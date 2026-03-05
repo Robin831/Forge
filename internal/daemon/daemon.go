@@ -33,6 +33,7 @@ import (
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/worker"
@@ -305,6 +306,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		AnvilConfig:     anvilCfg,
 		Bead:            bead,
 		ExtraFlags:      d.cfg.Settings.ClaudeFlags,
+		Providers:       provider.FromConfig(d.cfg.Settings.Providers),
 	})
 
 	if outcome.Error != nil {

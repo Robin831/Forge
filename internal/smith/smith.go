@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/provider"
 )
 
 // Result captures the outcome of a Smith session.
@@ -32,7 +33,7 @@ type Result struct {
 	ErrorOutput string
 	// Summary is extracted from the stream-json output (last assistant message).
 	Summary string
-	// FullOutput is the complete text response from Claude (from the result event).
+	// FullOutput is the complete text response from the AI (from the result event).
 	FullOutput string
 	// CostUSD is the total cost if extractable from output.
 	CostUSD float64
@@ -40,6 +41,13 @@ type Result struct {
 	TokensIn int
 	// TokensOut is the total output tokens if extractable.
 	TokensOut int
+	// RateLimited is true when the provider refused the request due to quota.
+	RateLimited bool
+	// ResultSubtype is the stream-json result event subtype (e.g. "success",
+	// "error_max_turns", "error_rate_limit_exceeded").
+	ResultSubtype string
+	// ProviderUsed records which provider produced this result.
+	ProviderUsed provider.Kind
 }
 
 // Process represents a running or completed Smith (Claude Code) process.
@@ -56,15 +64,23 @@ type Process struct {
 	result *Result
 }
 
-// StreamEvent represents a single event from Claude's stream-json output.
+// StreamEvent represents a single event from a provider's stream-json output.
 type StreamEvent struct {
 	Type    string          `json:"type"`
+	Subtype string          `json:"subtype,omitempty"`
 	Message json.RawMessage `json:"message,omitempty"`
 	Content string          `json:"content,omitempty"`
 	// Fields present when type == "result":
 	Result       string       `json:"result,omitempty"`
 	TotalCostUSD float64      `json:"total_cost_usd,omitempty"`
 	Usage        *StreamUsage `json:"usage,omitempty"`
+	// rate_limit_event fields
+	RateLimitInfo *RateLimitInfo `json:"rate_limit_info,omitempty"`
+}
+
+// RateLimitInfo is the payload of a Claude rate_limit_event.
+type RateLimitInfo struct {
+	Status string `json:"status"`
 }
 
 // StreamUsage holds token counts from the result event.
@@ -73,22 +89,22 @@ type StreamUsage struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
-// Spawn starts a new Claude Code process in the given worktree directory.
-// The prompt is sent via -p flag. The process runs with --dangerously-skip-permissions
-// for autonomous operation.
+// Spawn starts a Claude Code process in the given worktree directory.
+// This is a convenience wrapper around SpawnWithProvider using provider.Claude.
 //
 // logDir is where the session log file is written.
-func Spawn(ctx context.Context, worktreePath, prompt, logDir string, extraFlags []string) (*Process, error) {
-	// Build command arguments
-	args := []string{
-		"--dangerously-skip-permissions",
-		"-p", prompt,
-		"--output-format", "stream-json",
-		"--verbose",
-	}
-	args = append(args, extraFlags...)
+func Spawn(ctx context.Context, worktreePath, promptText, logDir string, extraFlags []string) (*Process, error) {
+	return SpawnWithProvider(ctx, worktreePath, promptText, logDir, provider.Provider{Kind: provider.Claude}, extraFlags)
+}
 
-	cmd := exec.CommandContext(ctx, "claude", args...)
+// SpawnWithProvider starts an AI coding agent process for the given provider.
+// The provider determines which binary is executed and how arguments are built.
+//
+// logDir is where the session log file is written.
+func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*Process, error) {
+	args := pv.BuildArgs(promptText, extraFlags)
+
+	cmd := exec.CommandContext(ctx, pv.Cmd(), args...)
 	cmd.Dir = worktreePath
 
 	// Strip CLAUDECODE so claude doesn't refuse to run inside another session.
@@ -129,7 +145,7 @@ func Spawn(ctx context.Context, worktreePath, prompt, logDir string, extraFlags 
 	startTime := time.Now()
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
-		return nil, fmt.Errorf("starting claude process: %w", err)
+		return nil, fmt.Errorf("starting %s process: %w", pv.Cmd(), err)
 	}
 
 	p := &Process{
@@ -144,7 +160,9 @@ func Spawn(ctx context.Context, worktreePath, prompt, logDir string, extraFlags 
 		defer close(p.done)
 		defer logFile.Close()
 
-		result := &Result{}
+		result := &Result{
+			ProviderUsed: pv.Kind,
+		}
 
 		// Read stdout and stderr concurrently
 		var wg sync.WaitGroup
@@ -179,6 +197,10 @@ func Spawn(ctx context.Context, worktreePath, prompt, logDir string, extraFlags 
 				result.ExitCode = -1
 			}
 		}
+
+		// Detect rate limit — check exit code, stderr, and result subtype.
+		result.RateLimited = provider.IsRateLimitError(
+			result.ExitCode, result.ErrorOutput, result.ResultSubtype)
 
 		p.mu.Lock()
 		p.result = result
@@ -276,6 +298,7 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 			// assistant response.  When subtype is "error_max_turns" the field
 			// is absent — we fall back to accumulated assistant text below.
 			if event.Type == "result" {
+				result.ResultSubtype = event.Subtype
 				result.CostUSD = event.TotalCostUSD
 				if event.Usage != nil {
 					result.TokensIn = event.Usage.InputTokens
@@ -283,6 +306,17 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 				}
 				if event.Result != "" {
 					result.FullOutput = event.Result
+				}
+			}
+
+			// Detect a hard rate-limit event emitted before the result.
+			// Claude emits rate_limit_event with status "blocked" (or similar)
+			// when the session cannot proceed.
+			if event.Type == "rate_limit_event" && event.RateLimitInfo != nil {
+				s := strings.ToLower(event.RateLimitInfo.Status)
+				switch s {
+				case "blocked", "denied", "exceeded", "hard_blocked":
+					result.RateLimited = true
 				}
 			}
 		}

@@ -40,6 +40,11 @@ type SettingsConfig struct {
 	SmithTimeout  time.Duration `mapstructure:"smith_timeout"`
 	MaxTotalSmiths int          `mapstructure:"max_total_smiths"`
 	ClaudeFlags   []string      `mapstructure:"claude_flags"`
+	// Providers is the ordered list of AI providers to try.
+	// Each entry is a Kind string ("claude", "gemini") or "kind:command" pair.
+	// When a provider signals a rate limit the next one in the list is tried.
+	// Defaults to ["claude", "gemini"] when empty.
+	Providers     []string      `mapstructure:"providers"`
 }
 
 // NotificationsConfig holds webhook and notification settings.
@@ -59,6 +64,7 @@ func Defaults() Config {
 			SmithTimeout:   30 * time.Minute,
 			MaxTotalSmiths: 4,
 			ClaudeFlags:    []string{},
+			// No Providers default here — provider.FromConfig handles empty slice.
 		},
 	}
 }

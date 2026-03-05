@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 )
 
@@ -59,8 +60,16 @@ type ReviewIssue struct {
 
 // Review runs a Warden review of the changes in the given worktree.
 // It gets the git diff, spawns a Claude review session, and parses the verdict.
-func Review(ctx context.Context, worktreePath, beadID, anvilPath string) (*ReviewResult, error) {
+//
+// providers is the ordered list of AI providers to try. When empty,
+// provider.Defaults() is used. Provider fallback applies on rate limit.
+func Review(ctx context.Context, worktreePath, beadID, anvilPath string, providers ...provider.Provider) (*ReviewResult, error) {
 	start := time.Now()
+
+	pvList := providers
+	if len(pvList) == 0 {
+		pvList = provider.Defaults()
+	}
 
 	// Get the diff of changes
 	diff, err := getDiff(ctx, worktreePath)
@@ -84,13 +93,27 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string) (*Revie
 	// read files. Allowing tools triggers multi-turn ToolSearch → Grep/Read
 	// sequences that hit max-turns before Claude outputs the verdict JSON.
 	logDir := filepath.Join(anvilPath, ".workers", "logs")
-	process, err := smith.Spawn(ctx, worktreePath, prompt, logDir, []string{"--max-turns", "3", "--tools", ""})
-	if err != nil {
-		return nil, fmt.Errorf("spawning warden: %w", err)
-	}
+	wardenFlags := []string{"--max-turns", "3", "--tools", ""}
 
-	// Wait for the review to complete
-	smithResult := process.Wait()
+	var smithResult *smith.Result
+	for pi, pv := range pvList {
+		// For non-Claude providers the --tools flag has no equivalent;
+		// pass flags as-is (provider.BuildArgs translates/drops them).
+		process, err := smith.SpawnWithProvider(ctx, worktreePath, prompt, logDir, pv, wardenFlags)
+		if err != nil {
+			return nil, fmt.Errorf("spawning warden (%s): %w", pv.Kind, err)
+		}
+		smithResult = process.Wait()
+		if !smithResult.RateLimited {
+			break
+		}
+		if pi+1 < len(pvList) {
+			// try next provider
+			continue
+		}
+		// All providers exhausted
+		return nil, fmt.Errorf("all warden providers rate limited")
+	}
 
 	result := &ReviewResult{
 		RawOutput: smithResult.Output,

@@ -18,6 +18,7 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
@@ -62,6 +63,9 @@ type Params struct {
 	Bead            poller.Bead
 	ExtraFlags      []string
 	TemperConfig    *temper.Config // nil = auto-detect
+	// Providers is the ordered list of AI providers to try.
+	// If empty, provider.Defaults() is used (Claude → Gemini).
+	Providers       []provider.Provider
 }
 
 // Run executes the full Smith → Temper → Warden pipeline for a bead.
@@ -124,6 +128,13 @@ func Run(ctx context.Context, p Params) *Outcome {
 		return outcome
 	}
 
+	// Resolve provider list.
+	providers := p.Providers
+	if len(providers) == 0 {
+		providers = provider.Defaults()
+	}
+	activeProviderIdx := 0
+
 	// Feedback loop
 	var currentPrompt = promptText
 
@@ -131,23 +142,48 @@ func Run(ctx context.Context, p Params) *Outcome {
 		outcome.Iterations = iteration
 		log.Printf("[pipeline:%s] Iteration %d/%d", workerID, iteration, MaxIterations)
 
-		// Step 2: Run Smith
-		log.Printf("[pipeline:%s] Running Smith", workerID)
-		_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d", iteration), p.Bead.ID, p.AnvilName)
+		// Step 2: Run Smith (with provider fallback on rate limit)
+		log.Printf("[pipeline:%s] Running Smith (provider: %s)", workerID, providers[activeProviderIdx].Kind)
+		_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d (provider: %s)", iteration, providers[activeProviderIdx].Kind), p.Bead.ID, p.AnvilName)
 
 		logDir := wt.Path + "/.forge-logs"
-		process, err := smith.Spawn(ctx, wt.Path, currentPrompt, logDir, p.ExtraFlags)
-		if err != nil {
-			outcome.Error = fmt.Errorf("spawning smith: %w", err)
+
+		var smithResult *smith.Result
+		for pi := activeProviderIdx; pi < len(providers); pi++ {
+			pv := providers[pi]
+			if pi > activeProviderIdx {
+				log.Printf("[pipeline:%s] Provider %s rate limited, retrying with %s", workerID, providers[pi-1].Kind, pv.Kind)
+				_ = p.DB.LogEvent(state.EventSmithStarted,
+					fmt.Sprintf("Rate limit fallback to provider %s (iteration %d)", pv.Kind, iteration),
+					p.Bead.ID, p.AnvilName)
+			}
+			process, err := smith.SpawnWithProvider(ctx, wt.Path, currentPrompt, logDir, pv, p.ExtraFlags)
+			if err != nil {
+				outcome.Error = fmt.Errorf("spawning smith (%s): %w", pv.Kind, err)
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+				_ = p.DB.LogEvent(state.EventSmithFailed, err.Error(), p.Bead.ID, p.AnvilName)
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
+			_ = p.DB.UpdateWorkerPID(workerID, process.PID)
+			smithResult = process.Wait()
+			if !smithResult.RateLimited {
+				activeProviderIdx = pi // remember for the next iteration
+				break
+			}
+		}
+		outcome.SmithResult = smithResult
+
+		if smithResult.RateLimited {
+			log.Printf("[pipeline:%s] All providers rate limited", workerID)
+			_ = p.DB.LogEvent(state.EventSmithFailed,
+				"All providers rate limited — cannot continue",
+				p.Bead.ID, p.AnvilName)
+			outcome.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
-			_ = p.DB.LogEvent(state.EventSmithFailed, err.Error(), p.Bead.ID, p.AnvilName)
 			outcome.Duration = time.Since(start)
 			return outcome
 		}
-		_ = p.DB.UpdateWorkerPID(workerID, process.PID)
-
-		smithResult := process.Wait()
-		outcome.SmithResult = smithResult
 
 		if smithResult.ExitCode != 0 {
 			log.Printf("[pipeline:%s] Smith failed exit=%d stderr=%s", workerID, smithResult.ExitCode, smithResult.ErrorOutput)
@@ -195,7 +231,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		log.Printf("[pipeline:%s] Running Warden review", workerID)
 		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
 
-		reviewResult, err := warden.Review(ctx, wt.Path, p.Bead.ID, p.AnvilConfig.Path)
+		reviewResult, err := warden.Review(ctx, wt.Path, p.Bead.ID, p.AnvilConfig.Path, providers...)
 		if err != nil {
 			log.Printf("[pipeline:%s] Warden error: %v", workerID, err)
 			// Warden failure is not fatal — default to approve and let human review
