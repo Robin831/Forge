@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 )
@@ -55,6 +56,9 @@ type Result struct {
 	ProviderUsed provider.Kind
 	// Quota contains the latest known quota information from the provider.
 	Quota *provider.Quota
+	// GeminiStats holds the raw stats block from a Gemini result event.
+	// Nil for non-Gemini providers or when no stats were emitted.
+	GeminiStats *StreamStats
 }
 
 // Process represents a running or completed Smith (Claude Code) process.
@@ -95,6 +99,10 @@ type StreamStats struct {
 	TotalTokens     int `json:"total_tokens,omitempty"`
 	InputTokens     int `json:"input_tokens,omitempty"`
 	OutputTokens    int `json:"output_tokens,omitempty"`
+	Cached          int `json:"cached,omitempty"`
+	Input           int `json:"input,omitempty"`
+	DurationMs      int `json:"duration_ms,omitempty"`
+	ToolCalls       int `json:"tool_calls,omitempty"`
 	RequestsLimit   int `json:"requests_limit,omitempty"`
 	RequestsUsed    int `json:"requests_used,omitempty"`
 	RequestsResetMs int `json:"requests_reset_ms,omitempty"`
@@ -380,6 +388,32 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 				// rejection). Flag it if the result text confirms the cause.
 				if event.IsError && provider.IsRateLimitError(0, event.Result, event.Subtype) {
 					result.RateLimited = true
+				}
+
+				// Gemini emits stats instead of usage/total_cost_usd.
+				if event.Stats != nil {
+					result.GeminiStats = event.Stats
+					// Populate token counts from stats when Usage is absent.
+					if result.TokensIn == 0 && result.TokensOut == 0 {
+						result.TokensIn = event.Stats.InputTokens
+						result.TokensOut = event.Stats.OutputTokens
+					}
+
+					// Estimate cost for Gemini if it was not provided (it is usually 0).
+					if result.CostUSD == 0 {
+						u := cost.Usage{
+							InputTokens:  event.Stats.InputTokens,
+							OutputTokens: event.Stats.OutputTokens,
+						}
+						u.Calculate(cost.GeminiPricing())
+						result.CostUSD = u.EstimatedCostUSD
+					}
+
+					// Write a human-readable stats summary to the smith log.
+					fmt.Fprintf(logFile,
+						"[gemini stats] tokens_in=%d tokens_out=%d total=%d cached=%d input=%d tool_calls=%d duration_ms=%d\n",
+						event.Stats.InputTokens, event.Stats.OutputTokens, event.Stats.TotalTokens,
+						event.Stats.Cached, event.Stats.Input, event.Stats.ToolCalls, event.Stats.DurationMs)
 				}
 
 				// Extract quota from Gemini stats if present

@@ -27,13 +27,23 @@ type Pricing struct {
 	CacheWritePerM float64 `json:"cache_write_per_m"`
 }
 
-// DefaultPricing returns approximate Claude Sonnet 4 pricing.
+// DefaultPricing returns approximate Claude Sonnet 3.5 pricing.
 func DefaultPricing() Pricing {
 	return Pricing{
 		InputPerM:      3.00,
 		OutputPerM:     15.00,
 		CacheReadPerM:  0.30,
 		CacheWritePerM: 3.75,
+	}
+}
+
+// GeminiPricing returns approximate Gemini 1.5 Pro pricing.
+func GeminiPricing() Pricing {
+	return Pricing{
+		InputPerM:      3.50,
+		OutputPerM:     10.50,
+		CacheReadPerM:  0.00, // Gemini caching pricing is different
+		CacheWritePerM: 0.00,
 	}
 }
 

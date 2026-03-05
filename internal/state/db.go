@@ -441,6 +441,7 @@ const (
 	EventBeadClaimed    EventType = "bead_claimed"
 	EventSmithStarted   EventType = "smith_started"
 	EventSmithDone      EventType = "smith_done"
+	EventSmithStats     EventType = "smith_stats"
 	EventSmithFailed    EventType = "smith_failed"
 	EventWardenStarted  EventType = "warden_started"
 	EventWardenPass     EventType = "warden_pass"

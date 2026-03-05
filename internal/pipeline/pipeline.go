@@ -229,6 +229,13 @@ func Run(ctx context.Context, p Params) *Outcome {
 			fmt.Sprintf("Completed in %.1fs ($%.4f)", smithResult.Duration.Seconds(), smithResult.CostUSD),
 			p.Bead.ID, p.AnvilName)
 
+		if s := smithResult.GeminiStats; s != nil {
+			_ = p.DB.LogEvent(state.EventSmithStats,
+				fmt.Sprintf("tokens_in=%d tokens_out=%d total=%d cached=%d input=%d tool_calls=%d duration_ms=%d",
+					s.InputTokens, s.OutputTokens, s.TotalTokens, s.Cached, s.Input, s.ToolCalls, s.DurationMs),
+				p.Bead.ID, p.AnvilName)
+		}
+
 		// Step 3: Run Temper (build/test)
 		log.Printf("[pipeline:%s] Running Temper verification", workerID)
 		_ = p.DB.UpdateWorkerPhase(workerID, "temper")
