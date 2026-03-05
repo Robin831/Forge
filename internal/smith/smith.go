@@ -79,6 +79,7 @@ func Spawn(ctx context.Context, worktreePath, prompt, logDir string, extraFlags 
 		"--dangerously-skip-permissions",
 		"-p", prompt,
 		"--output-format", "stream-json",
+		"--verbose",
 	}
 	args = append(args, extraFlags...)
 
