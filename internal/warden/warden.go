@@ -31,6 +31,12 @@ const (
 	VerdictRequestChanges Verdict = "request_changes"
 )
 
+// wardenMaxTurns is the maximum number of turns the Warden review session may
+// use. Enough to output the verdict JSON first and then do file analysis.
+// Higher than 3 (the previous value) because tool reads can consume turns
+// before the model emits the verdict block.
+const wardenMaxTurns = 5
+
 // ReviewResult captures the Warden's review outcome.
 type ReviewResult struct {
 	// Verdict is the review decision.
@@ -102,7 +108,7 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 	// still parseable. max-turns is set to 5 to give Claude enough room to
 	// output the verdict and then do analysis (even if it reads a few files).
 	logDir := filepath.Join(worktreePath, ".forge-logs")
-	wardenFlags := []string{"--max-turns", "5"}
+	wardenFlags := []string{"--max-turns", fmt.Sprintf("%d", wardenMaxTurns)}
 
 	var smithResult *smith.Result
 	// For non-Claude providers --max-turns is translated/dropped;
@@ -208,15 +214,16 @@ func buildReviewPrompt(beadID, diff, anvilPath string) string {
 
 ## REQUIRED: Output Your Verdict JSON Block First
 
-Before writing anything else, you MUST output the following JSON block as the VERY FIRST content
-in your response — even before any analysis or comments:
+Before writing anything else, output a JSON block in this format as the VERY FIRST content
+in your response — even before any analysis or comments. Replace each field with your actual
+verdict, summary, and list of issues:
 
 %s
 
-Where:
-- verdict is one of: "approve", "reject", "request_changes"
-- summary is a one-line summary of your review
-- issues is an array of specific issues found (empty array if approving)
+Fields:
+- verdict: one of "approve", "reject", or "request_changes" (required — do not copy the example value)
+- summary: a one-line summary of your overall review finding
+- issues: array of specific problems found; use [] when approving
 
 ## Verdict Meanings
 
@@ -240,7 +247,7 @@ After outputting the JSON verdict above, review the following git diff:
 
 %s
 %s`,
-		"```json\n{\"verdict\": \"approve|reject|request_changes\", \"summary\": \"...\", \"issues\": [{\"file\": \"path\", \"line\": 0, \"severity\": \"error|warning|suggestion\", \"message\": \"...\"}]}\n```",
+		"Use the following JSON format, replacing each field with your actual verdict, summary, and issues:\n\n```json\n{\"verdict\": \"request_changes\", \"summary\": \"\", \"issues\": []}\n```\n\nSet `verdict` to one of: `approve`, `reject`, `request_changes`.",
 		beadID,
 		"```diff\n"+truncateDiff(diff, 50000)+"\n```",
 		conditionalSection("## Repository Guidelines (AGENTS.md)", agentsMD),
