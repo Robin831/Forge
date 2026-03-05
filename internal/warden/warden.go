@@ -79,9 +79,12 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string) (*Revie
 	// Build the review prompt
 	prompt := buildReviewPrompt(beadID, diff, anvilPath)
 
-	// Spawn a Claude review session
+	// Spawn a Claude review session.
+	// Disable all tools: the diff is in the prompt, so Claude doesn't need to
+	// read files. Allowing tools triggers multi-turn ToolSearch → Grep/Read
+	// sequences that hit max-turns before Claude outputs the verdict JSON.
 	logDir := filepath.Join(anvilPath, ".workers", "logs")
-	process, err := smith.Spawn(ctx, worktreePath, prompt, logDir, []string{"--max-turns", "1"})
+	process, err := smith.Spawn(ctx, worktreePath, prompt, logDir, []string{"--max-turns", "3", "--tools", ""})
 	if err != nil {
 		return nil, fmt.Errorf("spawning warden: %w", err)
 	}

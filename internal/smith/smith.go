@@ -224,6 +224,14 @@ func (p *Process) Kill() error {
 	return nil
 }
 
+// assistantMessage is used to extract text from Claude's assistant events.
+type assistantMessage struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
 // readStreamJSON reads Claude's stream-json output line by line,
 // writing to both the buffer and log file, extracting result metadata.
 func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result *Result) {
@@ -232,6 +240,7 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 
 	var lastContent string
+	var assistantText strings.Builder
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -249,16 +258,41 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 				lastContent = event.Content
 			}
 
-			// Capture the final result event (contains full text and cost)
-			if event.Type == "result" && event.Result != "" {
-				result.FullOutput = event.Result
+			// Accumulate assistant message text (fallback when result event
+			// has no "result" field, e.g. subtype "error_max_turns").
+			if event.Type == "assistant" && len(event.Message) > 0 {
+				var msg assistantMessage
+				if err := json.Unmarshal(event.Message, &msg); err == nil {
+					for _, block := range msg.Content {
+						if block.Type == "text" && block.Text != "" {
+							assistantText.WriteString(block.Text)
+						}
+					}
+				}
+			}
+
+			// Capture the final result event (contains full text and cost).
+			// When subtype is "success" the "result" field holds the complete
+			// assistant response.  When subtype is "error_max_turns" the field
+			// is absent — we fall back to accumulated assistant text below.
+			if event.Type == "result" {
 				result.CostUSD = event.TotalCostUSD
 				if event.Usage != nil {
 					result.TokensIn = event.Usage.InputTokens
 					result.TokensOut = event.Usage.OutputTokens
 				}
+				if event.Result != "" {
+					result.FullOutput = event.Result
+				}
 			}
 		}
+	}
+
+	// If the result event had no text (e.g. error_max_turns), use the
+	// accumulated assistant message text as FullOutput so callers like the
+	// warden can still attempt to parse a verdict from partial output.
+	if result.FullOutput == "" {
+		result.FullOutput = assistantText.String()
 	}
 
 	// Use last content as summary
