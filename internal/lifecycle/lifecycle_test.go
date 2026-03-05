@@ -43,12 +43,13 @@ func makeEvent(prNum int, evType string) bellows.PREvent {
 
 // TestEventCIFailed_Dispatch verifies that a CI failure dispatches ActionFixCI.
 func TestEventCIFailed_Dispatch(t *testing.T) {
+	db := newTestDB(t)
 	var got ActionRequest
 	handler := func(_ context.Context, req ActionRequest) {
 		got = req
 	}
 
-	m := New(nil, testLogger(), handler)
+	m := New(db, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(42, bellows.EventCIFailed))
 
 	if got.Action != ActionFixCI {
@@ -61,7 +62,7 @@ func TestEventCIFailed_Dispatch(t *testing.T) {
 		t.Errorf("expected bead-1, got %q", got.BeadID)
 	}
 
-	st := m.GetState(42)
+	st := m.GetState("test-anvil", 42)
 	if st.CIFixCount != 1 {
 		t.Errorf("expected CIFixCount=1, got %d", st.CIFixCount)
 	}
@@ -90,7 +91,7 @@ func TestEventCIFailed_MaxAttemptsExhausted(t *testing.T) {
 		t.Errorf("expected 2 dispatches, got %d", dispatchCount)
 	}
 
-	st := m.GetState(10)
+	st := m.GetState("test-anvil", 10)
 	if st.CIFixCount != 2 {
 		t.Errorf("expected CIFixCount=2, got %d", st.CIFixCount)
 	}
@@ -131,7 +132,7 @@ func TestEventReviewChanges_Dispatch(t *testing.T) {
 		t.Errorf("expected ActionFixReview, got %v", got.Action)
 	}
 
-	st := m.GetState(7)
+	st := m.GetState("test-anvil", 7)
 	if st.ReviewFixCnt != 1 {
 		t.Errorf("expected ReviewFixCnt=1, got %d", st.ReviewFixCnt)
 	}
@@ -179,12 +180,13 @@ func TestEventReviewChanges_MaxAttemptsExhausted(t *testing.T) {
 
 // TestEventPRMerged_ClosesBead verifies ActionCloseBead is dispatched on merge.
 func TestEventPRMerged_ClosesBead(t *testing.T) {
+	db := newTestDB(t)
 	var got ActionRequest
 	handler := func(_ context.Context, req ActionRequest) {
 		got = req
 	}
 
-	m := New(nil, testLogger(), handler)
+	m := New(db, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(99, bellows.EventPRMerged))
 
 	if got.Action != ActionCloseBead {
@@ -194,7 +196,7 @@ func TestEventPRMerged_ClosesBead(t *testing.T) {
 		t.Errorf("expected PR #99, got %d", got.PRNumber)
 	}
 
-	st := m.GetState(99)
+	st := m.GetState("test-anvil", 99)
 	if !st.Merged {
 		t.Error("expected Merged=true")
 	}
@@ -294,7 +296,7 @@ func TestConcurrentHandleEvent(t *testing.T) {
 
 	// Verify manager state is internally consistent
 	for i := 0; i < 5; i++ {
-		st := m.GetState(i)
+		st := m.GetState("test-anvil", i)
 		if st == nil {
 			t.Errorf("expected state for PR #%d", i)
 		}
@@ -303,10 +305,11 @@ func TestConcurrentHandleEvent(t *testing.T) {
 
 // TestNewPRState_CreatedOnFirstEvent verifies state is auto-created on first event.
 func TestNewPRState_CreatedOnFirstEvent(t *testing.T) {
-	m := New(nil, testLogger(), nil)
+	db := newTestDB(t)
+	m := New(db, testLogger(), nil)
 	m.HandleEvent(context.Background(), makeEvent(1, bellows.EventCIPassed))
 
-	st := m.GetState(1)
+	st := m.GetState("test-anvil", 1)
 	if st == nil {
 		t.Fatal("expected state to be created")
 	}
@@ -320,19 +323,20 @@ func TestNewPRState_CreatedOnFirstEvent(t *testing.T) {
 
 // TestEventPRClosed_Cleanup verifies ActionCleanup is dispatched when PR is closed.
 func TestEventPRClosed_Cleanup(t *testing.T) {
+	db := newTestDB(t)
 	var got ActionRequest
 	handler := func(_ context.Context, req ActionRequest) {
 		got = req
 	}
 
-	m := New(nil, testLogger(), handler)
+	m := New(db, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(33, bellows.EventPRClosed))
 
 	if got.Action != ActionCleanup {
 		t.Errorf("expected ActionCleanup, got %v", got.Action)
 	}
 
-	st := m.GetState(33)
+	st := m.GetState("test-anvil", 33)
 	if !st.Closed {
 		t.Error("expected Closed=true")
 	}
@@ -340,7 +344,8 @@ func TestEventPRClosed_Cleanup(t *testing.T) {
 
 // TestActivePRs verifies ActivePRs count excludes merged/closed PRs.
 func TestActivePRs(t *testing.T) {
-	m := New(nil, testLogger(), nil)
+	db := newTestDB(t)
+	m := New(db, testLogger(), nil)
 	ctx := context.Background()
 
 	m.HandleEvent(ctx, makeEvent(1, bellows.EventCIPassed)) // active
@@ -355,11 +360,12 @@ func TestActivePRs(t *testing.T) {
 
 // TestRemove verifies that Remove deletes PR state.
 func TestRemove(t *testing.T) {
-	m := New(nil, testLogger(), nil)
+	db := newTestDB(t)
+	m := New(db, testLogger(), nil)
 	m.HandleEvent(context.Background(), makeEvent(5, bellows.EventCIPassed))
 
-	m.Remove(5)
-	if st := m.GetState(5); st != nil {
+	m.Remove("test-anvil", 5)
+	if st := m.GetState("test-anvil", 5); st != nil {
 		t.Error("expected state to be nil after Remove")
 	}
 }
@@ -403,7 +409,7 @@ func TestManager_Persistence(t *testing.T) {
 		BeadID:    "bd-1",
 	})
 
-	st := m.GetState(123)
+	st := m.GetState("test-anvil", 123)
 	if st == nil {
 		t.Fatal("state not found")
 	}
@@ -420,7 +426,7 @@ func TestManager_Persistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	st2 := m2.GetState(123)
+	st2 := m2.GetState("test-anvil", 123)
 	if st2 == nil {
 		t.Fatal("state not found after load")
 	}
@@ -440,5 +446,65 @@ func TestManager_Persistence(t *testing.T) {
 	})
 	if st2.CIFixCount != 1 {
 		t.Errorf("expected CIFixCount still 1 after redundant event, got %d", st2.CIFixCount)
+	}
+}
+
+func TestManager_AnvilCollision(t *testing.T) {
+	// Setup DB
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	m := New(db, testLogger(), func(ctx context.Context, req ActionRequest) {})
+
+	// PR #1 in Anvil A
+	m.HandleEvent(ctx, bellows.PREvent{
+		PRNumber:  1,
+		Anvil:     "anvil-a",
+		EventType: bellows.EventCIFailed,
+		BeadID:    "bead-a",
+	})
+
+	// PR #1 in Anvil B
+	m.HandleEvent(ctx, bellows.PREvent{
+		PRNumber:  1,
+		Anvil:     "anvil-b",
+		EventType: bellows.EventCIPassed,
+		BeadID:    "bead-b",
+	})
+
+	stA := m.GetState("anvil-a", 1)
+	stB := m.GetState("anvil-b", 1)
+
+	if stA == nil || stB == nil {
+		t.Fatal("states not found")
+	}
+
+	if stA.Anvil != "anvil-a" {
+		t.Errorf("expected anvil-a, got %s", stA.Anvil)
+	}
+	if stB.Anvil != "anvil-b" {
+		t.Errorf("expected anvil-b, got %s", stB.Anvil)
+	}
+
+	if stA.CIPassing {
+		t.Error("expected anvil-a to be failing")
+	}
+	if !stB.CIPassing {
+		t.Error("expected anvil-b to be passing")
+	}
+
+	// Verify both were inserted into DB with different IDs
+	if stA.ID == stB.ID {
+		t.Errorf("expected different DB IDs, both got %d", stA.ID)
 	}
 }
