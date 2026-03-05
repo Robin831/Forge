@@ -168,7 +168,14 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerPID(workerID, process.PID)
 			smithResult = process.Wait()
 
-			// Update quota in state DB if available
+			// A process that exits 0 completed successfully — the Claude CLI handles
+			// internal retries for rate limits and resumes automatically. Any
+			// rate_limit_event we saw was either a warning or a transient block that
+			// resolved before exit. Don't fall back to another provider in this case.
+			if smithResult.ExitCode == 0 {
+				smithResult.RateLimited = false
+			}
+
 			if smithResult.Quota != nil {
 				if err := p.DB.UpsertProviderQuota(string(pv.Kind), smithResult.Quota); err != nil {
 					log.Printf("[pipeline:%s] Failed to update provider %s quota in DB: %v", workerID, pv.Kind, err)
