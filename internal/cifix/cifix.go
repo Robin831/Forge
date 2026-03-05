@@ -1,0 +1,179 @@
+// Package cifix spawns a Smith worker to fix CI failures on a PR branch.
+//
+// When Bellows detects CI failures, cifix checks out the existing PR branch,
+// runs Temper to reproduce the failure, then spawns Smith with a targeted
+// fix prompt. It retries up to a configurable number of attempts.
+package cifix
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/Robin831/Forge/internal/smith"
+	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/temper"
+)
+
+// MaxAttempts is the maximum number of CI fix attempts per PR.
+const MaxAttempts = 2
+
+// FixParams holds the inputs for a CI fix attempt.
+type FixParams struct {
+	// WorktreePath is the git worktree for this PR's branch.
+	WorktreePath string
+	// BeadID for tracking.
+	BeadID string
+	// AnvilName for tracking.
+	AnvilName string
+	// AnvilPath to the repo root.
+	AnvilPath string
+	// PRNumber being fixed.
+	PRNumber int
+	// Branch name for the PR.
+	Branch string
+	// DB for state tracking.
+	DB *state.DB
+	// ExtraFlags for Claude CLI.
+	ExtraFlags []string
+	// TemperConfig overrides auto-detection if set.
+	TemperConfig *temper.Config
+}
+
+// FixResult captures the outcome of a CI fix attempt.
+type FixResult struct {
+	// Fixed is true if the CI issues were resolved.
+	Fixed bool
+	// Attempts is how many fix cycles were tried.
+	Attempts int
+	// LastTemperResult is from the last verification.
+	LastTemperResult *temper.Result
+	// Duration is the total time spent.
+	Duration time.Duration
+	// Error if the fix process itself failed.
+	Error error
+}
+
+// Fix attempts to resolve CI failures on a PR branch.
+func Fix(ctx context.Context, p FixParams) *FixResult {
+	start := time.Now()
+	result := &FixResult{}
+
+	for attempt := 1; attempt <= MaxAttempts; attempt++ {
+		result.Attempts = attempt
+		log.Printf("[cifix] PR #%d attempt %d/%d", p.PRNumber, attempt, MaxAttempts)
+
+		// Step 1: Run Temper to reproduce failures
+		temperCfg := p.TemperConfig
+		if temperCfg == nil {
+			detected := temper.DefaultConfig(p.WorktreePath)
+			temperCfg = &detected
+		}
+
+		temperResult := temper.Run(ctx, p.WorktreePath, *temperCfg)
+		result.LastTemperResult = temperResult
+
+		if temperResult.Passed {
+			log.Printf("[cifix] PR #%d: Temper passes — CI may be fixed already", p.PRNumber)
+			result.Fixed = true
+			result.Duration = time.Since(start)
+			return result
+		}
+
+		// Step 2: Build fix prompt from Temper failures
+		prompt := buildCIFixPrompt(p, temperResult)
+
+		// Step 3: Spawn Smith to fix
+		_ = p.DB.LogEvent("ci_fix_started",
+			fmt.Sprintf("PR #%d: attempt %d, failed step: %s", p.PRNumber, attempt, temperResult.FailedStep),
+			p.BeadID, p.AnvilName)
+
+		logDir := p.WorktreePath + "/.forge-logs"
+		process, err := smith.Spawn(ctx, p.WorktreePath, prompt, logDir, p.ExtraFlags)
+		if err != nil {
+			result.Error = fmt.Errorf("spawning smith for CI fix: %w", err)
+			result.Duration = time.Since(start)
+			return result
+		}
+
+		smithResult := process.Wait()
+		if smithResult.ExitCode != 0 {
+			log.Printf("[cifix] PR #%d: Smith fix attempt %d failed (exit %d)", p.PRNumber, attempt, smithResult.ExitCode)
+			_ = p.DB.LogEvent("ci_fix_failed",
+				fmt.Sprintf("PR #%d: Smith exit %d on attempt %d", p.PRNumber, smithResult.ExitCode, attempt),
+				p.BeadID, p.AnvilName)
+			continue
+		}
+
+		// Step 4: Verify the fix
+		verifyResult := temper.Run(ctx, p.WorktreePath, *temperCfg)
+		result.LastTemperResult = verifyResult
+
+		if verifyResult.Passed {
+			log.Printf("[cifix] PR #%d: Fixed on attempt %d", p.PRNumber, attempt)
+			result.Fixed = true
+			_ = p.DB.LogEvent("ci_fix_success",
+				fmt.Sprintf("PR #%d: Fixed on attempt %d", p.PRNumber, attempt),
+				p.BeadID, p.AnvilName)
+			result.Duration = time.Since(start)
+			return result
+		}
+
+		log.Printf("[cifix] PR #%d: Temper still failing after attempt %d", p.PRNumber, attempt)
+	}
+
+	result.Error = fmt.Errorf("could not fix CI after %d attempts", MaxAttempts)
+	_ = p.DB.LogEvent("ci_fix_exhausted",
+		fmt.Sprintf("PR #%d: Exhausted %d fix attempts", p.PRNumber, MaxAttempts),
+		p.BeadID, p.AnvilName)
+	result.Duration = time.Since(start)
+	return result
+}
+
+// buildCIFixPrompt creates a targeted prompt for Smith to fix CI failures.
+func buildCIFixPrompt(p FixParams, tr *temper.Result) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, `You are fixing CI failures on PR #%d (branch: %s) for bead %s.
+
+## CI Failure Summary
+
+%s
+
+## Failed Steps
+
+`, p.PRNumber, p.Branch, p.BeadID, tr.Summary)
+
+	for _, step := range tr.Steps {
+		if !step.Passed {
+			fmt.Fprintf(&b, "### %s (FAILED)\n", step.Name)
+			fmt.Fprintf(&b, "Command: %s\n", step.Command)
+			if step.Output != "" {
+				// Truncate long output
+				output := step.Output
+				if len(output) > 4000 {
+					output = output[len(output)-4000:]
+					output = "... (truncated)\n" + output
+				}
+				fmt.Fprintf(&b, "Output:\n```\n%s\n```\n\n", output)
+			}
+		}
+	}
+
+	fmt.Fprintf(&b, `## Instructions
+
+1. Analyze the CI failure output above
+2. Fix the root cause — do NOT just suppress warnings or skip tests
+3. Ensure all build, lint, and test steps pass
+4. Commit fixes with message: "fix: resolve CI failures for %s"
+5. Push to branch: %s
+
+## Working Directory
+
+%s
+`, p.BeadID, p.Branch, p.WorktreePath)
+
+	return b.String()
+}
