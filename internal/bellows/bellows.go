@@ -173,7 +173,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   fmt.Sprintf("PR #%d has been merged", pr.Number),
 			Timestamp: time.Now(),
 		})
-		_ = m.db.UpdatePRStatus(pr.Number, state.PRMerged)
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
 		_ = m.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
 	} else if status.IsClosed() && !lastSnap.IsClosed {
@@ -186,7 +186,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   fmt.Sprintf("PR #%d has been closed", pr.Number),
 			Timestamp: time.Now(),
 		})
-		_ = m.db.UpdatePRStatus(pr.Number, state.PRClosed)
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRClosed)
 		_ = m.db.LogEvent(state.EventPRClosed, fmt.Sprintf("PR #%d closed without merge", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
 	}
@@ -211,7 +211,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   "CI checks failed",
 			Timestamp: time.Now(),
 		})
-		_ = m.db.UpdatePRStatus(pr.Number, state.PRNeedsFix)
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
 		_ = m.db.LogEvent(state.EventCIFailed, fmt.Sprintf("PR #%d CI checks failed", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d CI failed", pr.Number), pr.BeadID, pr.Anvil)
 	}
@@ -226,7 +226,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   "PR received approval",
 			Timestamp: time.Now(),
 		})
-		_ = m.db.UpdatePRStatus(pr.Number, state.PRApproved)
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRApproved)
 	}
 
 	// Detect merge conflicts (CONFLICTING → fire event so operator / lifecycle can rebase)
@@ -260,7 +260,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   details,
 			Timestamp: time.Now(),
 		})
-		_ = m.db.UpdatePRStatus(pr.Number, state.PRNeedsFix)
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
 		_ = m.db.LogEvent(state.EventReviewChanges, fmt.Sprintf("PR #%d: %s", pr.Number, details), pr.BeadID, pr.Anvil)
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d: review fix needed", pr.Number), pr.BeadID, pr.Anvil)
 	}

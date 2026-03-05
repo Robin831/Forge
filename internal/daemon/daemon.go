@@ -284,6 +284,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.bellowsMonitor = bellows.New(d.db, monitorInterval, monitorAnvils)
 	d.lifecycleMgr = lifecycle.New(d.db, d.handleLifecycleAction)
+	if err := d.lifecycleMgr.Load(ctx); err != nil {
+		d.logger.Error("failed to load lifecycle states", "error", err)
+	}
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
 
 	// Reconcile: register any GitHub PRs not yet tracked in the state DB.

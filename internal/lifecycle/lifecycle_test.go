@@ -2,10 +2,12 @@ package lifecycle
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/state"
@@ -335,10 +337,10 @@ func TestActivePRs(t *testing.T) {
 	m := New(nil, nil)
 	ctx := context.Background()
 
-	m.HandleEvent(ctx, makeEvent(1, bellows.EventCIPassed))  // active
-	m.HandleEvent(ctx, makeEvent(2, bellows.EventCIPassed))  // active
-	m.HandleEvent(ctx, makeEvent(3, bellows.EventPRMerged))  // merged
-	m.HandleEvent(ctx, makeEvent(4, bellows.EventPRClosed))  // closed
+	m.HandleEvent(ctx, makeEvent(1, bellows.EventCIPassed)) // active
+	m.HandleEvent(ctx, makeEvent(2, bellows.EventCIPassed)) // active
+	m.HandleEvent(ctx, makeEvent(3, bellows.EventPRMerged)) // merged
+	m.HandleEvent(ctx, makeEvent(4, bellows.EventPRClosed)) // closed
 
 	if count := m.ActivePRs(); count != 2 {
 		t.Errorf("expected 2 active PRs, got %d", count)
@@ -356,3 +358,81 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+func TestManager_Persistence(t *testing.T) {
+	// Setup DB
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// 1. Create a PR and some state
+	ctx := context.Background()
+	pr := &state.PR{
+		Number:    123,
+		Anvil:     "test-anvil",
+		BeadID:    "bd-1",
+		Branch:    "fix-1",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+		CIPassing: true,
+	}
+	if err := db.InsertPR(pr); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(db, func(ctx context.Context, req ActionRequest) {})
+
+	// Simulate event to change state
+	m.HandleEvent(ctx, bellows.PREvent{
+		PRNumber:  123,
+		Anvil:     "test-anvil",
+		EventType: bellows.EventCIFailed,
+		BeadID:    "bd-1",
+	})
+
+	st := m.GetState(123)
+	if st == nil {
+		t.Fatal("state not found")
+	}
+	if st.CIFixCount != 1 {
+		t.Errorf("expected CIFixCount 1, got %d", st.CIFixCount)
+	}
+	if st.CIPassing {
+		t.Error("expected CIPassing false")
+	}
+
+	// 2. Restart Manager (new instance)
+	m2 := New(db, func(ctx context.Context, req ActionRequest) {})
+	if err := m2.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	st2 := m2.GetState(123)
+	if st2 == nil {
+		t.Fatal("state not found after load")
+	}
+	if st2.CIFixCount != 1 {
+		t.Errorf("expected CIFixCount 1 after load, got %d", st2.CIFixCount)
+	}
+	if st2.CIPassing {
+		t.Error("expected CIPassing false after load")
+	}
+
+	// 3. Verify redundant events are ignored
+	m2.HandleEvent(ctx, bellows.PREvent{
+		PRNumber:  123,
+		Anvil:     "test-anvil",
+		EventType: bellows.EventCIFailed,
+		BeadID:    "bd-1",
+	})
+	if st2.CIFixCount != 1 {
+		t.Errorf("expected CIFixCount still 1 after redundant event, got %d", st2.CIFixCount)
+	}
+}
