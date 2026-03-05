@@ -255,12 +255,11 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 	}
 
 	// Skip if bead is already in flight (either being implemented or another fix)
-	if _, inFlight := d.activeBeads.Load(req.BeadID); inFlight {
+	if _, inFlight := d.activeBeads.LoadOrStore(req.BeadID, true); inFlight {
 		d.logger.Info("bead already in flight, skipping lifecycle action", "bead", req.BeadID)
 		return
 	}
 
-	d.activeBeads.Store(req.BeadID, true)
 	d.wg.Add(1)
 
 	go func() {

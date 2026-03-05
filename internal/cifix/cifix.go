@@ -84,7 +84,10 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		}
 
 		// Step 2: Build fix prompt from Temper failures + GitHub checks
-		ghChecks, _ := fetchPRChecks(ctx, p.WorktreePath, p.PRNumber)
+		ghChecks, err := fetchPRChecks(ctx, p.WorktreePath, p.PRNumber)
+		if err != nil {
+			log.Printf("[cifix] Warning: failed to fetch GitHub PR checks: %v", err)
+		}
 		prompt := buildCIFixPrompt(p, temperResult, ghChecks)
 
 		// Step 3: Spawn Smith to fix
