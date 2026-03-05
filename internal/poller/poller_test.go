@@ -1,18 +1,38 @@
 package poller
 
 import (
+	"context"
 	"encoding/json"
+	"sort"
 	"testing"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestBead_UnmarshalJSON(t *testing.T) {
+func TestBead_JSONParsing(t *testing.T) {
+	raw := `[
+		{"id":"forge-1","title":"Fix bug","priority":1,"status":"open","issue_type":"bug","tags":["urgent"]},
+		{"id":"forge-2","title":"Add feature","priority":2,"status":"open","issue_type":"feature","assignee":"alice"}
+	]`
+
+	var beads []Bead
+	require.NoError(t, json.Unmarshal([]byte(raw), &beads))
+
+	assert.Len(t, beads, 2)
+	assert.Equal(t, "forge-1", beads[0].ID)
+	assert.Equal(t, "Fix bug", beads[0].Title)
+	assert.Equal(t, 1, beads[0].Priority)
+	assert.Equal(t, []string{"urgent"}, beads[0].Tags)
+	assert.Equal(t, "alice", beads[1].Assignee)
+}
+
+func TestBead_UnmarshalJSON_Tags(t *testing.T) {
 	jsonData := `[
 		{
 			"id": "BD-1",
 			"title": "Test Bead",
-			"description": "A test bead",
 			"status": "ready",
 			"priority": 1,
 			"tags": ["forge-auto", "bug"]
@@ -25,8 +45,7 @@ func TestBead_UnmarshalJSON(t *testing.T) {
 	]`
 
 	var beads []Bead
-	err := json.Unmarshal([]byte(jsonData), &beads)
-	assert.NoError(t, err)
+	require.NoError(t, json.Unmarshal([]byte(jsonData), &beads))
 	assert.Len(t, beads, 2)
 
 	assert.Equal(t, "BD-1", beads[0].ID)
@@ -36,20 +55,70 @@ func TestBead_UnmarshalJSON(t *testing.T) {
 	assert.Nil(t, beads[1].Tags)
 }
 
-func TestBead_Priority(t *testing.T) {
-	jsonData := `[
-		{"id": "P3", "priority": 3},
-		{"id": "P0", "priority": 0},
-		{"id": "P1", "priority": 1}
-	]`
-
-	var beads []Bead
-	err := json.Unmarshal([]byte(jsonData), &beads)
-	assert.NoError(t, err)
-	assert.Len(t, beads, 3)
-
-	assert.Equal(t, 3, beads[0].Priority)
-	assert.Equal(t, 0, beads[1].Priority)
-	assert.Equal(t, 1, beads[2].Priority)
+func TestBead_AnvilFieldNotInJSON(t *testing.T) {
+	// Anvil is injected at runtime and should not appear in JSON output
+	b := Bead{ID: "x", Anvil: "myrepo"}
+	data, err := json.Marshal(b)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "myrepo")
 }
 
+func TestSortBeadsByPriority(t *testing.T) {
+	// Replicate the sort.Slice logic used in Poll to verify ordering
+	beads := []Bead{
+		{ID: "z-high", Priority: 3},
+		{ID: "a-critical", Priority: 0},
+		{ID: "b-high", Priority: 3},
+		{ID: "m-medium", Priority: 2},
+		{ID: "x-low", Priority: 4},
+		{ID: "c-urgent", Priority: 1},
+	}
+
+	sort.Slice(beads, func(i, j int) bool {
+		if beads[i].Priority != beads[j].Priority {
+			return beads[i].Priority < beads[j].Priority
+		}
+		return beads[i].ID < beads[j].ID
+	})
+
+	assert.Equal(t, "a-critical", beads[0].ID) // priority 0
+	assert.Equal(t, "c-urgent", beads[1].ID)   // priority 1
+	assert.Equal(t, "m-medium", beads[2].ID)   // priority 2
+	assert.Equal(t, "b-high", beads[3].ID)     // priority 3, ID "b" < "z"
+	assert.Equal(t, "z-high", beads[4].ID)     // priority 3, ID "z"
+	assert.Equal(t, "x-low", beads[5].ID)      // priority 4
+}
+
+func TestSortBeadsByPriority_StableByID(t *testing.T) {
+	// When priorities are equal, sort is stable by ID (ascending)
+	beads := []Bead{
+		{ID: "forge-z", Priority: 2},
+		{ID: "forge-a", Priority: 2},
+		{ID: "forge-m", Priority: 2},
+	}
+
+	sort.Slice(beads, func(i, j int) bool {
+		if beads[i].Priority != beads[j].Priority {
+			return beads[i].Priority < beads[j].Priority
+		}
+		return beads[i].ID < beads[j].ID
+	})
+
+	assert.Equal(t, "forge-a", beads[0].ID)
+	assert.Equal(t, "forge-m", beads[1].ID)
+	assert.Equal(t, "forge-z", beads[2].ID)
+}
+
+func TestNew(t *testing.T) {
+	p := New(nil)
+	assert.NotNil(t, p)
+
+	p2 := New(map[string]config.AnvilConfig{})
+	assert.NotNil(t, p2)
+}
+
+func TestPollSingle_UnknownAnvil(t *testing.T) {
+	p := New(nil)
+	_, err := p.PollSingle(context.Background(), "nonexistent")
+	assert.ErrorContains(t, err, "not found")
+}

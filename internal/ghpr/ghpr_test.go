@@ -2,6 +2,8 @@ package ghpr
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestExtractPRNumber(t *testing.T) {
@@ -48,6 +50,76 @@ func TestParseRepoURL(t *testing.T) {
 		if owner != tt.wantOwner || repo != tt.wantRepo {
 			t.Errorf("ParseRepoURL(%q) = (%q, %q); want (%q, %q)", tt.url, owner, repo, tt.wantOwner, tt.wantRepo)
 		}
+	}
+}
+
+func TestPRStatus_IsMerged(t *testing.T) {
+	assert.True(t, (&PRStatus{State: "MERGED"}).IsMerged())
+	assert.False(t, (&PRStatus{State: "OPEN"}).IsMerged())
+	assert.False(t, (&PRStatus{State: "CLOSED"}).IsMerged())
+}
+
+func TestPRStatus_IsClosed(t *testing.T) {
+	assert.True(t, (&PRStatus{State: "CLOSED"}).IsClosed())
+	assert.False(t, (&PRStatus{State: "OPEN"}).IsClosed())
+	assert.False(t, (&PRStatus{State: "MERGED"}).IsClosed())
+}
+
+func TestPRStatus_CIsPassing(t *testing.T) {
+	tests := []struct {
+		name   string
+		status PRStatus
+		want   bool
+	}{
+		{"no checks → passing", PRStatus{}, true},
+		{"all success", PRStatus{StatusCheckRollup: []CheckRun{{Conclusion: "SUCCESS"}, {Conclusion: "SUCCESS"}}}, true},
+		{"neutral is ok", PRStatus{StatusCheckRollup: []CheckRun{{Conclusion: "NEUTRAL"}}}, true},
+		{"skipped is ok", PRStatus{StatusCheckRollup: []CheckRun{{Conclusion: "SKIPPED"}}}, true},
+		{"one failure", PRStatus{StatusCheckRollup: []CheckRun{{Conclusion: "SUCCESS"}, {Conclusion: "FAILURE"}}}, false},
+		{"pending", PRStatus{StatusCheckRollup: []CheckRun{{Conclusion: ""}}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.status.CIsPassing())
+		})
+	}
+}
+
+func TestPRStatus_HasApproval(t *testing.T) {
+	tests := []struct {
+		name   string
+		status PRStatus
+		want   bool
+	}{
+		{"no reviews", PRStatus{}, false},
+		{"approved", PRStatus{Reviews: []Review{{State: "APPROVED"}}}, true},
+		{"changes requested only", PRStatus{Reviews: []Review{{State: "CHANGES_REQUESTED"}}}, false},
+		{"mixed with approval", PRStatus{Reviews: []Review{{State: "CHANGES_REQUESTED"}, {State: "APPROVED"}}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.status.HasApproval())
+		})
+	}
+}
+
+func TestPRStatus_NeedsChanges(t *testing.T) {
+	tests := []struct {
+		name   string
+		status PRStatus
+		want   bool
+	}{
+		{"no reviews, no threads", PRStatus{}, false},
+		{"changes requested", PRStatus{Reviews: []Review{{State: "CHANGES_REQUESTED"}}}, true},
+		{"approved only", PRStatus{Reviews: []Review{{State: "APPROVED"}}}, false},
+		{"unresolved threads", PRStatus{UnresolvedThreads: 2}, true},
+		{"zero unresolved threads", PRStatus{UnresolvedThreads: 0}, false},
+		{"both changes and threads", PRStatus{Reviews: []Review{{State: "CHANGES_REQUESTED"}}, UnresolvedThreads: 1}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.status.NeedsChanges())
+		})
 	}
 }
 
