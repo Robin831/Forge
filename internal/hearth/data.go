@@ -184,6 +184,9 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			Content string          `json:"content,omitempty"`
 			Role    string          `json:"role,omitempty"`
 			Status  string          `json:"status,omitempty"`
+			RateLimitInfo *struct {
+				Status string `json:"status"`
+			} `json:"rate_limit_info,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
@@ -250,9 +253,9 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 				}
 			}
 		case "rate_limit_event":
-			// Claude-style informational event
-			if event.Status != "" {
-				entries = append(entries, fmt.Sprintf("[rate] %s", event.Status))
+			// Claude-style informational event — status is inside rate_limit_info
+			if event.RateLimitInfo != nil && event.RateLimitInfo.Status != "" {
+				entries = append(entries, fmt.Sprintf("[rate] %s", event.RateLimitInfo.Status))
 			}
 		case "result":
 			subtype := event.Subtype

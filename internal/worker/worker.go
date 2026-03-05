@@ -161,15 +161,13 @@ func (w *Worker) Run(ctx context.Context, extraFlags []string) (*smith.Result, e
 	}
 	w.process = process
 
-	// Update PID in state DB
+	// Update PID and log path in state DB immediately so Hearth can tail the log
 	_ = w.db.UpdateWorkerPID(w.ID, process.PID)
+	_ = w.db.UpdateWorkerLogPath(w.ID, process.LogPath)
 
 	// Step 4: Wait for Smith to complete
 	log.Printf("[%s] Waiting for Smith (PID %d)", w.ID, process.PID)
 	result = process.Wait()
-
-	// Update log path in state DB
-	_ = w.db.UpdateWorkerLogPath(w.ID, process.LogPath)
 
 	// Step 5: Determine outcome
 	if result.ExitCode == 0 {
