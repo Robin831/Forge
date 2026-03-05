@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/provider"
@@ -90,7 +91,12 @@ func (db *DB) migrate() error {
 		return err
 	}
 	// Additive migrations for existing databases
-	_, _ = db.conn.Exec(`ALTER TABLE workers ADD COLUMN phase TEXT NOT NULL DEFAULT ''`)
+	if _, err := db.conn.Exec(`ALTER TABLE workers ADD COLUMN phase TEXT NOT NULL DEFAULT ''`); err != nil {
+		// Ignore error if column already exists (SQLite doesn't have IF NOT EXISTS for columns)
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
 	return nil
 }
 

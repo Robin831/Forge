@@ -278,7 +278,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		}
 		defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
 
-		workerID := fmt.Sprintf("%s-%s-%d", req.Anvil, req.BeadID, time.Now().Unix())
+		workerID := fmt.Sprintf("%s-%s-%d", req.Anvil, req.BeadID, time.Now().UnixNano())
 
 		switch req.Action {
 		case lifecycle.ActionFixCI:
@@ -292,7 +292,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Phase:     "cifix",
 				StartedAt: time.Now(),
 			})
-			cifix.Fix(ctx, cifix.FixParams{
+			res := cifix.Fix(ctx, cifix.FixParams{
 				WorktreePath: wt.Path,
 				BeadID:       req.BeadID,
 				AnvilName:    req.Anvil,
@@ -302,7 +302,11 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				DB:           d.db,
 				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
 			})
-			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
+			status := state.WorkerDone
+			if res.Error != nil {
+				status = state.WorkerFailed
+			}
+			_ = d.db.UpdateWorkerStatus(workerID, status)
 
 		case lifecycle.ActionFixReview:
 			d.logger.Info("spawning review fix worker", "pr", req.PRNumber, "bead", req.BeadID)
@@ -315,7 +319,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Phase:     "reviewfix",
 				StartedAt: time.Now(),
 			})
-			reviewfix.Fix(ctx, reviewfix.FixParams{
+			res := reviewfix.Fix(ctx, reviewfix.FixParams{
 				WorktreePath: wt.Path,
 				BeadID:       req.BeadID,
 				AnvilName:    req.Anvil,
@@ -325,7 +329,11 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				DB:           d.db,
 				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
 			})
-			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
+			status := state.WorkerDone
+			if res.Error != nil {
+				status = state.WorkerFailed
+			}
+			_ = d.db.UpdateWorkerStatus(workerID, status)
 
 		case lifecycle.ActionCloseBead:
 			d.logger.Info("closing bead after merge", "bead", req.BeadID)
