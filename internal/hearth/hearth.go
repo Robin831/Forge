@@ -1,9 +1,9 @@
 // Package hearth provides The Forge's TUI dashboard using Bubbletea.
 //
-// The TUI has three panels in a horizontal layout:
-//   - Queue (left): Pending beads from anvils
-//   - Workers (center): Active Smith processes
-//   - Event Log (right): Recent events from the state DB
+// The TUI has three panels in a vertical split layout:
+//   - Queue (top left): Pending beads from anvils
+//   - Workers (top right): Active Smith processes
+//   - Event Log (bottom): Recent events from the state DB
 //
 // Tab switches focus between panels, j/k scrolls the focused panel,
 // q quits the app.
@@ -191,34 +191,50 @@ func (m Model) View() string {
 		return "Initializing The Forge..."
 	}
 
-	// Calculate panel widths (roughly thirds)
-	panelWidth := (m.width - 4) / 3 // 4 for borders/gaps
-	if panelWidth < 20 {
-		panelWidth = 20
+	// Calculate heights for the vertical split
+	// Top half for Queue and Workers, bottom half for Events
+	availableHeight := m.height - 4 // minus header and footer
+	topHeight := availableHeight / 2
+	if topHeight < 8 {
+		topHeight = 8
 	}
-	contentHeight := m.height - 4 // header + footer
+	bottomHeight := availableHeight - topHeight
+	if bottomHeight < 5 {
+		bottomHeight = 5
+	}
 
-	// Build panels
-	queuePanel := m.renderQueue(panelWidth, contentHeight)
-	workerPanel := m.renderWorkers(panelWidth, contentHeight)
-	eventPanel := m.renderEvents(panelWidth, contentHeight)
+	// Top section: Queue and Workers (side-by-side)
+	topPanelWidth := (m.width - 2) / 2
+	if topPanelWidth < 20 {
+		topPanelWidth = 20
+	}
+
+	queuePanel := m.renderQueue(topPanelWidth, topHeight)
+	workerPanel := m.renderWorkers(m.width-topPanelWidth, topHeight)
+
+	topSection := lipgloss.JoinHorizontal(lipgloss.Top,
+		queuePanel,
+		workerPanel,
+	)
+
+	// Bottom section: Events (full width)
+	eventPanel := m.renderEvents(m.width, bottomHeight)
 
 	// Header
 	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
-
-	// Join panels horizontally
-	panels := lipgloss.JoinHorizontal(lipgloss.Top,
-		queuePanel,
-		workerPanel,
-		eventPanel,
-	)
 
 	// Footer
 	footer := footerStyle.Width(m.width).Render(
 		"Tab: switch panel • j/k: scroll • K: kill worker • f: follow events • q: quit",
 	)
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, panels, footer)
+	// Final assembly
+	return lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		topSection,
+		eventPanel,
+		footer,
+	)
 }
 
 // scrollDown scrolls the focused panel down.
@@ -327,7 +343,7 @@ func (m Model) renderWorkers(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderEvents renders the event log panel.
+// renderEvents renders the event log panel with word-wrapped messages.
 func (m Model) renderEvents(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelEvents {
@@ -346,22 +362,51 @@ func (m Model) renderEvents(width, height int) string {
 	if len(m.events) == 0 {
 		lines = append(lines, dimStyle.Render("No events"))
 	} else {
-		visible := visibleItems(m.eventScroll, len(m.events), height-3)
-		for i := visible.start; i < visible.end; i++ {
+		// Content width: panel width minus border (2) and padding (2)
+		contentWidth := width - 4
+		if contentWidth < 20 {
+			contentWidth = 20
+		}
+		availLines := height - 3 // space after title + margins
+
+		for i := m.eventScroll; i < len(m.events) && len(lines)-1 < availLines; i++ {
 			item := m.events[i]
-			beadTag := ""
+
+			// Build the styled prefix: timestamp + event type + optional bead tag
+			ts := dimStyle.Render(item.Timestamp)
+			et := eventTypeStyle(item.Type)
+			prefix := ts + " " + et + " "
 			if item.BeadID != "" {
-				beadTag = dimStyle.Render("["+item.BeadID+"] ")
+				prefix += dimStyle.Render("["+item.BeadID+"] ")
 			}
-			line := fmt.Sprintf("%s %s %s%s",
-				dimStyle.Render(item.Timestamp),
-				eventTypeStyle(item.Type),
-				beadTag,
-				truncate(item.Message, width-30))
+
+			prefixWidth := lipgloss.Width(prefix)
+			msgWidth := contentWidth - prefixWidth
+			if msgWidth < 20 {
+				msgWidth = 20
+			}
+
+			msgLines := wordWrap(item.Message, msgWidth)
+
+			// First line: full prefix + first message segment
+			firstLine := prefix + msgLines[0]
 			if i == m.eventScroll {
-				line = selectedStyle.Render(line)
+				firstLine = selectedStyle.Render(firstLine)
 			}
-			lines = append(lines, line)
+			lines = append(lines, firstLine)
+
+			// Continuation lines: indented to align with message body
+			indent := strings.Repeat(" ", prefixWidth)
+			for _, ml := range msgLines[1:] {
+				if len(lines)-1 >= availLines {
+					break
+				}
+				contLine := indent + ml
+				if i == m.eventScroll {
+					contLine = selectedStyle.Render(contLine)
+				}
+				lines = append(lines, contLine)
+			}
 		}
 	}
 
@@ -514,4 +559,36 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// wordWrap breaks s into lines of at most maxWidth characters, splitting on
+// word boundaries. Words longer than maxWidth are placed on their own line.
+func wordWrap(s string, maxWidth int) []string {
+	if maxWidth < 1 {
+		maxWidth = 1
+	}
+	if s == "" {
+		return []string{""}
+	}
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	var lines []string
+	current := ""
+	for _, w := range words {
+		switch {
+		case current == "":
+			current = w
+		case len(current)+1+len(w) <= maxWidth:
+			current += " " + w
+		default:
+			lines = append(lines, current)
+			current = w
+		}
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return lines
 }

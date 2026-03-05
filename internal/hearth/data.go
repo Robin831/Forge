@@ -178,7 +178,7 @@ func FetchAll(ctx context.Context, db *state.DB, anvils map[string]config.AnvilC
 	return tea.Batch(
 		FetchQueue(ctx, anvils),
 		FetchWorkers(db),
-		FetchEvents(db, 50),
+		FetchEvents(db, 100),
 	)
 }
 
