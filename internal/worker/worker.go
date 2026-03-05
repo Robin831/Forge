@@ -179,8 +179,8 @@ func (w *Worker) Run(ctx context.Context, extraFlags []string) (*smith.Result, e
 			w.Bead.ID, w.AnvilName)
 		if s := result.GeminiStats; s != nil {
 			_ = w.db.LogEvent(state.EventSmithStats,
-				fmt.Sprintf("tokens_in=%d tokens_out=%d total=%d cached=%d tool_calls=%d duration_ms=%d",
-					s.InputTokens, s.OutputTokens, s.TotalTokens, s.Cached, s.ToolCalls, s.DurationMs),
+				fmt.Sprintf("tokens_in=%d tokens_out=%d total=%d cached=%d input=%d tool_calls=%d duration_ms=%d",
+					s.InputTokens, s.OutputTokens, s.TotalTokens, s.Cached, s.Input, s.ToolCalls, s.DurationMs),
 				w.Bead.ID, w.AnvilName)
 		}
 		log.Printf("[%s] Smith completed successfully in %s", w.ID, result.Duration)
