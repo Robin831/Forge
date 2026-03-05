@@ -410,12 +410,18 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 
 	d.logger.Info("dispatching bead", "bead", bead.ID, "anvil", bead.Anvil, "title", bead.Title)
 
-	// Apply smith timeout
+	// Apply smith timeout.
+	// IMPORTANT: derive pipelineCtx from context.Background(), NOT from the
+	// daemon's ctx. This ensures that a graceful shutdown (SIGINT/SIGTERM)
+	// does not cancel in-flight pipelines mid-run. The smith subprocess is
+	// killed explicitly by GracefulShutdown(); post-smith work (warden, PR
+	// creation, bead closing) should be allowed to complete so PRs are not
+	// lost. The smith timeout still provides the outer deadline.
 	smithTimeout := d.cfg.Settings.SmithTimeout
 	if smithTimeout <= 0 {
 		smithTimeout = 30 * time.Minute
 	}
-	pipelineCtx, cancel := context.WithTimeout(ctx, smithTimeout)
+	pipelineCtx, cancel := context.WithTimeout(context.Background(), smithTimeout)
 	defer cancel()
 
 	outcome := pipeline.Run(pipelineCtx, pipeline.Params{
@@ -441,8 +447,10 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 
 	d.logger.Info("pipeline succeeded", "bead", bead.ID, "branch", outcome.Branch, "iterations", outcome.Iterations)
 
-	// Create PR — run gh from the main repo dir since the branch is already pushed
-	pr, err := ghpr.Create(ctx, ghpr.CreateParams{
+	// Create PR — run gh from the main repo dir since the branch is already pushed.
+	// Use pipelineCtx (background-derived) so PR creation succeeds even during
+	// graceful shutdown.
+	pr, err := ghpr.Create(pipelineCtx, ghpr.CreateParams{
 		WorktreePath: anvilCfg.Path,
 		BeadID:       bead.ID,
 		Title:        fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
@@ -457,8 +465,8 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 
 	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
 
-	// Close the bead
-	if err := d.closeBead(ctx, bead.ID, anvilCfg.Path); err != nil {
+	// Close the bead — also use pipelineCtx for the same reason.
+	if err := d.closeBead(pipelineCtx, bead.ID, anvilCfg.Path); err != nil {
 		d.logger.Warn("failed to close bead", "bead", bead.ID, "error", err)
 	}
 }
