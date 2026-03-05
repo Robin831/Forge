@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -25,6 +26,15 @@ func TestHandleIPC_RunBead_Errors(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-test-*")
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
+
+	// Initialize git repo so worktree creation doesn't fail immediately
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tmpDir
+	_ = cmd.Run()
+	// Add a dummy commit so we can create worktrees
+	_ = os.WriteFile(filepath.Join(tmpDir, "initial"), []byte("initial"), 0o644)
+	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "initial").Run()
 
 	// Mock config
 	cfg := &config.Config{
@@ -90,6 +100,15 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-test-*")
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
+
+	// Initialize git repo so worktree creation doesn't fail immediately
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tmpDir
+	_ = cmd.Run()
+	// Add a dummy commit so we can create worktrees
+	_ = os.WriteFile(filepath.Join(tmpDir, "initial"), []byte("initial"), 0o644)
+	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "initial").Run()
 
 	// Create a fake bd script (cross-platform)
 	var bdScript string

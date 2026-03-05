@@ -24,7 +24,7 @@ type PRState struct {
 	CIPassing      bool
 	Approved       bool
 	NeedsFix       bool
-	Conflicting    bool
+	IsConflicting  bool
 	Merged         bool
 	Closed         bool
 	CIFixCount     int
@@ -98,6 +98,7 @@ func (m *Manager) SeedFromDB() error {
 			CIPassing:      pr.CIPassing,
 			CIFixCount:     pr.CIFixCount,
 			ReviewFixCount: pr.ReviewFixCount,
+			IsConflicting:  pr.IsConflicting,
 		}
 		switch pr.Status {
 		case state.PRApproved:
@@ -159,7 +160,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		}
 
 	case bellows.EventPRConflicting:
-		st.Conflicting = true
+		st.IsConflicting = true
 		if st.RebaseCount < m.maxRebase {
 			st.RebaseCount++
 			action = ActionRebase

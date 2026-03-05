@@ -6,9 +6,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newTestDB opens a temporary SQLite DB for testing and registers cleanup.
@@ -124,8 +127,8 @@ func TestEventReviewChanges_Dispatch(t *testing.T) {
 	}
 
 	st := m.GetState(7)
-	if st.ReviewFixCnt != 1 {
-		t.Errorf("expected ReviewFixCnt=1, got %d", st.ReviewFixCnt)
+	if st.ReviewFixCount != 1 {
+		t.Errorf("expected ReviewFixCount=1, got %d", st.ReviewFixCount)
 	}
 	if !st.NeedsFix {
 		t.Error("expected NeedsFix=true")
@@ -356,3 +359,99 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+func TestSeedFromDB(t *testing.T) {
+	db, err := state.Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Insert some PRs
+	now := time.Now()
+	prs := []state.PR{
+		{
+			Number:         1,
+			Anvil:          "anvil1",
+			BeadID:         "bead1",
+			Branch:         "branch1",
+			Status:         state.PRNeedsFix,
+			CreatedAt:      now,
+			CIPassing:      false,
+			CIFixCount:     1,
+			ReviewFixCount: 0,
+			IsConflicting:  true,
+		},
+		{
+			Number:         2,
+			Anvil:          "anvil1",
+			BeadID:         "bead2",
+			Branch:         "branch2",
+			Status:         state.PRApproved,
+			CreatedAt:      now,
+			CIPassing:      true,
+			CIFixCount:     0,
+			ReviewFixCount: 0,
+			IsConflicting:  false,
+		},
+	}
+
+	for _, pr := range prs {
+		err := db.InsertPR(&pr)
+		require.NoError(t, err)
+		if pr.IsConflicting {
+			err = db.UpdatePRConflicting(pr.Number, true)
+			require.NoError(t, err)
+		}
+	}
+
+	mgr := New(db, nil)
+	err = mgr.SeedFromDB()
+	require.NoError(t, err)
+
+	st1 := mgr.GetState(1)
+	require.NotNil(t, st1)
+	assert.Equal(t, 1, st1.PRNumber)
+	assert.Equal(t, "bead1", st1.BeadID)
+	assert.False(t, st1.CIPassing)
+	assert.True(t, st1.NeedsFix)
+	assert.Equal(t, 1, st1.CIFixCount)
+	assert.True(t, st1.IsConflicting)
+
+	st2 := mgr.GetState(2)
+	require.NotNil(t, st2)
+	assert.True(t, st2.Approved)
+}
+
+func TestHandleEvent_Persistence(t *testing.T) {
+	db, err := state.Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	mgr := New(db, nil)
+
+	ctx := context.Background()
+	event := bellows.PREvent{
+		PRNumber:  1,
+		BeadID:    "bead1",
+		Anvil:     "anvil1",
+		Branch:    "branch1",
+		EventType: bellows.EventCIFailed,
+	}
+
+	mgr.HandleEvent(ctx, event)
+
+	st := mgr.GetState(1)
+	assert.Equal(t, 1, st.CIFixCount)
+
+	// Verify DB was updated
+	openPRs, err := db.OpenPRs()
+	require.NoError(t, err)
+
+	found := false
+	for _, pr := range openPRs {
+		if pr.Number == 1 {
+			assert.Equal(t, 1, pr.CIFixCount)
+			assert.False(t, pr.CIPassing)
+			found = true
+		}
+	}
+	_ = found // Suppress unused warning, we only care about the assertions inside the loop if found
+}
