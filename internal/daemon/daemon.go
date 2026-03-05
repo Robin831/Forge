@@ -85,6 +85,10 @@ type Daemon struct {
 	configFile string
 	logFile    *os.File
 	startTime  time.Time
+
+	// Cache for last poll results
+	lastBeads   []poller.Bead
+	lastBeadsMu sync.RWMutex
 }
 
 // New creates a new daemon instance.
@@ -335,6 +339,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	p := poller.New(d.cfg.Anvils)
 	beads, results := p.Poll(ctx)
 
+	// Update cache
+	d.lastBeadsMu.Lock()
+	d.lastBeads = beads
+	d.lastBeadsMu.Unlock()
+
 	for _, r := range results {
 		if r.Err != nil {
 			d.logger.Warn("poll error", "anvil", r.Name, "error", r.Err)
@@ -540,6 +549,122 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 	case "queue":
 		data, _ := json.Marshal(map[string]string{"message": "not yet implemented"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "run_bead":
+		var rp ipc.RunBeadPayload
+		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid run_bead payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		// Search for the bead in cache first
+		var targetBead *poller.Bead
+		d.lastBeadsMu.RLock()
+		for _, b := range d.lastBeads {
+			if b.ID == rp.BeadID && (rp.Anvil == "" || b.Anvil == rp.Anvil) {
+				tb := b // copy
+				targetBead = &tb
+				break
+			}
+		}
+		d.lastBeadsMu.RUnlock()
+
+		// If not in cache, poll as fallback
+		if targetBead == nil {
+			d.logger.Info("bead not in cache, polling anvils", "bead", rp.BeadID)
+			p := poller.New(d.cfg.Anvils)
+			var beads []poller.Bead
+			var pollErrors []string
+
+			if rp.Anvil != "" {
+				var err error
+				beads, err = p.PollSingle(context.Background(), rp.Anvil)
+				if err != nil {
+					msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found or poll failed: %v", rp.Anvil, err)})
+					return ipc.Response{Type: "error", Payload: msg}
+				}
+			} else {
+				var results []poller.AnvilResult
+				beads, results = p.Poll(context.Background())
+				for _, r := range results {
+					if r.Err != nil {
+						pollErrors = append(pollErrors, fmt.Sprintf("%s: %v", r.Name, r.Err))
+					}
+				}
+			}
+
+			for _, b := range beads {
+				if b.ID == rp.BeadID {
+					tb := b
+					targetBead = &tb
+					break
+				}
+			}
+
+			if targetBead == nil {
+				errorMsg := fmt.Sprintf("bead %q not found or not ready", rp.BeadID)
+				if len(pollErrors) > 0 {
+					errorMsg += fmt.Sprintf(" (also %d anvils failed to poll: %v)", len(pollErrors), pollErrors)
+				}
+				msg, _ := json.Marshal(map[string]string{"message": errorMsg})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+		}
+
+		// Skip if bead is already in flight
+		if _, inFlight := d.activeBeads.LoadOrStore(targetBead.ID, true); inFlight {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q is already in flight", targetBead.ID)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		// Dispatch immediately regardless of auto_dispatch setting (but respect capacity)
+		anvilCfg := d.cfg.Anvils[targetBead.Anvil]
+
+		// Check capacity
+		maxSmiths := anvilCfg.MaxSmiths
+		if maxSmiths <= 0 {
+			maxSmiths = 1
+		}
+		canSpawnAnvil, err := worker.CanSpawn(d.db, targetBead.Anvil, maxSmiths)
+		if err != nil {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("checking anvil capacity: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if !canSpawnAnvil {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q capacity reached (max %d smiths)", targetBead.Anvil, maxSmiths)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		maxTotal := d.cfg.Settings.MaxTotalSmiths
+		if maxTotal <= 0 {
+			maxTotal = 4
+		}
+		canSpawnGlobal, err := worker.CanSpawnGlobal(d.db, maxTotal)
+		if err != nil {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("checking global capacity: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if !canSpawnGlobal {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("global capacity reached (max %d smiths)", maxTotal)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		// Claim the bead
+		if err := d.claimBead(context.Background(), targetBead.ID, anvilCfg.Path); err != nil {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to claim bead: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		d.wg.Add(1)
+		go d.dispatchBead(context.Background(), *targetBead, anvilCfg)
+
+		data, _ := json.Marshal(map[string]string{"message": "dispatched"})
 		return ipc.Response{Type: "ok", Payload: data}
 
 	default:
