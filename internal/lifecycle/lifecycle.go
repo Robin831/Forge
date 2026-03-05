@@ -83,8 +83,12 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 			PRNumber: event.PRNumber,
 			BeadID:   event.BeadID,
 			Anvil:    event.Anvil,
+			Branch:   event.Branch,
 		}
 		m.states[event.PRNumber] = st
+	}
+	if event.Branch != "" {
+		st.Branch = event.Branch
 	}
 	m.mu.Unlock()
 

@@ -25,15 +25,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Robin831/Forge/internal/bellows"
+	"github.com/Robin831/Forge/internal/cifix"
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/hotreload"
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/lifecycle"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/reviewfix"
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/worker"
@@ -71,6 +75,10 @@ type Daemon struct {
 	wg           sync.WaitGroup // tracks running pipeline goroutines
 	worktreeMgr  *worktree.Manager
 	promptBuilder *prompt.Builder
+
+	// PR Monitoring (Bellows)
+	bellowsMonitor *bellows.Monitor
+	lifecycleMgr   *lifecycle.Manager
 
 	forgeDir   string // ~/.forge
 	pidFile    string
@@ -198,6 +206,27 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Initial poll
 	d.pollAndDispatch(ctx)
 
+	// Start PR Monitor (Bellows)
+	monitorAnvils := make(map[string]string)
+	for name, a := range d.cfg.Anvils {
+		if a.Path != "" {
+			monitorAnvils[name] = a.Path
+		}
+	}
+	monitorInterval := d.cfg.Settings.PollInterval
+	if monitorInterval < 2*time.Minute {
+		monitorInterval = 2 * time.Minute // don't poll GitHub too fast
+	}
+	d.bellowsMonitor = bellows.New(d.db, monitorInterval, monitorAnvils)
+	d.lifecycleMgr = lifecycle.New(d.db, d.handleLifecycleAction)
+	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
+
+	go func() {
+		if err := d.bellowsMonitor.Run(ctx); err != nil && err != context.Canceled {
+			d.logger.Error("Bellows monitor error", "error", err)
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -213,6 +242,74 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.pollAndDispatch(ctx)
 		}
 	}
+}
+
+// handleLifecycleAction handles PR-triggered fixes from Bellows.
+func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.ActionRequest) {
+	d.logger.Info("lifecycle action requested", "action", req.Action, "pr", req.PRNumber, "bead", req.BeadID)
+
+	anvilCfg, ok := d.cfg.Anvils[req.Anvil]
+	if !ok {
+		d.logger.Error("unknown anvil in lifecycle action", "anvil", req.Anvil)
+		return
+	}
+
+	// Skip if bead is already in flight (either being implemented or another fix)
+	if _, inFlight := d.activeBeads.LoadOrStore(req.BeadID, true); inFlight {
+		d.logger.Info("bead already in flight, skipping lifecycle action", "bead", req.BeadID)
+		return
+	}
+
+	d.wg.Add(1)
+
+	go func() {
+		defer d.wg.Done()
+		defer d.activeBeads.Delete(req.BeadID)
+
+		// Create/get worktree for the PR branch
+		wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, req.BeadID, req.Branch)
+		if err != nil {
+			d.logger.Error("failed to create worktree for lifecycle fix", "error", err)
+			return
+		}
+		defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
+
+		switch req.Action {
+		case lifecycle.ActionFixCI:
+			d.logger.Info("spawning CI fix worker", "pr", req.PRNumber, "bead", req.BeadID)
+			cifix.Fix(ctx, cifix.FixParams{
+				WorktreePath: wt.Path,
+				BeadID:       req.BeadID,
+				AnvilName:    req.Anvil,
+				AnvilPath:    anvilCfg.Path,
+				PRNumber:     req.PRNumber,
+				Branch:       req.Branch,
+				DB:           d.db,
+				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
+			})
+
+		case lifecycle.ActionFixReview:
+			d.logger.Info("spawning review fix worker", "pr", req.PRNumber, "bead", req.BeadID)
+			reviewfix.Fix(ctx, reviewfix.FixParams{
+				WorktreePath: wt.Path,
+				BeadID:       req.BeadID,
+				AnvilName:    req.Anvil,
+				AnvilPath:    anvilCfg.Path,
+				PRNumber:     req.PRNumber,
+				Branch:       req.Branch,
+				DB:           d.db,
+				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
+			})
+
+		case lifecycle.ActionCloseBead:
+			d.logger.Info("closing bead after merge", "bead", req.BeadID)
+			_ = d.closeBead(ctx, req.BeadID, anvilCfg.Path)
+
+		case lifecycle.ActionCleanup:
+			d.logger.Info("cleaning up PR after close", "pr", req.PRNumber)
+			// Optional: delete remote branch etc.
+		}
+	}()
 }
 
 // pollAndDispatch polls all anvils for ready beads and dispatches workers.

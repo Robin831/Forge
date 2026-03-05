@@ -31,6 +31,7 @@ type PREvent struct {
 	PRNumber  int
 	BeadID    string
 	Anvil     string
+	Branch    string
 	EventType string
 	Details   string
 	Timestamp time.Time
@@ -51,11 +52,12 @@ type Monitor struct {
 
 // prSnapshot tracks the last seen state of a PR.
 type prSnapshot struct {
-	CIPassing  bool
-	HasApproval bool
-	NeedsChanges bool
-	IsMerged   bool
-	IsClosed   bool
+	CIPassing            bool
+	HasApproval          bool
+	NeedsChanges         bool
+	HasUnresolvedThreads bool
+	IsMerged             bool
+	IsClosed             bool
 }
 
 // New creates a Bellows monitor.
@@ -143,11 +145,12 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	m.mu.Unlock()
 
 	newSnap := &prSnapshot{
-		CIPassing:    status.CIsPassing(),
-		HasApproval:  status.HasApproval(),
-		NeedsChanges: status.NeedsChanges(),
-		IsMerged:     status.IsMerged(),
-		IsClosed:     status.IsClosed(),
+		CIPassing:            status.CIsPassing(),
+		HasApproval:          status.HasApproval(),
+		NeedsChanges:         status.NeedsChanges(),
+		HasUnresolvedThreads: status.UnresolvedThreads > 0,
+		IsMerged:             status.IsMerged(),
+		IsClosed:             status.IsClosed(),
 	}
 
 	// Detect transitions and emit events
@@ -156,6 +159,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
 			Anvil:     pr.Anvil,
+			Branch:    status.HeadRefName,
 			EventType: EventPRMerged,
 			Details:   fmt.Sprintf("PR #%d has been merged", pr.Number),
 			Timestamp: time.Now(),
@@ -167,6 +171,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
 			Anvil:     pr.Anvil,
+			Branch:    status.HeadRefName,
 			EventType: EventPRClosed,
 			Details:   fmt.Sprintf("PR #%d has been closed", pr.Number),
 			Timestamp: time.Now(),
@@ -180,6 +185,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
 			Anvil:     pr.Anvil,
+			Branch:    status.HeadRefName,
 			EventType: EventCIPassed,
 			Details:   "All CI checks passed",
 			Timestamp: time.Now(),
@@ -189,6 +195,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
 			Anvil:     pr.Anvil,
+			Branch:    status.HeadRefName,
 			EventType: EventCIFailed,
 			Details:   "CI checks failed",
 			Timestamp: time.Now(),
@@ -202,6 +209,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
 			Anvil:     pr.Anvil,
+			Branch:    status.HeadRefName,
 			EventType: EventReviewApproved,
 			Details:   "PR received approval",
 			Timestamp: time.Now(),
@@ -209,17 +217,23 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.UpdatePRStatus(pr.Number, state.PRApproved)
 	}
 
-	if newSnap.NeedsChanges && !lastSnap.NeedsChanges {
+	// Trigger on "CHANGES_REQUESTED" or transition from 0 to >0 unresolved threads (Bug 1)
+	if (newSnap.NeedsChanges && !lastSnap.NeedsChanges) || (newSnap.HasUnresolvedThreads && !lastSnap.HasUnresolvedThreads) {
+		details := "PR has changes requested"
+		if newSnap.HasUnresolvedThreads && !lastSnap.HasUnresolvedThreads {
+			details = "PR has unresolved review threads"
+		}
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
 			Anvil:     pr.Anvil,
+			Branch:    status.HeadRefName,
 			EventType: EventReviewChanges,
-			Details:   "PR has changes requested",
+			Details:   details,
 			Timestamp: time.Now(),
 		})
 		_ = m.db.UpdatePRStatus(pr.Number, state.PRNeedsFix)
-		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d changes requested", pr.Number), pr.BeadID, pr.Anvil)
+		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d: %s", pr.Number, details), pr.BeadID, pr.Anvil)
 	}
 
 	// Update snapshot
