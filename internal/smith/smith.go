@@ -85,6 +85,16 @@ func Spawn(ctx context.Context, worktreePath, prompt, logDir string, extraFlags 
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = worktreePath
 
+	// Strip CLAUDECODE so claude doesn't refuse to run inside another session.
+	env := os.Environ()
+	filtered := env[:0:0]
+	for _, e := range env {
+		if !strings.HasPrefix(e, "CLAUDECODE=") {
+			filtered = append(filtered, e)
+		}
+	}
+	cmd.Env = filtered
+
 	// Set up log file
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating log directory: %w", err)

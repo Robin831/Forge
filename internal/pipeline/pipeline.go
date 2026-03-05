@@ -150,9 +150,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 		outcome.SmithResult = smithResult
 
 		if smithResult.ExitCode != 0 {
-			log.Printf("[pipeline:%s] Smith failed with exit code %d", workerID, smithResult.ExitCode)
+			log.Printf("[pipeline:%s] Smith failed exit=%d stderr=%s", workerID, smithResult.ExitCode, smithResult.ErrorOutput)
 			_ = p.DB.LogEvent(state.EventSmithFailed,
-				fmt.Sprintf("Exit code %d after %.1fs", smithResult.ExitCode, smithResult.Duration.Seconds()),
+				fmt.Sprintf("Exit code %d after %.1fs: %s", smithResult.ExitCode, smithResult.Duration.Seconds(), smithResult.ErrorOutput),
 				p.Bead.ID, p.AnvilName)
 			outcome.Error = fmt.Errorf("smith exit code %d", smithResult.ExitCode)
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
