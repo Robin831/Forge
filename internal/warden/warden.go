@@ -92,7 +92,7 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, provide
 	// Disable all tools: the diff is in the prompt, so Claude doesn't need to
 	// read files. Allowing tools triggers multi-turn ToolSearch → Grep/Read
 	// sequences that hit max-turns before Claude outputs the verdict JSON.
-	logDir := filepath.Join(anvilPath, ".workers", "logs")
+	logDir := filepath.Join(worktreePath, ".forge-logs")
 	wardenFlags := []string{"--max-turns", "3", "--tools", ""}
 
 	var smithResult *smith.Result
@@ -255,15 +255,22 @@ func parseVerdict(output string, result *ReviewResult) {
 		}
 	}
 
-	// Fallback: try to infer from keywords
-	lower := strings.ToLower(output)
+	// Fallback: scan for verdict value with several formatting variants
+	// (handles missing spaces, Gemini markdown quirks, etc.)
+	norm := strings.ToLower(strings.ReplaceAll(output, " ", ""))
 	switch {
-	case strings.Contains(lower, "\"verdict\": \"approve\"") || strings.Contains(lower, "lgtm") || strings.Contains(lower, "looks good"):
+	case strings.Contains(norm, `"verdict":"approve"`) ||
+		strings.Contains(strings.ToLower(output), "lgtm") ||
+		strings.Contains(strings.ToLower(output), "looks good to merge"):
 		result.Verdict = VerdictApprove
 		result.Summary = "Inferred approval from output"
-	case strings.Contains(lower, "\"verdict\": \"reject\""):
+	case strings.Contains(norm, `"verdict":"reject"`):
 		result.Verdict = VerdictReject
 		result.Summary = "Inferred rejection from output"
+	case strings.Contains(norm, `"verdict":"request_changes"`) ||
+		strings.Contains(norm, `"verdict":"requestchanges"`):
+		result.Verdict = VerdictRequestChanges
+		result.Summary = "Inferred request_changes from output"
 	default:
 		result.Verdict = VerdictRequestChanges
 		result.Summary = "Could not parse structured verdict; defaulting to request_changes"
@@ -272,17 +279,17 @@ func parseVerdict(output string, result *ReviewResult) {
 
 // extractJSON finds the first JSON object in the text that looks like a verdict.
 func extractJSON(text string) string {
-	// Look for JSON blocks in code fences
-	start := strings.Index(text, "```json")
-	if start != -1 {
-		start += len("```json")
-		end := strings.Index(text[start:], "```")
-		if end != -1 {
-			return strings.TrimSpace(text[start : start+end])
-		}
+	// 1. Look for ```json ... ``` blocks (Claude style)
+	if s := extractFencedBlock(text, "```json"); s != "" {
+		return s
 	}
 
-	// Look for raw JSON objects containing "verdict"
+	// 2. Look for plain ``` ... ``` blocks that contain "verdict" (Gemini style)
+	if s := extractFencedBlock(text, "```"); s != "" && strings.Contains(s, "verdict") {
+		return s
+	}
+
+	// 3. Look for raw JSON objects containing "verdict"
 	for i := 0; i < len(text); i++ {
 		if text[i] == '{' {
 			// Find matching closing brace
@@ -305,6 +312,25 @@ func extractJSON(text string) string {
 	}
 
 	return ""
+}
+
+// extractFencedBlock returns the content between the first occurrence of
+// fence and the next closing ```.  Returns "" if not found.
+func extractFencedBlock(text, fence string) string {
+	start := strings.Index(text, fence)
+	if start == -1 {
+		return ""
+	}
+	start += len(fence)
+	// Skip optional space/newline immediately after the fence marker
+	for start < len(text) && (text[start] == '\n' || text[start] == '\r' || text[start] == ' ') {
+		start++
+	}
+	end := strings.Index(text[start:], "```")
+	if end == -1 {
+		return ""
+	}
+	return strings.TrimSpace(text[start : start+end])
 }
 
 // truncateDiff limits the diff size to avoid token overflow.
