@@ -43,6 +43,9 @@ type WorkerItem struct {
 	Status   string
 	Duration string
 	CostUSD  float64
+	Type     string // "smith", "warden", "temper", "cifix", "reviewfix"
+	LastLog  string // Last line from the worker log
+	PID      int    // Process ID for kill
 }
 
 // EventItem represents an event in the event log panel.
@@ -62,6 +65,9 @@ type Model struct {
 
 	// Data source for polling
 	data *DataSource
+
+	// Callback for killing a worker (set by the caller)
+	OnKill func(workerID string, pid int)
 
 	// State
 	focused      Panel
@@ -114,6 +120,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "k", "up":
 			m.scrollUp()
+
+		case "K":
+			// Kill selected worker
+			if m.focused == PanelWorkers && len(m.workers) > 0 &&
+				m.workerScroll < len(m.workers) {
+				w := m.workers[m.workerScroll]
+				if m.OnKill != nil && w.PID > 0 {
+					m.OnKill(w.ID, w.PID)
+				}
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -266,11 +282,18 @@ func (m Model) renderWorkers(width, height int) string {
 		for i := visible.start; i < visible.end; i++ {
 			item := m.workers[i]
 			status := workerStatusStyle(item.Status)
-			line := fmt.Sprintf("%s %s %s", status, item.BeadID, item.Duration)
+			typeIcon := workerTypeIcon(item.Type)
+			mainLine := fmt.Sprintf("%s %s %s %s %s",
+				status, typeIcon, item.BeadID,
+				dimStyle.Render(item.Anvil), item.Duration)
 			if i == m.workerScroll {
-				line = selectedStyle.Render(line)
+				mainLine = selectedStyle.Render(mainLine)
 			}
-			lines = append(lines, line)
+			lines = append(lines, mainLine)
+			// Show last log line for the selected worker
+			if i == m.workerScroll && item.LastLog != "" {
+				lines = append(lines, dimStyle.Render("  "+truncate(item.LastLog, width-6)))
+			}
 		}
 	}
 
@@ -318,6 +341,12 @@ type UpdateWorkersMsg struct{ Items []WorkerItem }
 
 // UpdateEventsMsg updates the event log panel.
 type UpdateEventsMsg struct{ Items []EventItem }
+
+// KillWorkerMsg requests killing the selected worker by PID.
+type KillWorkerMsg struct {
+	WorkerID string
+	PID      int
+}
 
 // --- Styles ---
 
@@ -385,6 +414,24 @@ func workerStatusStyle(status string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("✗")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("○")
+	}
+}
+
+// workerTypeIcon returns a short icon for the worker type.
+func workerTypeIcon(t string) string {
+	switch t {
+	case "smith":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("⚒")
+	case "warden":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render("⛨")
+	case "temper":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render("🔥")
+	case "cifix":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("🔧")
+	case "reviewfix":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render("📝")
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("?")
 	}
 }
 

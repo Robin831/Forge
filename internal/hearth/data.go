@@ -3,7 +3,9 @@ package hearth
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -63,7 +65,8 @@ func FetchQueue(ctx context.Context, anvils map[string]config.AnvilConfig) tea.C
 	}
 }
 
-// FetchWorkers reads active workers from the state DB.
+// FetchWorkers reads active workers from the state DB and enriches with
+// last log line from the worker log file.
 func FetchWorkers(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
 		workers, err := db.ActiveWorkers()
@@ -78,17 +81,71 @@ func FetchWorkers(db *state.DB) tea.Cmd {
 				duration = time.Since(w.StartedAt).Truncate(time.Second).String()
 			}
 
+			// Infer worker type from ID prefix or status
+			wType := inferWorkerType(w.ID, w.Status)
+
+			// Read last log line
+			lastLog := readLastLogLine(w.LogPath)
+
 			items = append(items, WorkerItem{
 				ID:       w.ID,
 				BeadID:   w.BeadID,
 				Anvil:    w.Anvil,
 				Status:   string(w.Status),
 				Duration: duration,
+				Type:     wType,
+				LastLog:  lastLog,
+				PID:      w.PID,
 			})
 		}
 
 		return UpdateWorkersMsg{Items: items}
 	}
+}
+
+// inferWorkerType guesses the worker type from its ID or status.
+func inferWorkerType(id string, status state.WorkerStatus) string {
+	// Convention: worker IDs are prefixed with type
+	switch {
+	case len(id) > 6 && id[:6] == "smith-":
+		return "smith"
+	case len(id) > 7 && id[:7] == "warden-":
+		return "warden"
+	case len(id) > 7 && id[:7] == "temper-":
+		return "temper"
+	case len(id) > 6 && id[:6] == "cifix-":
+		return "cifix"
+	case len(id) > 10 && id[:10] == "reviewfix-":
+		return "reviewfix"
+	}
+	// Fall back to status-based guess
+	if status == state.WorkerReviewing {
+		return "warden"
+	}
+	return "smith"
+}
+
+// readLastLogLine reads the last non-empty line from a log file.
+func readLastLogLine(logPath string) string {
+	if logPath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	// Return last non-empty line
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // FetchEvents reads recent events from the state DB.
