@@ -175,6 +175,12 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 
 	// 3. Clean up abandoned worktrees across all anvils
 	if m.worktrees != nil {
+		// Refresh active workers list to ensure we don't skip worktrees of workers we just marked as failed
+		workers, err = m.db.ActiveWorkers()
+		if err != nil {
+			m.logger.Error("failed to refresh active workers for worktree cleanup", "error", err)
+		}
+
 		ctx := context.Background()
 		for name, anvilPath := range m.anvils {
 			wts, err := m.worktrees.List(anvilPath)
@@ -185,9 +191,13 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 				// Check if any active worker references this worktree
 				used := false
 				for _, w := range workers {
-					if w.Anvil == name && w.Branch != "" && strings.Contains(wtPath, w.Branch) {
-						used = true
-						break
+					// Precisely match worktree directory name with the worker's branch (minus forge/ prefix)
+					if w.Anvil == name && w.Branch != "" {
+						dirName := strings.TrimPrefix(w.Branch, "forge/")
+						if filepath.Base(wtPath) == dirName {
+							used = true
+							break
+						}
 					}
 				}
 				if !used {
@@ -241,11 +251,11 @@ func (m *Manager) resetBead(beadID, anvilPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open"))
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open", "--json"))
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("bd update %s --status=open: %w\n%s", beadID, err, out)
+		return fmt.Errorf("bd update %s --status=open --json: %w\n%s", beadID, err, out)
 	}
 	return nil
 }
