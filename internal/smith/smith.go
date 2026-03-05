@@ -103,10 +103,15 @@ func Spawn(ctx context.Context, worktreePath, promptText, logDir string, extraFl
 //
 // logDir is where the session log file is written.
 func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*Process, error) {
-	args := pv.BuildArgs(promptText, extraFlags)
+	args := pv.BuildArgs(extraFlags)
 
 	cmd := exec.CommandContext(ctx, pv.Cmd(), args...)
 	cmd.Dir = worktreePath
+
+	// Deliver the prompt via stdin to avoid the Windows CreateProcess command-line
+	// length limit (32 767 chars).  Claude uses -p -, Copilot uses -p -,
+	// and Gemini reads stdin when no positional prompt argument is provided.
+	cmd.Stdin = strings.NewReader(promptText)
 
 	// Strip CLAUDECODE so claude doesn't refuse to run inside another session.
 	env := os.Environ()

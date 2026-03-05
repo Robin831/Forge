@@ -63,37 +63,43 @@ func (p Provider) Format() OutputFormat {
 
 // BuildArgs returns the full argument list for a one-shot non-interactive run.
 //
+// The prompt text is NOT included in the returned args — it must be written to
+// the process's stdin instead.  This avoids the Windows CreateProcess
+// command-line length limit (32 767 chars) for large Forge prompts.
+//
 // claudeFlags are additional flags specified by callers (e.g. --max-turns or
 // --tools "").  For non-Claude providers these are translated where possible
 // and silently dropped where they have no equivalent.
-func (p Provider) BuildArgs(promptText string, claudeFlags []string) []string {
+func (p Provider) BuildArgs(claudeFlags []string) []string {
 	switch p.Kind {
 	case Gemini:
-		return p.geminiArgs(promptText, claudeFlags)
+		return p.geminiArgs(claudeFlags)
 	case Copilot:
-		return p.copilotArgs(promptText, claudeFlags)
+		return p.copilotArgs(claudeFlags)
 	default:
-		return p.claudeArgs(promptText, claudeFlags)
+		return p.claudeArgs(claudeFlags)
 	}
 }
 
-func (p Provider) claudeArgs(promptText string, extra []string) []string {
+func (p Provider) claudeArgs(extra []string) []string {
+	// -p - tells Claude to read the prompt from stdin.
 	base := []string{
 		"--dangerously-skip-permissions",
-		"-p", promptText,
+		"-p", "-",
 		"--output-format", "stream-json",
 		"--verbose",
 	}
 	return append(base, extra...)
 }
 
-func (p Provider) geminiArgs(promptText string, claudeFlags []string) []string {
-	// Gemini CLI: `gemini <prompt> --yolo -o stream-json`
+func (p Provider) geminiArgs(claudeFlags []string) []string {
+	// Gemini CLI: `gemini --yolo -o stream-json`
+	// Without a positional prompt argument the Gemini CLI reads the prompt from
+	// stdin, avoiding the Windows command-line length limit.
 	// --yolo is equivalent to claude's --dangerously-skip-permissions.
 	// --output-format stream-json / -o stream-json enables machine-readable output.
 	// Translate recognised claude flags; drop the rest.
 	base := []string{
-		promptText, // positional argument (not -p)
 		"--yolo",
 		"-o", "stream-json",
 	}
@@ -114,10 +120,11 @@ func (p Provider) geminiArgs(promptText string, claudeFlags []string) []string {
 	return base
 }
 
-func (p Provider) copilotArgs(promptText string, claudeFlags []string) []string {
+func (p Provider) copilotArgs(claudeFlags []string) []string {
 	// GitHub Copilot CLI:
-	//   copilot -p "<prompt>" --yolo --silent --model claude-sonnet-4.6 --no-auto-update
+	//   copilot -p - --yolo --silent --model claude-sonnet-4.6 --no-auto-update
 	//
+	// -p -       = read prompt from stdin (avoids Windows command-line length limit)
 	// --yolo     = --allow-all-tools + --allow-all-paths + --allow-all-urls
 	// --silent   = output only the agent response, no stats (plain text)
 	// --model    = use Claude Sonnet 4.6 (best autonomous-coding model available)
@@ -135,7 +142,7 @@ func (p Provider) copilotArgs(promptText string, claudeFlags []string) []string 
 	}
 
 	return []string{
-		"-p", promptText,
+		"-p", "-",
 		"--yolo",
 		"--silent",
 		"--model", model,
