@@ -56,7 +56,7 @@ var hearthCmd = &cobra.Command{
 			})
 		}
 
-		p := tea.NewProgram(model, tea.WithAltScreen())
+		p := tea.NewProgram(&model, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			return err
