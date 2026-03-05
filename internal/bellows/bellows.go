@@ -113,11 +113,11 @@ func (m *Monitor) checkAll(ctx context.Context) {
 
 	log.Printf("[bellows] Checking %d open PRs", len(prs))
 
-	for _, pr := range prs {
+	for i := range prs {
 		if ctx.Err() != nil {
 			return
 		}
-		m.checkPR(ctx, pr)
+		m.checkPR(ctx, &prs[i])
 	}
 }
 
