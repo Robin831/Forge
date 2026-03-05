@@ -327,7 +327,7 @@ func (m Model) renderWorkers(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderEvents renders the event log panel.
+// renderEvents renders the event log panel with word-wrapped messages.
 func (m Model) renderEvents(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelEvents {
@@ -346,22 +346,51 @@ func (m Model) renderEvents(width, height int) string {
 	if len(m.events) == 0 {
 		lines = append(lines, dimStyle.Render("No events"))
 	} else {
-		visible := visibleItems(m.eventScroll, len(m.events), height-3)
-		for i := visible.start; i < visible.end; i++ {
+		// Content width: panel width minus border (2) and padding (2)
+		contentWidth := width - 4
+		if contentWidth < 20 {
+			contentWidth = 20
+		}
+		availLines := height - 3 // space after title + margins
+
+		for i := m.eventScroll; i < len(m.events) && len(lines)-1 < availLines; i++ {
 			item := m.events[i]
-			beadTag := ""
+
+			// Build the styled prefix: timestamp + event type + optional bead tag
+			ts := dimStyle.Render(item.Timestamp)
+			et := eventTypeStyle(item.Type)
+			prefix := ts + " " + et + " "
 			if item.BeadID != "" {
-				beadTag = dimStyle.Render("["+item.BeadID+"] ")
+				prefix += dimStyle.Render("["+item.BeadID+"] ")
 			}
-			line := fmt.Sprintf("%s %s %s%s",
-				dimStyle.Render(item.Timestamp),
-				eventTypeStyle(item.Type),
-				beadTag,
-				truncate(item.Message, width-30))
+
+			prefixWidth := lipgloss.Width(prefix)
+			msgWidth := contentWidth - prefixWidth
+			if msgWidth < 20 {
+				msgWidth = 20
+			}
+
+			msgLines := wordWrap(item.Message, msgWidth)
+
+			// First line: full prefix + first message segment
+			firstLine := prefix + msgLines[0]
 			if i == m.eventScroll {
-				line = selectedStyle.Render(line)
+				firstLine = selectedStyle.Render(firstLine)
 			}
-			lines = append(lines, line)
+			lines = append(lines, firstLine)
+
+			// Continuation lines: indented to align with message body
+			indent := strings.Repeat(" ", prefixWidth)
+			for _, ml := range msgLines[1:] {
+				if len(lines)-1 >= availLines {
+					break
+				}
+				contLine := indent + ml
+				if i == m.eventScroll {
+					contLine = selectedStyle.Render(contLine)
+				}
+				lines = append(lines, contLine)
+			}
 		}
 	}
 
@@ -514,4 +543,36 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// wordWrap breaks s into lines of at most maxWidth characters, splitting on
+// word boundaries. Words longer than maxWidth are placed on their own line.
+func wordWrap(s string, maxWidth int) []string {
+	if maxWidth < 1 {
+		maxWidth = 1
+	}
+	if s == "" {
+		return []string{""}
+	}
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	var lines []string
+	current := ""
+	for _, w := range words {
+		switch {
+		case current == "":
+			current = w
+		case len(current)+1+len(w) <= maxWidth:
+			current += " " + w
+		default:
+			lines = append(lines, current)
+			current = w
+		}
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return lines
 }
