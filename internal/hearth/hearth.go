@@ -21,10 +21,17 @@ import (
 type Panel int
 
 const (
-	PanelQueue   Panel = iota
+	PanelQueue Panel = iota
 	PanelWorkers
 	PanelEvents
+
+	// Event panel rendering constants
+	eventPanelInteriorPadding = 4
+	eventPanelMinWidth        = 20
+	eventTimestampWidth       = 9  // "HH:MM:SS "
+	eventMsgMinWidth          = 20 // Minimum width before msg moves to next line
 )
+
 
 // QueueItem represents a bead in the queue panel.
 type QueueItem struct {
@@ -461,6 +468,36 @@ func (m *Model) renderAllEventLines(width int) []string {
 	return allLines
 }
 
+type eventLayout struct {
+	interiorWidth int
+	prefixVisLen  int
+	msgWidth      int
+	beadTag       string
+}
+
+func (m *Model) getEventLayout(item EventItem, panelWidth int) eventLayout {
+	beadTag := ""
+	if item.BeadID != "" {
+		beadTag = "[" + item.BeadID + "] "
+	}
+
+	interiorWidth := panelWidth - eventPanelInteriorPadding
+	if interiorWidth < eventPanelMinWidth {
+		interiorWidth = eventPanelMinWidth
+	}
+
+	// Visual prefix length: "HH:MM:SS "(9) + type + " " + beadTag
+	prefixVisLen := eventTimestampWidth + len(item.Type) + 1 + len(beadTag)
+	msgWidth := interiorWidth - prefixVisLen
+
+	return eventLayout{
+		interiorWidth: interiorWidth,
+		prefixVisLen:  prefixVisLen,
+		msgWidth:      msgWidth,
+		beadTag:       beadTag,
+	}
+}
+
 // eventTotalLineCount returns the total number of rendered lines across all events
 // without allocating styled strings. Used by scrollDown for cheap bounds checking.
 func (m *Model) eventTotalLineCount(width int) int {
@@ -478,59 +515,35 @@ func (m *Model) eventTotalLineCount(width int) int {
 // eventLineCount returns the number of lines renderEventLines would produce for item
 // without performing any string formatting or allocation beyond wrap counting.
 func (m *Model) eventLineCount(item EventItem, width int) int {
-	beadTag := ""
-	if item.BeadID != "" {
-		beadTag = "[" + item.BeadID + "] "
-	}
+	layout := m.getEventLayout(item, width)
 
-	interiorWidth := width - 4
-	if interiorWidth < 20 {
-		interiorWidth = 20
-	}
-
-	prefixVisLen := 9 + len(item.Type) + 1 + len(beadTag)
-	msgWidth := interiorWidth - prefixVisLen
-
-	if msgWidth < 20 {
+	if layout.msgWidth < eventMsgMinWidth {
 		// header line + wrapped message lines
-		return 1 + wordWrapCount(item.Message, interiorWidth-2)
+		return 1 + wordWrapCount(item.Message, layout.interiorWidth-2)
 	}
-	return wordWrapCount(item.Message, msgWidth)
+	return wordWrapCount(item.Message, layout.msgWidth)
 }
 
 // renderEventLines renders a single event as one or more wrapped lines.
 // The timestamp and event type stay on the first line; the message body wraps
 // onto continuation lines if it exceeds the available width.
 func (m *Model) renderEventLines(item EventItem, selected bool, panelWidth int) []string {
-	beadTag := ""
-	if item.BeadID != "" {
-		beadTag = "[" + item.BeadID + "] "
-	}
-
-	// Interior width: subtract border (2) + padding (2) on each side = 4 total
-	interiorWidth := panelWidth - 4
-	if interiorWidth < 20 {
-		interiorWidth = 20
-	}
-
-	// Visual prefix length: "HH:MM:SS "(9) + type + " " + beadTag
-	prefixVisLen := 9 + len(item.Type) + 1 + len(beadTag)
-	msgWidth := interiorWidth - prefixVisLen
+	layout := m.getEventLayout(item, panelWidth)
 
 	var lines []string
-	if msgWidth < 20 {
+	if layout.msgWidth < eventMsgMinWidth {
 		// Prefix is too wide for the current panel width, put message on its own lines
 		header := fmt.Sprintf("%s %s %s",
 			dimStyle.Render(item.Timestamp),
 			eventTypeStyle(item.Type),
-			dimStyle.Render(beadTag))
+			dimStyle.Render(layout.beadTag))
 		if selected {
 			header = selectedStyle.Render(header)
 		}
 		lines = append(lines, header)
 
 		// Message starts on next line, indented slightly
-		wrapped := wordWrap(item.Message, interiorWidth-2)
+		wrapped := wordWrap(item.Message, layout.interiorWidth-2)
 		for _, part := range wrapped {
 			line := "  " + dimStyle.Render(part)
 			if selected {
@@ -540,19 +553,19 @@ func (m *Model) renderEventLines(item EventItem, selected bool, panelWidth int) 
 		}
 	} else {
 		// Message starts on the same line as the prefix
-		wrapped := wordWrap(item.Message, msgWidth)
+		wrapped := wordWrap(item.Message, layout.msgWidth)
 		if len(wrapped) == 0 {
 			wrapped = []string{""}
 		}
 
-		indent := strings.Repeat(" ", prefixVisLen)
+		indent := strings.Repeat(" ", layout.prefixVisLen)
 		for i, part := range wrapped {
 			var line string
 			if i == 0 {
 				line = fmt.Sprintf("%s %s %s%s",
 					dimStyle.Render(item.Timestamp),
 					eventTypeStyle(item.Type),
-					dimStyle.Render(beadTag),
+					dimStyle.Render(layout.beadTag),
 					part)
 			} else {
 				line = indent + dimStyle.Render(part)
