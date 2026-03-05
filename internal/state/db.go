@@ -461,6 +461,7 @@ const (
 	EventPRCreated      EventType = "pr_created"
 	EventPRMerged       EventType = "pr_merged"
 	EventPRClosed       EventType = "pr_closed"
+	EventPRConflicting  EventType = "pr_conflicting"
 	EventPRNeedsFix     EventType = "pr_needs_fix"
 	EventLifecycleExhausted EventType = "lifecycle_exhausted"
 	EventError          EventType = "error"

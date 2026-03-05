@@ -131,6 +131,12 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 				event.BeadID, event.Anvil)
 		}
 
+	case bellows.EventPRConflicting:
+		log.Printf("[lifecycle] PR #%d: merge conflict detected, manual rebase required", event.PRNumber)
+		_ = m.db.LogEvent(state.EventPRConflicting,
+			fmt.Sprintf("PR #%d: conflict detected — rebase required before merge", event.PRNumber),
+			event.BeadID, event.Anvil)
+
 	case bellows.EventPRMerged:
 		st.Merged = true
 		action = ActionCloseBead
