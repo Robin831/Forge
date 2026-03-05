@@ -30,8 +30,11 @@ type Config struct {
 
 // AnvilConfig defines a registered repository (anvil).
 type AnvilConfig struct {
-	Path      string `mapstructure:"path"`
-	MaxSmiths int    `mapstructure:"max_smiths"`
+	Path                    string `mapstructure:"path"`
+	MaxSmiths               int    `mapstructure:"max_smiths"`
+	AutoDispatch            string `mapstructure:"auto_dispatch"`
+	AutoDispatchTag         string `mapstructure:"auto_dispatch_tag"`
+	AutoDispatchMinPriority int    `mapstructure:"auto_dispatch_min_priority"`
 }
 
 // SettingsConfig holds global operational settings.
@@ -114,6 +117,14 @@ func Load(configFile string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
 	}
 
+	// Set per-anvil defaults and parse durations
+	for name, anvil := range cfg.Anvils {
+		if anvil.AutoDispatch == "" {
+			anvil.AutoDispatch = "all"
+		}
+		cfg.Anvils[name] = anvil
+	}
+
 	// Parse durations from string values (viper returns strings from YAML)
 	if raw := v.GetString("settings.poll_interval"); raw != "" {
 		d, err := time.ParseDuration(raw)
@@ -176,6 +187,20 @@ func (c *Config) Validate() []string {
 		if anvil.MaxSmiths < 0 {
 			errs = append(errs, fmt.Sprintf("anvil %q: max_smiths must be >= 0", name))
 		}
+
+		switch anvil.AutoDispatch {
+		case "all", "tagged", "priority", "off", "":
+			// valid
+		default:
+			errs = append(errs, fmt.Sprintf("anvil %q: invalid auto_dispatch %q (must be all|tagged|priority|off)", name, anvil.AutoDispatch))
+		}
+
+		if anvil.AutoDispatch == "tagged" && anvil.AutoDispatchTag == "" {
+			errs = append(errs, fmt.Sprintf("anvil %q: auto_dispatch_tag must be non-empty when auto_dispatch is \"tagged\"", name))
+		}
+		if anvil.AutoDispatch == "priority" && (anvil.AutoDispatchMinPriority < 0 || anvil.AutoDispatchMinPriority > 4) {
+			errs = append(errs, fmt.Sprintf("anvil %q: auto_dispatch_min_priority must be 0-4 when auto_dispatch is \"priority\"", name))
+		}
 	}
 
 	return errs
@@ -189,6 +214,9 @@ func Save(cfg *Config, path string) error {
 	for name, anvil := range cfg.Anvils {
 		v.Set("anvils."+name+".path", anvil.Path)
 		v.Set("anvils."+name+".max_smiths", anvil.MaxSmiths)
+		v.Set("anvils."+name+".auto_dispatch", anvil.AutoDispatch)
+		v.Set("anvils."+name+".auto_dispatch_tag", anvil.AutoDispatchTag)
+		v.Set("anvils."+name+".auto_dispatch_min_priority", anvil.AutoDispatchMinPriority)
 	}
 
 	v.Set("settings.poll_interval", cfg.Settings.PollInterval.String())

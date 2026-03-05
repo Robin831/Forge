@@ -18,14 +18,15 @@ import (
 // Bead represents an issue returned by 'bd ready --json'.
 // Only the fields Forge needs are extracted.
 type Bead struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Status      string `json:"status"`
-	Priority    int    `json:"priority"`
-	IssueType   string `json:"issue_type"`
-	Assignee    string `json:"assignee"`
-	Parent      string `json:"parent"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Status      string   `json:"status"`
+	Priority    int      `json:"priority"`
+	IssueType   string   `json:"issue_type"`
+	Assignee    string   `json:"assignee"`
+	Parent      string   `json:"parent"`
+	Tags        []string `json:"tags"`
 
 	// Forge-injected: which anvil this bead belongs to
 	Anvil string `json:"-"`

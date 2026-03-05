@@ -263,6 +263,30 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		// Check per-anvil capacity, accounting for beads dispatched this cycle
 		// that haven't been written to the DB yet.
 		anvilCfg := d.cfg.Anvils[bead.Anvil]
+
+		// Apply auto-dispatch filtering
+		switch anvilCfg.AutoDispatch {
+		case "off":
+			continue
+		case "tagged":
+			found := false
+			for _, t := range bead.Tags {
+				if t == anvilCfg.AutoDispatchTag {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		case "priority":
+			if bead.Priority > anvilCfg.AutoDispatchMinPriority {
+				continue
+			}
+		case "all", "":
+			// default: dispatch everything ready
+		}
+
 		maxSmiths := anvilCfg.MaxSmiths
 		if maxSmiths <= 0 {
 			maxSmiths = 1
