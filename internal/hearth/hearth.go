@@ -412,59 +412,74 @@ func (m Model) renderEvents(width, height int) string {
 	var lines []string
 	lines = append(lines, title)
 
+	contentHeight := height - 3 // title + border rows
+
 	if len(m.events) == 0 {
 		lines = append(lines, dimStyle.Render("No events"))
 	} else {
-		// Content width: panel width minus border (2) and padding (2)
-		contentWidth := width - 4
-		if contentWidth < 20 {
-			contentWidth = 20
-		}
-		availLines := height - 3 // space after title + margins
-
-		for i := m.eventScroll; i < len(m.events) && len(lines)-1 < availLines; i++ {
-			item := m.events[i]
-
-			// Build the styled prefix: timestamp + event type + optional bead tag
-			ts := dimStyle.Render(item.Timestamp)
-			et := eventTypeStyle(item.Type)
-			prefix := ts + " " + et + " "
-			if item.BeadID != "" {
-				prefix += dimStyle.Render("["+item.BeadID+"] ")
-			}
-
-			prefixWidth := lipgloss.Width(prefix)
-			msgWidth := contentWidth - prefixWidth
-			if msgWidth < 20 {
-				msgWidth = 20
-			}
-
-			msgLines := wordWrap(item.Message, msgWidth)
-
-			// First line: full prefix + first message segment
-			firstLine := prefix + msgLines[0]
-			if i == m.eventScroll {
-				firstLine = selectedStyle.Render(firstLine)
-			}
-			lines = append(lines, firstLine)
-
-			// Continuation lines: indented to align with message body
-			indent := strings.Repeat(" ", prefixWidth)
-			for _, ml := range msgLines[1:] {
-				if len(lines)-1 >= availLines {
+		linesUsed := 0
+		for i := m.eventScroll; i < len(m.events) && linesUsed < contentHeight; i++ {
+			for _, l := range m.renderEventLines(m.events[i], i == m.eventScroll, width) {
+				if linesUsed >= contentHeight {
 					break
 				}
-				contLine := indent + ml
-				if i == m.eventScroll {
-					contLine = selectedStyle.Render(contLine)
-				}
-				lines = append(lines, contLine)
+				lines = append(lines, l)
+				linesUsed++
 			}
+
 		}
 	}
 
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
+}
+
+// renderEventLines renders a single event as one or more wrapped lines.
+// The timestamp and event type stay on the first line; the message body wraps
+// onto continuation lines if it exceeds the available width.
+func (m Model) renderEventLines(item EventItem, selected bool, panelWidth int) []string {
+	beadTag := ""
+	if item.BeadID != "" {
+		beadTag = "[" + item.BeadID + "] "
+	}
+
+	// Interior width: subtract border (2) + padding (2) on each side = 4 total
+	interiorWidth := panelWidth - 4
+	if interiorWidth < 20 {
+		interiorWidth = 20
+	}
+
+	// Visual prefix length: "HH:MM:SS "(9) + type + " " + beadTag
+	prefixVisLen := 9 + len(item.Type) + 1 + len(beadTag)
+	msgWidth := interiorWidth - prefixVisLen
+	if msgWidth < 20 {
+		msgWidth = 20
+	}
+
+	wrapped := wordWrap(item.Message, msgWidth)
+	if len(wrapped) == 0 {
+		wrapped = []string{""}
+	}
+
+	indent := strings.Repeat(" ", prefixVisLen)
+	var lines []string
+	for i, part := range wrapped {
+		var line string
+		if i == 0 {
+			line = fmt.Sprintf("%s %s %s%s",
+				dimStyle.Render(item.Timestamp),
+				eventTypeStyle(item.Type),
+				dimStyle.Render(beadTag),
+				part)
+		} else {
+			line = indent + dimStyle.Render(part)
+		}
+		if selected {
+			line = selectedStyle.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 // --- Messages for updating panel data ---
@@ -642,34 +657,38 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-// wordWrap breaks s into lines of at most maxWidth characters, splitting on
-// word boundaries. Words longer than maxWidth are placed on their own line.
+// wordWrap splits s into lines of at most maxWidth characters,
+// preferring to break at spaces. Newlines in s are normalized to spaces.
 func wordWrap(s string, maxWidth int) []string {
-	if maxWidth < 1 {
-		maxWidth = 1
+	if maxWidth < 10 {
+		maxWidth = 10
 	}
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
 	if s == "" {
 		return []string{""}
 	}
-	words := strings.Fields(s)
-	if len(words) == 0 {
-		return []string{""}
+	if len(s) <= maxWidth {
+		return []string{s}
 	}
-	var lines []string
-	current := ""
-	for _, w := range words {
-		switch {
-		case current == "":
-			current = w
-		case len(current)+1+len(w) <= maxWidth:
-			current += " " + w
-		default:
-			lines = append(lines, current)
-			current = w
+
+	var result []string
+	for len(s) > maxWidth {
+		breakAt := -1
+		for i := maxWidth; i >= maxWidth/2; i-- {
+			if s[i] == ' ' {
+				breakAt = i
+				break
+			}
 		}
+		if breakAt == -1 {
+			breakAt = maxWidth
+		}
+		result = append(result, s[:breakAt])
+		s = strings.TrimLeft(s[breakAt:], " ")
 	}
-	if current != "" {
-		lines = append(lines, current)
+	if len(s) > 0 {
+		result = append(result, s)
 	}
-	return lines
+	return result
+
 }
