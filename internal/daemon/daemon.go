@@ -265,26 +265,8 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		anvilCfg := d.cfg.Anvils[bead.Anvil]
 
 		// Apply auto-dispatch filtering
-		switch anvilCfg.AutoDispatch {
-		case "off":
+		if !shouldDispatch(bead, anvilCfg) {
 			continue
-		case "tagged":
-			found := false
-			for _, t := range bead.Tags {
-				if t == anvilCfg.AutoDispatchTag {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		case "priority":
-			if bead.Priority > anvilCfg.AutoDispatchMinPriority {
-				continue
-			}
-		case "all", "":
-			// default: dispatch everything ready
 		}
 
 		maxSmiths := anvilCfg.MaxSmiths
@@ -569,4 +551,28 @@ func pidFilePath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".forge", PIDFileName), nil
+}
+
+// shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.
+func shouldDispatch(bead poller.Bead, anvilCfg config.AnvilConfig) bool {
+	switch anvilCfg.AutoDispatch {
+	case "off":
+		return false
+	case "tagged":
+		if anvilCfg.AutoDispatchTag == "" {
+			return false
+		}
+		for _, t := range bead.Tags {
+			if strings.EqualFold(t, anvilCfg.AutoDispatchTag) {
+				return true
+			}
+		}
+		return false
+	case "priority":
+		return bead.Priority <= anvilCfg.AutoDispatchMinPriority
+	case "all", "":
+		return true
+	default:
+		return true
+	}
 }
