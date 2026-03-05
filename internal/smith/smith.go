@@ -61,16 +61,16 @@ type StreamEvent struct {
 	Type    string          `json:"type"`
 	Message json.RawMessage `json:"message,omitempty"`
 	Content string          `json:"content,omitempty"`
-	// Result events include cost info
-	Result *StreamResult `json:"result,omitempty"`
+	// Fields present when type == "result":
+	Result       string       `json:"result,omitempty"`
+	TotalCostUSD float64      `json:"total_cost_usd,omitempty"`
+	Usage        *StreamUsage `json:"usage,omitempty"`
 }
 
-// StreamResult is the final result event from Claude stream-json.
-type StreamResult struct {
-	Result    string  `json:"result,omitempty"`
-	CostUSD   float64 `json:"cost_usd,omitempty"`
-	TokensIn  int     `json:"input_tokens,omitempty"`
-	TokensOut int     `json:"output_tokens,omitempty"`
+// StreamUsage holds token counts from the result event.
+type StreamUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 // Spawn starts a new Claude Code process in the given worktree directory.
@@ -249,13 +249,13 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 				lastContent = event.Content
 			}
 
-			// Extract cost/token info from result events
-			if event.Result != nil {
-				result.CostUSD = event.Result.CostUSD
-				result.TokensIn = event.Result.TokensIn
-				result.TokensOut = event.Result.TokensOut
-				if event.Result.Result != "" {
-					result.FullOutput = event.Result.Result
+			// Capture the final result event (contains full text and cost)
+			if event.Type == "result" && event.Result != "" {
+				result.FullOutput = event.Result
+				result.CostUSD = event.TotalCostUSD
+				if event.Usage != nil {
+					result.TokensIn = event.Usage.InputTokens
+					result.TokensOut = event.Usage.OutputTokens
 				}
 			}
 		}
