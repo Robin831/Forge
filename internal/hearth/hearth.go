@@ -37,15 +37,17 @@ type QueueItem struct {
 
 // WorkerItem represents a worker in the workers panel.
 type WorkerItem struct {
-	ID       string
-	BeadID   string
-	Anvil    string
-	Status   string
-	Duration string
-	CostUSD  float64
-	Type     string // "smith", "warden", "temper", "cifix", "reviewfix"
-	LastLog  string // Last line from the worker log
-	PID      int    // Process ID for kill
+	ID            string
+	BeadID        string
+	Anvil         string
+	Status        string
+	Duration      string
+	CostUSD       float64
+	Type          string   // "smith", "warden", "temper", "cifix", "reviewfix"
+	LastLog       string   // Last line from the worker log
+	PID           int      // Process ID for kill
+	LogPath       string   // Path to the worker's log file
+	ActivityLines []string // Recent parsed activity from the log (tool calls, thinking, text)
 }
 
 // EventItem represents an event in the event log panel.
@@ -305,8 +307,23 @@ func (m Model) renderQueue(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderWorkers renders the workers panel.
+// renderWorkers splits the center Workers panel into two vertical sub-panels:
+// top shows the worker list, bottom shows the live activity log for the
+// selected worker. Uses lipgloss.JoinVertical for the split.
 func (m Model) renderWorkers(width, height int) string {
+	listHeight := height * 6 / 10
+	if listHeight < 5 {
+		listHeight = 5
+	}
+	activityHeight := height - listHeight
+
+	top := m.renderWorkerList(width, listHeight)
+	bottom := m.renderWorkerActivity(width, activityHeight)
+	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
+}
+
+// renderWorkerList renders the top sub-panel: the list of active workers.
+func (m Model) renderWorkerList(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelWorkers {
 		style = focusedPanelStyle.Width(width)
@@ -320,7 +337,8 @@ func (m Model) renderWorkers(width, height int) string {
 	if len(m.workers) == 0 {
 		lines = append(lines, dimStyle.Render("No active workers"))
 	} else {
-		visible := visibleItems(m.workerScroll, len(m.workers), height-3)
+		// height-2 (borders) - 2 (title + margin) = height-4
+		visible := visibleItems(m.workerScroll, len(m.workers), height-4)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.workers[i]
 			status := workerStatusStyle(item.Status)
@@ -332,10 +350,45 @@ func (m Model) renderWorkers(width, height int) string {
 				mainLine = selectedStyle.Render(mainLine)
 			}
 			lines = append(lines, mainLine)
-			// Show last log line for the selected worker
-			if i == m.workerScroll && item.LastLog != "" {
-				lines = append(lines, dimStyle.Render("  "+truncate(item.LastLog, width-6)))
-			}
+		}
+	}
+
+	content := strings.Join(lines, "\n")
+	return style.Height(height).Render(content)
+}
+
+// renderWorkerActivity renders the bottom sub-panel: a live activity log
+// for the currently selected worker, parsed from its stream-json log file.
+func (m Model) renderWorkerActivity(width, height int) string {
+	style := panelStyle.Width(width)
+	if m.focused == PanelWorkers {
+		style = focusedPanelStyle.Width(width)
+	}
+
+	title := activityPanelTitleStyle.Render("Live Activity")
+
+	var lines []string
+	lines = append(lines, title)
+
+	var activityLines []string
+	if len(m.workers) > 0 && m.workerScroll < len(m.workers) {
+		activityLines = m.workers[m.workerScroll].ActivityLines
+	}
+
+	if len(activityLines) == 0 {
+		lines = append(lines, dimStyle.Render("No activity"))
+	} else {
+		// height-2 (borders) - 2 (title + margin) = height-4
+		maxVisible := height - 4
+		if maxVisible < 1 {
+			maxVisible = 1
+		}
+		start := len(activityLines) - maxVisible
+		if start < 0 {
+			start = 0
+		}
+		for _, entry := range activityLines[start:] {
+			lines = append(lines, truncate(entry, width-4))
 		}
 	}
 
@@ -466,6 +519,11 @@ var (
 
 	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
+
+	activityPanelTitleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("245")).
+			MarginBottom(1)
 )
 
 // priorityStyle returns a colored priority indicator.

@@ -2,6 +2,7 @@ package hearth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -87,15 +88,19 @@ func FetchWorkers(db *state.DB) tea.Cmd {
 			// Read last log line
 			lastLog := readLastLogLine(w.LogPath)
 
+			activityLines := parseWorkerActivity(w.LogPath, 100)
+
 			items = append(items, WorkerItem{
-				ID:       w.ID,
-				BeadID:   w.BeadID,
-				Anvil:    w.Anvil,
-				Status:   string(w.Status),
-				Duration: duration,
-				Type:     wType,
-				LastLog:  lastLog,
-				PID:      w.PID,
+				ID:            w.ID,
+				BeadID:        w.BeadID,
+				Anvil:         w.Anvil,
+				Status:        string(w.Status),
+				Duration:      duration,
+				Type:          wType,
+				LastLog:       lastLog,
+				PID:           w.PID,
+				LogPath:       w.LogPath,
+				ActivityLines: activityLines,
 			})
 		}
 
@@ -146,6 +151,119 @@ func readLastLogLine(logPath string) string {
 		}
 	}
 	return ""
+}
+
+// parseWorkerActivity reads the last maxEntries activity events from a
+// stream-json log file (as written by the smith package) and returns
+// human-readable lines suitable for the Live Activity sub-panel.
+func parseWorkerActivity(logPath string, maxEntries int) []string {
+	if logPath == "" || maxEntries <= 0 {
+		return nil
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return nil
+	}
+
+	rawLines := strings.Split(string(data), "\n")
+
+	var entries []string
+	for _, line := range rawLines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		var event struct {
+			Type    string          `json:"type"`
+			Subtype string          `json:"subtype,omitempty"`
+			Message json.RawMessage `json:"message,omitempty"`
+			Content string          `json:"content,omitempty"`
+			Role    string          `json:"role,omitempty"`
+			Status  string          `json:"status,omitempty"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+
+		switch event.Type {
+		case "assistant":
+			if len(event.Message) == 0 {
+				continue
+			}
+			var msg struct {
+				Content []struct {
+					Type     string          `json:"type"`
+					Text     string          `json:"text,omitempty"`
+					Name     string          `json:"name,omitempty"`
+					Input    json.RawMessage `json:"input,omitempty"`
+					Thinking string          `json:"thinking,omitempty"`
+				} `json:"content"`
+			}
+			if err := json.Unmarshal(event.Message, &msg); err != nil {
+				continue
+			}
+			for _, block := range msg.Content {
+				switch block.Type {
+				case "tool_use":
+					inputStr := ""
+					if len(block.Input) > 0 {
+						inputStr = string(block.Input)
+						if len(inputStr) > 50 {
+							inputStr = inputStr[:47] + "..."
+						}
+					}
+					entries = append(entries, fmt.Sprintf("[tool] %s %s", block.Name, inputStr))
+				case "text":
+					text := strings.ReplaceAll(block.Text, "\n", " ")
+					text = strings.TrimSpace(text)
+					if text != "" {
+						if len(text) > 70 {
+							text = text[:67] + "..."
+						}
+						entries = append(entries, fmt.Sprintf("[text] %s", text))
+					}
+				case "thinking":
+					thinking := strings.ReplaceAll(block.Thinking, "\n", " ")
+					thinking = strings.TrimSpace(thinking)
+					if thinking != "" {
+						if len(thinking) > 60 {
+							thinking = thinking[:57] + "..."
+						}
+						entries = append(entries, fmt.Sprintf("[think] %s", thinking))
+					}
+				}
+			}
+		case "message":
+			// Gemini-style delta message
+			if event.Role == "assistant" && event.Content != "" {
+				text := strings.ReplaceAll(event.Content, "\n", " ")
+				text = strings.TrimSpace(text)
+				if text != "" {
+					if len(text) > 70 {
+						text = text[:67] + "..."
+					}
+					entries = append(entries, fmt.Sprintf("[text] %s", text))
+				}
+			}
+		case "rate_limit_event":
+			// Claude-style informational event
+			if event.Status != "" {
+				entries = append(entries, fmt.Sprintf("[rate] %s", event.Status))
+			}
+		case "result":
+			subtype := event.Subtype
+			if subtype == "" {
+				subtype = "done"
+			}
+			entries = append(entries, fmt.Sprintf("[result] %s", subtype))
+		}
+	}
+
+	if len(entries) > maxEntries {
+		entries = entries[len(entries)-maxEntries:]
+	}
+	return entries
 }
 
 // FetchEvents reads recent events from the state DB.
