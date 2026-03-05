@@ -198,8 +198,8 @@ func (c *Config) Validate() []string {
 		if anvil.AutoDispatch == "tagged" && anvil.AutoDispatchTag == "" {
 			errs = append(errs, fmt.Sprintf("anvil %q: auto_dispatch_tag must be non-empty when auto_dispatch is \"tagged\"", name))
 		}
-		if anvil.AutoDispatch == "priority" && (anvil.AutoDispatchMinPriority < 0 || anvil.AutoDispatchMinPriority > 4) {
-			errs = append(errs, fmt.Sprintf("anvil %q: auto_dispatch_min_priority must be 0-4 when auto_dispatch is \"priority\"", name))
+		if anvil.AutoDispatch == "priority" && (anvil.AutoDispatchMinPriority < 1 || anvil.AutoDispatchMinPriority > 4) {
+			errs = append(errs, fmt.Sprintf("anvil %q: auto_dispatch_min_priority must be 1-4 when auto_dispatch is \"priority\" (0 would only dispatch critical beads; set explicitly if intentional)", name))
 		}
 	}
 

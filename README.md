@@ -97,7 +97,7 @@ settings:
 | Mode | Description |
 |------|-------------|
 | `all` | (Default) Dispatch all ready beads found in the anvil. |
-| `tagged` | Only dispatch beads containing the string in `auto_dispatch_tag`. |
+| `tagged` | Only dispatch beads where one of the bead's tags exactly matches `auto_dispatch_tag` (case-insensitive). |
 | `priority` | Only dispatch beads with priority <= `auto_dispatch_min_priority`. |
 | `off` | Never auto-dispatch; beads must be started manually via `forge queue run`. |
 

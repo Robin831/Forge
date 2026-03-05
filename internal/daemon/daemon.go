@@ -573,6 +573,9 @@ func shouldDispatch(bead poller.Bead, anvilCfg config.AnvilConfig) bool {
 	case "all", "":
 		return true
 	default:
-		return true
+		// Unknown mode — fail safe rather than dispatch everything.
+		// Validate() prevents this in practice but guard against runtime surprises.
+		slog.Warn("unknown auto_dispatch mode; disabling auto-dispatch for safety", "mode", anvilCfg.AutoDispatch)
+		return false
 	}
 }
