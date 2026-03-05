@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"text/tabwriter"
 
+	"github.com/Robin831/Forge/internal/autostart"
 	"github.com/Robin831/Forge/internal/daemon"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
@@ -56,6 +57,11 @@ var doctorCmd = &cobra.Command{
 
 		// 8. Check anvils configured
 		checks = append(checks, checkAnvils())
+
+		// 9. Check autostart registration (Windows only)
+		if runtime.GOOS == "windows" {
+			checks = append(checks, checkAutostart())
+		}
 
 		if jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
@@ -266,5 +272,32 @@ func checkAnvils() checkResult {
 		Name:   "Anvils configured",
 		Status: "ok",
 		Detail: fmt.Sprintf("%d anvils registered", count),
+	}
+}
+
+func checkAutostart() checkResult {
+	registered, nextRun, err := autostart.Status()
+	if err != nil {
+		return checkResult{
+			Name:   "Autostart",
+			Status: "warn",
+			Detail: fmt.Sprintf("check failed: %v", err),
+		}
+	}
+	if !registered {
+		return checkResult{
+			Name:   "Autostart",
+			Status: "warn",
+			Detail: "not configured (run 'forge autostart install')",
+		}
+	}
+	detail := "registered"
+	if nextRun != "" {
+		detail += " (next: " + nextRun + ")"
+	}
+	return checkResult{
+		Name:   "Autostart",
+		Status: "ok",
+		Detail: detail,
 	}
 }
