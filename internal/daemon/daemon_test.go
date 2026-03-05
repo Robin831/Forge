@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -90,19 +91,16 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
 
-	// Create a fake bd script
-	bdScript := filepath.Join(tmpDir, "bd.bat")
-	bdContent := `@echo off
-if "%1"=="ready" (
-    echo [{"id": "TEST-1", "title": "Test Bead", "status": "ready", "priority": 1, "tags": ["test"]}]
-    exit /b 0
-)
-if "%1"=="update" (
-    echo {"id": "TEST-1", "status": "in_progress"}
-    exit /b 0
-)
-exit /b 1
-`
+	// Create a fake bd script (cross-platform)
+	var bdScript string
+	var bdContent string
+	if runtime.GOOS == "windows" {
+		bdScript = filepath.Join(tmpDir, "bd.bat")
+		bdContent = "@echo off\r\nif \"%1\"==\"ready\" (\r\n    echo [{\"id\": \"TEST-1\", \"title\": \"Test Bead\", \"status\": \"ready\", \"priority\": 1, \"tags\": [\"test\"]}]\r\n    exit /b 0\r\n)\r\nif \"%1\"==\"update\" (\r\n    echo {\"id\": \"TEST-1\", \"status\": \"in_progress\"}\r\n    exit /b 0\r\n)\r\nexit /b 1\r\n"
+	} else {
+		bdScript = filepath.Join(tmpDir, "bd")
+		bdContent = "#!/bin/sh\nif [ \"$1\" = \"ready\" ]; then\n    echo '[{\"id\": \"TEST-1\", \"title\": \"Test Bead\", \"status\": \"ready\", \"priority\": 1, \"tags\": [\"test\"]}]'\n    exit 0\nfi\nif [ \"$1\" = \"update\" ]; then\n    echo '{\"id\": \"TEST-1\", \"status\": \"in_progress\"}'\n    exit 0\nfi\nexit 1\n"
+	}
 	err = os.WriteFile(bdScript, []byte(bdContent), 0o755)
 	require.NoError(t, err)
 
