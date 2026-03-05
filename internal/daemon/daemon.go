@@ -537,7 +537,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if kp.PID > 0 {
 			proc, err := os.FindProcess(kp.PID)
 			if err == nil {
-				_ = proc.Signal(syscall.SIGINT)
+				if runtime.GOOS == "windows" {
+					// Windows does not support SIGINT via Signal; use Kill instead.
+					_ = proc.Kill()
+				} else {
+					_ = proc.Signal(syscall.SIGINT)
+				}
 			}
 		}
 		_ = d.db.UpdateWorkerStatus(kp.WorkerID, state.WorkerFailed)
