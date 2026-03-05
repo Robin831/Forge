@@ -99,12 +99,16 @@ var queueRunCmd = &cobra.Command{
 
 		if resp.Type == "error" {
 			var msg map[string]string
-			_ = json.Unmarshal(resp.Payload, &msg)
+			if err := json.Unmarshal(resp.Payload, &msg); err != nil {
+				return fmt.Errorf("daemon error (failed to unmarshal message): %w", err)
+			}
 			return fmt.Errorf("daemon error: %s", msg["message"])
 		}
 
 		var result map[string]string
-		_ = json.Unmarshal(resp.Payload, &result)
+		if err := json.Unmarshal(resp.Payload, &result); err != nil {
+			return fmt.Errorf("failed to unmarshal daemon response: %w", err)
+		}
 		fmt.Printf("Successfully dispatched bead %s: %s\n", beadID, result["message"])
 		return nil
 	},

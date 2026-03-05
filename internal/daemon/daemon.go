@@ -545,6 +545,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		var targetBead *poller.Bead
 		p := poller.New(d.cfg.Anvils)
 		var beads []poller.Bead
+		var pollErrors []string
+
 		if rp.Anvil != "" {
 			var err error
 			beads, err = p.PollSingle(context.Background(), rp.Anvil)
@@ -553,7 +555,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				return ipc.Response{Type: "error", Payload: msg}
 			}
 		} else {
-			beads, _ = p.Poll(context.Background())
+			var results []poller.AnvilResult
+			beads, results = p.Poll(context.Background())
+			for _, r := range results {
+				if r.Err != nil {
+					pollErrors = append(pollErrors, fmt.Sprintf("%s: %v", r.Name, r.Err))
+				}
+			}
 		}
 
 		for _, b := range beads {
@@ -564,7 +572,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 
 		if targetBead == nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q not found or not ready", rp.BeadID)})
+			errorMsg := fmt.Sprintf("bead %q not found or not ready", rp.BeadID)
+			if len(pollErrors) > 0 {
+				errorMsg += fmt.Sprintf(" (also %d anvils failed to poll: %v)", len(pollErrors), pollErrors)
+			}
+			msg, _ := json.Marshal(map[string]string{"message": errorMsg})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
@@ -576,6 +588,39 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 		// Dispatch immediately regardless of auto_dispatch setting (but respect capacity)
 		anvilCfg := d.cfg.Anvils[targetBead.Anvil]
+
+		// Check capacity
+		maxSmiths := anvilCfg.MaxSmiths
+		if maxSmiths <= 0 {
+			maxSmiths = 1
+		}
+		canSpawnAnvil, err := worker.CanSpawn(d.db, targetBead.Anvil, maxSmiths)
+		if err != nil {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("checking anvil capacity: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if !canSpawnAnvil {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q capacity reached (max %d smiths)", targetBead.Anvil, maxSmiths)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		maxTotal := d.cfg.Settings.MaxTotalSmiths
+		if maxTotal <= 0 {
+			maxTotal = 4
+		}
+		canSpawnGlobal, err := worker.CanSpawnGlobal(d.db, maxTotal)
+		if err != nil {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("checking global capacity: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if !canSpawnGlobal {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("global capacity reached (max %d smiths)", maxTotal)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
 
 		// Claim the bead
 		if err := d.claimBead(context.Background(), targetBead.ID, anvilCfg.Path); err != nil {
