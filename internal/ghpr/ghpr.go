@@ -299,11 +299,16 @@ type CheckRun struct {
 	Conclusion string `json:"conclusion"`
 }
 
+// ReviewAuthor is the author object returned by the GitHub API.
+type ReviewAuthor struct {
+	Login string `json:"login"`
+}
+
 // Review represents a PR review.
 type Review struct {
-	Author string `json:"author"`
-	State  string `json:"state"`
-	Body   string `json:"body"`
+	Author ReviewAuthor `json:"author"`
+	State  string       `json:"state"`
+	Body   string       `json:"body"`
 }
 
 // IsMerged returns true if the PR has been merged.
