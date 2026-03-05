@@ -159,6 +159,11 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 		assert.True(t, inFlight)
 	})
 
+	// Wait for the background goroutine from the previous subtest to finish so
+	// its DB worker record (status=pending) is transitioned to a terminal state
+	// before the next capacity check runs.
+	d.wg.Wait()
+
 	t.Run("successful dispatch via cache", func(t *testing.T) {
 		// Wait for the goroutine from the previous subtest to finish so its
 		// deferred activeBeads.Delete cannot race with the Store below.
