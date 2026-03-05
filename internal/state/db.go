@@ -205,6 +205,28 @@ func (db *DB) WorkersByAnvil(anvil string) ([]Worker, error) {
 		ORDER BY started_at DESC`, anvil)
 }
 
+// CompletedWorkers returns workers in terminal states (done, failed, timeout),
+// ordered by most recently completed first. Limit 0 means no limit.
+func (db *DB) CompletedWorkers(limit int) ([]Worker, error) {
+	query := `SELECT id, bead_id, anvil, branch, pid, status, started_at, completed_at, log_path
+		FROM workers WHERE status IN ('done', 'failed', 'timeout')
+		ORDER BY completed_at DESC`
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	return db.queryWorkers(query)
+}
+
+// AllWorkers returns all workers ordered by most recent first.
+func (db *DB) AllWorkers(limit int) ([]Worker, error) {
+	query := `SELECT id, bead_id, anvil, branch, pid, status, started_at, completed_at, log_path
+		FROM workers ORDER BY started_at DESC`
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	return db.queryWorkers(query)
+}
+
 func (db *DB) queryWorkers(query string, args ...any) ([]Worker, error) {
 	rows, err := db.conn.Query(query, args...)
 	if err != nil {
