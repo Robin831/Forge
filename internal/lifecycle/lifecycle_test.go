@@ -55,7 +55,7 @@ func TestEventCIFailed_Dispatch(t *testing.T) {
 	}
 
 	m := New(nil, handler)
-	m.HandleEvent(context.Background(), makeEvent(42, bellows.EventCIFailed))
+	m.HandleEvent(context.Background(), makeEventWithID(42, 42, bellows.EventCIFailed))
 
 	if got.Action != ActionFixCI {
 		t.Errorf("expected ActionFixCI, got %v", got.Action)
@@ -201,7 +201,7 @@ func TestEventPRMerged_ClosesBead(t *testing.T) {
 	}
 
 	m := New(nil, handler)
-	m.HandleEvent(context.Background(), makeEvent(99, bellows.EventPRMerged))
+	m.HandleEvent(context.Background(), makeEventWithID(99, 99, bellows.EventPRMerged))
 
 	if got.Action != ActionCloseBead {
 		t.Errorf("expected ActionCloseBead, got %v", got.Action)
@@ -299,6 +299,7 @@ func TestConcurrentHandleEvent(t *testing.T) {
 			}
 			for _, evType := range evTypes {
 				ev := bellows.PREvent{
+					ID:        pr + 1, // non-zero ID (pr is 0-4, so ID is 1-5)
 					PRNumber:  pr,
 					BeadID:    "bead-concurrent",
 					Anvil:     "test-anvil",
@@ -316,15 +317,10 @@ func TestConcurrentHandleEvent(t *testing.T) {
 
 // TestNewPRState_CreatedOnFirstEvent verifies state is auto-created on first event.
 func TestNewPRState_CreatedOnFirstEvent(t *testing.T) {
-	db := newTestDB(t)
+	m := New(nil, nil)
+	m.HandleEvent(context.Background(), makeEventWithID(1, 1, bellows.EventCIPassed))
 
-	pr := state.PR{Number: 1, Anvil: "test-anvil", BeadID: "bead-1", Status: state.PROpen, CreatedAt: time.Now()}
-	require.NoError(t, db.InsertPR(&pr))
-
-	m := New(db, nil)
-	m.HandleEvent(context.Background(), makeEventWithID(pr.ID, 1, bellows.EventCIPassed))
-
-	st := m.GetState(pr.ID)
+	st := m.GetState(1)
 	if st == nil {
 		t.Fatal("expected state to be created")
 	}
@@ -344,7 +340,7 @@ func TestEventPRClosed_Cleanup(t *testing.T) {
 	}
 
 	m := New(nil, handler)
-	m.HandleEvent(context.Background(), makeEvent(33, bellows.EventPRClosed))
+	m.HandleEvent(context.Background(), makeEventWithID(33, 33, bellows.EventPRClosed))
 
 	if got.Action != ActionCleanup {
 		t.Errorf("expected ActionCleanup, got %v", got.Action)

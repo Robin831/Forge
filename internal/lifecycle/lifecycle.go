@@ -120,16 +120,15 @@ func (m *Manager) SeedFromDB() error {
 
 // HandleEvent processes a Bellows PR event and dispatches any required actions.
 func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
+	if event.ID == 0 {
+		log.Printf("[lifecycle] Warning: received event with ID 0 for PR #%d, skipping", event.PRNumber)
+		return
+	}
 	var action Action
-	var branch string
 
 	m.mu.Lock()
-	// Find existing state by DB ID if available in event
-	var st *PRState
-	var ok bool
-	if event.ID != 0 {
-		st, ok = m.states[event.ID]
-	}
+	// Find existing state by DB ID
+	st, ok := m.states[event.ID]
 
 	if !ok {
 		// This shouldn't happen for seeded PRs, but for safety:
@@ -140,9 +139,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 			Anvil:    event.Anvil,
 			Branch:   event.Branch,
 		}
-		if event.ID != 0 {
-			m.states[event.ID] = st
-		}
+		m.states[event.ID] = st
 	}
 	if event.Branch != "" {
 		st.Branch = event.Branch
@@ -187,13 +184,17 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		action = ActionCleanup
 	}
 
-	branch = st.Branch
+	// Capture state for use outside the critical section
+	branch := st.Branch
+	id := st.ID
+	ciPassing := st.CIPassing
 	ciFixCount := st.CIFixCount
-	reviewFixCnt := st.ReviewFixCount
+	reviewFixCount := st.ReviewFixCount
 	rebaseCount := st.RebaseCount
+	prNumber := st.PRNumber
 	m.mu.Unlock()
 
-	// Logging and DB writes happen outside the lock to avoid blocking other goroutines.
+	// Logging happens outside the lock to avoid blocking other goroutines.
 	switch event.EventType {
 	case bellows.EventCIPassed:
 		log.Printf("[lifecycle] PR #%d: CI passed", event.PRNumber)
@@ -215,7 +216,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 
 	case bellows.EventReviewChanges:
 		if action == ActionFixReview {
-			log.Printf("[lifecycle] PR #%d: Changes requested, dispatching fix (attempt %d)", event.PRNumber, reviewFixCnt)
+			log.Printf("[lifecycle] PR #%d: Changes requested, dispatching fix (attempt %d)", event.PRNumber, reviewFixCount)
 		} else {
 			log.Printf("[lifecycle] PR #%d: Changes requested, max fix attempts exhausted", event.PRNumber)
 			if m.db != nil {
@@ -244,10 +245,10 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		log.Printf("[lifecycle] PR #%d: Closed without merge, cleanup", event.PRNumber)
 	}
 
-	// Persist updated state to DB
-	if st.ID != 0 && m.db != nil {
-		if err := m.db.UpdatePRLifecycle(st.ID, st.CIPassing, st.CIFixCount, st.ReviewFixCount); err != nil {
-			log.Printf("[lifecycle] Error updating PR lifecycle for #%d: %v", st.PRNumber, err)
+	// Persist updated state to DB outside the critical section
+	if m.db != nil {
+		if err := m.db.UpdatePRLifecycle(id, ciPassing, ciFixCount, reviewFixCount); err != nil {
+			log.Printf("[lifecycle] Error updating PR lifecycle for #%d: %v", prNumber, err)
 		}
 	}
 

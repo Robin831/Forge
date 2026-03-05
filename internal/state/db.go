@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/provider"
@@ -91,31 +90,49 @@ func (db *DB) migrate() error {
 		return err
 	}
 	// Additive migrations for existing databases
-	if _, err := db.conn.Exec(`ALTER TABLE workers ADD COLUMN phase TEXT NOT NULL DEFAULT ''`); err != nil {
-		// Ignore error if column already exists (SQLite doesn't have IF NOT EXISTS for columns)
-		if !strings.Contains(err.Error(), "duplicate column name") {
+	if err := db.addColumnIfNotExists("workers", "phase", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfNotExists("prs", "is_conflicting", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfNotExists("prs", "ci_passing", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfNotExists("prs", "ci_fix_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfNotExists("prs", "review_fix_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (db *DB) addColumnIfNotExists(table, column, definition string) error {
+	rows, err := db.conn.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, dtype string
+		var notnull, pk int
+		var dfltValue any
+		if err := rows.Scan(&cid, &name, &dtype, &notnull, &dfltValue, &pk); err != nil {
 			return err
+		}
+		if name == column {
+			found = true
+			break
 		}
 	}
-	if _, err := db.conn.Exec(`ALTER TABLE prs ADD COLUMN is_conflicting INTEGER NOT NULL DEFAULT 0`); err != nil {
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
-	}
-	if _, err := db.conn.Exec(`ALTER TABLE prs ADD COLUMN ci_passing INTEGER NOT NULL DEFAULT 1`); err != nil {
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
-	}
-	if _, err := db.conn.Exec(`ALTER TABLE prs ADD COLUMN ci_fix_count INTEGER NOT NULL DEFAULT 0`); err != nil {
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
-	}
-	if _, err := db.conn.Exec(`ALTER TABLE prs ADD COLUMN review_fix_count INTEGER NOT NULL DEFAULT 0`); err != nil {
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
+
+	if !found {
+		_, err := db.conn.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+		return err
 	}
 	return nil
 }
@@ -398,10 +415,13 @@ type PR struct {
 
 // InsertPR adds a new PR record.
 func (db *DB) InsertPR(pr *PR) error {
+	// Derive ci_passing: default to 1 (passing) for open/approved PRs,
+	// but use 0 if status is needs_fix unless explicitly set to passing.
 	ciPassing := 1
-	if !pr.CIPassing {
+	if pr.Status == PRNeedsFix && !pr.CIPassing {
 		ciPassing = 0
 	}
+
 	res, err := db.conn.Exec(
 		`INSERT INTO prs (number, anvil, bead_id, branch, status, created_at, ci_passing, ci_fix_count, review_fix_count)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,

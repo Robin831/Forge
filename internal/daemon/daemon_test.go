@@ -21,20 +21,49 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func setupTestRepo(t *testing.T, tmpDir string) {
+	// Ensure git is available; skip test if not.
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("skipping test because git is not available: " + err.Error())
+	}
+
+	// Initialize git repo so worktree creation doesn't fail immediately
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tmpDir
+	output, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git init failed: %s", string(output))
+
+	// Configure local git user so commits succeed in CI environments.
+	for _, args := range [][]string{
+		{"config", "user.name", "test"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "commit.gpgsign", "false"},
+	} {
+		cmd = exec.Command("git", append([]string{"-C", tmpDir}, args...)...)
+		output, err = cmd.CombinedOutput()
+		require.NoErrorf(t, err, "git config failed (%v): %s", args, string(output))
+	}
+
+	// Add a dummy commit so we can create worktrees
+	err = os.WriteFile(filepath.Join(tmpDir, "initial"), []byte("initial"), 0o644)
+	require.NoError(t, err)
+
+	cmd = exec.Command("git", "-C", tmpDir, "add", ".")
+	output, err = cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git add failed: %s", string(output))
+
+	cmd = exec.Command("git", "-C", tmpDir, "commit", "-m", "initial")
+	output, err = cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git commit failed: %s", string(output))
+}
+
 func TestHandleIPC_RunBead_Errors(t *testing.T) {
 	// Setup a temporary forge directory
 	tmpDir, err := os.MkdirTemp("", "forge-test-*")
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
 
-	// Initialize git repo so worktree creation doesn't fail immediately
-	cmd := exec.Command("git", "init")
-	cmd.Dir = tmpDir
-	_ = cmd.Run()
-	// Add a dummy commit so we can create worktrees
-	_ = os.WriteFile(filepath.Join(tmpDir, "initial"), []byte("initial"), 0o644)
-	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
-	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "initial").Run()
+	setupTestRepo(t, tmpDir)
 
 	// Mock config
 	cfg := &config.Config{
@@ -101,14 +130,7 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
 
-	// Initialize git repo so worktree creation doesn't fail immediately
-	cmd := exec.Command("git", "init")
-	cmd.Dir = tmpDir
-	_ = cmd.Run()
-	// Add a dummy commit so we can create worktrees
-	_ = os.WriteFile(filepath.Join(tmpDir, "initial"), []byte("initial"), 0o644)
-	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
-	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "initial").Run()
+	setupTestRepo(t, tmpDir)
 
 	// Create a fake bd script (cross-platform)
 	var bdScript string
