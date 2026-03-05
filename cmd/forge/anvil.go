@@ -74,8 +74,9 @@ directory containing a .beads/ directory (indicating it uses beads for issue tra
 			cfg.Anvils = make(map[string]config.AnvilConfig)
 		}
 		cfg.Anvils[name] = config.AnvilConfig{
-			Path:      absPath,
-			MaxSmiths: 1, // Default: 1 concurrent Smith per anvil
+			Path:         absPath,
+			MaxSmiths:    1, // Default: 1 concurrent Smith per anvil
+			AutoDispatch: "all",
 		}
 
 		// Save config
@@ -139,7 +140,7 @@ var anvilListCmd = &cobra.Command{
 		}
 
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintf(tw, "NAME\tPATH\tMAX SMITHS\tSTATUS\n")
+		fmt.Fprintf(tw, "NAME\tPATH\tMAX SMITHS\tAUTO-DISPATCH\tSTATUS\n")
 
 		for name, anvil := range cfg.Anvils {
 			status := "ok"
@@ -148,7 +149,18 @@ var anvilListCmd = &cobra.Command{
 			} else if _, err := os.Stat(filepath.Join(anvil.Path, ".beads")); os.IsNotExist(err) {
 				status = "no .beads/"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\n", name, anvil.Path, anvil.MaxSmiths, status)
+
+			mode := anvil.AutoDispatch
+			if mode == "" {
+				mode = "all"
+			}
+			if mode == "tagged" {
+				mode = fmt.Sprintf("tagged:%s", anvil.AutoDispatchTag)
+			} else if mode == "priority" {
+				mode = fmt.Sprintf("priority:P%d", anvil.AutoDispatchMinPriority)
+			}
+
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", name, anvil.Path, anvil.MaxSmiths, mode, status)
 		}
 		tw.Flush()
 

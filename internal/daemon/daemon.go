@@ -263,6 +263,12 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		// Check per-anvil capacity, accounting for beads dispatched this cycle
 		// that haven't been written to the DB yet.
 		anvilCfg := d.cfg.Anvils[bead.Anvil]
+
+		// Apply auto-dispatch filtering
+		if !shouldDispatch(bead, anvilCfg) {
+			continue
+		}
+
 		maxSmiths := anvilCfg.MaxSmiths
 		if maxSmiths <= 0 {
 			maxSmiths = 1
@@ -547,4 +553,31 @@ func pidFilePath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".forge", PIDFileName), nil
+}
+
+// shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.
+func shouldDispatch(bead poller.Bead, anvilCfg config.AnvilConfig) bool {
+	switch anvilCfg.AutoDispatch {
+	case "off":
+		return false
+	case "tagged":
+		if anvilCfg.AutoDispatchTag == "" {
+			return false
+		}
+		for _, t := range bead.Tags {
+			if strings.EqualFold(t, anvilCfg.AutoDispatchTag) {
+				return true
+			}
+		}
+		return false
+	case "priority":
+		return bead.Priority <= anvilCfg.AutoDispatchMinPriority
+	case "all", "":
+		return true
+	default:
+		// Unknown mode — fail safe rather than dispatch everything.
+		// Validate() prevents this in practice but guard against runtime surprises.
+		slog.Warn("unknown auto_dispatch mode; disabling auto-dispatch for safety", "mode", anvilCfg.AutoDispatch)
+		return false
+	}
 }

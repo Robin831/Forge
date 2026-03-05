@@ -73,9 +73,16 @@ anvils:
   heimdall:
     path: C:\source\fhigit\Heimdall
     max_smiths: 2
+    auto_dispatch: all  # all | tagged | priority | off
   metadata:
     path: C:\source\fhigit\Fhi.Metadata
     max_smiths: 2
+    auto_dispatch: tagged
+    auto_dispatch_tag: 'forge-auto'
+  legacy-repo:
+    path: C:\source\fhigit\Legacy
+    auto_dispatch: priority
+    auto_dispatch_min_priority: 1  # Only P0 and P1
 
 settings:
   poll_interval: 5m
@@ -84,6 +91,15 @@ settings:
   max_review_attempts: 2
   claude_flags: "--dangerously-skip-permissions --max-turns 50"
 ```
+
+### Auto-Dispatch Modes
+
+| Mode | Description |
+|------|-------------|
+| `all` | (Default) Dispatch all ready beads found in the anvil. |
+| `tagged` | Only dispatch beads where one of the bead's tags exactly matches `auto_dispatch_tag` (case-insensitive). |
+| `priority` | Only dispatch beads with priority <= `auto_dispatch_min_priority`. |
+| `off` | Never auto-dispatch; beads must be started manually via `forge queue run`. |
 
 ## Worker Pipeline
 
