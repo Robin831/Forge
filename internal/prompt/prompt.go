@@ -1,0 +1,179 @@
+// Package prompt builds prompts for Smith (Claude Code) workers from bead metadata.
+//
+// Prompts combine repo context (AGENTS.md), bead description, coding standards,
+// and per-anvil overrides into a single instruction string for Claude.
+package prompt
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"text/template"
+)
+
+// BeadContext holds the information needed to build a Smith prompt.
+type BeadContext struct {
+	// BeadID is the unique bead identifier.
+	BeadID string
+	// Title is the bead title.
+	Title string
+	// Description is the full bead description.
+	Description string
+	// IssueType is the bead type (bug, feature, task, etc.).
+	IssueType string
+	// Priority is the bead priority (0-4).
+	Priority int
+	// Parent is the parent bead ID (if any).
+	Parent string
+	// Branch is the git branch created for this work.
+	Branch string
+	// AnvilName is the name of the anvil (repo label).
+	AnvilName string
+	// AnvilPath is the path to the main repo.
+	AnvilPath string
+	// WorktreePath is the path to the worker's worktree.
+	WorktreePath string
+}
+
+// Builder constructs prompts from templates and context.
+type Builder struct {
+	// CustomTemplate is an optional per-anvil template override.
+	// If empty, the default template is used.
+	CustomTemplate string
+}
+
+// NewBuilder creates a Builder with default settings.
+func NewBuilder() *Builder {
+	return &Builder{}
+}
+
+// Build constructs a complete prompt for a Smith worker.
+func (b *Builder) Build(ctx BeadContext) (string, error) {
+	tmplText := defaultTemplate
+	if b.CustomTemplate != "" {
+		tmplText = b.CustomTemplate
+	}
+
+	tmpl, err := template.New("prompt").Funcs(template.FuncMap{
+		"readFile": readFileSafe,
+		"upper":    strings.ToUpper,
+	}).Parse(tmplText)
+	if err != nil {
+		return "", fmt.Errorf("parsing template: %w", err)
+	}
+
+	// Gather repo context files
+	data := templateData{
+		Bead:      ctx,
+		AgentsMD:  readFileSafe(filepath.Join(ctx.AnvilPath, "AGENTS.md")),
+		ClaudeMD:  readFileSafe(filepath.Join(ctx.AnvilPath, "CLAUDE.md")),
+		ReadmeMD:  readFileSafe(filepath.Join(ctx.AnvilPath, "README.md")),
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("executing template: %w", err)
+	}
+
+	return buf.String(), nil
+}
+
+// LoadCustomTemplate reads a custom template file for an anvil.
+// Returns empty string if the file doesn't exist.
+func LoadCustomTemplate(anvilPath string) string {
+	paths := []string{
+		filepath.Join(anvilPath, ".forge", "prompt.tmpl"),
+		filepath.Join(anvilPath, ".forge", "smith-prompt.tmpl"),
+	}
+
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err == nil {
+			return string(data)
+		}
+	}
+
+	return ""
+}
+
+// templateData is the full set of data available to the prompt template.
+type templateData struct {
+	Bead     BeadContext
+	AgentsMD string
+	ClaudeMD string
+	ReadmeMD string
+}
+
+// readFileSafe reads a file and returns its contents, or empty string on error.
+func readFileSafe(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// defaultTemplate is the standard Smith prompt template.
+// It provides repo context, task description, and clear instructions.
+var defaultTemplate = `You are an autonomous AI developer working on the {{.Bead.AnvilName}} repository.
+
+## Task
+
+**Bead**: {{.Bead.BeadID}}
+**Title**: {{.Bead.Title}}
+**Type**: {{.Bead.IssueType}} | **Priority**: {{.Bead.Priority}}
+{{- if .Bead.Parent}}
+**Parent**: {{.Bead.Parent}}
+{{- end}}
+
+### Description
+
+{{.Bead.Description}}
+
+## Working Directory
+
+You are working in a git worktree at: {{.Bead.WorktreePath}}
+Branch: {{.Bead.Branch}}
+Main repository: {{.Bead.AnvilPath}}
+
+## Instructions
+
+1. **Implement the task** described above fully and completely
+2. **Follow the repository's coding standards** (see context below)
+3. **Run tests** if the project has them — do not break existing tests
+4. **Commit your changes** with a clear commit message referencing the bead:
+   - Format: "feat: <description>" or "fix: <description>"
+   - Include "Bead: {{.Bead.BeadID}}" in the commit body
+5. **Push your branch** to the remote: git push -u origin {{.Bead.Branch}}
+6. **Do not create a PR** — that will be handled by the orchestrator
+
+## Constraints
+
+- Stay focused on this bead only — do not fix unrelated issues
+- If you discover blocking issues, note them in your commit message
+- If the task is unclear, implement the most reasonable interpretation
+- Make sure the project builds successfully before committing
+
+{{- if .AgentsMD}}
+
+## Repository Guidelines (AGENTS.md)
+
+{{.AgentsMD}}
+{{- end}}
+
+{{- if .ClaudeMD}}
+
+## AI Instructions (CLAUDE.md)
+
+{{.ClaudeMD}}
+{{- end}}
+
+{{- if .ReadmeMD}}
+
+## Project Overview (README.md)
+
+{{.ReadmeMD}}
+{{- end}}
+`
