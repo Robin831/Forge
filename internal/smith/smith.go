@@ -70,6 +70,8 @@ type StreamEvent struct {
 	Subtype string          `json:"subtype,omitempty"`
 	Message json.RawMessage `json:"message,omitempty"`
 	Content string          `json:"content,omitempty"`
+	// Role is present on Gemini delta message events (role: "assistant" or "user").
+	Role string `json:"role,omitempty"`
 	// Fields present when type == "result":
 	Result       string       `json:"result,omitempty"`
 	IsError      bool         `json:"is_error,omitempty"`
@@ -309,6 +311,13 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 						}
 					}
 				}
+			}
+
+			// Accumulate Gemini-style delta messages: {type:"message",role:"assistant",content:"...",delta:true}
+			// Gemini does not include the full response in the result event's
+			// "result" field, so we must rebuild FullOutput from streaming deltas.
+			if event.Type == "message" && event.Role == "assistant" && event.Content != "" {
+				assistantText.WriteString(event.Content)
 			}
 
 			// Capture the final result event (contains full text and cost).
