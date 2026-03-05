@@ -391,21 +391,20 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 			}
 
 			// Detect a hard rate-limit event emitted before the result.
-			// Claude emits rate_limit_event for both informational warnings (status:
-			// "warning" — approaching the limit) and genuine blocks (status:
-			// "blocked", "rejected", or future blocking status values).
-			// Only set RateLimited when the status is NOT just a warning; if
-			// status is unknown/empty we assume blocking to stay conservative.
-			// Note: the Claude CLI handles automatic retries within a session,
-			// so if the process eventually exits 0 we won't treat it as blocked
-			// (see pipeline.go).
+			// Claude emits rate_limit_event for multiple informational purposes:
+			//   status:"warning"  — approaching the limit, session continues
+			//   status:"allowed"  — within limits (org may have overage disabled)
+			//   status:"blocked"  — genuinely blocked, cannot continue
+			// Only set RateLimited when status is explicitly "blocked".
+			// All other statuses (warning, allowed, empty, unknown) are treated
+			// as informational. The exit-code 0 safety net in pipeline.go
+			// ensures we never fall back when the process actually succeeded.
 			if event.Type == "rate_limit_event" {
 				status := ""
 				if event.RateLimitInfo != nil {
 					status = strings.ToLower(strings.TrimSpace(event.RateLimitInfo.Status))
 				}
-				if status != "warning" {
-					// "blocked", "rejected", empty, or any unknown status → treat as hard block
+				if status == "blocked" {
 					result.RateLimited = true
 				}
 
