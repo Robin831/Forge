@@ -27,6 +27,7 @@ Thumbs.db
 
 # Forge runtime
 .workers/
+.forge-logs/
 *.db
 forge.yaml
 
