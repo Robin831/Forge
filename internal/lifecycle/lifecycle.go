@@ -17,6 +17,7 @@ import (
 
 // PRState tracks the lifecycle of a single PR.
 type PRState struct {
+	ID             int
 	PRNumber       int
 	BeadID         string
 	Anvil          string
@@ -58,12 +59,12 @@ type ActionHandler func(ctx context.Context, req ActionRequest)
 
 // Manager tracks PR states and dispatches actions based on events.
 type Manager struct {
-	db       *state.DB
-	mu       sync.Mutex
-	states   map[int]*PRState // PR number → state
-	handler  ActionHandler
-	maxCI    int // max CI fix attempts per PR
-	maxRev   int // max review fix attempts per PR
+	db        *state.DB
+	mu        sync.Mutex
+	states    map[int]*PRState // DB ID → state
+	handler   ActionHandler
+	maxCI     int // max CI fix attempts per PR
+	maxRev    int // max review fix attempts per PR
 	maxRebase int // max rebase attempts per PR
 }
 
@@ -91,6 +92,7 @@ func (m *Manager) SeedFromDB() error {
 
 	for _, pr := range prs {
 		st := &PRState{
+			ID:             pr.ID,
 			PRNumber:       pr.Number,
 			BeadID:         pr.BeadID,
 			Anvil:          pr.Anvil,
@@ -110,7 +112,7 @@ func (m *Manager) SeedFromDB() error {
 		case state.PRClosed:
 			st.Closed = true
 		}
-		m.states[pr.Number] = st
+		m.states[pr.ID] = st
 	}
 	log.Printf("[lifecycle] Seeded %d PR state(s) from DB", len(prs))
 	return nil
@@ -122,15 +124,25 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 	var branch string
 
 	m.mu.Lock()
-	st, ok := m.states[event.PRNumber]
+	// Find existing state by DB ID if available in event
+	var st *PRState
+	var ok bool
+	if event.ID != 0 {
+		st, ok = m.states[event.ID]
+	}
+
 	if !ok {
+		// This shouldn't happen for seeded PRs, but for safety:
 		st = &PRState{
+			ID:       event.ID,
 			PRNumber: event.PRNumber,
 			BeadID:   event.BeadID,
 			Anvil:    event.Anvil,
 			Branch:   event.Branch,
 		}
-		m.states[event.PRNumber] = st
+		if event.ID != 0 {
+			m.states[event.ID] = st
+		}
 	}
 	if event.Branch != "" {
 		st.Branch = event.Branch
@@ -233,7 +245,11 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 	}
 
 	// Persist updated state to DB
-	_ = m.db.UpdatePRLifecycle(st.PRNumber, st.CIPassing, st.CIFixCount, st.ReviewFixCount)
+	if st.ID != 0 && m.db != nil {
+		if err := m.db.UpdatePRLifecycle(st.ID, st.CIPassing, st.CIFixCount, st.ReviewFixCount); err != nil {
+			log.Printf("[lifecycle] Error updating PR lifecycle for #%d: %v", st.PRNumber, err)
+		}
+	}
 
 	if action != ActionNone && m.handler != nil {
 		m.handler(ctx, ActionRequest{
@@ -246,18 +262,18 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 	}
 }
 
-// GetState returns the current lifecycle state for a PR.
-func (m *Manager) GetState(prNumber int) *PRState {
+// GetState returns the current lifecycle state for a PR by its database ID.
+func (m *Manager) GetState(id int) *PRState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.states[prNumber]
+	return m.states[id]
 }
 
 // SetBranch sets the branch name for a tracked PR.
-func (m *Manager) SetBranch(prNumber int, branch string) {
+func (m *Manager) SetBranch(id int, branch string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	st, ok := m.states[prNumber]
+	st, ok := m.states[id]
 	if ok {
 		st.Branch = branch
 	}
@@ -277,8 +293,8 @@ func (m *Manager) ActivePRs() int {
 }
 
 // Remove deletes tracking state for a PR (e.g., after cleanup).
-func (m *Manager) Remove(prNumber int) {
+func (m *Manager) Remove(id int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.states, prNumber)
+	delete(m.states, id)
 }

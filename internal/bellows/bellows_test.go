@@ -267,7 +267,7 @@ func TestSeedFromDB(t *testing.T) {
 		}
 	}
 	// Set PR #1 as conflicting
-	if err := db.UpdatePRConflicting(1, true); err != nil {
+	if err := db.UpdatePRConflicting(prs[0].ID, true); err != nil {
 		t.Fatalf("set conflicting: %v", err)
 	}
 
@@ -281,18 +281,18 @@ func TestSeedFromDB(t *testing.T) {
 
 	assert.Len(t, m.lastStatuses, 3)
 
-	snap1 := m.lastStatuses[1]
+	snap1 := m.lastStatuses[prs[0].ID]
 	assert.True(t, snap1.CIPassing, "PR#1 (open): CIPassing")
 	assert.True(t, snap1.IsConflicting, "PR#1 (open+conflict): IsConflicting")
 
-	snap2 := m.lastStatuses[2]
+	snap2 := m.lastStatuses[prs[1].ID]
 	assert.False(t, snap2.CIPassing, "PR#2 (needs_fix): CIPassing should be false")
 	assert.True(t, snap2.NeedsChanges, "PR#2 (needs_fix): NeedsChanges should be true")
 
-	snap3 := m.lastStatuses[3]
+	snap3 := m.lastStatuses[prs[2].ID]
 	assert.True(t, snap3.CIPassing, "PR#3 (approved): CIPassing")
 	assert.True(t, snap3.HasApproval, "PR#3 (approved): HasApproval")
-}
+	}
 
 // computeTransitionEvents mirrors the transition conditions in checkPR,
 // returning the event types that would be emitted for a given state change.

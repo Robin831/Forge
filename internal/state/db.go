@@ -416,24 +416,24 @@ func (db *DB) InsertPR(pr *PR) error {
 	return nil
 }
 
-// UpdatePRStatus updates a PR's status and last_checked time by GitHub PR number.
-func (db *DB) UpdatePRStatus(number int, status PRStatus) error {
+// UpdatePRStatus updates a PR's status and last_checked time.
+func (db *DB) UpdatePRStatus(id int, status PRStatus) error {
 	_, err := db.conn.Exec(
-		`UPDATE prs SET status = ?, last_checked = ? WHERE number = ?`,
-		string(status), time.Now().Format(time.RFC3339), number,
+		`UPDATE prs SET status = ?, last_checked = ? WHERE id = ?`,
+		string(status), time.Now().Format(time.RFC3339), id,
 	)
 	return err
 }
 
 // UpdatePRLifecycle updates the lifecycle-specific tracking fields for a PR.
-func (db *DB) UpdatePRLifecycle(number int, ciPassing bool, ciFixCount, reviewFixCount int) error {
+func (db *DB) UpdatePRLifecycle(id int, ciPassing bool, ciFixCount, reviewFixCount int) error {
 	cp := 0
 	if ciPassing {
 		cp = 1
 	}
 	_, err := db.conn.Exec(
-		`UPDATE prs SET ci_passing = ?, ci_fix_count = ?, review_fix_count = ?, last_checked = ? WHERE number = ?`,
-		cp, ciFixCount, reviewFixCount, time.Now().Format(time.RFC3339), number,
+		`UPDATE prs SET ci_passing = ?, ci_fix_count = ?, review_fix_count = ?, last_checked = ? WHERE id = ?`,
+		cp, ciFixCount, reviewFixCount, time.Now().Format(time.RFC3339), id,
 	)
 	return err
 }
@@ -446,14 +446,14 @@ func (db *DB) OpenPRs() ([]PR, error) {
 }
 
 // UpdatePRConflicting sets or clears the persisted conflict flag for a PR.
-func (db *DB) UpdatePRConflicting(number int, conflicting bool) error {
+func (db *DB) UpdatePRConflicting(id int, conflicting bool) error {
 	val := 0
 	if conflicting {
 		val = 1
 	}
 	_, err := db.conn.Exec(
-		`UPDATE prs SET is_conflicting = ?, last_checked = ? WHERE number = ?`,
-		val, time.Now().Format(time.RFC3339), number,
+		`UPDATE prs SET is_conflicting = ?, last_checked = ? WHERE id = ?`,
+		val, time.Now().Format(time.RFC3339), id,
 	)
 	return err
 }
