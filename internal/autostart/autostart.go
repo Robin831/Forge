@@ -13,11 +13,12 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/Robin831/Forge/internal/executil"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"text/template"
+
+	"github.com/Robin831/Forge/internal/executil"
 )
 
 const (

@@ -6,15 +6,15 @@ An autonomous AI orchestrator that coordinates multiple Claude Code agents worki
 
 The Forge uses a blacksmith metaphor throughout:
 
-| Component | Role |
-|-----------|------|
-| **Hearth** | Daemon process + TUI dashboard |
-| **Smith** | Implementation worker (Claude Code session) |
-| **Warden** | Review agent (validates Smith output) |
-| **Temper** | Build/lint/test verification |
-| **Bellows** | PR monitor (CI failures, review comments) |
-| **Anvil** | Repository workspace |
-| **Heat** | Work batch / session |
+| Component   | Role                                        |
+| ----------- | ------------------------------------------- |
+| **Hearth**  | Daemon process + TUI dashboard              |
+| **Smith**   | Implementation worker (Claude Code session) |
+| **Warden**  | Review agent (validates Smith output)       |
+| **Temper**  | Build/lint/test verification                |
+| **Bellows** | PR monitor (CI failures, review comments)   |
+| **Anvil**   | Repository workspace                        |
+| **Heat**    | Work batch / session                        |
 
 ## Architecture
 

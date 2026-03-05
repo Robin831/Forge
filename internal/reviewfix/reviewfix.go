@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 )
 

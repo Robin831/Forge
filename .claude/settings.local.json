@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)",
+      "Bash(go env:*)",
+      "Bash(go install ./cmd/forge)",
+      "Read(//c/Users/robs/go/bin/**)",
+      "Bash(python3:*)",
+      "Bash(forge history:*)",
+      "Bash(go:*)",
+      "Bash(git:*)"
+    ]
+  }
+}
