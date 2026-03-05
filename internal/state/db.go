@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/provider"
@@ -90,27 +89,52 @@ func (db *DB) migrate() error {
 	if _, err := db.conn.Exec(schema); err != nil {
 		return err
 	}
-	// Additive migrations for existing databases
-	if _, err := db.conn.Exec(`ALTER TABLE workers ADD COLUMN phase TEXT NOT NULL DEFAULT ''`); err != nil {
-		// Ignore error if column already exists (SQLite doesn't have IF NOT EXISTS for columns)
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			return err
+	// Additive column migrations — checked via PRAGMA to avoid fragile error-string matching.
+	type colMigration struct {
+		table  string
+		column string
+		stmt   string
+	}
+	migrations := []colMigration{
+		{"workers", "phase", `ALTER TABLE workers ADD COLUMN phase TEXT NOT NULL DEFAULT ''`},
+		{"prs", "ci_fix_count", `ALTER TABLE prs ADD COLUMN ci_fix_count INTEGER NOT NULL DEFAULT 0`},
+		{"prs", "review_fix_count", `ALTER TABLE prs ADD COLUMN review_fix_count INTEGER NOT NULL DEFAULT 0`},
+		{"prs", "ci_passing", `ALTER TABLE prs ADD COLUMN ci_passing INTEGER NOT NULL DEFAULT 1`},
+	}
+	for _, m := range migrations {
+		exists, err := db.columnExists(m.table, m.column)
+		if err != nil {
+			return fmt.Errorf("checking column %s.%s: %w", m.table, m.column, err)
 		}
-	}
-	// PR lifecycle migrations
-	cols := []string{
-		"ALTER TABLE prs ADD COLUMN ci_fix_count INTEGER NOT NULL DEFAULT 0",
-		"ALTER TABLE prs ADD COLUMN review_fix_count INTEGER NOT NULL DEFAULT 0",
-		"ALTER TABLE prs ADD COLUMN ci_passing INTEGER NOT NULL DEFAULT 1",
-	}
-	for _, col := range cols {
-		if _, err := db.conn.Exec(col); err != nil {
-			if !strings.Contains(err.Error(), "duplicate column name") {
-				return err
-			}
+		if exists {
+			continue
+		}
+		if _, err := db.conn.Exec(m.stmt); err != nil {
+			return fmt.Errorf("adding column %s.%s: %w", m.table, m.column, err)
 		}
 	}
 	return nil
+}
+
+// columnExists reports whether the named column exists in the given table.
+func (db *DB) columnExists(table, column string) (bool, error) {
+	rows, err := db.conn.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, colType string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &colType, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 const schema = `
@@ -388,16 +412,14 @@ type PR struct {
 }
 
 // InsertPR adds a new PR record.
+// ci_passing is intentionally omitted so the DB default (1 = passing) always applies
+// for new PRs, avoiding silent insertion of a failing PR due to Go's zero-value false.
 func (db *DB) InsertPR(pr *PR) error {
-	ciPassing := 0
-	if pr.CIPassing {
-		ciPassing = 1
-	}
 	res, err := db.conn.Exec(
-		`INSERT INTO prs (number, anvil, bead_id, branch, status, created_at, ci_fix_count, review_fix_count, ci_passing)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO prs (number, anvil, bead_id, branch, status, created_at, ci_fix_count, review_fix_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		pr.Number, pr.Anvil, pr.BeadID, pr.Branch, string(pr.Status),
-		pr.CreatedAt.Format(time.RFC3339), pr.CIFixCount, pr.ReviewFixCount, ciPassing,
+		pr.CreatedAt.Format(time.RFC3339), pr.CIFixCount, pr.ReviewFixCount,
 	)
 	if err != nil {
 		return err

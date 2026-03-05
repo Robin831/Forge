@@ -149,7 +149,19 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		// New PR (or first time we've seen it this session)
 		// Try to find it in the DB
 		pr, err := m.db.GetPRByNumber(event.Anvil, event.PRNumber)
-		if err == nil && pr != nil {
+		if err != nil {
+			// DB error — log and fall back to in-memory-only tracking to avoid
+			// inserting a duplicate row if the record actually exists.
+			m.logger.Error("failed to query PR from DB, falling back to in-memory tracking",
+				"pr", event.PRNumber, "anvil", event.Anvil, "error", err)
+			st = &PRState{
+				PRNumber:  event.PRNumber,
+				BeadID:    event.BeadID,
+				Anvil:     event.Anvil,
+				Branch:    event.Branch,
+				CIPassing: true,
+			}
+		} else if pr != nil {
 			st = &PRState{
 				ID:           pr.ID,
 				PRNumber:     pr.Number,
@@ -163,6 +175,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 				ReviewFixCnt: pr.ReviewFixCount,
 			}
 		} else {
+			// Not found in DB — create new state and persist it
 			st = &PRState{
 				PRNumber:  event.PRNumber,
 				BeadID:    event.BeadID,
@@ -178,7 +191,6 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 				Branch:    st.Branch,
 				Status:    state.PROpen,
 				CreatedAt: time.Now(),
-				CIPassing: st.CIPassing,
 			}
 			if err := m.db.InsertPR(dbPR); err != nil {
 				m.logger.Error("failed to insert new PR into DB", "pr", st.PRNumber, "anvil", st.Anvil, "error", err)
@@ -267,15 +279,11 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		m.logger.Info("PR closed without merge, cleanup", "pr", event.PRNumber, "anvil", event.Anvil)
 	}
 
-	// Persist changes to DB
-	if st.ID > 0 {
-		err := m.db.UpdatePRLifecycle(st.ID, st.CIFixCount, st.ReviewFixCnt, st.CIPassing)
-		if err != nil {
-			m.logger.Error("failed to update PR lifecycle in DB", "pr", event.PRNumber, "anvil", event.Anvil, "error", err)
-		}
-	}
-
-	// Capture values needed for async handler while holding the lock
+	// Capture all values needed after the lock is released.
+	dbID := st.ID
+	ciFixCount := st.CIFixCount
+	reviewFixCnt := st.ReviewFixCnt
+	ciPassing := st.CIPassing
 	req := ActionRequest{
 		Action:   action,
 		PRNumber: event.PRNumber,
@@ -284,6 +292,14 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		Branch:   st.Branch,
 	}
 	m.mu.Unlock()
+
+	// Persist changes to DB outside the lock to avoid blocking other event handlers
+	// during SQLite contention (busy timeout / WAL checkpoint).
+	if dbID > 0 {
+		if err := m.db.UpdatePRLifecycle(dbID, ciFixCount, reviewFixCnt, ciPassing); err != nil {
+			m.logger.Error("failed to update PR lifecycle in DB", "pr", event.PRNumber, "anvil", event.Anvil, "error", err)
+		}
+	}
 
 	if action != ActionNone && m.handler != nil {
 		m.handler(ctx, req)

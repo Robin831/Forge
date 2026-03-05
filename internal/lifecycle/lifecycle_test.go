@@ -382,7 +382,7 @@ func TestManager_Persistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	// db lifecycle managed manually below to simulate a daemon restart.
 
 	// 1. Create a PR and some state
 	ctx := context.Background()
@@ -420,7 +420,17 @@ func TestManager_Persistence(t *testing.T) {
 		t.Error("expected CIPassing false")
 	}
 
-	// 2. Restart Manager (new instance)
+	// 2. Simulate daemon restart: close the current DB handle and reopen it to
+	// exercise SQLite close/reopen behaviour rather than reusing the same connection.
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = state.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
 	m2 := New(db, testLogger(), func(ctx context.Context, req ActionRequest) {})
 	if err := m2.Load(ctx); err != nil {
 		t.Fatal(err)
