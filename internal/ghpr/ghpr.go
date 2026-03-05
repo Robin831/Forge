@@ -162,6 +162,7 @@ func CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*PRSta
 }
 
 // FetchUnresolvedThreadCount uses the GraphQL API to count unresolved review threads.
+// Paginates through all threads (100 per page) to ensure an accurate count on large PRs.
 func FetchUnresolvedThreadCount(ctx context.Context, worktreePath string, prNumber int) (int, error) {
 	owner, repo, err := GetRepoOwnerAndName(ctx, worktreePath)
 	if err != nil {
@@ -169,71 +170,91 @@ func FetchUnresolvedThreadCount(ctx context.Context, worktreePath string, prNumb
 	}
 
 	query := `
-	query($owner:String!, $repo:String!, $pr:Int!) {
+	query($owner:String!, $repo:String!, $pr:Int!, $cursor:String) {
 		repository(owner:$owner, name:$repo) {
 			pullRequest(number:$pr) {
-				reviewThreads(first:100) {
+				reviewThreads(first:100, after:$cursor) {
+					pageInfo { hasNextPage endCursor }
 					nodes { isResolved }
 				}
 			}
 		}
 	}`
 
-	args := []string{
-		"api", "graphql",
-		"-f", "query=" + query,
-		"-f", "owner=" + owner,
-		"-f", "repo=" + repo,
-		"-F", fmt.Sprintf("pr=%d", prNumber),
-	}
-
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
-	cmd.Dir = worktreePath
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return 0, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr.String())
-	}
-
-	var gqlData struct {
-		Data struct {
-			Repository struct {
-				PullRequest struct {
-					ReviewThreads struct {
-						Nodes []struct {
-							IsResolved bool `json:"isResolved"`
-						} `json:"nodes"`
-					} `json:"reviewThreads"`
-				} `json:"pullRequest"`
-			} `json:"repository"`
-		} `json:"data"`
-	}
-
-	if err := json.Unmarshal(stdout.Bytes(), &gqlData); err != nil {
-		return 0, fmt.Errorf("parsing graphql response: %w", err)
-	}
-
 	count := 0
-	for _, node := range gqlData.Data.Repository.PullRequest.ReviewThreads.Nodes {
-		if !node.IsResolved {
-			count++
+	cursor := ""
+	for {
+		args := []string{
+			"api", "graphql",
+			"-f", "query=" + query,
+			"-f", "owner=" + owner,
+			"-f", "repo=" + repo,
+			"-F", fmt.Sprintf("pr=%d", prNumber),
 		}
+		if cursor != "" {
+			args = append(args, "-f", "cursor="+cursor)
+		} else {
+			args = append(args, "-F", "cursor=null")
+		}
+
+		cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
+		cmd.Dir = worktreePath
+
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+
+		if err := cmd.Run(); err != nil {
+			return 0, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr.String())
+		}
+
+		var gqlData struct {
+			Data struct {
+				Repository struct {
+					PullRequest struct {
+						ReviewThreads struct {
+							PageInfo struct {
+								HasNextPage bool   `json:"hasNextPage"`
+								EndCursor   string `json:"endCursor"`
+							} `json:"pageInfo"`
+							Nodes []struct {
+								IsResolved bool `json:"isResolved"`
+							} `json:"nodes"`
+						} `json:"reviewThreads"`
+					} `json:"pullRequest"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+
+		if err := json.Unmarshal(stdout.Bytes(), &gqlData); err != nil {
+			return 0, fmt.Errorf("parsing graphql response: %w", err)
+		}
+
+		for _, node := range gqlData.Data.Repository.PullRequest.ReviewThreads.Nodes {
+			if !node.IsResolved {
+				count++
+			}
+		}
+
+		if !gqlData.Data.Repository.PullRequest.ReviewThreads.PageInfo.HasNextPage {
+			break
+		}
+		cursor = gqlData.Data.Repository.PullRequest.ReviewThreads.PageInfo.EndCursor
 	}
 	return count, nil
 }
 
 // GetRepoOwnerAndName extracts the owner and repository name from git remote origin.
 func GetRepoOwnerAndName(ctx context.Context, worktreePath string) (owner, repo string, err error) {
-	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "remote", "get-url", "origin"))
 	cmd.Dir = worktreePath
-	out, err := cmd.Output()
-	if err != nil {
-		return "", "", err
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", "", fmt.Errorf("git remote get-url origin: %w\nstderr: %s", err, stderr.String())
 	}
-	url := strings.TrimSpace(string(out))
+	url := strings.TrimSpace(stdout.String())
 	return ParseRepoURL(url)
 }
 

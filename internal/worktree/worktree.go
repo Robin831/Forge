@@ -43,7 +43,8 @@ func NewManager() *Manager {
 
 // Create creates a new worktree for the given bead in the given anvil directory.
 // If branch is provided, it checks out that existing branch.
-// Otherwise, it creates a new branch named forge/<bead-id> from origin/main.
+// Otherwise, it creates a new branch named forge/<bead-id> from origin/main or
+// origin/master (whichever exists, resolved by resolveBaseRef).
 func (m *Manager) Create(ctx context.Context, anvilPath, beadID string, branch ...string) (*Worktree, error) {
 	workersDir := filepath.Join(anvilPath, m.WorkersDir)
 	worktreePath := filepath.Join(workersDir, sanitizePath(beadID))
@@ -71,9 +72,21 @@ func (m *Manager) Create(ctx context.Context, anvilPath, beadID string, branch .
 	}
 
 	if branchExists(ctx, anvilPath, targetBranch) {
-		// Checkout existing branch
-		if err := gitCmd(ctx, anvilPath, "worktree", "add", "-f", worktreePath, targetBranch); err != nil {
-			return nil, fmt.Errorf("git worktree add (existing): %w", err)
+		// Distinguish local vs remote-only: `git worktree add <path> <branch>` requires
+		// the local ref to exist. If only the remote branch exists, create a local
+		// tracking branch from origin/<branch> instead.
+		localRef := "refs/heads/" + targetBranch
+		if err := gitCmd(ctx, anvilPath, "show-ref", "--verify", "--quiet", localRef); err == nil {
+			// Local branch exists; checkout directly.
+			if err := gitCmd(ctx, anvilPath, "worktree", "add", "-f", worktreePath, targetBranch); err != nil {
+				return nil, fmt.Errorf("git worktree add (existing local): %w", err)
+			}
+		} else {
+			// Only remote branch exists; create a local tracking branch from origin/<branch>.
+			remoteRef := "origin/" + targetBranch
+			if err := gitCmd(ctx, anvilPath, "worktree", "add", "-f", "-b", targetBranch, worktreePath, remoteRef); err != nil {
+				return nil, fmt.Errorf("git worktree add (from remote): %w", err)
+			}
 		}
 	} else {
 		// Determine base ref (origin/main or origin/master)

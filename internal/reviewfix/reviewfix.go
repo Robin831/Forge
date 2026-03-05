@@ -165,12 +165,13 @@ func fetchReviewComments(ctx context.Context, worktreePath string, prNumber int)
 		return nil, fmt.Errorf("getting repo owner and name: %w", err)
 	}
 
-	// 1. Fetch unresolved threads via GraphQL
+	// 1. Fetch unresolved threads via GraphQL (paginated — avoids missing threads on large PRs)
 	query := `
-	query($owner:String!, $repo:String!, $pr:Int!) {
+	query($owner:String!, $repo:String!, $pr:Int!, $cursor:String) {
 		repository(owner:$owner, name:$repo) {
 			pullRequest(number:$pr) {
-				reviewThreads(first:100) {
+				reviewThreads(first:100, after:$cursor) {
+					pageInfo { hasNextPage endCursor }
 					nodes {
 						id
 						isResolved
@@ -183,30 +184,15 @@ func fetchReviewComments(ctx context.Context, worktreePath string, prNumber int)
 		}
 	}`
 
-	args := []string{
-		"api", "graphql",
-		"-f", "query=" + query,
-		"-f", "owner=" + owner,
-		"-f", "repo=" + repo,
-		"-F", fmt.Sprintf("pr=%d", prNumber),
-	}
-
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
-	cmd.Dir = worktreePath
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr.String())
-	}
-
-	var gqlData struct {
+	type gqlPage struct {
 		Data struct {
 			Repository struct {
 				PullRequest struct {
 					ReviewThreads struct {
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
 						Nodes []struct {
 							ID         string `json:"id"`
 							IsResolved bool   `json:"isResolved"`
@@ -227,39 +213,74 @@ func fetchReviewComments(ctx context.Context, worktreePath string, prNumber int)
 		} `json:"data"`
 	}
 
-	if err := json.Unmarshal(stdout.Bytes(), &gqlData); err != nil {
-		return nil, fmt.Errorf("parsing graphql response: %w", err)
-	}
-
 	var comments []ReviewComment
-	for _, thread := range gqlData.Data.Repository.PullRequest.ReviewThreads.Nodes {
-		if thread.IsResolved {
-			continue
+	cursor := ""
+	for {
+		args := []string{
+			"api", "graphql",
+			"-f", "query=" + query,
+			"-f", "owner=" + owner,
+			"-f", "repo=" + repo,
+			"-F", fmt.Sprintf("pr=%d", prNumber),
 		}
-		if len(thread.Comments.Nodes) > 0 {
-			c := thread.Comments.Nodes[0]
-			comments = append(comments, ReviewComment{
-				Author:   c.Author.Login,
-				Body:     c.Body,
-				Path:     c.Path,
-				Line:     c.Line,
-				ThreadID: thread.ID,
-			})
+		if cursor != "" {
+			args = append(args, "-f", "cursor="+cursor)
+		} else {
+			args = append(args, "-F", "cursor=null")
 		}
+
+		cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
+		cmd.Dir = worktreePath
+
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr.String())
+		}
+
+		var page gqlPage
+		if err := json.Unmarshal(stdout.Bytes(), &page); err != nil {
+			return nil, fmt.Errorf("parsing graphql response: %w", err)
+		}
+
+		for _, thread := range page.Data.Repository.PullRequest.ReviewThreads.Nodes {
+			if thread.IsResolved {
+				continue
+			}
+			if len(thread.Comments.Nodes) > 0 {
+				c := thread.Comments.Nodes[0]
+				comments = append(comments, ReviewComment{
+					Author:   c.Author.Login,
+					Body:     c.Body,
+					Path:     c.Path,
+					Line:     c.Line,
+					ThreadID: thread.ID,
+				})
+			}
+		}
+
+		if !page.Data.Repository.PullRequest.ReviewThreads.PageInfo.HasNextPage {
+			break
+		}
+		cursor = page.Data.Repository.PullRequest.ReviewThreads.PageInfo.EndCursor
 	}
 
 	// 2. Fetch PR-level reviews via gh pr view
-	args = []string{
+	args2 := []string{
 		"pr", "view", fmt.Sprintf("%d", prNumber),
 		"--json", "reviews,comments",
 	}
 
-	cmd = executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
-	cmd.Dir = worktreePath
-	stdout.Reset()
-	stderr.Reset()
+	cmd2 := executil.HideWindow(exec.CommandContext(ctx, "gh", args2...))
+	cmd2.Dir = worktreePath
 
-	if err := cmd.Run(); err != nil {
+	var stdout2, stderr2 bytes.Buffer
+	cmd2.Stdout = &stdout2
+	cmd2.Stderr = &stderr2
+
+	if err := cmd2.Run(); err != nil {
 		return comments, nil // Return what we have from threads if this fails
 	}
 
@@ -279,7 +300,7 @@ func fetchReviewComments(ctx context.Context, worktreePath string, prNumber int)
 		} `json:"comments"`
 	}
 
-	if err := json.Unmarshal(stdout.Bytes(), &prData); err == nil {
+	if err := json.Unmarshal(stdout2.Bytes(), &prData); err == nil {
 		// Review-level comments
 		for _, r := range prData.Reviews {
 			if r.State != "APPROVED" && r.State != "DISMISSED" && len(r.Body) > 20 {
