@@ -799,7 +799,6 @@ func wordWrapCount(s string, maxWidth int) int {
 	count := 0
 	paragraphs := strings.Split(s, "\n")
 	for _, pStr := range paragraphs {
-		pStr = strings.TrimSpace(pStr)
 		if pStr == "" {
 			if len(paragraphs) > 1 {
 				count++
@@ -836,8 +835,9 @@ func wordWrapCount(s string, maxWidth int) int {
 	return count
 }
 
-// wordWrap splits s into lines of at most maxWidth characters,
-// preferring to break at spaces. Newlines in s are respected.
+// wordWrap splits s into lines of at most maxWidth runes, preferring to break
+// at spaces. Newlines in s are preserved as hard line breaks; leading
+// indentation on each input line is kept intact.
 func wordWrap(s string, maxWidth int) []string {
 	if maxWidth < 1 {
 		maxWidth = 1
@@ -846,7 +846,6 @@ func wordWrap(s string, maxWidth int) []string {
 	var result []string
 	paragraphs := strings.Split(s, "\n")
 	for _, pStr := range paragraphs {
-		pStr = strings.TrimSpace(pStr)
 		if pStr == "" {
 			if len(paragraphs) > 1 {
 				result = append(result, "")
@@ -857,9 +856,15 @@ func wordWrap(s string, maxWidth int) []string {
 		p := []rune(pStr)
 		for len(p) > maxWidth {
 			breakAt := -1
-			// Look for last space within maxWidth
-			for i := maxWidth; i >= maxWidth/2; i-- {
-				if i < len(p) && p[i] == ' ' {
+			// Scan backwards from maxWidth looking for a space to break at.
+			// Include position maxWidth itself (the char just past the limit)
+			// so that a space landing exactly there produces a clean line.
+			end := maxWidth
+			if end >= len(p) {
+				end = len(p) - 1
+			}
+			for i := end; i >= maxWidth/2; i-- {
+				if p[i] == ' ' {
 					breakAt = i
 					break
 				}
@@ -869,7 +874,7 @@ func wordWrap(s string, maxWidth int) []string {
 			}
 			result = append(result, string(p[:breakAt]))
 			p = p[breakAt:]
-			// Trim leading spaces for the next line
+			// Consume the space we broke at.
 			for len(p) > 0 && p[0] == ' ' {
 				p = p[1:]
 			}
@@ -883,5 +888,4 @@ func wordWrap(s string, maxWidth int) []string {
 		return []string{""}
 	}
 	return result
-
 }
