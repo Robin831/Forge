@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -82,8 +83,9 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			return result
 		}
 
-		// Step 2: Build fix prompt from Temper failures
-		prompt := buildCIFixPrompt(p, temperResult)
+		// Step 2: Build fix prompt from Temper failures + GitHub checks
+		ghChecks, _ := fetchPRChecks(ctx, p.WorktreePath, p.PRNumber)
+		prompt := buildCIFixPrompt(p, temperResult, ghChecks)
 
 		// Step 3: Spawn Smith to fix
 		_ = p.DB.LogEvent("ci_fix_started",
@@ -133,18 +135,22 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 }
 
 // buildCIFixPrompt creates a targeted prompt for Smith to fix CI failures.
-func buildCIFixPrompt(p FixParams, tr *temper.Result) string {
+func buildCIFixPrompt(p FixParams, tr *temper.Result, ghChecks string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, `You are fixing CI failures on PR #%d (branch: %s) for bead %s.
 
-## CI Failure Summary
+## GitHub PR Checks Output
 
 %s
 
-## Failed Steps
+## Local Temper Reproduction Summary
 
-`, p.PRNumber, p.Branch, p.BeadID, tr.Summary)
+%s
+
+## Failed Local Steps
+
+`, p.PRNumber, p.Branch, p.BeadID, ghChecks, tr.Summary)
 
 	for _, step := range tr.Steps {
 		if !step.Passed {
@@ -164,7 +170,7 @@ func buildCIFixPrompt(p FixParams, tr *temper.Result) string {
 
 	fmt.Fprintf(&b, `## Instructions
 
-1. Analyze the CI failure output above
+1. Analyze the CI failure output above (both GitHub and local)
 2. Fix the root cause — do NOT just suppress warnings or skip tests
 3. Ensure all build, lint, and test steps pass
 4. Commit fixes with message: "fix: resolve CI failures for %s"
@@ -176,4 +182,14 @@ func buildCIFixPrompt(p FixParams, tr *temper.Result) string {
 `, p.BeadID, p.Branch, p.WorktreePath)
 
 	return b.String()
+}
+
+func fetchPRChecks(ctx context.Context, worktreePath string, prNumber int) (string, error) {
+	cmd := exec.CommandContext(ctx, "gh", "pr", "checks", fmt.Sprintf("%d", prNumber))
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }

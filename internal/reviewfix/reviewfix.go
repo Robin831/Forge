@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -130,6 +131,16 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		// Smith succeeded — assume fixes were committed and pushed
 		log.Printf("[reviewfix] PR #%d: Review fixes applied on attempt %d", p.PRNumber, attempt)
 		result.Addressed = true
+
+		// Resolve threads after successful fix
+		for _, comment := range actionable {
+			if comment.ThreadID != "" {
+				if err := resolveThread(ctx, p.WorktreePath, comment.ThreadID); err != nil {
+					log.Printf("[reviewfix] PR #%d: Warning: failed to resolve thread %s: %v", p.PRNumber, comment.ThreadID, err)
+				}
+			}
+		}
+
 		_ = p.DB.LogEvent("review_fix_success",
 			fmt.Sprintf("PR #%d: Addressed %d comments on attempt %d", p.PRNumber, len(actionable), attempt),
 			p.BeadID, p.AnvilName)
@@ -145,11 +156,37 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	return result
 }
 
-// fetchReviewComments gets PR review comments via gh CLI.
+// fetchReviewComments gets PR review comments via GraphQL and gh CLI.
 func fetchReviewComments(ctx context.Context, worktreePath string, prNumber int) ([]ReviewComment, error) {
+	owner, repo, err := ghpr.GetRepoOwnerAndName(ctx, worktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("getting repo owner and name: %w", err)
+	}
+
+	// 1. Fetch unresolved threads via GraphQL
+	query := `
+	query($owner:String!, $repo:String!, $pr:Int!) {
+		repository(owner:$owner, name:$repo) {
+			pullRequest(number:$pr) {
+				reviewThreads(first:100) {
+					nodes {
+						id
+						isResolved
+						comments(first:1) {
+							nodes { path line body author { login } }
+						}
+					}
+				}
+			}
+		}
+	}`
+
 	args := []string{
-		"pr", "view", fmt.Sprintf("%d", prNumber),
-		"--json", "reviews,comments",
+		"api", "graphql",
+		"-f", "query=" + query,
+		"-f", "owner=" + owner,
+		"-f", "repo=" + repo,
+		"-F", fmt.Sprintf("pr=%d", prNumber),
 	}
 
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
@@ -160,7 +197,68 @@ func fetchReviewComments(ctx context.Context, worktreePath string, prNumber int)
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh pr view: %w\nstderr: %s", err, stderr.String())
+		return nil, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr.String())
+	}
+
+	var gqlData struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						Nodes []struct {
+							ID         string `json:"id"`
+							IsResolved bool   `json:"isResolved"`
+							Comments   struct {
+								Nodes []struct {
+									Path   string `json:"path"`
+									Line   int    `json:"line"`
+									Body   string `json:"body"`
+									Author struct {
+										Login string `json:"login"`
+									} `json:"author"`
+								} `json:"nodes"`
+							} `json:"comments"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(stdout.Bytes(), &gqlData); err != nil {
+		return nil, fmt.Errorf("parsing graphql response: %w", err)
+	}
+
+	var comments []ReviewComment
+	for _, thread := range gqlData.Data.Repository.PullRequest.ReviewThreads.Nodes {
+		if thread.IsResolved {
+			continue
+		}
+		if len(thread.Comments.Nodes) > 0 {
+			c := thread.Comments.Nodes[0]
+			comments = append(comments, ReviewComment{
+				Author:   c.Author.Login,
+				Body:     c.Body,
+				Path:     c.Path,
+				Line:     c.Line,
+				ThreadID: thread.ID,
+			})
+		}
+	}
+
+	// 2. Fetch PR-level reviews via gh pr view
+	args = []string{
+		"pr", "view", fmt.Sprintf("%d", prNumber),
+		"--json", "reviews,comments",
+	}
+
+	cmd = executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
+	cmd.Dir = worktreePath
+	stdout.Reset()
+	stderr.Reset()
+
+	if err := cmd.Run(); err != nil {
+		return comments, nil // Return what we have from threads if this fails
 	}
 
 	var prData struct {
@@ -176,41 +274,59 @@ func fetchReviewComments(ctx context.Context, worktreePath string, prNumber int)
 				Login string `json:"login"`
 			} `json:"author"`
 			Body string `json:"body"`
-			Path string `json:"path"`
-			Line int    `json:"line"`
-			ID   string `json:"id"`
 		} `json:"comments"`
 	}
 
-	if err := json.Unmarshal(stdout.Bytes(), &prData); err != nil {
-		return nil, fmt.Errorf("parsing pr data: %w", err)
-	}
-
-	var comments []ReviewComment
-
-	// Review-level comments
-	for _, r := range prData.Reviews {
-		if r.Body != "" {
-			comments = append(comments, ReviewComment{
-				Author: r.Author.Login,
-				Body:   r.Body,
-				State:  r.State,
-			})
+	if err := json.Unmarshal(stdout.Bytes(), &prData); err == nil {
+		// Review-level comments
+		for _, r := range prData.Reviews {
+			if r.State != "APPROVED" && r.State != "DISMISSED" && len(r.Body) > 20 {
+				comments = append(comments, ReviewComment{
+					Author: r.Author.Login,
+					Body:   r.Body,
+					State:  r.State,
+				})
+			}
+		}
+		// PR-level general comments
+		for _, c := range prData.Comments {
+			if len(c.Body) > 20 {
+				comments = append(comments, ReviewComment{
+					Author: c.Author.Login,
+					Body:   c.Body,
+				})
+			}
 		}
 	}
 
-	// Inline comments
-	for _, c := range prData.Comments {
-		comments = append(comments, ReviewComment{
-			Author:   c.Author.Login,
-			Body:     c.Body,
-			Path:     c.Path,
-			Line:     c.Line,
-			ThreadID: c.ID,
-		})
+	return comments, nil
+}
+
+func resolveThread(ctx context.Context, worktreePath string, threadID string) error {
+	query := `
+	mutation($threadId:ID!) {
+		resolveReviewThread(input:{threadId:$threadId}) {
+			thread { isResolved }
+		}
+	}`
+
+	args := []string{
+		"api", "graphql",
+		"-f", "query=" + query,
+		"-f", "threadId=" + threadID,
 	}
 
-	return comments, nil
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
+	cmd.Dir = worktreePath
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh api graphql (resolve): %w\nstderr: %s", err, stderr.String())
+	}
+
+	return nil
 }
 
 // filterActionableComments keeps only comments that need action.

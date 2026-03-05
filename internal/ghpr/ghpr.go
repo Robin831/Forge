@@ -131,7 +131,7 @@ func Create(ctx context.Context, p CreateParams) (*PR, error) {
 func CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, error) {
 	args := []string{
 		"pr", "view", fmt.Sprintf("%d", prNumber),
-		"--json", "state,statusCheckRollup,reviews,mergeable",
+		"--json", "state,statusCheckRollup,reviews,mergeable,headRefName",
 	}
 
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
@@ -150,15 +150,120 @@ func CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*PRSta
 		return nil, fmt.Errorf("parsing pr status: %w", err)
 	}
 
+	// Fetch unresolved thread count via GraphQL (Bug 1)
+	count, err := FetchUnresolvedThreadCount(ctx, worktreePath, prNumber)
+	if err == nil {
+		status.UnresolvedThreads = count
+	} else {
+		log.Printf("[ghpr] Warning: could not fetch unresolved thread count for PR #%d: %v", prNumber, err)
+	}
+
 	return &status, nil
+}
+
+// FetchUnresolvedThreadCount uses the GraphQL API to count unresolved review threads.
+func FetchUnresolvedThreadCount(ctx context.Context, worktreePath string, prNumber int) (int, error) {
+	owner, repo, err := GetRepoOwnerAndName(ctx, worktreePath)
+	if err != nil {
+		return 0, err
+	}
+
+	query := `
+	query($owner:String!, $repo:String!, $pr:Int!) {
+		repository(owner:$owner, name:$repo) {
+			pullRequest(number:$pr) {
+				reviewThreads(first:100) {
+					nodes { isResolved }
+				}
+			}
+		}
+	}`
+
+	args := []string{
+		"api", "graphql",
+		"-f", "query=" + query,
+		"-f", "owner=" + owner,
+		"-f", "repo=" + repo,
+		"-F", fmt.Sprintf("pr=%d", prNumber),
+	}
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
+	cmd.Dir = worktreePath
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return 0, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr.String())
+	}
+
+	var gqlData struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						Nodes []struct {
+							IsResolved bool `json:"isResolved"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(stdout.Bytes(), &gqlData); err != nil {
+		return 0, fmt.Errorf("parsing graphql response: %w", err)
+	}
+
+	count := 0
+	for _, node := range gqlData.Data.Repository.PullRequest.ReviewThreads.Nodes {
+		if !node.IsResolved {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// GetRepoOwnerAndName extracts the owner and repository name from git remote origin.
+func GetRepoOwnerAndName(ctx context.Context, worktreePath string) (owner, repo string, err error) {
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", "", err
+	}
+	url := strings.TrimSpace(string(out))
+	url = strings.TrimSuffix(url, ".git")
+
+	if strings.Contains(url, "github.com") {
+		if strings.HasPrefix(url, "https://") {
+			parts := strings.Split(strings.TrimPrefix(url, "https://"), "/")
+			if len(parts) >= 3 {
+				return parts[1], parts[2], nil
+			}
+		} else if strings.HasPrefix(url, "git@") {
+			parts := strings.Split(strings.TrimPrefix(url, "git@"), ":")
+			if len(parts) == 2 {
+				subParts := strings.Split(parts[1], "/")
+				if len(subParts) == 2 {
+					return subParts[0], subParts[1], nil
+				}
+			}
+		}
+	}
+
+	return "", "", fmt.Errorf("could not parse remote URL: %s", url)
 }
 
 // PRStatus represents the GitHub state of a PR.
 type PRStatus struct {
-	State             string        `json:"state"`
-	StatusCheckRollup []CheckRun    `json:"statusCheckRollup"`
-	Reviews           []Review      `json:"reviews"`
-	Mergeable         string        `json:"mergeable"`
+	State             string     `json:"state"`
+	StatusCheckRollup []CheckRun  `json:"statusCheckRollup"`
+	Reviews           []Review    `json:"reviews"`
+	Mergeable         string     `json:"mergeable"`
+	UnresolvedThreads int        `json:"unresolvedThreads"`
+	HeadRefName       string     `json:"headRefName"`
 }
 
 // CheckRun represents a CI check on the PR.
@@ -208,14 +313,14 @@ func (s *PRStatus) HasApproval() bool {
 	return false
 }
 
-// NeedsChanges returns true if any review requests changes.
+// NeedsChanges returns true if any review requests changes or there are unresolved threads.
 func (s *PRStatus) NeedsChanges() bool {
 	for _, r := range s.Reviews {
 		if r.State == "CHANGES_REQUESTED" {
 			return true
 		}
 	}
-	return false
+	return s.UnresolvedThreads > 0
 }
 
 // buildDefaultBody creates a standard PR body referencing the bead.

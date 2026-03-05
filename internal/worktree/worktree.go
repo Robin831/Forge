@@ -42,15 +42,18 @@ func NewManager() *Manager {
 }
 
 // Create creates a new worktree for the given bead in the given anvil directory.
-// It:
-//  1. Fetches origin to ensure we have latest
-//  2. Creates a branch named forge/<bead-id>
-//  3. Creates a git worktree at .workers/<bead-id>/
-//  4. Installs a .beads/redirect file so bd works in the worktree
-func (m *Manager) Create(ctx context.Context, anvilPath, beadID string) (*Worktree, error) {
+// If branch is provided, it checks out that existing branch.
+// Otherwise, it creates a new branch named forge/<bead-id> from origin/main.
+func (m *Manager) Create(ctx context.Context, anvilPath, beadID string, branch ...string) (*Worktree, error) {
 	workersDir := filepath.Join(anvilPath, m.WorkersDir)
 	worktreePath := filepath.Join(workersDir, sanitizePath(beadID))
-	branch := "forge/" + sanitizePath(beadID)
+
+	targetBranch := ""
+	if len(branch) > 0 && branch[0] != "" {
+		targetBranch = branch[0]
+	} else {
+		targetBranch = "forge/" + sanitizePath(beadID)
+	}
 
 	// Ensure .workers directory exists
 	if err := os.MkdirAll(workersDir, 0o755); err != nil {
@@ -67,15 +70,22 @@ func (m *Manager) Create(ctx context.Context, anvilPath, beadID string) (*Worktr
 		return nil, fmt.Errorf("git fetch: %w", err)
 	}
 
-	// Determine base ref (origin/main or origin/master)
-	baseRef, err := resolveBaseRef(ctx, anvilPath)
-	if err != nil {
-		return nil, fmt.Errorf("resolving base ref: %w", err)
-	}
+	if branchExists(ctx, anvilPath, targetBranch) {
+		// Checkout existing branch
+		if err := gitCmd(ctx, anvilPath, "worktree", "add", "-f", worktreePath, targetBranch); err != nil {
+			return nil, fmt.Errorf("git worktree add (existing): %w", err)
+		}
+	} else {
+		// Determine base ref (origin/main or origin/master)
+		baseRef, err := resolveBaseRef(ctx, anvilPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolving base ref: %w", err)
+		}
 
-	// Create worktree with new branch (use -B to reset if branch exists, -f to force if checked out elsewhere)
-	if err := gitCmd(ctx, anvilPath, "worktree", "add", "-f", "-B", branch, worktreePath, baseRef); err != nil {
-		return nil, fmt.Errorf("git worktree add: %w", err)
+		// Create worktree with new branch
+		if err := gitCmd(ctx, anvilPath, "worktree", "add", "-f", "-b", targetBranch, worktreePath, baseRef); err != nil {
+			return nil, fmt.Errorf("git worktree add (new): %w", err)
+		}
 	}
 
 	// Install .beads/redirect so bd can find the beads database
@@ -88,8 +98,21 @@ func (m *Manager) Create(ctx context.Context, anvilPath, beadID string) (*Worktr
 		BeadID:    beadID,
 		AnvilPath: anvilPath,
 		Path:      worktreePath,
-		Branch:    branch,
+		Branch:    targetBranch,
 	}, nil
+}
+
+// branchExists checks if a branch exists locally or on origin.
+func branchExists(ctx context.Context, repoPath, branch string) bool {
+	// Check local
+	if err := gitCmd(ctx, repoPath, "rev-parse", "--verify", branch); err == nil {
+		return true
+	}
+	// Check origin
+	if err := gitCmd(ctx, repoPath, "rev-parse", "--verify", "origin/"+branch); err == nil {
+		return true
+	}
+	return false
 }
 
 // Remove tears down a worktree and cleans up its branch.
