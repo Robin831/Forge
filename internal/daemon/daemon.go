@@ -80,6 +80,8 @@ type Daemon struct {
 	bellowsMonitor *bellows.Monitor
 	lifecycleMgr   *lifecycle.Manager
 
+	cancel     context.CancelFunc // cancels the Run context for graceful shutdown
+
 	forgeDir   string // ~/.forge
 	pidFile    string
 	configFile string
@@ -198,6 +200,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Set up signal handling
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Store cancel so IPC shutdown command can trigger graceful stop.
+	// Wrap ctx with a cancel so the IPC handler can cancel independently.
+	ctx, d.cancel = context.WithCancel(ctx)
 
 	// Main poll loop
 	pollInterval := d.cfg.Settings.PollInterval
@@ -538,6 +544,15 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"killed": kp.WorkerID})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "shutdown":
+		go func() {
+			if d.cancel != nil {
+				d.cancel()
+			}
+		}()
+		data, _ := json.Marshal(map[string]string{"message": "shutting down"})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	case "refresh":
 		go d.pollAndDispatch(context.Background())
 		data, _ := json.Marshal(map[string]string{"message": "poll triggered"})
@@ -730,22 +745,39 @@ func IsRunning() (int, bool) {
 }
 
 // Stop sends a graceful shutdown signal to the running daemon.
+// On Windows, syscall.SIGINT is not supported, so we use an IPC "shutdown"
+// command instead. On Unix we send SIGINT directly.
 func Stop() error {
-	pid, running := IsRunning()
+	_, running := IsRunning()
 	if !running {
 		return fmt.Errorf("no daemon running")
 	}
 
+	if runtime.GOOS == "windows" {
+		client, err := ipc.NewClient()
+		if err != nil {
+			return fmt.Errorf("connecting to daemon: %w", err)
+		}
+		defer client.Close()
+		resp, err := client.Send(ipc.Command{Type: "shutdown"})
+		if err != nil {
+			return fmt.Errorf("sending shutdown command: %w", err)
+		}
+		if resp.Type == "error" {
+			return fmt.Errorf("daemon rejected shutdown: %s", resp.Payload)
+		}
+		return nil
+	}
+
+	// Unix: find the process and send SIGINT for graceful shutdown.
+	pid, _ := IsRunning()
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return fmt.Errorf("finding process %d: %w", pid, err)
 	}
-
-	// Send interrupt signal for graceful shutdown
 	if err := proc.Signal(syscall.SIGINT); err != nil {
 		return fmt.Errorf("sending shutdown signal to PID %d: %w", pid, err)
 	}
-
 	return nil
 }
 
