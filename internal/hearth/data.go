@@ -82,8 +82,11 @@ func FetchWorkers(db *state.DB) tea.Cmd {
 				duration = time.Since(w.StartedAt).Truncate(time.Second).String()
 			}
 
-			// Infer worker type from ID prefix or status
-			wType := inferWorkerType(w.ID, w.Status)
+			// Use explicit phase if set, otherwise infer from ID prefix or status
+			wType := w.Phase
+			if wType == "" {
+				wType = inferWorkerType(w.ID, w.Status)
+			}
 
 			// Read last log line
 			lastLog := readLastLogLine(w.LogPath)

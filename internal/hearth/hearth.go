@@ -342,9 +342,9 @@ func (m Model) renderWorkerList(width, height int) string {
 		for i := visible.start; i < visible.end; i++ {
 			item := m.workers[i]
 			status := workerStatusStyle(item.Status)
-			typeIcon := workerTypeIcon(item.Type)
+			phase := phaseTag(item.Type)
 			mainLine := fmt.Sprintf("%s %s %s %s %s",
-				status, typeIcon, item.BeadID,
+				status, phase, item.BeadID,
 				dimStyle.Render(item.Anvil), item.Duration)
 			if i == m.workerScroll {
 				mainLine = selectedStyle.Render(mainLine)
@@ -573,6 +573,27 @@ func workerTypeIcon(t string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render("📝")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("?")
+	}
+}
+
+// phaseTag returns a colored [phase] tag for the active pipeline component.
+// Colors: smith=yellow, temper=cyan, warden=magenta, bellows=blue, idle=gray.
+func phaseTag(phase string) string {
+	switch phase {
+	case "smith":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render("[smith]")
+	case "temper":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Render("[temper]")
+	case "warden":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("201")).Render("[warden]")
+	case "bellows":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("[bellows]")
+	case "cifix":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("[cifix]")
+	case "reviewfix":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render("[reviewfix]")
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("[idle]")
 	}
 }
 
