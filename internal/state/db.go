@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Robin831/Forge/internal/provider"
 	_ "modernc.org/sqlite" // Pure-Go SQLite driver
 )
 
@@ -162,6 +163,17 @@ CREATE TABLE IF NOT EXISTS daily_costs (
     cache_write      INTEGER NOT NULL DEFAULT 0,
     estimated_cost   REAL NOT NULL DEFAULT 0,
     cost_limit       REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS provider_quotas (
+    provider           TEXT PRIMARY KEY,
+    requests_limit     INTEGER NOT NULL DEFAULT 0,
+    requests_remaining INTEGER NOT NULL DEFAULT 0,
+    requests_reset     TEXT,
+    tokens_limit       INTEGER NOT NULL DEFAULT 0,
+    tokens_remaining   INTEGER NOT NULL DEFAULT 0,
+    tokens_reset       TEXT,
+    updated_at         TEXT NOT NULL
 );
 `
 
@@ -664,4 +676,98 @@ func (db *DB) RecentDailyCosts(n int) ([]struct {
 		costs = append(costs, c)
 	}
 	return costs, rows.Err()
+}
+
+// --- Provider Quota tracking ---
+
+// UpsertProviderQuota creates or updates a provider's quota record.
+func (db *DB) UpsertProviderQuota(pv string, q *provider.Quota) error {
+	var reqReset, tokReset *string
+	if q.RequestsReset != nil {
+		s := q.RequestsReset.Format(time.RFC3339)
+		reqReset = &s
+	}
+	if q.TokensReset != nil {
+		s := q.TokensReset.Format(time.RFC3339)
+		tokReset = &s
+	}
+
+	_, err := db.conn.Exec(
+		`INSERT INTO provider_quotas (
+			provider, requests_limit, requests_remaining, requests_reset,
+			tokens_limit, tokens_remaining, tokens_reset, updated_at
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(provider) DO UPDATE SET
+			requests_limit = excluded.requests_limit,
+			requests_remaining = excluded.requests_remaining,
+			requests_reset = excluded.requests_reset,
+			tokens_limit = excluded.tokens_limit,
+			tokens_remaining = excluded.tokens_remaining,
+			tokens_reset = excluded.tokens_reset,
+			updated_at = excluded.updated_at`,
+		pv, q.RequestsLimit, q.RequestsRemaining, reqReset,
+		q.TokensLimit, q.TokensRemaining, tokReset, time.Now().Format(time.RFC3339),
+	)
+	return err
+}
+
+// GetAllProviderQuotas returns all known provider quotas.
+func (db *DB) GetAllProviderQuotas() (map[string]provider.Quota, error) {
+	rows, err := db.conn.Query(
+		`SELECT provider, requests_limit, requests_remaining, requests_reset,
+		        tokens_limit, tokens_remaining, tokens_reset
+		 FROM provider_quotas`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	quotas := make(map[string]provider.Quota)
+	for rows.Next() {
+		var pv string
+		var q provider.Quota
+		var reqReset, tokReset sql.NullString
+		if err := rows.Scan(&pv, &q.RequestsLimit, &q.RequestsRemaining, &reqReset,
+			&q.TokensLimit, &q.TokensRemaining, &tokReset); err != nil {
+			return nil, err
+		}
+		if reqReset.Valid {
+			t, _ := time.Parse(time.RFC3339, reqReset.String)
+			q.RequestsReset = &t
+		}
+		if tokReset.Valid {
+			t, _ := time.Parse(time.RFC3339, tokReset.String)
+			q.TokensReset = &t
+		}
+		quotas[pv] = q
+	}
+	return quotas, rows.Err()
+}
+
+// GetProviderQuota returns the quota for a specific provider.
+func (db *DB) GetProviderQuota(pv string) (*provider.Quota, error) {
+	row := db.conn.QueryRow(
+		`SELECT requests_limit, requests_remaining, requests_reset,
+		        tokens_limit, tokens_remaining, tokens_reset
+		 FROM provider_quotas WHERE provider = ?`, pv)
+
+	var q provider.Quota
+	var reqReset, tokReset sql.NullString
+	err := row.Scan(&q.RequestsLimit, &q.RequestsRemaining, &reqReset,
+		&q.TokensLimit, &q.TokensRemaining, &tokReset)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if reqReset.Valid {
+		t, _ := time.Parse(time.RFC3339, reqReset.String)
+		q.RequestsReset = &t
+	}
+	if tokReset.Valid {
+		t, _ := time.Parse(time.RFC3339, tokReset.String)
+		q.TokensReset = &t
+	}
+	return &q, nil
 }

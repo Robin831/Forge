@@ -9,6 +9,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/daemon"
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -44,6 +45,22 @@ var statusCmd = &cobra.Command{
 					fmt.Fprintf(tw, "Queue\t%d beads\n", s.QueueSize)
 					fmt.Fprintf(tw, "Open PRs\t%d\n", s.OpenPRs)
 					tw.Flush()
+
+					if len(s.Quotas) > 0 {
+						fmt.Printf("\nProvider Quotas:\n")
+						tw = tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+						fmt.Fprintf(tw, "PROVIDER\tREQUESTS\tTOKENS\tRESET\n")
+						for pv, q := range s.Quotas {
+							reqStr := fmt.Sprintf("%d/%d", q.RequestsRemaining, q.RequestsLimit)
+							tokStr := fmt.Sprintf("%d/%d", q.TokensRemaining, q.TokensLimit)
+							resetStr := "n/a"
+							if q.RequestsReset != nil {
+								resetStr = time.Until(*q.RequestsReset).Round(time.Minute).String()
+							}
+							fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", pv, reqStr, tokStr, resetStr)
+						}
+						tw.Flush()
+					}
 					return nil
 				}
 			}
@@ -59,14 +76,16 @@ var statusCmd = &cobra.Command{
 		workers, _ := db.ActiveWorkers()
 		prs, _ := db.OpenPRs()
 		events, _ := db.RecentEvents(5)
+		quotas, _ := db.GetAllProviderQuotas()
 
 		type statusData struct {
-			DaemonRunning bool   `json:"daemon_running"`
-			DaemonPID     int    `json:"daemon_pid,omitempty"`
-			ActiveWorkers int    `json:"active_workers"`
-			OpenPRs       int    `json:"open_prs"`
-			RecentEvents  int    `json:"recent_events"`
-			DBPath        string `json:"db_path"`
+			DaemonRunning bool                      `json:"daemon_running"`
+			DaemonPID     int                       `json:"daemon_pid,omitempty"`
+			ActiveWorkers int                       `json:"active_workers"`
+			OpenPRs       int                       `json:"open_prs"`
+			RecentEvents  int                       `json:"recent_events"`
+			DBPath        string                    `json:"db_path"`
+			Quotas        map[string]provider.Quota `json:"quotas,omitempty"`
 		}
 
 		data := statusData{
@@ -76,6 +95,7 @@ var statusCmd = &cobra.Command{
 			OpenPRs:       len(prs),
 			RecentEvents:  len(events),
 			DBPath:        db.Path(),
+			Quotas:        quotas,
 		}
 
 		if jsonOutput {
@@ -94,6 +114,22 @@ var statusCmd = &cobra.Command{
 		fmt.Fprintf(tw, "Open PRs\t%d\n", len(prs))
 		fmt.Fprintf(tw, "DB\t%s\n", db.Path())
 		tw.Flush()
+
+		if len(quotas) > 0 {
+			fmt.Printf("\nProvider Quotas:\n")
+			tw = tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			fmt.Fprintf(tw, "PROVIDER\tREQUESTS\tTOKENS\tRESET\n")
+			for pv, q := range quotas {
+				reqStr := fmt.Sprintf("%d/%d", q.RequestsRemaining, q.RequestsLimit)
+				tokStr := fmt.Sprintf("%d/%d", q.TokensRemaining, q.TokensLimit)
+				resetStr := "n/a"
+				if q.RequestsReset != nil {
+					resetStr = time.Until(*q.RequestsReset).Round(time.Minute).String()
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", pv, reqStr, tokStr, resetStr)
+			}
+			tw.Flush()
+		}
 
 		if len(workers) > 0 {
 			fmt.Printf("\nActive Workers:\n")

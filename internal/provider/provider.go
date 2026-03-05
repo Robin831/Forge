@@ -5,7 +5,11 @@
 // a rate limit the pipeline automatically retries with the next provider.
 package provider
 
-import "strings"
+import (
+	"context"
+	"strings"
+	"time"
+)
 
 // Kind is the canonical name of a provider.
 type Kind string
@@ -15,6 +19,16 @@ const (
 	Gemini  Kind = "gemini"
 	Copilot Kind = "copilot" // gh copilot
 )
+
+// Quota holds remaining request/token counts and reset times.
+type Quota struct {
+	RequestsRemaining int        `json:"requests_remaining,omitempty"`
+	RequestsLimit     int        `json:"requests_limit,omitempty"`
+	RequestsReset     *time.Time `json:"requests_reset,omitempty"`
+	TokensRemaining   int        `json:"tokens_remaining,omitempty"`
+	TokensLimit       int        `json:"tokens_limit,omitempty"`
+	TokensReset       *time.Time `json:"tokens_reset,omitempty"`
+}
 
 // OutputFormat describes how the provider writes its response to stdout.
 type OutputFormat int
@@ -227,4 +241,18 @@ func IsRateLimitError(exitCode int, stderr, resultSubtype string) bool {
 	}
 
 	return false
+}
+
+// FetchQuota is a placeholder for future provider quota reporting via CLI.
+//
+// Neither 'claude --usage' nor 'gemini --quota' are supported non-interactive
+// commands with a stable, machine-readable output format. Until a verified
+// format is confirmed, this method is intentionally a no-op to avoid calling
+// unsupported flags and silently swallowing real execution errors.
+//
+// Quota data is captured automatically from stream-json events during normal
+// Smith runs (see readStreamJSON). FetchQuota exists as an extension point for
+// any future proactive quota polling.
+func (p Provider) FetchQuota(_ context.Context) (*Quota, error) {
+	return nil, nil
 }

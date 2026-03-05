@@ -48,6 +48,8 @@ type Result struct {
 	ResultSubtype string
 	// ProviderUsed records which provider produced this result.
 	ProviderUsed provider.Kind
+	// Quota contains the latest known quota information from the provider.
+	Quota *provider.Quota
 }
 
 // Process represents a running or completed Smith (Claude Code) process.
@@ -77,13 +79,36 @@ type StreamEvent struct {
 	IsError      bool         `json:"is_error,omitempty"`
 	TotalCostUSD float64      `json:"total_cost_usd,omitempty"`
 	Usage        *StreamUsage `json:"usage,omitempty"`
+	// Stats from Gemini result event
+	Stats *StreamStats `json:"stats,omitempty"`
 	// rate_limit_event fields
 	RateLimitInfo *RateLimitInfo `json:"rate_limit_info,omitempty"`
 }
 
+// StreamStats from Gemini result event.
+type StreamStats struct {
+	TotalTokens     int `json:"total_tokens,omitempty"`
+	InputTokens     int `json:"input_tokens,omitempty"`
+	OutputTokens    int `json:"output_tokens,omitempty"`
+	RequestsLimit   int `json:"requests_limit,omitempty"`
+	RequestsUsed    int `json:"requests_used,omitempty"`
+	RequestsResetMs int `json:"requests_reset_ms,omitempty"`
+	TokensLimit     int `json:"tokens_limit,omitempty"`
+	TokensUsed      int `json:"tokens_used,omitempty"`
+	TokensResetMs   int `json:"tokens_reset_ms,omitempty"`
+}
+
 // RateLimitInfo is the payload of a Claude rate_limit_event.
 type RateLimitInfo struct {
-	Status string `json:"status"`
+	Status            string `json:"status"`
+	ResetAt           string `json:"reset_at,omitempty"`  // RFC3339 timestamp from Claude
+	ResetsAt          int64  `json:"resetsAt,omitempty"`  // Unix epoch seconds (observed in real rate_limit_event payloads)
+	RequestsRemaining int    `json:"requests_remaining,omitempty"`
+	RequestsLimit     int    `json:"requests_limit,omitempty"`
+	RequestsReset     string `json:"requests_reset,omitempty"` // RFC3339 or similar
+	TokensRemaining   int    `json:"tokens_remaining,omitempty"`
+	TokensLimit       int    `json:"tokens_limit,omitempty"`
+	TokensReset       string `json:"tokens_reset,omitempty"`
 }
 
 // StreamUsage holds token counts from the result event.
@@ -340,6 +365,29 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 				if event.IsError && provider.IsRateLimitError(0, event.Result, event.Subtype) {
 					result.RateLimited = true
 				}
+
+				// Extract quota from Gemini stats if present
+				if event.Stats != nil && (event.Stats.RequestsLimit > 0 || event.Stats.TokensLimit > 0) {
+					if result.Quota == nil {
+						result.Quota = &provider.Quota{}
+					}
+					if event.Stats.RequestsLimit > 0 {
+						result.Quota.RequestsLimit = event.Stats.RequestsLimit
+					result.Quota.RequestsRemaining = max(0, event.Stats.RequestsLimit-event.Stats.RequestsUsed)
+						if event.Stats.RequestsResetMs > 0 {
+							reset := time.Now().Add(time.Duration(event.Stats.RequestsResetMs) * time.Millisecond)
+							result.Quota.RequestsReset = &reset
+						}
+					}
+					if event.Stats.TokensLimit > 0 {
+						result.Quota.TokensLimit = event.Stats.TokensLimit
+					result.Quota.TokensRemaining = max(0, event.Stats.TokensLimit-event.Stats.TokensUsed)
+						if event.Stats.TokensResetMs > 0 {
+							reset := time.Now().Add(time.Duration(event.Stats.TokensResetMs) * time.Millisecond)
+							result.Quota.TokensReset = &reset
+						}
+					}
+				}
 			}
 
 			// Detect a hard rate-limit event emitted before the result.
@@ -349,6 +397,39 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 			// a definitive signal regardless of the status value.
 			if event.Type == "rate_limit_event" {
 				result.RateLimited = true
+
+				if event.RateLimitInfo != nil {
+					if result.Quota == nil {
+						result.Quota = &provider.Quota{}
+					}
+					if event.RateLimitInfo.RequestsLimit > 0 {
+						result.Quota.RequestsLimit = event.RateLimitInfo.RequestsLimit
+						result.Quota.RequestsRemaining = event.RateLimitInfo.RequestsRemaining
+						if event.RateLimitInfo.RequestsReset != "" {
+							if t, err := time.Parse(time.RFC3339, event.RateLimitInfo.RequestsReset); err == nil {
+								result.Quota.RequestsReset = &t
+							}
+						}
+					}
+					// Claude's reset_at field (RFC3339) or resetsAt (Unix epoch seconds)
+					if event.RateLimitInfo.ResetAt != "" {
+						if t, err := time.Parse(time.RFC3339, event.RateLimitInfo.ResetAt); err == nil {
+							result.Quota.RequestsReset = &t
+						}
+					} else if event.RateLimitInfo.ResetsAt > 0 {
+						t := time.Unix(event.RateLimitInfo.ResetsAt, 0)
+						result.Quota.RequestsReset = &t
+					}
+					if event.RateLimitInfo.TokensLimit > 0 {
+						result.Quota.TokensLimit = event.RateLimitInfo.TokensLimit
+						result.Quota.TokensRemaining = event.RateLimitInfo.TokensRemaining
+						if event.RateLimitInfo.TokensReset != "" {
+							if t, err := time.Parse(time.RFC3339, event.RateLimitInfo.TokensReset); err == nil {
+								result.Quota.TokensReset = &t
+							}
+						}
+					}
+				}
 			}
 		}
 	}
