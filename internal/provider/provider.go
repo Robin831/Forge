@@ -1,8 +1,8 @@
 // Package provider defines the AI provider abstraction for Forge.
 //
-// Forge supports multiple AI coding agents (Claude, Gemini, …) and selects
-// among them in priority order.  When the active provider signals a rate limit
-// the pipeline automatically retries with the next provider in the list.
+// Forge supports multiple AI coding agents (Claude, Gemini, GitHub Copilot CLI)
+// and selects among them in priority order.  When the active provider signals
+// a rate limit the pipeline automatically retries with the next provider.
 package provider
 
 import "strings"
@@ -13,7 +13,19 @@ type Kind string
 const (
 	Claude  Kind = "claude"
 	Gemini  Kind = "gemini"
-	Copilot Kind = "copilot" // gh copilot – placeholder, not yet implemented
+	Copilot Kind = "copilot" // gh copilot
+)
+
+// OutputFormat describes how the provider writes its response to stdout.
+type OutputFormat int
+
+const (
+	// StreamJSON means the provider emits newline-delimited JSON events
+	// (Claude and Gemini stream-json mode). smith.go parses these events.
+	StreamJSON OutputFormat = iota
+	// PlainText means the provider writes the raw assistant response text
+	// directly to stdout (GitHub Copilot CLI --silent mode).
+	PlainText
 )
 
 // Provider describes one AI backend along with any per-instance overrides.
@@ -33,9 +45,19 @@ func (p Provider) Cmd() string {
 	case Gemini:
 		return "gemini"
 	case Copilot:
-		return "gh"
+		return "copilot"
 	default:
 		return "claude"
+	}
+}
+
+// Format returns the output format this provider writes to stdout.
+func (p Provider) Format() OutputFormat {
+	switch p.Kind {
+	case Copilot:
+		return PlainText
+	default:
+		return StreamJSON
 	}
 }
 
@@ -49,8 +71,7 @@ func (p Provider) BuildArgs(promptText string, claudeFlags []string) []string {
 	case Gemini:
 		return p.geminiArgs(promptText, claudeFlags)
 	case Copilot:
-		// gh copilot is interactive-only; fallback to best-effort text mode.
-		return p.copilotArgs(promptText)
+		return p.copilotArgs(promptText, claudeFlags)
 	default:
 		return p.claudeArgs(promptText, claudeFlags)
 	}
@@ -68,10 +89,11 @@ func (p Provider) claudeArgs(promptText string, extra []string) []string {
 
 func (p Provider) geminiArgs(promptText string, claudeFlags []string) []string {
 	// Gemini CLI: `gemini <prompt> --yolo -o stream-json`
-	// --yolo is equivalent to claude's --dangerously-skip-permissions. 	// --output-format stream-json / -o stream-json enables machine-readable output.
+	// --yolo is equivalent to claude's --dangerously-skip-permissions.
+	// --output-format stream-json / -o stream-json enables machine-readable output.
 	// Translate recognised claude flags; drop the rest.
 	base := []string{
-		promptText,           // positional argument (not -p)
+		promptText, // positional argument (not -p)
 		"--yolo",
 		"-o", "stream-json",
 	}
@@ -81,15 +103,10 @@ func (p Provider) geminiArgs(promptText string, claudeFlags []string) []string {
 		flag := claudeFlags[i]
 		switch flag {
 		case "--max-turns":
-			// Gemini one-shot runs don't need explicit turn limits; skip.
-			i += 2
+			i += 2 // skip value
 		case "--tools":
-			// `--tools ""` → Gemini equivalent is omitting --allowed-tools which
-			// defaults to no confirmation, but there's no "disable all" flag.
-			// We intentionally skip to keep the run non-interactive.
-			i += 2
+			i += 2 // skip value — no direct Gemini equivalent
 		default:
-			// Unknown claude flags are silently dropped.
 			i++
 		}
 	}
@@ -97,17 +114,42 @@ func (p Provider) geminiArgs(promptText string, claudeFlags []string) []string {
 	return base
 }
 
-func (p Provider) copilotArgs(promptText string) []string {
-	// gh copilot suggest is conversational; best we can do is a one-shot suggest.
-	return []string{"copilot", "suggest", "-t", "shell", promptText}
+func (p Provider) copilotArgs(promptText string, claudeFlags []string) []string {
+	// GitHub Copilot CLI:
+	//   copilot -p "<prompt>" --yolo --silent --model claude-sonnet-4.6 --no-auto-update
+	//
+	// --yolo     = --allow-all-tools + --allow-all-paths + --allow-all-urls
+	// --silent   = output only the agent response, no stats (plain text)
+	// --model    = use Claude Sonnet 4.6 (best autonomous-coding model available)
+	// --no-auto-update = avoid interactive update prompts in CI/daemon context
+	//
+	// Unrecognised claude flags (--max-turns, --tools, --verbose, etc.) are dropped.
+	model := "claude-sonnet-4.6"
+
+	// Allow callers to override the model via a --model flag in claudeFlags.
+	for i := 0; i+1 < len(claudeFlags); i++ {
+		if claudeFlags[i] == "--model" {
+			model = claudeFlags[i+1]
+			break
+		}
+	}
+
+	return []string{
+		"-p", promptText,
+		"--yolo",
+		"--silent",
+		"--model", model,
+		"--no-auto-update",
+	}
 }
 
 // Defaults returns the default ordered list of providers.
-// Claude is always tried first; Gemini is the first fallback.
+// Claude is tried first, Gemini second, Copilot CLI third.
 func Defaults() []Provider {
 	return []Provider{
 		{Kind: Claude},
 		{Kind: Gemini},
+		{Kind: Copilot},
 	}
 }
 

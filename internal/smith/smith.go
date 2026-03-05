@@ -156,6 +156,7 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 	}
 
 	// Collect output in background
+	pvFormat := pv.Format()
 	go func() {
 		defer close(p.done)
 		defer logFile.Close()
@@ -170,10 +171,15 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 
 		wg.Add(2)
 
-		// Read stream-json stdout
+		// Read stdout — branch on provider output format.
 		go func() {
 			defer wg.Done()
-			readStreamJSON(stdoutPipe, &stdoutBuf, logFile, result)
+			if pvFormat == provider.StreamJSON {
+				readStreamJSON(stdoutPipe, &stdoutBuf, logFile, result)
+			} else {
+				// PlainText (Copilot CLI --silent): raw response in stdout.
+				readAll(stdoutPipe, &stdoutBuf, logFile)
+			}
 		}()
 
 		// Read stderr
@@ -189,6 +195,11 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 		result.Duration = time.Since(startTime)
 		result.Output = stdoutBuf.String()
 		result.ErrorOutput = stderrBuf.String()
+
+		// For plain-text providers the full response IS the raw stdout.
+		if pvFormat == provider.PlainText && result.FullOutput == "" {
+			result.FullOutput = result.Output
+		}
 
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
