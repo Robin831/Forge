@@ -141,6 +141,28 @@ CREATE TABLE IF NOT EXISTS retries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_retries_needs_human ON retries(needs_human);
+
+CREATE TABLE IF NOT EXISTS bead_costs (
+    bead_id          TEXT NOT NULL,
+    anvil            TEXT NOT NULL,
+    input_tokens     INTEGER NOT NULL DEFAULT 0,
+    output_tokens    INTEGER NOT NULL DEFAULT 0,
+    cache_read       INTEGER NOT NULL DEFAULT 0,
+    cache_write      INTEGER NOT NULL DEFAULT 0,
+    estimated_cost   REAL NOT NULL DEFAULT 0,
+    updated_at       TEXT NOT NULL,
+    PRIMARY KEY (bead_id, anvil)
+);
+
+CREATE TABLE IF NOT EXISTS daily_costs (
+    date             TEXT PRIMARY KEY,
+    input_tokens     INTEGER NOT NULL DEFAULT 0,
+    output_tokens    INTEGER NOT NULL DEFAULT 0,
+    cache_read       INTEGER NOT NULL DEFAULT 0,
+    cache_write      INTEGER NOT NULL DEFAULT 0,
+    estimated_cost   REAL NOT NULL DEFAULT 0,
+    cost_limit       REAL NOT NULL DEFAULT 0
+);
 `
 
 // WorkerStatus represents the lifecycle state of a Smith worker.
@@ -539,4 +561,107 @@ func (db *DB) NeedsHumanBeads() ([]RetryRecord, error) {
 func (db *DB) ClearRetry(beadID, anvil string) error {
 	_, err := db.conn.Exec(`DELETE FROM retries WHERE bead_id = ? AND anvil = ?`, beadID, anvil)
 	return err
+}
+
+// --- Cost tracking ---
+
+// AddBeadCost adds token usage to a bead's cumulative cost.
+func (db *DB) AddBeadCost(beadID, anvil string, input, output, cacheRead, cacheWrite int, cost float64) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO bead_costs (bead_id, anvil, input_tokens, output_tokens, cache_read, cache_write, estimated_cost, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(bead_id, anvil) DO UPDATE SET
+			input_tokens = input_tokens + excluded.input_tokens,
+			output_tokens = output_tokens + excluded.output_tokens,
+			cache_read = cache_read + excluded.cache_read,
+			cache_write = cache_write + excluded.cache_write,
+			estimated_cost = estimated_cost + excluded.estimated_cost,
+			updated_at = excluded.updated_at`,
+		beadID, anvil, input, output, cacheRead, cacheWrite, cost,
+		time.Now().Format(time.RFC3339),
+	)
+	return err
+}
+
+// AddDailyCost adds token usage to today's aggregate.
+func (db *DB) AddDailyCost(date string, input, output, cacheRead, cacheWrite int, cost float64) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO daily_costs (date, input_tokens, output_tokens, cache_read, cache_write, estimated_cost)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(date) DO UPDATE SET
+			input_tokens = input_tokens + excluded.input_tokens,
+			output_tokens = output_tokens + excluded.output_tokens,
+			cache_read = cache_read + excluded.cache_read,
+			cache_write = cache_write + excluded.cache_write,
+			estimated_cost = estimated_cost + excluded.estimated_cost`,
+		date, input, output, cacheRead, cacheWrite, cost,
+	)
+	return err
+}
+
+// GetDailyCost returns cost data for a specific date.
+func (db *DB) GetDailyCost(date string) (inputTokens, outputTokens, cacheRead, cacheWrite int, cost, limit float64, err error) {
+	err = db.conn.QueryRow(
+		`SELECT input_tokens, output_tokens, cache_read, cache_write, estimated_cost, cost_limit
+		 FROM daily_costs WHERE date = ?`, date).
+		Scan(&inputTokens, &outputTokens, &cacheRead, &cacheWrite, &cost, &limit)
+	return
+}
+
+// SetDailyCostLimit sets the cost limit for a specific date.
+func (db *DB) SetDailyCostLimit(date string, limit float64) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO daily_costs (date, cost_limit) VALUES (?, ?)
+		 ON CONFLICT(date) DO UPDATE SET cost_limit = excluded.cost_limit`,
+		date, limit,
+	)
+	return err
+}
+
+// TotalCostSince returns aggregate cost since a given date.
+func (db *DB) TotalCostSince(sinceDate string) (float64, error) {
+	var total sql.NullFloat64
+	err := db.conn.QueryRow(
+		`SELECT SUM(estimated_cost) FROM daily_costs WHERE date >= ?`, sinceDate).
+		Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	return total.Float64, nil
+}
+
+// RecentDailyCosts returns daily cost records, most recent first.
+func (db *DB) RecentDailyCosts(n int) ([]struct {
+	Date          string
+	InputTokens   int
+	OutputTokens  int
+	EstimatedCost float64
+}, error) {
+	rows, err := db.conn.Query(
+		`SELECT date, input_tokens, output_tokens, estimated_cost
+		 FROM daily_costs ORDER BY date DESC LIMIT ?`, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var costs []struct {
+		Date          string
+		InputTokens   int
+		OutputTokens  int
+		EstimatedCost float64
+	}
+	for rows.Next() {
+		var c struct {
+			Date          string
+			InputTokens   int
+			OutputTokens  int
+			EstimatedCost float64
+		}
+		if err := rows.Scan(&c.Date, &c.InputTokens, &c.OutputTokens, &c.EstimatedCost); err != nil {
+			return nil, err
+		}
+		costs = append(costs, c)
+	}
+	return costs, rows.Err()
 }
