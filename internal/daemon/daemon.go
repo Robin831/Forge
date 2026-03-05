@@ -231,6 +231,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.bellowsMonitor = bellows.New(d.db, monitorInterval, monitorAnvils)
 	d.lifecycleMgr = lifecycle.New(d.db, d.handleLifecycleAction)
+	if err := d.lifecycleMgr.SeedFromDB(); err != nil {
+		d.logger.Warn("failed to seed lifecycle manager from DB", "error", err)
+	}
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
 
 	go func() {

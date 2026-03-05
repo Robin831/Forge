@@ -17,19 +17,19 @@ import (
 
 // PRState tracks the lifecycle of a single PR.
 type PRState struct {
-	PRNumber     int
-	BeadID       string
-	Anvil        string
-	Branch       string
-	CIPassing    bool
-	Approved     bool
-	NeedsFix     bool
-	Conflicting  bool
-	Merged       bool
-	Closed       bool
-	CIFixCount   int
-	ReviewFixCnt int
-	RebaseCount  int
+	PRNumber       int
+	BeadID         string
+	Anvil          string
+	Branch         string
+	CIPassing      bool
+	Approved       bool
+	NeedsFix       bool
+	Conflicting    bool
+	Merged         bool
+	Closed         bool
+	CIFixCount     int
+	ReviewFixCount int
+	RebaseCount    int
 }
 
 // Action enumerates lifecycle actions to take.
@@ -79,6 +79,42 @@ func New(db *state.DB, handler ActionHandler) *Manager {
 	}
 }
 
+// SeedFromDB pre-populates the states map from the database.
+func (m *Manager) SeedFromDB() error {
+	prs, err := m.db.OpenPRs()
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, pr := range prs {
+		st := &PRState{
+			PRNumber:       pr.Number,
+			BeadID:         pr.BeadID,
+			Anvil:          pr.Anvil,
+			Branch:         pr.Branch,
+			CIPassing:      pr.CIPassing,
+			CIFixCount:     pr.CIFixCount,
+			ReviewFixCount: pr.ReviewFixCount,
+		}
+		switch pr.Status {
+		case state.PRApproved:
+			st.Approved = true
+		case state.PRNeedsFix:
+			st.NeedsFix = true
+		case state.PRMerged:
+			st.Merged = true
+		case state.PRClosed:
+			st.Closed = true
+		}
+		m.states[pr.Number] = st
+	}
+	log.Printf("[lifecycle] Seeded %d PR state(s) from DB", len(prs))
+	return nil
+}
+
 // HandleEvent processes a Bellows PR event and dispatches any required actions.
 func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 	var action Action
@@ -117,8 +153,8 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 
 	case bellows.EventReviewChanges:
 		st.NeedsFix = true
-		if st.ReviewFixCnt < m.maxRev {
-			st.ReviewFixCnt++
+		if st.ReviewFixCount < m.maxRev {
+			st.ReviewFixCount++
 			action = ActionFixReview
 		}
 
@@ -140,7 +176,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 
 	branch = st.Branch
 	ciFixCount := st.CIFixCount
-	reviewFixCnt := st.ReviewFixCnt
+	reviewFixCnt := st.ReviewFixCount
 	rebaseCount := st.RebaseCount
 	m.mu.Unlock()
 
@@ -194,6 +230,9 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 	case bellows.EventPRClosed:
 		log.Printf("[lifecycle] PR #%d: Closed without merge, cleanup", event.PRNumber)
 	}
+
+	// Persist updated state to DB
+	_ = m.db.UpdatePRLifecycle(st.PRNumber, st.CIPassing, st.CIFixCount, st.ReviewFixCount)
 
 	if action != ActionNone && m.handler != nil {
 		m.handler(ctx, ActionRequest{

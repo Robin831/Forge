@@ -82,10 +82,57 @@ func (m *Monitor) OnEvent(h Handler) {
 	m.handlers = append(m.handlers, h)
 }
 
+// SeedFromDB pre-populates lastStatuses from persisted PR state so that
+// continuous monitoring survives daemon restarts without re-firing stale events.
+func (m *Monitor) SeedFromDB() error {
+	prs, err := m.db.OpenPRs()
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for i := range prs {
+		m.lastStatuses[prs[i].Number] = snapshotFromPR(&prs[i])
+	}
+	log.Printf("[bellows] Seeded %d PR snapshot(s) from DB", len(prs))
+	return nil
+}
+
+// snapshotFromPR reconstructs a prSnapshot from persisted PR state.
+// This avoids re-firing events for conditions already known before a restart.
+func snapshotFromPR(pr *state.PR) *prSnapshot {
+	snap := &prSnapshot{
+		CIPassing:     pr.CIPassing,
+		IsConflicting: pr.IsConflicting,
+	}
+	switch pr.Status {
+	case state.PRApproved:
+		snap.HasApproval = true
+	case state.PRNeedsFix:
+		// Something needed fixing — seed all fix-type flags to prevent
+		// re-firing stale events regardless of which condition caused the status.
+		snap.NeedsChanges = true
+		snap.HasUnresolvedThreads = true
+	case state.PRMerged:
+		snap.IsMerged = true
+	case state.PRClosed:
+		snap.IsClosed = true
+	}
+	return snap
+}
+
 // Run starts the polling loop. Blocks until ctx is canceled.
 func (m *Monitor) Run(ctx context.Context) error {
 	log.Printf("[bellows] Starting PR monitor (interval: %s)", m.interval)
 	_ = m.db.LogEvent(state.EventBellowsStarted, fmt.Sprintf("PR monitor started (interval: %s)", m.interval), "", "")
+
+	// Restore PR state from DB so we don't re-fire events for conditions
+	// that were already known before this (re)start.
+	if err := m.SeedFromDB(); err != nil {
+		log.Printf("[bellows] Warning: failed to seed PR snapshots from DB: %v", err)
+	}
 
 	// Initial check
 	m.checkAll(ctx)
@@ -142,11 +189,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 
 	m.mu.Lock()
 	lastSnap := m.lastStatuses[pr.Number]
-	isFirstCheck := lastSnap == nil
 	if lastSnap == nil {
-		// Seed CIPassing=true so that a PR that is already failing when the
-		// daemon starts (or after a restart) still triggers an EventCIFailed
-		// on the very first poll.
+		// Fallback for PRs not yet seeded (e.g. newly discovered).
+		// Seed CIPassing=true so a PR already failing CI still fires EventCIFailed.
 		lastSnap = &prSnapshot{CIPassing: true}
 	}
 	m.mu.Unlock()
@@ -160,8 +205,6 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		IsClosed:             status.IsClosed(),
 		IsConflicting:        status.Mergeable == "CONFLICTING",
 	}
-	_ = isFirstCheck // used implicitly via seeded lastSnap
-
 	// Detect transitions and emit events
 	if status.IsMerged() && !lastSnap.IsMerged {
 		m.emit(ctx, PREvent{
@@ -230,6 +273,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	}
 
 	// Detect merge conflicts (CONFLICTING → fire event so operator / lifecycle can rebase)
+	if newSnap.IsConflicting != lastSnap.IsConflicting {
+		_ = m.db.UpdatePRConflicting(pr.Number, newSnap.IsConflicting)
+	}
 	if newSnap.IsConflicting && !lastSnap.IsConflicting {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Robin831/Forge/internal/state"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -172,6 +173,125 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSnapshotFromPR verifies that snapshotFromPR produces the right initial
+// state for each PR status, preventing re-fires of already-known conditions.
+func TestSnapshotFromPR(t *testing.T) {
+	tests := []struct {
+		name          string
+		pr            state.PR
+		wantCIPassing bool
+		wantApproval  bool
+		wantNeedsFix  bool
+		wantConflict  bool
+		wantMerged    bool
+		wantClosed    bool
+	}{
+		{
+			name:          "open PR assumes CI passing",
+			pr:            state.PR{Status: state.PROpen, CIPassing: true},
+			wantCIPassing: true,
+		},
+		{
+			name:          "approved PR has approval + CI passing",
+			pr:            state.PR{Status: state.PRApproved, CIPassing: true},
+			wantCIPassing: true,
+			wantApproval:  true,
+		},
+		{
+			name:         "needs_fix PR seeds all fix flags to suppress re-fires",
+			pr:           state.PR{Status: state.PRNeedsFix, CIPassing: false},
+			wantNeedsFix: true,
+		},
+		{
+			name:          "open PR with persisted conflict seeds IsConflicting",
+			pr:            state.PR{Status: state.PROpen, IsConflicting: true, CIPassing: true},
+			wantCIPassing: true,
+			wantConflict:  true,
+		},
+		{
+			name:          "needs_fix PR with persisted conflict",
+			pr:            state.PR{Status: state.PRNeedsFix, IsConflicting: true, CIPassing: false},
+			wantNeedsFix:  true,
+			wantConflict:  true,
+		},
+		{
+			name:          "merged PR",
+			pr:            state.PR{Status: state.PRMerged, CIPassing: true},
+			wantCIPassing: true,
+			wantMerged:    true,
+		},
+		{
+			name:          "closed PR",
+			pr:            state.PR{Status: state.PRClosed, CIPassing: true},
+			wantCIPassing: true,
+			wantClosed:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			snap := snapshotFromPR(&tt.pr)
+			assert.Equal(t, tt.wantCIPassing, snap.CIPassing, "CIPassing")
+			assert.Equal(t, tt.wantApproval, snap.HasApproval, "HasApproval")
+			assert.Equal(t, tt.wantConflict, snap.IsConflicting, "IsConflicting")
+			assert.Equal(t, tt.wantMerged, snap.IsMerged, "IsMerged")
+			assert.Equal(t, tt.wantClosed, snap.IsClosed, "IsClosed")
+			if tt.wantNeedsFix {
+				assert.False(t, snap.CIPassing, "needs_fix: CIPassing should be false")
+				assert.True(t, snap.NeedsChanges, "needs_fix: NeedsChanges should be true")
+				assert.True(t, snap.HasUnresolvedThreads, "needs_fix: HasUnresolvedThreads should be true")
+			}
+		})
+	}
+}
+
+// TestSeedFromDB verifies that SeedFromDB populates lastStatuses from open PRs.
+func TestSeedFromDB(t *testing.T) {
+	db, err := state.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory DB: %v", err)
+	}
+	defer db.Close()
+
+	// Insert a few PRs in different states
+	prs := []state.PR{
+		{Number: 1, Anvil: "test", BeadID: "b1", Status: state.PROpen, CreatedAt: time.Now(), CIPassing: true},
+		{Number: 2, Anvil: "test", BeadID: "b2", Status: state.PRNeedsFix, CreatedAt: time.Now(), CIPassing: false},
+		{Number: 3, Anvil: "test", BeadID: "b3", Status: state.PRApproved, CreatedAt: time.Now(), CIPassing: true},
+	}
+	for i := range prs {
+		if err := db.InsertPR(&prs[i]); err != nil {
+			t.Fatalf("insert PR: %v", err)
+		}
+	}
+	// Set PR #1 as conflicting
+	if err := db.UpdatePRConflicting(1, true); err != nil {
+		t.Fatalf("set conflicting: %v", err)
+	}
+
+	m := New(db, time.Minute, nil)
+	if err := m.SeedFromDB(); err != nil {
+		t.Fatalf("SeedFromDB: %v", err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	assert.Len(t, m.lastStatuses, 3)
+
+	snap1 := m.lastStatuses[1]
+	assert.True(t, snap1.CIPassing, "PR#1 (open): CIPassing")
+	assert.True(t, snap1.IsConflicting, "PR#1 (open+conflict): IsConflicting")
+
+	snap2 := m.lastStatuses[2]
+	assert.False(t, snap2.CIPassing, "PR#2 (needs_fix): CIPassing should be false")
+	assert.True(t, snap2.NeedsChanges, "PR#2 (needs_fix): NeedsChanges should be true")
+
+	snap3 := m.lastStatuses[3]
+	assert.True(t, snap3.CIPassing, "PR#3 (approved): CIPassing")
+	assert.True(t, snap3.HasApproval, "PR#3 (approved): HasApproval")
 }
 
 // computeTransitionEvents mirrors the transition conditions in checkPR,

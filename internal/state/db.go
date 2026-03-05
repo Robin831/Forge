@@ -97,6 +97,26 @@ func (db *DB) migrate() error {
 			return err
 		}
 	}
+	if _, err := db.conn.Exec(`ALTER TABLE prs ADD COLUMN is_conflicting INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	if _, err := db.conn.Exec(`ALTER TABLE prs ADD COLUMN ci_passing INTEGER NOT NULL DEFAULT 1`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	if _, err := db.conn.Exec(`ALTER TABLE prs ADD COLUMN ci_fix_count INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	if _, err := db.conn.Exec(`ALTER TABLE prs ADD COLUMN review_fix_count INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -115,14 +135,18 @@ CREATE TABLE IF NOT EXISTS workers (
 );
 
 CREATE TABLE IF NOT EXISTS prs (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    number       INTEGER NOT NULL,
-    anvil        TEXT NOT NULL,
-    bead_id      TEXT NOT NULL DEFAULT '',
-    branch       TEXT NOT NULL DEFAULT '',
-    status       TEXT NOT NULL DEFAULT 'open',
-    created_at   TEXT NOT NULL,
-    last_checked TEXT
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    number          INTEGER NOT NULL,
+    anvil           TEXT NOT NULL,
+    bead_id         TEXT NOT NULL DEFAULT '',
+    branch          TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'open',
+    created_at      TEXT NOT NULL,
+    last_checked    TEXT,
+    is_conflicting  INTEGER NOT NULL DEFAULT 0,
+    ci_passing      INTEGER NOT NULL DEFAULT 1,
+    ci_fix_count    INTEGER NOT NULL DEFAULT 0,
+    review_fix_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -358,23 +382,31 @@ const (
 
 // PR represents a pull request entry.
 type PR struct {
-	ID          int
-	Number      int
-	Anvil       string
-	BeadID      string
-	Branch      string
-	Status      PRStatus
-	CreatedAt   time.Time
-	LastChecked *time.Time
+	ID               int
+	Number           int
+	Anvil            string
+	BeadID           string
+	Branch           string
+	Status           PRStatus
+	CreatedAt        time.Time
+	LastChecked      *time.Time
+	IsConflicting    bool
+	CIPassing        bool
+	CIFixCount       int
+	ReviewFixCount   int
 }
 
 // InsertPR adds a new PR record.
 func (db *DB) InsertPR(pr *PR) error {
+	ciPassing := 1
+	if !pr.CIPassing {
+		ciPassing = 0
+	}
 	res, err := db.conn.Exec(
-		`INSERT INTO prs (number, anvil, bead_id, branch, status, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO prs (number, anvil, bead_id, branch, status, created_at, ci_passing, ci_fix_count, review_fix_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		pr.Number, pr.Anvil, pr.BeadID, pr.Branch, string(pr.Status),
-		pr.CreatedAt.Format(time.RFC3339),
+		pr.CreatedAt.Format(time.RFC3339), ciPassing, pr.CIFixCount, pr.ReviewFixCount,
 	)
 	if err != nil {
 		return err
@@ -393,11 +425,37 @@ func (db *DB) UpdatePRStatus(number int, status PRStatus) error {
 	return err
 }
 
+// UpdatePRLifecycle updates the lifecycle-specific tracking fields for a PR.
+func (db *DB) UpdatePRLifecycle(number int, ciPassing bool, ciFixCount, reviewFixCount int) error {
+	cp := 0
+	if ciPassing {
+		cp = 1
+	}
+	_, err := db.conn.Exec(
+		`UPDATE prs SET ci_passing = ?, ci_fix_count = ?, review_fix_count = ?, last_checked = ? WHERE number = ?`,
+		cp, ciFixCount, reviewFixCount, time.Now().Format(time.RFC3339), number,
+	)
+	return err
+}
+
 // OpenPRs returns all PRs with non-terminal status.
 func (db *DB) OpenPRs() ([]PR, error) {
-	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked
+	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, is_conflicting, ci_passing, ci_fix_count, review_fix_count
 		FROM prs WHERE status IN ('open', 'approved', 'needs_fix')
 		ORDER BY created_at`)
+}
+
+// UpdatePRConflicting sets or clears the persisted conflict flag for a PR.
+func (db *DB) UpdatePRConflicting(number int, conflicting bool) error {
+	val := 0
+	if conflicting {
+		val = 1
+	}
+	_, err := db.conn.Exec(
+		`UPDATE prs SET is_conflicting = ?, last_checked = ? WHERE number = ?`,
+		val, time.Now().Format(time.RFC3339), number,
+	)
+	return err
 }
 
 func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
@@ -413,11 +471,14 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 		var status string
 		var createdAt string
 		var lastChecked sql.NullString
+		var isConflicting, ciPassing int
 		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch,
-			&status, &createdAt, &lastChecked); err != nil {
+			&status, &createdAt, &lastChecked, &isConflicting, &ciPassing, &p.CIFixCount, &p.ReviewFixCount); err != nil {
 			return nil, err
 		}
 		p.Status = PRStatus(status)
+		p.IsConflicting = isConflicting != 0
+		p.CIPassing = ciPassing != 0
 		p.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 		if lastChecked.Valid {
 			t, _ := time.Parse(time.RFC3339, lastChecked.String)
