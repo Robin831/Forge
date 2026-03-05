@@ -101,7 +101,8 @@ type StreamStats struct {
 // RateLimitInfo is the payload of a Claude rate_limit_event.
 type RateLimitInfo struct {
 	Status            string `json:"status"`
-	ResetAt           string `json:"reset_at,omitempty"` // RFC3339 timestamp from Claude
+	ResetAt           string `json:"reset_at,omitempty"`  // RFC3339 timestamp from Claude
+	ResetsAt          int64  `json:"resetsAt,omitempty"`  // Unix epoch seconds (observed in real rate_limit_event payloads)
 	RequestsRemaining int    `json:"requests_remaining,omitempty"`
 	RequestsLimit     int    `json:"requests_limit,omitempty"`
 	RequestsReset     string `json:"requests_reset,omitempty"` // RFC3339 or similar
@@ -372,7 +373,7 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 					}
 					if event.Stats.RequestsLimit > 0 {
 						result.Quota.RequestsLimit = event.Stats.RequestsLimit
-						result.Quota.RequestsRemaining = event.Stats.RequestsLimit - event.Stats.RequestsUsed
+					result.Quota.RequestsRemaining = max(0, event.Stats.RequestsLimit-event.Stats.RequestsUsed)
 						if event.Stats.RequestsResetMs > 0 {
 							reset := time.Now().Add(time.Duration(event.Stats.RequestsResetMs) * time.Millisecond)
 							result.Quota.RequestsReset = &reset
@@ -380,7 +381,7 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 					}
 					if event.Stats.TokensLimit > 0 {
 						result.Quota.TokensLimit = event.Stats.TokensLimit
-						result.Quota.TokensRemaining = event.Stats.TokensLimit - event.Stats.TokensUsed
+					result.Quota.TokensRemaining = max(0, event.Stats.TokensLimit-event.Stats.TokensUsed)
 						if event.Stats.TokensResetMs > 0 {
 							reset := time.Now().Add(time.Duration(event.Stats.TokensResetMs) * time.Millisecond)
 							result.Quota.TokensReset = &reset
@@ -410,11 +411,14 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 							}
 						}
 					}
-					// Claude's reset_at field
+					// Claude's reset_at field (RFC3339) or resetsAt (Unix epoch seconds)
 					if event.RateLimitInfo.ResetAt != "" {
 						if t, err := time.Parse(time.RFC3339, event.RateLimitInfo.ResetAt); err == nil {
 							result.Quota.RequestsReset = &t
 						}
+					} else if event.RateLimitInfo.ResetsAt > 0 {
+						t := time.Unix(event.RateLimitInfo.ResetsAt, 0)
+						result.Quota.RequestsReset = &t
 					}
 					if event.RateLimitInfo.TokensLimit > 0 {
 						result.Quota.TokensLimit = event.RateLimitInfo.TokensLimit

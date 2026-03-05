@@ -7,8 +7,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -245,35 +243,16 @@ func IsRateLimitError(exitCode int, stderr, resultSubtype string) bool {
 	return false
 }
 
-// FetchQuota attempts to retrieve the latest quota information from the provider CLI.
-// Returns nil if the provider does not support quota reporting via CLI.
-func (p Provider) FetchQuota(ctx context.Context) (*Quota, error) {
-	var args []string
-	switch p.Kind {
-	case Claude:
-		// Based on bead description: run 'claude --usage'
-		args = []string{"--usage"}
-	case Gemini:
-		// Based on bead description: check if 'gemini --quota' exists
-		args = []string{"--quota"}
-	default:
-		return nil, nil
-	}
-
-	cmd := exec.CommandContext(ctx, p.Cmd(), args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		// If command fails, we assume it's not supported or not implemented yet.
-		return nil, nil
-	}
-
-	// Try to parse JSON output.
-	var q Quota
-	if err := json.Unmarshal(output, &q); err == nil {
-		return &q, nil
-	}
-
-	// If not JSON, try to parse known text patterns if we encounter them.
-	// For now, return nil as we don't have a confirmed text format.
+// FetchQuota is a placeholder for future provider quota reporting via CLI.
+//
+// Neither 'claude --usage' nor 'gemini --quota' are supported non-interactive
+// commands with a stable, machine-readable output format. Until a verified
+// format is confirmed, this method is intentionally a no-op to avoid calling
+// unsupported flags and silently swallowing real execution errors.
+//
+// Quota data is captured automatically from stream-json events during normal
+// Smith runs (see readStreamJSON). FetchQuota exists as an extension point for
+// any future proactive quota polling.
+func (p Provider) FetchQuota(_ context.Context) (*Quota, error) {
 	return nil, nil
 }
