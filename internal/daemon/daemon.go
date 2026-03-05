@@ -534,6 +534,62 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": "not yet implemented"})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "run_bead":
+		var rp ipc.RunBeadPayload
+		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid run_bead payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		// Search for the bead
+		var targetBead *poller.Bead
+		p := poller.New(d.cfg.Anvils)
+		var beads []poller.Bead
+		if rp.Anvil != "" {
+			var err error
+			beads, err = p.PollSingle(context.Background(), rp.Anvil)
+			if err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found or poll failed: %v", rp.Anvil, err)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+		} else {
+			beads, _ = p.Poll(context.Background())
+		}
+
+		for _, b := range beads {
+			if b.ID == rp.BeadID {
+				targetBead = &b
+				break
+			}
+		}
+
+		if targetBead == nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q not found or not ready", rp.BeadID)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		// Skip if bead is already in flight
+		if _, inFlight := d.activeBeads.LoadOrStore(targetBead.ID, true); inFlight {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q is already in flight", targetBead.ID)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		// Dispatch immediately regardless of auto_dispatch setting (but respect capacity)
+		anvilCfg := d.cfg.Anvils[targetBead.Anvil]
+
+		// Claim the bead
+		if err := d.claimBead(context.Background(), targetBead.ID, anvilCfg.Path); err != nil {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to claim bead: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		d.wg.Add(1)
+		go d.dispatchBead(context.Background(), *targetBead, anvilCfg)
+
+		data, _ := json.Marshal(map[string]string{"message": "dispatched"})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}

@@ -7,11 +7,14 @@ import (
 	"text/tabwriter"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/spf13/cobra"
 )
 
 func init() {
+	queueRunCmd.Flags().StringP("anvil", "a", "", "Anvil name (to disambiguate if multiple anvils have the same bead ID)")
+	queueCmd.AddCommand(queueRunCmd)
 	rootCmd.AddCommand(queueCmd)
 }
 
@@ -62,6 +65,47 @@ var queueCmd = &cobra.Command{
 		tw.Flush()
 
 		fmt.Printf("\n%d ready beads across %d anvils\n", len(beads), len(cfg.Anvils))
+		return nil
+	},
+}
+
+var queueRunCmd = &cobra.Command{
+	Use:     "run <id>",
+	Short:   "Manually dispatch a bead for execution",
+	Args:    cobra.ExactArgs(1),
+	Example: "  forge queue run BD-42\n  forge queue run BD-42 --anvil metadata",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		beadID := args[0]
+		anvil, _ := cmd.Flags().GetString("anvil")
+
+		client, err := ipc.NewClient()
+		if err != nil {
+			return fmt.Errorf("connecting to daemon: %w (is 'forge up' running?)", err)
+		}
+		defer client.Close()
+
+		payload, _ := json.Marshal(ipc.RunBeadPayload{
+			BeadID: beadID,
+			Anvil:  anvil,
+		})
+
+		resp, err := client.Send(ipc.Command{
+			Type:    "run_bead",
+			Payload: payload,
+		})
+		if err != nil {
+			return fmt.Errorf("sending command: %w", err)
+		}
+
+		if resp.Type == "error" {
+			var msg map[string]string
+			_ = json.Unmarshal(resp.Payload, &msg)
+			return fmt.Errorf("daemon error: %s", msg["message"])
+		}
+
+		var result map[string]string
+		_ = json.Unmarshal(resp.Payload, &result)
+		fmt.Printf("Successfully dispatched bead %s: %s\n", beadID, result["message"])
 		return nil
 	},
 }

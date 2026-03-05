@@ -31,7 +31,7 @@ import (
 
 // Command is a message sent from a client to the daemon.
 type Command struct {
-	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue"
+	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead"
 	Payload json.RawMessage `json:"payload"` // Type-specific data
 }
 
@@ -64,6 +64,12 @@ type StatusPayload struct {
 type KillWorkerPayload struct {
 	WorkerID string `json:"worker_id"`
 	PID      int    `json:"pid"`
+}
+
+// RunBeadPayload is the payload for a "run_bead" command.
+type RunBeadPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"` // Optional: narrows search if multiple anvils have same bead ID
 }
 
 // CommandHandler is called by the server for each incoming command.
