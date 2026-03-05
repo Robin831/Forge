@@ -230,8 +230,8 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		if s := smithResult.GeminiStats; s != nil {
 			_ = p.DB.LogEvent(state.EventSmithStats,
-				fmt.Sprintf("tokens_in=%d tokens_out=%d total=%d cached=%d tool_calls=%d duration_ms=%d",
-					s.InputTokens, s.OutputTokens, s.TotalTokens, s.Cached, s.ToolCalls, s.DurationMs),
+				fmt.Sprintf("tokens_in=%d tokens_out=%d total=%d cached=%d input=%d tool_calls=%d duration_ms=%d",
+					s.InputTokens, s.OutputTokens, s.TotalTokens, s.Cached, s.Input, s.ToolCalls, s.DurationMs),
 				p.Bead.ID, p.AnvilName)
 		}
 

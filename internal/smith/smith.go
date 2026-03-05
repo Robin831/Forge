@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 )
@@ -397,11 +398,22 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 						result.TokensIn = event.Stats.InputTokens
 						result.TokensOut = event.Stats.OutputTokens
 					}
+
+					// Estimate cost for Gemini if it was not provided (it is usually 0).
+					if result.CostUSD == 0 {
+						u := cost.Usage{
+							InputTokens:  event.Stats.InputTokens,
+							OutputTokens: event.Stats.OutputTokens,
+						}
+						u.Calculate(cost.GeminiPricing())
+						result.CostUSD = u.EstimatedCostUSD
+					}
+
 					// Write a human-readable stats summary to the smith log.
 					fmt.Fprintf(logFile,
-						"[gemini stats] tokens_in=%d tokens_out=%d total=%d cached=%d tool_calls=%d duration_ms=%d\n",
+						"[gemini stats] tokens_in=%d tokens_out=%d total=%d cached=%d input=%d tool_calls=%d duration_ms=%d\n",
 						event.Stats.InputTokens, event.Stats.OutputTokens, event.Stats.TotalTokens,
-						event.Stats.Cached, event.Stats.ToolCalls, event.Stats.DurationMs)
+						event.Stats.Cached, event.Stats.Input, event.Stats.ToolCalls, event.Stats.DurationMs)
 				}
 
 				// Extract quota from Gemini stats if present
