@@ -210,8 +210,9 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 			}
 		}
 
-		// Detect rate limit — check exit code, stderr, and result subtype.
-		result.RateLimited = provider.IsRateLimitError(
+		// Detect rate limit — OR with any flag already set by readStreamJSON
+		// (e.g. from a rate_limit_event seen mid-stream) so we never lose it.
+		result.RateLimited = result.RateLimited || provider.IsRateLimitError(
 			result.ExitCode, result.ErrorOutput, result.ResultSubtype)
 
 		p.mu.Lock()
