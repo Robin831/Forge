@@ -193,34 +193,18 @@ func (m Model) View() string {
 		return "Initializing The Forge..."
 	}
 
-	// Calculate heights for the vertical split
-	// Top half for Queue and Workers, bottom half for Events
-	availableHeight := m.height - 4 // minus header and footer
-	topHeight := availableHeight / 2
-	if topHeight < 8 {
-		topHeight = 8
-	}
-	bottomHeight := availableHeight - topHeight
-	if bottomHeight < 5 {
-		bottomHeight = 5
-	}
+	// Calculate panel widths (25% / 25% / 50% distribution)
+	remainingWidth := m.width - 4 // 4 for borders/gaps
+	queueWidth := remainingWidth / 4
+	workerWidth := remainingWidth / 4
+	eventWidth := remainingWidth - queueWidth - workerWidth
 
-	// Top section: Queue and Workers (side-by-side)
-	topPanelWidth := (m.width - 2) / 2
-	if topPanelWidth < 20 {
-		topPanelWidth = 20
-	}
+	contentHeight := m.height - 4 // header + footer
 
-	queuePanel := m.renderQueue(topPanelWidth, topHeight)
-	workerPanel := m.renderWorkers(m.width-topPanelWidth, topHeight)
-
-	topSection := lipgloss.JoinHorizontal(lipgloss.Top,
-		queuePanel,
-		workerPanel,
-	)
-
-	// Bottom section: Events (full width)
-	eventPanel := m.renderEvents(m.width, bottomHeight)
+	// Build panels
+	queuePanel := m.renderQueue(queueWidth, contentHeight)
+	workerPanel := m.renderWorkers(workerWidth, contentHeight)
+	eventPanel := m.renderEvents(eventWidth, contentHeight)
 
 	// Header
 	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
@@ -231,10 +215,10 @@ func (m Model) View() string {
 	)
 
 	// Final assembly
+	mainSection := lipgloss.JoinHorizontal(lipgloss.Top, queuePanel, workerPanel, eventPanel)
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
-		topSection,
-		eventPanel,
+		mainSection,
 		footer,
 	)
 }
@@ -251,7 +235,12 @@ func (m *Model) scrollDown() {
 			m.workerScroll++
 		}
 	case PanelEvents:
-		if m.eventScroll < len(m.events)-1 {
+		remainingWidth := m.width - 4
+		queueWidth := remainingWidth / 4
+		workerWidth := remainingWidth / 4
+		eventWidth := remainingWidth - queueWidth - workerWidth
+		allLines := m.renderAllEventLines(eventWidth)
+		if m.eventScroll < len(allLines)-1 {
 			m.eventScroll++
 		}
 	}
@@ -417,21 +406,26 @@ func (m Model) renderEvents(width, height int) string {
 	if len(m.events) == 0 {
 		lines = append(lines, dimStyle.Render("No events"))
 	} else {
-		linesUsed := 0
-		for i := m.eventScroll; i < len(m.events) && linesUsed < contentHeight; i++ {
-			for _, l := range m.renderEventLines(m.events[i], i == m.eventScroll, width) {
-				if linesUsed >= contentHeight {
-					break
-				}
-				lines = append(lines, l)
-				linesUsed++
-			}
-
+		allLines := m.renderAllEventLines(width)
+		visible := visibleItems(m.eventScroll, len(allLines), contentHeight)
+		for i := visible.start; i < visible.end; i++ {
+			lines = append(lines, allLines[i])
 		}
 	}
 
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
+}
+
+// renderAllEventLines flattens all events into a single slice of rendered lines.
+func (m Model) renderAllEventLines(width int) []string {
+	var allLines []string
+	for _, event := range m.events {
+		// In line-based scrolling, we don't highlight a single event row by default
+		// unless we're at the very top and it's following.
+		allLines = append(allLines, m.renderEventLines(event, false, width)...)
+	}
+	return allLines
 }
 
 // renderEventLines renders a single event as one or more wrapped lines.
@@ -452,32 +446,52 @@ func (m Model) renderEventLines(item EventItem, selected bool, panelWidth int) [
 	// Visual prefix length: "HH:MM:SS "(9) + type + " " + beadTag
 	prefixVisLen := 9 + len(item.Type) + 1 + len(beadTag)
 	msgWidth := interiorWidth - prefixVisLen
-	if msgWidth < 20 {
-		msgWidth = 20
-	}
 
-	wrapped := wordWrap(item.Message, msgWidth)
-	if len(wrapped) == 0 {
-		wrapped = []string{""}
-	}
-
-	indent := strings.Repeat(" ", prefixVisLen)
 	var lines []string
-	for i, part := range wrapped {
-		var line string
-		if i == 0 {
-			line = fmt.Sprintf("%s %s %s%s",
-				dimStyle.Render(item.Timestamp),
-				eventTypeStyle(item.Type),
-				dimStyle.Render(beadTag),
-				part)
-		} else {
-			line = indent + dimStyle.Render(part)
-		}
+	if msgWidth < 20 {
+		// Prefix is too wide for the current panel width, put message on its own lines
+		header := fmt.Sprintf("%s %s %s",
+			dimStyle.Render(item.Timestamp),
+			eventTypeStyle(item.Type),
+			dimStyle.Render(beadTag))
 		if selected {
-			line = selectedStyle.Render(line)
+			header = selectedStyle.Render(header)
 		}
-		lines = append(lines, line)
+		lines = append(lines, header)
+
+		// Message starts on next line, indented slightly
+		wrapped := wordWrap(item.Message, interiorWidth-2)
+		for _, part := range wrapped {
+			line := "  " + dimStyle.Render(part)
+			if selected {
+				line = selectedStyle.Render(line)
+			}
+			lines = append(lines, line)
+		}
+	} else {
+		// Message starts on the same line as the prefix
+		wrapped := wordWrap(item.Message, msgWidth)
+		if len(wrapped) == 0 {
+			wrapped = []string{""}
+		}
+
+		indent := strings.Repeat(" ", prefixVisLen)
+		for i, part := range wrapped {
+			var line string
+			if i == 0 {
+				line = fmt.Sprintf("%s %s %s%s",
+					dimStyle.Render(item.Timestamp),
+					eventTypeStyle(item.Type),
+					dimStyle.Render(beadTag),
+					part)
+			} else {
+				line = indent + dimStyle.Render(part)
+			}
+			if selected {
+				line = selectedStyle.Render(line)
+			}
+			lines = append(lines, line)
+		}
 	}
 	return lines
 }
@@ -658,36 +672,49 @@ func truncate(s string, maxLen int) string {
 }
 
 // wordWrap splits s into lines of at most maxWidth characters,
-// preferring to break at spaces. Newlines in s are normalized to spaces.
+// preferring to break at spaces. Newlines in s are respected.
 func wordWrap(s string, maxWidth int) []string {
 	if maxWidth < 10 {
 		maxWidth = 10
 	}
-	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
-	if s == "" {
-		return []string{""}
-	}
-	if len(s) <= maxWidth {
-		return []string{s}
-	}
 
 	var result []string
-	for len(s) > maxWidth {
-		breakAt := -1
-		for i := maxWidth; i >= maxWidth/2; i-- {
-			if s[i] == ' ' {
-				breakAt = i
-				break
+	paragraphs := strings.Split(s, "\n")
+	for _, p := range paragraphs {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			if len(paragraphs) > 1 {
+				result = append(result, "")
 			}
+			continue
 		}
-		if breakAt == -1 {
-			breakAt = maxWidth
+
+		for len(p) > maxWidth {
+			breakAt := -1
+			// Look for last space within maxWidth
+			searchLen := maxWidth
+			if searchLen >= len(p) {
+				searchLen = len(p) - 1
+			}
+			for i := searchLen; i >= maxWidth/2; i-- {
+				if p[i] == ' ' {
+					breakAt = i
+					break
+				}
+			}
+			if breakAt == -1 {
+				breakAt = maxWidth
+			}
+			result = append(result, p[:breakAt])
+			p = strings.TrimLeft(p[breakAt:], " ")
 		}
-		result = append(result, s[:breakAt])
-		s = strings.TrimLeft(s[breakAt:], " ")
+		if len(p) > 0 {
+			result = append(result, p)
+		}
 	}
-	if len(s) > 0 {
-		result = append(result, s)
+
+	if len(result) == 0 {
+		return []string{""}
 	}
 	return result
 
