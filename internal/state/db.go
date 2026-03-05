@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/provider"
@@ -86,8 +87,17 @@ func (db *DB) Conn() *sql.DB {
 
 // migrate creates or updates the database schema.
 func (db *DB) migrate() error {
-	_, err := db.conn.Exec(schema)
-	return err
+	if _, err := db.conn.Exec(schema); err != nil {
+		return err
+	}
+	// Additive migrations for existing databases
+	if _, err := db.conn.Exec(`ALTER TABLE workers ADD COLUMN phase TEXT NOT NULL DEFAULT ''`); err != nil {
+		// Ignore error if column already exists (SQLite doesn't have IF NOT EXISTS for columns)
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
 }
 
 const schema = `
@@ -98,6 +108,7 @@ CREATE TABLE IF NOT EXISTS workers (
     branch      TEXT NOT NULL DEFAULT '',
     pid         INTEGER NOT NULL DEFAULT 0,
     status      TEXT NOT NULL DEFAULT 'pending',
+    phase       TEXT NOT NULL DEFAULT '',
     started_at  TEXT NOT NULL,
     completed_at TEXT,
     log_path    TEXT NOT NULL DEFAULT ''
@@ -181,12 +192,13 @@ CREATE TABLE IF NOT EXISTS provider_quotas (
 type WorkerStatus string
 
 const (
-	WorkerPending   WorkerStatus = "pending"
-	WorkerRunning   WorkerStatus = "running"
-	WorkerReviewing WorkerStatus = "reviewing"
-	WorkerDone      WorkerStatus = "done"
-	WorkerFailed    WorkerStatus = "failed"
-	WorkerTimeout   WorkerStatus = "timeout"
+	WorkerPending    WorkerStatus = "pending"
+	WorkerRunning    WorkerStatus = "running"
+	WorkerReviewing  WorkerStatus = "reviewing"
+	WorkerMonitoring WorkerStatus = "monitoring"
+	WorkerDone       WorkerStatus = "done"
+	WorkerFailed     WorkerStatus = "failed"
+	WorkerTimeout    WorkerStatus = "timeout"
 )
 
 // Worker represents a Smith worker entry.
@@ -197,6 +209,7 @@ type Worker struct {
 	Branch      string
 	PID         int
 	Status      WorkerStatus
+	Phase       string // active component: smith|temper|warden|bellows|idle
 	StartedAt   time.Time
 	CompletedAt *time.Time
 	LogPath     string
@@ -205,11 +218,17 @@ type Worker struct {
 // InsertWorker adds a new worker record.
 func (db *DB) InsertWorker(w *Worker) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO workers (id, bead_id, anvil, branch, pid, status, started_at, log_path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		w.ID, w.BeadID, w.Anvil, w.Branch, w.PID, string(w.Status),
+		`INSERT INTO workers (id, bead_id, anvil, branch, pid, status, phase, started_at, log_path)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, w.BeadID, w.Anvil, w.Branch, w.PID, string(w.Status), w.Phase,
 		w.StartedAt.Format(time.RFC3339), w.LogPath,
 	)
+	return err
+}
+
+// UpdateWorkerPhase updates the active pipeline phase for a worker.
+func (db *DB) UpdateWorkerPhase(id string, phase string) error {
+	_, err := db.conn.Exec(`UPDATE workers SET phase = ? WHERE id = ?`, phase, id)
 	return err
 }
 
@@ -240,14 +259,38 @@ func (db *DB) UpdateWorkerLogPath(id string, logPath string) error {
 
 // ActiveWorkers returns all workers with non-terminal status.
 func (db *DB) ActiveWorkers() ([]Worker, error) {
-	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, started_at, completed_at, log_path
-		FROM workers WHERE status IN ('pending', 'running', 'reviewing')
+	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
+		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
 		ORDER BY started_at`)
+}
+
+// ActiveWorkerByBead returns the non-terminal worker for a given bead ID.
+func (db *DB) ActiveWorkerByBead(beadID string) (*Worker, error) {
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
+		FROM workers WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')
+		LIMIT 1`, beadID)
+	if err != nil {
+		return nil, err
+	}
+	if len(workers) == 0 {
+		return nil, nil
+	}
+	return &workers[0], nil
+}
+
+// CompleteWorkersByBead marks all non-terminal workers for a bead as Done.
+func (db *DB) CompleteWorkersByBead(beadID string) error {
+	_, err := db.conn.Exec(
+		`UPDATE workers SET status = ?, completed_at = ?
+		 WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')`,
+		string(WorkerDone), time.Now().Format(time.RFC3339), beadID,
+	)
+	return err
 }
 
 // WorkersByAnvil returns all workers for a given anvil.
 func (db *DB) WorkersByAnvil(anvil string) ([]Worker, error) {
-	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, started_at, completed_at, log_path
+	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
 		FROM workers WHERE anvil = ?
 		ORDER BY started_at DESC`, anvil)
 }
@@ -255,7 +298,7 @@ func (db *DB) WorkersByAnvil(anvil string) ([]Worker, error) {
 // CompletedWorkers returns workers in terminal states (done, failed, timeout),
 // ordered by most recently completed first. Limit 0 means no limit.
 func (db *DB) CompletedWorkers(limit int) ([]Worker, error) {
-	query := `SELECT id, bead_id, anvil, branch, pid, status, started_at, completed_at, log_path
+	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
 		FROM workers WHERE status IN ('done', 'failed', 'timeout')
 		ORDER BY completed_at DESC`
 	if limit > 0 {
@@ -266,7 +309,7 @@ func (db *DB) CompletedWorkers(limit int) ([]Worker, error) {
 
 // AllWorkers returns all workers ordered by most recent first.
 func (db *DB) AllWorkers(limit int) ([]Worker, error) {
-	query := `SELECT id, bead_id, anvil, branch, pid, status, started_at, completed_at, log_path
+	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
 		FROM workers ORDER BY started_at DESC`
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
@@ -288,7 +331,7 @@ func (db *DB) queryWorkers(query string, args ...any) ([]Worker, error) {
 		var startedAt string
 		var completedAt sql.NullString
 		if err := rows.Scan(&w.ID, &w.BeadID, &w.Anvil, &w.Branch, &w.PID,
-			&status, &startedAt, &completedAt, &w.LogPath); err != nil {
+			&status, &w.Phase, &startedAt, &completedAt, &w.LogPath); err != nil {
 			return nil, err
 		}
 		w.Status = WorkerStatus(status)

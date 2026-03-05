@@ -167,6 +167,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		})
 		_ = m.db.UpdatePRStatus(pr.Number, state.PRMerged)
 		_ = m.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged", pr.Number), pr.BeadID, pr.Anvil)
+		_ = m.db.CompleteWorkersByBead(pr.BeadID)
 	} else if status.IsClosed() && !lastSnap.IsClosed {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
@@ -179,6 +180,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		})
 		_ = m.db.UpdatePRStatus(pr.Number, state.PRClosed)
 		_ = m.db.LogEvent(state.EventPRClosed, fmt.Sprintf("PR #%d closed without merge", pr.Number), pr.BeadID, pr.Anvil)
+		_ = m.db.CompleteWorkersByBead(pr.BeadID)
 	}
 
 	if newSnap.CIPassing && !lastSnap.CIPassing {

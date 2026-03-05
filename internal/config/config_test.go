@@ -116,20 +116,20 @@ func TestConfig_Validate(t *testing.T) {
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
-						Path:                       "/path/to/repo",
-						AutoDispatch:               "priority",
+						Path:                    "/path/to/repo",
+						AutoDispatch:            "priority",
 						AutoDispatchMinPriority: -1,
 					},
 					"test2": {
-						Path:                       "/path/to/repo",
-						AutoDispatch:               "priority",
+						Path:                    "/path/to/repo",
+						AutoDispatch:            "priority",
 						AutoDispatchMinPriority: 5,
 					},
 				},
 			},
 			expected: []string{
-				"anvil \"test\": auto_dispatch_min_priority must be 1-4 when auto_dispatch is \"priority\" (0 would only dispatch critical beads; set explicitly if intentional)",
-				"anvil \"test2\": auto_dispatch_min_priority must be 1-4 when auto_dispatch is \"priority\" (0 would only dispatch critical beads; set explicitly if intentional)",
+				"anvil \"test\": auto_dispatch_min_priority must be 0-4 when auto_dispatch is \"priority\"",
+				"anvil \"test2\": auto_dispatch_min_priority must be 0-4 when auto_dispatch is \"priority\"",
 			},
 		},
 	}

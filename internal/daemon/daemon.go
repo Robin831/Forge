@@ -284,10 +284,21 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		}
 		defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
 
+		workerID := fmt.Sprintf("%s-%s-%d", req.Anvil, req.BeadID, time.Now().UnixNano())
+
 		switch req.Action {
 		case lifecycle.ActionFixCI:
 			d.logger.Info("spawning CI fix worker", "pr", req.PRNumber, "bead", req.BeadID)
-			cifix.Fix(ctx, cifix.FixParams{
+			_ = d.db.InsertWorker(&state.Worker{
+				ID:        workerID,
+				BeadID:    req.BeadID,
+				Anvil:     req.Anvil,
+				Branch:    req.Branch,
+				Status:    state.WorkerRunning,
+				Phase:     "cifix",
+				StartedAt: time.Now(),
+			})
+			res := cifix.Fix(ctx, cifix.FixParams{
 				WorktreePath: wt.Path,
 				BeadID:       req.BeadID,
 				AnvilName:    req.Anvil,
@@ -297,10 +308,24 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				DB:           d.db,
 				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
 			})
+			status := state.WorkerDone
+			if res.Error != nil {
+				status = state.WorkerFailed
+			}
+			_ = d.db.UpdateWorkerStatus(workerID, status)
 
 		case lifecycle.ActionFixReview:
 			d.logger.Info("spawning review fix worker", "pr", req.PRNumber, "bead", req.BeadID)
-			reviewfix.Fix(ctx, reviewfix.FixParams{
+			_ = d.db.InsertWorker(&state.Worker{
+				ID:        workerID,
+				BeadID:    req.BeadID,
+				Anvil:     req.Anvil,
+				Branch:    req.Branch,
+				Status:    state.WorkerRunning,
+				Phase:     "reviewfix",
+				StartedAt: time.Now(),
+			})
+			res := reviewfix.Fix(ctx, reviewfix.FixParams{
 				WorktreePath: wt.Path,
 				BeadID:       req.BeadID,
 				AnvilName:    req.Anvil,
@@ -310,6 +335,11 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				DB:           d.db,
 				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
 			})
+			status := state.WorkerDone
+			if res.Error != nil {
+				status = state.WorkerFailed
+			}
+			_ = d.db.UpdateWorkerStatus(workerID, status)
 
 		case lifecycle.ActionCloseBead:
 			d.logger.Info("closing bead after merge", "bead", req.BeadID)

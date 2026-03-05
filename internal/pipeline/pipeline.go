@@ -144,6 +144,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		// Step 2: Run Smith (with provider fallback on rate limit)
 		log.Printf("[pipeline:%s] Running Smith (provider: %s)", workerID, providers[activeProviderIdx].Kind)
+		_ = p.DB.UpdateWorkerPhase(workerID, "smith")
 		_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d (provider: %s)", iteration, providers[activeProviderIdx].Kind), p.Bead.ID, p.AnvilName)
 
 		logDir := wt.Path + "/.forge-logs"
@@ -230,6 +231,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		// Step 3: Run Temper (build/test)
 		log.Printf("[pipeline:%s] Running Temper verification", workerID)
+		_ = p.DB.UpdateWorkerPhase(workerID, "temper")
 		temperCfg := p.TemperConfig
 		if temperCfg == nil {
 			detected := temper.DefaultConfig(wt.Path)
@@ -257,6 +259,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		// Step 4: Run Warden review
 		log.Printf("[pipeline:%s] Running Warden review", workerID)
+		_ = p.DB.UpdateWorkerPhase(workerID, "warden")
 		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
 
 		reviewResult, err := warden.Review(ctx, wt.Path, p.Bead.ID, p.AnvilConfig.Path, p.DB, p.AnvilName, providers...)
@@ -282,7 +285,8 @@ func Run(ctx context.Context, p Params) *Outcome {
 			log.Printf("[pipeline:%s] Warden approved", workerID)
 			outcome.Verdict = warden.VerdictApprove
 			outcome.Success = true
-			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerMonitoring)
+			_ = p.DB.UpdateWorkerPhase(workerID, "bellows")
 			_ = p.DB.LogEvent(state.EventWardenPass, reviewResult.Summary, p.Bead.ID, p.AnvilName)
 			outcome.Duration = time.Since(start)
 			return outcome
