@@ -24,6 +24,7 @@ const (
 	EventReviewChanges   = "review_changes_requested"
 	EventPRMerged        = "pr_merged"
 	EventPRClosed        = "pr_closed"
+	EventPRConflicting   = "pr_conflicting"
 )
 
 // PREvent is emitted when a PR status changes.
@@ -58,6 +59,7 @@ type prSnapshot struct {
 	HasUnresolvedThreads bool
 	IsMerged             bool
 	IsClosed             bool
+	IsConflicting        bool
 }
 
 // New creates a Bellows monitor.
@@ -140,8 +142,12 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 
 	m.mu.Lock()
 	lastSnap := m.lastStatuses[pr.Number]
+	isFirstCheck := lastSnap == nil
 	if lastSnap == nil {
-		lastSnap = &prSnapshot{}
+		// Seed CIPassing=true so that a PR that is already failing when the
+		// daemon starts (or after a restart) still triggers an EventCIFailed
+		// on the very first poll.
+		lastSnap = &prSnapshot{CIPassing: true}
 	}
 	m.mu.Unlock()
 
@@ -152,7 +158,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		HasUnresolvedThreads: status.UnresolvedThreads > 0,
 		IsMerged:             status.IsMerged(),
 		IsClosed:             status.IsClosed(),
+		IsConflicting:        status.Mergeable == "CONFLICTING",
 	}
+	_ = isFirstCheck // used implicitly via seeded lastSnap
 
 	// Detect transitions and emit events
 	if status.IsMerged() && !lastSnap.IsMerged {
@@ -219,6 +227,22 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Timestamp: time.Now(),
 		})
 		_ = m.db.UpdatePRStatus(pr.Number, state.PRApproved)
+	}
+
+	// Detect merge conflicts (CONFLICTING → fire event so operator / lifecycle can rebase)
+	if newSnap.IsConflicting && !lastSnap.IsConflicting {
+		m.emit(ctx, PREvent{
+			PRNumber:  pr.Number,
+			BeadID:    pr.BeadID,
+			Anvil:     pr.Anvil,
+			Branch:    status.HeadRefName,
+			EventType: EventPRConflicting,
+			Details:   fmt.Sprintf("PR #%d has merge conflicts with base branch", pr.Number),
+			Timestamp: time.Now(),
+		})
+		_ = m.db.LogEvent(state.EventPRConflicting,
+			fmt.Sprintf("PR #%d: merge conflict detected — manual rebase required", pr.Number),
+			pr.BeadID, pr.Anvil)
 	}
 
 	// Trigger on "CHANGES_REQUESTED" or transition from 0 to >0 unresolved threads (Bug 1)
