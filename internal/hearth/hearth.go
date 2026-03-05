@@ -835,9 +835,9 @@ func wordWrapCount(s string, maxWidth int) int {
 	return count
 }
 
-// wordWrap splits s into lines of at most maxWidth runes, preferring to break
-// at spaces. Newlines in s are preserved as hard line breaks; leading
-// indentation on each input line is kept intact.
+// wordWrap splits s into lines of at most maxWidth runes (by rune count, not
+// display width), preferring to break at spaces. Newlines in s are preserved
+// as hard line breaks; leading indentation on each input line is kept intact.
 func wordWrap(s string, maxWidth int) []string {
 	if maxWidth < 1 {
 		maxWidth = 1
@@ -846,7 +846,7 @@ func wordWrap(s string, maxWidth int) []string {
 	var result []string
 	paragraphs := strings.Split(s, "\n")
 	for _, pStr := range paragraphs {
-		if pStr == "" {
+		if strings.TrimSpace(pStr) == "" {
 			if len(paragraphs) > 1 {
 				result = append(result, "")
 			}
