@@ -19,6 +19,7 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
+	"github.com/Robin831/Forge/internal/state"
 )
 
 // Verdict represents the Warden's review decision.
@@ -61,10 +62,15 @@ type ReviewIssue struct {
 // Review runs a Warden review of the changes in the given worktree.
 // It gets the git diff, spawns a Claude review session, and parses the verdict.
 //
+// db and anvilName are used to log lifecycle events; db may be nil to skip logging.
 // providers is the ordered list of AI providers to try. When empty,
 // provider.Defaults() is used. Provider fallback applies on rate limit.
-func Review(ctx context.Context, worktreePath, beadID, anvilPath string, providers ...provider.Provider) (*ReviewResult, error) {
+func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *state.DB, anvilName string, providers ...provider.Provider) (*ReviewResult, error) {
 	start := time.Now()
+
+	if db != nil {
+		_ = db.LogEvent(state.EventWardenStarted, fmt.Sprintf("Starting review for %s", beadID), beadID, anvilName)
+	}
 
 	pvList := providers
 	if len(pvList) == 0 {
@@ -127,6 +133,14 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, provide
 		outputText = smithResult.Output
 	}
 	parseVerdict(outputText, result)
+
+	if db != nil {
+		evtType := state.EventWardenPass
+		if result.Verdict == VerdictReject || result.Verdict == VerdictRequestChanges {
+			evtType = state.EventWardenReject
+		}
+		_ = db.LogEvent(evtType, fmt.Sprintf("Verdict: %s — %s", result.Verdict, result.Summary), beadID, anvilName)
+	}
 
 	return result, nil
 }

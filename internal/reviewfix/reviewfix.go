@@ -107,7 +107,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		prompt := buildReviewFixPrompt(p, actionable)
 
 		// Step 3: Spawn Smith
-		_ = p.DB.LogEvent("review_fix_started",
+		_ = p.DB.LogEvent(state.EventReviewFixStarted,
 			fmt.Sprintf("PR #%d: attempt %d, %d comments", p.PRNumber, attempt, len(actionable)),
 			p.BeadID, p.AnvilName)
 
@@ -115,6 +115,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		process, err := smith.Spawn(ctx, p.WorktreePath, prompt, logDir, p.ExtraFlags)
 		if err != nil {
 			result.Error = fmt.Errorf("spawning smith for review fix: %w", err)
+			_ = p.DB.LogEvent(state.EventReviewFixFailed, result.Error.Error(), p.BeadID, p.AnvilName)
 			result.Duration = time.Since(start)
 			return result
 		}
@@ -122,7 +123,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		smithResult := process.Wait()
 		if smithResult.ExitCode != 0 {
 			log.Printf("[reviewfix] PR #%d: Smith fix attempt %d failed (exit %d)", p.PRNumber, attempt, smithResult.ExitCode)
-			_ = p.DB.LogEvent("review_fix_failed",
+			_ = p.DB.LogEvent(state.EventReviewFixFailed,
 				fmt.Sprintf("PR #%d: Smith exit %d on attempt %d", p.PRNumber, smithResult.ExitCode, attempt),
 				p.BeadID, p.AnvilName)
 			continue
@@ -143,7 +144,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			}
 		}
 
-		_ = p.DB.LogEvent("review_fix_success",
+		_ = p.DB.LogEvent(state.EventReviewFixSuccess,
 			fmt.Sprintf("PR #%d: Addressed %d comments on attempt %d", p.PRNumber, len(actionable), attempt),
 			p.BeadID, p.AnvilName)
 		result.Duration = time.Since(start)
@@ -151,7 +152,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	}
 
 	result.Error = fmt.Errorf("could not address review comments after %d attempts", MaxAttempts)
-	_ = p.DB.LogEvent("review_fix_exhausted",
+	_ = p.DB.LogEvent(state.EventReviewFixFailed,
 		fmt.Sprintf("PR #%d: Exhausted %d fix attempts for %d comments", p.PRNumber, MaxAttempts, len(actionable)),
 		p.BeadID, p.AnvilName)
 	result.Duration = time.Since(start)

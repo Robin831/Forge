@@ -165,7 +165,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		"anvils", len(d.cfg.Anvils),
 		"poll_interval", d.cfg.Settings.PollInterval,
 	)
-	d.db.LogEvent(state.EventSmithStarted, "Forge daemon started", "", "")
+	d.db.LogEvent(state.EventDaemonStarted, "Forge daemon started", "", "")
 
 	// Clean up orphans from any previous crash
 	if cleaned := d.shutdownMgr.CleanupOrphans(); cleaned > 0 {
@@ -186,7 +186,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.configWatcher = hotreload.NewWatcher(d.configFile, d.cfg, d.logger)
 		d.configWatcher.OnChange(func(old, new *config.Config) {
 			d.cfg = new
-			d.db.LogEvent("config_reload", "Configuration reloaded", "", "")
+			d.db.LogEvent(state.EventConfigReload, "Configuration reloaded", "", "")
 		})
 		go func() {
 			if err := d.configWatcher.Start(); err != nil {
@@ -238,7 +238,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			killed := d.shutdownMgr.GracefulShutdown()
 			d.shutdownMgr.CleanupWorktrees()
 			d.wg.Wait() // wait for all dispatch goroutines
-			d.db.LogEvent(state.EventSmithDone,
+			d.db.LogEvent(state.EventDaemonStopped,
 				fmt.Sprintf("Forge daemon stopped (killed %d workers)", killed), "", "")
 			return nil
 
@@ -347,10 +347,10 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	for _, r := range results {
 		if r.Err != nil {
 			d.logger.Warn("poll error", "anvil", r.Name, "error", r.Err)
-			_ = d.db.LogEvent("poll_error", r.Err.Error(), "", r.Name)
+			_ = d.db.LogEvent(state.EventPollError, r.Err.Error(), "", r.Name)
 		} else {
 			d.logger.Info("poll complete", "anvil", r.Name, "ready", len(r.Beads))
-			_ = d.db.LogEvent("poll", fmt.Sprintf("Polled anvil: %s (%d ready)", r.Name, len(r.Beads)), "", r.Name)
+			_ = d.db.LogEvent(state.EventPoll, fmt.Sprintf("Polled anvil: %s (%d ready)", r.Name, len(r.Beads)), "", r.Name)
 		}
 	}
 
