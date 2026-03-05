@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/worktree"
 )
@@ -45,17 +47,17 @@ type Manager struct {
 	worktrees   *worktree.Manager
 	logger      *slog.Logger
 	gracePeriod time.Duration
-	anvilPaths  []string // Configured anvil directory paths
+	anvils      map[string]string // anvil name -> directory path
 }
 
 // NewManager creates a new shutdown manager.
-func NewManager(db *state.DB, wm *worktree.Manager, logger *slog.Logger, anvilPaths []string) *Manager {
+func NewManager(db *state.DB, wm *worktree.Manager, logger *slog.Logger, anvils map[string]string) *Manager {
 	return &Manager{
 		db:          db,
 		worktrees:   wm,
 		logger:      logger,
 		gracePeriod: DefaultGracePeriod,
-		anvilPaths:  anvilPaths,
+		anvils:      anvils,
 	}
 }
 
@@ -134,17 +136,31 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 	}
 
 	for _, w := range workers {
+		isDead := false
 		if w.PID > 0 && !isProcessAlive(w.PID) {
 			m.logger.Warn("found orphaned worker (process dead)", "id", w.ID, "pid", w.PID)
-			_ = m.db.UpdateWorkerStatus(w.ID, state.WorkerFailed)
-			m.db.LogEvent(state.EventError,
-				fmt.Sprintf("Orphaned worker %s cleaned up (PID %d dead)", w.ID, w.PID),
-				w.BeadID, w.Anvil)
-			cleaned++
+			isDead = true
 		} else if w.PID == 0 {
 			// Worker with no PID is stale
 			m.logger.Warn("found stale worker (no PID)", "id", w.ID)
+			isDead = true
+		}
+
+		if isDead {
 			_ = m.db.UpdateWorkerStatus(w.ID, state.WorkerFailed)
+			m.db.LogEvent(state.EventError,
+				fmt.Sprintf("Orphaned worker %s cleaned up", w.ID),
+				w.BeadID, w.Anvil)
+
+			// Reset bead status to open in bd
+			if anvilPath, ok := m.anvils[w.Anvil]; ok {
+				if err := m.resetBead(w.BeadID, anvilPath); err != nil {
+					m.logger.Warn("failed to reset bead status", "bead", w.BeadID, "error", err)
+				} else {
+					m.logger.Info("reset bead status to open", "bead", w.BeadID, "anvil", w.Anvil)
+				}
+			}
+
 			cleaned++
 		}
 	}
@@ -160,7 +176,7 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 	// 3. Clean up abandoned worktrees across all anvils
 	if m.worktrees != nil {
 		ctx := context.Background()
-		for _, anvilPath := range m.anvilPaths {
+		for name, anvilPath := range m.anvils {
 			wts, err := m.worktrees.List(anvilPath)
 			if err != nil {
 				continue
@@ -169,7 +185,7 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 				// Check if any active worker references this worktree
 				used := false
 				for _, w := range workers {
-					if w.Branch != "" && strings.Contains(wtPath, w.Branch) {
+					if w.Anvil == name && w.Branch != "" && strings.Contains(wtPath, w.Branch) {
 						used = true
 						break
 					}
@@ -205,7 +221,7 @@ func (m *Manager) CleanupWorktrees() {
 		return
 	}
 	ctx := context.Background()
-	for _, anvilPath := range m.anvilPaths {
+	for _, anvilPath := range m.anvils {
 		wts, err := m.worktrees.List(anvilPath)
 		if err != nil {
 			continue
@@ -218,6 +234,20 @@ func (m *Manager) CleanupWorktrees() {
 			})
 		}
 	}
+}
+
+// resetBead marks a bead as open via bd update.
+func (m *Manager) resetBead(beadID, anvilPath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open"))
+	cmd.Dir = anvilPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("bd update %s --status=open: %w\n%s", beadID, err, out)
+	}
+	return nil
 }
 
 // signalProcess sends a signal to a process.

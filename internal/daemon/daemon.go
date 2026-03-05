@@ -119,21 +119,21 @@ func New(cfg *config.Config) (*Daemon, error) {
 		pidFile:       filepath.Join(forgeDir, PIDFileName),
 		configFile:    config.ConfigFilePath(""),
 		logFile:       logFile,
-		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPaths(cfg)),
+		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
 	}, nil
 }
 
-// anvilPaths extracts directory paths from all configured anvils.
-func anvilPaths(cfg *config.Config) []string {
-	paths := make([]string, 0, len(cfg.Anvils))
-	for _, a := range cfg.Anvils {
+// anvilPathMap extracts directory paths from all configured anvils.
+func anvilPathMap(cfg *config.Config) map[string]string {
+	m := make(map[string]string)
+	for name, a := range cfg.Anvils {
 		if a.Path != "" {
-			paths = append(paths, a.Path)
+			m[name] = a.Path
 		}
 	}
-	return paths
+	return m
 }
 
 // Run starts the daemon's main loop. It blocks until ctx is cancelled
