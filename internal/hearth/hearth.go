@@ -193,12 +193,7 @@ func (m Model) View() string {
 		return "Initializing The Forge..."
 	}
 
-	// Calculate panel widths (25% / 25% / 50% distribution)
-	remainingWidth := m.width - 4 // 4 for borders/gaps
-	queueWidth := remainingWidth / 4
-	workerWidth := remainingWidth / 4
-	eventWidth := remainingWidth - queueWidth - workerWidth
-
+	queueWidth, workerWidth, eventWidth := m.getPanelWidths()
 	contentHeight := m.height - 4 // header + footer
 
 	// Build panels
@@ -223,6 +218,14 @@ func (m Model) View() string {
 	)
 }
 
+func (m Model) getPanelWidths() (queueWidth, workerWidth, eventWidth int) {
+	remainingWidth := m.width - 4 // 4 for borders/gaps
+	queueWidth = remainingWidth / 4
+	workerWidth = remainingWidth / 4
+	eventWidth = remainingWidth - queueWidth - workerWidth
+	return
+}
+
 // scrollDown scrolls the focused panel down.
 func (m *Model) scrollDown() {
 	switch m.focused {
@@ -235,10 +238,7 @@ func (m *Model) scrollDown() {
 			m.workerScroll++
 		}
 	case PanelEvents:
-		remainingWidth := m.width - 4
-		queueWidth := remainingWidth / 4
-		workerWidth := remainingWidth / 4
-		eventWidth := remainingWidth - queueWidth - workerWidth
+		_, _, eventWidth := m.getPanelWidths()
 		allLines := m.renderAllEventLines(eventWidth)
 		if m.eventScroll < len(allLines)-1 {
 			m.eventScroll++
@@ -420,10 +420,20 @@ func (m Model) renderEvents(width, height int) string {
 // renderAllEventLines flattens all events into a single slice of rendered lines.
 func (m Model) renderAllEventLines(width int) []string {
 	var allLines []string
-	for _, event := range m.events {
-		// In line-based scrolling, we don't highlight a single event row by default
-		// unless we're at the very top and it's following.
-		allLines = append(allLines, m.renderEventLines(event, false, width)...)
+
+	// Track which event the current scroll position belongs to
+	selectedEventIdx := -1
+	tempLineCount := 0
+	for i, event := range m.events {
+		lines := m.renderEventLines(event, false, width)
+		if selectedEventIdx == -1 && tempLineCount+len(lines) > m.eventScroll {
+			selectedEventIdx = i
+		}
+		tempLineCount += len(lines)
+	}
+
+	for i, event := range m.events {
+		allLines = append(allLines, m.renderEventLines(event, i == selectedEventIdx, width)...)
 	}
 	return allLines
 }
@@ -674,30 +684,27 @@ func truncate(s string, maxLen int) string {
 // wordWrap splits s into lines of at most maxWidth characters,
 // preferring to break at spaces. Newlines in s are respected.
 func wordWrap(s string, maxWidth int) []string {
-	if maxWidth < 10 {
-		maxWidth = 10
+	if maxWidth < 1 {
+		maxWidth = 1
 	}
 
 	var result []string
 	paragraphs := strings.Split(s, "\n")
-	for _, p := range paragraphs {
-		p = strings.TrimSpace(p)
-		if p == "" {
+	for _, pStr := range paragraphs {
+		pStr = strings.TrimSpace(pStr)
+		if pStr == "" {
 			if len(paragraphs) > 1 {
 				result = append(result, "")
 			}
 			continue
 		}
 
+		p := []rune(pStr)
 		for len(p) > maxWidth {
 			breakAt := -1
 			// Look for last space within maxWidth
-			searchLen := maxWidth
-			if searchLen >= len(p) {
-				searchLen = len(p) - 1
-			}
-			for i := searchLen; i >= maxWidth/2; i-- {
-				if p[i] == ' ' {
+			for i := maxWidth; i >= maxWidth/2; i-- {
+				if i < len(p) && p[i] == ' ' {
 					breakAt = i
 					break
 				}
@@ -705,11 +712,15 @@ func wordWrap(s string, maxWidth int) []string {
 			if breakAt == -1 {
 				breakAt = maxWidth
 			}
-			result = append(result, p[:breakAt])
-			p = strings.TrimLeft(p[breakAt:], " ")
+			result = append(result, string(p[:breakAt]))
+			p = p[breakAt:]
+			// Trim leading spaces for the next line
+			for len(p) > 0 && p[0] == ' ' {
+				p = p[1:]
+			}
 		}
 		if len(p) > 0 {
-			result = append(result, p)
+			result = append(result, string(p))
 		}
 	}
 
