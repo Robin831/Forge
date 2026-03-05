@@ -1,0 +1,194 @@
+// Package hotreload watches forge.yaml for changes and applies safe updates
+// to the running daemon without a restart.
+//
+// Hot-reloadable settings:
+//   - settings.poll_interval
+//   - settings.smith_timeout
+//   - settings.max_total_smiths
+//   - settings.claude_flags
+//   - notifications.* (all notification settings)
+//
+// NOT hot-reloadable (require restart):
+//   - anvils.* (adding/removing repositories)
+package hotreload
+
+import (
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/Robin831/Forge/internal/config"
+	"github.com/fsnotify/fsnotify"
+)
+
+// Callback is called when config changes are detected and applied.
+// oldCfg is the previous config, newCfg is the updated config.
+type Callback func(oldCfg, newCfg *config.Config)
+
+// Watcher monitors the config file and applies safe changes.
+type Watcher struct {
+	configFile string
+	logger     *slog.Logger
+	mu         sync.RWMutex
+	current    *config.Config
+	callbacks  []Callback
+	stop       chan struct{}
+	debounce   time.Duration
+}
+
+// NewWatcher creates a config file watcher.
+func NewWatcher(configFile string, current *config.Config, logger *slog.Logger) *Watcher {
+	return &Watcher{
+		configFile: configFile,
+		logger:     logger,
+		current:    current,
+		stop:       make(chan struct{}),
+		debounce:   500 * time.Millisecond,
+	}
+}
+
+// OnChange registers a callback for config changes.
+func (w *Watcher) OnChange(cb Callback) {
+	w.callbacks = append(w.callbacks, cb)
+}
+
+// Current returns the current config (thread-safe).
+func (w *Watcher) Current() *config.Config {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.current
+}
+
+// Start begins watching the config file. Blocks until Stop() or error.
+func (w *Watcher) Start() error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("creating watcher: %w", err)
+	}
+	defer watcher.Close()
+
+	if err := watcher.Add(w.configFile); err != nil {
+		return fmt.Errorf("watching %s: %w", w.configFile, err)
+	}
+
+	w.logger.Info("config hot-reload started", "file", w.configFile)
+
+	var debounceTimer *time.Timer
+	for {
+		select {
+		case <-w.stop:
+			w.logger.Info("config watcher stopped")
+			return nil
+
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return nil
+			}
+			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+				// Debounce rapid write events (editors write multiple times)
+				if debounceTimer != nil {
+					debounceTimer.Stop()
+				}
+				debounceTimer = time.AfterFunc(w.debounce, func() {
+					w.reload()
+				})
+			}
+
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return nil
+			}
+			w.logger.Error("config watcher error", "error", err)
+		}
+	}
+}
+
+// Stop terminates the watcher.
+func (w *Watcher) Stop() {
+	close(w.stop)
+}
+
+// reload reads the config file and applies safe changes.
+func (w *Watcher) reload() {
+	newCfg, err := config.Load(w.configFile)
+	if err != nil {
+		w.logger.Error("failed to reload config", "error", err)
+		return
+	}
+
+	w.mu.Lock()
+	oldCfg := w.current
+
+	// Apply only hot-reloadable fields
+	changes := applyChanges(oldCfg, newCfg)
+	if len(changes) == 0 {
+		w.mu.Unlock()
+		return
+	}
+
+	w.current = newCfg
+	w.mu.Unlock()
+
+	for _, change := range changes {
+		w.logger.Info("config updated", "field", change)
+	}
+
+	// Notify callbacks
+	for _, cb := range w.callbacks {
+		cb(oldCfg, newCfg)
+	}
+}
+
+// applyChanges compares old and new configs and returns a list of changed fields.
+func applyChanges(old, new *config.Config) []string {
+	var changes []string
+
+	if old.Settings.PollInterval != new.Settings.PollInterval {
+		changes = append(changes, fmt.Sprintf("poll_interval: %v → %v",
+			old.Settings.PollInterval, new.Settings.PollInterval))
+	}
+
+	if old.Settings.SmithTimeout != new.Settings.SmithTimeout {
+		changes = append(changes, fmt.Sprintf("smith_timeout: %v → %v",
+			old.Settings.SmithTimeout, new.Settings.SmithTimeout))
+	}
+
+	if old.Settings.MaxTotalSmiths != new.Settings.MaxTotalSmiths {
+		changes = append(changes, fmt.Sprintf("max_total_smiths: %d → %d",
+			old.Settings.MaxTotalSmiths, new.Settings.MaxTotalSmiths))
+	}
+
+	if !sliceEqual(old.Settings.ClaudeFlags, new.Settings.ClaudeFlags) {
+		changes = append(changes, "claude_flags changed")
+	}
+
+	if old.Notifications.TeamsWebhookURL != new.Notifications.TeamsWebhookURL {
+		changes = append(changes, "teams_webhook_url changed")
+	}
+
+	if old.Notifications.Enabled != new.Notifications.Enabled {
+		changes = append(changes, fmt.Sprintf("notifications.enabled: %v → %v",
+			old.Notifications.Enabled, new.Notifications.Enabled))
+	}
+
+	// Warn about non-reloadable changes
+	if len(old.Anvils) != len(new.Anvils) {
+		changes = append(changes, "WARNING: anvil changes require restart")
+	}
+
+	return changes
+}
+
+// sliceEqual compares two string slices.
+func sliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

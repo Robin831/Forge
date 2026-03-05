@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/hotreload"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/state"
@@ -48,16 +49,18 @@ const (
 
 // Daemon is the main Forge orchestration daemon.
 type Daemon struct {
-	cfg         *config.Config
-	db          *state.DB
-	logger      *slog.Logger
-	ipc         *ipc.Server
-	shutdownMgr *shutdown.Manager
+	cfg           *config.Config
+	db            *state.DB
+	logger        *slog.Logger
+	ipc           *ipc.Server
+	shutdownMgr   *shutdown.Manager
+	configWatcher *hotreload.Watcher
 
-	forgeDir  string // ~/.forge
-	pidFile   string
-	logFile   *os.File
-	startTime time.Time
+	forgeDir   string // ~/.forge
+	pidFile    string
+	configFile string
+	logFile    *os.File
+	startTime  time.Time
 }
 
 // New creates a new daemon instance.
@@ -91,12 +94,13 @@ func New(cfg *config.Config) (*Daemon, error) {
 	}
 
 	return &Daemon{
-		cfg:      cfg,
-		db:       db,
-		logger:   logger,
-		forgeDir: forgeDir,
-		pidFile:  filepath.Join(forgeDir, PIDFileName),
-		logFile:  logFile,
+		cfg:         cfg,
+		db:          db,
+		logger:      logger,
+		forgeDir:    forgeDir,
+		pidFile:     filepath.Join(forgeDir, PIDFileName),
+		configFile:  config.ConfigFilePath(""),
+		logFile:     logFile,
 		shutdownMgr: shutdown.NewManager(db, worktree.NewManager(), logger, anvilPaths(cfg)),
 	}, nil
 }
@@ -144,6 +148,20 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.logger.Error("IPC server error", "error", err)
 		}
 	}()
+
+	// Start config hot-reload watcher
+	if d.configFile != "" {
+		d.configWatcher = hotreload.NewWatcher(d.configFile, d.cfg, d.logger)
+		d.configWatcher.OnChange(func(old, new *config.Config) {
+			d.cfg = new
+			d.db.LogEvent("config_reload", "Configuration reloaded", "", "")
+		})
+		go func() {
+			if err := d.configWatcher.Start(); err != nil {
+				d.logger.Error("config watcher error", "error", err)
+			}
+		}()
+	}
 
 	// Set up signal handling
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
@@ -330,6 +348,9 @@ func (d *Daemon) removePID() {
 
 // cleanup closes resources.
 func (d *Daemon) cleanup() {
+	if d.configWatcher != nil {
+		d.configWatcher.Stop()
+	}
 	if d.ipc != nil {
 		d.ipc.Close()
 	}
