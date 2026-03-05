@@ -239,8 +239,8 @@ func (m *Model) scrollDown() {
 		}
 	case PanelEvents:
 		_, _, eventWidth := m.getPanelWidths()
-		allLines := m.renderAllEventLines(eventWidth)
-		if m.eventScroll < len(allLines)-1 {
+		totalLines := m.eventTotalLineCount(eventWidth)
+		if m.eventScroll < totalLines-1 {
 			m.eventScroll++
 		}
 	}
@@ -418,24 +418,58 @@ func (m Model) renderEvents(width, height int) string {
 }
 
 // renderAllEventLines flattens all events into a single slice of rendered lines.
+// It uses eventLineCount for the selection-mapping pass to avoid a double full render.
 func (m Model) renderAllEventLines(width int) []string {
-	var allLines []string
-
-	// Track which event the current scroll position belongs to
+	// First pass: use lightweight line counts to find which event owns the scroll position.
 	selectedEventIdx := -1
-	tempLineCount := 0
+	cumulative := 0
 	for i, event := range m.events {
-		lines := m.renderEventLines(event, false, width)
-		if selectedEventIdx == -1 && tempLineCount+len(lines) > m.eventScroll {
+		count := m.eventLineCount(event, width)
+		if selectedEventIdx == -1 && cumulative+count > m.eventScroll {
 			selectedEventIdx = i
 		}
-		tempLineCount += len(lines)
+		cumulative += count
 	}
 
+	// Second pass: render each event exactly once.
+	var allLines []string
 	for i, event := range m.events {
 		allLines = append(allLines, m.renderEventLines(event, i == selectedEventIdx, width)...)
 	}
 	return allLines
+}
+
+// eventTotalLineCount returns the total number of rendered lines across all events
+// without allocating styled strings. Used by scrollDown for cheap bounds checking.
+func (m Model) eventTotalLineCount(width int) int {
+	total := 0
+	for _, event := range m.events {
+		total += m.eventLineCount(event, width)
+	}
+	return total
+}
+
+// eventLineCount returns the number of lines renderEventLines would produce for item
+// without performing any string formatting or allocation beyond wrap counting.
+func (m Model) eventLineCount(item EventItem, width int) int {
+	beadTag := ""
+	if item.BeadID != "" {
+		beadTag = "[" + item.BeadID + "] "
+	}
+
+	interiorWidth := width - 4
+	if interiorWidth < 20 {
+		interiorWidth = 20
+	}
+
+	prefixVisLen := 9 + len(item.Type) + 1 + len(beadTag)
+	msgWidth := interiorWidth - prefixVisLen
+
+	if msgWidth < 20 {
+		// header line + wrapped message lines
+		return 1 + wordWrapCount(item.Message, interiorWidth-2)
+	}
+	return wordWrapCount(item.Message, msgWidth)
 }
 
 // renderEventLines renders a single event as one or more wrapped lines.
@@ -679,6 +713,53 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// wordWrapCount returns the number of lines wordWrap would produce without
+// allocating the line strings. Mirrors the logic in wordWrap exactly.
+func wordWrapCount(s string, maxWidth int) int {
+	if maxWidth < 1 {
+		maxWidth = 1
+	}
+
+	count := 0
+	paragraphs := strings.Split(s, "\n")
+	for _, pStr := range paragraphs {
+		pStr = strings.TrimSpace(pStr)
+		if pStr == "" {
+			if len(paragraphs) > 1 {
+				count++
+			}
+			continue
+		}
+
+		p := []rune(pStr)
+		for len(p) > maxWidth {
+			breakAt := -1
+			for i := maxWidth; i >= maxWidth/2; i-- {
+				if i < len(p) && p[i] == ' ' {
+					breakAt = i
+					break
+				}
+			}
+			if breakAt == -1 {
+				breakAt = maxWidth
+			}
+			count++
+			p = p[breakAt:]
+			for len(p) > 0 && p[0] == ' ' {
+				p = p[1:]
+			}
+		}
+		if len(p) > 0 {
+			count++
+		}
+	}
+
+	if count == 0 {
+		return 1 // wordWrap returns [""] for empty input
+	}
+	return count
 }
 
 // wordWrap splits s into lines of at most maxWidth characters,
