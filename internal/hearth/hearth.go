@@ -70,21 +70,24 @@ type Model struct {
 	OnKill func(workerID string, pid int)
 
 	// State
-	focused      Panel
-	queueScroll  int
-	workerScroll int
-	eventScroll  int
-	width        int
-	height       int
-	ready        bool
+	focused        Panel
+	queueScroll    int
+	workerScroll   int
+	eventScroll    int
+	eventAutoScroll bool  // true = follow new events
+	prevEventCount int   // track event count for auto-scroll
+	width          int
+	height         int
+	ready          bool
 }
 
 // NewModel creates a new Hearth TUI model.
 // Pass nil for DataSource to run in display-only mode (no polling).
 func NewModel(ds *DataSource) Model {
 	return Model{
-		focused: PanelQueue,
-		data:    ds,
+		focused:         PanelQueue,
+		data:            ds,
+		eventAutoScroll: true,
 	}
 }
 
@@ -117,9 +120,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "j", "down":
 			m.scrollDown()
+			// Disable auto-scroll when user manually scrolls events
+			if m.focused == PanelEvents {
+				m.eventAutoScroll = false
+			}
 
 		case "k", "up":
 			m.scrollUp()
+			if m.focused == PanelEvents {
+				m.eventAutoScroll = false
+			}
+
+		case "f", "F":
+			// Toggle follow mode (auto-scroll) for events
+			if m.focused == PanelEvents {
+				m.eventAutoScroll = !m.eventAutoScroll
+				if m.eventAutoScroll {
+					m.eventScroll = 0
+				}
+			}
 
 		case "K":
 			// Kill selected worker
@@ -145,6 +164,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateEventsMsg:
 		m.events = msg.Items
+		// Auto-scroll to bottom if enabled and new events arrived
+		if m.eventAutoScroll && len(msg.Items) > m.prevEventCount {
+			if len(msg.Items) > 0 {
+				m.eventScroll = 0 // Events are newest-first from DB
+			}
+		}
+		m.prevEventCount = len(msg.Items)
 
 	case TickMsg:
 		// On each tick, refresh all panels and schedule the next tick
@@ -189,7 +215,7 @@ func (m Model) View() string {
 
 	// Footer
 	footer := footerStyle.Width(m.width).Render(
-		"Tab: switch panel • j/k: scroll • q: quit",
+		"Tab: switch panel • j/k: scroll • K: kill worker • f: follow events • q: quit",
 	)
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, panels, footer)
@@ -308,7 +334,11 @@ func (m Model) renderEvents(width, height int) string {
 		style = focusedPanelStyle.Width(width)
 	}
 
-	title := panelTitleStyle.Render(fmt.Sprintf("Events (%d)", len(m.events)))
+	scrollIndicator := ""
+	if !m.eventAutoScroll {
+		scrollIndicator = dimStyle.Render(" ⏸")
+	}
+	title := panelTitleStyle.Render(fmt.Sprintf("Events (%d)%s", len(m.events), scrollIndicator))
 
 	var lines []string
 	lines = append(lines, title)
@@ -319,7 +349,15 @@ func (m Model) renderEvents(width, height int) string {
 		visible := visibleItems(m.eventScroll, len(m.events), height-3)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.events[i]
-			line := fmt.Sprintf("%s %s %s", dimStyle.Render(item.Timestamp), eventTypeStyle(item.Type), truncate(item.Message, width-25))
+			beadTag := ""
+			if item.BeadID != "" {
+				beadTag = dimStyle.Render("["+item.BeadID+"] ")
+			}
+			line := fmt.Sprintf("%s %s %s%s",
+				dimStyle.Render(item.Timestamp),
+				eventTypeStyle(item.Type),
+				beadTag,
+				truncate(item.Message, width-30))
 			if i == m.eventScroll {
 				line = selectedStyle.Render(line)
 			}
