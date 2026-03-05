@@ -60,6 +60,9 @@ type Model struct {
 	workers []WorkerItem
 	events  []EventItem
 
+	// Data source for polling
+	data *DataSource
+
 	// State
 	focused      Panel
 	queueScroll  int
@@ -71,15 +74,25 @@ type Model struct {
 }
 
 // NewModel creates a new Hearth TUI model.
-func NewModel() Model {
+// Pass nil for DataSource to run in display-only mode (no polling).
+func NewModel(ds *DataSource) Model {
 	return Model{
 		focused: PanelQueue,
+		data:    ds,
 	}
 }
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tea.SetWindowTitle("The Forge — Hearth")
+	cmds := []tea.Cmd{tea.SetWindowTitle("The Forge — Hearth")}
+
+	// Start the data tick cycle and do an initial fetch
+	if m.data != nil {
+		cmds = append(cmds, Tick())
+		cmds = append(cmds, FetchAll(m.data.Ctx, m.data.DB, m.data.Anvils))
+	}
+
+	return tea.Batch(cmds...)
 }
 
 // Update implements tea.Model.
@@ -116,6 +129,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateEventsMsg:
 		m.events = msg.Items
+
+	case TickMsg:
+		// On each tick, refresh all panels and schedule the next tick
+		if m.data != nil {
+			return m, tea.Batch(
+				Tick(),
+				FetchAll(m.data.Ctx, m.data.DB, m.data.Anvils),
+			)
+		}
 	}
 
 	return m, nil
@@ -212,7 +234,8 @@ func (m Model) renderQueue(width, height int) string {
 		for i := visible.start; i < visible.end; i++ {
 			item := m.queue[i]
 			priority := priorityStyle(item.Priority)
-			line := fmt.Sprintf("%s %s %s", priority, item.BeadID, truncate(item.Title, width-20))
+			anvil := dimStyle.Render(item.Anvil)
+			line := fmt.Sprintf("%s %s %s %s", priority, item.BeadID, anvil, truncate(item.Title, width-28))
 			if i == m.queueScroll {
 				line = selectedStyle.Render(line)
 			}
