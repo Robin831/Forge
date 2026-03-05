@@ -179,6 +179,18 @@ func (db *DB) UpdateWorkerStatus(id string, status WorkerStatus) error {
 	return err
 }
 
+// UpdateWorkerPID updates the PID of a running worker.
+func (db *DB) UpdateWorkerPID(id string, pid int) error {
+	_, err := db.conn.Exec(`UPDATE workers SET pid = ? WHERE id = ?`, pid, id)
+	return err
+}
+
+// UpdateWorkerLogPath updates the log path of a worker.
+func (db *DB) UpdateWorkerLogPath(id string, logPath string) error {
+	_, err := db.conn.Exec(`UPDATE workers SET log_path = ? WHERE id = ?`, logPath, id)
+	return err
+}
+
 // ActiveWorkers returns all workers with non-terminal status.
 func (db *DB) ActiveWorkers() ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, started_at, completed_at, log_path
