@@ -24,7 +24,9 @@ import (
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/worktree"
 )
 
 const (
@@ -46,10 +48,11 @@ const (
 
 // Daemon is the main Forge orchestration daemon.
 type Daemon struct {
-	cfg    *config.Config
-	db     *state.DB
-	logger *slog.Logger
-	ipc    *ipc.Server
+	cfg         *config.Config
+	db          *state.DB
+	logger      *slog.Logger
+	ipc         *ipc.Server
+	shutdownMgr *shutdown.Manager
 
 	forgeDir  string // ~/.forge
 	pidFile   string
@@ -94,7 +97,19 @@ func New(cfg *config.Config) (*Daemon, error) {
 		forgeDir: forgeDir,
 		pidFile:  filepath.Join(forgeDir, PIDFileName),
 		logFile:  logFile,
+		shutdownMgr: shutdown.NewManager(db, worktree.NewManager(), logger, anvilPaths(cfg)),
 	}, nil
+}
+
+// anvilPaths extracts directory paths from all configured anvils.
+func anvilPaths(cfg *config.Config) []string {
+	paths := make([]string, 0, len(cfg.Anvils))
+	for _, a := range cfg.Anvils {
+		if a.Path != "" {
+			paths = append(paths, a.Path)
+		}
+	}
+	return paths
 }
 
 // Run starts the daemon's main loop. It blocks until ctx is cancelled
@@ -115,6 +130,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		"poll_interval", d.cfg.Settings.PollInterval,
 	)
 	d.db.LogEvent(state.EventSmithStarted, "Forge daemon started", "", "")
+
+	// Clean up orphans from any previous crash
+	if cleaned := d.shutdownMgr.CleanupOrphans(); cleaned > 0 {
+		d.logger.Info("startup orphan cleanup done", "cleaned", cleaned)
+	}
 
 	// Start IPC server
 	d.ipc = ipc.NewServer()
@@ -144,7 +164,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			d.logger.Info("daemon shutting down", "reason", ctx.Err())
-			d.db.LogEvent(state.EventSmithDone, "Forge daemon stopped", "", "")
+			killed := d.shutdownMgr.GracefulShutdown()
+			d.shutdownMgr.CleanupWorktrees()
+			d.db.LogEvent(state.EventSmithDone,
+				fmt.Sprintf("Forge daemon stopped (killed %d workers)", killed), "", "")
 			return nil
 
 		case <-ticker.C:
