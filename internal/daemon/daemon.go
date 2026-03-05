@@ -10,6 +10,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -47,10 +49,12 @@ type Daemon struct {
 	cfg    *config.Config
 	db     *state.DB
 	logger *slog.Logger
+	ipc    *ipc.Server
 
-	forgeDir string // ~/.forge
-	pidFile  string
-	logFile  *os.File
+	forgeDir  string // ~/.forge
+	pidFile   string
+	logFile   *os.File
+	startTime time.Time
 }
 
 // New creates a new daemon instance.
@@ -103,12 +107,23 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer d.removePID()
 	defer d.cleanup()
 
+	d.startTime = time.Now()
+
 	d.logger.Info("daemon started",
 		"pid", os.Getpid(),
 		"anvils", len(d.cfg.Anvils),
 		"poll_interval", d.cfg.Settings.PollInterval,
 	)
 	d.db.LogEvent(state.EventSmithStarted, "Forge daemon started", "", "")
+
+	// Start IPC server
+	d.ipc = ipc.NewServer()
+	d.ipc.OnCommand(d.handleIPC)
+	go func() {
+		if err := d.ipc.Start(ctx); err != nil {
+			d.logger.Error("IPC server error", "error", err)
+		}
+	}()
 
 	// Set up signal handling
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
@@ -155,6 +170,74 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		// For now, the daemon loop structure is ready.
 		d.db.LogEvent("poll", fmt.Sprintf("Polled anvil: %s", name), "", name)
 	}
+}
+
+// handleIPC processes incoming IPC commands from CLI/TUI clients.
+func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
+	switch cmd.Type {
+	case "status":
+		workers, _ := d.db.ActiveWorkers()
+		prs, _ := d.db.OpenPRs()
+		payload := ipc.StatusPayload{
+			Running:   true,
+			PID:       os.Getpid(),
+			Uptime:    time.Since(d.startTime).Round(time.Second).String(),
+			Workers:   len(workers),
+			QueueSize: 0, // Updated during poll
+			OpenPRs:   len(prs),
+			LastPoll:  "n/a",
+		}
+		data, _ := json.Marshal(payload)
+		return ipc.Response{Type: "status", Payload: data}
+
+	case "kill_worker":
+		var kp ipc.KillWorkerPayload
+		if err := json.Unmarshal(cmd.Payload, &kp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid kill payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if kp.PID > 0 {
+			proc, err := os.FindProcess(kp.PID)
+			if err == nil {
+				_ = proc.Signal(syscall.SIGINT)
+			}
+		}
+		_ = d.db.UpdateWorkerStatus(kp.WorkerID, state.WorkerFailed)
+		data, _ := json.Marshal(map[string]string{"killed": kp.WorkerID})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "refresh":
+		go d.pollAndDispatch(context.Background())
+		data, _ := json.Marshal(map[string]string{"message": "poll triggered"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "subscribe":
+		// Client is now subscribed — Broadcast() handles push
+		data, _ := json.Marshal(map[string]string{"message": "subscribed"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "queue":
+		// Return current queue data
+		data, _ := json.Marshal(map[string]string{"message": "not yet implemented"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	default:
+		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
+		return ipc.Response{Type: "error", Payload: msg}
+	}
+}
+
+// BroadcastEvent sends an event to all connected IPC clients.
+func (d *Daemon) BroadcastEvent(eventType string, data any) {
+	if d.ipc == nil {
+		return
+	}
+	raw, _ := json.Marshal(data)
+	d.ipc.Broadcast(ipc.Event{
+		Type:      eventType,
+		Timestamp: time.Now(),
+		Data:      raw,
+	})
 }
 
 // IsRunning checks whether a daemon process is already running by reading
@@ -224,6 +307,9 @@ func (d *Daemon) removePID() {
 
 // cleanup closes resources.
 func (d *Daemon) cleanup() {
+	if d.ipc != nil {
+		d.ipc.Close()
+	}
 	if d.db != nil {
 		d.db.Close()
 	}
