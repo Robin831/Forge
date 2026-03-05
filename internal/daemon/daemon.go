@@ -72,7 +72,7 @@ type Daemon struct {
 
 	// Dispatch state
 	activeBeads    sync.Map       // beadID -> true, currently in-flight
-	pendingActions sync.Map       // beadID -> lifecycle.ActionRequest, queued while in-flight
+	pendingActions sync.Map       // beadID -> lifecycle.ActionRequest; single parked action per bead, latest-wins
 	wg             sync.WaitGroup // tracks running pipeline goroutines
 	worktreeMgr    *worktree.Manager
 	promptBuilder  *prompt.Builder
@@ -278,7 +278,12 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		defer d.wg.Done()
 		// Drain order: activeBeads.Delete runs first (registered last → LIFO),
 		// then drainPendingAction fires so any parked action sees the bead as free.
-		defer d.drainPendingAction(ctx, req.BeadID)
+		// Skip draining during shutdown to avoid wg.Add after wg.Wait.
+		defer func() {
+			if ctx.Err() == nil {
+				d.drainPendingAction(ctx, req.BeadID)
+			}
+		}()
 		defer d.activeBeads.Delete(req.BeadID)
 
 		// Create/get worktree for the PR branch
@@ -365,7 +370,11 @@ func (d *Daemon) drainPendingAction(ctx context.Context, beadID string) {
 	if !ok {
 		return
 	}
-	req := v.(lifecycle.ActionRequest)
+	req, ok := v.(lifecycle.ActionRequest)
+	if !ok {
+		d.logger.Error("pending lifecycle action has unexpected type", "bead", beadID, "valueType", fmt.Sprintf("%T", v))
+		return
+	}
 	d.logger.Info("draining parked lifecycle action", "bead", beadID, "action", req.Action)
 	d.handleLifecycleAction(ctx, req)
 }
@@ -471,7 +480,12 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	defer d.wg.Done()
 	// Drain order: activeBeads.Delete runs first (registered last → LIFO),
 	// then drainPendingAction fires so any parked lifecycle action sees the bead as free.
-	defer d.drainPendingAction(ctx, bead.ID)
+	// Skip draining during shutdown to avoid wg.Add after wg.Wait.
+	defer func() {
+		if ctx.Err() == nil {
+			d.drainPendingAction(ctx, bead.ID)
+		}
+	}()
 	defer d.activeBeads.Delete(bead.ID)
 
 	d.logger.Info("dispatching bead", "bead", bead.ID, "anvil", bead.Anvil, "title", bead.Title)
