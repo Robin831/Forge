@@ -1,9 +1,9 @@
 // Package hearth provides The Forge's TUI dashboard using Bubbletea.
 //
-// The TUI has three panels in a horizontal layout:
-//   - Queue (left): Pending beads from anvils
-//   - Workers (center): Active Smith processes
-//   - Event Log (right): Recent events from the state DB
+// The TUI has three panels in a vertical split layout:
+//   - Queue (top left): Pending beads from anvils
+//   - Workers (top right): Active Smith processes
+//   - Event Log (bottom): Recent events from the state DB
 //
 // Tab switches focus between panels, j/k scrolls the focused panel,
 // q quits the app.
@@ -191,34 +191,50 @@ func (m Model) View() string {
 		return "Initializing The Forge..."
 	}
 
-	// Calculate panel widths (roughly thirds)
-	panelWidth := (m.width - 4) / 3 // 4 for borders/gaps
-	if panelWidth < 20 {
-		panelWidth = 20
+	// Calculate heights for the vertical split
+	// Top half for Queue and Workers, bottom half for Events
+	availableHeight := m.height - 4 // minus header and footer
+	topHeight := availableHeight / 2
+	if topHeight < 8 {
+		topHeight = 8
 	}
-	contentHeight := m.height - 4 // header + footer
+	bottomHeight := availableHeight - topHeight
+	if bottomHeight < 5 {
+		bottomHeight = 5
+	}
 
-	// Build panels
-	queuePanel := m.renderQueue(panelWidth, contentHeight)
-	workerPanel := m.renderWorkers(panelWidth, contentHeight)
-	eventPanel := m.renderEvents(panelWidth, contentHeight)
+	// Top section: Queue and Workers (side-by-side)
+	topPanelWidth := (m.width - 2) / 2
+	if topPanelWidth < 20 {
+		topPanelWidth = 20
+	}
+
+	queuePanel := m.renderQueue(topPanelWidth, topHeight)
+	workerPanel := m.renderWorkers(m.width-topPanelWidth, topHeight)
+
+	topSection := lipgloss.JoinHorizontal(lipgloss.Top,
+		queuePanel,
+		workerPanel,
+	)
+
+	// Bottom section: Events (full width)
+	eventPanel := m.renderEvents(m.width, bottomHeight)
 
 	// Header
 	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
-
-	// Join panels horizontally
-	panels := lipgloss.JoinHorizontal(lipgloss.Top,
-		queuePanel,
-		workerPanel,
-		eventPanel,
-	)
 
 	// Footer
 	footer := footerStyle.Width(m.width).Render(
 		"Tab: switch panel • j/k: scroll • K: kill worker • f: follow events • q: quit",
 	)
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, panels, footer)
+	// Final assembly
+	return lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		topSection,
+		eventPanel,
+		footer,
+	)
 }
 
 // scrollDown scrolls the focused panel down.
