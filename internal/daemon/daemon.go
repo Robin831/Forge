@@ -71,10 +71,11 @@ type Daemon struct {
 	configWatcher *hotreload.Watcher
 
 	// Dispatch state
-	activeBeads  sync.Map       // beadID -> true, currently in-flight
-	wg           sync.WaitGroup // tracks running pipeline goroutines
-	worktreeMgr  *worktree.Manager
-	promptBuilder *prompt.Builder
+	activeBeads    sync.Map       // beadID -> true, currently in-flight
+	pendingActions sync.Map       // beadID -> lifecycle.ActionRequest, queued while in-flight
+	wg             sync.WaitGroup // tracks running pipeline goroutines
+	worktreeMgr    *worktree.Manager
+	promptBuilder  *prompt.Builder
 
 	// PR Monitoring (Bellows)
 	bellowsMonitor *bellows.Monitor
@@ -264,9 +265,10 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		return
 	}
 
-	// Skip if bead is already in flight (either being implemented or another fix)
+	// If bead is already in flight, park the action for after it finishes.
 	if _, inFlight := d.activeBeads.LoadOrStore(req.BeadID, true); inFlight {
-		d.logger.Info("bead already in flight, skipping lifecycle action", "bead", req.BeadID)
+		d.pendingActions.Store(req.BeadID, req)
+		d.logger.Info("bead in flight, queued lifecycle action for later", "bead", req.BeadID, "action", req.Action)
 		return
 	}
 
@@ -274,6 +276,9 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 
 	go func() {
 		defer d.wg.Done()
+		// Drain order: activeBeads.Delete runs first (registered last → LIFO),
+		// then drainPendingAction fires so any parked action sees the bead as free.
+		defer d.drainPendingAction(ctx, req.BeadID)
 		defer d.activeBeads.Delete(req.BeadID)
 
 		// Create/get worktree for the PR branch
@@ -350,6 +355,19 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			// Optional: delete remote branch etc.
 		}
 	}()
+}
+
+// drainPendingAction checks whether a lifecycle action was parked for beadID
+// while it was in flight, and if so dispatches it now. Called after
+// activeBeads.Delete so the bead is considered free before the action runs.
+func (d *Daemon) drainPendingAction(ctx context.Context, beadID string) {
+	v, ok := d.pendingActions.LoadAndDelete(beadID)
+	if !ok {
+		return
+	}
+	req := v.(lifecycle.ActionRequest)
+	d.logger.Info("draining parked lifecycle action", "bead", beadID, "action", req.Action)
+	d.handleLifecycleAction(ctx, req)
 }
 
 // pollAndDispatch polls all anvils for ready beads and dispatches workers.
@@ -451,6 +469,9 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 // dispatchBead runs the full pipeline for a single bead in a goroutine.
 func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig) {
 	defer d.wg.Done()
+	// Drain order: activeBeads.Delete runs first (registered last → LIFO),
+	// then drainPendingAction fires so any parked lifecycle action sees the bead as free.
+	defer d.drainPendingAction(ctx, bead.ID)
 	defer d.activeBeads.Delete(bead.ID)
 
 	d.logger.Info("dispatching bead", "bead", bead.ID, "anvil", bead.Anvil, "title", bead.Title)

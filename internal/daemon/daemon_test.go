@@ -160,6 +160,10 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 	})
 
 	t.Run("successful dispatch via cache", func(t *testing.T) {
+		// Wait for the goroutine from the previous subtest to finish so its
+		// deferred activeBeads.Delete cannot race with the Store below.
+		d.wg.Wait()
+
 		// Clear activeBeads
 		d.activeBeads.Delete("TEST-1")
 
