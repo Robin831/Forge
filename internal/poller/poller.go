@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"bytes"
 	"os/exec"
 	"sort"
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/executil"
 )
 
 // Bead represents an issue returned by 'bd ready --json'.
@@ -85,12 +87,14 @@ func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Be
 	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, "bd", "ready", "--json")
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "ready", "--json"))
 	cmd.Dir = anvil.Path
 
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("bd ready in %s (%s): %w", name, anvil.Path, err)
+		return nil, fmt.Errorf("bd ready in %s (%s): %w: %s", name, anvil.Path, err, stderr.String())
 	}
 
 	var beads []Bead

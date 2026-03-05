@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Robin831/Forge/internal/executil"
 )
 
 // Result captures the outcome of a Smith session.
@@ -30,6 +32,8 @@ type Result struct {
 	ErrorOutput string
 	// Summary is extracted from the stream-json output (last assistant message).
 	Summary string
+	// FullOutput is the complete text response from Claude (from the result event).
+	FullOutput string
 	// CostUSD is the total cost if extractable from output.
 	CostUSD float64
 	// TokensIn is the total input tokens if extractable.
@@ -63,6 +67,7 @@ type StreamEvent struct {
 
 // StreamResult is the final result event from Claude stream-json.
 type StreamResult struct {
+	Result    string  `json:"result,omitempty"`
 	CostUSD   float64 `json:"cost_usd,omitempty"`
 	TokensIn  int     `json:"input_tokens,omitempty"`
 	TokensOut int     `json:"output_tokens,omitempty"`
@@ -95,6 +100,7 @@ func Spawn(ctx context.Context, worktreePath, prompt, logDir string, extraFlags 
 		}
 	}
 	cmd.Env = filtered
+	executil.HideWindow(cmd)
 
 	// Set up log file
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
@@ -248,6 +254,9 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 				result.CostUSD = event.Result.CostUSD
 				result.TokensIn = event.Result.TokensIn
 				result.TokensOut = event.Result.TokensOut
+				if event.Result.Result != "" {
+					result.FullOutput = event.Result.Result
+				}
 			}
 		}
 	}

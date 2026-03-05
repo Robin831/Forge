@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/smith"
 )
 
@@ -94,8 +95,12 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string) (*Revie
 		CostUSD:   smithResult.CostUSD,
 	}
 
-	// Parse the verdict from the output
-	parseVerdict(smithResult.Output, result)
+	// Parse the verdict from the full text output (stream-json result field)
+	outputText := smithResult.FullOutput
+	if outputText == "" {
+		outputText = smithResult.Output
+	}
+	parseVerdict(outputText, result)
 
 	return result, nil
 }
@@ -107,7 +112,7 @@ func getDiff(ctx context.Context, worktreePath string) (string, error) {
 	defer cancel()
 
 	// Get diff of all changes (staged and unstaged)
-	cmd := exec.CommandContext(cmdCtx, "git", "diff", "HEAD")
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "diff", "HEAD"))
 	cmd.Dir = worktreePath
 
 	var stdout, stderr bytes.Buffer
@@ -116,7 +121,7 @@ func getDiff(ctx context.Context, worktreePath string) (string, error) {
 
 	if err := cmd.Run(); err != nil {
 		// If HEAD doesn't exist (fresh repo), try just the index
-		cmd2 := exec.CommandContext(ctx, "git", "diff")
+		cmd2 := executil.HideWindow(exec.CommandContext(ctx, "git", "diff"))
 		cmd2.Dir = worktreePath
 		var out2 bytes.Buffer
 		cmd2.Stdout = &out2
@@ -130,13 +135,13 @@ func getDiff(ctx context.Context, worktreePath string) (string, error) {
 	diff := stdout.String()
 
 	// Check for any commits on the branch not on the base
-	cmd3 := exec.CommandContext(ctx, "git", "log", "--oneline", "origin/main..HEAD")
+	cmd3 := executil.HideWindow(exec.CommandContext(ctx, "git", "log", "--oneline", "origin/main..HEAD"))
 	cmd3.Dir = worktreePath
 	var logOut bytes.Buffer
 	cmd3.Stdout = &logOut
 	if cmd3.Run() == nil && logOut.Len() > 0 {
 		// There are commits — get the full diff against origin/main
-		cmd4 := exec.CommandContext(ctx, "git", "diff", "origin/main...HEAD")
+		cmd4 := executil.HideWindow(exec.CommandContext(ctx, "git", "diff", "origin/main...HEAD"))
 		cmd4.Dir = worktreePath
 		var diffOut bytes.Buffer
 		cmd4.Stdout = &diffOut

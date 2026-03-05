@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/hotreload"
 	"github.com/Robin831/Forge/internal/ipc"
@@ -342,7 +343,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 
 // claimBead marks a bead as in_progress via bd update --claim.
 func (d *Daemon) claimBead(ctx context.Context, beadID, anvilPath string) error {
-	cmd := exec.CommandContext(ctx, "bd", "update", beadID, "--status=in_progress")
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=in_progress"))
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -353,7 +354,7 @@ func (d *Daemon) claimBead(ctx context.Context, beadID, anvilPath string) error 
 
 // closeBead marks a bead as closed via bd close.
 func (d *Daemon) closeBead(ctx context.Context, beadID, anvilPath string) error {
-	cmd := exec.CommandContext(ctx, "bd", "close", beadID, "--reason=Implemented by Forge")
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "close", beadID, "--reason=Implemented by Forge"))
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {

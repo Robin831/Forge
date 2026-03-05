@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -80,7 +81,7 @@ func Create(ctx context.Context, p CreateParams) (*PR, error) {
 	log.Printf("[ghpr] Creating PR for %s on branch %s", p.BeadID, p.Branch)
 
 	// Run gh pr create
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
 	cmd.Dir = p.WorktreePath
 
 	var stdout, stderr bytes.Buffer
@@ -133,7 +134,7 @@ func CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*PRSta
 		"--json", "state,statusCheckRollup,reviews,mergeable",
 	}
 
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
 	cmd.Dir = worktreePath
 
 	var stdout, stderr bytes.Buffer

@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Robin831/Forge/internal/executil"
 )
 
 // StepResult captures the outcome of a single verification step.
@@ -120,7 +122,7 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 
 	start := time.Now()
 
-	cmd := exec.CommandContext(stepCtx, step.Command, step.Args...)
+	cmd := executil.HideWindow(exec.CommandContext(stepCtx, step.Command, step.Args...))
 	cmd.Dir = dir
 
 	var output bytes.Buffer
