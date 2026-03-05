@@ -246,6 +246,13 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 		// (e.g. from a rate_limit_event seen mid-stream) so we never lose it.
 		result.RateLimited = result.RateLimited || provider.IsRateLimitError(
 			result.ExitCode, result.ErrorOutput, result.ResultSubtype)
+		// A success result subtype means the AI completed the task, regardless of
+		// exit code. Claude may exit 2 (its rate-limit code) even when it recovered
+		// internally and produced a successful result event — don't fall back in
+		// that case.
+		if result.ResultSubtype == "success" {
+			result.RateLimited = false
+		}
 
 		p.mu.Lock()
 		p.result = result

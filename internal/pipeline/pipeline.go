@@ -168,11 +168,12 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerPID(workerID, process.PID)
 			smithResult = process.Wait()
 
-			// A process that exits 0 completed successfully — the Claude CLI handles
-			// internal retries for rate limits and resumes automatically. Any
-			// rate_limit_event we saw was either a warning or a transient block that
-			// resolved before exit. Don't fall back to another provider in this case.
-			if smithResult.ExitCode == 0 {
+			// A process that exits 0, or produces a success result event, completed
+			// successfully. The Claude CLI handles internal retries for rate limits
+			// and resumes automatically. Any rate_limit_event or non-zero exit code
+			// we saw was either a warning or a transient block that resolved before
+			// the session finished. Don't fall back to another provider in this case.
+			if smithResult.ExitCode == 0 || smithResult.ResultSubtype == "success" {
 				smithResult.RateLimited = false
 			}
 
