@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/forge"
 	"github.com/spf13/cobra"
 )
@@ -17,6 +18,9 @@ var (
 	jsonOutput bool
 	verbose    bool
 )
+
+// Loaded configuration (available after PersistentPreRun)
+var cfg *config.Config
 
 // Signal-aware context for graceful shutdown
 var (
@@ -60,6 +64,28 @@ and monitors pull requests (Bellows) across registered repositories (Anvils).`,
 		// Set up signal-aware context: SIGINT + SIGTERM cancel the context,
 		// allowing in-flight work to drain gracefully.
 		rootCtx, rootCancel = setupSignalContext()
+
+		// Skip config loading for commands that don't need it
+		switch cmd.Name() {
+		case "version", "help", "completion":
+			return
+		}
+
+		// Load configuration
+		loaded, err := config.Load(configFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+			os.Exit(1)
+		}
+		cfg = loaded
+
+		if verbose {
+			if path := config.ConfigFilePath(configFile); path != "" {
+				fmt.Fprintf(os.Stderr, "Config: %s\n", path)
+			} else {
+				fmt.Fprintf(os.Stderr, "Config: using defaults (no forge.yaml found)\n")
+			}
+		}
 	},
 	PersistentPostRun: func(cmd *cobra.Command, args []string) {
 		if rootCancel != nil {
