@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -305,8 +306,17 @@ func IsRunning() (int, bool) {
 		return 0, false
 	}
 
-	// On Unix, FindProcess always succeeds. Send signal 0 to check liveness.
-	// On Windows, FindProcess failing means process doesn't exist.
+	// On Windows, Signal(0) is not supported. Use the named pipe as a
+	// liveness proxy — the OS destroys it automatically when the process exits.
+	if runtime.GOOS == "windows" {
+		alive := ipc.SocketExists()
+		if !alive {
+			_ = proc.Release()
+		}
+		return pid, alive
+	}
+
+	// On Unix, FindProcess always succeeds; Signal(0) checks liveness.
 	err = proc.Signal(syscall.Signal(0))
 	if err != nil {
 		return 0, false
