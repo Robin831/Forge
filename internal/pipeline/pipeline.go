@@ -285,7 +285,8 @@ func Run(ctx context.Context, p Params) *Outcome {
 			log.Printf("[pipeline:%s] Warden approved", workerID)
 			outcome.Verdict = warden.VerdictApprove
 			outcome.Success = true
-			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerMonitoring)
+			_ = p.DB.UpdateWorkerPhase(workerID, "bellows")
 			_ = p.DB.LogEvent(state.EventWardenPass, reviewResult.Summary, p.Bead.ID, p.AnvilName)
 			outcome.Duration = time.Since(start)
 			return outcome

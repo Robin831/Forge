@@ -113,13 +113,13 @@ func TestConfig_Validate(t *testing.T) {
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
-						Path:                       "/path/to/repo",
-						AutoDispatch:               "priority",
+						Path:                    "/path/to/repo",
+						AutoDispatch:            "priority",
 						AutoDispatchMinPriority: -1,
 					},
 					"test2": {
-						Path:                       "/path/to/repo",
-						AutoDispatch:               "priority",
+						Path:                    "/path/to/repo",
+						AutoDispatch:            "priority",
 						AutoDispatchMinPriority: 5,
 					},
 				},

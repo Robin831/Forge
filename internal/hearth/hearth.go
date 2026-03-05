@@ -549,6 +549,8 @@ func workerStatusStyle(status string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Render("●")
 	case "reviewing":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render("◐")
+	case "monitoring":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("○")
 	case "done":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Render("✓")
 	case "failed":

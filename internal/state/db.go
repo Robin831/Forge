@@ -186,12 +186,13 @@ CREATE TABLE IF NOT EXISTS provider_quotas (
 type WorkerStatus string
 
 const (
-	WorkerPending   WorkerStatus = "pending"
-	WorkerRunning   WorkerStatus = "running"
-	WorkerReviewing WorkerStatus = "reviewing"
-	WorkerDone      WorkerStatus = "done"
-	WorkerFailed    WorkerStatus = "failed"
-	WorkerTimeout   WorkerStatus = "timeout"
+	WorkerPending    WorkerStatus = "pending"
+	WorkerRunning    WorkerStatus = "running"
+	WorkerReviewing  WorkerStatus = "reviewing"
+	WorkerMonitoring WorkerStatus = "monitoring"
+	WorkerDone       WorkerStatus = "done"
+	WorkerFailed     WorkerStatus = "failed"
+	WorkerTimeout    WorkerStatus = "timeout"
 )
 
 // Worker represents a Smith worker entry.
@@ -253,8 +254,32 @@ func (db *DB) UpdateWorkerLogPath(id string, logPath string) error {
 // ActiveWorkers returns all workers with non-terminal status.
 func (db *DB) ActiveWorkers() ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
-		FROM workers WHERE status IN ('pending', 'running', 'reviewing')
+		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
 		ORDER BY started_at`)
+}
+
+// ActiveWorkerByBead returns the non-terminal worker for a given bead ID.
+func (db *DB) ActiveWorkerByBead(beadID string) (*Worker, error) {
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
+		FROM workers WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')
+		LIMIT 1`, beadID)
+	if err != nil {
+		return nil, err
+	}
+	if len(workers) == 0 {
+		return nil, nil
+	}
+	return &workers[0], nil
+}
+
+// CompleteWorkersByBead marks all non-terminal workers for a bead as Done.
+func (db *DB) CompleteWorkersByBead(beadID string) error {
+	_, err := db.conn.Exec(
+		`UPDATE workers SET status = ?, completed_at = ?
+		 WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')`,
+		string(WorkerDone), time.Now().Format(time.RFC3339), beadID,
+	)
+	return err
 }
 
 // WorkersByAnvil returns all workers for a given anvil.

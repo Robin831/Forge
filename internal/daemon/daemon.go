@@ -278,9 +278,20 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		}
 		defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
 
+		workerID := fmt.Sprintf("%s-%s-%d", req.Anvil, req.BeadID, time.Now().Unix())
+
 		switch req.Action {
 		case lifecycle.ActionFixCI:
 			d.logger.Info("spawning CI fix worker", "pr", req.PRNumber, "bead", req.BeadID)
+			_ = d.db.InsertWorker(&state.Worker{
+				ID:        workerID,
+				BeadID:    req.BeadID,
+				Anvil:     req.Anvil,
+				Branch:    req.Branch,
+				Status:    state.WorkerRunning,
+				Phase:     "cifix",
+				StartedAt: time.Now(),
+			})
 			cifix.Fix(ctx, cifix.FixParams{
 				WorktreePath: wt.Path,
 				BeadID:       req.BeadID,
@@ -291,9 +302,19 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				DB:           d.db,
 				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
 			})
+			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 
 		case lifecycle.ActionFixReview:
 			d.logger.Info("spawning review fix worker", "pr", req.PRNumber, "bead", req.BeadID)
+			_ = d.db.InsertWorker(&state.Worker{
+				ID:        workerID,
+				BeadID:    req.BeadID,
+				Anvil:     req.Anvil,
+				Branch:    req.Branch,
+				Status:    state.WorkerRunning,
+				Phase:     "reviewfix",
+				StartedAt: time.Now(),
+			})
 			reviewfix.Fix(ctx, reviewfix.FixParams{
 				WorktreePath: wt.Path,
 				BeadID:       req.BeadID,
@@ -304,6 +325,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				DB:           d.db,
 				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
 			})
+			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 
 		case lifecycle.ActionCloseBead:
 			d.logger.Info("closing bead after merge", "bead", req.BeadID)
