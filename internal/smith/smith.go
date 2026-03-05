@@ -453,7 +453,10 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 				if event.RateLimitInfo != nil {
 					status = strings.ToLower(strings.TrimSpace(event.RateLimitInfo.Status))
 				}
-				if status == "blocked" || status == "rejected" {
+				// "blocked" and "rejected" are explicit hard limits.
+				// Empty/unknown status is treated conservatively as blocking.
+				// "warning" and "allowed" are informational only.
+				if status == "blocked" || status == "rejected" || status == "" {
 					result.RateLimited = true
 				}
 
