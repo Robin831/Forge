@@ -8,7 +8,7 @@ package lifecycle
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/Robin831/Forge/internal/bellows"
@@ -37,12 +37,12 @@ type PRState struct {
 type Action int
 
 const (
-	ActionNone       Action = iota
-	ActionFixCI             // Spawn CI fix worker
-	ActionFixReview         // Spawn review fix worker
-	ActionCloseBead         // Close bead after merge
-	ActionCleanup           // Clean up worktree/branch after close
-	ActionRebase            // Rebase branch on top of main to resolve conflict
+	ActionNone      Action = iota
+	ActionFixCI            // Spawn CI fix worker
+	ActionFixReview        // Spawn review fix worker
+	ActionCloseBead        // Close bead after merge
+	ActionCleanup          // Clean up worktree/branch after close
+	ActionRebase           // Rebase branch on top of main to resolve conflict
 )
 
 // ActionRequest is dispatched to the action handler.
@@ -59,19 +59,21 @@ type ActionHandler func(ctx context.Context, req ActionRequest)
 
 // Manager tracks PR states and dispatches actions based on events.
 type Manager struct {
-	db       *state.DB
-	mu       sync.Mutex
-	states   map[int]*PRState // PR number → state
-	handler  ActionHandler
-	maxCI    int // max CI fix attempts per PR
-	maxRev   int // max review fix attempts per PR
+	db        *state.DB
+	logger    *slog.Logger
+	mu        sync.Mutex
+	states    map[int]*PRState // PR number → state
+	handler   ActionHandler
+	maxCI     int // max CI fix attempts per PR
+	maxRev    int // max review fix attempts per PR
 	maxRebase int // max rebase attempts per PR
 }
 
 // New creates a lifecycle Manager.
-func New(db *state.DB, handler ActionHandler) *Manager {
+func New(db *state.DB, logger *slog.Logger, handler ActionHandler) *Manager {
 	return &Manager{
 		db:        db,
+		logger:    logger,
 		states:    make(map[int]*PRState),
 		handler:   handler,
 		maxCI:     2,
@@ -104,18 +106,18 @@ func (m *Manager) Load(ctx context.Context) error {
 			ReviewFixCnt: pr.ReviewFixCount,
 		}
 		m.states[pr.Number] = st
-		log.Printf("[lifecycle] Restored PR #%d (Anvil: %s) from DB: CIPassing=%v, CIFixCount=%d, ReviewFixCnt=%d",
-			pr.Number, pr.Anvil, pr.CIPassing, pr.CIFixCount, pr.ReviewFixCount)
+		m.logger.Info("restored PR from DB",
+			"pr", pr.Number,
+			"anvil", pr.Anvil,
+			"ci_passing", pr.CIPassing,
+			"ci_fixes", pr.CIFixCount,
+			"review_fixes", pr.ReviewFixCount)
 	}
 	return nil
 }
 
 // HandleEvent processes a Bellows PR event and dispatches any required actions.
 func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
-	var action Action
-	var branch string
-	var reviewAlreadyInCycle bool
-
 	m.mu.Lock()
 	st, ok := m.states[event.PRNumber]
 	if !ok {
@@ -150,15 +152,18 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		st.Branch = event.Branch
 	}
 
+	var action Action
+
 	switch event.EventType {
 	case bellows.EventCIPassed:
 		st.CIPassing = true
 		st.NeedsFix = false
+		m.logger.Info("PR CI passed", "pr", event.PRNumber)
 
 	case bellows.EventCIFailed:
 		if !st.CIPassing {
 			// Already in failing state, don't increment counter or dispatch new fix
-			log.Printf("[lifecycle] PR #%d: CI failed again (already failing), skipping dispatch", event.PRNumber)
+			m.logger.Info("PR CI failed again (already failing), skipping dispatch", "pr", event.PRNumber)
 			break
 		}
 		st.CIPassing = false
@@ -166,10 +171,17 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		if st.CIFixCount < m.maxCI {
 			st.CIFixCount++
 			action = ActionFixCI
+			m.logger.Info("PR CI failed, dispatching fix", "pr", event.PRNumber, "attempt", st.CIFixCount)
+		} else {
+			m.logger.Warn("PR CI failed, max fix attempts exhausted", "pr", event.PRNumber, "max", m.maxCI)
+			_ = m.db.LogEvent(state.EventLifecycleExhausted,
+				fmt.Sprintf("PR #%d: CI fix attempts exhausted (%d)", event.PRNumber, m.maxCI),
+				event.BeadID, event.Anvil)
 		}
 
 	case bellows.EventReviewApproved:
 		st.Approved = true
+		m.logger.Info("PR approved", "pr", event.PRNumber)
 
 	case bellows.EventReviewChanges:
 		// Only increment if not already in a fix cycle, or if previously approved.
@@ -179,9 +191,15 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 			if st.ReviewFixCnt < m.maxRev {
 				st.ReviewFixCnt++
 				action = ActionFixReview
+				m.logger.Info("PR changes requested, dispatching fix", "pr", event.PRNumber, "attempt", st.ReviewFixCnt)
+			} else {
+				m.logger.Warn("PR changes requested, max fix attempts exhausted", "pr", event.PRNumber, "max", m.maxRev)
+				_ = m.db.LogEvent(state.EventLifecycleExhausted,
+					fmt.Sprintf("PR #%d: Review fix attempts exhausted (%d)", event.PRNumber, m.maxRev),
+					event.BeadID, event.Anvil)
 			}
 		} else {
-			reviewAlreadyInCycle = true
+			m.logger.Info("PR changes requested again, but already in fix cycle", "pr", event.PRNumber)
 		}
 
 	case bellows.EventPRConflicting:
@@ -189,89 +207,45 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		if st.RebaseCount < m.maxRebase {
 			st.RebaseCount++
 			action = ActionRebase
+			m.logger.Info("PR merge conflict detected, dispatching rebase", "pr", event.PRNumber, "attempt", st.RebaseCount)
+		} else {
+			m.logger.Warn("PR merge conflict detected, max rebase attempts exhausted", "pr", event.PRNumber, "max", m.maxRebase)
+			_ = m.db.LogEvent(state.EventLifecycleExhausted,
+				fmt.Sprintf("PR #%d: rebase attempts exhausted (%d)", event.PRNumber, m.maxRebase),
+				event.BeadID, event.Anvil)
 		}
 
 	case bellows.EventPRMerged:
 		st.Merged = true
 		action = ActionCloseBead
+		m.logger.Info("PR merged, will close bead", "pr", event.PRNumber)
 
 	case bellows.EventPRClosed:
 		st.Closed = true
 		action = ActionCleanup
-	}
-
-	branch = st.Branch
-	ciFixCount := st.CIFixCount
-	reviewFixCnt := st.ReviewFixCnt
-	rebaseCount := st.RebaseCount
-	m.mu.Unlock()
-
-	// Logging and DB writes happen outside the lock to avoid blocking other goroutines.
-	switch event.EventType {
-	case bellows.EventCIPassed:
-		log.Printf("[lifecycle] PR #%d: CI passed", event.PRNumber)
-
-	case bellows.EventCIFailed:
-		if action == ActionFixCI {
-			log.Printf("[lifecycle] PR #%d: CI failed, dispatching fix (attempt %d)", event.PRNumber, ciFixCount)
-		} else {
-			log.Printf("[lifecycle] PR #%d: CI failed, max fix attempts exhausted", event.PRNumber)
-			if m.db != nil {
-				_ = m.db.LogEvent(state.EventLifecycleExhausted,
-					fmt.Sprintf("PR #%d: CI fix attempts exhausted (%d)", event.PRNumber, m.maxCI),
-					event.BeadID, event.Anvil)
-			}
-		}
-
-	case bellows.EventReviewApproved:
-		log.Printf("[lifecycle] PR #%d: Approved", event.PRNumber)
-
-	case bellows.EventReviewChanges:
-		if reviewAlreadyInCycle {
-			log.Printf("[lifecycle] PR #%d: Changes requested again, but already in fix cycle", event.PRNumber)
-		} else if action == ActionFixReview {
-			log.Printf("[lifecycle] PR #%d: Changes requested, dispatching fix (attempt %d)", event.PRNumber, reviewFixCnt)
-		} else {
-			log.Printf("[lifecycle] PR #%d: Changes requested, max fix attempts exhausted", event.PRNumber)
-			if m.db != nil {
-				_ = m.db.LogEvent(state.EventLifecycleExhausted,
-					fmt.Sprintf("PR #%d: Review fix attempts exhausted (%d)", event.PRNumber, m.maxRev),
-					event.BeadID, event.Anvil)
-			}
-		}
-
-	case bellows.EventPRConflicting:
-		if action == ActionRebase {
-			log.Printf("[lifecycle] PR #%d: merge conflict detected, dispatching rebase (attempt %d)", event.PRNumber, rebaseCount)
-		} else {
-			log.Printf("[lifecycle] PR #%d: merge conflict detected, max rebase attempts exhausted", event.PRNumber)
-			if m.db != nil {
-				_ = m.db.LogEvent(state.EventLifecycleExhausted,
-					fmt.Sprintf("PR #%d: rebase attempts exhausted (%d)", event.PRNumber, m.maxRebase),
-					event.BeadID, event.Anvil)
-			}
-		}
-
-	case bellows.EventPRMerged:
-		log.Printf("[lifecycle] PR #%d: Merged, will close bead", event.PRNumber)
-
-	case bellows.EventPRClosed:
-		log.Printf("[lifecycle] PR #%d: Closed without merge, cleanup", event.PRNumber)
+		m.logger.Info("PR closed without merge, cleanup", "pr", event.PRNumber)
 	}
 
 	// Persist changes to DB
 	if st.ID > 0 {
-		_ = m.db.UpdatePRLifecycle(st.ID, st.CIFixCount, st.ReviewFixCnt, st.CIPassing)
+		err := m.db.UpdatePRLifecycle(st.ID, st.CIFixCount, st.ReviewFixCnt, st.CIPassing)
+		if err != nil {
+			m.logger.Error("failed to update PR lifecycle in DB", "pr", event.PRNumber, "error", err)
+		}
 	}
 
+	// Capture values needed for async handler while holding the lock
+	req := ActionRequest{
+		Action:   action,
+		PRNumber: event.PRNumber,
+		BeadID:   event.BeadID,
+		Anvil:    event.Anvil,
+		Branch:   st.Branch,
+	}
+	m.mu.Unlock()
+
 	if action != ActionNone && m.handler != nil {
-		m.handler(ctx, ActionRequest{
-			Action:   action,
-			PRNumber: event.PRNumber,
-			BeadID:   event.BeadID,
-			Anvil:    event.Anvil,
-			Branch:   branch,
-		})
+		m.handler(ctx, req)
 	}
 }
 

@@ -2,6 +2,8 @@ package lifecycle
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -25,6 +27,10 @@ func newTestDB(t *testing.T) *state.DB {
 	return db
 }
 
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
 func makeEvent(prNum int, evType string) bellows.PREvent {
 	return bellows.PREvent{
 		PRNumber:  prNum,
@@ -42,7 +48,7 @@ func TestEventCIFailed_Dispatch(t *testing.T) {
 		got = req
 	}
 
-	m := New(nil, handler)
+	m := New(nil, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(42, bellows.EventCIFailed))
 
 	if got.Action != ActionFixCI {
@@ -70,7 +76,7 @@ func TestEventCIFailed_MaxAttemptsExhausted(t *testing.T) {
 		dispatchCount++
 	}
 
-	m := New(db, handler)
+	m := New(db, testLogger(), handler)
 	ctx := context.Background()
 	ev := makeEvent(10, bellows.EventCIFailed)
 
@@ -118,7 +124,7 @@ func TestEventReviewChanges_Dispatch(t *testing.T) {
 		got = req
 	}
 
-	m := New(db, handler)
+	m := New(db, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(7, bellows.EventReviewChanges))
 
 	if got.Action != ActionFixReview {
@@ -143,7 +149,7 @@ func TestEventReviewChanges_MaxAttemptsExhausted(t *testing.T) {
 		dispatchCount++
 	}
 
-	m := New(db, handler)
+	m := New(db, testLogger(), handler)
 	ctx := context.Background()
 	ev := makeEvent(20, bellows.EventReviewChanges)
 
@@ -178,7 +184,7 @@ func TestEventPRMerged_ClosesBead(t *testing.T) {
 		got = req
 	}
 
-	m := New(nil, handler)
+	m := New(nil, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(99, bellows.EventPRMerged))
 
 	if got.Action != ActionCloseBead {
@@ -203,7 +209,7 @@ func TestEventPRConflicting_Dispatch(t *testing.T) {
 		dispatched = append(dispatched, req)
 	}
 
-	m := New(db, handler)
+	m := New(db, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(55, bellows.EventPRConflicting))
 
 	if len(dispatched) != 1 {
@@ -232,7 +238,7 @@ func TestEventPRConflicting_ExhaustRebase(t *testing.T) {
 		dispatchCount++
 	}
 
-	m := New(db, handler)
+	m := New(db, testLogger(), handler)
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
 		m.HandleEvent(ctx, makeEvent(77, bellows.EventPRConflicting))
@@ -253,7 +259,7 @@ func TestConcurrentHandleEvent(t *testing.T) {
 		callCount.Add(1)
 	}
 
-	m := New(db, handler)
+	m := New(db, testLogger(), handler)
 	ctx := context.Background()
 
 	const goroutines = 20
@@ -297,7 +303,7 @@ func TestConcurrentHandleEvent(t *testing.T) {
 
 // TestNewPRState_CreatedOnFirstEvent verifies state is auto-created on first event.
 func TestNewPRState_CreatedOnFirstEvent(t *testing.T) {
-	m := New(nil, nil)
+	m := New(nil, testLogger(), nil)
 	m.HandleEvent(context.Background(), makeEvent(1, bellows.EventCIPassed))
 
 	st := m.GetState(1)
@@ -319,7 +325,7 @@ func TestEventPRClosed_Cleanup(t *testing.T) {
 		got = req
 	}
 
-	m := New(nil, handler)
+	m := New(nil, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(33, bellows.EventPRClosed))
 
 	if got.Action != ActionCleanup {
@@ -334,7 +340,7 @@ func TestEventPRClosed_Cleanup(t *testing.T) {
 
 // TestActivePRs verifies ActivePRs count excludes merged/closed PRs.
 func TestActivePRs(t *testing.T) {
-	m := New(nil, nil)
+	m := New(nil, testLogger(), nil)
 	ctx := context.Background()
 
 	m.HandleEvent(ctx, makeEvent(1, bellows.EventCIPassed)) // active
@@ -349,7 +355,7 @@ func TestActivePRs(t *testing.T) {
 
 // TestRemove verifies that Remove deletes PR state.
 func TestRemove(t *testing.T) {
-	m := New(nil, nil)
+	m := New(nil, testLogger(), nil)
 	m.HandleEvent(context.Background(), makeEvent(5, bellows.EventCIPassed))
 
 	m.Remove(5)
@@ -387,7 +393,7 @@ func TestManager_Persistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := New(db, func(ctx context.Context, req ActionRequest) {})
+	m := New(db, testLogger(), func(ctx context.Context, req ActionRequest) {})
 
 	// Simulate event to change state
 	m.HandleEvent(ctx, bellows.PREvent{
@@ -409,7 +415,7 @@ func TestManager_Persistence(t *testing.T) {
 	}
 
 	// 2. Restart Manager (new instance)
-	m2 := New(db, func(ctx context.Context, req ActionRequest) {})
+	m2 := New(db, testLogger(), func(ctx context.Context, req ActionRequest) {})
 	if err := m2.Load(ctx); err != nil {
 		t.Fatal(err)
 	}
