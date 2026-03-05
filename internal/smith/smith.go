@@ -72,6 +72,7 @@ type StreamEvent struct {
 	Content string          `json:"content,omitempty"`
 	// Fields present when type == "result":
 	Result       string       `json:"result,omitempty"`
+	IsError      bool         `json:"is_error,omitempty"`
 	TotalCostUSD float64      `json:"total_cost_usd,omitempty"`
 	Usage        *StreamUsage `json:"usage,omitempty"`
 	// rate_limit_event fields
@@ -308,6 +309,8 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 			// When subtype is "success" the "result" field holds the complete
 			// assistant response.  When subtype is "error_max_turns" the field
 			// is absent — we fall back to accumulated assistant text below.
+			// When is_error is true the session was aborted (e.g. rate limit)
+			// even though subtype may still read "success".
 			if event.Type == "result" {
 				result.ResultSubtype = event.Subtype
 				result.CostUSD = event.TotalCostUSD
@@ -318,17 +321,19 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 				if event.Result != "" {
 					result.FullOutput = event.Result
 				}
+				// is_error:true + rate-limit text in result = provider blocked.
+				if event.IsError && provider.IsRateLimitError(0, event.Result, event.Subtype) {
+					result.RateLimited = true
+				}
 			}
 
 			// Detect a hard rate-limit event emitted before the result.
-			// Claude emits rate_limit_event with status "blocked" (or similar)
-			// when the session cannot proceed.
-			if event.Type == "rate_limit_event" && event.RateLimitInfo != nil {
-				s := strings.ToLower(event.RateLimitInfo.Status)
-				switch s {
-				case "blocked", "denied", "exceeded", "hard_blocked":
-					result.RateLimited = true
-				}
+			// Claude emits rate_limit_event whenever the session is blocked by
+			// any plan/hour/day limit. The status field has changed over time
+			// ("blocked", "rejected", etc.) so treat any rate_limit_event as
+			// a definitive signal regardless of the status value.
+			if event.Type == "rate_limit_event" {
+				result.RateLimited = true
 			}
 		}
 	}

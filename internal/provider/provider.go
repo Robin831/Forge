@@ -195,6 +195,8 @@ func IsRateLimitError(exitCode int, stderr, resultSubtype string) bool {
 		"usage limit",
 		"quota exceeded",
 		"you have run out",
+		"you've hit",
+		"hit your limit",
 		"claude ai usage",
 		"usage cap",
 		"too many requests",

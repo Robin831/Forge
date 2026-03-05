@@ -248,25 +248,40 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 	}
 
+	// Track beads dispatched this poll cycle but not yet inserted into the DB.
+	// Without this, the DB-based capacity checks see stale counts and can
+	// over-dispatch before the first goroutine's InsertWorker call commits.
+	thisCycleTotal := 0
+	thisCycleAnvil := make(map[string]int)
+
 	for _, bead := range beads {
 		// Skip beads already in flight
 		if _, inFlight := d.activeBeads.Load(bead.ID); inFlight {
 			continue
 		}
 
-		// Check per-anvil capacity
+		// Check per-anvil capacity, accounting for beads dispatched this cycle
+		// that haven't been written to the DB yet.
 		anvilCfg := d.cfg.Anvils[bead.Anvil]
 		maxSmiths := anvilCfg.MaxSmiths
 		if maxSmiths <= 0 {
 			maxSmiths = 1
 		}
-		canSpawnAnvil, err := worker.CanSpawn(d.db, bead.Anvil, maxSmiths)
+		effectiveAnvilMax := maxSmiths - thisCycleAnvil[bead.Anvil]
+		if effectiveAnvilMax <= 0 {
+			continue
+		}
+		canSpawnAnvil, err := worker.CanSpawn(d.db, bead.Anvil, effectiveAnvilMax)
 		if err != nil || !canSpawnAnvil {
 			continue
 		}
 
 		// Re-check global capacity (may have filled since the check above)
-		canSpawn, err = worker.CanSpawnGlobal(d.db, maxTotal)
+		effectiveGlobalMax := maxTotal - thisCycleTotal
+		if effectiveGlobalMax <= 0 {
+			break
+		}
+		canSpawn, err = worker.CanSpawnGlobal(d.db, effectiveGlobalMax)
 		if err != nil || !canSpawn {
 			break
 		}
@@ -278,6 +293,8 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 
 		d.activeBeads.Store(bead.ID, true)
+		thisCycleAnvil[bead.Anvil]++
+		thisCycleTotal++
 		d.wg.Add(1)
 		go d.dispatchBead(ctx, bead, anvilCfg)
 	}
