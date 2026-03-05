@@ -94,17 +94,20 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 	// Build the review prompt
 	prompt := buildReviewPrompt(beadID, diff, anvilPath)
 
-	// Spawn a Claude review session.
-	// Disable all tools: the diff is in the prompt, so Claude doesn't need to
-	// read files. Allowing tools triggers multi-turn ToolSearch → Grep/Read
-	// sequences that hit max-turns before Claude outputs the verdict JSON.
+	// Spawn a Claude review session. The diff is embedded in the prompt so
+	// Claude doesn't need to read files. Previously --tools "" was passed to
+	// try to disable tool use, but it was unreliable across providers and caused
+	// error_max_turns before the verdict was emitted. Instead the prompt now
+	// instructs Claude to output the verdict JSON FIRST so partial runs are
+	// still parseable. max-turns is set to 5 to give Claude enough room to
+	// output the verdict and then do analysis (even if it reads a few files).
 	logDir := filepath.Join(worktreePath, ".forge-logs")
-	wardenFlags := []string{"--max-turns", "3", "--tools", ""}
+	wardenFlags := []string{"--max-turns", "5"}
 
 	var smithResult *smith.Result
+	// For non-Claude providers --max-turns is translated/dropped;
+	// pass flags as-is (provider.BuildArgs handles translation).
 	for pi, pv := range pvList {
-		// For non-Claude providers the --tools flag has no equivalent;
-		// pass flags as-is (provider.BuildArgs translates/drops them).
 		process, err := smith.SpawnWithProvider(ctx, worktreePath, prompt, logDir, pv, wardenFlags)
 		if err != nil {
 			return nil, fmt.Errorf("spawning warden (%s): %w", pv.Kind, err)
@@ -203,9 +206,27 @@ func buildReviewPrompt(beadID, diff, anvilPath string) string {
 
 	return fmt.Sprintf(`You are a code reviewer (the "Warden") for an AI-generated pull request.
 
-## Task
+## REQUIRED: Output Your Verdict JSON Block First
 
-Review the following git diff for bead %s. Your job is to:
+Before writing anything else, you MUST output the following JSON block as the VERY FIRST content
+in your response — even before any analysis or comments:
+
+%s
+
+Where:
+- verdict is one of: "approve", "reject", "request_changes"
+- summary is a one-line summary of your review
+- issues is an array of specific issues found (empty array if approving)
+
+## Verdict Meanings
+
+- "approve" — the code is correct and ready to merge as-is
+- "request_changes" — minor fixable issues found; the Smith can address them
+- "reject" — fundamental problems that require a complete rethink
+
+## Task: Review Bead %s
+
+After outputting the JSON verdict above, review the following git diff:
 
 1. Check for correctness — does the code work as intended?
 2. Check for coding standards — does it follow the repository's conventions?
@@ -213,35 +234,16 @@ Review the following git diff for bead %s. Your job is to:
 4. Check for safety — any security issues, resource leaks, error handling gaps?
 5. Check for tests — are there adequate tests for the changes?
 
-## Your Verdict
-
-You MUST output a JSON block at the end of your response in exactly this format:
-
-%s
-
-Where:
-- verdict is one of: "approve", "reject", "request_changes"
-- summary is a one-line summary of your review
-- issues is an array of specific issues (empty if approving)
-
-## Review Guidelines
-
-- "approve" means the code is good to merge as-is
-- "request_changes" means minor fixes are needed (the Smith can fix them)
-- "reject" means fundamental issues that need a complete rethink
-
 ## Git Diff
 
 %s
 
 %s
-%s
 %s`,
-		beadID,
 		"```json\n{\"verdict\": \"approve|reject|request_changes\", \"summary\": \"...\", \"issues\": [{\"file\": \"path\", \"line\": 0, \"severity\": \"error|warning|suggestion\", \"message\": \"...\"}]}\n```",
+		beadID,
 		"```diff\n"+truncateDiff(diff, 50000)+"\n```",
 		conditionalSection("## Repository Guidelines (AGENTS.md)", agentsMD),
-		"",
 		"Be thorough but practical. Focus on issues that would cause bugs or maintenance problems.",
 	)
 }
