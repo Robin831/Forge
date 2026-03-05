@@ -109,7 +109,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 			log.Printf("[lifecycle] PR #%d: CI failed, dispatching fix (attempt %d)", event.PRNumber, st.CIFixCount)
 		} else {
 			log.Printf("[lifecycle] PR #%d: CI failed, max fix attempts exhausted", event.PRNumber)
-			_ = m.db.LogEvent("lifecycle_exhausted",
+			_ = m.db.LogEvent(state.EventLifecycleExhausted,
 				fmt.Sprintf("PR #%d: CI fix attempts exhausted (%d)", event.PRNumber, m.maxCI),
 				event.BeadID, event.Anvil)
 		}
@@ -126,7 +126,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 			log.Printf("[lifecycle] PR #%d: Changes requested, dispatching fix (attempt %d)", event.PRNumber, st.ReviewFixCnt)
 		} else {
 			log.Printf("[lifecycle] PR #%d: Changes requested, max fix attempts exhausted", event.PRNumber)
-			_ = m.db.LogEvent("lifecycle_exhausted",
+			_ = m.db.LogEvent(state.EventLifecycleExhausted,
 				fmt.Sprintf("PR #%d: Review fix attempts exhausted (%d)", event.PRNumber, m.maxRev),
 				event.BeadID, event.Anvil)
 		}

@@ -235,7 +235,8 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Timestamp: time.Now(),
 		})
 		_ = m.db.UpdatePRStatus(pr.Number, state.PRNeedsFix)
-		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d: %s", pr.Number, details), pr.BeadID, pr.Anvil)
+		_ = m.db.LogEvent(state.EventReviewChanges, fmt.Sprintf("PR #%d: %s", pr.Number, details), pr.BeadID, pr.Anvil)
+		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d: review fix needed", pr.Number), pr.BeadID, pr.Anvil)
 	}
 
 	// Update snapshot

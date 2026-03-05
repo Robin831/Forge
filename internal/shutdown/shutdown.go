@@ -218,7 +218,7 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 
 	if cleaned > 0 {
 		m.logger.Info("orphan cleanup complete", "cleaned", cleaned)
-		m.db.LogEvent("orphan_cleanup",
+		m.db.LogEvent(state.EventOrphanCleanup,
 			fmt.Sprintf("Cleaned up %d orphaned resources on startup", cleaned),
 			"", "")
 	} else {

@@ -90,8 +90,8 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		}
 		prompt := buildCIFixPrompt(p, temperResult, ghChecks)
 
-		// Step 3: Spawn Smith to fix
-		_ = p.DB.LogEvent("ci_fix_started",
+		// Step 3: Spawn Smith
+		_ = p.DB.LogEvent(state.EventCIFixStarted,
 			fmt.Sprintf("PR #%d: attempt %d, failed step: %s", p.PRNumber, attempt, temperResult.FailedStep),
 			p.BeadID, p.AnvilName)
 
@@ -106,7 +106,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		smithResult := process.Wait()
 		if smithResult.ExitCode != 0 {
 			log.Printf("[cifix] PR #%d: Smith fix attempt %d failed (exit %d)", p.PRNumber, attempt, smithResult.ExitCode)
-			_ = p.DB.LogEvent("ci_fix_failed",
+			_ = p.DB.LogEvent(state.EventCIFixFailed,
 				fmt.Sprintf("PR #%d: Smith exit %d on attempt %d", p.PRNumber, smithResult.ExitCode, attempt),
 				p.BeadID, p.AnvilName)
 			continue
@@ -119,7 +119,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		if verifyResult.Passed {
 			log.Printf("[cifix] PR #%d: Fixed on attempt %d", p.PRNumber, attempt)
 			result.Fixed = true
-			_ = p.DB.LogEvent("ci_fix_success",
+			_ = p.DB.LogEvent(state.EventCIFixSuccess,
 				fmt.Sprintf("PR #%d: Fixed on attempt %d", p.PRNumber, attempt),
 				p.BeadID, p.AnvilName)
 			result.Duration = time.Since(start)
@@ -130,7 +130,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	}
 
 	result.Error = fmt.Errorf("could not fix CI after %d attempts", MaxAttempts)
-	_ = p.DB.LogEvent("ci_fix_exhausted",
+	_ = p.DB.LogEvent(state.EventCIFixFailed,
 		fmt.Sprintf("PR #%d: Exhausted %d fix attempts", p.PRNumber, MaxAttempts),
 		p.BeadID, p.AnvilName)
 	result.Duration = time.Since(start)
