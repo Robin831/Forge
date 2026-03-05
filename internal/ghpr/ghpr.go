@@ -234,6 +234,11 @@ func GetRepoOwnerAndName(ctx context.Context, worktreePath string) (owner, repo 
 		return "", "", err
 	}
 	url := strings.TrimSpace(string(out))
+	return ParseRepoURL(url)
+}
+
+// ParseRepoURL parses a git remote URL into owner and repository name.
+func ParseRepoURL(url string) (owner, repo string, err error) {
 	url = strings.TrimSuffix(url, ".git")
 
 	if strings.Contains(url, "github.com") {

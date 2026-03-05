@@ -137,6 +137,8 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			if comment.ThreadID != "" {
 				if err := resolveThread(ctx, p.WorktreePath, comment.ThreadID); err != nil {
 					log.Printf("[reviewfix] PR #%d: Warning: failed to resolve thread %s: %v", p.PRNumber, comment.ThreadID, err)
+				} else {
+					log.Printf("[reviewfix] PR #%d: Resolved thread %s", p.PRNumber, comment.ThreadID)
 				}
 			}
 		}
