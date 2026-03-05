@@ -23,8 +23,9 @@ import (
 
 // Config is the top-level configuration for The Forge.
 type Config struct {
-	Anvils   map[string]AnvilConfig `mapstructure:"anvils"`
-	Settings SettingsConfig         `mapstructure:"settings"`
+	Anvils        map[string]AnvilConfig `mapstructure:"anvils"`
+	Settings      SettingsConfig         `mapstructure:"settings"`
+	Notifications NotificationsConfig    `mapstructure:"notifications"`
 }
 
 // AnvilConfig defines a registered repository (anvil).
@@ -39,6 +40,14 @@ type SettingsConfig struct {
 	SmithTimeout  time.Duration `mapstructure:"smith_timeout"`
 	MaxTotalSmiths int          `mapstructure:"max_total_smiths"`
 	ClaudeFlags   []string      `mapstructure:"claude_flags"`
+}
+
+// NotificationsConfig holds webhook and notification settings.
+type NotificationsConfig struct {
+	TeamsWebhookURL string `mapstructure:"teams_webhook_url"`
+	Enabled         bool   `mapstructure:"enabled"`
+	// Events to notify on. Empty = all. Options: pr_created, bead_failed, daily_cost, worker_done.
+	Events []string `mapstructure:"events"`
 }
 
 // Defaults returns a Config with sensible default values.
