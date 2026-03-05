@@ -317,6 +317,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Branch:       req.Branch,
 				DB:           d.db,
 				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
+				Providers:    provider.FromConfig(d.cfg.Settings.Providers),
 			})
 			status := state.WorkerDone
 			if res.Error != nil {
@@ -344,6 +345,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Branch:       req.Branch,
 				DB:           d.db,
 				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
+				Providers:    provider.FromConfig(d.cfg.Settings.Providers),
 			})
 			status := state.WorkerDone
 			if res.Error != nil {

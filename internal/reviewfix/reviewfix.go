@@ -17,6 +17,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ghpr"
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -52,6 +53,9 @@ type FixParams struct {
 	DB *state.DB
 	// ExtraFlags for Claude CLI.
 	ExtraFlags []string
+	// Providers is the ordered list of AI providers to try.
+	// If empty, provider.Defaults() is used (Claude → Gemini).
+	Providers []provider.Provider
 }
 
 // FixResult captures the outcome of addressing review comments.
@@ -100,38 +104,76 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 	log.Printf("[reviewfix] PR #%d: %d actionable review comments", p.PRNumber, len(actionable))
 
+	// Resolve providers — default to Claude → Gemini if not specified.
+	providers := p.Providers
+	if len(providers) == 0 {
+		providers = provider.Defaults()
+	}
+	activeProviderIdx := 0
+
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
 		result.Attempts = attempt
 
 		// Step 2: Build fix prompt
 		prompt := buildReviewFixPrompt(p, actionable)
 
-		// Step 3: Spawn Smith
+		// Step 3: Spawn Smith (with provider fallback on rate limit)
 		_ = p.DB.LogEvent(state.EventReviewFixStarted,
-			fmt.Sprintf("PR #%d: attempt %d, %d comments", p.PRNumber, attempt, len(actionable)),
+			fmt.Sprintf("PR #%d: attempt %d, %d comments (provider: %s)", p.PRNumber, attempt, len(actionable), providers[activeProviderIdx].Kind),
 			p.BeadID, p.AnvilName)
 
 		logDir := p.WorktreePath + "/.forge-logs"
-		process, err := smith.Spawn(ctx, p.WorktreePath, prompt, logDir, p.ExtraFlags)
-		if err != nil {
-			result.Error = fmt.Errorf("spawning smith for review fix: %w", err)
-			_ = p.DB.LogEvent(state.EventReviewFixFailed, result.Error.Error(), p.BeadID, p.AnvilName)
+		var smithResult *smith.Result
+		for pi := activeProviderIdx; pi < len(providers); pi++ {
+			pv := providers[pi]
+			if pi > activeProviderIdx {
+				log.Printf("[reviewfix] PR #%d: Provider %s rate limited, retrying with %s",
+					p.PRNumber, providers[pi-1].Kind, pv.Kind)
+				_ = p.DB.LogEvent(state.EventReviewFixSmithError,
+					fmt.Sprintf("PR #%d attempt %d: %s rate limited, falling back to %s",
+						p.PRNumber, attempt, providers[pi-1].Kind, pv.Kind),
+					p.BeadID, p.AnvilName)
+			}
+			process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
+			if err != nil {
+				result.Error = fmt.Errorf("spawning smith (%s) for review fix: %w", pv.Kind, err)
+				_ = p.DB.LogEvent(state.EventReviewFixFailed, result.Error.Error(), p.BeadID, p.AnvilName)
+				result.Duration = time.Since(start)
+				return result
+			}
+			smithResult = process.Wait()
+			// Treat exit 0 or a genuine success event as not rate-limited.
+			if smithResult.ExitCode == 0 || (smithResult.ResultSubtype == "success" && !smithResult.IsError) {
+				smithResult.RateLimited = false
+			}
+			if !smithResult.RateLimited {
+				activeProviderIdx = pi
+				break
+			}
+		}
+
+		// If all providers are rate-limited, abort rather than burning more attempts.
+		if smithResult.RateLimited {
+			log.Printf("[reviewfix] PR #%d: All providers rate limited on attempt %d", p.PRNumber, attempt)
+			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+				fmt.Sprintf("PR #%d attempt %d: all providers rate limited", p.PRNumber, attempt),
+				p.BeadID, p.AnvilName)
+			_ = p.DB.LogEvent(state.EventReviewFixSmithError,
+				fmt.Sprintf("PR #%d attempt %d: rate_limited (all %d providers exhausted)", p.PRNumber, attempt, len(providers)),
+				p.BeadID, p.AnvilName)
+			result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 			result.Duration = time.Since(start)
 			return result
 		}
 
-		smithResult := process.Wait()
 		if smithResult.ExitCode != 0 {
-			log.Printf("[reviewfix] PR #%d: Smith fix attempt %d failed (exit %d, ratelimited=%v, subtype=%s)",
-				p.PRNumber, attempt, smithResult.ExitCode, smithResult.RateLimited, smithResult.ResultSubtype)
+			log.Printf("[reviewfix] PR #%d: Smith fix attempt %d failed (exit %d, subtype=%s)",
+				p.PRNumber, attempt, smithResult.ExitCode, smithResult.ResultSubtype)
 			_ = p.DB.LogEvent(state.EventReviewFixFailed,
 				fmt.Sprintf("PR #%d: Smith exit %d on attempt %d", p.PRNumber, smithResult.ExitCode, attempt),
 				p.BeadID, p.AnvilName)
-			// Log smith error details so we can debug root cause from the events table.
+			// Log error detail for root-cause debugging.
 			errDetail := smithResult.ResultSubtype
-			if smithResult.RateLimited {
-				errDetail = "rate_limited"
-			}
 			if errDetail == "" && smithResult.ErrorOutput != "" {
 				errDetail = smithResult.ErrorOutput
 				if len(errDetail) > 300 {

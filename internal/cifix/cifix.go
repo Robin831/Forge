@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
@@ -41,6 +42,9 @@ type FixParams struct {
 	ExtraFlags []string
 	// TemperConfig overrides auto-detection if set.
 	TemperConfig *temper.Config
+	// Providers is the ordered list of AI providers to try.
+	// If empty, provider.Defaults() is used (Claude → Gemini).
+	Providers []provider.Provider
 }
 
 // FixResult captures the outcome of a CI fix attempt.
@@ -61,6 +65,13 @@ type FixResult struct {
 func Fix(ctx context.Context, p FixParams) *FixResult {
 	start := time.Now()
 	result := &FixResult{}
+
+	// Resolve providers — default to Claude → Gemini if not specified.
+	providers := p.Providers
+	if len(providers) == 0 {
+		providers = provider.Defaults()
+	}
+	activeProviderIdx := 0
 
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
 		result.Attempts = attempt
@@ -96,14 +107,39 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			p.BeadID, p.AnvilName)
 
 		logDir := p.WorktreePath + "/.forge-logs"
-		process, err := smith.Spawn(ctx, p.WorktreePath, prompt, logDir, p.ExtraFlags)
-		if err != nil {
-			result.Error = fmt.Errorf("spawning smith for CI fix: %w", err)
+		var smithResult *smith.Result
+		for pi := activeProviderIdx; pi < len(providers); pi++ {
+			pv := providers[pi]
+			if pi > activeProviderIdx {
+				log.Printf("[cifix] PR #%d: Provider %s rate limited, retrying with %s",
+					p.PRNumber, providers[pi-1].Kind, pv.Kind)
+			}
+			process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
+			if err != nil {
+				result.Error = fmt.Errorf("spawning smith (%s) for CI fix: %w", pv.Kind, err)
+				result.Duration = time.Since(start)
+				return result
+			}
+			smithResult = process.Wait()
+			if smithResult.ExitCode == 0 || (smithResult.ResultSubtype == "success" && !smithResult.IsError) {
+				smithResult.RateLimited = false
+			}
+			if !smithResult.RateLimited {
+				activeProviderIdx = pi
+				break
+			}
+		}
+
+		if smithResult.RateLimited {
+			log.Printf("[cifix] PR #%d: All providers rate limited on attempt %d", p.PRNumber, attempt)
+			_ = p.DB.LogEvent(state.EventCIFixFailed,
+				fmt.Sprintf("PR #%d attempt %d: all providers rate limited", p.PRNumber, attempt),
+				p.BeadID, p.AnvilName)
+			result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 			result.Duration = time.Since(start)
 			return result
 		}
 
-		smithResult := process.Wait()
 		if smithResult.ExitCode != 0 {
 			log.Printf("[cifix] PR #%d: Smith fix attempt %d failed (exit %d)", p.PRNumber, attempt, smithResult.ExitCode)
 			_ = p.DB.LogEvent(state.EventCIFixFailed,
