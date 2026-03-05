@@ -121,7 +121,11 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				return result
 			}
 			smithResult = process.Wait()
-			if smithResult.ExitCode == 0 || (smithResult.ResultSubtype == "success" && !smithResult.IsError) {
+			// Treat a genuine success event as not rate-limited.
+			// Do NOT use ExitCode == 0 here: Claude can exit 0 with is_error:true
+			// (subtype:"success") when the session was rate-limit rejected — that
+			// is not a successful session and must not suppress the fallback.
+			if smithResult.ResultSubtype == "success" && !smithResult.IsError {
 				smithResult.RateLimited = false
 			}
 			if !smithResult.RateLimited {

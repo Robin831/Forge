@@ -1,6 +1,7 @@
 package ghpr
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -121,5 +122,26 @@ func TestPRStatus_NeedsChanges(t *testing.T) {
 			assert.Equal(t, tt.want, tt.status.NeedsChanges())
 		})
 	}
+}
+
+// TestReviewAuthorUnmarshal is a regression test for the bug where Review.Author
+// was typed as string and failed JSON unmarshaling when GitHub returned a nested
+// {"login":"..."} object, silently producing empty reviews and suppressing all
+// bellows review-change events.
+func TestReviewAuthorUnmarshal(t *testing.T) {
+	payload := `{"reviews":[{"author":{"login":"octocat"},"state":"CHANGES_REQUESTED","body":"please fix"},{"author":{"login":"alice"},"state":"APPROVED","body":""}]}`
+	var status PRStatus
+	if err := json.Unmarshal([]byte(payload), &status); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if len(status.Reviews) != 2 {
+		t.Fatalf("expected 2 reviews, got %d", len(status.Reviews))
+	}
+	assert.Equal(t, "octocat", status.Reviews[0].Author.Login)
+	assert.Equal(t, "CHANGES_REQUESTED", status.Reviews[0].State)
+	assert.Equal(t, "alice", status.Reviews[1].Author.Login)
+	assert.Equal(t, "APPROVED", status.Reviews[1].State)
+	assert.True(t, status.NeedsChanges(), "CHANGES_REQUESTED review should cause NeedsChanges")
+	assert.True(t, status.HasApproval(), "APPROVED review should be detected")
 }
 
