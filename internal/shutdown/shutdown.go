@@ -176,9 +176,11 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 	// 3. Clean up abandoned worktrees across all anvils
 	if m.worktrees != nil {
 		// Refresh active workers list to ensure we don't skip worktrees of workers we just marked as failed
-		workers, err = m.db.ActiveWorkers()
-		if err != nil {
+		if refreshed, err := m.db.ActiveWorkers(); err != nil {
 			m.logger.Error("failed to refresh active workers for worktree cleanup", "error", err)
+			// Keep existing workers slice — do not overwrite with nil on error
+		} else {
+			workers = refreshed
 		}
 
 		ctx := context.Background()
