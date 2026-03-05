@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Robin831/Forge/internal/executil"
 )
 
 // Worktree represents an active git worktree for a Smith worker.
@@ -164,7 +166,7 @@ func gitCmd(ctx context.Context, dir string, args ...string) error {
 	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, "git", args...)
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
 	cmd.Dir = dir
 	cmd.Stdout = os.Stderr // Git output goes to stderr for debugging
 	cmd.Stderr = os.Stderr

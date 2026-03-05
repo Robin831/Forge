@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+
+	"github.com/Robin831/Forge/internal/executil"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -100,7 +102,7 @@ func Install() error {
 	}
 
 	// Register via schtasks
-	cmd := exec.Command("schtasks", "/create", "/tn", TaskName, "/xml", xmlPath, "/f")
+	cmd := executil.HideWindow(exec.Command("schtasks", "/create", "/tn", TaskName, "/xml", xmlPath, "/f"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("registering task: %s (output: %s)", err, strings.TrimSpace(string(output)))
@@ -118,7 +120,7 @@ func Remove() error {
 		return fmt.Errorf("autostart is Windows-only")
 	}
 
-	cmd := exec.Command("schtasks", "/delete", "/tn", TaskName, "/f")
+	cmd := executil.HideWindow(exec.Command("schtasks", "/delete", "/tn", TaskName, "/f"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("removing task: %s (output: %s)", err, strings.TrimSpace(string(output)))
@@ -134,7 +136,7 @@ func Status() (registered bool, nextRun string, err error) {
 		return false, "", fmt.Errorf("autostart is Windows-only")
 	}
 
-	cmd := exec.Command("schtasks", "/query", "/tn", TaskName, "/fo", "CSV", "/nh")
+	cmd := executil.HideWindow(exec.Command("schtasks", "/query", "/tn", TaskName, "/fo", "CSV", "/nh"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, "", nil // Not registered

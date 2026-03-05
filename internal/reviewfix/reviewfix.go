@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/smith"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -151,7 +152,7 @@ func fetchReviewComments(ctx context.Context, worktreePath string, prNumber int)
 		"--json", "reviews,comments",
 	}
 
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
 	cmd.Dir = worktreePath
 
 	var stdout, stderr bytes.Buffer
