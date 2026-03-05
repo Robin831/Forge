@@ -211,6 +211,9 @@ func (m *Model) View() string {
 
 	queueWidth, workerWidth, eventWidth := m.getPanelWidths()
 	contentHeight := m.height - 4 // header + footer
+	if contentHeight < 0 {
+		contentHeight = 0
+	}
 
 	// Build panels
 	queuePanel := m.renderQueue(queueWidth, contentHeight)
@@ -236,6 +239,9 @@ func (m *Model) View() string {
 
 func (m *Model) getPanelWidths() (queueWidth, workerWidth, eventWidth int) {
 	remainingWidth := m.width - 4 // 4 for borders/gaps
+	if remainingWidth < 0 {
+		remainingWidth = 0
+	}
 	queueWidth = remainingWidth / 4
 	workerWidth = remainingWidth / 4
 	eventWidth = remainingWidth - queueWidth - workerWidth
@@ -319,6 +325,9 @@ func (m *Model) renderWorkers(width, height int) string {
 	listHeight := height * 6 / 10
 	if listHeight < 5 {
 		listHeight = 5
+	}
+	if listHeight > height {
+		listHeight = height
 	}
 	activityHeight := height - listHeight
 
@@ -486,9 +495,10 @@ func (m *Model) getEventLayout(item EventItem, panelWidth int) eventLayout {
 		beadTag = "[" + item.BeadID + "] "
 	}
 
-	interiorWidth := panelWidth - eventPanelInteriorPadding
-	if interiorWidth < eventPanelMinWidth {
-		interiorWidth = eventPanelMinWidth
+	// Interior width: subtract border (2) + padding (2) on each side = 4 total
+	interiorWidth := panelWidth - 4
+	if interiorWidth < 1 {
+		interiorWidth = 1
 	}
 
 	// Visual prefix length: "HH:MM:SS "(9) + type + " " + beadTag
