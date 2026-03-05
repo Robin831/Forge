@@ -73,8 +73,8 @@ func (m *Manager) Create(ctx context.Context, anvilPath, beadID string) (*Worktr
 		return nil, fmt.Errorf("resolving base ref: %w", err)
 	}
 
-	// Create worktree with new branch
-	if err := gitCmd(ctx, anvilPath, "worktree", "add", "-b", branch, worktreePath, baseRef); err != nil {
+	// Create worktree with new branch (use -B to reset if branch exists, -f to force if checked out elsewhere)
+	if err := gitCmd(ctx, anvilPath, "worktree", "add", "-f", "-B", branch, worktreePath, baseRef); err != nil {
 		return nil, fmt.Errorf("git worktree add: %w", err)
 	}
 
