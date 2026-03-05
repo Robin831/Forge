@@ -15,19 +15,26 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/hotreload"
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/pipeline"
+	"github.com/Robin831/Forge/internal/poller"
+	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/worker"
 	"github.com/Robin831/Forge/internal/worktree"
 )
 
@@ -42,7 +49,7 @@ const (
 	LogFileName = "daemon.log"
 
 	// DefaultPollInterval is the default interval between bead polls.
-	DefaultPollInterval = 5 * time.Minute
+	DefaultPollInterval = 30 * time.Second
 
 	// GracefulTimeout is how long to wait for workers to finish on shutdown.
 	GracefulTimeout = 60 * time.Second
@@ -56,6 +63,12 @@ type Daemon struct {
 	ipc           *ipc.Server
 	shutdownMgr   *shutdown.Manager
 	configWatcher *hotreload.Watcher
+
+	// Dispatch state
+	activeBeads  sync.Map       // beadID -> true, currently in-flight
+	wg           sync.WaitGroup // tracks running pipeline goroutines
+	worktreeMgr  *worktree.Manager
+	promptBuilder *prompt.Builder
 
 	forgeDir   string // ~/.forge
 	pidFile    string
@@ -94,15 +107,19 @@ func New(cfg *config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("opening state database: %w", err)
 	}
 
+	wtMgr := worktree.NewManager()
+
 	return &Daemon{
-		cfg:         cfg,
-		db:          db,
-		logger:      logger,
-		forgeDir:    forgeDir,
-		pidFile:     filepath.Join(forgeDir, PIDFileName),
-		configFile:  config.ConfigFilePath(""),
-		logFile:     logFile,
-		shutdownMgr: shutdown.NewManager(db, worktree.NewManager(), logger, anvilPaths(cfg)),
+		cfg:           cfg,
+		db:            db,
+		logger:        logger,
+		forgeDir:      forgeDir,
+		pidFile:       filepath.Join(forgeDir, PIDFileName),
+		configFile:    config.ConfigFilePath(""),
+		logFile:       logFile,
+		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPaths(cfg)),
+		worktreeMgr:   wtMgr,
+		promptBuilder: prompt.NewBuilder(),
 	}, nil
 }
 
@@ -185,6 +202,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.logger.Info("daemon shutting down", "reason", ctx.Err())
 			killed := d.shutdownMgr.GracefulShutdown()
 			d.shutdownMgr.CleanupWorktrees()
+			d.wg.Wait() // wait for all dispatch goroutines
 			d.db.LogEvent(state.EventSmithDone,
 				fmt.Sprintf("Forge daemon stopped (killed %d workers)", killed), "", "")
 			return nil
@@ -195,23 +213,153 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 }
 
-// pollAndDispatch polls all anvils for ready beads and logs results.
-// Worker spawning will be connected in Phase 6 integration.
+// pollAndDispatch polls all anvils for ready beads and dispatches workers.
 func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	d.logger.Info("polling anvils", "count", len(d.cfg.Anvils))
 
-	for name := range d.cfg.Anvils {
-		select {
-		case <-ctx.Done():
-			return
-		default:
+	// Check global capacity first
+	maxTotal := d.cfg.Settings.MaxTotalSmiths
+	if maxTotal <= 0 {
+		maxTotal = 4
+	}
+	canSpawn, err := worker.CanSpawnGlobal(d.db, maxTotal)
+	if err != nil {
+		d.logger.Error("checking global capacity", "error", err)
+		return
+	}
+	if !canSpawn {
+		d.logger.Info("global smith limit reached, skipping poll", "max", maxTotal)
+		return
+	}
+
+	// Poll all anvils for ready beads
+	p := poller.New(d.cfg.Anvils)
+	beads, results := p.Poll(ctx)
+
+	for _, r := range results {
+		if r.Err != nil {
+			d.logger.Warn("poll error", "anvil", r.Name, "error", r.Err)
+			_ = d.db.LogEvent("poll_error", r.Err.Error(), "", r.Name)
+		} else {
+			d.logger.Info("poll complete", "anvil", r.Name, "ready", len(r.Beads))
+			_ = d.db.LogEvent("poll", fmt.Sprintf("Polled anvil: %s (%d ready)", r.Name, len(r.Beads)), "", r.Name)
+		}
+	}
+
+	for _, bead := range beads {
+		// Skip beads already in flight
+		if _, inFlight := d.activeBeads.Load(bead.ID); inFlight {
+			continue
 		}
 
-		d.logger.Debug("polling anvil", "name", name)
-		// The actual poller/worker integration will come in the integration phase.
-		// For now, the daemon loop structure is ready.
-		d.db.LogEvent("poll", fmt.Sprintf("Polled anvil: %s", name), "", name)
+		// Check per-anvil capacity
+		anvilCfg := d.cfg.Anvils[bead.Anvil]
+		maxSmiths := anvilCfg.MaxSmiths
+		if maxSmiths <= 0 {
+			maxSmiths = 1
+		}
+		canSpawnAnvil, err := worker.CanSpawn(d.db, bead.Anvil, maxSmiths)
+		if err != nil || !canSpawnAnvil {
+			continue
+		}
+
+		// Re-check global capacity (may have filled since the check above)
+		canSpawn, err = worker.CanSpawnGlobal(d.db, maxTotal)
+		if err != nil || !canSpawn {
+			break
+		}
+
+		// Claim the bead atomically before dispatching
+		if err := d.claimBead(ctx, bead.ID, anvilCfg.Path); err != nil {
+			d.logger.Warn("failed to claim bead", "bead", bead.ID, "error", err)
+			continue
+		}
+
+		d.activeBeads.Store(bead.ID, true)
+		d.wg.Add(1)
+		go d.dispatchBead(ctx, bead, anvilCfg)
 	}
+}
+
+// dispatchBead runs the full pipeline for a single bead in a goroutine.
+func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig) {
+	defer d.wg.Done()
+	defer d.activeBeads.Delete(bead.ID)
+
+	d.logger.Info("dispatching bead", "bead", bead.ID, "anvil", bead.Anvil, "title", bead.Title)
+
+	// Apply smith timeout
+	smithTimeout := d.cfg.Settings.SmithTimeout
+	if smithTimeout <= 0 {
+		smithTimeout = 30 * time.Minute
+	}
+	pipelineCtx, cancel := context.WithTimeout(ctx, smithTimeout)
+	defer cancel()
+
+	outcome := pipeline.Run(pipelineCtx, pipeline.Params{
+		DB:              d.db,
+		WorktreeManager: d.worktreeMgr,
+		PromptBuilder:   d.promptBuilder,
+		AnvilName:       bead.Anvil,
+		AnvilConfig:     anvilCfg,
+		Bead:            bead,
+		ExtraFlags:      d.cfg.Settings.ClaudeFlags,
+	})
+
+	if outcome.Error != nil {
+		d.logger.Error("pipeline error", "bead", bead.ID, "error", outcome.Error)
+		return
+	}
+
+	if !outcome.Success {
+		d.logger.Warn("pipeline did not succeed", "bead", bead.ID, "verdict", outcome.Verdict)
+		return
+	}
+
+	d.logger.Info("pipeline succeeded", "bead", bead.ID, "branch", outcome.Branch, "iterations", outcome.Iterations)
+
+	// Create PR — run gh from the main repo dir since the branch is already pushed
+	pr, err := ghpr.Create(ctx, ghpr.CreateParams{
+		WorktreePath: anvilCfg.Path,
+		BeadID:       bead.ID,
+		Title:        fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
+		Branch:       outcome.Branch,
+		AnvilName:    bead.Anvil,
+		DB:           d.db,
+	})
+	if err != nil {
+		d.logger.Error("PR creation failed", "bead", bead.ID, "error", err)
+		return
+	}
+
+	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
+
+	// Close the bead
+	if err := d.closeBead(ctx, bead.ID, anvilCfg.Path); err != nil {
+		d.logger.Warn("failed to close bead", "bead", bead.ID, "error", err)
+	}
+}
+
+// claimBead marks a bead as in_progress via bd update --claim.
+func (d *Daemon) claimBead(ctx context.Context, beadID, anvilPath string) error {
+	cmd := exec.CommandContext(ctx, "bd", "update", beadID, "--status=in_progress")
+	cmd.Dir = anvilPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("bd update %s --status=in_progress: %w\n%s", beadID, err, out)
+	}
+	return nil
+}
+
+// closeBead marks a bead as closed via bd close.
+func (d *Daemon) closeBead(ctx context.Context, beadID, anvilPath string) error {
+	cmd := exec.CommandContext(ctx, "bd", "close", beadID, "--reason=Implemented by Forge")
+	cmd.Dir = anvilPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("bd close %s: %w\n%s", beadID, err, out)
+	}
+	return nil
 }
 
 // handleIPC processes incoming IPC commands from CLI/TUI clients.
@@ -254,12 +402,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		return ipc.Response{Type: "ok", Payload: data}
 
 	case "subscribe":
-		// Client is now subscribed — Broadcast() handles push
 		data, _ := json.Marshal(map[string]string{"message": "subscribed"})
 		return ipc.Response{Type: "ok", Payload: data}
 
 	case "queue":
-		// Return current queue data
 		data, _ := json.Marshal(map[string]string{"message": "not yet implemented"})
 		return ipc.Response{Type: "ok", Payload: data}
 
