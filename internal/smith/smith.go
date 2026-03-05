@@ -101,6 +101,7 @@ type StreamStats struct {
 // RateLimitInfo is the payload of a Claude rate_limit_event.
 type RateLimitInfo struct {
 	Status            string `json:"status"`
+	ResetAt           string `json:"reset_at,omitempty"` // RFC3339 timestamp from Claude
 	RequestsRemaining int    `json:"requests_remaining,omitempty"`
 	RequestsLimit     int    `json:"requests_limit,omitempty"`
 	RequestsReset     string `json:"requests_reset,omitempty"` // RFC3339 or similar
@@ -407,6 +408,12 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 							if t, err := time.Parse(time.RFC3339, event.RateLimitInfo.RequestsReset); err == nil {
 								result.Quota.RequestsReset = &t
 							}
+						}
+					}
+					// Claude's reset_at field
+					if event.RateLimitInfo.ResetAt != "" {
+						if t, err := time.Parse(time.RFC3339, event.RateLimitInfo.ResetAt); err == nil {
+							result.Quota.RequestsReset = &t
 						}
 					}
 					if event.RateLimitInfo.TokensLimit > 0 {
