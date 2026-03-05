@@ -37,15 +37,17 @@ type QueueItem struct {
 
 // WorkerItem represents a worker in the workers panel.
 type WorkerItem struct {
-	ID       string
-	BeadID   string
-	Anvil    string
-	Status   string
-	Duration string
-	CostUSD  float64
-	Type     string // "smith", "warden", "temper", "cifix", "reviewfix"
-	LastLog  string // Last line from the worker log
-	PID      int    // Process ID for kill
+	ID            string
+	BeadID        string
+	Anvil         string
+	Status        string
+	Duration      string
+	CostUSD       float64
+	Type          string   // "smith", "warden", "temper", "cifix", "reviewfix"
+	LastLog       string   // Last line from the worker log
+	PID           int      // Process ID for kill
+	LogPath       string   // Path to the worker's log file
+	ActivityLines []string // Recent parsed activity from the log (tool calls, thinking, text)
 }
 
 // EventItem represents an event in the event log panel.
@@ -289,8 +291,31 @@ func (m Model) renderQueue(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderWorkers renders the workers panel.
+// renderWorkers splits the center Workers panel into two vertical sub-panels:
+// top shows the worker list, bottom shows the live activity log for the
+// selected worker. Uses lipgloss.JoinVertical for the split.
 func (m Model) renderWorkers(width, height int) string {
+	// Subtract 2 so each of the two bordered boxes gets half the available rows.
+	innerTotal := height - 2
+	if innerTotal < 6 {
+		innerTotal = 6
+	}
+	listHeight := innerTotal * 6 / 10
+	if listHeight < 3 {
+		listHeight = 3
+	}
+	activityHeight := innerTotal - listHeight
+	if activityHeight < 3 {
+		activityHeight = 3
+	}
+
+	top := m.renderWorkerList(width, listHeight)
+	bottom := m.renderWorkerActivity(width, activityHeight)
+	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
+}
+
+// renderWorkerList renders the top sub-panel: the list of active workers.
+func (m Model) renderWorkerList(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelWorkers {
 		style = focusedPanelStyle.Width(width)
@@ -325,6 +350,40 @@ func (m Model) renderWorkers(width, height int) string {
 
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
+}
+
+// renderWorkerActivity renders the bottom sub-panel: a live activity log
+// for the currently selected worker, parsed from its stream-json log file.
+func (m Model) renderWorkerActivity(width, height int) string {
+	title := activityPanelTitleStyle.Render("Live Activity")
+
+	var lines []string
+	lines = append(lines, title)
+
+	var activityLines []string
+	if len(m.workers) > 0 && m.workerScroll < len(m.workers) {
+		activityLines = m.workers[m.workerScroll].ActivityLines
+	}
+
+	if len(activityLines) == 0 {
+		lines = append(lines, dimStyle.Render("No activity"))
+	} else {
+		// Show the last entries that fit in the box (newest at the bottom).
+		maxVisible := height - 3
+		if maxVisible < 1 {
+			maxVisible = 1
+		}
+		start := len(activityLines) - maxVisible
+		if start < 0 {
+			start = 0
+		}
+		for _, entry := range activityLines[start:] {
+			lines = append(lines, truncate(entry, width-4))
+		}
+	}
+
+	content := strings.Join(lines, "\n")
+	return activityPanelStyle.Width(width).Height(height).Render(content)
 }
 
 // renderEvents renders the event log panel.
@@ -421,6 +480,16 @@ var (
 
 	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
+
+	activityPanelStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("238")).
+			Padding(0, 1)
+
+	activityPanelTitleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("245")).
+			MarginBottom(1)
 )
 
 // priorityStyle returns a colored priority indicator.
