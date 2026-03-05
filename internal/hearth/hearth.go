@@ -193,34 +193,13 @@ func (m Model) View() string {
 		return "Initializing The Forge..."
 	}
 
-	// Calculate heights for the vertical split
-	// Top half for Queue and Workers, bottom half for Events
-	availableHeight := m.height - 4 // minus header and footer
-	topHeight := availableHeight / 2
-	if topHeight < 8 {
-		topHeight = 8
-	}
-	bottomHeight := availableHeight - topHeight
-	if bottomHeight < 5 {
-		bottomHeight = 5
-	}
+	queueWidth, workerWidth, eventWidth := m.getPanelWidths()
+	contentHeight := m.height - 4 // header + footer
 
-	// Top section: Queue and Workers (side-by-side)
-	topPanelWidth := (m.width - 2) / 2
-	if topPanelWidth < 20 {
-		topPanelWidth = 20
-	}
-
-	queuePanel := m.renderQueue(topPanelWidth, topHeight)
-	workerPanel := m.renderWorkers(m.width-topPanelWidth, topHeight)
-
-	topSection := lipgloss.JoinHorizontal(lipgloss.Top,
-		queuePanel,
-		workerPanel,
-	)
-
-	// Bottom section: Events (full width)
-	eventPanel := m.renderEvents(m.width, bottomHeight)
+	// Build panels
+	queuePanel := m.renderQueue(queueWidth, contentHeight)
+	workerPanel := m.renderWorkers(workerWidth, contentHeight)
+	eventPanel := m.renderEvents(eventWidth, contentHeight)
 
 	// Header
 	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
@@ -231,12 +210,20 @@ func (m Model) View() string {
 	)
 
 	// Final assembly
+	mainSection := lipgloss.JoinHorizontal(lipgloss.Top, queuePanel, workerPanel, eventPanel)
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
-		topSection,
-		eventPanel,
+		mainSection,
 		footer,
 	)
+}
+
+func (m Model) getPanelWidths() (queueWidth, workerWidth, eventWidth int) {
+	remainingWidth := m.width - 4 // 4 for borders/gaps
+	queueWidth = remainingWidth / 4
+	workerWidth = remainingWidth / 4
+	eventWidth = remainingWidth - queueWidth - workerWidth
+	return
 }
 
 // scrollDown scrolls the focused panel down.
@@ -251,7 +238,9 @@ func (m *Model) scrollDown() {
 			m.workerScroll++
 		}
 	case PanelEvents:
-		if m.eventScroll < len(m.events)-1 {
+		_, _, eventWidth := m.getPanelWidths()
+		allLines := m.renderAllEventLines(eventWidth)
+		if m.eventScroll < len(allLines)-1 {
 			m.eventScroll++
 		}
 	}
@@ -412,59 +401,109 @@ func (m Model) renderEvents(width, height int) string {
 	var lines []string
 	lines = append(lines, title)
 
+	contentHeight := height - 3 // title + border rows
+
 	if len(m.events) == 0 {
 		lines = append(lines, dimStyle.Render("No events"))
 	} else {
-		// Content width: panel width minus border (2) and padding (2)
-		contentWidth := width - 4
-		if contentWidth < 20 {
-			contentWidth = 20
-		}
-		availLines := height - 3 // space after title + margins
-
-		for i := m.eventScroll; i < len(m.events) && len(lines)-1 < availLines; i++ {
-			item := m.events[i]
-
-			// Build the styled prefix: timestamp + event type + optional bead tag
-			ts := dimStyle.Render(item.Timestamp)
-			et := eventTypeStyle(item.Type)
-			prefix := ts + " " + et + " "
-			if item.BeadID != "" {
-				prefix += dimStyle.Render("["+item.BeadID+"] ")
-			}
-
-			prefixWidth := lipgloss.Width(prefix)
-			msgWidth := contentWidth - prefixWidth
-			if msgWidth < 20 {
-				msgWidth = 20
-			}
-
-			msgLines := wordWrap(item.Message, msgWidth)
-
-			// First line: full prefix + first message segment
-			firstLine := prefix + msgLines[0]
-			if i == m.eventScroll {
-				firstLine = selectedStyle.Render(firstLine)
-			}
-			lines = append(lines, firstLine)
-
-			// Continuation lines: indented to align with message body
-			indent := strings.Repeat(" ", prefixWidth)
-			for _, ml := range msgLines[1:] {
-				if len(lines)-1 >= availLines {
-					break
-				}
-				contLine := indent + ml
-				if i == m.eventScroll {
-					contLine = selectedStyle.Render(contLine)
-				}
-				lines = append(lines, contLine)
-			}
+		allLines := m.renderAllEventLines(width)
+		visible := visibleItems(m.eventScroll, len(allLines), contentHeight)
+		for i := visible.start; i < visible.end; i++ {
+			lines = append(lines, allLines[i])
 		}
 	}
 
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
+}
+
+// renderAllEventLines flattens all events into a single slice of rendered lines.
+func (m Model) renderAllEventLines(width int) []string {
+	var allLines []string
+
+	// Track which event the current scroll position belongs to
+	selectedEventIdx := -1
+	tempLineCount := 0
+	for i, event := range m.events {
+		lines := m.renderEventLines(event, false, width)
+		if selectedEventIdx == -1 && tempLineCount+len(lines) > m.eventScroll {
+			selectedEventIdx = i
+		}
+		tempLineCount += len(lines)
+	}
+
+	for i, event := range m.events {
+		allLines = append(allLines, m.renderEventLines(event, i == selectedEventIdx, width)...)
+	}
+	return allLines
+}
+
+// renderEventLines renders a single event as one or more wrapped lines.
+// The timestamp and event type stay on the first line; the message body wraps
+// onto continuation lines if it exceeds the available width.
+func (m Model) renderEventLines(item EventItem, selected bool, panelWidth int) []string {
+	beadTag := ""
+	if item.BeadID != "" {
+		beadTag = "[" + item.BeadID + "] "
+	}
+
+	// Interior width: subtract border (2) + padding (2) on each side = 4 total
+	interiorWidth := panelWidth - 4
+	if interiorWidth < 20 {
+		interiorWidth = 20
+	}
+
+	// Visual prefix length: "HH:MM:SS "(9) + type + " " + beadTag
+	prefixVisLen := 9 + len(item.Type) + 1 + len(beadTag)
+	msgWidth := interiorWidth - prefixVisLen
+
+	var lines []string
+	if msgWidth < 20 {
+		// Prefix is too wide for the current panel width, put message on its own lines
+		header := fmt.Sprintf("%s %s %s",
+			dimStyle.Render(item.Timestamp),
+			eventTypeStyle(item.Type),
+			dimStyle.Render(beadTag))
+		if selected {
+			header = selectedStyle.Render(header)
+		}
+		lines = append(lines, header)
+
+		// Message starts on next line, indented slightly
+		wrapped := wordWrap(item.Message, interiorWidth-2)
+		for _, part := range wrapped {
+			line := "  " + dimStyle.Render(part)
+			if selected {
+				line = selectedStyle.Render(line)
+			}
+			lines = append(lines, line)
+		}
+	} else {
+		// Message starts on the same line as the prefix
+		wrapped := wordWrap(item.Message, msgWidth)
+		if len(wrapped) == 0 {
+			wrapped = []string{""}
+		}
+
+		indent := strings.Repeat(" ", prefixVisLen)
+		for i, part := range wrapped {
+			var line string
+			if i == 0 {
+				line = fmt.Sprintf("%s %s %s%s",
+					dimStyle.Render(item.Timestamp),
+					eventTypeStyle(item.Type),
+					dimStyle.Render(beadTag),
+					part)
+			} else {
+				line = indent + dimStyle.Render(part)
+			}
+			if selected {
+				line = selectedStyle.Render(line)
+			}
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 // --- Messages for updating panel data ---
@@ -642,34 +681,52 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-// wordWrap breaks s into lines of at most maxWidth characters, splitting on
-// word boundaries. Words longer than maxWidth are placed on their own line.
+// wordWrap splits s into lines of at most maxWidth characters,
+// preferring to break at spaces. Newlines in s are respected.
 func wordWrap(s string, maxWidth int) []string {
 	if maxWidth < 1 {
 		maxWidth = 1
 	}
-	if s == "" {
-		return []string{""}
-	}
-	words := strings.Fields(s)
-	if len(words) == 0 {
-		return []string{""}
-	}
-	var lines []string
-	current := ""
-	for _, w := range words {
-		switch {
-		case current == "":
-			current = w
-		case len(current)+1+len(w) <= maxWidth:
-			current += " " + w
-		default:
-			lines = append(lines, current)
-			current = w
+
+	var result []string
+	paragraphs := strings.Split(s, "\n")
+	for _, pStr := range paragraphs {
+		pStr = strings.TrimSpace(pStr)
+		if pStr == "" {
+			if len(paragraphs) > 1 {
+				result = append(result, "")
+			}
+			continue
+		}
+
+		p := []rune(pStr)
+		for len(p) > maxWidth {
+			breakAt := -1
+			// Look for last space within maxWidth
+			for i := maxWidth; i >= maxWidth/2; i-- {
+				if i < len(p) && p[i] == ' ' {
+					breakAt = i
+					break
+				}
+			}
+			if breakAt == -1 {
+				breakAt = maxWidth
+			}
+			result = append(result, string(p[:breakAt]))
+			p = p[breakAt:]
+			// Trim leading spaces for the next line
+			for len(p) > 0 && p[0] == ' ' {
+				p = p[1:]
+			}
+		}
+		if len(p) > 0 {
+			result = append(result, string(p))
 		}
 	}
-	if current != "" {
-		lines = append(lines, current)
+
+	if len(result) == 0 {
+		return []string{""}
 	}
-	return lines
+	return result
+
 }
