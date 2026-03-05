@@ -388,6 +388,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	case "status":
 		workers, _ := d.db.ActiveWorkers()
 		prs, _ := d.db.OpenPRs()
+		quotas, _ := d.db.GetAllProviderQuotas()
 		payload := ipc.StatusPayload{
 			Running:   true,
 			PID:       os.Getpid(),
@@ -396,6 +397,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			QueueSize: 0, // Updated during poll
 			OpenPRs:   len(prs),
 			LastPoll:  "n/a",
+			Quotas:    quotas,
 		}
 		data, _ := json.Marshal(payload)
 		return ipc.Response{Type: "status", Payload: data}

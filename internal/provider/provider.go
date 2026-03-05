@@ -5,7 +5,13 @@
 // a rate limit the pipeline automatically retries with the next provider.
 package provider
 
-import "strings"
+import (
+	"context"
+	"encoding/json"
+	"os/exec"
+	"strings"
+	"time"
+)
 
 // Kind is the canonical name of a provider.
 type Kind string
@@ -15,6 +21,16 @@ const (
 	Gemini  Kind = "gemini"
 	Copilot Kind = "copilot" // gh copilot
 )
+
+// Quota holds remaining request/token counts and reset times.
+type Quota struct {
+	RequestsRemaining int        `json:"requests_remaining,omitempty"`
+	RequestsLimit     int        `json:"requests_limit,omitempty"`
+	RequestsReset     *time.Time `json:"requests_reset,omitempty"`
+	TokensRemaining   int        `json:"tokens_remaining,omitempty"`
+	TokensLimit       int        `json:"tokens_limit,omitempty"`
+	TokensReset       *time.Time `json:"tokens_reset,omitempty"`
+}
 
 // OutputFormat describes how the provider writes its response to stdout.
 type OutputFormat int
@@ -227,4 +243,37 @@ func IsRateLimitError(exitCode int, stderr, resultSubtype string) bool {
 	}
 
 	return false
+}
+
+// FetchQuota attempts to retrieve the latest quota information from the provider CLI.
+// Returns nil if the provider does not support quota reporting via CLI.
+func (p Provider) FetchQuota(ctx context.Context) (*Quota, error) {
+	var args []string
+	switch p.Kind {
+	case Claude:
+		// Based on bead description: run 'claude --usage'
+		args = []string{"--usage"}
+	case Gemini:
+		// Based on bead description: check if 'gemini --quota' exists
+		args = []string{"--quota"}
+	default:
+		return nil, nil
+	}
+
+	cmd := exec.CommandContext(ctx, p.Cmd(), args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// If command fails, we assume it's not supported or not implemented yet.
+		return nil, nil
+	}
+
+	// Try to parse JSON output.
+	var q Quota
+	if err := json.Unmarshal(output, &q); err == nil {
+		return &q, nil
+	}
+
+	// If not JSON, try to parse known text patterns if we encounter them.
+	// For now, return nil as we don't have a confirmed text format.
+	return nil, nil
 }

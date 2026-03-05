@@ -167,6 +167,20 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 			_ = p.DB.UpdateWorkerPID(workerID, process.PID)
 			smithResult = process.Wait()
+
+			// Update quota in state DB if available
+			if smithResult.Quota != nil {
+				_ = p.DB.UpsertProviderQuota(string(pv.Kind), smithResult.Quota)
+				resetStr := "n/a"
+				if smithResult.Quota.RequestsReset != nil {
+					resetStr = time.Until(*smithResult.Quota.RequestsReset).Round(time.Minute).String()
+				}
+				log.Printf("[pipeline:%s] Provider %s quota updated: %d/%d requests, %d/%d tokens remaining (reset in %s)",
+					workerID, pv.Kind,
+					smithResult.Quota.RequestsRemaining, smithResult.Quota.RequestsLimit,
+					smithResult.Quota.TokensRemaining, smithResult.Quota.TokensLimit, resetStr)
+			}
+
 			if !smithResult.RateLimited {
 				activeProviderIdx = pi // remember for the next iteration
 				break

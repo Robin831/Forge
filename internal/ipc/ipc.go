@@ -25,6 +25,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/Robin831/Forge/internal/provider"
 )
 
 // Command is a message sent from a client to the daemon.
@@ -48,13 +50,14 @@ type Event struct {
 
 // StatusPayload is the response for a "status" command.
 type StatusPayload struct {
-	Running    bool   `json:"running"`
-	PID        int    `json:"pid"`
-	Uptime     string `json:"uptime"`
-	Workers    int    `json:"workers"`
-	QueueSize  int    `json:"queue_size"`
-	OpenPRs    int    `json:"open_prs"`
-	LastPoll   string `json:"last_poll"`
+	Running    bool                      `json:"running"`
+	PID        int                       `json:"pid"`
+	Uptime     string                    `json:"uptime"`
+	Workers    int                       `json:"workers"`
+	QueueSize  int                       `json:"queue_size"`
+	OpenPRs    int                       `json:"open_prs"`
+	LastPoll   string                    `json:"last_poll"`
+	Quotas     map[string]provider.Quota `json:"quotas,omitempty"`
 }
 
 // KillWorkerPayload is the payload for a "kill_worker" command.
