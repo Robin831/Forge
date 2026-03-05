@@ -203,9 +203,10 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 				if !used {
 					m.logger.Warn("cleaning abandoned worktree", "path", wtPath, "anvil", anvilPath)
 					// Extract bead ID from path for Worktree struct
+					beadID := filepath.Base(wtPath)
 					_ = m.worktrees.Remove(ctx, anvilPath, &worktree.Worktree{
 						Path:   wtPath,
-						Branch: filepath.Base(wtPath),
+						Branch: "forge/" + beadID,
 					})
 					cleaned++
 				}
@@ -238,9 +239,10 @@ func (m *Manager) CleanupWorktrees() {
 		}
 		for _, wtPath := range wts {
 			m.logger.Debug("removing worktree", "path", wtPath, "anvil", anvilPath)
+			beadID := filepath.Base(wtPath)
 			_ = m.worktrees.Remove(ctx, anvilPath, &worktree.Worktree{
 				Path:   wtPath,
-				Branch: filepath.Base(wtPath),
+				Branch: "forge/" + beadID,
 			})
 		}
 	}
