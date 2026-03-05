@@ -83,6 +83,7 @@ func (m *Monitor) OnEvent(h Handler) {
 // Run starts the polling loop. Blocks until ctx is canceled.
 func (m *Monitor) Run(ctx context.Context) error {
 	log.Printf("[bellows] Starting PR monitor (interval: %s)", m.interval)
+	_ = m.db.LogEvent(state.EventBellowsStarted, fmt.Sprintf("PR monitor started (interval: %s)", m.interval), "", "")
 
 	// Initial check
 	m.checkAll(ctx)
@@ -177,7 +178,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Timestamp: time.Now(),
 		})
 		_ = m.db.UpdatePRStatus(pr.Number, state.PRClosed)
-		_ = m.db.LogEvent("pr_closed", fmt.Sprintf("PR #%d closed without merge", pr.Number), pr.BeadID, pr.Anvil)
+		_ = m.db.LogEvent(state.EventPRClosed, fmt.Sprintf("PR #%d closed without merge", pr.Number), pr.BeadID, pr.Anvil)
 	}
 
 	if newSnap.CIPassing && !lastSnap.CIPassing {
@@ -201,6 +202,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Timestamp: time.Now(),
 		})
 		_ = m.db.UpdatePRStatus(pr.Number, state.PRNeedsFix)
+		_ = m.db.LogEvent(state.EventCIFailed, fmt.Sprintf("PR #%d CI checks failed", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d CI failed", pr.Number), pr.BeadID, pr.Anvil)
 	}
 

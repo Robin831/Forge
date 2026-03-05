@@ -389,16 +389,23 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 type EventType string
 
 const (
-	EventBeadClaimed  EventType = "bead_claimed"
-	EventSmithStarted EventType = "smith_started"
-	EventSmithDone    EventType = "smith_done"
-	EventSmithFailed  EventType = "smith_failed"
-	EventWardenPass   EventType = "warden_pass"
-	EventWardenReject EventType = "warden_reject"
-	EventPRCreated    EventType = "pr_created"
-	EventPRMerged     EventType = "pr_merged"
-	EventPRNeedsFix   EventType = "pr_needs_fix"
-	EventError        EventType = "error"
+	EventBeadClaimed    EventType = "bead_claimed"
+	EventSmithStarted   EventType = "smith_started"
+	EventSmithDone      EventType = "smith_done"
+	EventSmithFailed    EventType = "smith_failed"
+	EventWardenStarted  EventType = "warden_started"
+	EventWardenPass     EventType = "warden_pass"
+	EventWardenReject   EventType = "warden_reject"
+	EventTemperStarted  EventType = "temper_started"
+	EventTemperPassed   EventType = "temper_passed"
+	EventTemperFailed   EventType = "temper_failed"
+	EventBellowsStarted EventType = "bellows_started"
+	EventCIFailed       EventType = "ci_failed"
+	EventPRCreated      EventType = "pr_created"
+	EventPRMerged       EventType = "pr_merged"
+	EventPRClosed       EventType = "pr_closed"
+	EventPRNeedsFix     EventType = "pr_needs_fix"
+	EventError          EventType = "error"
 )
 
 // Event represents a logged event.

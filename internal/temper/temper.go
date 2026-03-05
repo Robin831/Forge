@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/state"
 )
 
 // StepResult captures the outcome of a single verification step.
@@ -80,9 +81,14 @@ func DefaultConfig(worktreePath string) Config {
 
 // Run executes all verification steps in sequence.
 // It stops on the first non-optional failure.
-func Run(ctx context.Context, worktreePath string, cfg Config) *Result {
+// db, beadID, and anvil are used to log lifecycle events; db may be nil to skip logging.
+func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, beadID, anvil string) *Result {
 	result := &Result{}
 	start := time.Now()
+
+	if db != nil {
+		_ = db.LogEvent(state.EventTemperStarted, fmt.Sprintf("Starting %d verification step(s) for %s", len(cfg.Steps), beadID), beadID, anvil)
+	}
 
 	for _, step := range cfg.Steps {
 		stepResult := runStep(ctx, worktreePath, step)
@@ -97,6 +103,14 @@ func Run(ctx context.Context, worktreePath string, cfg Config) *Result {
 	result.Duration = time.Since(start)
 	result.Passed = result.FailedStep == ""
 	result.Summary = buildSummary(result)
+
+	if db != nil {
+		if result.Passed {
+			_ = db.LogEvent(state.EventTemperPassed, fmt.Sprintf("All checks passed in %.1fs", result.Duration.Seconds()), beadID, anvil)
+		} else {
+			_ = db.LogEvent(state.EventTemperFailed, fmt.Sprintf("Failed at step %q in %.1fs", result.FailedStep, result.Duration.Seconds()), beadID, anvil)
+		}
+	}
 
 	return result
 }

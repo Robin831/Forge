@@ -233,7 +233,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			temperCfg = &detected
 		}
 
-		temperResult := temper.Run(ctx, wt.Path, *temperCfg)
+		temperResult := temper.Run(ctx, wt.Path, *temperCfg, p.DB, p.Bead.ID, p.AnvilName)
 		outcome.TemperResult = temperResult
 
 		if !temperResult.Passed {
@@ -256,7 +256,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		log.Printf("[pipeline:%s] Running Warden review", workerID)
 		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
 
-		reviewResult, err := warden.Review(ctx, wt.Path, p.Bead.ID, p.AnvilConfig.Path, providers...)
+		reviewResult, err := warden.Review(ctx, wt.Path, p.Bead.ID, p.AnvilConfig.Path, p.DB, p.AnvilName, providers...)
 		if err != nil {
 			log.Printf("[pipeline:%s] Warden error: %v", workerID, err)
 			// Warden failure is not fatal — default to approve and let human review

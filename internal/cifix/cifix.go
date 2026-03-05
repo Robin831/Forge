@@ -73,7 +73,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			temperCfg = &detected
 		}
 
-		temperResult := temper.Run(ctx, p.WorktreePath, *temperCfg)
+		temperResult := temper.Run(ctx, p.WorktreePath, *temperCfg, p.DB, p.BeadID, p.AnvilName)
 		result.LastTemperResult = temperResult
 
 		if temperResult.Passed {
@@ -113,7 +113,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		}
 
 		// Step 4: Verify the fix
-		verifyResult := temper.Run(ctx, p.WorktreePath, *temperCfg)
+		verifyResult := temper.Run(ctx, p.WorktreePath, *temperCfg, p.DB, p.BeadID, p.AnvilName)
 		result.LastTemperResult = verifyResult
 
 		if verifyResult.Passed {
