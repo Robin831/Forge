@@ -43,6 +43,11 @@ type Result struct {
 	TokensOut int
 	// RateLimited is true when the provider refused the request due to quota.
 	RateLimited bool
+	// IsError is true when the result event had is_error:true (session aborted,
+	// e.g. hard rate-limit rejection). A success subtype with is_error:true
+	// means Claude returned the rate-limit message as the "result" text, and we
+	// must NOT treat this as a successful session.
+	IsError bool
 	// ResultSubtype is the stream-json result event subtype (e.g. "success",
 	// "error_max_turns", "error_rate_limit_exceeded").
 	ResultSubtype string
@@ -246,11 +251,13 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 		// (e.g. from a rate_limit_event seen mid-stream) so we never lose it.
 		result.RateLimited = result.RateLimited || provider.IsRateLimitError(
 			result.ExitCode, result.ErrorOutput, result.ResultSubtype)
-		// A success result subtype means the AI completed the task, regardless of
-		// exit code. Claude may exit 2 (its rate-limit code) even when it recovered
-		// internally and produced a successful result event — don't fall back in
-		// that case.
-		if result.ResultSubtype == "success" {
+		// A genuine success (subtype "success", is_error false) means the AI
+		// completed the task. Claude may exit 2 (its rate-limit code) even after
+		// recovering internally — don't fall back in that case.
+		// IMPORTANT: Do NOT clear RateLimited when is_error is true. Claude returns
+		// subtype:"success" with is_error:true when the session was rate-limit
+		// rejected before any work was done — that is NOT a successful session.
+		if result.ResultSubtype == "success" && !result.IsError {
 			result.RateLimited = false
 		}
 
@@ -356,10 +363,11 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 			// When subtype is "success" the "result" field holds the complete
 			// assistant response.  When subtype is "error_max_turns" the field
 			// is absent — we fall back to accumulated assistant text below.
-			// When is_error is true the session was aborted (e.g. rate limit)
-			// even though subtype may still read "success".
+			// When is_error is true the session was aborted (e.g. hard rate-limit
+			// rejection) even though subtype may still read "success".
 			if event.Type == "result" {
 				result.ResultSubtype = event.Subtype
+				result.IsError = event.IsError
 				result.CostUSD = event.TotalCostUSD
 				if event.Usage != nil {
 					result.TokensIn = event.Usage.InputTokens
@@ -368,7 +376,8 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 				if event.Result != "" {
 					result.FullOutput = event.Result
 				}
-				// is_error:true + rate-limit text in result = provider blocked.
+				// is_error:true means the session was hard-aborted (e.g. rate-limit
+				// rejection). Flag it if the result text confirms the cause.
 				if event.IsError && provider.IsRateLimitError(0, event.Result, event.Subtype) {
 					result.RateLimited = true
 				}
@@ -401,17 +410,16 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 			// Claude emits rate_limit_event for multiple informational purposes:
 			//   status:"warning"  — approaching the limit, session continues
 			//   status:"allowed"  — within limits (org may have overage disabled)
-			//   status:"blocked"  — genuinely blocked, cannot continue
-			// Only set RateLimited when status is explicitly "blocked".
-			// All other statuses (warning, allowed, empty, unknown) are treated
-			// as informational. The exit-code 0 safety net in pipeline.go
-			// ensures we never fall back when the process actually succeeded.
+			//   status:"blocked"  — hard block, quota exhausted mid-session
+			//   status:"rejected" — session rejected before it started (quota full)
+			// Only set RateLimited for statuses that mean real blocking.
+			// "warning" and "allowed" are informational only.
 			if event.Type == "rate_limit_event" {
 				status := ""
 				if event.RateLimitInfo != nil {
 					status = strings.ToLower(strings.TrimSpace(event.RateLimitInfo.Status))
 				}
-				if status == "blocked" {
+				if status == "blocked" || status == "rejected" {
 					result.RateLimited = true
 				}
 
