@@ -295,19 +295,11 @@ func (m Model) renderQueue(width, height int) string {
 // top shows the worker list, bottom shows the live activity log for the
 // selected worker. Uses lipgloss.JoinVertical for the split.
 func (m Model) renderWorkers(width, height int) string {
-	// Subtract 2 so each of the two bordered boxes gets half the available rows.
-	innerTotal := height - 2
-	if innerTotal < 6 {
-		innerTotal = 6
+	listHeight := height * 6 / 10
+	if listHeight < 5 {
+		listHeight = 5
 	}
-	listHeight := innerTotal * 6 / 10
-	if listHeight < 3 {
-		listHeight = 3
-	}
-	activityHeight := innerTotal - listHeight
-	if activityHeight < 3 {
-		activityHeight = 3
-	}
+	activityHeight := height - listHeight
 
 	top := m.renderWorkerList(width, listHeight)
 	bottom := m.renderWorkerActivity(width, activityHeight)
@@ -329,7 +321,8 @@ func (m Model) renderWorkerList(width, height int) string {
 	if len(m.workers) == 0 {
 		lines = append(lines, dimStyle.Render("No active workers"))
 	} else {
-		visible := visibleItems(m.workerScroll, len(m.workers), height-3)
+		// height-2 (borders) - 2 (title + margin) = height-4
+		visible := visibleItems(m.workerScroll, len(m.workers), height-4)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.workers[i]
 			status := workerStatusStyle(item.Status)
@@ -341,10 +334,6 @@ func (m Model) renderWorkerList(width, height int) string {
 				mainLine = selectedStyle.Render(mainLine)
 			}
 			lines = append(lines, mainLine)
-			// Show last log line for the selected worker
-			if i == m.workerScroll && item.LastLog != "" {
-				lines = append(lines, dimStyle.Render("  "+truncate(item.LastLog, width-6)))
-			}
 		}
 	}
 
@@ -355,6 +344,11 @@ func (m Model) renderWorkerList(width, height int) string {
 // renderWorkerActivity renders the bottom sub-panel: a live activity log
 // for the currently selected worker, parsed from its stream-json log file.
 func (m Model) renderWorkerActivity(width, height int) string {
+	style := panelStyle.Width(width)
+	if m.focused == PanelWorkers {
+		style = focusedPanelStyle.Width(width)
+	}
+
 	title := activityPanelTitleStyle.Render("Live Activity")
 
 	var lines []string
@@ -368,8 +362,8 @@ func (m Model) renderWorkerActivity(width, height int) string {
 	if len(activityLines) == 0 {
 		lines = append(lines, dimStyle.Render("No activity"))
 	} else {
-		// Show the last entries that fit in the box (newest at the bottom).
-		maxVisible := height - 3
+		// height-2 (borders) - 2 (title + margin) = height-4
+		maxVisible := height - 4
 		if maxVisible < 1 {
 			maxVisible = 1
 		}
@@ -383,7 +377,7 @@ func (m Model) renderWorkerActivity(width, height int) string {
 	}
 
 	content := strings.Join(lines, "\n")
-	return activityPanelStyle.Width(width).Height(height).Render(content)
+	return style.Height(height).Render(content)
 }
 
 // renderEvents renders the event log panel.
@@ -480,11 +474,6 @@ var (
 
 	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
-
-	activityPanelStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("238")).
-			Padding(0, 1)
 
 	activityPanelTitleStyle = lipgloss.NewStyle().
 			Bold(true).

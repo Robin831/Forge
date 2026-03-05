@@ -178,6 +178,9 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			Type    string          `json:"type"`
 			Subtype string          `json:"subtype,omitempty"`
 			Message json.RawMessage `json:"message,omitempty"`
+			Content string          `json:"content,omitempty"`
+			Role    string          `json:"role,omitempty"`
+			Status  string          `json:"status,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
@@ -230,6 +233,23 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 						entries = append(entries, fmt.Sprintf("[think] %s", thinking))
 					}
 				}
+			}
+		case "message":
+			// Gemini-style delta message
+			if event.Role == "assistant" && event.Content != "" {
+				text := strings.ReplaceAll(event.Content, "\n", " ")
+				text = strings.TrimSpace(text)
+				if text != "" {
+					if len(text) > 70 {
+						text = text[:67] + "..."
+					}
+					entries = append(entries, fmt.Sprintf("[text] %s", text))
+				}
+			}
+		case "rate_limit_event":
+			// Claude-style informational event
+			if event.Status != "" {
+				entries = append(entries, fmt.Sprintf("[rate] %s", event.Status))
 			}
 		case "result":
 			subtype := event.Subtype
