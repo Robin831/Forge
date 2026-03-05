@@ -28,6 +28,7 @@ Thumbs.db
 # Forge runtime
 .workers/
 *.db
+forge.yaml
 
 # Temporary files
 tmp/
