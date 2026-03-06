@@ -522,18 +522,35 @@ func (m *Model) eventTotalLineCount(width int) int {
 func (m *Model) eventLineCount(item EventItem, width int) int {
 	layout := m.getEventLayout(item, width)
 
+	var n int
 	if layout.msgWidth < eventMsgMinWidth {
 		// header line + wrapped message lines
-		return 1 + wordWrapCount(item.Message, layout.interiorWidth-2)
+		n = 1 + wordWrapCount(item.Message, layout.interiorWidth-2)
+	} else {
+		n = wordWrapCount(item.Message, layout.msgWidth)
 	}
-	return wordWrapCount(item.Message, layout.msgWidth)
+	if n > maxEventLines {
+		n = maxEventLines
+	}
+	return n
 }
 
 // renderEventLines renders a single event as one or more wrapped lines.
 // The timestamp and event type stay on the first line; the message body wraps
 // onto continuation lines if it exceeds the available width.
+// At most maxEventLines lines are produced to prevent long error messages from
+// overflowing into adjacent hearth panels.
+const maxEventLines = 3
+
 func (m *Model) renderEventLines(item EventItem, selected bool, panelWidth int) []string {
 	layout := m.getEventLayout(item, panelWidth)
+
+	capWrapped := func(wrapped []string) []string {
+		if len(wrapped) > maxEventLines {
+			wrapped = append(wrapped[:maxEventLines-1], "…")
+		}
+		return wrapped
+	}
 
 	var lines []string
 	if layout.msgWidth < eventMsgMinWidth {
@@ -548,7 +565,7 @@ func (m *Model) renderEventLines(item EventItem, selected bool, panelWidth int) 
 		lines = append(lines, header)
 
 		// Message starts on next line, indented slightly
-		wrapped := wordWrap(item.Message, layout.interiorWidth-2)
+		wrapped := capWrapped(wordWrap(item.Message, layout.interiorWidth-2))
 		for _, part := range wrapped {
 			line := "  " + dimStyle.Render(part)
 			if selected {
@@ -558,7 +575,7 @@ func (m *Model) renderEventLines(item EventItem, selected bool, panelWidth int) 
 		}
 	} else {
 		// Message starts on the same line as the prefix
-		wrapped := wordWrap(item.Message, layout.msgWidth)
+		wrapped := capWrapped(wordWrap(item.Message, layout.msgWidth))
 		if len(wrapped) == 0 {
 			wrapped = []string{""}
 		}

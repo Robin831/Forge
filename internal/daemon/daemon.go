@@ -380,6 +380,8 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				AnvilName:    req.Anvil,
 				PRNumber:     req.PRNumber,
 				DB:           d.db,
+				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
+				Providers:    provider.FromConfig(d.cfg.Settings.Providers),
 			})
 			status := state.WorkerDone
 			if !res.Success {
