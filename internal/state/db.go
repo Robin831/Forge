@@ -442,11 +442,11 @@ func (db *DB) PRByNumber(number int) (*PR, error) {
 	return &prs[0], nil
 }
 
-// UpdatePRStatus updates a PR's status and last_checked time by GitHub PR number.
-func (db *DB) UpdatePRStatus(number int, status PRStatus) error {
+// UpdatePRStatus updates a PR's status and last_checked time by its internal database ID.
+func (db *DB) UpdatePRStatus(id int, status PRStatus) error {
 	_, err := db.conn.Exec(
-		`UPDATE prs SET status = ?, last_checked = ? WHERE number = ?`,
-		string(status), time.Now().Format(time.RFC3339), number,
+		`UPDATE prs SET status = ?, last_checked = ? WHERE id = ?`,
+		string(status), time.Now().Format(time.RFC3339), id,
 	)
 	return err
 }

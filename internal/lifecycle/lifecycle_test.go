@@ -79,13 +79,17 @@ func TestEventCIFailed_MaxAttemptsExhausted(t *testing.T) {
 
 	m := New(db, testLogger(), handler)
 	ctx := context.Background()
-	ev := makeEvent(10, bellows.EventCIFailed)
+	evFail := makeEvent(10, bellows.EventCIFailed)
+	evPass := makeEvent(10, bellows.EventCIPassed)
 
-	// First two failures should dispatch (maxCI=2)
-	m.HandleEvent(ctx, ev)
-	m.HandleEvent(ctx, ev)
-	// Third failure should NOT dispatch
-	m.HandleEvent(ctx, ev)
+	// First failure should dispatch (maxCI=2)
+	m.HandleEvent(ctx, evFail)
+	m.HandleEvent(ctx, evPass)
+	// Second failure should dispatch
+	m.HandleEvent(ctx, evFail)
+	m.HandleEvent(ctx, evPass)
+	// Third failure should NOT dispatch, hits exhaustion log
+	m.HandleEvent(ctx, evFail)
 
 	if dispatchCount != 2 {
 		t.Errorf("expected 2 dispatches, got %d", dispatchCount)
@@ -152,11 +156,14 @@ func TestEventReviewChanges_MaxAttemptsExhausted(t *testing.T) {
 
 	m := New(db, testLogger(), handler)
 	ctx := context.Background()
-	ev := makeEvent(20, bellows.EventReviewChanges)
+	evChange := makeEvent(20, bellows.EventReviewChanges)
+	evApprove := makeEvent(20, bellows.EventReviewApproved)
 
-	m.HandleEvent(ctx, ev)
-	m.HandleEvent(ctx, ev)
-	m.HandleEvent(ctx, ev) // exhausted
+	m.HandleEvent(ctx, evChange)
+	m.HandleEvent(ctx, evApprove)
+	m.HandleEvent(ctx, evChange)
+	m.HandleEvent(ctx, evApprove)
+	m.HandleEvent(ctx, evChange) // exhausted
 
 	if dispatchCount != 2 {
 		t.Errorf("expected 2 dispatches, got %d", dispatchCount)
