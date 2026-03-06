@@ -331,10 +331,33 @@ func FetchEvents(db *state.DB, limit int) tea.Cmd {
 	}
 }
 
-// FetchAll returns a batch command that refreshes all three panels.
+// FetchNeedsAttention reads beads that need human intervention from the state DB.
+func FetchNeedsAttention(db *state.DB) tea.Cmd {
+	return func() tea.Msg {
+		beads, err := db.NeedsAttentionBeads()
+		if err != nil {
+			return UpdateNeedsAttentionMsg{Items: nil}
+		}
+
+		var items []NeedsAttentionItem
+		for _, b := range beads {
+			items = append(items, NeedsAttentionItem{
+				BeadID: b.BeadID,
+				Title:  b.Title,
+				Anvil:  b.Anvil,
+				Reason: b.Reason,
+			})
+		}
+
+		return UpdateNeedsAttentionMsg{Items: items}
+	}
+}
+
+// FetchAll returns a batch command that refreshes all panels.
 func FetchAll(db *state.DB) tea.Cmd {
 	return tea.Batch(
 		FetchQueue(db),
+		FetchNeedsAttention(db),
 		FetchWorkers(db),
 		FetchEvents(db, EventFetchLimit),
 	)

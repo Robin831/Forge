@@ -896,6 +896,48 @@ func (db *DB) ClearRetry(beadID, anvil string) error {
 	return err
 }
 
+// NeedsAttentionBead represents a bead requiring human attention, combining
+// retry metadata with a best-effort title lookup from queue_cache or workers.
+type NeedsAttentionBead struct {
+	BeadID              string
+	Anvil               string
+	Title               string
+	Reason              string
+	NeedsHuman          bool
+	ClarificationNeeded bool
+}
+
+// NeedsAttentionBeads returns all beads with needs_human=1 or clarification_needed=1,
+// enriched with title from queue_cache or workers tables.
+func (db *DB) NeedsAttentionBeads() ([]NeedsAttentionBead, error) {
+	rows, err := db.conn.Query(
+		`SELECT r.bead_id, r.anvil, r.needs_human, r.clarification_needed, r.last_error,
+		        COALESCE(q.title, w.title, '') AS title
+		 FROM retries r
+		 LEFT JOIN queue_cache q ON r.bead_id = q.bead_id AND r.anvil = q.anvil
+		 LEFT JOIN (SELECT bead_id, anvil, title FROM workers GROUP BY bead_id, anvil) w
+		   ON r.bead_id = w.bead_id AND r.anvil = w.anvil
+		 WHERE r.needs_human = 1 OR r.clarification_needed = 1
+		 ORDER BY r.updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var beads []NeedsAttentionBead
+	for rows.Next() {
+		var b NeedsAttentionBead
+		var needsHuman, clarNeeded int
+		if err := rows.Scan(&b.BeadID, &b.Anvil, &needsHuman, &clarNeeded, &b.Reason, &b.Title); err != nil {
+			return nil, err
+		}
+		b.NeedsHuman = needsHuman != 0
+		b.ClarificationNeeded = clarNeeded != 0
+		beads = append(beads, b)
+	}
+	return beads, rows.Err()
+}
+
 // --- Cost tracking ---
 
 // AddBeadCost adds token usage to a bead's cumulative cost.

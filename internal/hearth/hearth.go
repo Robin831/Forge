@@ -24,8 +24,11 @@ type Panel int
 
 const (
 	PanelQueue Panel = iota
+	PanelNeedsAttention
 	PanelWorkers
 	PanelEvents
+
+	panelCount = 4
 
 	// Event panel rendering constants
 	eventPanelInteriorPadding = 4
@@ -42,6 +45,14 @@ type QueueItem struct {
 	Anvil    string
 	Priority int
 	Status   string
+}
+
+// NeedsAttentionItem represents a bead requiring human attention.
+type NeedsAttentionItem struct {
+	BeadID string
+	Title  string
+	Anvil  string
+	Reason string
 }
 
 // WorkerItem represents a worker in the workers panel.
@@ -71,9 +82,10 @@ type EventItem struct {
 // Model is the Bubbletea model for the Hearth TUI.
 type Model struct {
 	// Panels
-	queue   []QueueItem
-	workers []WorkerItem
-	events  []EventItem
+	queue          []QueueItem
+	needsAttention []NeedsAttentionItem
+	workers        []WorkerItem
+	events         []EventItem
 
 	// Data source for polling
 	data *DataSource
@@ -82,15 +94,16 @@ type Model struct {
 	OnKill func(workerID string, pid int)
 
 	// State
-	focused        Panel
-	queueScroll    int
-	workerScroll   int
-	eventScroll    int
-	eventAutoScroll bool  // true = follow new events
-	prevEventCount int   // track event count for auto-scroll
-	width          int
-	height         int
-	ready           bool
+	focused              Panel
+	queueScroll          int
+	needsAttentionScroll int
+	workerScroll         int
+	eventScroll          int
+	eventAutoScroll      bool  // true = follow new events
+	prevEventCount       int   // track event count for auto-scroll
+	width                int
+	height               int
+	ready                bool
 
 	// Event rendering cache
 	eventLinesCache        []string
@@ -133,10 +146,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "tab":
-			m.focused = (m.focused + 1) % 3
+			m.focused = (m.focused + 1) % panelCount
 
 		case "shift+tab":
-			m.focused = (m.focused + 2) % 3
+			m.focused = (m.focused + panelCount - 1) % panelCount
 
 		case "j", "down":
 			m.scrollDown()
@@ -194,6 +207,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.eventScroll = 0
 		}
 
+	case UpdateNeedsAttentionMsg:
+		m.needsAttention = msg.Items
+
 	case UpdateWorkersMsg:
 		m.workers = msg.Items
 
@@ -233,8 +249,10 @@ func (m *Model) View() string {
 		contentHeight = 0
 	}
 
-	// Build panels
-	queuePanel := m.renderQueue(queueWidth, contentHeight)
+	// Split the left column into Queue (top) and Needs Attention (bottom).
+	// The split mirrors the Workers column approach: two stacked sub-panels
+	// that together occupy the same height as a single-panel column.
+	leftColumn := m.renderLeftColumn(queueWidth, contentHeight)
 	workerPanel := m.renderWorkers(workerWidth, contentHeight)
 	eventPanel := m.renderEvents(eventWidth, contentHeight)
 
@@ -247,7 +265,7 @@ func (m *Model) View() string {
 	)
 
 	// Final assembly
-	mainSection := lipgloss.JoinHorizontal(lipgloss.Top, queuePanel, workerPanel, eventPanel)
+	mainSection := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, workerPanel, eventPanel)
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
 		mainSection,
@@ -273,6 +291,10 @@ func (m *Model) scrollDown() {
 		if m.queueScroll < len(m.queue)-1 {
 			m.queueScroll++
 		}
+	case PanelNeedsAttention:
+		if m.needsAttentionScroll < len(m.needsAttention)-1 {
+			m.needsAttentionScroll++
+		}
 	case PanelWorkers:
 		if m.workerScroll < len(m.workers)-1 {
 			m.workerScroll++
@@ -292,6 +314,10 @@ func (m *Model) scrollUp() {
 	case PanelQueue:
 		if m.queueScroll > 0 {
 			m.queueScroll--
+		}
+	case PanelNeedsAttention:
+		if m.needsAttentionScroll > 0 {
+			m.needsAttentionScroll--
 		}
 	case PanelWorkers:
 		if m.workerScroll > 0 {
@@ -329,6 +355,72 @@ func (m *Model) renderQueue(width, height int) string {
 				line = selectedStyle.Render(line)
 			}
 			lines = append(lines, line)
+		}
+	}
+
+	content := strings.Join(lines, "\n")
+	return style.Height(height).Render(content)
+}
+
+// renderLeftColumn splits the left column into Queue (top) and Needs Attention (bottom).
+func (m *Model) renderLeftColumn(width, height int) string {
+	// Two sub-panels add 4 border lines total vs 2 for a single panel.
+	// Deduct the extra 2 so combined height matches sibling columns.
+	innerHeight := height - 2
+	if innerHeight < 0 {
+		innerHeight = 0
+	}
+
+	// Give queue 60% of space, needs attention 40%.
+	queueHeight := innerHeight * 6 / 10
+	if innerHeight < 5 {
+		queueHeight = innerHeight
+	} else {
+		queueHeight = max(queueHeight, 5)
+	}
+	attentionHeight := innerHeight - queueHeight
+
+	top := m.renderQueue(width, queueHeight)
+	bottom := m.renderNeedsAttention(width, attentionHeight)
+	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
+}
+
+// renderNeedsAttention renders the Needs Attention sub-panel showing beads
+// that require human intervention (exhausted retries or clarification needed).
+func (m *Model) renderNeedsAttention(width, height int) string {
+	style := panelStyle.Width(width)
+	if m.focused == PanelNeedsAttention {
+		style = focusedPanelStyle.Width(width)
+	}
+
+	title := needsAttentionTitleStyle.Render(fmt.Sprintf("Needs Attention (%d)", len(m.needsAttention)))
+
+	var lines []string
+	lines = append(lines, title)
+
+	if len(m.needsAttention) == 0 {
+		lines = append(lines, dimStyle.Render("None"))
+	} else {
+		visible := visibleItems(m.needsAttentionScroll, len(m.needsAttention), height-3)
+		for i := visible.start; i < visible.end; i++ {
+			item := m.needsAttention[i]
+			anvil := dimStyle.Render(item.Anvil)
+			beadLine := fmt.Sprintf("⚠ %s %s", item.BeadID, anvil)
+			if i == m.needsAttentionScroll {
+				beadLine = selectedStyle.Render(beadLine)
+			}
+			lines = append(lines, beadLine)
+
+			// Second line: reason (truncated)
+			reason := item.Reason
+			if reason == "" {
+				reason = "(no reason)"
+			}
+			reasonLine := "  " + dimStyle.Render(truncate(reason, width-6))
+			if i == m.needsAttentionScroll {
+				reasonLine = "  " + selectedStyle.Render(truncate(reason, width-6))
+			}
+			lines = append(lines, reasonLine)
 		}
 	}
 
@@ -666,6 +758,9 @@ type UpdateQueueMsg struct{ Items []QueueItem }
 // flip to "No pending beads" on a transient DB error.
 type QueueErrorMsg struct{ Err error }
 
+// UpdateNeedsAttentionMsg updates the needs attention panel.
+type UpdateNeedsAttentionMsg struct{ Items []NeedsAttentionItem }
+
 // UpdateWorkersMsg updates the workers panel.
 type UpdateWorkersMsg struct{ Items []WorkerItem }
 
@@ -718,6 +813,11 @@ var (
 			Bold(true).
 			Foreground(lipgloss.Color("245")).
 			MarginBottom(1)
+
+	needsAttentionTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("196")).
+				MarginBottom(1)
 )
 
 // priorityStyle returns a colored priority indicator.
