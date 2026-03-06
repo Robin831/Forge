@@ -324,22 +324,22 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 }
 
 // ActiveDispatchWorkers returns active workers that are running primary dispatch
-// pipeline phases (smith, temper, warden, bellows, idle). Lifecycle workers
-// (cifix, reviewfix) are excluded so they don't consume dispatch capacity slots.
+// pipeline phases (smith, temper, warden). Bellows (PR monitoring) and lifecycle
+// workers (cifix, reviewfix) are excluded so they don't consume dispatch capacity slots.
 func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
-		  AND phase NOT IN ('cifix', 'reviewfix')
+		  AND phase NOT IN ('cifix', 'reviewfix', 'bellows')
 		ORDER BY started_at`)
 }
 
 // ActiveDispatchWorkersByAnvil returns active dispatch workers for a given anvil,
-// excluding lifecycle workers (cifix, reviewfix).
+// excluding bellows and lifecycle workers (cifix, reviewfix).
 func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE anvil = ?
 		  AND status IN ('pending', 'running', 'reviewing', 'monitoring')
-		  AND phase NOT IN ('cifix', 'reviewfix')
+		  AND phase NOT IN ('cifix', 'reviewfix', 'bellows')
 		ORDER BY started_at`, anvil)
 }
 
