@@ -80,6 +80,15 @@ type SettingsConfig struct {
 	// When the running total exceeds this value, auto-dispatch is paused until
 	// the next calendar day. Zero means no limit (default).
 	DailyCostLimit float64 `mapstructure:"daily_cost_limit"`
+	// MaxCIFixAttempts is the maximum number of CI fix cycles per PR before
+	// the PR is considered exhausted. Default: 5.
+	MaxCIFixAttempts int `mapstructure:"max_ci_fix_attempts"`
+	// MaxReviewFixAttempts is the maximum number of review fix cycles per PR
+	// before the PR is considered exhausted. Default: 5.
+	MaxReviewFixAttempts int `mapstructure:"max_review_fix_attempts"`
+	// MaxRebaseAttempts is the maximum number of conflict rebase attempts per
+	// PR before the PR is considered exhausted. Default: 3.
+	MaxRebaseAttempts int `mapstructure:"max_rebase_attempts"`
 }
 
 // NotificationsConfig holds webhook and notification settings.

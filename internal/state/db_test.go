@@ -49,7 +49,7 @@ func TestDB_PRLifecycle(t *testing.T) {
 	}
 
 	// 3. Update lifecycle
-	if err := db.UpdatePRLifecycle(pr.ID, 5, 3, false); err != nil {
+	if err := db.UpdatePRLifecycle(pr.ID, 5, 3, 0, false); err != nil {
 		t.Fatal(err)
 	}
 

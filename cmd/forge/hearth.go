@@ -49,6 +49,60 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 		}
+		model.OnRetryBead = func(beadID, anvil string, prID int) {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return
+			}
+			defer client.Close()
+			payload, _ := json.Marshal(ipc.RetryBeadPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+				PRID:   prID,
+			})
+			_, _ = client.Send(ipc.Command{
+				Type:    "retry_bead",
+				Payload: json.RawMessage(payload),
+			})
+		}
+		model.OnDismissBead = func(beadID, anvil string, prID int) {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return
+			}
+			defer client.Close()
+			payload, _ := json.Marshal(ipc.DismissBeadPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+				PRID:   prID,
+			})
+			_, _ = client.Send(ipc.Command{
+				Type:    "dismiss_bead",
+				Payload: json.RawMessage(payload),
+			})
+		}
+		model.OnViewLogs = func(beadID string) (string, []string) {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return "", nil
+			}
+			defer client.Close()
+			payload, _ := json.Marshal(ipc.ViewLogsPayload{
+				BeadID: beadID,
+			})
+			resp, err := client.Send(ipc.Command{
+				Type:    "view_logs",
+				Payload: json.RawMessage(payload),
+			})
+			if err != nil || resp.Type != "ok" {
+				return "", nil
+			}
+			var result ipc.ViewLogsResponse
+			if err := json.Unmarshal(resp.Payload, &result); err != nil {
+				return "", nil
+			}
+			return result.LogPath, result.LastLines
+		}
 
 		p := tea.NewProgram(&model, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {

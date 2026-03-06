@@ -332,19 +332,27 @@ func FetchEvents(db *state.DB, limit int) tea.Cmd {
 }
 
 // FetchNeedsAttention reads beads that need human intervention from the state DB.
+// This includes both retry-exhausted beads and PRs that have exhausted their
+// CI-fix, review-fix, or rebase attempt limits.
 func FetchNeedsAttention(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
-		beads, err := db.NeedsAttentionBeads()
+		beads, err := db.NeedsAttentionBeads(
+			state.DefaultMaxCIFixAttempts,
+			state.DefaultMaxReviewFixAttempts,
+			state.DefaultMaxRebaseAttempts,
+		)
 		if err != nil {
 			return NeedsAttentionErrorMsg{Err: fmt.Errorf("failed to fetch needs attention beads: %w", err)}
 		}
 		var items []NeedsAttentionItem
 		for _, b := range beads {
 			items = append(items, NeedsAttentionItem{
-				BeadID: b.BeadID,
-				Title:  b.Title,
-				Anvil:  b.Anvil,
-				Reason: b.Reason,
+				BeadID:   b.BeadID,
+				Title:    b.Title,
+				Anvil:    b.Anvil,
+				Reason:   b.Reason,
+				PRID:     b.PRID,
+				PRNumber: b.PRNumber,
 			})
 		}
 
