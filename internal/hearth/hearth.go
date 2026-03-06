@@ -322,19 +322,29 @@ func (m *Model) renderQueue(width, height int) string {
 // top shows the worker list, bottom shows the live activity log for the
 // selected worker. Uses lipgloss.JoinVertical for the split.
 func (m *Model) renderWorkers(width, height int) string {
+	// Each sub-panel's border adds 2 lines (top + bottom). Two sub-panels
+	// add 4 border lines total, but single-panel columns only add 2. Deduct
+	// the extra 2 so the combined rendered height matches sibling columns.
+	innerHeight := height - 2
+	if innerHeight < 0 {
+		innerHeight = 0
+	}
+
 	// For very small panels, give all space to the list.
 	// Otherwise enforce a minimum of 5 rows so renderWorkerList has enough room.
-	listHeight := height * 6 / 10
-	if height < 5 {
-		listHeight = height
+	listHeight := innerHeight * 6 / 10
+	if innerHeight < 5 {
+		listHeight = innerHeight
 	} else {
 		listHeight = max(listHeight, 5)
 	}
-	activityHeight := height - listHeight
+	activityHeight := innerHeight - listHeight
 
 	top := m.renderWorkerList(width, listHeight)
 	bottom := m.renderWorkerActivity(width, activityHeight)
-	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
+	combined := lipgloss.JoinVertical(lipgloss.Left, top, bottom)
+
+	return combined
 }
 
 // renderWorkerList renders the top sub-panel: the list of active workers.

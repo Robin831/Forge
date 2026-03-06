@@ -2,6 +2,7 @@ package hearth
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +52,32 @@ func TestEventLineCountMatchesRender(t *testing.T) {
 					width, ev.Message, len(rendered), counted)
 			}
 		}
+	}
+}
+
+func TestRenderWorkersDoesNotExceedSinglePanel(t *testing.T) {
+	m := Model{
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+				ActivityLines: []string{"line1", "line2", "line3", "line4", "line5", "line6", "line7", "line8"}},
+		},
+		focused: PanelWorkers,
+		width:   120,
+		height:  40,
+	}
+
+	contentHeight := 30
+	width := 40
+
+	queuePanel := m.renderQueue(width, contentHeight)
+	workerPanel := m.renderWorkers(width, contentHeight)
+
+	queueLines := strings.Count(strings.TrimRight(queuePanel, "\n"), "\n") + 1
+	workerLines := strings.Count(strings.TrimRight(workerPanel, "\n"), "\n") + 1
+
+	if workerLines != queueLines {
+		t.Errorf("renderWorkers produced %d lines, expected same as renderQueue's %d lines (contentHeight=%d)",
+			workerLines, queueLines, contentHeight)
 	}
 }
 
