@@ -382,7 +382,13 @@ func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 		}
 		info, err := os.Stat(w.LogPath)
 		if err != nil {
-			continue // file missing or unreadable — skip
+			// If the worker has been running longer than the stale threshold but its
+			// log file is missing or unreadable, treat it as stalled so it still
+			// surfaces for attention.
+			if w.StartedAt.Before(cutoff) {
+				stalled = append(stalled, w)
+			}
+			continue
 		}
 		if info.ModTime().Before(cutoff) {
 			stalled = append(stalled, w)
@@ -1310,8 +1316,9 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 		     UNION ALL
 		     SELECT w.bead_id, w.anvil, 0 AS needs_human, 0 AS clarification_needed,
 		            'Worker stalled (no log activity)' AS reason,
-		            w.title, COALESCE(w.updated_at, w.started_at) AS updated_at
+		            COALESCE(q2.title, w.title, '') AS title, COALESCE(w.updated_at, w.started_at) AS updated_at
 		     FROM workers w
+		     LEFT JOIN queue_cache q2 ON w.bead_id = q2.bead_id AND w.anvil = q2.anvil
 		     WHERE w.status = 'stalled'
 		 )
 		 ORDER BY updated_at DESC`)

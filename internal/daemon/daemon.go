@@ -554,8 +554,9 @@ func (d *Daemon) drainPendingAction(ctx context.Context, beadID string) {
 // A worker is marked as stalled if its log file has not been modified for longer
 // than the configured stale_interval. This does not kill the process — it warns
 // the operator via the Needs Attention panel. The check runs approximately at
-// half the stale interval, but never less frequently than every 30s and never
-// less often than the stale interval itself.
+// half the stale interval, but will not run more frequently than every 30s
+// (except when stale_interval itself is less than 30s, in which case it runs
+// at the stale_interval).
 func (d *Daemon) runStaleDetection(ctx context.Context) {
 	staleInterval := d.config().Settings.StaleInterval
 	checkInterval := staleInterval / 2
