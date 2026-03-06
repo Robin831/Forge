@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -76,6 +77,7 @@ type Daemon struct {
 	activeBeads    sync.Map       // beadID -> true, currently in-flight
 	pendingActions sync.Map       // beadID -> lifecycle.ActionRequest; single parked action per bead, latest-wins
 	wg             sync.WaitGroup // tracks running pipeline goroutines
+	pollRunning    atomic.Bool    // true while pollAndDispatch is executing; prevents concurrent overlapping polls
 	worktreeMgr    *worktree.Manager
 	promptBuilder  *prompt.Builder
 
@@ -482,7 +484,17 @@ func (d *Daemon) drainPendingAction(ctx context.Context, beadID string) {
 }
 
 // pollAndDispatch polls all anvils for ready beads and dispatches workers.
+// It is serialized via a try-lock: if a poll is already running (e.g. an IPC
+// "refresh" overlapping with the ticker), the second caller returns immediately.
+// The in-progress poll already holds a consistent capacity snapshot, so
+// skipping the duplicate avoids double-dispatching past max_total_smiths.
 func (d *Daemon) pollAndDispatch(ctx context.Context) {
+	if !d.pollRunning.CompareAndSwap(false, true) {
+		d.logger.Debug("pollAndDispatch already running, skipping concurrent invocation")
+		return
+	}
+	defer d.pollRunning.Store(false)
+
 	d.logger.Info("polling anvils", "count", len(d.cfg.Anvils))
 
 	maxTotal := d.cfg.Settings.MaxTotalSmiths
