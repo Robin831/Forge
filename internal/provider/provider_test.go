@@ -121,10 +121,9 @@ func TestProvider_BuildArgs_Copilot_CustomModel(t *testing.T) {
 
 func TestDefaults(t *testing.T) {
 	providers := Defaults()
-	assert.Len(t, providers, 3)
+	assert.Len(t, providers, 2)
 	assert.Equal(t, Claude, providers[0].Kind)
 	assert.Equal(t, Gemini, providers[1].Kind)
-	assert.Equal(t, Copilot, providers[2].Kind)
 }
 
 func TestFromConfig(t *testing.T) {
@@ -137,7 +136,7 @@ func TestFromConfig(t *testing.T) {
 		{
 			name:      "empty returns defaults",
 			specs:     nil,
-			wantKinds: []Kind{Claude, Gemini, Copilot},
+			wantKinds: []Kind{Claude, Gemini},
 		},
 		{
 			name:      "single provider",
