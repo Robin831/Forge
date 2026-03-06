@@ -103,8 +103,10 @@ When no custom template is provided, the built-in prompt includes:
 
 ## File Reading
 
-The `readFile` function reads files relative to the worktree root. It returns an empty string on any error (missing file, permission denied), so templates can safely reference files that may or may not exist:
+The `readFile` function calls `os.ReadFile` on the path exactly as given — relative paths are resolved relative to the **Forge process's working directory**, not the worktree. To reliably read files from the worktree or anvil, construct absolute paths using `.Bead.WorktreePath` or `.Bead.AnvilPath`:
 
 ```
-{{readFile ".forge/style-guide.md"}}
+{{readFile (printf "%s/.forge/style-guide.md" .Bead.WorktreePath)}}
 ```
+
+The function returns an empty string on any error (missing file, permission denied), so templates can safely reference files that may or may not exist.

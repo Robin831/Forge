@@ -32,21 +32,22 @@ kind[:command][/model]
 ### Examples
 
 ```yaml
-providers:
-  # Claude with default settings
-  - claude
+settings:
+  providers:
+    # Claude with default settings
+    - claude
 
-  # Gemini with default model
-  - gemini
+    # Gemini with default model
+    - gemini
 
-  # Gemini with specific model
-  - gemini/gemini-2.5-pro
+    # Gemini with specific model
+    - gemini/gemini-2.5-pro
 
-  # Gemini with custom binary and model
-  - gemini:mybin/gemini-2.5-pro
+    # Gemini with custom binary and model
+    - gemini:mybin/gemini-2.5-pro
 
-  # GitHub Copilot CLI
-  - copilot
+    # GitHub Copilot CLI
+    - copilot
 ```
 
 ## Provider Details
@@ -69,7 +70,7 @@ providers:
 
 - **Binary**: `copilot` (or custom via `:command`)
 - **Output format**: Plain text (not JSON)
-- **Model**: Defaults to `claude-sonnet-4.6`; configurable via `/model` suffix
+- **Model**: Defaults to `claude-sonnet-4.6`; overridable via a `--model <name>` entry in `claude_flags`. The `/model` suffix in the provider string is **not** honored for Copilot.
 - **Flag translation**: Unrecognized Claude flags are silently dropped
 - **Note**: Not included in defaults — must be explicitly added to the providers list
 

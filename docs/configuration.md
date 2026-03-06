@@ -63,7 +63,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `path` | string | **required** | Filesystem path to the repository root. Must contain a `.beads/` directory. |
-| `max_smiths` | int | 0 (unlimited) | Maximum concurrent workers for this anvil. 0 means limited only by `max_total_smiths`. |
+| `max_smiths` | int | 1 | Maximum concurrent workers for this anvil. Values <= 0 are treated as 1. Overall concurrency is still limited by `max_total_smiths`. |
 | `auto_dispatch` | string | `"all"` | Dispatch mode — see below. |
 | `auto_dispatch_tag` | string | | Required when `auto_dispatch: tagged`. Beads must have this tag (case-insensitive) to be dispatched. |
 | `auto_dispatch_min_priority` | int | 0 | Required when `auto_dispatch: priority`. Only beads with priority <= this value are dispatched. Range: 0-4. |
@@ -149,9 +149,13 @@ The config is validated at load time. Errors are reported as a list:
 
 ## Hot Reload
 
-The daemon watches `forge.yaml` via fsnotify. When the file changes:
+The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a subset of settings are hot-reloaded**:
 
-- Settings are re-read and applied immediately
-- Notification configuration (webhook URL, enabled, events) is updated
+- `poll_interval` is re-read and the new value takes effect on the next cycle
+- `smith_timeout` is re-read and used for newly started smiths
+- `max_total_smiths` is re-read and applied to subsequent scheduling decisions
+- `claude_flags` are re-read and used for newly started smiths
+- `notifications.*` (webhook URL, enabled, events, etc.) are re-read and applied immediately
 - In-flight workers are **not** interrupted
-- New poll intervals take effect on the next cycle
+
+All other configuration changes (including `anvils.*`, `providers`, `rate_limit_backoff`, and any fields not listed above) **require a daemon restart** to take effect.
