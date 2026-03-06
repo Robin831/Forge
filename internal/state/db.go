@@ -672,6 +672,7 @@ const (
 	EventSchematicDone        EventType = "schematic_done"
 	EventSchematicSkipped     EventType = "schematic_skipped"
 	EventDispatchCircuitBreak  EventType = "dispatch_circuit_break"
+	EventCostLimitHit         EventType = "cost_limit_hit"
 	EventError                EventType = "error"
 	EventBeadRecovered        EventType = "bead_recovered"
 )
@@ -1174,6 +1175,21 @@ func (db *DB) GetDailyCost(date string) (inputTokens, outputTokens, cacheRead, c
 		 FROM daily_costs WHERE date = ?`, date).
 		Scan(&inputTokens, &outputTokens, &cacheRead, &cacheWrite, &cost, &limit)
 	return
+}
+
+// GetTodayCost returns today's estimated cost total. Returns 0 if no row exists yet.
+func (db *DB) GetTodayCost() (float64, error) {
+	return db.GetTodayCostOn(time.Now().Format("2006-01-02"))
+}
+
+// GetTodayCostOn returns the estimated cost total for the given date (YYYY-MM-DD).
+// Returns 0 if no row exists yet for that date.
+func (db *DB) GetTodayCostOn(date string) (float64, error) {
+	_, _, _, _, cost, _, err := db.GetDailyCost(date)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return cost, err
 }
 
 // SetDailyCostLimit sets the cost limit for a specific date.

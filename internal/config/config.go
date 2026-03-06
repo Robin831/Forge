@@ -14,6 +14,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -75,6 +76,10 @@ type SettingsConfig struct {
 	// BellowsInterval is how often the Bellows PR monitor polls GitHub for
 	// status changes on open PRs. Defaults to 2 minutes.
 	BellowsInterval time.Duration `mapstructure:"bellows_interval"`
+	// DailyCostLimit is the maximum estimated USD spend per calendar day.
+	// When the running total exceeds this value, auto-dispatch is paused until
+	// the next calendar day. Zero means no limit (default).
+	DailyCostLimit float64 `mapstructure:"daily_cost_limit"`
 }
 
 // NotificationsConfig holds webhook and notification settings.
@@ -231,6 +236,9 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.BellowsInterval < 30*time.Second {
 		errs = append(errs, "settings.bellows_interval must be >= 30s")
+	}
+	if c.Settings.DailyCostLimit < 0 || math.IsNaN(c.Settings.DailyCostLimit) || math.IsInf(c.Settings.DailyCostLimit, 0) {
+		errs = append(errs, "settings.daily_cost_limit must be a non-negative finite number")
 	}
 
 	for name, anvil := range c.Anvils {

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -96,10 +97,30 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 	var bdContent string
 	if runtime.GOOS == "windows" {
 		bdScript = filepath.Join(tmpDir, "bd.bat")
-		bdContent = "@echo off\r\nif \"%1\"==\"ready\" (\r\n    echo [{\"id\": \"TEST-1\", \"title\": \"Test Bead\", \"status\": \"ready\", \"priority\": 1, \"tags\": [\"test\"]}]\r\n    exit /b 0\r\n)\r\nif \"%1\"==\"update\" (\r\n    echo {\"id\": \"TEST-1\", \"status\": \"in_progress\"}\r\n    exit /b 0\r\n)\r\nexit /b 1\r\n"
+		bdContent = `@echo off
+if "%1"=="ready" (
+    echo [{"id": "TEST-1", "title": "Test Bead", "status": "ready", "priority": 1, "tags": ["test"]}]
+    exit /b 0
+)
+if "%1"=="update" (
+    echo {"id": "TEST-1", "status": "in_progress"}
+    exit /b 0
+)
+exit /b 1
+`
 	} else {
 		bdScript = filepath.Join(tmpDir, "bd")
-		bdContent = "#!/bin/sh\nif [ \"$1\" = \"ready\" ]; then\n    echo '[{\"id\": \"TEST-1\", \"title\": \"Test Bead\", \"status\": \"ready\", \"priority\": 1, \"tags\": [\"test\"]}]'\n    exit 0\nfi\nif [ \"$1\" = \"update\" ]; then\n    echo '{\"id\": \"TEST-1\", \"status\": \"in_progress\"}'\n    exit 0\nfi\nexit 1\n"
+		bdContent = `#!/bin/sh
+if [ "$1" = "ready" ]; then
+    echo '[{"id": "TEST-1", "title": "Test Bead", "status": "ready", "priority": 1, "tags": ["test"]}]'
+    exit 0
+fi
+if [ "$1" = "update" ]; then
+    echo '{"id": "TEST-1", "status": "in_progress"}'
+    exit 0
+fi
+exit 1
+`
 	}
 	err = os.WriteFile(bdScript, []byte(bdContent), 0o755)
 	require.NoError(t, err)
@@ -375,6 +396,98 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 	})
 }
 
+// TestPollAndDispatch_CostLimit verifies that pollAndDispatch skips dispatch when
+// today's cost meets or exceeds the configured limit, and that the cost_limit_hit
+// event is logged only once per day across multiple poll cycles.
+func TestPollAndDispatch_CostLimit(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-costlimit-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// Create a fake bd script that returns one ready bead so we can verify
+	// dispatch is actually skipped (not just a no-op because no beads exist).
+	var bdScript string
+	var bdContent string
+	if runtime.GOOS == "windows" {
+		bdScript = filepath.Join(tmpDir, "bd.bat")
+		bdContent = `@echo off
+if "%1"=="ready" (
+    echo [{"id": "COST-1", "title": "Cost Test Bead", "status": "ready", "priority": 1, "tags": []}]
+    exit /b 0
+)
+exit /b 0
+`
+	} else {
+		bdScript = filepath.Join(tmpDir, "bd")
+		bdContent = `#!/bin/sh
+if [ "$1" = "ready" ]; then
+    echo '[{"id": "COST-1", "title": "Cost Test Bead", "status": "ready", "priority": 1, "tags": []}]'
+    exit 0
+fi
+exit 0
+`
+	}
+	require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+	defer os.Setenv("PATH", oldPath)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Seed today's cost above the limit.
+	today := time.Now().Format("2006-01-02")
+	require.NoError(t, db.AddDailyCost(today, 0, 0, 0, 0, 15.00))
+
+	cfg := &config.Config{
+		Settings: config.SettingsConfig{
+			MaxTotalSmiths: 4,
+			PollInterval:   10 * time.Second,
+			DailyCostLimit: 10.00, // limit is $10, cost is $15
+		},
+		Anvils: map[string]config.AnvilConfig{
+			"dummy": {Path: tmpDir, AutoDispatch: "all"},
+		},
+	}
+
+	d := &Daemon{
+		cfg:           cfg,
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+	}
+	d.costLimitLoggedDate.Store("")
+
+	countCostLimitEvents := func() int {
+		events, err := db.RecentEvents(50)
+		require.NoError(t, err)
+		n := 0
+		for _, e := range events {
+			if e.Type == state.EventCostLimitHit {
+				n++
+			}
+		}
+		return n
+	}
+
+	// First poll: the fake bd script returns a ready bead but dispatch should be
+	// skipped because today's cost exceeds the limit.
+	d.pollAndDispatch(context.Background())
+	assert.GreaterOrEqual(t, len(d.lastBeads), 1, "poll should surface the ready bead")
+	// No worker should have been dispatched.
+	_, inFlight := d.activeBeads.Load("COST-1")
+	assert.False(t, inFlight, "bead should NOT be dispatched when cost limit is exceeded")
+	assert.Equal(t, 1, countCostLimitEvents(), "cost_limit_hit event should be logged once")
+
+	// Second poll: event must NOT be logged again (same calendar day).
+	d.pollAndDispatch(context.Background())
+	assert.Equal(t, 1, countCostLimitEvents(), "cost_limit_hit must not be logged again on same day")
+}
+
 func TestHandleIPC_RetryBead(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-test-*")
 	require.NoError(t, err)
@@ -531,7 +644,10 @@ func TestHandleIPC_ViewLogs(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		// Write a small log file.
 		logFile := filepath.Join(tmpDir, "smith.log")
-		require.NoError(t, os.WriteFile(logFile, []byte("line1\nline2\nline3\n"), 0o644))
+		require.NoError(t, os.WriteFile(logFile, []byte(`line1
+line2
+line3
+`), 0o644))
 
 		// Insert a worker record pointing to the log.
 		require.NoError(t, db.InsertWorker(&state.Worker{

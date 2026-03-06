@@ -44,6 +44,14 @@ var statusCmd = &cobra.Command{
 					fmt.Fprintf(tw, "Workers\t%d active\n", s.Workers)
 					fmt.Fprintf(tw, "Queue\t%d beads\n", s.QueueSize)
 					fmt.Fprintf(tw, "Open PRs\t%d\n", s.OpenPRs)
+					if s.DailyCostLimit > 0 {
+						fmt.Fprintf(tw, "Daily Cost\t$%.2f / $%.2f\n", s.DailyCost, s.DailyCostLimit)
+						if s.CostLimitPaused {
+							fmt.Fprintf(tw, "Cost Status\tauto-dispatch paused (limit reached)\n")
+						}
+					} else if s.DailyCost > 0 {
+						fmt.Fprintf(tw, "Daily Cost\t$%.2f (no limit)\n", s.DailyCost)
+					}
 					tw.Flush()
 
 					if len(s.Quotas) > 0 {
@@ -77,6 +85,7 @@ var statusCmd = &cobra.Command{
 		prs, _ := db.OpenPRs()
 		events, _ := db.RecentEvents(5)
 		quotas, _ := db.GetAllProviderQuotas()
+		todayCost, _ := db.GetTodayCost()
 
 		type statusData struct {
 			DaemonRunning bool                      `json:"daemon_running"`
@@ -86,6 +95,7 @@ var statusCmd = &cobra.Command{
 			RecentEvents  int                       `json:"recent_events"`
 			DBPath        string                    `json:"db_path"`
 			Quotas        map[string]provider.Quota `json:"quotas,omitempty"`
+			DailyCost     float64                   `json:"daily_cost"`
 		}
 
 		data := statusData{
@@ -96,6 +106,7 @@ var statusCmd = &cobra.Command{
 			RecentEvents:  len(events),
 			DBPath:        db.Path(),
 			Quotas:        quotas,
+			DailyCost:     todayCost,
 		}
 
 		if jsonOutput {
@@ -112,6 +123,9 @@ var statusCmd = &cobra.Command{
 		}
 		fmt.Fprintf(tw, "Workers\t%d active\n", len(workers))
 		fmt.Fprintf(tw, "Open PRs\t%d\n", len(prs))
+		if todayCost > 0 {
+			fmt.Fprintf(tw, "Daily Cost\t$%.2f\n", todayCost)
+		}
 		fmt.Fprintf(tw, "DB\t%s\n", db.Path())
 		tw.Flush()
 
