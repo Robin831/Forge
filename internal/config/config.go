@@ -268,6 +268,11 @@ func (c *Config) Validate() []string {
 	if c.Settings.DailyCostLimit < 0 || math.IsNaN(c.Settings.DailyCostLimit) || math.IsInf(c.Settings.DailyCostLimit, 0) {
 		errs = append(errs, "settings.daily_cost_limit must be a non-negative finite number")
 	}
+	if c.Settings.StaleInterval < 0 {
+		errs = append(errs, "settings.stale_interval must not be negative (set to 0 to disable)")
+	} else if c.Settings.StaleInterval > 0 && c.Settings.StaleInterval < 30*time.Second {
+		errs = append(errs, "settings.stale_interval must be >= 30s when enabled (or 0 to disable)")
+	}
 
 	for name, anvil := range c.Anvils {
 		if anvil.Path == "" {

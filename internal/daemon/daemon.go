@@ -602,6 +602,23 @@ func (d *Daemon) runStaleDetection(ctx context.Context) {
 					fmt.Sprintf("Worker %s stalled (no log activity for %s)", w.ID, interval),
 					w.BeadID, w.Anvil)
 			}
+
+			// If the stale interval has changed, adjust the ticker cadence
+			newCheckInterval := interval / 2
+			if newCheckInterval < 30*time.Second {
+				if interval < 30*time.Second {
+					// For very small stale intervals, fall back to checking at the
+					// stale interval itself to avoid delaying detection past the
+					// configured threshold.
+					newCheckInterval = interval
+				} else {
+					newCheckInterval = 30 * time.Second
+				}
+			}
+			if newCheckInterval > 0 && newCheckInterval != checkInterval {
+				ticker.Reset(newCheckInterval)
+				checkInterval = newCheckInterval
+			}
 		}
 	}
 }

@@ -1335,6 +1335,21 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 			if (b.NeedsHuman || b.ClarificationNeeded) && b.Reason != "" {
 				existing.Reason = b.Reason
 			}
+			// Merge title as well:
+			// - If this row carries actionable flags (retry row), prefer its
+			//   non-empty title, which is derived from queue_cache or the
+			//   latest worker record.
+			// - If this row is from a stalled worker (no flags), only let it
+			//   supply a title when we don't already have one.
+			if b.Title != "" {
+				if b.NeedsHuman || b.ClarificationNeeded {
+					// Retry row: prefer its more specific title.
+					existing.Title = b.Title
+				} else if existing.Title == "" {
+					// Stalled-worker row: only fill in when we have no title yet.
+					existing.Title = b.Title
+				}
+			}
 			continue
 		}
 		seen[key] = len(beads)
