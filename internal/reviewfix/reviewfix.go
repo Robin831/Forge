@@ -17,6 +17,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ghpr"
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -52,6 +53,9 @@ type FixParams struct {
 	DB *state.DB
 	// ExtraFlags for Claude CLI.
 	ExtraFlags []string
+	// Providers is the ordered list of AI providers to try.
+	// If empty, provider.Defaults() is used (Claude → Gemini).
+	Providers []provider.Provider
 }
 
 // FixResult captures the outcome of addressing review comments.
@@ -100,32 +104,90 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 	log.Printf("[reviewfix] PR #%d: %d actionable review comments", p.PRNumber, len(actionable))
 
+	// Resolve providers — default to Claude → Gemini if not specified.
+	providers := p.Providers
+	if len(providers) == 0 {
+		providers = provider.Defaults()
+	}
+	activeProviderIdx := 0
+
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
 		result.Attempts = attempt
 
 		// Step 2: Build fix prompt
 		prompt := buildReviewFixPrompt(p, actionable)
 
-		// Step 3: Spawn Smith
+		// Step 3: Spawn Smith (with provider fallback on rate limit)
 		_ = p.DB.LogEvent(state.EventReviewFixStarted,
-			fmt.Sprintf("PR #%d: attempt %d, %d comments", p.PRNumber, attempt, len(actionable)),
+			fmt.Sprintf("PR #%d: attempt %d, %d comments (provider: %s)", p.PRNumber, attempt, len(actionable), providers[activeProviderIdx].Kind),
 			p.BeadID, p.AnvilName)
 
 		logDir := p.WorktreePath + "/.forge-logs"
-		process, err := smith.Spawn(ctx, p.WorktreePath, prompt, logDir, p.ExtraFlags)
-		if err != nil {
-			result.Error = fmt.Errorf("spawning smith for review fix: %w", err)
-			_ = p.DB.LogEvent(state.EventReviewFixFailed, result.Error.Error(), p.BeadID, p.AnvilName)
+		var smithResult *smith.Result
+		for pi := activeProviderIdx; pi < len(providers); pi++ {
+			pv := providers[pi]
+			if pi > activeProviderIdx {
+				log.Printf("[reviewfix] PR #%d: Provider %s rate limited, retrying with %s",
+					p.PRNumber, providers[pi-1].Kind, pv.Kind)
+				_ = p.DB.LogEvent(state.EventReviewFixSmithError,
+					fmt.Sprintf("PR #%d attempt %d: %s rate limited, falling back to %s",
+						p.PRNumber, attempt, providers[pi-1].Kind, pv.Kind),
+					p.BeadID, p.AnvilName)
+			}
+			process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
+			if err != nil {
+				result.Error = fmt.Errorf("spawning smith (%s) for review fix: %w", pv.Kind, err)
+				_ = p.DB.LogEvent(state.EventReviewFixFailed, result.Error.Error(), p.BeadID, p.AnvilName)
+				result.Duration = time.Since(start)
+				return result
+			}
+			smithResult = process.Wait()
+			// Treat a genuine success event as not rate-limited.
+			// Do NOT use ExitCode == 0 here: Claude can exit 0 with is_error:true
+			// (subtype:"success") when the session was rate-limit rejected — that
+			// is not a successful session and must not suppress the fallback.
+			if smithResult.ResultSubtype == "success" && !smithResult.IsError {
+				smithResult.RateLimited = false
+			}
+			if !smithResult.RateLimited {
+				activeProviderIdx = pi
+				break
+			}
+		}
+
+		// If all providers are rate-limited, abort rather than burning more attempts.
+		if smithResult.RateLimited {
+			log.Printf("[reviewfix] PR #%d: All providers rate limited on attempt %d", p.PRNumber, attempt)
+			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+				fmt.Sprintf("PR #%d attempt %d: all providers rate limited", p.PRNumber, attempt),
+				p.BeadID, p.AnvilName)
+			_ = p.DB.LogEvent(state.EventReviewFixSmithError,
+				fmt.Sprintf("PR #%d attempt %d: rate_limited (all %d providers exhausted)", p.PRNumber, attempt, len(providers)),
+				p.BeadID, p.AnvilName)
+			result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 			result.Duration = time.Since(start)
 			return result
 		}
 
-		smithResult := process.Wait()
 		if smithResult.ExitCode != 0 {
-			log.Printf("[reviewfix] PR #%d: Smith fix attempt %d failed (exit %d)", p.PRNumber, attempt, smithResult.ExitCode)
+			log.Printf("[reviewfix] PR #%d: Smith fix attempt %d failed (exit %d, subtype=%s)",
+				p.PRNumber, attempt, smithResult.ExitCode, smithResult.ResultSubtype)
 			_ = p.DB.LogEvent(state.EventReviewFixFailed,
 				fmt.Sprintf("PR #%d: Smith exit %d on attempt %d", p.PRNumber, smithResult.ExitCode, attempt),
 				p.BeadID, p.AnvilName)
+			// Log error detail for root-cause debugging.
+			errDetail := smithResult.ResultSubtype
+			if errDetail == "" && smithResult.ErrorOutput != "" {
+				errDetail = smithResult.ErrorOutput
+				if len(errDetail) > 300 {
+					errDetail = errDetail[:300] + "..."
+				}
+			}
+			if errDetail != "" {
+				_ = p.DB.LogEvent(state.EventReviewFixSmithError,
+					fmt.Sprintf("PR #%d attempt %d: %s", p.PRNumber, attempt, errDetail),
+					p.BeadID, p.AnvilName)
+			}
 			continue
 		}
 
@@ -133,15 +195,34 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		log.Printf("[reviewfix] PR #%d: Review fixes applied on attempt %d", p.PRNumber, attempt)
 		result.Addressed = true
 
-		// Resolve threads after successful fix
+		// Resolve threads after successful fix.
+		// Only thread-level comments (with a ThreadID from GraphQL) can be resolved
+		// via the API; review-level CHANGES_REQUESTED comments have no thread ID.
+		resolvedCount := 0
 		for _, comment := range actionable {
-			if comment.ThreadID != "" {
-				if err := resolveThread(ctx, p.WorktreePath, comment.ThreadID); err != nil {
-					log.Printf("[reviewfix] PR #%d: Warning: failed to resolve thread %s: %v", p.PRNumber, comment.ThreadID, err)
-				} else {
-					log.Printf("[reviewfix] PR #%d: Resolved thread %s", p.PRNumber, comment.ThreadID)
-				}
+			if comment.ThreadID == "" {
+				continue
 			}
+			if err := resolveThread(ctx, p.WorktreePath, comment.ThreadID); err != nil {
+				log.Printf("[reviewfix] PR #%d: Warning: failed to resolve thread %s: %v", p.PRNumber, comment.ThreadID, err)
+				_ = p.DB.LogEvent(state.EventReviewFixFailed,
+					fmt.Sprintf("PR #%d: resolve thread %s failed: %v", p.PRNumber, comment.ThreadID, err),
+					p.BeadID, p.AnvilName)
+			} else {
+				resolvedCount++
+				log.Printf("[reviewfix] PR #%d: Resolved thread %s (by @%s)", p.PRNumber, comment.ThreadID, comment.Author)
+				// Log resolved thread to DB so it's visible in forge history.
+				body := comment.Body
+				if len(body) > 120 {
+					body = body[:120] + "..."
+				}
+				_ = p.DB.LogEvent(state.EventReviewThreadResolved,
+					fmt.Sprintf("PR #%d: resolved thread by @%s — %s", p.PRNumber, comment.Author, body),
+					p.BeadID, p.AnvilName)
+			}
+		}
+		if resolvedCount > 0 {
+			log.Printf("[reviewfix] PR #%d: Resolved %d/%d threads on GitHub", p.PRNumber, resolvedCount, len(actionable))
 		}
 
 		_ = p.DB.LogEvent(state.EventReviewFixSuccess,
