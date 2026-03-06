@@ -60,45 +60,26 @@ type ActionHandler func(ctx context.Context, req ActionRequest)
 
 // Manager tracks PR states and dispatches actions based on events.
 type Manager struct {
-<<<<<<< HEAD
 	db        *state.DB
 	logger    *slog.Logger
 	mu        sync.Mutex
-	states    map[int]*PRState // PR number → state
+	states    map[string]*PRState // "anvil/number" → state
 	handler   ActionHandler
 	maxCI     int // max CI fix attempts per PR
 	maxRev    int // max review fix attempts per PR
 	maxRebase int // max rebase attempts per PR
-=======
-	db      *state.DB
-	logger  *slog.Logger
-	mu      sync.Mutex
-	states  map[string]*PRState // "anvil/number" → state
-	handler ActionHandler
-	maxCI   int // max CI fix attempts per PR
-	maxRev  int // max review fix attempts per PR
->>>>>>> 30e01b0 (fix(lifecycle): use composite key for PR states and persist new PRs)
 }
 
 // New creates a lifecycle Manager.
 func New(db *state.DB, logger *slog.Logger, handler ActionHandler) *Manager {
 	return &Manager{
-<<<<<<< HEAD
 		db:        db,
 		logger:    logger,
-		states:    make(map[int]*PRState),
+		states:    make(map[string]*PRState),
 		handler:   handler,
 		maxCI:     2,
 		maxRev:    2,
 		maxRebase: 3,
-=======
-		db:      db,
-		logger:  logger,
-		states:  make(map[string]*PRState),
-		handler: handler,
-		maxCI:   2,
-		maxRev:  2,
->>>>>>> 30e01b0 (fix(lifecycle): use composite key for PR states and persist new PRs)
 	}
 }
 
