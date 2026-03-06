@@ -37,7 +37,7 @@ func FetchQueue(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
 		cached, err := db.QueueCache()
 		if err != nil {
-			return UpdateQueueMsg{Items: nil}
+			return QueueErrorMsg{Err: err}
 		}
 
 		var items []QueueItem

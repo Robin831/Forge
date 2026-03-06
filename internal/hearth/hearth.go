@@ -12,6 +12,7 @@ package hearth
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -175,6 +176,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateQueueMsg:
 		m.queue = msg.Items
+
+	case QueueErrorMsg:
+		// Preserve previous queue; surface the error in the events panel
+		m.events = append(m.events, EventItem{
+			Timestamp: time.Now().Format("15:04:05"),
+			Type:      "error",
+			Message:   fmt.Sprintf("queue cache read failed: %v", msg.Err),
+		})
+		m.eventRevision++
 
 	case UpdateWorkersMsg:
 		m.workers = msg.Items
@@ -616,6 +626,11 @@ func (m *Model) renderEventLines(item EventItem, selected bool, panelWidth int) 
 
 // UpdateQueueMsg updates the queue panel.
 type UpdateQueueMsg struct{ Items []QueueItem }
+
+// QueueErrorMsg signals that reading the queue cache failed.
+// The model preserves the previous queue data so the UI doesn't
+// flip to "No pending beads" on a transient DB error.
+type QueueErrorMsg struct{ Err error }
 
 // UpdateWorkersMsg updates the workers panel.
 type UpdateWorkersMsg struct{ Items []WorkerItem }
