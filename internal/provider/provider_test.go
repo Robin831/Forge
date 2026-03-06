@@ -79,6 +79,42 @@ func TestProvider_BuildArgs_Gemini_DropsMaxTurns(t *testing.T) {
 	assert.NotContains(t, args, "--tools")
 }
 
+func TestProvider_BuildArgs_Gemini_WithModel(t *testing.T) {
+	p := Provider{Kind: Gemini, Model: "gemini-2.5-pro"}
+	args := p.BuildArgs(nil)
+	assert.Contains(t, args, "--model")
+	modelIdx := -1
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) {
+			modelIdx = i + 1
+			break
+		}
+	}
+	assert.NotEqual(t, -1, modelIdx, "expected --model flag")
+	assert.Equal(t, "gemini-2.5-pro", args[modelIdx])
+}
+
+func TestProvider_BuildArgs_Gemini_NoModelByDefault(t *testing.T) {
+	p := Provider{Kind: Gemini}
+	args := p.BuildArgs(nil)
+	assert.NotContains(t, args, "--model")
+}
+
+func TestProvider_BuildArgs_Gemini_ClaudeFlagModelOverrides(t *testing.T) {
+	// A --model in claude_flags overrides the Provider.Model field.
+	p := Provider{Kind: Gemini, Model: "gemini-2.5-flash-lite"}
+	args := p.BuildArgs([]string{"--model", "gemini-2.5-pro"})
+	modelIdx := -1
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) {
+			modelIdx = i + 1
+			break
+		}
+	}
+	assert.NotEqual(t, -1, modelIdx)
+	assert.Equal(t, "gemini-2.5-pro", args[modelIdx])
+}
+
 func TestProvider_BuildArgs_Copilot(t *testing.T) {
 	p := Provider{Kind: Copilot}
 	args := p.BuildArgs(nil)
@@ -121,23 +157,23 @@ func TestProvider_BuildArgs_Copilot_CustomModel(t *testing.T) {
 
 func TestDefaults(t *testing.T) {
 	providers := Defaults()
-	assert.Len(t, providers, 3)
+	assert.Len(t, providers, 2)
 	assert.Equal(t, Claude, providers[0].Kind)
 	assert.Equal(t, Gemini, providers[1].Kind)
-	assert.Equal(t, Copilot, providers[2].Kind)
 }
 
 func TestFromConfig(t *testing.T) {
 	tests := []struct {
-		name      string
-		specs     []string
-		wantKinds []Kind
-		wantCmds  []string
+		name       string
+		specs      []string
+		wantKinds  []Kind
+		wantCmds   []string
+		wantModels []string
 	}{
 		{
 			name:      "empty returns defaults",
 			specs:     nil,
-			wantKinds: []Kind{Claude, Gemini, Copilot},
+			wantKinds: []Kind{Claude, Gemini},
 		},
 		{
 			name:      "single provider",
@@ -149,6 +185,25 @@ func TestFromConfig(t *testing.T) {
 			specs:     []string{"gemini:gemini2"},
 			wantKinds: []Kind{Gemini},
 			wantCmds:  []string{"gemini2"},
+		},
+		{
+			name:      "kind/model format",
+			specs:     []string{"gemini/gemini-2.5-pro"},
+			wantKinds: []Kind{Gemini},
+			wantModels: []string{"gemini-2.5-pro"},
+		},
+		{
+			name:      "kind:command/model format",
+			specs:     []string{"gemini:mybin/gemini-2.5-flash"},
+			wantKinds: []Kind{Gemini},
+			wantCmds:  []string{"mybin"},
+			wantModels: []string{"gemini-2.5-flash"},
+		},
+		{
+			name:  "multiple gemini models as fallback chain",
+			specs: []string{"claude", "gemini/gemini-2.5-pro", "gemini/gemini-3-flash-preview", "gemini/gemini-2.5-flash-lite"},
+			wantKinds: []Kind{Claude, Gemini, Gemini, Gemini},
+			wantModels: []string{"", "gemini-2.5-pro", "gemini-3-flash-preview", "gemini-2.5-flash-lite"},
 		},
 		{
 			name:      "multiple providers",
@@ -176,6 +231,11 @@ func TestFromConfig(t *testing.T) {
 			if tt.wantCmds != nil {
 				for i, cmd := range tt.wantCmds {
 					assert.Equal(t, cmd, got[i].Command)
+				}
+			}
+			if tt.wantModels != nil {
+				for i, model := range tt.wantModels {
+					assert.Equal(t, model, got[i].Model)
 				}
 			}
 		})

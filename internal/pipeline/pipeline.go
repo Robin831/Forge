@@ -143,9 +143,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 		log.Printf("[pipeline:%s] Iteration %d/%d", workerID, iteration, MaxIterations)
 
 		// Step 2: Run Smith (with provider fallback on rate limit)
-		log.Printf("[pipeline:%s] Running Smith (provider: %s)", workerID, providers[activeProviderIdx].Kind)
+		log.Printf("[pipeline:%s] Running Smith (provider: %s)", workerID, providers[activeProviderIdx].Label())
 		_ = p.DB.UpdateWorkerPhase(workerID, "smith")
-		_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d (provider: %s)", iteration, providers[activeProviderIdx].Kind), p.Bead.ID, p.AnvilName)
+		_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d (provider: %s)", iteration, providers[activeProviderIdx].Label()), p.Bead.ID, p.AnvilName)
 
 		logDir := wt.Path + "/.forge-logs"
 
@@ -153,14 +153,14 @@ func Run(ctx context.Context, p Params) *Outcome {
 		for pi := activeProviderIdx; pi < len(providers); pi++ {
 			pv := providers[pi]
 			if pi > activeProviderIdx {
-				log.Printf("[pipeline:%s] Provider %s rate limited, retrying with %s", workerID, providers[pi-1].Kind, pv.Kind)
+				log.Printf("[pipeline:%s] Provider %s rate limited, retrying with %s", workerID, providers[pi-1].Label(), pv.Label())
 				_ = p.DB.LogEvent(state.EventSmithStarted,
-					fmt.Sprintf("Rate limit fallback to provider %s (iteration %d)", pv.Kind, iteration),
+					fmt.Sprintf("Rate limit fallback to provider %s (iteration %d)", pv.Label(), iteration),
 					p.Bead.ID, p.AnvilName)
 			}
 			process, err := smith.SpawnWithProvider(ctx, wt.Path, currentPrompt, logDir, pv, p.ExtraFlags)
 			if err != nil {
-				outcome.Error = fmt.Errorf("spawning smith (%s): %w", pv.Kind, err)
+				outcome.Error = fmt.Errorf("spawning smith (%s): %w", pv.Label(), err)
 				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
 				_ = p.DB.LogEvent(state.EventSmithFailed, err.Error(), p.Bead.ID, p.AnvilName)
 				outcome.Duration = time.Since(start)
@@ -183,14 +183,14 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 			if smithResult.Quota != nil {
 				if err := p.DB.UpsertProviderQuota(string(pv.Kind), smithResult.Quota); err != nil {
-					log.Printf("[pipeline:%s] Failed to update provider %s quota in DB: %v", workerID, pv.Kind, err)
+					log.Printf("[pipeline:%s] Failed to update provider %s quota in DB: %v", workerID, pv.Label(), err)
 				} else {
 					resetStr := "n/a"
 					if smithResult.Quota.RequestsReset != nil {
 						resetStr = time.Until(*smithResult.Quota.RequestsReset).Round(time.Minute).String()
 					}
 					log.Printf("[pipeline:%s] Provider %s quota updated: %d/%d requests, %d/%d tokens remaining (reset in %s)",
-						workerID, pv.Kind,
+						workerID, pv.Label(),
 						smithResult.Quota.RequestsRemaining, smithResult.Quota.RequestsLimit,
 						smithResult.Quota.TokensRemaining, smithResult.Quota.TokensLimit, resetStr)
 				}

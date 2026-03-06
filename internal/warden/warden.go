@@ -116,7 +116,7 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 	for pi, pv := range pvList {
 		process, err := smith.SpawnWithProvider(ctx, worktreePath, prompt, logDir, pv, wardenFlags)
 		if err != nil {
-			return nil, fmt.Errorf("spawning warden (%s): %w", pv.Kind, err)
+			return nil, fmt.Errorf("spawning warden (%s): %w", pv.Label(), err)
 		}
 		smithResult = process.Wait()
 		if !smithResult.RateLimited {

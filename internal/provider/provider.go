@@ -48,6 +48,10 @@ type Provider struct {
 	Kind Kind
 	// Command is the binary to execute. If empty, the Kind default is used.
 	Command string
+	// Model is the specific model to request from the provider.
+	// Supported for Gemini (--model flag) and Copilot (--model flag).
+	// When empty the provider's own default model is used.
+	Model string
 }
 
 // Cmd returns the effective binary name.
@@ -63,6 +67,16 @@ func (p Provider) Cmd() string {
 	default:
 		return "claude"
 	}
+}
+
+// Label returns a human-readable identifier for this provider suitable for
+// log messages. When a model is set it returns "kind/model" (e.g.
+// "gemini/gemini-2.5-pro"); otherwise it returns just the kind string.
+func (p Provider) Label() string {
+	if p.Model != "" {
+		return string(p.Kind) + "/" + p.Model
+	}
+	return string(p.Kind)
 }
 
 // Format returns the output format this provider writes to stdout.
@@ -107,17 +121,20 @@ func (p Provider) claudeArgs(extra []string) []string {
 }
 
 func (p Provider) geminiArgs(claudeFlags []string) []string {
-	// Gemini CLI: `gemini --yolo -o stream-json`
+	// Gemini CLI: `gemini --yolo -o stream-json [--model <model>]`
 	// Without a positional prompt argument the Gemini CLI reads the prompt from
 	// stdin, avoiding the Windows command-line length limit.
 	// --yolo is equivalent to claude's --dangerously-skip-permissions.
 	// --output-format stream-json / -o stream-json enables machine-readable output.
+	// --model selects a specific Gemini model; omitted when empty (CLI picks default).
 	// Translate recognised claude flags; drop the rest.
 	base := []string{
 		"--yolo",
 		"-o", "stream-json",
 	}
 
+	// Honour an explicit model override from claude_flags; otherwise use p.Model.
+	model := p.Model
 	i := 0
 	for i < len(claudeFlags) {
 		flag := claudeFlags[i]
@@ -126,11 +143,21 @@ func (p Provider) geminiArgs(claudeFlags []string) []string {
 			i += 2 // skip value
 		case "--tools":
 			i += 2 // skip value — no direct Gemini equivalent
+		case "--model":
+			if i+1 < len(claudeFlags) {
+				model = claudeFlags[i+1]
+				i += 2
+			} else {
+				i++
+			}
 		default:
 			i++
 		}
 	}
 
+	if model != "" {
+		base = append(base, "--model", model)
+	}
 	return base
 }
 
@@ -165,11 +192,22 @@ func (p Provider) copilotArgs(claudeFlags []string) []string {
 }
 
 // Defaults returns the default ordered list of providers.
-// Claude is tried first, Gemini second.
+// Claude is tried first, then Gemini (no specific model — CLI picks its default).
+//
+// To use specific Gemini models in priority order, list them explicitly in
+// forge.yaml using the "gemini/model-name" syntax:
+//
+//	settings:
+//	  providers:
+//	    - claude
+//	    - gemini/gemini-2.5-pro
+//	    - gemini/gemini-3-flash-preview
+//	    - gemini/gemini-2.5-flash
+//	    - gemini/gemini-2.5-flash-lite
 //
 // GitHub Copilot CLI is NOT included by default because it consumes
 // premium "Copilot for CLI" quota that requires manual approval.
-// To enable Copilot as a fallback, add it explicitly in forge.yaml:
+// To enable Copilot as a fallback, add it explicitly:
 //
 //	settings:
 //	  providers: [claude, gemini, copilot]
@@ -181,7 +219,17 @@ func Defaults() []Provider {
 }
 
 // FromConfig builds a Provider slice from configuration strings.
-// Each string is a Kind or "kind:command" pair (e.g. "gemini" or "gemini:gemini2").
+//
+// Accepted formats:
+//
+//	"claude"                          – Claude with default command
+//	"gemini"                          – Gemini with default command and model
+//	"gemini/gemini-2.5-pro"           – Gemini, specific model
+//	"gemini:mybin"                     – Gemini, custom binary, default model
+//	"gemini:mybin/gemini-2.5-pro"      – Gemini, custom binary, specific model
+//
+// The optional "/model" suffix selects a specific model to pass via --model.
+// The optional ":command" infix overrides the binary to execute.
 func FromConfig(specs []string) []Provider {
 	if len(specs) == 0 {
 		return Defaults()
@@ -192,8 +240,15 @@ func FromConfig(specs []string) []Provider {
 		if s == "" {
 			continue
 		}
+		// Split off optional "/model" suffix first (model names never contain '/').
+		var model string
+		if idx := strings.LastIndex(s, "/"); idx != -1 {
+			model = s[idx+1:]
+			s = s[:idx]
+		}
+		// Remaining: "kind" or "kind:command".
 		parts := strings.SplitN(s, ":", 2)
-		pv := Provider{Kind: Kind(strings.ToLower(parts[0]))}
+		pv := Provider{Kind: Kind(strings.ToLower(parts[0])), Model: model}
 		if len(parts) == 2 {
 			pv.Command = parts[1]
 		}

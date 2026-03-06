@@ -119,7 +119,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 		// Step 3: Spawn Smith (with provider fallback on rate limit)
 		_ = p.DB.LogEvent(state.EventReviewFixStarted,
-			fmt.Sprintf("PR #%d: attempt %d, %d comments (provider: %s)", p.PRNumber, attempt, len(actionable), providers[activeProviderIdx].Kind),
+			fmt.Sprintf("PR #%d: attempt %d, %d comments (provider: %s)", p.PRNumber, attempt, len(actionable), providers[activeProviderIdx].Label()),
 			p.BeadID, p.AnvilName)
 
 		logDir := p.WorktreePath + "/.forge-logs"
@@ -128,15 +128,15 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			pv := providers[pi]
 			if pi > activeProviderIdx {
 				log.Printf("[reviewfix] PR #%d: Provider %s rate limited, retrying with %s",
-					p.PRNumber, providers[pi-1].Kind, pv.Kind)
+					p.PRNumber, providers[pi-1].Label(), pv.Label())
 				_ = p.DB.LogEvent(state.EventReviewFixSmithError,
 					fmt.Sprintf("PR #%d attempt %d: %s rate limited, falling back to %s",
-						p.PRNumber, attempt, providers[pi-1].Kind, pv.Kind),
+						p.PRNumber, attempt, providers[pi-1].Label(), pv.Label()),
 					p.BeadID, p.AnvilName)
 			}
 			process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
 			if err != nil {
-				result.Error = fmt.Errorf("spawning smith (%s) for review fix: %w", pv.Kind, err)
+				result.Error = fmt.Errorf("spawning smith (%s) for review fix: %w", pv.Label(), err)
 				_ = p.DB.LogEvent(state.EventReviewFixFailed, result.Error.Error(), p.BeadID, p.AnvilName)
 				result.Duration = time.Since(start)
 				return result

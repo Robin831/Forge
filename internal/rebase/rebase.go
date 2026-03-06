@@ -97,22 +97,22 @@ func (p *Params) rebaseWithSmith(ctx context.Context, providers []provider.Provi
 	for pi, pv := range providers {
 		if pi > 0 {
 			log.Printf("[rebase] PR #%d: provider %s rate-limited, trying %s",
-				p.PRNumber, providers[pi-1].Kind, pv.Kind)
+				p.PRNumber, providers[pi-1].Label(), pv.Label())
 		}
 		process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
 		if err != nil {
-			return fmt.Errorf("spawning Smith (%s): %w", pv.Kind, err)
+			return fmt.Errorf("spawning Smith (%s): %w", pv.Label(), err)
 		}
 		result := process.Wait()
 		if result.ResultSubtype == "success" && !result.IsError {
 			result.RateLimited = false
 		}
 		if result.RateLimited {
-			lastErr = fmt.Errorf("provider %s rate-limited", pv.Kind)
+			lastErr = fmt.Errorf("provider %s rate-limited", pv.Label())
 			continue
 		}
 		if result.ExitCode != 0 || result.IsError {
-			return fmt.Errorf("Smith (%s) exited %d (subtype=%s)", pv.Kind, result.ExitCode, result.ResultSubtype)
+			return fmt.Errorf("Smith (%s) exited %d (subtype=%s)", pv.Label(), result.ExitCode, result.ResultSubtype)
 		}
 		return nil
 	}
