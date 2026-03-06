@@ -167,6 +167,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 				return outcome
 			}
 			_ = p.DB.UpdateWorkerPID(workerID, process.PID)
+			_ = p.DB.UpdateWorkerLogPath(workerID, process.LogPath)
 			smithResult = process.Wait()
 
 			// A process that exits 0, or produces a genuine success result event
