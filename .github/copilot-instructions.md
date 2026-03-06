@@ -33,3 +33,4 @@ The following are intentional design choices in this project. **Do not flag them
 - **Viper config with env var binding**: We use Viper for configuration management and environment variable binding.
 - **Manual Go error wrapping**: We use manual error wrapping (e.g., `fmt.Errorf("...: %w", err)`) instead of third-party libraries.
 - **SQLite WAL mode**: Our `state.db` uses Write-Ahead Logging (WAL) mode by design.
+- **No unit tests for `cmd/forge/*` entrypoints**: The files under `cmd/forge/` are thin wiring layers (Cobra commands, flag parsing, IPC dispatch). They intentionally have no unit tests. Coverage is provided by the component packages they coordinate (`internal/daemon`, `internal/ipc`, etc.) and by system/integration tests. Do not request unit tests for entrypoint files.
