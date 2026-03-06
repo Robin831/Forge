@@ -28,7 +28,6 @@ func TestDB_PRLifecycle(t *testing.T) {
 		Branch:    "fix-1",
 		Status:    PROpen,
 		CreatedAt: time.Now(),
-		CIPassing: true,
 	}
 	if err := db.InsertPR(pr); err != nil {
 		t.Fatal(err)
