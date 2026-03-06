@@ -92,7 +92,7 @@ func TestDB_QueueCache(t *testing.T) {
 		{BeadID: "bd-1", Anvil: "anvil-b", Title: "High priority", Priority: 1, Status: "open"},
 		{BeadID: "bd-2", Anvil: "anvil-a", Title: "Mid priority", Priority: 2, Status: "open"},
 	}
-	if err := db.ReplaceQueueCache(input); err != nil {
+	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-a", "anvil-b"}, input); err != nil {
 		t.Fatal(err)
 	}
 
@@ -121,7 +121,7 @@ func TestDB_QueueCache(t *testing.T) {
 		{BeadID: "bd-5", Anvil: "anvil-a", Title: "Same bead A", Priority: 1, Status: "open"},
 		{BeadID: "bd-4", Anvil: "anvil-b", Title: "Higher pri", Priority: 0, Status: "open"},
 	}
-	if err := db.ReplaceQueueCache(dupes); err != nil {
+	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-a", "anvil-b", "anvil-z"}, dupes); err != nil {
 		t.Fatal(err)
 	}
 	items, err = db.QueueCache()
@@ -142,11 +142,11 @@ func TestDB_QueueCache(t *testing.T) {
 		t.Errorf("expected bd-5/anvil-z third, got %s/%s", items[2].BeadID, items[2].Anvil)
 	}
 
-	// 3. Replace semantics: new call replaces old data
+	// 3. Replace semantics: new call replaces old data for specified anvils
 	replacement := []QueueItem{
 		{BeadID: "bd-99", Anvil: "anvil-c", Title: "Only item", Priority: 0, Status: "ready"},
 	}
-	if err := db.ReplaceQueueCache(replacement); err != nil {
+	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-a", "anvil-b", "anvil-c", "anvil-z"}, replacement); err != nil {
 		t.Fatal(err)
 	}
 
@@ -161,8 +161,8 @@ func TestDB_QueueCache(t *testing.T) {
 		t.Errorf("unexpected item: %+v", items[0])
 	}
 
-	// 4. Replace with empty clears cache
-	if err := db.ReplaceQueueCache(nil); err != nil {
+	// 4. Replace with empty anvils list clears only those anvils
+	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-c"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	items, err = db.QueueCache()
@@ -171,5 +171,34 @@ func TestDB_QueueCache(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Fatalf("expected empty cache after nil replace, got %d items", len(items))
+	}
+
+	// 5. Per-anvil replacement preserves rows for unspecified anvils
+	seed := []QueueItem{
+		{BeadID: "bd-10", Anvil: "anvil-x", Title: "X item", Priority: 1, Status: "open"},
+		{BeadID: "bd-11", Anvil: "anvil-y", Title: "Y item", Priority: 2, Status: "open"},
+	}
+	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-x", "anvil-y"}, seed); err != nil {
+		t.Fatal(err)
+	}
+	// Now update only anvil-x; anvil-y should be retained
+	updated := []QueueItem{
+		{BeadID: "bd-12", Anvil: "anvil-x", Title: "X updated", Priority: 0, Status: "open"},
+	}
+	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-x"}, updated); err != nil {
+		t.Fatal(err)
+	}
+	items, err = db.QueueCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items (anvil-x updated + anvil-y retained), got %d", len(items))
+	}
+	if items[0].BeadID != "bd-12" || items[0].Anvil != "anvil-x" {
+		t.Errorf("expected bd-12/anvil-x first, got %s/%s", items[0].BeadID, items[0].Anvil)
+	}
+	if items[1].BeadID != "bd-11" || items[1].Anvil != "anvil-y" {
+		t.Errorf("expected bd-11/anvil-y second, got %s/%s", items[1].BeadID, items[1].Anvil)
 	}
 }

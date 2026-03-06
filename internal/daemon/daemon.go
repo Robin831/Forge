@@ -513,22 +513,15 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	}
 
 	// Cache queue in SQLite so the Hearth TUI can read it without polling independently.
-	// If every anvil poll failed, keep the previous cache so the UI doesn't show
-	// an empty queue due to transient errors.
-	var anyFailed, anySucceeded bool
+	// Only update cache rows for anvils that polled successfully, so failed anvils
+	// retain their last-known cached data instead of appearing empty.
+	var succeededAnvils []string
 	for _, r := range results {
-		if r.Err != nil {
-			anyFailed = true
-		} else {
-			anySucceeded = true
+		if r.Err == nil {
+			succeededAnvils = append(succeededAnvils, r.Name)
 		}
 	}
-	// Update the queue cache only when at least one anvil succeeded.
-	// If every anvil failed, keep the previous cache so the UI doesn't show
-	// an empty queue due to transient errors.
-	// Also skip when beads is empty but some polls failed — a partial failure
-	// could hide beads from the failed anvils, so retain the previous cache.
-	if anySucceeded && !(len(beads) == 0 && anyFailed) {
+	if len(succeededAnvils) > 0 {
 		var cacheItems []state.QueueItem
 		for _, b := range beads {
 			cacheItems = append(cacheItems, state.QueueItem{
@@ -539,7 +532,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 				Status:   b.Status,
 			})
 		}
-		if err := d.db.ReplaceQueueCache(cacheItems); err != nil {
+		if err := d.db.ReplaceQueueCacheForAnvils(succeededAnvils, cacheItems); err != nil {
 			d.logger.Warn("failed to cache queue", "error", err)
 		}
 	}

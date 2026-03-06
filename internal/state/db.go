@@ -926,16 +926,21 @@ type QueueItem struct {
 	Status   string
 }
 
-// ReplaceQueueCache atomically replaces the queue cache with fresh poll results.
-func (db *DB) ReplaceQueueCache(items []QueueItem) error {
+// ReplaceQueueCacheForAnvils atomically replaces the cached queue rows for the
+// specified anvils only, leaving rows for other anvils untouched. This allows
+// failed anvil polls to retain their last-known cached data.
+func (db *DB) ReplaceQueueCacheForAnvils(anvils []string, items []QueueItem) error {
 	tx, err := db.conn.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(`DELETE FROM queue_cache`); err != nil {
-		return err
+	// Delete only rows belonging to the successfully polled anvils.
+	for _, anvil := range anvils {
+		if _, err := tx.Exec(`DELETE FROM queue_cache WHERE anvil = ?`, anvil); err != nil {
+			return err
+		}
 	}
 
 	now := time.Now().Format(time.RFC3339)
