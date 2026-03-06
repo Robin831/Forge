@@ -192,35 +192,53 @@ func TestEventPRMerged_ClosesBead(t *testing.T) {
 	}
 }
 
-// TestEventPRConflicting_Logging verifies conflict event is logged to DB without dispatch.
-func TestEventPRConflicting_Logging(t *testing.T) {
+// TestEventPRConflicting_Dispatch verifies that a conflict event dispatches ActionRebase.
+func TestEventPRConflicting_Dispatch(t *testing.T) {
 	db := newTestDB(t)
 
-	var dispatched bool
-	handler := func(_ context.Context, _ ActionRequest) {
-		dispatched = true
+	var dispatched []ActionRequest
+	handler := func(_ context.Context, req ActionRequest) {
+		dispatched = append(dispatched, req)
 	}
 
 	m := New(db, handler)
 	m.HandleEvent(context.Background(), makeEvent(55, bellows.EventPRConflicting))
 
-	if dispatched {
-		t.Error("expected no dispatch for EventPRConflicting")
+	if len(dispatched) != 1 {
+		t.Fatalf("expected 1 dispatch, got %d", len(dispatched))
+	}
+	if dispatched[0].Action != ActionRebase {
+		t.Errorf("expected ActionRebase, got %v", dispatched[0].Action)
+	}
+	if dispatched[0].PRNumber != 55 {
+		t.Errorf("expected PR #55, got #%d", dispatched[0].PRNumber)
 	}
 
-	events, err := db.RecentEvents(10)
-	if err != nil {
-		t.Fatalf("RecentEvents: %v", err)
+	// Second conflicting event: still within maxRebase (3), should dispatch again.
+	m.HandleEvent(context.Background(), makeEvent(55, bellows.EventPRConflicting))
+	if len(dispatched) != 2 {
+		t.Errorf("expected 2 dispatches after second conflict, got %d", len(dispatched))
 	}
-	found := false
-	for _, e := range events {
-		if string(e.Type) == string(state.EventPRConflicting) {
-			found = true
-			break
-		}
+}
+
+// TestEventPRConflicting_ExhaustRebase verifies rebase attempts are capped.
+func TestEventPRConflicting_ExhaustRebase(t *testing.T) {
+	db := newTestDB(t)
+
+	var dispatchCount int
+	handler := func(_ context.Context, _ ActionRequest) {
+		dispatchCount++
 	}
-	if !found {
-		t.Error("expected EventPRConflicting to be logged to DB")
+
+	m := New(db, handler)
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		m.HandleEvent(ctx, makeEvent(77, bellows.EventPRConflicting))
+	}
+
+	// maxRebase is 3, so only 3 dispatches regardless of how many events fire.
+	if dispatchCount != 3 {
+		t.Errorf("expected 3 rebase dispatches (maxRebase), got %d", dispatchCount)
 	}
 }
 

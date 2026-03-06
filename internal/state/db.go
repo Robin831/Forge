@@ -384,11 +384,11 @@ func (db *DB) InsertPR(pr *PR) error {
 	return nil
 }
 
-// UpdatePRStatus updates a PR's status and last_checked time.
-func (db *DB) UpdatePRStatus(id int, status PRStatus) error {
+// UpdatePRStatus updates a PR's status and last_checked time by GitHub PR number.
+func (db *DB) UpdatePRStatus(number int, status PRStatus) error {
 	_, err := db.conn.Exec(
-		`UPDATE prs SET status = ?, last_checked = ? WHERE id = ?`,
-		string(status), time.Now().Format(time.RFC3339), id,
+		`UPDATE prs SET status = ?, last_checked = ? WHERE number = ?`,
+		string(status), time.Now().Format(time.RFC3339), number,
 	)
 	return err
 }
@@ -465,6 +465,9 @@ const (
 	EventPRClosed       EventType = "pr_closed"
 	EventPRConflicting  EventType = "pr_conflicting"
 	EventPRNeedsFix     EventType = "pr_needs_fix"
+	EventRebaseStarted  EventType = "rebase_started"
+	EventRebaseSuccess  EventType = "rebase_success"
+	EventRebaseFailed   EventType = "rebase_failed"
 	EventLifecycleExhausted EventType = "lifecycle_exhausted"
 	EventError          EventType = "error"
 )

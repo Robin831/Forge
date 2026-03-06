@@ -24,10 +24,12 @@ type PRState struct {
 	CIPassing    bool
 	Approved     bool
 	NeedsFix     bool
+	Conflicting  bool
 	Merged       bool
 	Closed       bool
 	CIFixCount   int
 	ReviewFixCnt int
+	RebaseCount  int
 }
 
 // Action enumerates lifecycle actions to take.
@@ -39,6 +41,7 @@ const (
 	ActionFixReview         // Spawn review fix worker
 	ActionCloseBead         // Close bead after merge
 	ActionCleanup           // Clean up worktree/branch after close
+	ActionRebase            // Rebase branch on top of main to resolve conflict
 )
 
 // ActionRequest is dispatched to the action handler.
@@ -55,22 +58,24 @@ type ActionHandler func(ctx context.Context, req ActionRequest)
 
 // Manager tracks PR states and dispatches actions based on events.
 type Manager struct {
-	db      *state.DB
-	mu      sync.Mutex
-	states  map[int]*PRState // PR number → state
-	handler ActionHandler
-	maxCI   int // max CI fix attempts per PR
-	maxRev  int // max review fix attempts per PR
+	db       *state.DB
+	mu       sync.Mutex
+	states   map[int]*PRState // PR number → state
+	handler  ActionHandler
+	maxCI    int // max CI fix attempts per PR
+	maxRev   int // max review fix attempts per PR
+	maxRebase int // max rebase attempts per PR
 }
 
 // New creates a lifecycle Manager.
 func New(db *state.DB, handler ActionHandler) *Manager {
 	return &Manager{
-		db:      db,
-		states:  make(map[int]*PRState),
-		handler: handler,
-		maxCI:   2,
-		maxRev:  2,
+		db:        db,
+		states:    make(map[int]*PRState),
+		handler:   handler,
+		maxCI:     2,
+		maxRev:    2,
+		maxRebase: 3,
 	}
 }
 
@@ -118,7 +123,11 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		}
 
 	case bellows.EventPRConflicting:
-		// no state mutation; logged below after unlock
+		st.Conflicting = true
+		if st.RebaseCount < m.maxRebase {
+			st.RebaseCount++
+			action = ActionRebase
+		}
 
 	case bellows.EventPRMerged:
 		st.Merged = true
@@ -132,6 +141,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 	branch = st.Branch
 	ciFixCount := st.CIFixCount
 	reviewFixCnt := st.ReviewFixCnt
+	rebaseCount := st.RebaseCount
 	m.mu.Unlock()
 
 	// Logging and DB writes happen outside the lock to avoid blocking other goroutines.
@@ -167,11 +177,15 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		}
 
 	case bellows.EventPRConflicting:
-		log.Printf("[lifecycle] PR #%d: merge conflict detected, manual rebase required", event.PRNumber)
-		if m.db != nil {
-			_ = m.db.LogEvent(state.EventPRConflicting,
-				fmt.Sprintf("PR #%d: conflict detected — rebase required before merge", event.PRNumber),
-				event.BeadID, event.Anvil)
+		if action == ActionRebase {
+			log.Printf("[lifecycle] PR #%d: merge conflict detected, dispatching rebase (attempt %d)", event.PRNumber, rebaseCount)
+		} else {
+			log.Printf("[lifecycle] PR #%d: merge conflict detected, max rebase attempts exhausted", event.PRNumber)
+			if m.db != nil {
+				_ = m.db.LogEvent(state.EventLifecycleExhausted,
+					fmt.Sprintf("PR #%d: rebase attempts exhausted (%d)", event.PRNumber, m.maxRebase),
+					event.BeadID, event.Anvil)
+			}
 		}
 
 	case bellows.EventPRMerged:

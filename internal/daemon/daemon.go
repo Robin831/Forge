@@ -37,6 +37,7 @@ import (
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/rebase"
 	"github.com/Robin831/Forge/internal/reviewfix"
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/state"
@@ -360,6 +361,31 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		case lifecycle.ActionCleanup:
 			d.logger.Info("cleaning up PR after close", "pr", req.PRNumber)
 			// Optional: delete remote branch etc.
+
+		case lifecycle.ActionRebase:
+			d.logger.Info("rebasing conflicting PR", "pr", req.PRNumber, "bead", req.BeadID)
+			_ = d.db.InsertWorker(&state.Worker{
+				ID:        workerID,
+				BeadID:    req.BeadID,
+				Anvil:     req.Anvil,
+				Branch:    req.Branch,
+				Status:    state.WorkerRunning,
+				Phase:     "rebase",
+				StartedAt: time.Now(),
+			})
+			res := rebase.Rebase(ctx, rebase.Params{
+				WorktreePath: wt.Path,
+				Branch:       req.Branch,
+				BeadID:       req.BeadID,
+				AnvilName:    req.Anvil,
+				PRNumber:     req.PRNumber,
+				DB:           d.db,
+			})
+			status := state.WorkerDone
+			if !res.Success {
+				status = state.WorkerFailed
+			}
+			_ = d.db.UpdateWorkerStatus(workerID, status)
 		}
 	}()
 }
