@@ -541,7 +541,8 @@ func (m *Model) renderActionMenu() string {
 	lines = append(lines, "")
 	lines = append(lines, dimStyle.Render("Enter: select • Esc: close"))
 
-	content := strings.Join(lines, "\n")
+	content := strings.Join(lines, "
+")
 	popup := actionMenuStyle.Width(menuWidth).Render(content)
 
 	return popup
@@ -592,7 +593,8 @@ func (m *Model) renderLogViewer() string {
 	scrollInfo := fmt.Sprintf("Line %d/%d", m.logViewerScroll+1, max(len(m.logViewerLines), 1))
 	lines = append(lines, dimStyle.Render("j/k: scroll • Esc: close  "+scrollInfo))
 
-	content := strings.Join(lines, "\n")
+	content := strings.Join(lines, "
+")
 	return logViewerStyle.Width(viewerWidth).Height(viewerHeight).Render(content)
 }
 
@@ -624,7 +626,8 @@ func (m *Model) renderQueue(width, height int) string {
 		}
 	}
 
-	content := strings.Join(lines, "\n")
+	content := strings.Join(lines, "
+")
 	return style.Height(height).Render(content)
 }
 
@@ -690,7 +693,8 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 		}
 	}
 
-	content := strings.Join(lines, "\n")
+	content := strings.Join(lines, "
+")
 	return style.Height(height).Render(content)
 }
 
@@ -746,7 +750,8 @@ func (m *Model) renderWorkerList(width, height int) string {
 		}
 	}
 
-	content := strings.Join(lines, "\n")
+	content := strings.Join(lines, "
+")
 	return style.Height(height).Render(content)
 }
 
@@ -797,7 +802,8 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 		}
 	}
 
-	content := strings.Join(lines, "\n")
+	content := strings.Join(lines, "
+")
 	return style.Height(height).Render(content)
 }
 
@@ -829,7 +835,8 @@ func (m *Model) renderEvents(width, height int) string {
 		}
 	}
 
-	content := strings.Join(lines, "\n")
+	content := strings.Join(lines, "
+")
 	return style.Height(height).Render(content)
 }
 
@@ -1188,7 +1195,8 @@ func eventTypeStyle(t string) string {
 // bead title before rendering it in the TUI.
 func sanitizeTitle(s string) string {
 	// Replace newlines/CR with a space so the second title line stays single-line.
-	s = strings.NewReplacer("\n", " ", "\r", " ").Replace(s)
+	s = strings.NewReplacer("
+", " ", "", " ").Replace(s)
 
 	// Strip ANSI escape sequences (ESC [ ... m and similar).
 	var b strings.Builder
@@ -1239,8 +1247,10 @@ func visibleItems(scroll, total, viewHeight int) visibleRange {
 
 // placeOverlay centers the overlay string on top of the background string.
 func placeOverlay(width, height int, overlay, background string) string {
-	overlayLines := strings.Split(overlay, "\n")
-	bgLines := strings.Split(background, "\n")
+	overlayLines := strings.Split(overlay, "
+")
+	bgLines := strings.Split(background, "
+")
 
 	// Ensure background has enough lines
 	for len(bgLines) < height {
@@ -1292,7 +1302,8 @@ func placeOverlay(width, height int, overlay, background string) string {
 		bgLines[bgIdx] = string(result)
 	}
 
-	return strings.Join(bgLines[:height], "\n")
+	return strings.Join(bgLines[:height], "
+")
 }
 
 func truncate(s string, maxLen int) string {
@@ -1313,7 +1324,8 @@ func wordWrapCount(s string, maxWidth int) int {
 	}
 
 	count := 0
-	paragraphs := strings.Split(s, "\n")
+	paragraphs := strings.Split(s, "
+")
 	for _, pStr := range paragraphs {
 		if pStr == "" {
 			if len(paragraphs) > 1 {
@@ -1360,7 +1372,8 @@ func wordWrap(s string, maxWidth int) []string {
 	}
 
 	var result []string
-	paragraphs := strings.Split(s, "\n")
+	paragraphs := strings.Split(s, "
+")
 	for _, pStr := range paragraphs {
 		if strings.TrimSpace(pStr) == "" {
 			if len(paragraphs) > 1 {
@@ -1404,4 +1417,11 @@ func wordWrap(s string, maxWidth int) []string {
 		return []string{""}
 	}
 	return result
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

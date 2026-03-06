@@ -135,7 +135,8 @@ func readLastLogLine(logPath string) string {
 	if err != nil {
 		return ""
 	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	lines := strings.Split(strings.TrimSpace(string(data)), "
+")
 	if len(lines) == 0 {
 		return ""
 	}
@@ -161,7 +162,8 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 		return nil
 	}
 
-	rawLines := strings.Split(string(data), "\n")
+	rawLines := strings.Split(string(data), "
+")
 
 	var entries []string
 	// For Gemini delta messages, accumulate fragments into a single entry
@@ -172,7 +174,8 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 		if geminiTextBuf.Len() == 0 {
 			return
 		}
-		text := strings.ReplaceAll(geminiTextBuf.String(), "\n", " ")
+		text := strings.ReplaceAll(geminiTextBuf.String(), "
+", " ")
 		text = strings.TrimSpace(text)
 		geminiTextBuf.Reset()
 		if text == "" {
@@ -237,7 +240,8 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 					}
 					entries = append(entries, fmt.Sprintf("[tool] %s %s", block.Name, inputStr))
 				case "text":
-					text := strings.ReplaceAll(block.Text, "\n", " ")
+					text := strings.ReplaceAll(block.Text, "
+", " ")
 					text = strings.TrimSpace(text)
 					if text != "" {
 						if len(text) > 70 {
@@ -246,7 +250,8 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 						entries = append(entries, fmt.Sprintf("[text] %s", text))
 					}
 				case "thinking":
-					thinking := strings.ReplaceAll(block.Thinking, "\n", " ")
+					thinking := strings.ReplaceAll(block.Thinking, "
+", " ")
 					thinking = strings.TrimSpace(thinking)
 					if thinking != "" {
 						if len(thinking) > 60 {
@@ -336,8 +341,7 @@ func FetchNeedsAttention(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
 		beads, err := db.NeedsAttentionBeads()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "hearth: FetchNeedsAttention DB error: %v\n", err)
-			return nil
+			return UpdateNeedsAttentionMsg{Items: nil}
 		}
 
 		var items []NeedsAttentionItem
