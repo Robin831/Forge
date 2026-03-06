@@ -572,7 +572,10 @@ const (
 	EventRebaseSuccess  EventType = "rebase_success"
 	EventRebaseFailed   EventType = "rebase_failed"
 	EventLifecycleExhausted EventType = "lifecycle_exhausted"
-	EventError          EventType = "error"
+	EventSchematicStarted EventType = "schematic_started"
+	EventSchematicDone    EventType = "schematic_done"
+	EventSchematicSkipped EventType = "schematic_skipped"
+	EventError            EventType = "error"
 )
 
 // Event represents a logged event.

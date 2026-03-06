@@ -10,6 +10,7 @@ import (
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
@@ -303,4 +304,186 @@ func TestBuildFixPrompt_NoIssues(t *testing.T) {
 	assert.Contains(t, got, "build/test")
 	assert.Contains(t, got, "Build failed.")
 	assert.NotContains(t, got, "## Specific Issues to Fix")
+}
+
+// TestSchematic_Plan_InjectsIntoSmithPrompt verifies that when Schematic
+// produces a plan, it is included in the Smith prompt.
+func TestSchematic_Plan_InjectsIntoSmithPrompt(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	var capturedPrompt string
+	params.SmithRunner = func(_ context.Context, _, promptText, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		capturedPrompt = promptText
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
+	}
+	params.WardenReviewer = func(_ context.Context, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	schemCfg := schematic.Config{Enabled: true, WordThreshold: 1}
+	params.SchematicConfig = &schemCfg
+	params.Bead.Description = "Implement the foo feature with bar integration"
+	params.SchematicRunner = func(_ context.Context, _ schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
+		return &schematic.Result{
+			Action: schematic.ActionPlan,
+			Plan:   "1. Create foo.go\n2. Add bar client\n3. Write tests",
+			Reason: "Focused single task",
+		}
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.True(t, outcome.Success)
+	assert.NotNil(t, outcome.SchematicResult)
+	assert.Equal(t, schematic.ActionPlan, outcome.SchematicResult.Action)
+	assert.Contains(t, capturedPrompt, "Create foo.go")
+	assert.Contains(t, capturedPrompt, "Implementation Plan")
+}
+
+// TestSchematic_Decompose_ExitsEarly verifies that when Schematic decomposes
+// a bead, the pipeline exits early without running Smith.
+func TestSchematic_Decompose_ExitsEarly(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	smithCalled := false
+	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		smithCalled = true
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
+	}
+
+	schemCfg := schematic.Config{Enabled: true, WordThreshold: 1}
+	params.SchematicConfig = &schemCfg
+	params.Bead.Description = "Multiple independent features to implement"
+	params.SchematicRunner = func(_ context.Context, _ schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
+		return &schematic.Result{
+			Action:   schematic.ActionDecompose,
+			SubBeads: []string{"sub-1", "sub-2"},
+			Reason:   "Too large, splitting",
+		}
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.True(t, outcome.Decomposed)
+	assert.False(t, smithCalled, "Smith should not run when bead is decomposed")
+	assert.Equal(t, schematic.ActionDecompose, outcome.SchematicResult.Action)
+	assert.Nil(t, outcome.Error)
+}
+
+// TestSchematic_Clarify_ReleasesBeadAndSetsNeedsHuman verifies that when
+// Schematic says clarification is needed, the bead is released.
+func TestSchematic_Clarify_ReleasesBeadAndSetsNeedsHuman(t *testing.T) {
+	db := newTestDB(t)
+	params, releasedID, mu := baseParams(t, db)
+
+	schemCfg := schematic.Config{Enabled: true, WordThreshold: 1}
+	params.SchematicConfig = &schemCfg
+	params.Bead.Description = "Ambiguous requirements that need more context"
+	params.SchematicRunner = func(_ context.Context, _ schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
+		return &schematic.Result{
+			Action: schematic.ActionClarify,
+			Reason: "Missing acceptance criteria",
+		}
+	}
+
+	outcome := Run(context.Background(), params)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.True(t, outcome.NeedsHuman)
+	assert.Equal(t, "test-bead", *releasedID)
+	assert.Equal(t, schematic.ActionClarify, outcome.SchematicResult.Action)
+}
+
+// TestSchematic_Clarify_NeedsHumanFalse_WhenReleaseFails verifies that when
+// Schematic says clarification is needed but releasing the bead fails,
+// NeedsHuman remains false (mirroring the NoDiff path behavior).
+func TestSchematic_Clarify_NeedsHumanFalse_WhenReleaseFails(t *testing.T) {
+	db := newTestDB(t)
+	params, releasedID, mu := baseParams(t, db)
+
+	// Simulate a failure in BeadReleaser.
+	params.BeadReleaser = func(beadID, _ string) error {
+		return assert.AnError
+	}
+
+	schemCfg := schematic.Config{Enabled: true, WordThreshold: 1}
+	params.SchematicConfig = &schemCfg
+	params.Bead.Description = "Ambiguous requirements that need more context"
+	params.SchematicRunner = func(_ context.Context, _ schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
+		return &schematic.Result{
+			Action: schematic.ActionClarify,
+			Reason: "Missing acceptance criteria",
+		}
+	}
+
+	outcome := Run(context.Background(), params)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.False(t, outcome.NeedsHuman, "NeedsHuman should be false when BeadReleaser fails")
+	assert.Empty(t, *releasedID, "bead should not be marked as released when BeadReleaser fails")
+	assert.Equal(t, schematic.ActionClarify, outcome.SchematicResult.Action)
+}
+
+// TestSchematic_Skip_ContinuesToSmith verifies that when Schematic skips,
+// the pipeline continues normally to Smith.
+func TestSchematic_Skip_ContinuesToSmith(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	smithCalled := false
+	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		smithCalled = true
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
+	}
+	params.WardenReviewer = func(_ context.Context, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove}, nil
+	}
+
+	schemCfg := schematic.Config{Enabled: true, WordThreshold: 1}
+	params.SchematicConfig = &schemCfg
+	params.Bead.Description = "Simple task"
+	params.SchematicRunner = func(_ context.Context, _ schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
+		return &schematic.Result{
+			Action: schematic.ActionSkip,
+			Reason: "Simple enough",
+		}
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.True(t, outcome.Success)
+	assert.True(t, smithCalled, "Smith should run when Schematic skips")
+}
+
+// TestSchematic_PerAnvilDisable verifies that per-anvil SchematicEnabled=false
+// overrides the global setting.
+func TestSchematic_PerAnvilDisable(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	schematicCalled := false
+	params.SchematicRunner = func(_ context.Context, _ schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
+		schematicCalled = true
+		return &schematic.Result{Action: schematic.ActionSkip}
+	}
+	params.WardenReviewer = func(_ context.Context, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove}, nil
+	}
+
+	schemCfg := schematic.Config{Enabled: true, WordThreshold: 1}
+	params.SchematicConfig = &schemCfg
+	params.Bead.Description = "A task with enough words to trigger the threshold"
+
+	// Per-anvil disable
+	disabled := false
+	params.AnvilConfig.SchematicEnabled = &disabled
+
+	outcome := Run(context.Background(), params)
+
+	assert.True(t, outcome.Success)
+	assert.False(t, schematicCalled, "Schematic should not run when per-anvil disabled")
 }

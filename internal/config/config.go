@@ -35,6 +35,10 @@ type AnvilConfig struct {
 	AutoDispatch            string `mapstructure:"auto_dispatch"`
 	AutoDispatchTag         string `mapstructure:"auto_dispatch_tag"`
 	AutoDispatchMinPriority int    `mapstructure:"auto_dispatch_min_priority"`
+	// SchematicEnabled controls whether the Schematic pre-worker runs for
+	// beads in this anvil. When nil, the global setting is used. Set to
+	// a pointer to false to disable per-anvil.
+	SchematicEnabled *bool `mapstructure:"schematic_enabled"`
 }
 
 // SettingsConfig holds global operational settings.
@@ -54,6 +58,14 @@ type SettingsConfig struct {
 	// bead slot stays reserved (activeBeads) so the poller does not
 	// immediately re-claim it. Defaults to 5 minutes.
 	RateLimitBackoff time.Duration `mapstructure:"rate_limit_backoff"`
+	// SchematicEnabled enables the Schematic pre-worker globally. When true,
+	// beads that exceed the word threshold or carry the "decompose" tag are
+	// analysed before Smith starts. Default: false.
+	SchematicEnabled bool `mapstructure:"schematic_enabled"`
+	// SchematicWordThreshold is the minimum word count in a bead description
+	// to trigger automatic schematic analysis. When this value is zero or
+	// unset, the daemon applies an effective default of 100.
+	SchematicWordThreshold int `mapstructure:"schematic_word_threshold"`
 }
 
 // NotificationsConfig holds webhook and notification settings.

@@ -39,6 +39,7 @@ import (
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/rebase"
 	"github.com/Robin831/Forge/internal/reviewfix"
+	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/worker"
@@ -606,7 +607,8 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	pipelineCtx, cancel := context.WithTimeout(context.Background(), smithTimeout)
 	defer cancel()
 
-	outcome := pipeline.Run(pipelineCtx, pipeline.Params{
+	// Build pipeline params, optionally enabling Schematic pre-worker.
+	pipelineParams := pipeline.Params{
 		DB:              d.db,
 		WorktreeManager: d.worktreeMgr,
 		PromptBuilder:   d.promptBuilder,
@@ -615,7 +617,20 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		Bead:            bead,
 		ExtraFlags:      d.cfg.Settings.ClaudeFlags,
 		Providers:       provider.FromConfig(d.cfg.Settings.Providers),
-	})
+	}
+	if d.cfg.Settings.SchematicEnabled {
+		wordThreshold := d.cfg.Settings.SchematicWordThreshold
+		if wordThreshold <= 0 {
+			wordThreshold = 100
+		}
+		schemCfg := schematic.DefaultConfig()
+		schemCfg.Enabled = true
+		schemCfg.WordThreshold = wordThreshold
+		schemCfg.ExtraFlags = d.cfg.Settings.ClaudeFlags
+		pipelineParams.SchematicConfig = &schemCfg
+	}
+
+	outcome := pipeline.Run(pipelineCtx, pipelineParams)
 
 	if outcome.Error != nil {
 		if outcome.RateLimited {
@@ -639,6 +654,10 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	}
 
 	if !outcome.Success {
+		if outcome.Decomposed {
+			d.logger.Info("bead decomposed into sub-beads", "bead", bead.ID)
+			return
+		}
 		if outcome.NeedsHuman {
 			// Bead was released back to open (Smith produced no diff). Hold the
 			// activeBeads slot for a full poll interval so the bead is not
