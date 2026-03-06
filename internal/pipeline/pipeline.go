@@ -211,7 +211,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		WorktreePath: wt.Path,
 	}
 
-	// Step 2: Run Schematic pre-worker (optional)
+	// Run Schematic pre-worker (optional)
 	if p.SchematicConfig != nil {
 		runSchematic := p.SchematicRunner
 		if runSchematic == nil {
@@ -296,7 +296,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		outcome.Iterations = iteration
 		log.Printf("[pipeline:%s] Iteration %d/%d", workerID, iteration, MaxIterations)
 
-		// Step 2: Run Smith (with provider fallback on rate limit)
+		// Run Smith (with provider fallback on rate limit)
 		log.Printf("[pipeline:%s] Running Smith (provider: %s)", workerID, providers[activeProviderIdx].Label())
 		_ = p.DB.UpdateWorkerPhase(workerID, "smith")
 		_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d (provider: %s)", iteration, providers[activeProviderIdx].Label()), p.Bead.ID, p.AnvilName)

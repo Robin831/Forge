@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -127,9 +129,22 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 
 	log.Printf("[schematic:%s] Analysing bead scope (provider: %s)", bead.ID, pv.Label())
 
-	// Use the same smith.SpawnWithProvider to run the AI session
+	// Use the same smith.SpawnWithProvider to run the AI session in a temp dir
+	// so the schematic session cannot modify the main repo.
+	workDir, err := os.MkdirTemp("", "forge-schematic-*")
+	if err != nil {
+		return &Result{
+			Action:   ActionSkip,
+			Reason:   fmt.Sprintf("Failed to create temp dir: %v", err),
+			Duration: time.Since(start),
+			Error:    fmt.Errorf("creating schematic workdir: %w", err),
+		}
+	}
+	defer os.RemoveAll(workDir)
+
+	logDir := filepath.Join(workDir, "logs")
 	extraFlags := []string{"--max-turns", fmt.Sprintf("%d", cfg.MaxTurns)}
-	process, err := smith.SpawnWithProvider(ctx, anvilPath, promptText, "", pv, extraFlags)
+	process, err := smith.SpawnWithProvider(ctx, workDir, promptText, logDir, pv, extraFlags)
 	if err != nil {
 		return &Result{
 			Action:   ActionSkip,
@@ -274,6 +289,18 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 		return nil, fmt.Errorf("no sub-tasks to create")
 	}
 
+	resetParent := func() {
+		rCtx, rCancel := context.WithTimeout(ctx, 15*time.Second)
+		defer rCancel()
+		rCmd := executil.HideWindow(exec.CommandContext(rCtx,
+			"bd", "update", parent.ID, "--status=open", "--json",
+		))
+		rCmd.Dir = anvilPath
+		if out, err := rCmd.CombinedOutput(); err != nil {
+			log.Printf("[schematic:%s] Warning: failed to reset parent to open: %v: %s", parent.ID, err, out)
+		}
+	}
+
 	var subIDs []string
 	for _, task := range tasks {
 		// Create sub-bead with discovered-from dependency in a single call
@@ -291,6 +318,8 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 		out, err := cmd.CombinedOutput()
 		cancel()
 		if err != nil {
+			log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: %v", parent.ID, len(subIDs), err)
+			resetParent()
 			return subIDs, fmt.Errorf("creating sub-bead %q: %w: %s", task, err, out)
 		}
 
@@ -307,6 +336,8 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 				}
 			}
 			if created.ID == "" {
+				log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: could not parse ID", parent.ID, len(subIDs))
+				resetParent()
 				return subIDs, fmt.Errorf("parsing sub-bead ID from output: %w: %s", err, out)
 			}
 		}
@@ -315,15 +346,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 	}
 
 	// Block the parent bead (set status back to open — it will be blocked by dependencies)
-	blockCtx, blockCancel := context.WithTimeout(ctx, 15*time.Second)
-	defer blockCancel()
-	blockCmd := executil.HideWindow(exec.CommandContext(blockCtx,
-		"bd", "update", parent.ID, "--status=open", "--json",
-	))
-	blockCmd.Dir = anvilPath
-	if out, err := blockCmd.CombinedOutput(); err != nil {
-		log.Printf("[schematic:%s] Warning: failed to reset parent to open: %v: %s", parent.ID, err, out)
-	}
+	resetParent()
 
 	return subIDs, nil
 }

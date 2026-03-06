@@ -648,6 +648,10 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	}
 
 	if !outcome.Success {
+		if outcome.Decomposed {
+			d.logger.Info("bead decomposed into sub-beads", "bead", bead.ID)
+			return
+		}
 		if outcome.NeedsHuman {
 			// Bead was released back to open (Smith produced no diff). Hold the
 			// activeBeads slot for a full poll interval so the bead is not
