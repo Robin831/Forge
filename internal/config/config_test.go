@@ -128,8 +128,8 @@ func TestConfig_Validate(t *testing.T) {
 				},
 			},
 			expected: []string{
-				"anvil \"test\": auto_dispatch_min_priority must be 0-4 when auto_dispatch is \"priority\"",
-				"anvil \"test2\": auto_dispatch_min_priority must be 0-4 when auto_dispatch is \"priority\"",
+				"anvil \"test\": auto_dispatch_min_priority must be 0-4 (0 = critical-only) when auto_dispatch is \"priority\"",
+				"anvil \"test2\": auto_dispatch_min_priority must be 0-4 (0 = critical-only) when auto_dispatch is \"priority\"",
 			},
 		},
 	}

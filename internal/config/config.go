@@ -199,7 +199,7 @@ func (c *Config) Validate() []string {
 			errs = append(errs, fmt.Sprintf("anvil %q: auto_dispatch_tag must be non-empty when auto_dispatch is \"tagged\"", name))
 		}
 		if anvil.AutoDispatch == "priority" && (anvil.AutoDispatchMinPriority < 0 || anvil.AutoDispatchMinPriority > 4) {
-			errs = append(errs, fmt.Sprintf("anvil %q: auto_dispatch_min_priority must be 0-4 when auto_dispatch is \"priority\"", name))
+			errs = append(errs, fmt.Sprintf("anvil %q: auto_dispatch_min_priority must be 0-4 (0 = critical-only) when auto_dispatch is \"priority\"", name))
 		}
 	}
 
