@@ -1112,7 +1112,11 @@ func pidFilePath() (string, error) {
 func (d *Daemon) isBeadClarificationNeeded(beadID, anvil string) bool {
 	r, err := d.db.GetRetry(beadID, anvil)
 	if err != nil {
-		return false // No record means no flag
+		d.logger.Error("checking clarification status", "bead", beadID, "anvil", anvil, "error", err)
+		return true // fail-safe: treat DB errors as clarification needed to avoid dispatching
+	}
+	if r == nil {
+		return false // no record means no flag
 	}
 	return r.ClarificationNeeded
 }

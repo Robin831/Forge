@@ -114,6 +114,10 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("adding column %s.%s: %w", m.table, m.column, err)
 		}
 	}
+	// Ensure index exists for clarification_needed queries (idempotent).
+	if _, err := db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_retries_clarification ON retries(clarification_needed)`); err != nil {
+		return fmt.Errorf("creating clarification index: %w", err)
+	}
 	return nil
 }
 
@@ -187,13 +191,15 @@ CREATE TABLE IF NOT EXISTS retries (
     anvil        TEXT NOT NULL,
     retry_count  INTEGER NOT NULL DEFAULT 0,
     next_retry   TEXT,
-    needs_human  INTEGER NOT NULL DEFAULT 0,
-    last_error   TEXT NOT NULL DEFAULT '',
-    updated_at   TEXT NOT NULL,
+    needs_human            INTEGER NOT NULL DEFAULT 0,
+    clarification_needed   INTEGER NOT NULL DEFAULT 0,
+    last_error             TEXT NOT NULL DEFAULT '',
+    updated_at             TEXT NOT NULL,
     PRIMARY KEY (bead_id, anvil)
 );
 
 CREATE INDEX IF NOT EXISTS idx_retries_needs_human ON retries(needs_human);
+CREATE INDEX IF NOT EXISTS idx_retries_clarification ON retries(clarification_needed);
 
 CREATE TABLE IF NOT EXISTS bead_costs (
     bead_id          TEXT NOT NULL,
@@ -661,6 +667,9 @@ func (db *DB) GetRetry(beadID, anvil string) (*RetryRecord, error) {
 	var needsHuman, clarNeeded int
 	err := row.Scan(&r.BeadID, &r.Anvil, &r.RetryCount, &nextRetry, &needsHuman, &clarNeeded, &r.LastError, &updatedAt)
 	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
 		return nil, err
 	}
 	r.NeedsHuman = needsHuman != 0

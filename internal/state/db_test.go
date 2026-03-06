@@ -277,8 +277,12 @@ func TestDB_ClarificationNeededBeads(t *testing.T) {
 	}
 
 	// Add two clarification-needed beads
-	db.SetClarificationNeeded("BD-1", "anvil-1", true, "reason1")
-	db.SetClarificationNeeded("BD-2", "anvil-1", true, "reason2")
+	if err := db.SetClarificationNeeded("BD-1", "anvil-1", true, "reason1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetClarificationNeeded("BD-2", "anvil-1", true, "reason2"); err != nil {
+		t.Fatal(err)
+	}
 
 	beads, err = db.ClarificationNeededBeads()
 	if err != nil {
@@ -289,7 +293,9 @@ func TestDB_ClarificationNeededBeads(t *testing.T) {
 	}
 
 	// Clear one
-	db.SetClarificationNeeded("BD-1", "anvil-1", false, "")
+	if err := db.SetClarificationNeeded("BD-1", "anvil-1", false, ""); err != nil {
+		t.Fatal(err)
+	}
 	beads, err = db.ClarificationNeededBeads()
 	if err != nil {
 		t.Fatal(err)
@@ -317,21 +323,25 @@ func TestDB_PendingRetries_ExcludesClarification(t *testing.T) {
 	// Insert a normal retry record
 	now := time.Now()
 	past := now.Add(-1 * time.Hour)
-	db.UpsertRetry(&RetryRecord{
+	if err := db.UpsertRetry(&RetryRecord{
 		BeadID:     "BD-NORMAL",
 		Anvil:      "anvil-1",
 		RetryCount: 1,
 		NextRetry:  &past,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Insert a clarification-needed retry record
-	db.UpsertRetry(&RetryRecord{
+	if err := db.UpsertRetry(&RetryRecord{
 		BeadID:              "BD-CLAR",
 		Anvil:               "anvil-1",
 		RetryCount:          0,
 		ClarificationNeeded: true,
 		NextRetry:           &past,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	pending, err := db.PendingRetries()
 	if err != nil {
