@@ -633,8 +633,19 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 
 	if !outcome.Success {
 		if outcome.NeedsHuman {
-			d.logger.Warn("bead released to open — Smith produced no diff, needs human attention",
-				"bead", bead.ID, "verdict", outcome.Verdict)
+			// Bead was released back to open (Smith produced no diff). Hold the
+			// activeBeads slot for a full poll interval so the bead is not
+			// immediately re-dispatched before a human can investigate.
+			holdOff := d.cfg.Settings.PollInterval
+			if holdOff <= 0 {
+				holdOff = DefaultPollInterval
+			}
+			d.logger.Warn("bead released to open — Smith produced no diff, needs human attention; holding off re-dispatch",
+				"bead", bead.ID, "holdoff", holdOff)
+			select {
+			case <-time.After(holdOff):
+			case <-ctx.Done():
+			}
 		} else {
 			d.logger.Warn("pipeline did not succeed", "bead", bead.ID, "verdict", outcome.Verdict)
 		}
