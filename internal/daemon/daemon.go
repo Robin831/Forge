@@ -642,6 +642,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	thisCycleAnvil := make(map[string]int)
 
 	for _, b := range beads {
+		// Stop dispatching if the daemon is shutting down.
+		if ctx.Err() != nil {
+			break
+		}
+
 		// 1. Skip if the bead requires human clarification or is circuit-broken.
 		// These sets are keyed by "beadID\x00anvilPath".
 		key := b.ID + "\x00" + b.Anvil
@@ -670,6 +675,13 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			d.activeBeads.Delete(b.ID)
 			continue
 		}
+
+		// Skip if this bead should not be automatically dispatched based on anvil config.
+		if !shouldDispatch(b, anvilCfg) {
+			d.activeBeads.Delete(b.ID)
+			continue
+		}
+
 		maxPerAnvil := anvilCfg.MaxSmiths
 		if maxPerAnvil <= 0 {
 			maxPerAnvil = 2
@@ -690,6 +702,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		thisCycleAnvil[b.Anvil]++
 		d.wg.Add(1)
 		go d.dispatchBead(ctx, b, anvilCfg)
+	}
+
+	// Optionally log a summary of this poll cycle's dispatch activity.
+	if len(thisCycleAnvil) > 0 {
+		d.logger.Debug("poll cycle dispatch summary", "anvil_dispatch_counts", thisCycleAnvil)
 	}
 }
 
