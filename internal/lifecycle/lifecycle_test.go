@@ -77,11 +77,17 @@ func TestHandleEvent_Transitions(t *testing.T) {
 		{
 			name:     "max CI attempts exhaustion",
 			prNumber: 10,
-			// maxCI=2: we need 2 full [Failed,Passed] cycles to fill the counter,
-			// then the 3rd EventCIFailed triggers exhaustion.
+			// maxCI=5: we need 5 full [Failed,Passed] cycles to fill the counter,
+			// then the 6th EventCIFailed triggers exhaustion.
 			// EventCIPassed between failures resets CIPassing=true so the next
 			// EventCIFailed can pass the !st.CIPassing guard and increment the counter.
 			setupEvents: []bellows.PREvent{
+				makeEvent(10, bellows.EventCIFailed),
+				makeEvent(10, bellows.EventCIPassed),
+				makeEvent(10, bellows.EventCIFailed),
+				makeEvent(10, bellows.EventCIPassed),
+				makeEvent(10, bellows.EventCIFailed),
+				makeEvent(10, bellows.EventCIPassed),
 				makeEvent(10, bellows.EventCIFailed),
 				makeEvent(10, bellows.EventCIPassed),
 				makeEvent(10, bellows.EventCIFailed),
@@ -90,7 +96,7 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			event:           makeEvent(10, bellows.EventCIFailed),
 			wantAction:      ActionNone,
 			wantNeedsFix:    true,
-			wantCIFixCount:  2, // counter must be at max to confirm setup worked
+			wantCIFixCount:  5, // counter must be at max to confirm setup worked
 			wantDispatches:  0, // exhaustion path must not dispatch
 			wantDBEventType: state.EventLifecycleExhausted,
 		},
@@ -107,11 +113,17 @@ func TestHandleEvent_Transitions(t *testing.T) {
 		{
 			name:     "max review attempts exhaustion",
 			prNumber: 20,
-			// maxRev=2: 2 full [Changes,Approved] cycles fill the counter;
-			// the 3rd EventReviewChanges triggers exhaustion.
+			// maxRev=5: 5 full [Changes,Approved] cycles fill the counter;
+			// the 6th EventReviewChanges triggers exhaustion.
 			// EventReviewApproved sets Approved=true, re-opening the fix cycle
 			// so the next EventReviewChanges passes the !NeedsFix||Approved guard.
 			setupEvents: []bellows.PREvent{
+				makeEvent(20, bellows.EventReviewChanges),
+				makeEvent(20, bellows.EventReviewApproved),
+				makeEvent(20, bellows.EventReviewChanges),
+				makeEvent(20, bellows.EventReviewApproved),
+				makeEvent(20, bellows.EventReviewChanges),
+				makeEvent(20, bellows.EventReviewApproved),
 				makeEvent(20, bellows.EventReviewChanges),
 				makeEvent(20, bellows.EventReviewApproved),
 				makeEvent(20, bellows.EventReviewChanges),
@@ -121,7 +133,7 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			wantAction:       ActionNone,
 			wantNeedsFix:     true,
 			wantCIPassing:    true, // review events do not change CI state
-			wantReviewFixCnt: 2,    // counter must be at max to confirm setup worked
+			wantReviewFixCnt: 5,    // counter must be at max to confirm setup worked
 			wantDispatches:   0,    // exhaustion path must not dispatch
 			wantDBEventType:  state.EventLifecycleExhausted,
 		},
@@ -539,5 +551,73 @@ func TestManager_AnvilCollision(t *testing.T) {
 	// Verify both were inserted into DB with different IDs
 	if stA.ID == stB.ID {
 		t.Errorf("expected different DB IDs, both got %d", stA.ID)
+	}
+}
+
+// TestNotifyReviewFixCompleted_AllowsNextCycle verifies that after a review fix
+// worker completes (NotifyReviewFixCompleted is called), a subsequent
+// EventReviewChanges from the re-requested review dispatches a new fix cycle
+// instead of being suppressed by the "already in fix cycle" guard.
+//
+// This covers the real-world scenario where:
+//  1. First wave: reviewer requests changes → reviewfix dispatched (NeedsFix=true)
+//  2. Second wave arrives WHILE fix is running → "already in fix cycle" (expected)
+//  3. Fix worker finishes → NotifyReviewFixCompleted clears NeedsFix
+//  4. Re-review after pushed fixes still has issues → new EventReviewChanges
+//     must be dispatched (was previously dropped because NeedsFix stayed true)
+func TestNotifyReviewFixCompleted_AllowsNextCycle(t *testing.T) {
+	db := newTestDB(t)
+	var dispatched []ActionRequest
+	handler := func(_ context.Context, req ActionRequest) {
+		dispatched = append(dispatched, req)
+	}
+	m := New(db, testLogger(), handler)
+	ctx := context.Background()
+
+	// Step 1: first wave — EventReviewChanges dispatches fix cycle 1.
+	m.HandleEvent(ctx, makeEvent(101, bellows.EventReviewChanges))
+	if len(dispatched) != 1 || dispatched[0].Action != ActionFixReview {
+		t.Fatalf("step 1: expected 1 ActionFixReview dispatch, got %v", dispatched)
+	}
+
+	// Step 2: second wave arrives while fix is running — must be suppressed.
+	dispatched = dispatched[:0]
+	m.HandleEvent(ctx, makeEvent(101, bellows.EventReviewChanges))
+	if len(dispatched) != 0 {
+		t.Fatalf("step 2: expected 0 dispatches (already in fix cycle), got %d", len(dispatched))
+	}
+
+	// Verify NeedsFix is still set and ReviewFixCnt is 1 after the suppressed event.
+	st := m.GetState("test-anvil", 101)
+	if st == nil {
+		t.Fatal("no state for PR 101")
+	}
+	if !st.NeedsFix {
+		t.Error("step 2: expected NeedsFix=true")
+	}
+	if st.ReviewFixCnt != 1 {
+		t.Errorf("step 2: expected ReviewFixCnt=1, got %d", st.ReviewFixCnt)
+	}
+
+	// Step 3: review fix worker finishes — notify lifecycle.
+	m.NotifyReviewFixCompleted("test-anvil", 101)
+
+	st = m.GetState("test-anvil", 101)
+	if st.NeedsFix {
+		t.Error("step 3: expected NeedsFix=false after NotifyReviewFixCompleted")
+	}
+
+	// Step 4: re-review after pushed fixes — EventReviewChanges must be dispatched.
+	m.HandleEvent(ctx, makeEvent(101, bellows.EventReviewChanges))
+	if len(dispatched) != 1 || dispatched[0].Action != ActionFixReview {
+		t.Fatalf("step 4: expected 1 ActionFixReview dispatch after fix completed, got %v", dispatched)
+	}
+	if dispatched[0].PRNumber != 101 {
+		t.Errorf("step 4: expected PR #101, got #%d", dispatched[0].PRNumber)
+	}
+
+	st = m.GetState("test-anvil", 101)
+	if st.ReviewFixCnt != 2 {
+		t.Errorf("step 4: expected ReviewFixCnt=2, got %d", st.ReviewFixCnt)
 	}
 }

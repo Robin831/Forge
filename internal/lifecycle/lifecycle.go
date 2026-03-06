@@ -77,8 +77,8 @@ func New(db *state.DB, logger *slog.Logger, handler ActionHandler) *Manager {
 		logger:    logger,
 		states:    make(map[string]*PRState),
 		handler:   handler,
-		maxCI:     2,
-		maxRev:    2,
+		maxCI:     5,
+		maxRev:    5,
 		maxRebase: 3,
 	}
 }
@@ -98,6 +98,33 @@ func (m *Manager) Load(ctx context.Context) error {
 	}
 
 	for _, pr := range prs {
+		// If a PR was persisted as needs_fix, handle it based on CI state:
+		//
+		// CIPassing=true  → the needs_fix was set by bellows for a review-fix cycle
+		//                   that was killed mid-flight (e.g. daemon restart). Reset
+		//                   to open so bellows re-detects review comments and
+		//                   dispatches a fresh fix cycle.
+		//
+		// CIPassing=false → the needs_fix was set by bellows for an active CI failure.
+		//                   Do NOT reset it, otherwise we briefly hide the CI-failing
+		//                   state on restart. Bellows will re-detect and handle it.
+		//
+		// In both cases, do NOT restore NeedsFix=true in memory — bellows will
+		// re-detect and drive any required fix cycles.
+		if pr.Status == state.PRNeedsFix {
+			if pr.CIPassing {
+				if err := m.db.UpdatePRStatus(pr.ID, state.PROpen); err != nil {
+					m.logger.Warn("failed to reset stale review needs_fix PR to open on load",
+						"pr", pr.Number, "anvil", pr.Anvil, "error", err)
+				} else {
+					m.logger.Info("reset stale review needs_fix PR to open on load (fix worker was killed)",
+						"pr", pr.Number, "anvil", pr.Anvil)
+				}
+			} else {
+				m.logger.Info("preserving needs_fix status for CI-failing PR on load",
+					"pr", pr.Number, "anvil", pr.Anvil)
+			}
+		}
 		st := &PRState{
 			ID:           pr.ID,
 			PRNumber:     pr.Number,
@@ -106,7 +133,7 @@ func (m *Manager) Load(ctx context.Context) error {
 			Branch:       pr.Branch,
 			CIPassing:    pr.CIPassing,
 			Approved:     pr.Status == state.PRApproved,
-			NeedsFix:     pr.Status == state.PRNeedsFix,
+			NeedsFix:     false, // never restore NeedsFix=true; bellows will re-detect
 			CIFixCount:   pr.CIFixCount,
 			ReviewFixCnt: pr.ReviewFixCount,
 		}
@@ -334,5 +361,39 @@ func (m *Manager) Remove(anvil string, prNumber int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.states, m.key(anvil, prNumber))
+}
+
+// NotifyReviewFixCompleted clears the NeedsFix flag after a review fix worker
+// finishes. This allows the next EventReviewChanges (from the re-requested
+// review) to dispatch a new fix cycle rather than being suppressed by the
+// "already in fix cycle" guard.
+//
+// Without this, NeedsFix stays true after the fix worker pushes its changes and
+// re-requests review. When the reviewer re-reviews and still requests changes,
+// HandleEvent sees NeedsFix=true and silently drops the event.
+func (m *Manager) NotifyReviewFixCompleted(anvil string, prNumber int) {
+	m.mu.Lock()
+	st, ok := m.states[m.key(anvil, prNumber)]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	st.NeedsFix = false
+	dbID := st.ID
+	m.mu.Unlock()
+
+	m.logger.Info("review fix cycle completed, cleared NeedsFix", "pr", prNumber, "anvil", anvil)
+
+	// Persist the cleared state so a daemon restart does not reload a stale
+	// needs_fix DB status and get permanently stuck.
+	// Use a conditional update that only transitions from needs_fix → open;
+	// this prevents overwriting a terminal status (merged/closed) if the PR
+	// was closed while the review-fix worker was still running.
+	if dbID > 0 {
+		if err := m.db.UpdatePRStatusIfNeedsFix(dbID, state.PROpen); err != nil {
+			m.logger.Warn("failed to persist PROpen after review fix completed",
+				"pr", prNumber, "anvil", anvil, "error", err)
+		}
+	}
 }
 
