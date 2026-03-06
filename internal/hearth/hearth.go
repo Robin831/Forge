@@ -28,7 +28,7 @@ const (
 	PanelWorkers
 	PanelEvents
 
-	panelCount = 4
+	panelCount = PanelEvents + 1
 
 	// Event panel rendering constants
 	eventPanelInteriorPadding = 4
@@ -36,7 +36,6 @@ const (
 	eventTimestampWidth       = 9  // "HH:MM:SS "
 	eventMsgMinWidth          = 20 // Minimum width before msg moves to next line
 )
-
 
 // QueueItem represents a bead in the queue panel.
 type QueueItem struct {
@@ -59,7 +58,7 @@ type NeedsAttentionItem struct {
 type WorkerItem struct {
 	ID            string
 	BeadID        string
-	Title         string   // Bead title for display
+	Title         string // Bead title for display
 	Anvil         string
 	Status        string
 	Duration      string
@@ -99,19 +98,19 @@ type Model struct {
 	needsAttentionScroll int
 	workerScroll         int
 	eventScroll          int
-	eventAutoScroll      bool  // true = follow new events
-	prevEventCount       int   // track event count for auto-scroll
+	eventAutoScroll      bool // true = follow new events
+	prevEventCount       int  // track event count for auto-scroll
 	width                int
 	height               int
 	ready                bool
 
 	// Event rendering cache
-	eventLinesCache        []string
-	eventWidthCache        int
-	eventSelectedIdxCache  int
-	eventCountCache        int
-	eventRevision          int // incremented on every UpdateEventsMsg to detect content changes
-	eventRevisionCache     int
+	eventLinesCache       []string
+	eventWidthCache       int
+	eventSelectedIdxCache int
+	eventCountCache       int
+	eventRevision         int // incremented on every UpdateEventsMsg to detect content changes
+	eventRevisionCache    int
 }
 
 // NewModel creates a new Hearth TUI model.
@@ -810,9 +809,9 @@ var (
 			Foreground(lipgloss.Color("240"))
 
 	activityPanelTitleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("245")).
-			MarginBottom(1)
+				Bold(true).
+				Foreground(lipgloss.Color("245")).
+				MarginBottom(1)
 
 	needsAttentionTitleStyle = lipgloss.NewStyle().
 				Bold(true).

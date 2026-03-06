@@ -915,7 +915,15 @@ func (db *DB) NeedsAttentionBeads() ([]NeedsAttentionBead, error) {
 		        COALESCE(q.title, w.title, '') AS title
 		 FROM retries r
 		 LEFT JOIN queue_cache q ON r.bead_id = q.bead_id AND r.anvil = q.anvil
-		 LEFT JOIN (SELECT bead_id, anvil, title FROM workers GROUP BY bead_id, anvil) w
+		 LEFT JOIN (
+		     SELECT bead_id, anvil, title
+		     FROM (
+		         SELECT bead_id, anvil, title,
+		                ROW_NUMBER() OVER (PARTITION BY bead_id, anvil ORDER BY started_at DESC) AS rn
+		         FROM workers
+		     )
+		     WHERE rn = 1
+		 ) w
 		   ON r.bead_id = w.bead_id AND r.anvil = w.anvil
 		 WHERE r.needs_human = 1 OR r.clarification_needed = 1
 		 ORDER BY r.updated_at DESC`)
