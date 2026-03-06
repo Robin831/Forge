@@ -88,6 +88,7 @@ func FetchWorkers(db *state.DB) tea.Cmd {
 			items = append(items, WorkerItem{
 				ID:            w.ID,
 				BeadID:        w.BeadID,
+				Title:         w.Title,
 				Anvil:         w.Anvil,
 				Status:        string(w.Status),
 				Duration:      duration,

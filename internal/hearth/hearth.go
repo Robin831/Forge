@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -47,6 +48,7 @@ type QueueItem struct {
 type WorkerItem struct {
 	ID            string
 	BeadID        string
+	Title         string   // Bead title for display
 	Anvil         string
 	Status        string
 	Duration      string
@@ -378,8 +380,14 @@ func (m *Model) renderWorkerList(width, height int) string {
 	if len(m.workers) == 0 {
 		lines = append(lines, dimStyle.Render("No active workers"))
 	} else {
-		// height-2 (borders) - 2 (title + margin) = height-4
-		visible := visibleItems(m.workerScroll, len(m.workers), height-4)
+		// Each worker uses 2 lines (main + title), so halve the visible slot count.
+		maxLines := height - 4 // height-2 (borders) - 2 (title + margin)
+		slotsPerWorker := 2
+		maxWorkers := maxLines / slotsPerWorker
+		if maxWorkers < 1 {
+			maxWorkers = 1
+		}
+		visible := visibleItems(m.workerScroll, len(m.workers), maxWorkers)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.workers[i]
 			status := workerStatusStyle(item.Status)
@@ -391,6 +399,17 @@ func (m *Model) renderWorkerList(width, height int) string {
 				mainLine = selectedStyle.Render(mainLine)
 			}
 			lines = append(lines, mainLine)
+
+			// Second line: indented bead title (sanitized to strip control chars)
+			titleText := sanitizeTitle(item.Title)
+			if titleText == "" {
+				titleText = "(no title)"
+			}
+			titleLine := "    " + dimStyle.Render(truncate(titleText, width-8))
+			if i == m.workerScroll {
+				titleLine = "    " + selectedStyle.Render(truncate(titleText, width-8))
+			}
+			lines = append(lines, titleLine)
 		}
 	}
 
@@ -786,6 +805,39 @@ func eventTypeStyle(t string) string {
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render(t)
 	}
+}
+
+// sanitizeTitle removes ANSI escape sequences, replaces newlines/carriage
+// returns with spaces, and strips non-printable control characters from a
+// bead title before rendering it in the TUI.
+func sanitizeTitle(s string) string {
+	// Replace newlines/CR with a space so the second title line stays single-line.
+	s = strings.NewReplacer("\n", " ", "\r", " ").Replace(s)
+
+	// Strip ANSI escape sequences (ESC [ ... m and similar).
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	runes := []rune(s)
+	for i < len(runes) {
+		if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
+			// Skip until the final byte of the CSI sequence (a letter).
+			i += 2
+			for i < len(runes) && !unicode.IsLetter(runes[i]) {
+				i++
+			}
+			i++ // consume the terminating letter
+			continue
+		}
+		// Skip other C0/C1 control characters (except space).
+		if runes[i] < 0x20 || (runes[i] >= 0x7f && runes[i] < 0xa0) {
+			i++
+			continue
+		}
+		b.WriteRune(runes[i])
+		i++
+	}
+	return b.String()
 }
 
 // --- Helpers ---
