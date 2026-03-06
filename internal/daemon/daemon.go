@@ -380,6 +380,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Branch:    req.Branch,
 				Status:    state.WorkerRunning,
 				Phase:     "cifix",
+				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
 				StartedAt: time.Now(),
 			})
 			res := cifix.Fix(ctx, cifix.FixParams{
@@ -409,6 +410,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Branch:    req.Branch,
 				Status:    state.WorkerRunning,
 				Phase:     "reviewfix",
+				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
 				StartedAt: time.Now(),
 			})
 			res := reviewfix.Fix(ctx, reviewfix.FixParams{
@@ -454,6 +456,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Branch:    req.Branch,
 				Status:    state.WorkerRunning,
 				Phase:     "rebase",
+				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
 				StartedAt: time.Now(),
 			})
 			res := rebase.Rebase(ctx, rebase.Params{

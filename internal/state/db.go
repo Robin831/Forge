@@ -1375,6 +1375,30 @@ func (db *DB) QueueCache() ([]QueueItem, error) {
 	return items, rows.Err()
 }
 
+// BeadTitle returns the display title for a bead, consulting queue_cache first
+// then falling back to the most recent workers entry. Returns an empty string
+// if no title is found.
+func (db *DB) BeadTitle(beadID, anvil string) string {
+	// Try queue_cache first (most up-to-date).
+	var title string
+	err := db.conn.QueryRow(
+		`SELECT title FROM queue_cache WHERE bead_id = ? AND anvil = ? LIMIT 1`,
+		beadID, anvil,
+	).Scan(&title)
+	if err == nil && title != "" {
+		return title
+	}
+	// Fall back to the most recent completed worker for this bead.
+	err = db.conn.QueryRow(
+		`SELECT title FROM workers WHERE bead_id = ? AND anvil = ? AND title != '' ORDER BY started_at DESC LIMIT 1`,
+		beadID, anvil,
+	).Scan(&title)
+	if err == nil {
+		return title
+	}
+	return ""
+}
+
 // GetProviderQuota returns the quota for a specific provider.
 func (db *DB) GetProviderQuota(pv string) (*provider.Quota, error) {
 	row := db.conn.QueryRow(
