@@ -104,7 +104,6 @@ type ViewLogsResponse struct {
 	LastLines []string `json:"last_lines"`
 }
 
-
 // CommandHandler is called by the server for each incoming command.
 type CommandHandler func(cmd Command) Response
 

@@ -976,7 +976,7 @@ func (db *DB) ClearRetry(beadID, anvil string) error {
 func (db *DB) ResetRetry(beadID, anvil string) error {
 	now := time.Now().Format(time.RFC3339)
 	res, err := db.conn.Exec(
-		`UPDATE retries SET needs_human = 0, clarification_needed = 0, retry_count = 0,
+		`UPDATE retries SET needs_human = 0, clarification_needed = 0, retry_count = 0, dispatch_failures = 0,
 		        next_retry = NULL, last_error = '', updated_at = ?
 		 WHERE bead_id = ? AND anvil = ?`,
 		now, beadID, anvil,

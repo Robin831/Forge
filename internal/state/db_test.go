@@ -372,6 +372,7 @@ func TestDB_ResetRetry(t *testing.T) {
 		BeadID:              "BD-1",
 		Anvil:               "anvil-1",
 		RetryCount:          3,
+		DispatchFailures:    3,
 		NeedsHuman:          true,
 		ClarificationNeeded: true,
 		LastError:           "something went wrong",
@@ -384,7 +385,6 @@ func TestDB_ResetRetry(t *testing.T) {
 	if err := db.ResetRetry("BD-1", "anvil-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
 
 	r, err := db.GetRetry("BD-1", "anvil-1")
 	if err != nil {
@@ -401,6 +401,9 @@ func TestDB_ResetRetry(t *testing.T) {
 	}
 	if r.RetryCount != 0 {
 		t.Errorf("expected RetryCount=0 after reset, got %d", r.RetryCount)
+	}
+	if r.DispatchFailures != 0 {
+		t.Errorf("expected DispatchFailures=0 after reset, got %d", r.DispatchFailures)
 	}
 }
 
