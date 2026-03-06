@@ -686,6 +686,7 @@ func TestHandleIPC_TagBead(t *testing.T) {
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
 	}
 	d.cfg.Store(&config.Config{
 		Anvils: map[string]config.AnvilConfig{
