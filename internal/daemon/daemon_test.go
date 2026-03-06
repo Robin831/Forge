@@ -174,6 +174,66 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 		t.Fatalf("timeout waiting for background goroutines to finish")
 	}
 
+	t.Run("set clarification: invalid payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{
+			Type:    "set_clarification",
+			Payload: []byte("invalid"),
+		})
+		assert.Equal(t, "error", resp.Type)
+	})
+
+	t.Run("set clarification: missing fields", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ClarificationPayload{BeadID: "X"})
+		resp := d.handleIPC(ipc.Command{
+			Type:    "set_clarification",
+			Payload: payload,
+		})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("set and clear clarification", func(t *testing.T) {
+		// Set
+		payload, _ := json.Marshal(ipc.ClarificationPayload{
+			BeadID: "TEST-CLAR",
+			Anvil:  "test-anvil",
+			Reason: "which auth library?",
+		})
+		resp := d.handleIPC(ipc.Command{
+			Type:    "set_clarification",
+			Payload: payload,
+		})
+		assert.Equal(t, "ok", resp.Type)
+
+		// Verify in DB
+		r, err := db.GetRetry("TEST-CLAR", "test-anvil")
+		require.NoError(t, err)
+		assert.True(t, r.ClarificationNeeded)
+
+		// isBeadClarificationNeeded should return true
+		assert.True(t, d.isBeadClarificationNeeded("TEST-CLAR", "test-anvil"))
+
+		// Clear
+		payload, _ = json.Marshal(ipc.ClarificationPayload{
+			BeadID: "TEST-CLAR",
+			Anvil:  "test-anvil",
+		})
+		resp = d.handleIPC(ipc.Command{
+			Type:    "clear_clarification",
+			Payload: payload,
+		})
+		assert.Equal(t, "ok", resp.Type)
+
+		// Verify cleared
+		assert.False(t, d.isBeadClarificationNeeded("TEST-CLAR", "test-anvil"))
+	})
+
+	t.Run("isBeadClarificationNeeded returns false for unknown bead", func(t *testing.T) {
+		assert.False(t, d.isBeadClarificationNeeded("UNKNOWN", "test-anvil"))
+	})
+
 	t.Run("successful dispatch via cache", func(t *testing.T) {
 		// Wait for the goroutine from the previous subtest to finish so its
 		// deferred activeBeads.Delete cannot race with the Store below.

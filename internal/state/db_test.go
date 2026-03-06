@@ -202,3 +202,147 @@ func TestDB_QueueCache(t *testing.T) {
 		t.Errorf("expected bd-11/anvil-y second, got %s/%s", items[1].BeadID, items[1].Anvil)
 	}
 }
+
+func TestDB_SetClarificationNeeded(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Initially no record exists
+	r, err := db.GetRetry("BD-1", "anvil-1")
+	if err == nil && r != nil {
+		t.Fatal("expected no retry record initially")
+	}
+
+	// Set clarification needed
+	if err := db.SetClarificationNeeded("BD-1", "anvil-1", true, "which auth library?"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify it was set
+	r, err = db.GetRetry("BD-1", "anvil-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.ClarificationNeeded {
+		t.Error("expected ClarificationNeeded=true")
+	}
+	if r.LastError != "which auth library?" {
+		t.Errorf("expected reason in LastError, got %q", r.LastError)
+	}
+
+	// Clear clarification
+	if err := db.SetClarificationNeeded("BD-1", "anvil-1", false, ""); err != nil {
+		t.Fatal(err)
+	}
+	r, err = db.GetRetry("BD-1", "anvil-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ClarificationNeeded {
+		t.Error("expected ClarificationNeeded=false after clearing")
+	}
+	// Reason should be preserved when clearing (the SQL uses CASE)
+	if r.LastError != "which auth library?" {
+		t.Errorf("expected reason preserved after clear, got %q", r.LastError)
+	}
+}
+
+func TestDB_ClarificationNeededBeads(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Empty initially
+	beads, err := db.ClarificationNeededBeads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beads) != 0 {
+		t.Errorf("expected 0 beads, got %d", len(beads))
+	}
+
+	// Add two clarification-needed beads
+	db.SetClarificationNeeded("BD-1", "anvil-1", true, "reason1")
+	db.SetClarificationNeeded("BD-2", "anvil-1", true, "reason2")
+
+	beads, err = db.ClarificationNeededBeads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beads) != 2 {
+		t.Errorf("expected 2 beads, got %d", len(beads))
+	}
+
+	// Clear one
+	db.SetClarificationNeeded("BD-1", "anvil-1", false, "")
+	beads, err = db.ClarificationNeededBeads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beads) != 1 {
+		t.Errorf("expected 1 bead, got %d", len(beads))
+	}
+	if beads[0].BeadID != "BD-2" {
+		t.Errorf("expected BD-2, got %s", beads[0].BeadID)
+	}
+}
+
+func TestDB_PendingRetries_ExcludesClarification(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert a normal retry record
+	now := time.Now()
+	past := now.Add(-1 * time.Hour)
+	db.UpsertRetry(&RetryRecord{
+		BeadID:     "BD-NORMAL",
+		Anvil:      "anvil-1",
+		RetryCount: 1,
+		NextRetry:  &past,
+	})
+
+	// Insert a clarification-needed retry record
+	db.UpsertRetry(&RetryRecord{
+		BeadID:              "BD-CLAR",
+		Anvil:               "anvil-1",
+		RetryCount:          0,
+		ClarificationNeeded: true,
+		NextRetry:           &past,
+	})
+
+	pending, err := db.PendingRetries()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Only the normal one should appear
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending retry, got %d", len(pending))
+	}
+	if pending[0].BeadID != "BD-NORMAL" {
+		t.Errorf("expected BD-NORMAL, got %s", pending[0].BeadID)
+	}
+}
