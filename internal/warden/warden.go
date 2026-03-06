@@ -51,6 +51,8 @@ type ReviewResult struct {
 	Duration time.Duration
 	// CostUSD is the cost of the review session.
 	CostUSD float64
+	// NoDiff is true when the rejection was because Smith produced no diff.
+	NoDiff bool
 }
 
 // ReviewIssue represents a specific issue found during review.
@@ -90,11 +92,18 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 	}
 
 	if strings.TrimSpace(diff) == "" {
-		return &ReviewResult{
+		result := &ReviewResult{
 			Verdict:  VerdictReject,
 			Summary:  "No changes detected — Smith produced no diff",
 			Duration: time.Since(start),
-		}, nil
+			NoDiff:   true,
+		}
+		if db != nil {
+			_ = db.LogEvent(state.EventWardenReject,
+				fmt.Sprintf("Verdict: %s — %s", result.Verdict, result.Summary),
+				beadID, anvilName)
+		}
+		return result, nil
 	}
 
 	// Build the review prompt
