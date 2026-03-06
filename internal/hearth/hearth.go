@@ -27,7 +27,7 @@ const (
 
 	// Event panel rendering constants
 	eventPanelInteriorPadding = 4
-	eventPanelMinWidth        = 20
+	eventPanelMinWidth        = 1
 	eventTimestampWidth       = 9  // "HH:MM:SS "
 	eventMsgMinWidth          = 20 // Minimum width before msg moves to next line
 )
@@ -211,6 +211,9 @@ func (m *Model) View() string {
 
 	queueWidth, workerWidth, eventWidth := m.getPanelWidths()
 	contentHeight := m.height - 4 // header + footer
+	if contentHeight < 0 {
+		contentHeight = 0
+	}
 
 	// Build panels
 	queuePanel := m.renderQueue(queueWidth, contentHeight)
@@ -236,6 +239,9 @@ func (m *Model) View() string {
 
 func (m *Model) getPanelWidths() (queueWidth, workerWidth, eventWidth int) {
 	remainingWidth := m.width - 4 // 4 for borders/gaps
+	if remainingWidth < 0 {
+		remainingWidth = 0
+	}
 	queueWidth = remainingWidth / 4
 	workerWidth = remainingWidth / 4
 	eventWidth = remainingWidth - queueWidth - workerWidth
@@ -316,9 +322,13 @@ func (m *Model) renderQueue(width, height int) string {
 // top shows the worker list, bottom shows the live activity log for the
 // selected worker. Uses lipgloss.JoinVertical for the split.
 func (m *Model) renderWorkers(width, height int) string {
+	// For very small panels, give all space to the list.
+	// Otherwise enforce a minimum of 5 rows so renderWorkerList has enough room.
 	listHeight := height * 6 / 10
-	if listHeight < 5 {
-		listHeight = 5
+	if height < 5 {
+		listHeight = height
+	} else {
+		listHeight = max(listHeight, 5)
 	}
 	activityHeight := height - listHeight
 
@@ -486,6 +496,7 @@ func (m *Model) getEventLayout(item EventItem, panelWidth int) eventLayout {
 		beadTag = "[" + item.BeadID + "] "
 	}
 
+	// Interior width: subtract border (1 each side = 2) + padding (1 each side = 2) = 4 total
 	interiorWidth := panelWidth - eventPanelInteriorPadding
 	if interiorWidth < eventPanelMinWidth {
 		interiorWidth = eventPanelMinWidth
