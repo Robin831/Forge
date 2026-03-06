@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
@@ -229,6 +230,7 @@ func buildCIFixPrompt(p FixParams, tr *temper.Result, ghChecks string) string {
 
 func fetchPRChecks(ctx context.Context, worktreePath string, prNumber int) (string, error) {
 	cmd := exec.CommandContext(ctx, "gh", "pr", "checks", fmt.Sprintf("%d", prNumber))
+	executil.HideWindow(cmd)
 	cmd.Dir = worktreePath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
