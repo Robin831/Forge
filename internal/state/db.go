@@ -393,11 +393,17 @@ func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 
 // MarkWorkerStalled sets a worker's status to stalled and records the time.
 func (db *DB) MarkWorkerStalled(id string) error {
-	_, err := db.conn.Exec(
-		`UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`,
+	res, err := db.conn.Exec(
+		`UPDATE workers SET status = ?, updated_at = ?
+		 WHERE id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')`,
 		string(WorkerStalled), time.Now().Format(time.RFC3339), id,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	// Observe whether the transition actually occurred; ignore the count to avoid changing behavior.
+	_, _ = res.RowsAffected()
+	return nil
 }
 
 // ActiveDispatchWorkers returns active workers that are running primary dispatch
@@ -442,7 +448,7 @@ func (db *DB) ActiveWorkerByBead(beadID string) (*Worker, error) {
 // iterating per-anvil to avoid false positives when two anvils share bead IDs.
 func (db *DB) ActiveWorkerByBeadAndAnvil(beadID, anvil string) (*Worker, error) {
 	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
-		FROM workers WHERE bead_id = ? AND anvil = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')
+		FROM workers WHERE bead_id = ? AND anvil = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
 		LIMIT 1`, beadID, anvil)
 	if err != nil {
 		return nil, err
