@@ -651,6 +651,13 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	defer cancel()
 
 	// Build pipeline params, optionally enabling Schematic pre-worker.
+	// Use smith_providers for the dispatch pipeline when configured; fall back
+	// to the main providers list. This lets smiths run a more capable model
+	// while lifecycle workers (cifix, reviewfix) use a lighter model.
+	smithProviderSpecs := d.cfg.Settings.SmithProviders
+	if len(smithProviderSpecs) == 0 {
+		smithProviderSpecs = d.cfg.Settings.Providers
+	}
 	pipelineParams := pipeline.Params{
 		DB:              d.db,
 		WorktreeManager: d.worktreeMgr,
@@ -659,7 +666,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		AnvilConfig:     anvilCfg,
 		Bead:            bead,
 		ExtraFlags:      d.cfg.Settings.ClaudeFlags,
-		Providers:       provider.FromConfig(d.cfg.Settings.Providers),
+		Providers:       provider.FromConfig(smithProviderSpecs),
 	}
 	if d.cfg.Settings.SchematicEnabled {
 		wordThreshold := d.cfg.Settings.SchematicWordThreshold

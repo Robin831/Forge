@@ -6,6 +6,8 @@
 //   - settings.smith_timeout
 //   - settings.max_total_smiths
 //   - settings.claude_flags
+//   - settings.providers
+//   - settings.smith_providers
 //   - notifications.* (all notification settings)
 //   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
 //
@@ -162,6 +164,14 @@ func applyChanges(old, new *config.Config) []string {
 
 	if !sliceEqual(old.Settings.ClaudeFlags, new.Settings.ClaudeFlags) {
 		changes = append(changes, "claude_flags changed")
+	}
+
+	if !sliceEqual(old.Settings.Providers, new.Settings.Providers) {
+		changes = append(changes, "providers changed")
+	}
+
+	if !sliceEqual(old.Settings.SmithProviders, new.Settings.SmithProviders) {
+		changes = append(changes, "smith_providers changed")
 	}
 
 	if old.Notifications.TeamsWebhookURL != new.Notifications.TeamsWebhookURL {

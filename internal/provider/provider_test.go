@@ -60,6 +60,44 @@ func TestProvider_BuildArgs_Claude_ExtraFlags(t *testing.T) {
 	assert.Contains(t, args, "50")
 }
 
+func TestProvider_BuildArgs_Claude_WithModel(t *testing.T) {
+	p := Provider{Kind: Claude, Model: "claude-opus-4-6"}
+	args := p.BuildArgs(nil)
+	assert.Contains(t, args, "--model")
+	assert.Contains(t, args, "claude-opus-4-6")
+}
+
+func TestProvider_BuildArgs_Claude_NoModelByDefault(t *testing.T) {
+	p := Provider{Kind: Claude}
+	args := p.BuildArgs(nil)
+	assert.NotContains(t, args, "--model")
+}
+
+func TestProvider_BuildArgs_Claude_ClaudeFlagModelOverrides(t *testing.T) {
+	// --model in claude_flags takes precedence over Provider.Model
+	p := Provider{Kind: Claude, Model: "claude-opus-4-6"}
+	args := p.BuildArgs([]string{"--model", "claude-sonnet-4-6"})
+	idx := -1
+	for i, a := range args {
+		if a == "--model" {
+			idx = i
+			break
+		}
+	}
+	assert.NotEqual(t, -1, idx, "--model flag should be present")
+	if idx >= 0 && idx+1 < len(args) {
+		assert.Equal(t, "claude-sonnet-4-6", args[idx+1])
+	}
+	// Should appear exactly once
+	count := 0
+	for _, a := range args {
+		if a == "--model" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "--model should appear exactly once")
+}
+
 func TestProvider_BuildArgs_Gemini(t *testing.T) {
 	p := Provider{Kind: Gemini}
 	args := p.BuildArgs(nil)

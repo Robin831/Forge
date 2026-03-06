@@ -58,6 +58,12 @@ type SettingsConfig struct {
 	// bead slot stays reserved (activeBeads) so the poller does not
 	// immediately re-claim it. Defaults to 5 minutes.
 	RateLimitBackoff time.Duration `mapstructure:"rate_limit_backoff"`
+	// SmithProviders is the ordered list of AI providers used specifically for
+	// dispatch pipeline (Smith + Warden + Schematic). When empty, Providers is
+	// used as fallback. This lets smiths run a more capable model (e.g.
+	// claude/claude-opus-4-6) while lifecycle workers (cifix, reviewfix) use a
+	// lighter model. Accepts the same "kind/model" format as Providers.
+	SmithProviders []string `mapstructure:"smith_providers"`
 	// SchematicEnabled enables the Schematic pre-worker globally. When true,
 	// beads that exceed the word threshold or carry the "decompose" tag are
 	// analysed before Smith starts. Default: false.

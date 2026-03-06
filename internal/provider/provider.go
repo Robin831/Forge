@@ -49,7 +49,7 @@ type Provider struct {
 	// Command is the binary to execute. If empty, the Kind default is used.
 	Command string
 	// Model is the specific model to request from the provider.
-	// Supported for Gemini (--model flag) and Copilot (--model flag).
+	// Supported for all provider kinds via the --model flag.
 	// When empty the provider's own default model is used.
 	Model string
 }
@@ -117,7 +117,21 @@ func (p Provider) claudeArgs(extra []string) []string {
 		"--output-format", "stream-json",
 		"--verbose",
 	}
-	return append(base, extra...)
+	// Honour explicit model override from claude_flags; if none, use p.Model.
+	model := p.Model
+	var filtered []string
+	for i := 0; i < len(extra); i++ {
+		if extra[i] == "--model" && i+1 < len(extra) {
+			model = extra[i+1]
+			i++ // skip value
+		} else {
+			filtered = append(filtered, extra[i])
+		}
+	}
+	if model != "" {
+		base = append(base, "--model", model)
+	}
+	return append(base, filtered...)
 }
 
 func (p Provider) geminiArgs(claudeFlags []string) []string {
