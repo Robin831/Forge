@@ -6,6 +6,13 @@
 # Issue prefix for this repository (used by bd init)
 issue-prefix: "Forge"
 
+# Disable auto-start of a local Dolt server.
+# Forge connects to a remote Dolt via kubectl port-forward (127.0.0.1:3306).
+# Without this, beads auto-starts a local dolt when the port-forward drops,
+# which conflicts and keeps restarting even after you kill it (idle-monitor watchdog).
+dolt:
+  auto-start: false
+
 # Use no-db mode: load from JSONL, no SQLite, write back after each command
 # When true, bd will use .beads/issues.jsonl as the source of truth
 # instead of SQLite database
