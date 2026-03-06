@@ -376,9 +376,6 @@ func (m *Model) renderWorkerList(width, height int) string {
 // for the currently selected worker, parsed from its stream-json log file.
 func (m *Model) renderWorkerActivity(width, height int) string {
 	style := panelStyle.Width(width)
-	if m.focused == PanelWorkers {
-		style = focusedPanelStyle.Width(width)
-	}
 
 	title := activityPanelTitleStyle.Render("Live Activity")
 
