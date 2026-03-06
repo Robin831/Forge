@@ -662,17 +662,18 @@ func (m *Model) renderLogViewer() string {
 	return logViewerStyle.Width(viewerWidth).Height(viewerHeight).Render(content)
 }
 
-// sectionHeader maps section identifiers to styled header labels.
-var sectionHeaders = map[string]func() string{
-	"ready": func() string {
-		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("82")).Render("── Ready ──")
-	},
-	"unlabeled": func() string {
-		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("226")).Render("── Unlabeled ──")
-	},
-	"in_progress": func() string {
-		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75")).Render("── In Progress ──")
-	},
+// Precompute section header strings once to avoid per-render allocations.
+var (
+	sectionHeaderReady      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("82")).Render("── Ready ──")
+	sectionHeaderUnlabeled  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("226")).Render("── Unlabeled ──")
+	sectionHeaderInProgress = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75")).Render("── In Progress ──")
+)
+
+// sectionHeaders maps section identifiers to their precomputed styled header strings.
+var sectionHeaders = map[string]string{
+	"ready":       sectionHeaderReady,
+	"unlabeled":   sectionHeaderUnlabeled,
+	"in_progress": sectionHeaderInProgress,
 }
 
 // renderQueue renders the queue panel with section headers for
@@ -701,7 +702,7 @@ func (m *Model) renderQueue(width, height int) string {
 		for i, item := range m.queue {
 			if item.Section != lastSection {
 				if hdr, ok := sectionHeaders[item.Section]; ok {
-					rows = append(rows, displayRow{text: hdr(), itemIdx: -1})
+					rows = append(rows, displayRow{text: hdr, itemIdx: -1})
 				}
 				lastSection = item.Section
 			}

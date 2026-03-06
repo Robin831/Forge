@@ -8,7 +8,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
-	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/hearth"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
@@ -122,21 +121,11 @@ var hearthCmd = &cobra.Command{
 			}
 			defer client.Close()
 
-			// Read auto_dispatch_tag from the local config since the hearth
-			// process loads the same config file the daemon uses.
-			cfg, cfgErr := config.Load(configFile)
-			if cfgErr != nil {
-				return
-			}
-			anvilCfg, ok := cfg.Anvils[anvil]
-			if !ok || anvilCfg.AutoDispatchTag == "" {
-				return
-			}
-
+			// The daemon derives the tag from its own (hot-reloaded) config, so
+			// the client only needs to send the bead identity.
 			payload, _ := json.Marshal(ipc.TagBeadPayload{
 				BeadID: beadID,
 				Anvil:  anvil,
-				Tag:    anvilCfg.AutoDispatchTag,
 			})
 			_, _ = client.Send(ipc.Command{
 				Type:    "tag_bead",

@@ -161,12 +161,13 @@ func TestDB_QueueCache(t *testing.T) {
 		t.Errorf("unexpected item: %+v", items[0])
 	}
 
-	// 3b. Section ordering: ready → unlabeled → in_progress, then priority within section
+	// 3b. Section ordering: ready → unlabeled → in_progress, then priority within section.
+	// An empty Section is normalized to QueueSectionReady on insert.
 	sectioned := []QueueItem{
 		{BeadID: "bd-s3", Anvil: "anvil-a", Title: "In progress bead", Priority: 1, Status: "in_progress", Section: QueueSectionInProgress},
 		{BeadID: "bd-s1", Anvil: "anvil-a", Title: "Ready bead", Priority: 2, Status: "open", Section: QueueSectionReady},
 		{BeadID: "bd-s2", Anvil: "anvil-a", Title: "Unlabeled bead", Priority: 1, Status: "open", Section: QueueSectionUnlabeled},
-		{BeadID: "bd-s4", Anvil: "anvil-a", Title: "Empty section defaults to last", Priority: 0, Status: "open", Section: ""},
+		{BeadID: "bd-s4", Anvil: "anvil-a", Title: "Empty section normalizes to ready", Priority: 0, Status: "open", Section: ""},
 	}
 	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-a", "anvil-b", "anvil-c"}, sectioned); err != nil {
 		t.Fatal(err)
@@ -178,21 +179,21 @@ func TestDB_QueueCache(t *testing.T) {
 	if len(items) != 4 {
 		t.Fatalf("expected 4 sectioned items, got %d", len(items))
 	}
-	// ready first
-	if items[0].BeadID != "bd-s1" || items[0].Section != QueueSectionReady {
-		t.Errorf("expected bd-s1 (ready) first, got %s (%s)", items[0].BeadID, items[0].Section)
+	// bd-s4 has empty section (normalized to ready) and priority 0, so it sorts first
+	if items[0].BeadID != "bd-s4" || items[0].Section != QueueSectionReady {
+		t.Errorf("expected bd-s4 (normalized ready, priority 0) first, got %s (%s)", items[0].BeadID, items[0].Section)
 	}
-	// unlabeled second
-	if items[1].BeadID != "bd-s2" || items[1].Section != QueueSectionUnlabeled {
-		t.Errorf("expected bd-s2 (unlabeled) second, got %s (%s)", items[1].BeadID, items[1].Section)
+	// bd-s1 is ready with priority 2, second among ready items
+	if items[1].BeadID != "bd-s1" || items[1].Section != QueueSectionReady {
+		t.Errorf("expected bd-s1 (ready) second, got %s (%s)", items[1].BeadID, items[1].Section)
 	}
-	// in_progress third
-	if items[2].BeadID != "bd-s3" || items[2].Section != QueueSectionInProgress {
-		t.Errorf("expected bd-s3 (in_progress) third, got %s (%s)", items[2].BeadID, items[2].Section)
+	// unlabeled third
+	if items[2].BeadID != "bd-s2" || items[2].Section != QueueSectionUnlabeled {
+		t.Errorf("expected bd-s2 (unlabeled) third, got %s (%s)", items[2].BeadID, items[2].Section)
 	}
-	// empty section sorts last (ELSE 3 in CASE)
-	if items[3].BeadID != "bd-s4" || items[3].Section != "" {
-		t.Errorf("expected bd-s4 (empty section) last, got %s (%s)", items[3].BeadID, items[3].Section)
+	// in_progress last
+	if items[3].BeadID != "bd-s3" || items[3].Section != QueueSectionInProgress {
+		t.Errorf("expected bd-s3 (in_progress) last, got %s (%s)", items[3].BeadID, items[3].Section)
 	}
 
 	// 3c. Labels round-trip: nil/empty labels stored as "[]", not "null"

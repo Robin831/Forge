@@ -651,7 +651,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	}
 	defer d.pollRunning.Store(false)
 
-	d.logger.Info("polling anvils", "count", len(d.cfg.Load().Anvils))
+	// Snapshot config once so the entire poll cycle sees a consistent view even
+	// if hot-reload swaps the pointer concurrently.
+	cfg := d.cfg.Load()
+
+	d.logger.Info("polling anvils", "count", len(cfg.Anvils))
 
 	// Periodically recover orphaned in-progress beads (every 10 poll cycles).
 	// Recovery also runs once at startup (see Start). Running it here catches
@@ -665,14 +669,14 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 	}
 
-	maxTotal := d.cfg.Load().Settings.MaxTotalSmiths
+	maxTotal := cfg.Settings.MaxTotalSmiths
 	if maxTotal <= 0 {
 		maxTotal = 4
 	}
 
 	// Always poll so the Hearth TUI queue cache stays current even when all
 	// smith slots are occupied. Capacity is checked below before dispatching.
-	p := poller.New(d.cfg.Load().Anvils)
+	p := poller.New(cfg.Anvils)
 	beads, results := p.Poll(ctx)
 
 	// Update cache
@@ -843,7 +847,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			continue
 		}
 
-		anvilCfg := d.cfg.Load().Anvils[bead.Anvil]
+		anvilCfg := cfg.Anvils[bead.Anvil]
 
 		// Apply auto-dispatch filtering
 		if !shouldDispatch(bead, anvilCfg) {
@@ -1301,8 +1305,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "invalid tag_bead payload"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if tp.BeadID == "" || tp.Anvil == "" || tp.Tag == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id, anvil, and tag are required"})
+		if tp.BeadID == "" || tp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 		cfgSnapshot := d.cfg.Load()
@@ -1311,19 +1315,35 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", tp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
+		if anvilCfg.Path == "" {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", tp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		// Derive the tag from the daemon's authoritative config so the client
+		// cannot inject arbitrary labels and hot-reload is respected.
+		tag := anvilCfg.AutoDispatchTag
+		if tag == "" {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no auto_dispatch_tag configured", tp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
 		tagCtx, tagCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer tagCancel()
-		tagCmd := executil.HideWindow(exec.CommandContext(tagCtx, "bd", "update", tp.BeadID, "--add-label", tp.Tag))
+		tagCmd := executil.HideWindow(exec.CommandContext(tagCtx, "bd", "update", tp.BeadID, "--add-label", tag))
 		tagCmd.Dir = anvilCfg.Path
 		if out, err := tagCmd.CombinedOutput(); err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update failed: %v: %s", err, string(out))})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		d.logger.Info("label added to bead", "bead", tp.BeadID, "anvil", tp.Anvil, "tag", tp.Tag)
-		_ = d.db.LogEvent(state.EventBeadTagged, fmt.Sprintf("Label %q added to bead %s", tp.Tag, tp.BeadID), tp.BeadID, tp.Anvil)
-		// Trigger a refresh so the queue cache updates promptly
-		go d.pollAndDispatch(context.Background())
-		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q added", tp.Tag)})
+		d.logger.Info("label added to bead", "bead", tp.BeadID, "anvil", tp.Anvil, "tag", tag)
+		_ = d.db.LogEvent(state.EventBeadTagged, fmt.Sprintf("Label %q added to bead %s", tag, tp.BeadID), tp.BeadID, tp.Anvil)
+		// Trigger a refresh so the queue cache updates promptly, but bound the
+		// context so the refresh participates in graceful shutdown.
+		refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		go func() {
+			defer refreshCancel()
+			d.pollAndDispatch(refreshCtx)
+		}()
+		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q added", tag)})
 		return ipc.Response{Type: "ok", Payload: data}
 
 

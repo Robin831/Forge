@@ -670,3 +670,112 @@ line3
 		assert.Contains(t, vr.LastLines, "line3")
 	})
 }
+
+func TestHandleIPC_TagBead(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {
+				Path:            tmpDir,
+				AutoDispatchTag: "forge-ready",
+			},
+			"no-path-anvil": {
+				Path:            "",
+				AutoDispatchTag: "forge-ready",
+			},
+			"no-tag-anvil": {
+				Path:            tmpDir,
+				AutoDispatchTag: "",
+			},
+		},
+	})
+
+	t.Run("invalid JSON payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "tag_bead", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid tag_bead payload")
+	})
+
+	t.Run("missing bead_id", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.TagBeadPayload{Anvil: "test-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "tag_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("missing anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.TagBeadPayload{BeadID: "BEAD-1"})
+		resp := d.handleIPC(ipc.Command{Type: "tag_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("unknown anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.TagBeadPayload{BeadID: "BEAD-1", Anvil: "unknown-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "tag_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "not found")
+	})
+
+	t.Run("anvil with empty path", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.TagBeadPayload{BeadID: "BEAD-1", Anvil: "no-path-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "tag_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "no path configured")
+	})
+
+	t.Run("anvil with no auto_dispatch_tag", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.TagBeadPayload{BeadID: "BEAD-1", Anvil: "no-tag-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "tag_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "no auto_dispatch_tag configured")
+	})
+
+	t.Run("success with fake bd script", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			bdScript := filepath.Join(tmpDir, "bd.bat")
+			bdContent := "@echo off\r\nif \"%1\"==\"update\" (\r\n    echo {\"id\": \"%2\", \"status\": \"ok\"}\r\n    exit /b 0\r\n)\r\nexit /b 1\r\n"
+			require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+		} else {
+			bdScript := filepath.Join(tmpDir, "bd")
+			bdContent := "#!/bin/sh\nif [ \"$1\" = \"update\" ]; then\n    echo '{\"id\": \"'\"$2\"'\", \"status\": \"ok\"}'\n    exit 0\nfi\nexit 1\n"
+			require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+		}
+		oldPath := os.Getenv("PATH")
+		os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+		defer os.Setenv("PATH", oldPath)
+
+		payload, _ := json.Marshal(ipc.TagBeadPayload{BeadID: "BEAD-1", Anvil: "test-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "tag_bead", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "forge-ready")
+	})
+}
