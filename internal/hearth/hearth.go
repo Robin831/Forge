@@ -1,13 +1,12 @@
 // Package hearth provides The Forge's TUI dashboard using Bubbletea.
 //
-// The TUI has a top row with three columns and a bottom event strip:
-//   - Queue / Needs Attention (left column, stacked): Pending and stuck beads
-//   - Workers (center column): Active Smith processes
-//   - Live Activity (right column): Streaming log output for the selected worker
-//   - Event Log (bottom strip): Recent events from the state DB
+// The TUI is organized into three columns:
+//   - Left column: Queue and Needs Attention sub-panels for beads
+//   - Middle column: Workers showing active Smith processes
+//   - Right column: Event Log with recent events from the state DB
 //
-// Tab switches focus between panels, j/k scrolls the focused panel,
-// q quits the app.
+// Tab switches focus between columns and sub-panels, j/k scrolls the focused
+// view, and q quits the app.
 package hearth
 
 import (
@@ -27,19 +26,15 @@ const (
 	PanelQueue Panel = iota
 	PanelNeedsAttention
 	PanelWorkers
-	PanelActivity
 	PanelEvents
 
-	panelCount = PanelEvents + 1 // NOTE: update if panels are added/removed
+	panelCount = PanelEvents + 1
 
 	// Event panel rendering constants
 	eventPanelInteriorPadding = 4
 	eventPanelMinWidth        = 1
 	eventTimestampWidth       = 9  // "HH:MM:SS "
 	eventMsgMinWidth          = 20 // Minimum width before msg moves to next line
-
-	// Layout constants
-	eventStripHeight = 8 // fixed height for the bottom event strip (including border)
 )
 
 // QueueItem represents a bead in the queue panel.
@@ -83,26 +78,6 @@ type EventItem struct {
 	BeadID    string
 }
 
-// ActionMenuChoice represents an action the user can take on a Needs Attention bead.
-type ActionMenuChoice int
-
-const (
-	ActionRetry ActionMenuChoice = iota
-	ActionDismiss
-	ActionViewLogs
-
-	actionMenuCount = ActionViewLogs + 1
-)
-
-// actionMenuLabels returns the display labels for the action menu.
-func actionMenuLabels() [actionMenuCount]string {
-	return [actionMenuCount]string{
-		"Retry       — Clear flags, put back in queue",
-		"Dismiss     — Remove from Needs Attention",
-		"View Logs   — Show last worker log",
-	}
-}
-
 // Model is the Bubbletea model for the Hearth TUI.
 type Model struct {
 	// Panels
@@ -114,41 +89,20 @@ type Model struct {
 	// Data source for polling
 	data *DataSource
 
-	// Callback for killing a worker (set by the caller)
+	// Callback for interacting with the daemon (set by the caller)
 	OnKill func(workerID string, pid int)
-
-	// Callbacks for Needs Attention actions (set by the caller)
-	OnRetryBead   func(beadID, anvil string)
-	OnDismissBead func(beadID, anvil string)
-	OnViewLogs    func(beadID string) (logPath string, lines []string)
 
 	// State
 	focused              Panel
 	queueScroll          int
 	needsAttentionScroll int
 	workerScroll         int
-	activityScroll       int
 	eventScroll          int
 	eventAutoScroll      bool // true = follow new events
 	prevEventCount       int  // track event count for auto-scroll
 	width                int
 	height               int
 	ready                bool
-
-	// Action menu overlay state
-	showActionMenu bool
-	actionMenuIdx  int
-	actionTarget   *NeedsAttentionItem // bead the menu is open for
-
-	// Log viewer overlay state
-	showLogViewer  bool
-	logViewerTitle string
-	logViewerLines []string
-	logViewerScroll int
-
-	// Status message (flashes briefly after an action)
-	statusMsg     string
-	statusMsgTime time.Time
 
 	// Event rendering cache
 	eventLinesCache       []string
@@ -186,39 +140,6 @@ func (m *Model) Init() tea.Cmd {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Log viewer overlay intercepts all keys
-		if m.showLogViewer {
-			switch msg.String() {
-			case "q", "esc":
-				m.showLogViewer = false
-			case "j", "down":
-				if m.logViewerScroll < len(m.logViewerLines)-1 {
-					m.logViewerScroll++
-				}
-			case "k", "up":
-				if m.logViewerScroll > 0 {
-					m.logViewerScroll--
-				}
-			}
-			return m, nil
-		}
-
-		// Action menu overlay intercepts keys when open
-		if m.showActionMenu {
-			switch msg.String() {
-			case "esc", "q":
-				m.showActionMenu = false
-			case "j", "down":
-				m.actionMenuIdx = (m.actionMenuIdx + 1) % int(actionMenuCount)
-			case "k", "up":
-				m.actionMenuIdx = (m.actionMenuIdx + int(actionMenuCount) - 1) % int(actionMenuCount)
-			case "enter":
-				m.executeAction(ActionMenuChoice(m.actionMenuIdx))
-				m.showActionMenu = false
-			}
-			return m, nil
-		}
-
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -243,15 +164,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "f", "F":
-			// Toggle follow mode (auto-scroll) for events or activity
+			// Toggle follow mode (auto-scroll) for events
 			if m.focused == PanelEvents {
 				m.eventAutoScroll = !m.eventAutoScroll
 				if m.eventAutoScroll {
 					m.eventScroll = 0
 				}
-			} else if m.focused == PanelActivity {
-				// Reset activity scroll to bottom (follow latest)
-				m.activityScroll = 0
 			}
 
 		case "K":
@@ -262,16 +180,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.OnKill != nil && w.PID > 0 {
 					m.OnKill(w.ID, w.PID)
 				}
-			}
-
-		case "enter":
-			// Open action menu for selected Needs Attention bead
-			if m.focused == PanelNeedsAttention && len(m.needsAttention) > 0 &&
-				m.needsAttentionScroll < len(m.needsAttention) {
-				item := m.needsAttention[m.needsAttentionScroll]
-				m.actionTarget = &item
-				m.actionMenuIdx = 0
-				m.showActionMenu = true
 			}
 		}
 
@@ -300,6 +208,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateNeedsAttentionMsg:
 		m.needsAttention = msg.Items
+
+	case NeedsAttentionErrorMsg:
+		errEvent := EventItem{
+			Timestamp: time.Now().Format("15:04:05"),
+			Type:      "error",
+			Message:   fmt.Sprintf("needs attention read failed: %v", msg.Err),
+		}
+		m.events = append([]EventItem{errEvent}, m.events...)
+		m.eventRevision++
+		if m.eventAutoScroll {
+			m.eventScroll = 0
+		}
 
 	case UpdateWorkersMsg:
 		m.workers = msg.Items
@@ -334,74 +254,44 @@ func (m *Model) View() string {
 		return "Initializing The Forge..."
 	}
 
-	queueWidth, workerWidth, activityWidth := m.getTopPanelWidths()
-	topHeight, bottomHeight := m.getVerticalSplit()
-
-	// Left column: Queue (top) + Needs Attention (bottom)
-	leftColumn := m.renderLeftColumn(queueWidth, topHeight)
-	// Center: worker list; Right: live activity (full column)
-	workerPanel := m.renderWorkerList(workerWidth, topHeight)
-	activityPanel := m.renderWorkerActivity(activityWidth, topHeight)
-
-	// Bottom strip: Events
-	eventPanel := m.renderEvents(m.width-2, bottomHeight) // -2 for outer margin
-
-	// Header
-	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
-
-	// Footer with status message or default hints
-	footerText := "Tab: switch panel • j/k: scroll • K: kill worker • Enter: actions • f: follow • q: quit"
-	if m.statusMsg != "" && time.Since(m.statusMsgTime) < 5*time.Second {
-		footerText = statusMsgStyle.Render(m.statusMsg)
-	}
-	footer := footerStyle.Width(m.width).Render(footerText)
-
-	// Final assembly
-	topSection := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, workerPanel, activityPanel)
-	view := lipgloss.JoinVertical(lipgloss.Left,
-		header,
-		topSection,
-		eventPanel,
-		footer,
-	)
-
-	// Render overlays on top
-	if m.showLogViewer {
-		overlay := m.renderLogViewer()
-		view = placeOverlay(m.width, m.height, overlay, view)
-	} else if m.showActionMenu {
-		overlay := m.renderActionMenu()
-		view = placeOverlay(m.width, m.height, overlay, view)
-	}
-
-	return view
-}
-
-func (m *Model) getTopPanelWidths() (queueWidth, workerWidth, activityWidth int) {
-	remainingWidth := m.width - 4 // borders/gaps
-	if remainingWidth < 0 {
-		remainingWidth = 0
-	}
-	queueWidth = remainingWidth / 5
-	workerWidth = remainingWidth / 4
-	activityWidth = remainingWidth - queueWidth - workerWidth
-	return
-}
-
-func (m *Model) getVerticalSplit() (topHeight, bottomHeight int) {
+	queueWidth, workerWidth, eventWidth := m.getPanelWidths()
 	contentHeight := m.height - 4 // header + footer
 	if contentHeight < 0 {
 		contentHeight = 0
 	}
-	bottomHeight = eventStripHeight
-	if bottomHeight > contentHeight/3 {
-		bottomHeight = contentHeight / 3
+
+	// Split the left column into Queue (top) and Needs Attention (bottom).
+	// The split mirrors the Workers column approach: two stacked sub-panels
+	// that together occupy the same height as a single-panel column.
+	leftColumn := m.renderLeftColumn(queueWidth, contentHeight)
+	workerPanel := m.renderWorkers(workerWidth, contentHeight)
+	eventPanel := m.renderEvents(eventWidth, contentHeight)
+
+	// Header
+	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
+
+	// Footer
+	footer := footerStyle.Width(m.width).Render(
+		"Tab: switch panel • j/k: scroll • K: kill worker • f: follow events • q: quit",
+	)
+
+	// Final assembly
+	mainSection := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, workerPanel, eventPanel)
+	return lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		mainSection,
+		footer,
+	)
+}
+
+func (m *Model) getPanelWidths() (queueWidth, workerWidth, eventWidth int) {
+	remainingWidth := m.width - 4 // 4 for borders/gaps
+	if remainingWidth < 0 {
+		remainingWidth = 0
 	}
-	// Events panel needs at least 4 lines (border top/bottom + title + 1 event)
-	if bottomHeight < 4 && contentHeight >= 4 {
-		bottomHeight = 4
-	}
-	topHeight = contentHeight - bottomHeight
+	queueWidth = remainingWidth / 4
+	workerWidth = remainingWidth / 4
+	eventWidth = remainingWidth - queueWidth - workerWidth
 	return
 }
 
@@ -419,24 +309,10 @@ func (m *Model) scrollDown() {
 	case PanelWorkers:
 		if m.workerScroll < len(m.workers)-1 {
 			m.workerScroll++
-			m.activityScroll = 0 // Reset activity scroll only when selection actually changed
-		}
-	case PanelActivity:
-		activityLines := m.selectedWorkerActivity()
-		_, topHeight := m.getVerticalSplit()
-		maxVisible := topHeight - 4
-		if maxVisible < 1 {
-			maxVisible = 1
-		}
-		maxScroll := len(activityLines) - maxVisible
-		if maxScroll < 0 {
-			maxScroll = 0
-		}
-		if m.activityScroll < maxScroll {
-			m.activityScroll++
 		}
 	case PanelEvents:
-		totalLines := m.eventTotalLineCount(m.width - 2)
+		_, _, eventWidth := m.getPanelWidths()
+		totalLines := m.eventTotalLineCount(eventWidth)
 		if m.eventScroll < totalLines-1 {
 			m.eventScroll++
 		}
@@ -457,143 +333,12 @@ func (m *Model) scrollUp() {
 	case PanelWorkers:
 		if m.workerScroll > 0 {
 			m.workerScroll--
-			m.activityScroll = 0 // Reset activity scroll only when selection actually changed
-		}
-	case PanelActivity:
-		if m.activityScroll > 0 {
-			m.activityScroll--
 		}
 	case PanelEvents:
 		if m.eventScroll > 0 {
 			m.eventScroll--
 		}
 	}
-}
-
-// selectedWorkerActivity returns the activity lines for the currently selected worker.
-func (m *Model) selectedWorkerActivity() []string {
-	if len(m.workers) > 0 && m.workerScroll < len(m.workers) {
-		return m.workers[m.workerScroll].ActivityLines
-	}
-	return nil
-}
-
-// executeAction runs the selected action menu choice against the target bead.
-func (m *Model) executeAction(choice ActionMenuChoice) {
-	if m.actionTarget == nil {
-		return
-	}
-	bead := m.actionTarget
-	switch choice {
-	case ActionRetry:
-		if m.OnRetryBead != nil {
-			m.OnRetryBead(bead.BeadID, bead.Anvil)
-			m.statusMsg = fmt.Sprintf("Retry queued for %s", bead.BeadID)
-			m.statusMsgTime = time.Now()
-		}
-	case ActionDismiss:
-		if m.OnDismissBead != nil {
-			m.OnDismissBead(bead.BeadID, bead.Anvil)
-			m.statusMsg = fmt.Sprintf("Dismissed %s", bead.BeadID)
-			m.statusMsgTime = time.Now()
-		}
-	case ActionViewLogs:
-		if m.OnViewLogs != nil {
-			logPath, lines := m.OnViewLogs(bead.BeadID)
-			if logPath == "" {
-				m.statusMsg = fmt.Sprintf("No logs found for %s", bead.BeadID)
-				m.statusMsgTime = time.Now()
-				return
-			}
-			m.logViewerTitle = fmt.Sprintf("Logs: %s — %s", bead.BeadID, logPath)
-			m.logViewerLines = lines
-			m.logViewerScroll = 0
-			m.showLogViewer = true
-		}
-	}
-}
-
-// renderActionMenu renders the action menu overlay centered on screen.
-func (m *Model) renderActionMenu() string {
-	if m.actionTarget == nil {
-		return ""
-	}
-
-	menuWidth := 52
-	labels := actionMenuLabels()
-
-	var lines []string
-	title := fmt.Sprintf("Actions for %s", m.actionTarget.BeadID)
-	lines = append(lines, actionMenuTitleStyle.Render(title))
-	lines = append(lines, "")
-
-	for i, label := range labels {
-		cursor := "  "
-		if i == m.actionMenuIdx {
-			cursor = "> "
-			label = actionMenuSelectedStyle.Render(label)
-		} else {
-			label = dimStyle.Render(label)
-		}
-		lines = append(lines, cursor+label)
-	}
-
-	lines = append(lines, "")
-	lines = append(lines, dimStyle.Render("Enter: select • Esc: close"))
-
-	content := strings.Join(lines, "\n")
-	popup := actionMenuStyle.Width(menuWidth).Render(content)
-
-	return popup
-}
-
-// renderLogViewer renders the log viewer overlay.
-func (m *Model) renderLogViewer() string {
-	viewerWidth := m.width - 8
-	if viewerWidth < 40 {
-		viewerWidth = 40
-	}
-	viewerHeight := m.height - 6
-	if viewerHeight < 10 {
-		viewerHeight = 10
-	}
-
-	var lines []string
-	lines = append(lines, actionMenuTitleStyle.Render(truncate(m.logViewerTitle, viewerWidth-4)))
-	lines = append(lines, "")
-
-	contentHeight := viewerHeight - 5 // title + margins + footer
-	if contentHeight < 1 {
-		contentHeight = 1
-	}
-
-	if len(m.logViewerLines) == 0 {
-		lines = append(lines, dimStyle.Render("(empty log)"))
-	} else {
-		visible := visibleItems(m.logViewerScroll, len(m.logViewerLines), contentHeight)
-		for i := visible.start; i < visible.end; i++ {
-			line := m.logViewerLines[i]
-			maxLen := viewerWidth - 4
-			if maxLen > 0 {
-				runes := []rune(line)
-				if len(runes) > maxLen {
-					if maxLen > 3 {
-						line = string(runes[:maxLen-3]) + "..."
-					} else {
-						line = string(runes[:maxLen])
-					}
-				}
-			}
-			lines = append(lines, dimStyle.Render(line))
-		}
-	}
-
-	lines = append(lines, "")
-	scrollInfo := fmt.Sprintf("Line %d/%d", m.logViewerScroll+1, max(len(m.logViewerLines), 1))
-	lines = append(lines, dimStyle.Render("j/k: scroll • Esc: close  "+scrollInfo))
-
-	content := strings.Join(lines, "\n")
-	return logViewerStyle.Width(viewerWidth).Height(viewerHeight).Render(content)
 }
 
 // renderQueue renders the queue panel.
@@ -694,11 +439,36 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderWorkers delegates to renderWorkerList for the center column.
+// renderWorkers splits the center Workers panel into two vertical sub-panels:
+// top shows the worker list, bottom shows the live activity log for the
+// selected worker. Uses lipgloss.JoinVertical for the split.
 func (m *Model) renderWorkers(width, height int) string {
-	return m.renderWorkerList(width, height)
+	// Each sub-panel's border adds 2 lines (top + bottom). Two sub-panels
+	// add 4 border lines total, but single-panel columns only add 2. Deduct
+	// the extra 2 so the combined rendered height matches sibling columns.
+	innerHeight := height - 2
+	if innerHeight < 0 {
+		innerHeight = 0
+	}
+
+	// For very small panels, give all space to the list.
+	// Otherwise enforce a minimum of 5 rows so renderWorkerList has enough room.
+	listHeight := innerHeight * 6 / 10
+	if innerHeight < 5 {
+		listHeight = innerHeight
+	} else {
+		listHeight = max(listHeight, 5)
+	}
+	activityHeight := innerHeight - listHeight
+
+	top := m.renderWorkerList(width, listHeight)
+	bottom := m.renderWorkerActivity(width, activityHeight)
+	combined := lipgloss.JoinVertical(lipgloss.Left, top, bottom)
+
+	return combined
 }
 
+// renderWorkerList renders the top sub-panel: the list of active workers.
 func (m *Model) renderWorkerList(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelWorkers {
@@ -750,44 +520,34 @@ func (m *Model) renderWorkerList(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderWorkerActivity renders the activity panel: a live log view for the
-// currently selected worker, parsed from its stream-json log file.
+// renderWorkerActivity renders the bottom sub-panel: a live activity log
+// for the currently selected worker, parsed from its stream-json log file.
 func (m *Model) renderWorkerActivity(width, height int) string {
 	style := panelStyle.Width(width)
-	if m.focused == PanelActivity {
+	if m.focused == PanelWorkers {
 		style = focusedPanelStyle.Width(width)
 	}
 
-	// Build title with selected worker info
-	titleText := "Live Activity"
-	if len(m.workers) > 0 && m.workerScroll < len(m.workers) {
-		w := m.workers[m.workerScroll]
-		titleText = fmt.Sprintf("Live Activity — %s %s", w.BeadID, dimStyle.Render(w.Anvil))
-	}
-	title := activityPanelTitleStyle.Render(titleText)
+	title := activityPanelTitleStyle.Render("Live Activity")
 
 	var lines []string
 	lines = append(lines, title)
 
-	activityLines := m.selectedWorkerActivity()
+	var activityLines []string
+	if len(m.workers) > 0 && m.workerScroll < len(m.workers) {
+		activityLines = m.workers[m.workerScroll].ActivityLines
+	}
 
 	if len(activityLines) == 0 {
-		if len(m.workers) == 0 {
-			lines = append(lines, dimStyle.Render("No active workers"))
-		} else {
-			lines = append(lines, dimStyle.Render("Waiting for output..."))
-		}
+		lines = append(lines, dimStyle.Render("No activity"))
 	} else {
 		// height-2 (borders) - 2 (title + margin) = height-4
 		maxVisible := height - 4
 		if maxVisible < 1 {
 			maxVisible = 1
 		}
-		// Default: show the latest lines (tail). activityScroll scrolls up from bottom.
-		end := len(activityLines) - m.activityScroll
-		if end < 0 {
-			end = 0
-		}
+		// Show newest entries first (reverse order), like the Events panel
+		end := len(activityLines)
 		start := end - maxVisible
 		if start < 0 {
 			start = 0
@@ -1015,6 +775,9 @@ type QueueErrorMsg struct{ Err error }
 // UpdateNeedsAttentionMsg updates the needs attention panel.
 type UpdateNeedsAttentionMsg struct{ Items []NeedsAttentionItem }
 
+// NeedsAttentionErrorMsg signals that reading the needs-attention beads failed.
+type NeedsAttentionErrorMsg struct{ Err error }
+
 // UpdateWorkersMsg updates the workers panel.
 type UpdateWorkersMsg struct{ Items []WorkerItem }
 
@@ -1072,28 +835,6 @@ var (
 				Bold(true).
 				Foreground(lipgloss.Color("196")).
 				MarginBottom(1)
-
-	actionMenuStyle = lipgloss.NewStyle().
-			Border(lipgloss.DoubleBorder()).
-			BorderForeground(lipgloss.Color("208")).
-			Padding(1, 2)
-
-	actionMenuTitleStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("208"))
-
-	actionMenuSelectedStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("255"))
-
-	logViewerStyle = lipgloss.NewStyle().
-			Border(lipgloss.DoubleBorder()).
-			BorderForeground(lipgloss.Color("75")).
-			Padding(1, 2)
-
-	statusMsgStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("82")).
-			Bold(true)
 )
 
 // priorityStyle returns a colored priority indicator.
@@ -1237,64 +978,6 @@ func visibleItems(scroll, total, viewHeight int) visibleRange {
 	return visibleRange{start: start, end: end}
 }
 
-// placeOverlay centers the overlay string on top of the background string.
-func placeOverlay(width, height int, overlay, background string) string {
-	overlayLines := strings.Split(overlay, "\n")
-	bgLines := strings.Split(background, "\n")
-
-	// Ensure background has enough lines
-	for len(bgLines) < height {
-		bgLines = append(bgLines, "")
-	}
-
-	overlayHeight := len(overlayLines)
-	overlayWidth := 0
-	for _, l := range overlayLines {
-		if w := lipgloss.Width(l); w > overlayWidth {
-			overlayWidth = w
-		}
-	}
-
-	startY := (height - overlayHeight) / 2
-	startX := (width - overlayWidth) / 2
-	if startY < 0 {
-		startY = 0
-	}
-	if startX < 0 {
-		startX = 0
-	}
-
-	for i, overlayLine := range overlayLines {
-		bgIdx := startY + i
-		if bgIdx >= len(bgLines) {
-			break
-		}
-		bgRunes := []rune(bgLines[bgIdx])
-		olRunes := []rune(overlayLine)
-
-		// Build the composed line
-		var result []rune
-		// Pad/take background up to startX
-		for j := 0; j < startX && j < len(bgRunes); j++ {
-			result = append(result, bgRunes[j])
-		}
-		for len(result) < startX {
-			result = append(result, ' ')
-		}
-		// Insert overlay
-		result = append(result, olRunes...)
-		// Append remainder of background if any.
-		// Use visual width (ANSI-aware) so the resume position is correct.
-		afterOverlay := startX + lipgloss.Width(overlayLine)
-		if afterOverlay < len(bgRunes) {
-			result = append(result, bgRunes[afterOverlay:]...)
-		}
-		bgLines[bgIdx] = string(result)
-	}
-
-	return strings.Join(bgLines[:height], "\n")
-}
-
 func truncate(s string, maxLen int) string {
 	if maxLen < 4 {
 		maxLen = 4
@@ -1404,4 +1087,11 @@ func wordWrap(s string, maxWidth int) []string {
 		return []string{""}
 	}
 	return result
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

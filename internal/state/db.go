@@ -758,7 +758,7 @@ func (db *DB) GetRetry(beadID, anvil string) (*RetryRecord, error) {
 	r.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 	if nextRetry.Valid {
 		t, _ := time.Parse(time.RFC3339, nextRetry.String)
-		r.NextRetry = &t
+			r.NextRetry = &t
 	}
 	return &r, nil
 }
@@ -1098,7 +1098,7 @@ type NeedsAttentionBead struct {
 func (db *DB) NeedsAttentionBeads() ([]NeedsAttentionBead, error) {
 	rows, err := db.conn.Query(
 		`SELECT r.bead_id, r.anvil, r.needs_human, r.clarification_needed, r.last_error,
-		        COALESCE(q.title, w.title, '') AS title
+		        COALESCE(NULLIF(q.title, ''), NULLIF(w.title, ''), '') AS title
 		 FROM retries r
 		 LEFT JOIN queue_cache q ON r.bead_id = q.bead_id AND r.anvil = q.anvil
 		 LEFT JOIN (
@@ -1434,7 +1434,7 @@ func (db *DB) GetProviderQuota(pv string) (*provider.Quota, error) {
 	}
 	if reqReset.Valid {
 		t, _ := time.Parse(time.RFC3339, reqReset.String)
-		q.RequestsReset = &t
+			q.RequestsReset = &t
 	}
 	if tokReset.Valid {
 		t, _ := time.Parse(time.RFC3339, tokReset.String)

@@ -133,7 +133,7 @@ func TestEventLineCountMatchesRender(t *testing.T) {
 	}
 }
 
-func TestRenderWorkersDoesNotExceedSinglePanel(t *testing.T) {
+func TestRenderWorkersDoesNotExceedLeftColumn(t *testing.T) {
 	m := Model{
 		workers: []WorkerItem{
 			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
@@ -147,15 +147,46 @@ func TestRenderWorkersDoesNotExceedSinglePanel(t *testing.T) {
 	contentHeight := 30
 	width := 40
 
-	queuePanel := m.renderQueue(width, contentHeight)
+	leftColumn := m.renderLeftColumn(width, contentHeight)
 	workerPanel := m.renderWorkers(width, contentHeight)
 
-	queueLines := strings.Count(strings.TrimRight(queuePanel, "\n"), "\n") + 1
+	leftLines := strings.Count(strings.TrimRight(leftColumn, "\n"), "\n") + 1
 	workerLines := strings.Count(strings.TrimRight(workerPanel, "\n"), "\n") + 1
 
-	if workerLines != queueLines {
-		t.Errorf("renderWorkers produced %d lines, expected same as renderQueue's %d lines (contentHeight=%d)",
-			workerLines, queueLines, contentHeight)
+	if workerLines != leftLines {
+		t.Errorf("renderWorkers produced %d lines, expected same as renderLeftColumn's %d lines (contentHeight=%d)",
+			workerLines, leftLines, contentHeight)
+	}
+}
+
+func TestRenderNeedsAttentionShowsItems(t *testing.T) {
+	m := Model{
+		needsAttention: []NeedsAttentionItem{
+			{BeadID: "bd-42", Anvil: "heimdall", Reason: "exhausted retries"},
+			{BeadID: "bd-99", Anvil: "metadata", Reason: "clarification needed"},
+		},
+		focused: PanelNeedsAttention,
+	}
+	rendered := m.renderNeedsAttention(60, 20)
+	if !strings.Contains(rendered, "bd-42") {
+		t.Errorf("expected bd-42 in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "exhausted retries") {
+		t.Errorf("expected reason 'exhausted retries' in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Needs Attention (2)") {
+		t.Errorf("expected 'Needs Attention (2)' title in rendered output:\n%s", rendered)
+	}
+}
+
+func TestRenderNeedsAttentionEmpty(t *testing.T) {
+	m := Model{
+		needsAttention: nil,
+		focused:        PanelNeedsAttention,
+	}
+	rendered := m.renderNeedsAttention(60, 20)
+	if !strings.Contains(rendered, "None") {
+		t.Errorf("expected 'None' when no items:\n%s", rendered)
 	}
 }
 
