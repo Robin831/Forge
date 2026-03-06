@@ -780,7 +780,7 @@ func (db *DB) NeedsHumanBeads() ([]RetryRecord, error) {
 func (db *DB) ClarificationNeededBeads() ([]RetryRecord, error) {
 	rows, err := db.conn.Query(
 		`SELECT bead_id, anvil, retry_count, next_retry, needs_human, clarification_needed, last_error, updated_at
-		 FROM retries WHERE clarification_needed = 1 ORDER BY updated_at DESC`)
+		 FROM retries WHERE clarification_needed = 1 AND needs_human = 0 ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}

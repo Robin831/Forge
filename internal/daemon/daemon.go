@@ -961,12 +961,17 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if err := d.db.SetClarificationNeeded(cp.BeadID, cp.Anvil, true, cp.Reason); err != nil {
+		reason := strings.TrimSpace(cp.Reason)
+		if reason == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "reason is required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if err := d.db.SetClarificationNeeded(cp.BeadID, cp.Anvil, true, reason); err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to set clarification: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		_ = d.db.LogEvent(state.EventClarificationNeeded, fmt.Sprintf("Bead %s needs clarification: %s", cp.BeadID, cp.Reason), cp.BeadID, cp.Anvil)
-		d.logger.Info("bead marked as clarification_needed", "bead", cp.BeadID, "anvil", cp.Anvil, "reason", cp.Reason)
+		_ = d.db.LogEvent(state.EventClarificationNeeded, fmt.Sprintf("Bead %s needs clarification: %s", cp.BeadID, reason), cp.BeadID, cp.Anvil)
+		d.logger.Info("bead marked as clarification_needed", "bead", cp.BeadID, "anvil", cp.Anvil, "reason", reason)
 		data, _ := json.Marshal(map[string]string{"message": "clarification_needed set"})
 		return ipc.Response{Type: "ok", Payload: data}
 

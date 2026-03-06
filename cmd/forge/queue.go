@@ -123,7 +123,7 @@ var queueRunCmd = &cobra.Command{
 
 var queueClarifyCmd = &cobra.Command{
 	Use:     "clarify <id>",
-	Short:   "Mark a bead as needing human clarification before work can start",
+	Short:   "Mark a bead as needing human clarification before work can start (daemon-local only; bead still appears in anvil polling)",
 	Args:    cobra.ExactArgs(1),
 	Example: "  forge queue clarify BD-42 --anvil heimdall --reason 'which auth library?'",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -171,7 +171,7 @@ var queueClarifyCmd = &cobra.Command{
 
 var queueUnclarifyCmd = &cobra.Command{
 	Use:     "unclarify <id>",
-	Short:   "Clear the clarification_needed flag so the bead can be dispatched",
+	Short:   "Clear the clarification_needed flag so the bead can be dispatched (daemon-local only)",
 	Args:    cobra.ExactArgs(1),
 	Example: "  forge queue unclarify BD-42 --anvil heimdall",
 	RunE: func(cmd *cobra.Command, args []string) error {

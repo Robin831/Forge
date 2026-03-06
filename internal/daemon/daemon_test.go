@@ -194,6 +194,18 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 		assert.Contains(t, msg["message"], "bead_id and anvil are required")
 	})
 
+	t.Run("set clarification: empty reason", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ClarificationPayload{BeadID: "X", Anvil: "a"})
+		resp := d.handleIPC(ipc.Command{
+			Type:    "set_clarification",
+			Payload: payload,
+		})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "reason is required")
+	})
+
 	t.Run("set and clear clarification", func(t *testing.T) {
 		// Set
 		payload, _ := json.Marshal(ipc.ClarificationPayload{

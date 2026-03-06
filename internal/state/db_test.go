@@ -311,6 +311,43 @@ func TestDB_ClarificationNeededBeads(t *testing.T) {
 	}
 }
 
+func TestDB_ClarificationNeededBeads_ExcludesNeedsHuman(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Set clarification_needed on two beads
+	if err := db.SetClarificationNeeded("BD-1", "anvil-1", true, "reason1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetClarificationNeeded("BD-2", "anvil-1", true, "reason2"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Also mark BD-2 as needs_human (simulating exhausted retries)
+	if err := db.UpsertRetry(&RetryRecord{BeadID: "BD-2", Anvil: "anvil-1", NeedsHuman: true, ClarificationNeeded: true, LastError: "reason2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	beads, err := db.ClarificationNeededBeads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beads) != 1 {
+		t.Errorf("expected 1 bead (needs_human should be excluded), got %d", len(beads))
+	}
+	if len(beads) > 0 && beads[0].BeadID != "BD-1" {
+		t.Errorf("expected BD-1, got %s", beads[0].BeadID)
+	}
+}
+
 func TestDB_PendingRetries_ExcludesClarification(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {
