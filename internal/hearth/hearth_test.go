@@ -55,7 +55,7 @@ func TestEventLineCountMatchesRender(t *testing.T) {
 	}
 }
 
-func TestRenderWorkersHeightMatchesSinglePanel(t *testing.T) {
+func TestRenderWorkersDoesNotExceedSinglePanel(t *testing.T) {
 	m := Model{
 		workers: []WorkerItem{
 			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
@@ -72,8 +72,8 @@ func TestRenderWorkersHeightMatchesSinglePanel(t *testing.T) {
 	queuePanel := m.renderQueue(width, contentHeight)
 	workerPanel := m.renderWorkers(width, contentHeight)
 
-	queueLines := strings.Count(queuePanel, "\n") + 1
-	workerLines := strings.Count(workerPanel, "\n") + 1
+	queueLines := strings.Count(strings.TrimRight(queuePanel, "\n"), "\n") + 1
+	workerLines := strings.Count(strings.TrimRight(workerPanel, "\n"), "\n") + 1
 
 	if workerLines > queueLines {
 		t.Errorf("renderWorkers produced %d lines, exceeding renderQueue's %d lines (contentHeight=%d)",
