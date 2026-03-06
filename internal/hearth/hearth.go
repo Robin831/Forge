@@ -728,6 +728,8 @@ func phaseTag(phase string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("[cifix]")
 	case "reviewfix":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render("[reviewfix]")
+	case "rebase":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("[rebase]")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("[idle]")
 	}

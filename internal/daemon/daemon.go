@@ -386,6 +386,9 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			status := state.WorkerDone
 			if !res.Success {
 				status = state.WorkerFailed
+				d.logger.Error("rebase failed", "pr", req.PRNumber, "bead", req.BeadID, "error", res.Output)
+			} else {
+				d.logger.Info("rebase succeeded", "pr", req.PRNumber, "bead", req.BeadID)
 			}
 			_ = d.db.UpdateWorkerStatus(workerID, status)
 		}

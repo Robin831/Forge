@@ -9,7 +9,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/executil"
@@ -125,9 +127,10 @@ func Rebase(ctx context.Context, p Params) Result {
 
 // resolveWithSmith invokes a Smith worker (Claude/Gemini) to resolve conflicts.
 func (p *Params) resolveWithSmith(ctx context.Context, conflicted []string, providers []provider.Provider) error {
-	prompt := buildConflictPrompt(p.WorktreePath, conflicted)
+	prompt := buildConflictPrompt(p.WorktreePath, p.Branch, p.BaseBranch, conflicted)
 	logDir := p.WorktreePath + "/.forge-logs"
 
+	var lastErr error
 	for pi, pv := range providers {
 		if pi > 0 {
 			log.Printf("[rebase] PR #%d: provider %s rate-limited, trying %s",
@@ -138,33 +141,77 @@ func (p *Params) resolveWithSmith(ctx context.Context, conflicted []string, prov
 			return fmt.Errorf("spawning Smith (%s): %w", pv.Kind, err)
 		}
 		result := process.Wait()
+		// Mirror reviewfix: a success subtype overrides the RateLimited flag
+		// (Claude can set RateLimited=true AND ResultSubtype="success" on some responses).
+		if result.ResultSubtype == "success" && !result.IsError {
+			result.RateLimited = false
+		}
 		if result.RateLimited {
+			lastErr = fmt.Errorf("provider %s rate-limited", pv.Kind)
 			continue
 		}
 		if result.ExitCode != 0 || result.IsError {
-			return fmt.Errorf("Smith exited %d (subtype=%s)", result.ExitCode, result.ResultSubtype)
+			return fmt.Errorf("Smith (%s) exited %d (subtype=%s)", pv.Kind, result.ExitCode, result.ResultSubtype)
 		}
 		return nil
 	}
-	return fmt.Errorf("all %d providers are rate-limited or failed", len(providers))
+	if lastErr != nil {
+		return fmt.Errorf("all %d providers rate-limited: %w", len(providers), lastErr)
+	}
+	return fmt.Errorf("all %d providers failed", len(providers))
 }
 
-// buildConflictPrompt creates a prompt asking the AI to resolve conflict markers.
-func buildConflictPrompt(worktreePath string, conflicted []string) string {
+// maxConflictFileBytes is the maximum bytes to inline per conflicted file in the prompt.
+const maxConflictFileBytes = 8192
+
+// buildConflictPrompt creates a detailed prompt asking the AI to resolve conflict markers,
+// including the actual content of each conflicted file.
+func buildConflictPrompt(worktreePath, branch, baseBranch string, conflicted []string) string {
 	var sb strings.Builder
-	sb.WriteString("You are resolving git merge conflicts in a pull request rebase.\n\n")
-	sb.WriteString("The following files have conflict markers (<<<<<<, =======, >>>>>>>):\n")
+	sb.WriteString("You are resolving git merge conflicts that occurred while rebasing a pull request branch onto main.\n\n")
+	sb.WriteString(fmt.Sprintf("Branch being rebased: %s\n", branch))
+	sb.WriteString(fmt.Sprintf("Rebasing onto: origin/%s\n\n", baseBranch))
+	sb.WriteString("In a rebase conflict:\n")
+	sb.WriteString("  - The section between <<<<<<< HEAD and ======= is the CURRENT upstream code (from origin/" + baseBranch + ")\n")
+	sb.WriteString("  - The section between ======= and >>>>>>> is the INCOMING change from the PR branch\n\n")
+	sb.WriteString("Your task: resolve ALL conflicts in the files below. Make a clear, decisive decision\n")
+	sb.WriteString("about what the final code should look like. In most cases the PR's incoming changes\n")
+	sb.WriteString("are the intended contribution — keep them unless they obviously conflict with the\n")
+	sb.WriteString("upstream logic (e.g. a function was renamed or removed). When both sides add code,\n")
+	sb.WriteString("combine them. When they contradict, prefer the PR's changes.\n\n")
+	sb.WriteString("RULES:\n")
+	sb.WriteString("1. Remove EVERY conflict marker: <<<<<<<, =======, >>>>>>>.\n")
+	sb.WriteString("2. Do NOT leave any unresolved marker in the file.\n")
+	sb.WriteString("3. Edit the files directly — do NOT run any git commands.\n")
+	sb.WriteString("4. Preserve correct syntax (Go, TypeScript, YAML, etc.) in the final file.\n\n")
+
+	sb.WriteString("---\nCONFLICTED FILES:\n---\n\n")
 	for _, f := range conflicted {
-		sb.WriteString("  - " + f + "\n")
+		sb.WriteString(fmt.Sprintf("### %s\n", f))
+		fulPath := filepath.Join(worktreePath, f)
+		data, err := os.ReadFile(fulPath)
+		if err != nil {
+			sb.WriteString(fmt.Sprintf("(could not read file: %v)\n", err))
+		} else {
+			contents := data
+			truncated := false
+			if len(contents) > maxConflictFileBytes {
+				contents = contents[:maxConflictFileBytes]
+				truncated = true
+			}
+			sb.WriteString("```\n")
+			sb.Write(contents)
+			if truncated {
+				sb.WriteString(fmt.Sprintf("\n... (truncated; full file at %s)\n", fulPath))
+			}
+			sb.WriteString("```\n")
+		}
+		sb.WriteString("\n")
 	}
-	sb.WriteString("\nFor each conflicted file:\n")
-	sb.WriteString("1. Read the file to see the conflict markers\n")
-	sb.WriteString("2. Resolve the conflict by choosing the correct content, combining both sides intelligently\n")
-	sb.WriteString("3. Remove ALL conflict markers (<<<<<<, =======, >>>>>>>)\n")
-	sb.WriteString("4. Write the resolved content back to the file\n\n")
-	sb.WriteString("Do NOT run any git commands — only edit the files. ")
-	sb.WriteString("Preserve the intent of both the incoming changes and the existing code.\n")
-	sb.WriteString("Working directory: " + worktreePath + "\n")
+
+	sb.WriteString("---\n")
+	sb.WriteString("Now edit each file to resolve its conflicts and write the corrected content back.\n")
+	sb.WriteString(fmt.Sprintf("Working directory: %s\n", worktreePath))
 	return sb.String()
 }
 
