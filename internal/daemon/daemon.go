@@ -150,6 +150,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 	if strings.TrimSpace(webhookURL) != "" {
 		formatted, err := notify.FormatWebhookURL(webhookURL)
 		if err != nil {
+			db.Close()
 			logFile.Close()
 			return nil, fmt.Errorf("invalid Teams webhook URL: %w", err)
 		}
