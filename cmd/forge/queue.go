@@ -153,8 +153,15 @@ var queueClarifyCmd = &cobra.Command{
 
 		if resp.Type == "error" {
 			var msg map[string]string
-			_ = json.Unmarshal(resp.Payload, &msg)
-			return fmt.Errorf("daemon error: %s", msg["message"])
+			var errMsg string
+			if err := json.Unmarshal(resp.Payload, &msg); err == nil && msg["message"] != "" {
+				errMsg = msg["message"]
+			} else if len(resp.Payload) > 0 {
+				errMsg = string(resp.Payload)
+			} else {
+				errMsg = "unknown error from daemon"
+			}
+			return fmt.Errorf("daemon error: %s", errMsg)
 		}
 
 		fmt.Printf("Bead %s marked as needing clarification\n", beadID)
@@ -192,8 +199,15 @@ var queueUnclarifyCmd = &cobra.Command{
 
 		if resp.Type == "error" {
 			var msg map[string]string
-			_ = json.Unmarshal(resp.Payload, &msg)
-			return fmt.Errorf("daemon error: %s", msg["message"])
+			var errMsg string
+			if err := json.Unmarshal(resp.Payload, &msg); err == nil && msg["message"] != "" {
+				errMsg = msg["message"]
+			} else if len(resp.Payload) > 0 {
+				errMsg = string(resp.Payload)
+			} else {
+				errMsg = "unknown error from daemon"
+			}
+			return fmt.Errorf("daemon error: %s", errMsg)
 		}
 
 		fmt.Printf("Clarification cleared for bead %s\n", beadID)

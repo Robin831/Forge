@@ -217,7 +217,10 @@ func TestDB_SetClarificationNeeded(t *testing.T) {
 
 	// Initially no record exists
 	r, err := db.GetRetry("BD-1", "anvil-1")
-	if err == nil && r != nil {
+	if err != nil {
+		t.Fatalf("unexpected error from GetRetry: %v", err)
+	}
+	if r != nil {
 		t.Fatal("expected no retry record initially")
 	}
 

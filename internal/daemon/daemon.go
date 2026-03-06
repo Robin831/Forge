@@ -886,6 +886,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
+		// Block beads that need clarification (consistent with auto-dispatch behavior)
+		if d.isBeadClarificationNeeded(targetBead.ID, targetBead.Anvil) {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q needs clarification; use 'forge queue unclarify' to clear", targetBead.ID)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
 		// Dispatch immediately regardless of auto_dispatch setting (but respect capacity)
 		anvilCfg := d.cfg.Anvils[targetBead.Anvil]
 
