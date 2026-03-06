@@ -123,19 +123,22 @@ func (m *Manager) Load(ctx context.Context) error {
 
 // HandleEvent processes a Bellows PR event and dispatches any required actions.
 func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
-	m.mu.Lock()
 	key := m.key(event.Anvil, event.PRNumber)
+
+	m.mu.Lock()
 	st, ok := m.states[key]
+	m.mu.Unlock()
+
 	if !ok {
 		// New PR (or first time we've seen it this session)
-		// Try to find it in the DB
+		// Try to find it in the DB outside the lock
 		pr, err := m.db.GetPRByNumber(event.Anvil, event.PRNumber)
+		var newSt *PRState
 		if err != nil {
-			// DB error — log and fall back to in-memory-only tracking to avoid
-			// inserting a duplicate row if the record actually exists.
+			// DB error — log and fall back to in-memory-only tracking
 			m.logger.Error("failed to query PR from DB, falling back to in-memory tracking",
 				"pr", event.PRNumber, "anvil", event.Anvil, "error", err)
-			st = &PRState{
+			newSt = &PRState{
 				PRNumber:  event.PRNumber,
 				BeadID:    event.BeadID,
 				Anvil:     event.Anvil,
@@ -143,7 +146,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 				CIPassing: true,
 			}
 		} else if pr != nil {
-			st = &PRState{
+			newSt = &PRState{
 				ID:           pr.ID,
 				PRNumber:     pr.Number,
 				BeadID:       pr.BeadID,
@@ -157,36 +160,47 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 			}
 		} else {
 			// Not found in DB — create new state and persist it
-			st = &PRState{
+			newSt = &PRState{
 				PRNumber:  event.PRNumber,
 				BeadID:    event.BeadID,
 				Anvil:     event.Anvil,
 				Branch:    event.Branch,
 				CIPassing: true, // Default to true so first failure triggers fix
 			}
-			// Persist new PR to DB immediately so it gets an ID
+			// Persist new PR to DB
 			dbPR := &state.PR{
-				Number:    st.PRNumber,
-				Anvil:     st.Anvil,
-				BeadID:    st.BeadID,
-				Branch:    st.Branch,
+				Number:    newSt.PRNumber,
+				Anvil:     newSt.Anvil,
+				BeadID:    newSt.BeadID,
+				Branch:    newSt.Branch,
 				Status:    state.PROpen,
 				CreatedAt: time.Now(),
 			}
 			if err := m.db.InsertPR(dbPR); err != nil {
-				m.logger.Error("failed to insert new PR into DB", "pr", st.PRNumber, "anvil", st.Anvil, "error", err)
+				m.logger.Error("failed to insert new PR into DB", "pr", newSt.PRNumber, "anvil", newSt.Anvil, "error", err)
 			} else {
-				st.ID = dbPR.ID
-				m.logger.Info("tracked new PR in DB", "pr", st.PRNumber, "anvil", st.Anvil, "db_id", st.ID)
+				newSt.ID = dbPR.ID
+				m.logger.Info("tracked new PR in DB", "pr", newSt.PRNumber, "anvil", newSt.Anvil, "db_id", newSt.ID)
 			}
 		}
-		m.states[key] = st
+
+		m.mu.Lock()
+		if existing, exists := m.states[key]; exists {
+			st = existing
+		} else {
+			m.states[key] = newSt
+			st = newSt
+		}
+		m.mu.Unlock()
 	}
+
+	m.mu.Lock()
 	if event.Branch != "" {
 		st.Branch = event.Branch
 	}
 
 	var action Action
+	var logMsg string
 
 	switch event.EventType {
 	case bellows.EventCIPassed:
@@ -208,9 +222,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 			m.logger.Info("PR CI failed, dispatching fix", "pr", event.PRNumber, "anvil", event.Anvil, "attempt", st.CIFixCount)
 		} else {
 			m.logger.Warn("PR CI failed, max fix attempts exhausted", "pr", event.PRNumber, "anvil", event.Anvil, "max", m.maxCI)
-			_ = m.db.LogEvent(state.EventLifecycleExhausted,
-				fmt.Sprintf("PR #%d (%s): CI fix attempts exhausted (%d)", event.PRNumber, event.Anvil, m.maxCI),
-				event.BeadID, event.Anvil)
+			logMsg = fmt.Sprintf("PR #%d (%s): CI fix attempts exhausted (%d)", event.PRNumber, event.Anvil, m.maxCI)
 		}
 
 	case bellows.EventReviewApproved:
@@ -228,9 +240,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 				m.logger.Info("PR changes requested, dispatching fix", "pr", event.PRNumber, "anvil", event.Anvil, "attempt", st.ReviewFixCnt)
 			} else {
 				m.logger.Warn("PR changes requested, max fix attempts exhausted", "pr", event.PRNumber, "anvil", event.Anvil, "max", m.maxRev)
-				_ = m.db.LogEvent(state.EventLifecycleExhausted,
-					fmt.Sprintf("PR #%d (%s): Review fix attempts exhausted (%d)", event.PRNumber, event.Anvil, m.maxRev),
-					event.BeadID, event.Anvil)
+				logMsg = fmt.Sprintf("PR #%d (%s): Review fix attempts exhausted (%d)", event.PRNumber, event.Anvil, m.maxRev)
 			}
 		} else {
 			m.logger.Info("PR changes requested again, but already in fix cycle", "pr", event.PRNumber, "anvil", event.Anvil)
@@ -244,9 +254,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 			m.logger.Info("PR merge conflict detected, dispatching rebase", "pr", event.PRNumber, "anvil", event.Anvil, "attempt", st.RebaseCount)
 		} else {
 			m.logger.Warn("PR merge conflict detected, max rebase attempts exhausted", "pr", event.PRNumber, "anvil", event.Anvil, "max", m.maxRebase)
-			_ = m.db.LogEvent(state.EventLifecycleExhausted,
-				fmt.Sprintf("PR #%d (%s): rebase attempts exhausted (%d)", event.PRNumber, event.Anvil, m.maxRebase),
-				event.BeadID, event.Anvil)
+			logMsg = fmt.Sprintf("PR #%d (%s): rebase attempts exhausted (%d)", event.PRNumber, event.Anvil, m.maxRebase)
 		}
 
 	case bellows.EventPRMerged:
@@ -276,6 +284,10 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 
 	// Persist changes to DB outside the lock to avoid blocking other event handlers
 	// during SQLite contention (busy timeout / WAL checkpoint).
+	if logMsg != "" {
+		_ = m.db.LogEvent(state.EventLifecycleExhausted, logMsg, event.BeadID, event.Anvil)
+	}
+
 	if dbID > 0 {
 		if err := m.db.UpdatePRLifecycle(dbID, ciFixCount, reviewFixCnt, ciPassing); err != nil {
 			m.logger.Error("failed to update PR lifecycle in DB", "pr", event.PRNumber, "anvil", event.Anvil, "error", err)

@@ -48,7 +48,7 @@ type Monitor struct {
 	anvilPaths   map[string]string // anvil name → path
 	handlers     []Handler
 	mu           sync.Mutex
-	lastStatuses map[int]*prSnapshot // PR number → last known state
+	lastStatuses map[string]*prSnapshot // anvil/PR number → last known state
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -71,7 +71,7 @@ func New(db *state.DB, interval time.Duration, anvilPaths map[string]string) *Mo
 		db:           db,
 		interval:     interval,
 		anvilPaths:   anvilPaths,
-		lastStatuses: make(map[int]*prSnapshot),
+		lastStatuses: make(map[string]*prSnapshot),
 	}
 }
 
@@ -141,7 +141,8 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	}
 
 	m.mu.Lock()
-	lastSnap := m.lastStatuses[pr.Number]
+	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
+	lastSnap := m.lastStatuses[key]
 	isFirstCheck := lastSnap == nil
 	if lastSnap == nil {
 		// Seed CIPassing=true so that a PR that is already failing when the
@@ -267,7 +268,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 
 	// Update snapshot
 	m.mu.Lock()
-	m.lastStatuses[pr.Number] = newSnap
+	m.lastStatuses[key] = newSnap
 	m.mu.Unlock()
 }
 

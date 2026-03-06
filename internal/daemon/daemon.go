@@ -286,6 +286,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.lifecycleMgr = lifecycle.New(d.db, d.logger, d.handleLifecycleAction)
 	if err := d.lifecycleMgr.Load(ctx); err != nil {
 		d.logger.Error("failed to load lifecycle states", "error", err)
+		return fmt.Errorf("daemon initialization failed: %w", err)
 	}
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
 

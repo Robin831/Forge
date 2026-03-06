@@ -431,7 +431,7 @@ func (db *DB) InsertPR(pr *PR) error {
 
 // PRByNumber returns the PR record for a given GitHub PR number, or nil if not found.
 func (db *DB) PRByNumber(number int) (*PR, error) {
-	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked
+	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, ci_passing
 		FROM prs WHERE number = ? LIMIT 1`, number)
 	if err != nil {
 		return nil, err
@@ -467,7 +467,7 @@ func (db *DB) UpdatePRLifecycle(id int, ciFixCount, reviewFixCount int, ciPassin
 // GetPRByNumber returns a PR by its anvil and number.
 func (db *DB) GetPRByNumber(anvil string, number int) (*PR, error) {
 	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, ci_passing
-		FROM prs WHERE anvil = ? AND number = ?`, anvil, number)
+		FROM prs WHERE anvil = ? AND number = ? ORDER BY id DESC LIMIT 1`, anvil, number)
 }
 
 // OpenPRs returns all PRs with non-terminal status.

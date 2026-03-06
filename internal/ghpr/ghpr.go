@@ -118,7 +118,6 @@ func Create(ctx context.Context, p CreateParams) (*PR, error) {
 			Branch:    p.Branch,
 			Status:    state.PROpen,
 			CreatedAt: pr.Created,
-			CIPassing: true,
 		}
 		_ = p.DB.InsertPR(dbPR)
 		_ = p.DB.LogEvent(state.EventPRCreated,
