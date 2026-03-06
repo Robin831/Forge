@@ -152,6 +152,59 @@ func anvilPathMap(cfg *config.Config) map[string]string {
 	return m
 }
 
+// reconcileGitHubPRs fetches open PRs from GitHub and registers any that are
+// missing from the state DB. This ensures Bellows monitors PRs even after a
+// DB reset or if the PR was created outside a recorded Forge pipeline session.
+func (d *Daemon) reconcileGitHubPRs(ctx context.Context) {
+	for anvilName, anvilCfg := range d.cfg.Anvils {
+		if anvilCfg.Path == "" {
+			continue
+		}
+		prs, err := ghpr.ListOpen(ctx, anvilCfg.Path)
+		if err != nil {
+			d.logger.Warn("reconcile: could not list GitHub PRs", "anvil", anvilName, "err", err)
+			continue
+		}
+		for _, pr := range prs {
+			existing, _ := d.db.PRByNumber(pr.Number)
+			if existing != nil {
+				continue // already tracked
+			}
+			beadID := extractBeadID(pr.Body)
+			if beadID == "" {
+				continue // not a Forge PR
+			}
+			dbPR := &state.PR{
+				Number:    pr.Number,
+				Anvil:     anvilName,
+				BeadID:    beadID,
+				Branch:    pr.Branch,
+				Status:    state.PROpen,
+				CreatedAt: time.Now(),
+			}
+			if err := d.db.InsertPR(dbPR); err == nil {
+				d.logger.Info("reconcile: registered untracked GitHub PR",
+					"pr", pr.Number, "bead", beadID, "anvil", anvilName)
+			}
+		}
+	}
+}
+
+// extractBeadID parses a bead ID from a Forge PR body (e.g. "**Bead**: Forge-abc").
+func extractBeadID(body string) string {
+	const marker = "**Bead**: "
+	idx := strings.Index(body, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := body[idx+len(marker):]
+	end := strings.IndexAny(rest, "\n\r ")
+	if end < 0 {
+		end = len(rest)
+	}
+	return rest[:end]
+}
+
 // Run starts the daemon's main loop. It blocks until ctx is cancelled
 // or a shutdown signal is received.
 func (d *Daemon) Run(ctx context.Context) error {
@@ -232,6 +285,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.bellowsMonitor = bellows.New(d.db, monitorInterval, monitorAnvils)
 	d.lifecycleMgr = lifecycle.New(d.db, d.handleLifecycleAction)
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
+
+	// Reconcile: register any GitHub PRs not yet tracked in the state DB.
+	// This handles PRs created before the current DB or after a DB reset.
+	d.reconcileGitHubPRs(ctx)
 
 	go func() {
 		if err := d.bellowsMonitor.Run(ctx); err != nil && err != context.Canceled {

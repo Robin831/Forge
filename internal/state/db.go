@@ -384,6 +384,19 @@ func (db *DB) InsertPR(pr *PR) error {
 	return nil
 }
 
+// PRByNumber returns the PR record for a given GitHub PR number, or nil if not found.
+func (db *DB) PRByNumber(number int) (*PR, error) {
+	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked
+		FROM prs WHERE number = ? LIMIT 1`, number)
+	if err != nil {
+		return nil, err
+	}
+	if len(prs) == 0 {
+		return nil, nil
+	}
+	return &prs[0], nil
+}
+
 // UpdatePRStatus updates a PR's status and last_checked time by GitHub PR number.
 func (db *DB) UpdatePRStatus(number int, status PRStatus) error {
 	_, err := db.conn.Exec(

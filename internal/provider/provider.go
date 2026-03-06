@@ -165,12 +165,18 @@ func (p Provider) copilotArgs(claudeFlags []string) []string {
 }
 
 // Defaults returns the default ordered list of providers.
-// Claude is tried first, Gemini second, Copilot CLI third.
+// Claude is tried first, Gemini second.
+//
+// GitHub Copilot CLI is NOT included by default because it consumes
+// premium "Copilot for CLI" quota that requires manual approval.
+// To enable Copilot as a fallback, add it explicitly in forge.yaml:
+//
+//	settings:
+//	  providers: [claude, gemini, copilot]
 func Defaults() []Provider {
 	return []Provider{
 		{Kind: Claude},
 		{Kind: Gemini},
-		{Kind: Copilot},
 	}
 }
 

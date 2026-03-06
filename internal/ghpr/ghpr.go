@@ -244,6 +244,44 @@ func FetchUnresolvedThreadCount(ctx context.Context, worktreePath string, prNumb
 	return count, nil
 }
 
+// OpenPR is a lightweight view of a GitHub PR used for reconciliation.
+type OpenPR struct {
+	Number  int
+	Title   string
+	Branch  string
+	Body    string
+}
+
+// ListOpen returns all open PRs in the repository for the given worktree path.
+func ListOpen(ctx context.Context, worktreePath string) ([]OpenPR, error) {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", "pr", "list",
+		"--state", "open",
+		"--json", "number,title,headRefName,body",
+		"--limit", "100",
+	))
+	cmd.Dir = worktreePath
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh pr list failed: %w\nstderr: %s", err, stderr.String())
+	}
+	var raw []struct {
+		Number      int    `json:"number"`
+		Title       string `json:"title"`
+		HeadRefName string `json:"headRefName"`
+		Body        string `json:"body"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		return nil, fmt.Errorf("parsing pr list: %w", err)
+	}
+	out := make([]OpenPR, len(raw))
+	for i, r := range raw {
+		out[i] = OpenPR{Number: r.Number, Title: r.Title, Branch: r.HeadRefName, Body: r.Body}
+	}
+	return out, nil
+}
+
 // GetRepoOwnerAndName extracts the owner and repository name from git remote origin.
 func GetRepoOwnerAndName(ctx context.Context, worktreePath string) (owner, repo string, err error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "remote", "get-url", "origin"))
