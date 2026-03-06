@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/provider"
@@ -90,14 +89,52 @@ func (db *DB) migrate() error {
 	if _, err := db.conn.Exec(schema); err != nil {
 		return err
 	}
-	// Additive migrations for existing databases
-	if _, err := db.conn.Exec(`ALTER TABLE workers ADD COLUMN phase TEXT NOT NULL DEFAULT ''`); err != nil {
-		// Ignore error if column already exists (SQLite doesn't have IF NOT EXISTS for columns)
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			return err
+	// Additive column migrations — checked via PRAGMA to avoid fragile error-string matching.
+	type colMigration struct {
+		table  string
+		column string
+		stmt   string
+	}
+	migrations := []colMigration{
+		{"workers", "phase", `ALTER TABLE workers ADD COLUMN phase TEXT NOT NULL DEFAULT ''`},
+		{"prs", "ci_fix_count", `ALTER TABLE prs ADD COLUMN ci_fix_count INTEGER NOT NULL DEFAULT 0`},
+		{"prs", "review_fix_count", `ALTER TABLE prs ADD COLUMN review_fix_count INTEGER NOT NULL DEFAULT 0`},
+		{"prs", "ci_passing", `ALTER TABLE prs ADD COLUMN ci_passing INTEGER NOT NULL DEFAULT 1`},
+	}
+	for _, m := range migrations {
+		exists, err := db.columnExists(m.table, m.column)
+		if err != nil {
+			return fmt.Errorf("checking column %s.%s: %w", m.table, m.column, err)
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.conn.Exec(m.stmt); err != nil {
+			return fmt.Errorf("adding column %s.%s: %w", m.table, m.column, err)
 		}
 	}
 	return nil
+}
+
+// columnExists reports whether the named column exists in the given table.
+func (db *DB) columnExists(table, column string) (bool, error) {
+	rows, err := db.conn.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, colType string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &colType, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 const schema = `
@@ -115,14 +152,17 @@ CREATE TABLE IF NOT EXISTS workers (
 );
 
 CREATE TABLE IF NOT EXISTS prs (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    number       INTEGER NOT NULL,
-    anvil        TEXT NOT NULL,
-    bead_id      TEXT NOT NULL DEFAULT '',
-    branch       TEXT NOT NULL DEFAULT '',
-    status       TEXT NOT NULL DEFAULT 'open',
-    created_at   TEXT NOT NULL,
-    last_checked TEXT
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    number           INTEGER NOT NULL,
+    anvil            TEXT NOT NULL,
+    bead_id          TEXT NOT NULL DEFAULT '',
+    branch           TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'open',
+    created_at       TEXT NOT NULL,
+    last_checked     TEXT,
+    ci_fix_count     INTEGER NOT NULL DEFAULT 0,
+    review_fix_count INTEGER NOT NULL DEFAULT 0,
+    ci_passing       INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -358,23 +398,28 @@ const (
 
 // PR represents a pull request entry.
 type PR struct {
-	ID          int
-	Number      int
-	Anvil       string
-	BeadID      string
-	Branch      string
-	Status      PRStatus
-	CreatedAt   time.Time
-	LastChecked *time.Time
+	ID             int
+	Number         int
+	Anvil          string
+	BeadID         string
+	Branch         string
+	Status         PRStatus
+	CreatedAt      time.Time
+	LastChecked    *time.Time
+	CIFixCount     int
+	ReviewFixCount int
+	CIPassing      bool
 }
 
 // InsertPR adds a new PR record.
+// ci_passing is intentionally omitted so the DB default (1 = passing) always applies
+// for new PRs, avoiding silent insertion of a failing PR due to Go's zero-value false.
 func (db *DB) InsertPR(pr *PR) error {
 	res, err := db.conn.Exec(
-		`INSERT INTO prs (number, anvil, bead_id, branch, status, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO prs (number, anvil, bead_id, branch, status, created_at, ci_fix_count, review_fix_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		pr.Number, pr.Anvil, pr.BeadID, pr.Branch, string(pr.Status),
-		pr.CreatedAt.Format(time.RFC3339),
+		pr.CreatedAt.Format(time.RFC3339), pr.CIFixCount, pr.ReviewFixCount,
 	)
 	if err != nil {
 		return err
@@ -386,7 +431,7 @@ func (db *DB) InsertPR(pr *PR) error {
 
 // PRByNumber returns the PR record for a given GitHub PR number, or nil if not found.
 func (db *DB) PRByNumber(number int) (*PR, error) {
-	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked
+	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, ci_passing
 		FROM prs WHERE number = ? LIMIT 1`, number)
 	if err != nil {
 		return nil, err
@@ -397,20 +442,50 @@ func (db *DB) PRByNumber(number int) (*PR, error) {
 	return &prs[0], nil
 }
 
-// UpdatePRStatus updates a PR's status and last_checked time by GitHub PR number.
-func (db *DB) UpdatePRStatus(number int, status PRStatus) error {
+// UpdatePRStatus updates a PR's status and last_checked time by its internal database ID.
+func (db *DB) UpdatePRStatus(id int, status PRStatus) error {
 	_, err := db.conn.Exec(
-		`UPDATE prs SET status = ?, last_checked = ? WHERE number = ?`,
-		string(status), time.Now().Format(time.RFC3339), number,
+		`UPDATE prs SET status = ?, last_checked = ? WHERE id = ?`,
+		string(status), time.Now().Format(time.RFC3339), id,
 	)
 	return err
 }
 
+// UpdatePRLifecycle updates the lifecycle state of a PR.
+func (db *DB) UpdatePRLifecycle(id int, ciFixCount, reviewFixCount int, ciPassing bool) error {
+	passing := 0
+	if ciPassing {
+		passing = 1
+	}
+	_, err := db.conn.Exec(
+		`UPDATE prs SET ci_fix_count = ?, review_fix_count = ?, ci_passing = ? WHERE id = ?`,
+		ciFixCount, reviewFixCount, passing, id,
+	)
+	return err
+}
+
+// GetPRByNumber returns a PR by its anvil and number.
+func (db *DB) GetPRByNumber(anvil string, number int) (*PR, error) {
+	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, ci_passing
+		FROM prs WHERE anvil = ? AND number = ? ORDER BY id DESC LIMIT 1`, anvil, number)
+}
+
 // OpenPRs returns all PRs with non-terminal status.
 func (db *DB) OpenPRs() ([]PR, error) {
-	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked
+	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, ci_passing
 		FROM prs WHERE status IN ('open', 'approved', 'needs_fix')
 		ORDER BY created_at`)
+}
+
+func (db *DB) queryPR(query string, args ...any) (*PR, error) {
+	prs, err := db.queryPRs(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	if len(prs) == 0 {
+		return nil, nil
+	}
+	return &prs[0], nil
 }
 
 func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
@@ -426,11 +501,13 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 		var status string
 		var createdAt string
 		var lastChecked sql.NullString
+		var ciPassing int
 		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch,
-			&status, &createdAt, &lastChecked); err != nil {
+			&status, &createdAt, &lastChecked, &p.CIFixCount, &p.ReviewFixCount, &ciPassing); err != nil {
 			return nil, err
 		}
 		p.Status = PRStatus(status)
+		p.CIPassing = ciPassing != 0
 		p.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 		if lastChecked.Valid {
 			t, _ := time.Parse(time.RFC3339, lastChecked.String)

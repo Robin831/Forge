@@ -48,7 +48,7 @@ type Monitor struct {
 	anvilPaths   map[string]string // anvil name → path
 	handlers     []Handler
 	mu           sync.Mutex
-	lastStatuses map[int]*prSnapshot // PR number → last known state
+	lastStatuses map[string]*prSnapshot // anvil/PR number → last known state
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -71,7 +71,7 @@ func New(db *state.DB, interval time.Duration, anvilPaths map[string]string) *Mo
 		db:           db,
 		interval:     interval,
 		anvilPaths:   anvilPaths,
-		lastStatuses: make(map[int]*prSnapshot),
+		lastStatuses: make(map[string]*prSnapshot),
 	}
 }
 
@@ -141,7 +141,8 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	}
 
 	m.mu.Lock()
-	lastSnap := m.lastStatuses[pr.Number]
+	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
+	lastSnap := m.lastStatuses[key]
 	isFirstCheck := lastSnap == nil
 	if lastSnap == nil {
 		// Seed CIPassing=true so that a PR that is already failing when the
@@ -173,7 +174,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   fmt.Sprintf("PR #%d has been merged", pr.Number),
 			Timestamp: time.Now(),
 		})
-		_ = m.db.UpdatePRStatus(pr.Number, state.PRMerged)
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
 		_ = m.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
 	} else if status.IsClosed() && !lastSnap.IsClosed {
@@ -186,7 +187,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   fmt.Sprintf("PR #%d has been closed", pr.Number),
 			Timestamp: time.Now(),
 		})
-		_ = m.db.UpdatePRStatus(pr.Number, state.PRClosed)
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRClosed)
 		_ = m.db.LogEvent(state.EventPRClosed, fmt.Sprintf("PR #%d closed without merge", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
 	}
@@ -211,7 +212,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   "CI checks failed",
 			Timestamp: time.Now(),
 		})
-		_ = m.db.UpdatePRStatus(pr.Number, state.PRNeedsFix)
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
 		_ = m.db.LogEvent(state.EventCIFailed, fmt.Sprintf("PR #%d CI checks failed", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d CI failed", pr.Number), pr.BeadID, pr.Anvil)
 	}
@@ -226,7 +227,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   "PR received approval",
 			Timestamp: time.Now(),
 		})
-		_ = m.db.UpdatePRStatus(pr.Number, state.PRApproved)
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRApproved)
 	}
 
 	// Detect merge conflicts (CONFLICTING → fire event so operator / lifecycle can rebase)
@@ -260,14 +261,14 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   details,
 			Timestamp: time.Now(),
 		})
-		_ = m.db.UpdatePRStatus(pr.Number, state.PRNeedsFix)
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
 		_ = m.db.LogEvent(state.EventReviewChanges, fmt.Sprintf("PR #%d: %s", pr.Number, details), pr.BeadID, pr.Anvil)
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d: review fix needed", pr.Number), pr.BeadID, pr.Anvil)
 	}
 
 	// Update snapshot
 	m.mu.Lock()
-	m.lastStatuses[pr.Number] = newSnap
+	m.lastStatuses[key] = newSnap
 	m.mu.Unlock()
 }
 

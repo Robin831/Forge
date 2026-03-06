@@ -2,10 +2,14 @@ package lifecycle
 
 import (
 	"context"
+	"io"
+	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/state"
@@ -23,6 +27,10 @@ func newTestDB(t *testing.T) *state.DB {
 	return db
 }
 
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
 func makeEvent(prNum int, evType string) bellows.PREvent {
 	return bellows.PREvent{
 		PRNumber:  prNum,
@@ -35,12 +43,13 @@ func makeEvent(prNum int, evType string) bellows.PREvent {
 
 // TestEventCIFailed_Dispatch verifies that a CI failure dispatches ActionFixCI.
 func TestEventCIFailed_Dispatch(t *testing.T) {
+	db := newTestDB(t)
 	var got ActionRequest
 	handler := func(_ context.Context, req ActionRequest) {
 		got = req
 	}
 
-	m := New(nil, handler)
+	m := New(db, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(42, bellows.EventCIFailed))
 
 	if got.Action != ActionFixCI {
@@ -53,7 +62,7 @@ func TestEventCIFailed_Dispatch(t *testing.T) {
 		t.Errorf("expected bead-1, got %q", got.BeadID)
 	}
 
-	st := m.GetState(42)
+	st := m.GetState("test-anvil", 42)
 	if st.CIFixCount != 1 {
 		t.Errorf("expected CIFixCount=1, got %d", st.CIFixCount)
 	}
@@ -68,21 +77,25 @@ func TestEventCIFailed_MaxAttemptsExhausted(t *testing.T) {
 		dispatchCount++
 	}
 
-	m := New(db, handler)
+	m := New(db, testLogger(), handler)
 	ctx := context.Background()
-	ev := makeEvent(10, bellows.EventCIFailed)
+	evFail := makeEvent(10, bellows.EventCIFailed)
+	evPass := makeEvent(10, bellows.EventCIPassed)
 
-	// First two failures should dispatch (maxCI=2)
-	m.HandleEvent(ctx, ev)
-	m.HandleEvent(ctx, ev)
-	// Third failure should NOT dispatch
-	m.HandleEvent(ctx, ev)
+	// First failure should dispatch (maxCI=2)
+	m.HandleEvent(ctx, evFail)
+	m.HandleEvent(ctx, evPass)
+	// Second failure should dispatch
+	m.HandleEvent(ctx, evFail)
+	m.HandleEvent(ctx, evPass)
+	// Third failure should NOT dispatch, hits exhaustion log
+	m.HandleEvent(ctx, evFail)
 
 	if dispatchCount != 2 {
 		t.Errorf("expected 2 dispatches, got %d", dispatchCount)
 	}
 
-	st := m.GetState(10)
+	st := m.GetState("test-anvil", 10)
 	if st.CIFixCount != 2 {
 		t.Errorf("expected CIFixCount=2, got %d", st.CIFixCount)
 	}
@@ -116,14 +129,14 @@ func TestEventReviewChanges_Dispatch(t *testing.T) {
 		got = req
 	}
 
-	m := New(db, handler)
+	m := New(db, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(7, bellows.EventReviewChanges))
 
 	if got.Action != ActionFixReview {
 		t.Errorf("expected ActionFixReview, got %v", got.Action)
 	}
 
-	st := m.GetState(7)
+	st := m.GetState("test-anvil", 7)
 	if st.ReviewFixCnt != 1 {
 		t.Errorf("expected ReviewFixCnt=1, got %d", st.ReviewFixCnt)
 	}
@@ -141,13 +154,16 @@ func TestEventReviewChanges_MaxAttemptsExhausted(t *testing.T) {
 		dispatchCount++
 	}
 
-	m := New(db, handler)
+	m := New(db, testLogger(), handler)
 	ctx := context.Background()
-	ev := makeEvent(20, bellows.EventReviewChanges)
+	evChange := makeEvent(20, bellows.EventReviewChanges)
+	evApprove := makeEvent(20, bellows.EventReviewApproved)
 
-	m.HandleEvent(ctx, ev)
-	m.HandleEvent(ctx, ev)
-	m.HandleEvent(ctx, ev) // exhausted
+	m.HandleEvent(ctx, evChange)
+	m.HandleEvent(ctx, evApprove)
+	m.HandleEvent(ctx, evChange)
+	m.HandleEvent(ctx, evApprove)
+	m.HandleEvent(ctx, evChange) // exhausted
 
 	if dispatchCount != 2 {
 		t.Errorf("expected 2 dispatches, got %d", dispatchCount)
@@ -171,12 +187,13 @@ func TestEventReviewChanges_MaxAttemptsExhausted(t *testing.T) {
 
 // TestEventPRMerged_ClosesBead verifies ActionCloseBead is dispatched on merge.
 func TestEventPRMerged_ClosesBead(t *testing.T) {
+	db := newTestDB(t)
 	var got ActionRequest
 	handler := func(_ context.Context, req ActionRequest) {
 		got = req
 	}
 
-	m := New(nil, handler)
+	m := New(db, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(99, bellows.EventPRMerged))
 
 	if got.Action != ActionCloseBead {
@@ -186,7 +203,7 @@ func TestEventPRMerged_ClosesBead(t *testing.T) {
 		t.Errorf("expected PR #99, got %d", got.PRNumber)
 	}
 
-	st := m.GetState(99)
+	st := m.GetState("test-anvil", 99)
 	if !st.Merged {
 		t.Error("expected Merged=true")
 	}
@@ -201,7 +218,7 @@ func TestEventPRConflicting_Dispatch(t *testing.T) {
 		dispatched = append(dispatched, req)
 	}
 
-	m := New(db, handler)
+	m := New(db, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(55, bellows.EventPRConflicting))
 
 	if len(dispatched) != 1 {
@@ -230,7 +247,7 @@ func TestEventPRConflicting_ExhaustRebase(t *testing.T) {
 		dispatchCount++
 	}
 
-	m := New(db, handler)
+	m := New(db, testLogger(), handler)
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
 		m.HandleEvent(ctx, makeEvent(77, bellows.EventPRConflicting))
@@ -251,7 +268,7 @@ func TestConcurrentHandleEvent(t *testing.T) {
 		callCount.Add(1)
 	}
 
-	m := New(db, handler)
+	m := New(db, testLogger(), handler)
 	ctx := context.Background()
 
 	const goroutines = 20
@@ -286,7 +303,7 @@ func TestConcurrentHandleEvent(t *testing.T) {
 
 	// Verify manager state is internally consistent
 	for i := 0; i < 5; i++ {
-		st := m.GetState(i)
+		st := m.GetState("test-anvil", i)
 		if st == nil {
 			t.Errorf("expected state for PR #%d", i)
 		}
@@ -295,10 +312,11 @@ func TestConcurrentHandleEvent(t *testing.T) {
 
 // TestNewPRState_CreatedOnFirstEvent verifies state is auto-created on first event.
 func TestNewPRState_CreatedOnFirstEvent(t *testing.T) {
-	m := New(nil, nil)
+	db := newTestDB(t)
+	m := New(db, testLogger(), nil)
 	m.HandleEvent(context.Background(), makeEvent(1, bellows.EventCIPassed))
 
-	st := m.GetState(1)
+	st := m.GetState("test-anvil", 1)
 	if st == nil {
 		t.Fatal("expected state to be created")
 	}
@@ -312,19 +330,20 @@ func TestNewPRState_CreatedOnFirstEvent(t *testing.T) {
 
 // TestEventPRClosed_Cleanup verifies ActionCleanup is dispatched when PR is closed.
 func TestEventPRClosed_Cleanup(t *testing.T) {
+	db := newTestDB(t)
 	var got ActionRequest
 	handler := func(_ context.Context, req ActionRequest) {
 		got = req
 	}
 
-	m := New(nil, handler)
+	m := New(db, testLogger(), handler)
 	m.HandleEvent(context.Background(), makeEvent(33, bellows.EventPRClosed))
 
 	if got.Action != ActionCleanup {
 		t.Errorf("expected ActionCleanup, got %v", got.Action)
 	}
 
-	st := m.GetState(33)
+	st := m.GetState("test-anvil", 33)
 	if !st.Closed {
 		t.Error("expected Closed=true")
 	}
@@ -332,13 +351,14 @@ func TestEventPRClosed_Cleanup(t *testing.T) {
 
 // TestActivePRs verifies ActivePRs count excludes merged/closed PRs.
 func TestActivePRs(t *testing.T) {
-	m := New(nil, nil)
+	db := newTestDB(t)
+	m := New(db, testLogger(), nil)
 	ctx := context.Background()
 
-	m.HandleEvent(ctx, makeEvent(1, bellows.EventCIPassed))  // active
-	m.HandleEvent(ctx, makeEvent(2, bellows.EventCIPassed))  // active
-	m.HandleEvent(ctx, makeEvent(3, bellows.EventPRMerged))  // merged
-	m.HandleEvent(ctx, makeEvent(4, bellows.EventPRClosed))  // closed
+	m.HandleEvent(ctx, makeEvent(1, bellows.EventCIPassed)) // active
+	m.HandleEvent(ctx, makeEvent(2, bellows.EventCIPassed)) // active
+	m.HandleEvent(ctx, makeEvent(3, bellows.EventPRMerged)) // merged
+	m.HandleEvent(ctx, makeEvent(4, bellows.EventPRClosed)) // closed
 
 	if count := m.ActivePRs(); count != 2 {
 		t.Errorf("expected 2 active PRs, got %d", count)
@@ -347,12 +367,161 @@ func TestActivePRs(t *testing.T) {
 
 // TestRemove verifies that Remove deletes PR state.
 func TestRemove(t *testing.T) {
-	m := New(nil, nil)
+	db := newTestDB(t)
+	m := New(db, testLogger(), nil)
 	m.HandleEvent(context.Background(), makeEvent(5, bellows.EventCIPassed))
 
-	m.Remove(5)
-	if st := m.GetState(5); st != nil {
+	m.Remove("test-anvil", 5)
+	if st := m.GetState("test-anvil", 5); st != nil {
 		t.Error("expected state to be nil after Remove")
 	}
 }
 
+func TestManager_Persistence(t *testing.T) {
+	// Setup DB
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// db lifecycle managed manually below to simulate a daemon restart.
+
+	// 1. Create a PR and some state
+	ctx := context.Background()
+	pr := &state.PR{
+		Number:    123,
+		Anvil:     "test-anvil",
+		BeadID:    "bd-1",
+		Branch:    "fix-1",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+		CIPassing: true,
+	}
+	if err := db.InsertPR(pr); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(db, testLogger(), func(ctx context.Context, req ActionRequest) {})
+
+	// Simulate event to change state
+	m.HandleEvent(ctx, bellows.PREvent{
+		PRNumber:  123,
+		Anvil:     "test-anvil",
+		EventType: bellows.EventCIFailed,
+		BeadID:    "bd-1",
+	})
+
+	st := m.GetState("test-anvil", 123)
+	if st == nil {
+		t.Fatal("state not found")
+	}
+	if st.CIFixCount != 1 {
+		t.Errorf("expected CIFixCount 1, got %d", st.CIFixCount)
+	}
+	if st.CIPassing {
+		t.Error("expected CIPassing false")
+	}
+
+	// 2. Simulate daemon restart: close the current DB handle and reopen it to
+	// exercise SQLite close/reopen behaviour rather than reusing the same connection.
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = state.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	m2 := New(db, testLogger(), func(ctx context.Context, req ActionRequest) {})
+	if err := m2.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	st2 := m2.GetState("test-anvil", 123)
+	if st2 == nil {
+		t.Fatal("state not found after load")
+	}
+	if st2.CIFixCount != 1 {
+		t.Errorf("expected CIFixCount 1 after load, got %d", st2.CIFixCount)
+	}
+	if st2.CIPassing {
+		t.Error("expected CIPassing false after load")
+	}
+
+	// 3. Verify redundant events are ignored
+	m2.HandleEvent(ctx, bellows.PREvent{
+		PRNumber:  123,
+		Anvil:     "test-anvil",
+		EventType: bellows.EventCIFailed,
+		BeadID:    "bd-1",
+	})
+	if st2.CIFixCount != 1 {
+		t.Errorf("expected CIFixCount still 1 after redundant event, got %d", st2.CIFixCount)
+	}
+}
+
+func TestManager_AnvilCollision(t *testing.T) {
+	// Setup DB
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	m := New(db, testLogger(), func(ctx context.Context, req ActionRequest) {})
+
+	// PR #1 in Anvil A
+	m.HandleEvent(ctx, bellows.PREvent{
+		PRNumber:  1,
+		Anvil:     "anvil-a",
+		EventType: bellows.EventCIFailed,
+		BeadID:    "bead-a",
+	})
+
+	// PR #1 in Anvil B
+	m.HandleEvent(ctx, bellows.PREvent{
+		PRNumber:  1,
+		Anvil:     "anvil-b",
+		EventType: bellows.EventCIPassed,
+		BeadID:    "bead-b",
+	})
+
+	stA := m.GetState("anvil-a", 1)
+	stB := m.GetState("anvil-b", 1)
+
+	if stA == nil || stB == nil {
+		t.Fatal("states not found")
+	}
+
+	if stA.Anvil != "anvil-a" {
+		t.Errorf("expected anvil-a, got %s", stA.Anvil)
+	}
+	if stB.Anvil != "anvil-b" {
+		t.Errorf("expected anvil-b, got %s", stB.Anvil)
+	}
+
+	if stA.CIPassing {
+		t.Error("expected anvil-a to be failing")
+	}
+	if !stB.CIPassing {
+		t.Error("expected anvil-b to be passing")
+	}
+
+	// Verify both were inserted into DB with different IDs
+	if stA.ID == stB.ID {
+		t.Errorf("expected different DB IDs, both got %d", stA.ID)
+	}
+}
