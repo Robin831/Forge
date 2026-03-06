@@ -546,10 +546,12 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	}
 
 	// Preload all clarification-needed bead IDs once per poll cycle to avoid N+1 queries.
+	// Fail-closed: if the DB query fails, skip dispatch this cycle so beads that need
+	// clarification are not accidentally started during a transient DB error.
 	clarSet, clarErr := d.db.ClarificationNeededBeadIDSet()
 	if clarErr != nil {
-		d.logger.Error("loading clarification-needed set", "error", clarErr)
-		clarSet = make(map[string]struct{}) // fail-open: proceed without filtering
+		d.logger.Error("loading clarification-needed set; skipping dispatch this poll cycle", "error", clarErr)
+		return
 	}
 
 	// Track beads dispatched this poll cycle but not yet inserted into the DB.
