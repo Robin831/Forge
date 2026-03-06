@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -119,14 +120,31 @@ func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Be
 	}
 
 	// Filter out beads that are already assigned (claimed by another agent)
-	var unassigned []Bead
+	// or tagged as needing clarification.
+	var eligible []Bead
 	for _, b := range beads {
-		if b.Assignee == "" {
-			unassigned = append(unassigned, b)
+		if b.Assignee != "" {
+			continue
 		}
+		if hasClarificationTag(b.Tags) {
+			continue
+		}
+		eligible = append(eligible, b)
 	}
 
-	return unassigned, nil
+	return eligible, nil
+}
+
+// hasClarificationTag returns true if the tags list contains the
+// "clarification-needed" or "clarification_needed" tag (case-insensitive).
+func hasClarificationTag(tags []string) bool {
+	for _, t := range tags {
+		lower := strings.ToLower(t)
+		if lower == "clarification-needed" || lower == "clarification_needed" {
+			return true
+		}
+	}
+	return false
 }
 
 // PollSingle polls a single anvil by name and returns its beads.

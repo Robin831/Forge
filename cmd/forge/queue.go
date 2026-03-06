@@ -14,7 +14,14 @@ import (
 
 func init() {
 	queueRunCmd.Flags().StringP("anvil", "a", "", "Anvil name (to disambiguate if multiple anvils have the same bead ID)")
+	queueClarifyCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
+	queueClarifyCmd.Flags().StringP("reason", "r", "", "Why clarification is needed")
+	_ = queueClarifyCmd.MarkFlagRequired("anvil")
+	queueUnclarifyCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
+	_ = queueUnclarifyCmd.MarkFlagRequired("anvil")
 	queueCmd.AddCommand(queueRunCmd)
+	queueCmd.AddCommand(queueClarifyCmd)
+	queueCmd.AddCommand(queueUnclarifyCmd)
 	rootCmd.AddCommand(queueCmd)
 }
 
@@ -110,6 +117,86 @@ var queueRunCmd = &cobra.Command{
 			return fmt.Errorf("failed to unmarshal daemon response: %w", err)
 		}
 		fmt.Printf("Successfully dispatched bead %s: %s\n", beadID, result["message"])
+		return nil
+	},
+}
+
+var queueClarifyCmd = &cobra.Command{
+	Use:     "clarify <id>",
+	Short:   "Mark a bead as needing human clarification before work can start",
+	Args:    cobra.ExactArgs(1),
+	Example: "  forge queue clarify BD-42 --anvil heimdall --reason 'which auth library?'",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		beadID := args[0]
+		anvil, _ := cmd.Flags().GetString("anvil")
+		reason, _ := cmd.Flags().GetString("reason")
+
+		client, err := ipc.NewClient()
+		if err != nil {
+			return fmt.Errorf("connecting to daemon: %w (is 'forge up' running?)", err)
+		}
+		defer client.Close()
+
+		payload, _ := json.Marshal(ipc.ClarificationPayload{
+			BeadID: beadID,
+			Anvil:  anvil,
+			Reason: reason,
+		})
+
+		resp, err := client.Send(ipc.Command{
+			Type:    "set_clarification",
+			Payload: payload,
+		})
+		if err != nil {
+			return fmt.Errorf("sending command: %w", err)
+		}
+
+		if resp.Type == "error" {
+			var msg map[string]string
+			_ = json.Unmarshal(resp.Payload, &msg)
+			return fmt.Errorf("daemon error: %s", msg["message"])
+		}
+
+		fmt.Printf("Bead %s marked as needing clarification\n", beadID)
+		return nil
+	},
+}
+
+var queueUnclarifyCmd = &cobra.Command{
+	Use:     "unclarify <id>",
+	Short:   "Clear the clarification_needed flag so the bead can be dispatched",
+	Args:    cobra.ExactArgs(1),
+	Example: "  forge queue unclarify BD-42 --anvil heimdall",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		beadID := args[0]
+		anvil, _ := cmd.Flags().GetString("anvil")
+
+		client, err := ipc.NewClient()
+		if err != nil {
+			return fmt.Errorf("connecting to daemon: %w (is 'forge up' running?)", err)
+		}
+		defer client.Close()
+
+		payload, _ := json.Marshal(ipc.ClarificationPayload{
+			BeadID: beadID,
+			Anvil:  anvil,
+		})
+
+		resp, err := client.Send(ipc.Command{
+			Type:    "clear_clarification",
+			Payload: payload,
+		})
+		if err != nil {
+			return fmt.Errorf("sending command: %w", err)
+		}
+
+		if resp.Type == "error" {
+			var msg map[string]string
+			_ = json.Unmarshal(resp.Payload, &msg)
+			return fmt.Errorf("daemon error: %s", msg["message"])
+		}
+
+		fmt.Printf("Clarification cleared for bead %s\n", beadID)
 		return nil
 	},
 }

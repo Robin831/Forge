@@ -100,6 +100,7 @@ func (db *DB) migrate() error {
 		{"prs", "ci_fix_count", `ALTER TABLE prs ADD COLUMN ci_fix_count INTEGER NOT NULL DEFAULT 0`},
 		{"prs", "review_fix_count", `ALTER TABLE prs ADD COLUMN review_fix_count INTEGER NOT NULL DEFAULT 0`},
 		{"prs", "ci_passing", `ALTER TABLE prs ADD COLUMN ci_passing INTEGER NOT NULL DEFAULT 1`},
+		{"retries", "clarification_needed", `ALTER TABLE retries ADD COLUMN clarification_needed INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -581,11 +582,13 @@ const (
 	EventRebaseStarted  EventType = "rebase_started"
 	EventRebaseSuccess  EventType = "rebase_success"
 	EventRebaseFailed   EventType = "rebase_failed"
-	EventLifecycleExhausted EventType = "lifecycle_exhausted"
-	EventSchematicStarted EventType = "schematic_started"
-	EventSchematicDone    EventType = "schematic_done"
-	EventSchematicSkipped EventType = "schematic_skipped"
-	EventError            EventType = "error"
+	EventLifecycleExhausted    EventType = "lifecycle_exhausted"
+	EventSchematicStarted      EventType = "schematic_started"
+	EventSchematicDone         EventType = "schematic_done"
+	EventSchematicSkipped      EventType = "schematic_skipped"
+	EventClarificationNeeded   EventType = "clarification_needed"
+	EventClarificationCleared  EventType = "clarification_cleared"
+	EventError                 EventType = "error"
 )
 
 // Event represents a logged event.
@@ -636,30 +639,32 @@ func (db *DB) RecentEvents(n int) ([]Event, error) {
 
 // RetryRecord tracks retry state for a bead.
 type RetryRecord struct {
-	BeadID     string
-	Anvil      string
-	RetryCount int
-	NextRetry  *time.Time
-	NeedsHuman bool
-	LastError  string
-	UpdatedAt  time.Time
+	BeadID               string
+	Anvil                string
+	RetryCount           int
+	NextRetry            *time.Time
+	NeedsHuman           bool
+	ClarificationNeeded  bool
+	LastError            string
+	UpdatedAt            time.Time
 }
 
 // GetRetry returns the retry record for a bead, or nil if none exists.
 func (db *DB) GetRetry(beadID, anvil string) (*RetryRecord, error) {
 	row := db.conn.QueryRow(
-		`SELECT bead_id, anvil, retry_count, next_retry, needs_human, last_error, updated_at
+		`SELECT bead_id, anvil, retry_count, next_retry, needs_human, clarification_needed, last_error, updated_at
 		 FROM retries WHERE bead_id = ? AND anvil = ?`, beadID, anvil)
 
 	var r RetryRecord
 	var nextRetry sql.NullString
 	var updatedAt string
-	var needsHuman int
-	err := row.Scan(&r.BeadID, &r.Anvil, &r.RetryCount, &nextRetry, &needsHuman, &r.LastError, &updatedAt)
+	var needsHuman, clarNeeded int
+	err := row.Scan(&r.BeadID, &r.Anvil, &r.RetryCount, &nextRetry, &needsHuman, &clarNeeded, &r.LastError, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
 	r.NeedsHuman = needsHuman != 0
+	r.ClarificationNeeded = clarNeeded != 0
 	r.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 	if nextRetry.Valid {
 		t, _ := time.Parse(time.RFC3339, nextRetry.String)
@@ -679,16 +684,21 @@ func (db *DB) UpsertRetry(r *RetryRecord) error {
 	if r.NeedsHuman {
 		needsHuman = 1
 	}
+	clarNeeded := 0
+	if r.ClarificationNeeded {
+		clarNeeded = 1
+	}
 	_, err := db.conn.Exec(
-		`INSERT INTO retries (bead_id, anvil, retry_count, next_retry, needs_human, last_error, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO retries (bead_id, anvil, retry_count, next_retry, needs_human, clarification_needed, last_error, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(bead_id, anvil) DO UPDATE SET
 			retry_count = excluded.retry_count,
 			next_retry = excluded.next_retry,
 			needs_human = excluded.needs_human,
+			clarification_needed = excluded.clarification_needed,
 			last_error = excluded.last_error,
 			updated_at = excluded.updated_at`,
-		r.BeadID, r.Anvil, r.RetryCount, nextRetry, needsHuman,
+		r.BeadID, r.Anvil, r.RetryCount, nextRetry, needsHuman, clarNeeded,
 		r.LastError, time.Now().Format(time.RFC3339),
 	)
 	return err
@@ -698,8 +708,8 @@ func (db *DB) UpsertRetry(r *RetryRecord) error {
 func (db *DB) PendingRetries() ([]RetryRecord, error) {
 	now := time.Now().Format(time.RFC3339)
 	rows, err := db.conn.Query(
-		`SELECT bead_id, anvil, retry_count, next_retry, needs_human, last_error, updated_at
-		 FROM retries WHERE needs_human = 0 AND (next_retry IS NULL OR next_retry <= ?)
+		`SELECT bead_id, anvil, retry_count, next_retry, needs_human, clarification_needed, last_error, updated_at
+		 FROM retries WHERE needs_human = 0 AND clarification_needed = 0 AND (next_retry IS NULL OR next_retry <= ?)
 		 ORDER BY next_retry`, now)
 	if err != nil {
 		return nil, err
@@ -711,11 +721,12 @@ func (db *DB) PendingRetries() ([]RetryRecord, error) {
 		var r RetryRecord
 		var nextRetry sql.NullString
 		var updatedAt string
-		var needsHuman int
-		if err := rows.Scan(&r.BeadID, &r.Anvil, &r.RetryCount, &nextRetry, &needsHuman, &r.LastError, &updatedAt); err != nil {
+		var needsHuman, clarNeeded int
+		if err := rows.Scan(&r.BeadID, &r.Anvil, &r.RetryCount, &nextRetry, &needsHuman, &clarNeeded, &r.LastError, &updatedAt); err != nil {
 			return nil, err
 		}
 		r.NeedsHuman = needsHuman != 0
+		r.ClarificationNeeded = clarNeeded != 0
 		r.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 		if nextRetry.Valid {
 			t, _ := time.Parse(time.RFC3339, nextRetry.String)
@@ -729,7 +740,7 @@ func (db *DB) PendingRetries() ([]RetryRecord, error) {
 // NeedsHumanBeads returns all beads that have exhausted retries.
 func (db *DB) NeedsHumanBeads() ([]RetryRecord, error) {
 	rows, err := db.conn.Query(
-		`SELECT bead_id, anvil, retry_count, next_retry, needs_human, last_error, updated_at
+		`SELECT bead_id, anvil, retry_count, next_retry, needs_human, clarification_needed, last_error, updated_at
 		 FROM retries WHERE needs_human = 1 ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
@@ -741,11 +752,12 @@ func (db *DB) NeedsHumanBeads() ([]RetryRecord, error) {
 		var r RetryRecord
 		var nextRetry sql.NullString
 		var updatedAt string
-		var needsHuman int
-		if err := rows.Scan(&r.BeadID, &r.Anvil, &r.RetryCount, &nextRetry, &needsHuman, &r.LastError, &updatedAt); err != nil {
+		var needsHuman, clarNeeded int
+		if err := rows.Scan(&r.BeadID, &r.Anvil, &r.RetryCount, &nextRetry, &needsHuman, &clarNeeded, &r.LastError, &updatedAt); err != nil {
 			return nil, err
 		}
 		r.NeedsHuman = needsHuman != 0
+		r.ClarificationNeeded = clarNeeded != 0
 		r.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 		if nextRetry.Valid {
 			t, _ := time.Parse(time.RFC3339, nextRetry.String)
@@ -754,6 +766,56 @@ func (db *DB) NeedsHumanBeads() ([]RetryRecord, error) {
 		records = append(records, r)
 	}
 	return records, rows.Err()
+}
+
+// ClarificationNeededBeads returns all beads that need human clarification before work can start.
+func (db *DB) ClarificationNeededBeads() ([]RetryRecord, error) {
+	rows, err := db.conn.Query(
+		`SELECT bead_id, anvil, retry_count, next_retry, needs_human, clarification_needed, last_error, updated_at
+		 FROM retries WHERE clarification_needed = 1 ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []RetryRecord
+	for rows.Next() {
+		var r RetryRecord
+		var nextRetry sql.NullString
+		var updatedAt string
+		var needsHuman, clarNeeded int
+		if err := rows.Scan(&r.BeadID, &r.Anvil, &r.RetryCount, &nextRetry, &needsHuman, &clarNeeded, &r.LastError, &updatedAt); err != nil {
+			return nil, err
+		}
+		r.NeedsHuman = needsHuman != 0
+		r.ClarificationNeeded = clarNeeded != 0
+		r.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		if nextRetry.Valid {
+			t, _ := time.Parse(time.RFC3339, nextRetry.String)
+			r.NextRetry = &t
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
+// SetClarificationNeeded marks or clears the clarification_needed flag for a bead.
+// If no retry record exists, one is created with the flag set.
+func (db *DB) SetClarificationNeeded(beadID, anvil string, needed bool, reason string) error {
+	clarNeeded := 0
+	if needed {
+		clarNeeded = 1
+	}
+	_, err := db.conn.Exec(
+		`INSERT INTO retries (bead_id, anvil, retry_count, needs_human, clarification_needed, last_error, updated_at)
+		 VALUES (?, ?, 0, 0, ?, ?, ?)
+		 ON CONFLICT(bead_id, anvil) DO UPDATE SET
+			clarification_needed = excluded.clarification_needed,
+			last_error = CASE WHEN excluded.clarification_needed = 1 THEN excluded.last_error ELSE last_error END,
+			updated_at = excluded.updated_at`,
+		beadID, anvil, clarNeeded, reason, time.Now().Format(time.RFC3339),
+	)
+	return err
 }
 
 // ClearRetry removes the retry record for a bead (typically after success).
