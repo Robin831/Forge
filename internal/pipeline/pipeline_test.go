@@ -397,6 +397,37 @@ func TestSchematic_Clarify_ReleasesBeadAndSetsNeedsHuman(t *testing.T) {
 	assert.Equal(t, schematic.ActionClarify, outcome.SchematicResult.Action)
 }
 
+// TestSchematic_Clarify_NeedsHumanFalse_WhenReleaseFails verifies that when
+// Schematic says clarification is needed but releasing the bead fails,
+// NeedsHuman remains false (mirroring the NoDiff path behavior).
+func TestSchematic_Clarify_NeedsHumanFalse_WhenReleaseFails(t *testing.T) {
+	db := newTestDB(t)
+	params, releasedID, mu := baseParams(t, db)
+
+	// Simulate a failure in BeadReleaser.
+	params.BeadReleaser = func(beadID, _ string) error {
+		return assert.AnError
+	}
+
+	schemCfg := schematic.Config{Enabled: true, WordThreshold: 1}
+	params.SchematicConfig = &schemCfg
+	params.Bead.Description = "Ambiguous requirements that need more context"
+	params.SchematicRunner = func(_ context.Context, _ schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
+		return &schematic.Result{
+			Action: schematic.ActionClarify,
+			Reason: "Missing acceptance criteria",
+		}
+	}
+
+	outcome := Run(context.Background(), params)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.False(t, outcome.NeedsHuman, "NeedsHuman should be false when BeadReleaser fails")
+	assert.Empty(t, *releasedID, "bead should not be marked as released when BeadReleaser fails")
+	assert.Equal(t, schematic.ActionClarify, outcome.SchematicResult.Action)
+}
+
 // TestSchematic_Skip_ContinuesToSmith verifies that when Schematic skips,
 // the pipeline continues normally to Smith.
 func TestSchematic_Skip_ContinuesToSmith(t *testing.T) {

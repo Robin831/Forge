@@ -252,8 +252,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 				// Release bead back to open for human attention
 				if err := doRelease(p.Bead.ID, p.AnvilConfig.Path); err != nil {
 					log.Printf("[pipeline:%s] Failed to release bead after clarify: %v", workerID, err)
+				} else {
+					outcome.NeedsHuman = true
 				}
-				outcome.NeedsHuman = true
 				outcome.Duration = time.Since(start)
 				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
 				return outcome

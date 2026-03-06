@@ -619,6 +619,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		schemCfg := schematic.DefaultConfig()
 		schemCfg.Enabled = true
 		schemCfg.WordThreshold = wordThreshold
+		schemCfg.ExtraFlags = d.cfg.Settings.ClaudeFlags
 		pipelineParams.SchematicConfig = &schemCfg
 	}
 

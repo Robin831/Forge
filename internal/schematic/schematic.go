@@ -73,6 +73,9 @@ type Config struct {
 	WordThreshold int
 	// MaxTurns limits the AI session length. Default: 10.
 	MaxTurns int
+	// ExtraFlags are additional CLI flags forwarded to the Claude session
+	// (e.g. model selection, auth tokens). Mirrors pipeline.Params.ExtraFlags.
+	ExtraFlags []string
 }
 
 // DefaultConfig returns sensible defaults for Schematic.
@@ -143,7 +146,7 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 	defer os.RemoveAll(workDir)
 
 	logDir := filepath.Join(workDir, "logs")
-	extraFlags := []string{"--max-turns", fmt.Sprintf("%d", cfg.MaxTurns)}
+	extraFlags := append([]string{"--max-turns", fmt.Sprintf("%d", cfg.MaxTurns)}, cfg.ExtraFlags...)
 	process, err := smith.SpawnWithProvider(ctx, workDir, promptText, logDir, pv, extraFlags)
 	if err != nil {
 		return &Result{
@@ -359,20 +362,33 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 }
 
 // buildPrompt creates the analysis prompt for the Schematic AI session.
+// It uses strings.Builder instead of fmt.Sprintf to avoid issues with
+// user-controlled bead fields containing '%' characters.
 func buildPrompt(bead poller.Bead) string {
-	return fmt.Sprintf(`You are a software architect analysing a work item (bead) to determine the best approach.
+	prompt := `You are a software architect analysing a work item (bead) to determine the best approach.
 
 ## Bead to Analyse
 
-**ID**: %s
-**Title**: %s
-**Type**: %s
-**Priority**: %d
+`
 
-### Description
+	var b strings.Builder
+	b.WriteString(prompt)
 
-%s
+	// Append bead metadata literally so that any '%' characters in the bead fields
+	// are treated as plain text and cannot affect formatting.
+	b.WriteString("**ID**: ")
+	b.WriteString(bead.ID)
+	b.WriteString("\n**Title**: ")
+	b.WriteString(bead.Title)
+	b.WriteString("\n**Type**: ")
+	b.WriteString(bead.IssueType)
+	b.WriteString("\n**Priority**: ")
+	b.WriteString(fmt.Sprintf("%d", bead.Priority))
+	b.WriteString("\n\n### Description\n\n")
+	b.WriteString(bead.Description)
+	b.WriteString("\n")
 
+	b.WriteString(`
 ## Your Task
 
 Analyse this bead and decide ONE of the following actions:
@@ -393,16 +409,18 @@ Analyse this bead and decide ONE of the following actions:
 
 Output your verdict as a JSON block FIRST, before any explanation:
 
-`+"```json"+`
+` + "```json" + `
 {
   "action": "plan|decompose|clarify",
   "plan": "Step-by-step implementation plan (only for action=plan)",
   "sub_tasks": ["Task 1 title", "Task 2 title"],
   "reason": "Brief explanation of your decision"
 }
-`+"```"+`
+` + "```" + `
 
 Keep sub_tasks to 2-5 items. Each should be a clear, self-contained task title.
 For "plan", provide concrete steps: which files to modify, what to add, what to test.
-`, bead.ID, bead.Title, bead.IssueType, bead.Priority, bead.Description)
+`)
+
+	return b.String()
 }
