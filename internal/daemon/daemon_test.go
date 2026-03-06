@@ -449,7 +449,7 @@ exit 0
 			DailyCostLimit: 10.00, // limit is $10, cost is $15
 		},
 		Anvils: map[string]config.AnvilConfig{
-			"dummy": {Path: tmpDir, AutoDispatch: "always"},
+			"dummy": {Path: tmpDir, AutoDispatch: "all"},
 		},
 	}
 

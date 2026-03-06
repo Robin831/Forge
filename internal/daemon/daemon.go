@@ -387,7 +387,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				BeadID:    req.BeadID,
 				Anvil:     req.Anvil,
 				Branch:    req.Branch,
-				Status: "running",
+				Status:    state.WorkerRunning,
 				Phase:     "cifix",
 				StartedAt: time.Now(),
 			})
@@ -416,7 +416,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				BeadID:    req.BeadID,
 				Anvil:     req.Anvil,
 				Branch:    req.Branch,
-				Status: "running",
+				Status:    state.WorkerRunning,
 				Phase:     "reviewfix",
 				StartedAt: time.Now(),
 			})
@@ -461,7 +461,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				BeadID:    req.BeadID,
 				Anvil:     req.Anvil,
 				Branch:    req.Branch,
-				Status: "running",
+				Status:    state.WorkerRunning,
 				Phase:     "rebase",
 				StartedAt: time.Now(),
 			})
@@ -653,7 +653,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 
 		// 1. Skip if the bead requires human clarification or is circuit-broken.
-		// These sets are keyed by "beadID\x00anvilPath".
+		// These sets are keyed by "beadID\x00anvil" (anvil name).
 		key := b.ID + "\x00" + b.Anvil
 		if _, ok := clarSet[key]; ok {
 			continue
@@ -704,7 +704,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		if _, checked := anvilActive[b.Anvil]; !checked {
 			active, err := worker.DispatchActiveCount(d.db, b.Anvil)
 			if err != nil {
-				slog.Error("failed to query active smith count; skipping dispatch for anvil this cycle",
+				d.logger.Error("failed to query active smith count; skipping dispatch for anvil this cycle",
 					"anvil", b.Anvil,
 					"error", err,
 				)
@@ -1196,8 +1196,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to dismiss: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-			logMessage := fmt.Sprintf("Bead %s dismissed from needs attention", dp.BeadID)
-			_ = d.db.LogEvent(state.EventBeadDismissed, logMessage, dp.BeadID, dp.Anvil)
+		logMessage := fmt.Sprintf("Bead %s dismissed from needs attention", dp.BeadID)
+		_ = d.db.LogEvent(state.EventBeadDismissed, logMessage, dp.BeadID, dp.Anvil)
 		d.logger.Info("bead dismissed from needs attention", "bead", dp.BeadID, "anvil", dp.Anvil)
 		data, _ := json.Marshal(map[string]string{"message": "dismissed"})
 		return ipc.Response{Type: "ok", Payload: data}
