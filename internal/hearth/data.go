@@ -336,7 +336,7 @@ func FetchNeedsAttention(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
 		beads, err := db.NeedsAttentionBeads()
 		if err != nil {
-			return NeedsAttentionErrorMsg{Err: err}
+			return NeedsAttentionErrorMsg{Err: fmt.Errorf("failed to fetch needs attention beads: %w", err)}
 		}
 		var items []NeedsAttentionItem
 		for _, b := range beads {
