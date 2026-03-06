@@ -5,6 +5,7 @@
 //  1. Emit a focused implementation plan appended to Smith's prompt
 //  2. Decompose large beads into sub-beads via bd, blocking the parent
 //  3. Skip entirely for small/simple beads
+//  4. Request human clarification for ambiguous beads and block work until clarified
 package schematic
 
 import (
@@ -205,13 +206,13 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 		// Create sub-beads via bd
 		subIDs, err := createSubBeads(ctx, bead, verdict.SubTasks, anvilPath)
 		if err != nil {
-			// Failed to create sub-beads — fall back to plan.
+			// Failed to create sub-beads — treat as hard error instead of falling back to plan.
 			// Log partial IDs so an operator can clean up orphaned sub-beads.
-			log.Printf("[schematic:%s] Failed to create sub-beads: %v (partial IDs: %v) — treating as plan", bead.ID, err, subIDs)
-			result.Action = ActionPlan
-			result.Plan = strings.Join(verdict.SubTasks, "\n")
+			log.Printf("[schematic:%s] Failed to create sub-beads: %v (partial IDs: %v)", bead.ID, err, subIDs)
+			result.Action = ActionSkip
 			result.SubBeads = subIDs // preserve partial IDs for caller visibility
-			result.Reason = fmt.Sprintf("Decomposition failed (%v), using tasks as plan", err)
+			result.Reason = fmt.Sprintf("Decomposition failed: %v", err)
+			result.Error = err
 		} else {
 			result.SubBeads = subIDs
 		}
@@ -293,7 +294,9 @@ func parseVerdict(output string) (*schematicVerdict, error) {
 	return nil, fmt.Errorf("no valid schematic verdict JSON found in output")
 }
 
-// createSubBeads creates sub-beads via bd CLI with discovered-from dependency links.
+// createSubBeads creates sub-beads via bd CLI with blocking dependency links.
+// Each sub-bead blocks the parent so that bd ready excludes the parent until
+// all sub-beads are closed.
 func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anvilPath string) ([]string, error) {
 	if len(tasks) == 0 {
 		return nil, fmt.Errorf("no sub-tasks to create")
@@ -313,7 +316,8 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 
 	var subIDs []string
 	for _, task := range tasks {
-		// Create sub-bead with discovered-from dependency in a single call
+		// Create sub-bead with blocks dependency so the parent is blocked
+		// until all sub-beads are closed.
 		createCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		cmd := executil.HideWindow(exec.CommandContext(createCtx,
 			"bd", "create",
@@ -321,7 +325,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 			"--description=Sub-task decomposed from "+parent.ID+": "+parent.Title,
 			"--type=task",
 			fmt.Sprintf("--priority=%d", parent.Priority),
-			"--deps", "discovered-from:"+parent.ID,
+			"--deps", "blocks:"+parent.ID,
 			"--json",
 		))
 		cmd.Dir = anvilPath
@@ -355,7 +359,8 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 		subIDs = append(subIDs, created.ID)
 	}
 
-	// Block the parent bead (set status back to open — it will be blocked by dependencies)
+	// Set the parent bead back to open. It will be excluded from bd ready
+	// because each sub-bead has a blocks:<parent> dependency.
 	resetParent()
 
 	return subIDs, nil

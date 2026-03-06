@@ -1,6 +1,7 @@
 // Package pipeline orchestrates the full Smith → Temper → Warden → feedback loop.
 //
 // The pipeline runs a bead through:
+//  0. Schematic analysis (optional pre-worker) — may produce a plan, decompose, clarify, or skip
 //  1. Smith implementation
 //  2. Temper build/test verification
 //  3. Warden code review
