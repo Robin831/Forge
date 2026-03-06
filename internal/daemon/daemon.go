@@ -545,6 +545,13 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 	}
 
+	// Preload all clarification-needed bead IDs once per poll cycle to avoid N+1 queries.
+	clarSet, clarErr := d.db.ClarificationNeededBeadIDSet()
+	if clarErr != nil {
+		d.logger.Error("loading clarification-needed set", "error", clarErr)
+		clarSet = make(map[string]struct{}) // fail-open: proceed without filtering
+	}
+
 	// Track beads dispatched this poll cycle but not yet inserted into the DB.
 	// Without this, the DB-based capacity checks see stale counts and can
 	// over-dispatch before the first goroutine's InsertWorker call commits.
@@ -558,10 +565,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 
 		// Skip beads that need clarification (analogous to needs_human)
-		if needed, err := d.isBeadClarificationNeeded(bead.ID, bead.Anvil); err != nil {
-			d.logger.Error("checking clarification status", "bead", bead.ID, "anvil", bead.Anvil, "error", err)
-			continue // fail-safe: skip dispatch on DB errors
-		} else if needed {
+		if _, needed := clarSet[bead.ID+"\x00"+bead.Anvil]; needed {
 			continue
 		}
 

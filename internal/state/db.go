@@ -827,13 +827,46 @@ func (db *DB) SetClarificationNeeded(beadID, anvil string, needed bool, reason s
 	}
 
 	// When clearing clarification_needed, only update existing rows; do not create new retries records.
-	_, err := db.conn.Exec(
+	res, err := db.conn.Exec(
 		`UPDATE retries
 		 SET clarification_needed = 0, updated_at = ?
 		 WHERE bead_id = ? AND anvil = ?`,
 		now, beadID, anvil,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("no retry record found to clear clarification for bead %q on anvil %q", beadID, anvil)
+	}
+
+	return nil
+}
+
+// ClarificationNeededBeadIDSet returns a set of "beadID\x00anvil" keys for all beads needing clarification.
+// This allows callers to do a single query and then O(1) membership checks.
+func (db *DB) ClarificationNeededBeadIDSet() (map[string]struct{}, error) {
+	rows, err := db.conn.Query(
+		`SELECT bead_id, anvil FROM retries WHERE clarification_needed = 1 AND needs_human = 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	set := make(map[string]struct{})
+	for rows.Next() {
+		var beadID, anvil string
+		if err := rows.Scan(&beadID, &anvil); err != nil {
+			return nil, err
+		}
+		set[beadID+"\x00"+anvil] = struct{}{}
+	}
+	return set, rows.Err()
 }
 
 // ClearRetry removes the retry record for a bead (typically after success).

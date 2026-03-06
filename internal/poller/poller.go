@@ -139,8 +139,7 @@ func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Be
 // "clarification-needed" or "clarification_needed" tag (case-insensitive).
 func hasClarificationTag(tags []string) bool {
 	for _, t := range tags {
-		lower := strings.ToLower(t)
-		if lower == "clarification-needed" || lower == "clarification_needed" {
+		if strings.EqualFold(t, "clarification-needed") || strings.EqualFold(t, "clarification_needed") {
 			return true
 		}
 	}
