@@ -26,6 +26,7 @@ const (
 	PanelQueue Panel = iota
 	PanelNeedsAttention
 	PanelWorkers
+	PanelActivity
 	PanelEvents
 
 	panelCount = PanelEvents + 1
@@ -35,6 +36,9 @@ const (
 	eventPanelMinWidth        = 1
 	eventTimestampWidth       = 9  // "HH:MM:SS "
 	eventMsgMinWidth          = 20 // Minimum width before msg moves to next line
+
+	// Layout constants
+	eventStripHeight = 8 // fixed height for the bottom event strip (including border)
 )
 
 // QueueItem represents a bead in the queue panel.
@@ -97,6 +101,7 @@ type Model struct {
 	queueScroll          int
 	needsAttentionScroll int
 	workerScroll         int
+	activityScroll       int
 	eventScroll          int
 	eventAutoScroll      bool // true = follow new events
 	prevEventCount       int  // track event count for auto-scroll
@@ -164,12 +169,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "f", "F":
-			// Toggle follow mode (auto-scroll) for events
+			// Toggle follow mode (auto-scroll) for events or activity
 			if m.focused == PanelEvents {
 				m.eventAutoScroll = !m.eventAutoScroll
 				if m.eventAutoScroll {
 					m.eventScroll = 0
 				}
+			} else if m.focused == PanelActivity {
+				// Reset activity scroll to bottom (follow latest)
+				m.activityScroll = 0
 			}
 
 		case "K":
@@ -242,44 +250,57 @@ func (m *Model) View() string {
 		return "Initializing The Forge..."
 	}
 
-	queueWidth, workerWidth, eventWidth := m.getPanelWidths()
-	contentHeight := m.height - 4 // header + footer
-	if contentHeight < 0 {
-		contentHeight = 0
-	}
+	queueWidth, workerWidth, activityWidth := m.getTopPanelWidths()
+	topHeight, bottomHeight := m.getVerticalSplit()
 
-	// Split the left column into Queue (top) and Needs Attention (bottom).
-	// The split mirrors the Workers column approach: two stacked sub-panels
-	// that together occupy the same height as a single-panel column.
-	leftColumn := m.renderLeftColumn(queueWidth, contentHeight)
-	workerPanel := m.renderWorkers(workerWidth, contentHeight)
-	eventPanel := m.renderEvents(eventWidth, contentHeight)
+	// Left column: Queue (top) + Needs Attention (bottom)
+	leftColumn := m.renderLeftColumn(queueWidth, topHeight)
+	// Center: worker list; Right: live activity (full column)
+	workerPanel := m.renderWorkerList(workerWidth, topHeight)
+	activityPanel := m.renderWorkerActivity(activityWidth, topHeight)
+
+	// Bottom strip: Events
+	eventPanel := m.renderEvents(m.width-2, bottomHeight) // -2 for outer margin
 
 	// Header
 	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
 
 	// Footer
 	footer := footerStyle.Width(m.width).Render(
-		"Tab: switch panel • j/k: scroll • K: kill worker • f: follow events • q: quit",
+		"Tab: switch panel • j/k: scroll • K: kill worker • f: follow/reset scroll • q: quit",
 	)
 
 	// Final assembly
-	mainSection := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, workerPanel, eventPanel)
+	topSection := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, workerPanel, activityPanel)
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
-		mainSection,
+		topSection,
+		eventPanel,
 		footer,
 	)
 }
 
-func (m *Model) getPanelWidths() (queueWidth, workerWidth, eventWidth int) {
-	remainingWidth := m.width - 4 // 4 for borders/gaps
+func (m *Model) getTopPanelWidths() (queueWidth, workerWidth, activityWidth int) {
+	remainingWidth := m.width - 4 // borders/gaps
 	if remainingWidth < 0 {
 		remainingWidth = 0
 	}
-	queueWidth = remainingWidth / 4
+	queueWidth = remainingWidth / 5
 	workerWidth = remainingWidth / 4
-	eventWidth = remainingWidth - queueWidth - workerWidth
+	activityWidth = remainingWidth - queueWidth - workerWidth
+	return
+}
+
+func (m *Model) getVerticalSplit() (topHeight, bottomHeight int) {
+	contentHeight := m.height - 4 // header + footer
+	if contentHeight < 0 {
+		contentHeight = 0
+	}
+	bottomHeight = eventStripHeight
+	if bottomHeight > contentHeight/3 {
+		bottomHeight = contentHeight / 3
+	}
+	topHeight = contentHeight - bottomHeight
 	return
 }
 
@@ -298,9 +319,15 @@ func (m *Model) scrollDown() {
 		if m.workerScroll < len(m.workers)-1 {
 			m.workerScroll++
 		}
+		// Reset activity scroll when changing worker selection
+		m.activityScroll = 0
+	case PanelActivity:
+		activityLines := m.selectedWorkerActivity()
+		if m.activityScroll < len(activityLines)-1 {
+			m.activityScroll++
+		}
 	case PanelEvents:
-		_, _, eventWidth := m.getPanelWidths()
-		totalLines := m.eventTotalLineCount(eventWidth)
+		totalLines := m.eventTotalLineCount(m.width - 2)
 		if m.eventScroll < totalLines-1 {
 			m.eventScroll++
 		}
@@ -322,11 +349,25 @@ func (m *Model) scrollUp() {
 		if m.workerScroll > 0 {
 			m.workerScroll--
 		}
+		// Reset activity scroll when changing worker selection
+		m.activityScroll = 0
+	case PanelActivity:
+		if m.activityScroll > 0 {
+			m.activityScroll--
+		}
 	case PanelEvents:
 		if m.eventScroll > 0 {
 			m.eventScroll--
 		}
 	}
+}
+
+// selectedWorkerActivity returns the activity lines for the currently selected worker.
+func (m *Model) selectedWorkerActivity() []string {
+	if len(m.workers) > 0 && m.workerScroll < len(m.workers) {
+		return m.workers[m.workerScroll].ActivityLines
+	}
+	return nil
 }
 
 // renderQueue renders the queue panel.
@@ -427,36 +468,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderWorkers splits the center Workers panel into two vertical sub-panels:
-// top shows the worker list, bottom shows the live activity log for the
-// selected worker. Uses lipgloss.JoinVertical for the split.
-func (m *Model) renderWorkers(width, height int) string {
-	// Each sub-panel's border adds 2 lines (top + bottom). Two sub-panels
-	// add 4 border lines total, but single-panel columns only add 2. Deduct
-	// the extra 2 so the combined rendered height matches sibling columns.
-	innerHeight := height - 2
-	if innerHeight < 0 {
-		innerHeight = 0
-	}
-
-	// For very small panels, give all space to the list.
-	// Otherwise enforce a minimum of 5 rows so renderWorkerList has enough room.
-	listHeight := innerHeight * 6 / 10
-	if innerHeight < 5 {
-		listHeight = innerHeight
-	} else {
-		listHeight = max(listHeight, 5)
-	}
-	activityHeight := innerHeight - listHeight
-
-	top := m.renderWorkerList(width, listHeight)
-	bottom := m.renderWorkerActivity(width, activityHeight)
-	combined := lipgloss.JoinVertical(lipgloss.Left, top, bottom)
-
-	return combined
-}
-
-// renderWorkerList renders the top sub-panel: the list of active workers.
+// renderWorkerList renders the workers panel: a list of active workers.
 func (m *Model) renderWorkerList(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelWorkers {
@@ -508,37 +520,50 @@ func (m *Model) renderWorkerList(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderWorkerActivity renders the bottom sub-panel: a live activity log
-// for the currently selected worker, parsed from its stream-json log file.
+// renderWorkerActivity renders the activity panel: a live log view for the
+// currently selected worker, parsed from its stream-json log file.
 func (m *Model) renderWorkerActivity(width, height int) string {
 	style := panelStyle.Width(width)
+	if m.focused == PanelActivity {
+		style = focusedPanelStyle.Width(width)
+	}
 
-	title := activityPanelTitleStyle.Render("Live Activity")
+	// Build title with selected worker info
+	titleText := "Live Activity"
+	if len(m.workers) > 0 && m.workerScroll < len(m.workers) {
+		w := m.workers[m.workerScroll]
+		titleText = fmt.Sprintf("Live Activity — %s %s", w.BeadID, dimStyle.Render(w.Anvil))
+	}
+	title := activityPanelTitleStyle.Render(titleText)
 
 	var lines []string
 	lines = append(lines, title)
 
-	var activityLines []string
-	if len(m.workers) > 0 && m.workerScroll < len(m.workers) {
-		activityLines = m.workers[m.workerScroll].ActivityLines
-	}
+	activityLines := m.selectedWorkerActivity()
 
 	if len(activityLines) == 0 {
-		lines = append(lines, dimStyle.Render("No activity"))
+		if len(m.workers) == 0 {
+			lines = append(lines, dimStyle.Render("No active workers"))
+		} else {
+			lines = append(lines, dimStyle.Render("Waiting for output..."))
+		}
 	} else {
 		// height-2 (borders) - 2 (title + margin) = height-4
 		maxVisible := height - 4
 		if maxVisible < 1 {
 			maxVisible = 1
 		}
-		// Show newest entries first (reverse order), like the Events panel
-		end := len(activityLines)
+		// Default: show the latest lines (tail). activityScroll scrolls up from bottom.
+		end := len(activityLines) - m.activityScroll
+		if end < 0 {
+			end = 0
+		}
 		start := end - maxVisible
 		if start < 0 {
 			start = 0
 		}
-		for i := end - 1; i >= start; i-- {
-			lines = append(lines, truncate(activityLines[i], width-4))
+		for _, entry := range activityLines[start:end] {
+			lines = append(lines, truncate(entry, width-4))
 		}
 	}
 
