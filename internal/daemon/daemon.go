@@ -859,9 +859,20 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			return
 		}
 		if outcome.NeedsHuman {
-			// Bead was released back to open (Smith produced no diff). Record as
-			// dispatch failure so the circuit breaker can trip after repeated attempts.
-			d.recordDispatchFailure(bead.ID, bead.Anvil, "Smith produced no diff, needs human attention")
+			// Bead was released back to open. Record as dispatch failure so the
+			// circuit breaker can trip after repeated attempts.
+			reason := "Smith produced no diff, needs human attention"
+			if outcome.SchematicResult != nil && outcome.SchematicResult.Reason != "" {
+				reason = outcome.SchematicResult.Reason
+			} else if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" && outcome.ReviewResult.NoDiff {
+				reason = "Warden rejected (no diff): " + outcome.ReviewResult.Summary
+			} else if outcome.SmithResult != nil {
+				if r := extractNeedsHuman(outcome.SmithResult.FullOutput); r != "" {
+					reason = "Smith escalated: " + r
+				}
+			}
+
+			d.recordDispatchFailure(bead.ID, bead.Anvil, reason)
 			// Hold the activeBeads slot for a full poll interval so the bead is not
 			// immediately re-dispatched before a human can investigate.
 			holdOff := d.cfg.Settings.PollInterval

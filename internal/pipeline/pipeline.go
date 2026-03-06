@@ -288,6 +288,14 @@ func Run(ctx context.Context, p Params) *Outcome {
 				_ = p.DB.LogEvent(state.EventSchematicDone,
 					fmt.Sprintf("Needs clarification: %s", sResult.Reason),
 					p.Bead.ID, p.AnvilName)
+
+				// Mark clarification_needed in DB so the poller skips this bead
+				// until it is manually cleared.
+				_ = p.DB.SetClarificationNeeded(p.Bead.ID, p.AnvilName, true, sResult.Reason)
+				_ = p.DB.LogEvent(state.EventClarificationNeeded,
+					fmt.Sprintf("Bead %s needs clarification: %s", p.Bead.ID, sResult.Reason),
+					p.Bead.ID, p.AnvilName)
+
 				// Release bead back to open for human attention
 				if err := doRelease(p.Bead.ID, p.AnvilConfig.Path); err != nil {
 					log.Printf("[pipeline:%s] Failed to release bead after clarify: %v", workerID, err)

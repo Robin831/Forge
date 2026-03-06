@@ -444,6 +444,13 @@ func TestSchematic_Clarify_ReleasesBeadAndSetsNeedsHuman(t *testing.T) {
 	assert.True(t, outcome.NeedsHuman)
 	assert.Equal(t, "test-bead", *releasedID)
 	assert.Equal(t, schematic.ActionClarify, outcome.SchematicResult.Action)
+
+	// Verify that clarification_needed flag was set in DB with the correct reason
+	r, err := db.GetRetry("test-bead", "test-anvil")
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.True(t, r.ClarificationNeeded)
+	assert.Equal(t, "Missing acceptance criteria", r.LastError)
 }
 
 // TestSchematic_Clarify_NeedsHumanFalse_WhenReleaseFails verifies that when
