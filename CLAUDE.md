@@ -101,6 +101,17 @@ Config resolution order: `--config` flag → `./forge.yaml` → `~/.forge/config
 
 Place a template file at `<anvil-path>/.forge/prompt.tmpl` or `.forge/smith-prompt.tmpl` to override the default Smith prompt for that repo. The template receives `{{.Bead}}`, `{{.AgentsMD}}`, `{{.ClaudeMD}}`, `{{.ReadmeMD}}`.
 
+## Beads Database — kubectl port-forward ONLY
+
+Forge's beads DB connects via kubectl port-forward to the AKS pod `tn-heimdall/dolt-beads` on **port 3306**.
+
+- ❌ Never run `dolt sql-server` locally on port 3306
+- ❌ Never run `start-dolt-server.ps1` (offline fallback only, uses port 3307)
+- ✅ If `bd` returns "Access denied", restart the port-forward:
+  ```powershell
+  kubectl port-forward -n tn-heimdall svc/dolt-beads 3306:3306
+  ```
+
 ## Issue Tracking
 
 All task tracking uses **bd (beads)**. See `AGENTS.md` for the full workflow. Key commands:
