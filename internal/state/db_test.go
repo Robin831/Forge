@@ -104,7 +104,7 @@ func TestDB_QueueCache(t *testing.T) {
 		t.Fatalf("expected 3 items, got %d", len(items))
 	}
 
-	// Verify ordering: priority ASC, then bead_id ASC
+	// Verify ordering: priority ASC, then bead_id ASC, then anvil ASC
 	if items[0].BeadID != "bd-1" || items[0].Priority != 1 {
 		t.Errorf("expected bd-1 first, got %s (priority %d)", items[0].BeadID, items[0].Priority)
 	}
@@ -113,6 +113,33 @@ func TestDB_QueueCache(t *testing.T) {
 	}
 	if items[2].BeadID != "bd-3" || items[2].Priority != 3 {
 		t.Errorf("expected bd-3 third, got %s (priority %d)", items[2].BeadID, items[2].Priority)
+	}
+
+	// 2b. Duplicate bead ID across anvils: deterministic tie-break by anvil
+	dupes := []QueueItem{
+		{BeadID: "bd-5", Anvil: "anvil-z", Title: "Same bead Z", Priority: 1, Status: "open"},
+		{BeadID: "bd-5", Anvil: "anvil-a", Title: "Same bead A", Priority: 1, Status: "open"},
+		{BeadID: "bd-4", Anvil: "anvil-b", Title: "Higher pri", Priority: 0, Status: "open"},
+	}
+	if err := db.ReplaceQueueCache(dupes); err != nil {
+		t.Fatal(err)
+	}
+	items, err = db.QueueCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(items))
+	}
+	// bd-4 (priority 0) first, then bd-5/anvil-a, then bd-5/anvil-z
+	if items[0].BeadID != "bd-4" {
+		t.Errorf("expected bd-4 first, got %s", items[0].BeadID)
+	}
+	if items[1].BeadID != "bd-5" || items[1].Anvil != "anvil-a" {
+		t.Errorf("expected bd-5/anvil-a second, got %s/%s", items[1].BeadID, items[1].Anvil)
+	}
+	if items[2].BeadID != "bd-5" || items[2].Anvil != "anvil-z" {
+		t.Errorf("expected bd-5/anvil-z third, got %s/%s", items[2].BeadID, items[2].Anvil)
 	}
 
 	// 3. Replace semantics: new call replaces old data

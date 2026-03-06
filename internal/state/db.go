@@ -957,11 +957,11 @@ func (db *DB) ReplaceQueueCache(items []QueueItem) error {
 	return tx.Commit()
 }
 
-// QueueCache returns all cached queue items, sorted by priority then bead ID.
+// QueueCache returns all cached queue items, sorted by priority, bead ID, then anvil.
 func (db *DB) QueueCache() ([]QueueItem, error) {
 	rows, err := db.conn.Query(
 		`SELECT bead_id, anvil, title, priority, status
-		 FROM queue_cache ORDER BY priority, bead_id`)
+		 FROM queue_cache ORDER BY priority, bead_id, anvil`)
 	if err != nil {
 		return nil, err
 	}
