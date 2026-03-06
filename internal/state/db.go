@@ -764,6 +764,29 @@ func (db *DB) ClearRetry(beadID, anvil string) error {
 	return err
 }
 
+// StuckBeads returns beads that have all workers in terminal (failed/timeout)
+// status but no needs_human=1 retry record — these are "stuck" in_progress
+// beads with no active worker to advance them.
+func (db *DB) StuckBeads() ([]Worker, error) {
+	// Find the most recent terminal worker per bead where no non-terminal worker
+	// exists and no needs_human retry record exists.
+	return db.queryWorkers(`
+		SELECT w.id, w.bead_id, w.anvil, w.branch, w.pid, w.status, w.phase, w.started_at, w.completed_at, w.log_path
+		FROM workers w
+		WHERE w.status IN ('failed', 'timeout')
+		  AND NOT EXISTS (
+		    SELECT 1 FROM workers w2
+		    WHERE w2.bead_id = w.bead_id AND w2.status IN ('pending', 'running', 'reviewing', 'monitoring')
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM retries r WHERE r.bead_id = w.bead_id AND r.anvil = w.anvil AND r.needs_human = 1
+		  )
+		  AND w.completed_at = (
+		    SELECT MAX(w3.completed_at) FROM workers w3 WHERE w3.bead_id = w.bead_id
+		  )
+		ORDER BY w.completed_at DESC`)
+}
+
 // --- Cost tracking ---
 
 // AddBeadCost adds token usage to a bead's cumulative cost.

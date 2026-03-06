@@ -312,14 +312,20 @@ type UpdateAttentionMsg struct{ Items []AttentionItem }
 
 // classifyError inspects an error message and returns a short reason and suggestion.
 func classifyError(msg string) (reason, suggestion string) {
+	lower := strings.ToLower(msg)
 	switch {
-	case strings.Contains(msg, "CI fix attempts exhausted"):
+	case strings.Contains(lower, "ci fix attempts exhausted"):
+		if strings.Contains(lower, "unrelated") || strings.Contains(lower, "collateral") {
+			return "Collateral CI failure", "CI failed in unrelated package; try: git rebase main, then reset"
+		}
 		return "CI fix exhausted", "Check CI logs and fix manually, then reset"
-	case strings.Contains(msg, "Review fix attempts exhausted"):
+	case strings.Contains(lower, "review fix attempts exhausted"):
 		return "Review fix exhausted", "Address review comments manually, then reset"
-	case strings.Contains(msg, "rebase attempts exhausted"):
+	case strings.Contains(lower, "rebase attempts exhausted"):
 		return "Rebase exhausted", "Run: git rebase main, resolve conflicts, then reset"
-	case strings.Contains(msg, "exhausted") || strings.Contains(msg, "needs human"):
+	case strings.Contains(lower, "rate limit") || strings.Contains(lower, "all providers") && strings.Contains(lower, "rate"):
+		return "Rate limited", "All providers rate limited; wait for quota reset or add providers"
+	case strings.Contains(lower, "exhausted") || strings.Contains(lower, "needs human"):
 		return "Retries exhausted", "Inspect logs and reset when ready"
 	default:
 		return "Needs attention", "Inspect logs and reset when ready"
@@ -327,7 +333,8 @@ func classifyError(msg string) (reason, suggestion string) {
 }
 
 // FetchAttention queries the DB for beads needing human attention:
-// (1) retries with needs_human=1, (2) recent lifecycle_exhausted events.
+// (1) retries with needs_human=1, (2) recent lifecycle_exhausted events,
+// (3) stuck beads in_progress with no active worker.
 func FetchAttention(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
 		var items []AttentionItem
@@ -362,6 +369,26 @@ func FetchAttention(db *state.DB) tea.Cmd {
 				Reason:     reason,
 				Suggestion: suggestion,
 				UpdatedAt:  e.Timestamp.Format("15:04:05"),
+			})
+		}
+
+		// Source 3: stuck beads — all workers terminal, no needs_human retry
+		stuckWorkers, _ := db.StuckBeads()
+		for _, w := range stuckWorkers {
+			if seen[w.BeadID] {
+				continue
+			}
+			seen[w.BeadID] = true
+			updatedAt := ""
+			if w.CompletedAt != nil {
+				updatedAt = w.CompletedAt.Format("15:04:05")
+			}
+			items = append(items, AttentionItem{
+				BeadID:     w.BeadID,
+				Anvil:      w.Anvil,
+				Reason:     "Stuck (no worker)",
+				Suggestion: "Worker " + string(w.Status) + "; reset to open or dismiss",
+				UpdatedAt:  updatedAt,
 			})
 		}
 

@@ -86,6 +86,9 @@ type Model struct {
 	// Callback for resetting a bead to open (set by the caller)
 	OnResetBead func(beadID, anvil string)
 
+	// Callback for dismissing a bead from attention without resetting (set by the caller)
+	OnDismissBead func(beadID, anvil string)
+
 	// State
 	focused          Panel
 	queueScroll      int
@@ -185,6 +188,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.OnResetBead(item.BeadID, item.Anvil)
 				}
 			}
+
+		case "D":
+			// Dismiss selected attention item (mark resolved without resetting)
+			if m.focused == PanelAttention && len(m.attention) > 0 &&
+				m.attentionScroll < len(m.attention) {
+				item := m.attention[m.attentionScroll]
+				if m.OnDismissBead != nil {
+					m.OnDismissBead(item.BeadID, item.Anvil)
+				}
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -265,7 +278,7 @@ func (m *Model) View() string {
 
 	// Footer
 	footer := footerStyle.Width(m.width).Render(
-		"Tab: switch panel • j/k: scroll • K: kill worker • R: reset bead • f: follow events • q: quit",
+		"Tab: switch panel • j/k: scroll • K: kill worker • R: reset bead • D: dismiss • f: follow events • q: quit",
 	)
 
 	// Final assembly
@@ -704,7 +717,7 @@ func (m *Model) renderAttention(width, height int) string {
 			suggLine := "  " + dimStyle.Render("→ "+item.Suggestion)
 
 			if selected {
-				mainLine = selectedStyle.Render(item.BeadID+"  "+item.Anvil+"  "+item.Reason+"  "+item.UpdatedAt) + "  " + dimStyle.Render("[R: reset to open]")
+				mainLine = selectedStyle.Render(item.BeadID+"  "+item.Anvil+"  "+item.Reason+"  "+item.UpdatedAt) + "  " + dimStyle.Render("[R: reset] [D: dismiss]")
 				suggLine = "  " + selectedStyle.Render("→ "+item.Suggestion)
 			}
 			lines = append(lines, mainLine)
@@ -858,11 +871,15 @@ func phaseTag(phase string) string {
 // attentionReasonStyle returns a colored reason string for the attention panel.
 func attentionReasonStyle(reason string) string {
 	switch {
-	case strings.Contains(reason, "CI fix"):
+	case strings.Contains(reason, "CI fix") || strings.Contains(reason, "Collateral CI"):
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(reason)
 	case strings.Contains(reason, "Review fix"):
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render(reason)
 	case strings.Contains(reason, "Rebase"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(reason)
+	case strings.Contains(reason, "Rate limited"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Render(reason)
+	case strings.Contains(reason, "Stuck"):
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(reason)
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render(reason)

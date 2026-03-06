@@ -78,6 +78,13 @@ type ResetBeadPayload struct {
 	Anvil  string `json:"anvil"` // Used to resolve the anvil path for bd commands
 }
 
+// DismissBeadPayload is the payload for a "dismiss_bead" command.
+// Dismiss clears the retry/attention record without resetting the bead to open.
+type DismissBeadPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`
+}
+
 // CommandHandler is called by the server for each incoming command.
 type CommandHandler func(cmd Command) Response
 

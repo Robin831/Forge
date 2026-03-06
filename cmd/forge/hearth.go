@@ -70,6 +70,21 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 		}
+		model.OnDismissBead = func(beadID, anvil string) {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return
+			}
+			defer client.Close()
+			payload, _ := json.Marshal(ipc.DismissBeadPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+			})
+			_, _ = client.Send(ipc.Command{
+				Type:    "dismiss_bead",
+				Payload: json.RawMessage(payload),
+			})
+		}
 
 		p := tea.NewProgram(&model, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {

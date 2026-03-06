@@ -889,6 +889,18 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"reset": rp.BeadID})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "dismiss_bead":
+		var dp ipc.DismissBeadPayload
+		if err := json.Unmarshal(cmd.Payload, &dp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid dismiss_bead payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		_ = d.db.ClearRetry(dp.BeadID, dp.Anvil)
+		_ = d.db.CompleteWorkersByBead(dp.BeadID)
+		_ = d.db.LogEvent(state.EventError, fmt.Sprintf("bead %s dismissed by operator", dp.BeadID), dp.BeadID, dp.Anvil)
+		data, _ := json.Marshal(map[string]string{"dismissed": dp.BeadID})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}
