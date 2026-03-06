@@ -107,6 +107,12 @@ Forge's beads DB connects via kubectl port-forward to the AKS pod `tn-heimdall/d
 
 - ❌ Never run `dolt sql-server` locally on port 3306
 - ❌ Never run `start-dolt-server.ps1` (offline fallback only, uses port 3307)
+- ❌ A local dolt on port 3306 will conflict with the port-forward and break `bd` with "Access denied"
+
+**Auto-start is permanently disabled** via `.beads/config.yaml` (`dolt.auto-start: false`).
+Without this, beads auto-starts a local dolt when the port-forward drops and spawns an
+idle-monitor watchdog that restarts it even after manual kills. Do not remove that setting.
+
 - ✅ If `bd` returns "Access denied", restart the port-forward:
   ```powershell
   kubectl port-forward -n tn-heimdall svc/dolt-beads 3306:3306
