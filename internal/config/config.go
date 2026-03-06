@@ -89,6 +89,10 @@ type SettingsConfig struct {
 	// MaxRebaseAttempts is the maximum number of conflict rebase attempts per
 	// PR before the PR is considered exhausted. Default: 3.
 	MaxRebaseAttempts int `mapstructure:"max_rebase_attempts"`
+	// StaleInterval is how long a worker's log file can go without being
+	// modified before the worker is marked as stalled. A value of 0 disables
+	// stale detection. Defaults to 5 minutes.
+	StaleInterval time.Duration `mapstructure:"stale_interval"`
 }
 
 // NotificationsConfig holds webhook and notification settings.
@@ -115,6 +119,7 @@ func Defaults() Config {
 			MaxCIFixAttempts:     5,
 			MaxReviewFixAttempts: 5,
 			MaxRebaseAttempts:    3,
+			StaleInterval:        5 * time.Minute,
 		},
 	}
 }
@@ -136,6 +141,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.max_ci_fix_attempts", 5)
 	v.SetDefault("settings.max_review_fix_attempts", 5)
 	v.SetDefault("settings.max_rebase_attempts", 3)
+	v.SetDefault("settings.stale_interval", "5m")
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	v.SetEnvPrefix("FORGE")
@@ -206,6 +212,13 @@ func Load(configFile string) (*Config, error) {
 			return nil, fmt.Errorf("invalid bellows_interval %q: %w", raw, err)
 		}
 		cfg.Settings.BellowsInterval = d
+	}
+	if raw := v.GetString("settings.stale_interval"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid stale_interval %q: %w", raw, err)
+		}
+		cfg.Settings.StaleInterval = d
 	}
 
 	return &cfg, nil
@@ -302,6 +315,7 @@ func Save(cfg *Config, path string) error {
 	v.Set("settings.claude_flags", cfg.Settings.ClaudeFlags)
 	v.Set("settings.rate_limit_backoff", cfg.Settings.RateLimitBackoff.String())
 	v.Set("settings.bellows_interval", cfg.Settings.BellowsInterval.String())
+	v.Set("settings.stale_interval", cfg.Settings.StaleInterval.String())
 
 	// Ensure directory exists
 	dir := filepath.Dir(path)

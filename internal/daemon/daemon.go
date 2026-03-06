@@ -351,6 +351,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}()
 
+	// Start stale worker detection loop
+	if d.cfg.Settings.StaleInterval > 0 {
+		go d.runStaleDetection(ctx)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -536,6 +541,54 @@ func (d *Daemon) drainPendingAction(ctx context.Context, beadID string) {
 	}
 	d.logger.Info("draining parked lifecycle action", "bead", beadID, "action", req.Action)
 	d.handleLifecycleAction(ctx, req)
+}
+
+// runStaleDetection periodically checks active workers for stale log files.
+// A worker is marked as stalled if its log file has not been modified for longer
+// than the configured stale_interval. This does not kill the process — it warns
+// the operator via the Needs Attention panel. The check runs at half the stale
+// interval to ensure timely detection.
+func (d *Daemon) runStaleDetection(ctx context.Context) {
+	staleInterval := d.cfg.Settings.StaleInterval
+	checkInterval := staleInterval / 2
+	if checkInterval < 30*time.Second {
+		checkInterval = 30 * time.Second
+	}
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Re-read stale interval in case config was hot-reloaded
+			interval := d.cfg.Settings.StaleInterval
+			if interval <= 0 {
+				continue
+			}
+			stalled, err := d.db.StalledWorkers(interval)
+			if err != nil {
+				d.logger.Warn("stale detection: failed to query workers", "error", err)
+				continue
+			}
+			for _, w := range stalled {
+				if w.Status == state.WorkerStalled {
+					continue // already marked
+				}
+				d.logger.Warn("marking worker as stalled — no log activity",
+					"worker", w.ID, "bead", w.BeadID, "anvil", w.Anvil,
+					"phase", w.Phase, "stale_interval", interval)
+				if err := d.db.MarkWorkerStalled(w.ID); err != nil {
+					d.logger.Error("failed to mark worker stalled", "worker", w.ID, "error", err)
+					continue
+				}
+				_ = d.db.LogEvent(state.EventWorkerStalled,
+					fmt.Sprintf("Worker %s stalled (no log activity for %s)", w.ID, interval),
+					w.BeadID, w.Anvil)
+			}
+		}
+	}
 }
 
 // pollAndDispatch polls all anvils for ready beads and dispatches workers.
