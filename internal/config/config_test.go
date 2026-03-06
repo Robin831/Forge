@@ -20,10 +20,11 @@ func TestConfig_Validate(t *testing.T) {
 			name: "valid config",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths: 4,
+					MaxTotalSmiths:  4,
 					MaxReviewAttempts: 5,
-					PollInterval:   1 * time.Minute,
-					SmithTimeout:   30 * time.Minute,
+					PollInterval:    1 * time.Minute,
+					SmithTimeout:    30 * time.Minute,
+					BellowsInterval: 2 * time.Minute,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -39,10 +40,11 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid settings",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths: 0,
+					MaxTotalSmiths:  0,
 					MaxReviewAttempts: 0,
-					PollInterval:   5 * time.Second,
-					SmithTimeout:   30 * time.Second,
+					PollInterval:    5 * time.Second,
+					SmithTimeout:    30 * time.Second,
+					BellowsInterval: 10 * time.Second,
 				},
 			},
 			expected: []string{
@@ -50,16 +52,18 @@ func TestConfig_Validate(t *testing.T) {
 				"settings.max_review_attempts must be >= 1",
 				"settings.poll_interval must be >= 10s",
 				"settings.smith_timeout must be >= 1m",
+				"settings.bellows_interval must be >= 30s",
 			},
 		},
 		{
 			name: "invalid anvil path",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths: 4,
+					MaxTotalSmiths:  4,
 					MaxReviewAttempts: 5,
-					PollInterval:   1 * time.Minute,
-					SmithTimeout:   30 * time.Minute,
+					PollInterval:    1 * time.Minute,
+					SmithTimeout:    30 * time.Minute,
+					BellowsInterval: 2 * time.Minute,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -75,10 +79,11 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid auto_dispatch mode",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths: 4,
+					MaxTotalSmiths:  4,
 					MaxReviewAttempts: 5,
-					PollInterval:   1 * time.Minute,
-					SmithTimeout:   30 * time.Minute,
+					PollInterval:    1 * time.Minute,
+					SmithTimeout:    30 * time.Minute,
+					BellowsInterval: 2 * time.Minute,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -95,10 +100,11 @@ func TestConfig_Validate(t *testing.T) {
 			name: "missing tag for tagged mode",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths: 4,
+					MaxTotalSmiths:  4,
 					MaxReviewAttempts: 5,
-					PollInterval:   1 * time.Minute,
-					SmithTimeout:   30 * time.Minute,
+					PollInterval:    1 * time.Minute,
+					SmithTimeout:    30 * time.Minute,
+					BellowsInterval: 2 * time.Minute,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -116,10 +122,11 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid priority for priority mode",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths: 4,
+					MaxTotalSmiths:  4,
 					MaxReviewAttempts: 5,
-					PollInterval:   1 * time.Minute,
-					SmithTimeout:   30 * time.Minute,
+					PollInterval:    1 * time.Minute,
+					SmithTimeout:    30 * time.Minute,
+					BellowsInterval: 2 * time.Minute,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -155,6 +162,7 @@ func TestDefaults(t *testing.T) {
 	assert.Equal(t, 30*time.Minute, cfg.Settings.SmithTimeout)
 	assert.Equal(t, 4, cfg.Settings.MaxTotalSmiths)
 	assert.Equal(t, 5*time.Minute, cfg.Settings.RateLimitBackoff)
+	assert.Equal(t, 2*time.Minute, cfg.Settings.BellowsInterval)
 	assert.NotNil(t, cfg.Anvils)
 }
 
@@ -238,6 +246,47 @@ settings:
 
 	_, err := Load(cfgPath)
 	assert.ErrorContains(t, err, "rate_limit_backoff")
+}
+
+func TestLoad_BellowsInterval(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  bellows_interval: 3m
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 3*time.Minute, cfg.Settings.BellowsInterval)
+}
+
+func TestLoad_BellowsInterval_Default(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  max_total_smiths: 2
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 2*time.Minute, cfg.Settings.BellowsInterval)
+}
+
+func TestLoad_InvalidBellowsInterval(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  bellows_interval: notaduration
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	_, err := Load(cfgPath)
+	assert.ErrorContains(t, err, "bellows_interval")
 }
 
 func TestLoad_InvalidPollInterval(t *testing.T) {
