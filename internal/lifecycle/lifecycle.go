@@ -390,6 +390,7 @@ func (m *Manager) NotifyReviewFixCompleted(anvil string, prNumber int) {
 	}
 	st.ReviewNeedsFix = false
 	dbID := st.ID
+	ciNeedsFix := st.CINeedsFix
 	m.mu.Unlock()
 
 	m.logger.Info("review fix cycle completed, cleared ReviewNeedsFix", "pr", prNumber, "anvil", anvil)
@@ -399,7 +400,13 @@ func (m *Manager) NotifyReviewFixCompleted(anvil string, prNumber int) {
 	// Use a conditional update that only transitions from needs_fix → open;
 	// this prevents overwriting a terminal status (merged/closed) if the PR
 	// was closed while the review-fix worker was still running.
-	if dbID > 0 {
+	//
+	// Only update when CI is not still failing: if CINeedsFix is set, the DB
+	// status must remain needs_fix so the CI failure is preserved across daemon
+	// restarts. Bellows only sets PRNeedsFix on a passing→failing transition, so
+	// clearing it here while CI is still failing would leave the DB permanently
+	// inconsistent (needs_fix would never be re-set while CI stays failing).
+	if dbID > 0 && !ciNeedsFix {
 		if err := m.db.UpdatePRStatusIfNeedsFix(dbID, state.PROpen); err != nil {
 			m.logger.Warn("failed to persist PROpen after review fix completed",
 				"pr", prNumber, "anvil", anvil, "error", err)

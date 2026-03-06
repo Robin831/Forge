@@ -688,3 +688,47 @@ func TestCIAndReviewFixesAreIndependent(t *testing.T) {
 		t.Error("step 4: CINeedsFix should still be false")
 	}
 }
+
+// TestNotifyReviewFixCompleted_DoesNotClearCINeedsFixWhileFailing verifies that
+// completing a review fix does not clear a CI-related needs-fix state when CI
+// is still failing. This guards against regressions where NotifyReviewFixCompleted
+// would incorrectly clear CI-related flags or status.
+func TestNotifyReviewFixCompleted_DoesNotClearCINeedsFixWhileFailing(t *testing.T) {
+	db := newTestDB(t)
+	var dispatched []ActionRequest
+	handler := func(_ context.Context, req ActionRequest) {
+		dispatched = append(dispatched, req)
+	}
+	m := New(db, testLogger(), handler)
+	ctx := context.Background()
+
+	// Step 1: CI fails → sets CINeedsFix.
+	m.HandleEvent(ctx, makeEvent(200, bellows.EventCIFailed))
+	st := m.GetState("test-anvil", 200)
+	if !st.CINeedsFix {
+		t.Fatal("step 1: expected CINeedsFix=true after CI failure")
+	}
+
+	// Step 2: Review changes arrive while CI is still failing → sets ReviewNeedsFix.
+	dispatched = dispatched[:0]
+	m.HandleEvent(ctx, makeEvent(200, bellows.EventReviewChanges))
+	st = m.GetState("test-anvil", 200)
+	if !st.CINeedsFix {
+		t.Fatal("step 2: expected CINeedsFix to remain true while CI is still failing")
+	}
+	if !st.ReviewNeedsFix {
+		t.Fatal("step 2: expected ReviewNeedsFix=true after review changes")
+	}
+
+	// Step 3: Review fix completes while CI is still failing.
+	m.NotifyReviewFixCompleted("test-anvil", 200)
+	st = m.GetState("test-anvil", 200)
+
+	// ReviewNeedsFix should be cleared, but CINeedsFix must remain true.
+	if st.ReviewNeedsFix {
+		t.Error("step 3: ReviewNeedsFix should be false after NotifyReviewFixCompleted")
+	}
+	if !st.CINeedsFix {
+		t.Error("step 3: CINeedsFix must remain true while CI is still failing")
+	}
+}
