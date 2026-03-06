@@ -98,17 +98,30 @@ func (m *Manager) Load(ctx context.Context) error {
 	}
 
 	for _, pr := range prs {
-		// If a PR was persisted as needs_fix, the fix worker was killed before it
-		// could complete (e.g. daemon restart). Reset to open so bellows re-detects
-		// any outstanding review comments and dispatches a fresh fix cycle.
-		// Do NOT restore NeedsFix=true — that permanently blocks HandleEvent from
-		// dispatching until the stuck state is manually cleared.
+		// If a PR was persisted as needs_fix, handle it based on CI state:
+		//
+		// CIPassing=true  → the needs_fix was set by bellows for a review-fix cycle
+		//                   that was killed mid-flight (e.g. daemon restart). Reset
+		//                   to open so bellows re-detects review comments and
+		//                   dispatches a fresh fix cycle.
+		//
+		// CIPassing=false → the needs_fix was set by bellows for an active CI failure.
+		//                   Do NOT reset it, otherwise we briefly hide the CI-failing
+		//                   state on restart. Bellows will re-detect and handle it.
+		//
+		// In both cases, do NOT restore NeedsFix=true in memory — bellows will
+		// re-detect and drive any required fix cycles.
 		if pr.Status == state.PRNeedsFix {
-			if err := m.db.UpdatePRStatus(pr.ID, state.PROpen); err != nil {
-				m.logger.Warn("failed to reset stale needs_fix PR to open on load",
-					"pr", pr.Number, "anvil", pr.Anvil, "error", err)
+			if pr.CIPassing {
+				if err := m.db.UpdatePRStatus(pr.ID, state.PROpen); err != nil {
+					m.logger.Warn("failed to reset stale review needs_fix PR to open on load",
+						"pr", pr.Number, "anvil", pr.Anvil, "error", err)
+				} else {
+					m.logger.Info("reset stale review needs_fix PR to open on load (fix worker was killed)",
+						"pr", pr.Number, "anvil", pr.Anvil)
+				}
 			} else {
-				m.logger.Info("reset stale needs_fix PR to open on load (fix worker was killed)",
+				m.logger.Info("preserving needs_fix status for CI-failing PR on load",
 					"pr", pr.Number, "anvil", pr.Anvil)
 			}
 		}
@@ -373,8 +386,11 @@ func (m *Manager) NotifyReviewFixCompleted(anvil string, prNumber int) {
 
 	// Persist the cleared state so a daemon restart does not reload a stale
 	// needs_fix DB status and get permanently stuck.
+	// Use a conditional update that only transitions from needs_fix → open;
+	// this prevents overwriting a terminal status (merged/closed) if the PR
+	// was closed while the review-fix worker was still running.
 	if dbID > 0 {
-		if err := m.db.UpdatePRStatus(dbID, state.PROpen); err != nil {
+		if err := m.db.UpdatePRStatusIfNeedsFix(dbID, state.PROpen); err != nil {
 			m.logger.Warn("failed to persist PROpen after review fix completed",
 				"pr", prNumber, "anvil", anvil, "error", err)
 		}

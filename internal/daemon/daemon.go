@@ -415,9 +415,13 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				status = state.WorkerFailed
 			}
 			_ = d.db.UpdateWorkerStatus(workerID, status)
-			// Clear NeedsFix so the next EventReviewChanges (from the
-			// re-requested review) can dispatch a new fix cycle.
-			d.lifecycleMgr.NotifyReviewFixCompleted(req.Anvil, req.PRNumber)
+			// Clear NeedsFix only when the fix cycle completed without error.
+			// If the fix failed (res.Error != nil), leave NeedsFix set so bellows
+			// can detect and dispatch another attempt rather than silently
+			// clearing a state that still needs attention.
+			if res.Error == nil {
+				d.lifecycleMgr.NotifyReviewFixCompleted(req.Anvil, req.PRNumber)
+			}
 
 		case lifecycle.ActionCloseBead:
 			d.logger.Info("closing bead after merge", "bead", req.BeadID)

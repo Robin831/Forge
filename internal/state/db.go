@@ -451,6 +451,17 @@ func (db *DB) UpdatePRStatus(id int, status PRStatus) error {
 	return err
 }
 
+// UpdatePRStatusIfNeedsFix conditionally updates a PR's status only when the
+// current status is needs_fix. This prevents overwriting a terminal status
+// (e.g. merged or closed) if the PR transitions while a fix worker is running.
+func (db *DB) UpdatePRStatusIfNeedsFix(id int, status PRStatus) error {
+	_, err := db.conn.Exec(
+		`UPDATE prs SET status = ?, last_checked = ? WHERE id = ? AND status = 'needs_fix'`,
+		string(status), time.Now().Format(time.RFC3339), id,
+	)
+	return err
+}
+
 // UpdatePRLifecycle updates the lifecycle state of a PR.
 func (db *DB) UpdatePRLifecycle(id int, ciFixCount, reviewFixCount int, ciPassing bool) error {
 	passing := 0
