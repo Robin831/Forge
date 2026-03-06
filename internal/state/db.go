@@ -105,6 +105,7 @@ func (db *DB) migrate() error {
 		{"workers", "title", `ALTER TABLE workers ADD COLUMN title TEXT NOT NULL DEFAULT ''`},
 		{"retries", "dispatch_failures", `ALTER TABLE retries ADD COLUMN dispatch_failures INTEGER NOT NULL DEFAULT 0`},
 		{"prs", "rebase_count", `ALTER TABLE prs ADD COLUMN rebase_count INTEGER NOT NULL DEFAULT 0`},
+		{"workers", "updated_at", `ALTER TABLE workers ADD COLUMN updated_at TEXT`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -359,10 +360,14 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 		ORDER BY started_at`)
 }
 
-// StalledWorkers returns active workers whose log files have not been modified
-// within the given staleThreshold. Workers without a log path are skipped.
+// StalledWorkers returns active non-stalled workers whose log files have not
+// been modified within the given staleThreshold. Workers without a log path
+// are skipped. Already-stalled workers are excluded to avoid repeated
+// filesystem stat calls on log files that won't change their status.
 func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
-	workers, err := db.ActiveWorkers()
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
+		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
+		ORDER BY started_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -383,28 +388,34 @@ func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 	return stalled, nil
 }
 
-// MarkWorkerStalled sets a worker's status to stalled.
+// MarkWorkerStalled sets a worker's status to stalled and records the time.
 func (db *DB) MarkWorkerStalled(id string) error {
-	_, err := db.conn.Exec(`UPDATE workers SET status = ? WHERE id = ?`, string(WorkerStalled), id)
+	_, err := db.conn.Exec(
+		`UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`,
+		string(WorkerStalled), time.Now().Format(time.RFC3339), id,
+	)
 	return err
 }
 
 // ActiveDispatchWorkers returns active workers that are running primary dispatch
 // pipeline phases (smith, temper, warden). Bellows (PR monitoring) and lifecycle
 // workers (cifix, reviewfix) are excluded so they don't consume dispatch capacity slots.
+// Stalled workers are included so they continue to count against capacity and
+// prevent the daemon from over-subscribing while stalled processes are still running.
 func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
-		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
+		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
 		  AND phase NOT IN ('cifix', 'reviewfix', 'bellows')
 		ORDER BY started_at`)
 }
 
 // ActiveDispatchWorkersByAnvil returns active dispatch workers for a given anvil,
 // excluding bellows and lifecycle workers (cifix, reviewfix).
+// Stalled workers are included so they continue to count against per-anvil capacity.
 func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE anvil = ?
-		  AND status IN ('pending', 'running', 'reviewing', 'monitoring')
+		  AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
 		  AND phase NOT IN ('cifix', 'reviewfix', 'bellows')
 		ORDER BY started_at`, anvil)
 }
@@ -1290,7 +1301,7 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 		     UNION ALL
 		     SELECT w.bead_id, w.anvil, 0 AS needs_human, 0 AS clarification_needed,
 		            'Worker stalled (no log activity)' AS reason,
-		            w.title, w.started_at AS updated_at
+		            w.title, COALESCE(w.updated_at, w.started_at) AS updated_at
 		     FROM workers w
 		     WHERE w.status = 'stalled'
 		 )
@@ -1300,7 +1311,9 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 	}
 	defer rows.Close()
 
-	seen := make(map[string]struct{})
+	// seen maps bead+anvil key to its index in beads, enabling flag merging
+	// when the same bead appears in both the retries and stalled-workers branches.
+	seen := make(map[string]int)
 	var beads []NeedsAttentionBead
 	for rows.Next() {
 		var b NeedsAttentionBead
@@ -1308,14 +1321,23 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 		if err := rows.Scan(&b.BeadID, &b.Anvil, &needsHuman, &clarNeeded, &b.Reason, &b.Title); err != nil {
 			return nil, err
 		}
-		// Deduplicate: a bead may appear from both retries and stalled workers
-		key := b.BeadID + "\x00" + b.Anvil
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
 		b.NeedsHuman = needsHuman != 0
 		b.ClarificationNeeded = clarNeeded != 0
+
+		key := b.BeadID + "\x00" + b.Anvil
+		if idx, dup := seen[key]; dup {
+			// Merge: OR the actionable flags so neither source's signal is lost.
+			// Prefer the reason from a row that carries flags (retry row) over
+			// the generic stalled reason.
+			existing := &beads[idx]
+			existing.NeedsHuman = existing.NeedsHuman || b.NeedsHuman
+			existing.ClarificationNeeded = existing.ClarificationNeeded || b.ClarificationNeeded
+			if (b.NeedsHuman || b.ClarificationNeeded) && b.Reason != "" {
+				existing.Reason = b.Reason
+			}
+			continue
+		}
+		seen[key] = len(beads)
 		beads = append(beads, b)
 	}
 	if err := rows.Err(); err != nil {

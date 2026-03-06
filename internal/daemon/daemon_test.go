@@ -49,12 +49,12 @@ func TestHandleIPC_RunBead_Errors(t *testing.T) {
 	defer db.Close()
 
 	d := &Daemon{
-		cfg:           cfg,
 		db:            db,
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 	}
+	d.cfg.Store(cfg)
 
 	t.Run("invalid payload", func(t *testing.T) {
 		resp := d.handleIPC(ipc.Command{
@@ -152,12 +152,12 @@ exit 1
 	defer db.Close()
 
 	d := &Daemon{
-		cfg:           cfg,
 		db:            db,
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 	}
+	d.cfg.Store(cfg)
 
 	t.Run("successful dispatch via poll fallback", func(t *testing.T) {
 		payload, _ := json.Marshal(ipc.RunBeadPayload{
