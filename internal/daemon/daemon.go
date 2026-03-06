@@ -632,6 +632,12 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			continue
 		}
 
+		// Skip beads that already have an open PR (bellows should handle them)
+		if hasPR, err := d.db.HasOpenPRForBead(bead.ID, bead.Anvil); err == nil && hasPR {
+			d.logger.Debug("skipping bead with open PR", "bead", bead.ID)
+			continue
+		}
+
 		anvilCfg := d.cfg.Anvils[bead.Anvil]
 
 		// Apply auto-dispatch filtering

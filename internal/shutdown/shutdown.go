@@ -153,12 +153,21 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 				fmt.Sprintf("Orphaned worker %s cleaned up", w.ID),
 				w.BeadID, w.Anvil)
 
-			// Reset bead status to open in bd
+			// Only reset bead to open if there is no open PR for it.
+			// Bellows/monitoring workers die on daemon restart, but their
+			// PRs are still open and should not be re-dispatched.
 			if anvilPath, ok := m.anvils[w.Anvil]; ok {
-				if err := m.resetBead(w.BeadID, anvilPath); err != nil {
-					m.logger.Warn("failed to reset bead status", "bead", w.BeadID, "error", err)
+				hasPR, prErr := m.db.HasOpenPRForBead(w.BeadID, w.Anvil)
+				if prErr != nil {
+					m.logger.Warn("failed to check open PR for orphaned worker", "bead", w.BeadID, "error", prErr)
+				} else if hasPR {
+					m.logger.Info("orphaned worker has open PR, keeping bead in_progress", "bead", w.BeadID, "anvil", w.Anvil)
 				} else {
-					m.logger.Info("reset bead status to open", "bead", w.BeadID, "anvil", w.Anvil)
+					if err := m.resetBead(w.BeadID, anvilPath); err != nil {
+						m.logger.Warn("failed to reset bead status", "bead", w.BeadID, "error", err)
+					} else {
+						m.logger.Info("reset bead status to open", "bead", w.BeadID, "anvil", w.Anvil)
+					}
 				}
 			}
 
