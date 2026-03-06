@@ -341,7 +341,8 @@ func FetchNeedsAttention(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
 		beads, err := db.NeedsAttentionBeads()
 		if err != nil {
-			return UpdateNeedsAttentionMsg{Items: nil}
+			fmt.Fprintf(os.Stderr, "hearth: FetchNeedsAttention DB error: %v\n", err)
+			return nil
 		}
 
 		var items []NeedsAttentionItem
