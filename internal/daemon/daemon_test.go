@@ -404,6 +404,35 @@ func TestPollAndDispatch_CostLimit(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
 
+	// Create a fake bd script that returns one ready bead so we can verify
+	// dispatch is actually skipped (not just a no-op because no beads exist).
+	var bdScript string
+	var bdContent string
+	if runtime.GOOS == "windows" {
+		bdScript = filepath.Join(tmpDir, "bd.bat")
+		bdContent = `@echo off
+if "%1"=="ready" (
+    echo [{"id": "COST-1", "title": "Cost Test Bead", "status": "ready", "priority": 1, "tags": []}]
+    exit /b 0
+)
+exit /b 0
+`
+	} else {
+		bdScript = filepath.Join(tmpDir, "bd")
+		bdContent = `#!/bin/sh
+if [ "$1" = "ready" ]; then
+    echo '[{"id": "COST-1", "title": "Cost Test Bead", "status": "ready", "priority": 1, "tags": []}]'
+    exit 0
+fi
+exit 0
+`
+	}
+	require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+	defer os.Setenv("PATH", oldPath)
+
 	dbPath := filepath.Join(tmpDir, "state.db")
 	db, err := state.Open(dbPath)
 	require.NoError(t, err)
@@ -419,7 +448,9 @@ func TestPollAndDispatch_CostLimit(t *testing.T) {
 			PollInterval:   10 * time.Second,
 			DailyCostLimit: 10.00, // limit is $10, cost is $15
 		},
-		Anvils: map[string]config.AnvilConfig{}, // no anvils — poll returns empty
+		Anvils: map[string]config.AnvilConfig{
+			"dummy": {Path: tmpDir, AutoDispatch: "always"},
+		},
 	}
 
 	d := &Daemon{
@@ -429,6 +460,7 @@ func TestPollAndDispatch_CostLimit(t *testing.T) {
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 	}
+	d.costLimitLoggedDate.Store("")
 
 	countCostLimitEvents := func() int {
 		events, err := db.RecentEvents(50)
@@ -442,9 +474,13 @@ func TestPollAndDispatch_CostLimit(t *testing.T) {
 		return n
 	}
 
-	// First poll: dispatch should be skipped and event logged once.
+	// First poll: the fake bd script returns a ready bead but dispatch should be
+	// skipped because today's cost exceeds the limit.
 	d.pollAndDispatch(context.Background())
-	assert.Equal(t, 0, len(d.lastBeads), "no beads should be dispatched")
+	assert.GreaterOrEqual(t, len(d.lastBeads), 1, "poll should surface the ready bead")
+	// No worker should have been dispatched.
+	_, inFlight := d.activeBeads.Load("COST-1")
+	assert.False(t, inFlight, "bead should NOT be dispatched when cost limit is exceeded")
 	assert.Equal(t, 1, countCostLimitEvents(), "cost_limit_hit event should be logged once")
 
 	// Second poll: event must NOT be logged again (same calendar day).

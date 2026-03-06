@@ -142,7 +142,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 
 	wtMgr := worktree.NewManager()
 
-	return &Daemon{
+	d := &Daemon{
 		cfg:           cfg,
 		db:            db,
 		logger:        logger,
@@ -153,7 +153,12 @@ func New(cfg *config.Config) (*Daemon, error) {
 		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
-	}, nil
+	}
+	// Initialize costLimitLoggedDate so Load() is always safe (zero atomic.Value
+	// returns nil on Load, which is fine for type assertion, but Store("")
+	// makes the intent explicit and avoids any future ambiguity).
+	d.costLimitLoggedDate.Store("")
+	return d, nil
 }
 
 // anvilPathMap extracts directory paths from all configured anvils.
@@ -657,19 +662,27 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			continue
 		}
 
-		// 2. Skip if the bead is already in flight. activeBeads tracks all
+		// 2. Skip beads that already have an open PR (bellows handles them).
+		if hasPR, err := d.db.HasOpenPRForBead(b.ID, b.Anvil); err == nil && hasPR {
+			d.logger.Debug("skipping bead with open PR", "bead", b.ID)
+			continue
+		}
+
+		// 3. Skip if the bead is already in flight. activeBeads tracks all
 		// goroutines currently running dispatchBead.
 		if _, loaded := d.activeBeads.LoadOrStore(b.ID, true); loaded {
 			continue
 		}
 
-		// 3. Check global capacity.
+		// 4. Check global capacity. Since globalActive and thisCycleGlobal only
+		// increase within this loop, once the limit is reached it stays reached —
+		// break to avoid unnecessary LoadOrStore/Delete on remaining beads.
 		if globalActive+thisCycleGlobal >= maxTotal {
 			d.activeBeads.Delete(b.ID)
-			continue
+			break
 		}
 
-		// 4. Check per-anvil capacity.
+		// 5. Check per-anvil capacity.
 		anvilCfg, ok := d.cfg.Anvils[b.Anvil]
 		if !ok {
 			d.activeBeads.Delete(b.ID)
@@ -682,13 +695,24 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			continue
 		}
 
+		// Default to 1 smith per anvil to match the run_bead path.
 		maxPerAnvil := anvilCfg.MaxSmiths
 		if maxPerAnvil <= 0 {
-			maxPerAnvil = 2
+			maxPerAnvil = 1
 		}
 
 		if _, checked := anvilActive[b.Anvil]; !checked {
-			active, _ := worker.DispatchActiveCount(d.db, b.Anvil)
+			active, err := worker.DispatchActiveCount(d.db, b.Anvil)
+			if err != nil {
+				slog.Error("failed to query active smith count; skipping dispatch for anvil this cycle",
+					"anvil", b.Anvil,
+					"error", err,
+				)
+				// Fail closed: treat this anvil as at capacity for this cycle.
+				anvilActive[b.Anvil] = maxPerAnvil
+				d.activeBeads.Delete(b.ID)
+				continue
+			}
 			anvilActive[b.Anvil] = active
 		}
 
@@ -697,7 +721,16 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			continue
 		}
 
-		// 5. Dispatch!
+		// 6. Claim the bead atomically before dispatching so concurrent daemons
+		// cannot pick up the same bead.
+		if err := d.claimBead(ctx, b.ID, anvilCfg.Path); err != nil {
+			d.logger.Warn("failed to claim bead", "bead", b.ID, "error", err)
+			d.recordDispatchFailure(b.ID, b.Anvil, fmt.Sprintf("claim failed: %v", err))
+			d.activeBeads.Delete(b.ID)
+			continue
+		}
+
+		// 7. Dispatch!
 		thisCycleGlobal++
 		thisCycleAnvil[b.Anvil]++
 		d.wg.Add(1)
