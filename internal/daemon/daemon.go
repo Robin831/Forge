@@ -1146,7 +1146,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to dismiss: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		_ = d.db.LogEvent(state.EventBeadDismissed, fmt.Sprintf("Bead %s dismissed from needs attention", dp.BeadID), dp.BeadID, dp.Anvil)
+			logMessage := fmt.Sprintf("Bead %s dismissed from needs attention", dp.BeadID)
+			_ = d.db.LogEvent(state.EventBeadDismissed, logMessage, dp.BeadID, dp.Anvil)
 		d.logger.Info("bead dismissed from needs attention", "bead", dp.BeadID, "anvil", dp.Anvil)
 		data, _ := json.Marshal(map[string]string{"message": "dismissed"})
 		return ipc.Response{Type: "ok", Payload: data}
