@@ -72,9 +72,15 @@ func TestHandleEvent_Transitions(t *testing.T) {
 		{
 			name:     "max CI attempts exhaustion",
 			prNumber: 10,
+			// maxCI=2: we need 2 full [Failed,Passed] cycles to fill the counter,
+			// then the 3rd EventCIFailed triggers exhaustion.
+			// EventCIPassed between failures resets CIPassing=true so the next
+			// EventCIFailed can pass the !st.CIPassing guard and increment the counter.
 			setupEvents: []bellows.PREvent{
 				makeEvent(10, bellows.EventCIFailed),
+				makeEvent(10, bellows.EventCIPassed),
 				makeEvent(10, bellows.EventCIFailed),
+				makeEvent(10, bellows.EventCIPassed),
 			},
 			event:           makeEvent(10, bellows.EventCIFailed),
 			wantAction:      ActionNone,
@@ -82,43 +88,54 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			wantDBEventType: state.EventLifecycleExhausted,
 		},
 		{
-			name:         "EventReviewChanges dispatch",
-			prNumber:     7,
-			event:        makeEvent(7, bellows.EventReviewChanges),
-			wantAction:   ActionFixReview,
-			wantNeedsFix: true,
+			name:          "EventReviewChanges dispatch",
+			prNumber:      7,
+			event:         makeEvent(7, bellows.EventReviewChanges),
+			wantAction:    ActionFixReview,
+			wantNeedsFix:  true,
+			wantCIPassing: true, // InsertPR omits ci_passing so DB default (true) applies; review event does not change CI state
 		},
 		{
 			name:     "max review attempts exhaustion",
 			prNumber: 20,
+			// maxRev=2: 2 full [Changes,Approved] cycles fill the counter;
+			// the 3rd EventReviewChanges triggers exhaustion.
+			// EventReviewApproved sets Approved=true, re-opening the fix cycle
+			// so the next EventReviewChanges passes the !NeedsFix||Approved guard.
 			setupEvents: []bellows.PREvent{
 				makeEvent(20, bellows.EventReviewChanges),
+				makeEvent(20, bellows.EventReviewApproved),
 				makeEvent(20, bellows.EventReviewChanges),
+				makeEvent(20, bellows.EventReviewApproved),
 			},
 			event:           makeEvent(20, bellows.EventReviewChanges),
 			wantAction:      ActionNone,
 			wantNeedsFix:    true,
+			wantCIPassing:   true, // review events do not change CI state
 			wantDBEventType: state.EventLifecycleExhausted,
 		},
 		{
-			name:       "EventPRMerged closes bead",
-			prNumber:   99,
-			event:      makeEvent(99, bellows.EventPRMerged),
-			wantAction: ActionCloseBead,
-			wantMerged: true,
+			name:          "EventPRMerged closes bead",
+			prNumber:      99,
+			event:         makeEvent(99, bellows.EventPRMerged),
+			wantAction:    ActionCloseBead,
+			wantMerged:    true,
+			wantCIPassing: true, // merge event does not change CI state
 		},
 		{
-			name:       "EventPRConflicting dispatch",
-			prNumber:   55,
-			event:      makeEvent(55, bellows.EventPRConflicting),
-			wantAction: ActionRebase,
+			name:          "EventPRConflicting dispatch",
+			prNumber:      55,
+			event:         makeEvent(55, bellows.EventPRConflicting),
+			wantAction:    ActionRebase,
+			wantCIPassing: true, // conflict event does not change CI state
 		},
 		{
-			name:       "EventPRClosed cleanup",
-			prNumber:   33,
-			event:      makeEvent(33, bellows.EventPRClosed),
-			wantAction: ActionCleanup,
-			wantClosed: true,
+			name:          "EventPRClosed cleanup",
+			prNumber:      33,
+			event:         makeEvent(33, bellows.EventPRClosed),
+			wantAction:    ActionCleanup,
+			wantClosed:    true,
+			wantCIPassing: true, // close event does not change CI state
 		},
 		{
 			name:          "EventCIPassed",
@@ -129,11 +146,12 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			wantCIPassing: true,
 		},
 		{
-			name:         "EventReviewApproved",
-			prNumber:     2,
-			event:        makeEvent(2, bellows.EventReviewApproved),
-			wantAction:   ActionNone,
-			wantApproved: true,
+			name:          "EventReviewApproved",
+			prNumber:      2,
+			event:         makeEvent(2, bellows.EventReviewApproved),
+			wantAction:    ActionNone,
+			wantApproved:  true,
+			wantCIPassing: true, // approve event does not change CI state
 		},
 	}
 
