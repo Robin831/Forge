@@ -348,6 +348,99 @@ func TestDB_ClarificationNeededBeads_ExcludesNeedsHuman(t *testing.T) {
 	}
 }
 
+func TestDB_DispatchCircuitBreaker(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Initially no circuit-broken beads
+	broken, err := db.DispatchCircuitBrokenBeadIDSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(broken) != 0 {
+		t.Fatalf("expected empty set, got %d", len(broken))
+	}
+
+	// First two failures should not trip the breaker
+	for i := 1; i <= 2; i++ {
+		count, tripped, err := db.IncrementDispatchFailures("BD-1", "anvil-1", 3, "test error")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != i {
+			t.Errorf("expected count %d, got %d", i, count)
+		}
+		if tripped {
+			t.Errorf("should not trip on failure %d", i)
+		}
+	}
+
+	// Third failure should trip the breaker
+	count, tripped, err := db.IncrementDispatchFailures("BD-1", "anvil-1", 3, "test error 3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Errorf("expected count 3, got %d", count)
+	}
+	if !tripped {
+		t.Error("expected circuit breaker to trip on failure 3")
+	}
+
+	// Should now appear in circuit-broken set
+	broken, err = db.DispatchCircuitBrokenBeadIDSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := broken["BD-1\x00anvil-1"]; !ok {
+		t.Error("BD-1 should be in circuit-broken set")
+	}
+
+	// Verify needs_human is set
+	r, err := db.GetRetry("BD-1", "anvil-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.NeedsHuman {
+		t.Error("expected needs_human=true")
+	}
+	if r.DispatchFailures != 3 {
+		t.Errorf("expected dispatch_failures=3, got %d", r.DispatchFailures)
+	}
+
+	// Reset should clear everything
+	if err := db.ResetDispatchFailures("BD-1", "anvil-1"); err != nil {
+		t.Fatal(err)
+	}
+	r, err = db.GetRetry("BD-1", "anvil-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.NeedsHuman {
+		t.Error("expected needs_human=false after reset")
+	}
+	if r.DispatchFailures != 0 {
+		t.Errorf("expected dispatch_failures=0 after reset, got %d", r.DispatchFailures)
+	}
+
+	// Should no longer be in circuit-broken set
+	broken, err = db.DispatchCircuitBrokenBeadIDSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := broken["BD-1\x00anvil-1"]; ok {
+		t.Error("BD-1 should not be in circuit-broken set after reset")
+	}
+}
+
 func TestDB_PendingRetries_ExcludesClarification(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

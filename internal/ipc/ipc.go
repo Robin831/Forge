@@ -79,6 +79,13 @@ type ClarificationPayload struct {
 	Reason string `json:"reason"`  // Why clarification is needed (used when setting)
 }
 
+// RetryBeadPayload is the payload for a "retry_bead" command that resets
+// the dispatch circuit breaker for a bead.
+type RetryBeadPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`
+}
+
 // CommandHandler is called by the server for each incoming command.
 type CommandHandler func(cmd Command) Response
 

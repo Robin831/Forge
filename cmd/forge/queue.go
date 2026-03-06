@@ -20,9 +20,12 @@ func init() {
 	_ = queueClarifyCmd.MarkFlagRequired("reason")
 	queueUnclarifyCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
 	_ = queueUnclarifyCmd.MarkFlagRequired("anvil")
+	queueRetryCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
+	_ = queueRetryCmd.MarkFlagRequired("anvil")
 	queueCmd.AddCommand(queueRunCmd)
 	queueCmd.AddCommand(queueClarifyCmd)
 	queueCmd.AddCommand(queueUnclarifyCmd)
+	queueCmd.AddCommand(queueRetryCmd)
 	rootCmd.AddCommand(queueCmd)
 }
 
@@ -166,6 +169,52 @@ var queueClarifyCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Bead %s marked as needing clarification\n", beadID)
+		return nil
+	},
+}
+
+var queueRetryCmd = &cobra.Command{
+	Use:     "retry <id>",
+	Short:   "Reset dispatch circuit breaker for a bead (clears needs_human from dispatch failures)",
+	Args:    cobra.ExactArgs(1),
+	Example: "  forge queue retry BD-42 --anvil heimdall",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		beadID := args[0]
+		anvil, _ := cmd.Flags().GetString("anvil")
+
+		client, err := ipc.NewClient()
+		if err != nil {
+			return fmt.Errorf("connecting to daemon: %w (is 'forge up' running?)", err)
+		}
+		defer client.Close()
+
+		payload, _ := json.Marshal(ipc.RetryBeadPayload{
+			BeadID: beadID,
+			Anvil:  anvil,
+		})
+
+		resp, err := client.Send(ipc.Command{
+			Type:    "retry_bead",
+			Payload: payload,
+		})
+		if err != nil {
+			return fmt.Errorf("sending command: %w", err)
+		}
+
+		if resp.Type == "error" {
+			var msg map[string]string
+			var errMsg string
+			if err := json.Unmarshal(resp.Payload, &msg); err == nil && msg["message"] != "" {
+				errMsg = msg["message"]
+			} else if len(resp.Payload) > 0 {
+				errMsg = string(resp.Payload)
+			} else {
+				errMsg = "unknown error from daemon"
+			}
+			return fmt.Errorf("daemon error: %s", errMsg)
+		}
+
+		fmt.Printf("Circuit breaker reset for bead %s — it will be retried on next poll\n", beadID)
 		return nil
 	},
 }

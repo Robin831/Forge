@@ -62,6 +62,11 @@ const (
 
 	// GracefulTimeout is how long to wait for workers to finish on shutdown.
 	GracefulTimeout = 60 * time.Second
+
+	// MaxDispatchFailures is the number of consecutive dispatch failures before
+	// a bead is circuit-broken (marked needs_human). This prevents a single
+	// poison bead from consuming capacity every poll cycle.
+	MaxDispatchFailures = 3
 )
 
 // Daemon is the main Forge orchestration daemon.
@@ -556,6 +561,13 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		return
 	}
 
+	// Preload circuit-broken beads (needs_human=1) to avoid dispatching poison beads.
+	circuitBrokenSet, cbErr := d.db.DispatchCircuitBrokenBeadIDSet()
+	if cbErr != nil {
+		d.logger.Error("loading circuit-broken set; skipping dispatch this poll cycle", "error", cbErr)
+		return
+	}
+
 	// Snapshot global capacity before dispatching. Done after the cache update
 	// so the Hearth TUI always reflects the current ready queue even when all
 	// slots are occupied.
@@ -595,6 +607,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			continue
 		}
 
+		// Skip beads that are circuit-broken (needs_human=1 from dispatch failures or retries)
+		if _, broken := circuitBrokenSet[bead.ID+"\x00"+bead.Anvil]; broken {
+			continue
+		}
+
 		anvilCfg := d.cfg.Anvils[bead.Anvil]
 
 		// Apply auto-dispatch filtering
@@ -627,6 +644,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		// Claim the bead atomically before dispatching
 		if err := d.claimBead(ctx, bead.ID, anvilCfg.Path); err != nil {
 			d.logger.Warn("failed to claim bead", "bead", bead.ID, "error", err)
+			d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("claim failed: %v", err))
 			continue
 		}
 
@@ -717,17 +735,22 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			return
 		}
 		d.logger.Error("pipeline error", "bead", bead.ID, "error", outcome.Error)
+		d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("pipeline error: %v", outcome.Error))
 		return
 	}
 
 	if !outcome.Success {
 		if outcome.Decomposed {
 			d.logger.Info("bead decomposed into sub-beads", "bead", bead.ID)
+			// Decomposition is intentional, not a failure — clear any prior dispatch failures.
+			_ = d.db.ClearRetry(bead.ID, bead.Anvil)
 			return
 		}
 		if outcome.NeedsHuman {
-			// Bead was released back to open (Smith produced no diff). Hold the
-			// activeBeads slot for a full poll interval so the bead is not
+			// Bead was released back to open (Smith produced no diff). Record as
+			// dispatch failure so the circuit breaker can trip after repeated attempts.
+			d.recordDispatchFailure(bead.ID, bead.Anvil, "Smith produced no diff, needs human attention")
+			// Hold the activeBeads slot for a full poll interval so the bead is not
 			// immediately re-dispatched before a human can investigate.
 			holdOff := d.cfg.Settings.PollInterval
 			if holdOff <= 0 {
@@ -741,10 +764,13 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			}
 		} else {
 			d.logger.Warn("pipeline did not succeed", "bead", bead.ID, "verdict", outcome.Verdict)
+			d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("pipeline failed: %s", outcome.Verdict))
 		}
 		return
 	}
 
+	// Pipeline succeeded — clear any prior dispatch failures.
+	_ = d.db.ClearRetry(bead.ID, bead.Anvil)
 	d.logger.Info("pipeline succeeded", "bead", bead.ID, "branch", outcome.Branch, "iterations", outcome.Iterations)
 
 	// Create PR — run gh from the main repo dir since the branch is already pushed.
@@ -936,6 +962,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
+		// Manual dispatch resets the dispatch circuit breaker so the bead can be retried.
+		_ = d.db.ResetDispatchFailures(targetBead.ID, targetBead.Anvil)
+
 		// Dispatch immediately regardless of auto_dispatch setting (but respect capacity)
 		anvilCfg := d.cfg.Anvils[targetBead.Anvil]
 
@@ -1007,6 +1036,24 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		_ = d.db.LogEvent(state.EventClarificationNeeded, fmt.Sprintf("Bead %s needs clarification: %s", cp.BeadID, reason), cp.BeadID, cp.Anvil)
 		d.logger.Info("bead marked as clarification_needed", "bead", cp.BeadID, "anvil", cp.Anvil, "reason", reason)
 		data, _ := json.Marshal(map[string]string{"message": "clarification_needed set"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "retry_bead":
+		var rp ipc.RetryBeadPayload
+		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid retry_bead payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if rp.BeadID == "" || rp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if err := d.db.ResetDispatchFailures(rp.BeadID, rp.Anvil); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset dispatch failures: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		d.logger.Info("dispatch circuit breaker reset", "bead", rp.BeadID, "anvil", rp.Anvil)
+		data, _ := json.Marshal(map[string]string{"message": "circuit breaker reset"})
 		return ipc.Response{Type: "ok", Payload: data}
 
 	case "clear_clarification":
@@ -1174,6 +1221,21 @@ func (d *Daemon) isBeadClarificationNeeded(beadID, anvil string) (bool, error) {
 		return false, nil
 	}
 	return r.ClarificationNeeded, nil
+}
+
+// recordDispatchFailure increments the dispatch failure counter for a bead and
+// logs a circuit-break event if the threshold is reached.
+func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
+	count, broken, err := d.db.IncrementDispatchFailures(beadID, anvil, MaxDispatchFailures, reason)
+	if err != nil {
+		d.logger.Error("failed to record dispatch failure", "bead", beadID, "error", err)
+		return
+	}
+	if broken {
+		msg := fmt.Sprintf("Bead %s circuit-broken after %d consecutive dispatch failures: %s", beadID, count, reason)
+		d.logger.Warn(msg, "bead", beadID, "anvil", anvil)
+		_ = d.db.LogEvent(state.EventDispatchCircuitBreak, msg, beadID, anvil)
+	}
 }
 
 // shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.
