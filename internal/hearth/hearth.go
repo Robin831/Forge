@@ -27,7 +27,7 @@ const (
 
 	// Event panel rendering constants
 	eventPanelInteriorPadding = 4
-	eventPanelMinWidth        = 20
+	eventPanelMinWidth        = 1
 	eventTimestampWidth       = 9  // "HH:MM:SS "
 	eventMsgMinWidth          = 20 // Minimum width before msg moves to next line
 )
@@ -321,7 +321,7 @@ func (m *Model) renderQueue(width, height int) string {
 // renderWorkers splits the center Workers panel into two vertical sub-panels:
 // top shows the worker list, bottom shows the live activity log for the
 // selected worker. Uses lipgloss.JoinVertical for the split.
-func (m Model) renderWorkers(width, height int) string {
+func (m *Model) renderWorkers(width, height int) string {
 	// For very small panels, give all space to the list.
 	// Otherwise enforce a minimum of 5 rows so renderWorkerList has enough room.
 	listHeight := height * 6 / 10
@@ -496,10 +496,10 @@ func (m *Model) getEventLayout(item EventItem, panelWidth int) eventLayout {
 		beadTag = "[" + item.BeadID + "] "
 	}
 
-	// Interior width: subtract border (2) + padding (2) on each side = 4 total
-	interiorWidth := panelWidth - 4
-	if interiorWidth < 1 {
-		interiorWidth = 1
+	// Interior width: subtract border (1 each side = 2) + padding (1 each side = 2) = 4 total
+	interiorWidth := panelWidth - eventPanelInteriorPadding
+	if interiorWidth < eventPanelMinWidth {
+		interiorWidth = eventPanelMinWidth
 	}
 
 	// Visual prefix length: "HH:MM:SS "(9) + type + " " + beadTag
