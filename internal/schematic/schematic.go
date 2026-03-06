@@ -175,8 +175,13 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 		return result
 	}
 
-	// Parse structured verdict from output
-	verdict, err := parseVerdict(smithResult.Output)
+	// Parse structured verdict from output — prefer FullOutput (natural-language
+	// response) over Output (raw stream-JSON protocol lines).
+	output := smithResult.FullOutput
+	if output == "" {
+		output = smithResult.Output
+	}
+	verdict, err := parseVerdict(output)
 	if err != nil {
 		// On parse failure, skip rather than block the pipeline
 		result.Action = ActionSkip
@@ -290,7 +295,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 	}
 
 	resetParent := func() {
-		rCtx, rCancel := context.WithTimeout(ctx, 15*time.Second)
+		rCtx, rCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer rCancel()
 		rCmd := executil.HideWindow(exec.CommandContext(rCtx,
 			"bd", "update", parent.ID, "--status=open", "--json",
