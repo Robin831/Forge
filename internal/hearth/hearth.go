@@ -1,12 +1,12 @@
 // Package hearth provides The Forge's TUI dashboard using Bubbletea.
 //
-// The TUI has three panels in a vertical split layout:
-//   - Queue (top left): Pending beads from anvils
-//   - Workers (top right): Active Smith processes
-//   - Event Log (bottom): Recent events from the state DB
+// The TUI is organized into three columns:
+//   - Left column: Queue and Needs Attention sub-panels for beads
+//   - Middle column: Workers showing active Smith processes
+//   - Right column: Event Log with recent events from the state DB
 //
-// Tab switches focus between panels, j/k scrolls the focused panel,
-// q quits the app.
+// Tab switches focus between columns and sub-panels, j/k scrolls the focused
+// view, and q quits the app.
 package hearth
 
 import (
@@ -89,11 +89,8 @@ type Model struct {
 	// Data source for polling
 	data *DataSource
 
-	// Callbacks for interacting with the daemon (set by the caller)
-	OnKill        func(workerID string, pid int)
-	OnRetryBead   func(beadID, anvil string)
-	OnDismissBead func(beadID, anvil string)
-	OnViewLogs    func(beadID string) (logPath string, lastLines []string)
+	// Callback for interacting with the daemon (set by the caller)
+	OnKill func(workerID string, pid int)
 
 	// State
 	focused              Panel
@@ -527,6 +524,9 @@ func (m *Model) renderWorkerList(width, height int) string {
 // for the currently selected worker, parsed from its stream-json log file.
 func (m *Model) renderWorkerActivity(width, height int) string {
 	style := panelStyle.Width(width)
+	if m.focused == PanelWorkers {
+		style = focusedPanelStyle.Width(width)
+	}
 
 	title := activityPanelTitleStyle.Render("Live Activity")
 
@@ -929,7 +929,7 @@ func eventTypeStyle(t string) string {
 // bead title before rendering it in the TUI.
 func sanitizeTitle(s string) string {
 	// Replace newlines/CR with a space so the second title line stays single-line.
-	s = strings.NewReplacer("\n", " ", "", " ").Replace(s)
+	s = strings.NewReplacer("\n", " ", "\r", " ").Replace(s)
 
 	// Strip ANSI escape sequences (ESC [ ... m and similar).
 	var b strings.Builder
