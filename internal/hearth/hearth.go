@@ -89,8 +89,11 @@ type Model struct {
 	// Data source for polling
 	data *DataSource
 
-	// Callback for killing a worker (set by the caller)
-	OnKill func(workerID string, pid int)
+	// Callbacks for interacting with the daemon (set by the caller)
+	OnKill        func(workerID string, pid int)
+	OnRetryBead   func(beadID, anvil string)
+	OnDismissBead func(beadID, anvil string)
+	OnViewLogs    func(beadID string) (logPath string, lastLines []string)
 
 	// State
 	focused              Panel

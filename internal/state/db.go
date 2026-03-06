@@ -757,7 +757,7 @@ func (db *DB) GetRetry(beadID, anvil string) (*RetryRecord, error) {
 	r.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 	if nextRetry.Valid {
 		t, _ := time.Parse(time.RFC3339, nextRetry.String)
-		r.NextRetry = &t
+			r.NextRetry = &t
 	}
 	return &r, nil
 }
@@ -1394,7 +1394,7 @@ func (db *DB) GetProviderQuota(pv string) (*provider.Quota, error) {
 	}
 	if reqReset.Valid {
 		t, _ := time.Parse(time.RFC3339, reqReset.String)
-		q.RequestsReset = &t
+			q.RequestsReset = &t
 	}
 	if tokReset.Valid {
 		t, _ := time.Parse(time.RFC3339, tokReset.String)
