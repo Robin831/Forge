@@ -179,12 +179,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case QueueErrorMsg:
 		// Preserve previous queue; surface the error in the events panel
-		m.events = append(m.events, EventItem{
+		errEvent := EventItem{
 			Timestamp: time.Now().Format("15:04:05"),
 			Type:      "error",
 			Message:   fmt.Sprintf("queue cache read failed: %v", msg.Err),
-		})
+		}
+		// Prepend so the synthetic error appears as the newest event
+		m.events = append([]EventItem{errEvent}, m.events...)
 		m.eventRevision++
+		// In follow mode, keep view pinned to newest events so the error is visible
+		if m.eventAutoScroll {
+			m.eventScroll = 0
+		}
 
 	case UpdateWorkersMsg:
 		m.workers = msg.Items
