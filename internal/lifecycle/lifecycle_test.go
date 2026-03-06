@@ -2,10 +2,12 @@ package lifecycle
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,7 +25,11 @@ func newTestDB(t *testing.T) *state.DB {
 	if err != nil {
 		t.Fatalf("open test DB: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close test DB: %v", err)
+		}
+	})
 	return db
 }
 
@@ -144,7 +150,7 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			for _, ev := range tc.setupEvents {
 				m.HandleEvent(ctx, ev)
 			}
-			
+
 			// Reset got before the final event
 			got = ActionRequest{}
 			m.HandleEvent(ctx, tc.event)
@@ -182,19 +188,20 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			}
 
 			if tc.wantDBEventType != "" {
-				events, err := db.RecentEvents(tc.prNumber)
+				events, err := db.RecentEvents(50)
 				if err != nil {
 					t.Fatalf("RecentEvents: %v", err)
 				}
 				found := false
+				expectedPrefix := fmt.Sprintf("PR #%d", tc.prNumber)
 				for _, e := range events {
-					if string(e.Type) == string(tc.wantDBEventType) {
+					if string(e.Type) == string(tc.wantDBEventType) && strings.Contains(e.Message, expectedPrefix) {
 						found = true
 						break
 					}
 				}
 				if !found {
-					t.Errorf("expected DB event %q, found none", tc.wantDBEventType)
+					t.Errorf("expected DB event %q for PR #%d, found none", tc.wantDBEventType, tc.prNumber)
 				}
 			}
 		})
