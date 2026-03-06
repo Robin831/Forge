@@ -469,6 +469,10 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 }
 
 // renderWorkerList renders the workers panel: a list of active workers.
+func (m *Model) renderWorkers(width, height int) string {
+	return m.renderWorkerList(width, height)
+}
+
 func (m *Model) renderWorkerList(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelWorkers {
