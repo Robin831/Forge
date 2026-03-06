@@ -122,3 +122,34 @@ func TestPollSingle_UnknownAnvil(t *testing.T) {
 	_, err := p.PollSingle(context.Background(), "nonexistent")
 	assert.ErrorContains(t, err, "not found")
 }
+
+// TestPoll_MultipleAnvils verifies that Poll collects results from all anvils
+// concurrently. Anvil paths point to temp directories where 'bd ready' will
+// fail, but all anvils must still be represented in the returned results.
+// Running with -race will detect any data-race in the concurrent poll loop.
+func TestPoll_MultipleAnvils(t *testing.T) {
+	anvils := map[string]config.AnvilConfig{
+		"anvil-a": {Path: t.TempDir()},
+		"anvil-b": {Path: t.TempDir()},
+		"anvil-c": {Path: t.TempDir()},
+	}
+
+	p := New(anvils)
+	beads, results := p.Poll(context.Background())
+
+	// All three anvils must be represented in results (errors are fine)
+	assert.Len(t, results, len(anvils))
+
+	seen := make(map[string]bool, len(results))
+	for _, r := range results {
+		seen[r.Name] = true
+		// Each failed anvil should carry a non-nil error
+		assert.Error(t, r.Err, "expected error for anvil %s", r.Name)
+	}
+	assert.True(t, seen["anvil-a"], "anvil-a missing from results")
+	assert.True(t, seen["anvil-b"], "anvil-b missing from results")
+	assert.True(t, seen["anvil-c"], "anvil-c missing from results")
+
+	// No beads expected since all polls failed
+	assert.Empty(t, beads)
+}

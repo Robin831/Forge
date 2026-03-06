@@ -3,12 +3,13 @@
 package poller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"bytes"
 	"os/exec"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
@@ -55,15 +56,24 @@ func New(anvils map[string]config.AnvilConfig) *BeadPoller {
 func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 	results := make([]AnvilResult, 0, len(p.anvils))
 
-	// Poll each anvil (sequential for now; can be parallelized later)
+	// Poll all anvils concurrently and merge results.
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	for name, anvil := range p.anvils {
-		beads, err := pollAnvil(ctx, name, anvil)
-		results = append(results, AnvilResult{
-			Name:  name,
-			Beads: beads,
-			Err:   err,
-		})
+		wg.Add(1)
+		go func(name string, anvil config.AnvilConfig) {
+			defer wg.Done()
+			beads, err := pollAnvil(ctx, name, anvil)
+			mu.Lock()
+			results = append(results, AnvilResult{
+				Name:  name,
+				Beads: beads,
+				Err:   err,
+			})
+			mu.Unlock()
+		}(name, anvil)
 	}
+	wg.Wait()
 
 	// Merge all beads into a unified queue
 	var all []Bead
