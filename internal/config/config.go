@@ -104,14 +104,17 @@ func Defaults() Config {
 	return Config{
 		Anvils: make(map[string]AnvilConfig),
 		Settings: SettingsConfig{
-			PollInterval:     5 * time.Minute,
-			SmithTimeout:     30 * time.Minute,
-			MaxTotalSmiths:   4,
-			MaxReviewAttempts: 2,
-			ClaudeFlags:      []string{},
+			PollInterval:         5 * time.Minute,
+			SmithTimeout:         30 * time.Minute,
+			MaxTotalSmiths:       4,
+			MaxReviewAttempts:    2,
+			ClaudeFlags:          []string{},
 			// No Providers default here — provider.FromConfig handles empty slice.
-			RateLimitBackoff: 5 * time.Minute,
-			BellowsInterval:  2 * time.Minute,
+			RateLimitBackoff:     5 * time.Minute,
+			BellowsInterval:      2 * time.Minute,
+			MaxCIFixAttempts:     5,
+			MaxReviewFixAttempts: 5,
+			MaxRebaseAttempts:    3,
 		},
 	}
 }
@@ -130,6 +133,9 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.claude_flags", []string{})
 	v.SetDefault("settings.rate_limit_backoff", "5m")
 	v.SetDefault("settings.bellows_interval", "2m")
+	v.SetDefault("settings.max_ci_fix_attempts", 5)
+	v.SetDefault("settings.max_review_fix_attempts", 5)
+	v.SetDefault("settings.max_rebase_attempts", 3)
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	v.SetEnvPrefix("FORGE")

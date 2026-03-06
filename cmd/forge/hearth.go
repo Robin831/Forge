@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/hearth"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
@@ -29,8 +30,17 @@ var hearthCmd = &cobra.Command{
 		}
 		defer db.Close()
 
+		cfg, _ := config.Load("")
+		if cfg == nil {
+			cfg = &config.Config{}
+			*cfg = config.Defaults()
+		}
+
 		ds := &hearth.DataSource{
-			DB: db,
+			DB:                   db,
+			MaxCIFixAttempts:     cfg.Settings.MaxCIFixAttempts,
+			MaxReviewFixAttempts: cfg.Settings.MaxReviewFixAttempts,
+			MaxRebaseAttempts:    cfg.Settings.MaxRebaseAttempts,
 		}
 
 		model := hearth.NewModel(ds)

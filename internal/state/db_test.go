@@ -612,3 +612,265 @@ func TestDB_PendingRetries_ExcludesClarification(t *testing.T) {
 		t.Errorf("expected BD-NORMAL, got %s", pending[0].BeadID)
 	}
 }
+
+func TestDB_ExhaustedPRs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert a PR with ci_fix_count at the threshold.
+	exhaustedCI := &PR{
+		Number: 10, Anvil: "anvil-1", BeadID: "bd-ci", Branch: "fix-ci",
+		Status: PROpen, CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(exhaustedCI); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdatePRLifecycle(exhaustedCI.ID, 5, 0, 0, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert a PR with review_fix_count over the threshold.
+	exhaustedRev := &PR{
+		Number: 11, Anvil: "anvil-1", BeadID: "bd-rev", Branch: "fix-rev",
+		Status: PROpen, CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(exhaustedRev); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdatePRLifecycle(exhaustedRev.ID, 0, 6, 0, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert a PR with rebase_count at the threshold.
+	exhaustedRebase := &PR{
+		Number: 12, Anvil: "anvil-1", BeadID: "bd-rebase", Branch: "fix-rebase",
+		Status: PROpen, CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(exhaustedRebase); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdatePRLifecycle(exhaustedRebase.ID, 0, 0, 3, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert a healthy PR that should NOT appear.
+	healthy := &PR{
+		Number: 13, Anvil: "anvil-1", BeadID: "bd-ok", Branch: "fix-ok",
+		Status: PROpen, CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(healthy); err != nil {
+		t.Fatal(err)
+	}
+
+	exhausted, err := db.ExhaustedPRs(5, 5, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exhausted) != 3 {
+		t.Fatalf("expected 3 exhausted PRs, got %d", len(exhausted))
+	}
+
+	// Verify the Reason field is populated with meaningful text.
+	var foundCI, foundRev, foundRebase bool
+	for _, ep := range exhausted {
+		switch ep.BeadID {
+		case "bd-ci":
+			foundCI = true
+			if ep.Reason == "" {
+				t.Error("expected non-empty Reason for CI-exhausted PR")
+			}
+		case "bd-rev":
+			foundRev = true
+			if ep.Reason == "" {
+				t.Error("expected non-empty Reason for review-exhausted PR")
+			}
+		case "bd-rebase":
+			foundRebase = true
+			if ep.Reason == "" {
+				t.Error("expected non-empty Reason for rebase-exhausted PR")
+			}
+		}
+	}
+	if !foundCI || !foundRev || !foundRebase {
+		t.Errorf("missing exhausted PR: ci=%v rev=%v rebase=%v", foundCI, foundRev, foundRebase)
+	}
+
+	// Zero thresholds are normalized to defaults — should produce the same result.
+	exhaustedDefaults, err := db.ExhaustedPRs(0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exhaustedDefaults) != len(exhausted) {
+		t.Errorf("zero thresholds should fall back to defaults: got %d want %d", len(exhaustedDefaults), len(exhausted))
+	}
+}
+
+func TestDB_ResetPRFixCounts(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	pr := &PR{
+		Number: 20, Anvil: "anvil-1", BeadID: "bd-reset", Branch: "fix-reset",
+		Status: PROpen, CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(pr); err != nil {
+		t.Fatal(err)
+	}
+	// Drive it to exhaustion with ci_passing=false.
+	if err := db.UpdatePRLifecycle(pr.ID, 5, 3, 2, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should appear in exhausted list.
+	exhausted, err := db.ExhaustedPRs(5, 5, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exhausted) != 1 {
+		t.Fatalf("expected 1 exhausted PR before reset, got %d", len(exhausted))
+	}
+
+	// Reset.
+	if err := db.ResetPRFixCounts(pr.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should no longer appear in exhausted list.
+	exhausted, err = db.ExhaustedPRs(5, 5, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exhausted) != 0 {
+		t.Errorf("expected 0 exhausted PRs after reset, got %d", len(exhausted))
+	}
+
+	// Counters and ci_passing should be reset.
+	pr2, err := db.GetPRByNumber("anvil-1", 20)
+	if err != nil || pr2 == nil {
+		t.Fatal("PR not found after reset")
+	}
+	if pr2.CIFixCount != 0 || pr2.ReviewFixCount != 0 || pr2.RebaseCount != 0 {
+		t.Errorf("counts not reset: ci=%d rev=%d rebase=%d", pr2.CIFixCount, pr2.ReviewFixCount, pr2.RebaseCount)
+	}
+	if !pr2.CIPassing {
+		t.Error("ci_passing should be reset to true")
+	}
+	if pr2.Status != PROpen {
+		t.Errorf("status should be open after reset, got %s", pr2.Status)
+	}
+}
+
+func TestDB_DismissExhaustedPR(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	pr := &PR{
+		Number: 30, Anvil: "anvil-1", BeadID: "bd-dismiss", Branch: "fix-dismiss",
+		Status: PROpen, CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(pr); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdatePRLifecycle(pr.ID, 5, 0, 0, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// Confirm it appears as exhausted.
+	exhausted, err := db.ExhaustedPRs(5, 5, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exhausted) != 1 {
+		t.Fatalf("expected 1 exhausted PR, got %d", len(exhausted))
+	}
+
+	// Dismiss it.
+	if err := db.DismissExhaustedPR(pr.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should no longer appear in exhausted list (terminal status).
+	exhausted, err = db.ExhaustedPRs(5, 5, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exhausted) != 0 {
+		t.Errorf("expected 0 exhausted PRs after dismiss, got %d", len(exhausted))
+	}
+
+	// PR status should be closed.
+	pr2, err := db.GetPRByNumber("anvil-1", 30)
+	if err != nil || pr2 == nil {
+		t.Fatal("PR not found after dismiss")
+	}
+	if pr2.Status != PRClosed {
+		t.Errorf("expected status closed after dismiss, got %s", pr2.Status)
+	}
+}
+
+func TestDB_NeedsAttentionBeads_IncludesExhaustedPRs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert an exhausted PR.
+	pr := &PR{
+		Number: 40, Anvil: "anvil-1", BeadID: "bd-na", Branch: "fix-na",
+		Status: PROpen, CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(pr); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdatePRLifecycle(pr.ID, 5, 0, 0, true); err != nil {
+		t.Fatal(err)
+	}
+
+	beads, err := db.NeedsAttentionBeads(5, 5, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var found bool
+	for _, b := range beads {
+		if b.PRID == pr.ID && b.PRNumber == 40 && b.BeadID == "bd-na" {
+			found = true
+			if b.Reason == "" {
+				t.Error("expected non-empty Reason for exhausted PR in NeedsAttentionBeads")
+			}
+		}
+	}
+	if !found {
+		t.Error("exhausted PR not found in NeedsAttentionBeads results")
+	}
+}

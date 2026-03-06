@@ -566,6 +566,12 @@ func (db *DB) UpdatePRLifecycle(id int, ciFixCount, reviewFixCount, rebaseCount 
 	return err
 }
 
+// GetPRByID returns a PR by its primary key id, or nil if not found.
+func (db *DB) GetPRByID(id int) (*PR, error) {
+	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing
+		FROM prs WHERE id = ?`, id)
+}
+
 // GetPRByNumber returns a PR by its anvil and number.
 func (db *DB) GetPRByNumber(anvil string, number int) (*PR, error) {
 	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing
@@ -648,8 +654,18 @@ type ExhaustedPR struct {
 
 // ExhaustedPRs returns non-terminal PRs where any fix/rebase counter has reached
 // its threshold. The thresholds are passed as parameters so the caller can
-// source them from config or constants.
+// source them from config or constants. Non-positive threshold values are
+// normalized to their intended defaults to avoid matching all PRs.
 func (db *DB) ExhaustedPRs(maxCI, maxRev, maxRebase int) ([]ExhaustedPR, error) {
+	if maxCI <= 0 {
+		maxCI = DefaultMaxCIFixAttempts
+	}
+	if maxRev <= 0 {
+		maxRev = DefaultMaxReviewFixAttempts
+	}
+	if maxRebase <= 0 {
+		maxRebase = DefaultMaxRebaseAttempts
+	}
 	rows, err := db.conn.Query(
 		`SELECT id, number, anvil, bead_id, ci_fix_count, review_fix_count, rebase_count
 		 FROM prs
@@ -692,7 +708,7 @@ func (db *DB) ExhaustedPRs(maxCI, maxRev, maxRebase int) ([]ExhaustedPR, error) 
 func (db *DB) ResetPRFixCounts(id int) error {
 	_, err := db.conn.Exec(
 		`UPDATE prs SET ci_fix_count = 0, review_fix_count = 0, rebase_count = 0,
-		        status = 'open', last_checked = ? WHERE id = ?`,
+		        ci_passing = 1, status = 'open', last_checked = ? WHERE id = ?`,
 		time.Now().Format(time.RFC3339), id,
 	)
 	return err
@@ -1228,7 +1244,7 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 	// Append exhausted PRs
 	exhausted, err := db.ExhaustedPRs(maxCI, maxRev, maxRebase)
 	if err != nil {
-		return beads, nil // non-fatal: return what we have
+		return beads, fmt.Errorf("fetching exhausted PRs: %w", err)
 	}
 	for _, ep := range exhausted {
 		beads = append(beads, NeedsAttentionBead{

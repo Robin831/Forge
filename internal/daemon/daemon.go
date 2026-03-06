@@ -1172,12 +1172,22 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		// Exhausted PR retry: reset fix counters and status back to open
 		if rp.PRID > 0 {
+			pr, err := d.db.GetPRByID(rp.PRID)
+			if err != nil || pr == nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR %d not found", rp.PRID)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
 			if err := d.db.ResetPRFixCounts(rp.PRID); err != nil {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset PR fix counts: %v", err)})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
-			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("PR fix counts reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
-			d.logger.Info("PR fix counts reset", "bead", rp.BeadID, "anvil", rp.Anvil, "pr_id", rp.PRID)
+			_ = d.db.LogEvent(
+				state.EventRetryReset,
+				fmt.Sprintf("PR fix counts reset for PR %d (manual)", rp.PRID),
+				pr.BeadID,
+				pr.Anvil,
+			)
+			d.logger.Info("PR fix counts reset", "pr_id", rp.PRID, "bead", pr.BeadID, "anvil", pr.Anvil)
 			data, _ := json.Marshal(map[string]string{"message": "PR fix counts reset, status set to open"})
 			return ipc.Response{Type: "ok", Payload: data}
 		}
@@ -1213,12 +1223,22 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		// Exhausted PR dismiss: set status to closed
 		if dp.PRID > 0 {
+			pr, err := d.db.GetPRByID(dp.PRID)
+			if err != nil || pr == nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR %d not found", dp.PRID)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
 			if err := d.db.DismissExhaustedPR(dp.PRID); err != nil {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to dismiss exhausted PR: %v", err)})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
-			_ = d.db.LogEvent(state.EventBeadDismissed, fmt.Sprintf("Exhausted PR dismissed for bead %s", dp.BeadID), dp.BeadID, dp.Anvil)
-			d.logger.Info("exhausted PR dismissed", "bead", dp.BeadID, "anvil", dp.Anvil, "pr_id", dp.PRID)
+			_ = d.db.LogEvent(
+				state.EventBeadDismissed,
+				fmt.Sprintf("Exhausted PR %d dismissed (manual)", dp.PRID),
+				pr.BeadID,
+				pr.Anvil,
+			)
+			d.logger.Info("exhausted PR dismissed", "pr_id", dp.PRID, "bead", pr.BeadID, "anvil", pr.Anvil)
 			data, _ := json.Marshal(map[string]string{"message": "exhausted PR dismissed"})
 			return ipc.Response{Type: "ok", Payload: data}
 		}
