@@ -256,7 +256,7 @@ After outputting the JSON verdict above, review the following git diff:
 
 %s
 %s`,
-		"Use the following JSON format, replacing each field with your actual verdict, summary, and issues:\n\n```json\n{\"verdict\": \"request_changes\", \"summary\": \"\", \"issues\": []}\n```\n\nSet `verdict` to one of: `approve`, `reject`, `request_changes`.",
+		"Use the following JSON format, replacing each field with your actual verdict, summary, and issues:\n\n```json\n{\"verdict\": \"approve\", \"summary\": \"\", \"issues\": []}\n```\n\nSet `verdict` to one of: `approve`, `reject`, `request_changes`.",
 		beadID,
 		"```diff\n"+truncateDiff(diff, 50000)+"\n```",
 		conditionalSection("## Repository Guidelines (AGENTS.md)", agentsMD),
