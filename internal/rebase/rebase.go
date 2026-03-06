@@ -9,9 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/executil"
@@ -68,91 +66,31 @@ func Rebase(ctx context.Context, p Params) Result {
 
 	log.Printf("[rebase] PR #%d: starting rebase of %q onto origin/%s", p.PRNumber, p.Branch, p.BaseBranch)
 
-	// Step 1: fetch latest remote state.
+	// Step 1: fetch so Smith has up-to-date refs.
 	if res := runGit(p.WorktreePath, "fetch", "origin"); res.err != nil {
 		return p.fail(fmt.Sprintf("git fetch failed: %s", firstLine(res.output)), res.err)
 	}
 
-	// Step 2: abort any in-progress rebase to leave the tree clean.
+	// Step 2: abort any in-progress rebase so the tree is clean.
 	_ = runGit(p.WorktreePath, "rebase", "--abort")
 
-	// Step 3: start the rebase and loop through all conflict rounds.
-	// A rebase with N commits can produce N separate conflict stops; we call
-	// Smith for each round and keep calling --continue until git exits 0.
-	rebaseTarget := "origin/" + p.BaseBranch
-	res := runGit(p.WorktreePath, "rebase", rebaseTarget)
-	if res.err != nil {
-		const maxConflictRounds = 20
-		for round := 1; round <= maxConflictRounds; round++ {
-			conflicted := conflictedFiles(p.WorktreePath)
-			if len(conflicted) == 0 {
-				// No conflict markers — git stopped for a different reason.
-				_ = runGit(p.WorktreePath, "rebase", "--abort")
-				return p.fail(fmt.Sprintf("git rebase %s failed (round %d, no conflicts): %s",
-					rebaseTarget, round, firstLine(res.output)), res.err)
-			}
-
-			log.Printf("[rebase] PR #%d round %d: %d conflicted file(s) — invoking Smith",
-				p.PRNumber, round, len(conflicted))
-			if err := p.resolveWithSmith(ctx, conflicted, providers); err != nil {
-				_ = runGit(p.WorktreePath, "rebase", "--abort")
-				return p.fail(fmt.Sprintf("Smith could not resolve conflicts (round %d): %s",
-					round, firstLine(err.Error())), err)
-			}
-
-			if r := runGit(p.WorktreePath, "add", "."); r.err != nil {
-				_ = runGit(p.WorktreePath, "rebase", "--abort")
-				return p.fail(fmt.Sprintf("git add after Smith (round %d): %s",
-					round, firstLine(r.output)), r.err)
-			}
-
-			// --continue: applies the next commit. Exits 0 when the rebase is
-			// fully complete; exits non-zero when another conflict round follows.
-			// GIT_EDITOR=true prevents an interactive editor opening on Windows.
-			continueCmd := exec.Command("git", "rebase", "--continue")
-			continueCmd.Dir = p.WorktreePath
-			continueCmd.Env = append(continueCmd.Environ(), "GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true")
-			executil.HideWindow(continueCmd)
-			out, err := continueCmd.CombinedOutput()
-			continueOut := strings.TrimSpace(string(out))
-			if err == nil {
-				// Rebase complete — break out of the loop.
-				log.Printf("[rebase] PR #%d: rebase complete after %d conflict round(s)", p.PRNumber, round)
-				break
-			}
-
-			// git rebase --continue exits non-zero for two reasons:
-			//   a) more conflict rounds remain  → conflictedFiles() will be non-empty next iteration
-			//   b) genuine failure (bad state)  → conflictedFiles() will be empty next iteration
-			// Log what git said and let the next iteration decide.
-			log.Printf("[rebase] PR #%d round %d: --continue output (will retry if more conflicts): %s",
-				p.PRNumber, round, firstLine(continueOut))
-			// Store the latest continue result to propagate if no conflicts found next round.
-			res = cmdResult{output: continueOut, err: err}
-
-			if round == maxConflictRounds {
-				_ = runGit(p.WorktreePath, "rebase", "--abort")
-				return p.fail(fmt.Sprintf("rebase exceeded %d conflict rounds; giving up", maxConflictRounds),
-					fmt.Errorf("too many conflict rounds"))
-			}
-		}
+	// Step 3: hand the entire rebase (including conflict resolution) to Smith
+	// in a single call. Smith runs the rebase, resolves every conflict round,
+	// and pushes the result — no round-tripping between us and the AI.
+	if err := p.rebaseWithSmith(ctx, providers); err != nil {
+		return p.fail(firstLine(err.Error()), err)
 	}
 
-	// Step 4: push the rebased branch.
-	push := runGit(p.WorktreePath, "push", "--force-with-lease", "origin", p.Branch)
-	if push.err != nil {
-		return p.fail(fmt.Sprintf("git push --force-with-lease failed: %s", firstLine(push.output)), push.err)
-	}
-
-	msg := fmt.Sprintf("PR #%d: rebased onto %s and pushed successfully", p.PRNumber, rebaseTarget)
+	msg := fmt.Sprintf("PR #%d: rebased onto origin/%s and pushed successfully", p.PRNumber, p.BaseBranch)
 	log.Printf("[rebase] %s", msg)
 	logEvent(p.DB, state.EventRebaseSuccess, msg, p.BeadID, p.AnvilName)
 	return Result{Success: true}
 }
 
-// resolveWithSmith invokes a Smith worker (Claude/Gemini) to resolve conflicts.
-func (p *Params) resolveWithSmith(ctx context.Context, conflicted []string, providers []provider.Provider) error {
-	prompt := buildConflictPrompt(p.WorktreePath, p.Branch, p.BaseBranch, conflicted)
+// rebaseWithSmith runs a single Smith session that performs the entire rebase:
+// starts it, resolves any conflict rounds, and pushes the result.
+func (p *Params) rebaseWithSmith(ctx context.Context, providers []provider.Provider) error {
+	prompt := buildRebasePrompt(p.WorktreePath, p.Branch, p.BaseBranch)
 	logDir := p.WorktreePath + "/.forge-logs"
 
 	var lastErr error
@@ -166,8 +104,6 @@ func (p *Params) resolveWithSmith(ctx context.Context, conflicted []string, prov
 			return fmt.Errorf("spawning Smith (%s): %w", pv.Kind, err)
 		}
 		result := process.Wait()
-		// Mirror reviewfix: a success subtype overrides the RateLimited flag
-		// (Claude can set RateLimited=true AND ResultSubtype="success" on some responses).
 		if result.ResultSubtype == "success" && !result.IsError {
 			result.RateLimited = false
 		}
@@ -186,73 +122,45 @@ func (p *Params) resolveWithSmith(ctx context.Context, conflicted []string, prov
 	return fmt.Errorf("all %d providers failed", len(providers))
 }
 
-// maxConflictFileBytes is the maximum bytes to inline per conflicted file in the prompt.
-const maxConflictFileBytes = 8192
-
-// buildConflictPrompt creates a detailed prompt asking the AI to resolve conflict markers,
-// including the actual content of each conflicted file.
-func buildConflictPrompt(worktreePath, branch, baseBranch string, conflicted []string) string {
+// buildRebasePrompt returns a prompt instructing Smith to run the complete
+// rebase workflow — start, resolve all conflict rounds, push — in one session.
+func buildRebasePrompt(worktreePath, branch, baseBranch string) string {
 	var sb strings.Builder
-	sb.WriteString("You are resolving git merge conflicts that occurred while rebasing a pull request branch onto main.\n\n")
-	sb.WriteString(fmt.Sprintf("Branch being rebased: %s\n", branch))
-	sb.WriteString(fmt.Sprintf("Rebasing onto: origin/%s\n\n", baseBranch))
-	sb.WriteString("In a rebase conflict:\n")
-	sb.WriteString("  - The section between <<<<<<< HEAD and ======= is the CURRENT upstream code (from origin/" + baseBranch + ")\n")
-	sb.WriteString("  - The section between ======= and >>>>>>> is the INCOMING change from the PR branch\n\n")
-	sb.WriteString("Your task: resolve ALL conflicts in the files below. Make a clear, decisive decision\n")
-	sb.WriteString("about what the final code should look like. In most cases the PR's incoming changes\n")
-	sb.WriteString("are the intended contribution — keep them unless they obviously conflict with the\n")
-	sb.WriteString("upstream logic (e.g. a function was renamed or removed). When both sides add code,\n")
-	sb.WriteString("combine them. When they contradict, prefer the PR's changes.\n\n")
-	sb.WriteString("RULES:\n")
-	sb.WriteString("1. Remove EVERY conflict marker: <<<<<<<, =======, >>>>>>>.\n")
-	sb.WriteString("2. Do NOT leave any unresolved marker in the file.\n")
-	sb.WriteString("3. Edit the files directly — do NOT run any git commands.\n")
-	sb.WriteString("4. Preserve correct syntax (Go, TypeScript, YAML, etc.) in the final file.\n\n")
+	target := "origin/" + baseBranch
 
-	sb.WriteString("---\nCONFLICTED FILES:\n---\n\n")
-	for _, f := range conflicted {
-		sb.WriteString(fmt.Sprintf("### %s\n", f))
-		fulPath := filepath.Join(worktreePath, f)
-		data, err := os.ReadFile(fulPath)
-		if err != nil {
-			sb.WriteString(fmt.Sprintf("(could not read file: %v)\n", err))
-		} else {
-			contents := data
-			truncated := false
-			if len(contents) > maxConflictFileBytes {
-				contents = contents[:maxConflictFileBytes]
-				truncated = true
-			}
-			sb.WriteString("```\n")
-			sb.Write(contents)
-			if truncated {
-				sb.WriteString(fmt.Sprintf("\n... (truncated; full file at %s)\n", fulPath))
-			}
-			sb.WriteString("```\n")
-		}
-		sb.WriteString("\n")
-	}
-
-	sb.WriteString("---\n")
-	sb.WriteString("Now edit each file to resolve its conflicts and write the corrected content back.\n")
+	sb.WriteString("You are rebasing a pull request branch onto the latest upstream code.\n\n")
 	sb.WriteString(fmt.Sprintf("Working directory: %s\n", worktreePath))
-	return sb.String()
-}
+	sb.WriteString(fmt.Sprintf("PR branch: %s\n", branch))
+	sb.WriteString(fmt.Sprintf("Rebasing onto: %s\n\n", target))
 
-// conflictedFiles returns files with unresolved conflict markers.
-func conflictedFiles(dir string) []string {
-	res := runGit(dir, "diff", "--name-only", "--diff-filter=U")
-	if res.err != nil || res.output == "" {
-		return nil
-	}
-	var files []string
-	for _, line := range strings.Split(res.output, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			files = append(files, line)
-		}
-	}
-	return files
+	sb.WriteString("## Your job\n\n")
+	sb.WriteString("Run the complete rebase workflow from start to finish:\n\n")
+	sb.WriteString("1. Run: `GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true git rebase " + target + "`\n")
+	sb.WriteString("2. If it exits 0 immediately — no conflicts, skip to step 6.\n")
+	sb.WriteString("3. If it exits non-zero — check for conflicted files:\n")
+	sb.WriteString("   `git diff --name-only --diff-filter=U`\n")
+	sb.WriteString("4. For EACH conflicted file: read it, remove ALL conflict markers\n")
+	sb.WriteString("   (`<<<<<<< HEAD`, `=======`, `>>>>>>>`) and write the resolved content back.\n")
+	sb.WriteString("   - Between `<<<<<<< HEAD` and `=======` is the UPSTREAM code (" + baseBranch + ").\n")
+	sb.WriteString("   - Between `=======` and `>>>>>>>` is the PR branch's incoming change.\n")
+	sb.WriteString("   - Prefer the PR's incoming change unless it clearly conflicts with\n")
+	sb.WriteString("     an upstream rename or removal. When both sides add independent code,\n")
+	sb.WriteString("     keep both. Never leave a conflict marker in the file.\n")
+	sb.WriteString("5. Run: `git add .` then `GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true git rebase --continue`\n")
+	sb.WriteString("   - If it exits 0 → rebase complete, go to step 6.\n")
+	sb.WriteString("   - If it exits non-zero → more conflicts; go back to step 3.\n")
+	sb.WriteString("   Repeat until `git rebase --continue` exits 0.\n")
+	sb.WriteString("6. Run: `git push --force-with-lease origin " + branch + "`\n\n")
+
+	sb.WriteString("## Rules\n\n")
+	sb.WriteString("- Always use `GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true` before every git rebase command\n")
+	sb.WriteString("  to prevent interactive editor prompts.\n")
+	sb.WriteString("- Do NOT open a PR, do NOT commit individually — the rebase handles commits.\n")
+	sb.WriteString("- If `git push --force-with-lease` fails, try once with `git push --force origin " + branch + "`.\n")
+	sb.WriteString("- If the rebase cannot be completed (e.g. a file was deleted upstream),\n")
+	sb.WriteString("  run `git rebase --abort` and report the error clearly.\n")
+
+	return sb.String()
 }
 
 // fail logs a failure and returns a Result.
