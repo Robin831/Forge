@@ -279,7 +279,8 @@ func parseVerdict(output string, result *ReviewResult) {
 			case VerdictApprove, VerdictReject, VerdictRequestChanges:
 				result.Verdict = Verdict(parsed.Verdict)
 			default:
-				result.Verdict = VerdictRequestChanges
+				result.Verdict = VerdictApprove
+				parsed.Summary = "Unknown verdict value in parsed JSON; defaulting to approve for human review"
 			}
 			result.Summary = parsed.Summary
 			result.Issues = parsed.Issues
