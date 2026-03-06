@@ -152,6 +152,30 @@ Main repository: {{.Bead.AnvilPath}}
 5. **Push your branch** to the remote: git push -u origin {{.Bead.Branch}}
 6. **Do not create a PR** — that will be handled by the orchestrator
 
+## Escalation — When to Ask for Human Help
+
+If you encounter a situation where you cannot reasonably complete the task, signal this by
+including the exact marker **NEEDS_HUMAN:** followed by a short reason on its own line in
+your final output. Do **not** commit or push when escalating — just output the marker and stop.
+
+Escalate when you encounter:
+- **Ambiguous requirements** you cannot resolve with a reasonable interpretation
+- **Missing configuration or secrets** you cannot access (API keys, tokens, environment variables)
+- **External dependencies or URLs** that are required but not provided or reachable
+- **Architectural decisions** that require human judgment (e.g. choosing between incompatible approaches)
+- **Permission or access issues** that prevent you from completing the work
+- **Scope far beyond the bead** — the task requires changes across many unrelated systems
+
+Example escalation output:
+` + "`" + `` + "`" + `` + "`" + `
+NEEDS_HUMAN: The bead requires an API key for the payment service which is not available in the environment or config files.
+` + "`" + `` + "`" + `` + "`" + `
+
+Do NOT escalate for:
+- Build or test failures (Temper handles verification)
+- Minor ambiguity you can resolve with a reasonable default
+- Missing documentation you can infer from code
+
 ## Constraints
 
 - Stay focused on this bead only — do not fix unrelated issues

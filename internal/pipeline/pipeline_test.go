@@ -459,6 +459,93 @@ func TestSchematic_Skip_ContinuesToSmith(t *testing.T) {
 	assert.True(t, smithCalled, "Smith should run when Schematic skips")
 }
 
+// TestSmith_NeedsHuman_ReleasesBeadAndSetsFlag verifies that when Smith outputs
+// the NEEDS_HUMAN: marker, the bead is released and NeedsHuman is set.
+func TestSmith_NeedsHuman_ReleasesBeadAndSetsFlag(t *testing.T) {
+	db := newTestDB(t)
+	params, releasedID, mu := baseParams(t, db)
+
+	params.SmithRunner = immediateSmith(&smith.Result{
+		ExitCode:   0,
+		FullOutput: "I investigated the task but cannot proceed.\nNEEDS_HUMAN: Missing API credentials for the payment service\nStopping here.",
+	})
+	params.WardenReviewer = func(_ context.Context, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		t.Fatal("Warden should not be called when Smith escalates")
+		return nil, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, "test-bead", *releasedID, "BeadReleaser must be called with the correct bead ID")
+	assert.True(t, outcome.NeedsHuman, "NeedsHuman should be true when Smith escalates")
+	assert.False(t, outcome.Success)
+	assert.Nil(t, outcome.Error)
+}
+
+// TestSmith_NeedsHuman_NotTriggeredWithoutMarker verifies that normal Smith
+// output without the NEEDS_HUMAN marker proceeds to Temper/Warden as usual.
+func TestSmith_NeedsHuman_NotTriggeredWithoutMarker(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	params.SmithRunner = immediateSmith(&smith.Result{
+		ExitCode:   0,
+		FullOutput: "Implemented the feature successfully.\nAll changes committed and pushed.",
+	})
+	params.WardenReviewer = func(_ context.Context, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.True(t, outcome.Success)
+	assert.False(t, outcome.NeedsHuman)
+}
+
+// TestSmith_NeedsHuman_ReleaseFails verifies that NeedsHuman stays false when
+// the bead release fails after a NEEDS_HUMAN escalation.
+func TestSmith_NeedsHuman_ReleaseFails(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	params.SmithRunner = immediateSmith(&smith.Result{
+		ExitCode:   0,
+		FullOutput: "NEEDS_HUMAN: Cannot resolve ambiguous requirements",
+	})
+	params.BeadReleaser = func(_, _ string) error {
+		return assert.AnError
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.False(t, outcome.NeedsHuman, "NeedsHuman should be false when release fails")
+}
+
+// TestExtractNeedsHuman verifies the NEEDS_HUMAN marker extraction logic.
+func TestExtractNeedsHuman(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"marker with reason", "NEEDS_HUMAN: Missing API key", "Missing API key"},
+		{"marker mid-output", "Some text\nNEEDS_HUMAN: Ambiguous spec\nMore text", "Ambiguous spec"},
+		{"marker with leading spaces", "  NEEDS_HUMAN: Indented reason", "Indented reason"},
+		{"no marker", "Normal output without escalation", ""},
+		{"marker without reason", "NEEDS_HUMAN:", ""},
+		{"partial marker", "NEEDS_HUMANOID: not a real marker", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractNeedsHuman(tt.input)
+			assert.Equal(t, tt.expect, got)
+		})
+	}
+}
+
 // TestSchematic_PerAnvilDisable verifies that per-anvil SchematicEnabled=false
 // overrides the global setting.
 func TestSchematic_PerAnvilDisable(t *testing.T) {
