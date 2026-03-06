@@ -72,6 +72,9 @@ type SettingsConfig struct {
 	// to trigger automatic schematic analysis. When this value is zero or
 	// unset, the daemon applies an effective default of 100.
 	SchematicWordThreshold int `mapstructure:"schematic_word_threshold"`
+	// BellowsInterval is how often the Bellows PR monitor polls GitHub for
+	// status changes on open PRs. Defaults to 2 minutes.
+	BellowsInterval time.Duration `mapstructure:"bellows_interval"`
 }
 
 // NotificationsConfig holds webhook and notification settings.
@@ -94,6 +97,7 @@ func Defaults() Config {
 			ClaudeFlags:      []string{},
 			// No Providers default here — provider.FromConfig handles empty slice.
 			RateLimitBackoff: 5 * time.Minute,
+			BellowsInterval:  2 * time.Minute,
 		},
 	}
 }
@@ -111,6 +115,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.max_review_attempts", 2)
 	v.SetDefault("settings.claude_flags", []string{})
 	v.SetDefault("settings.rate_limit_backoff", "5m")
+	v.SetDefault("settings.bellows_interval", "2m")
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	v.SetEnvPrefix("FORGE")
@@ -175,6 +180,13 @@ func Load(configFile string) (*Config, error) {
 		}
 		cfg.Settings.RateLimitBackoff = d
 	}
+	if raw := v.GetString("settings.bellows_interval"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid bellows_interval %q: %w", raw, err)
+		}
+		cfg.Settings.BellowsInterval = d
+	}
 
 	return &cfg, nil
 }
@@ -216,6 +228,9 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.SmithTimeout < 1*time.Minute {
 		errs = append(errs, "settings.smith_timeout must be >= 1m")
+	}
+	if c.Settings.BellowsInterval < 30*time.Second {
+		errs = append(errs, "settings.bellows_interval must be >= 30s")
 	}
 
 	for name, anvil := range c.Anvils {
@@ -263,6 +278,7 @@ func Save(cfg *Config, path string) error {
 	v.Set("settings.max_review_attempts", cfg.Settings.MaxReviewAttempts)
 	v.Set("settings.claude_flags", cfg.Settings.ClaudeFlags)
 	v.Set("settings.rate_limit_backoff", cfg.Settings.RateLimitBackoff.String())
+	v.Set("settings.bellows_interval", cfg.Settings.BellowsInterval.String())
 
 	// Ensure directory exists
 	dir := filepath.Dir(path)

@@ -91,6 +91,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `rate_limit_backoff` | duration | `5m` | | How long to wait before retrying when all providers are rate-limited. |
 | `schematic_enabled` | bool | `false` | | Enable Schematic pre-worker globally for complex beads. |
 | `schematic_word_threshold` | int | `100` | | Minimum word count in bead description to trigger Schematic analysis. |
+| `bellows_interval` | duration | `2m` | `30s` | How often Bellows polls GitHub for PR status changes. |
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, etc.
 
@@ -126,6 +127,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_RATE_LIMIT_BACKOFF` | `settings.rate_limit_backoff` |
 | `FORGE_SETTINGS_SCHEMATIC_ENABLED` | `settings.schematic_enabled` |
 | `FORGE_SETTINGS_SCHEMATIC_WORD_THRESHOLD` | `settings.schematic_word_threshold` |
+| `FORGE_SETTINGS_BELLOWS_INTERVAL` | `settings.bellows_interval` |
 | `FORGE_NOTIFICATIONS_ENABLED` | `notifications.enabled` |
 | `FORGE_NOTIFICATIONS_TEAMS_WEBHOOK_URL` | `notifications.teams_webhook_url` |
 
@@ -141,6 +143,7 @@ The config is validated at load time. Errors are reported as a list:
 - `max_review_attempts` must be >= 1
 - `poll_interval` must be >= 10s
 - `smith_timeout` must be >= 1m
+- `bellows_interval` must be >= 30s
 - Each anvil `path` must be non-empty
 - Each anvil `max_smiths` must be >= 0
 - `auto_dispatch` must be one of: `all`, `tagged`, `priority`, `off`

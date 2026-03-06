@@ -279,11 +279,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			monitorAnvils[name] = a.Path
 		}
 	}
-	monitorInterval := d.cfg.Settings.PollInterval
-	if monitorInterval < 2*time.Minute {
-		monitorInterval = 2 * time.Minute // don't poll GitHub too fast
-	}
-	d.bellowsMonitor = bellows.New(d.db, monitorInterval, monitorAnvils)
+	d.bellowsMonitor = bellows.New(d.db, d.cfg.Settings.BellowsInterval, monitorAnvils)
 	d.lifecycleMgr = lifecycle.New(d.db, d.logger, d.handleLifecycleAction)
 	if err := d.lifecycleMgr.Load(ctx); err != nil {
 		d.logger.Error("failed to load lifecycle states", "error", err)
