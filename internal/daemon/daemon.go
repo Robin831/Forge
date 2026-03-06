@@ -382,7 +382,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				BeadID:    req.BeadID,
 				Anvil:     req.Anvil,
 				Branch:    req.Branch,
-				Status:    state.WorkerRunning,
+				Status: "running",
 				Phase:     "cifix",
 				StartedAt: time.Now(),
 			})
@@ -411,7 +411,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				BeadID:    req.BeadID,
 				Anvil:     req.Anvil,
 				Branch:    req.Branch,
-				Status:    state.WorkerRunning,
+				Status: "running",
 				Phase:     "reviewfix",
 				StartedAt: time.Now(),
 			})
@@ -456,7 +456,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				BeadID:    req.BeadID,
 				Anvil:     req.Anvil,
 				Branch:    req.Branch,
-				Status:    state.WorkerRunning,
+				Status: "running",
 				Phase:     "rebase",
 				StartedAt: time.Now(),
 			})
