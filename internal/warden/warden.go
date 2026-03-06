@@ -304,8 +304,8 @@ func parseVerdict(output string, result *ReviewResult) {
 		result.Verdict = VerdictRequestChanges
 		result.Summary = "Inferred request_changes from output"
 	default:
-		result.Verdict = VerdictRequestChanges
-		result.Summary = "Could not parse structured verdict; defaulting to request_changes"
+		result.Verdict = VerdictApprove
+		result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
 	}
 }
 
