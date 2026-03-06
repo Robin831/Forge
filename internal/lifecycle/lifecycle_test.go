@@ -541,3 +541,71 @@ func TestManager_AnvilCollision(t *testing.T) {
 		t.Errorf("expected different DB IDs, both got %d", stA.ID)
 	}
 }
+
+// TestNotifyReviewFixCompleted_AllowsNextCycle verifies that after a review fix
+// worker completes (NotifyReviewFixCompleted is called), a subsequent
+// EventReviewChanges from the re-requested review dispatches a new fix cycle
+// instead of being suppressed by the "already in fix cycle" guard.
+//
+// This covers the real-world scenario where:
+//  1. First wave: reviewer requests changes → reviewfix dispatched (NeedsFix=true)
+//  2. Second wave arrives WHILE fix is running → "already in fix cycle" (expected)
+//  3. Fix worker finishes → NotifyReviewFixCompleted clears NeedsFix
+//  4. Re-review after pushed fixes still has issues → new EventReviewChanges
+//     must be dispatched (was previously dropped because NeedsFix stayed true)
+func TestNotifyReviewFixCompleted_AllowsNextCycle(t *testing.T) {
+	db := newTestDB(t)
+	var dispatched []ActionRequest
+	handler := func(_ context.Context, req ActionRequest) {
+		dispatched = append(dispatched, req)
+	}
+	m := New(db, testLogger(), handler)
+	ctx := context.Background()
+
+	// Step 1: first wave — EventReviewChanges dispatches fix cycle 1.
+	m.HandleEvent(ctx, makeEvent(101, bellows.EventReviewChanges))
+	if len(dispatched) != 1 || dispatched[0].Action != ActionFixReview {
+		t.Fatalf("step 1: expected 1 ActionFixReview dispatch, got %v", dispatched)
+	}
+
+	// Step 2: second wave arrives while fix is running — must be suppressed.
+	dispatched = dispatched[:0]
+	m.HandleEvent(ctx, makeEvent(101, bellows.EventReviewChanges))
+	if len(dispatched) != 0 {
+		t.Fatalf("step 2: expected 0 dispatches (already in fix cycle), got %d", len(dispatched))
+	}
+
+	// Verify NeedsFix is still set and ReviewFixCnt is 1 after the suppressed event.
+	st := m.GetState("test-anvil", 101)
+	if st == nil {
+		t.Fatal("no state for PR 101")
+	}
+	if !st.NeedsFix {
+		t.Error("step 2: expected NeedsFix=true")
+	}
+	if st.ReviewFixCnt != 1 {
+		t.Errorf("step 2: expected ReviewFixCnt=1, got %d", st.ReviewFixCnt)
+	}
+
+	// Step 3: review fix worker finishes — notify lifecycle.
+	m.NotifyReviewFixCompleted("test-anvil", 101)
+
+	st = m.GetState("test-anvil", 101)
+	if st.NeedsFix {
+		t.Error("step 3: expected NeedsFix=false after NotifyReviewFixCompleted")
+	}
+
+	// Step 4: re-review after pushed fixes — EventReviewChanges must be dispatched.
+	m.HandleEvent(ctx, makeEvent(101, bellows.EventReviewChanges))
+	if len(dispatched) != 1 || dispatched[0].Action != ActionFixReview {
+		t.Fatalf("step 4: expected 1 ActionFixReview dispatch after fix completed, got %v", dispatched)
+	}
+	if dispatched[0].PRNumber != 101 {
+		t.Errorf("step 4: expected PR #101, got #%d", dispatched[0].PRNumber)
+	}
+
+	st = m.GetState("test-anvil", 101)
+	if st.ReviewFixCnt != 2 {
+		t.Errorf("step 4: expected ReviewFixCnt=2, got %d", st.ReviewFixCnt)
+	}
+}

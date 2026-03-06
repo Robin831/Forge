@@ -415,6 +415,9 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				status = state.WorkerFailed
 			}
 			_ = d.db.UpdateWorkerStatus(workerID, status)
+			// Clear NeedsFix so the next EventReviewChanges (from the
+			// re-requested review) can dispatch a new fix cycle.
+			d.lifecycleMgr.NotifyReviewFixCompleted(req.Anvil, req.PRNumber)
 
 		case lifecycle.ActionCloseBead:
 			d.logger.Info("closing bead after merge", "bead", req.BeadID)

@@ -336,3 +336,22 @@ func (m *Manager) Remove(anvil string, prNumber int) {
 	delete(m.states, m.key(anvil, prNumber))
 }
 
+// NotifyReviewFixCompleted clears the NeedsFix flag after a review fix worker
+// finishes. This allows the next EventReviewChanges (from the re-requested
+// review) to dispatch a new fix cycle rather than being suppressed by the
+// "already in fix cycle" guard.
+//
+// Without this, NeedsFix stays true after the fix worker pushes its changes and
+// re-requests review. When the reviewer re-reviews and still requests changes,
+// HandleEvent sees NeedsFix=true and silently drops the event.
+func (m *Manager) NotifyReviewFixCompleted(anvil string, prNumber int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.states[m.key(anvil, prNumber)]
+	if !ok {
+		return
+	}
+	st.NeedsFix = false
+	m.logger.Info("review fix cycle completed, cleared NeedsFix", "pr", prNumber, "anvil", anvil)
+}
+
