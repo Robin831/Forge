@@ -72,6 +72,12 @@ type RunBeadPayload struct {
 	Anvil  string `json:"anvil"` // Optional: narrows search if multiple anvils have same bead ID
 }
 
+// ResetBeadPayload is the payload for a "reset_bead" command.
+type ResetBeadPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"` // Used to resolve the anvil path for bd commands
+}
+
 // CommandHandler is called by the server for each incoming command.
 type CommandHandler func(cmd Command) Response
 

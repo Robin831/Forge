@@ -55,6 +55,21 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 		}
+		model.OnResetBead = func(beadID, anvil string) {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return
+			}
+			defer client.Close()
+			payload, _ := json.Marshal(ipc.ResetBeadPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+			})
+			_, _ = client.Send(ipc.Command{
+				Type:    "reset_bead",
+				Payload: json.RawMessage(payload),
+			})
+		}
 
 		p := tea.NewProgram(&model, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {

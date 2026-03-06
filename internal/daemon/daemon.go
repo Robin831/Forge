@@ -863,6 +863,32 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": "dispatched"})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "reset_bead":
+		var rp ipc.ResetBeadPayload
+		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid reset_bead payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		anvilCfg, ok := d.cfg.Anvils[rp.Anvil]
+		if !ok {
+			// Fallback: pick any configured anvil
+			for _, ac := range d.cfg.Anvils {
+				anvilCfg = ac
+				break
+			}
+		}
+		resetCmd := executil.HideWindow(exec.CommandContext(context.Background(), "bd", "update", rp.BeadID, "--status=open", "--json"))
+		resetCmd.Dir = anvilCfg.Path
+		out, err := resetCmd.CombinedOutput()
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update failed: %s", strings.TrimSpace(string(out)))})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		_ = d.db.ClearRetry(rp.BeadID, rp.Anvil)
+		_ = d.db.LogEvent(state.EventBeadClaimed, fmt.Sprintf("bead %s reset to open by operator", rp.BeadID), rp.BeadID, rp.Anvil)
+		data, _ := json.Marshal(map[string]string{"reset": rp.BeadID})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}

@@ -24,12 +24,16 @@ const (
 	PanelQueue Panel = iota
 	PanelWorkers
 	PanelEvents
+	PanelAttention
 
 	// Event panel rendering constants
 	eventPanelInteriorPadding = 4
 	eventPanelMinWidth        = 1
 	eventTimestampWidth       = 9  // "HH:MM:SS "
 	eventMsgMinWidth          = 20 // Minimum width before msg moves to next line
+
+	// Number of panels in the tab cycle.
+	panelCount = 4
 )
 
 
@@ -68,9 +72,10 @@ type EventItem struct {
 // Model is the Bubbletea model for the Hearth TUI.
 type Model struct {
 	// Panels
-	queue   []QueueItem
-	workers []WorkerItem
-	events  []EventItem
+	queue     []QueueItem
+	workers   []WorkerItem
+	events    []EventItem
+	attention []AttentionItem
 
 	// Data source for polling
 	data *DataSource
@@ -78,16 +83,20 @@ type Model struct {
 	// Callback for killing a worker (set by the caller)
 	OnKill func(workerID string, pid int)
 
+	// Callback for resetting a bead to open (set by the caller)
+	OnResetBead func(beadID, anvil string)
+
 	// State
-	focused        Panel
-	queueScroll    int
-	workerScroll   int
-	eventScroll    int
-	eventAutoScroll bool  // true = follow new events
-	prevEventCount int   // track event count for auto-scroll
-	width          int
-	height         int
-	ready           bool
+	focused          Panel
+	queueScroll      int
+	workerScroll     int
+	eventScroll      int
+	attentionScroll  int
+	eventAutoScroll  bool // true = follow new events
+	prevEventCount   int  // track event count for auto-scroll
+	width            int
+	height           int
+	ready            bool
 
 	// Event rendering cache
 	eventLinesCache        []string
@@ -130,10 +139,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "tab":
-			m.focused = (m.focused + 1) % 3
+			m.focused = (m.focused + 1) % panelCount
 
 		case "shift+tab":
-			m.focused = (m.focused + 2) % 3
+			m.focused = (m.focused + panelCount - 1) % panelCount
 
 		case "j", "down":
 			m.scrollDown()
@@ -166,6 +175,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.OnKill(w.ID, w.PID)
 				}
 			}
+
+		case "R":
+			// Reset selected attention item to open
+			if m.focused == PanelAttention && len(m.attention) > 0 &&
+				m.attentionScroll < len(m.attention) {
+				item := m.attention[m.attentionScroll]
+				if m.OnResetBead != nil {
+					m.OnResetBead(item.BeadID, item.Anvil)
+				}
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -189,6 +208,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.prevEventCount = len(msg.Items)
+
+	case UpdateAttentionMsg:
+		m.attention = msg.Items
+		// Clamp scroll position if items were removed
+		if m.attentionScroll >= len(m.attention) && len(m.attention) > 0 {
+			m.attentionScroll = len(m.attention) - 1
+		}
 
 	case TickMsg:
 		// On each tick, refresh all panels and schedule the next tick
@@ -215,24 +241,39 @@ func (m *Model) View() string {
 		contentHeight = 0
 	}
 
-	// Build panels
-	queuePanel := m.renderQueue(queueWidth, contentHeight)
-	workerPanel := m.renderWorkers(workerWidth, contentHeight)
-	eventPanel := m.renderEvents(eventWidth, contentHeight)
+	// Split content height: top 3 panels get ~65%, attention panel gets ~35%.
+	// Minimum 4 rows for the attention panel.
+	attnHeight := contentHeight * 35 / 100
+	if attnHeight < 4 {
+		attnHeight = 4
+	}
+	if attnHeight > contentHeight {
+		attnHeight = contentHeight
+	}
+	topHeight := contentHeight - attnHeight
+
+	// Build top panels
+	queuePanel := m.renderQueue(queueWidth, topHeight)
+	workerPanel := m.renderWorkers(workerWidth, topHeight)
+	eventPanel := m.renderEvents(eventWidth, topHeight)
+
+	// Build attention panel (full width)
+	attnPanel := m.renderAttention(m.width, attnHeight)
 
 	// Header
 	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
 
 	// Footer
 	footer := footerStyle.Width(m.width).Render(
-		"Tab: switch panel • j/k: scroll • K: kill worker • f: follow events • q: quit",
+		"Tab: switch panel • j/k: scroll • K: kill worker • R: reset bead • f: follow events • q: quit",
 	)
 
 	// Final assembly
-	mainSection := lipgloss.JoinHorizontal(lipgloss.Top, queuePanel, workerPanel, eventPanel)
+	topSection := lipgloss.JoinHorizontal(lipgloss.Top, queuePanel, workerPanel, eventPanel)
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
-		mainSection,
+		topSection,
+		attnPanel,
 		footer,
 	)
 }
@@ -265,6 +306,10 @@ func (m *Model) scrollDown() {
 		if m.eventScroll < totalLines-1 {
 			m.eventScroll++
 		}
+	case PanelAttention:
+		if m.attentionScroll < len(m.attention)-1 {
+			m.attentionScroll++
+		}
 	}
 }
 
@@ -282,6 +327,10 @@ func (m *Model) scrollUp() {
 	case PanelEvents:
 		if m.eventScroll > 0 {
 			m.eventScroll--
+		}
+	case PanelAttention:
+		if m.attentionScroll > 0 {
+			m.attentionScroll--
 		}
 	}
 }
@@ -612,6 +661,61 @@ func (m *Model) renderEventLines(item EventItem, selected bool, panelWidth int) 
 	return lines
 }
 
+// renderAttention renders the full-width "Needs Human Attention" panel at the
+// bottom of the dashboard. It lists beads with needs_human=1 (exhausted retries)
+// or lifecycle_exhausted events, along with the reason and a suggested remediation.
+func (m *Model) renderAttention(width, height int) string {
+	style := panelStyle.Width(width - 4) // subtract borders
+	if m.focused == PanelAttention {
+		style = focusedPanelStyle.Width(width - 4)
+	}
+
+	count := len(m.attention)
+	badge := ""
+	if count > 0 {
+		badge = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render(fmt.Sprintf(" (%d)", count))
+	}
+	title := attentionTitleStyle.Render("Needs Human Attention") + badge
+
+	var lines []string
+	lines = append(lines, title)
+
+	if count == 0 {
+		lines = append(lines, dimStyle.Render("No beads need attention"))
+	} else {
+		// Each item occupies 2 rows: main line + suggestion line.
+		// height - 2 (borders) - 2 (title + margin) = height-4 available rows.
+		maxVisible := (height - 4) / 2
+		if maxVisible < 1 {
+			maxVisible = 1
+		}
+		visible := visibleItems(m.attentionScroll, count, maxVisible)
+		for i := visible.start; i < visible.end; i++ {
+			item := m.attention[i]
+			selected := i == m.attentionScroll && m.focused == PanelAttention
+
+			reasonStr := attentionReasonStyle(item.Reason)
+			mainLine := fmt.Sprintf("%s  %s  %s  %s",
+				lipgloss.NewStyle().Bold(true).Render(item.BeadID),
+				dimStyle.Render(item.Anvil),
+				reasonStr,
+				dimStyle.Render(item.UpdatedAt),
+			)
+			suggLine := "  " + dimStyle.Render("→ "+item.Suggestion)
+
+			if selected {
+				mainLine = selectedStyle.Render(item.BeadID+"  "+item.Anvil+"  "+item.Reason+"  "+item.UpdatedAt) + "  " + dimStyle.Render("[R: reset to open]")
+				suggLine = "  " + selectedStyle.Render("→ "+item.Suggestion)
+			}
+			lines = append(lines, mainLine)
+			lines = append(lines, suggLine)
+		}
+	}
+
+	content := strings.Join(lines, "\n")
+	return style.Height(height).Render(content)
+}
+
 // --- Messages for updating panel data ---
 
 // UpdateQueueMsg updates the queue panel.
@@ -669,6 +773,11 @@ var (
 			Bold(true).
 			Foreground(lipgloss.Color("245")).
 			MarginBottom(1)
+
+	attentionTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("196")).
+				MarginBottom(1)
 )
 
 // priorityStyle returns a colored priority indicator.
@@ -743,6 +852,20 @@ func phaseTag(phase string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("[rebase]")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("[idle]")
+	}
+}
+
+// attentionReasonStyle returns a colored reason string for the attention panel.
+func attentionReasonStyle(reason string) string {
+	switch {
+	case strings.Contains(reason, "CI fix"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(reason)
+	case strings.Contains(reason, "Review fix"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render(reason)
+	case strings.Contains(reason, "Rebase"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(reason)
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render(reason)
 	}
 }
 

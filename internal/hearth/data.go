@@ -297,12 +297,85 @@ func FetchEvents(db *state.DB, limit int) tea.Cmd {
 	}
 }
 
-// FetchAll returns a batch command that refreshes all three panels.
+// AttentionItem represents a bead needing human attention in the attention panel.
+type AttentionItem struct {
+	BeadID     string
+	Anvil      string
+	RetryCount int
+	Reason     string // e.g., "CI fix exhausted", "Review fix exhausted", "Rebase exhausted"
+	Suggestion string // e.g., "Check CI logs and fix manually"
+	UpdatedAt  string
+}
+
+// UpdateAttentionMsg updates the attention panel.
+type UpdateAttentionMsg struct{ Items []AttentionItem }
+
+// classifyError inspects an error message and returns a short reason and suggestion.
+func classifyError(msg string) (reason, suggestion string) {
+	switch {
+	case strings.Contains(msg, "CI fix attempts exhausted"):
+		return "CI fix exhausted", "Check CI logs and fix manually, then reset"
+	case strings.Contains(msg, "Review fix attempts exhausted"):
+		return "Review fix exhausted", "Address review comments manually, then reset"
+	case strings.Contains(msg, "rebase attempts exhausted"):
+		return "Rebase exhausted", "Run: git rebase main, resolve conflicts, then reset"
+	case strings.Contains(msg, "exhausted") || strings.Contains(msg, "needs human"):
+		return "Retries exhausted", "Inspect logs and reset when ready"
+	default:
+		return "Needs attention", "Inspect logs and reset when ready"
+	}
+}
+
+// FetchAttention queries the DB for beads needing human attention:
+// (1) retries with needs_human=1, (2) recent lifecycle_exhausted events.
+func FetchAttention(db *state.DB) tea.Cmd {
+	return func() tea.Msg {
+		var items []AttentionItem
+		seen := map[string]bool{}
+
+		// Source 1: retries table with needs_human=1
+		retries, _ := db.NeedsHumanBeads()
+		for _, r := range retries {
+			reason, suggestion := classifyError(r.LastError)
+			items = append(items, AttentionItem{
+				BeadID:     r.BeadID,
+				Anvil:      r.Anvil,
+				RetryCount: r.RetryCount,
+				Reason:     reason,
+				Suggestion: suggestion,
+				UpdatedAt:  r.UpdatedAt.Format("15:04:05"),
+			})
+			seen[r.BeadID] = true
+		}
+
+		// Source 2: lifecycle_exhausted events (deduplicated per bead, most recent)
+		events, _ := db.LifecycleExhaustedEvents(50)
+		for _, e := range events {
+			if seen[e.BeadID] {
+				continue
+			}
+			seen[e.BeadID] = true
+			reason, suggestion := classifyError(e.Message)
+			items = append(items, AttentionItem{
+				BeadID:     e.BeadID,
+				Anvil:      e.Anvil,
+				Reason:     reason,
+				Suggestion: suggestion,
+				UpdatedAt:  e.Timestamp.Format("15:04:05"),
+			})
+		}
+
+		return UpdateAttentionMsg{Items: items}
+	}
+}
+
+// FetchAll returns a batch command that refreshes all panels.
 func FetchAll(ctx context.Context, db *state.DB, anvils map[string]config.AnvilConfig) tea.Cmd {
 	return tea.Batch(
 		FetchQueue(ctx, anvils),
 		FetchWorkers(db),
 		FetchEvents(db, 100),
+		FetchAttention(db),
 	)
 }
 

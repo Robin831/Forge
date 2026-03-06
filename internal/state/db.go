@@ -584,6 +584,32 @@ func (db *DB) LogEvent(typ EventType, message, beadID, anvil string) error {
 	return err
 }
 
+// LifecycleExhaustedEvents returns the most recent n lifecycle_exhausted events,
+// ordered newest first. Used by the Hearth attention panel.
+func (db *DB) LifecycleExhaustedEvents(n int) ([]Event, error) {
+	rows, err := db.conn.Query(
+		`SELECT id, timestamp, type, message, bead_id, anvil
+		 FROM events WHERE type = 'lifecycle_exhausted'
+		 ORDER BY timestamp DESC LIMIT ?`, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var typ, ts string
+		if err := rows.Scan(&e.ID, &ts, &typ, &e.Message, &e.BeadID, &e.Anvil); err != nil {
+			return nil, err
+		}
+		e.Type = EventType(typ)
+		e.Timestamp, _ = time.Parse(time.RFC3339, ts)
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
 // RecentEvents returns the most recent n events.
 func (db *DB) RecentEvents(n int) ([]Event, error) {
 	rows, err := db.conn.Query(
