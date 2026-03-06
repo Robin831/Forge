@@ -128,7 +128,7 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 	log.Printf("[schematic:%s] Analysing bead scope (provider: %s)", bead.ID, pv.Label())
 
 	// Use the same smith.SpawnWithProvider to run the AI session
-	extraFlags := []string{fmt.Sprintf("--max-turns %d", cfg.MaxTurns)}
+	extraFlags := []string{"--max-turns", fmt.Sprintf("%d", cfg.MaxTurns)}
 	process, err := smith.SpawnWithProvider(ctx, anvilPath, promptText, "", pv, extraFlags)
 	if err != nil {
 		return &Result{
@@ -268,7 +268,7 @@ func parseVerdict(output string) (*schematicVerdict, error) {
 	return nil, fmt.Errorf("no valid schematic verdict JSON found in output")
 }
 
-// createSubBeads creates sub-beads via bd CLI and adds dependency links.
+// createSubBeads creates sub-beads via bd CLI with discovered-from dependency links.
 func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anvilPath string) ([]string, error) {
 	if len(tasks) == 0 {
 		return nil, fmt.Errorf("no sub-tasks to create")
@@ -276,7 +276,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 
 	var subIDs []string
 	for _, task := range tasks {
-		// Create sub-bead
+		// Create sub-bead with discovered-from dependency in a single call
 		createCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		cmd := executil.HideWindow(exec.CommandContext(createCtx,
 			"bd", "create",
@@ -284,6 +284,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 			"--description=Sub-task decomposed from "+parent.ID+": "+parent.Title,
 			"--type=task",
 			fmt.Sprintf("--priority=%d", parent.Priority),
+			"--deps", "discovered-from:"+parent.ID,
 			"--json",
 		))
 		cmd.Dir = anvilPath
@@ -311,17 +312,6 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 		}
 
 		subIDs = append(subIDs, created.ID)
-
-		// Add dependency: sub-bead discovered-from parent
-		depCtx, depCancel := context.WithTimeout(ctx, 15*time.Second)
-		depCmd := executil.HideWindow(exec.CommandContext(depCtx,
-			"bd", "dep", "add", created.ID, "discovered-from:"+parent.ID,
-		))
-		depCmd.Dir = anvilPath
-		if depOut, depErr := depCmd.CombinedOutput(); depErr != nil {
-			log.Printf("[schematic:%s] Warning: failed to add dependency for %s: %v: %s", parent.ID, created.ID, depErr, depOut)
-		}
-		depCancel()
 	}
 
 	// Block the parent bead (set status back to open — it will be blocked by dependencies)
