@@ -284,6 +284,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		p.PromptBuilder.CustomTemplate = customTmpl
 	}
 
+	beadCtx.Iteration = 1
 	promptText, err := p.PromptBuilder.Build(beadCtx)
 	if err != nil {
 		outcome.Error = fmt.Errorf("building prompt: %w", err)
@@ -441,8 +442,16 @@ func Run(ctx context.Context, p Params) *Outcome {
 			log.Printf("[pipeline:%s] Temper failed at step: %s", workerID, temperResult.FailedStep)
 
 			if iteration < MaxIterations {
-				// Build feedback prompt for Smith to fix build/test failures
-				currentPrompt = buildFixPrompt(beadCtx, "build/test", temperResult.Summary, nil)
+				// Rebuild prompt with temper feedback for next iteration
+				beadCtx.Iteration = iteration + 1
+				beadCtx.PriorFeedbackSource = "build/test verification"
+				beadCtx.PriorFeedback = temperResult.Summary
+				if rebuilt, err := p.PromptBuilder.Build(beadCtx); err == nil {
+					currentPrompt = rebuilt
+				} else {
+					log.Printf("[pipeline:%s] Failed to rebuild prompt, using fallback: %v", workerID, err)
+					currentPrompt = buildFixPrompt(beadCtx, "build/test", temperResult.Summary, nil)
+				}
 				continue
 			}
 
@@ -522,8 +531,16 @@ func Run(ctx context.Context, p Params) *Outcome {
 				p.Bead.ID, p.AnvilName)
 
 			if iteration < MaxIterations {
-				// Build feedback prompt with review issues
-				currentPrompt = buildFixPrompt(beadCtx, "review", reviewResult.Summary, reviewResult.Issues)
+				// Rebuild prompt with warden feedback for next iteration
+				beadCtx.Iteration = iteration + 1
+				beadCtx.PriorFeedbackSource = "Warden code review"
+				beadCtx.PriorFeedback = formatWardenFeedback(reviewResult.Summary, reviewResult.Issues)
+				if rebuilt, err := p.PromptBuilder.Build(beadCtx); err == nil {
+					currentPrompt = rebuilt
+				} else {
+					log.Printf("[pipeline:%s] Failed to rebuild prompt, using fallback: %v", workerID, err)
+					currentPrompt = buildFixPrompt(beadCtx, "review", reviewResult.Summary, reviewResult.Issues)
+				}
 				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerRunning)
 				continue
 			}
@@ -557,7 +574,32 @@ func extractNeedsHuman(output string) string {
 	return ""
 }
 
+// formatWardenFeedback combines the review summary and structured issues into a
+// single pre-formatted feedback string for inclusion in BeadContext.PriorFeedback.
+func formatWardenFeedback(summary string, issues []warden.ReviewIssue) string {
+	var b strings.Builder
+	b.WriteString(summary)
+
+	if len(issues) > 0 {
+		b.WriteString("\n\n### Specific Issues\n\n")
+		for i, issue := range issues {
+			fmt.Fprintf(&b, "%d. **[%s]** %s", i+1, issue.Severity, issue.Message)
+			if issue.File != "" {
+				fmt.Fprintf(&b, " (in `%s`", issue.File)
+				if issue.Line > 0 {
+					fmt.Fprintf(&b, " line %d", issue.Line)
+				}
+				b.WriteString(")")
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	return b.String()
+}
+
 // buildFixPrompt creates a prompt for Smith to fix issues found by Temper or Warden.
+// Retained as a fallback if the prompt builder fails to rebuild on retry.
 func buildFixPrompt(beadCtx prompt.BeadContext, source, summary string, issues []warden.ReviewIssue) string {
 	var b strings.Builder
 
