@@ -633,7 +633,10 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	}
 	defer d.pollRunning.Store(false)
 
-	d.logger.Info("polling anvils", "count", len(d.config().Anvils))
+	// Snapshot config once so hot-reloads don't change Anvils mid-cycle.
+	cfg := d.config()
+
+	d.logger.Info("polling anvils", "count", len(cfg.Anvils))
 
 	// Periodically recover orphaned in-progress beads (every 10 poll cycles).
 	// Recovery also runs once at startup (see Start). Running it here catches
@@ -647,14 +650,14 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 	}
 
-	maxTotal := d.config().Settings.MaxTotalSmiths
+	maxTotal := cfg.Settings.MaxTotalSmiths
 	if maxTotal <= 0 {
 		maxTotal = 4
 	}
 
 	// Always poll so the Hearth TUI queue cache stays current even when all
 	// smith slots are occupied. Capacity is checked below before dispatching.
-	p := poller.New(d.config().Anvils)
+	p := poller.New(cfg.Anvils)
 	beads, results := p.Poll(ctx)
 
 	// Update cache
@@ -730,7 +733,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	}
 
 	// Check daily cost limit before dispatching new work.
-	costLimit := d.config().Settings.DailyCostLimit
+	costLimit := cfg.Settings.DailyCostLimit
 	if costLimit > 0 {
 		// Capture date once so both the cost lookup and the event-suppression
 		// key use the same day even if midnight rolls over between calls.
@@ -784,7 +787,15 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			continue
 		}
 
-		anvilCfg := d.config().Anvils[b.Anvil]
+		anvilCfg, ok := cfg.Anvils[b.Anvil]
+		if !ok {
+			d.logger.Warn("skipping bead for unknown anvil", "bead", b.ID, "anvil", b.Anvil)
+			continue
+		}
+		if anvilCfg.Path == "" {
+			d.logger.Warn("skipping bead with empty anvil path", "bead", b.ID, "anvil", b.Anvil)
+			continue
+		}
 
 		// Apply auto-dispatch filtering
 		if !shouldDispatch(b, anvilCfg) {
@@ -800,6 +811,9 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		if _, ok := anvilActive[b.Anvil]; !ok {
 			cnt, err := worker.DispatchActiveCount(d.db, b.Anvil)
 			if err != nil {
+				d.logger.Error("checking per-anvil capacity", "anvil", b.Anvil, "bead", b.ID, "error", err)
+				// Treat as at-capacity to avoid repeated noisy queries this cycle.
+				anvilActive[b.Anvil] = maxSmiths
 				continue
 			}
 			anvilActive[b.Anvil] = cnt

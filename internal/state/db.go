@@ -1299,7 +1299,7 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 		`SELECT bead_id, anvil, needs_human, clarification_needed, reason, title
 		 FROM (
 		     SELECT r.bead_id, r.anvil, r.needs_human, r.clarification_needed, r.last_error AS reason,
-		            COALESCE(q.title, w2.title, '') AS title, r.updated_at
+		            COALESCE(NULLIF(q.title, ''), NULLIF(w2.title, ''), '') AS title, r.updated_at
 		     FROM retries r
 		     LEFT JOIN queue_cache q ON r.bead_id = q.bead_id AND r.anvil = q.anvil
 		     LEFT JOIN (
@@ -1316,7 +1316,7 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 		     UNION ALL
 		     SELECT w.bead_id, w.anvil, 0 AS needs_human, 0 AS clarification_needed,
 		            'Worker stalled (no log activity)' AS reason,
-		            COALESCE(q2.title, w.title, '') AS title, COALESCE(w.updated_at, w.started_at) AS updated_at
+		            COALESCE(NULLIF(q2.title, ''), NULLIF(w.title, ''), '') AS title, COALESCE(w.updated_at, w.started_at) AS updated_at
 		     FROM workers w
 		     LEFT JOIN queue_cache q2 ON w.bead_id = q2.bead_id AND w.anvil = q2.anvil
 		     WHERE w.status = 'stalled'
