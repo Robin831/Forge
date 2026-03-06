@@ -90,10 +90,12 @@ type Model struct {
 	ready           bool
 
 	// Event rendering cache
-	eventLinesCache       []string
-	eventWidthCache       int
-	eventSelectedIdxCache int
-	eventCountCache       int
+	eventLinesCache        []string
+	eventWidthCache        int
+	eventSelectedIdxCache  int
+	eventCountCache        int
+	eventRevision          int // incremented on every UpdateEventsMsg to detect content changes
+	eventRevisionCache     int
 }
 
 // NewModel creates a new Hearth TUI model.
@@ -179,6 +181,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateEventsMsg:
 		m.events = msg.Items
+		m.eventRevision++
 		// Auto-scroll to bottom if enabled and new events arrived
 		if m.eventAutoScroll && len(msg.Items) > m.prevEventCount {
 			if len(msg.Items) > 0 {
@@ -449,6 +452,7 @@ func (m *Model) renderAllEventLines(width int) []string {
 	if m.eventWidthCache == width &&
 		m.eventCountCache == len(m.events) &&
 		m.eventSelectedIdxCache == selectedEventIdx &&
+		m.eventRevisionCache == m.eventRevision &&
 		m.eventLinesCache != nil {
 		return m.eventLinesCache
 	}
@@ -464,6 +468,7 @@ func (m *Model) renderAllEventLines(width int) []string {
 	m.eventWidthCache = width
 	m.eventCountCache = len(m.events)
 	m.eventSelectedIdxCache = selectedEventIdx
+	m.eventRevisionCache = m.eventRevision
 
 	return allLines
 }
@@ -501,7 +506,7 @@ func (m *Model) getEventLayout(item EventItem, panelWidth int) eventLayout {
 // eventTotalLineCount returns the total number of rendered lines across all events
 // without allocating styled strings. Used by scrollDown for cheap bounds checking.
 func (m *Model) eventTotalLineCount(width int) int {
-	if m.eventWidthCache == width && m.eventCountCache == len(m.events) && m.eventLinesCache != nil {
+	if m.eventWidthCache == width && m.eventCountCache == len(m.events) && m.eventRevisionCache == m.eventRevision && m.eventLinesCache != nil {
 		return len(m.eventLinesCache)
 	}
 
