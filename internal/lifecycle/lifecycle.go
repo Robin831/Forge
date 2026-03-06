@@ -18,20 +18,26 @@ import (
 
 // PRState tracks the lifecycle of a single PR.
 type PRState struct {
-	ID           int // Database ID
-	PRNumber     int
-	BeadID       string
-	Anvil        string
-	Branch       string
-	CIPassing    bool
-	Approved     bool
-	NeedsFix     bool
-	Conflicting  bool
-	Merged       bool
-	Closed       bool
-	CIFixCount   int
-	ReviewFixCnt int
-	RebaseCount  int
+	ID             int // Database ID
+	PRNumber       int
+	BeadID         string
+	Anvil          string
+	Branch         string
+	CIPassing      bool
+	Approved       bool
+	CINeedsFix     bool // CI failure fix cycle in progress
+	ReviewNeedsFix bool // Review comment fix cycle in progress
+	Conflicting    bool
+	Merged         bool
+	Closed         bool
+	CIFixCount     int
+	ReviewFixCnt   int
+	RebaseCount    int
+}
+
+// NeedsFix returns true if either a CI or review fix cycle is active.
+func (s *PRState) NeedsFix() bool {
+	return s.CINeedsFix || s.ReviewNeedsFix
 }
 
 // Action enumerates lifecycle actions to take.
@@ -126,16 +132,17 @@ func (m *Manager) Load(ctx context.Context) error {
 			}
 		}
 		st := &PRState{
-			ID:           pr.ID,
-			PRNumber:     pr.Number,
-			BeadID:       pr.BeadID,
-			Anvil:        pr.Anvil,
-			Branch:       pr.Branch,
-			CIPassing:    pr.CIPassing,
-			Approved:     pr.Status == state.PRApproved,
-			NeedsFix:     false, // never restore NeedsFix=true; bellows will re-detect
-			CIFixCount:   pr.CIFixCount,
-			ReviewFixCnt: pr.ReviewFixCount,
+			ID:             pr.ID,
+			PRNumber:       pr.Number,
+			BeadID:         pr.BeadID,
+			Anvil:          pr.Anvil,
+			Branch:         pr.Branch,
+			CIPassing:      pr.CIPassing,
+			Approved:       pr.Status == state.PRApproved,
+			CINeedsFix:     false, // never restore; bellows will re-detect CI failures
+			ReviewNeedsFix: false, // never restore; bellows will re-detect review comments
+			CIFixCount:     pr.CIFixCount,
+			ReviewFixCnt:   pr.ReviewFixCount,
 		}
 		m.states[m.key(pr.Anvil, pr.Number)] = st
 		m.logger.Info("restored PR from DB",
@@ -174,16 +181,17 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 			}
 		} else if pr != nil {
 			newSt = &PRState{
-				ID:           pr.ID,
-				PRNumber:     pr.Number,
-				BeadID:       pr.BeadID,
-				Anvil:        pr.Anvil,
-				Branch:       pr.Branch,
-				CIPassing:    pr.CIPassing,
-				Approved:     pr.Status == state.PRApproved,
-				NeedsFix:     pr.Status == state.PRNeedsFix,
-				CIFixCount:   pr.CIFixCount,
-				ReviewFixCnt: pr.ReviewFixCount,
+				ID:             pr.ID,
+				PRNumber:       pr.Number,
+				BeadID:         pr.BeadID,
+				Anvil:          pr.Anvil,
+				Branch:         pr.Branch,
+				CIPassing:      pr.CIPassing,
+				Approved:       pr.Status == state.PRApproved,
+				CINeedsFix:     pr.Status == state.PRNeedsFix && !pr.CIPassing,
+				ReviewNeedsFix: pr.Status == state.PRNeedsFix && pr.CIPassing,
+				CIFixCount:     pr.CIFixCount,
+				ReviewFixCnt:   pr.ReviewFixCount,
 			}
 		} else {
 			// Not found in DB — create new state and persist it
@@ -232,7 +240,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 	switch event.EventType {
 	case bellows.EventCIPassed:
 		st.CIPassing = true
-		st.NeedsFix = false
+		st.CINeedsFix = false
 		m.logger.Info("PR CI passed", "pr", event.PRNumber, "anvil", event.Anvil)
 
 	case bellows.EventCIFailed:
@@ -242,7 +250,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 			break
 		}
 		st.CIPassing = false
-		st.NeedsFix = true
+		st.CINeedsFix = true
 		if st.CIFixCount < m.maxCI {
 			st.CIFixCount++
 			action = ActionFixCI
@@ -257,9 +265,10 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		m.logger.Info("PR approved", "pr", event.PRNumber, "anvil", event.Anvil)
 
 	case bellows.EventReviewChanges:
-		// Only increment if not already in a fix cycle, or if previously approved.
-		if !st.NeedsFix || st.Approved {
-			st.NeedsFix = true
+		// Only increment if not already in a review fix cycle, or if previously approved.
+		// CINeedsFix is independent — a CI fix in progress does not block review fixes.
+		if !st.ReviewNeedsFix || st.Approved {
+			st.ReviewNeedsFix = true
 			st.Approved = false
 			if st.ReviewFixCnt < m.maxRev {
 				st.ReviewFixCnt++
@@ -270,7 +279,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 				logMsg = fmt.Sprintf("PR #%d (%s): Review fix attempts exhausted (%d)", event.PRNumber, event.Anvil, m.maxRev)
 			}
 		} else {
-			m.logger.Info("PR changes requested again, but already in fix cycle", "pr", event.PRNumber, "anvil", event.Anvil)
+			m.logger.Info("PR changes requested again, but already in review fix cycle", "pr", event.PRNumber, "anvil", event.Anvil)
 		}
 
 	case bellows.EventPRConflicting:
@@ -363,14 +372,15 @@ func (m *Manager) Remove(anvil string, prNumber int) {
 	delete(m.states, m.key(anvil, prNumber))
 }
 
-// NotifyReviewFixCompleted clears the NeedsFix flag after a review fix worker
-// finishes. This allows the next EventReviewChanges (triggered automatically by
-// GitHub when the reviewer re-examines the updated push) to dispatch a new fix
-// cycle rather than being suppressed by the "already in fix cycle" guard.
+// NotifyReviewFixCompleted clears the ReviewNeedsFix flag after a review fix
+// worker finishes. This allows the next EventReviewChanges (triggered
+// automatically by GitHub when the reviewer re-examines the updated push) to
+// dispatch a new fix cycle rather than being suppressed by the "already in fix
+// cycle" guard.
 //
-// Without this, NeedsFix stays true after the fix worker pushes its changes.
-// When the reviewer re-reviews and still requests changes, HandleEvent sees
-// NeedsFix=true and silently drops the event.
+// Without this, ReviewNeedsFix stays true after the fix worker pushes its
+// changes. When the reviewer re-reviews and still requests changes, HandleEvent
+// sees ReviewNeedsFix=true and silently drops the event.
 func (m *Manager) NotifyReviewFixCompleted(anvil string, prNumber int) {
 	m.mu.Lock()
 	st, ok := m.states[m.key(anvil, prNumber)]
@@ -378,11 +388,11 @@ func (m *Manager) NotifyReviewFixCompleted(anvil string, prNumber int) {
 		m.mu.Unlock()
 		return
 	}
-	st.NeedsFix = false
+	st.ReviewNeedsFix = false
 	dbID := st.ID
 	m.mu.Unlock()
 
-	m.logger.Info("review fix cycle completed, cleared NeedsFix", "pr", prNumber, "anvil", anvil)
+	m.logger.Info("review fix cycle completed, cleared ReviewNeedsFix", "pr", prNumber, "anvil", anvil)
 
 	// Persist the cleared state so a daemon restart does not reload a stale
 	// needs_fix DB status and get permanently stuck.

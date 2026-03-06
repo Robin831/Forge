@@ -48,29 +48,30 @@ func makeEvent(prNum int, evType string) bellows.PREvent {
 // TestHandleEvent_Transitions uses table-driven tests to verify all major event transitions.
 func TestHandleEvent_Transitions(t *testing.T) {
 	tests := []struct {
-		name             string
-		prNumber         int
-		setupEvents      []bellows.PREvent
-		event            bellows.PREvent
-		wantAction       Action
-		wantNeedsFix     bool
-		wantCIPassing    bool
-		wantApproved     bool
-		wantMerged       bool
-		wantClosed       bool
-		wantConflicting  bool
-		wantCIFixCount   int
-		wantReviewFixCnt int
-		wantRebaseCount  int
-		wantDispatches   int // expected dispatches from the final event only
-		wantDBEventType  state.EventType
+		name               string
+		prNumber           int
+		setupEvents        []bellows.PREvent
+		event              bellows.PREvent
+		wantAction         Action
+		wantCINeedsFix     bool
+		wantReviewNeedsFix bool
+		wantCIPassing      bool
+		wantApproved       bool
+		wantMerged         bool
+		wantClosed         bool
+		wantConflicting    bool
+		wantCIFixCount     int
+		wantReviewFixCnt   int
+		wantRebaseCount    int
+		wantDispatches     int // expected dispatches from the final event only
+		wantDBEventType    state.EventType
 	}{
 		{
 			name:           "EventCIFailed dispatch",
 			prNumber:       42,
 			event:          makeEvent(42, bellows.EventCIFailed),
 			wantAction:     ActionFixCI,
-			wantNeedsFix:   true,
+			wantCINeedsFix: true,
 			wantCIFixCount: 1,
 			wantDispatches: 1,
 		},
@@ -95,7 +96,7 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			},
 			event:           makeEvent(10, bellows.EventCIFailed),
 			wantAction:      ActionNone,
-			wantNeedsFix:    true,
+			wantCINeedsFix:  true,
 			wantCIFixCount:  5, // counter must be at max to confirm setup worked
 			wantDispatches:  0, // exhaustion path must not dispatch
 			wantDBEventType: state.EventLifecycleExhausted,
@@ -103,10 +104,10 @@ func TestHandleEvent_Transitions(t *testing.T) {
 		{
 			name:             "EventReviewChanges dispatch",
 			prNumber:         7,
-			event:            makeEvent(7, bellows.EventReviewChanges),
-			wantAction:       ActionFixReview,
-			wantNeedsFix:     true,
-			wantCIPassing:    true, // InsertPR omits ci_passing so DB default (true) applies; review event does not change CI state
+			event:              makeEvent(7, bellows.EventReviewChanges),
+			wantAction:         ActionFixReview,
+			wantReviewNeedsFix: true,
+			wantCIPassing:      true, // InsertPR omits ci_passing so DB default (true) applies; review event does not change CI state
 			wantReviewFixCnt: 1,
 			wantDispatches:   1,
 		},
@@ -116,7 +117,7 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			// maxRev=5: 5 full [Changes,Approved] cycles fill the counter;
 			// the 6th EventReviewChanges triggers exhaustion.
 			// EventReviewApproved sets Approved=true, re-opening the fix cycle
-			// so the next EventReviewChanges passes the !NeedsFix||Approved guard.
+			// so the next EventReviewChanges passes the !ReviewNeedsFix||Approved guard.
 			setupEvents: []bellows.PREvent{
 				makeEvent(20, bellows.EventReviewChanges),
 				makeEvent(20, bellows.EventReviewApproved),
@@ -129,10 +130,10 @@ func TestHandleEvent_Transitions(t *testing.T) {
 				makeEvent(20, bellows.EventReviewChanges),
 				makeEvent(20, bellows.EventReviewApproved),
 			},
-			event:            makeEvent(20, bellows.EventReviewChanges),
-			wantAction:       ActionNone,
-			wantNeedsFix:     true,
-			wantCIPassing:    true, // review events do not change CI state
+			event:              makeEvent(20, bellows.EventReviewChanges),
+			wantAction:         ActionNone,
+			wantReviewNeedsFix: true,
+			wantCIPassing:      true, // review events do not change CI state
 			wantReviewFixCnt: 5,    // counter must be at max to confirm setup worked
 			wantDispatches:   0,    // exhaustion path must not dispatch
 			wantDBEventType:  state.EventLifecycleExhausted,
@@ -170,7 +171,6 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			prNumber:       1,
 			event:          makeEvent(1, bellows.EventCIPassed),
 			wantAction:     ActionNone,
-			wantNeedsFix:   false,
 			wantCIPassing:  true,
 			wantDispatches: 0,
 		},
@@ -226,8 +226,11 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			if st == nil {
 				t.Fatalf("expected state for PR #%d", tc.prNumber)
 			}
-			if st.NeedsFix != tc.wantNeedsFix {
-				t.Errorf("expected NeedsFix=%v, got %v", tc.wantNeedsFix, st.NeedsFix)
+			if st.CINeedsFix != tc.wantCINeedsFix {
+				t.Errorf("expected CINeedsFix=%v, got %v", tc.wantCINeedsFix, st.CINeedsFix)
+			}
+			if st.ReviewNeedsFix != tc.wantReviewNeedsFix {
+				t.Errorf("expected ReviewNeedsFix=%v, got %v", tc.wantReviewNeedsFix, st.ReviewNeedsFix)
 			}
 			if st.Merged != tc.wantMerged {
 				t.Errorf("expected Merged=%v, got %v", tc.wantMerged, st.Merged)
@@ -561,11 +564,11 @@ func TestManager_AnvilCollision(t *testing.T) {
 // fix cycle" guard.
 //
 // This covers the real-world scenario where:
-//  1. First wave: reviewer requests changes → reviewfix dispatched (NeedsFix=true)
+//  1. First wave: reviewer requests changes → reviewfix dispatched (ReviewNeedsFix=true)
 //  2. Second wave arrives WHILE fix is running → "already in fix cycle" (expected)
-//  3. Fix worker pushes changes → NotifyReviewFixCompleted clears NeedsFix
+//  3. Fix worker pushes changes → NotifyReviewFixCompleted clears ReviewNeedsFix
 //  4. Reviewer re-examines the push, still requests changes → new EventReviewChanges
-//     must be dispatched (was previously dropped because NeedsFix stayed true)
+//     must be dispatched (was previously dropped because ReviewNeedsFix stayed true)
 func TestNotifyReviewFixCompleted_AllowsNextCycle(t *testing.T) {
 	db := newTestDB(t)
 	var dispatched []ActionRequest
@@ -588,13 +591,13 @@ func TestNotifyReviewFixCompleted_AllowsNextCycle(t *testing.T) {
 		t.Fatalf("step 2: expected 0 dispatches (already in fix cycle), got %d", len(dispatched))
 	}
 
-	// Verify NeedsFix is still set and ReviewFixCnt is 1 after the suppressed event.
+	// Verify ReviewNeedsFix is still set and ReviewFixCnt is 1 after the suppressed event.
 	st := m.GetState("test-anvil", 101)
 	if st == nil {
 		t.Fatal("no state for PR 101")
 	}
-	if !st.NeedsFix {
-		t.Error("step 2: expected NeedsFix=true")
+	if !st.ReviewNeedsFix {
+		t.Error("step 2: expected ReviewNeedsFix=true")
 	}
 	if st.ReviewFixCnt != 1 {
 		t.Errorf("step 2: expected ReviewFixCnt=1, got %d", st.ReviewFixCnt)
@@ -604,8 +607,8 @@ func TestNotifyReviewFixCompleted_AllowsNextCycle(t *testing.T) {
 	m.NotifyReviewFixCompleted("test-anvil", 101)
 
 	st = m.GetState("test-anvil", 101)
-	if st.NeedsFix {
-		t.Error("step 3: expected NeedsFix=false after NotifyReviewFixCompleted")
+	if st.ReviewNeedsFix {
+		t.Error("step 3: expected ReviewNeedsFix=false after NotifyReviewFixCompleted")
 	}
 
 	// Step 4: re-review after pushed fixes — EventReviewChanges must be dispatched.
@@ -620,5 +623,68 @@ func TestNotifyReviewFixCompleted_AllowsNextCycle(t *testing.T) {
 	st = m.GetState("test-anvil", 101)
 	if st.ReviewFixCnt != 2 {
 		t.Errorf("step 4: expected ReviewFixCnt=2, got %d", st.ReviewFixCnt)
+	}
+}
+
+// TestCIAndReviewFixesAreIndependent verifies that CI failures and review
+// changes dispatch independent fix cycles. This was the root cause of
+// Forge-uxg: a single NeedsFix flag caused review fixes to be skipped when
+// a CI fix cycle was already in progress.
+func TestCIAndReviewFixesAreIndependent(t *testing.T) {
+	db := newTestDB(t)
+	var dispatched []ActionRequest
+	handler := func(_ context.Context, req ActionRequest) {
+		dispatched = append(dispatched, req)
+	}
+	m := New(db, testLogger(), handler)
+	ctx := context.Background()
+
+	// Step 1: CI fails → dispatches ActionFixCI.
+	m.HandleEvent(ctx, makeEvent(200, bellows.EventCIFailed))
+	if len(dispatched) != 1 || dispatched[0].Action != ActionFixCI {
+		t.Fatalf("step 1: expected ActionFixCI, got %v", dispatched)
+	}
+
+	st := m.GetState("test-anvil", 200)
+	if !st.CINeedsFix {
+		t.Error("step 1: expected CINeedsFix=true")
+	}
+
+	// Step 2: Review changes arrive while CI fix is running.
+	// With the split flags, this must NOT be blocked.
+	dispatched = dispatched[:0]
+	m.HandleEvent(ctx, makeEvent(200, bellows.EventReviewChanges))
+	if len(dispatched) != 1 || dispatched[0].Action != ActionFixReview {
+		t.Fatalf("step 2: expected ActionFixReview (independent of CI), got %v", dispatched)
+	}
+
+	st = m.GetState("test-anvil", 200)
+	if !st.CINeedsFix {
+		t.Error("step 2: CINeedsFix should still be true")
+	}
+	if !st.ReviewNeedsFix {
+		t.Error("step 2: ReviewNeedsFix should be true")
+	}
+
+	// Step 3: CI passes → clears CINeedsFix but NOT ReviewNeedsFix.
+	dispatched = dispatched[:0]
+	m.HandleEvent(ctx, makeEvent(200, bellows.EventCIPassed))
+
+	st = m.GetState("test-anvil", 200)
+	if st.CINeedsFix {
+		t.Error("step 3: CINeedsFix should be false after CI passed")
+	}
+	if !st.ReviewNeedsFix {
+		t.Error("step 3: ReviewNeedsFix must still be true — CI passing should not clear it")
+	}
+
+	// Step 4: Review fix completes → clears ReviewNeedsFix.
+	m.NotifyReviewFixCompleted("test-anvil", 200)
+	st = m.GetState("test-anvil", 200)
+	if st.ReviewNeedsFix {
+		t.Error("step 4: ReviewNeedsFix should be false after NotifyReviewFixCompleted")
+	}
+	if st.CINeedsFix {
+		t.Error("step 4: CINeedsFix should still be false")
 	}
 }
