@@ -97,7 +97,7 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 	var bdContent string
 	if runtime.GOOS == "windows" {
 		bdScript = filepath.Join(tmpDir, "bd.bat")
-		bdContent = "@echo off
+		bdContent = `@echo off
 if "%1"=="ready" (
     echo [{"id": "TEST-1", "title": "Test Bead", "status": "ready", "priority": 1, "tags": ["test"]}]
     exit /b 0
@@ -107,10 +107,10 @@ if "%1"=="update" (
     exit /b 0
 )
 exit /b 1
-"
+`
 	} else {
 		bdScript = filepath.Join(tmpDir, "bd")
-		bdContent = "#!/bin/sh
+		bdContent = `#!/bin/sh
 if [ "$1" = "ready" ]; then
     echo '[{"id": "TEST-1", "title": "Test Bead", "status": "ready", "priority": 1, "tags": ["test"]}]'
     exit 0
@@ -120,7 +120,7 @@ if [ "$1" = "update" ]; then
     exit 0
 fi
 exit 1
-"
+`
 	}
 	err = os.WriteFile(bdScript, []byte(bdContent), 0o755)
 	require.NoError(t, err)
@@ -608,10 +608,10 @@ func TestHandleIPC_ViewLogs(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		// Write a small log file.
 		logFile := filepath.Join(tmpDir, "smith.log")
-		require.NoError(t, os.WriteFile(logFile, []byte("line1
+		require.NoError(t, os.WriteFile(logFile, []byte(`line1
 line2
 line3
-"), 0o644))
+`), 0o644))
 
 		// Insert a worker record pointing to the log.
 		require.NoError(t, db.InsertWorker(&state.Worker{

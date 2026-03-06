@@ -586,7 +586,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	}
 
 	// Preload circuit-broken beads (needs_human=1) to avoid dispatching poison beads.
-	circuitBrokenSet, cbErr := d.db.DispatchCircuitBrokenBeadIDSet()
+	cbSet, cbErr := d.db.DispatchCircuitBrokenBeadIDSet()
 	if cbErr != nil {
 		d.logger.Error("loading circuit-broken set; skipping dispatch this poll cycle", "error", cbErr)
 		return
@@ -638,8 +638,60 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	// Snapshot per-anvil active counts so we don't re-query the DB each
 	// iteration (avoids double-counting with the thisCycleAnvil counter).
 	anvilActive := make(map[string]int)
+	thisCycleGlobal := 0
+	thisCycleAnvil := make(map[string]int)
 
-	// Track beads dispatched this poll cycle (not yet visible in the snapshot).
+	for _, b := range beads {
+		// 1. Skip if the bead requires human clarification or is circuit-broken.
+		// These sets are keyed by "beadID\x00anvilPath".
+		key := b.ID + "\x00" + b.Anvil
+		if _, ok := clarSet[key]; ok {
+			continue
+		}
+		if _, ok := cbSet[key]; ok {
+			continue
+		}
+
+		// 2. Skip if the bead is already in flight. activeBeads tracks all
+		// goroutines currently running dispatchBead.
+		if _, loaded := d.activeBeads.LoadOrStore(b.ID, true); loaded {
+			continue
+		}
+
+		// 3. Check global capacity.
+		if globalActive+thisCycleGlobal >= maxTotal {
+			d.activeBeads.Delete(b.ID)
+			continue
+		}
+
+		// 4. Check per-anvil capacity.
+		anvilCfg, ok := d.cfg.Anvils[b.Anvil]
+		if !ok {
+			d.activeBeads.Delete(b.ID)
+			continue
+		}
+		maxPerAnvil := anvilCfg.MaxSmiths
+		if maxPerAnvil <= 0 {
+			maxPerAnvil = 2
+		}
+
+		if _, checked := anvilActive[b.Anvil]; !checked {
+			active, _ := worker.DispatchActiveCount(d.db, b.Anvil)
+			anvilActive[b.Anvil] = active
+		}
+
+		if anvilActive[b.Anvil]+thisCycleAnvil[b.Anvil] >= maxPerAnvil {
+			d.activeBeads.Delete(b.ID)
+			continue
+		}
+
+		// 5. Dispatch!
+		thisCycleGlobal++
+		thisCycleAnvil[b.Anvil]++
+		d.wg.Add(1)
+		go d.dispatchBead(ctx, b, anvilCfg)
+	}
+}
 
 // dispatchBead runs the full pipeline for a single bead in a goroutine.
 func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig) {
