@@ -398,6 +398,22 @@ func Run(ctx context.Context, p Params) *Outcome {
 			return outcome
 		}
 
+		// Check if Smith explicitly escalated for human help.
+		if reason := extractNeedsHuman(smithResult.FullOutput); reason != "" {
+			log.Printf("[pipeline:%s] Smith escalated: NEEDS_HUMAN: %s", workerID, reason)
+			_ = p.DB.LogEvent(state.EventSmithFailed,
+				fmt.Sprintf("Smith escalated — needs human: %s", reason),
+				p.Bead.ID, p.AnvilName)
+			if err := doRelease(p.Bead.ID, p.AnvilConfig.Path); err != nil {
+				log.Printf("[pipeline:%s] Failed to release bead %s after NEEDS_HUMAN: %v", workerID, p.Bead.ID, err)
+			} else {
+				outcome.NeedsHuman = true
+			}
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+			outcome.Duration = time.Since(start)
+			return outcome
+		}
+
 		_ = p.DB.LogEvent(state.EventSmithDone,
 			fmt.Sprintf("Completed in %.1fs ($%.4f)", smithResult.Duration.Seconds(), smithResult.CostUSD),
 			p.Bead.ID, p.AnvilName)
@@ -523,6 +539,22 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 	outcome.Duration = time.Since(start)
 	return outcome
+}
+
+// extractNeedsHuman scans Smith output for the NEEDS_HUMAN: marker and returns
+// the reason string. Returns empty string if not found.
+func extractNeedsHuman(output string) string {
+	const marker = "NEEDS_HUMAN:"
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, marker) {
+			reason := strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
+			if reason != "" {
+				return reason
+			}
+		}
+	}
+	return ""
 }
 
 // buildFixPrompt creates a prompt for Smith to fix issues found by Temper or Warden.
