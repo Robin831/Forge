@@ -1097,7 +1097,7 @@ type NeedsAttentionBead struct {
 func (db *DB) NeedsAttentionBeads() ([]NeedsAttentionBead, error) {
 	rows, err := db.conn.Query(
 		`SELECT r.bead_id, r.anvil, r.needs_human, r.clarification_needed, r.last_error,
-		        COALESCE(q.title, w.title, '') AS title
+		        COALESCE(NULLIF(q.title, ''), NULLIF(w.title, ''), '') AS title
 		 FROM retries r
 		 LEFT JOIN queue_cache q ON r.bead_id = q.bead_id AND r.anvil = q.anvil
 		 LEFT JOIN (

@@ -209,6 +209,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UpdateNeedsAttentionMsg:
 		m.needsAttention = msg.Items
 
+	case NeedsAttentionErrorMsg:
+		errEvent := EventItem{
+			Timestamp: time.Now().Format("15:04:05"),
+			Type:      "error",
+			Message:   fmt.Sprintf("needs attention read failed: %v", msg.Err),
+		}
+		m.events = append([]EventItem{errEvent}, m.events...)
+		m.eventRevision++
+		if m.eventAutoScroll {
+			m.eventScroll = 0
+		}
+
 	case UpdateWorkersMsg:
 		m.workers = msg.Items
 
@@ -357,8 +369,7 @@ func (m *Model) renderQueue(width, height int) string {
 		}
 	}
 
-	content := strings.Join(lines, "
-")
+	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
 }
 
@@ -424,8 +435,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 		}
 	}
 
-	content := strings.Join(lines, "
-")
+	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
 }
 
@@ -506,8 +516,7 @@ func (m *Model) renderWorkerList(width, height int) string {
 		}
 	}
 
-	content := strings.Join(lines, "
-")
+	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
 }
 
@@ -545,8 +554,7 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 		}
 	}
 
-	content := strings.Join(lines, "
-")
+	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
 }
 
@@ -578,8 +586,7 @@ func (m *Model) renderEvents(width, height int) string {
 		}
 	}
 
-	content := strings.Join(lines, "
-")
+	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
 }
 
@@ -765,6 +772,9 @@ type QueueErrorMsg struct{ Err error }
 // UpdateNeedsAttentionMsg updates the needs attention panel.
 type UpdateNeedsAttentionMsg struct{ Items []NeedsAttentionItem }
 
+// NeedsAttentionErrorMsg signals that reading the needs-attention beads failed.
+type NeedsAttentionErrorMsg struct{ Err error }
+
 // UpdateWorkersMsg updates the workers panel.
 type UpdateWorkersMsg struct{ Items []WorkerItem }
 
@@ -916,8 +926,7 @@ func eventTypeStyle(t string) string {
 // bead title before rendering it in the TUI.
 func sanitizeTitle(s string) string {
 	// Replace newlines/CR with a space so the second title line stays single-line.
-	s = strings.NewReplacer("
-", " ", "", " ").Replace(s)
+	s = strings.NewReplacer("\n", " ", "", " ").Replace(s)
 
 	// Strip ANSI escape sequences (ESC [ ... m and similar).
 	var b strings.Builder
@@ -984,8 +993,7 @@ func wordWrapCount(s string, maxWidth int) int {
 	}
 
 	count := 0
-	paragraphs := strings.Split(s, "
-")
+	paragraphs := strings.Split(s, "\n")
 	for _, pStr := range paragraphs {
 		if pStr == "" {
 			if len(paragraphs) > 1 {
@@ -1032,8 +1040,7 @@ func wordWrap(s string, maxWidth int) []string {
 	}
 
 	var result []string
-	paragraphs := strings.Split(s, "
-")
+	paragraphs := strings.Split(s, "\n")
 	for _, pStr := range paragraphs {
 		if strings.TrimSpace(pStr) == "" {
 			if len(paragraphs) > 1 {
