@@ -92,12 +92,18 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 	}
 
 	if strings.TrimSpace(diff) == "" {
-		return &ReviewResult{
+		result := &ReviewResult{
 			Verdict:  VerdictReject,
 			Summary:  "No changes detected — Smith produced no diff",
 			Duration: time.Since(start),
 			NoDiff:   true,
-		}, nil
+		}
+		if db != nil {
+			_ = db.LogEvent(state.EventWardenReject,
+				fmt.Sprintf("Verdict: %s — %s", result.Verdict, result.Summary),
+				beadID, anvilName)
+		}
+		return result, nil
 	}
 
 	// Build the review prompt

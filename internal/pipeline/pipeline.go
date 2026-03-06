@@ -56,8 +56,10 @@ type Outcome struct {
 	// RateLimited is true when all providers were rate limited and the bead
 	// has been released back to open so the poller can retry later.
 	RateLimited bool
-	// NeedsHuman is true when the bead has been released back to open with a
-	// needs-human flag (e.g., Smith produced no diff).
+	// NeedsHuman is true when the pipeline has released the bead back to open
+	// because it requires human attention (e.g., Smith produced no diff). The
+	// current bd call only sets --status=open and does not add a separate
+	// needs-human flag.
 	NeedsHuman bool
 }
 
@@ -96,6 +98,11 @@ type Params struct {
 // releaseBead resets a bead status to open via the bd CLI. It always uses a
 // fresh context derived from context.Background() so that a cancelled or
 // timed-out pipeline context does not prevent the release from completing.
+//
+// NOTE: shutdown.Manager.resetBead contains equivalent logic. If the timeout,
+// flags, or error formatting change here, keep that function in sync (and vice
+// versa). A future cleanup could factor this into a shared executil helper used
+// by both call sites.
 func releaseBead(beadID, anvilPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
