@@ -215,7 +215,7 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 			// Failed to create sub-beads — treat as hard error instead of falling back to plan.
 			// Log partial sub-beads so an operator can clean up orphaned sub-beads.
 			log.Printf("[schematic:%s] Failed to create sub-beads: %v (partial: %v)", bead.ID, err, subs)
-			result.Action = ActionSkip
+			result.Action = ActionClarify
 			result.SubBeads = subs // preserve partial sub-beads for caller visibility
 			result.Reason = fmt.Sprintf("Decomposition failed: %v", err)
 			result.Error = err

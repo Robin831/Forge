@@ -111,6 +111,7 @@ Duration values use Go syntax: `30s`, `5m`, `1h30m`, etc.
 | `bead_failed` | A bead exhausted retries and needs human intervention. |
 | `daily_cost` | Daily token usage and cost summary. |
 | `worker_done` | A worker successfully completed its pipeline. |
+| `bead_decomposed` | Schematic split a bead into sub-beads; the parent is now blocked. |
 
 Notifications are sent as MS Teams Adaptive Cards with color-coded severity.
 
