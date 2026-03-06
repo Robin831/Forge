@@ -199,7 +199,7 @@ func TestDB_QueueCache(t *testing.T) {
 	// 3c. Labels round-trip: nil/empty labels stored as "[]", not "null"
 	withLabels := []QueueItem{
 		{BeadID: "bd-l1", Anvil: "anvil-l", Title: "Has labels", Priority: 1, Status: "open", Labels: `["dispatch"]`, Section: QueueSectionReady},
-		{BeadID: "bd-l2", Anvil: "anvil-l", Title: "No labels (empty JSON array)", Priority: 2, Status: "open", Section: QueueSectionUnlabeled}, // Explicit empty JSON array
+		{BeadID: "bd-l2", Anvil: "anvil-l", Title: "No labels (empty JSON array)", Priority: 2, Status: "open", Labels: "[]", Section: QueueSectionUnlabeled}, // Explicit empty JSON array
 		{BeadID: "bd-l3", Anvil: "anvil-l", Title: "No labels (empty string)", Priority: 3, Status: "open", Labels: "", Section: QueueSectionUnlabeled}, // Empty string
 	}
 	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-a", "anvil-l"}, withLabels); err != nil {

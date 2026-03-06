@@ -1398,6 +1398,46 @@ func visibleItems(scroll, total, viewHeight int) visibleRange {
 	return visibleRange{start: start, end: end}
 }
 
+// ansiEscapeLen returns the number of runes consumed by an ANSI CSI escape
+// sequence starting at runes[i], or 0 if no escape sequence starts there.
+func ansiEscapeLen(runes []rune, i int) int {
+	if i >= len(runes) || runes[i] != '\x1b' {
+		return 0
+	}
+	if i+1 >= len(runes) || runes[i+1] != '[' {
+		return 0
+	}
+	j := i + 2
+	for j < len(runes) {
+		r := runes[j]
+		j++
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+			return j - i
+		}
+	}
+	return 0
+}
+
+// visualToRuneIndex returns the rune index in s that corresponds to visual
+// column col, skipping ANSI CSI escape sequences which have no visual width.
+func visualToRuneIndex(s string, col int) int {
+	runes := []rune(s)
+	visual := 0
+	i := 0
+	for i < len(runes) {
+		if visual >= col {
+			return i
+		}
+		if n := ansiEscapeLen(runes, i); n > 0 {
+			i += n
+			continue
+		}
+		visual++
+		i++
+	}
+	return i
+}
+
 // placeOverlay centers the overlay string on top of the background string.
 func placeOverlay(width, height int, overlay, background string) string {
 	overlayLines := strings.Split(overlay, "\n")
@@ -1430,25 +1470,30 @@ func placeOverlay(width, height int, overlay, background string) string {
 		if bgIdx >= len(bgLines) {
 			break
 		}
-		bgRunes := []rune(bgLines[bgIdx])
+		bgLine := bgLines[bgIdx]
+		bgRunes := []rune(bgLine)
 		olRunes := []rune(overlayLine)
+
+		// Convert visual column startX to a rune index, skipping ANSI escape
+		// sequences so we don't slice through them or misplace the overlay.
+		bgCutStart := visualToRuneIndex(bgLine, startX)
 
 		// Build the composed line
 		var result []rune
-		// Pad/take background up to startX
-		for j := 0; j < startX && j < len(bgRunes); j++ {
-			result = append(result, bgRunes[j])
-		}
-		for len(result) < startX {
+		// Copy background up to the ANSI-aware cut point.
+		result = append(result, bgRunes[:bgCutStart]...)
+		// Pad with spaces if the background is visually shorter than startX.
+		for lipgloss.Width(string(result)) < startX {
 			result = append(result, ' ')
 		}
-		// Insert overlay
+		// Insert overlay.
 		result = append(result, olRunes...)
-		// Append remainder of background if any.
-		// Use rune count (not ANSI-aware width) because bgRunes is indexed by rune position.
-		afterOverlay := startX + len(olRunes)
-		if afterOverlay < len(bgRunes) {
-			result = append(result, bgRunes[afterOverlay:]...)
+		// Append remainder of background after the overlay region.
+		// Use visualToRuneIndex so we skip over any ANSI sequences that fall
+		// within the overlay's visual span rather than indexing by raw rune count.
+		bgCutEnd := visualToRuneIndex(bgLine, startX+overlayWidth)
+		if bgCutEnd < len(bgRunes) {
+			result = append(result, bgRunes[bgCutEnd:]...)
 		}
 		bgLines[bgIdx] = string(result)
 	}

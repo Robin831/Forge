@@ -187,6 +187,10 @@ func New(cfg *config.Config) (*Daemon, error) {
 	// makes the intent explicit and avoids any future ambiguity).
 	d.costLimitLoggedDate.Store("")
 	d.cfg.Store(cfg)
+	// Default runCtx to context.Background() so IPC handlers that access it
+	// before Run() wires up the real context (e.g. early tag_bead commands)
+	// never receive a nil context.
+	d.runCtx = context.Background()
 	return d, nil
 }
 
