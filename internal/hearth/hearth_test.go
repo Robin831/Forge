@@ -6,6 +6,82 @@ import (
 	"testing"
 )
 
+func TestRenderWorkerListShowsTitle(t *testing.T) {
+	m := Model{
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+				Title: "add user auth endpoint"},
+		},
+		focused: PanelWorkers,
+	}
+	rendered := m.renderWorkerList(60, 20)
+	if !strings.Contains(rendered, "add user auth endpoint") {
+		t.Errorf("expected title 'add user auth endpoint' in rendered output:\n%s", rendered)
+	}
+}
+
+func TestRenderWorkerListNoTitle(t *testing.T) {
+	m := Model{
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+				Title: ""},
+		},
+		focused: PanelWorkers,
+	}
+	rendered := m.renderWorkerList(60, 20)
+	if !strings.Contains(rendered, "(no title)") {
+		t.Errorf("expected '(no title)' when Title is empty:\n%s", rendered)
+	}
+}
+
+func TestRenderWorkerListScrollRespectsTwoLinesPerWorker(t *testing.T) {
+	// Build more workers than fit in the panel to verify scroll/clipping.
+	// height=10 → maxLines = 10-4 = 6, slotsPerWorker=2, maxWorkers=3.
+	// Only the first 3 workers should be visible at scroll=0.
+	workers := []WorkerItem{
+		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-0"},
+		{ID: "w2", BeadID: "bd-2", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-1"},
+		{ID: "w3", BeadID: "bd-3", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-2"},
+		{ID: "w4", BeadID: "bd-4", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-3"},
+		{ID: "w5", BeadID: "bd-5", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-4"},
+	}
+	m := Model{workers: workers, focused: PanelWorkers, workerScroll: 0}
+
+	rendered := m.renderWorkerList(60, 10)
+
+	// Workers 0-2 should be visible; worker 3 and 4 must be clipped.
+	for _, visible := range []string{"title-0", "title-1", "title-2"} {
+		if !strings.Contains(rendered, visible) {
+			t.Errorf("expected %q to be visible in rendered output:\n%s", visible, rendered)
+		}
+	}
+	for _, hidden := range []string{"title-3", "title-4"} {
+		if strings.Contains(rendered, hidden) {
+			t.Errorf("expected %q to be clipped (not visible) in rendered output:\n%s", hidden, rendered)
+		}
+	}
+}
+
+func TestSanitizeTitle(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"plain title", "plain title"},
+		{"line\none", "line one"},
+		{"line\r\none", "line  one"},
+		{"\x1b[31mred\x1b[0m", "red"},
+		{"tab\there", "tabhere"}, // \t is a control char
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := sanitizeTitle(tt.input)
+		if got != tt.want {
+			t.Errorf("sanitizeTitle(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestWordWrapCount(t *testing.T) {
 	tests := []struct {
 		name     string

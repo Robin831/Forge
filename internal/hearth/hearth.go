@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -399,8 +400,8 @@ func (m *Model) renderWorkerList(width, height int) string {
 			}
 			lines = append(lines, mainLine)
 
-			// Second line: indented bead title
-			titleText := item.Title
+			// Second line: indented bead title (sanitized to strip control chars)
+			titleText := sanitizeTitle(item.Title)
 			if titleText == "" {
 				titleText = "(no title)"
 			}
@@ -804,6 +805,39 @@ func eventTypeStyle(t string) string {
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render(t)
 	}
+}
+
+// sanitizeTitle removes ANSI escape sequences, replaces newlines/carriage
+// returns with spaces, and strips non-printable control characters from a
+// bead title before rendering it in the TUI.
+func sanitizeTitle(s string) string {
+	// Replace newlines/CR with a space so the second title line stays single-line.
+	s = strings.NewReplacer("\n", " ", "\r", " ").Replace(s)
+
+	// Strip ANSI escape sequences (ESC [ ... m and similar).
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	runes := []rune(s)
+	for i < len(runes) {
+		if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
+			// Skip until the final byte of the CSI sequence (a letter).
+			i += 2
+			for i < len(runes) && !unicode.IsLetter(runes[i]) {
+				i++
+			}
+			i++ // consume the terminating letter
+			continue
+		}
+		// Skip other C0/C1 control characters (except space).
+		if runes[i] < 0x20 || (runes[i] >= 0x7f && runes[i] < 0xa0) {
+			i++
+			continue
+		}
+		b.WriteRune(runes[i])
+		i++
+	}
+	return b.String()
 }
 
 // --- Helpers ---

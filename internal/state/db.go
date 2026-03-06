@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS workers (
     pid         INTEGER NOT NULL DEFAULT 0,
     status      TEXT NOT NULL DEFAULT 'pending',
     phase       TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL DEFAULT '',
     started_at  TEXT NOT NULL,
     completed_at TEXT,
     log_path    TEXT NOT NULL DEFAULT ''
