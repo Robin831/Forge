@@ -145,7 +145,7 @@ Main repository: {{.Bead.AnvilPath}}
 
 1. **Implement the task** described above fully and completely
 2. **Follow the repository's coding standards** (see context below)
-3. **Run tests** if the project has them — do not break existing tests
+3. **Do NOT run builds, tests, or linters** — the Temper verification step runs build, lint, and test checks automatically after you finish. Focus your time on implementation.
 4. **Commit your changes** with a clear commit message referencing the bead:
    - Format: "feat: <description>" or "fix: <description>"
    - Include "Bead: {{.Bead.BeadID}}" in the commit body
@@ -157,7 +157,7 @@ Main repository: {{.Bead.AnvilPath}}
 - Stay focused on this bead only — do not fix unrelated issues
 - If you discover blocking issues, note them in your commit message
 - If the task is unclear, implement the most reasonable interpretation
-- Make sure the project builds successfully before committing
+- Do not run tests, builds, or linters — Temper handles verification
 {{- if .Bead.SchematicPlan}}
 
 ## Implementation Plan (from Schematic analysis)
