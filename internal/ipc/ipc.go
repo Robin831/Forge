@@ -50,14 +50,17 @@ type Event struct {
 
 // StatusPayload is the response for a "status" command.
 type StatusPayload struct {
-	Running    bool                      `json:"running"`
-	PID        int                       `json:"pid"`
-	Uptime     string                    `json:"uptime"`
-	Workers    int                       `json:"workers"`
-	QueueSize  int                       `json:"queue_size"`
-	OpenPRs    int                       `json:"open_prs"`
-	LastPoll   string                    `json:"last_poll"`
-	Quotas     map[string]provider.Quota `json:"quotas,omitempty"`
+	Running          bool                      `json:"running"`
+	PID              int                       `json:"pid"`
+	Uptime           string                    `json:"uptime"`
+	Workers          int                       `json:"workers"`
+	QueueSize        int                       `json:"queue_size"`
+	OpenPRs          int                       `json:"open_prs"`
+	LastPoll         string                    `json:"last_poll"`
+	Quotas           map[string]provider.Quota `json:"quotas,omitempty"`
+	DailyCost        float64                   `json:"daily_cost"`
+	DailyCostLimit   float64                   `json:"daily_cost_limit,omitempty"`
+	CostLimitPaused  bool                      `json:"cost_limit_paused,omitempty"`
 }
 
 // KillWorkerPayload is the payload for a "kill_worker" command.

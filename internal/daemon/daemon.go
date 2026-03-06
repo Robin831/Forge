@@ -104,6 +104,10 @@ type Daemon struct {
 
 	// Periodic bead recovery counter (runs every N poll cycles)
 	pollCount atomic.Int64
+
+	// Cost limit: tracks which date we last logged the cost_limit_hit event
+	// to avoid spamming the event log every poll cycle.
+	costLimitLoggedDate atomic.Value // stores string (YYYY-MM-DD)
 }
 
 // New creates a new daemon instance.
@@ -588,10 +592,6 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		return
 	}
 
-	// Snapshot global capacity before dispatching. Done after the cache update
-	// so the Hearth TUI always reflects the current ready queue even when all
-	// slots are occupied.
-	//
 	// We snapshot DB counts ONCE here and track in-cycle dispatches separately.
 	// Previously, the loop re-queried the DB each iteration and subtracted the
 	// in-cycle count from the max. This double-counted workers whose goroutines
@@ -608,79 +608,36 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		return
 	}
 
+	// Check daily cost limit before dispatching new work.
+	costLimit := d.cfg.Settings.DailyCostLimit
+	if costLimit > 0 {
+		todayCost, err := d.db.GetTodayCost()
+		if err != nil {
+			d.logger.Error("checking daily cost", "error", err)
+			return
+		}
+		if todayCost >= costLimit {
+			// Log the event only once per day to avoid spamming.
+			today := time.Now().Format("2006-01-02")
+			prev, _ := d.costLimitLoggedDate.Load().(string)
+			if prev != today {
+				d.costLimitLoggedDate.Store(today)
+				_ = d.db.LogEvent(state.EventCostLimitHit,
+					fmt.Sprintf("Daily cost $%.2f reached limit $%.2f — dispatch paused", todayCost, costLimit),
+					"", "")
+				d.logger.Warn("daily cost limit reached, dispatch paused",
+					"cost", fmt.Sprintf("$%.2f", todayCost),
+					"limit", fmt.Sprintf("$%.2f", costLimit))
+			}
+			return
+		}
+	}
+
 	// Snapshot per-anvil active counts so we don't re-query the DB each
 	// iteration (avoids double-counting with the thisCycleAnvil counter).
 	anvilActive := make(map[string]int)
 
 	// Track beads dispatched this poll cycle (not yet visible in the snapshot).
-	thisCycleTotal := 0
-	thisCycleAnvil := make(map[string]int)
-
-	for _, bead := range beads {
-		// Skip beads already in flight
-		if _, inFlight := d.activeBeads.Load(bead.ID); inFlight {
-			continue
-		}
-
-		// Skip beads that need clarification (analogous to needs_human)
-		if _, needed := clarSet[bead.ID+"\x00"+bead.Anvil]; needed {
-			continue
-		}
-
-		// Skip beads that are circuit-broken (needs_human=1 from dispatch failures or retries)
-		if _, broken := circuitBrokenSet[bead.ID+"\x00"+bead.Anvil]; broken {
-			continue
-		}
-
-		// Skip beads that already have an open PR (bellows should handle them)
-		if hasPR, err := d.db.HasOpenPRForBead(bead.ID, bead.Anvil); err == nil && hasPR {
-			d.logger.Debug("skipping bead with open PR", "bead", bead.ID)
-			continue
-		}
-
-		anvilCfg := d.cfg.Anvils[bead.Anvil]
-
-		// Apply auto-dispatch filtering
-		if !shouldDispatch(bead, anvilCfg) {
-			continue
-		}
-
-		maxSmiths := anvilCfg.MaxSmiths
-		if maxSmiths <= 0 {
-			maxSmiths = 1
-		}
-
-		// Check per-anvil capacity using snapshot + in-cycle count
-		if _, ok := anvilActive[bead.Anvil]; !ok {
-			cnt, err := worker.DispatchActiveCount(d.db, bead.Anvil)
-			if err != nil {
-				continue
-			}
-			anvilActive[bead.Anvil] = cnt
-		}
-		if anvilActive[bead.Anvil]+thisCycleAnvil[bead.Anvil] >= maxSmiths {
-			continue
-		}
-
-		// Check global capacity using snapshot + in-cycle count
-		if globalActive+thisCycleTotal >= maxTotal {
-			break
-		}
-
-		// Claim the bead atomically before dispatching
-		if err := d.claimBead(ctx, bead.ID, anvilCfg.Path); err != nil {
-			d.logger.Warn("failed to claim bead", "bead", bead.ID, "error", err)
-			d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("claim failed: %v", err))
-			continue
-		}
-
-		d.activeBeads.Store(bead.ID, true)
-		thisCycleAnvil[bead.Anvil]++
-		thisCycleTotal++
-		d.wg.Add(1)
-		go d.dispatchBead(ctx, bead, anvilCfg)
-	}
-}
 
 // dispatchBead runs the full pipeline for a single bead in a goroutine.
 func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig) {
@@ -852,15 +809,20 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		workers, _ := d.db.ActiveWorkers()
 		prs, _ := d.db.OpenPRs()
 		quotas, _ := d.db.GetAllProviderQuotas()
+		todayCost, _ := d.db.GetTodayCost()
+		costLimit := d.cfg.Settings.DailyCostLimit
 		payload := ipc.StatusPayload{
-			Running:   true,
-			PID:       os.Getpid(),
-			Uptime:    time.Since(d.startTime).Round(time.Second).String(),
-			Workers:   len(workers),
-			QueueSize: 0, // Updated during poll
-			OpenPRs:   len(prs),
-			LastPoll:  "n/a",
-			Quotas:    quotas,
+			Running:         true,
+			PID:             os.Getpid(),
+			Uptime:          time.Since(d.startTime).Round(time.Second).String(),
+			Workers:         len(workers),
+			QueueSize:       0, // Updated during poll
+			OpenPRs:         len(prs),
+			LastPoll:        "n/a",
+			Quotas:          quotas,
+			DailyCost:       todayCost,
+			DailyCostLimit:  costLimit,
+			CostLimitPaused: costLimit > 0 && todayCost >= costLimit,
 		}
 		data, _ := json.Marshal(payload)
 		return ipc.Response{Type: "status", Payload: data}

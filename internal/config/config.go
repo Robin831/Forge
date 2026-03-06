@@ -75,6 +75,11 @@ type SettingsConfig struct {
 	// BellowsInterval is how often the Bellows PR monitor polls GitHub for
 	// status changes on open PRs. Defaults to 2 minutes.
 	BellowsInterval time.Duration `mapstructure:"bellows_interval"`
+	// DailyCostLimit is the maximum estimated USD spend per calendar day.
+	// When the running total exceeds this value, dispatch is paused until
+	// the next day (or until the operator manually resumes). Zero means
+	// no limit (default).
+	DailyCostLimit float64 `mapstructure:"daily_cost_limit"`
 }
 
 // NotificationsConfig holds webhook and notification settings.
