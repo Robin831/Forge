@@ -21,10 +21,17 @@ import (
 type Panel int
 
 const (
-	PanelQueue   Panel = iota
+	PanelQueue Panel = iota
 	PanelWorkers
 	PanelEvents
+
+	// Event panel rendering constants
+	eventPanelInteriorPadding = 4
+	eventPanelMinWidth        = 20
+	eventTimestampWidth       = 9  // "HH:MM:SS "
+	eventMsgMinWidth          = 20 // Minimum width before msg moves to next line
 )
+
 
 // QueueItem represents a bead in the queue panel.
 type QueueItem struct {
@@ -80,7 +87,15 @@ type Model struct {
 	prevEventCount int   // track event count for auto-scroll
 	width          int
 	height         int
-	ready          bool
+	ready           bool
+
+	// Event rendering cache
+	eventLinesCache        []string
+	eventWidthCache        int
+	eventSelectedIdxCache  int
+	eventCountCache        int
+	eventRevision          int // incremented on every UpdateEventsMsg to detect content changes
+	eventRevisionCache     int
 }
 
 // NewModel creates a new Hearth TUI model.
@@ -94,7 +109,7 @@ func NewModel(ds *DataSource) Model {
 }
 
 // Init implements tea.Model.
-func (m Model) Init() tea.Cmd {
+func (m *Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{tea.SetWindowTitle("The Forge — Hearth")}
 
 	// Start the data tick cycle and do an initial fetch
@@ -107,7 +122,7 @@ func (m Model) Init() tea.Cmd {
 }
 
 // Update implements tea.Model.
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -166,6 +181,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateEventsMsg:
 		m.events = msg.Items
+		m.eventRevision++
 		// Auto-scroll to bottom if enabled and new events arrived
 		if m.eventAutoScroll && len(msg.Items) > m.prevEventCount {
 			if len(msg.Items) > 0 {
@@ -188,7 +204,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View implements tea.Model.
-func (m Model) View() string {
+func (m *Model) View() string {
 	if !m.ready {
 		return "Initializing The Forge..."
 	}
@@ -218,7 +234,7 @@ func (m Model) View() string {
 	)
 }
 
-func (m Model) getPanelWidths() (queueWidth, workerWidth, eventWidth int) {
+func (m *Model) getPanelWidths() (queueWidth, workerWidth, eventWidth int) {
 	remainingWidth := m.width - 4 // 4 for borders/gaps
 	queueWidth = remainingWidth / 4
 	workerWidth = remainingWidth / 4
@@ -239,8 +255,8 @@ func (m *Model) scrollDown() {
 		}
 	case PanelEvents:
 		_, _, eventWidth := m.getPanelWidths()
-		allLines := m.renderAllEventLines(eventWidth)
-		if m.eventScroll < len(allLines)-1 {
+		totalLines := m.eventTotalLineCount(eventWidth)
+		if m.eventScroll < totalLines-1 {
 			m.eventScroll++
 		}
 	}
@@ -265,7 +281,7 @@ func (m *Model) scrollUp() {
 }
 
 // renderQueue renders the queue panel.
-func (m Model) renderQueue(width, height int) string {
+func (m *Model) renderQueue(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelQueue {
 		style = focusedPanelStyle.Width(width)
@@ -299,7 +315,7 @@ func (m Model) renderQueue(width, height int) string {
 // renderWorkers splits the center Workers panel into two vertical sub-panels:
 // top shows the worker list, bottom shows the live activity log for the
 // selected worker. Uses lipgloss.JoinVertical for the split.
-func (m Model) renderWorkers(width, height int) string {
+func (m *Model) renderWorkers(width, height int) string {
 	listHeight := height * 6 / 10
 	if listHeight < 5 {
 		listHeight = 5
@@ -312,7 +328,7 @@ func (m Model) renderWorkers(width, height int) string {
 }
 
 // renderWorkerList renders the top sub-panel: the list of active workers.
-func (m Model) renderWorkerList(width, height int) string {
+func (m *Model) renderWorkerList(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelWorkers {
 		style = focusedPanelStyle.Width(width)
@@ -348,7 +364,7 @@ func (m Model) renderWorkerList(width, height int) string {
 
 // renderWorkerActivity renders the bottom sub-panel: a live activity log
 // for the currently selected worker, parsed from its stream-json log file.
-func (m Model) renderWorkerActivity(width, height int) string {
+func (m *Model) renderWorkerActivity(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelWorkers {
 		style = focusedPanelStyle.Width(width)
@@ -386,7 +402,7 @@ func (m Model) renderWorkerActivity(width, height int) string {
 }
 
 // renderEvents renders the event log panel with word-wrapped messages.
-func (m Model) renderEvents(width, height int) string {
+func (m *Model) renderEvents(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelEvents {
 		style = focusedPanelStyle.Width(width)
@@ -418,59 +434,121 @@ func (m Model) renderEvents(width, height int) string {
 }
 
 // renderAllEventLines flattens all events into a single slice of rendered lines.
-func (m Model) renderAllEventLines(width int) []string {
-	var allLines []string
-
-	// Track which event the current scroll position belongs to
+// It uses eventLineCount for the selection-mapping pass to avoid a double full render.
+// Caches the results to avoid redundant work.
+func (m *Model) renderAllEventLines(width int) []string {
+	// Calculate what the selected event index WOULD be.
 	selectedEventIdx := -1
-	tempLineCount := 0
+	cumulative := 0
 	for i, event := range m.events {
-		lines := m.renderEventLines(event, false, width)
-		if selectedEventIdx == -1 && tempLineCount+len(lines) > m.eventScroll {
+		count := m.eventLineCount(event, width)
+		if selectedEventIdx == -1 && cumulative+count > m.eventScroll {
 			selectedEventIdx = i
 		}
-		tempLineCount += len(lines)
+		cumulative += count
 	}
 
+	// Check if cache is valid.
+	if m.eventWidthCache == width &&
+		m.eventCountCache == len(m.events) &&
+		m.eventSelectedIdxCache == selectedEventIdx &&
+		m.eventRevisionCache == m.eventRevision &&
+		m.eventLinesCache != nil {
+		return m.eventLinesCache
+	}
+
+	// Cache invalid, perform full render.
+	var allLines []string
 	for i, event := range m.events {
 		allLines = append(allLines, m.renderEventLines(event, i == selectedEventIdx, width)...)
 	}
+
+	// Update cache
+	m.eventLinesCache = allLines
+	m.eventWidthCache = width
+	m.eventCountCache = len(m.events)
+	m.eventSelectedIdxCache = selectedEventIdx
+	m.eventRevisionCache = m.eventRevision
+
 	return allLines
 }
 
-// renderEventLines renders a single event as one or more wrapped lines.
-// The timestamp and event type stay on the first line; the message body wraps
-// onto continuation lines if it exceeds the available width.
-func (m Model) renderEventLines(item EventItem, selected bool, panelWidth int) []string {
+type eventLayout struct {
+	interiorWidth int
+	prefixVisLen  int
+	msgWidth      int
+	beadTag       string
+}
+
+func (m *Model) getEventLayout(item EventItem, panelWidth int) eventLayout {
 	beadTag := ""
 	if item.BeadID != "" {
 		beadTag = "[" + item.BeadID + "] "
 	}
 
-	// Interior width: subtract border (2) + padding (2) on each side = 4 total
-	interiorWidth := panelWidth - 4
-	if interiorWidth < 20 {
-		interiorWidth = 20
+	interiorWidth := panelWidth - eventPanelInteriorPadding
+	if interiorWidth < eventPanelMinWidth {
+		interiorWidth = eventPanelMinWidth
 	}
 
 	// Visual prefix length: "HH:MM:SS "(9) + type + " " + beadTag
-	prefixVisLen := 9 + len(item.Type) + 1 + len(beadTag)
+	prefixVisLen := eventTimestampWidth + len(item.Type) + 1 + len(beadTag)
 	msgWidth := interiorWidth - prefixVisLen
 
+	return eventLayout{
+		interiorWidth: interiorWidth,
+		prefixVisLen:  prefixVisLen,
+		msgWidth:      msgWidth,
+		beadTag:       beadTag,
+	}
+}
+
+// eventTotalLineCount returns the total number of rendered lines across all events
+// without allocating styled strings. Used by scrollDown for cheap bounds checking.
+func (m *Model) eventTotalLineCount(width int) int {
+	if m.eventWidthCache == width && m.eventCountCache == len(m.events) && m.eventRevisionCache == m.eventRevision && m.eventLinesCache != nil {
+		return len(m.eventLinesCache)
+	}
+
+	total := 0
+	for _, event := range m.events {
+		total += m.eventLineCount(event, width)
+	}
+	return total
+}
+
+// eventLineCount returns the number of lines renderEventLines would produce for item
+// without performing any string formatting or allocation beyond wrap counting.
+func (m *Model) eventLineCount(item EventItem, width int) int {
+	layout := m.getEventLayout(item, width)
+
+	if layout.msgWidth < eventMsgMinWidth {
+		// header line + wrapped message lines
+		return 1 + wordWrapCount(item.Message, layout.interiorWidth-2)
+	}
+	return wordWrapCount(item.Message, layout.msgWidth)
+}
+
+// renderEventLines renders a single event as one or more wrapped lines.
+// The timestamp and event type stay on the first line; the message body wraps
+// onto continuation lines if it exceeds the available width.
+func (m *Model) renderEventLines(item EventItem, selected bool, panelWidth int) []string {
+	layout := m.getEventLayout(item, panelWidth)
+
 	var lines []string
-	if msgWidth < 20 {
+	if layout.msgWidth < eventMsgMinWidth {
 		// Prefix is too wide for the current panel width, put message on its own lines
 		header := fmt.Sprintf("%s %s %s",
 			dimStyle.Render(item.Timestamp),
 			eventTypeStyle(item.Type),
-			dimStyle.Render(beadTag))
+			dimStyle.Render(layout.beadTag))
 		if selected {
 			header = selectedStyle.Render(header)
 		}
 		lines = append(lines, header)
 
 		// Message starts on next line, indented slightly
-		wrapped := wordWrap(item.Message, interiorWidth-2)
+		wrapped := wordWrap(item.Message, layout.interiorWidth-2)
 		for _, part := range wrapped {
 			line := "  " + dimStyle.Render(part)
 			if selected {
@@ -480,19 +558,19 @@ func (m Model) renderEventLines(item EventItem, selected bool, panelWidth int) [
 		}
 	} else {
 		// Message starts on the same line as the prefix
-		wrapped := wordWrap(item.Message, msgWidth)
+		wrapped := wordWrap(item.Message, layout.msgWidth)
 		if len(wrapped) == 0 {
 			wrapped = []string{""}
 		}
 
-		indent := strings.Repeat(" ", prefixVisLen)
+		indent := strings.Repeat(" ", layout.prefixVisLen)
 		for i, part := range wrapped {
 			var line string
 			if i == 0 {
 				line = fmt.Sprintf("%s %s %s%s",
 					dimStyle.Render(item.Timestamp),
 					eventTypeStyle(item.Type),
-					dimStyle.Render(beadTag),
+					dimStyle.Render(layout.beadTag),
 					part)
 			} else {
 				line = indent + dimStyle.Render(part)
@@ -679,6 +757,53 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// wordWrapCount returns the number of lines wordWrap would produce without
+// allocating the line strings. Mirrors the logic in wordWrap exactly.
+func wordWrapCount(s string, maxWidth int) int {
+	if maxWidth < 1 {
+		maxWidth = 1
+	}
+
+	count := 0
+	paragraphs := strings.Split(s, "\n")
+	for _, pStr := range paragraphs {
+		pStr = strings.TrimSpace(pStr)
+		if pStr == "" {
+			if len(paragraphs) > 1 {
+				count++
+			}
+			continue
+		}
+
+		p := []rune(pStr)
+		for len(p) > maxWidth {
+			breakAt := -1
+			for i := maxWidth; i >= maxWidth/2; i-- {
+				if i < len(p) && p[i] == ' ' {
+					breakAt = i
+					break
+				}
+			}
+			if breakAt == -1 {
+				breakAt = maxWidth
+			}
+			count++
+			p = p[breakAt:]
+			for len(p) > 0 && p[0] == ' ' {
+				p = p[1:]
+			}
+		}
+		if len(p) > 0 {
+			count++
+		}
+	}
+
+	if count == 0 {
+		return 1 // wordWrap returns [""] for empty input
+	}
+	return count
 }
 
 // wordWrap splits s into lines of at most maxWidth characters,
