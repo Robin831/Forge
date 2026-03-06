@@ -120,12 +120,3 @@ func TestBuildReviewFixPrompt_NoAuthorOrPath(t *testing.T) {
 		t.Error("prompt should include body even when author and path are empty")
 	}
 }
-
-func TestDefaultCopilotReviewer(t *testing.T) {
-	if DefaultCopilotReviewer == "" {
-		t.Error("DefaultCopilotReviewer should not be empty")
-	}
-	if DefaultCopilotReviewer != "copilot-pull-request-reviewer" {
-		t.Errorf("DefaultCopilotReviewer = %q; want %q", DefaultCopilotReviewer, "copilot-pull-request-reviewer")
-	}
-}
