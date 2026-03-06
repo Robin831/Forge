@@ -421,12 +421,14 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 		if maxVisible < 1 {
 			maxVisible = 1
 		}
-		start := len(activityLines) - maxVisible
+		// Show newest entries first (reverse order), like the Events panel
+		end := len(activityLines)
+		start := end - maxVisible
 		if start < 0 {
 			start = 0
 		}
-		for _, entry := range activityLines[start:] {
-			lines = append(lines, truncate(entry, width-4))
+		for i := end - 1; i >= start; i-- {
+			lines = append(lines, truncate(activityLines[i], width-4))
 		}
 	}
 
