@@ -79,6 +79,7 @@ func New(p Params) (*Worker, error) {
 		Branch:    "forge/" + p.Bead.ID,
 		PID:       0,
 		Status:    state.WorkerPending,
+		Title:     p.Bead.Title,
 		StartedAt: time.Now(),
 	}
 

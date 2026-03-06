@@ -101,6 +101,7 @@ func (db *DB) migrate() error {
 		{"prs", "review_fix_count", `ALTER TABLE prs ADD COLUMN review_fix_count INTEGER NOT NULL DEFAULT 0`},
 		{"prs", "ci_passing", `ALTER TABLE prs ADD COLUMN ci_passing INTEGER NOT NULL DEFAULT 1`},
 		{"retries", "clarification_needed", `ALTER TABLE retries ADD COLUMN clarification_needed INTEGER NOT NULL DEFAULT 0`},
+		{"workers", "title", `ALTER TABLE workers ADD COLUMN title TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -266,6 +267,7 @@ type Worker struct {
 	PID         int
 	Status      WorkerStatus
 	Phase       string // active component: smith|temper|warden|bellows|idle
+	Title       string // bead title for display in hearth
 	StartedAt   time.Time
 	CompletedAt *time.Time
 	LogPath     string
@@ -274,9 +276,9 @@ type Worker struct {
 // InsertWorker adds a new worker record.
 func (db *DB) InsertWorker(w *Worker) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO workers (id, bead_id, anvil, branch, pid, status, phase, started_at, log_path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		w.ID, w.BeadID, w.Anvil, w.Branch, w.PID, string(w.Status), w.Phase,
+		`INSERT INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, started_at, log_path)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, w.BeadID, w.Anvil, w.Branch, w.PID, string(w.Status), w.Phase, w.Title,
 		w.StartedAt.Format(time.RFC3339), w.LogPath,
 	)
 	return err
@@ -315,7 +317,7 @@ func (db *DB) UpdateWorkerLogPath(id string, logPath string) error {
 
 // ActiveWorkers returns all workers with non-terminal status.
 func (db *DB) ActiveWorkers() ([]Worker, error) {
-	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
+	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
 		ORDER BY started_at`)
 }
@@ -324,7 +326,7 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 // pipeline phases (smith, temper, warden, bellows, idle). Lifecycle workers
 // (cifix, reviewfix) are excluded so they don't consume dispatch capacity slots.
 func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
-	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
+	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
 		  AND phase NOT IN ('cifix', 'reviewfix')
 		ORDER BY started_at`)
@@ -333,7 +335,7 @@ func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 // ActiveDispatchWorkersByAnvil returns active dispatch workers for a given anvil,
 // excluding lifecycle workers (cifix, reviewfix).
 func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
-	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
+	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE anvil = ?
 		  AND status IN ('pending', 'running', 'reviewing', 'monitoring')
 		  AND phase NOT IN ('cifix', 'reviewfix')
@@ -342,7 +344,7 @@ func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 
 // ActiveWorkerByBead returns the non-terminal worker for a given bead ID.
 func (db *DB) ActiveWorkerByBead(beadID string) (*Worker, error) {
-	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')
 		LIMIT 1`, beadID)
 	if err != nil {
@@ -366,7 +368,7 @@ func (db *DB) CompleteWorkersByBead(beadID string) error {
 
 // WorkersByAnvil returns all workers for a given anvil.
 func (db *DB) WorkersByAnvil(anvil string) ([]Worker, error) {
-	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
+	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE anvil = ?
 		ORDER BY started_at DESC`, anvil)
 }
@@ -374,7 +376,7 @@ func (db *DB) WorkersByAnvil(anvil string) ([]Worker, error) {
 // CompletedWorkers returns workers in terminal states (done, failed, timeout),
 // ordered by most recently completed first. Limit 0 means no limit.
 func (db *DB) CompletedWorkers(limit int) ([]Worker, error) {
-	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
+	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE status IN ('done', 'failed', 'timeout')
 		ORDER BY completed_at DESC`
 	if limit > 0 {
@@ -385,7 +387,7 @@ func (db *DB) CompletedWorkers(limit int) ([]Worker, error) {
 
 // AllWorkers returns all workers ordered by most recent first.
 func (db *DB) AllWorkers(limit int) ([]Worker, error) {
-	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, started_at, completed_at, log_path
+	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers ORDER BY started_at DESC`
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
@@ -407,7 +409,7 @@ func (db *DB) queryWorkers(query string, args ...any) ([]Worker, error) {
 		var startedAt string
 		var completedAt sql.NullString
 		if err := rows.Scan(&w.ID, &w.BeadID, &w.Anvil, &w.Branch, &w.PID,
-			&status, &w.Phase, &startedAt, &completedAt, &w.LogPath); err != nil {
+			&status, &w.Phase, &w.Title, &startedAt, &completedAt, &w.LogPath); err != nil {
 			return nil, err
 		}
 		w.Status = WorkerStatus(status)

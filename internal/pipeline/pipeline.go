@@ -186,6 +186,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		Anvil:     p.AnvilName,
 		Branch:    wt.Branch,
 		Status:    state.WorkerRunning,
+		Title:     p.Bead.Title,
 		StartedAt: time.Now(),
 	}
 	_ = p.DB.InsertWorker(dbWorker)

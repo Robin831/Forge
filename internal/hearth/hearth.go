@@ -47,6 +47,7 @@ type QueueItem struct {
 type WorkerItem struct {
 	ID            string
 	BeadID        string
+	Title         string   // Bead title for display
 	Anvil         string
 	Status        string
 	Duration      string
@@ -378,8 +379,14 @@ func (m *Model) renderWorkerList(width, height int) string {
 	if len(m.workers) == 0 {
 		lines = append(lines, dimStyle.Render("No active workers"))
 	} else {
-		// height-2 (borders) - 2 (title + margin) = height-4
-		visible := visibleItems(m.workerScroll, len(m.workers), height-4)
+		// Each worker uses 2 lines (main + title), so halve the visible slot count.
+		maxLines := height - 4 // height-2 (borders) - 2 (title + margin)
+		slotsPerWorker := 2
+		maxWorkers := maxLines / slotsPerWorker
+		if maxWorkers < 1 {
+			maxWorkers = 1
+		}
+		visible := visibleItems(m.workerScroll, len(m.workers), maxWorkers)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.workers[i]
 			status := workerStatusStyle(item.Status)
@@ -391,6 +398,17 @@ func (m *Model) renderWorkerList(width, height int) string {
 				mainLine = selectedStyle.Render(mainLine)
 			}
 			lines = append(lines, mainLine)
+
+			// Second line: indented bead title
+			titleText := item.Title
+			if titleText == "" {
+				titleText = "(no title)"
+			}
+			titleLine := "    " + dimStyle.Render(truncate(titleText, width-8))
+			if i == m.workerScroll {
+				titleLine = "    " + selectedStyle.Render(truncate(titleText, width-8))
+			}
+			lines = append(lines, titleLine)
 		}
 	}
 
