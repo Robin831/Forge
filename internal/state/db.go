@@ -458,14 +458,23 @@ const (
 // keep them in sync.
 var nonTerminalPRStatuses = []PRStatus{PROpen, PRApproved, PRNeedsFix}
 
-// nonTerminalPRStatusSQL returns a SQL IN-clause literal built from
-// nonTerminalPRStatuses, e.g. ('open','approved','needs_fix').
-func nonTerminalPRStatusSQL() string {
+// nonTerminalPRStatusLiteral is the SQL IN-clause literal built once from
+// nonTerminalPRStatuses, e.g. ('open','approved','needs_fix'). Cached at
+// package init to avoid repeated allocations on per-bead hot paths.
+var nonTerminalPRStatusLiteral string
+
+func init() {
 	parts := make([]string, len(nonTerminalPRStatuses))
 	for i, s := range nonTerminalPRStatuses {
 		parts[i] = "'" + string(s) + "'"
 	}
-	return "(" + strings.Join(parts, ",") + ")"
+	nonTerminalPRStatusLiteral = "(" + strings.Join(parts, ",") + ")"
+}
+
+// nonTerminalPRStatusSQL returns the cached SQL IN-clause literal for
+// non-terminal PR statuses, e.g. ('open','approved','needs_fix').
+func nonTerminalPRStatusSQL() string {
+	return nonTerminalPRStatusLiteral
 }
 
 // PR represents a pull request entry.
@@ -603,15 +612,15 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 
 // HasOpenPRForBead returns true if there is a non-terminal PR for the given bead in the given anvil.
 func (db *DB) HasOpenPRForBead(beadID, anvil string) (bool, error) {
-	var count int
+	var exists bool
 	err := db.conn.QueryRow(
-		`SELECT COUNT(*) FROM prs WHERE bead_id = ? AND anvil = ? AND status IN `+nonTerminalPRStatusSQL(),
+		`SELECT EXISTS(SELECT 1 FROM prs WHERE bead_id = ? AND anvil = ? AND status IN `+nonTerminalPRStatusSQL()+` LIMIT 1)`,
 		beadID, anvil,
-	).Scan(&count)
+	).Scan(&exists)
 	if err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	return exists, nil
 }
 
 // EventType categorizes events in the log.

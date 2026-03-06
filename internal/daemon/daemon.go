@@ -511,8 +511,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	d.logger.Info("polling anvils", "count", len(d.cfg.Anvils))
 
 	// Periodically recover orphaned in-progress beads (every 10 poll cycles).
-	// This catches beads that became orphaned after startup (e.g., a worker
-	// crashed between claiming a bead and being tracked in the DB).
+	// Recovery also runs once at startup (see Start). Running it here catches
+	// beads that become orphaned during normal operation — for example, a
+	// worker that crashed between claiming a bead in bd and inserting its row
+	// into state.db. A minimum-age guard inside RecoverOrphanedBeads prevents
+	// it from reopening legitimately in-flight beads on each periodic check.
 	if d.pollCount.Add(1)%10 == 0 {
 		if recovered := d.shutdownMgr.RecoverOrphanedBeads(); recovered > 0 {
 			d.logger.Info("periodic bead recovery", "recovered", recovered)

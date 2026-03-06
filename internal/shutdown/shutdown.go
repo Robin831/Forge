@@ -229,10 +229,18 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 	return cleaned
 }
 
+// orphanMinAge is the minimum time a bead must have been in_progress before it
+// is considered orphaned. This prevents recovery from racing with the normal
+// dispatch path, where a bead is marked in_progress in bd before the worker
+// row is inserted into state.db.
+const orphanMinAge = 5 * time.Minute
+
 // RecoverOrphanedBeads detects beads with status=in_progress in the beads DB
 // that have no active worker and no open PR in Forge's state DB. These are
 // beads that were claimed but orphaned (e.g., daemon crashed mid-session).
 // Only beads belonging to this Forge's configured anvils are considered.
+// This runs both at startup and periodically during normal operation (every
+// 10 poll cycles) so recovery is not limited to crash scenarios.
 // Returns the number of beads recovered.
 func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 	m.logger.Info("checking for orphaned in-progress beads")
@@ -244,7 +252,18 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 			continue
 		}
 
-		for _, beadID := range beads {
+		for _, bead := range beads {
+			beadID := bead.ID
+
+			// Skip beads that were recently claimed: the worker row may not yet
+			// have been inserted into state.db (it happens after worktree
+			// creation, which can take a few seconds). Only recover beads that
+			// have been in_progress longer than orphanMinAge.
+			if !bead.UpdatedAt.IsZero() && time.Since(bead.UpdatedAt) < orphanMinAge {
+				m.logger.Debug("skipping recently-claimed bead", "bead", beadID, "age", time.Since(bead.UpdatedAt).Round(time.Second))
+				continue
+			}
+
 			// Check if there's an active worker for this bead in this anvil.
 			// Using the anvil-scoped query prevents a worker in a different anvil
 			// (with the same bead ID) from masking an orphan here.
@@ -290,8 +309,15 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 	return recovered
 }
 
-// listInProgressBeads returns bead IDs with status=in_progress for an anvil.
-func (m *Manager) listInProgressBeads(anvilPath string) ([]string, error) {
+// inProgressBead holds the id and last-update time of an in-progress bead.
+type inProgressBead struct {
+	ID        string
+	UpdatedAt time.Time
+}
+
+// listInProgressBeads returns in-progress beads for an anvil, including their
+// last-updated timestamps so callers can filter by age.
+func (m *Manager) listInProgressBeads(anvilPath string) ([]inProgressBead, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -306,19 +332,24 @@ func (m *Manager) listInProgressBeads(anvilPath string) ([]string, error) {
 		return nil, fmt.Errorf("bd list --status=in_progress --json: %w\n%s", err, stderr.String())
 	}
 
-	// Parse JSON array of beads — we only need the "id" field.
-	var beads []struct {
-		ID string `json:"id"`
+	// Parse JSON array of beads — we need "id" and "updated_at".
+	var raw []struct {
+		ID        string `json:"id"`
+		UpdatedAt string `json:"updated_at"`
 	}
-	if err := json.Unmarshal(stdout, &beads); err != nil {
+	if err := json.Unmarshal(stdout, &raw); err != nil {
 		return nil, fmt.Errorf("parsing bd list output: %w", err)
 	}
 
-	ids := make([]string, len(beads))
-	for i, b := range beads {
-		ids[i] = b.ID
+	beads := make([]inProgressBead, len(raw))
+	for i, b := range raw {
+		beads[i].ID = b.ID
+		// Parse RFC3339 timestamp; zero value if missing/unparseable (treated as old).
+		if t, err := time.Parse(time.RFC3339, b.UpdatedAt); err == nil {
+			beads[i].UpdatedAt = t
+		}
 	}
-	return ids, nil
+	return beads, nil
 }
 
 // CleanupWorktrees removes all worktrees across all anvils (for full shutdown).
