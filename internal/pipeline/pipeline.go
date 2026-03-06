@@ -56,6 +56,11 @@ type Outcome struct {
 	// RateLimited is true when all providers were rate limited and the bead
 	// has been released back to open so the poller can retry later.
 	RateLimited bool
+	// NeedsHuman is true when the pipeline has released the bead back to open
+	// because it requires human attention (e.g., Smith produced no diff). The
+	// current bd call only sets --status=open and does not add a separate
+	// needs-human flag.
+	NeedsHuman bool
 }
 
 // Params holds the dependencies for running a pipeline.
@@ -70,7 +75,44 @@ type Params struct {
 	TemperConfig    *temper.Config // nil = auto-detect
 	// Providers is the ordered list of AI providers to try.
 	// If empty, provider.Defaults() is used (Claude → Gemini).
-	Providers       []provider.Provider
+	Providers []provider.Provider
+
+	// The following fields are optional injection points used in tests.
+	// If nil, the default production implementations are used.
+
+	// WorktreeCreator overrides WorktreeManager.Create. Used in tests.
+	WorktreeCreator func(ctx context.Context, anvilPath, beadID string) (*worktree.Worktree, error)
+	// WorktreeRemover overrides WorktreeManager.Remove. Used in tests.
+	WorktreeRemover func(ctx context.Context, anvilPath string, wt *worktree.Worktree)
+	// SmithRunner overrides smith.SpawnWithProvider. Used in tests.
+	SmithRunner func(ctx context.Context, wtPath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*smith.Process, error)
+	// TemperRunner overrides temper.Run. Used in tests.
+	TemperRunner func(ctx context.Context, wtPath string, cfg temper.Config, db *state.DB, beadID, anvilName string) *temper.Result
+	// WardenReviewer overrides warden.Review. Used in tests.
+	WardenReviewer func(ctx context.Context, wtPath, beadID, anvilPath string, db *state.DB, anvilName string, providers ...provider.Provider) (*warden.ReviewResult, error)
+	// BeadReleaser overrides the default exec-based bd-update call for releasing
+	// a bead back to open. Used in tests.
+	BeadReleaser func(beadID, anvilPath string) error
+}
+
+// releaseBead resets a bead status to open via the bd CLI. It always uses a
+// fresh context derived from context.Background() so that a cancelled or
+// timed-out pipeline context does not prevent the release from completing.
+//
+// NOTE: shutdown.Manager.resetBead contains equivalent logic. If the timeout,
+// flags, or error formatting change here, keep that function in sync (and vice
+// versa). A future cleanup could factor this into a shared executil helper used
+// by both call sites.
+func releaseBead(beadID, anvilPath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open", "--json"))
+	cmd.Dir = anvilPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("bd update %s --status=open: %w: %s", beadID, err, out)
+	}
+	return nil
 }
 
 // Run executes the full Smith → Temper → Warden pipeline for a bead.
@@ -80,9 +122,39 @@ func Run(ctx context.Context, p Params) *Outcome {
 	workerID := fmt.Sprintf("%s-%s-%d", p.AnvilName, p.Bead.ID, time.Now().Unix())
 	outcome.WorkerID = workerID
 
+	// Resolve injectable dependencies, falling back to defaults.
+	createWorktree := p.WorktreeCreator
+	if createWorktree == nil {
+		createWorktree = func(ctx context.Context, anvilPath, beadID string) (*worktree.Worktree, error) {
+			return p.WorktreeManager.Create(ctx, anvilPath, beadID)
+		}
+	}
+	removeWorktree := p.WorktreeRemover
+	if removeWorktree == nil {
+		removeWorktree = func(ctx context.Context, anvilPath string, wt *worktree.Worktree) {
+			_ = p.WorktreeManager.Remove(ctx, anvilPath, wt)
+		}
+	}
+	spawnSmith := p.SmithRunner
+	if spawnSmith == nil {
+		spawnSmith = smith.SpawnWithProvider
+	}
+	runTemper := p.TemperRunner
+	if runTemper == nil {
+		runTemper = temper.Run
+	}
+	reviewWarden := p.WardenReviewer
+	if reviewWarden == nil {
+		reviewWarden = warden.Review
+	}
+	doRelease := p.BeadReleaser
+	if doRelease == nil {
+		doRelease = releaseBead
+	}
+
 	// Step 1: Create worktree
 	log.Printf("[pipeline:%s] Creating worktree for bead %s", workerID, p.Bead.ID)
-	wt, err := p.WorktreeManager.Create(ctx, p.AnvilConfig.Path, p.Bead.ID)
+	wt, err := createWorktree(ctx, p.AnvilConfig.Path, p.Bead.ID)
 	if err != nil {
 		outcome.Error = fmt.Errorf("creating worktree: %w", err)
 		outcome.Duration = time.Since(start)
@@ -91,7 +163,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 	outcome.Branch = wt.Branch
 	defer func() {
 		log.Printf("[pipeline:%s] Cleaning up worktree", workerID)
-		_ = p.WorktreeManager.Remove(ctx, p.AnvilConfig.Path, wt)
+		removeWorktree(ctx, p.AnvilConfig.Path, wt)
 	}()
 
 	// Record worker in state DB
@@ -163,7 +235,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 					fmt.Sprintf("Rate limit fallback to provider %s (iteration %d)", pv.Label(), iteration),
 					p.Bead.ID, p.AnvilName)
 			}
-			process, err := smith.SpawnWithProvider(ctx, wt.Path, currentPrompt, logDir, pv, p.ExtraFlags)
+			process, err := spawnSmith(ctx, wt.Path, currentPrompt, logDir, pv, p.ExtraFlags)
 			if err != nil {
 				outcome.Error = fmt.Errorf("spawning smith (%s): %w", pv.Label(), err)
 				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
@@ -215,14 +287,12 @@ func Run(ctx context.Context, p Params) *Outcome {
 				"All providers rate limited — releasing bead back to open for retry",
 				p.Bead.ID, p.AnvilName)
 			// Reset the bead to open so the poller can retry after backoff.
-			releaseCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-			releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", p.Bead.ID, "--status=open", "--json"))
-			releaseCmd.Dir = p.AnvilConfig.Path
-			if out, err := releaseCmd.CombinedOutput(); err != nil {
-				log.Printf("[pipeline:%s] Failed to release bead %s back to open: %v: %s", workerID, p.Bead.ID, err, out)
+			// Use a fresh context (not the pipeline ctx) so a timed-out pipeline
+			// cannot prevent the release from completing.
+			if err := doRelease(p.Bead.ID, p.AnvilConfig.Path); err != nil {
+				log.Printf("[pipeline:%s] Failed to release bead %s back to open: %v", workerID, p.Bead.ID, err)
 				_ = p.DB.LogEvent(state.EventSmithFailed,
-					fmt.Sprintf("Failed to release bead back to open after rate limit: %v: %s", err, out),
+					fmt.Sprintf("Failed to release bead back to open after rate limit: %v", err),
 					p.Bead.ID, p.AnvilName)
 				outcome.Error = fmt.Errorf("all providers (%d) are rate limited, and failed to release bead back to open: %w", len(providers), err)
 				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
@@ -268,7 +338,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			temperCfg = &detected
 		}
 
-		temperResult := temper.Run(ctx, wt.Path, *temperCfg, p.DB, p.Bead.ID, p.AnvilName)
+		temperResult := runTemper(ctx, wt.Path, *temperCfg, p.DB, p.Bead.ID, p.AnvilName)
 		outcome.TemperResult = temperResult
 
 		if !temperResult.Passed {
@@ -292,7 +362,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		_ = p.DB.UpdateWorkerPhase(workerID, "warden")
 		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
 
-		reviewResult, err := warden.Review(ctx, wt.Path, p.Bead.ID, p.AnvilConfig.Path, p.DB, p.AnvilName, providers...)
+		reviewResult, err := reviewWarden(ctx, wt.Path, p.Bead.ID, p.AnvilConfig.Path, p.DB, p.AnvilName, providers...)
 		if err != nil {
 			log.Printf("[pipeline:%s] Warden error: %v", workerID, err)
 			// Warden failure is not fatal — default to approve and let human review
@@ -326,6 +396,26 @@ func Run(ctx context.Context, p Params) *Outcome {
 			outcome.Verdict = warden.VerdictReject
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
 			_ = p.DB.LogEvent(state.EventWardenReject, reviewResult.Summary, p.Bead.ID, p.AnvilName)
+			if reviewResult.NoDiff {
+				// Smith produced no diff — release the bead back to open so
+				// a human can investigate and retry rather than leaving it
+				// stuck in_progress with no active worker.
+				// Use a fresh context (not the pipeline ctx) so a timed-out
+				// pipeline cannot prevent the release from completing.
+				log.Printf("[pipeline:%s] No-diff rejection — releasing bead %s back to open for human review", workerID, p.Bead.ID)
+				if releaseErr := doRelease(p.Bead.ID, p.AnvilConfig.Path); releaseErr != nil {
+					log.Printf("[pipeline:%s] Failed to release bead %s back to open: %v", workerID, p.Bead.ID, releaseErr)
+					_ = p.DB.LogEvent(state.EventWardenReject,
+						fmt.Sprintf("Failed to release bead back to open after no-diff: %v", releaseErr),
+						p.Bead.ID, p.AnvilName)
+				} else {
+					log.Printf("[pipeline:%s] Bead %s released back to open (no-diff)", workerID, p.Bead.ID)
+					_ = p.DB.LogEvent(state.EventWardenReject,
+						"Bead released back to open — Smith produced no diff, needs human attention",
+						p.Bead.ID, p.AnvilName)
+					outcome.NeedsHuman = true
+				}
+			}
 			outcome.Duration = time.Since(start)
 			return outcome
 
