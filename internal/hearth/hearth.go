@@ -37,6 +37,20 @@ const (
 	eventMsgMinWidth          = 20 // Minimum width before msg moves to next line
 )
 
+// ActionMenuChoice identifies an action in the Needs Attention action menu.
+type ActionMenuChoice int
+
+const (
+	ActionRetry   ActionMenuChoice = iota // Re-queue the bead for processing
+	ActionDismiss                         // Dismiss the bead from the attention list
+	ActionViewLogs                        // Open the log viewer for the bead
+)
+
+// actionMenuLabels returns the display labels for each ActionMenuChoice, in order.
+func actionMenuLabels() []string {
+	return []string{"Retry", "Dismiss", "View Logs"}
+}
+
 // QueueItem represents a bead in the queue panel.
 type QueueItem struct {
 	BeadID   string
@@ -110,6 +124,21 @@ type Model struct {
 	width                int
 	height               int
 	ready                bool
+
+	// Action menu state (Needs Attention panel)
+	showActionMenu bool
+	actionTarget   *NeedsAttentionItem
+	actionMenuIdx  int
+
+	// Transient status message shown in the footer after an action
+	statusMsg     string
+	statusMsgTime time.Time
+
+	// Log viewer overlay
+	showLogViewer   bool
+	logViewerTitle  string
+	logViewerLines  []string
+	logViewerScroll int
 
 	// Event rendering cache
 	eventLinesCache       []string
@@ -980,6 +1009,24 @@ var (
 				Bold(true).
 				Foreground(lipgloss.Color("196")).
 				MarginBottom(1)
+
+	actionMenuStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("208")).
+			Padding(1, 2)
+
+	actionMenuTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("208"))
+
+	actionMenuSelectedStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("255"))
+
+	logViewerStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("75")).
+			Padding(1, 2)
 )
 
 // priorityStyle returns a colored priority indicator.
