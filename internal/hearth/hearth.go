@@ -83,6 +83,26 @@ type EventItem struct {
 	BeadID    string
 }
 
+// ActionMenuChoice represents an action the user can take on a Needs Attention bead.
+type ActionMenuChoice int
+
+const (
+	ActionRetry ActionMenuChoice = iota
+	ActionDismiss
+	ActionViewLogs
+
+	actionMenuCount = ActionViewLogs + 1
+)
+
+// actionMenuLabels returns the display labels for the action menu.
+func actionMenuLabels() [actionMenuCount]string {
+	return [actionMenuCount]string{
+		"Retry       — Clear flags, put back in queue",
+		"Dismiss     — Remove from Needs Attention",
+		"View Logs   — Show last worker log",
+	}
+}
+
 // Model is the Bubbletea model for the Hearth TUI.
 type Model struct {
 	// Panels
@@ -97,6 +117,11 @@ type Model struct {
 	// Callback for killing a worker (set by the caller)
 	OnKill func(workerID string, pid int)
 
+	// Callbacks for Needs Attention actions (set by the caller)
+	OnRetryBead   func(beadID, anvil string)
+	OnDismissBead func(beadID, anvil string)
+	OnViewLogs    func(beadID string) (logPath string, lines []string)
+
 	// State
 	focused              Panel
 	queueScroll          int
@@ -109,6 +134,21 @@ type Model struct {
 	width                int
 	height               int
 	ready                bool
+
+	// Action menu overlay state
+	showActionMenu bool
+	actionMenuIdx  int
+	actionTarget   *NeedsAttentionItem // bead the menu is open for
+
+	// Log viewer overlay state
+	showLogViewer  bool
+	logViewerTitle string
+	logViewerLines []string
+	logViewerScroll int
+
+	// Status message (flashes briefly after an action)
+	statusMsg     string
+	statusMsgTime time.Time
 
 	// Event rendering cache
 	eventLinesCache       []string
@@ -146,6 +186,39 @@ func (m *Model) Init() tea.Cmd {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Log viewer overlay intercepts all keys
+		if m.showLogViewer {
+			switch msg.String() {
+			case "q", "esc":
+				m.showLogViewer = false
+			case "j", "down":
+				if m.logViewerScroll < len(m.logViewerLines)-1 {
+					m.logViewerScroll++
+				}
+			case "k", "up":
+				if m.logViewerScroll > 0 {
+					m.logViewerScroll--
+				}
+			}
+			return m, nil
+		}
+
+		// Action menu overlay intercepts keys when open
+		if m.showActionMenu {
+			switch msg.String() {
+			case "esc", "q":
+				m.showActionMenu = false
+			case "j", "down":
+				m.actionMenuIdx = (m.actionMenuIdx + 1) % int(actionMenuCount)
+			case "k", "up":
+				m.actionMenuIdx = (m.actionMenuIdx + int(actionMenuCount) - 1) % int(actionMenuCount)
+			case "enter":
+				m.executeAction(ActionMenuChoice(m.actionMenuIdx))
+				m.showActionMenu = false
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -189,6 +262,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.OnKill != nil && w.PID > 0 {
 					m.OnKill(w.ID, w.PID)
 				}
+			}
+
+		case "enter":
+			// Open action menu for selected Needs Attention bead
+			if m.focused == PanelNeedsAttention && len(m.needsAttention) > 0 &&
+				m.needsAttentionScroll < len(m.needsAttention) {
+				item := m.needsAttention[m.needsAttentionScroll]
+				m.actionTarget = &item
+				m.actionMenuIdx = 0
+				m.showActionMenu = true
 			}
 		}
 
@@ -266,19 +349,32 @@ func (m *Model) View() string {
 	// Header
 	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
 
-	// Footer
-	footer := footerStyle.Width(m.width).Render(
-		"Tab: switch panel • j/k: scroll • K: kill worker • f: follow/reset scroll • q: quit",
-	)
+	// Footer with status message or default hints
+	footerText := "Tab: switch panel • j/k: scroll • K: kill worker • Enter: actions • f: follow • q: quit"
+	if m.statusMsg != "" && time.Since(m.statusMsgTime) < 5*time.Second {
+		footerText = statusMsgStyle.Render(m.statusMsg)
+	}
+	footer := footerStyle.Width(m.width).Render(footerText)
 
 	// Final assembly
 	topSection := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, workerPanel, activityPanel)
-	return lipgloss.JoinVertical(lipgloss.Left,
+	view := lipgloss.JoinVertical(lipgloss.Left,
 		header,
 		topSection,
 		eventPanel,
 		footer,
 	)
+
+	// Render overlays on top
+	if m.showLogViewer {
+		overlay := m.renderLogViewer()
+		view = placeOverlay(m.width, m.height, overlay, view)
+	} else if m.showActionMenu {
+		overlay := m.renderActionMenu()
+		view = placeOverlay(m.width, m.height, overlay, view)
+	}
+
+	return view
 }
 
 func (m *Model) getTopPanelWidths() (queueWidth, workerWidth, activityWidth int) {
@@ -380,6 +476,124 @@ func (m *Model) selectedWorkerActivity() []string {
 		return m.workers[m.workerScroll].ActivityLines
 	}
 	return nil
+}
+
+// executeAction runs the selected action menu choice against the target bead.
+func (m *Model) executeAction(choice ActionMenuChoice) {
+	if m.actionTarget == nil {
+		return
+	}
+	bead := m.actionTarget
+	switch choice {
+	case ActionRetry:
+		if m.OnRetryBead != nil {
+			m.OnRetryBead(bead.BeadID, bead.Anvil)
+			m.statusMsg = fmt.Sprintf("Retry queued for %s", bead.BeadID)
+			m.statusMsgTime = time.Now()
+		}
+	case ActionDismiss:
+		if m.OnDismissBead != nil {
+			m.OnDismissBead(bead.BeadID, bead.Anvil)
+			m.statusMsg = fmt.Sprintf("Dismissed %s", bead.BeadID)
+			m.statusMsgTime = time.Now()
+		}
+	case ActionViewLogs:
+		if m.OnViewLogs != nil {
+			logPath, lines := m.OnViewLogs(bead.BeadID)
+			if logPath == "" {
+				m.statusMsg = fmt.Sprintf("No logs found for %s", bead.BeadID)
+				m.statusMsgTime = time.Now()
+				return
+			}
+			m.logViewerTitle = fmt.Sprintf("Logs: %s — %s", bead.BeadID, logPath)
+			m.logViewerLines = lines
+			m.logViewerScroll = 0
+			m.showLogViewer = true
+		}
+	}
+}
+
+// renderActionMenu renders the action menu overlay centered on screen.
+func (m *Model) renderActionMenu() string {
+	if m.actionTarget == nil {
+		return ""
+	}
+
+	menuWidth := 52
+	labels := actionMenuLabels()
+
+	var lines []string
+	title := fmt.Sprintf("Actions for %s", m.actionTarget.BeadID)
+	lines = append(lines, actionMenuTitleStyle.Render(title))
+	lines = append(lines, "")
+
+	for i, label := range labels {
+		cursor := "  "
+		if i == m.actionMenuIdx {
+			cursor = "> "
+			label = actionMenuSelectedStyle.Render(label)
+		} else {
+			label = dimStyle.Render(label)
+		}
+		lines = append(lines, cursor+label)
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render("Enter: select • Esc: close"))
+
+	content := strings.Join(lines, "\n")
+	popup := actionMenuStyle.Width(menuWidth).Render(content)
+
+	return popup
+}
+
+// renderLogViewer renders the log viewer overlay.
+func (m *Model) renderLogViewer() string {
+	viewerWidth := m.width - 8
+	if viewerWidth < 40 {
+		viewerWidth = 40
+	}
+	viewerHeight := m.height - 6
+	if viewerHeight < 10 {
+		viewerHeight = 10
+	}
+
+	var lines []string
+	lines = append(lines, actionMenuTitleStyle.Render(truncate(m.logViewerTitle, viewerWidth-4)))
+	lines = append(lines, "")
+
+	contentHeight := viewerHeight - 5 // title + margins + footer
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+
+	if len(m.logViewerLines) == 0 {
+		lines = append(lines, dimStyle.Render("(empty log)"))
+	} else {
+		visible := visibleItems(m.logViewerScroll, len(m.logViewerLines), contentHeight)
+		for i := visible.start; i < visible.end; i++ {
+			line := m.logViewerLines[i]
+			maxLen := viewerWidth - 4
+			if maxLen > 0 {
+				runes := []rune(line)
+				if len(runes) > maxLen {
+					if maxLen > 3 {
+						line = string(runes[:maxLen-3]) + "..."
+					} else {
+						line = string(runes[:maxLen])
+					}
+				}
+			}
+			lines = append(lines, dimStyle.Render(line))
+		}
+	}
+
+	lines = append(lines, "")
+	scrollInfo := fmt.Sprintf("Line %d/%d", m.logViewerScroll+1, max(len(m.logViewerLines), 1))
+	lines = append(lines, dimStyle.Render("j/k: scroll • Esc: close  "+scrollInfo))
+
+	content := strings.Join(lines, "\n")
+	return logViewerStyle.Width(viewerWidth).Height(viewerHeight).Render(content)
 }
 
 // renderQueue renders the queue panel.
@@ -858,6 +1072,28 @@ var (
 				Bold(true).
 				Foreground(lipgloss.Color("196")).
 				MarginBottom(1)
+
+	actionMenuStyle = lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(lipgloss.Color("208")).
+			Padding(1, 2)
+
+	actionMenuTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("208"))
+
+	actionMenuSelectedStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("255"))
+
+	logViewerStyle = lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(lipgloss.Color("75")).
+			Padding(1, 2)
+
+	statusMsgStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("82")).
+			Bold(true)
 )
 
 // priorityStyle returns a colored priority indicator.
@@ -999,6 +1235,64 @@ func visibleItems(scroll, total, viewHeight int) visibleRange {
 		start = total
 	}
 	return visibleRange{start: start, end: end}
+}
+
+// placeOverlay centers the overlay string on top of the background string.
+func placeOverlay(width, height int, overlay, background string) string {
+	overlayLines := strings.Split(overlay, "\n")
+	bgLines := strings.Split(background, "\n")
+
+	// Ensure background has enough lines
+	for len(bgLines) < height {
+		bgLines = append(bgLines, "")
+	}
+
+	overlayHeight := len(overlayLines)
+	overlayWidth := 0
+	for _, l := range overlayLines {
+		if w := lipgloss.Width(l); w > overlayWidth {
+			overlayWidth = w
+		}
+	}
+
+	startY := (height - overlayHeight) / 2
+	startX := (width - overlayWidth) / 2
+	if startY < 0 {
+		startY = 0
+	}
+	if startX < 0 {
+		startX = 0
+	}
+
+	for i, overlayLine := range overlayLines {
+		bgIdx := startY + i
+		if bgIdx >= len(bgLines) {
+			break
+		}
+		bgRunes := []rune(bgLines[bgIdx])
+		olRunes := []rune(overlayLine)
+
+		// Build the composed line
+		var result []rune
+		// Pad/take background up to startX
+		for j := 0; j < startX && j < len(bgRunes); j++ {
+			result = append(result, bgRunes[j])
+		}
+		for len(result) < startX {
+			result = append(result, ' ')
+		}
+		// Insert overlay
+		result = append(result, olRunes...)
+		// Append remainder of background if any.
+		// Use visual width (ANSI-aware) so the resume position is correct.
+		afterOverlay := startX + lipgloss.Width(overlayLine)
+		if afterOverlay < len(bgRunes) {
+			result = append(result, bgRunes[afterOverlay:]...)
+		}
+		bgLines[bgIdx] = string(result)
+	}
+
+	return strings.Join(bgLines[:height], "\n")
 }
 
 func truncate(s string, maxLen int) string {

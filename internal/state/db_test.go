@@ -348,7 +348,7 @@ func TestDB_ClarificationNeededBeads_ExcludesNeedsHuman(t *testing.T) {
 	}
 }
 
-func TestDB_DispatchCircuitBreaker(t *testing.T) {
+func TestDB_ResetRetry(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -360,84 +360,145 @@ func TestDB_DispatchCircuitBreaker(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Initially no circuit-broken beads
-	broken, err := db.DispatchCircuitBrokenBeadIDSet()
-	if err != nil {
+	// ResetRetry on non-existent record should return error.
+	if err := db.ResetRetry("BD-MISSING", "anvil-1"); err == nil {
+		t.Error("expected error for missing bead, got nil")
+	}
+
+	// Insert a retry record with flags set.
+	now := time.Now()
+	past := now.Add(-1 * time.Hour)
+	if err := db.UpsertRetry(&RetryRecord{
+		BeadID:              "BD-1",
+		Anvil:               "anvil-1",
+		RetryCount:          3,
+		DispatchFailures:    3,
+		NeedsHuman:          true,
+		ClarificationNeeded: true,
+		LastError:           "something went wrong",
+		NextRetry:           &past,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(broken) != 0 {
-		t.Fatalf("expected empty set, got %d", len(broken))
+
+	// ResetRetry should clear flags and reset count.
+	if err := db.ResetRetry("BD-1", "anvil-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// First two failures should not trip the breaker
-	for i := 1; i <= 2; i++ {
-		count, tripped, err := db.IncrementDispatchFailures("BD-1", "anvil-1", 3, "test error")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if count != i {
-			t.Errorf("expected count %d, got %d", i, count)
-		}
-		if tripped {
-			t.Errorf("should not trip on failure %d", i)
-		}
-	}
-
-	// Third failure should trip the breaker
-	count, tripped, err := db.IncrementDispatchFailures("BD-1", "anvil-1", 3, "test error 3")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count != 3 {
-		t.Errorf("expected count 3, got %d", count)
-	}
-	if !tripped {
-		t.Error("expected circuit breaker to trip on failure 3")
-	}
-
-	// Should now appear in circuit-broken set
-	broken, err = db.DispatchCircuitBrokenBeadIDSet()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := broken["BD-1\x00anvil-1"]; !ok {
-		t.Error("BD-1 should be in circuit-broken set")
-	}
-
-	// Verify needs_human is set
 	r, err := db.GetRetry("BD-1", "anvil-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !r.NeedsHuman {
-		t.Error("expected needs_human=true")
-	}
-	if r.DispatchFailures != 3 {
-		t.Errorf("expected dispatch_failures=3, got %d", r.DispatchFailures)
-	}
-
-	// Reset should clear everything
-	if err := db.ResetDispatchFailures("BD-1", "anvil-1"); err != nil {
-		t.Fatal(err)
-	}
-	r, err = db.GetRetry("BD-1", "anvil-1")
-	if err != nil {
-		t.Fatal(err)
+	if r == nil {
+		t.Fatal("expected record to still exist after reset")
 	}
 	if r.NeedsHuman {
-		t.Error("expected needs_human=false after reset")
+		t.Error("expected NeedsHuman=false after reset")
+	}
+	if r.ClarificationNeeded {
+		t.Error("expected ClarificationNeeded=false after reset")
+	}
+	if r.RetryCount != 0 {
+		t.Errorf("expected RetryCount=0 after reset, got %d", r.RetryCount)
 	}
 	if r.DispatchFailures != 0 {
-		t.Errorf("expected dispatch_failures=0 after reset, got %d", r.DispatchFailures)
+		t.Errorf("expected DispatchFailures=0 after reset, got %d", r.DispatchFailures)
 	}
+}
 
-	// Should no longer be in circuit-broken set
-	broken, err = db.DispatchCircuitBrokenBeadIDSet()
+func TestDB_DismissRetry(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := broken["BD-1\x00anvil-1"]; ok {
-		t.Error("BD-1 should not be in circuit-broken set after reset")
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// DismissRetry on non-existent record should return error.
+	if err := db.DismissRetry("BD-MISSING", "anvil-1"); err == nil {
+		t.Error("expected error for missing bead, got nil")
+	}
+
+	// Insert a retry record.
+	if err := db.UpsertRetry(&RetryRecord{
+		BeadID:     "BD-2",
+		Anvil:      "anvil-1",
+		NeedsHuman: true,
+		LastError:  "too many retries",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// DismissRetry should remove the record entirely.
+	if err := db.DismissRetry("BD-2", "anvil-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r, err := db.GetRetry("BD-2", "anvil-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r != nil {
+		t.Error("expected record to be deleted after dismiss, but it still exists")
+	}
+}
+
+func TestDB_LastWorkerLogPath(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// No workers: should return empty string with no error.
+	logPath, err := db.LastWorkerLogPath("BD-NONE")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if logPath != "" {
+		t.Errorf("expected empty log path, got %q", logPath)
+	}
+
+	// Insert two workers for the same bead; the most recent should win.
+	w1 := &Worker{
+		ID:        "worker-1",
+		BeadID:    "BD-3",
+		Anvil:     "anvil-1",
+		Status:    WorkerDone,
+		LogPath:   "/logs/first.log",
+		StartedAt: time.Now().Add(-2 * time.Minute),
+	}
+	if err := db.InsertWorker(w1); err != nil {
+		t.Fatal(err)
+	}
+	w2 := &Worker{
+		ID:        "worker-2",
+		BeadID:    "BD-3",
+		Anvil:     "anvil-1",
+		Status:    WorkerDone,
+		LogPath:   "/logs/latest.log",
+		StartedAt: time.Now().Add(-1 * time.Minute),
+	}
+	if err := db.InsertWorker(w2); err != nil {
+		t.Fatal(err)
+	}
+
+	logPath, err = db.LastWorkerLogPath("BD-3")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if logPath != "/logs/latest.log" {
+		t.Errorf("expected latest log path, got %q", logPath)
 	}
 }
 

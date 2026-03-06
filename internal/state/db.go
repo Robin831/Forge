@@ -666,6 +666,8 @@ const (
 	EventLifecycleExhausted   EventType = "lifecycle_exhausted"
 	EventClarificationNeeded  EventType = "clarification_needed"
 	EventClarificationCleared EventType = "clarification_cleared"
+	EventRetryReset           EventType = "retry_reset"
+	EventBeadDismissed        EventType = "bead_dismissed"
 	EventSchematicStarted     EventType = "schematic_started"
 	EventSchematicDone        EventType = "schematic_done"
 	EventSchematicSkipped     EventType = "schematic_skipped"
@@ -1022,6 +1024,61 @@ func (db *DB) DispatchCircuitBrokenBeadIDSet() (map[string]struct{}, error) {
 func (db *DB) ClearRetry(beadID, anvil string) error {
 	_, err := db.conn.Exec(`DELETE FROM retries WHERE bead_id = ? AND anvil = ?`, beadID, anvil)
 	return err
+}
+
+// ResetRetry clears the needs_human and clarification_needed flags and resets
+// the retry count to zero, allowing the bead to be dispatched again.
+func (db *DB) ResetRetry(beadID, anvil string) error {
+	now := time.Now().Format(time.RFC3339)
+	res, err := db.conn.Exec(
+		`UPDATE retries SET needs_human = 0, clarification_needed = 0, retry_count = 0, dispatch_failures = 0,
+		        next_retry = NULL, last_error = '', updated_at = ?
+		 WHERE bead_id = ? AND anvil = ?`,
+		now, beadID, anvil,
+	)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("no retry record found for bead %q on anvil %q", beadID, anvil)
+	}
+	return nil
+}
+
+// DismissRetry removes the retry record entirely, clearing the bead from the
+// Needs Attention list without resetting for a retry.
+func (db *DB) DismissRetry(beadID, anvil string) error {
+	res, err := db.conn.Exec(`DELETE FROM retries WHERE bead_id = ? AND anvil = ?`, beadID, anvil)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("no retry record found for bead %q on anvil %q", beadID, anvil)
+	}
+	return nil
+}
+
+// LastWorkerLogPath returns the log path from the most recent worker for a bead.
+func (db *DB) LastWorkerLogPath(beadID string) (string, error) {
+	var logPath string
+	err := db.conn.QueryRow(
+		`SELECT log_path FROM workers WHERE bead_id = ?
+		 ORDER BY started_at DESC LIMIT 1`, beadID).Scan(&logPath)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return logPath, nil
 }
 
 // NeedsAttentionBead represents a bead requiring human attention, combining
