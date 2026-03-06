@@ -632,7 +632,12 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	}
 
 	if !outcome.Success {
-		d.logger.Warn("pipeline did not succeed", "bead", bead.ID, "verdict", outcome.Verdict)
+		if outcome.NeedsHuman {
+			d.logger.Warn("bead released to open — Smith produced no diff, needs human attention",
+				"bead", bead.ID, "verdict", outcome.Verdict)
+		} else {
+			d.logger.Warn("pipeline did not succeed", "bead", bead.ID, "verdict", outcome.Verdict)
+		}
 		return
 	}
 

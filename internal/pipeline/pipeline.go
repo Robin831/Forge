@@ -56,6 +56,9 @@ type Outcome struct {
 	// RateLimited is true when all providers were rate limited and the bead
 	// has been released back to open so the poller can retry later.
 	RateLimited bool
+	// NeedsHuman is true when the bead has been released back to open with a
+	// needs-human flag (e.g., Smith produced no diff).
+	NeedsHuman bool
 }
 
 // Params holds the dependencies for running a pipeline.
@@ -326,6 +329,28 @@ func Run(ctx context.Context, p Params) *Outcome {
 			outcome.Verdict = warden.VerdictReject
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
 			_ = p.DB.LogEvent(state.EventWardenReject, reviewResult.Summary, p.Bead.ID, p.AnvilName)
+			if reviewResult.NoDiff {
+				// Smith produced no diff — release the bead back to open so
+				// a human can investigate and retry rather than leaving it
+				// stuck in_progress with no active worker.
+				log.Printf("[pipeline:%s] No-diff rejection — releasing bead %s back to open for human review", workerID, p.Bead.ID)
+				releaseCtx, releaseCancel := context.WithTimeout(ctx, 30*time.Second)
+				defer releaseCancel()
+				releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", p.Bead.ID, "--status=open", "--json"))
+				releaseCmd.Dir = p.AnvilConfig.Path
+				if out, releaseErr := releaseCmd.CombinedOutput(); releaseErr != nil {
+					log.Printf("[pipeline:%s] Failed to release bead %s back to open: %v: %s", workerID, p.Bead.ID, releaseErr, out)
+					_ = p.DB.LogEvent(state.EventWardenReject,
+						fmt.Sprintf("Failed to release bead back to open after no-diff: %v", releaseErr),
+						p.Bead.ID, p.AnvilName)
+				} else {
+					log.Printf("[pipeline:%s] Bead %s released back to open (no-diff)", workerID, p.Bead.ID)
+					_ = p.DB.LogEvent(state.EventWardenReject,
+						"Bead released back to open — Smith produced no diff, needs human attention",
+						p.Bead.ID, p.AnvilName)
+					outcome.NeedsHuman = true
+				}
+			}
 			outcome.Duration = time.Since(start)
 			return outcome
 

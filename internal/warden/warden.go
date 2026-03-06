@@ -51,6 +51,8 @@ type ReviewResult struct {
 	Duration time.Duration
 	// CostUSD is the cost of the review session.
 	CostUSD float64
+	// NoDiff is true when the rejection was because Smith produced no diff.
+	NoDiff bool
 }
 
 // ReviewIssue represents a specific issue found during review.
@@ -94,6 +96,7 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 			Verdict:  VerdictReject,
 			Summary:  "No changes detected — Smith produced no diff",
 			Duration: time.Since(start),
+			NoDiff:   true,
 		}, nil
 	}
 
