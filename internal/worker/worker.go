@@ -232,10 +232,22 @@ func ActiveCount(db *state.DB, anvilName string) (int, error) {
 	return count, nil
 }
 
+// DispatchActiveCount returns the number of active dispatch pipeline workers for
+// an anvil, excluding lifecycle workers (cifix, reviewfix). This is the correct
+// value to compare against max_smiths.
+func DispatchActiveCount(db *state.DB, anvilName string) (int, error) {
+	workers, err := db.ActiveDispatchWorkersByAnvil(anvilName)
+	if err != nil {
+		return 0, err
+	}
+	return len(workers), nil
+}
+
 // CanSpawn checks if a new worker can be spawned for the given anvil,
-// respecting the max_smiths limit.
+// respecting the max_smiths limit. Only dispatch pipeline workers count;
+// lifecycle workers (cifix, reviewfix) are excluded.
 func CanSpawn(db *state.DB, anvilName string, maxSmiths int) (bool, error) {
-	active, err := ActiveCount(db, anvilName)
+	active, err := DispatchActiveCount(db, anvilName)
 	if err != nil {
 		return false, err
 	}
@@ -251,10 +263,22 @@ func TotalActiveCount(db *state.DB) (int, error) {
 	return len(workers), nil
 }
 
+// DispatchTotalActiveCount returns the total number of active dispatch pipeline
+// workers across all anvils, excluding lifecycle workers (cifix, reviewfix).
+// This is the correct value to compare against max_total_smiths.
+func DispatchTotalActiveCount(db *state.DB) (int, error) {
+	workers, err := db.ActiveDispatchWorkers()
+	if err != nil {
+		return 0, err
+	}
+	return len(workers), nil
+}
+
 // CanSpawnGlobal checks if a new worker can be spawned globally,
-// respecting the max_total_smiths limit.
+// respecting the max_total_smiths limit. Only dispatch pipeline workers count;
+// lifecycle workers (cifix, reviewfix) are excluded.
 func CanSpawnGlobal(db *state.DB, maxTotal int) (bool, error) {
-	total, err := TotalActiveCount(db)
+	total, err := DispatchTotalActiveCount(db)
 	if err != nil {
 		return false, err
 	}

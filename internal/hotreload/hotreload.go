@@ -7,9 +7,10 @@
 //   - settings.max_total_smiths
 //   - settings.claude_flags
 //   - notifications.* (all notification settings)
+//   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
 //
 // NOT hot-reloadable (require restart):
-//   - anvils.* (adding/removing repositories)
+//   - anvils.* adding or removing anvil entries
 package hotreload
 
 import (
@@ -175,6 +176,17 @@ func applyChanges(old, new *config.Config) []string {
 	// Warn about non-reloadable changes
 	if len(old.Anvils) != len(new.Anvils) {
 		changes = append(changes, "WARNING: anvil changes require restart")
+	} else {
+		// Report per-anvil max_smiths changes (these ARE hot-reloadable since
+		// pollAndDispatch reads d.cfg.Anvils each cycle via the OnChange callback)
+		for name, newAnvil := range new.Anvils {
+			if oldAnvil, ok := old.Anvils[name]; ok {
+				if oldAnvil.MaxSmiths != newAnvil.MaxSmiths {
+					changes = append(changes, fmt.Sprintf("anvil %s max_smiths: %d → %d",
+						name, oldAnvil.MaxSmiths, newAnvil.MaxSmiths))
+				}
+			}
+		}
 	}
 
 	return changes
