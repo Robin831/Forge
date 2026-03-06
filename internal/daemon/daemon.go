@@ -101,6 +101,9 @@ type Daemon struct {
 	// Cache for last poll results
 	lastBeads   []poller.Bead
 	lastBeadsMu sync.RWMutex
+
+	// Periodic bead recovery counter (runs every N poll cycles)
+	pollCount atomic.Int64
 }
 
 // New creates a new daemon instance.
@@ -235,6 +238,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Clean up orphans from any previous crash
 	if cleaned := d.shutdownMgr.CleanupOrphans(); cleaned > 0 {
 		d.logger.Info("startup orphan cleanup done", "cleaned", cleaned)
+	}
+
+	// Recover orphaned in-progress beads (claimed but no active worker or open PR)
+	if recovered := d.shutdownMgr.RecoverOrphanedBeads(); recovered > 0 {
+		d.logger.Info("startup bead recovery done", "recovered", recovered)
 	}
 
 	// Start IPC server
@@ -501,6 +509,15 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	defer d.pollRunning.Store(false)
 
 	d.logger.Info("polling anvils", "count", len(d.cfg.Anvils))
+
+	// Periodically recover orphaned in-progress beads (every 10 poll cycles).
+	// This catches beads that became orphaned after startup (e.g., a worker
+	// crashed between claiming a bead and being tracked in the DB).
+	if d.pollCount.Add(1)%10 == 0 {
+		if recovered := d.shutdownMgr.RecoverOrphanedBeads(); recovered > 0 {
+			d.logger.Info("periodic bead recovery", "recovered", recovered)
+		}
+	}
 
 	maxTotal := d.cfg.Settings.MaxTotalSmiths
 	if maxTotal <= 0 {

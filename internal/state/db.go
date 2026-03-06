@@ -569,6 +569,19 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 	return prs, rows.Err()
 }
 
+// HasOpenPRForBead returns true if there is a non-terminal PR for the given bead in the given anvil.
+func (db *DB) HasOpenPRForBead(beadID, anvil string) (bool, error) {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM prs WHERE bead_id = ? AND anvil = ? AND status IN ('open', 'approved', 'needs_fix')`,
+		beadID, anvil,
+	).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // EventType categorizes events in the log.
 type EventType string
 
@@ -617,6 +630,7 @@ const (
 	EventSchematicSkipped     EventType = "schematic_skipped"
 	EventDispatchCircuitBreak  EventType = "dispatch_circuit_break"
 	EventError                EventType = "error"
+	EventBeadRecovered        EventType = "bead_recovered"
 )
 
 // Event represents a logged event.

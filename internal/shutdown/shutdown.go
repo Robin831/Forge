@@ -17,6 +17,7 @@ package shutdown
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -226,6 +227,92 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 	}
 
 	return cleaned
+}
+
+// RecoverOrphanedBeads detects beads with status=in_progress in the beads DB
+// that have no active worker and no open PR in Forge's state DB. These are
+// beads that were claimed but orphaned (e.g., daemon crashed mid-session).
+// Only beads belonging to this Forge's configured anvils are considered.
+// Returns the number of beads recovered.
+func (m *Manager) RecoverOrphanedBeads() (recovered int) {
+	m.logger.Info("checking for orphaned in-progress beads")
+
+	for anvilName, anvilPath := range m.anvils {
+		beads, err := m.listInProgressBeads(anvilPath)
+		if err != nil {
+			m.logger.Warn("failed to list in-progress beads", "anvil", anvilName, "error", err)
+			continue
+		}
+
+		for _, beadID := range beads {
+			// Check if there's an active worker for this bead
+			activeWorker, err := m.db.ActiveWorkerByBead(beadID)
+			if err != nil {
+				m.logger.Warn("failed to check active worker", "bead", beadID, "error", err)
+				continue
+			}
+			if activeWorker != nil {
+				continue // has an active worker, not orphaned
+			}
+
+			// Check if there's an open PR for this bead
+			hasPR, err := m.db.HasOpenPRForBead(beadID, anvilName)
+			if err != nil {
+				m.logger.Warn("failed to check open PR", "bead", beadID, "error", err)
+				continue
+			}
+			if hasPR {
+				continue // has an open PR, not orphaned
+			}
+
+			// This bead is orphaned — reset it to open
+			m.logger.Warn("found orphaned in-progress bead", "bead", beadID, "anvil", anvilName)
+			if err := m.resetBead(beadID, anvilPath); err != nil {
+				m.logger.Warn("failed to reset orphaned bead", "bead", beadID, "error", err)
+				continue
+			}
+			m.logger.Info("recovered orphaned bead to open", "bead", beadID, "anvil", anvilName)
+			m.db.LogEvent(state.EventBeadRecovered,
+				fmt.Sprintf("Orphaned in-progress bead %s recovered to open", beadID),
+				beadID, anvilName)
+			recovered++
+		}
+	}
+
+	if recovered > 0 {
+		m.logger.Info("orphaned bead recovery complete", "recovered", recovered)
+	} else {
+		m.logger.Info("no orphaned in-progress beads found")
+	}
+
+	return recovered
+}
+
+// listInProgressBeads returns bead IDs with status=in_progress for an anvil.
+func (m *Manager) listInProgressBeads(anvilPath string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "list", "--status=in_progress", "--json"))
+	cmd.Dir = anvilPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("bd list --status=in_progress --json: %w\n%s", err, out)
+	}
+
+	// Parse JSON array of beads — we only need the "id" field.
+	var beads []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(out, &beads); err != nil {
+		return nil, fmt.Errorf("parsing bd list output: %w", err)
+	}
+
+	ids := make([]string, len(beads))
+	for i, b := range beads {
+		ids[i] = b.ID
+	}
+	return ids, nil
 }
 
 // CleanupWorktrees removes all worktrees across all anvils (for full shutdown).
