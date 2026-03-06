@@ -1041,24 +1041,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": "clarification_needed set"})
 		return ipc.Response{Type: "ok", Payload: data}
 
-	case "retry_bead":
-		var rp ipc.RetryBeadPayload
-		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid retry_bead payload"})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		if rp.BeadID == "" || rp.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		if err := d.db.ResetDispatchFailures(rp.BeadID, rp.Anvil); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset dispatch failures: %v", err)})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		d.logger.Info("dispatch circuit breaker reset", "bead", rp.BeadID, "anvil", rp.Anvil)
-		data, _ := json.Marshal(map[string]string{"message": "circuit breaker reset"})
-		return ipc.Response{Type: "ok", Payload: data}
-
 	case "clear_clarification":
 		var cp ipc.ClarificationPayload
 		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {
@@ -1092,7 +1074,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset retry: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		_ = d.db.LogEvent(state.EventClarificationCleared, fmt.Sprintf("Retry reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
+		_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Retry reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
 		d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
 		data, _ := json.Marshal(map[string]string{"message": "retry reset"})
 		return ipc.Response{Type: "ok", Payload: data}
@@ -1111,7 +1093,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to dismiss: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		_ = d.db.LogEvent(state.EventClarificationCleared, fmt.Sprintf("Bead %s dismissed from needs attention", dp.BeadID), dp.BeadID, dp.Anvil)
+		_ = d.db.LogEvent(state.EventBeadDismissed, fmt.Sprintf("Bead %s dismissed from needs attention", dp.BeadID), dp.BeadID, dp.Anvil)
 		d.logger.Info("bead dismissed from needs attention", "bead", dp.BeadID, "anvil", dp.Anvil)
 		data, _ := json.Marshal(map[string]string{"message": "dismissed"})
 		return ipc.Response{Type: "ok", Payload: data}
@@ -1135,16 +1117,67 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("no worker logs found for bead %q", vp.BeadID)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		// Read last 50 lines of the log
-		var lastLines []string
-		logData, err := os.ReadFile(logPath)
-		if err == nil {
-			allLines := strings.Split(strings.TrimSpace(string(logData)), "\n")
-			start := len(allLines) - 50
-			if start < 0 {
-				start = 0
+		// Read last 50 lines of the log without loading the entire file into memory.
+		const maxLines = 50
+		lastLines, err := func(path string, n int) ([]string, error) {
+			if n <= 0 {
+				return nil, nil
 			}
-			lastLines = allLines[start:]
+			f, err := os.Open(path)
+			if err != nil {
+				return nil, err
+			}
+			defer f.Close()
+
+			info, err := f.Stat()
+			if err != nil {
+				return nil, err
+			}
+			size := info.Size()
+			if size == 0 {
+				return nil, nil
+			}
+
+			const readBlockSize = 8192
+			var (
+				buf          []byte
+				remaining    = size
+				newlineCount int
+			)
+
+			for remaining > 0 && newlineCount <= n {
+				toRead := int64(readBlockSize)
+				if remaining < toRead {
+					toRead = remaining
+				}
+				remaining -= toRead
+
+				chunk := make([]byte, toRead)
+				if _, err := f.ReadAt(chunk, remaining); err != nil && err != io.EOF {
+					return nil, err
+				}
+
+				for _, b := range chunk {
+					if b == '\n' {
+						newlineCount++
+					}
+				}
+
+				buf = append(chunk, buf...)
+			}
+
+			if len(buf) == 0 {
+				return nil, nil
+			}
+
+			lines := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
+			if len(lines) <= n {
+				return lines, nil
+			}
+			return lines[len(lines)-n:], nil
+		}(logPath, maxLines)
+		if err != nil {
+			lastLines = nil
 		}
 		resp := ipc.ViewLogsResponse{LogPath: logPath, LastLines: lastLines}
 		data, _ := json.Marshal(resp)

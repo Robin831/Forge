@@ -612,6 +612,8 @@ const (
 	EventLifecycleExhausted   EventType = "lifecycle_exhausted"
 	EventClarificationNeeded  EventType = "clarification_needed"
 	EventClarificationCleared EventType = "clarification_cleared"
+	EventRetryReset           EventType = "retry_reset"
+	EventBeadDismissed        EventType = "bead_dismissed"
 	EventSchematicStarted     EventType = "schematic_started"
 	EventSchematicDone        EventType = "schematic_done"
 	EventSchematicSkipped     EventType = "schematic_skipped"

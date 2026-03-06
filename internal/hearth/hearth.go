@@ -573,8 +573,16 @@ func (m *Model) renderLogViewer() string {
 		visible := visibleItems(m.logViewerScroll, len(m.logViewerLines), contentHeight)
 		for i := visible.start; i < visible.end; i++ {
 			line := m.logViewerLines[i]
-			if len(line) > viewerWidth-4 {
-				line = line[:viewerWidth-7] + "..."
+			maxLen := viewerWidth - 4
+			if maxLen > 0 {
+				runes := []rune(line)
+				if len(runes) > maxLen {
+					if maxLen > 3 {
+						line = string(runes[:maxLen-3]) + "..."
+					} else {
+						line = string(runes[:maxLen])
+					}
+				}
 			}
 			lines = append(lines, dimStyle.Render(line))
 		}
@@ -1242,8 +1250,8 @@ func placeOverlay(width, height int, overlay, background string) string {
 	overlayHeight := len(overlayLines)
 	overlayWidth := 0
 	for _, l := range overlayLines {
-		if len([]rune(l)) > overlayWidth {
-			overlayWidth = len([]rune(l))
+		if w := lipgloss.Width(l); w > overlayWidth {
+			overlayWidth = w
 		}
 	}
 
@@ -1275,8 +1283,9 @@ func placeOverlay(width, height int, overlay, background string) string {
 		}
 		// Insert overlay
 		result = append(result, olRunes...)
-		// Append remainder of background if any
-		afterOverlay := startX + len(olRunes)
+		// Append remainder of background if any.
+		// Use visual width (ANSI-aware) so the resume position is correct.
+		afterOverlay := startX + lipgloss.Width(overlayLine)
 		if afterOverlay < len(bgRunes) {
 			result = append(result, bgRunes[afterOverlay:]...)
 		}

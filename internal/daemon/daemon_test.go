@@ -374,3 +374,183 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 		assert.True(t, inFlight)
 	})
 }
+
+func TestHandleIPC_RetryBead(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		cfg:           &config.Config{},
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+	}
+
+	t.Run("invalid payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "retry_bead", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid retry_bead payload")
+	})
+
+	t.Run("missing fields", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: "X"})
+		resp := d.handleIPC(ipc.Command{Type: "retry_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("success", func(t *testing.T) {
+		// Seed a retry record that needs human attention.
+		require.NoError(t, db.UpsertRetry(&state.RetryRecord{
+			BeadID:     "BD-RETRY",
+			Anvil:      "anvil-1",
+			NeedsHuman: true,
+			RetryCount: 3,
+		}))
+
+		payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: "BD-RETRY", Anvil: "anvil-1"})
+		resp := d.handleIPC(ipc.Command{Type: "retry_bead", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+
+		r, err := db.GetRetry("BD-RETRY", "anvil-1")
+		require.NoError(t, err)
+		require.NotNil(t, r)
+		assert.False(t, r.NeedsHuman)
+		assert.Equal(t, 0, r.RetryCount)
+	})
+}
+
+func TestHandleIPC_DismissBead(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		cfg:           &config.Config{},
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+	}
+
+	t.Run("invalid payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "dismiss_bead", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid dismiss_bead payload")
+	})
+
+	t.Run("missing fields", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.DismissBeadPayload{BeadID: "X"})
+		resp := d.handleIPC(ipc.Command{Type: "dismiss_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("success", func(t *testing.T) {
+		require.NoError(t, db.UpsertRetry(&state.RetryRecord{
+			BeadID:     "BD-DISMISS",
+			Anvil:      "anvil-1",
+			NeedsHuman: true,
+		}))
+
+		payload, _ := json.Marshal(ipc.DismissBeadPayload{BeadID: "BD-DISMISS", Anvil: "anvil-1"})
+		resp := d.handleIPC(ipc.Command{Type: "dismiss_bead", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+
+		// Record should be gone.
+		r, err := db.GetRetry("BD-DISMISS", "anvil-1")
+		require.NoError(t, err)
+		assert.Nil(t, r)
+	})
+}
+
+func TestHandleIPC_ViewLogs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		cfg:           &config.Config{},
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+	}
+
+	t.Run("invalid payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "view_logs", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid view_logs payload")
+	})
+
+	t.Run("missing bead_id", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ViewLogsPayload{})
+		resp := d.handleIPC(ipc.Command{Type: "view_logs", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id is required")
+	})
+
+	t.Run("no log found", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ViewLogsPayload{BeadID: "BD-NO-LOG"})
+		resp := d.handleIPC(ipc.Command{Type: "view_logs", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "no worker logs found")
+	})
+
+	t.Run("success", func(t *testing.T) {
+		// Write a small log file.
+		logFile := filepath.Join(tmpDir, "smith.log")
+		require.NoError(t, os.WriteFile(logFile, []byte("line1\nline2\nline3\n"), 0o644))
+
+		// Insert a worker record pointing to the log.
+		require.NoError(t, db.InsertWorker(&state.Worker{
+			ID:        "w-view-logs",
+			BeadID:    "BD-VIEWLOGS",
+			Anvil:     "anvil-1",
+			Status:    state.WorkerDone,
+			LogPath:   logFile,
+			StartedAt: time.Now(),
+		}))
+
+		payload, _ := json.Marshal(ipc.ViewLogsPayload{BeadID: "BD-VIEWLOGS"})
+		resp := d.handleIPC(ipc.Command{Type: "view_logs", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+
+		var vr ipc.ViewLogsResponse
+		require.NoError(t, json.Unmarshal(resp.Payload, &vr))
+		assert.Equal(t, logFile, vr.LogPath)
+		assert.Contains(t, vr.LastLines, "line1")
+		assert.Contains(t, vr.LastLines, "line3")
+	})
+}
