@@ -22,6 +22,10 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
+// DefaultCopilotReviewer is the GitHub reviewer handle for GitHub Copilot PR reviews.
+// It aliases ghpr.DefaultReviewer to avoid duplicating the default value.
+var DefaultCopilotReviewer = ghpr.DefaultReviewer
+
 // ReviewComment represents a PR review comment from GitHub.
 type ReviewComment struct {
 	Author   string `json:"author"`
@@ -50,6 +54,9 @@ type FixParams struct {
 	DB *state.DB
 	// MaxAttempts is the maximum fix attempts for review comments.
 	MaxAttempts int
+	// Reviewer is the GitHub reviewer handle to request re-review from after pushing fixes.
+	// Defaults to DefaultCopilotReviewer ("copilot-pull-request-reviewer") if empty.
+	Reviewer string
 	// ExtraFlags for Claude CLI.
 	ExtraFlags []string
 	// Providers is the ordered list of AI providers to try.
@@ -233,6 +240,28 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		_ = p.DB.LogEvent(state.EventReviewFixSuccess,
 			fmt.Sprintf("PR #%d: Addressed %d comments on attempt %d", p.PRNumber, len(actionable), attempt),
 			p.BeadID, p.AnvilName)
+
+		// Request re-review so Copilot (or the configured reviewer) re-examines
+		// the PR after the fix commit is pushed. Without this, the review cycle
+		// stalls because the reviewer is never notified.
+		reviewer := p.Reviewer
+		if reviewer == "" {
+			reviewer = DefaultCopilotReviewer
+		}
+		if err := ghpr.RequestReReview(ctx, p.WorktreePath, p.PRNumber, reviewer); err != nil {
+			log.Printf("[reviewfix] PR #%d: could not request re-review from %s: %v", p.PRNumber, reviewer, err)
+			// Treat re-review request failure as a failed fix cycle so Bellows can retry or escalate.
+			result.Error = fmt.Errorf("PR #%d: request re-review from %s failed: %w", p.PRNumber, reviewer, err)
+			_ = p.DB.LogEvent(state.EventReReviewRequestFailed,
+				fmt.Sprintf("PR #%d: re-review request failed after addressing comments: %v", p.PRNumber, err),
+				p.BeadID, p.AnvilName)
+			result.Duration = time.Since(start)
+			return result
+		}
+		_ = p.DB.LogEvent(state.EventReReviewRequested,
+			fmt.Sprintf("PR #%d: requested re-review from %s", p.PRNumber, reviewer),
+			p.BeadID, p.AnvilName)
+
 		result.Duration = time.Since(start)
 		return result
 	}
