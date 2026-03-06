@@ -215,13 +215,21 @@ func Run(ctx context.Context, p Params) *Outcome {
 				"All providers rate limited — releasing bead back to open for retry",
 				p.Bead.ID, p.AnvilName)
 			// Reset the bead to open so the poller can retry after backoff.
-			releaseCmd := executil.HideWindow(exec.Command("bd", "update", p.Bead.ID, "--status=open", "--json"))
+			releaseCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", p.Bead.ID, "--status=open", "--json"))
 			releaseCmd.Dir = p.AnvilConfig.Path
 			if out, err := releaseCmd.CombinedOutput(); err != nil {
 				log.Printf("[pipeline:%s] Failed to release bead %s back to open: %v: %s", workerID, p.Bead.ID, err, out)
-			} else {
-				log.Printf("[pipeline:%s] Bead %s released back to open", workerID, p.Bead.ID)
+				_ = p.DB.LogEvent(state.EventSmithFailed,
+					fmt.Sprintf("Failed to release bead back to open after rate limit: %v: %s", err, out),
+					p.Bead.ID, p.AnvilName)
+				outcome.Error = fmt.Errorf("all providers (%d) are rate limited, and failed to release bead back to open: %w", len(providers), err)
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+				outcome.Duration = time.Since(start)
+				return outcome
 			}
+			log.Printf("[pipeline:%s] Bead %s released back to open", workerID, p.Bead.ID)
 			outcome.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 			outcome.RateLimited = true
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)

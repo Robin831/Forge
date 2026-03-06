@@ -154,6 +154,7 @@ func TestDefaults(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, cfg.Settings.PollInterval)
 	assert.Equal(t, 30*time.Minute, cfg.Settings.SmithTimeout)
 	assert.Equal(t, 4, cfg.Settings.MaxTotalSmiths)
+	assert.Equal(t, 5*time.Minute, cfg.Settings.RateLimitBackoff)
 	assert.NotNil(t, cfg.Anvils)
 }
 
@@ -195,6 +196,48 @@ anvils:
 	cfg, err := Load(cfgPath)
 	require.NoError(t, err)
 	assert.Equal(t, "all", cfg.Anvils["myrepo"].AutoDispatch)
+}
+
+func TestLoad_RateLimitBackoff(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  rate_limit_backoff: 10m
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 10*time.Minute, cfg.Settings.RateLimitBackoff)
+}
+
+func TestLoad_RateLimitBackoff_Default(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	// No rate_limit_backoff set — should use 5m default.
+	content := `
+settings:
+  max_total_smiths: 2
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 5*time.Minute, cfg.Settings.RateLimitBackoff)
+}
+
+func TestLoad_InvalidRateLimitBackoff(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  rate_limit_backoff: notaduration
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	_, err := Load(cfgPath)
+	assert.ErrorContains(t, err, "rate_limit_backoff")
 }
 
 func TestLoad_InvalidPollInterval(t *testing.T) {
