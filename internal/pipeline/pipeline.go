@@ -578,7 +578,9 @@ func extractNeedsHuman(output string) string {
 // single pre-formatted feedback string for inclusion in BeadContext.PriorFeedback.
 func formatWardenFeedback(summary string, issues []warden.ReviewIssue) string {
 	var b strings.Builder
-	b.WriteString(summary)
+	if summary != "" {
+		b.WriteString(summary)
+	}
 
 	if len(issues) > 0 {
 		b.WriteString("\n\n### Specific Issues\n\n")
@@ -595,7 +597,11 @@ func formatWardenFeedback(summary string, issues []warden.ReviewIssue) string {
 		}
 	}
 
-	return b.String()
+	result := b.String()
+	if result == "" {
+		return "Warden requested changes but did not provide details."
+	}
+	return result
 }
 
 // buildFixPrompt creates a prompt for Smith to fix issues found by Temper or Warden.

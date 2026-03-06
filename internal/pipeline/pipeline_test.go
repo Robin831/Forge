@@ -648,6 +648,11 @@ func TestFormatWardenFeedback(t *testing.T) {
 	noIssues := formatWardenFeedback("Looks bad.", nil)
 	assert.Equal(t, "Looks bad.", noIssues)
 	assert.NotContains(t, noIssues, "Specific Issues")
+
+	// Empty summary and no issues should still yield some non-empty feedback,
+	// so that retry prompts are never completely blank.
+	emptySummaryNoIssues := formatWardenFeedback("", nil)
+	assert.NotEmpty(t, emptySummaryNoIssues)
 }
 
 // TestSchematic_PerAnvilDisable verifies that per-anvil SchematicEnabled=false
