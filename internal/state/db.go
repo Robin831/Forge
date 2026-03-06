@@ -943,6 +943,12 @@ func (db *DB) ReplaceQueueCacheForAnvils(anvils []string, items []QueueItem) err
 		}
 	}
 
+	// Build a set of allowed anvils for filtering.
+	allowed := make(map[string]struct{}, len(anvils))
+	for _, a := range anvils {
+		allowed[a] = struct{}{}
+	}
+
 	now := time.Now().Format(time.RFC3339)
 	stmt, err := tx.Prepare(
 		`INSERT INTO queue_cache (bead_id, anvil, title, priority, status, updated_at)
@@ -952,6 +958,9 @@ func (db *DB) ReplaceQueueCacheForAnvils(anvils []string, items []QueueItem) err
 	}
 	defer stmt.Close()
 	for _, item := range items {
+		if _, ok := allowed[item.Anvil]; !ok {
+			continue // skip items for anvils not in the replacement set
+		}
 		if _, err := stmt.Exec(
 			item.BeadID, item.Anvil, item.Title, item.Priority, item.Status, now,
 		); err != nil {

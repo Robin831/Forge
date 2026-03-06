@@ -161,7 +161,7 @@ func TestDB_QueueCache(t *testing.T) {
 		t.Errorf("unexpected item: %+v", items[0])
 	}
 
-	// 4. Replace with empty anvils list clears only those anvils
+	// 4. Replacing with no items clears the cache for the specified anvils
 	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-c"}, nil); err != nil {
 		t.Fatal(err)
 	}
