@@ -2,12 +2,10 @@ package lifecycle
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -50,24 +48,31 @@ func makeEvent(prNum int, evType string) bellows.PREvent {
 // TestHandleEvent_Transitions uses table-driven tests to verify all major event transitions.
 func TestHandleEvent_Transitions(t *testing.T) {
 	tests := []struct {
-		name            string
-		prNumber        int
-		setupEvents     []bellows.PREvent
-		event           bellows.PREvent
-		wantAction      Action
-		wantNeedsFix    bool
-		wantCIPassing   bool
-		wantApproved    bool
-		wantMerged      bool
-		wantClosed      bool
-		wantDBEventType state.EventType
+		name             string
+		prNumber         int
+		setupEvents      []bellows.PREvent
+		event            bellows.PREvent
+		wantAction       Action
+		wantNeedsFix     bool
+		wantCIPassing    bool
+		wantApproved     bool
+		wantMerged       bool
+		wantClosed       bool
+		wantConflicting  bool
+		wantCIFixCount   int
+		wantReviewFixCnt int
+		wantRebaseCount  int
+		wantDispatches   int // expected dispatches from the final event only
+		wantDBEventType  state.EventType
 	}{
 		{
-			name:         "EventCIFailed dispatch",
-			prNumber:     42,
-			event:        makeEvent(42, bellows.EventCIFailed),
-			wantAction:   ActionFixCI,
-			wantNeedsFix: true,
+			name:           "EventCIFailed dispatch",
+			prNumber:       42,
+			event:          makeEvent(42, bellows.EventCIFailed),
+			wantAction:     ActionFixCI,
+			wantNeedsFix:   true,
+			wantCIFixCount: 1,
+			wantDispatches: 1,
 		},
 		{
 			name:     "max CI attempts exhaustion",
@@ -85,15 +90,19 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			event:           makeEvent(10, bellows.EventCIFailed),
 			wantAction:      ActionNone,
 			wantNeedsFix:    true,
+			wantCIFixCount:  2, // counter must be at max to confirm setup worked
+			wantDispatches:  0, // exhaustion path must not dispatch
 			wantDBEventType: state.EventLifecycleExhausted,
 		},
 		{
-			name:          "EventReviewChanges dispatch",
-			prNumber:      7,
-			event:         makeEvent(7, bellows.EventReviewChanges),
-			wantAction:    ActionFixReview,
-			wantNeedsFix:  true,
-			wantCIPassing: true, // InsertPR omits ci_passing so DB default (true) applies; review event does not change CI state
+			name:             "EventReviewChanges dispatch",
+			prNumber:         7,
+			event:            makeEvent(7, bellows.EventReviewChanges),
+			wantAction:       ActionFixReview,
+			wantNeedsFix:     true,
+			wantCIPassing:    true, // InsertPR omits ci_passing so DB default (true) applies; review event does not change CI state
+			wantReviewFixCnt: 1,
+			wantDispatches:   1,
 		},
 		{
 			name:     "max review attempts exhaustion",
@@ -108,58 +117,69 @@ func TestHandleEvent_Transitions(t *testing.T) {
 				makeEvent(20, bellows.EventReviewChanges),
 				makeEvent(20, bellows.EventReviewApproved),
 			},
-			event:           makeEvent(20, bellows.EventReviewChanges),
-			wantAction:      ActionNone,
-			wantNeedsFix:    true,
-			wantCIPassing:   true, // review events do not change CI state
-			wantDBEventType: state.EventLifecycleExhausted,
+			event:            makeEvent(20, bellows.EventReviewChanges),
+			wantAction:       ActionNone,
+			wantNeedsFix:     true,
+			wantCIPassing:    true, // review events do not change CI state
+			wantReviewFixCnt: 2,    // counter must be at max to confirm setup worked
+			wantDispatches:   0,    // exhaustion path must not dispatch
+			wantDBEventType:  state.EventLifecycleExhausted,
 		},
 		{
-			name:          "EventPRMerged closes bead",
-			prNumber:      99,
-			event:         makeEvent(99, bellows.EventPRMerged),
-			wantAction:    ActionCloseBead,
-			wantMerged:    true,
-			wantCIPassing: true, // merge event does not change CI state
+			name:           "EventPRMerged closes bead",
+			prNumber:       99,
+			event:          makeEvent(99, bellows.EventPRMerged),
+			wantAction:     ActionCloseBead,
+			wantMerged:     true,
+			wantCIPassing:  true, // merge event does not change CI state
+			wantDispatches: 1,
 		},
 		{
-			name:          "EventPRConflicting dispatch",
-			prNumber:      55,
-			event:         makeEvent(55, bellows.EventPRConflicting),
-			wantAction:    ActionRebase,
-			wantCIPassing: true, // conflict event does not change CI state
+			name:            "EventPRConflicting dispatch",
+			prNumber:        55,
+			event:           makeEvent(55, bellows.EventPRConflicting),
+			wantAction:      ActionRebase,
+			wantCIPassing:   true, // conflict event does not change CI state
+			wantConflicting: true,
+			wantRebaseCount: 1,
+			wantDispatches:  1,
 		},
 		{
-			name:          "EventPRClosed cleanup",
-			prNumber:      33,
-			event:         makeEvent(33, bellows.EventPRClosed),
-			wantAction:    ActionCleanup,
-			wantClosed:    true,
-			wantCIPassing: true, // close event does not change CI state
+			name:           "EventPRClosed cleanup",
+			prNumber:       33,
+			event:          makeEvent(33, bellows.EventPRClosed),
+			wantAction:     ActionCleanup,
+			wantClosed:     true,
+			wantCIPassing:  true, // close event does not change CI state
+			wantDispatches: 1,
 		},
 		{
-			name:          "EventCIPassed",
-			prNumber:      1,
-			event:         makeEvent(1, bellows.EventCIPassed),
-			wantAction:    ActionNone,
-			wantNeedsFix:  false,
-			wantCIPassing: true,
+			name:           "EventCIPassed",
+			prNumber:       1,
+			event:          makeEvent(1, bellows.EventCIPassed),
+			wantAction:     ActionNone,
+			wantNeedsFix:   false,
+			wantCIPassing:  true,
+			wantDispatches: 0,
 		},
 		{
-			name:          "EventReviewApproved",
-			prNumber:      2,
-			event:         makeEvent(2, bellows.EventReviewApproved),
-			wantAction:    ActionNone,
-			wantApproved:  true,
-			wantCIPassing: true, // approve event does not change CI state
+			name:           "EventReviewApproved",
+			prNumber:       2,
+			event:          makeEvent(2, bellows.EventReviewApproved),
+			wantAction:     ActionNone,
+			wantApproved:   true,
+			wantCIPassing:  true, // approve event does not change CI state
+			wantDispatches: 0,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			db := newTestDB(t)
+			var dispatches atomic.Int64
 			var got ActionRequest
 			handler := func(_ context.Context, req ActionRequest) {
+				dispatches.Add(1)
 				got = req
 			}
 			m := New(db, testLogger(), handler)
@@ -169,12 +189,17 @@ func TestHandleEvent_Transitions(t *testing.T) {
 				m.HandleEvent(ctx, ev)
 			}
 
-			// Reset got before the final event
+			// Reset counters before the final event so dispatch count is for the
+			// final event only, not the setup events.
+			dispatches.Store(0)
 			got = ActionRequest{}
 			m.HandleEvent(ctx, tc.event)
 
 			if got.Action != tc.wantAction {
 				t.Errorf("expected Action %v, got %v", tc.wantAction, got.Action)
+			}
+			if int(dispatches.Load()) != tc.wantDispatches {
+				t.Errorf("expected %d dispatch(es) for final event, got %d", tc.wantDispatches, dispatches.Load())
 			}
 			if tc.wantAction != ActionNone {
 				if got.PRNumber != tc.prNumber {
@@ -204,22 +229,35 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			if st.Approved != tc.wantApproved {
 				t.Errorf("expected Approved=%v, got %v", tc.wantApproved, st.Approved)
 			}
+			if st.Conflicting != tc.wantConflicting {
+				t.Errorf("expected Conflicting=%v, got %v", tc.wantConflicting, st.Conflicting)
+			}
+			if tc.wantCIFixCount != 0 && st.CIFixCount != tc.wantCIFixCount {
+				t.Errorf("expected CIFixCount=%d, got %d", tc.wantCIFixCount, st.CIFixCount)
+			}
+			if tc.wantReviewFixCnt != 0 && st.ReviewFixCnt != tc.wantReviewFixCnt {
+				t.Errorf("expected ReviewFixCnt=%d, got %d", tc.wantReviewFixCnt, st.ReviewFixCnt)
+			}
+			if tc.wantRebaseCount != 0 && st.RebaseCount != tc.wantRebaseCount {
+				t.Errorf("expected RebaseCount=%d, got %d", tc.wantRebaseCount, st.RebaseCount)
+			}
 
 			if tc.wantDBEventType != "" {
 				events, err := db.RecentEvents(50)
 				if err != nil {
 					t.Fatalf("RecentEvents: %v", err)
 				}
+				// Each subtest uses a fresh temp DB so asserting on event type alone
+				// is sufficient — there is no cross-contamination between subtests.
 				found := false
-				expectedPrefix := fmt.Sprintf("PR #%d", tc.prNumber)
 				for _, e := range events {
-					if string(e.Type) == string(tc.wantDBEventType) && strings.Contains(e.Message, expectedPrefix) {
+					if string(e.Type) == string(tc.wantDBEventType) {
 						found = true
 						break
 					}
 				}
 				if !found {
-					t.Errorf("expected DB event %q for PR #%d, found none", tc.wantDBEventType, tc.prNumber)
+					t.Errorf("expected DB event %q, found none", tc.wantDBEventType)
 				}
 			}
 		})
