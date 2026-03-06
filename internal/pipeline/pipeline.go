@@ -557,7 +557,7 @@ Your previous implementation had issues identified by the %s:
 	fmt.Fprintf(&b, `## Instructions
 
 1. Fix ALL the issues listed above
-2. Do NOT run tests or linters — Temper will verify automatically after you finish
+2. Do NOT run builds, tests, or linters — Temper will verify automatically after you finish
 3. Commit your fixes with a clear message
 4. Push to the branch: %s
 

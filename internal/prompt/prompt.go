@@ -145,7 +145,7 @@ Main repository: {{.Bead.AnvilPath}}
 
 1. **Implement the task** described above fully and completely
 2. **Follow the repository's coding standards** (see context below)
-3. **Do NOT run tests or linters** — the Temper verification step runs build, lint, and test checks automatically after you finish. Focus your time on implementation.
+3. **Do NOT run builds, tests, or linters** — the Temper verification step runs build, lint, and test checks automatically after you finish. Focus your time on implementation.
 4. **Commit your changes** with a clear commit message referencing the bead:
    - Format: "feat: <description>" or "fix: <description>"
    - Include "Bead: {{.Bead.BeadID}}" in the commit body
