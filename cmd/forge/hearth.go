@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -30,13 +29,8 @@ var hearthCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		ctx, cancel := context.WithCancel(rootCtx)
-		defer cancel()
-
 		ds := &hearth.DataSource{
-			DB:     db,
-			Anvils: cfg.Anvils,
-			Ctx:    ctx,
+			DB: db,
 		}
 
 		model := hearth.NewModel(ds)

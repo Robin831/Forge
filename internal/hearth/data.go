@@ -1,18 +1,14 @@
 package hearth
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/Robin831/Forge/internal/config"
-	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -24,9 +20,7 @@ type TickMsg time.Time
 
 // DataSource holds the dependencies needed to feed the TUI panels.
 type DataSource struct {
-	DB     *state.DB
-	Anvils map[string]config.AnvilConfig
-	Ctx    context.Context
+	DB *state.DB
 }
 
 // Tick returns a Bubbletea command that sends a TickMsg after the interval.
@@ -36,31 +30,26 @@ func Tick() tea.Cmd {
 	})
 }
 
-// FetchQueue polls bd ready for each anvil and returns a queue update message.
-// Results are sorted by priority (lowest number = highest priority).
-func FetchQueue(ctx context.Context, anvils map[string]config.AnvilConfig) tea.Cmd {
+// FetchQueue reads the daemon's cached queue from the state DB.
+// The daemon writes queue data on each poll cycle, so the Hearth TUI
+// always reflects the daemon's view without running its own bd ready calls.
+func FetchQueue(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
-		p := poller.New(anvils)
-		beads, _ := p.Poll(ctx)
-
-		var items []QueueItem
-		for _, b := range beads {
-			items = append(items, QueueItem{
-				BeadID:   b.ID,
-				Title:    b.Title,
-				Anvil:    b.Anvil,
-				Priority: b.Priority,
-				Status:   b.Status,
-			})
+		cached, err := db.QueueCache()
+		if err != nil {
+			return UpdateQueueMsg{Items: nil}
 		}
 
-		// Already sorted by poller, but ensure priority order
-		sort.Slice(items, func(i, j int) bool {
-			if items[i].Priority != items[j].Priority {
-				return items[i].Priority < items[j].Priority
-			}
-			return items[i].BeadID < items[j].BeadID
-		})
+		var items []QueueItem
+		for _, c := range cached {
+			items = append(items, QueueItem{
+				BeadID:   c.BeadID,
+				Title:    c.Title,
+				Anvil:    c.Anvil,
+				Priority: c.Priority,
+				Status:   c.Status,
+			})
+		}
 
 		return UpdateQueueMsg{Items: items}
 	}
@@ -298,9 +287,9 @@ func FetchEvents(db *state.DB, limit int) tea.Cmd {
 }
 
 // FetchAll returns a batch command that refreshes all three panels.
-func FetchAll(ctx context.Context, db *state.DB, anvils map[string]config.AnvilConfig) tea.Cmd {
+func FetchAll(db *state.DB) tea.Cmd {
 	return tea.Batch(
-		FetchQueue(ctx, anvils),
+		FetchQueue(db),
 		FetchWorkers(db),
 		FetchEvents(db, 100),
 	)

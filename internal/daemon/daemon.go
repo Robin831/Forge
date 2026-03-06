@@ -512,6 +512,21 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 	}
 
+	// Cache queue in SQLite so the Hearth TUI can read it without polling independently
+	var cacheItems []state.QueueItem
+	for _, b := range beads {
+		cacheItems = append(cacheItems, state.QueueItem{
+			BeadID:   b.ID,
+			Anvil:    b.Anvil,
+			Title:    b.Title,
+			Priority: b.Priority,
+			Status:   b.Status,
+		})
+	}
+	if err := d.db.ReplaceQueueCache(cacheItems); err != nil {
+		d.logger.Warn("failed to cache queue", "error", err)
+	}
+
 	// Track beads dispatched this poll cycle but not yet inserted into the DB.
 	// Without this, the DB-based capacity checks see stale counts and can
 	// over-dispatch before the first goroutine's InsertWorker call commits.

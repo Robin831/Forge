@@ -115,7 +115,7 @@ func (m *Model) Init() tea.Cmd {
 	// Start the data tick cycle and do an initial fetch
 	if m.data != nil {
 		cmds = append(cmds, Tick())
-		cmds = append(cmds, FetchAll(m.data.Ctx, m.data.DB, m.data.Anvils))
+		cmds = append(cmds, FetchAll(m.data.DB))
 	}
 
 	return tea.Batch(cmds...)
@@ -195,7 +195,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.data != nil {
 			return m, tea.Batch(
 				Tick(),
-				FetchAll(m.data.Ctx, m.data.DB, m.data.Anvils),
+				FetchAll(m.data.DB),
 			)
 		}
 	}
