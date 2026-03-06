@@ -81,6 +81,30 @@ func TestRenderWorkersDoesNotExceedSinglePanel(t *testing.T) {
 	}
 }
 
+func TestRenderWorkerActivityNewestFirst(t *testing.T) {
+	m := Model{
+		workers: []WorkerItem{
+			{
+				ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+				ActivityLines: []string{"oldest entry", "middle entry", "newest entry"},
+			},
+		},
+		workerScroll: 0,
+	}
+
+	// Use a large height so all lines are visible
+	rendered := m.renderWorkerActivity(80, 20)
+
+	oldestIdx := strings.Index(rendered, "oldest entry")
+	newestIdx := strings.Index(rendered, "newest entry")
+	if oldestIdx == -1 || newestIdx == -1 {
+		t.Fatal("expected both oldest and newest entries in rendered output")
+	}
+	if newestIdx >= oldestIdx {
+		t.Errorf("newest entry (pos %d) should appear before oldest entry (pos %d) in rendered output", newestIdx, oldestIdx)
+	}
+}
+
 func TestWordWrap(t *testing.T) {
 	tests := []struct {
 		name     string
