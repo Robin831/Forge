@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/provider"
@@ -358,6 +359,22 @@ func (db *DB) ActiveWorkerByBead(beadID string) (*Worker, error) {
 	return &workers[0], nil
 }
 
+// ActiveWorkerByBeadAndAnvil returns the non-terminal worker for a given bead
+// scoped to a specific anvil. Use this instead of ActiveWorkerByBead when
+// iterating per-anvil to avoid false positives when two anvils share bead IDs.
+func (db *DB) ActiveWorkerByBeadAndAnvil(beadID, anvil string) (*Worker, error) {
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
+		FROM workers WHERE bead_id = ? AND anvil = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')
+		LIMIT 1`, beadID, anvil)
+	if err != nil {
+		return nil, err
+	}
+	if len(workers) == 0 {
+		return nil, nil
+	}
+	return &workers[0], nil
+}
+
 // CompleteWorkersByBead marks all non-terminal workers for a bead as Done.
 func (db *DB) CompleteWorkersByBead(beadID string) error {
 	_, err := db.conn.Exec(
@@ -435,6 +452,30 @@ const (
 	PRClosed    PRStatus = "closed"
 	PRNeedsFix  PRStatus = "needs_fix"
 )
+
+// nonTerminalPRStatuses lists every PR status that is not yet resolved.
+// Both OpenPRs and HasOpenPRForBead must agree on this set — update here to
+// keep them in sync.
+var nonTerminalPRStatuses = []PRStatus{PROpen, PRApproved, PRNeedsFix}
+
+// nonTerminalPRStatusLiteral is the SQL IN-clause literal built once from
+// nonTerminalPRStatuses, e.g. ('open','approved','needs_fix'). Cached at
+// package init to avoid repeated allocations on per-bead hot paths.
+var nonTerminalPRStatusLiteral string
+
+func init() {
+	parts := make([]string, len(nonTerminalPRStatuses))
+	for i, s := range nonTerminalPRStatuses {
+		parts[i] = "'" + string(s) + "'"
+	}
+	nonTerminalPRStatusLiteral = "(" + strings.Join(parts, ",") + ")"
+}
+
+// nonTerminalPRStatusSQL returns the cached SQL IN-clause literal for
+// non-terminal PR statuses, e.g. ('open','approved','needs_fix').
+func nonTerminalPRStatusSQL() string {
+	return nonTerminalPRStatusLiteral
+}
 
 // PR represents a pull request entry.
 type PR struct {
@@ -524,7 +565,7 @@ func (db *DB) GetPRByNumber(anvil string, number int) (*PR, error) {
 // OpenPRs returns all PRs with non-terminal status.
 func (db *DB) OpenPRs() ([]PR, error) {
 	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, ci_passing
-		FROM prs WHERE status IN ('open', 'approved', 'needs_fix')
+		FROM prs WHERE status IN ` + nonTerminalPRStatusSQL() + `
 		ORDER BY created_at`)
 }
 
@@ -567,6 +608,19 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 		prs = append(prs, p)
 	}
 	return prs, rows.Err()
+}
+
+// HasOpenPRForBead returns true if there is a non-terminal PR for the given bead in the given anvil.
+func (db *DB) HasOpenPRForBead(beadID, anvil string) (bool, error) {
+	var exists bool
+	err := db.conn.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM prs WHERE bead_id = ? AND anvil = ? AND status IN `+nonTerminalPRStatusSQL()+` LIMIT 1)`,
+		beadID, anvil,
+	).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 // EventType categorizes events in the log.
@@ -617,6 +671,7 @@ const (
 	EventSchematicSkipped     EventType = "schematic_skipped"
 	EventDispatchCircuitBreak  EventType = "dispatch_circuit_break"
 	EventError                EventType = "error"
+	EventBeadRecovered        EventType = "bead_recovered"
 )
 
 // Event represents a logged event.

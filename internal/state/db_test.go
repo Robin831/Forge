@@ -441,6 +441,68 @@ func TestDB_DispatchCircuitBreaker(t *testing.T) {
 	}
 }
 
+func TestDB_HasOpenPRForBead(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// No PR exists
+	has, err := db.HasOpenPRForBead("bd-1", "anvil-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has {
+		t.Error("expected no open PR initially")
+	}
+
+	// Insert an open PR
+	if err := db.InsertPR(&PR{
+		Number: 42, Anvil: "anvil-1", BeadID: "bd-1",
+		Branch: "fix-1", Status: PROpen, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	has, err = db.HasOpenPRForBead("bd-1", "anvil-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Error("expected open PR to be found")
+	}
+
+	// Different anvil should not match
+	has, err = db.HasOpenPRForBead("bd-1", "anvil-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has {
+		t.Error("expected no match for different anvil")
+	}
+
+	// Merged PR should not count
+	pr2 := &PR{
+		Number: 43, Anvil: "anvil-2", BeadID: "bd-2",
+		Branch: "fix-2", Status: PRMerged, CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(pr2); err != nil {
+		t.Fatal(err)
+	}
+	has, err = db.HasOpenPRForBead("bd-2", "anvil-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has {
+		t.Error("merged PR should not count as open")
+	}
+}
+
 func TestDB_PendingRetries_ExcludesClarification(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {
