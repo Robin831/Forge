@@ -343,10 +343,8 @@ func (m *Model) renderWorkers(width, height int) string {
 	top := m.renderWorkerList(width, listHeight)
 	bottom := m.renderWorkerActivity(width, activityHeight)
 	combined := lipgloss.JoinVertical(lipgloss.Left, top, bottom)
-	// Hard-clamp output height to prevent any overflow from pushing
-	// sibling panels off screen; keep within the same height budget
-	// used by other columns.
-	return lipgloss.NewStyle().MaxHeight(height).Render(combined)
+
+	return combined
 }
 
 // renderWorkerList renders the top sub-panel: the list of active workers.

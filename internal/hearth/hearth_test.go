@@ -75,8 +75,8 @@ func TestRenderWorkersDoesNotExceedSinglePanel(t *testing.T) {
 	queueLines := strings.Count(strings.TrimRight(queuePanel, "\n"), "\n") + 1
 	workerLines := strings.Count(strings.TrimRight(workerPanel, "\n"), "\n") + 1
 
-	if workerLines > queueLines {
-		t.Errorf("renderWorkers produced %d lines, exceeding renderQueue's %d lines (contentHeight=%d)",
+	if workerLines != queueLines {
+		t.Errorf("renderWorkers produced %d lines, expected same as renderQueue's %d lines (contentHeight=%d)",
 			workerLines, queueLines, contentHeight)
 	}
 }
