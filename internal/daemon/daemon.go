@@ -558,7 +558,10 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 
 		// Skip beads that need clarification (analogous to needs_human)
-		if d.isBeadClarificationNeeded(bead.ID, bead.Anvil) {
+		if needed, err := d.isBeadClarificationNeeded(bead.ID, bead.Anvil); err != nil {
+			d.logger.Error("checking clarification status", "bead", bead.ID, "anvil", bead.Anvil, "error", err)
+			continue // fail-safe: skip dispatch on DB errors
+		} else if needed {
 			continue
 		}
 
@@ -887,7 +890,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 
 		// Block beads that need clarification (consistent with auto-dispatch behavior)
-		if d.isBeadClarificationNeeded(targetBead.ID, targetBead.Anvil) {
+		needed, err := d.isBeadClarificationNeeded(targetBead.ID, targetBead.Anvil)
+		if err != nil {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to check clarification status for %q: %v", targetBead.ID, err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if needed {
 			d.activeBeads.Delete(targetBead.ID)
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q needs clarification; use 'forge queue unclarify' to clear", targetBead.ID)})
 			return ipc.Response{Type: "error", Payload: msg}
@@ -1116,16 +1125,16 @@ func pidFilePath() (string, error) {
 }
 
 // isBeadClarificationNeeded checks the state DB for a clarification_needed flag on a bead.
-func (d *Daemon) isBeadClarificationNeeded(beadID, anvil string) bool {
+// Returns (needed, error) so callers can distinguish "clarification needed" from "DB error".
+func (d *Daemon) isBeadClarificationNeeded(beadID, anvil string) (bool, error) {
 	r, err := d.db.GetRetry(beadID, anvil)
 	if err != nil {
-		d.logger.Error("checking clarification status", "bead", beadID, "anvil", anvil, "error", err)
-		return true // fail-safe: treat DB errors as clarification needed to avoid dispatching
+		return false, fmt.Errorf("checking clarification status for %s: %w", beadID, err)
 	}
 	if r == nil {
-		return false // no record means no flag
+		return false, nil
 	}
-	return r.ClarificationNeeded
+	return r.ClarificationNeeded, nil
 }
 
 // shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.

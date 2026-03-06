@@ -199,7 +199,6 @@ CREATE TABLE IF NOT EXISTS retries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_retries_needs_human ON retries(needs_human);
-CREATE INDEX IF NOT EXISTS idx_retries_clarification ON retries(clarification_needed);
 
 CREATE TABLE IF NOT EXISTS bead_costs (
     bead_id          TEXT NOT NULL,
@@ -809,20 +808,30 @@ func (db *DB) ClarificationNeededBeads() ([]RetryRecord, error) {
 }
 
 // SetClarificationNeeded marks or clears the clarification_needed flag for a bead.
-// If no retry record exists, one is created with the flag set.
+// When needed=true and no retry record exists, one is created with the flag set.
+// When needed=false, only existing records are updated (no row is created).
 func (db *DB) SetClarificationNeeded(beadID, anvil string, needed bool, reason string) error {
-	clarNeeded := 0
+	now := time.Now().Format(time.RFC3339)
+
 	if needed {
-		clarNeeded = 1
+		_, err := db.conn.Exec(
+			`INSERT INTO retries (bead_id, anvil, retry_count, needs_human, clarification_needed, last_error, updated_at)
+			 VALUES (?, ?, 0, 0, ?, ?, ?)
+			 ON CONFLICT(bead_id, anvil) DO UPDATE SET
+				clarification_needed = excluded.clarification_needed,
+				last_error = CASE WHEN excluded.clarification_needed = 1 THEN excluded.last_error ELSE last_error END,
+				updated_at = excluded.updated_at`,
+			beadID, anvil, 1, reason, now,
+		)
+		return err
 	}
+
+	// When clearing clarification_needed, only update existing rows; do not create new retries records.
 	_, err := db.conn.Exec(
-		`INSERT INTO retries (bead_id, anvil, retry_count, needs_human, clarification_needed, last_error, updated_at)
-		 VALUES (?, ?, 0, 0, ?, ?, ?)
-		 ON CONFLICT(bead_id, anvil) DO UPDATE SET
-			clarification_needed = excluded.clarification_needed,
-			last_error = CASE WHEN excluded.clarification_needed = 1 THEN excluded.last_error ELSE last_error END,
-			updated_at = excluded.updated_at`,
-		beadID, anvil, clarNeeded, reason, time.Now().Format(time.RFC3339),
+		`UPDATE retries
+		 SET clarification_needed = 0, updated_at = ?
+		 WHERE bead_id = ? AND anvil = ?`,
+		now, beadID, anvil,
 	)
 	return err
 }

@@ -213,7 +213,9 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 		assert.True(t, r.ClarificationNeeded)
 
 		// isBeadClarificationNeeded should return true
-		assert.True(t, d.isBeadClarificationNeeded("TEST-CLAR", "test-anvil"))
+		needed, err := d.isBeadClarificationNeeded("TEST-CLAR", "test-anvil")
+		require.NoError(t, err)
+		assert.True(t, needed)
 
 		// Clear
 		payload, _ = json.Marshal(ipc.ClarificationPayload{
@@ -227,11 +229,15 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 		assert.Equal(t, "ok", resp.Type)
 
 		// Verify cleared
-		assert.False(t, d.isBeadClarificationNeeded("TEST-CLAR", "test-anvil"))
+		needed, err = d.isBeadClarificationNeeded("TEST-CLAR", "test-anvil")
+		require.NoError(t, err)
+		assert.False(t, needed)
 	})
 
 	t.Run("isBeadClarificationNeeded returns false for unknown bead", func(t *testing.T) {
-		assert.False(t, d.isBeadClarificationNeeded("UNKNOWN", "test-anvil"))
+		needed, err := d.isBeadClarificationNeeded("UNKNOWN", "test-anvil")
+		require.NoError(t, err)
+		assert.False(t, needed)
 	})
 
 	t.Run("successful dispatch via cache", func(t *testing.T) {
