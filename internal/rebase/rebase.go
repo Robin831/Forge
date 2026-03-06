@@ -34,6 +34,9 @@ type Params struct {
 	PRNumber int
 	// DB for event logging (may be nil).
 	DB *state.DB
+	// WorkerID is the state DB worker ID, used to update the log path
+	// so the Hearth TUI can display live activity.
+	WorkerID string
 	// ExtraFlags for the AI CLI.
 	ExtraFlags []string
 	// Providers is the ordered list of AI providers to try.
@@ -102,6 +105,9 @@ func (p *Params) rebaseWithSmith(ctx context.Context, providers []provider.Provi
 		process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
 		if err != nil {
 			return fmt.Errorf("spawning Smith (%s): %w", pv.Label(), err)
+		}
+		if p.WorkerID != "" && p.DB != nil {
+			_ = p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath)
 		}
 		result := process.Wait()
 		if result.ResultSubtype == "success" && !result.IsError {

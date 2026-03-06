@@ -1,6 +1,8 @@
 package hearth
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -102,6 +104,82 @@ func TestRenderWorkerActivityNewestFirst(t *testing.T) {
 	}
 	if newestIdx >= oldestIdx {
 		t.Errorf("newest entry (pos %d) should appear before oldest entry (pos %d) in rendered output", newestIdx, oldestIdx)
+	}
+}
+
+func TestParseWorkerActivityClaude(t *testing.T) {
+	// Claude stream-json format: assistant events with nested content blocks
+	logContent := `{"type":"system","subtype":"init","session_id":"abc"}
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Let me analyze this code"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/test.go"}}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"I found the issue in the code."}]}}
+{"type":"result","subtype":"success"}
+`
+	logPath := filepath.Join(t.TempDir(), "smith.log")
+	if err := os.WriteFile(logPath, []byte(logContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := parseWorkerActivity(logPath, 100)
+	if len(entries) == 0 {
+		t.Fatal("expected entries from Claude log, got none")
+	}
+
+	// Should have: [think], [tool], [text], [result]
+	wantPrefixes := []string{"[think]", "[tool]", "[text]", "[result]"}
+	if len(entries) != len(wantPrefixes) {
+		t.Fatalf("got %d entries, want %d: %v", len(entries), len(wantPrefixes), entries)
+	}
+	for i, prefix := range wantPrefixes {
+		if !strings.HasPrefix(entries[i], prefix) {
+			t.Errorf("entry[%d] = %q, want prefix %q", i, entries[i], prefix)
+		}
+	}
+}
+
+func TestParseWorkerActivityGemini(t *testing.T) {
+	// Gemini format: top-level message, tool_use, tool_result events
+	logContent := `{"type":"init","timestamp":"2026-01-01T00:00:00Z","session_id":"xyz","model":"gemini-3"}
+{"type":"message","timestamp":"2026-01-01T00:00:01Z","role":"user","content":"Do the task"}
+{"type":"message","timestamp":"2026-01-01T00:00:02Z","role":"assistant","content":"I will ","delta":true}
+{"type":"message","timestamp":"2026-01-01T00:00:03Z","role":"assistant","content":"read the file.","delta":true}
+{"type":"tool_use","timestamp":"2026-01-01T00:00:04Z","tool_name":"read_file","tool_id":"t1","parameters":{"path":"/tmp/test.go"}}
+{"type":"tool_result","timestamp":"2026-01-01T00:00:05Z","tool_id":"t1","output":"file contents"}
+{"type":"message","timestamp":"2026-01-01T00:00:06Z","role":"assistant","content":"Done fixing it.","delta":true}
+{"type":"tool_use","timestamp":"2026-01-01T00:00:07Z","tool_name":"write_file","tool_id":"t2","parameters":{"path":"/tmp/test.go","content":"fixed"}}
+{"type":"tool_result","timestamp":"2026-01-01T00:00:08Z","tool_id":"t2","output":"ok"}
+`
+	logPath := filepath.Join(t.TempDir(), "smith.log")
+	if err := os.WriteFile(logPath, []byte(logContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := parseWorkerActivity(logPath, 100)
+	if len(entries) == 0 {
+		t.Fatal("expected entries from Gemini log, got none")
+	}
+
+	// Should have: [text] (accumulated deltas), [tool] read_file, [text], [tool] write_file
+	wantPrefixes := []string{"[text]", "[tool] read_file", "[text]", "[tool] write_file"}
+	if len(entries) != len(wantPrefixes) {
+		t.Fatalf("got %d entries, want %d: %v", len(entries), len(wantPrefixes), entries)
+	}
+	for i, prefix := range wantPrefixes {
+		if !strings.HasPrefix(entries[i], prefix) {
+			t.Errorf("entry[%d] = %q, want prefix %q", i, entries[i], prefix)
+		}
+	}
+
+	// Verify accumulated text: "I will read the file."
+	if !strings.Contains(entries[0], "I will read the file.") {
+		t.Errorf("expected accumulated text in entry[0], got %q", entries[0])
+	}
+}
+
+func TestParseWorkerActivityEmptyLogPath(t *testing.T) {
+	entries := parseWorkerActivity("", 100)
+	if entries != nil {
+		t.Errorf("expected nil for empty log path, got %v", entries)
 	}
 }
 

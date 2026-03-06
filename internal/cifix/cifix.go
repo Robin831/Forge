@@ -39,6 +39,9 @@ type FixParams struct {
 	Branch string
 	// DB for state tracking.
 	DB *state.DB
+	// WorkerID is the state DB worker ID, used to update the log path
+	// so the Hearth TUI can display live activity.
+	WorkerID string
 	// ExtraFlags for Claude CLI.
 	ExtraFlags []string
 	// TemperConfig overrides auto-detection if set.
@@ -120,6 +123,9 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				result.Error = fmt.Errorf("spawning smith (%s) for CI fix: %w", pv.Kind, err)
 				result.Duration = time.Since(start)
 				return result
+			}
+			if p.WorkerID != "" && p.DB != nil {
+				_ = p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath)
 			}
 			smithResult = process.Wait()
 			// Treat a genuine success event as not rate-limited.
