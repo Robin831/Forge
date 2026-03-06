@@ -250,7 +250,8 @@ CREATE TABLE IF NOT EXISTS queue_cache (
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
 // stored in the SQLite state database. It always includes 9 fractional
-// digits so that lexicographic ordering of TEXT values matches
+// digits so that, when all timestamps share the same offset (typically
+// normalized to UTC), lexicographic ordering of TEXT values matches
 // chronological ordering.
 const dbTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
@@ -1061,7 +1062,7 @@ func (db *DB) ClearRetry(beadID, anvil string) error {
 // ResetRetry clears the needs_human and clarification_needed flags and resets
 // the retry count to zero, allowing the bead to be dispatched again.
 func (db *DB) ResetRetry(beadID, anvil string) error {
-	now := time.Now().Format(time.RFC3339)
+	now := time.Now().Format(dbTimeLayout)
 	res, err := db.conn.Exec(
 		`UPDATE retries SET needs_human = 0, clarification_needed = 0, retry_count = 0, dispatch_failures = 0,
 		        next_retry = NULL, last_error = '', updated_at = ?

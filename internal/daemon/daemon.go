@@ -147,14 +147,17 @@ func New(cfg *config.Config) (*Daemon, error) {
 	wtMgr := worktree.NewManager()
 
 	webhookURL := cfg.Notifications.TeamsWebhookURL
-	if strings.TrimSpace(webhookURL) != "" {
-		formatted, err := notify.FormatWebhookURL(webhookURL)
+	trimmedWebhookURL := strings.TrimSpace(webhookURL)
+	if cfg.Notifications.Enabled && trimmedWebhookURL != "" {
+		formatted, err := notify.FormatWebhookURL(trimmedWebhookURL)
 		if err != nil {
 			db.Close()
 			logFile.Close()
 			return nil, fmt.Errorf("invalid Teams webhook URL: %w", err)
 		}
 		webhookURL = formatted
+	} else if !cfg.Notifications.Enabled && trimmedWebhookURL != "" {
+		logger.Warn("Teams webhook URL is set but notifications are disabled; skipping URL validation")
 	}
 
 	notifier := notify.NewNotifier(notify.Config{
