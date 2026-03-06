@@ -611,6 +611,22 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	})
 
 	if outcome.Error != nil {
+		if outcome.RateLimited {
+			// Bead was released back to open by the pipeline. Wait for the
+			// configured backoff so this goroutine holds the activeBeads slot
+			// and prevents an immediate re-dispatch by the next poll tick.
+			backoff := d.cfg.Settings.RateLimitBackoff
+			if backoff <= 0 {
+				backoff = 5 * time.Minute
+			}
+			d.logger.Warn("all providers rate limited; bead released to open, backing off",
+				"bead", bead.ID, "backoff", backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+			}
+			return
+		}
 		d.logger.Error("pipeline error", "bead", bead.ID, "error", outcome.Error)
 		return
 	}

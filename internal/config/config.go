@@ -49,6 +49,11 @@ type SettingsConfig struct {
 	// When a provider signals a rate limit the next one in the list is tried.
 	// Defaults to ["claude", "gemini"] when empty.
 	Providers     []string      `mapstructure:"providers"`
+	// RateLimitBackoff is how long dispatchBead waits after releasing a bead
+	// back to open when all providers are rate limited. During this window the
+	// bead slot stays reserved (activeBeads) so the poller does not
+	// immediately re-claim it. Defaults to 5 minutes.
+	RateLimitBackoff time.Duration `mapstructure:"rate_limit_backoff"`
 }
 
 // NotificationsConfig holds webhook and notification settings.
@@ -64,12 +69,13 @@ func Defaults() Config {
 	return Config{
 		Anvils: make(map[string]AnvilConfig),
 		Settings: SettingsConfig{
-			PollInterval:   5 * time.Minute,
-			SmithTimeout:   30 * time.Minute,
-			MaxTotalSmiths: 4,
+			PollInterval:     5 * time.Minute,
+			SmithTimeout:     30 * time.Minute,
+			MaxTotalSmiths:   4,
 			MaxReviewAttempts: 2,
-			ClaudeFlags:    []string{},
+			ClaudeFlags:      []string{},
 			// No Providers default here — provider.FromConfig handles empty slice.
+			RateLimitBackoff: 5 * time.Minute,
 		},
 	}
 }
@@ -86,6 +92,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.max_total_smiths", 4)
 	v.SetDefault("settings.max_review_attempts", 2)
 	v.SetDefault("settings.claude_flags", []string{})
+	v.SetDefault("settings.rate_limit_backoff", "5m")
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	v.SetEnvPrefix("FORGE")
@@ -142,6 +149,13 @@ func Load(configFile string) (*Config, error) {
 			return nil, fmt.Errorf("invalid smith_timeout %q: %w", raw, err)
 		}
 		cfg.Settings.SmithTimeout = d
+	}
+	if raw := v.GetString("settings.rate_limit_backoff"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid rate_limit_backoff %q: %w", raw, err)
+		}
+		cfg.Settings.RateLimitBackoff = d
 	}
 
 	return &cfg, nil
@@ -230,6 +244,7 @@ func Save(cfg *Config, path string) error {
 	v.Set("settings.max_total_smiths", cfg.Settings.MaxTotalSmiths)
 	v.Set("settings.max_review_attempts", cfg.Settings.MaxReviewAttempts)
 	v.Set("settings.claude_flags", cfg.Settings.ClaudeFlags)
+	v.Set("settings.rate_limit_backoff", cfg.Settings.RateLimitBackoff.String())
 
 	// Ensure directory exists
 	dir := filepath.Dir(path)
