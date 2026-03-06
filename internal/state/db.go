@@ -587,13 +587,13 @@ const (
 	EventRebaseStarted  EventType = "rebase_started"
 	EventRebaseSuccess  EventType = "rebase_success"
 	EventRebaseFailed   EventType = "rebase_failed"
-	EventLifecycleExhausted    EventType = "lifecycle_exhausted"
-	EventSchematicStarted      EventType = "schematic_started"
-	EventSchematicDone         EventType = "schematic_done"
-	EventSchematicSkipped      EventType = "schematic_skipped"
-	EventClarificationNeeded   EventType = "clarification_needed"
-	EventClarificationCleared  EventType = "clarification_cleared"
-	EventError                 EventType = "error"
+	EventLifecycleExhausted   EventType = "lifecycle_exhausted"
+	EventClarificationNeeded  EventType = "clarification_needed"
+	EventClarificationCleared EventType = "clarification_cleared"
+	EventSchematicStarted     EventType = "schematic_started"
+	EventSchematicDone        EventType = "schematic_done"
+	EventSchematicSkipped     EventType = "schematic_skipped"
+	EventError                EventType = "error"
 )
 
 // Event represents a logged event.
