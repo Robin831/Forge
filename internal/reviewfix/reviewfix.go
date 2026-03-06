@@ -249,7 +249,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		}
 		if err := ghpr.RequestReReview(ctx, p.WorktreePath, p.PRNumber, reviewer); err != nil {
 			log.Printf("[reviewfix] PR #%d: Warning: could not request re-review from %s: %v", p.PRNumber, reviewer, err)
-			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+			_ = p.DB.LogEvent(state.EventReReviewRequestFailed,
 				fmt.Sprintf("PR #%d: re-review request failed: %v", p.PRNumber, err),
 				p.BeadID, p.AnvilName)
 		} else {
