@@ -63,7 +63,8 @@ type SettingsConfig struct {
 	// analysed before Smith starts. Default: false.
 	SchematicEnabled bool `mapstructure:"schematic_enabled"`
 	// SchematicWordThreshold is the minimum word count in a bead description
-	// to trigger automatic schematic analysis. Default: 100.
+	// to trigger automatic schematic analysis. When this value is zero or
+	// unset, the daemon applies an effective default of 100.
 	SchematicWordThreshold int `mapstructure:"schematic_word_threshold"`
 }
 

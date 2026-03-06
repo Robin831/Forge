@@ -616,11 +616,9 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		if wordThreshold <= 0 {
 			wordThreshold = 100
 		}
-		schemCfg := schematic.Config{
-			Enabled:       true,
-			WordThreshold: wordThreshold,
-			MaxTurns:      10,
-		}
+		schemCfg := schematic.DefaultConfig()
+		schemCfg.Enabled = true
+		schemCfg.WordThreshold = wordThreshold
 		pipelineParams.SchematicConfig = &schemCfg
 	}
 

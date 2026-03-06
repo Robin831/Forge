@@ -202,10 +202,12 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 		// Create sub-beads via bd
 		subIDs, err := createSubBeads(ctx, bead, verdict.SubTasks, anvilPath)
 		if err != nil {
-			// Failed to create sub-beads — fall back to plan
-			log.Printf("[schematic:%s] Failed to create sub-beads: %v — treating as plan", bead.ID, err)
+			// Failed to create sub-beads — fall back to plan.
+			// Log partial IDs so an operator can clean up orphaned sub-beads.
+			log.Printf("[schematic:%s] Failed to create sub-beads: %v (partial IDs: %v) — treating as plan", bead.ID, err, subIDs)
 			result.Action = ActionPlan
 			result.Plan = strings.Join(verdict.SubTasks, "\n")
+			result.SubBeads = subIDs // preserve partial IDs for caller visibility
 			result.Reason = fmt.Sprintf("Decomposition failed (%v), using tasks as plan", err)
 		} else {
 			result.SubBeads = subIDs
