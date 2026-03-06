@@ -898,7 +898,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		if needed {
 			d.activeBeads.Delete(targetBead.ID)
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q needs clarification; use 'forge queue unclarify' to clear", targetBead.ID)})
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q needs clarification; use 'forge queue unclarify --anvil %s %s' to clear", targetBead.ID, targetBead.Anvil, targetBead.ID)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 

@@ -17,6 +17,7 @@ func init() {
 	queueClarifyCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
 	queueClarifyCmd.Flags().StringP("reason", "r", "", "Why clarification is needed")
 	_ = queueClarifyCmd.MarkFlagRequired("anvil")
+	_ = queueClarifyCmd.MarkFlagRequired("reason")
 	queueUnclarifyCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
 	_ = queueUnclarifyCmd.MarkFlagRequired("anvil")
 	queueCmd.AddCommand(queueRunCmd)

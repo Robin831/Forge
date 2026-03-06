@@ -819,7 +819,7 @@ func (db *DB) SetClarificationNeeded(beadID, anvil string, needed bool, reason s
 			 VALUES (?, ?, 0, 0, ?, ?, ?)
 			 ON CONFLICT(bead_id, anvil) DO UPDATE SET
 				clarification_needed = excluded.clarification_needed,
-				last_error = CASE WHEN excluded.clarification_needed = 1 THEN excluded.last_error ELSE last_error END,
+				last_error = excluded.last_error,
 				updated_at = excluded.updated_at`,
 			beadID, anvil, 1, reason, now,
 		)

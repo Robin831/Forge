@@ -252,7 +252,7 @@ func TestDB_SetClarificationNeeded(t *testing.T) {
 	if r.ClarificationNeeded {
 		t.Error("expected ClarificationNeeded=false after clearing")
 	}
-	// Reason should be preserved when clearing (the SQL uses CASE)
+	// Reason should be preserved when clearing; clearing clarification does not overwrite LastError
 	if r.LastError != "which auth library?" {
 		t.Errorf("expected reason preserved after clear, got %q", r.LastError)
 	}
