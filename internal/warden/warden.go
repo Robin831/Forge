@@ -300,15 +300,15 @@ func parseVerdict(output string, result *ReviewResult) {
 	case strings.Contains(norm, `"verdict":"reject"`):
 		result.Verdict = VerdictReject
 		result.Summary = "Inferred rejection from output"
-	case strings.Contains(norm, `"verdict":"request_changes"`) ||
-		strings.Contains(norm, `"verdict":"requestchanges"`):
-		result.Verdict = VerdictRequestChanges
-		result.Summary = "Inferred request_changes from output"
 	default:
+		// Do NOT scan for "request_changes" in prose — the prompt itself advertises
+		// that verdict value, so any parse failure would spuriously trigger it.
+		// If JSON extraction failed entirely, default to approve for human review.
 		result.Verdict = VerdictApprove
 		result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
 	}
 }
+
 
 // extractJSON finds the first JSON object in the text that looks like a verdict.
 func extractJSON(text string) string {
