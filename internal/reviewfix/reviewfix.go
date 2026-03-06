@@ -76,6 +76,12 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	start := time.Now()
 	result := &FixResult{}
 
+	// Validate MaxAttempts to avoid silently skipping all attempts when unset or invalid.
+	if p.MaxAttempts <= 0 {
+		log.Printf("[reviewfix] PR #%d: MaxAttempts=%d is not positive; defaulting to 1 attempt", p.PRNumber, p.MaxAttempts)
+		p.MaxAttempts = 1
+	}
+
 	// Step 1: Fetch review comments
 	comments, err := fetchReviewComments(ctx, p.WorktreePath, p.PRNumber)
 	if err != nil {

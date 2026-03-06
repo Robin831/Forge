@@ -67,7 +67,7 @@ func Defaults() Config {
 			PollInterval:   5 * time.Minute,
 			SmithTimeout:   30 * time.Minute,
 			MaxTotalSmiths: 4,
-			MaxReviewAttempts: 5,
+			MaxReviewAttempts: 2,
 			ClaudeFlags:    []string{},
 			// No Providers default here — provider.FromConfig handles empty slice.
 		},
@@ -84,7 +84,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.poll_interval", "5m")
 	v.SetDefault("settings.smith_timeout", "30m")
 	v.SetDefault("settings.max_total_smiths", 4)
-	v.SetDefault("settings.max_review_attempts", 5)
+	v.SetDefault("settings.max_review_attempts", 2)
 	v.SetDefault("settings.claude_flags", []string{})
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
