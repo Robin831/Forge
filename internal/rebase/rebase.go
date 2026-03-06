@@ -76,40 +76,65 @@ func Rebase(ctx context.Context, p Params) Result {
 	// Step 2: abort any in-progress rebase to leave the tree clean.
 	_ = runGit(p.WorktreePath, "rebase", "--abort")
 
-	// Step 3: start the rebase.
+	// Step 3: start the rebase and loop through all conflict rounds.
+	// A rebase with N commits can produce N separate conflict stops; we call
+	// Smith for each round and keep calling --continue until git exits 0.
 	rebaseTarget := "origin/" + p.BaseBranch
 	res := runGit(p.WorktreePath, "rebase", rebaseTarget)
 	if res.err != nil {
-		// Check whether git left conflicted files that Smith can resolve.
-		conflicted := conflictedFiles(p.WorktreePath)
-		if len(conflicted) == 0 {
-			_ = runGit(p.WorktreePath, "rebase", "--abort")
-			return p.fail(fmt.Sprintf("git rebase %s failed: %s", rebaseTarget, firstLine(res.output)), res.err)
-		}
+		const maxConflictRounds = 20
+		for round := 1; round <= maxConflictRounds; round++ {
+			conflicted := conflictedFiles(p.WorktreePath)
+			if len(conflicted) == 0 {
+				// No conflict markers — git stopped for a different reason.
+				_ = runGit(p.WorktreePath, "rebase", "--abort")
+				return p.fail(fmt.Sprintf("git rebase %s failed (round %d, no conflicts): %s",
+					rebaseTarget, round, firstLine(res.output)), res.err)
+			}
 
-		log.Printf("[rebase] PR #%d: %d conflicted files — invoking Smith", p.PRNumber, len(conflicted))
-		if err := p.resolveWithSmith(ctx, conflicted, providers); err != nil {
-			_ = runGit(p.WorktreePath, "rebase", "--abort")
-			return p.fail(fmt.Sprintf("Smith could not resolve conflicts: %s", firstLine(err.Error())), err)
-		}
+			log.Printf("[rebase] PR #%d round %d: %d conflicted file(s) — invoking Smith",
+				p.PRNumber, round, len(conflicted))
+			if err := p.resolveWithSmith(ctx, conflicted, providers); err != nil {
+				_ = runGit(p.WorktreePath, "rebase", "--abort")
+				return p.fail(fmt.Sprintf("Smith could not resolve conflicts (round %d): %s",
+					round, firstLine(err.Error())), err)
+			}
 
-		// Stage all resolved files and continue the rebase.
-		if r := runGit(p.WorktreePath, "add", "."); r.err != nil {
-			_ = runGit(p.WorktreePath, "rebase", "--abort")
-			return p.fail(fmt.Sprintf("git add after Smith: %s", firstLine(r.output)), r.err)
-		}
-		// Use GIT_EDITOR=true so --continue never opens an interactive editor.
-		continueCmd := exec.Command("git", "rebase", "--continue")
-		continueCmd.Dir = p.WorktreePath
-		continueCmd.Env = append(continueCmd.Environ(), "GIT_EDITOR=true")
-		executil.HideWindow(continueCmd)
-		out, err := continueCmd.CombinedOutput()
-		if err != nil {
-			_ = runGit(p.WorktreePath, "rebase", "--abort")
-			return p.fail(
-				fmt.Sprintf("git rebase --continue failed: %s", firstLine(strings.TrimSpace(string(out)))),
-				err,
-			)
+			if r := runGit(p.WorktreePath, "add", "."); r.err != nil {
+				_ = runGit(p.WorktreePath, "rebase", "--abort")
+				return p.fail(fmt.Sprintf("git add after Smith (round %d): %s",
+					round, firstLine(r.output)), r.err)
+			}
+
+			// --continue: applies the next commit. Exits 0 when the rebase is
+			// fully complete; exits non-zero when another conflict round follows.
+			// GIT_EDITOR=true prevents an interactive editor opening on Windows.
+			continueCmd := exec.Command("git", "rebase", "--continue")
+			continueCmd.Dir = p.WorktreePath
+			continueCmd.Env = append(continueCmd.Environ(), "GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true")
+			executil.HideWindow(continueCmd)
+			out, err := continueCmd.CombinedOutput()
+			continueOut := strings.TrimSpace(string(out))
+			if err == nil {
+				// Rebase complete — break out of the loop.
+				log.Printf("[rebase] PR #%d: rebase complete after %d conflict round(s)", p.PRNumber, round)
+				break
+			}
+
+			// git rebase --continue exits non-zero for two reasons:
+			//   a) more conflict rounds remain  → conflictedFiles() will be non-empty next iteration
+			//   b) genuine failure (bad state)  → conflictedFiles() will be empty next iteration
+			// Log what git said and let the next iteration decide.
+			log.Printf("[rebase] PR #%d round %d: --continue output (will retry if more conflicts): %s",
+				p.PRNumber, round, firstLine(continueOut))
+			// Store the latest continue result to propagate if no conflicts found next round.
+			res = cmdResult{output: continueOut, err: err}
+
+			if round == maxConflictRounds {
+				_ = runGit(p.WorktreePath, "rebase", "--abort")
+				return p.fail(fmt.Sprintf("rebase exceeded %d conflict rounds; giving up", maxConflictRounds),
+					fmt.Errorf("too many conflict rounds"))
+			}
 		}
 	}
 
