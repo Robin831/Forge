@@ -546,6 +546,115 @@ func TestExtractNeedsHuman(t *testing.T) {
 	}
 }
 
+// TestWardenFeedback_PassedToSmithOnRetry verifies that when Warden requests
+// changes, the feedback is included in the Smith prompt for the next iteration.
+func TestWardenFeedback_PassedToSmithOnRetry(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	var capturedPrompts []string
+	iteration := 0
+	params.SmithRunner = func(_ context.Context, _, promptText, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		capturedPrompts = append(capturedPrompts, promptText)
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
+	}
+
+	params.WardenReviewer = func(_ context.Context, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		iteration++
+		if iteration == 1 {
+			return &warden.ReviewResult{
+				Verdict: warden.VerdictRequestChanges,
+				Summary: "Missing error handling in foo.go",
+				Issues: []warden.ReviewIssue{
+					{Severity: "error", Message: "Unchecked error return from bar()", File: "foo.go", Line: 42},
+					{Severity: "warning", Message: "Missing nil check", File: "baz.go"},
+				},
+			}, nil
+		}
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	require.True(t, outcome.Success)
+	require.Len(t, capturedPrompts, 2, "Smith should be called twice (initial + retry)")
+
+	// First prompt should NOT contain feedback
+	assert.NotContains(t, capturedPrompts[0], "Previous Iteration Feedback")
+
+	// Second prompt should contain warden feedback
+	assert.Contains(t, capturedPrompts[1], "Previous Iteration Feedback")
+	assert.Contains(t, capturedPrompts[1], "Warden code review")
+	assert.Contains(t, capturedPrompts[1], "Missing error handling in foo.go")
+	assert.Contains(t, capturedPrompts[1], "Unchecked error return from bar()")
+	assert.Contains(t, capturedPrompts[1], "foo.go")
+	assert.Contains(t, capturedPrompts[1], "line 42")
+	assert.Contains(t, capturedPrompts[1], "Missing nil check")
+	// Verify repo context is still included (AGENTS.md etc. come from the builder)
+	assert.Contains(t, capturedPrompts[1], "autonomous AI developer")
+}
+
+// TestTemperFeedback_PassedToSmithOnRetry verifies that when Temper fails,
+// the failure details are included in the Smith prompt for the next iteration.
+func TestTemperFeedback_PassedToSmithOnRetry(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	var capturedPrompts []string
+	params.SmithRunner = func(_ context.Context, _, promptText, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		capturedPrompts = append(capturedPrompts, promptText)
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
+	}
+
+	temperIteration := 0
+	params.TemperRunner = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		temperIteration++
+		if temperIteration == 1 {
+			return &temper.Result{Passed: false, FailedStep: "test", Summary: "TestFoo failed: expected 42 got 0"}
+		}
+		return &temper.Result{Passed: true}
+	}
+	params.WardenReviewer = func(_ context.Context, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	require.True(t, outcome.Success)
+	require.Len(t, capturedPrompts, 2)
+
+	assert.NotContains(t, capturedPrompts[0], "Previous Iteration Feedback")
+	assert.Contains(t, capturedPrompts[1], "Previous Iteration Feedback")
+	assert.Contains(t, capturedPrompts[1], "build/test verification")
+	assert.Contains(t, capturedPrompts[1], "TestFoo failed")
+}
+
+// TestFormatWardenFeedback verifies the warden feedback formatting helper.
+func TestFormatWardenFeedback(t *testing.T) {
+	got := formatWardenFeedback("Two issues found.", []warden.ReviewIssue{
+		{Severity: "error", Message: "Missing tests", File: "foo.go", Line: 42},
+		{Severity: "warning", Message: "Unused import", File: "bar.go"},
+	})
+
+	assert.Contains(t, got, "Two issues found.")
+	assert.Contains(t, got, "[error]")
+	assert.Contains(t, got, "Missing tests")
+	assert.Contains(t, got, "foo.go")
+	assert.Contains(t, got, "line 42")
+	assert.Contains(t, got, "[warning]")
+	assert.Contains(t, got, "bar.go")
+
+	// No issues case
+	noIssues := formatWardenFeedback("Looks bad.", nil)
+	assert.Equal(t, "Looks bad.", noIssues)
+	assert.NotContains(t, noIssues, "Specific Issues")
+
+	// Empty summary and no issues should still yield some non-empty feedback,
+	// so that retry prompts are never completely blank.
+	emptySummaryNoIssues := formatWardenFeedback("", nil)
+	assert.NotEmpty(t, emptySummaryNoIssues)
+}
+
 // TestSchematic_PerAnvilDisable verifies that per-anvil SchematicEnabled=false
 // overrides the global setting.
 func TestSchematic_PerAnvilDisable(t *testing.T) {

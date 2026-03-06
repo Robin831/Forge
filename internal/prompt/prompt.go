@@ -38,6 +38,15 @@ type BeadContext struct {
 	// SchematicPlan is an optional implementation plan produced by the
 	// Schematic pre-worker. When non-empty it is included in the prompt.
 	SchematicPlan string
+	// Iteration is the current Smith-Warden cycle (1 = first attempt).
+	// On iteration 2+ the prompt includes prior feedback.
+	Iteration int
+	// PriorFeedback is pre-formatted feedback from the previous iteration
+	// (Warden review or Temper build/test failure). Set on iteration 2+.
+	PriorFeedback string
+	// PriorFeedbackSource describes where the feedback came from
+	// (e.g. "Warden review" or "build/test verification").
+	PriorFeedbackSource string
 }
 
 // Builder constructs prompts from templates and context.
@@ -182,6 +191,15 @@ Do NOT escalate for:
 - If you discover blocking issues, note them in your commit message
 - If the task is unclear, implement the most reasonable interpretation
 - Do not run tests, builds, or linters — Temper handles verification
+{{- if .Bead.PriorFeedback}}
+
+## Previous Iteration Feedback (from {{.Bead.PriorFeedbackSource}})
+
+This is iteration {{.Bead.Iteration}} — your previous attempt had issues. Fix ALL of the
+following problems while preserving the parts that were correct:
+
+{{.Bead.PriorFeedback}}
+{{- end}}
 {{- if .Bead.SchematicPlan}}
 
 ## Implementation Plan (from Schematic analysis)
