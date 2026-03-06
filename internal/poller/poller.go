@@ -155,11 +155,14 @@ func (p *BeadPoller) PollSingle(ctx context.Context, name string) ([]Bead, error
 	return pollAnvil(ctx, name, anvil)
 }
 
-// PollInProgress runs 'bd list --status=in_progress --json' in each anvil
-// and returns all in-progress beads, merged and sorted by priority.
-func (p *BeadPoller) PollInProgress(ctx context.Context) []Bead {
+// PollInProgress runs 'bd list --status=in_progress --json' in each anvil directory
+// concurrently. It returns all in-progress beads, merged and sorted by priority, along
+// with per-anvil results so callers can distinguish "no in-progress beads" from
+// "bd list failed" and log errors accordingly.
+func (p *BeadPoller) PollInProgress(ctx context.Context) ([]Bead, []AnvilResult) {
+	results := make([]AnvilResult, 0, len(p.anvils))
+
 	var mu sync.Mutex
-	var all []Bead
 	var wg sync.WaitGroup
 
 	for name, anvil := range p.anvils {
@@ -167,15 +170,17 @@ func (p *BeadPoller) PollInProgress(ctx context.Context) []Bead {
 		go func(name string, anvil config.AnvilConfig) {
 			defer wg.Done()
 			beads, err := pollInProgressAnvil(ctx, name, anvil)
-			if err != nil {
-				return // best-effort; skip failed anvils
-			}
 			mu.Lock()
-			all = append(all, beads...)
+			results = append(results, AnvilResult{Name: name, Beads: beads, Err: err})
 			mu.Unlock()
 		}(name, anvil)
 	}
 	wg.Wait()
+
+	var all []Bead
+	for _, r := range results {
+		all = append(all, r.Beads...)
+	}
 
 	sort.Slice(all, func(i, j int) bool {
 		if all[i].Priority != all[j].Priority {
@@ -183,7 +188,7 @@ func (p *BeadPoller) PollInProgress(ctx context.Context) []Bead {
 		}
 		return all[i].ID < all[j].ID
 	})
-	return all
+	return all, results
 }
 
 // pollInProgressAnvil runs 'bd list --status=in_progress --json' in one anvil directory.

@@ -1646,9 +1646,6 @@ func (db *DB) ReplaceQueueCacheForAnvils(anvils []string, items []QueueItem) err
 			labels = "[]"
 		}
 		section := string(item.Section)
-		if section == "" {
-			section = string(QueueSectionReady)
-		}
 		if _, err := stmt.Exec(
 			item.BeadID, item.Anvil, item.Title, item.Priority, item.Status, labels, section, now,
 		); err != nil {

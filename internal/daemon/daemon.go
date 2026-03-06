@@ -211,7 +211,7 @@ func anvilPathMap(cfg *config.Config) map[string]string {
 // missing from the state DB. This ensures Bellows monitors PRs even after a
 // DB reset or if the PR was created outside a recorded Forge pipeline session.
 func (d *Daemon) reconcileGitHubPRs(ctx context.Context) {
-	for anvilName, anvilCfg := range d.config().Anvils {
+	for anvilName, anvilCfg := range d.cfg.Load().Anvils {
 		if anvilCfg.Path == "" {
 			continue
 		}
@@ -274,8 +274,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	d.logger.Info("daemon started",
 		"pid", os.Getpid(),
-		"anvils", len(d.config().Anvils),
-		"poll_interval", d.config().Settings.PollInterval,
+		"anvils", len(d.cfg.Load().Anvils),
+		"poll_interval", d.cfg.Load().Settings.PollInterval,
 	)
 	d.db.LogEvent(state.EventDaemonStarted, "Forge daemon started", "", "")
 
@@ -328,7 +328,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	ctx, d.cancel = context.WithCancel(ctx)
 
 	// Main poll loop
-	pollInterval := d.config().Settings.PollInterval
+	pollInterval := d.cfg.Load().Settings.PollInterval
 	if pollInterval == 0 {
 		pollInterval = DefaultPollInterval
 	}
@@ -340,12 +340,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Start PR Monitor (Bellows)
 	monitorAnvils := make(map[string]string)
-	for name, a := range d.config().Anvils {
+	for name, a := range d.cfg.Load().Anvils {
 		if a.Path != "" {
 			monitorAnvils[name] = a.Path
 		}
 	}
-	d.bellowsMonitor = bellows.New(d.db, d.config().Settings.BellowsInterval, monitorAnvils)
+	d.bellowsMonitor = bellows.New(d.db, d.cfg.Load().Settings.BellowsInterval, monitorAnvils)
 	d.lifecycleMgr = lifecycle.New(d.db, d.logger, d.handleLifecycleAction)
 	d.lifecycleMgr.SetThresholds(
 		d.config().Settings.MaxCIFixAttempts,
@@ -405,7 +405,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.ActionRequest) {
 	d.logger.Info("lifecycle action requested", "action", req.Action, "pr", req.PRNumber, "bead", req.BeadID)
 
-	anvilCfg, ok := d.config().Anvils[req.Anvil]
+	anvilCfg, ok := d.cfg.Load().Anvils[req.Anvil]
 	if !ok {
 		d.logger.Error("unknown anvil in lifecycle action", "anvil", req.Anvil)
 		return
@@ -496,9 +496,9 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Branch:       req.Branch,
 				DB:           d.db,
 				WorkerID:     workerID,
-				MaxAttempts:  d.config().Settings.MaxReviewAttempts,
-				ExtraFlags:   d.config().Settings.ClaudeFlags,
-				Providers:    provider.FromConfig(d.config().Settings.Providers),
+				MaxAttempts:  d.cfg.Load().Settings.MaxReviewAttempts,
+				ExtraFlags:   d.cfg.Load().Settings.ClaudeFlags,
+				Providers:    provider.FromConfig(d.cfg.Load().Settings.Providers),
 			})
 			status := state.WorkerDone
 			if res.Error != nil {
@@ -541,8 +541,8 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				PRNumber:     req.PRNumber,
 				DB:           d.db,
 				WorkerID:     workerID,
-				ExtraFlags:   d.config().Settings.ClaudeFlags,
-				Providers:    provider.FromConfig(d.config().Settings.Providers),
+				ExtraFlags:   d.cfg.Load().Settings.ClaudeFlags,
+				Providers:    provider.FromConfig(d.cfg.Load().Settings.Providers),
 			})
 			status := state.WorkerDone
 			if !res.Success {
@@ -651,10 +651,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	}
 	defer d.pollRunning.Store(false)
 
-	// Snapshot config once so hot-reloads don't change Anvils mid-cycle.
-	cfg := d.config()
-
-	d.logger.Info("polling anvils", "count", len(cfg.Anvils))
+	d.logger.Info("polling anvils", "count", len(d.cfg.Load().Anvils))
 
 	// Periodically recover orphaned in-progress beads (every 10 poll cycles).
 	// Recovery also runs once at startup (see Start). Running it here catches
@@ -668,14 +665,14 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 	}
 
-	maxTotal := cfg.Settings.MaxTotalSmiths
+	maxTotal := d.cfg.Load().Settings.MaxTotalSmiths
 	if maxTotal <= 0 {
 		maxTotal = 4
 	}
 
 	// Always poll so the Hearth TUI queue cache stays current even when all
 	// smith slots are occupied. Capacity is checked below before dispatching.
-	p := poller.New(cfg.Anvils)
+	p := poller.New(d.cfg.Load().Anvils)
 	beads, results := p.Poll(ctx)
 
 	// Update cache
@@ -703,8 +700,17 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 	}
 	if len(succeededAnvils) > 0 {
+		// Build a set of succeeded anvils for O(1) membership checks.
+		succeededSet := make(map[string]struct{}, len(succeededAnvils))
+		for _, a := range succeededAnvils {
+			succeededSet[a] = struct{}{}
+		}
+
 		var cacheItems []state.QueueItem
 		for _, b := range beads {
+			if b.Labels == nil {
+				b.Labels = []string{}
+			}
 			labelsJSON, _ := json.Marshal(b.Labels)
 			section := d.classifyBeadSection(b)
 			cacheItems = append(cacheItems, state.QueueItem{
@@ -719,18 +725,19 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 
 		// Also include in-progress beads from successful anvils.
-		inProgress := p.PollInProgress(ctx)
+		inProgress, inProgressResults := p.PollInProgress(ctx)
+		for _, r := range inProgressResults {
+			if r.Err != nil {
+				d.logger.Warn("poll in-progress error", "anvil", r.Name, "error", r.Err)
+			}
+		}
 		for _, b := range inProgress {
 			// Only include in-progress beads from anvils that polled successfully.
-			found := false
-			for _, a := range succeededAnvils {
-				if a == b.Anvil {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if _, ok := succeededSet[b.Anvil]; !ok {
 				continue
+			}
+			if b.Labels == nil {
+				b.Labels = []string{}
 			}
 			labelsJSON, _ := json.Marshal(b.Labels)
 			cacheItems = append(cacheItems, state.QueueItem{
@@ -759,9 +766,9 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	}
 
 	// Preload circuit-broken beads (needs_human=1) to avoid dispatching poison beads.
-	cbSet, cbErr := d.db.DispatchCircuitBrokenBeadIDSet()
-	if cbErr != nil {
-		d.logger.Error("loading circuit-broken set; skipping dispatch this poll cycle", "error", cbErr)
+	circuitBrokenSet, circuitBrokenErr := d.db.DispatchCircuitBrokenBeadIDSet()
+	if circuitBrokenErr != nil {
+		d.logger.Error("loading circuit-broken set; skipping dispatch this poll cycle", "error", circuitBrokenErr)
 		return
 	}
 
@@ -782,7 +789,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	}
 
 	// Check daily cost limit before dispatching new work.
-	costLimit := cfg.Settings.DailyCostLimit
+	costLimit := d.cfg.Load().Settings.DailyCostLimit
 	if costLimit > 0 {
 		// Capture date once so both the cost lookup and the event-suppression
 		// key use the same day even if midnight rolls over between calls.
@@ -811,43 +818,35 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	// Snapshot per-anvil active counts so we don't re-query the DB each
 	// iteration (avoids double-counting with the thisCycleAnvil counter).
 	anvilActive := make(map[string]int)
-	thisCycleGlobal := 0
+	thisCycleTotal := 0
 	thisCycleAnvil := make(map[string]int)
 
-	for _, b := range beads {
+	for _, bead := range beads {
 		// Skip beads already in flight
-		if _, inFlight := d.activeBeads.Load(b.ID); inFlight {
+		if _, inFlight := d.activeBeads.Load(bead.ID); inFlight {
 			continue
 		}
 
 		// Skip beads that need clarification (analogous to needs_human)
-		if _, needed := clarSet[b.ID+"\x00"+b.Anvil]; needed {
+		if _, needed := clarSet[bead.ID+"\x00"+bead.Anvil]; needed {
 			continue
 		}
 
 		// Skip beads that are circuit-broken (needs_human=1 from dispatch failures or retries)
-		if _, broken := cbSet[b.ID+"\x00"+b.Anvil]; broken {
+		if _, broken := circuitBrokenSet[bead.ID+"\x00"+bead.Anvil]; broken {
 			continue
 		}
 
 		// Skip beads that already have an open PR (bellows should handle them)
-		if hasPR, err := d.db.HasOpenPRForBead(b.ID, b.Anvil); err == nil && hasPR {
-			d.logger.Debug("skipping bead with open PR", "bead", b.ID)
+		if hasPR, err := d.db.HasOpenPRForBead(bead.ID, bead.Anvil); err == nil && hasPR {
+			d.logger.Debug("skipping bead with open PR", "bead", bead.ID)
 			continue
 		}
 
-		anvilCfg, ok := cfg.Anvils[b.Anvil]
-		if !ok {
-			d.logger.Warn("skipping bead for unknown anvil", "bead", b.ID, "anvil", b.Anvil)
-			continue
-		}
-		if anvilCfg.Path == "" {
-			d.logger.Warn("skipping bead with empty anvil path", "bead", b.ID, "anvil", b.Anvil)
-			continue
-		}
+		anvilCfg := d.cfg.Load().Anvils[bead.Anvil]
 
 		// Apply auto-dispatch filtering
-		if !shouldDispatch(b, anvilCfg) {
+		if !shouldDispatch(bead, anvilCfg) {
 			continue
 		}
 
@@ -857,44 +856,34 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 
 		// Check per-anvil capacity using snapshot + in-cycle count
-		if _, ok := anvilActive[b.Anvil]; !ok {
-			cnt, err := worker.DispatchActiveCount(d.db, b.Anvil)
+		if _, ok := anvilActive[bead.Anvil]; !ok {
+			cnt, err := worker.DispatchActiveCount(d.db, bead.Anvil)
 			if err != nil {
-				d.logger.Error("checking per-anvil capacity", "anvil", b.Anvil, "bead", b.ID, "error", err)
-				// Treat as at-capacity to avoid repeated noisy queries this cycle.
-				anvilActive[b.Anvil] = maxSmiths
 				continue
 			}
-			anvilActive[b.Anvil] = cnt
+			anvilActive[bead.Anvil] = cnt
 		}
-		if anvilActive[b.Anvil]+thisCycleAnvil[b.Anvil] >= maxSmiths {
+		if anvilActive[bead.Anvil]+thisCycleAnvil[bead.Anvil] >= maxSmiths {
 			continue
 		}
 
 		// Check global capacity using snapshot + in-cycle count
-		if globalActive+thisCycleGlobal >= maxTotal {
+		if globalActive+thisCycleTotal >= maxTotal {
 			break
 		}
 
-		// Mark in flight atomically before dispatching.
-		if _, loaded := d.activeBeads.LoadOrStore(b.ID, true); loaded {
+		// Claim the bead atomically before dispatching
+		if err := d.claimBead(ctx, bead.ID, anvilCfg.Path); err != nil {
+			d.logger.Warn("failed to claim bead", "bead", bead.ID, "error", err)
+			d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("claim failed: %v", err))
 			continue
 		}
 
-		// Claim the bead atomically before dispatching so concurrent daemons
-		// cannot pick up the same bead.
-		if err := d.claimBead(ctx, b.ID, anvilCfg.Path); err != nil {
-			d.logger.Warn("failed to claim bead", "bead", b.ID, "error", err)
-			d.recordDispatchFailure(b.ID, b.Anvil, fmt.Sprintf("claim failed: %v", err))
-			d.activeBeads.Delete(b.ID)
-			continue
-		}
-
-		// Dispatch!
-		thisCycleGlobal++
-		thisCycleAnvil[b.Anvil]++
+		d.activeBeads.Store(bead.ID, true)
+		thisCycleAnvil[bead.Anvil]++
+		thisCycleTotal++
 		d.wg.Add(1)
-		go d.dispatchBead(ctx, b, anvilCfg)
+		go d.dispatchBead(ctx, bead, anvilCfg)
 	}
 
 	// Optionally log a summary of this poll cycle's dispatch activity.
@@ -925,7 +914,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	// killed explicitly by GracefulShutdown(); post-smith work (warden, PR
 	// creation, bead closing) should be allowed to complete so PRs are not
 	// lost. The smith timeout still provides the outer deadline.
-	smithTimeout := d.config().Settings.SmithTimeout
+	smithTimeout := d.cfg.Load().Settings.SmithTimeout
 	if smithTimeout <= 0 {
 		smithTimeout = 30 * time.Minute
 	}
@@ -936,9 +925,9 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	// Use smith_providers for the dispatch pipeline when configured; fall back
 	// to the main providers list. This lets smiths run a more capable model
 	// while lifecycle workers (cifix, reviewfix) use a lighter model.
-	smithProviderSpecs := d.config().Settings.SmithProviders
+	smithProviderSpecs := d.cfg.Load().Settings.SmithProviders
 	if len(smithProviderSpecs) == 0 {
-		smithProviderSpecs = d.config().Settings.Providers
+		smithProviderSpecs = d.cfg.Load().Settings.Providers
 	}
 	pipelineParams := pipeline.Params{
 		DB:              d.db,
@@ -947,19 +936,19 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		AnvilName:       bead.Anvil,
 		AnvilConfig:     anvilCfg,
 		Bead:            bead,
-		ExtraFlags:      d.config().Settings.ClaudeFlags,
+		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
 		Providers:       provider.FromConfig(smithProviderSpecs),
 		Notifier:        d.notifier,
 	}
-	if d.config().Settings.SchematicEnabled {
-		wordThreshold := d.config().Settings.SchematicWordThreshold
+	if d.cfg.Load().Settings.SchematicEnabled {
+		wordThreshold := d.cfg.Load().Settings.SchematicWordThreshold
 		if wordThreshold <= 0 {
 			wordThreshold = 100
 		}
 		schemCfg := schematic.DefaultConfig()
 		schemCfg.Enabled = true
 		schemCfg.WordThreshold = wordThreshold
-		schemCfg.ExtraFlags = d.config().Settings.ClaudeFlags
+		schemCfg.ExtraFlags = d.cfg.Load().Settings.ClaudeFlags
 		pipelineParams.SchematicConfig = &schemCfg
 	}
 
@@ -970,7 +959,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			// Bead was released back to open by the pipeline. Wait for the
 			// configured backoff so this goroutine holds the activeBeads slot
 			// and prevents an immediate re-dispatch by the next poll tick.
-			backoff := d.config().Settings.RateLimitBackoff
+			backoff := d.cfg.Load().Settings.RateLimitBackoff
 			if backoff <= 0 {
 				backoff = 5 * time.Minute
 			}
@@ -1011,7 +1000,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			d.recordDispatchFailure(bead.ID, bead.Anvil, reason)
 			// Hold the activeBeads slot for a full poll interval so the bead is not
 			// immediately re-dispatched before a human can investigate.
-			holdOff := d.config().Settings.PollInterval
+			holdOff := d.cfg.Load().Settings.PollInterval
 			if holdOff <= 0 {
 				holdOff = DefaultPollInterval
 			}
@@ -1168,7 +1157,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// If not in cache, poll as fallback
 		if targetBead == nil {
 			d.logger.Info("bead not in cache, polling anvils", "bead", rp.BeadID)
-			p := poller.New(d.config().Anvils)
+			p := poller.New(d.cfg.Load().Anvils)
 			var beads []poller.Bead
 			var pollErrors []string
 
@@ -1233,7 +1222,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 
 		// Dispatch immediately regardless of auto_dispatch setting (but respect capacity)
-		anvilCfg := d.config().Anvils[targetBead.Anvil]
+		anvilCfg := d.cfg.Load().Anvils[targetBead.Anvil]
 
 		// Check capacity
 		maxSmiths := anvilCfg.MaxSmiths
@@ -1252,7 +1241,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
-		maxTotal := d.config().Settings.MaxTotalSmiths
+		maxTotal := d.cfg.Load().Settings.MaxTotalSmiths
 		if maxTotal <= 0 {
 			maxTotal = 4
 		}
@@ -1316,12 +1305,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id, anvil, and tag are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		anvilCfg, ok := d.cfg.Anvils[tp.Anvil]
+		anvilCfg, ok := d.cfg.Load().Anvils[tp.Anvil]
 		if !ok {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", tp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		tagCmd := exec.Command("bd", "update", tp.BeadID, "--add-label", tp.Tag)
+		tagCtx, tagCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer tagCancel()
+		tagCmd := executil.HideWindow(exec.CommandContext(tagCtx, "bd", "update", tp.BeadID, "--add-label", tp.Tag))
 		tagCmd.Dir = anvilCfg.Path
 		if out, err := tagCmd.CombinedOutput(); err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update failed: %v: %s", err, string(out))})
@@ -1709,7 +1700,7 @@ func (d *Daemon) classifyBeadSection(bead poller.Bead) state.QueueSection {
 	if bead.Status == "in_progress" {
 		return state.QueueSectionInProgress
 	}
-	anvilCfg, ok := d.cfg.Anvils[bead.Anvil]
+	anvilCfg, ok := d.cfg.Load().Anvils[bead.Anvil]
 	if !ok {
 		return state.QueueSectionReady
 	}
