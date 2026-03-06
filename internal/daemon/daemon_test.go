@@ -454,12 +454,12 @@ exit 0
 	}
 
 	d := &Daemon{
-		cfg:           cfg,
 		db:            db,
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 	}
+	d.cfg.Store(cfg)
 	d.costLimitLoggedDate.Store("")
 
 	countCostLimitEvents := func() int {
