@@ -252,6 +252,89 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 		assert.False(t, needed)
 	})
 
+	t.Run("retry_bead: invalid payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{
+			Type:    "retry_bead",
+			Payload: []byte("invalid"),
+		})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid retry_bead payload")
+	})
+
+	t.Run("retry_bead: missing fields", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: "X"})
+		resp := d.handleIPC(ipc.Command{
+			Type:    "retry_bead",
+			Payload: payload,
+		})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("retry_bead: resets circuit breaker", func(t *testing.T) {
+		// Trip the circuit breaker by incrementing past the threshold.
+		const beadID = "CB-BEAD"
+		const anvil = "test-anvil"
+		_, broke, err := db.IncrementDispatchFailures(beadID, anvil, 1, "test failure")
+		require.NoError(t, err)
+		require.True(t, broke, "expected circuit breaker to trip")
+
+		// Verify needs_human is set.
+		r, err := db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		require.True(t, r.NeedsHuman)
+
+		// Reset via IPC.
+		payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: beadID, Anvil: anvil})
+		resp := d.handleIPC(ipc.Command{
+			Type:    "retry_bead",
+			Payload: payload,
+		})
+		assert.Equal(t, "ok", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Equal(t, "circuit breaker reset", msg["message"])
+
+		// Verify circuit breaker is cleared.
+		r, err = db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		assert.False(t, r.NeedsHuman)
+		assert.Equal(t, 0, r.DispatchFailures)
+	})
+
+	t.Run("retry_bead: does not clear unrelated needs_human", func(t *testing.T) {
+		// Set needs_human via exhausted retries (no circuit breaker prefix).
+		const beadID = "NH-BEAD"
+		const anvil = "test-anvil"
+		err := db.UpsertRetry(&state.RetryRecord{
+			BeadID:    beadID,
+			Anvil:     anvil,
+			NeedsHuman: true,
+			LastError: "exhausted retries",
+		})
+		require.NoError(t, err)
+
+		r, err := db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		require.True(t, r.NeedsHuman)
+
+		// retry_bead should succeed (no DB error) but NOT clear the flag.
+		payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: beadID, Anvil: anvil})
+		resp := d.handleIPC(ipc.Command{
+			Type:    "retry_bead",
+			Payload: payload,
+		})
+		assert.Equal(t, "ok", resp.Type)
+
+		r, err = db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		assert.True(t, r.NeedsHuman, "needs_human should remain set for non-circuit-breaker reasons")
+	})
+
 	t.Run("successful dispatch via cache", func(t *testing.T) {
 		// Wait for the goroutine from the previous subtest to finish so its
 		// deferred activeBeads.Delete cannot race with the Store below.

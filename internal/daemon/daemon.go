@@ -962,8 +962,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
-		// Manual dispatch resets the dispatch circuit breaker so the bead can be retried.
-		_ = d.db.ResetDispatchFailures(targetBead.ID, targetBead.Anvil)
+		// Manual dispatch resets the dispatch circuit breaker so the bead can be retried,
+		// but only if the bead has recorded dispatch failures (i.e., the breaker was involved).
+		if retry, err := d.db.GetRetry(targetBead.ID, targetBead.Anvil); err == nil && retry != nil && retry.DispatchFailures > 0 {
+			_ = d.db.ResetDispatchFailures(targetBead.ID, targetBead.Anvil)
+		}
 
 		// Dispatch immediately regardless of auto_dispatch setting (but respect capacity)
 		anvilCfg := d.cfg.Anvils[targetBead.Anvil]

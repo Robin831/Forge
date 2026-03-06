@@ -864,13 +864,20 @@ func scanRetryRows(rows *sql.Rows) ([]RetryRecord, error) {
 }
 
 // IncrementDispatchFailures atomically increments the dispatch_failures counter
-// for a bead. If the counter reaches maxFailures, sets needs_human=1 with the
-// given reason. Returns the new failure count and whether the circuit broke.
+// for a bead within a transaction. If the counter reaches maxFailures, sets
+// needs_human=1 with a "circuit breaker:" prefixed error. Returns the new
+// failure count and whether the circuit broke.
 func (db *DB) IncrementDispatchFailures(beadID, anvil string, maxFailures int, reason string) (int, bool, error) {
 	now := time.Now().Format(time.RFC3339)
 
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return 0, false, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	// Upsert: increment dispatch_failures, or create row with dispatch_failures=1.
-	_, err := db.conn.Exec(
+	_, err = tx.Exec(
 		`INSERT INTO retries (bead_id, anvil, retry_count, needs_human, clarification_needed, dispatch_failures, last_error, updated_at)
 		 VALUES (?, ?, 0, 0, 0, 1, ?, ?)
 		 ON CONFLICT(bead_id, anvil) DO UPDATE SET
@@ -883,9 +890,9 @@ func (db *DB) IncrementDispatchFailures(beadID, anvil string, maxFailures int, r
 		return 0, false, fmt.Errorf("incrementing dispatch failures: %w", err)
 	}
 
-	// Read back the current value.
+	// Read back the current value within the same transaction.
 	var failures int
-	err = db.conn.QueryRow(
+	err = tx.QueryRow(
 		`SELECT dispatch_failures FROM retries WHERE bead_id = ? AND anvil = ?`,
 		beadID, anvil,
 	).Scan(&failures)
@@ -893,8 +900,9 @@ func (db *DB) IncrementDispatchFailures(beadID, anvil string, maxFailures int, r
 		return 0, false, fmt.Errorf("reading dispatch failures: %w", err)
 	}
 
+	broke := false
 	if failures >= maxFailures {
-		_, err = db.conn.Exec(
+		_, err = tx.Exec(
 			`UPDATE retries SET needs_human = 1, last_error = ?, updated_at = ?
 			 WHERE bead_id = ? AND anvil = ?`,
 			fmt.Sprintf("circuit breaker: %d consecutive dispatch failures (%s)", failures, reason),
@@ -903,29 +911,42 @@ func (db *DB) IncrementDispatchFailures(beadID, anvil string, maxFailures int, r
 		if err != nil {
 			return failures, false, fmt.Errorf("setting needs_human after circuit break: %w", err)
 		}
-		return failures, true, nil
+		broke = true
 	}
 
-	return failures, false, nil
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("committing dispatch failure increment: %w", err)
+	}
+	return failures, broke, nil
 }
 
-// ResetDispatchFailures clears the dispatch_failures counter and needs_human
-// flag for a bead, allowing it to be dispatched again.
+// ResetDispatchFailures clears the dispatch_failures counter and any
+// circuit-breaker-induced needs_human flag for a bead, allowing it to be
+// dispatched again. It only resets rows that were actually tripped by the
+// dispatch circuit breaker (dispatch_failures > 0 with a "circuit breaker:"
+// last_error), so unrelated needs_human states are preserved.
 func (db *DB) ResetDispatchFailures(beadID, anvil string) error {
 	_, err := db.conn.Exec(
-		`UPDATE retries SET dispatch_failures = 0, needs_human = 0, last_error = '', updated_at = ?
-		 WHERE bead_id = ? AND anvil = ?`,
+		`UPDATE retries
+		 SET dispatch_failures = 0,
+		     needs_human = 0,
+		     last_error = '',
+		     updated_at = ?
+		 WHERE bead_id = ? AND anvil = ?
+		   AND dispatch_failures > 0
+		   AND last_error LIKE 'circuit breaker:%'`,
 		time.Now().Format(time.RFC3339), beadID, anvil,
 	)
 	return err
 }
 
-// DispatchCircuitBrokenBeadIDSet returns a set of "beadID\x00anvil" keys for all
-// beads that are circuit-broken (needs_human=1). This allows callers to do a
-// single query and then O(1) membership checks in the dispatch loop.
+// DispatchCircuitBrokenBeadIDSet returns a set of "beadID\x00anvil" keys for
+// beads that are circuit-broken via the dispatch circuit breaker
+// (needs_human=1 with a "circuit breaker:" last_error). This allows callers to
+// do a single query and then O(1) membership checks in the dispatch loop.
 func (db *DB) DispatchCircuitBrokenBeadIDSet() (map[string]struct{}, error) {
 	rows, err := db.conn.Query(
-		`SELECT bead_id, anvil FROM retries WHERE needs_human = 1`)
+		`SELECT bead_id, anvil FROM retries WHERE needs_human = 1 AND last_error LIKE 'circuit breaker:%'`)
 	if err != nil {
 		return nil, err
 	}
