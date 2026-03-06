@@ -1078,6 +1078,78 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": "clarification_needed cleared"})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "retry_bead":
+		var rp ipc.RetryBeadPayload
+		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid retry_bead payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if rp.BeadID == "" || rp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if err := d.db.ResetRetry(rp.BeadID, rp.Anvil); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset retry: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		_ = d.db.LogEvent(state.EventClarificationCleared, fmt.Sprintf("Retry reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
+		d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
+		data, _ := json.Marshal(map[string]string{"message": "retry reset"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "dismiss_bead":
+		var dp ipc.DismissBeadPayload
+		if err := json.Unmarshal(cmd.Payload, &dp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid dismiss_bead payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if dp.BeadID == "" || dp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if err := d.db.DismissRetry(dp.BeadID, dp.Anvil); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to dismiss: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		_ = d.db.LogEvent(state.EventClarificationCleared, fmt.Sprintf("Bead %s dismissed from needs attention", dp.BeadID), dp.BeadID, dp.Anvil)
+		d.logger.Info("bead dismissed from needs attention", "bead", dp.BeadID, "anvil", dp.Anvil)
+		data, _ := json.Marshal(map[string]string{"message": "dismissed"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "view_logs":
+		var vp ipc.ViewLogsPayload
+		if err := json.Unmarshal(cmd.Payload, &vp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid view_logs payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if vp.BeadID == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id is required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		logPath, err := d.db.LastWorkerLogPath(vp.BeadID)
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to find log: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if logPath == "" {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("no worker logs found for bead %q", vp.BeadID)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		// Read last 50 lines of the log
+		var lastLines []string
+		logData, err := os.ReadFile(logPath)
+		if err == nil {
+			allLines := strings.Split(strings.TrimSpace(string(logData)), "\n")
+			start := len(allLines) - 50
+			if start < 0 {
+				start = 0
+			}
+			lastLines = allLines[start:]
+		}
+		resp := ipc.ViewLogsResponse{LogPath: logPath, LastLines: lastLines}
+		data, _ := json.Marshal(resp)
+		return ipc.Response{Type: "ok", Payload: data}
+
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}
