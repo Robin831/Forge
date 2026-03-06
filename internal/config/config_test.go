@@ -21,6 +21,7 @@ func TestConfig_Validate(t *testing.T) {
 			cfg: Config{
 				Settings: SettingsConfig{
 					MaxTotalSmiths: 4,
+					MaxReviewAttempts: 5,
 					PollInterval:   1 * time.Minute,
 					SmithTimeout:   30 * time.Minute,
 				},
@@ -39,12 +40,14 @@ func TestConfig_Validate(t *testing.T) {
 			cfg: Config{
 				Settings: SettingsConfig{
 					MaxTotalSmiths: 0,
+					MaxReviewAttempts: 0,
 					PollInterval:   5 * time.Second,
 					SmithTimeout:   30 * time.Second,
 				},
 			},
 			expected: []string{
 				"settings.max_total_smiths must be >= 1",
+				"settings.max_review_attempts must be >= 1",
 				"settings.poll_interval must be >= 10s",
 				"settings.smith_timeout must be >= 1m",
 			},
@@ -54,6 +57,7 @@ func TestConfig_Validate(t *testing.T) {
 			cfg: Config{
 				Settings: SettingsConfig{
 					MaxTotalSmiths: 4,
+					MaxReviewAttempts: 5,
 					PollInterval:   1 * time.Minute,
 					SmithTimeout:   30 * time.Minute,
 				},
@@ -72,6 +76,7 @@ func TestConfig_Validate(t *testing.T) {
 			cfg: Config{
 				Settings: SettingsConfig{
 					MaxTotalSmiths: 4,
+					MaxReviewAttempts: 5,
 					PollInterval:   1 * time.Minute,
 					SmithTimeout:   30 * time.Minute,
 				},
@@ -91,6 +96,7 @@ func TestConfig_Validate(t *testing.T) {
 			cfg: Config{
 				Settings: SettingsConfig{
 					MaxTotalSmiths: 4,
+					MaxReviewAttempts: 5,
 					PollInterval:   1 * time.Minute,
 					SmithTimeout:   30 * time.Minute,
 				},
@@ -111,6 +117,7 @@ func TestConfig_Validate(t *testing.T) {
 			cfg: Config{
 				Settings: SettingsConfig{
 					MaxTotalSmiths: 4,
+					MaxReviewAttempts: 5,
 					PollInterval:   1 * time.Minute,
 					SmithTimeout:   30 * time.Minute,
 				},
