@@ -486,22 +486,13 @@ func (d *Daemon) drainPendingAction(ctx context.Context, beadID string) {
 func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	d.logger.Info("polling anvils", "count", len(d.cfg.Anvils))
 
-	// Check global capacity first
 	maxTotal := d.cfg.Settings.MaxTotalSmiths
 	if maxTotal <= 0 {
 		maxTotal = 4
 	}
-	canSpawn, err := worker.CanSpawnGlobal(d.db, maxTotal)
-	if err != nil {
-		d.logger.Error("checking global capacity", "error", err)
-		return
-	}
-	if !canSpawn {
-		d.logger.Info("global smith limit reached, skipping poll", "max", maxTotal)
-		return
-	}
 
-	// Poll all anvils for ready beads
+	// Always poll so the Hearth TUI queue cache stays current even when all
+	// smith slots are occupied. Capacity is checked below before dispatching.
 	p := poller.New(d.cfg.Anvils)
 	beads, results := p.Poll(ctx)
 
@@ -551,6 +542,19 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	clarSet, clarErr := d.db.ClarificationNeededBeadIDSet()
 	if clarErr != nil {
 		d.logger.Error("loading clarification-needed set; skipping dispatch this poll cycle", "error", clarErr)
+		return
+	}
+
+	// Check global capacity before dispatching. Done after the cache update so
+	// the Hearth TUI always reflects the current ready queue even when all slots
+	// are occupied.
+	canSpawn, err := worker.CanSpawnGlobal(d.db, maxTotal)
+	if err != nil {
+		d.logger.Error("checking global capacity", "error", err)
+		return
+	}
+	if !canSpawn {
+		d.logger.Info("global smith limit reached, skipping dispatch", "max", maxTotal)
 		return
 	}
 
