@@ -31,7 +31,7 @@ import (
 
 // Command is a message sent from a client to the daemon.
 type Command struct {
-	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead"
+	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "set_clarification", "clear_clarification"
 	Payload json.RawMessage `json:"payload"` // Type-specific data
 }
 
@@ -70,6 +70,13 @@ type KillWorkerPayload struct {
 type RunBeadPayload struct {
 	BeadID string `json:"bead_id"`
 	Anvil  string `json:"anvil"` // Optional: narrows search if multiple anvils have same bead ID
+}
+
+// ClarificationPayload is the payload for "set_clarification" / "clear_clarification" commands.
+type ClarificationPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`   // Required: which anvil the bead belongs to
+	Reason string `json:"reason"`  // Why clarification is needed (used when setting)
 }
 
 // CommandHandler is called by the server for each incoming command.

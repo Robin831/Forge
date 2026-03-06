@@ -123,6 +123,28 @@ func TestPollSingle_UnknownAnvil(t *testing.T) {
 	assert.ErrorContains(t, err, "not found")
 }
 
+func TestHasClarificationTag(t *testing.T) {
+	tests := []struct {
+		name string
+		tags []string
+		want bool
+	}{
+		{"nil tags", nil, false},
+		{"empty tags", []string{}, false},
+		{"unrelated tags", []string{"urgent", "bug"}, false},
+		{"exact hyphen", []string{"clarification-needed"}, true},
+		{"exact underscore", []string{"clarification_needed"}, true},
+		{"case insensitive", []string{"Clarification-Needed"}, true},
+		{"upper case", []string{"CLARIFICATION_NEEDED"}, true},
+		{"among other tags", []string{"bug", "clarification-needed", "p1"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, hasClarificationTag(tt.tags))
+		})
+	}
+}
+
 // TestPoll_MultipleAnvils verifies that Poll collects results from all anvils
 // concurrently. Anvil paths point to temp directories where 'bd ready' will
 // fail, but all anvils must still be represented in the returned results.

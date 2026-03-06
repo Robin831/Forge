@@ -174,6 +174,84 @@ func TestHandleIPC_RunBead_Success(t *testing.T) {
 		t.Fatalf("timeout waiting for background goroutines to finish")
 	}
 
+	t.Run("set clarification: invalid payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{
+			Type:    "set_clarification",
+			Payload: []byte("invalid"),
+		})
+		assert.Equal(t, "error", resp.Type)
+	})
+
+	t.Run("set clarification: missing fields", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ClarificationPayload{BeadID: "X"})
+		resp := d.handleIPC(ipc.Command{
+			Type:    "set_clarification",
+			Payload: payload,
+		})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("set clarification: empty reason", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ClarificationPayload{BeadID: "X", Anvil: "a"})
+		resp := d.handleIPC(ipc.Command{
+			Type:    "set_clarification",
+			Payload: payload,
+		})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "reason is required")
+	})
+
+	t.Run("set and clear clarification", func(t *testing.T) {
+		// Set
+		payload, _ := json.Marshal(ipc.ClarificationPayload{
+			BeadID: "TEST-CLAR",
+			Anvil:  "test-anvil",
+			Reason: "which auth library?",
+		})
+		resp := d.handleIPC(ipc.Command{
+			Type:    "set_clarification",
+			Payload: payload,
+		})
+		assert.Equal(t, "ok", resp.Type)
+
+		// Verify in DB
+		r, err := db.GetRetry("TEST-CLAR", "test-anvil")
+		require.NoError(t, err)
+		assert.True(t, r.ClarificationNeeded)
+
+		// isBeadClarificationNeeded should return true
+		needed, err := d.isBeadClarificationNeeded("TEST-CLAR", "test-anvil")
+		require.NoError(t, err)
+		assert.True(t, needed)
+
+		// Clear
+		payload, _ = json.Marshal(ipc.ClarificationPayload{
+			BeadID: "TEST-CLAR",
+			Anvil:  "test-anvil",
+		})
+		resp = d.handleIPC(ipc.Command{
+			Type:    "clear_clarification",
+			Payload: payload,
+		})
+		assert.Equal(t, "ok", resp.Type)
+
+		// Verify cleared
+		needed, err = d.isBeadClarificationNeeded("TEST-CLAR", "test-anvil")
+		require.NoError(t, err)
+		assert.False(t, needed)
+	})
+
+	t.Run("isBeadClarificationNeeded returns false for unknown bead", func(t *testing.T) {
+		needed, err := d.isBeadClarificationNeeded("UNKNOWN", "test-anvil")
+		require.NoError(t, err)
+		assert.False(t, needed)
+	})
+
 	t.Run("successful dispatch via cache", func(t *testing.T) {
 		// Wait for the goroutine from the previous subtest to finish so its
 		// deferred activeBeads.Delete cannot race with the Store below.

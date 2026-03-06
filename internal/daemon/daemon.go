@@ -545,6 +545,15 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 	}
 
+	// Preload all clarification-needed bead IDs once per poll cycle to avoid N+1 queries.
+	// Fail-closed: if the DB query fails, skip dispatch this cycle so beads that need
+	// clarification are not accidentally started during a transient DB error.
+	clarSet, clarErr := d.db.ClarificationNeededBeadIDSet()
+	if clarErr != nil {
+		d.logger.Error("loading clarification-needed set; skipping dispatch this poll cycle", "error", clarErr)
+		return
+	}
+
 	// Track beads dispatched this poll cycle but not yet inserted into the DB.
 	// Without this, the DB-based capacity checks see stale counts and can
 	// over-dispatch before the first goroutine's InsertWorker call commits.
@@ -554,6 +563,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	for _, bead := range beads {
 		// Skip beads already in flight
 		if _, inFlight := d.activeBeads.Load(bead.ID); inFlight {
+			continue
+		}
+
+		// Skip beads that need clarification (analogous to needs_human)
+		if _, needed := clarSet[bead.ID+"\x00"+bead.Anvil]; needed {
 			continue
 		}
 
@@ -881,6 +895,19 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
+		// Block beads that need clarification (consistent with auto-dispatch behavior)
+		needed, err := d.isBeadClarificationNeeded(targetBead.ID, targetBead.Anvil)
+		if err != nil {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to check clarification status for %q: %v", targetBead.ID, err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if needed {
+			d.activeBeads.Delete(targetBead.ID)
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q needs clarification; use 'forge queue unclarify --anvil %s %s' to clear", targetBead.ID, targetBead.Anvil, targetBead.ID)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
 		// Dispatch immediately regardless of auto_dispatch setting (but respect capacity)
 		anvilCfg := d.cfg.Anvils[targetBead.Anvil]
 
@@ -928,6 +955,49 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		go d.dispatchBead(context.Background(), *targetBead, anvilCfg)
 
 		data, _ := json.Marshal(map[string]string{"message": "dispatched"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "set_clarification":
+		var cp ipc.ClarificationPayload
+		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid set_clarification payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if cp.BeadID == "" || cp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		reason := strings.TrimSpace(cp.Reason)
+		if reason == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "reason is required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if err := d.db.SetClarificationNeeded(cp.BeadID, cp.Anvil, true, reason); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to set clarification: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		_ = d.db.LogEvent(state.EventClarificationNeeded, fmt.Sprintf("Bead %s needs clarification: %s", cp.BeadID, reason), cp.BeadID, cp.Anvil)
+		d.logger.Info("bead marked as clarification_needed", "bead", cp.BeadID, "anvil", cp.Anvil, "reason", reason)
+		data, _ := json.Marshal(map[string]string{"message": "clarification_needed set"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "clear_clarification":
+		var cp ipc.ClarificationPayload
+		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid clear_clarification payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if cp.BeadID == "" || cp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if err := d.db.SetClarificationNeeded(cp.BeadID, cp.Anvil, false, ""); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to clear clarification: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		_ = d.db.LogEvent(state.EventClarificationCleared, fmt.Sprintf("Clarification cleared for bead %s", cp.BeadID), cp.BeadID, cp.Anvil)
+		d.logger.Info("clarification_needed cleared", "bead", cp.BeadID, "anvil", cp.Anvil)
+		data, _ := json.Marshal(map[string]string{"message": "clarification_needed cleared"})
 		return ipc.Response{Type: "ok", Payload: data}
 
 	default:
@@ -1063,6 +1133,19 @@ func pidFilePath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".forge", PIDFileName), nil
+}
+
+// isBeadClarificationNeeded checks the state DB for a clarification_needed flag on a bead.
+// Returns (needed, error) so callers can distinguish "clarification needed" from "DB error".
+func (d *Daemon) isBeadClarificationNeeded(beadID, anvil string) (bool, error) {
+	r, err := d.db.GetRetry(beadID, anvil)
+	if err != nil {
+		return false, fmt.Errorf("checking clarification status for %s: %w", beadID, err)
+	}
+	if r == nil {
+		return false, nil
+	}
+	return r.ClarificationNeeded, nil
 }
 
 // shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.
