@@ -1305,7 +1305,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id, anvil, and tag are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		anvilCfg, ok := d.cfg.Load().Anvils[tp.Anvil]
+		cfgSnapshot := d.cfg.Load()
+		anvilCfg, ok := cfgSnapshot.Anvils[tp.Anvil]
 		if !ok {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", tp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
@@ -1700,7 +1701,8 @@ func (d *Daemon) classifyBeadSection(bead poller.Bead) state.QueueSection {
 	if bead.Status == "in_progress" {
 		return state.QueueSectionInProgress
 	}
-	anvilCfg, ok := d.cfg.Load().Anvils[bead.Anvil]
+	cfgSnapshot := d.cfg.Load()
+	anvilCfg, ok := cfgSnapshot.Anvils[bead.Anvil]
 	if !ok {
 		return state.QueueSectionReady
 	}
