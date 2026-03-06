@@ -245,8 +245,10 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 		}
 
 		for _, beadID := range beads {
-			// Check if there's an active worker for this bead
-			activeWorker, err := m.db.ActiveWorkerByBead(beadID)
+			// Check if there's an active worker for this bead in this anvil.
+			// Using the anvil-scoped query prevents a worker in a different anvil
+			// (with the same bead ID) from masking an orphan here.
+			activeWorker, err := m.db.ActiveWorkerByBeadAndAnvil(beadID, anvilName)
 			if err != nil {
 				m.logger.Warn("failed to check active worker", "bead", beadID, "error", err)
 				continue
@@ -295,16 +297,20 @@ func (m *Manager) listInProgressBeads(anvilPath string) ([]string, error) {
 
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "list", "--status=in_progress", "--json"))
 	cmd.Dir = anvilPath
-	out, err := cmd.CombinedOutput()
+	// Capture stderr separately so that any warnings/progress lines written to
+	// stderr by bd do not corrupt the JSON we parse from stdout.
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	stdout, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("bd list --status=in_progress --json: %w\n%s", err, out)
+		return nil, fmt.Errorf("bd list --status=in_progress --json: %w\n%s", err, stderr.String())
 	}
 
 	// Parse JSON array of beads — we only need the "id" field.
 	var beads []struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(out, &beads); err != nil {
+	if err := json.Unmarshal(stdout, &beads); err != nil {
 		return nil, fmt.Errorf("parsing bd list output: %w", err)
 	}
 
