@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -21,7 +20,7 @@ func init() {
 var hearthCmd = &cobra.Command{
 	Use:     "hearth",
 	Short:   "Open the TUI dashboard",
-	Long:    "Opens the Hearth TUI dashboard showing the bead queue, active workers, and event log.",
+	Long:    "Opens the Hearth TUI dashboard showing the bead queue, active workers, and event log.\n\nThe daemon must be running (forge up) for the queue to be populated. Hearth reads\nthe daemon's cached poll data from the state database rather than polling anvils directly.",
 	GroupID: "daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		db, err := state.Open("")
@@ -30,13 +29,8 @@ var hearthCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		ctx, cancel := context.WithCancel(rootCtx)
-		defer cancel()
-
 		ds := &hearth.DataSource{
-			DB:     db,
-			Anvils: cfg.Anvils,
-			Ctx:    ctx,
+			DB: db,
 		}
 
 		model := hearth.NewModel(ds)

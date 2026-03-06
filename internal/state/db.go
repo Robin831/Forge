@@ -226,6 +226,16 @@ CREATE TABLE IF NOT EXISTS provider_quotas (
     tokens_reset       TEXT,
     updated_at         TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS queue_cache (
+    bead_id     TEXT NOT NULL,
+    anvil       TEXT NOT NULL,
+    title       TEXT NOT NULL DEFAULT '',
+    priority    INTEGER NOT NULL DEFAULT 2,
+    status      TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (bead_id, anvil)
+);
 `
 
 // WorkerStatus represents the lifecycle state of a Smith worker.
@@ -919,6 +929,81 @@ func (db *DB) GetAllProviderQuotas() (map[string]provider.Quota, error) {
 		quotas[pv] = q
 	}
 	return quotas, rows.Err()
+}
+
+// QueueItem represents a cached bead from the daemon's poll.
+type QueueItem struct {
+	BeadID   string
+	Anvil    string
+	Title    string
+	Priority int
+	Status   string
+}
+
+// ReplaceQueueCacheForAnvils atomically replaces the cached queue rows for the
+// specified anvils only, leaving rows for other anvils untouched. This allows
+// failed anvil polls to retain their last-known cached data.
+func (db *DB) ReplaceQueueCacheForAnvils(anvils []string, items []QueueItem) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Delete only rows belonging to the successfully polled anvils.
+	for _, anvil := range anvils {
+		if _, err := tx.Exec(`DELETE FROM queue_cache WHERE anvil = ?`, anvil); err != nil {
+			return err
+		}
+	}
+
+	// Build a set of allowed anvils for filtering.
+	allowed := make(map[string]struct{}, len(anvils))
+	for _, a := range anvils {
+		allowed[a] = struct{}{}
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	stmt, err := tx.Prepare(
+		`INSERT INTO queue_cache (bead_id, anvil, title, priority, status, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, item := range items {
+		if _, ok := allowed[item.Anvil]; !ok {
+			continue // skip items for anvils not in the replacement set
+		}
+		if _, err := stmt.Exec(
+			item.BeadID, item.Anvil, item.Title, item.Priority, item.Status, now,
+		); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// QueueCache returns all cached queue items, sorted by priority, bead ID, then anvil.
+func (db *DB) QueueCache() ([]QueueItem, error) {
+	rows, err := db.conn.Query(
+		`SELECT bead_id, anvil, title, priority, status
+		 FROM queue_cache ORDER BY priority, bead_id, anvil`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []QueueItem
+	for rows.Next() {
+		var item QueueItem
+		if err := rows.Scan(&item.BeadID, &item.Anvil, &item.Title, &item.Priority, &item.Status); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 // GetProviderQuota returns the quota for a specific provider.

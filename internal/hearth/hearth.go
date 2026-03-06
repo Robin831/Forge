@@ -12,6 +12,7 @@ package hearth
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -115,7 +116,7 @@ func (m *Model) Init() tea.Cmd {
 	// Start the data tick cycle and do an initial fetch
 	if m.data != nil {
 		cmds = append(cmds, Tick())
-		cmds = append(cmds, FetchAll(m.data.Ctx, m.data.DB, m.data.Anvils))
+		cmds = append(cmds, FetchAll(m.data.DB))
 	}
 
 	return tea.Batch(cmds...)
@@ -176,6 +177,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UpdateQueueMsg:
 		m.queue = msg.Items
 
+	case QueueErrorMsg:
+		// Preserve previous queue; surface the error in the events panel
+		errEvent := EventItem{
+			Timestamp: time.Now().Format("15:04:05"),
+			Type:      "error",
+			Message:   fmt.Sprintf("queue cache read failed: %v", msg.Err),
+		}
+		// Prepend so the synthetic error appears as the newest event
+		m.events = append([]EventItem{errEvent}, m.events...)
+		m.eventRevision++
+		// In follow mode, keep view pinned to newest events so the error is visible
+		if m.eventAutoScroll {
+			m.eventScroll = 0
+		}
+
 	case UpdateWorkersMsg:
 		m.workers = msg.Items
 
@@ -195,7 +211,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.data != nil {
 			return m, tea.Batch(
 				Tick(),
-				FetchAll(m.data.Ctx, m.data.DB, m.data.Anvils),
+				FetchAll(m.data.DB),
 			)
 		}
 	}
@@ -623,6 +639,11 @@ func (m *Model) renderEventLines(item EventItem, selected bool, panelWidth int) 
 
 // UpdateQueueMsg updates the queue panel.
 type UpdateQueueMsg struct{ Items []QueueItem }
+
+// QueueErrorMsg signals that reading the queue cache failed.
+// The model preserves the previous queue data so the UI doesn't
+// flip to "No pending beads" on a transient DB error.
+type QueueErrorMsg struct{ Err error }
 
 // UpdateWorkersMsg updates the workers panel.
 type UpdateWorkersMsg struct{ Items []WorkerItem }
