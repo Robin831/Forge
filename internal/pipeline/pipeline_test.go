@@ -359,7 +359,7 @@ func TestSchematic_Decompose_ExitsEarly(t *testing.T) {
 	params.SchematicRunner = func(_ context.Context, _ schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
 		return &schematic.Result{
 			Action:   schematic.ActionDecompose,
-			SubBeads: []string{"sub-1", "sub-2"},
+			SubBeads: []schematic.SubBead{{ID: "sub-1", Title: "Task A"}, {ID: "sub-2", Title: "Task B"}},
 			Reason:   "Too large, splitting",
 		}
 	}

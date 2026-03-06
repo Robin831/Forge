@@ -34,6 +34,7 @@ import (
 	"github.com/Robin831/Forge/internal/hotreload"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
+	"github.com/Robin831/Forge/internal/notify"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
@@ -90,6 +91,9 @@ type Daemon struct {
 	bellowsMonitor *bellows.Monitor
 	lifecycleMgr   *lifecycle.Manager
 
+	// Teams notifications (nil = disabled)
+	notifier *notify.Notifier
+
 	cancel     context.CancelFunc // cancels the Run context for graceful shutdown
 
 	forgeDir   string // ~/.forge
@@ -142,6 +146,12 @@ func New(cfg *config.Config) (*Daemon, error) {
 
 	wtMgr := worktree.NewManager()
 
+	notifier := notify.NewNotifier(notify.Config{
+		WebhookURL: cfg.Notifications.TeamsWebhookURL,
+		Enabled:    cfg.Notifications.Enabled,
+		Events:     cfg.Notifications.Events,
+	}, logger)
+
 	d := &Daemon{
 		cfg:           cfg,
 		db:            db,
@@ -153,6 +163,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
+		notifier:      notifier,
 	}
 	// Initialize costLimitLoggedDate so Load() is always safe (zero atomic.Value
 	// returns nil on Load, which is fine for type assertion, but Store("")
@@ -792,6 +803,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		Bead:            bead,
 		ExtraFlags:      d.cfg.Settings.ClaudeFlags,
 		Providers:       provider.FromConfig(smithProviderSpecs),
+		Notifier:        d.notifier,
 	}
 	if d.cfg.Settings.SchematicEnabled {
 		wordThreshold := d.cfg.Settings.SchematicWordThreshold

@@ -671,8 +671,9 @@ const (
 	EventSchematicStarted     EventType = "schematic_started"
 	EventSchematicDone        EventType = "schematic_done"
 	EventSchematicSkipped     EventType = "schematic_skipped"
-	EventDispatchCircuitBreak  EventType = "dispatch_circuit_break"
+	EventDispatchCircuitBreak EventType = "dispatch_circuit_break"
 	EventCostLimitHit         EventType = "cost_limit_hit"
+	EventSchematicSubBead     EventType = "schematic_sub_bead"
 	EventError                EventType = "error"
 	EventBeadRecovered        EventType = "bead_recovered"
 )

@@ -11,6 +11,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/notify"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/provider"
@@ -87,6 +89,9 @@ type Params struct {
 	// SchematicConfig controls the Schematic pre-worker. When nil, Schematic
 	// is disabled (the default).
 	SchematicConfig *schematic.Config
+	// Notifier sends Teams webhook notifications. Nil-safe — calls are no-ops
+	// when nil.
+	Notifier *notify.Notifier
 
 	// The following fields are optional injection points used in tests.
 	// If nil, the default production implementations are used.
@@ -236,11 +241,29 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 			switch sResult.Action {
 			case schematic.ActionDecompose:
-				log.Printf("[pipeline:%s] Schematic decomposed bead into %d sub-beads: %v",
-					workerID, len(sResult.SubBeads), sResult.SubBeads)
+				log.Printf("[pipeline:%s] Schematic decomposed bead into %d sub-beads",
+					workerID, len(sResult.SubBeads))
+
+				// Log a summary event with JSON payload containing all sub-bead details
+				subBeadJSON, _ := json.Marshal(sResult.SubBeads)
 				_ = p.DB.LogEvent(state.EventSchematicDone,
-					fmt.Sprintf("Decomposed into %d sub-beads: %s", len(sResult.SubBeads), strings.Join(sResult.SubBeads, ", ")),
+					fmt.Sprintf("Decomposed into %d sub-beads: %s", len(sResult.SubBeads), string(subBeadJSON)),
 					p.Bead.ID, p.AnvilName)
+
+				// Log each sub-bead as an individual event for easy scanning
+				for _, sb := range sResult.SubBeads {
+					_ = p.DB.LogEvent(state.EventSchematicSubBead,
+						fmt.Sprintf("Created sub-bead %s: %s", sb.ID, sb.Title),
+						p.Bead.ID, p.AnvilName)
+				}
+
+				// Send Teams notification for decomposition
+				notifySubs := make([]notify.SubBead, len(sResult.SubBeads))
+				for i, sb := range sResult.SubBeads {
+					notifySubs[i] = notify.SubBead{ID: sb.ID, Title: sb.Title}
+				}
+				p.Notifier.BeadDecomposed(ctx, p.AnvilName, p.Bead.ID, p.Bead.Title, notifySubs)
+
 				outcome.Decomposed = true
 				outcome.Duration = time.Since(start)
 				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
