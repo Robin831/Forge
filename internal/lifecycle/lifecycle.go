@@ -77,8 +77,8 @@ func New(db *state.DB, logger *slog.Logger, handler ActionHandler) *Manager {
 		logger:    logger,
 		states:    make(map[string]*PRState),
 		handler:   handler,
-		maxCI:     2,
-		maxRev:    2,
+		maxCI:     5,
+		maxRev:    5,
 		maxRebase: 3,
 	}
 }

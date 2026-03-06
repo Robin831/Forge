@@ -77,11 +77,17 @@ func TestHandleEvent_Transitions(t *testing.T) {
 		{
 			name:     "max CI attempts exhaustion",
 			prNumber: 10,
-			// maxCI=2: we need 2 full [Failed,Passed] cycles to fill the counter,
-			// then the 3rd EventCIFailed triggers exhaustion.
+			// maxCI=5: we need 5 full [Failed,Passed] cycles to fill the counter,
+			// then the 6th EventCIFailed triggers exhaustion.
 			// EventCIPassed between failures resets CIPassing=true so the next
 			// EventCIFailed can pass the !st.CIPassing guard and increment the counter.
 			setupEvents: []bellows.PREvent{
+				makeEvent(10, bellows.EventCIFailed),
+				makeEvent(10, bellows.EventCIPassed),
+				makeEvent(10, bellows.EventCIFailed),
+				makeEvent(10, bellows.EventCIPassed),
+				makeEvent(10, bellows.EventCIFailed),
+				makeEvent(10, bellows.EventCIPassed),
 				makeEvent(10, bellows.EventCIFailed),
 				makeEvent(10, bellows.EventCIPassed),
 				makeEvent(10, bellows.EventCIFailed),
@@ -90,7 +96,7 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			event:           makeEvent(10, bellows.EventCIFailed),
 			wantAction:      ActionNone,
 			wantNeedsFix:    true,
-			wantCIFixCount:  2, // counter must be at max to confirm setup worked
+			wantCIFixCount:  5, // counter must be at max to confirm setup worked
 			wantDispatches:  0, // exhaustion path must not dispatch
 			wantDBEventType: state.EventLifecycleExhausted,
 		},
@@ -107,11 +113,17 @@ func TestHandleEvent_Transitions(t *testing.T) {
 		{
 			name:     "max review attempts exhaustion",
 			prNumber: 20,
-			// maxRev=2: 2 full [Changes,Approved] cycles fill the counter;
-			// the 3rd EventReviewChanges triggers exhaustion.
+			// maxRev=5: 5 full [Changes,Approved] cycles fill the counter;
+			// the 6th EventReviewChanges triggers exhaustion.
 			// EventReviewApproved sets Approved=true, re-opening the fix cycle
 			// so the next EventReviewChanges passes the !NeedsFix||Approved guard.
 			setupEvents: []bellows.PREvent{
+				makeEvent(20, bellows.EventReviewChanges),
+				makeEvent(20, bellows.EventReviewApproved),
+				makeEvent(20, bellows.EventReviewChanges),
+				makeEvent(20, bellows.EventReviewApproved),
+				makeEvent(20, bellows.EventReviewChanges),
+				makeEvent(20, bellows.EventReviewApproved),
 				makeEvent(20, bellows.EventReviewChanges),
 				makeEvent(20, bellows.EventReviewApproved),
 				makeEvent(20, bellows.EventReviewChanges),
@@ -121,7 +133,7 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			wantAction:       ActionNone,
 			wantNeedsFix:     true,
 			wantCIPassing:    true, // review events do not change CI state
-			wantReviewFixCnt: 2,    // counter must be at max to confirm setup worked
+			wantReviewFixCnt: 5,    // counter must be at max to confirm setup worked
 			wantDispatches:   0,    // exhaustion path must not dispatch
 			wantDBEventType:  state.EventLifecycleExhausted,
 		},
