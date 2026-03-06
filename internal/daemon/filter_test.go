@@ -42,8 +42,8 @@ func TestShouldDispatch(t *testing.T) {
 		{
 			name: "mode tagged: match found",
 			bead: poller.Bead{
-				ID:   "B1",
-				Tags: []string{"forge-auto", "other"},
+				ID:     "B1",
+				Labels: []string{"forge-auto", "other"},
 			},
 			anvilCfg: config.AnvilConfig{
 				AutoDispatch:    "tagged",
@@ -54,8 +54,8 @@ func TestShouldDispatch(t *testing.T) {
 		{
 			name: "mode tagged: case-insensitive match",
 			bead: poller.Bead{
-				ID:   "B1",
-				Tags: []string{"FORGE-AUTO"},
+				ID:     "B1",
+				Labels: []string{"FORGE-AUTO"},
 			},
 			anvilCfg: config.AnvilConfig{
 				AutoDispatch:    "tagged",
@@ -66,8 +66,8 @@ func TestShouldDispatch(t *testing.T) {
 		{
 			name: "mode tagged: no match",
 			bead: poller.Bead{
-				ID:   "B1",
-				Tags: []string{"manual"},
+				ID:     "B1",
+				Labels: []string{"manual"},
 			},
 			anvilCfg: config.AnvilConfig{
 				AutoDispatch:    "tagged",
@@ -78,8 +78,8 @@ func TestShouldDispatch(t *testing.T) {
 		{
 			name: "mode tagged: empty tags",
 			bead: poller.Bead{
-				ID:   "B1",
-				Tags: []string{},
+				ID:     "B1",
+				Labels: []string{},
 			},
 			anvilCfg: config.AnvilConfig{
 				AutoDispatch:    "tagged",
@@ -90,8 +90,8 @@ func TestShouldDispatch(t *testing.T) {
 		{
 			name: "mode tagged: empty config tag",
 			bead: poller.Bead{
-				ID:   "B1",
-				Tags: []string{"forge-auto"},
+				ID:     "B1",
+				Labels: []string{"forge-auto"},
 			},
 			anvilCfg: config.AnvilConfig{
 				AutoDispatch:    "tagged",

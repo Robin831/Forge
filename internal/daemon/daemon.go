@@ -1161,7 +1161,7 @@ func shouldDispatch(bead poller.Bead, anvilCfg config.AnvilConfig) bool {
 		if anvilCfg.AutoDispatchTag == "" {
 			return false
 		}
-		for _, t := range bead.Tags {
+		for _, t := range bead.Labels {
 			if strings.EqualFold(t, anvilCfg.AutoDispatchTag) {
 				return true
 			}

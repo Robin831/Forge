@@ -96,7 +96,7 @@ func ShouldRun(cfg Config, bead poller.Bead) bool {
 	}
 
 	// Explicit tag always triggers
-	for _, tag := range bead.Tags {
+	for _, tag := range bead.Labels {
 		if strings.EqualFold(tag, "decompose") {
 			return true
 		}

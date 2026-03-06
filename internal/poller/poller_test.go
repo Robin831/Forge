@@ -13,7 +13,7 @@ import (
 
 func TestBead_JSONParsing(t *testing.T) {
 	raw := `[
-		{"id":"forge-1","title":"Fix bug","priority":1,"status":"open","issue_type":"bug","tags":["urgent"]},
+		{"id":"forge-1","title":"Fix bug","priority":1,"status":"open","issue_type":"bug","labels":["urgent"]},
 		{"id":"forge-2","title":"Add feature","priority":2,"status":"open","issue_type":"feature","assignee":"alice"}
 	]`
 
@@ -24,7 +24,7 @@ func TestBead_JSONParsing(t *testing.T) {
 	assert.Equal(t, "forge-1", beads[0].ID)
 	assert.Equal(t, "Fix bug", beads[0].Title)
 	assert.Equal(t, 1, beads[0].Priority)
-	assert.Equal(t, []string{"urgent"}, beads[0].Tags)
+	assert.Equal(t, []string{"urgent"}, beads[0].Labels)
 	assert.Equal(t, "alice", beads[1].Assignee)
 }
 
@@ -35,7 +35,7 @@ func TestBead_UnmarshalJSON_Tags(t *testing.T) {
 			"title": "Test Bead",
 			"status": "ready",
 			"priority": 1,
-			"tags": ["forge-auto", "bug"]
+			"labels": ["forge-auto", "bug"]
 		},
 		{
 			"id": "BD-2",
@@ -49,10 +49,10 @@ func TestBead_UnmarshalJSON_Tags(t *testing.T) {
 	assert.Len(t, beads, 2)
 
 	assert.Equal(t, "BD-1", beads[0].ID)
-	assert.Equal(t, []string{"forge-auto", "bug"}, beads[0].Tags)
+	assert.Equal(t, []string{"forge-auto", "bug"}, beads[0].Labels)
 
 	assert.Equal(t, "BD-2", beads[1].ID)
-	assert.Nil(t, beads[1].Tags)
+	assert.Nil(t, beads[1].Labels)
 }
 
 func TestBead_AnvilFieldNotInJSON(t *testing.T) {

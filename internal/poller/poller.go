@@ -28,7 +28,7 @@ type Bead struct {
 	IssueType   string   `json:"issue_type"`
 	Assignee    string   `json:"assignee"`
 	Parent      string   `json:"parent"`
-	Tags        []string `json:"tags"`
+	Labels      []string `json:"labels"`
 
 	// Forge-injected: which anvil this bead belongs to
 	Anvil string `json:"-"`
@@ -126,7 +126,7 @@ func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Be
 		if b.Assignee != "" {
 			continue
 		}
-		if hasClarificationTag(b.Tags) {
+		if hasClarificationTag(b.Labels) {
 			continue
 		}
 		eligible = append(eligible, b)
