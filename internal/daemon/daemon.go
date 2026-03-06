@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -76,6 +77,7 @@ type Daemon struct {
 	activeBeads    sync.Map       // beadID -> true, currently in-flight
 	pendingActions sync.Map       // beadID -> lifecycle.ActionRequest; single parked action per bead, latest-wins
 	wg             sync.WaitGroup // tracks running pipeline goroutines
+	pollRunning    atomic.Bool    // true while pollAndDispatch is executing; prevents concurrent overlapping polls
 	worktreeMgr    *worktree.Manager
 	promptBuilder  *prompt.Builder
 
@@ -482,7 +484,17 @@ func (d *Daemon) drainPendingAction(ctx context.Context, beadID string) {
 }
 
 // pollAndDispatch polls all anvils for ready beads and dispatches workers.
+// It is serialized via a try-lock: if a poll is already running (e.g. an IPC
+// "refresh" overlapping with the ticker), the second caller returns immediately.
+// The in-progress poll already holds a consistent capacity snapshot, so
+// skipping the duplicate avoids double-dispatching past max_total_smiths.
 func (d *Daemon) pollAndDispatch(ctx context.Context) {
+	if !d.pollRunning.CompareAndSwap(false, true) {
+		d.logger.Debug("pollAndDispatch already running, skipping concurrent invocation")
+		return
+	}
+	defer d.pollRunning.Store(false)
+
 	d.logger.Info("polling anvils", "count", len(d.cfg.Anvils))
 
 	maxTotal := d.cfg.Settings.MaxTotalSmiths
@@ -544,22 +556,31 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		return
 	}
 
-	// Check global capacity before dispatching. Done after the cache update so
-	// the Hearth TUI always reflects the current ready queue even when all slots
-	// are occupied.
-	canSpawn, err := worker.CanSpawnGlobal(d.db, maxTotal)
+	// Snapshot global capacity before dispatching. Done after the cache update
+	// so the Hearth TUI always reflects the current ready queue even when all
+	// slots are occupied.
+	//
+	// We snapshot DB counts ONCE here and track in-cycle dispatches separately.
+	// Previously, the loop re-queried the DB each iteration and subtracted the
+	// in-cycle count from the max. This double-counted workers whose goroutines
+	// had already called InsertWorker: the DB count included them AND the
+	// thisCycle counter reduced the max for them, causing only one dispatch per
+	// cycle after the initial batch completed.
+	globalActive, err := worker.DispatchTotalActiveCount(d.db)
 	if err != nil {
 		d.logger.Error("checking global capacity", "error", err)
 		return
 	}
-	if !canSpawn {
+	if globalActive >= maxTotal {
 		d.logger.Info("global smith limit reached, skipping dispatch", "max", maxTotal)
 		return
 	}
 
-	// Track beads dispatched this poll cycle but not yet inserted into the DB.
-	// Without this, the DB-based capacity checks see stale counts and can
-	// over-dispatch before the first goroutine's InsertWorker call commits.
+	// Snapshot per-anvil active counts so we don't re-query the DB each
+	// iteration (avoids double-counting with the thisCycleAnvil counter).
+	anvilActive := make(map[string]int)
+
+	// Track beads dispatched this poll cycle (not yet visible in the snapshot).
 	thisCycleTotal := 0
 	thisCycleAnvil := make(map[string]int)
 
@@ -574,8 +595,6 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			continue
 		}
 
-		// Check per-anvil capacity, accounting for beads dispatched this cycle
-		// that haven't been written to the DB yet.
 		anvilCfg := d.cfg.Anvils[bead.Anvil]
 
 		// Apply auto-dispatch filtering
@@ -587,22 +606,21 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		if maxSmiths <= 0 {
 			maxSmiths = 1
 		}
-		effectiveAnvilMax := maxSmiths - thisCycleAnvil[bead.Anvil]
-		if effectiveAnvilMax <= 0 {
-			continue
+
+		// Check per-anvil capacity using snapshot + in-cycle count
+		if _, ok := anvilActive[bead.Anvil]; !ok {
+			cnt, err := worker.DispatchActiveCount(d.db, bead.Anvil)
+			if err != nil {
+				continue
+			}
+			anvilActive[bead.Anvil] = cnt
 		}
-		canSpawnAnvil, err := worker.CanSpawn(d.db, bead.Anvil, effectiveAnvilMax)
-		if err != nil || !canSpawnAnvil {
+		if anvilActive[bead.Anvil]+thisCycleAnvil[bead.Anvil] >= maxSmiths {
 			continue
 		}
 
-		// Re-check global capacity (may have filled since the check above)
-		effectiveGlobalMax := maxTotal - thisCycleTotal
-		if effectiveGlobalMax <= 0 {
-			break
-		}
-		canSpawn, err = worker.CanSpawnGlobal(d.db, effectiveGlobalMax)
-		if err != nil || !canSpawn {
+		// Check global capacity using snapshot + in-cycle count
+		if globalActive+thisCycleTotal >= maxTotal {
 			break
 		}
 
