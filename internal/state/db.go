@@ -248,6 +248,8 @@ CREATE TABLE IF NOT EXISTS queue_cache (
     title       TEXT NOT NULL DEFAULT '',
     priority    INTEGER NOT NULL DEFAULT 2,
     status      TEXT NOT NULL DEFAULT '',
+    labels      TEXT NOT NULL DEFAULT '[]',
+    section     TEXT NOT NULL DEFAULT 'ready',
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (bead_id, anvil)
 );
