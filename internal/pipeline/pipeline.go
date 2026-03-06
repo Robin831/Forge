@@ -21,6 +21,7 @@ import (
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
@@ -61,6 +62,11 @@ type Outcome struct {
 	// current bd call only sets --status=open and does not add a separate
 	// needs-human flag.
 	NeedsHuman bool
+	// SchematicResult is the result of the Schematic pre-worker, if it ran.
+	SchematicResult *schematic.Result
+	// Decomposed is true when the Schematic decomposed the bead into
+	// sub-beads. The pipeline exits early without running Smith.
+	Decomposed bool
 }
 
 // Params holds the dependencies for running a pipeline.
@@ -76,6 +82,10 @@ type Params struct {
 	// Providers is the ordered list of AI providers to try.
 	// If empty, provider.Defaults() is used (Claude → Gemini).
 	Providers []provider.Provider
+
+	// SchematicConfig controls the Schematic pre-worker. When nil, Schematic
+	// is disabled (the default).
+	SchematicConfig *schematic.Config
 
 	// The following fields are optional injection points used in tests.
 	// If nil, the default production implementations are used.
@@ -93,6 +103,8 @@ type Params struct {
 	// BeadReleaser overrides the default exec-based bd-update call for releasing
 	// a bead back to open. Used in tests.
 	BeadReleaser func(beadID, anvilPath string) error
+	// SchematicRunner overrides schematic.Run. Used in tests.
+	SchematicRunner func(ctx context.Context, cfg schematic.Config, bead poller.Bead, anvilPath string, pv provider.Provider) *schematic.Result
 }
 
 // releaseBead resets a bead status to open via the bd CLI. It always uses a
@@ -178,7 +190,14 @@ func Run(ctx context.Context, p Params) *Outcome {
 	_ = p.DB.InsertWorker(dbWorker)
 	_ = p.DB.LogEvent(state.EventBeadClaimed, fmt.Sprintf("Pipeline started for %s", p.Bead.ID), p.Bead.ID, p.AnvilName)
 
-	// Build initial prompt
+	// Resolve provider list.
+	providers := p.Providers
+	if len(providers) == 0 {
+		providers = provider.Defaults()
+	}
+	activeProviderIdx := 0
+
+	// Build initial prompt context
 	beadCtx := prompt.BeadContext{
 		BeadID:       p.Bead.ID,
 		Title:        p.Bead.Title,
@@ -192,6 +211,71 @@ func Run(ctx context.Context, p Params) *Outcome {
 		WorktreePath: wt.Path,
 	}
 
+	// Step 2: Run Schematic pre-worker (optional)
+	if p.SchematicConfig != nil {
+		runSchematic := p.SchematicRunner
+		if runSchematic == nil {
+			runSchematic = schematic.Run
+		}
+
+		// Resolve per-anvil override
+		schemCfg := *p.SchematicConfig
+		if p.AnvilConfig.SchematicEnabled != nil {
+			schemCfg.Enabled = *p.AnvilConfig.SchematicEnabled
+		}
+
+		if schematic.ShouldRun(schemCfg, p.Bead) {
+			log.Printf("[pipeline:%s] Running Schematic pre-analysis", workerID)
+			_ = p.DB.UpdateWorkerPhase(workerID, "schematic")
+			_ = p.DB.LogEvent(state.EventSchematicStarted, "Analysing bead scope", p.Bead.ID, p.AnvilName)
+
+			sResult := runSchematic(ctx, schemCfg, p.Bead, p.AnvilConfig.Path, providers[0])
+			outcome.SchematicResult = sResult
+
+			switch sResult.Action {
+			case schematic.ActionDecompose:
+				log.Printf("[pipeline:%s] Schematic decomposed bead into %d sub-beads: %v",
+					workerID, len(sResult.SubBeads), sResult.SubBeads)
+				_ = p.DB.LogEvent(state.EventSchematicDone,
+					fmt.Sprintf("Decomposed into %d sub-beads: %s", len(sResult.SubBeads), strings.Join(sResult.SubBeads, ", ")),
+					p.Bead.ID, p.AnvilName)
+				outcome.Decomposed = true
+				outcome.Duration = time.Since(start)
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+				return outcome
+
+			case schematic.ActionClarify:
+				log.Printf("[pipeline:%s] Schematic says bead needs clarification: %s", workerID, sResult.Reason)
+				_ = p.DB.LogEvent(state.EventSchematicDone,
+					fmt.Sprintf("Needs clarification: %s", sResult.Reason),
+					p.Bead.ID, p.AnvilName)
+				// Release bead back to open for human attention
+				if err := doRelease(p.Bead.ID, p.AnvilConfig.Path); err != nil {
+					log.Printf("[pipeline:%s] Failed to release bead after clarify: %v", workerID, err)
+				}
+				outcome.NeedsHuman = true
+				outcome.Duration = time.Since(start)
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+				return outcome
+
+			case schematic.ActionPlan:
+				log.Printf("[pipeline:%s] Schematic produced implementation plan", workerID)
+				_ = p.DB.LogEvent(state.EventSchematicDone,
+					fmt.Sprintf("Plan produced (%.1fs, $%.4f)", sResult.Duration.Seconds(), sResult.CostUSD),
+					p.Bead.ID, p.AnvilName)
+				beadCtx.SchematicPlan = sResult.Plan
+
+			default:
+				// ActionSkip or unknown — continue without plan
+				log.Printf("[pipeline:%s] Schematic skipped: %s", workerID, sResult.Reason)
+				_ = p.DB.LogEvent(state.EventSchematicSkipped, sResult.Reason, p.Bead.ID, p.AnvilName)
+			}
+		} else {
+			log.Printf("[pipeline:%s] Schematic not needed for this bead", workerID)
+		}
+	}
+
+	// Build Smith prompt (with optional Schematic plan injected)
 	customTmpl := prompt.LoadCustomTemplate(p.AnvilConfig.Path)
 	if customTmpl != "" {
 		p.PromptBuilder.CustomTemplate = customTmpl
@@ -204,13 +288,6 @@ func Run(ctx context.Context, p Params) *Outcome {
 		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
 		return outcome
 	}
-
-	// Resolve provider list.
-	providers := p.Providers
-	if len(providers) == 0 {
-		providers = provider.Defaults()
-	}
-	activeProviderIdx := 0
 
 	// Feedback loop
 	var currentPrompt = promptText

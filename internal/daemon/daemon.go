@@ -29,6 +29,7 @@ import (
 	"github.com/Robin831/Forge/internal/cifix"
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/hotreload"
 	"github.com/Robin831/Forge/internal/ipc"
@@ -599,7 +600,8 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	pipelineCtx, cancel := context.WithTimeout(context.Background(), smithTimeout)
 	defer cancel()
 
-	outcome := pipeline.Run(pipelineCtx, pipeline.Params{
+	// Build pipeline params, optionally enabling Schematic pre-worker.
+	pipelineParams := pipeline.Params{
 		DB:              d.db,
 		WorktreeManager: d.worktreeMgr,
 		PromptBuilder:   d.promptBuilder,
@@ -608,7 +610,21 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		Bead:            bead,
 		ExtraFlags:      d.cfg.Settings.ClaudeFlags,
 		Providers:       provider.FromConfig(d.cfg.Settings.Providers),
-	})
+	}
+	if d.cfg.Settings.SchematicEnabled {
+		wordThreshold := d.cfg.Settings.SchematicWordThreshold
+		if wordThreshold <= 0 {
+			wordThreshold = 100
+		}
+		schemCfg := schematic.Config{
+			Enabled:       true,
+			WordThreshold: wordThreshold,
+			MaxTurns:      10,
+		}
+		pipelineParams.SchematicConfig = &schemCfg
+	}
+
+	outcome := pipeline.Run(pipelineCtx, pipelineParams)
 
 	if outcome.Error != nil {
 		if outcome.RateLimited {

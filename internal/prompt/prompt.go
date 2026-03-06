@@ -35,6 +35,9 @@ type BeadContext struct {
 	AnvilPath string
 	// WorktreePath is the path to the worker's worktree.
 	WorktreePath string
+	// SchematicPlan is an optional implementation plan produced by the
+	// Schematic pre-worker. When non-empty it is included in the prompt.
+	SchematicPlan string
 }
 
 // Builder constructs prompts from templates and context.
@@ -155,6 +158,15 @@ Main repository: {{.Bead.AnvilPath}}
 - If you discover blocking issues, note them in your commit message
 - If the task is unclear, implement the most reasonable interpretation
 - Make sure the project builds successfully before committing
+{{- if .Bead.SchematicPlan}}
+
+## Implementation Plan (from Schematic analysis)
+
+The following plan was produced by an architectural pre-analysis of this bead.
+Follow it as a guide, but use your judgement if you discover the plan needs adjustment.
+
+{{.Bead.SchematicPlan}}
+{{- end}}
 
 {{- if .AgentsMD}}
 
