@@ -611,14 +611,16 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	// Check daily cost limit before dispatching new work.
 	costLimit := d.cfg.Settings.DailyCostLimit
 	if costLimit > 0 {
-		todayCost, err := d.db.GetTodayCost()
+		// Capture date once so both the cost lookup and the event-suppression
+		// key use the same day even if midnight rolls over between calls.
+		today := time.Now().Format("2006-01-02")
+		todayCost, err := d.db.GetTodayCostOn(today)
 		if err != nil {
 			d.logger.Error("checking daily cost", "error", err)
 			return
 		}
 		if todayCost >= costLimit {
 			// Log the event only once per day to avoid spamming.
-			today := time.Now().Format("2006-01-02")
 			prev, _ := d.costLimitLoggedDate.Load().(string)
 			if prev != today {
 				d.costLimitLoggedDate.Store(today)

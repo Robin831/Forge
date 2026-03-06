@@ -1179,8 +1179,13 @@ func (db *DB) GetDailyCost(date string) (inputTokens, outputTokens, cacheRead, c
 
 // GetTodayCost returns today's estimated cost total. Returns 0 if no row exists yet.
 func (db *DB) GetTodayCost() (float64, error) {
-	today := time.Now().Format("2006-01-02")
-	_, _, _, _, cost, _, err := db.GetDailyCost(today)
+	return db.GetTodayCostOn(time.Now().Format("2006-01-02"))
+}
+
+// GetTodayCostOn returns the estimated cost total for the given date (YYYY-MM-DD).
+// Returns 0 if no row exists yet for that date.
+func (db *DB) GetTodayCostOn(date string) (float64, error) {
+	_, _, _, _, cost, _, err := db.GetDailyCost(date)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
