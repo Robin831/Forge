@@ -375,10 +375,7 @@ func (m *Model) renderWorkerList(width, height int) string {
 // renderWorkerActivity renders the bottom sub-panel: a live activity log
 // for the currently selected worker, parsed from its stream-json log file.
 func (m *Model) renderWorkerActivity(width, height int) string {
-	style := panelStyle.Width(width) // Use default panel style, not focused
-	if m.focused == PanelWorkers {
-		// style = focusedPanelStyle.Width(width) // This was causing both sub-panels to be highlighted
-	}
+	style := panelStyle.Width(width)
 
 	title := activityPanelTitleStyle.Render("Live Activity")
 
