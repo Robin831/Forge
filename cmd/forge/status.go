@@ -47,7 +47,7 @@ var statusCmd = &cobra.Command{
 					if s.DailyCostLimit > 0 {
 						fmt.Fprintf(tw, "Daily Cost\t$%.2f / $%.2f\n", s.DailyCost, s.DailyCostLimit)
 						if s.CostLimitPaused {
-							fmt.Fprintf(tw, "Cost Status\tPAUSED (limit reached)\n")
+							fmt.Fprintf(tw, "Cost Status\tauto-dispatch paused (limit reached)\n")
 						}
 					} else if s.DailyCost > 0 {
 						fmt.Fprintf(tw, "Daily Cost\t$%.2f (no limit)\n", s.DailyCost)
