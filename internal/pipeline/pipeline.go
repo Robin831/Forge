@@ -445,7 +445,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		}
 
 		// Check if Smith explicitly escalated for human help.
-		if reason := extractNeedsHuman(smithResult.FullOutput); reason != "" {
+		if reason := ExtractNeedsHuman(smithResult.FullOutput); reason != "" {
 			log.Printf("[pipeline:%s] Smith escalated: NEEDS_HUMAN: %s", workerID, reason)
 			_ = p.DB.LogEvent(state.EventSmithFailed,
 				fmt.Sprintf("Smith escalated — needs human: %s", reason),
@@ -603,9 +603,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 	return outcome
 }
 
-// extractNeedsHuman scans Smith output for the NEEDS_HUMAN: marker and returns
+// ExtractNeedsHuman scans Smith output for the NEEDS_HUMAN: marker and returns
 // the reason string. Returns empty string if not found.
-func extractNeedsHuman(output string) string {
+func ExtractNeedsHuman(output string) string {
 	const marker = "NEEDS_HUMAN:"
 	for _, line := range strings.Split(output, "\n") {
 		trimmed := strings.TrimSpace(line)

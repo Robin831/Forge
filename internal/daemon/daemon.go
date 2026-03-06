@@ -867,7 +867,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			} else if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" && outcome.ReviewResult.NoDiff {
 				reason = "Warden rejected (no diff): " + outcome.ReviewResult.Summary
 			} else if outcome.SmithResult != nil {
-				if r := extractNeedsHuman(outcome.SmithResult.FullOutput); r != "" {
+				if r := pipeline.ExtractNeedsHuman(outcome.SmithResult.FullOutput); r != "" {
 					reason = "Smith escalated: " + r
 				}
 			}

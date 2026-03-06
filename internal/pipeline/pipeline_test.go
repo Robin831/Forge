@@ -596,7 +596,7 @@ func TestExtractNeedsHuman(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractNeedsHuman(tt.input)
+			got := ExtractNeedsHuman(tt.input)
 			assert.Equal(t, tt.expect, got)
 		})
 	}
