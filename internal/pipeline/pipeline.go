@@ -12,10 +12,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/provider"
@@ -51,6 +53,9 @@ type Outcome struct {
 	Branch string
 	// Error is set if the pipeline failed before reaching a verdict.
 	Error error
+	// RateLimited is true when all providers were rate limited and the bead
+	// has been released back to open so the poller can retry later.
+	RateLimited bool
 }
 
 // Params holds the dependencies for running a pipeline.
@@ -205,11 +210,20 @@ func Run(ctx context.Context, p Params) *Outcome {
 		outcome.SmithResult = smithResult
 
 		if smithResult.RateLimited {
-			log.Printf("[pipeline:%s] All providers rate limited", workerID)
+			log.Printf("[pipeline:%s] All providers rate limited — releasing bead %s back to open", workerID, p.Bead.ID)
 			_ = p.DB.LogEvent(state.EventSmithFailed,
-				"All providers rate limited — cannot continue",
+				"All providers rate limited — releasing bead back to open for retry",
 				p.Bead.ID, p.AnvilName)
+			// Reset the bead to open so the poller can retry after backoff.
+			releaseCmd := executil.HideWindow(exec.Command("bd", "update", p.Bead.ID, "--status=open", "--json"))
+			releaseCmd.Dir = p.AnvilConfig.Path
+			if out, err := releaseCmd.CombinedOutput(); err != nil {
+				log.Printf("[pipeline:%s] Failed to release bead %s back to open: %v: %s", workerID, p.Bead.ID, err, out)
+			} else {
+				log.Printf("[pipeline:%s] Bead %s released back to open", workerID, p.Bead.ID)
+			}
 			outcome.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
+			outcome.RateLimited = true
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
 			outcome.Duration = time.Since(start)
 			return outcome
