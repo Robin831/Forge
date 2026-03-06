@@ -212,12 +212,13 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 		// Create sub-beads via bd
 		subs, err := createSubBeads(ctx, bead, verdict.SubTasks, anvilPath)
 		if err != nil {
-			// Failed to create sub-beads — treat as hard error instead of falling back to plan.
-			// Log partial sub-beads so an operator can clean up orphaned sub-beads.
+			// Failed to create sub-beads — escalate to ActionClarify (not ActionSkip) so the
+			// pipeline releases the bead for human attention rather than silently continuing.
+			// Partial sub-beads are preserved so operators can identify and clean up orphans.
 			log.Printf("[schematic:%s] Failed to create sub-beads: %v (partial: %v)", bead.ID, err, subs)
 			result.Action = ActionClarify
 			result.SubBeads = subs // preserve partial sub-beads for caller visibility
-			result.Reason = fmt.Sprintf("Decomposition failed: %v", err)
+			result.Reason = fmt.Sprintf("Automatic decomposition failed, bead requires manual review: %v", err)
 			result.Error = err
 		} else {
 			result.SubBeads = subs

@@ -244,16 +244,30 @@ func Run(ctx context.Context, p Params) *Outcome {
 				log.Printf("[pipeline:%s] Schematic decomposed bead into %d sub-beads",
 					workerID, len(sResult.SubBeads))
 
-				// Log a summary event with JSON payload containing all sub-bead details
-				subBeadJSON, _ := json.Marshal(sResult.SubBeads)
+				// Log a summary event with JSON payload containing all sub-bead details.
+				// Fall back to a simple ID list if marshalling fails so the event is still useful.
+				subBeadJSON, marshalErr := json.Marshal(sResult.SubBeads)
+				var subBeadStr string
+				if marshalErr != nil {
+					log.Printf("[pipeline:%s] Failed to marshal sub-bead details: %v", workerID, marshalErr)
+					ids := make([]string, len(sResult.SubBeads))
+					for i, sb := range sResult.SubBeads {
+						ids[i] = sb.ID
+					}
+					subBeadStr = strings.Join(ids, ", ")
+				} else {
+					subBeadStr = string(subBeadJSON)
+				}
 				_ = p.DB.LogEvent(state.EventSchematicDone,
-					fmt.Sprintf("Decomposed into %d sub-beads: %s", len(sResult.SubBeads), string(subBeadJSON)),
+					fmt.Sprintf("Decomposed into %d sub-beads: %s", len(sResult.SubBeads), subBeadStr),
 					p.Bead.ID, p.AnvilName)
 
-				// Log each sub-bead as an individual event for easy scanning
-				for _, sb := range sResult.SubBeads {
+				// Log each sub-bead as an individual event for easy scanning.
+				// Events include a (n/total) counter so insertion order is preserved even if
+				// timestamps share the same second.
+				for i, sb := range sResult.SubBeads {
 					_ = p.DB.LogEvent(state.EventSchematicSubBead,
-						fmt.Sprintf("Created sub-bead %s: %s", sb.ID, sb.Title),
+						fmt.Sprintf("Created sub-bead (%d/%d) %s: %s", i+1, len(sResult.SubBeads), sb.ID, sb.Title),
 						p.Bead.ID, p.AnvilName)
 				}
 
