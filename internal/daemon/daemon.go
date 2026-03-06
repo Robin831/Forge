@@ -1070,9 +1070,20 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if err := d.db.ResetRetry(rp.BeadID, rp.Anvil); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset retry: %v", err)})
+		retry, err := d.db.GetRetry(rp.BeadID, rp.Anvil)
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to get retry state: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if retry != nil && retry.DispatchFailures > 0 {
+			if err := d.db.ResetDispatchFailures(rp.BeadID, rp.Anvil); err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset circuit breaker: %v", err)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Circuit breaker reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
+			d.logger.Info("circuit breaker reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
+			data, _ := json.Marshal(map[string]string{"message": "circuit breaker reset"})
+			return ipc.Response{Type: "ok", Payload: data}
 		}
 		_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Retry reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
 		d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)

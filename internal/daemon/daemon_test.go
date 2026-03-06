@@ -411,23 +411,23 @@ func TestHandleIPC_RetryBead(t *testing.T) {
 	})
 
 	t.Run("success", func(t *testing.T) {
-		// Seed a retry record that needs human attention.
-		require.NoError(t, db.UpsertRetry(&state.RetryRecord{
-			BeadID:     "BD-RETRY",
-			Anvil:      "anvil-1",
-			NeedsHuman: true,
-			RetryCount: 3,
-		}))
+		// Trip the circuit breaker so retry_bead has something to reset.
+		_, broke, err := db.IncrementDispatchFailures("BD-RETRY", "anvil-1", 1, "test failure")
+		require.NoError(t, err)
+		require.True(t, broke, "expected circuit breaker to trip")
 
 		payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: "BD-RETRY", Anvil: "anvil-1"})
 		resp := d.handleIPC(ipc.Command{Type: "retry_bead", Payload: payload})
 		assert.Equal(t, "ok", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Equal(t, "circuit breaker reset", msg["message"])
 
 		r, err := db.GetRetry("BD-RETRY", "anvil-1")
 		require.NoError(t, err)
 		require.NotNil(t, r)
 		assert.False(t, r.NeedsHuman)
-		assert.Equal(t, 0, r.RetryCount)
+		assert.Equal(t, 0, r.DispatchFailures)
 	})
 }
 
