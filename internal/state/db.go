@@ -939,10 +939,15 @@ func (db *DB) ReplaceQueueCache(items []QueueItem) error {
 	}
 
 	now := time.Now().Format(time.RFC3339)
+	stmt, err := tx.Prepare(
+		`INSERT INTO queue_cache (bead_id, anvil, title, priority, status, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
 	for _, item := range items {
-		if _, err := tx.Exec(
-			`INSERT INTO queue_cache (bead_id, anvil, title, priority, status, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
+		if _, err := stmt.Exec(
 			item.BeadID, item.Anvil, item.Title, item.Priority, item.Status, now,
 		); err != nil {
 			return err

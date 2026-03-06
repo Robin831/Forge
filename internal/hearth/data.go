@@ -37,7 +37,8 @@ func FetchQueue(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
 		cached, err := db.QueueCache()
 		if err != nil {
-			return UpdateQueueMsg{Items: nil}
+			fmt.Fprintf(os.Stderr, "hearth: failed to read queue cache: %v\n", err)
+			return nil
 		}
 
 		var items []QueueItem
