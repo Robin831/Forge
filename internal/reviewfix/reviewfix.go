@@ -150,7 +150,10 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				return result
 			}
 			if p.WorkerID != "" && p.DB != nil {
-				_ = p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath)
+				if err := p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath); err != nil {
+					log.Printf("[reviewfix] PR #%d: failed to update worker log path for worker %s to %q: %v",
+						p.PRNumber, p.WorkerID, process.LogPath, err)
+				}
 			}
 			smithResult = process.Wait()
 			// Treat a genuine success event as not rate-limited.

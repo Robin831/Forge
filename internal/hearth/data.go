@@ -274,7 +274,11 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			if name == "" {
 				name = "unknown"
 			}
-			entries = append(entries, fmt.Sprintf("[tool] %s %s", name, paramStr))
+			activity := fmt.Sprintf("[tool] %s", name)
+		if paramStr != "" {
+			activity = fmt.Sprintf("%s %s", activity, paramStr)
+		}
+		entries = append(entries, activity)
 		case "tool_result":
 			// Gemini tool_result — flush any buffered text (assistant spoke before tool ran)
 			flushGeminiText()

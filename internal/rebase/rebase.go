@@ -107,7 +107,9 @@ func (p *Params) rebaseWithSmith(ctx context.Context, providers []provider.Provi
 			return fmt.Errorf("spawning Smith (%s): %w", pv.Label(), err)
 		}
 		if p.WorkerID != "" && p.DB != nil {
-			_ = p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath)
+			if err := p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath); err != nil {
+				log.Printf("[rebase] warning: failed to update worker log path for worker %s: %v", p.WorkerID, err)
+			}
 		}
 		result := process.Wait()
 		if result.ResultSubtype == "success" && !result.IsError {
