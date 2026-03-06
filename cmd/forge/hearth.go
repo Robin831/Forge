@@ -30,8 +30,12 @@ var hearthCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		cfg, _ := config.Load("")
-		if cfg == nil {
+		cfg, err := config.Load("")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to load config for Hearth (using defaults): %v\n", err)
+			cfg = &config.Config{}
+			*cfg = config.Defaults()
+		} else if cfg == nil {
 			cfg = &config.Config{}
 			*cfg = config.Defaults()
 		}

@@ -90,8 +90,11 @@ func New(db *state.DB, logger *slog.Logger, handler ActionHandler) *Manager {
 }
 
 // SetThresholds overrides the default max attempt limits. Zero values are
-// ignored (the existing default is kept).
+// ignored (the existing default is kept). Must be called before any goroutines
+// call HandleEvent, or the caller must ensure exclusive access.
 func (m *Manager) SetThresholds(maxCI, maxRev, maxRebase int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if maxCI > 0 {
 		m.maxCI = maxCI
 	}

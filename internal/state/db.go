@@ -172,7 +172,8 @@ CREATE TABLE IF NOT EXISTS prs (
     last_checked     TEXT,
     ci_fix_count     INTEGER NOT NULL DEFAULT 0,
     review_fix_count INTEGER NOT NULL DEFAULT 0,
-    ci_passing       INTEGER NOT NULL DEFAULT 1
+    ci_passing       INTEGER NOT NULL DEFAULT 1,
+    rebase_count     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -523,7 +524,7 @@ func (db *DB) InsertPR(pr *PR) error {
 // PRByNumber returns the PR record for a given GitHub PR number, or nil if not found.
 func (db *DB) PRByNumber(number int) (*PR, error) {
 	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing
-		FROM prs WHERE number = ? LIMIT 1`, number)
+		FROM prs WHERE number = ? ORDER BY id DESC LIMIT 1`, number)
 	if err != nil {
 		return nil, err
 	}
