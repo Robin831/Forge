@@ -198,7 +198,8 @@ func TestDB_QueueCache(t *testing.T) {
 	// 3c. Labels round-trip: nil/empty labels stored as "[]", not "null"
 	withLabels := []QueueItem{
 		{BeadID: "bd-l1", Anvil: "anvil-l", Title: "Has labels", Priority: 1, Status: "open", Labels: `["dispatch"]`, Section: QueueSectionReady},
-		{BeadID: "bd-l2", Anvil: "anvil-l", Title: "No labels (empty JSON array)", Priority: 2, Status: "open", Section: QueueSectionUnlabeled},
+		{BeadID: "bd-l2", Anvil: "anvil-l", Title: "No labels (empty JSON array)", Priority: 2, Status: "open", Labels: `[]`, Section: QueueSectionUnlabeled}, // Explicit empty JSON array
+		{BeadID: "bd-l3", Anvil: "anvil-l", Title: "No labels (empty string)", Priority: 3, Status: "open", Labels: "", Section: QueueSectionUnlabeled}, // Empty string
 	}
 	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-a", "anvil-l"}, withLabels); err != nil {
 		t.Fatal(err)
@@ -207,13 +208,15 @@ func TestDB_QueueCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var l1, l2 *QueueItem
+	var l1, l2, l3 *QueueItem
 	for i := range items {
 		switch items[i].BeadID {
 		case "bd-l1":
 			l1 = &items[i]
 		case "bd-l2":
 			l2 = &items[i]
+		case "bd-l3":
+			l3 = &items[i]
 		}
 	}
 	if l1 == nil || l1.Labels != `["dispatch"]` {
@@ -221,6 +224,9 @@ func TestDB_QueueCache(t *testing.T) {
 	}
 	if l2 == nil || l2.Labels != `[]` {
 		t.Errorf("expected bd-l2 labels=[], got %v", l2)
+	}
+	if l3 == nil || l3.Labels != `[]` {
+		t.Errorf("expected bd-l3 labels=[], got %v", l3)
 	}
 
 	// 4. Replacing with no items clears the cache for the specified anvils
