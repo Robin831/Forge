@@ -75,9 +75,9 @@ func TestFilterActionableComments(t *testing.T) {
 
 func TestBuildReviewFixPrompt(t *testing.T) {
 	p := FixParams{
-		PRNumber:  42,
-		Branch:    "forge/Forge-xyz",
-		BeadID:    "Forge-xyz",
+		PRNumber:     42,
+		Branch:       "forge/Forge-xyz",
+		BeadID:       "Forge-xyz",
 		WorktreePath: "/tmp/worktree",
 	}
 	comments := []ReviewComment{

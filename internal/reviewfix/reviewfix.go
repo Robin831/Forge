@@ -23,7 +23,8 @@ import (
 )
 
 // DefaultCopilotReviewer is the GitHub reviewer handle for GitHub Copilot PR reviews.
-const DefaultCopilotReviewer = "copilot-pull-request-reviewer"
+// It aliases ghpr.DefaultReviewer to avoid duplicating the default value.
+var DefaultCopilotReviewer = ghpr.DefaultReviewer
 
 // ReviewComment represents a PR review comment from GitHub.
 type ReviewComment struct {
@@ -248,15 +249,18 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			reviewer = DefaultCopilotReviewer
 		}
 		if err := ghpr.RequestReReview(ctx, p.WorktreePath, p.PRNumber, reviewer); err != nil {
-			log.Printf("[reviewfix] PR #%d: Warning: could not request re-review from %s: %v", p.PRNumber, reviewer, err)
+			log.Printf("[reviewfix] PR #%d: could not request re-review from %s: %v", p.PRNumber, reviewer, err)
+			// Treat re-review request failure as a failed fix cycle so Bellows can retry or escalate.
+			result.Error = fmt.Errorf("PR #%d: request re-review from %s failed: %w", p.PRNumber, reviewer, err)
 			_ = p.DB.LogEvent(state.EventReReviewRequestFailed,
-				fmt.Sprintf("PR #%d: re-review request failed: %v", p.PRNumber, err),
+				fmt.Sprintf("PR #%d: re-review request failed after addressing comments: %v", p.PRNumber, err),
 				p.BeadID, p.AnvilName)
-		} else {
-			_ = p.DB.LogEvent(state.EventReReviewRequested,
-				fmt.Sprintf("PR #%d: requested re-review from %s", p.PRNumber, reviewer),
-				p.BeadID, p.AnvilName)
+			result.Duration = time.Since(start)
+			return result
 		}
+		_ = p.DB.LogEvent(state.EventReReviewRequested,
+			fmt.Sprintf("PR #%d: requested re-review from %s", p.PRNumber, reviewer),
+			p.BeadID, p.AnvilName)
 
 		result.Duration = time.Since(start)
 		return result

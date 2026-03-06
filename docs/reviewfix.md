@@ -17,7 +17,7 @@ Smith commits and pushes fixes to the PR branch
     ↓
 Resolved threads are marked resolved on GitHub
     ↓
-gh pr review-request <pr> --reviewer copilot-pull-request-reviewer
+gh pr edit <pr> --add-reviewer copilot-pull-request-reviewer
     ↓
 Copilot re-reviews the updated PR
     ↓
@@ -28,7 +28,7 @@ Copilot re-reviews the updated PR
 ## Triggering
 
 Bellows (`internal/bellows`) polls all open PRs on a configurable interval
-(default 30 s). It fires an `EventReviewChanges` event when:
+(default 5m; minimum 30 s). It fires an `EventReviewChanges` event when:
 
 - A review transitions to `CHANGES_REQUESTED`, or
 - The count of unresolved review threads increases from zero.
@@ -41,7 +41,7 @@ After `Fix()` successfully pushes review fixes it calls
 `ghpr.RequestReReview()`, which runs:
 
 ```
-gh pr review-request <PR number> --reviewer copilot-pull-request-reviewer
+gh pr edit <PR number> --add-reviewer copilot-pull-request-reviewer
 ```
 
 This notifies GitHub Copilot (or any configured reviewer) to re-examine the PR.
@@ -65,9 +65,8 @@ settings:
   max_review_attempts: 2   # max fix+re-review cycles per PR
 ```
 
-To use a different reviewer (e.g. a human or another bot) set the reviewer
-handle in the forge config or supply `FixParams.Reviewer` directly when calling
-`reviewfix.Fix()`.
+To use a different reviewer (e.g. a human or another bot), supply
+`FixParams.Reviewer` directly when calling `reviewfix.Fix()`.
 
 ## State Events
 
@@ -77,5 +76,6 @@ handle in the forge config or supply `FixParams.Reviewer` directly when calling
 | `review_fix_started` | Fix cycle started (Smith about to run) |
 | `review_fix_success` | Smith fixed the comments and pushed |
 | `re_review_requested` | Re-review requested from the configured reviewer |
-| `review_fix_failed` | A fix cycle failed (Smith error or re-review API error) |
+| `re_review_request_failed` | Re-review request failed (e.g. GitHub or CLI/API error) |
+| `review_fix_failed` | A fix cycle failed (e.g., Smith error during the fix phase) |
 | `review_thread_resolved` | An individual review thread was resolved on GitHub |
