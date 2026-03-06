@@ -48,6 +48,9 @@ type FixParams struct {
 	Branch string
 	// DB for state tracking.
 	DB *state.DB
+	// WorkerID is the state DB worker ID, used to update the log path
+	// so the Hearth TUI can display live activity.
+	WorkerID string
 	// MaxAttempts is the maximum fix attempts for review comments.
 	MaxAttempts int
 	// ExtraFlags for Claude CLI.
@@ -145,6 +148,12 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				_ = p.DB.LogEvent(state.EventReviewFixFailed, result.Error.Error(), p.BeadID, p.AnvilName)
 				result.Duration = time.Since(start)
 				return result
+			}
+			if p.WorkerID != "" && p.DB != nil {
+				if err := p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath); err != nil {
+					log.Printf("[reviewfix] PR #%d: failed to update worker log path for worker %s to %q: %v",
+						p.PRNumber, p.WorkerID, process.LogPath, err)
+				}
 			}
 			smithResult = process.Wait()
 			// Treat a genuine success event as not rate-limited.

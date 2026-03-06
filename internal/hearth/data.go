@@ -164,6 +164,26 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 	rawLines := strings.Split(string(data), "\n")
 
 	var entries []string
+	// For Gemini delta messages, accumulate fragments into a single entry
+	// rather than creating one [text] entry per tiny delta.
+	var geminiTextBuf strings.Builder
+
+	flushGeminiText := func() {
+		if geminiTextBuf.Len() == 0 {
+			return
+		}
+		text := strings.ReplaceAll(geminiTextBuf.String(), "\n", " ")
+		text = strings.TrimSpace(text)
+		geminiTextBuf.Reset()
+		if text == "" {
+			return
+		}
+		if len(text) > 70 {
+			text = text[:67] + "..."
+		}
+		entries = append(entries, fmt.Sprintf("[text] %s", text))
+	}
+
 	for _, line := range rawLines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -177,6 +197,9 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			Content string          `json:"content,omitempty"`
 			Role    string          `json:"role,omitempty"`
 			Status  string          `json:"status,omitempty"`
+			// Gemini top-level tool_use fields
+			ToolName   string          `json:"tool_name,omitempty"`
+			Parameters json.RawMessage `json:"parameters,omitempty"`
 			RateLimitInfo *struct {
 				Status string `json:"status"`
 			} `json:"rate_limit_info,omitempty"`
@@ -234,23 +257,39 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 				}
 			}
 		case "message":
-			// Gemini-style delta message
+			// Gemini-style delta message — accumulate fragments
 			if event.Role == "assistant" && event.Content != "" {
-				text := strings.ReplaceAll(event.Content, "\n", " ")
-				text = strings.TrimSpace(text)
-				if text != "" {
-					if len(text) > 70 {
-						text = text[:67] + "..."
-					}
-					entries = append(entries, fmt.Sprintf("[text] %s", text))
+				geminiTextBuf.WriteString(event.Content)
+			}
+		case "tool_use":
+			// Gemini top-level tool_use event — flush any buffered text first
+			flushGeminiText()
+			paramStr := ""
+			if len(event.Parameters) > 0 {
+				paramStr = string(event.Parameters)
+				if len(paramStr) > 50 {
+					paramStr = paramStr[:47] + "..."
 				}
 			}
+			name := event.ToolName
+			if name == "" {
+				name = "unknown"
+			}
+			activity := fmt.Sprintf("[tool] %s", name)
+		if paramStr != "" {
+			activity = fmt.Sprintf("%s %s", activity, paramStr)
+		}
+		entries = append(entries, activity)
+		case "tool_result":
+			// Gemini tool_result — flush any buffered text (assistant spoke before tool ran)
+			flushGeminiText()
 		case "rate_limit_event":
 			// Claude-style informational event — status is inside rate_limit_info
 			if event.RateLimitInfo != nil && event.RateLimitInfo.Status != "" {
 				entries = append(entries, fmt.Sprintf("[rate] %s", event.RateLimitInfo.Status))
 			}
 		case "result":
+			flushGeminiText()
 			subtype := event.Subtype
 			if subtype == "" {
 				subtype = "done"
@@ -258,6 +297,8 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			entries = append(entries, fmt.Sprintf("[result] %s", subtype))
 		}
 	}
+
+	flushGeminiText()
 
 	if len(entries) > maxEntries {
 		entries = entries[len(entries)-maxEntries:]

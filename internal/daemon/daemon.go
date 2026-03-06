@@ -379,6 +379,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				PRNumber:     req.PRNumber,
 				Branch:       req.Branch,
 				DB:           d.db,
+				WorkerID:     workerID,
 				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
 				Providers:    provider.FromConfig(d.cfg.Settings.Providers),
 			})
@@ -407,6 +408,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				PRNumber:     req.PRNumber,
 				Branch:       req.Branch,
 				DB:           d.db,
+				WorkerID:     workerID,
 				MaxAttempts:  d.cfg.Settings.MaxReviewAttempts,
 				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
 				Providers:    provider.FromConfig(d.cfg.Settings.Providers),
@@ -450,6 +452,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				AnvilName:    req.Anvil,
 				PRNumber:     req.PRNumber,
 				DB:           d.db,
+				WorkerID:     workerID,
 				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
 				Providers:    provider.FromConfig(d.cfg.Settings.Providers),
 			})
