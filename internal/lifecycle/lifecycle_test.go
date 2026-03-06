@@ -556,14 +556,15 @@ func TestManager_AnvilCollision(t *testing.T) {
 
 // TestNotifyReviewFixCompleted_AllowsNextCycle verifies that after a review fix
 // worker completes (NotifyReviewFixCompleted is called), a subsequent
-// EventReviewChanges from the re-requested review dispatches a new fix cycle
-// instead of being suppressed by the "already in fix cycle" guard.
+// EventReviewChanges triggered by the reviewer re-examining the updated push
+// dispatches a new fix cycle instead of being suppressed by the "already in
+// fix cycle" guard.
 //
 // This covers the real-world scenario where:
 //  1. First wave: reviewer requests changes → reviewfix dispatched (NeedsFix=true)
 //  2. Second wave arrives WHILE fix is running → "already in fix cycle" (expected)
-//  3. Fix worker finishes → NotifyReviewFixCompleted clears NeedsFix
-//  4. Re-review after pushed fixes still has issues → new EventReviewChanges
+//  3. Fix worker pushes changes → NotifyReviewFixCompleted clears NeedsFix
+//  4. Reviewer re-examines the push, still requests changes → new EventReviewChanges
 //     must be dispatched (was previously dropped because NeedsFix stayed true)
 func TestNotifyReviewFixCompleted_AllowsNextCycle(t *testing.T) {
 	db := newTestDB(t)

@@ -577,8 +577,6 @@ const (
 	EventReviewFixFailed         EventType = "review_fix_failed"
 	EventReviewThreadResolved    EventType = "review_thread_resolved"
 	EventReviewFixSmithError     EventType = "review_fix_smith_error"
-	EventReReviewRequested       EventType = "re_review_requested"
-	EventReReviewRequestFailed   EventType = "re_review_request_failed"
 	EventPRCreated      EventType = "pr_created"
 	EventPRMerged       EventType = "pr_merged"
 	EventPRClosed       EventType = "pr_closed"
