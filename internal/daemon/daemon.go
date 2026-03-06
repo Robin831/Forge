@@ -1306,24 +1306,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		return ipc.Response{Type: "ok", Payload: data}
 
 
-	case "retry_bead":
-		var rp ipc.RetryBeadPayload
-		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid retry_bead payload"})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		if rp.BeadID == "" || rp.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		if err := d.db.ResetDispatchFailures(rp.BeadID, rp.Anvil); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset dispatch failures: %v", err)})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		d.logger.Info("dispatch circuit breaker reset", "bead", rp.BeadID, "anvil", rp.Anvil)
-		data, _ := json.Marshal(map[string]string{"message": "circuit breaker reset"})
-		return ipc.Response{Type: "ok", Payload: data}
-
 	case "tag_bead":
 		var tp ipc.TagBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &tp); err != nil {
