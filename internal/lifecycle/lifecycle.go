@@ -98,6 +98,20 @@ func (m *Manager) Load(ctx context.Context) error {
 	}
 
 	for _, pr := range prs {
+		// If a PR was persisted as needs_fix, the fix worker was killed before it
+		// could complete (e.g. daemon restart). Reset to open so bellows re-detects
+		// any outstanding review comments and dispatches a fresh fix cycle.
+		// Do NOT restore NeedsFix=true — that permanently blocks HandleEvent from
+		// dispatching until the stuck state is manually cleared.
+		if pr.Status == state.PRNeedsFix {
+			if err := m.db.UpdatePRStatus(pr.ID, state.PROpen); err != nil {
+				m.logger.Warn("failed to reset stale needs_fix PR to open on load",
+					"pr", pr.Number, "anvil", pr.Anvil, "error", err)
+			} else {
+				m.logger.Info("reset stale needs_fix PR to open on load (fix worker was killed)",
+					"pr", pr.Number, "anvil", pr.Anvil)
+			}
+		}
 		st := &PRState{
 			ID:           pr.ID,
 			PRNumber:     pr.Number,
@@ -106,7 +120,7 @@ func (m *Manager) Load(ctx context.Context) error {
 			Branch:       pr.Branch,
 			CIPassing:    pr.CIPassing,
 			Approved:     pr.Status == state.PRApproved,
-			NeedsFix:     pr.Status == state.PRNeedsFix,
+			NeedsFix:     false, // never restore NeedsFix=true; bellows will re-detect
 			CIFixCount:   pr.CIFixCount,
 			ReviewFixCnt: pr.ReviewFixCount,
 		}
@@ -346,12 +360,24 @@ func (m *Manager) Remove(anvil string, prNumber int) {
 // HandleEvent sees NeedsFix=true and silently drops the event.
 func (m *Manager) NotifyReviewFixCompleted(anvil string, prNumber int) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	st, ok := m.states[m.key(anvil, prNumber)]
 	if !ok {
+		m.mu.Unlock()
 		return
 	}
 	st.NeedsFix = false
+	dbID := st.ID
+	m.mu.Unlock()
+
 	m.logger.Info("review fix cycle completed, cleared NeedsFix", "pr", prNumber, "anvil", anvil)
+
+	// Persist the cleared state so a daemon restart does not reload a stale
+	// needs_fix DB status and get permanently stuck.
+	if dbID > 0 {
+		if err := m.db.UpdatePRStatus(dbID, state.PROpen); err != nil {
+			m.logger.Warn("failed to persist PROpen after review fix completed",
+				"pr", prNumber, "anvil", anvil, "error", err)
+		}
+	}
 }
 
