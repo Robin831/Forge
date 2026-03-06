@@ -22,6 +22,9 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
+// DefaultCopilotReviewer is the GitHub reviewer handle for GitHub Copilot PR reviews.
+const DefaultCopilotReviewer = "copilot-pull-request-reviewer"
+
 // ReviewComment represents a PR review comment from GitHub.
 type ReviewComment struct {
 	Author   string `json:"author"`
@@ -50,6 +53,9 @@ type FixParams struct {
 	DB *state.DB
 	// MaxAttempts is the maximum fix attempts for review comments.
 	MaxAttempts int
+	// Reviewer is the GitHub reviewer handle to request re-review from after pushing fixes.
+	// Defaults to DefaultCopilotReviewer ("copilot-pull-request-reviewer") if empty.
+	Reviewer string
 	// ExtraFlags for Claude CLI.
 	ExtraFlags []string
 	// Providers is the ordered list of AI providers to try.
@@ -233,6 +239,25 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		_ = p.DB.LogEvent(state.EventReviewFixSuccess,
 			fmt.Sprintf("PR #%d: Addressed %d comments on attempt %d", p.PRNumber, len(actionable), attempt),
 			p.BeadID, p.AnvilName)
+
+		// Request re-review so Copilot (or the configured reviewer) re-examines
+		// the PR after the fix commit is pushed. Without this, the review cycle
+		// stalls because the reviewer is never notified.
+		reviewer := p.Reviewer
+		if reviewer == "" {
+			reviewer = DefaultCopilotReviewer
+		}
+		if err := ghpr.RequestReReview(ctx, p.WorktreePath, p.PRNumber, reviewer); err != nil {
+			log.Printf("[reviewfix] PR #%d: Warning: could not request re-review from %s: %v", p.PRNumber, reviewer, err)
+			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+				fmt.Sprintf("PR #%d: re-review request failed: %v", p.PRNumber, err),
+				p.BeadID, p.AnvilName)
+		} else {
+			_ = p.DB.LogEvent(state.EventReReviewRequested,
+				fmt.Sprintf("PR #%d: requested re-review from %s", p.PRNumber, reviewer),
+				p.BeadID, p.AnvilName)
+		}
+
 		result.Duration = time.Since(start)
 		return result
 	}
