@@ -705,14 +705,45 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	if len(succeededAnvils) > 0 {
 		var cacheItems []state.QueueItem
 		for _, b := range beads {
+			labelsJSON, _ := json.Marshal(b.Labels)
+			section := d.classifyBeadSection(b)
 			cacheItems = append(cacheItems, state.QueueItem{
 				BeadID:   b.ID,
 				Anvil:    b.Anvil,
 				Title:    b.Title,
 				Priority: b.Priority,
 				Status:   b.Status,
+				Labels:   string(labelsJSON),
+				Section:  section,
 			})
 		}
+
+		// Also include in-progress beads from successful anvils.
+		inProgress := p.PollInProgress(ctx)
+		for _, b := range inProgress {
+			// Only include in-progress beads from anvils that polled successfully.
+			found := false
+			for _, a := range succeededAnvils {
+				if a == b.Anvil {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+			labelsJSON, _ := json.Marshal(b.Labels)
+			cacheItems = append(cacheItems, state.QueueItem{
+				BeadID:   b.ID,
+				Anvil:    b.Anvil,
+				Title:    b.Title,
+				Priority: b.Priority,
+				Status:   b.Status,
+				Labels:   string(labelsJSON),
+				Section:  state.QueueSectionInProgress,
+			})
+		}
+
 		if err := d.db.ReplaceQueueCacheForAnvils(succeededAnvils, cacheItems); err != nil {
 			d.logger.Warn("failed to cache queue", "error", err)
 		}
@@ -1274,6 +1305,54 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": "clarification_needed set"})
 		return ipc.Response{Type: "ok", Payload: data}
 
+
+	case "retry_bead":
+		var rp ipc.RetryBeadPayload
+		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid retry_bead payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if rp.BeadID == "" || rp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if err := d.db.ResetDispatchFailures(rp.BeadID, rp.Anvil); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset dispatch failures: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		d.logger.Info("dispatch circuit breaker reset", "bead", rp.BeadID, "anvil", rp.Anvil)
+		data, _ := json.Marshal(map[string]string{"message": "circuit breaker reset"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "tag_bead":
+		var tp ipc.TagBeadPayload
+		if err := json.Unmarshal(cmd.Payload, &tp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid tag_bead payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if tp.BeadID == "" || tp.Anvil == "" || tp.Tag == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id, anvil, and tag are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		anvilCfg, ok := d.cfg.Anvils[tp.Anvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", tp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		tagCmd := exec.Command("bd", "update", tp.BeadID, "--add-label", tp.Tag)
+		tagCmd.Dir = anvilCfg.Path
+		if out, err := tagCmd.CombinedOutput(); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update failed: %v: %s", err, string(out))})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		d.logger.Info("label added to bead", "bead", tp.BeadID, "anvil", tp.Anvil, "tag", tp.Tag)
+		_ = d.db.LogEvent(state.EventBeadTagged, fmt.Sprintf("Label %q added to bead %s", tp.Tag, tp.BeadID), tp.BeadID, tp.Anvil)
+		// Trigger a refresh so the queue cache updates promptly
+		go d.pollAndDispatch(context.Background())
+		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q added", tp.Tag)})
+		return ipc.Response{Type: "ok", Payload: data}
+
+
 	case "clear_clarification":
 		var cp ipc.ClarificationPayload
 		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {
@@ -1640,6 +1719,28 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 		d.logger.Warn(msg, "bead", beadID, "anvil", anvil)
 		_ = d.db.LogEvent(state.EventDispatchCircuitBreak, msg, beadID, anvil)
 	}
+}
+
+// classifyBeadSection determines which queue section a bead belongs to based
+// on the anvil's auto_dispatch configuration.
+func (d *Daemon) classifyBeadSection(bead poller.Bead) state.QueueSection {
+	if bead.Status == "in_progress" {
+		return state.QueueSectionInProgress
+	}
+	anvilCfg, ok := d.cfg.Anvils[bead.Anvil]
+	if !ok {
+		return state.QueueSectionReady
+	}
+	// Only split ready vs unlabeled when auto_dispatch mode is "tagged"
+	if anvilCfg.AutoDispatch == "tagged" && anvilCfg.AutoDispatchTag != "" {
+		for _, t := range bead.Labels {
+			if strings.EqualFold(t, anvilCfg.AutoDispatchTag) {
+				return state.QueueSectionReady
+			}
+		}
+		return state.QueueSectionUnlabeled
+	}
+	return state.QueueSectionReady
 }
 
 // shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.

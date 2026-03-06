@@ -106,6 +106,8 @@ func (db *DB) migrate() error {
 		{"retries", "dispatch_failures", `ALTER TABLE retries ADD COLUMN dispatch_failures INTEGER NOT NULL DEFAULT 0`},
 		{"prs", "rebase_count", `ALTER TABLE prs ADD COLUMN rebase_count INTEGER NOT NULL DEFAULT 0`},
 		{"workers", "updated_at", `ALTER TABLE workers ADD COLUMN updated_at TEXT`},
+		{"queue_cache", "labels", `ALTER TABLE queue_cache ADD COLUMN labels TEXT NOT NULL DEFAULT '[]'`},
+		{"queue_cache", "section", `ALTER TABLE queue_cache ADD COLUMN section TEXT NOT NULL DEFAULT 'ready'`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -865,6 +867,7 @@ const (
 	EventCostLimitHit         EventType = "cost_limit_hit"
 	EventSchematicSubBead     EventType = "schematic_sub_bead"
 	EventWorkerStalled        EventType = "worker_stalled"
+	EventBeadTagged           EventType = "bead_tagged"
 	EventError                EventType = "error"
 	EventBeadRecovered        EventType = "bead_recovered"
 	EventDepcheckStarted      EventType = "depcheck_started"
@@ -1583,6 +1586,15 @@ func (db *DB) GetAllProviderQuotas() (map[string]provider.Quota, error) {
 	return quotas, rows.Err()
 }
 
+// QueueSection categorises a bead's position in the dispatch pipeline.
+type QueueSection string
+
+const (
+	QueueSectionReady      QueueSection = "ready"      // will be auto-dispatched
+	QueueSectionUnlabeled  QueueSection = "unlabeled"   // available but not tagged for dispatch
+	QueueSectionInProgress QueueSection = "in_progress" // currently being worked on
+)
+
 // QueueItem represents a cached bead from the daemon's poll.
 type QueueItem struct {
 	BeadID   string
@@ -1590,6 +1602,8 @@ type QueueItem struct {
 	Title    string
 	Priority int
 	Status   string
+	Labels   string       // JSON-encoded []string
+	Section  QueueSection // ready / unlabeled / in_progress
 }
 
 // ReplaceQueueCacheForAnvils atomically replaces the cached queue rows for the
@@ -1617,8 +1631,8 @@ func (db *DB) ReplaceQueueCacheForAnvils(anvils []string, items []QueueItem) err
 
 	now := time.Now().Format(dbTimeLayout)
 	stmt, err := tx.Prepare(
-		`INSERT INTO queue_cache (bead_id, anvil, title, priority, status, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`)
+		`INSERT INTO queue_cache (bead_id, anvil, title, priority, status, labels, section, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -1627,8 +1641,16 @@ func (db *DB) ReplaceQueueCacheForAnvils(anvils []string, items []QueueItem) err
 		if _, ok := allowed[item.Anvil]; !ok {
 			continue // skip items for anvils not in the replacement set
 		}
+		labels := item.Labels
+		if labels == "" {
+			labels = "[]"
+		}
+		section := string(item.Section)
+		if section == "" {
+			section = string(QueueSectionReady)
+		}
 		if _, err := stmt.Exec(
-			item.BeadID, item.Anvil, item.Title, item.Priority, item.Status, now,
+			item.BeadID, item.Anvil, item.Title, item.Priority, item.Status, labels, section, now,
 		); err != nil {
 			return err
 		}
@@ -1637,11 +1659,18 @@ func (db *DB) ReplaceQueueCacheForAnvils(anvils []string, items []QueueItem) err
 	return tx.Commit()
 }
 
-// QueueCache returns all cached queue items, sorted by priority, bead ID, then anvil.
+// QueueCache returns all cached queue items, sorted by section (ready, unlabeled,
+// in_progress), then priority, bead ID, and anvil.
 func (db *DB) QueueCache() ([]QueueItem, error) {
 	rows, err := db.conn.Query(
-		`SELECT bead_id, anvil, title, priority, status
-		 FROM queue_cache ORDER BY priority, bead_id, anvil`)
+		`SELECT bead_id, anvil, title, priority, status, labels, section
+		 FROM queue_cache
+		 ORDER BY CASE section
+		   WHEN 'ready' THEN 0
+		   WHEN 'unlabeled' THEN 1
+		   WHEN 'in_progress' THEN 2
+		   ELSE 3
+		 END, priority, bead_id, anvil`)
 	if err != nil {
 		return nil, err
 	}
@@ -1650,9 +1679,11 @@ func (db *DB) QueueCache() ([]QueueItem, error) {
 	var items []QueueItem
 	for rows.Next() {
 		var item QueueItem
-		if err := rows.Scan(&item.BeadID, &item.Anvil, &item.Title, &item.Priority, &item.Status); err != nil {
+		var section string
+		if err := rows.Scan(&item.BeadID, &item.Anvil, &item.Title, &item.Priority, &item.Status, &item.Labels, &section); err != nil {
 			return nil, err
 		}
+		item.Section = QueueSection(section)
 		items = append(items, item)
 	}
 	return items, rows.Err()

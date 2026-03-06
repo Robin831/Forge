@@ -63,7 +63,7 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 		}
-		model.OnRetryBead = func(beadID, anvil string, prID int) {
+		model.OnRetryBead = func(beadID, anvil string) {
 			client, err := ipc.NewClient()
 			if err != nil {
 				return
@@ -72,14 +72,13 @@ var hearthCmd = &cobra.Command{
 			payload, _ := json.Marshal(ipc.RetryBeadPayload{
 				BeadID: beadID,
 				Anvil:  anvil,
-				PRID:   prID,
 			})
 			_, _ = client.Send(ipc.Command{
 				Type:    "retry_bead",
 				Payload: json.RawMessage(payload),
 			})
 		}
-		model.OnDismissBead = func(beadID, anvil string, prID int) {
+		model.OnDismissBead = func(beadID, anvil string) {
 			client, err := ipc.NewClient()
 			if err != nil {
 				return
@@ -88,7 +87,6 @@ var hearthCmd = &cobra.Command{
 			payload, _ := json.Marshal(ipc.DismissBeadPayload{
 				BeadID: beadID,
 				Anvil:  anvil,
-				PRID:   prID,
 			})
 			_, _ = client.Send(ipc.Command{
 				Type:    "dismiss_bead",
@@ -116,6 +114,34 @@ var hearthCmd = &cobra.Command{
 				return "", nil
 			}
 			return result.LogPath, result.LastLines
+		}
+		model.OnTagBead = func(beadID, anvil string) {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return
+			}
+			defer client.Close()
+
+			// Read auto_dispatch_tag from the local config since the hearth
+			// process loads the same config file the daemon uses.
+			cfg, cfgErr := config.Load(configFile)
+			if cfgErr != nil {
+				return
+			}
+			anvilCfg, ok := cfg.Anvils[anvil]
+			if !ok || anvilCfg.AutoDispatchTag == "" {
+				return
+			}
+
+			payload, _ := json.Marshal(ipc.TagBeadPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+				Tag:    anvilCfg.AutoDispatchTag,
+			})
+			_, _ = client.Send(ipc.Command{
+				Type:    "tag_bead",
+				Payload: json.RawMessage(payload),
+			})
 		}
 
 		p := tea.NewProgram(&model, tea.WithAltScreen())
