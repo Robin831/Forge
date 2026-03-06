@@ -489,7 +489,7 @@ func (m *Model) scrollDown() {
 		}
 	case PanelActivity:
 		activityLines := m.selectedWorkerActivity()
-		_, topHeight := m.getVerticalSplit()
+		topHeight, _ := m.getVerticalSplit()
 		maxVisible := topHeight - 4
 		if maxVisible < 1 {
 			maxVisible = 1
@@ -1445,8 +1445,8 @@ func placeOverlay(width, height int, overlay, background string) string {
 		// Insert overlay
 		result = append(result, olRunes...)
 		// Append remainder of background if any.
-		// Use visual width (ANSI-aware) so the resume position is correct.
-		afterOverlay := startX + lipgloss.Width(overlayLine)
+		// Use rune count (not ANSI-aware width) because bgRunes is indexed by rune position.
+		afterOverlay := startX + len(olRunes)
 		if afterOverlay < len(bgRunes) {
 			result = append(result, bgRunes[afterOverlay:]...)
 		}

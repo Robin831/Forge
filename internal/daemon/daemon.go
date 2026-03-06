@@ -98,6 +98,7 @@ type Daemon struct {
 	notifier *notify.Notifier
 
 	cancel     context.CancelFunc // cancels the Run context for graceful shutdown
+	runCtx     context.Context    // the live run context; set in Run() after signal/cancel wiring
 
 	forgeDir   string // ~/.forge
 	pidFile    string
@@ -326,6 +327,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Store cancel so IPC shutdown command can trigger graceful stop.
 	// Wrap ctx with a cancel so the IPC handler can cancel independently.
 	ctx, d.cancel = context.WithCancel(ctx)
+	d.runCtx = ctx
 
 	// Main poll loop
 	pollInterval := d.cfg.Load().Settings.PollInterval
@@ -1326,7 +1328,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no auto_dispatch_tag configured", tp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		tagCtx, tagCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		tagCtx, tagCancel := context.WithTimeout(d.runCtx, 30*time.Second)
 		defer tagCancel()
 		tagCmd := executil.HideWindow(exec.CommandContext(tagCtx, "bd", "update", tp.BeadID, "--add-label", tag))
 		tagCmd.Dir = anvilCfg.Path
@@ -1338,7 +1340,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		_ = d.db.LogEvent(state.EventBeadTagged, fmt.Sprintf("Label %q added to bead %s", tag, tp.BeadID), tp.BeadID, tp.Anvil)
 		// Trigger a refresh so the queue cache updates promptly, but bound the
 		// context so the refresh participates in graceful shutdown.
-		refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
 		go func() {
 			defer refreshCancel()
 			d.pollAndDispatch(refreshCtx)
