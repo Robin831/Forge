@@ -1,9 +1,10 @@
 // Package hearth provides The Forge's TUI dashboard using Bubbletea.
 //
-// The TUI has three panels in a vertical split layout:
-//   - Queue (top left): Pending beads from anvils
-//   - Workers (top right): Active Smith processes
-//   - Event Log (bottom): Recent events from the state DB
+// The TUI has a top row with three columns and a bottom event strip:
+//   - Queue / Needs Attention (left column, stacked): Pending and stuck beads
+//   - Workers (center column): Active Smith processes
+//   - Live Activity (right column): Streaming log output for the selected worker
+//   - Event Log (bottom strip): Recent events from the state DB
 //
 // Tab switches focus between panels, j/k scrolls the focused panel,
 // q quits the app.
@@ -29,7 +30,7 @@ const (
 	PanelActivity
 	PanelEvents
 
-	panelCount = PanelEvents + 1
+	panelCount = PanelEvents + 1 // NOTE: update if panels are added/removed
 
 	// Event panel rendering constants
 	eventPanelInteriorPadding = 4
@@ -300,6 +301,10 @@ func (m *Model) getVerticalSplit() (topHeight, bottomHeight int) {
 	if bottomHeight > contentHeight/3 {
 		bottomHeight = contentHeight / 3
 	}
+	// Events panel needs at least 4 lines (border top/bottom + title + 1 event)
+	if bottomHeight < 4 && contentHeight >= 4 {
+		bottomHeight = 4
+	}
 	topHeight = contentHeight - bottomHeight
 	return
 }
@@ -318,12 +323,20 @@ func (m *Model) scrollDown() {
 	case PanelWorkers:
 		if m.workerScroll < len(m.workers)-1 {
 			m.workerScroll++
+			m.activityScroll = 0 // Reset activity scroll only when selection actually changed
 		}
-		// Reset activity scroll when changing worker selection
-		m.activityScroll = 0
 	case PanelActivity:
 		activityLines := m.selectedWorkerActivity()
-		if m.activityScroll < len(activityLines)-1 {
+		_, topHeight := m.getVerticalSplit()
+		maxVisible := topHeight - 4
+		if maxVisible < 1 {
+			maxVisible = 1
+		}
+		maxScroll := len(activityLines) - maxVisible
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if m.activityScroll < maxScroll {
 			m.activityScroll++
 		}
 	case PanelEvents:
@@ -348,9 +361,8 @@ func (m *Model) scrollUp() {
 	case PanelWorkers:
 		if m.workerScroll > 0 {
 			m.workerScroll--
+			m.activityScroll = 0 // Reset activity scroll only when selection actually changed
 		}
-		// Reset activity scroll when changing worker selection
-		m.activityScroll = 0
 	case PanelActivity:
 		if m.activityScroll > 0 {
 			m.activityScroll--
@@ -468,7 +480,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderWorkerList renders the workers panel: a list of active workers.
+// renderWorkers delegates to renderWorkerList for the center column.
 func (m *Model) renderWorkers(width, height int) string {
 	return m.renderWorkerList(width, height)
 }
