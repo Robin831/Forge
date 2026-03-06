@@ -15,6 +15,9 @@ import (
 // TickInterval is how often the TUI refreshes data.
 const TickInterval = 2 * time.Second
 
+// EventFetchLimit is the maximum number of events retrieved for the Events panel.
+const EventFetchLimit = 100
+
 // TickMsg triggers a data refresh cycle.
 type TickMsg time.Time
 
@@ -291,7 +294,7 @@ func FetchAll(db *state.DB) tea.Cmd {
 	return tea.Batch(
 		FetchQueue(db),
 		FetchWorkers(db),
-		FetchEvents(db, 100),
+		FetchEvents(db, EventFetchLimit),
 	)
 }
 
