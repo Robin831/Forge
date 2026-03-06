@@ -22,9 +22,6 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
-// MaxAttempts is the maximum fix attempts for review comments.
-const MaxAttempts = 2
-
 // ReviewComment represents a PR review comment from GitHub.
 type ReviewComment struct {
 	Author   string `json:"author"`
@@ -51,6 +48,8 @@ type FixParams struct {
 	Branch string
 	// DB for state tracking.
 	DB *state.DB
+	// MaxAttempts is the maximum fix attempts for review comments.
+	MaxAttempts int
 	// ExtraFlags for Claude CLI.
 	ExtraFlags []string
 	// Providers is the ordered list of AI providers to try.
@@ -76,6 +75,12 @@ type FixResult struct {
 func Fix(ctx context.Context, p FixParams) *FixResult {
 	start := time.Now()
 	result := &FixResult{}
+
+	// Validate MaxAttempts to avoid silently skipping all attempts when unset or invalid.
+	if p.MaxAttempts <= 0 {
+		log.Printf("[reviewfix] PR #%d: MaxAttempts=%d is not positive; defaulting to 1 attempt", p.PRNumber, p.MaxAttempts)
+		p.MaxAttempts = 1
+	}
 
 	// Step 1: Fetch review comments
 	comments, err := fetchReviewComments(ctx, p.WorktreePath, p.PRNumber)
@@ -111,7 +116,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	}
 	activeProviderIdx := 0
 
-	for attempt := 1; attempt <= MaxAttempts; attempt++ {
+	for attempt := 1; attempt <= p.MaxAttempts; attempt++ {
 		result.Attempts = attempt
 
 		// Step 2: Build fix prompt
@@ -232,9 +237,9 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		return result
 	}
 
-	result.Error = fmt.Errorf("could not address review comments after %d attempts", MaxAttempts)
+	result.Error = fmt.Errorf("could not address review comments after %d attempts", p.MaxAttempts)
 	_ = p.DB.LogEvent(state.EventReviewFixFailed,
-		fmt.Sprintf("PR #%d: Exhausted %d fix attempts for %d comments", p.PRNumber, MaxAttempts, len(actionable)),
+		fmt.Sprintf("PR #%d: Exhausted %d fix attempts for %d comments", p.PRNumber, p.MaxAttempts, len(actionable)),
 		p.BeadID, p.AnvilName)
 	result.Duration = time.Since(start)
 	return result

@@ -406,6 +406,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				PRNumber:     req.PRNumber,
 				Branch:       req.Branch,
 				DB:           d.db,
+				MaxAttempts:  d.cfg.Settings.MaxReviewAttempts,
 				ExtraFlags:   d.cfg.Settings.ClaudeFlags,
 				Providers:    provider.FromConfig(d.cfg.Settings.Providers),
 			})

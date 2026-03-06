@@ -42,6 +42,7 @@ type SettingsConfig struct {
 	PollInterval  time.Duration `mapstructure:"poll_interval"`
 	SmithTimeout  time.Duration `mapstructure:"smith_timeout"`
 	MaxTotalSmiths int          `mapstructure:"max_total_smiths"`
+	MaxReviewAttempts int       `mapstructure:"max_review_attempts"`
 	ClaudeFlags   []string      `mapstructure:"claude_flags"`
 	// Providers is the ordered list of AI providers to try.
 	// Each entry is a Kind string ("claude", "gemini") or "kind:command" pair.
@@ -66,6 +67,7 @@ func Defaults() Config {
 			PollInterval:   5 * time.Minute,
 			SmithTimeout:   30 * time.Minute,
 			MaxTotalSmiths: 4,
+			MaxReviewAttempts: 2,
 			ClaudeFlags:    []string{},
 			// No Providers default here — provider.FromConfig handles empty slice.
 		},
@@ -82,6 +84,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.poll_interval", "5m")
 	v.SetDefault("settings.smith_timeout", "30m")
 	v.SetDefault("settings.max_total_smiths", 4)
+	v.SetDefault("settings.max_review_attempts", 2)
 	v.SetDefault("settings.claude_flags", []string{})
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
@@ -173,6 +176,9 @@ func (c *Config) Validate() []string {
 	if c.Settings.MaxTotalSmiths < 1 {
 		errs = append(errs, "settings.max_total_smiths must be >= 1")
 	}
+	if c.Settings.MaxReviewAttempts < 1 {
+		errs = append(errs, "settings.max_review_attempts must be >= 1")
+	}
 	if c.Settings.PollInterval < 10*time.Second {
 		errs = append(errs, "settings.poll_interval must be >= 10s")
 	}
@@ -222,6 +228,7 @@ func Save(cfg *Config, path string) error {
 	v.Set("settings.poll_interval", cfg.Settings.PollInterval.String())
 	v.Set("settings.smith_timeout", cfg.Settings.SmithTimeout.String())
 	v.Set("settings.max_total_smiths", cfg.Settings.MaxTotalSmiths)
+	v.Set("settings.max_review_attempts", cfg.Settings.MaxReviewAttempts)
 	v.Set("settings.claude_flags", cfg.Settings.ClaudeFlags)
 
 	// Ensure directory exists
