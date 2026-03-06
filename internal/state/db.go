@@ -365,6 +365,9 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 // are skipped. Already-stalled workers are excluded to avoid repeated
 // filesystem stat calls on log files that won't change their status.
 func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
+	if staleThreshold <= 0 {
+		return nil, nil
+	}
 	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
 		ORDER BY started_at`)

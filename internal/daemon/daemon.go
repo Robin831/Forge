@@ -588,9 +588,6 @@ func (d *Daemon) runStaleDetection(ctx context.Context) {
 				continue
 			}
 			for _, w := range stalled {
-				if w.Status == state.WorkerStalled {
-					continue // already marked
-				}
 				d.logger.Warn("marking worker as stalled — no log activity",
 					"worker", w.ID, "bead", w.BeadID, "anvil", w.Anvil,
 					"phase", w.Phase, "stale_interval", interval)
