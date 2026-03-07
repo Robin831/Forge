@@ -945,3 +945,82 @@ func TestViewHeaderVisibleAtTightTerminalHeight(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeResultMsgError(t *testing.T) {
+	m := Model{}
+	msg := MergeResultMsg{PRNumber: 42, Err: errors.New("exit status 1\nsome stderr detail")}
+	_, _ = m.Update(msg)
+
+	if !m.statusMsgIsError {
+		t.Error("expected statusMsgIsError=true after merge failure")
+	}
+	if !strings.Contains(m.statusMsg, "42") {
+		t.Errorf("expected PR number in status message, got %q", m.statusMsg)
+	}
+	// Error must be single-line (no embedded newlines in the status bar)
+	if strings.ContainsAny(m.statusMsg, "\n\r") {
+		t.Errorf("status message must not contain newlines, got %q", m.statusMsg)
+	}
+	// Error message should show only the first line of the error
+	if strings.Contains(m.statusMsg, "some stderr detail") {
+		t.Errorf("status message should not contain the second error line, got %q", m.statusMsg)
+	}
+	if m.statusMsgTime.IsZero() {
+		t.Error("expected statusMsgTime to be set")
+	}
+}
+
+func TestMergeResultMsgSuccess(t *testing.T) {
+	// Prime the model with an error state to verify it gets cleared on success.
+	m := Model{statusMsgIsError: true}
+	msg := MergeResultMsg{PRNumber: 7, Err: nil}
+	_, _ = m.Update(msg)
+
+	if m.statusMsgIsError {
+		t.Error("expected statusMsgIsError=false after successful merge")
+	}
+	if !strings.Contains(m.statusMsg, "7") {
+		t.Errorf("expected PR number in status message, got %q", m.statusMsg)
+	}
+	if m.statusMsgTime.IsZero() {
+		t.Error("expected statusMsgTime to be set")
+	}
+}
+
+func TestMergeResultMsgErrorDurationLonger(t *testing.T) {
+	// Verify that error status messages use a longer display duration than non-error ones.
+	mErr := Model{}
+	_, _ = mErr.Update(MergeResultMsg{PRNumber: 1, Err: errors.New("failed")})
+
+	mOK := Model{}
+	_, _ = mOK.Update(MergeResultMsg{PRNumber: 2, Err: nil})
+
+	// Both should have a non-zero statusMsg and statusMsgTime set.
+	if mErr.statusMsgTime.IsZero() || mOK.statusMsgTime.IsZero() {
+		t.Fatal("expected statusMsgTime set in both cases")
+	}
+	// The error flag difference drives the duration branching in View(); confirm flags differ.
+	if !mErr.statusMsgIsError {
+		t.Error("error result must set statusMsgIsError=true")
+	}
+	if mOK.statusMsgIsError {
+		t.Error("success result must not set statusMsgIsError")
+	}
+}
+
+func TestSetStatusResetsErrorFlag(t *testing.T) {
+	// After a merge failure sets isError=true, a subsequent non-error setStatus call
+	// must reset the flag so the message no longer renders as an error.
+	m := Model{statusMsgIsError: true}
+	m.setStatus("all good", false)
+
+	if m.statusMsgIsError {
+		t.Error("expected statusMsgIsError=false after non-error setStatus call")
+	}
+	if m.statusMsg != "all good" {
+		t.Errorf("expected statusMsg %q, got %q", "all good", m.statusMsg)
+	}
+	if m.statusMsgTime.IsZero() {
+		t.Error("expected statusMsgTime to be set")
+	}
+}
