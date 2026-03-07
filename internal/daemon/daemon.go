@@ -505,6 +505,10 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				status = state.WorkerFailed
 			}
 			_ = d.db.UpdateWorkerStatus(workerID, status)
+			// Always notify lifecycle that the CI fix cycle has completed so it
+			// can reset any suppression state and allow future CI-failure
+			// detection to trigger additional attempts as needed.
+			d.lifecycleMgr.NotifyCIFixCompleted(req.Anvil, req.PRNumber)
 
 		case lifecycle.ActionFixReview:
 			d.logger.Info("spawning review fix worker", "pr", req.PRNumber, "bead", req.BeadID)

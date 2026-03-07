@@ -80,8 +80,8 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			prNumber: 10,
 			// maxCI=5: we need 5 full [Failed,Passed] cycles to fill the counter,
 			// then the 6th EventCIFailed triggers exhaustion.
-			// EventCIPassed between failures resets CIPassing=true so the next
-			// EventCIFailed can pass the !st.CIPassing guard and increment the counter.
+			// EventCIPassed between failures clears CINeedsFix=false so the next
+			// EventCIFailed passes the st.CINeedsFix guard and increments the counter.
 			setupEvents: []bellows.PREvent{
 				makeEvent(10, bellows.EventCIFailed),
 				makeEvent(10, bellows.EventCIPassed),
@@ -485,15 +485,31 @@ func TestManager_Persistence(t *testing.T) {
 		t.Error("expected CIPassing false after load")
 	}
 
-	// 3. Verify redundant events are ignored
-	m2.HandleEvent(ctx, bellows.PREvent{
+	// 3. Verify that after a daemon restart (CINeedsFix=false, CIPassing=false),
+	// a new EventCIFailed dispatches a fresh fix cycle rather than being
+	// suppressed. The guard now keys off CINeedsFix (fix-cycle-in-progress),
+	// not CIPassing (CI result), so a restart correctly re-arms dispatch.
+	var restarted int
+	restartHandler := func(_ context.Context, _ ActionRequest) { restarted++ }
+	m3 := New(db, testLogger(), restartHandler)
+	if err := m3.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m3.HandleEvent(ctx, bellows.PREvent{
 		PRNumber:  123,
 		Anvil:     "test-anvil",
 		EventType: bellows.EventCIFailed,
 		BeadID:    "bd-1",
 	})
-	if st2.CIFixCount != 1 {
-		t.Errorf("expected CIFixCount still 1 after redundant event, got %d", st2.CIFixCount)
+	if restarted != 1 {
+		t.Errorf("expected 1 dispatch after restart (CINeedsFix=false), got %d", restarted)
+	}
+	st3 := m3.GetState("test-anvil", 123)
+	if st3 == nil {
+		t.Fatal("state not found after second load")
+	}
+	if st3.CIFixCount != 2 {
+		t.Errorf("expected CIFixCount=2 after re-dispatch, got %d", st3.CIFixCount)
 	}
 }
 
@@ -811,4 +827,100 @@ func TestNotifyReviewFixCompleted_DoesNotClearCINeedsFixWhileFailing(t *testing.
 	if !st.CINeedsFix {
 		t.Error("step 3: CINeedsFix must remain true while CI is still failing")
 	}
+}
+
+// TestNotifyCIFixCompleted_AllowsNextCycle verifies that after a CI fix worker
+// finishes, NotifyCIFixCompleted clears CINeedsFix so the next CI failure event
+// from bellows can dispatch a new fix cycle. The guard in HandleEvent for
+// EventCIFailed now keys off CINeedsFix (fix-cycle-in-progress) rather than
+// CIPassing (CI result), so CIPassing intentionally remains false until Bellows
+// reports a real CI pass — it must not be faked here.
+func TestNotifyCIFixCompleted_AllowsNextCycle(t *testing.T) {
+	db := newTestDB(t)
+	var dispatched []ActionRequest
+	handler := func(_ context.Context, req ActionRequest) {
+		dispatched = append(dispatched, req)
+	}
+	m := New(db, testLogger(), handler)
+	ctx := context.Background()
+
+	// Step 1: CI fails → dispatches ActionFixCI.
+	m.HandleEvent(ctx, makeEvent(500, bellows.EventCIFailed))
+	if len(dispatched) != 1 || dispatched[0].Action != ActionFixCI {
+		t.Fatalf("step 1: expected ActionFixCI, got %v", dispatched)
+	}
+	st := m.GetState("test-anvil", 500)
+	if !st.CINeedsFix {
+		t.Fatal("step 1: expected CINeedsFix=true")
+	}
+	if st.CIPassing {
+		t.Fatal("step 1: expected CIPassing=false")
+	}
+
+	// Step 2: CI fix worker completes → notify lifecycle.
+	// CIPassing must remain false (CI hasn't actually passed yet);
+	// only CINeedsFix is cleared to re-arm the dispatch guard.
+	m.NotifyCIFixCompleted("test-anvil", 500)
+	st = m.GetState("test-anvil", 500)
+	if st.CINeedsFix {
+		t.Error("step 2: expected CINeedsFix=false after NotifyCIFixCompleted")
+	}
+	if st.CIPassing {
+		t.Error("step 2: CIPassing must remain false — CI has not actually passed")
+	}
+
+	// Step 3: CI fails again → should dispatch a new fix (not be suppressed by
+	// the CINeedsFix guard, which is now false).
+	dispatched = dispatched[:0]
+	m.HandleEvent(ctx, makeEvent(500, bellows.EventCIFailed))
+	if len(dispatched) != 1 || dispatched[0].Action != ActionFixCI {
+		t.Fatalf("step 3: expected ActionFixCI after reset, got %v", dispatched)
+	}
+	st = m.GetState("test-anvil", 500)
+	if st.CIFixCount != 2 {
+		t.Errorf("step 3: expected CIFixCount=2, got %d", st.CIFixCount)
+	}
+}
+
+// TestNotifyCIFixCompleted_DoesNotClearReviewNeedsFix verifies that completing
+// a CI fix does not clear a review-related needs-fix state when a review fix
+// cycle is also active.
+func TestNotifyCIFixCompleted_DoesNotClearReviewNeedsFix(t *testing.T) {
+	db := newTestDB(t)
+	var dispatched []ActionRequest
+	handler := func(_ context.Context, req ActionRequest) {
+		dispatched = append(dispatched, req)
+	}
+	m := New(db, testLogger(), handler)
+	ctx := context.Background()
+
+	// Step 1: CI fails and review changes both arrive.
+	m.HandleEvent(ctx, makeEvent(600, bellows.EventCIFailed))
+	m.HandleEvent(ctx, makeEvent(600, bellows.EventReviewChanges))
+	st := m.GetState("test-anvil", 600)
+	if !st.CINeedsFix {
+		t.Fatal("step 1: expected CINeedsFix=true")
+	}
+	if !st.ReviewNeedsFix {
+		t.Fatal("step 1: expected ReviewNeedsFix=true")
+	}
+
+	// Step 2: CI fix completes while review fix is still running.
+	m.NotifyCIFixCompleted("test-anvil", 600)
+	st = m.GetState("test-anvil", 600)
+	if st.CINeedsFix {
+		t.Error("step 2: CINeedsFix should be false after CI fix completed")
+	}
+	if !st.ReviewNeedsFix {
+		t.Error("step 2: ReviewNeedsFix must remain true — CI fix should not clear it")
+	}
+}
+
+// TestNotifyCIFixCompleted_Noop verifies NotifyCIFixCompleted is safe to call
+// for unknown PRs.
+func TestNotifyCIFixCompleted_Noop(t *testing.T) {
+	db := newTestDB(t)
+	m := New(db, testLogger(), nil)
+	// Should not panic.
+	m.NotifyCIFixCompleted("nonexistent-anvil", 999)
 }
