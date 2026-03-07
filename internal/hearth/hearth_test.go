@@ -177,7 +177,7 @@ func TestRenderColumnsAlignedHeight(t *testing.T) {
 		height:  40,
 	}
 
-	topHeight, bottomHeight := m.getVerticalSplit()
+	topHeight, bottomHeight := m.getVerticalSplit(1, 1)
 	width := 40
 
 	leftColumn := m.renderLeftColumn(width, topHeight, bottomHeight)
@@ -905,8 +905,11 @@ func TestReadyToMergeErrorMsgAppendsEvent(t *testing.T) {
 func TestGetVerticalSplitSumsToContentHeight(t *testing.T) {
 	for _, h := range []int{10, 24, 40, 80} {
 		m := Model{width: 120, height: h}
-		topHeight, bottomHeight := m.getVerticalSplit()
-		contentHeight := h - 2 // header(1) + footer(1)
+		topHeight, bottomHeight := m.getVerticalSplit(1, 1)
+		contentHeight := h - 1 - 1 - 4 // header(1) + footer(1) + panel borders(4)
+		if contentHeight < 0 {
+			contentHeight = 0
+		}
 		if topHeight < 0 {
 			t.Errorf("height=%d: topHeight=%d is negative", h, topHeight)
 		}
@@ -923,16 +926,22 @@ func TestGetVerticalSplitSumsToContentHeight(t *testing.T) {
 func TestViewHeaderVisibleAtTightTerminalHeight(t *testing.T) {
 	// Regression test: the Hearth header must appear first in the rendered output
 	// at any reasonable terminal height so it is not scrolled off-screen.
+	// Also verifies the rendered output does not exceed the terminal height,
+	// which would cause the terminal to scroll the header off-screen.
 	for _, h := range []int{10, 24, 40} {
 		m := Model{
-			width:  80,
+			width:  120,
 			height: h,
 			ready:  true,
 		}
 		rendered := m.View()
-		firstLine := strings.SplitN(rendered, "\n", 2)[0]
+		lines := strings.Split(rendered, "\n")
+		firstLine := lines[0]
 		if !strings.Contains(firstLine, "Forge") {
 			t.Errorf("height=%d: first rendered line does not contain header text, got: %q", h, firstLine)
+		}
+		if len(lines) > h {
+			t.Errorf("height=%d: rendered output has %d lines, exceeds terminal height and will scroll header off-screen", h, len(lines))
 		}
 	}
 }
