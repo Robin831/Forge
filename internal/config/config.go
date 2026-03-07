@@ -277,6 +277,15 @@ func (c *Config) Validate() []string {
 	} else if c.Settings.StaleInterval > 0 && c.Settings.StaleInterval < 30*time.Second {
 		errs = append(errs, "settings.stale_interval must be >= 30s when enabled (or 0 to disable)")
 	}
+	if c.Settings.MaxCIFixAttempts < 1 {
+		errs = append(errs, "settings.max_ci_fix_attempts must be >= 1")
+	}
+	if c.Settings.MaxReviewFixAttempts < 1 {
+		errs = append(errs, "settings.max_review_fix_attempts must be >= 1")
+	}
+	if c.Settings.MaxRebaseAttempts < 1 {
+		errs = append(errs, "settings.max_rebase_attempts must be >= 1")
+	}
 
 	for name, anvil := range c.Anvils {
 		if anvil.Path == "" {
@@ -325,6 +334,9 @@ func Save(cfg *Config, path string) error {
 	v.Set("settings.rate_limit_backoff", cfg.Settings.RateLimitBackoff.String())
 	v.Set("settings.bellows_interval", cfg.Settings.BellowsInterval.String())
 	v.Set("settings.stale_interval", cfg.Settings.StaleInterval.String())
+	v.Set("settings.max_ci_fix_attempts", cfg.Settings.MaxCIFixAttempts)
+	v.Set("settings.max_review_fix_attempts", cfg.Settings.MaxReviewFixAttempts)
+	v.Set("settings.max_rebase_attempts", cfg.Settings.MaxRebaseAttempts)
 
 	// Ensure directory exists
 	dir := filepath.Dir(path)

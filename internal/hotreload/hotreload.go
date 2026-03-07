@@ -8,6 +8,9 @@
 //   - settings.claude_flags
 //   - settings.providers
 //   - settings.smith_providers
+//   - settings.max_ci_fix_attempts (applied immediately to lifecycle manager)
+//   - settings.max_review_fix_attempts (applied immediately to lifecycle manager)
+//   - settings.max_rebase_attempts (applied immediately to lifecycle manager)
 //   - notifications.* (all notification settings)
 //   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
 //
@@ -181,6 +184,21 @@ func applyChanges(old, new *config.Config) []string {
 	if old.Notifications.Enabled != new.Notifications.Enabled {
 		changes = append(changes, fmt.Sprintf("notifications.enabled: %v → %v",
 			old.Notifications.Enabled, new.Notifications.Enabled))
+	}
+
+	if old.Settings.MaxCIFixAttempts != new.Settings.MaxCIFixAttempts {
+		changes = append(changes, fmt.Sprintf("max_ci_fix_attempts: %d → %d",
+			old.Settings.MaxCIFixAttempts, new.Settings.MaxCIFixAttempts))
+	}
+
+	if old.Settings.MaxReviewFixAttempts != new.Settings.MaxReviewFixAttempts {
+		changes = append(changes, fmt.Sprintf("max_review_fix_attempts: %d → %d",
+			old.Settings.MaxReviewFixAttempts, new.Settings.MaxReviewFixAttempts))
+	}
+
+	if old.Settings.MaxRebaseAttempts != new.Settings.MaxRebaseAttempts {
+		changes = append(changes, fmt.Sprintf("max_rebase_attempts: %d → %d",
+			old.Settings.MaxRebaseAttempts, new.Settings.MaxRebaseAttempts))
 	}
 
 	// Warn about non-reloadable changes

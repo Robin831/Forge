@@ -301,6 +301,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.configWatcher = hotreload.NewWatcher(d.configFile, d.cfg.Load(), d.logger)
 		d.configWatcher.OnChange(func(old, new *config.Config) {
 			d.cfg.Store(new)
+			if d.lifecycleMgr != nil {
+				d.lifecycleMgr.SetThresholds(
+					new.Settings.MaxCIFixAttempts,
+					new.Settings.MaxReviewFixAttempts,
+					new.Settings.MaxRebaseAttempts,
+				)
+			}
 			d.db.LogEvent(state.EventConfigReload, "Configuration reloaded", "", "")
 		})
 		go func() {
