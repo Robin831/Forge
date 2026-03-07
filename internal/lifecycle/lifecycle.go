@@ -23,7 +23,7 @@ type PRState struct {
 	BeadID         string
 	Anvil          string
 	Branch         string
-	BaseBranch     string // Target branch for the PR (empty = main)
+	BaseBranch     string // Target branch for the PR (empty = repo default)
 	CIPassing      bool
 	Approved       bool
 	CINeedsFix     bool // CI failure fix cycle in progress

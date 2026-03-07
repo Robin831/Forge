@@ -1129,7 +1129,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		BeadID:       bead.ID,
 		Title:        fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
 		Branch:       outcome.Branch,
-		Base:         bead.EpicBranch, // empty = default (main)
+		Base:         bead.EpicBranch, // empty = repo default branch (omits --base in gh pr create)
 		AnvilName:    bead.Anvil,
 		DB:           d.db,
 	})

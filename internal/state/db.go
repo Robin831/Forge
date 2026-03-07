@@ -610,7 +610,7 @@ type PR struct {
 	Anvil                string
 	BeadID               string
 	Branch               string
-	BaseBranch           string // Target branch for the PR (empty = main)
+	BaseBranch           string // Target branch for the PR (empty = repo default base branch)
 	Status               PRStatus
 	CreatedAt            time.Time
 	LastChecked          *time.Time

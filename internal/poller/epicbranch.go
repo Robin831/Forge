@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"os/exec"
 	"strings"
 	"time"
@@ -65,6 +66,7 @@ func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
+		log.Printf("lookupEpicBranch: bd show %s failed: %v: %s", parentID, err, stderr.String())
 		return ""
 	}
 
@@ -108,11 +110,14 @@ func IsEpicBead(b Bead) bool {
 }
 
 // sanitizeBeadID converts a bead ID to a safe branch name component.
+// Slashes are replaced so the result does not create unexpected path segments
+// when used as "epic/<id>" (matching worktree.sanitizePath behaviour).
 func sanitizeBeadID(id string) string {
 	r := strings.NewReplacer(
 		" ", "-",
 		":", "-",
 		"\\", "-",
+		"/", "-",
 	)
 	return r.Replace(id)
 }

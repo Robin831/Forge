@@ -91,7 +91,8 @@ type Params struct {
 
 	// BaseBranch overrides the base ref for worktree creation and PR
 	// targeting. When set (e.g. for epic child beads), the worktree branches
-	// from origin/<BaseBranch> and the PR targets this branch instead of main.
+	// from origin/<BaseBranch> and the PR targets this branch instead of the
+	// repo default branch (origin/main or origin/master).
 	BaseBranch string
 
 	// SchematicConfig controls the Schematic pre-worker. When nil, Schematic

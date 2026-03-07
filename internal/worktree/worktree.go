@@ -118,7 +118,7 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 			baseRef = "origin/" + opts.BaseBranch
 			// Verify the base branch exists on origin
 			if err := gitCmd(ctx, anvilPath, "rev-parse", "--verify", baseRef); err != nil {
-				return nil, fmt.Errorf("epic base branch %q not found on origin: %w", opts.BaseBranch, err)
+				return nil, fmt.Errorf("base branch %q not found on origin (ref %q): %w", opts.BaseBranch, baseRef, err)
 			}
 		} else {
 			var err error
@@ -154,6 +154,12 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 // the branch is created without any code changes so child beads can branch
 // from it.
 func (m *Manager) CreateEpicBranch(ctx context.Context, anvilPath, branchName string) error {
+	// Validate branchName before passing to git. Bead labels are user-controlled,
+	// so a name starting with "-" could be interpreted as a git flag.
+	if err := validateBranchName(ctx, anvilPath, branchName); err != nil {
+		return err
+	}
+
 	// Fetch origin
 	if err := gitCmd(ctx, anvilPath, "fetch", "origin"); err != nil {
 		return fmt.Errorf("git fetch: %w", err)
@@ -170,16 +176,28 @@ func (m *Manager) CreateEpicBranch(ctx context.Context, anvilPath, branchName st
 		return fmt.Errorf("resolving base ref: %w", err)
 	}
 
-	// Create the branch locally
-	if err := gitCmd(ctx, anvilPath, "branch", branchName, baseRef); err != nil {
+	// Use -- to prevent branchName from being parsed as a git option.
+	if err := gitCmd(ctx, anvilPath, "branch", "--", branchName, baseRef); err != nil {
 		return fmt.Errorf("creating epic branch %s: %w", branchName, err)
 	}
 
-	// Push to origin
-	if err := gitCmd(ctx, anvilPath, "push", "-u", "origin", branchName); err != nil {
+	// Push to origin — -- ends option parsing before the refspec.
+	if err := gitCmd(ctx, anvilPath, "push", "-u", "origin", "--", branchName); err != nil {
 		return fmt.Errorf("pushing epic branch %s: %w", branchName, err)
 	}
 
+	return nil
+}
+
+// validateBranchName checks that branchName is a valid git branch name and
+// does not start with "-" (which git could interpret as a flag).
+func validateBranchName(ctx context.Context, dir, branchName string) error {
+	if strings.HasPrefix(branchName, "-") {
+		return fmt.Errorf("invalid branch name %q: must not start with '-'", branchName)
+	}
+	if err := gitCmd(ctx, dir, "check-ref-format", "--branch", branchName); err != nil {
+		return fmt.Errorf("invalid branch name %q: %w", branchName, err)
+	}
 	return nil
 }
 
