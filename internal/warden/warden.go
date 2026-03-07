@@ -311,13 +311,17 @@ func parseVerdict(output string, result *ReviewResult) {
 
 
 // extractJSON finds the first JSON object in the text that contains the given
-// requiredKey. When requiredKey is empty, any JSON object is returned.
+// requiredKey. When requiredKey is empty or omitted, any JSON object is returned.
 // The requiredKey is matched as a quoted JSON key ("key") to avoid false
 // positives from occurrences inside string values.
-func extractJSON(text string, requiredKey string) string {
+func extractJSON(text string, requiredKey ...string) string {
+	key := ""
+	if len(requiredKey) > 0 {
+		key = requiredKey[0]
+	}
 	quotedKey := ""
-	if requiredKey != "" {
-		quotedKey = `"` + requiredKey + `"`
+	if key != "" {
+		quotedKey = `"` + key + `"`
 	}
 
 	containsKey := func(s string) bool {
