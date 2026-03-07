@@ -291,7 +291,14 @@ func detectSteps(worktreePath string, opts *DetectOptions) []Step {
 	return steps
 }
 
+// maxStepOutputLen is the maximum number of characters of step output to
+// include in the summary for a failed step. This keeps feedback actionable
+// without overwhelming the Smith prompt with enormous test logs.
+const maxStepOutputLen = 4000
+
 // buildSummary creates a human-readable summary of the verification result.
+// For failed steps, the actual command output (compiler errors, test failures,
+// etc.) is included so that Smith can diagnose and fix the problems.
 func buildSummary(r *Result) string {
 	var b strings.Builder
 	optionalWarnings := 0
@@ -307,6 +314,17 @@ func buildSummary(r *Result) string {
 			status = "FAIL"
 		}
 		fmt.Fprintf(&b, "[%s] %s (%.1fs)\n", status, s.Name, s.Duration.Seconds())
+
+		// Include the actual output for failed steps so the next Smith
+		// iteration knows exactly what went wrong and can fix it.
+		if !s.Passed && s.Output != "" {
+			output := strings.TrimSpace(s.Output)
+			if len(output) > maxStepOutputLen {
+				output = output[len(output)-maxStepOutputLen:]
+				output = "...(truncated)\n" + output
+			}
+			fmt.Fprintf(&b, "\n```\n%s\n```\n\n", output)
+		}
 	}
 	if r.Passed {
 		if optionalWarnings > 0 {
