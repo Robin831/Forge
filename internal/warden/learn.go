@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"sort"
 	"strings"
@@ -30,6 +32,26 @@ type ghReviewComment struct {
 	} `json:"user"`
 }
 
+// parsePaginatedComments decodes the stdout of `gh api --paginate`, which
+// concatenates one JSON array per page (e.g. [page1...][page2...]). A plain
+// json.Unmarshal fails on this format, and json.Decoder.More() returns false
+// at the top level before any array is decoded, so we loop until io.EOF.
+func parsePaginatedComments(data []byte) ([]ghReviewComment, error) {
+	var all []ghReviewComment
+	dec := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var page []ghReviewComment
+		if err := dec.Decode(&page); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("parsing gh response: %w", err)
+		}
+		all = append(all, page...)
+	}
+	return all, nil
+}
+
 // FetchCopilotComments retrieves review comments on a PR that were authored by
 // copilot[bot], github-actions[bot], or copilot via the gh CLI.
 func FetchCopilotComments(ctx context.Context, repoDir string, prNumber int) ([]PRComment, error) {
@@ -47,15 +69,10 @@ func FetchCopilotComments(ctx context.Context, repoDir string, prNumber int) ([]
 
 	// gh api --paginate for REST endpoints concatenates multiple JSON arrays
 	// (e.g. [page1...][page2...]) which json.Unmarshal cannot parse as one
-	// array. Use a streaming decoder to handle the concatenated output.
-	var raw []ghReviewComment
-	dec := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
-	for dec.More() {
-		var page []ghReviewComment
-		if err := dec.Decode(&page); err != nil {
-			return nil, fmt.Errorf("parsing gh response: %w", err)
-		}
-		raw = append(raw, page...)
+	// array. Use parsePaginatedComments to handle single and multi-page output.
+	raw, err := parsePaginatedComments(stdout.Bytes())
+	if err != nil {
+		return nil, err
 	}
 
 	var comments []PRComment
