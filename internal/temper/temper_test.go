@@ -155,10 +155,12 @@ func TestLoadAnvilConfig_ReturnsErrorForCorruptYAML(t *testing.T) {
 }
 
 func TestLoadAnvilConfig_ReturnsErrorForUnreadableFile(t *testing.T) {
-	// Use a path where .forge exists as a file instead of a directory,
-	// so ReadFile on .forge/temper.yaml fails with a non-ENOENT error.
+	// Make temper.yaml a directory so os.ReadFile fails with a non-ENOENT
+	// error on all platforms (including Windows where path-not-found is
+	// treated as ENOENT by os.IsNotExist).
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".forge"), []byte("not a dir"), 0o644))
+	forgeDir := filepath.Join(dir, ".forge")
+	require.NoError(t, os.MkdirAll(filepath.Join(forgeDir, "temper.yaml"), 0o755))
 
 	cfg, err := LoadAnvilConfig(dir)
 
