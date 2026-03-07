@@ -610,7 +610,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				m.statusMsg = fmt.Sprintf("Failed to retry %s: %v", bead.BeadID, err)
 			} else {
 				m.statusMsg = fmt.Sprintf("Retry queued for %s", bead.BeadID)
-				m.removeNeedsAttentionItem(bead.BeadID)
+				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
 				m.statusMsgTime = time.Now()
 				if m.data != nil {
 					return FetchNeedsAttention(m.data)
@@ -628,7 +628,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				m.statusMsg = fmt.Sprintf("Failed to dismiss %s: %v", bead.BeadID, err)
 			} else {
 				m.statusMsg = fmt.Sprintf("Dismissed %s", bead.BeadID)
-				m.removeNeedsAttentionItem(bead.BeadID)
+				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
 				m.statusMsgTime = time.Now()
 				if m.data != nil {
 					return FetchNeedsAttention(m.data)
@@ -657,11 +657,11 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 	return nil
 }
 
-// removeNeedsAttentionItem removes the item with the given beadID from the
+// removeNeedsAttentionItem removes the item with the given beadID and anvil from the
 // needsAttention list and adjusts the scroll position if necessary.
-func (m *Model) removeNeedsAttentionItem(beadID string) {
+func (m *Model) removeNeedsAttentionItem(beadID, anvil string) {
 	for i, item := range m.needsAttention {
-		if item.BeadID == beadID {
+		if item.BeadID == beadID && item.Anvil == anvil {
 			m.needsAttention = append(m.needsAttention[:i], m.needsAttention[i+1:]...)
 			if m.needsAttentionScroll >= len(m.needsAttention) && m.needsAttentionScroll > 0 {
 				m.needsAttentionScroll--

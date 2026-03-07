@@ -680,10 +680,10 @@ func TestUpdateQueueMsgKeepsMenuWhenTargetStillPresent(t *testing.T) {
 func TestRemoveNeedsAttentionItem_MiddleElement(t *testing.T) {
 	m := NewModel(nil)
 	m.needsAttention = []NeedsAttentionItem{
-		{BeadID: "a"}, {BeadID: "b"}, {BeadID: "c"},
+		{BeadID: "a", Anvil: "repo"}, {BeadID: "b", Anvil: "repo"}, {BeadID: "c", Anvil: "repo"},
 	}
 	m.needsAttentionScroll = 1
-	m.removeNeedsAttentionItem("b")
+	m.removeNeedsAttentionItem("b", "repo")
 	if len(m.needsAttention) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(m.needsAttention))
 	}
@@ -694,9 +694,9 @@ func TestRemoveNeedsAttentionItem_MiddleElement(t *testing.T) {
 
 func TestRemoveNeedsAttentionItem_LastElement_AdjustsScroll(t *testing.T) {
 	m := NewModel(nil)
-	m.needsAttention = []NeedsAttentionItem{{BeadID: "a"}, {BeadID: "b"}}
+	m.needsAttention = []NeedsAttentionItem{{BeadID: "a", Anvil: "repo"}, {BeadID: "b", Anvil: "repo"}}
 	m.needsAttentionScroll = 1 // pointing at last element "b"
-	m.removeNeedsAttentionItem("b")
+	m.removeNeedsAttentionItem("b", "repo")
 	if len(m.needsAttention) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(m.needsAttention))
 	}
@@ -707,9 +707,9 @@ func TestRemoveNeedsAttentionItem_LastElement_AdjustsScroll(t *testing.T) {
 
 func TestRemoveNeedsAttentionItem_OnlyElement_ScrollStaysZero(t *testing.T) {
 	m := NewModel(nil)
-	m.needsAttention = []NeedsAttentionItem{{BeadID: "only"}}
+	m.needsAttention = []NeedsAttentionItem{{BeadID: "only", Anvil: "repo"}}
 	m.needsAttentionScroll = 0
-	m.removeNeedsAttentionItem("only")
+	m.removeNeedsAttentionItem("only", "repo")
 	if len(m.needsAttention) != 0 {
 		t.Fatalf("expected 0 items, got %d", len(m.needsAttention))
 	}
@@ -720,10 +720,25 @@ func TestRemoveNeedsAttentionItem_OnlyElement_ScrollStaysZero(t *testing.T) {
 
 func TestRemoveNeedsAttentionItem_NotFound_NoChange(t *testing.T) {
 	m := NewModel(nil)
-	m.needsAttention = []NeedsAttentionItem{{BeadID: "a"}, {BeadID: "b"}}
-	m.removeNeedsAttentionItem("missing")
+	m.needsAttention = []NeedsAttentionItem{{BeadID: "a", Anvil: "repo"}, {BeadID: "b", Anvil: "repo"}}
+	m.removeNeedsAttentionItem("missing", "repo")
 	if len(m.needsAttention) != 2 {
 		t.Fatalf("expected 2 items unchanged, got %d", len(m.needsAttention))
+	}
+}
+
+func TestRemoveNeedsAttentionItem_SameBeadID_DifferentAnvils_OnlyRemovesMatching(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "x", Anvil: "repo-a"},
+		{BeadID: "x", Anvil: "repo-b"},
+	}
+	m.removeNeedsAttentionItem("x", "repo-a")
+	if len(m.needsAttention) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(m.needsAttention))
+	}
+	if m.needsAttention[0].Anvil != "repo-b" {
+		t.Errorf("expected repo-b to remain, got %q", m.needsAttention[0].Anvil)
 	}
 }
 
