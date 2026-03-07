@@ -476,7 +476,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		_ = p.DB.UpdateWorkerPhase(workerID, "temper")
 		temperCfg := p.TemperConfig
 		if temperCfg == nil {
-			detected := temper.DefaultConfig(wt.Path)
+			detected := temper.DefaultConfig(wt.Path, temper.DetectOptionsFromAnvilFlag(p.AnvilConfig.GolangciLint))
 			temperCfg = &detected
 		}
 

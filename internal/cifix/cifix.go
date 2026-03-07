@@ -46,6 +46,11 @@ type FixParams struct {
 	ExtraFlags []string
 	// TemperConfig overrides auto-detection if set.
 	TemperConfig *temper.Config
+	// DetectOptions controls optional steps during Temper auto-detection.
+	// When TemperConfig is nil, these options are forwarded to
+	// temper.DefaultConfig so that per-anvil settings (e.g. DisableGolangciLint)
+	// are respected by the cifix worker.
+	DetectOptions *temper.DetectOptions
 	// Providers is the ordered list of AI providers to try.
 	// If empty, provider.Defaults() is used (Claude → Gemini).
 	Providers []provider.Provider
@@ -84,7 +89,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		// Step 1: Run Temper to reproduce failures
 		temperCfg := p.TemperConfig
 		if temperCfg == nil {
-			detected := temper.DefaultConfig(p.WorktreePath)
+			detected := temper.DefaultConfig(p.WorktreePath, p.DetectOptions)
 			temperCfg = &detected
 		}
 

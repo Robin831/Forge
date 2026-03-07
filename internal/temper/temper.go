@@ -33,13 +33,17 @@ type StepResult struct {
 	Duration time.Duration
 	// Passed indicates whether the step succeeded.
 	Passed bool
+	// Optional mirrors the Step.Optional flag — failure here does not fail
+	// the overall check. Surfaced so summaries can render it distinctly.
+	Optional bool
 }
 
 // Result is the overall Temper verification result.
 type Result struct {
 	// Steps is the ordered list of step results.
 	Steps []StepResult
-	// Passed is true if ALL steps passed.
+	// Passed is true if all required steps passed (optional steps may have
+	// warned without affecting this flag).
 	Passed bool
 	// Duration is the total time for all steps.
 	Duration time.Duration
@@ -72,10 +76,29 @@ type Config struct {
 	Steps []Step
 }
 
+// DetectOptions controls optional steps during auto-detection.
+type DetectOptions struct {
+	// DisableGolangciLint skips the golangci-lint step even if the binary
+	// is available. When false (default), golangci-lint is added as an
+	// optional step for Go projects if the binary is found on PATH.
+	DisableGolangciLint bool
+}
+
+// DetectOptionsFromAnvilFlag converts a nullable boolean anvil config flag into
+// DetectOptions. When golangciLint is non-nil and false, golangci-lint is
+// disabled. This centralises the anvil-config → DetectOptions translation so
+// all call sites stay in sync when new detection toggles are added.
+func DetectOptionsFromAnvilFlag(golangciLint *bool) *DetectOptions {
+	if golangciLint != nil && !*golangciLint {
+		return &DetectOptions{DisableGolangciLint: true}
+	}
+	return nil
+}
+
 // DefaultConfig returns a default config that auto-detects the project type.
-func DefaultConfig(worktreePath string) Config {
+func DefaultConfig(worktreePath string, opts *DetectOptions) Config {
 	return Config{
-		Steps: detectSteps(worktreePath),
+		Steps: detectSteps(worktreePath, opts),
 	}
 }
 
@@ -106,7 +129,19 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 
 	if db != nil {
 		if result.Passed {
-			_ = db.LogEvent(state.EventTemperPassed, fmt.Sprintf("All checks passed in %.1fs", result.Duration.Seconds()), beadID, anvil)
+			optWarn := 0
+			for _, s := range result.Steps {
+				if s.Optional && !s.Passed {
+					optWarn++
+				}
+			}
+			var msg string
+			if optWarn > 0 {
+				msg = fmt.Sprintf("All required checks passed in %.1fs (%d optional step(s) warned)", result.Duration.Seconds(), optWarn)
+			} else {
+				msg = fmt.Sprintf("All required checks passed in %.1fs (no optional warnings)", result.Duration.Seconds())
+			}
+			_ = db.LogEvent(state.EventTemperPassed, msg, beadID, anvil)
 		} else {
 			_ = db.LogEvent(state.EventTemperFailed, fmt.Sprintf("Failed at step %q in %.1fs", result.FailedStep, result.Duration.Seconds()), beadID, anvil)
 		}
@@ -164,11 +199,12 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 		Output:   output.String(),
 		Duration: duration,
 		Passed:   passed,
+		Optional: step.Optional,
 	}
 }
 
 // detectSteps auto-detects project type and returns appropriate steps.
-func detectSteps(worktreePath string) []Step {
+func detectSteps(worktreePath string, opts *DetectOptions) []Step {
 	var steps []Step
 
 	// Check for Go project
@@ -185,6 +221,21 @@ func detectSteps(worktreePath string) []Step {
 			Args:    []string{"vet", "./..."},
 			Timeout: 2 * time.Minute,
 		})
+
+		// golangci-lint: optional step, skipped if binary not found or disabled
+		disableLint := opts != nil && opts.DisableGolangciLint
+		if !disableLint {
+			if _, err := exec.LookPath("golangci-lint"); err == nil {
+				steps = append(steps, Step{
+					Name:     "golangci-lint",
+					Command:  "golangci-lint",
+					Args:     []string{"run", "./..."},
+					Timeout:  3 * time.Minute,
+					Optional: true,
+				})
+			}
+		}
+
 		steps = append(steps, Step{
 			Name:    "test",
 			Command: "go",
@@ -243,15 +294,26 @@ func detectSteps(worktreePath string) []Step {
 // buildSummary creates a human-readable summary of the verification result.
 func buildSummary(r *Result) string {
 	var b strings.Builder
+	optionalWarnings := 0
 	for _, s := range r.Steps {
-		status := "PASS"
-		if !s.Passed {
+		var status string
+		switch {
+		case s.Passed:
+			status = "PASS"
+		case s.Optional:
+			status = "WARN"
+			optionalWarnings++
+		default:
 			status = "FAIL"
 		}
 		fmt.Fprintf(&b, "[%s] %s (%.1fs)\n", status, s.Name, s.Duration.Seconds())
 	}
 	if r.Passed {
-		fmt.Fprintf(&b, "\nAll checks passed in %.1fs", r.Duration.Seconds())
+		if optionalWarnings > 0 {
+			fmt.Fprintf(&b, "\nAll required checks passed in %.1fs (%d optional step(s) warned)", r.Duration.Seconds(), optionalWarnings)
+		} else {
+			fmt.Fprintf(&b, "\nAll required checks passed in %.1fs (no optional warnings)", r.Duration.Seconds())
+		}
 	} else {
 		fmt.Fprintf(&b, "\nFailed at step: %s", r.FailedStep)
 	}
