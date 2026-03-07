@@ -264,9 +264,10 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		m.logger.Info("PR CI passed", "pr", event.PRNumber, "anvil", event.Anvil)
 
 	case bellows.EventCIFailed:
-		if !st.CIPassing {
-			// Already in failing state, don't increment counter or dispatch new fix
-			m.logger.Info("PR CI failed again (already failing), skipping dispatch", "pr", event.PRNumber, "anvil", event.Anvil)
+		if st.CINeedsFix {
+			// CI fix cycle already in progress; ignore duplicate events until the
+			// worker completes and clears the flag via NotifyCIFixCompleted.
+			m.logger.Info("PR CI failed (fix cycle in progress), skipping dispatch", "pr", event.PRNumber, "anvil", event.Anvil)
 			break
 		}
 		st.CIPassing = false
@@ -415,14 +416,19 @@ func (m *Manager) ResetPRState(anvil string, prNumber int) {
 	st.Approved = false
 }
 
-// NotifyCIFixCompleted clears the CINeedsFix flag and resets CIPassing after
-// a CI fix worker finishes. This allows the next EventCIFailed (if CI still
-// fails after the fix attempt) to dispatch a new fix cycle rather than being
-// suppressed by the "already failing, skipping dispatch" guard at line 267.
+// NotifyCIFixCompleted clears the CINeedsFix flag after a CI fix worker
+// finishes. This allows the next EventCIFailed (if CI still fails after the
+// fix attempt) to dispatch a new fix cycle rather than being suppressed by
+// the "already failing, skipping dispatch" guard in HandleEvent for
+// EventCIFailed when CINeedsFix is true.
 //
-// Without this, CIPassing stays false and CINeedsFix stays true after the fix
-// worker completes. When bellows re-detects CI failure, HandleEvent sees
-// CIPassing=false and silently drops the event, permanently sticking the PR.
+// Without this, CINeedsFix stays true after the fix worker completes. When
+// bellows re-detects CI failure, HandleEvent sees CINeedsFix=true and silently
+// drops the event, permanently sticking the PR.
+//
+// CIPassing is intentionally left unchanged here — it reflects the last
+// observed CI result from Bellows and must not be faked to avoid incorrectly
+// surfacing the PR as ready-to-merge before CI actually passes.
 func (m *Manager) NotifyCIFixCompleted(anvil string, prNumber int) {
 	m.mu.Lock()
 	st, ok := m.states[m.key(anvil, prNumber)]
@@ -430,16 +436,12 @@ func (m *Manager) NotifyCIFixCompleted(anvil string, prNumber int) {
 		m.mu.Unlock()
 		return
 	}
-	st.CIPassing = true
 	st.CINeedsFix = false
 	dbID := st.ID
 	reviewNeedsFix := st.ReviewNeedsFix
-	ciFixCount := st.CIFixCount
-	reviewFixCnt := st.ReviewFixCnt
-	rebaseCount := st.RebaseCount
 	m.mu.Unlock()
 
-	m.logger.Info("CI fix cycle completed, reset CIPassing=true", "pr", prNumber, "anvil", anvil)
+	m.logger.Info("CI fix cycle completed, cleared CINeedsFix", "pr", prNumber, "anvil", anvil)
 
 	// Persist the cleared state so a daemon restart does not reload a stale
 	// needs_fix DB status. Only transition needs_fix → open when no review
@@ -448,15 +450,6 @@ func (m *Manager) NotifyCIFixCompleted(anvil string, prNumber int) {
 	if dbID > 0 && !reviewNeedsFix {
 		if err := m.db.UpdatePRStatusIfNeedsFix(dbID, state.PROpen); err != nil {
 			m.logger.Warn("failed to persist PROpen after CI fix completed",
-				"pr", prNumber, "anvil", anvil, "error", err)
-		}
-	}
-
-	// Persist the updated CIPassing flag to the DB so bellows sees the
-	// correct state after a daemon restart.
-	if dbID > 0 {
-		if err := m.db.UpdatePRLifecycle(dbID, ciFixCount, reviewFixCnt, rebaseCount, true); err != nil {
-			m.logger.Warn("failed to persist CIPassing after CI fix completed",
 				"pr", prNumber, "anvil", anvil, "error", err)
 		}
 	}

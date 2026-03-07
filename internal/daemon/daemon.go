@@ -489,13 +489,10 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				status = state.WorkerFailed
 			}
 			_ = d.db.UpdateWorkerStatus(workerID, status)
-			// Clear CINeedsFix only when the fix cycle completed without error.
-			// If the fix failed, leave NeedsFix set so bellows can detect and
-			// dispatch another attempt rather than silently clearing a state
-			// that still needs attention.
-			if res.Error == nil {
-				d.lifecycleMgr.NotifyCIFixCompleted(req.Anvil, req.PRNumber)
-			}
+			// Always notify lifecycle that the CI fix cycle has completed so it
+			// can reset any suppression state and allow future CI-failure
+			// detection to trigger additional attempts as needed.
+			d.lifecycleMgr.NotifyCIFixCompleted(req.Anvil, req.PRNumber)
 
 		case lifecycle.ActionFixReview:
 			d.logger.Info("spawning review fix worker", "pr", req.PRNumber, "bead", req.BeadID)
