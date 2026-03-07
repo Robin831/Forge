@@ -133,9 +133,9 @@ func Defaults() Config {
 			MaxReviewFixAttempts: 5,
 			MaxRebaseAttempts:    3,
 			StaleInterval:        5 * time.Minute,
-		DepcheckInterval:    168 * time.Hour, // weekly
-		DepcheckTimeout:     5 * time.Minute,
-		VulncheckInterval:   24 * time.Hour,
+			DepcheckInterval:     168 * time.Hour, // weekly
+			DepcheckTimeout:      5 * time.Minute,
+			VulncheckInterval:    24 * time.Hour,
 		},
 	}
 }

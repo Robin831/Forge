@@ -83,9 +83,11 @@ appropriate priority based on severity.`,
 
 		// Display results
 		totalVulns := 0
+		anyErr := false
 		for _, r := range results {
 			if r.Err != nil {
 				fmt.Fprintf(os.Stderr, "Error scanning %s: %v\n", r.Anvil, r.Err)
+				anyErr = true
 				continue
 			}
 
@@ -109,7 +111,7 @@ appropriate priority based on severity.`,
 			totalVulns += len(r.Vulns)
 		}
 
-		if totalVulns == 0 {
+		if totalVulns == 0 && !anyErr {
 			fmt.Println("\nAll anvils clean — no vulnerabilities found. Looks like your code is tougher than a blacksmith's anvil!")
 		}
 
