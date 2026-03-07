@@ -60,7 +60,7 @@ appropriate priority based on severity.`,
 			Level: slog.LevelInfo,
 		}))
 
-		scanner := vulncheck.New(db, logger, anvils)
+		scanner := vulncheck.New(db, logger, anvils, cfg.Settings.VulncheckTimeout)
 		results := scanner.ScanAll(rootCtx)
 
 		// Create beads regardless of output format

@@ -116,17 +116,23 @@ type ParsedVuln struct {
 
 // Scanner runs govulncheck on anvils.
 type Scanner struct {
-	db     *state.DB
-	logger *slog.Logger
-	anvils map[string]config.AnvilConfig
+	db      *state.DB
+	logger  *slog.Logger
+	anvils  map[string]config.AnvilConfig
+	timeout time.Duration
 }
 
-// New creates a Scanner.
-func New(db *state.DB, logger *slog.Logger, anvils map[string]config.AnvilConfig) *Scanner {
+// New creates a Scanner. timeout caps each govulncheck subprocess; pass 0 to
+// use the default of 10 minutes.
+func New(db *state.DB, logger *slog.Logger, anvils map[string]config.AnvilConfig, timeout time.Duration) *Scanner {
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
 	return &Scanner{
-		db:     db,
-		logger: logger,
-		anvils: anvils,
+		db:      db,
+		logger:  logger,
+		anvils:  anvils,
+		timeout: timeout,
 	}
 }
 
@@ -173,8 +179,12 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) ScanResult {
 		Scanned: time.Now(),
 	}
 
-	// Run govulncheck with JSON output
-	cmd := exec.CommandContext(ctx, "govulncheck", "-json", "./...")
+	// Run govulncheck with JSON output, bounded by a per-invocation timeout
+	// (govulncheck downloads the vuln database on first run).
+	scanCtx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(scanCtx, "govulncheck", "-json", "./...")
 	cmd.Dir = path
 	executil.HideWindow(cmd)
 
@@ -186,7 +196,11 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) ScanResult {
 	// govulncheck exits non-zero when vulnerabilities are found — that's expected.
 	// Only treat it as an error if we got no stdout at all.
 	if err != nil && stdout.Len() == 0 {
-		result.Err = fmt.Errorf("govulncheck: %w: %s", err, stderr.String())
+		if scanCtx.Err() != nil {
+			result.Err = fmt.Errorf("govulncheck timed out after %s: %w", s.timeout, scanCtx.Err())
+		} else {
+			result.Err = fmt.Errorf("govulncheck: %w: %s", err, stderr.String())
+		}
 		return result
 	}
 
@@ -334,9 +348,14 @@ func (s *Scanner) CreateBeads(ctx context.Context, results []ScanResult) (int, e
 	return created, nil
 }
 
-// beadExists checks whether a bead already references this vulnerability ID.
+// beadExists checks whether an *open* bead already references this vulnerability ID.
+// It restricts the search to open beads so that a resolved vulnerability whose bead
+// was closed does not suppress a new bead if the vulnerability reappears.
 func (s *Scanner) beadExists(ctx context.Context, anvilPath, vulnID string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "bd", "search", vulnID, "--json")
+	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, "bd", "list", "--status=open", "--json")
 	cmd.Dir = anvilPath
 	executil.HideWindow(cmd)
 
@@ -345,16 +364,11 @@ func (s *Scanner) beadExists(ctx context.Context, anvilPath, vulnID string) (boo
 		if ctx.Err() != nil {
 			return false, ctx.Err()
 		}
-		// bd search may return non-zero if no results; that's fine
+		// If we can't query, allow creation rather than silently suppressing beads.
 		return false, nil
 	}
 
-	// If we got any results, consider the bead as existing
-	trimmed := bytes.TrimSpace(out)
-	if len(trimmed) == 0 || string(trimmed) == "[]" || string(trimmed) == "null" {
-		return false, nil
-	}
-	return true, nil
+	return strings.Contains(string(out), vulnID), nil
 }
 
 // createBead calls `bd create` to make a new issue.
