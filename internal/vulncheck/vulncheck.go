@@ -22,34 +22,6 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
-// Vuln represents a single vulnerability from govulncheck JSON output.
-type Vuln struct {
-	OSV      string   `json:"osv"`
-	Modules  []Module `json:"modules"`
-	Summary  string   `json:"summary"`
-	Details  string   `json:"details"`
-	Severity string   `json:"database_specific,omitempty"`
-}
-
-// Module is an affected module within a vulnerability finding.
-type Module struct {
-	Path     string    `json:"path"`
-	Versions []Version `json:"versions"`
-	Packages []Pkg     `json:"packages"`
-}
-
-// Version describes a version range affected by a vulnerability.
-type Version struct {
-	Introduced string `json:"introduced,omitempty"`
-	Fixed      string `json:"fixed,omitempty"`
-}
-
-// Pkg is an affected package with specific vulnerable symbols.
-type Pkg struct {
-	Path    string   `json:"path"`
-	Symbols []string `json:"symbols"`
-}
-
 // Finding groups a vulnerability with its call stacks for govulncheck v1 JSON.
 type Finding struct {
 	OSV   string `json:"osv"`
@@ -69,9 +41,10 @@ type govulncheckMessage struct {
 
 // osvEntry represents the osv field in govulncheck JSON output.
 type osvEntry struct {
-	ID       string `json:"id"`
-	Summary  string `json:"summary"`
-	Details  string `json:"details"`
+	ID       string   `json:"id"`
+	Aliases  []string `json:"aliases"`
+	Summary  string   `json:"summary"`
+	Details  string   `json:"details"`
 	Affected []struct {
 		Package struct {
 			Name      string `json:"name"`
@@ -83,6 +56,12 @@ type osvEntry struct {
 				Fixed      string `json:"fixed,omitempty"`
 			} `json:"events"`
 		} `json:"ranges"`
+		EcosystemSpecific *struct {
+			Imports []struct {
+				Path    string   `json:"path"`
+				Symbols []string `json:"symbols"`
+			} `json:"imports"`
+		} `json:"ecosystem_specific,omitempty"`
 	} `json:"affected"`
 	DatabaseSpecific *struct {
 		Severity string `json:"severity"`
@@ -96,6 +75,31 @@ type ScanResult struct {
 	Vulns   []ParsedVuln
 	Err     error
 	Scanned time.Time
+}
+
+// MarshalJSON provides a custom JSON encoding for ScanResult that renders Err
+// as a string field, so that JSON output includes a meaningful error message.
+func (sr ScanResult) MarshalJSON() ([]byte, error) {
+	type scanResultJSON struct {
+		Anvil   string       `json:"anvil"`
+		Path    string       `json:"path"`
+		Vulns   []ParsedVuln `json:"vulns"`
+		Err     string       `json:"err,omitempty"`
+		Scanned time.Time    `json:"scanned"`
+	}
+
+	out := scanResultJSON{
+		Anvil:   sr.Anvil,
+		Path:    sr.Path,
+		Vulns:   sr.Vulns,
+		Scanned: sr.Scanned,
+	}
+
+	if sr.Err != nil {
+		out.Err = sr.Err.Error()
+	}
+
+	return json.Marshal(out)
 }
 
 // ParsedVuln is a processed vulnerability ready for bead creation.
@@ -246,12 +250,26 @@ func parseGovulncheckJSON(data []byte) ([]ParsedVuln, error) {
 			v.Severity = "MEDIUM" // default if not specified
 		}
 
-		// Extract CVE IDs from the OSV ID and details
+		// Extract CVE IDs from OSV aliases (preferred) and ID (fallback)
+		for _, alias := range osv.Aliases {
+			if strings.HasPrefix(alias, "CVE-") {
+				v.CVEs = append(v.CVEs, alias)
+			}
+		}
 		if strings.HasPrefix(osv.ID, "CVE-") {
-			v.CVEs = append(v.CVEs, osv.ID)
+			seen := false
+			for _, c := range v.CVEs {
+				if c == osv.ID {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				v.CVEs = append(v.CVEs, osv.ID)
+			}
 		}
 
-		// Extract affected packages and fix versions
+		// Extract affected packages, fix versions, and symbols
 		for _, aff := range osv.Affected {
 			if v.AffectedPkg == "" {
 				v.AffectedPkg = aff.Package.Name
@@ -261,6 +279,11 @@ func parseGovulncheckJSON(data []byte) ([]ParsedVuln, error) {
 					if ev.Fixed != "" && v.FixedIn == "" {
 						v.FixedIn = ev.Fixed
 					}
+				}
+			}
+			if aff.EcosystemSpecific != nil {
+				for _, imp := range aff.EcosystemSpecific.Imports {
+					v.Symbols = append(v.Symbols, imp.Symbols...)
 				}
 			}
 		}
@@ -319,6 +342,9 @@ func (s *Scanner) beadExists(ctx context.Context, anvilPath, vulnID string) (boo
 
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
 		// bd search may return non-zero if no results; that's fine
 		return false, nil
 	}

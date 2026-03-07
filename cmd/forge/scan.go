@@ -63,6 +63,18 @@ appropriate priority based on severity.`,
 		scanner := vulncheck.New(db, logger, anvils)
 		results := scanner.ScanAll(rootCtx)
 
+		// Create beads regardless of output format
+		createBeads, _ := cmd.Flags().GetBool("create-beads")
+		if createBeads {
+			created, err := scanner.CreateBeads(rootCtx, results)
+			if err != nil {
+				return fmt.Errorf("creating beads: %w", err)
+			}
+			if !jsonOutput && created > 0 {
+				fmt.Printf("\nCreated %d new beads for vulnerabilities\n", created)
+			}
+		}
+
 		if jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
@@ -91,20 +103,10 @@ appropriate priority based on severity.`,
 					fix = "none"
 				}
 				fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
-					v.ID, v.Severity, v.AffectedPkg, fix, truncateSummary(v.Summary, 50))
+					v.ID, v.Severity, v.AffectedPkg, fix, truncate(v.Summary, 50))
 			}
 			tw.Flush()
 			totalVulns += len(r.Vulns)
-		}
-
-		// Create beads if requested
-		createBeads, _ := cmd.Flags().GetBool("create-beads")
-		if createBeads && totalVulns > 0 {
-			created, err := scanner.CreateBeads(rootCtx, results)
-			if err != nil {
-				return fmt.Errorf("creating beads: %w", err)
-			}
-			fmt.Printf("\nCreated %d new beads for vulnerabilities\n", created)
 		}
 
 		if totalVulns == 0 {
@@ -113,11 +115,4 @@ appropriate priority based on severity.`,
 
 		return nil
 	},
-}
-
-func truncateSummary(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
 }
