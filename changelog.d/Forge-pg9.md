@@ -1,0 +1,2 @@
+category: Fixed
+- **Fixed FetchCopilotComments failing on PRs with >30 review comments** - `gh api --paginate` concatenates multiple JSON arrays (e.g. `[page1...][page2...]`) which neither `json.Unmarshal` nor a `json.Decoder.More()` loop can handle correctly (More() returns false at the top level). Extracted a `parsePaginatedComments` helper that loops until `io.EOF`, correctly collecting all pages. (Forge-pg9)

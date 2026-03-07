@@ -89,6 +89,27 @@ func TestFormatChecklist(t *testing.T) {
 	assert.Contains(t, checklist, "2. [ ] Check: ensure consistent formula (pattern: width calc)")
 }
 
+func TestParsePaginatedComments_SinglePage(t *testing.T) {
+	input := `[{"body":"comment one","path":"foo.go","user":{"login":"copilot[bot]"}},{"body":"comment two","path":"bar.go","user":{"login":"copilot[bot]"}}]`
+	got, err := parsePaginatedComments([]byte(input))
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "comment one", got[0].Body)
+	assert.Equal(t, "comment two", got[1].Body)
+}
+
+func TestParsePaginatedComments_MultiPage(t *testing.T) {
+	// gh api --paginate concatenates arrays without a separator
+	page1 := `[{"body":"page1 comment","path":"a.go","user":{"login":"copilot[bot]"}}]`
+	page2 := `[{"body":"page2 comment","path":"b.go","user":{"login":"copilot[bot]"}}]`
+	input := page1 + page2
+	got, err := parsePaginatedComments([]byte(input))
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "page1 comment", got[0].Body)
+	assert.Equal(t, "page2 comment", got[1].Body)
+}
+
 func TestGroupComments(t *testing.T) {
 	comments := []PRComment{
 		{Body: "Check for data races", PRNumber: 1},
