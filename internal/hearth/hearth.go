@@ -603,7 +603,11 @@ func (m *Model) getTopPanelWidths() (queueWidth, workerWidth, activityWidth int)
 }
 
 func (m *Model) getVerticalSplit() (topHeight, bottomHeight int) {
-	contentHeight := m.height - 6 // header(1) + footer(1) + top panel borders(2) + event panel borders(2)
+	// contentHeight is the total vertical space available for the top panels and
+	// the events panel, including their borders. We subtract only the global
+	// header(1) and footer(1) rows here; individual panels account for their
+	// own border/frame overhead internally.
+	contentHeight := m.height - 2 // header(1) + footer(1)
 	if contentHeight < 0 {
 		contentHeight = 0
 	}

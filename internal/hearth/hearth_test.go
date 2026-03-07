@@ -901,3 +901,38 @@ func TestReadyToMergeErrorMsgAppendsEvent(t *testing.T) {
 		t.Errorf("expected 'ready-to-merge read failed' in event message, got %q", m.events[0].Message)
 	}
 }
+
+func TestGetVerticalSplitSumsToContentHeight(t *testing.T) {
+	for _, h := range []int{10, 24, 40, 80} {
+		m := Model{width: 120, height: h}
+		topHeight, bottomHeight := m.getVerticalSplit()
+		contentHeight := h - 2 // header(1) + footer(1)
+		if topHeight < 0 {
+			t.Errorf("height=%d: topHeight=%d is negative", h, topHeight)
+		}
+		if bottomHeight < 0 {
+			t.Errorf("height=%d: bottomHeight=%d is negative", h, bottomHeight)
+		}
+		if got := topHeight + bottomHeight; got != contentHeight {
+			t.Errorf("height=%d: topHeight(%d) + bottomHeight(%d) = %d, want %d",
+				h, topHeight, bottomHeight, got, contentHeight)
+		}
+	}
+}
+
+func TestViewHeaderVisibleAtTightTerminalHeight(t *testing.T) {
+	// Regression test: the Hearth header must appear first in the rendered output
+	// at any reasonable terminal height so it is not scrolled off-screen.
+	for _, h := range []int{10, 24, 40} {
+		m := Model{
+			width:  80,
+			height: h,
+			ready:  true,
+		}
+		rendered := m.View()
+		firstLine := strings.SplitN(rendered, "\n", 2)[0]
+		if !strings.Contains(firstLine, "Forge") {
+			t.Errorf("height=%d: first rendered line does not contain header text, got: %q", h, firstLine)
+		}
+	}
+}
