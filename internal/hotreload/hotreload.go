@@ -183,6 +183,21 @@ func applyChanges(old, new *config.Config) []string {
 			old.Notifications.Enabled, new.Notifications.Enabled))
 	}
 
+	if old.Settings.MaxCIFixAttempts != new.Settings.MaxCIFixAttempts {
+		changes = append(changes, fmt.Sprintf("max_ci_fix_attempts: %d → %d",
+			old.Settings.MaxCIFixAttempts, new.Settings.MaxCIFixAttempts))
+	}
+
+	if old.Settings.MaxReviewFixAttempts != new.Settings.MaxReviewFixAttempts {
+		changes = append(changes, fmt.Sprintf("max_review_fix_attempts: %d → %d",
+			old.Settings.MaxReviewFixAttempts, new.Settings.MaxReviewFixAttempts))
+	}
+
+	if old.Settings.MaxRebaseAttempts != new.Settings.MaxRebaseAttempts {
+		changes = append(changes, fmt.Sprintf("max_rebase_attempts: %d → %d",
+			old.Settings.MaxRebaseAttempts, new.Settings.MaxRebaseAttempts))
+	}
+
 	// Warn about non-reloadable changes
 	if len(old.Anvils) != len(new.Anvils) {
 		changes = append(changes, "WARNING: anvil changes require restart")
