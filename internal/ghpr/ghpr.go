@@ -148,7 +148,6 @@ func Merge(ctx context.Context, worktreePath string, prNumber int, strategy stri
 		"pr", "merge", fmt.Sprintf("%d", prNumber),
 		"--" + strategy,
 		"--delete-branch",
-		"--yes",
 	}
 
 	log.Printf("[ghpr] Merging PR #%d with strategy %s", prNumber, strategy)
