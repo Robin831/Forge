@@ -493,3 +493,50 @@ func TestWordWrap(t *testing.T) {
 		})
 	}
 }
+
+func TestActivityScrollChangesVisibleLine(t *testing.T) {
+	lines := []string{"line-0", "line-1", "line-2", "line-3", "line-4"}
+	m := Model{
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+				ActivityLines: lines},
+		},
+		workerScroll:   0,
+		activityScroll: 0,
+		focused:        PanelLiveActivity,
+	}
+
+	// With no scroll, the newest entry (line-4) should be visible.
+	rendered0 := m.renderWorkerActivity(80, 10)
+	if !strings.Contains(rendered0, "line-4") {
+		t.Errorf("expected newest entry 'line-4' visible at scroll=0:\n%s", rendered0)
+	}
+
+	// Scroll down (toward older entries) so that line-4 is scrolled off.
+	m.activityScroll = len(lines) - 1 // scroll to the oldest
+	renderedScrolled := m.renderWorkerActivity(80, 10)
+	if !strings.Contains(renderedScrolled, "line-0") {
+		t.Errorf("expected oldest entry 'line-0' visible when scrolled to end:\n%s", renderedScrolled)
+	}
+}
+
+func TestActivityScrollClampPastEnd(t *testing.T) {
+	lines := []string{"alpha", "beta", "gamma"}
+	// activityScroll larger than len(lines)-1 simulates a stale scroll after
+	// the worker's activity list shrinks on refresh.
+	m := Model{
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+				ActivityLines: lines},
+		},
+		workerScroll:   0,
+		activityScroll: 100, // way past the end
+		focused:        PanelLiveActivity,
+	}
+
+	rendered := m.renderWorkerActivity(80, 10)
+	// The panel must not be blank — at least the oldest entry should show.
+	if !strings.Contains(rendered, "alpha") {
+		t.Errorf("expected at least oldest entry 'alpha' when activityScroll is past end:\n%s", rendered)
+	}
+}
