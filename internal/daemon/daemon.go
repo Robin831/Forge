@@ -410,9 +410,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}()
 	}
 
-	// Start vulnerability scanning loop
-	d.vulnScanner = vulncheck.New(d.db, d.logger, d.config().Anvils, d.config().Settings.VulncheckTimeout)
-	go d.vulnScanner.RunScheduled(ctx, d.config().Settings.VulncheckInterval)
+	// Start vulnerability scanning loop (respects vulncheck_enabled config)
+	if d.config().Settings.IsVulncheckEnabled() {
+		d.vulnScanner = vulncheck.New(d.db, d.logger, d.config().Anvils, d.config().Settings.VulncheckTimeout)
+		go d.vulnScanner.RunScheduled(ctx, d.config().Settings.VulncheckInterval)
+	} else {
+		d.logger.Info("vulncheck disabled via configuration (vulncheck_enabled: false)")
+	}
 
 	for {
 		select {

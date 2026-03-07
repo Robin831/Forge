@@ -1,0 +1,2 @@
+category: Fixed
+- **Vulncheck no longer spams vuln_scan_failed when govulncheck is missing** - The scanner now checks for govulncheck once at startup. If not installed, it logs a single warning and disables scheduled scanning instead of logging an error every cycle. Added `vulncheck_enabled` config option to explicitly disable scanning, and govulncheck now appears in `forge doctor` output. (Forge-dfb)

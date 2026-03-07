@@ -120,39 +120,52 @@ type Scanner struct {
 	logger          *slog.Logger
 	anvils          map[string]config.AnvilConfig
 	timeout         time.Duration
-	govulncheckPath string // resolved path to govulncheck binary; set by ScanAll
+	govulncheckPath string // resolved path to govulncheck binary; set by New
+	available       bool   // true if govulncheck was found at construction time
 }
 
 // New creates a Scanner. timeout caps each govulncheck subprocess; pass 0 to
-// use the default of 10 minutes.
+// use the default of 10 minutes. The binary is resolved once at construction;
+// if govulncheck is not installed a single warning is logged and the scanner
+// is marked unavailable (ScanAll returns immediately, RunScheduled is a no-op).
 func New(db *state.DB, logger *slog.Logger, anvils map[string]config.AnvilConfig, timeout time.Duration) *Scanner {
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
-	return &Scanner{
+	s := &Scanner{
 		db:      db,
 		logger:  logger,
 		anvils:  anvils,
 		timeout: timeout,
 	}
+
+	path, err := exec.LookPath("govulncheck")
+	if err != nil {
+		s.logger.Warn("govulncheck not found in PATH — vulnerability scanning disabled. Install with: go install golang.org/x/vuln/cmd/govulncheck@latest")
+		s.available = false
+	} else {
+		s.govulncheckPath = path
+		s.available = true
+	}
+
+	return s
 }
 
+// Available reports whether govulncheck was found at construction time.
+func (s *Scanner) Available() bool { return s.available }
+
 // ScanAll runs govulncheck on all Go-based anvils and returns results.
+// If govulncheck was not found at construction time, it returns a single
+// error result without logging an event (the warning was already emitted once).
 func (s *Scanner) ScanAll(ctx context.Context) []ScanResult {
 	var results []ScanResult
 
-	// Verify govulncheck is installed before attempting any scans.
-	govulncheckPath, err := exec.LookPath("govulncheck")
-	if err != nil {
-		s.logger.Warn("govulncheck not found in PATH; install with: go install golang.org/x/vuln/cmd/govulncheck@latest")
-		s.db.LogEvent(state.EventVulnScanFailed,
-			"govulncheck not found in PATH — skipping all vulnerability scans", "", "")
+	if !s.available {
 		results = append(results, ScanResult{
 			Err: fmt.Errorf("govulncheck not found in PATH"),
 		})
 		return results
 	}
-	s.govulncheckPath = govulncheckPath
 
 	for name, anvil := range s.anvils {
 		if ctx.Err() != nil {
@@ -474,10 +487,15 @@ func truncate(s string, maxLen int) string {
 }
 
 // RunScheduled is a blocking loop that runs scans on a configurable interval.
-// It should be launched as a goroutine alongside bellows.
+// It should be launched as a goroutine alongside bellows. If govulncheck is
+// not installed, the loop exits immediately (a warning was logged at construction).
 func (s *Scanner) RunScheduled(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		s.logger.Info("vulncheck scheduled scanning disabled (interval=0)")
+		return
+	}
+	if !s.available {
+		s.logger.Info("vulncheck scheduled scanning disabled (govulncheck not installed)")
 		return
 	}
 
