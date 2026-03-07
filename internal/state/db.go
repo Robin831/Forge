@@ -982,6 +982,8 @@ const (
 	EventVulnScanDone         EventType = "vuln_scan_done"
 	EventVulnScanFailed       EventType = "vuln_scan_failed"
 	EventVulnBeadCreated      EventType = "vuln_bead_created"
+	EventAutoLearnError       EventType = "auto_learn_error"
+	EventAutoLearnRules       EventType = "auto_learn_rules"
 )
 
 // Event represents a logged event.

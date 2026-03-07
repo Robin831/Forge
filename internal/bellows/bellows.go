@@ -50,8 +50,11 @@ type Monitor struct {
 	handlers       []Handler
 	mu             sync.Mutex
 	lastStatuses   map[string]*prSnapshot // anvil/PR number → last known state
-	refresh        chan struct{}          // channel to trigger immediate poll
-	autoLearnRules bool                  // auto-learn warden rules from Copilot comments on PR merge
+	refresh        chan struct{}           // channel to trigger immediate poll
+	autoLearnRules bool                   // auto-learn warden rules from Copilot comments on PR merge
+	learnMuMu      sync.Mutex             // protects learnMu map
+	learnMu        map[string]*sync.Mutex // per-anvil mutex serializing auto-learn
+	learnSem       chan struct{}           // caps overall concurrent auto-learn goroutines
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -78,6 +81,8 @@ func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, aut
 		lastStatuses:   make(map[string]*prSnapshot),
 		refresh:        make(chan struct{}, 1),
 		autoLearnRules: autoLearnRules,
+		learnMu:        make(map[string]*sync.Mutex),
+		learnSem:       make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
 	}
 }
 
@@ -198,7 +203,21 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
 
 		if m.autoLearnRules {
-			go m.learnRulesFromPR(ctx, pr.Anvil, anvilPath, pr.Number)
+			anvilMu := m.getLearnMu(pr.Anvil)
+			prNum := pr.Number
+			go func() {
+				// Acquire the concurrency semaphore, but bail on shutdown.
+				select {
+				case m.learnSem <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+				defer func() { <-m.learnSem }()
+				// Serialize per-anvil so load→add→save is atomic per repo.
+				anvilMu.Lock()
+				defer anvilMu.Unlock()
+				m.learnRulesFromPR(ctx, pr.Anvil, anvilPath, prNum)
+			}()
 		}
 	} else if newSnap.IsClosed && !lastSnap.IsClosed {
 		m.emit(ctx, PREvent{
@@ -312,13 +331,35 @@ func (m *Monitor) ResetPRState(anvil string, prNumber int) {
 	delete(m.lastStatuses, key)
 }
 
+// getLearnMu returns the per-anvil mutex used to serialize auto-learn operations,
+// creating it on first use.
+func (m *Monitor) getLearnMu(anvil string) *sync.Mutex {
+	m.learnMuMu.Lock()
+	defer m.learnMuMu.Unlock()
+	if m.learnMu[anvil] == nil {
+		m.learnMu[anvil] = &sync.Mutex{}
+	}
+	return m.learnMu[anvil]
+}
+
 // learnRulesFromPR fetches Copilot review comments from a merged PR,
 // distills them into warden rules, and saves them to the anvil's rules file.
+// The caller is responsible for holding the per-anvil learn mutex so that the
+// load→add→save sequence is atomic with respect to other goroutines.
 func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath string, prNumber int) {
+	if ctx.Err() != nil {
+		// Context canceled or deadline exceeded; treat as normal shutdown.
+		return
+	}
+
 	comments, err := warden.FetchCopilotComments(ctx, anvilPath, prNumber)
 	if err != nil {
+		// If the context was canceled while fetching, treat it as a non-error.
+		if ctx.Err() != nil {
+			return
+		}
 		log.Printf("[bellows] Auto-learn: error fetching Copilot comments for PR #%d (%s): %v", prNumber, anvilName, err)
-		_ = m.db.LogEvent("auto_learn_error", fmt.Sprintf("PR #%d: failed to fetch Copilot comments: %v", prNumber, err), "", anvilName)
+		_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: failed to fetch Copilot comments: %v", prNumber, err), "", anvilName)
 		return
 	}
 	if len(comments) == 0 {
@@ -330,14 +371,20 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath str
 	rf, err := warden.LoadRules(anvilPath)
 	if err != nil {
 		log.Printf("[bellows] Auto-learn: error loading existing rules for %s: %v", anvilName, err)
-		_ = m.db.LogEvent("auto_learn_error", fmt.Sprintf("PR #%d: failed to load rules: %v", prNumber, err), "", anvilName)
+		_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: failed to load rules: %v", prNumber, err), "", anvilName)
 		return
 	}
 
 	added := 0
 	for _, group := range groups {
+		if ctx.Err() != nil {
+			return
+		}
 		rule, err := warden.DistillRule(ctx, group, anvilPath)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			log.Printf("[bellows] Auto-learn: error distilling rule from PR #%d (%s): %v", prNumber, anvilName, err)
 			continue
 		}
@@ -353,12 +400,12 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath str
 
 	if err := warden.SaveRules(anvilPath, rf); err != nil {
 		log.Printf("[bellows] Auto-learn: error saving rules for %s: %v", anvilName, err)
-		_ = m.db.LogEvent("auto_learn_error", fmt.Sprintf("PR #%d: failed to save rules: %v", prNumber, err), "", anvilName)
+		_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: failed to save rules: %v", prNumber, err), "", anvilName)
 		return
 	}
 
 	log.Printf("[bellows] Auto-learn: added %d new rule(s) from PR #%d (%s)", added, prNumber, anvilName)
-	_ = m.db.LogEvent("auto_learn_rules", fmt.Sprintf("PR #%d: learned %d new rule(s)", prNumber, added), "", anvilName)
+	_ = m.db.LogEvent(state.EventAutoLearnRules, fmt.Sprintf("PR #%d: learned %d new rule(s)", prNumber, added), "", anvilName)
 }
 
 // emit calls all registered handlers with the given event.
