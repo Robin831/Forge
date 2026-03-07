@@ -841,14 +841,17 @@ func (db *DB) UpdatePRMergeability(id int, isConflicting, hasUnresolvedThreads b
 }
 
 // IsPRReadyToMerge reports whether the given PR currently satisfies all
-// ready-to-merge conditions: approved status, CI passing, not conflicting,
-// and no unresolved review threads.
+// ready-to-merge conditions: CI passing, not conflicting, no unresolved
+// review threads, and not in a needs_fix/closed/merged state.
+// Approval is not required — repos without branch protection rules
+// should still surface PRs as mergeable; GitHub enforces required
+// reviews at merge time.
 func (db *DB) IsPRReadyToMerge(id int) (bool, error) {
 	var count int
 	err := db.conn.QueryRow(
 		`SELECT COUNT(*) FROM prs
 		 WHERE id = ?
-		   AND status = 'approved'
+		   AND status IN ('approved', 'open')
 		   AND ci_passing = 1
 		   AND is_conflicting = 0
 		   AND has_unresolved_threads = 0`,
@@ -869,13 +872,13 @@ type ReadyToMergePR struct {
 	Branch string
 }
 
-// ReadyToMergePRs returns PRs where: status=approved, CI passing, not conflicting,
-// and no unresolved review threads.
+// ReadyToMergePRs returns PRs where: CI passing, not conflicting,
+// no unresolved review threads, and not in a terminal/fix state.
 func (db *DB) ReadyToMergePRs() ([]ReadyToMergePR, error) {
 	rows, err := db.conn.Query(
 		`SELECT id, number, anvil, bead_id, branch
 		 FROM prs
-		 WHERE status = 'approved'
+		 WHERE status IN ('approved', 'open')
 		   AND ci_passing = 1
 		   AND is_conflicting = 0
 		   AND has_unresolved_threads = 0

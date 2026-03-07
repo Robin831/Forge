@@ -1165,8 +1165,10 @@ func TestDB_ReadyToMerge(t *testing.T) {
 	prConflict := insert(203, PRApproved, true, true, false)
 	// approved, CI passing, has unresolved threads → not ready
 	prThreads := insert(204, PRApproved, true, false, true)
-	// open (not approved) → not ready
+	// open (not approved) but all conditions met → ready (approval not required)
 	prOpen := insert(205, PROpen, true, false, false)
+	// needs_fix → not ready (active fix cycle)
+	prNeedsFix := insert(206, PRNeedsFix, true, false, false)
 
 	// IsPRReadyToMerge
 	cases := []struct {
@@ -1178,7 +1180,8 @@ func TestDB_ReadyToMerge(t *testing.T) {
 		{prCIFail, false, "ci_failing"},
 		{prConflict, false, "conflicting"},
 		{prThreads, false, "unresolved_threads"},
-		{prOpen, false, "not_approved"},
+		{prOpen, true, "open_all_conditions_met"},
+		{prNeedsFix, false, "needs_fix"},
 	}
 	for _, tc := range cases {
 		got, err := db.IsPRReadyToMerge(tc.pr.ID)
@@ -1190,16 +1193,13 @@ func TestDB_ReadyToMerge(t *testing.T) {
 		}
 	}
 
-	// ReadyToMergePRs should return only prReady
+	// ReadyToMergePRs should return prReady and prOpen (both meet conditions)
 	ready, err := db.ReadyToMergePRs()
 	if err != nil {
 		t.Fatalf("ReadyToMergePRs: %v", err)
 	}
-	if len(ready) != 1 {
-		t.Fatalf("ReadyToMergePRs: expected 1 result, got %d", len(ready))
-	}
-	if ready[0].Number != prReady.Number {
-		t.Errorf("ReadyToMergePRs: got PR #%d, want #%d", ready[0].Number, prReady.Number)
+	if len(ready) != 2 {
+		t.Fatalf("ReadyToMergePRs: expected 2 results, got %d", len(ready))
 	}
 
 	// UpdatePRMergeability: make prConflict non-conflicting → now ready
@@ -1210,7 +1210,7 @@ func TestDB_ReadyToMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadyToMergePRs after update: %v", err)
 	}
-	if len(ready) != 2 {
-		t.Errorf("ReadyToMergePRs after update: expected 2 results, got %d", len(ready))
+	if len(ready) != 3 {
+		t.Errorf("ReadyToMergePRs after update: expected 3 results, got %d", len(ready))
 	}
 }
