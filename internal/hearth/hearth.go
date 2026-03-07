@@ -28,7 +28,7 @@ const (
 	PanelQueue Panel = iota
 	PanelNeedsAttention
 	PanelWorkers
-	PanelActivity
+	PanelLiveActivity
 	PanelEvents
 
 	panelCount = PanelEvents + 1 // NOTE: update if panels are added/removed
@@ -272,7 +272,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.eventAutoScroll {
 					m.eventScroll = 0
 				}
-			} else if m.focused == PanelActivity {
+			} else if m.focused == PanelLiveActivity {
 				// Reset activity scroll to bottom (follow latest)
 				m.activityScroll = 0
 			}
@@ -477,20 +477,11 @@ func (m *Model) scrollDown() {
 	case PanelWorkers:
 		if m.workerScroll < len(m.workers)-1 {
 			m.workerScroll++
-			m.activityScroll = 0 // Reset activity scroll only when selection actually changed
+			m.activityScroll = 0
 		}
-	case PanelActivity:
-		activityLines := m.selectedWorkerActivity()
-		topHeight, _ := m.getVerticalSplit()
-		maxVisible := topHeight - 4
-		if maxVisible < 1 {
-			maxVisible = 1
-		}
-		maxScroll := len(activityLines) - maxVisible
-		if maxScroll < 0 {
-			maxScroll = 0
-		}
-		if m.activityScroll < maxScroll {
+	case PanelLiveActivity:
+		activity := m.selectedWorkerActivity()
+		if m.activityScroll < len(activity)-1 {
 			m.activityScroll++
 		}
 	case PanelEvents:
@@ -515,9 +506,9 @@ func (m *Model) scrollUp() {
 	case PanelWorkers:
 		if m.workerScroll > 0 {
 			m.workerScroll--
-			m.activityScroll = 0 // Reset activity scroll only when selection actually changed
+			m.activityScroll = 0
 		}
-	case PanelActivity:
+	case PanelLiveActivity:
 		if m.activityScroll > 0 {
 			m.activityScroll--
 		}
@@ -916,7 +907,7 @@ func (m *Model) renderWorkerList(width, height int) string {
 // currently selected worker, parsed from its stream-json log file.
 func (m *Model) renderWorkerActivity(width, height int) string {
 	style := panelStyle.Width(width)
-	if m.focused == PanelActivity {
+	if m.focused == PanelLiveActivity {
 		style = focusedPanelStyle.Width(width)
 	}
 
@@ -945,11 +936,16 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 		if maxVisible < 1 {
 			maxVisible = 1
 		}
-		// Default: show the latest lines (tail). activityScroll scrolls up from bottom.
-		end := len(activityLines) - m.activityScroll
-		if end < 0 {
-			end = 0
+		// activityScroll offsets from the newest end. Clamp it so the model
+		// doesn't get stuck at an invalid offset (e.g., after refresh).
+		if m.activityScroll < 0 {
+			m.activityScroll = 0
 		}
+		maxOffset := len(activityLines) - 1
+		if m.activityScroll > maxOffset {
+			m.activityScroll = maxOffset
+		}
+		end := len(activityLines) - m.activityScroll
 		start := end - maxVisible
 		if start < 0 {
 			start = 0
