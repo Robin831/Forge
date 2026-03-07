@@ -294,6 +294,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.logger.Info("startup bead recovery done", "recovered", recovered)
 	}
 
+	// Set up signal handling and run context BEFORE starting IPC server,
+	// so IPC handlers always see a valid, race-free runCtx.
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Store cancel so IPC shutdown command can trigger graceful stop.
+	// Wrap ctx with a cancel so the IPC handler can cancel independently.
+	ctx, d.cancel = context.WithCancel(ctx)
+	d.runCtx = ctx
+
 	// Start IPC server
 	d.ipc = ipc.NewServer()
 	d.ipc.OnCommand(d.handleIPC)
@@ -323,15 +333,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 		}()
 	}
-
-	// Set up signal handling
-	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	// Store cancel so IPC shutdown command can trigger graceful stop.
-	// Wrap ctx with a cancel so the IPC handler can cancel independently.
-	ctx, d.cancel = context.WithCancel(ctx)
-	d.runCtx = ctx
 
 	// Main poll loop
 	pollInterval := d.cfg.Load().Settings.PollInterval
@@ -805,7 +806,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	}
 
 	// Check daily cost limit before dispatching new work.
-	costLimit := d.cfg.Load().Settings.DailyCostLimit
+	costLimit := cfg.Settings.DailyCostLimit
 	if costLimit > 0 {
 		// Capture date once so both the cost lookup and the event-suppression
 		// key use the same day even if midnight rolls over between calls.
@@ -865,7 +866,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			continue
 		}
 
-		anvilCfg := cfg.Anvils[bead.Anvil]
+		anvilCfg, ok := cfg.Anvils[bead.Anvil]
+		if !ok || anvilCfg.Path == "" {
+			d.activeBeads.Delete(bead.ID)
+			continue
+		}
 
 		// Apply auto-dispatch filtering
 		if !shouldDispatch(bead, anvilCfg) {

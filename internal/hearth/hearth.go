@@ -18,6 +18,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 // Panel identifies a TUI panel.
@@ -401,7 +402,7 @@ func (m *Model) View() string {
 	activityPanel := m.renderWorkerActivity(activityWidth, topHeight)
 
 	// Bottom strip: Events
-	eventPanel := m.renderEvents(m.width-2, bottomHeight) // -2 for outer margin
+	eventPanel := m.renderEvents(m.width-4, bottomHeight) // -4 to match top panels
 
 	// Header
 	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
@@ -1422,7 +1423,8 @@ func ansiEscapeLen(runes []rune, i int) int {
 }
 
 // visualToRuneIndex returns the rune index in s that corresponds to visual
-// column col, skipping ANSI CSI escape sequences which have no visual width.
+// column col, skipping ANSI CSI escape sequences and using cell-width-aware
+// counting so double-width runes (e.g. CJK, many emoji) are handled correctly.
 func visualToRuneIndex(s string, col int) int {
 	runes := []rune(s)
 	visual := 0
@@ -1435,7 +1437,7 @@ func visualToRuneIndex(s string, col int) int {
 			i += n
 			continue
 		}
-		visual++
+		visual += runewidth.RuneWidth(runes[i])
 		i++
 	}
 	return i

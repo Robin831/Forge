@@ -81,7 +81,7 @@ var hearthCmd = &cobra.Command{
 				return err
 			}
 			if resp.Type != "ok" {
-				return fmt.Errorf("daemon returned: %s", resp.Type)
+				return ipcError(resp)
 			}
 			return nil
 		}
@@ -103,7 +103,7 @@ var hearthCmd = &cobra.Command{
 				return err
 			}
 			if resp.Type != "ok" {
-				return fmt.Errorf("daemon returned: %s", resp.Type)
+				return ipcError(resp)
 			}
 			return nil
 		}
@@ -150,7 +150,7 @@ var hearthCmd = &cobra.Command{
 				return err
 			}
 			if resp.Type != "ok" {
-				return fmt.Errorf("daemon returned: %s", resp.Type)
+				return ipcError(resp)
 			}
 			return nil
 		}
@@ -162,4 +162,13 @@ var hearthCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// ipcError extracts a human-readable error message from a daemon error response.
+func ipcError(resp *ipc.Response) error {
+	var payload struct{ Message string }
+	if json.Unmarshal(resp.Payload, &payload) == nil && payload.Message != "" {
+		return fmt.Errorf("daemon: %s", payload.Message)
+	}
+	return fmt.Errorf("daemon returned: %s", resp.Type)
 }
