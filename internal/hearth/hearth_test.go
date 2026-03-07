@@ -871,6 +871,54 @@ func TestRenderReadyToMergeSelectionHighlighting(t *testing.T) {
 	}
 }
 
+func TestRenderReadyToMergeViewportRegression(t *testing.T) {
+	// Regression test: with a small panel height, setting the cursor to a middle
+	// index must keep the selected item visible and show adjacent neighbours
+	// (not just the selected item). Also verifies that viewport clamping works
+	// when the list later shrinks.
+
+	items := []ReadyToMergeItem{
+		{PRID: 1, PRNumber: 10, BeadID: "bd-10", Anvil: "forge"},
+		{PRID: 2, PRNumber: 11, BeadID: "bd-11", Anvil: "forge"},
+		{PRID: 3, PRNumber: 12, BeadID: "bd-12", Anvil: "forge"},
+		{PRID: 4, PRNumber: 13, BeadID: "bd-13", Anvil: "forge"},
+		{PRID: 5, PRNumber: 14, BeadID: "bd-14", Anvil: "forge"},
+	}
+
+	// height=7 → maxItems = 7-3 = 4. Cursor at index 2 (middle).
+	// Viewport should show items 0-3 (cursor visible, multiple adjacents present).
+	m := Model{
+		readyToMerge:       items,
+		readyToMergeScroll: 2,
+		focused:            PanelReadyToMerge,
+	}
+	rendered := m.renderReadyToMerge(80, 7)
+
+	// Selected item must be visible.
+	if !strings.Contains(rendered, "bd-12") {
+		t.Errorf("selected item bd-12 (cursor=2) not visible in small-height render:\n%s", rendered)
+	}
+	// At least one neighbour must also be visible (not just the selected item).
+	neighbourVisible := strings.Contains(rendered, "bd-10") ||
+		strings.Contains(rendered, "bd-11") ||
+		strings.Contains(rendered, "bd-13")
+	if !neighbourVisible {
+		t.Errorf("no adjacent neighbours visible alongside selected item (bd-12):\n%s", rendered)
+	}
+
+	// Now simulate the list shrinking: only 2 items remain, viewStart may be
+	// stale. The viewport should clamp so both remaining items are shown.
+	m.readyToMerge = items[:2]
+	m.readyToMergeScroll = 1
+	m.readyToMergeViewStart = 3 // stale value from before shrink
+	rendered2 := m.renderReadyToMerge(80, 7)
+	for _, want := range []string{"bd-10", "bd-11"} {
+		if !strings.Contains(rendered2, want) {
+			t.Errorf("after shrink, expected %q visible but got:\n%s", want, rendered2)
+		}
+	}
+}
+
 func TestRenderMergeMenuContainsBeadIDAndActions(t *testing.T) {
 	item := ReadyToMergeItem{PRID: 1, PRNumber: 55, BeadID: "bd-30", Anvil: "test"}
 	m := Model{
