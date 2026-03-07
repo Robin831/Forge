@@ -1458,6 +1458,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			data, _ := json.Marshal(map[string]string{"message": "circuit breaker reset"})
 			return ipc.Response{Type: "ok", Payload: data}
 		}
+		// Regular retry: clear needs_human and clarification_needed flags
+		if err := d.db.ResetRetry(rp.BeadID, rp.Anvil); err != nil {
+			// If no retry record exists, it might be a stalled worker being
+			// retried. We don't return an error here so the TUI can still
+			// show success and the user can proceed.
+			d.logger.Warn("ResetRetry failed (might not have a retry record)", "bead", rp.BeadID, "anvil", rp.Anvil, "error", err)
+		}
 		_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Retry reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
 		d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
 		data, _ := json.Marshal(map[string]string{"message": "retry reset"})
