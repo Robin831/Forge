@@ -1589,6 +1589,46 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(resp)
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "merge_pr":
+		var mp ipc.MergePRPayload
+		if err := json.Unmarshal(cmd.Payload, &mp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid merge_pr payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if mp.PRNumber <= 0 || mp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "pr_number and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		cfgSnapshot := d.cfg.Load()
+		anvilCfg, ok := cfgSnapshot.Anvils[mp.Anvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", mp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		strategy := cfgSnapshot.Settings.MergeStrategy
+		if strategy == "" {
+			strategy = "squash"
+		}
+		mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
+		defer mergeCancel()
+		if err := ghpr.Merge(mergeCtx, anvilCfg.Path, mp.PRNumber, strategy); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("merge failed: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		// Look up the bead ID for event logging
+		beadID := ""
+		if mp.PRID > 0 {
+			if pr, err := d.db.GetPRByID(mp.PRID); err == nil && pr != nil {
+				beadID = pr.BeadID
+			}
+		}
+		_ = d.db.LogEvent(state.EventPRMergeRequested,
+			fmt.Sprintf("PR #%d merge requested (strategy: %s)", mp.PRNumber, strategy),
+			beadID, mp.Anvil)
+		d.logger.Info("PR merge requested", "pr_number", mp.PRNumber, "anvil", mp.Anvil, "strategy", strategy)
+		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d merged", mp.PRNumber)})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}

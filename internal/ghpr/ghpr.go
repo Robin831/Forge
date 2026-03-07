@@ -127,6 +127,34 @@ func Create(ctx context.Context, p CreateParams) (*PR, error) {
 	return pr, nil
 }
 
+// Merge merges a PR using the gh CLI with the specified strategy.
+// Valid strategies: "squash", "merge", "rebase". Defaults to "squash" if empty.
+func Merge(ctx context.Context, worktreePath string, prNumber int, strategy string) error {
+	if strategy == "" {
+		strategy = "squash"
+	}
+	args := []string{
+		"pr", "merge", fmt.Sprintf("%d", prNumber),
+		"--" + strategy,
+		"--delete-branch",
+	}
+
+	log.Printf("[ghpr] Merging PR #%d with strategy %s", prNumber, strategy)
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
+	cmd.Dir = worktreePath
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh pr merge failed: %w\nstderr: %s", err, stderr.String())
+	}
+
+	log.Printf("[ghpr] Merged PR #%d", prNumber)
+	return nil
+}
+
 // CheckStatus gets the current status of a PR via gh pr view.
 func CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, error) {
 	args := []string{

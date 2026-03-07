@@ -266,6 +266,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d: review fix needed", pr.Number), pr.BeadID, pr.Anvil)
 	}
 
+	// Persist mergeability state so the ready-to-merge panel stays current.
+	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.IsConflicting, newSnap.HasUnresolvedThreads)
+
 	// Update snapshot
 	m.mu.Lock()
 	m.lastStatuses[key] = newSnap

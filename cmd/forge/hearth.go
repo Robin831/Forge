@@ -129,6 +129,29 @@ var hearthCmd = &cobra.Command{
 			}
 			return result.LogPath, result.LastLines
 		}
+		model.OnMergePR = func(prID, prNumber int, anvil string) error {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+			payload, _ := json.Marshal(ipc.MergePRPayload{
+				PRID:     prID,
+				PRNumber: prNumber,
+				Anvil:    anvil,
+			})
+			resp, err := client.Send(ipc.Command{
+				Type:    "merge_pr",
+				Payload: json.RawMessage(payload),
+			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return ipcError(resp)
+			}
+			return nil
+		}
 		model.OnTagBead = func(beadID, anvil string) error {
 			client, err := ipc.NewClient()
 			if err != nil {

@@ -93,6 +93,9 @@ type SettingsConfig struct {
 	// MaxRebaseAttempts is the maximum number of conflict rebase attempts per
 	// PR before the PR is considered exhausted. Default: 3.
 	MaxRebaseAttempts int `mapstructure:"max_rebase_attempts"`
+	// MergeStrategy controls how PRs are merged from the Hearth TUI.
+	// Valid values: "squash" (default), "merge", "rebase".
+	MergeStrategy string `mapstructure:"merge_strategy"`
 	// StaleInterval is how long a worker's log file can go without being
 	// modified before the worker is marked as stalled. A value of 0 disables
 	// stale detection. Defaults to 5 minutes.

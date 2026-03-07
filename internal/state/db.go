@@ -108,6 +108,8 @@ func (db *DB) migrate() error {
 		{"workers", "updated_at", `ALTER TABLE workers ADD COLUMN updated_at TEXT`},
 		{"queue_cache", "labels", `ALTER TABLE queue_cache ADD COLUMN labels TEXT NOT NULL DEFAULT '[]'`},
 		{"queue_cache", "section", `ALTER TABLE queue_cache ADD COLUMN section TEXT NOT NULL DEFAULT 'ready'`},
+		{"prs", "is_conflicting", `ALTER TABLE prs ADD COLUMN is_conflicting INTEGER NOT NULL DEFAULT 0`},
+		{"prs", "has_unresolved_threads", `ALTER TABLE prs ADD COLUMN has_unresolved_threads INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -266,6 +268,13 @@ const dbTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 // different layouts. It prefers the fixed-width dbTimeLayout, then falls
 // back to RFC3339Nano and RFC3339 for backwards compatibility with older
 // rows.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func parseTime(ts string) time.Time {
 	if ts == "" {
 		return time.Time{}
@@ -818,6 +827,54 @@ func (db *DB) ResetPRFixCounts(id int) error {
 	return err
 }
 
+// UpdatePRMergeability persists the conflict and unresolved thread state for a PR.
+// Called by Bellows on each poll to keep the ready-to-merge view current.
+func (db *DB) UpdatePRMergeability(id int, isConflicting, hasUnresolvedThreads bool) error {
+	_, err := db.conn.Exec(
+		`UPDATE prs SET is_conflicting = ?, has_unresolved_threads = ?, last_checked = ? WHERE id = ?`,
+		boolToInt(isConflicting), boolToInt(hasUnresolvedThreads),
+		time.Now().Format(dbTimeLayout), id,
+	)
+	return err
+}
+
+// ReadyToMergePR represents a PR that meets all conditions for merging.
+type ReadyToMergePR struct {
+	ID     int
+	Number int
+	Anvil  string
+	BeadID string
+	Branch string
+}
+
+// ReadyToMergePRs returns PRs where: status=approved, CI passing, not conflicting,
+// and no unresolved review threads.
+func (db *DB) ReadyToMergePRs() ([]ReadyToMergePR, error) {
+	rows, err := db.conn.Query(
+		`SELECT id, number, anvil, bead_id, branch
+		 FROM prs
+		 WHERE status = 'approved'
+		   AND ci_passing = 1
+		   AND is_conflicting = 0
+		   AND has_unresolved_threads = 0
+		 ORDER BY number`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []ReadyToMergePR
+	for rows.Next() {
+		var p ReadyToMergePR
+		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch); err != nil {
+			return nil, err
+		}
+		result = append(result, p)
+	}
+	return result, rows.Err()
+}
+
 // DismissExhaustedPR marks an exhausted PR as closed so it no longer appears
 // in the Needs Attention panel.
 func (db *DB) DismissExhaustedPR(id int) error {
@@ -881,6 +938,7 @@ const (
 	EventSchematicSubBead     EventType = "schematic_sub_bead"
 	EventWorkerStalled        EventType = "worker_stalled"
 	EventBeadTagged           EventType = "bead_tagged"
+	EventPRMergeRequested     EventType = "pr_merge_requested"
 	EventError                EventType = "error"
 	EventBeadRecovered        EventType = "bead_recovered"
 	EventDepcheckStarted      EventType = "depcheck_started"
