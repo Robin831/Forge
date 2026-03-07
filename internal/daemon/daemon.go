@@ -1164,7 +1164,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		return ipc.Response{Type: "ok", Payload: data}
 
 	case "refresh":
-		go d.pollAndDispatch(context.Background())
+		go func() {
+			d.pollAndDispatch(d.runCtx)
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.Refresh()
+			}
+		}()
 		data, _ := json.Marshal(map[string]string{"message": "poll triggered"})
 		return ipc.Response{Type: "ok", Payload: data}
 
@@ -1433,6 +1438,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				return ipc.Response{Type: "error", Payload: msg}
 			}
 			d.lifecycleMgr.ResetPRState(pr.Anvil, pr.Number)
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.ResetPRState(pr.Anvil, pr.Number)
+				d.bellowsMonitor.Refresh()
+			}
+			// Trigger a poll as well to catch any other ready work or updates.
+			go d.pollAndDispatch(d.runCtx)
+
 			_ = d.db.LogEvent(
 				state.EventRetryReset,
 				fmt.Sprintf("PR fix counts reset for PR %d (manual)", rp.PRID),
@@ -1455,11 +1467,26 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			}
 			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Circuit breaker reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
 			d.logger.Info("circuit breaker reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
+
+			// Trigger a poll immediately after resetting the circuit breaker.
+			go d.pollAndDispatch(d.runCtx)
+
 			data, _ := json.Marshal(map[string]string{"message": "circuit breaker reset"})
 			return ipc.Response{Type: "ok", Payload: data}
 		}
+		// Regular retry: clear needs_human and clarification_needed flags
+		if err := d.db.ResetRetry(rp.BeadID, rp.Anvil); err != nil {
+			// If no retry record exists, it might be a stalled worker being
+			// retried. We don't return an error here so the TUI can still
+			// show success and the user can proceed.
+			d.logger.Warn("ResetRetry failed (might not have a retry record)", "bead", rp.BeadID, "anvil", rp.Anvil, "error", err)
+		}
 		_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Retry reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
 		d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
+
+		// Trigger a poll immediately after resetting retry state.
+		go d.pollAndDispatch(d.runCtx)
+
 		data, _ := json.Marshal(map[string]string{"message": "retry reset"})
 		return ipc.Response{Type: "ok", Payload: data}
 

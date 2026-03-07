@@ -761,7 +761,7 @@ func TestExecuteAction_RetrySuccess_DataNil_ReturnsNil(t *testing.T) {
 	target := NeedsAttentionItem{BeadID: "forge-1", Anvil: "test"}
 	m.actionTarget = &target
 	m.needsAttention = []NeedsAttentionItem{target}
-	m.OnRetryBead = func(_, _ string) error { return nil }
+	m.OnRetryBead = func(_, _ string, _ int) error { return nil }
 
 	cmd := m.executeAction(ActionRetry)
 	if cmd != nil {
@@ -777,7 +777,7 @@ func TestExecuteAction_DismissSuccess_DataNil_ReturnsNil(t *testing.T) {
 	target := NeedsAttentionItem{BeadID: "forge-2", Anvil: "test"}
 	m.actionTarget = &target
 	m.needsAttention = []NeedsAttentionItem{target}
-	m.OnDismissBead = func(_, _ string) error { return nil }
+	m.OnDismissBead = func(_, _ string, _ int) error { return nil }
 
 	cmd := m.executeAction(ActionDismiss)
 	if cmd != nil {
@@ -793,7 +793,7 @@ func TestExecuteAction_RetryError_ItemNotRemoved(t *testing.T) {
 	target := NeedsAttentionItem{BeadID: "forge-3", Anvil: "test"}
 	m.actionTarget = &target
 	m.needsAttention = []NeedsAttentionItem{target}
-	m.OnRetryBead = func(_, _ string) error { return errors.New("retry failed") }
+	m.OnRetryBead = func(_, _ string, _ int) error { return errors.New("retry failed") }
 
 	m.executeAction(ActionRetry)
 	if len(m.needsAttention) != 1 {
@@ -806,7 +806,7 @@ func TestExecuteAction_DismissError_ItemNotRemoved(t *testing.T) {
 	target := NeedsAttentionItem{BeadID: "forge-4", Anvil: "test"}
 	m.actionTarget = &target
 	m.needsAttention = []NeedsAttentionItem{target}
-	m.OnDismissBead = func(_, _ string) error { return errors.New("dismiss failed") }
+	m.OnDismissBead = func(_, _ string, _ int) error { return errors.New("dismiss failed") }
 
 	m.executeAction(ActionDismiss)
 	if len(m.needsAttention) != 1 {

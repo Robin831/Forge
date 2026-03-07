@@ -49,6 +49,7 @@ type Monitor struct {
 	handlers     []Handler
 	mu           sync.Mutex
 	lastStatuses map[string]*prSnapshot // anvil/PR number → last known state
+	refresh      chan struct{}          // channel to trigger immediate poll
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -72,6 +73,7 @@ func New(db *state.DB, interval time.Duration, anvilPaths map[string]string) *Mo
 		interval:     interval,
 		anvilPaths:   anvilPaths,
 		lastStatuses: make(map[string]*prSnapshot),
+		refresh:      make(chan struct{}, 1),
 	}
 }
 
@@ -80,6 +82,15 @@ func (m *Monitor) OnEvent(h Handler) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.handlers = append(m.handlers, h)
+}
+
+// Refresh triggers an immediate poll cycle.
+func (m *Monitor) Refresh() {
+	select {
+	case m.refresh <- struct{}{}:
+	default:
+		// Refresh already pending
+	}
 }
 
 // Run starts the polling loop. Blocks until ctx is canceled.
@@ -99,6 +110,9 @@ func (m *Monitor) Run(ctx context.Context) error {
 			log.Println("[bellows] Shutting down PR monitor")
 			return ctx.Err()
 		case <-ticker.C:
+			m.checkAll(ctx)
+		case <-m.refresh:
+			log.Println("[bellows] Immediate poll triggered via refresh")
 			m.checkAll(ctx)
 		}
 	}
@@ -140,18 +154,6 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		return
 	}
 
-	m.mu.Lock()
-	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
-	lastSnap := m.lastStatuses[key]
-	isFirstCheck := lastSnap == nil
-	if lastSnap == nil {
-		// Seed CIPassing=true so that a PR that is already failing when the
-		// daemon starts (or after a restart) still triggers an EventCIFailed
-		// on the very first poll.
-		lastSnap = &prSnapshot{CIPassing: true}
-	}
-	m.mu.Unlock()
-
 	newSnap := &prSnapshot{
 		CIPassing:            status.CIsPassing(),
 		HasApproval:          status.HasApproval(),
@@ -161,10 +163,23 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		IsClosed:             status.IsClosed(),
 		IsConflicting:        status.Mergeable == "CONFLICTING",
 	}
-	_ = isFirstCheck // used implicitly via seeded lastSnap
 
-	// Detect transitions and emit events
-	if status.IsMerged() && !lastSnap.IsMerged {
+	// Detect transitions and emit events. We re-acquire the lock and re-check the
+	// last status to ensure a concurrent ResetPRState call hasn't cleared it.
+	m.mu.Lock()
+	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
+	lastSnap := m.lastStatuses[key]
+	if lastSnap == nil {
+		// Reset occurred during poll: treat as first check to ensure transitions are detected.
+		// Seed with "good" states so that if the PR is already in a "bad" state (failing,
+		// conflicting, etc.), the transition will be detected on this first poll.
+		lastSnap = &prSnapshot{CIPassing: true}
+	}
+	// Update snapshot while holding the lock
+	m.lastStatuses[key] = newSnap
+	m.mu.Unlock()
+
+	if newSnap.IsMerged && !lastSnap.IsMerged {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
@@ -177,7 +192,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
 		_ = m.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
-	} else if status.IsClosed() && !lastSnap.IsClosed {
+	} else if newSnap.IsClosed && !lastSnap.IsClosed {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
@@ -241,8 +256,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   fmt.Sprintf("PR #%d has merge conflicts with base branch", pr.Number),
 			Timestamp: time.Now(),
 		})
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
 		_ = m.db.LogEvent(state.EventPRConflicting,
-			fmt.Sprintf("PR #%d: merge conflict detected — manual rebase required", pr.Number),
+			fmt.Sprintf("PR #%d: merge conflict detected", pr.Number),
 			pr.BeadID, pr.Anvil)
 	}
 
@@ -275,10 +291,17 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	// Persist mergeability state so the ready-to-merge panel stays current.
 	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.IsConflicting, newSnap.HasUnresolvedThreads)
 
-	// Update snapshot
+}
+
+// ResetPRState clears the internal status cache for a PR. This should be called
+// when a PR is manually reset so that status changes (e.g. from failing back
+// to passing) are re-detected on the next poll cycle even if the state
+// is the same as it was before the reset.
+func (m *Monitor) ResetPRState(anvil string, prNumber int) {
 	m.mu.Lock()
-	m.lastStatuses[key] = newSnap
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	key := fmt.Sprintf("%s/%d", anvil, prNumber)
+	delete(m.lastStatuses, key)
 }
 
 // emit calls all registered handlers with the given event.

@@ -175,8 +175,8 @@ type Model struct {
 	OnKill func(workerID string, pid int)
 
 	// Callbacks for Needs Attention actions (set by the caller)
-	OnRetryBead   func(beadID, anvil string) error
-	OnDismissBead func(beadID, anvil string) error
+	OnRetryBead   func(beadID, anvil string, prID int) error
+	OnDismissBead func(beadID, anvil string, prID int) error
 	OnViewLogs    func(beadID string) (logPath string, lines []string)
 
 	// Callback for tagging a bead (set by the caller).
@@ -711,7 +711,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 	switch choice {
 	case ActionRetry:
 		if m.OnRetryBead != nil {
-			if err := m.OnRetryBead(bead.BeadID, bead.Anvil); err != nil {
+			if err := m.OnRetryBead(bead.BeadID, bead.Anvil, bead.PRID); err != nil {
 				m.statusMsg = fmt.Sprintf("Failed to retry %s: %v", bead.BeadID, err)
 			} else {
 				m.statusMsg = fmt.Sprintf("Retry queued for %s", bead.BeadID)
@@ -729,7 +729,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 		}
 	case ActionDismiss:
 		if m.OnDismissBead != nil {
-			if err := m.OnDismissBead(bead.BeadID, bead.Anvil); err != nil {
+			if err := m.OnDismissBead(bead.BeadID, bead.Anvil, bead.PRID); err != nil {
 				m.statusMsg = fmt.Sprintf("Failed to dismiss %s: %v", bead.BeadID, err)
 			} else {
 				m.statusMsg = fmt.Sprintf("Dismissed %s", bead.BeadID)

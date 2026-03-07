@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/lifecycle"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/state"
@@ -156,6 +158,7 @@ exit 1
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
 	}
 	d.cfg.Store(cfg)
 
@@ -327,15 +330,17 @@ exit 1
 		assert.Equal(t, 0, r.DispatchFailures)
 	})
 
-	t.Run("retry_bead: does not clear unrelated needs_human", func(t *testing.T) {
+	t.Run("retry_bead: clears needs_human for pipeline-exhausted beads", func(t *testing.T) {
 		// Set needs_human via exhausted retries (no circuit breaker prefix).
+		// When a user clicks Retry on such a bead, needs_human should be
+		// cleared so the bead is eligible for re-dispatch.
 		const beadID = "NH-BEAD"
 		const anvil = "test-anvil"
 		err := db.UpsertRetry(&state.RetryRecord{
-			BeadID:    beadID,
-			Anvil:     anvil,
+			BeadID:     beadID,
+			Anvil:      anvil,
 			NeedsHuman: true,
-			LastError: "exhausted retries",
+			LastError:  "exhausted retries",
 		})
 		require.NoError(t, err)
 
@@ -343,7 +348,6 @@ exit 1
 		require.NoError(t, err)
 		require.True(t, r.NeedsHuman)
 
-		// retry_bead should succeed (no DB error) but NOT clear the flag.
 		payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: beadID, Anvil: anvil})
 		resp := d.handleIPC(ipc.Command{
 			Type:    "retry_bead",
@@ -353,7 +357,9 @@ exit 1
 
 		r, err = db.GetRetry(beadID, anvil)
 		require.NoError(t, err)
-		assert.True(t, r.NeedsHuman, "needs_human should remain set for non-circuit-breaker reasons")
+		assert.False(t, r.NeedsHuman, "needs_human should be cleared after retry")
+		assert.Equal(t, 0, r.RetryCount, "retry_count should be reset")
+		assert.Empty(t, r.LastError, "last_error should be cleared")
 	})
 
 	t.Run("successful dispatch via cache", func(t *testing.T) {
@@ -503,6 +509,7 @@ func TestHandleIPC_RetryBead(t *testing.T) {
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
 	}
 	d.cfg.Store(&config.Config{})
 
@@ -542,6 +549,164 @@ func TestHandleIPC_RetryBead(t *testing.T) {
 		assert.False(t, r.NeedsHuman)
 		assert.Equal(t, 0, r.DispatchFailures)
 	})
+}
+
+// TestHandleIPC_RetryBead_ExhaustedPR verifies the full retry flow for an
+// exhausted PR (PRID > 0). This covers the scenario where a user clicks Retry
+// on "Rebase exhausted (3/3)" in the Needs Attention panel: DB fix counts are
+// reset, the lifecycle manager's in-memory state is cleared, and the bellows
+// snapshot cache is purged so that the next poll re-detects the conflict and
+// dispatches a fresh rebase worker.
+func TestHandleIPC_RetryBead_ExhaustedPR(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Create lifecycle manager with a noop handler.
+	lm := lifecycle.New(db, logger, func(_ context.Context, _ lifecycle.ActionRequest) {})
+
+	// Create bellows monitor (won't actually run, just needs to exist for reset).
+	bm := bellows.New(db, time.Minute, map[string]string{"test-anvil": tmpDir})
+
+	d := &Daemon{
+		db:             db,
+		logger:         logger,
+		worktreeMgr:    worktree.NewManager(),
+		promptBuilder:  prompt.NewBuilder(),
+		lifecycleMgr:   lm,
+		bellowsMonitor: bm,
+		runCtx:         context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir},
+		},
+	})
+
+	// Insert a PR that has exhausted its rebase attempts (3/3).
+	pr := &state.PR{
+		Number:    42,
+		Anvil:     "test-anvil",
+		BeadID:    "BD-REBASE",
+		Branch:    "forge/BD-REBASE",
+		Status:    state.PRNeedsFix,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NotZero(t, pr.ID, "InsertPR should set the ID")
+	// InsertPR doesn't set rebase_count/ci_passing/is_conflicting, so update them.
+	require.NoError(t, db.UpdatePRLifecycle(pr.ID, 0, 0, 3, true))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false))
+
+	// Verify the PR shows up as exhausted.
+	exhausted, err := db.ExhaustedPRs(
+		state.DefaultMaxCIFixAttempts,
+		state.DefaultMaxReviewFixAttempts,
+		state.DefaultMaxRebaseAttempts,
+	)
+	require.NoError(t, err)
+	require.Len(t, exhausted, 1, "PR should be exhausted before retry")
+
+	// Populate lifecycle state for this PR (simulates what Load() does at startup).
+	// Fire 3 conflict events to reach exhaustion (maxRebase=3).
+	for i := 0; i < state.DefaultMaxRebaseAttempts; i++ {
+		lm.HandleEvent(context.Background(), bellows.PREvent{
+			PRNumber:  42,
+			BeadID:    "BD-REBASE",
+			Anvil:     "test-anvil",
+			Branch:    "forge/BD-REBASE",
+			EventType: bellows.EventPRConflicting,
+		})
+	}
+	st := lm.GetState("test-anvil", 42)
+	require.NotNil(t, st)
+	require.Equal(t, state.DefaultMaxRebaseAttempts, st.RebaseCount, "setup: lifecycle should be exhausted")
+
+	// Reset bellows snapshot cache so this retry starts with no prior snapshot state.
+	// (In production this cache would be populated by prior checkAll polls.)
+	bm.ResetPRState("test-anvil", 42)
+
+	// --- Execute retry via IPC ---
+	payload, _ := json.Marshal(ipc.RetryBeadPayload{
+		BeadID: "BD-REBASE",
+		Anvil:  "test-anvil",
+		PRID:   pr.ID,
+	})
+	resp := d.handleIPC(ipc.Command{Type: "retry_bead", Payload: payload})
+	assert.Equal(t, "ok", resp.Type)
+
+	var msg map[string]string
+	require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+	assert.Equal(t, "PR fix counts reset, status set to open", msg["message"])
+
+	// Verify DB: fix counts reset, status back to open.
+	pr2, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	require.NotNil(t, pr2)
+	assert.Equal(t, state.PROpen, pr2.Status, "status should be reset to open")
+	assert.Equal(t, 0, pr2.RebaseCount, "rebase_count should be 0")
+	assert.Equal(t, 0, pr2.CIFixCount, "ci_fix_count should be 0")
+	assert.Equal(t, 0, pr2.ReviewFixCount, "review_fix_count should be 0")
+	assert.False(t, pr2.IsConflicting, "is_conflicting should be cleared")
+
+	// Verify PR no longer appears as exhausted.
+	exhausted, err = db.ExhaustedPRs(
+		state.DefaultMaxCIFixAttempts,
+		state.DefaultMaxReviewFixAttempts,
+		state.DefaultMaxRebaseAttempts,
+	)
+	require.NoError(t, err)
+	assert.Empty(t, exhausted, "PR should no longer be exhausted after retry")
+
+	// Verify lifecycle in-memory state was reset.
+	st = lm.GetState("test-anvil", 42)
+	require.NotNil(t, st)
+	assert.Equal(t, 0, st.RebaseCount, "lifecycle RebaseCount should be 0")
+	assert.False(t, st.Conflicting, "lifecycle Conflicting should be false")
+	assert.True(t, st.CIPassing, "lifecycle CIPassing should be true")
+
+	// Verify that a new EventPRConflicting dispatches a fresh rebase after reset.
+	// We need a new lifecycle manager with a tracking handler since lm was
+	// created with a noop handler.
+	var dispatched []lifecycle.ActionRequest
+	lm2 := lifecycle.New(db, logger, func(_ context.Context, req lifecycle.ActionRequest) {
+		dispatched = append(dispatched, req)
+	})
+	// Load from DB — the reset PR should have rebase_count=0 in the DB.
+	require.NoError(t, lm2.Load(context.Background()))
+	st2 := lm2.GetState("test-anvil", 42)
+	require.NotNil(t, st2, "lifecycle should load the reset PR from DB")
+	assert.Equal(t, 0, st2.RebaseCount, "loaded lifecycle state should have RebaseCount=0")
+
+	// Send a conflict event — should dispatch ActionRebase (not exhausted).
+	lm2.HandleEvent(context.Background(), bellows.PREvent{
+		PRNumber:  42,
+		BeadID:    "BD-REBASE",
+		Anvil:     "test-anvil",
+		Branch:    "forge/BD-REBASE",
+		EventType: bellows.EventPRConflicting,
+	})
+	require.Len(t, dispatched, 1, "conflict event after retry should dispatch")
+	assert.Equal(t, lifecycle.ActionRebase, dispatched[0].Action)
+
+	// Verify retry event was logged.
+	events, err := db.RecentEvents(50)
+	require.NoError(t, err)
+	found := false
+	for _, e := range events {
+		if e.Type == state.EventRetryReset && e.BeadID == "BD-REBASE" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "EventRetryReset should be logged for the bead")
 }
 
 func TestHandleIPC_DismissBead(t *testing.T) {

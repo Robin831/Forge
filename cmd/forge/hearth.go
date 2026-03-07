@@ -63,7 +63,7 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 		}
-		model.OnRetryBead = func(beadID, anvil string) error {
+		model.OnRetryBead = func(beadID, anvil string, prID int) error {
 			client, err := ipc.NewClient()
 			if err != nil {
 				return err
@@ -72,6 +72,7 @@ var hearthCmd = &cobra.Command{
 			payload, _ := json.Marshal(ipc.RetryBeadPayload{
 				BeadID: beadID,
 				Anvil:  anvil,
+				PRID:   prID,
 			})
 			resp, err := client.Send(ipc.Command{
 				Type:    "retry_bead",
@@ -85,7 +86,7 @@ var hearthCmd = &cobra.Command{
 			}
 			return nil
 		}
-		model.OnDismissBead = func(beadID, anvil string) error {
+		model.OnDismissBead = func(beadID, anvil string, prID int) error {
 			client, err := ipc.NewClient()
 			if err != nil {
 				return err
@@ -94,6 +95,7 @@ var hearthCmd = &cobra.Command{
 			payload, _ := json.Marshal(ipc.DismissBeadPayload{
 				BeadID: beadID,
 				Anvil:  anvil,
+				PRID:   prID,
 			})
 			resp, err := client.Send(ipc.Command{
 				Type:    "dismiss_bead",
