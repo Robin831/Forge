@@ -147,9 +147,10 @@ type Model struct {
 	// State
 	focused              Panel
 	queueScroll          int
-	needsAttentionScroll int
-	workerScroll         int
-	workerViewStart      int // viewport offset (separate from selection cursor)
+	needsAttentionScroll    int
+	needsAttentionViewStart int // viewport offset (separate from selection cursor)
+	workerScroll            int
+	workerViewStart         int // viewport offset (separate from selection cursor)
 	activityScroll       int
 	eventScroll          int
 	eventAutoScroll      bool // true = follow new events
@@ -338,6 +339,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateNeedsAttentionMsg:
 		m.needsAttention = msg.Items
+		// Clamp selection when the needs attention list shrinks
+		if len(msg.Items) > 0 && m.needsAttentionScroll >= len(msg.Items) {
+			m.needsAttentionScroll = len(msg.Items) - 1
+		}
+		if len(msg.Items) == 0 {
+			m.needsAttentionScroll = 0
+			m.needsAttentionViewStart = 0
+		}
 
 	case NeedsAttentionErrorMsg:
 		errEvent := EventItem{
@@ -813,7 +822,24 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 	if len(m.needsAttention) == 0 {
 		lines = append(lines, dimStyle.Render("None"))
 	} else {
-		visible := visibleItems(m.needsAttentionScroll, len(m.needsAttention), height-3)
+		// Each item uses 2 lines (bead + reason), so halve the visible slot count.
+		maxLines := height - 3
+		maxItems := maxLines / 2
+		if maxItems < 1 {
+			maxItems = 1
+		}
+		// Adjust viewport to keep the selected item visible.
+		// needsAttentionScroll is the cursor; needsAttentionViewStart is the viewport offset.
+		if m.needsAttentionScroll < m.needsAttentionViewStart {
+			m.needsAttentionViewStart = m.needsAttentionScroll
+		}
+		if m.needsAttentionScroll >= m.needsAttentionViewStart+maxItems {
+			m.needsAttentionViewStart = m.needsAttentionScroll - maxItems + 1
+		}
+		if m.needsAttentionViewStart < 0 {
+			m.needsAttentionViewStart = 0
+		}
+		visible := visibleItems(m.needsAttentionViewStart, len(m.needsAttention), maxItems)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.needsAttention[i]
 			anvil := dimStyle.Render(item.Anvil)
