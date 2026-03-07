@@ -166,7 +166,7 @@ func TestEventLineCountMatchesRender(t *testing.T) {
 	}
 }
 
-func TestRenderWorkersDoesNotExceedLeftColumn(t *testing.T) {
+func TestRenderColumnsAlignedHeight(t *testing.T) {
 	m := Model{
 		workers: []WorkerItem{
 			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
@@ -177,18 +177,22 @@ func TestRenderWorkersDoesNotExceedLeftColumn(t *testing.T) {
 		height:  40,
 	}
 
-	contentHeight := 30
+	topHeight, bottomHeight := m.getVerticalSplit()
 	width := 40
 
-	leftColumn := m.renderLeftColumn(width, contentHeight)
-	workerPanel := m.renderWorkers(width, contentHeight)
+	leftColumn := m.renderLeftColumn(width, topHeight, bottomHeight)
+	workerPanel := m.renderWorkers(width, topHeight+bottomHeight)
+	rightColumn := m.renderRightColumn(width, topHeight, bottomHeight)
 
 	leftLines := strings.Count(strings.TrimRight(leftColumn, "\n"), "\n") + 1
 	workerLines := strings.Count(strings.TrimRight(workerPanel, "\n"), "\n") + 1
+	rightLines := strings.Count(strings.TrimRight(rightColumn, "\n"), "\n") + 1
 
-	if workerLines != leftLines {
-		t.Errorf("renderWorkers produced %d lines, expected same as renderLeftColumn's %d lines (contentHeight=%d)",
-			workerLines, leftLines, contentHeight)
+	if leftLines != workerLines {
+		t.Errorf("left column produced %d lines, workers produced %d lines — should match", leftLines, workerLines)
+	}
+	if rightLines != workerLines {
+		t.Errorf("right column produced %d lines, workers produced %d lines — should match", rightLines, workerLines)
 	}
 }
 

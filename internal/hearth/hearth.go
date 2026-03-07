@@ -1,10 +1,9 @@
 // Package hearth provides The Forge's TUI dashboard using Bubbletea.
 //
-// The TUI has a top row with three columns and a bottom event strip:
+// The TUI has three columns:
 //   - Queue / Needs Attention (left column, stacked): Pending and stuck beads
 //   - Workers (center column): Active Smith processes
-//   - Live Activity (right column): Streaming log output for the selected worker
-//   - Event Log (bottom strip): Recent events from the state DB
+//   - Live Activity / Events (right column, stacked): Streaming log + event log
 //
 // Tab switches focus between panels, j/k scrolls the focused panel,
 // q quits the app.
@@ -39,8 +38,6 @@ const (
 	eventTimestampWidth       = 9  // "HH:MM:SS "
 	eventMsgMinWidth          = 20 // Minimum width before msg moves to next line
 
-	// Layout constants
-	eventStripHeight = 8 // fixed height for the bottom event strip (including border)
 )
 
 // QueueItem represents a bead in the queue panel.
@@ -463,13 +460,11 @@ func (m *Model) View() string {
 	topHeight, bottomHeight := m.getVerticalSplit()
 
 	// Left column: Queue (top) + Needs Attention (bottom)
-	leftColumn := m.renderLeftColumn(queueWidth, topHeight)
-	// Center: worker list; Right: live activity (full column)
-	workerPanel := m.renderWorkerList(workerWidth, topHeight)
-	activityPanel := m.renderWorkerActivity(activityWidth, topHeight)
-
-	// Bottom strip: Events
-	eventPanel := m.renderEvents(m.width-4, bottomHeight) // -4 to match top panels
+	leftColumn := m.renderLeftColumn(queueWidth, topHeight, bottomHeight)
+	// Center: worker list (full height)
+	workerPanel := m.renderWorkerList(workerWidth, topHeight+bottomHeight)
+	// Right column: Live Activity (top) + Events (bottom)
+	rightColumn := m.renderRightColumn(activityWidth, topHeight, bottomHeight)
 
 	// Header
 	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
@@ -482,11 +477,10 @@ func (m *Model) View() string {
 	footer := footerStyle.Width(m.width).Render(footerText)
 
 	// Final assembly
-	topSection := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, workerPanel, activityPanel)
+	columns := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, workerPanel, rightColumn)
 	view := lipgloss.JoinVertical(lipgloss.Left,
 		header,
-		topSection,
-		eventPanel,
+		columns,
 		footer,
 	)
 
@@ -521,15 +515,21 @@ func (m *Model) getVerticalSplit() (topHeight, bottomHeight int) {
 	if contentHeight < 0 {
 		contentHeight = 0
 	}
-	bottomHeight = eventStripHeight
-	if bottomHeight > contentHeight/3 {
-		bottomHeight = contentHeight / 3
+	// Give top panels 60%, bottom panels 40% (same split for left and right columns).
+	topHeight = contentHeight * 6 / 10
+	if contentHeight < 5 {
+		topHeight = contentHeight
+	} else {
+		topHeight = max(topHeight, 5)
 	}
-	// Events panel needs at least 4 lines (border top/bottom + title + 1 event)
-	if bottomHeight < 4 && contentHeight >= 4 {
-		bottomHeight = 4
+	bottomHeight = contentHeight - topHeight
+	// Enforce a minimum bottom panel height of 4 lines so bordered panels
+	// remain renderable at small terminal sizes.
+	const minBottomHeight = 4
+	if bottomHeight < minBottomHeight && contentHeight >= 5+minBottomHeight {
+		bottomHeight = minBottomHeight
+		topHeight = contentHeight - bottomHeight
 	}
-	topHeight = contentHeight - bottomHeight
 	return
 }
 
@@ -555,7 +555,8 @@ func (m *Model) scrollDown() {
 			m.activityScroll++
 		}
 	case PanelEvents:
-		totalLines := m.eventTotalLineCount(m.width - 2)
+		_, _, aw := m.getTopPanelWidths()
+		totalLines := m.eventTotalLineCount(aw)
 		if m.eventScroll < totalLines-1 {
 			m.eventScroll++
 		}
@@ -907,25 +908,32 @@ func (m *Model) renderQueue(width, height int) string {
 }
 
 // renderLeftColumn splits the left column into Queue (top) and Needs Attention (bottom).
-func (m *Model) renderLeftColumn(width, height int) string {
-	// Two sub-panels add 4 border lines total vs 2 for a single panel.
-	// Deduct the extra 2 so combined height matches sibling columns.
-	innerHeight := height - 2
-	if innerHeight < 0 {
-		innerHeight = 0
-	}
+func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
+	return m.renderStackedColumn(width, topHeight, bottomHeight,
+		m.renderQueue, m.renderNeedsAttention)
+}
 
-	// Give queue 60% of space, needs attention 40%.
-	queueHeight := innerHeight * 6 / 10
-	if innerHeight < 5 {
-		queueHeight = innerHeight
-	} else {
-		queueHeight = max(queueHeight, 5)
-	}
-	attentionHeight := innerHeight - queueHeight
+// renderRightColumn renders Live Activity (top) + Events (bottom), mirroring
+// the left column's Queue + Needs Attention layout.
+func (m *Model) renderRightColumn(width, topHeight, bottomHeight int) string {
+	return m.renderStackedColumn(width, topHeight, bottomHeight,
+		m.renderWorkerActivity, m.renderEvents)
+}
 
-	top := m.renderQueue(width, queueHeight)
-	bottom := m.renderNeedsAttention(width, attentionHeight)
+// renderStackedColumn renders two sub-panels stacked vertically.
+// Each lipgloss panel adds 2 border lines (top + bottom) to its height parameter.
+// Two stacked panels therefore produce 4 border lines total, whereas the single
+// center column produces only 2. The bottom panel's height is reduced by 2 so
+// that topHeight+bottomHeight+2 (single-panel rendered lines) equals
+// (topHeight+2)+(bottomHeight-2+2) = topHeight+bottomHeight+2 for the stacked column.
+func (m *Model) renderStackedColumn(width, topHeight, bottomHeight int,
+	renderTop, renderBottom func(int, int) string) string {
+	innerBottom := bottomHeight - 2
+	if innerBottom < 0 {
+		innerBottom = 0
+	}
+	top := renderTop(width, topHeight)
+	bottom := renderBottom(width, innerBottom)
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
