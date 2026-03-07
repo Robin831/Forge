@@ -575,6 +575,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			res := rebase.Rebase(ctx, rebase.Params{
 				WorktreePath: wt.Path,
 				Branch:       req.Branch,
+				BaseBranch:   req.BaseBranch,
 				BeadID:       req.BeadID,
 				AnvilName:    req.Anvil,
 				PRNumber:     req.PRNumber,
@@ -717,6 +718,15 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	// smith slots are occupied. Capacity is checked below before dispatching.
 	p := poller.New(cfg.Anvils)
 	beads, results := p.Poll(ctx)
+
+	// Resolve epic branches for beads that have a parent epic. This enriches
+	// each bead's EpicBranch field so dispatchBead can branch from and PR to
+	// the correct epic branch.
+	anvilPaths := make(map[string]string, len(cfg.Anvils))
+	for name, anvil := range cfg.Anvils {
+		anvilPaths[name] = anvil.Path
+	}
+	poller.ResolveEpicBranches(ctx, beads, anvilPaths)
 
 	// Update cache
 	d.lastBeadsMu.Lock()
@@ -974,6 +984,27 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 
 	d.logger.Info("dispatching bead", "bead", bead.ID, "anvil", bead.Anvil, "title", bead.Title)
 
+	// Handle epic beads: create the feature branch and mark in_progress,
+	// but skip the full pipeline (no code changes needed for the branch itself).
+	if poller.IsEpicBead(bead) {
+		epicBranch := poller.ExtractEpicBranch(bead)
+		if epicBranch != "" {
+			d.logger.Info("creating epic branch", "bead", bead.ID, "branch", epicBranch)
+			if err := d.worktreeMgr.CreateEpicBranch(ctx, anvilCfg.Path, epicBranch); err != nil {
+				d.logger.Error("failed to create epic branch", "bead", bead.ID, "branch", epicBranch, "error", err)
+				d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("epic branch creation failed: %v", err))
+				return
+			}
+			_ = d.db.LogEvent(state.EventBeadClaimed,
+				fmt.Sprintf("Epic branch %q created for %s", epicBranch, bead.ID),
+				bead.ID, bead.Anvil)
+			d.logger.Info("epic branch created", "bead", bead.ID, "branch", epicBranch)
+			// Epic bead stays in_progress — child beads will work on the branch.
+			// Do not close the epic or run the pipeline.
+			return
+		}
+	}
+
 	// Apply smith timeout.
 	// IMPORTANT: derive pipelineCtx from context.Background(), NOT from the
 	// daemon's ctx. This ensures that a graceful shutdown (SIGINT/SIGTERM)
@@ -1007,6 +1038,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 		Providers:       provider.FromConfig(smithProviderSpecs),
 		Notifier:        d.notifier,
+		BaseBranch:      bead.EpicBranch,
 	}
 	if d.cfg.Load().Settings.SchematicEnabled {
 		wordThreshold := d.cfg.Load().Settings.SchematicWordThreshold
@@ -1097,6 +1129,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		BeadID:       bead.ID,
 		Title:        fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
 		Branch:       outcome.Branch,
+		Base:         bead.EpicBranch, // empty = default (main)
 		AnvilName:    bead.Anvil,
 		DB:           d.db,
 	})
@@ -1292,6 +1325,18 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// but only if the bead has recorded dispatch failures (i.e., the breaker was involved).
 		if retry, err := d.db.GetRetry(targetBead.ID, targetBead.Anvil); err == nil && retry != nil && retry.DispatchFailures > 0 {
 			_ = d.db.ResetDispatchFailures(targetBead.ID, targetBead.Anvil)
+		}
+
+		// Resolve epic branch if the bead has a parent epic and EpicBranch
+		// wasn't already populated from the poll cache.
+		if targetBead.EpicBranch == "" && targetBead.Parent != "" {
+			anvilPath := d.cfg.Load().Anvils[targetBead.Anvil].Path
+			if anvilPath != "" {
+				paths := map[string]string{targetBead.Anvil: anvilPath}
+				single := []poller.Bead{*targetBead}
+				poller.ResolveEpicBranches(context.Background(), single, paths)
+				targetBead.EpicBranch = single[0].EpicBranch
+			}
 		}
 
 		// Dispatch immediately regardless of auto_dispatch setting (but respect capacity)

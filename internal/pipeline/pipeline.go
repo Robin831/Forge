@@ -89,6 +89,11 @@ type Params struct {
 	// If empty, provider.Defaults() is used (Claude → Gemini).
 	Providers []provider.Provider
 
+	// BaseBranch overrides the base ref for worktree creation and PR
+	// targeting. When set (e.g. for epic child beads), the worktree branches
+	// from origin/<BaseBranch> and the PR targets this branch instead of main.
+	BaseBranch string
+
 	// SchematicConfig controls the Schematic pre-worker. When nil, Schematic
 	// is disabled (the default).
 	SchematicConfig *schematic.Config
@@ -147,7 +152,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 	createWorktree := p.WorktreeCreator
 	if createWorktree == nil {
 		createWorktree = func(ctx context.Context, anvilPath, beadID string) (*worktree.Worktree, error) {
-			return p.WorktreeManager.Create(ctx, anvilPath, beadID)
+			return p.WorktreeManager.CreateWithOptions(ctx, anvilPath, beadID, worktree.CreateOptions{
+				BaseBranch: p.BaseBranch,
+			})
 		}
 	}
 	removeWorktree := p.WorktreeRemover

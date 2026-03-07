@@ -112,12 +112,13 @@ func Create(ctx context.Context, p CreateParams) (*PR, error) {
 	// Record in state DB
 	if p.DB != nil {
 		dbPR := &state.PR{
-			Number:    prNumber,
-			Anvil:     p.AnvilName,
-			BeadID:    p.BeadID,
-			Branch:    p.Branch,
-			Status:    state.PROpen,
-			CreatedAt: pr.Created,
+			Number:     prNumber,
+			Anvil:      p.AnvilName,
+			BeadID:     p.BeadID,
+			Branch:     p.Branch,
+			BaseBranch: p.Base,
+			Status:     state.PROpen,
+			CreatedAt:  pr.Created,
 		}
 		_ = p.DB.InsertPR(dbPR)
 		_ = p.DB.LogEvent(state.EventPRCreated,

@@ -23,6 +23,7 @@ type PRState struct {
 	BeadID         string
 	Anvil          string
 	Branch         string
+	BaseBranch     string // Target branch for the PR (empty = main)
 	CIPassing      bool
 	Approved       bool
 	CINeedsFix     bool // CI failure fix cycle in progress
@@ -54,11 +55,12 @@ const (
 
 // ActionRequest is dispatched to the action handler.
 type ActionRequest struct {
-	Action   Action
-	PRNumber int
-	BeadID   string
-	Anvil    string
-	Branch   string
+	Action     Action
+	PRNumber   int
+	BeadID     string
+	Anvil      string
+	Branch     string
+	BaseBranch string // Target branch for the PR (empty = main)
 }
 
 // ActionHandler processes lifecycle actions. Implementations should be async-safe.
@@ -154,6 +156,7 @@ func (m *Manager) Load(ctx context.Context) error {
 			BeadID:         pr.BeadID,
 			Anvil:          pr.Anvil,
 			Branch:         pr.Branch,
+			BaseBranch:     pr.BaseBranch,
 			CIPassing:      pr.CIPassing,
 			Approved:       pr.Status == state.PRApproved,
 			CINeedsFix:     false, // never restore; bellows will re-detect CI failures
@@ -205,6 +208,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 				BeadID:         pr.BeadID,
 				Anvil:          pr.Anvil,
 				Branch:         pr.Branch,
+				BaseBranch:     pr.BaseBranch,
 				CIPassing:      pr.CIPassing,
 				Approved:       pr.Status == state.PRApproved,
 				CINeedsFix:     pr.Status == state.PRNeedsFix && !pr.CIPassing,
@@ -332,11 +336,12 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 	rebaseCount := st.RebaseCount
 	ciPassing := st.CIPassing
 	req := ActionRequest{
-		Action:   action,
-		PRNumber: event.PRNumber,
-		BeadID:   event.BeadID,
-		Anvil:    event.Anvil,
-		Branch:   st.Branch,
+		Action:     action,
+		PRNumber:   event.PRNumber,
+		BeadID:     event.BeadID,
+		Anvil:      event.Anvil,
+		Branch:     st.Branch,
+		BaseBranch: st.BaseBranch,
 	}
 	m.mu.Unlock()
 
