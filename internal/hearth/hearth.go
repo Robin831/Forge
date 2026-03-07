@@ -121,6 +121,22 @@ func actionMenuLabels() [actionMenuCount]string {
 	}
 }
 
+// QueueActionMenuChoice represents an action the user can take on an unlabeled queue bead.
+type QueueActionMenuChoice int
+
+const (
+	QueueActionLabel QueueActionMenuChoice = iota
+
+	queueActionMenuCount = QueueActionLabel + 1
+)
+
+// queueActionMenuLabels returns the display labels for the queue action menu.
+func queueActionMenuLabels() [queueActionMenuCount]string {
+	return [queueActionMenuCount]string{
+		"Label for dispatch — Tag bead for auto-dispatch",
+	}
+}
+
 // Model is the Bubbletea model for the Hearth TUI.
 type Model struct {
 	// Panels
@@ -158,10 +174,15 @@ type Model struct {
 	height               int
 	ready                bool
 
-	// Action menu overlay state
+	// Action menu overlay state (Needs Attention)
 	showActionMenu bool
 	actionMenuIdx  int
 	actionTarget   *NeedsAttentionItem // bead the menu is open for
+
+	// Queue action menu overlay state (Unlabeled beads)
+	showQueueActionMenu bool
+	queueActionMenuIdx  int
+	queueActionTarget   *QueueItem // bead the queue menu is open for
 
 	// Log viewer overlay state
 	showLogViewer  bool
@@ -242,6 +263,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Queue action menu overlay intercepts keys when open
+		if m.showQueueActionMenu {
+			switch msg.String() {
+			case "esc", "q":
+				m.showQueueActionMenu = false
+			case "j", "down":
+				m.queueActionMenuIdx = (m.queueActionMenuIdx + 1) % int(queueActionMenuCount)
+			case "k", "up":
+				m.queueActionMenuIdx = (m.queueActionMenuIdx + int(queueActionMenuCount) - 1) % int(queueActionMenuCount)
+			case "enter":
+				m.executeQueueAction(QueueActionMenuChoice(m.queueActionMenuIdx))
+				m.showQueueActionMenu = false
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -295,6 +332,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.actionTarget = &item
 				m.actionMenuIdx = 0
 				m.showActionMenu = true
+			}
+			// Open queue action menu for selected unlabeled queue bead
+			if m.focused == PanelQueue && len(m.queue) > 0 &&
+				m.queueScroll < len(m.queue) {
+				item := m.queue[m.queueScroll]
+				if item.Section == "unlabeled" {
+					m.queueActionTarget = &item
+					m.queueActionMenuIdx = 0
+					m.showQueueActionMenu = true
+				}
 			}
 
 		case "l":
@@ -429,6 +476,9 @@ func (m *Model) View() string {
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.showActionMenu {
 		overlay := m.renderActionMenu()
+		view = placeOverlay(m.width, m.height, overlay, view)
+	} else if m.showQueueActionMenu {
+		overlay := m.renderQueueActionMenu()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	}
 
@@ -591,6 +641,62 @@ func (m *Model) renderActionMenu() string {
 	for i, label := range labels {
 		cursor := "  "
 		if i == m.actionMenuIdx {
+			cursor = "> "
+			label = actionMenuSelectedStyle.Render(label)
+		} else {
+			label = dimStyle.Render(label)
+		}
+		lines = append(lines, cursor+label)
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render("Enter: select • Esc: close"))
+
+	content := strings.Join(lines, "\n")
+	popup := actionMenuStyle.Width(menuWidth).Render(content)
+
+	return popup
+}
+
+// executeQueueAction runs the selected queue action menu choice against the target bead.
+func (m *Model) executeQueueAction(choice QueueActionMenuChoice) {
+	if m.queueActionTarget == nil {
+		return
+	}
+	item := m.queueActionTarget
+	switch choice {
+	case QueueActionLabel:
+		if m.OnTagBead != nil {
+			if err := m.OnTagBead(item.BeadID, item.Anvil); err != nil {
+				m.statusMsg = fmt.Sprintf("Failed to tag %s: %v", item.BeadID, err)
+			} else {
+				m.statusMsg = fmt.Sprintf("Tagged %s for dispatch", item.BeadID)
+			}
+			m.statusMsgTime = time.Now()
+		} else {
+			m.statusMsg = fmt.Sprintf("Label action unavailable for %s", item.BeadID)
+			m.statusMsgTime = time.Now()
+		}
+	}
+}
+
+// renderQueueActionMenu renders the queue action menu overlay centered on screen.
+func (m *Model) renderQueueActionMenu() string {
+	if m.queueActionTarget == nil {
+		return ""
+	}
+
+	menuWidth := 52
+	labels := queueActionMenuLabels()
+
+	var lines []string
+	title := fmt.Sprintf("Actions for %s", m.queueActionTarget.BeadID)
+	lines = append(lines, actionMenuTitleStyle.Render(title))
+	lines = append(lines, "")
+
+	for i, label := range labels {
+		cursor := "  "
+		if i == m.queueActionMenuIdx {
 			cursor = "> "
 			label = actionMenuSelectedStyle.Render(label)
 		} else {
