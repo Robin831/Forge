@@ -33,10 +33,11 @@ const (
 type EventType string
 
 const (
-	EventPRCreated   EventType = "pr_created"
-	EventBeadFailed  EventType = "bead_failed"
-	EventDailyCost   EventType = "daily_cost"
-	EventWorkerDone  EventType = "worker_done"
+	EventPRCreated      EventType = "pr_created"
+	EventBeadFailed     EventType = "bead_failed"
+	EventDailyCost      EventType = "daily_cost"
+	EventWorkerDone     EventType = "worker_done"
+	EventBeadDecomposed EventType = "bead_decomposed"
 )
 
 // Notifier sends notifications to Teams.
@@ -155,6 +156,38 @@ func (n *Notifier) DailyCost(ctx context.Context, date string, totalCost float64
 			{Title: "Budget", Value: limitStr},
 			{Title: "Input", Value: formatTokens(inputTokens)},
 			{Title: "Output", Value: formatTokens(outputTokens)},
+		},
+	)
+
+	n.send(ctx, card)
+}
+
+// SubBead holds the ID and title of a sub-bead for decomposition notifications.
+type SubBead struct {
+	ID    string
+	Title string
+}
+
+// BeadDecomposed sends a notification when Schematic decomposes a bead into
+// sub-beads. This is significant because it changes the work queue.
+func (n *Notifier) BeadDecomposed(ctx context.Context, anvil, beadID, beadTitle string, subBeads []SubBead) {
+	if !n.ShouldNotify(EventBeadDecomposed) {
+		return
+	}
+
+	var lines []string
+	for _, sb := range subBeads {
+		lines = append(lines, fmt.Sprintf("• **%s** — %s", sb.ID, sb.Title))
+	}
+
+	card := adaptiveCard(
+		"🔧 Bead Decomposed",
+		"accent",
+		[]cardFact{
+			{Title: "Anvil", Value: anvil},
+			{Title: "Parent", Value: fmt.Sprintf("%s — %s", beadID, beadTitle)},
+			{Title: "Sub-beads", Value: fmt.Sprintf("%d created", len(subBeads))},
+			{Title: "Details", Value: strings.Join(lines, "\n")},
 		},
 	)
 

@@ -248,6 +248,37 @@ CREATE TABLE IF NOT EXISTS queue_cache (
 );
 `
 
+// dbTimeLayout is the canonical, fixed-width layout used for timestamps
+// stored in the SQLite state database. It always includes 9 fractional
+// digits so that, when all timestamps share the same offset (typically
+// normalized to UTC), lexicographic ordering of TEXT values matches
+// chronological ordering.
+const dbTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// parseTime is a helper to robustly parse timestamps that may come from
+// different layouts. It prefers the fixed-width dbTimeLayout, then falls
+// back to RFC3339Nano and RFC3339 for backwards compatibility with older
+// rows.
+func parseTime(ts string) time.Time {
+	if ts == "" {
+		return time.Time{}
+	}
+
+	// Preferred canonical layout: fixed-width, lexicographically sortable.
+	if t, err := time.Parse(dbTimeLayout, ts); err == nil {
+		return t
+	}
+
+	// Legacy formats: first try RFC3339Nano (may include variable-width
+	// fractional seconds), then plain RFC3339 without fractions.
+	if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+		return t
+	}
+
+	t, _ := time.Parse(time.RFC3339, ts)
+	return t
+}
+
 // WorkerStatus represents the lifecycle state of a Smith worker.
 type WorkerStatus string
 
@@ -282,7 +313,7 @@ func (db *DB) InsertWorker(w *Worker) error {
 		`INSERT INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, started_at, log_path)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.BeadID, w.Anvil, w.Branch, w.PID, string(w.Status), w.Phase, w.Title,
-		w.StartedAt.Format(time.RFC3339), w.LogPath,
+		w.StartedAt.Format(dbTimeLayout), w.LogPath,
 	)
 	return err
 }
@@ -298,7 +329,7 @@ func (db *DB) UpdateWorkerStatus(id string, status WorkerStatus) error {
 	if status == WorkerDone || status == WorkerFailed || status == WorkerTimeout {
 		_, err := db.conn.Exec(
 			`UPDATE workers SET status = ?, completed_at = ? WHERE id = ?`,
-			string(status), time.Now().Format(time.RFC3339), id,
+			string(status), time.Now().Format(dbTimeLayout), id,
 		)
 		return err
 	}
@@ -380,7 +411,7 @@ func (db *DB) CompleteWorkersByBead(beadID string) error {
 	_, err := db.conn.Exec(
 		`UPDATE workers SET status = ?, completed_at = ?
 		 WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')`,
-		string(WorkerDone), time.Now().Format(time.RFC3339), beadID,
+		string(WorkerDone), time.Now().Format(dbTimeLayout), beadID,
 	)
 	return err
 }
@@ -432,9 +463,9 @@ func (db *DB) queryWorkers(query string, args ...any) ([]Worker, error) {
 			return nil, err
 		}
 		w.Status = WorkerStatus(status)
-		w.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
+		w.StartedAt = parseTime(startedAt)
 		if completedAt.Valid {
-			t, _ := time.Parse(time.RFC3339, completedAt.String)
+			t := parseTime(completedAt.String)
 			w.CompletedAt = &t
 		}
 		workers = append(workers, w)
@@ -500,7 +531,7 @@ func (db *DB) InsertPR(pr *PR) error {
 		`INSERT INTO prs (number, anvil, bead_id, branch, status, created_at, ci_fix_count, review_fix_count)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		pr.Number, pr.Anvil, pr.BeadID, pr.Branch, string(pr.Status),
-		pr.CreatedAt.Format(time.RFC3339), pr.CIFixCount, pr.ReviewFixCount,
+		pr.CreatedAt.Format(dbTimeLayout), pr.CIFixCount, pr.ReviewFixCount,
 	)
 	if err != nil {
 		return err
@@ -527,7 +558,7 @@ func (db *DB) PRByNumber(number int) (*PR, error) {
 func (db *DB) UpdatePRStatus(id int, status PRStatus) error {
 	_, err := db.conn.Exec(
 		`UPDATE prs SET status = ?, last_checked = ? WHERE id = ?`,
-		string(status), time.Now().Format(time.RFC3339), id,
+		string(status), time.Now().Format(dbTimeLayout), id,
 	)
 	return err
 }
@@ -538,7 +569,7 @@ func (db *DB) UpdatePRStatus(id int, status PRStatus) error {
 func (db *DB) UpdatePRStatusIfNeedsFix(id int, status PRStatus) error {
 	_, err := db.conn.Exec(
 		`UPDATE prs SET status = ?, last_checked = ? WHERE id = ? AND status = 'needs_fix'`,
-		string(status), time.Now().Format(time.RFC3339), id,
+		string(status), time.Now().Format(dbTimeLayout), id,
 	)
 	return err
 }
@@ -600,9 +631,9 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 		}
 		p.Status = PRStatus(status)
 		p.CIPassing = ciPassing != 0
-		p.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		p.CreatedAt = parseTime(createdAt)
 		if lastChecked.Valid {
-			t, _ := time.Parse(time.RFC3339, lastChecked.String)
+			t := parseTime(lastChecked.String)
 			p.LastChecked = &t
 		}
 		prs = append(prs, p)
@@ -671,8 +702,9 @@ const (
 	EventSchematicStarted     EventType = "schematic_started"
 	EventSchematicDone        EventType = "schematic_done"
 	EventSchematicSkipped     EventType = "schematic_skipped"
-	EventDispatchCircuitBreak  EventType = "dispatch_circuit_break"
+	EventDispatchCircuitBreak EventType = "dispatch_circuit_break"
 	EventCostLimitHit         EventType = "cost_limit_hit"
+	EventSchematicSubBead     EventType = "schematic_sub_bead"
 	EventError                EventType = "error"
 	EventBeadRecovered        EventType = "bead_recovered"
 )
@@ -692,7 +724,7 @@ func (db *DB) LogEvent(typ EventType, message, beadID, anvil string) error {
 	_, err := db.conn.Exec(
 		`INSERT INTO events (timestamp, type, message, bead_id, anvil)
 		 VALUES (?, ?, ?, ?, ?)`,
-		time.Now().Format(time.RFC3339), string(typ), message, beadID, anvil,
+		time.Now().Format(dbTimeLayout), string(typ), message, beadID, anvil,
 	)
 	return err
 }
@@ -701,7 +733,7 @@ func (db *DB) LogEvent(typ EventType, message, beadID, anvil string) error {
 func (db *DB) RecentEvents(n int) ([]Event, error) {
 	rows, err := db.conn.Query(
 		`SELECT id, timestamp, type, message, bead_id, anvil
-		 FROM events ORDER BY timestamp DESC LIMIT ?`, n)
+		 FROM events ORDER BY timestamp DESC, id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
 	}
@@ -715,7 +747,7 @@ func (db *DB) RecentEvents(n int) ([]Event, error) {
 			return nil, err
 		}
 		e.Type = EventType(typ)
-		e.Timestamp, _ = time.Parse(time.RFC3339, ts)
+		e.Timestamp = parseTime(ts)
 		events = append(events, e)
 	}
 	return events, rows.Err()
@@ -755,10 +787,10 @@ func (db *DB) GetRetry(beadID, anvil string) (*RetryRecord, error) {
 	}
 	r.NeedsHuman = needsHuman != 0
 	r.ClarificationNeeded = clarNeeded != 0
-	r.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	r.UpdatedAt = parseTime(updatedAt)
 	if nextRetry.Valid {
-		t, _ := time.Parse(time.RFC3339, nextRetry.String)
-			r.NextRetry = &t
+		t := parseTime(nextRetry.String)
+		r.NextRetry = &t
 	}
 	return &r, nil
 }
@@ -767,7 +799,7 @@ func (db *DB) GetRetry(beadID, anvil string) (*RetryRecord, error) {
 func (db *DB) UpsertRetry(r *RetryRecord) error {
 	var nextRetry *string
 	if r.NextRetry != nil {
-		s := r.NextRetry.Format(time.RFC3339)
+		s := r.NextRetry.Format(dbTimeLayout)
 		nextRetry = &s
 	}
 	needsHuman := 0
@@ -790,14 +822,14 @@ func (db *DB) UpsertRetry(r *RetryRecord) error {
 			last_error = excluded.last_error,
 			updated_at = excluded.updated_at`,
 		r.BeadID, r.Anvil, r.RetryCount, nextRetry, needsHuman, clarNeeded,
-		r.DispatchFailures, r.LastError, time.Now().Format(time.RFC3339),
+		r.DispatchFailures, r.LastError, time.Now().Format(dbTimeLayout),
 	)
 	return err
 }
 
 // PendingRetries returns retries that are ready to be attempted (next_retry <= now).
 func (db *DB) PendingRetries() ([]RetryRecord, error) {
-	now := time.Now().Format(time.RFC3339)
+	now := time.Now().Format(dbTimeLayout)
 	rows, err := db.conn.Query(
 		`SELECT bead_id, anvil, retry_count, next_retry, needs_human, clarification_needed, dispatch_failures, last_error, updated_at
 		 FROM retries WHERE needs_human = 0 AND clarification_needed = 0 AND (next_retry IS NULL OR next_retry <= ?)
@@ -837,7 +869,7 @@ func (db *DB) ClarificationNeededBeads() ([]RetryRecord, error) {
 // When needed=true and no retry record exists, one is created with the flag set.
 // When needed=false, only existing records are updated (no row is created).
 func (db *DB) SetClarificationNeeded(beadID, anvil string, needed bool, reason string) error {
-	now := time.Now().Format(time.RFC3339)
+	now := time.Now().Format(dbTimeLayout)
 
 	if needed {
 		_, err := db.conn.Exec(
@@ -911,9 +943,9 @@ func scanRetryRows(rows *sql.Rows) ([]RetryRecord, error) {
 		}
 		r.NeedsHuman = needsHuman != 0
 		r.ClarificationNeeded = clarNeeded != 0
-		r.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		r.UpdatedAt = parseTime(updatedAt)
 		if nextRetry.Valid {
-			t, _ := time.Parse(time.RFC3339, nextRetry.String)
+			t := parseTime(nextRetry.String)
 			r.NextRetry = &t
 		}
 		records = append(records, r)
@@ -926,7 +958,7 @@ func scanRetryRows(rows *sql.Rows) ([]RetryRecord, error) {
 // needs_human=1 with a "circuit breaker:" prefixed error. Returns the new
 // failure count and whether the circuit broke.
 func (db *DB) IncrementDispatchFailures(beadID, anvil string, maxFailures int, reason string) (int, bool, error) {
-	now := time.Now().Format(time.RFC3339)
+	now := time.Now().Format(dbTimeLayout)
 
 	tx, err := db.conn.Begin()
 	if err != nil {
@@ -993,7 +1025,7 @@ func (db *DB) ResetDispatchFailures(beadID, anvil string) error {
 		 WHERE bead_id = ? AND anvil = ?
 		   AND dispatch_failures > 0
 		   AND last_error LIKE 'circuit breaker:%'`,
-		time.Now().Format(time.RFC3339), beadID, anvil,
+		time.Now().Format(dbTimeLayout), beadID, anvil,
 	)
 	return err
 }
@@ -1030,7 +1062,7 @@ func (db *DB) ClearRetry(beadID, anvil string) error {
 // ResetRetry clears the needs_human and clarification_needed flags and resets
 // the retry count to zero, allowing the bead to be dispatched again.
 func (db *DB) ResetRetry(beadID, anvil string) error {
-	now := time.Now().Format(time.RFC3339)
+	now := time.Now().Format(dbTimeLayout)
 	res, err := db.conn.Exec(
 		`UPDATE retries SET needs_human = 0, clarification_needed = 0, retry_count = 0, dispatch_failures = 0,
 		        next_retry = NULL, last_error = '', updated_at = ?
@@ -1147,7 +1179,7 @@ func (db *DB) AddBeadCost(beadID, anvil string, input, output, cacheRead, cacheW
 			estimated_cost = estimated_cost + excluded.estimated_cost,
 			updated_at = excluded.updated_at`,
 		beadID, anvil, input, output, cacheRead, cacheWrite, cost,
-		time.Now().Format(time.RFC3339),
+		time.Now().Format(dbTimeLayout),
 	)
 	return err
 }
@@ -1256,11 +1288,11 @@ func (db *DB) RecentDailyCosts(n int) ([]struct {
 func (db *DB) UpsertProviderQuota(pv string, q *provider.Quota) error {
 	var reqReset, tokReset *string
 	if q.RequestsReset != nil {
-		s := q.RequestsReset.Format(time.RFC3339)
+		s := q.RequestsReset.Format(dbTimeLayout)
 		reqReset = &s
 	}
 	if q.TokensReset != nil {
-		s := q.TokensReset.Format(time.RFC3339)
+		s := q.TokensReset.Format(dbTimeLayout)
 		tokReset = &s
 	}
 
@@ -1278,7 +1310,7 @@ func (db *DB) UpsertProviderQuota(pv string, q *provider.Quota) error {
 			tokens_reset = excluded.tokens_reset,
 			updated_at = excluded.updated_at`,
 		pv, q.RequestsLimit, q.RequestsRemaining, reqReset,
-		q.TokensLimit, q.TokensRemaining, tokReset, time.Now().Format(time.RFC3339),
+		q.TokensLimit, q.TokensRemaining, tokReset, time.Now().Format(dbTimeLayout),
 	)
 	return err
 }
@@ -1304,11 +1336,11 @@ func (db *DB) GetAllProviderQuotas() (map[string]provider.Quota, error) {
 			return nil, err
 		}
 		if reqReset.Valid {
-			t, _ := time.Parse(time.RFC3339, reqReset.String)
+			t := parseTime(reqReset.String)
 			q.RequestsReset = &t
 		}
 		if tokReset.Valid {
-			t, _ := time.Parse(time.RFC3339, tokReset.String)
+			t := parseTime(tokReset.String)
 			q.TokensReset = &t
 		}
 		quotas[pv] = q
@@ -1348,7 +1380,7 @@ func (db *DB) ReplaceQueueCacheForAnvils(anvils []string, items []QueueItem) err
 		allowed[a] = struct{}{}
 	}
 
-	now := time.Now().Format(time.RFC3339)
+	now := time.Now().Format(dbTimeLayout)
 	stmt, err := tx.Prepare(
 		`INSERT INTO queue_cache (bead_id, anvil, title, priority, status, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`)
@@ -1433,11 +1465,11 @@ func (db *DB) GetProviderQuota(pv string) (*provider.Quota, error) {
 		return nil, err
 	}
 	if reqReset.Valid {
-		t, _ := time.Parse(time.RFC3339, reqReset.String)
-			q.RequestsReset = &t
+		t := parseTime(reqReset.String)
+		q.RequestsReset = &t
 	}
 	if tokReset.Valid {
-		t, _ := time.Parse(time.RFC3339, tokReset.String)
+		t := parseTime(tokReset.String)
 		q.TokensReset = &t
 	}
 	return &q, nil

@@ -11,6 +11,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/notify"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/provider"
@@ -87,6 +89,9 @@ type Params struct {
 	// SchematicConfig controls the Schematic pre-worker. When nil, Schematic
 	// is disabled (the default).
 	SchematicConfig *schematic.Config
+	// Notifier sends Teams webhook notifications. Nil-safe — calls are no-ops
+	// when nil.
+	Notifier *notify.Notifier
 
 	// The following fields are optional injection points used in tests.
 	// If nil, the default production implementations are used.
@@ -236,11 +241,43 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 			switch sResult.Action {
 			case schematic.ActionDecompose:
-				log.Printf("[pipeline:%s] Schematic decomposed bead into %d sub-beads: %v",
-					workerID, len(sResult.SubBeads), sResult.SubBeads)
+				log.Printf("[pipeline:%s] Schematic decomposed bead into %d sub-beads",
+					workerID, len(sResult.SubBeads))
+
+				// Log a summary event with JSON payload containing all sub-bead details.
+				// Fall back to a simple ID list if marshalling fails so the event is still useful.
+				subBeadJSON, marshalErr := json.Marshal(sResult.SubBeads)
+				var subBeadStr string
+				if marshalErr != nil {
+					log.Printf("[pipeline:%s] Failed to marshal sub-bead details: %v", workerID, marshalErr)
+					ids := make([]string, len(sResult.SubBeads))
+					for i, sb := range sResult.SubBeads {
+						ids[i] = sb.ID
+					}
+					subBeadStr = strings.Join(ids, ", ")
+				} else {
+					subBeadStr = string(subBeadJSON)
+				}
 				_ = p.DB.LogEvent(state.EventSchematicDone,
-					fmt.Sprintf("Decomposed into %d sub-beads: %s", len(sResult.SubBeads), strings.Join(sResult.SubBeads, ", ")),
+					fmt.Sprintf("Decomposed into %d sub-beads: %s", len(sResult.SubBeads), subBeadStr),
 					p.Bead.ID, p.AnvilName)
+
+				// Log each sub-bead as an individual event for easy scanning.
+				// Events include a (n/total) counter so insertion order is preserved even if
+				// timestamps share the same second.
+				for i, sb := range sResult.SubBeads {
+					_ = p.DB.LogEvent(state.EventSchematicSubBead,
+						fmt.Sprintf("Created sub-bead (%d/%d) %s: %s", i+1, len(sResult.SubBeads), sb.ID, sb.Title),
+						p.Bead.ID, p.AnvilName)
+				}
+
+				// Send Teams notification for decomposition
+				notifySubs := make([]notify.SubBead, len(sResult.SubBeads))
+				for i, sb := range sResult.SubBeads {
+					notifySubs[i] = notify.SubBead{ID: sb.ID, Title: sb.Title}
+				}
+				p.Notifier.BeadDecomposed(ctx, p.AnvilName, p.Bead.ID, p.Bead.Title, notifySubs)
+
 				outcome.Decomposed = true
 				outcome.Duration = time.Since(start)
 				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
@@ -251,6 +288,14 @@ func Run(ctx context.Context, p Params) *Outcome {
 				_ = p.DB.LogEvent(state.EventSchematicDone,
 					fmt.Sprintf("Needs clarification: %s", sResult.Reason),
 					p.Bead.ID, p.AnvilName)
+
+				// Mark clarification_needed in DB so the poller skips this bead
+				// until it is manually cleared.
+				_ = p.DB.SetClarificationNeeded(p.Bead.ID, p.AnvilName, true, sResult.Reason)
+				_ = p.DB.LogEvent(state.EventClarificationNeeded,
+					fmt.Sprintf("Bead %s needs clarification: %s", p.Bead.ID, sResult.Reason),
+					p.Bead.ID, p.AnvilName)
+
 				// Release bead back to open for human attention
 				if err := doRelease(p.Bead.ID, p.AnvilConfig.Path); err != nil {
 					log.Printf("[pipeline:%s] Failed to release bead after clarify: %v", workerID, err)
@@ -400,7 +445,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		}
 
 		// Check if Smith explicitly escalated for human help.
-		if reason := extractNeedsHuman(smithResult.FullOutput); reason != "" {
+		if reason := ExtractNeedsHuman(smithResult.FullOutput); reason != "" {
 			log.Printf("[pipeline:%s] Smith escalated: NEEDS_HUMAN: %s", workerID, reason)
 			_ = p.DB.LogEvent(state.EventSmithFailed,
 				fmt.Sprintf("Smith escalated — needs human: %s", reason),
@@ -558,9 +603,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 	return outcome
 }
 
-// extractNeedsHuman scans Smith output for the NEEDS_HUMAN: marker and returns
+// ExtractNeedsHuman scans Smith output for the NEEDS_HUMAN: marker and returns
 // the reason string. Returns empty string if not found.
-func extractNeedsHuman(output string) string {
+func ExtractNeedsHuman(output string) string {
 	const marker = "NEEDS_HUMAN:"
 	for _, line := range strings.Split(output, "\n") {
 		trimmed := strings.TrimSpace(line)

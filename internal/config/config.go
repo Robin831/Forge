@@ -86,7 +86,7 @@ type SettingsConfig struct {
 type NotificationsConfig struct {
 	TeamsWebhookURL string `mapstructure:"teams_webhook_url"`
 	Enabled         bool   `mapstructure:"enabled"`
-	// Events to notify on. Empty = all. Options: pr_created, bead_failed, daily_cost, worker_done.
+	// Events to notify on. Empty = all. Options: pr_created, bead_failed, daily_cost, worker_done, bead_decomposed.
 	Events []string `mapstructure:"events"`
 }
 

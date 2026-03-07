@@ -45,14 +45,20 @@ const (
 	ActionClarify Action = "clarify"
 )
 
+// SubBead holds the ID and title of a created sub-bead.
+type SubBead struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
 // Result captures the outcome of a Schematic analysis.
 type Result struct {
 	// Action is what the Schematic decided.
 	Action Action
 	// Plan is a focused implementation plan for Smith (only when Action=ActionPlan).
 	Plan string
-	// SubBeads is the list of sub-bead IDs created (only when Action=ActionDecompose).
-	SubBeads []string
+	// SubBeads is the list of sub-beads created (only when Action=ActionDecompose).
+	SubBeads []SubBead
 	// Reason is a human-readable explanation of the decision.
 	Reason string
 	// Duration is how long the analysis took.
@@ -204,17 +210,18 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 		result.Action = ActionDecompose
 		result.Reason = verdict.Reason
 		// Create sub-beads via bd
-		subIDs, err := createSubBeads(ctx, bead, verdict.SubTasks, anvilPath)
+		subs, err := createSubBeads(ctx, bead, verdict.SubTasks, anvilPath)
 		if err != nil {
-			// Failed to create sub-beads — treat as hard error instead of falling back to plan.
-			// Log partial IDs so an operator can clean up orphaned sub-beads.
-			log.Printf("[schematic:%s] Failed to create sub-beads: %v (partial IDs: %v)", bead.ID, err, subIDs)
-			result.Action = ActionSkip
-			result.SubBeads = subIDs // preserve partial IDs for caller visibility
-			result.Reason = fmt.Sprintf("Decomposition failed: %v", err)
+			// Failed to create sub-beads — escalate to ActionClarify (not ActionSkip) so the
+			// pipeline releases the bead for human attention rather than silently continuing.
+			// Partial sub-beads are preserved so operators can identify and clean up orphans.
+			log.Printf("[schematic:%s] Failed to create sub-beads: %v (partial: %v)", bead.ID, err, subs)
+			result.Action = ActionClarify
+			result.SubBeads = subs // preserve partial sub-beads for caller visibility
+			result.Reason = fmt.Sprintf("Automatic decomposition failed, bead requires manual review: %v", err)
 			result.Error = err
 		} else {
-			result.SubBeads = subIDs
+			result.SubBeads = subs
 		}
 
 	case "clarify":
@@ -297,7 +304,7 @@ func parseVerdict(output string) (*schematicVerdict, error) {
 // createSubBeads creates sub-beads via bd CLI with blocking dependency links.
 // Each sub-bead blocks the parent so that bd ready excludes the parent until
 // all sub-beads are closed.
-func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anvilPath string) ([]string, error) {
+func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anvilPath string) ([]SubBead, error) {
 	if len(tasks) == 0 {
 		return nil, fmt.Errorf("no sub-tasks to create")
 	}
@@ -314,7 +321,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 		}
 	}
 
-	var subIDs []string
+	var subBeads []SubBead
 	for _, task := range tasks {
 		// Create sub-bead with blocks dependency so the parent is blocked
 		// until all sub-beads are closed.
@@ -332,9 +339,9 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 		out, err := cmd.CombinedOutput()
 		cancel()
 		if err != nil {
-			log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: %v", parent.ID, len(subIDs), err)
+			log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: %v", parent.ID, len(subBeads), err)
 			resetParent()
-			return subIDs, fmt.Errorf("creating sub-bead %q: %w: %s", task, err, out)
+			return subBeads, fmt.Errorf("creating sub-bead %q: %w: %s", task, err, out)
 		}
 
 		// Extract ID from JSON output
@@ -350,20 +357,20 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 				}
 			}
 			if created.ID == "" {
-				log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: could not parse ID", parent.ID, len(subIDs))
+				log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: could not parse ID", parent.ID, len(subBeads))
 				resetParent()
-				return subIDs, fmt.Errorf("parsing sub-bead ID from output: %w: %s", err, out)
+				return subBeads, fmt.Errorf("parsing sub-bead ID from output: %w: %s", err, out)
 			}
 		}
 
-		subIDs = append(subIDs, created.ID)
+		subBeads = append(subBeads, SubBead{ID: created.ID, Title: task})
 	}
 
 	// Set the parent bead back to open. It will be excluded from bd ready
 	// because each sub-bead has a blocks:<parent> dependency.
 	resetParent()
 
-	return subIDs, nil
+	return subBeads, nil
 }
 
 // buildPrompt creates the analysis prompt for the Schematic AI session.

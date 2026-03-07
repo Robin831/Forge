@@ -34,6 +34,7 @@ import (
 	"github.com/Robin831/Forge/internal/hotreload"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
+	"github.com/Robin831/Forge/internal/notify"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
@@ -90,6 +91,9 @@ type Daemon struct {
 	bellowsMonitor *bellows.Monitor
 	lifecycleMgr   *lifecycle.Manager
 
+	// Teams notifications (nil = disabled)
+	notifier *notify.Notifier
+
 	cancel     context.CancelFunc // cancels the Run context for graceful shutdown
 
 	forgeDir   string // ~/.forge
@@ -142,6 +146,26 @@ func New(cfg *config.Config) (*Daemon, error) {
 
 	wtMgr := worktree.NewManager()
 
+	webhookURL := cfg.Notifications.TeamsWebhookURL
+	trimmedWebhookURL := strings.TrimSpace(webhookURL)
+	if cfg.Notifications.Enabled && trimmedWebhookURL != "" {
+		formatted, err := notify.FormatWebhookURL(trimmedWebhookURL)
+		if err != nil {
+			db.Close()
+			logFile.Close()
+			return nil, fmt.Errorf("invalid Teams webhook URL: %w", err)
+		}
+		webhookURL = formatted
+	} else if !cfg.Notifications.Enabled && trimmedWebhookURL != "" {
+		logger.Warn("Teams webhook URL is set but notifications are disabled; skipping URL validation")
+	}
+
+	notifier := notify.NewNotifier(notify.Config{
+		WebhookURL: webhookURL,
+		Enabled:    cfg.Notifications.Enabled,
+		Events:     cfg.Notifications.Events,
+	}, logger)
+
 	d := &Daemon{
 		cfg:           cfg,
 		db:            db,
@@ -153,6 +177,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
+		notifier:      notifier,
 	}
 	// Initialize costLimitLoggedDate so Load() is always safe (zero atomic.Value
 	// returns nil on Load, which is fine for type assertion, but Store("")
@@ -792,6 +817,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		Bead:            bead,
 		ExtraFlags:      d.cfg.Settings.ClaudeFlags,
 		Providers:       provider.FromConfig(smithProviderSpecs),
+		Notifier:        d.notifier,
 	}
 	if d.cfg.Settings.SchematicEnabled {
 		wordThreshold := d.cfg.Settings.SchematicWordThreshold
@@ -837,9 +863,20 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			return
 		}
 		if outcome.NeedsHuman {
-			// Bead was released back to open (Smith produced no diff). Record as
-			// dispatch failure so the circuit breaker can trip after repeated attempts.
-			d.recordDispatchFailure(bead.ID, bead.Anvil, "Smith produced no diff, needs human attention")
+			// Bead was released back to open. Record as dispatch failure so the
+			// circuit breaker can trip after repeated attempts.
+			reason := "Smith produced no diff, needs human attention"
+			if outcome.SchematicResult != nil && outcome.SchematicResult.Reason != "" {
+				reason = outcome.SchematicResult.Reason
+			} else if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" && outcome.ReviewResult.NoDiff {
+				reason = "Warden rejected (no diff): " + outcome.ReviewResult.Summary
+			} else if outcome.SmithResult != nil {
+				if r := pipeline.ExtractNeedsHuman(outcome.SmithResult.FullOutput); r != "" {
+					reason = "Smith escalated: " + r
+				}
+			}
+
+			d.recordDispatchFailure(bead.ID, bead.Anvil, reason)
 			// Hold the activeBeads slot for a full poll interval so the bead is not
 			// immediately re-dispatched before a human can investigate.
 			holdOff := d.cfg.Settings.PollInterval

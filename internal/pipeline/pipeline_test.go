@@ -359,7 +359,7 @@ func TestSchematic_Decompose_ExitsEarly(t *testing.T) {
 	params.SchematicRunner = func(_ context.Context, _ schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
 		return &schematic.Result{
 			Action:   schematic.ActionDecompose,
-			SubBeads: []string{"sub-1", "sub-2"},
+			SubBeads: []schematic.SubBead{{ID: "sub-1", Title: "Task A"}, {ID: "sub-2", Title: "Task B"}},
 			Reason:   "Too large, splitting",
 		}
 	}
@@ -370,6 +370,55 @@ func TestSchematic_Decompose_ExitsEarly(t *testing.T) {
 	assert.False(t, smithCalled, "Smith should not run when bead is decomposed")
 	assert.Equal(t, schematic.ActionDecompose, outcome.SchematicResult.Action)
 	assert.Nil(t, outcome.Error)
+}
+
+// TestSchematic_Decompose_LogsEvents verifies that when Schematic decomposes a bead,
+// a summary EventSchematicDone event containing sub-bead details is logged, and one
+// EventSchematicSubBead event is written per sub-bead.
+func TestSchematic_Decompose_LogsEvents(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	schemCfg := schematic.Config{Enabled: true, WordThreshold: 1}
+	params.SchematicConfig = &schemCfg
+	params.Bead.Description = "Multiple independent features to implement"
+	params.SchematicRunner = func(_ context.Context, _ schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
+		return &schematic.Result{
+			Action:   schematic.ActionDecompose,
+			SubBeads: []schematic.SubBead{{ID: "sub-1", Title: "Task A"}, {ID: "sub-2", Title: "Task B"}},
+			Reason:   "Too large, splitting",
+		}
+	}
+
+	outcome := Run(context.Background(), params)
+	require.True(t, outcome.Decomposed)
+
+	events, err := db.RecentEvents(20)
+	require.NoError(t, err)
+
+	// Collect events by type
+	var summaryEvents, subBeadEvents []state.Event
+	for _, e := range events {
+		switch e.Type {
+		case state.EventSchematicDone:
+			summaryEvents = append(summaryEvents, e)
+		case state.EventSchematicSubBead:
+			subBeadEvents = append(subBeadEvents, e)
+		}
+	}
+
+	require.Len(t, summaryEvents, 1, "exactly one EventSchematicDone summary event expected")
+	// Events are ordered DESC by timestamp, then ID. The summary event is logged *before* the sub-bead events.
+	assert.Contains(t, summaryEvents[0].Message, `[{"id":"sub-1","title":"Task A"},{"id":"sub-2","title":"Task B"}]`)
+
+	require.Len(t, subBeadEvents, 2, "one EventSchematicSubBead event per sub-bead expected")
+	// Events are ordered DESC, so subBeadEvents[0] is the *last* one logged ((2/2)).
+	assert.Contains(t, subBeadEvents[0].Message, "(2/2)")
+	assert.Contains(t, subBeadEvents[0].Message, "sub-2")
+	assert.Contains(t, subBeadEvents[0].Message, "Task B")
+	assert.Contains(t, subBeadEvents[1].Message, "(1/2)")
+	assert.Contains(t, subBeadEvents[1].Message, "sub-1")
+	assert.Contains(t, subBeadEvents[1].Message, "Task A")
 }
 
 // TestSchematic_Clarify_ReleasesBeadAndSetsNeedsHuman verifies that when
@@ -395,6 +444,13 @@ func TestSchematic_Clarify_ReleasesBeadAndSetsNeedsHuman(t *testing.T) {
 	assert.True(t, outcome.NeedsHuman)
 	assert.Equal(t, "test-bead", *releasedID)
 	assert.Equal(t, schematic.ActionClarify, outcome.SchematicResult.Action)
+
+	// Verify that clarification_needed flag was set in DB with the correct reason
+	r, err := db.GetRetry("test-bead", "test-anvil")
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.True(t, r.ClarificationNeeded)
+	assert.Equal(t, "Missing acceptance criteria", r.LastError)
 }
 
 // TestSchematic_Clarify_NeedsHumanFalse_WhenReleaseFails verifies that when
@@ -540,7 +596,7 @@ func TestExtractNeedsHuman(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractNeedsHuman(tt.input)
+			got := ExtractNeedsHuman(tt.input)
 			assert.Equal(t, tt.expect, got)
 		})
 	}
