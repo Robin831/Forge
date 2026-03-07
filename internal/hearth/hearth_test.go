@@ -1,12 +1,14 @@
 package hearth
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -538,5 +540,137 @@ func TestActivityScrollClampPastEnd(t *testing.T) {
 	// The panel must not be blank — at least the oldest entry should show.
 	if !strings.Contains(rendered, "alpha") {
 		t.Errorf("expected at least oldest entry 'alpha' when activityScroll is past end:\n%s", rendered)
+	}
+}
+
+func TestEnterOnUnlabeledQueueItemOpensMenu(t *testing.T) {
+	m := Model{
+		focused: PanelQueue,
+		queue: []QueueItem{
+			{BeadID: "bd-1", Anvil: "test", Section: "unlabeled"},
+		},
+		queueScroll: 0,
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.showQueueActionMenu {
+		t.Error("expected showQueueActionMenu=true after Enter on unlabeled item")
+	}
+	if m.queueActionTarget == nil || m.queueActionTarget.BeadID != "bd-1" {
+		t.Errorf("expected queueActionTarget.BeadID=bd-1, got %v", m.queueActionTarget)
+	}
+}
+
+func TestEnterOnReadyQueueItemDoesNotOpenMenu(t *testing.T) {
+	m := Model{
+		focused: PanelQueue,
+		queue: []QueueItem{
+			{BeadID: "bd-2", Anvil: "test", Section: "ready"},
+		},
+		queueScroll: 0,
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.showQueueActionMenu {
+		t.Error("expected showQueueActionMenu=false for ready (non-unlabeled) item")
+	}
+}
+
+func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
+	var taggedBead, taggedAnvil string
+	m := Model{
+		focused: PanelQueue,
+		queue: []QueueItem{
+			{BeadID: "bd-3", Anvil: "forge", Section: "unlabeled"},
+		},
+		queueScroll: 0,
+		OnTagBead: func(beadID, anvil string) error {
+			taggedBead = beadID
+			taggedAnvil = anvil
+			return nil
+		},
+	}
+	// Open the menu
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.showQueueActionMenu {
+		t.Fatal("expected menu open after Enter")
+	}
+	// Select the label action
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if taggedBead != "bd-3" || taggedAnvil != "forge" {
+		t.Errorf("OnTagBead called with (%q, %q), want (bd-3, forge)", taggedBead, taggedAnvil)
+	}
+	if !strings.Contains(m.statusMsg, "bd-3") {
+		t.Errorf("expected statusMsg to mention bd-3, got %q", m.statusMsg)
+	}
+	if m.showQueueActionMenu {
+		t.Error("expected menu to close after label action")
+	}
+}
+
+func TestQueueActionMenuLabelOnTagBeadError(t *testing.T) {
+	m := Model{
+		focused: PanelQueue,
+		queue: []QueueItem{
+			{BeadID: "bd-4", Anvil: "forge", Section: "unlabeled"},
+		},
+		queueScroll: 0,
+		OnTagBead: func(beadID, anvil string) error {
+			return errors.New("network error")
+		},
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(m.statusMsg, "Failed to tag") {
+		t.Errorf("expected failure statusMsg, got %q", m.statusMsg)
+	}
+}
+
+func TestRenderQueueActionMenuContainsBeadID(t *testing.T) {
+	item := QueueItem{BeadID: "bd-5", Anvil: "test", Section: "unlabeled"}
+	m := Model{
+		showQueueActionMenu: true,
+		queueActionTarget:   &item,
+		queueActionMenuIdx:  0,
+		width:               80,
+		height:              24,
+	}
+	rendered := m.renderQueueActionMenu()
+	if !strings.Contains(rendered, "bd-5") {
+		t.Errorf("expected bead ID bd-5 in renderQueueActionMenu output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Label for dispatch") {
+		t.Errorf("expected 'Label for dispatch' action in menu:\n%s", rendered)
+	}
+}
+
+func TestUpdateQueueMsgClosesMenuWhenTargetRemoved(t *testing.T) {
+	item := QueueItem{BeadID: "bd-6", Anvil: "test", Section: "unlabeled"}
+	m := Model{
+		showQueueActionMenu: true,
+		queueActionTarget:   &item,
+		queue:               []QueueItem{item},
+	}
+	// Simulate queue refresh that removes the target bead
+	_, _ = m.Update(UpdateQueueMsg{Items: []QueueItem{
+		{BeadID: "bd-99", Anvil: "test", Section: "unlabeled"},
+	}})
+	if m.showQueueActionMenu {
+		t.Error("expected menu to close when target bead no longer in unlabeled section")
+	}
+	if m.queueActionTarget != nil {
+		t.Error("expected queueActionTarget to be nil after menu closed")
+	}
+}
+
+func TestUpdateQueueMsgKeepsMenuWhenTargetStillPresent(t *testing.T) {
+	item := QueueItem{BeadID: "bd-7", Anvil: "test", Section: "unlabeled"}
+	m := Model{
+		showQueueActionMenu: true,
+		queueActionTarget:   &item,
+		queue:               []QueueItem{item},
+	}
+	// Simulate queue refresh that keeps the target bead
+	_, _ = m.Update(UpdateQueueMsg{Items: []QueueItem{item}})
+	if !m.showQueueActionMenu {
+		t.Error("expected menu to remain open when target bead still in unlabeled section")
 	}
 }
