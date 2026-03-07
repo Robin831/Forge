@@ -24,8 +24,11 @@ func TestBuildSummary_IncludesFailedStepOutput(t *testing.T) {
 }
 
 func TestBuildSummary_TruncatesLongOutput(t *testing.T) {
-	// Create output longer than maxStepOutputLen
-	longOutput := strings.Repeat("x", maxStepOutputLen+500)
+	// Use distinct head/tail markers so we can verify the tail is preserved
+	// and the head (which precedes the truncation point) is dropped.
+	head := "HEAD_MARKER_" + strings.Repeat("h", 100)
+	tail := strings.Repeat("t", 100) + "_TAIL_MARKER"
+	longOutput := head + strings.Repeat("x", maxStepOutputLen) + tail
 	r := &Result{
 		Steps: []StepResult{
 			{Name: "test", Passed: false, Duration: 1_000_000_000, Output: longOutput},
@@ -34,9 +37,11 @@ func TestBuildSummary_TruncatesLongOutput(t *testing.T) {
 	}
 	summary := buildSummary(r)
 
-	assert.Contains(t, summary, "...(truncated)")
+	assert.Contains(t, summary, "... (truncated)")
 	// The tail of the output should be preserved (most relevant errors are at the end)
-	assert.Contains(t, summary, strings.Repeat("x", 100))
+	assert.Contains(t, summary, "_TAIL_MARKER")
+	// The head should have been truncated away
+	assert.NotContains(t, summary, "HEAD_MARKER_")
 }
 
 func TestBuildSummary_NoOutputForPassingSteps(t *testing.T) {

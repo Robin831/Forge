@@ -291,7 +291,7 @@ func detectSteps(worktreePath string, opts *DetectOptions) []Step {
 	return steps
 }
 
-// maxStepOutputLen is the maximum number of characters of step output to
+// maxStepOutputLen is the maximum number of bytes of step output to
 // include in the summary for a failed step. This keeps feedback actionable
 // without overwhelming the Smith prompt with enormous test logs.
 const maxStepOutputLen = 4000
@@ -318,10 +318,10 @@ func buildSummary(r *Result) string {
 		// Include the actual output for failed steps so the next Smith
 		// iteration knows exactly what went wrong and can fix it.
 		if !s.Passed && s.Output != "" {
-			output := strings.TrimSpace(s.Output)
+			output := strings.TrimRight(s.Output, "\n\r\t ")
 			if len(output) > maxStepOutputLen {
 				output = output[len(output)-maxStepOutputLen:]
-				output = "...(truncated)\n" + output
+				output = "... (truncated)\n" + output
 			}
 			fmt.Fprintf(&b, "\n```\n%s\n```\n\n", output)
 		}
