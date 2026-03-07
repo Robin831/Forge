@@ -59,6 +59,7 @@ settings:
   depcheck_timeout: 5m
   vulncheck_interval: 24h
   vulncheck_timeout: 10m
+  auto_learn_rules: true
 
 notifications:
   enabled: true
@@ -117,6 +118,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `depcheck_timeout` | duration | `5m` | | Maximum time for a single depcheck invocation per anvil. |
 | `vulncheck_interval` | duration | `24h` | `0` | How often `govulncheck` runs on registered Go anvils. `0` disables. |
 | `vulncheck_timeout` | duration | `10m` | | Maximum time for a single govulncheck invocation per anvil. |
+| `auto_learn_rules` | bool | `false` | | Automatically learn Warden review rules from Copilot comments when a PR is merged. Rules are saved to each anvil's `.forge/warden-rules.yaml`. |
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
 
@@ -164,6 +166,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_DEPCHECK_TIMEOUT` | `settings.depcheck_timeout` |
 | `FORGE_SETTINGS_VULNCHECK_INTERVAL` | `settings.vulncheck_interval` |
 | `FORGE_SETTINGS_VULNCHECK_TIMEOUT` | `settings.vulncheck_timeout` |
+| `FORGE_SETTINGS_AUTO_LEARN_RULES` | `settings.auto_learn_rules` |
 | `FORGE_NOTIFICATIONS_ENABLED` | `notifications.enabled` |
 | `FORGE_NOTIFICATIONS_TEAMS_WEBHOOK_URL` | `notifications.teams_webhook_url` |
 

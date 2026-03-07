@@ -17,6 +17,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -121,6 +122,11 @@ type SettingsConfig struct {
 	// separate temper step globally. Per-anvil settings override this.
 	// Default: false.
 	GoRaceDetection bool `mapstructure:"go_race_detection"`
+	// AutoLearnRules enables automatic learning of Warden review rules from
+	// Copilot comments when a PR is merged. Bellows will fetch Copilot review
+	// comments, distill them into rules via Claude, and save them to the
+	// anvil's .forge/warden-rules.yaml. Default: false.
+	AutoLearnRules bool `mapstructure:"auto_learn_rules"`
 }
 
 // NotificationsConfig holds webhook and notification settings.
@@ -180,7 +186,10 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.vulncheck_timeout", "10m")
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
+	// SetEnvKeyReplacer maps dotted config keys (settings.auto_learn_rules) to
+	// underscore env vars (FORGE_SETTINGS_AUTO_LEARN_RULES).
 	v.SetEnvPrefix("FORGE")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
 	// Config file resolution

@@ -371,7 +371,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			monitorAnvils[name] = a.Path
 		}
 	}
-	d.bellowsMonitor = bellows.New(d.db, d.cfg.Load().Settings.BellowsInterval, monitorAnvils)
+	d.bellowsMonitor = bellows.New(d.db, d.cfg.Load().Settings.BellowsInterval, monitorAnvils, d.cfg.Load().Settings.AutoLearnRules)
 	d.lifecycleMgr = lifecycle.New(d.db, d.logger, d.handleLifecycleAction)
 	d.lifecycleMgr.SetThresholds(
 		d.cfg.Load().Settings.MaxCIFixAttempts,

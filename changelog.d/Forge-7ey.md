@@ -1,0 +1,2 @@
+category: Added
+- **Auto-learn Warden rules on PR merge** - When `settings.auto_learn_rules: true`, Bellows automatically fetches Copilot review comments from merged PRs, distills them into Warden review rules via Claude, and saves them to the anvil's `.forge/warden-rules.yaml`. This closes the feedback loop so review patterns accumulate automatically without manual `forge warden learn` runs. (Forge-7ey)
