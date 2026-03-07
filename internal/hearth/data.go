@@ -401,7 +401,7 @@ func FetchReadyToMerge(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
 		prs, err := db.ReadyToMergePRs()
 		if err != nil {
-			return UpdateReadyToMergeMsg{Items: nil}
+			return ReadyToMergeErrorMsg{Err: fmt.Errorf("failed to fetch ready-to-merge PRs: %w", err)}
 		}
 		var items []ReadyToMergeItem
 		for _, p := range prs {

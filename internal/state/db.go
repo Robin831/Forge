@@ -175,10 +175,12 @@ CREATE TABLE IF NOT EXISTS prs (
     status           TEXT NOT NULL DEFAULT 'open',
     created_at       TEXT NOT NULL,
     last_checked     TEXT,
-    ci_fix_count     INTEGER NOT NULL DEFAULT 0,
-    review_fix_count INTEGER NOT NULL DEFAULT 0,
-    ci_passing       INTEGER NOT NULL DEFAULT 1,
-    rebase_count     INTEGER NOT NULL DEFAULT 0
+    ci_fix_count            INTEGER NOT NULL DEFAULT 0,
+    review_fix_count        INTEGER NOT NULL DEFAULT 0,
+    ci_passing              INTEGER NOT NULL DEFAULT 1,
+    rebase_count            INTEGER NOT NULL DEFAULT 0,
+    is_conflicting          INTEGER NOT NULL DEFAULT 0,
+    has_unresolved_threads  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -264,10 +266,6 @@ CREATE TABLE IF NOT EXISTS queue_cache (
 // chronological ordering.
 const dbTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
-// parseTime is a helper to robustly parse timestamps that may come from
-// different layouts. It prefers the fixed-width dbTimeLayout, then falls
-// back to RFC3339Nano and RFC3339 for backwards compatibility with older
-// rows.
 func boolToInt(b bool) int {
 	if b {
 		return 1
@@ -275,6 +273,10 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// parseTime is a helper to robustly parse timestamps that may come from
+// different layouts. It prefers the fixed-width dbTimeLayout, then falls
+// back to RFC3339Nano and RFC3339 for backwards compatibility with older
+// rows.
 func parseTime(ts string) time.Time {
 	if ts == "" {
 		return time.Time{}

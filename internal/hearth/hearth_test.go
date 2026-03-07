@@ -813,3 +813,91 @@ func TestExecuteAction_DismissError_ItemNotRemoved(t *testing.T) {
 		t.Errorf("expected item to remain on error, got %d items", len(m.needsAttention))
 	}
 }
+
+func TestRenderReadyToMergeEmpty(t *testing.T) {
+	m := Model{
+		readyToMerge: nil,
+		focused:      PanelReadyToMerge,
+	}
+	rendered := m.renderReadyToMerge(60, 20)
+	if !strings.Contains(rendered, "None") {
+		t.Errorf("expected 'None' when no items:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Ready to Merge (0)") {
+		t.Errorf("expected 'Ready to Merge (0)' title:\n%s", rendered)
+	}
+}
+
+func TestRenderReadyToMergeShowsItems(t *testing.T) {
+	m := Model{
+		readyToMerge: []ReadyToMergeItem{
+			{PRID: 1, PRNumber: 42, BeadID: "bd-10", Anvil: "heimdall", Branch: "forge/bd-10"},
+			{PRID: 2, PRNumber: 99, BeadID: "bd-11", Anvil: "metadata", Branch: "forge/bd-11"},
+		},
+		focused: PanelReadyToMerge,
+	}
+	rendered := m.renderReadyToMerge(80, 20)
+	if !strings.Contains(rendered, "PR #42") {
+		t.Errorf("expected 'PR #42' in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "bd-10") {
+		t.Errorf("expected bead ID bd-10 in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Ready to Merge (2)") {
+		t.Errorf("expected 'Ready to Merge (2)' title:\n%s", rendered)
+	}
+}
+
+func TestRenderReadyToMergeSelectionHighlighting(t *testing.T) {
+	m := Model{
+		readyToMerge: []ReadyToMergeItem{
+			{PRID: 1, PRNumber: 10, BeadID: "bd-20", Anvil: "forge"},
+			{PRID: 2, PRNumber: 11, BeadID: "bd-21", Anvil: "forge"},
+		},
+		readyToMergeScroll: 0,
+		focused:            PanelReadyToMerge,
+	}
+	// With scroll=0, first item (bd-20) should be selected/visible.
+	rendered0 := m.renderReadyToMerge(80, 20)
+	if !strings.Contains(rendered0, "bd-20") {
+		t.Errorf("expected selected item bd-20 visible at scroll=0:\n%s", rendered0)
+	}
+
+	// With scroll=1, second item (bd-21) should be selected/visible.
+	m.readyToMergeScroll = 1
+	rendered1 := m.renderReadyToMerge(80, 20)
+	if !strings.Contains(rendered1, "bd-21") {
+		t.Errorf("expected selected item bd-21 visible at scroll=1:\n%s", rendered1)
+	}
+}
+
+func TestRenderMergeMenuContainsBeadIDAndActions(t *testing.T) {
+	item := ReadyToMergeItem{PRID: 1, PRNumber: 55, BeadID: "bd-30", Anvil: "test"}
+	m := Model{
+		mergeTarget:  &item,
+		mergeMenuIdx: 0,
+		width:        80,
+		height:       24,
+	}
+	rendered := m.renderMergeMenu()
+	if !strings.Contains(rendered, "bd-30") {
+		t.Errorf("expected bead ID bd-30 in renderMergeMenu output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "PR #55") {
+		t.Errorf("expected PR #55 in renderMergeMenu output:\n%s", rendered)
+	}
+}
+
+func TestReadyToMergeErrorMsgAppendsEvent(t *testing.T) {
+	m := Model{}
+	_, _ = m.Update(ReadyToMergeErrorMsg{Err: errors.New("db connection lost")})
+	if len(m.events) == 0 {
+		t.Fatal("expected an event to be appended on ReadyToMergeErrorMsg")
+	}
+	if m.events[0].Type != "error" {
+		t.Errorf("expected event type 'error', got %q", m.events[0].Type)
+	}
+	if !strings.Contains(m.events[0].Message, "ready-to-merge read failed") {
+		t.Errorf("expected 'ready-to-merge read failed' in event message, got %q", m.events[0].Message)
+	}
+}

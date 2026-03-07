@@ -483,6 +483,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.eventScroll = 0
 		}
 
+	case ReadyToMergeErrorMsg:
+		errEvent := EventItem{
+			Timestamp: time.Now().Format("15:04:05"),
+			Type:      "error",
+			Message:   fmt.Sprintf("ready-to-merge read failed: %v", msg.Err),
+		}
+		m.events = append([]EventItem{errEvent}, m.events...)
+		m.eventRevision++
+		if m.eventAutoScroll {
+			m.eventScroll = 0
+		}
+
 	case UpdateWorkersMsg:
 		m.workers = msg.Items
 		// Clamp selection when the workers list shrinks
@@ -1568,6 +1580,9 @@ type UpdateReadyToMergeMsg struct{ Items []ReadyToMergeItem }
 
 // NeedsAttentionErrorMsg signals that reading the needs-attention beads failed.
 type NeedsAttentionErrorMsg struct{ Err error }
+
+// ReadyToMergeErrorMsg signals that reading the ready-to-merge PRs failed.
+type ReadyToMergeErrorMsg struct{ Err error }
 
 // UpdateWorkersMsg updates the workers panel.
 type UpdateWorkersMsg struct{ Items []WorkerItem }

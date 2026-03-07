@@ -133,10 +133,22 @@ func Merge(ctx context.Context, worktreePath string, prNumber int, strategy stri
 	if strategy == "" {
 		strategy = "squash"
 	}
+
+	allowedStrategies := map[string]bool{
+		"squash": true,
+		"merge":  true,
+		"rebase": true,
+	}
+	if !allowedStrategies[strategy] {
+		log.Printf("[ghpr] Invalid merge strategy %q, defaulting to squash", strategy)
+		strategy = "squash"
+	}
+
 	args := []string{
 		"pr", "merge", fmt.Sprintf("%d", prNumber),
 		"--" + strategy,
 		"--delete-branch",
+		"--yes",
 	}
 
 	log.Printf("[ghpr] Merging PR #%d with strategy %s", prNumber, strategy)
