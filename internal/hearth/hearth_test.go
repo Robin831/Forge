@@ -674,3 +674,138 @@ func TestUpdateQueueMsgKeepsMenuWhenTargetStillPresent(t *testing.T) {
 		t.Error("expected menu to remain open when target bead still in unlabeled section")
 	}
 }
+
+// --- removeNeedsAttentionItem ---
+
+func TestRemoveNeedsAttentionItem_MiddleElement(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "a", Anvil: "repo"}, {BeadID: "b", Anvil: "repo"}, {BeadID: "c", Anvil: "repo"},
+	}
+	m.needsAttentionScroll = 1
+	m.removeNeedsAttentionItem("b", "repo")
+	if len(m.needsAttention) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(m.needsAttention))
+	}
+	if m.needsAttention[0].BeadID != "a" || m.needsAttention[1].BeadID != "c" {
+		t.Errorf("unexpected items after removal: %v", m.needsAttention)
+	}
+}
+
+func TestRemoveNeedsAttentionItem_LastElement_AdjustsScroll(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{{BeadID: "a", Anvil: "repo"}, {BeadID: "b", Anvil: "repo"}}
+	m.needsAttentionScroll = 1 // pointing at last element "b"
+	m.removeNeedsAttentionItem("b", "repo")
+	if len(m.needsAttention) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(m.needsAttention))
+	}
+	if m.needsAttentionScroll != 0 {
+		t.Errorf("expected scroll decremented to 0, got %d", m.needsAttentionScroll)
+	}
+}
+
+func TestRemoveNeedsAttentionItem_OnlyElement_ScrollStaysZero(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{{BeadID: "only", Anvil: "repo"}}
+	m.needsAttentionScroll = 0
+	m.removeNeedsAttentionItem("only", "repo")
+	if len(m.needsAttention) != 0 {
+		t.Fatalf("expected 0 items, got %d", len(m.needsAttention))
+	}
+	if m.needsAttentionScroll != 0 {
+		t.Errorf("expected scroll to stay 0, got %d", m.needsAttentionScroll)
+	}
+}
+
+func TestRemoveNeedsAttentionItem_NotFound_NoChange(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{{BeadID: "a", Anvil: "repo"}, {BeadID: "b", Anvil: "repo"}}
+	m.removeNeedsAttentionItem("missing", "repo")
+	if len(m.needsAttention) != 2 {
+		t.Fatalf("expected 2 items unchanged, got %d", len(m.needsAttention))
+	}
+}
+
+func TestRemoveNeedsAttentionItem_SameBeadID_DifferentAnvils_OnlyRemovesMatching(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "x", Anvil: "repo-a"},
+		{BeadID: "x", Anvil: "repo-b"},
+	}
+	m.removeNeedsAttentionItem("x", "repo-a")
+	if len(m.needsAttention) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(m.needsAttention))
+	}
+	if m.needsAttention[0].Anvil != "repo-b" {
+		t.Errorf("expected repo-b to remain, got %q", m.needsAttention[0].Anvil)
+	}
+}
+
+// --- executeAction ---
+
+func TestExecuteAction_NoActionTarget_ReturnsNil(t *testing.T) {
+	m := NewModel(nil)
+	m.actionTarget = nil
+	if cmd := m.executeAction(ActionRetry); cmd != nil {
+		t.Error("expected nil cmd when actionTarget is nil")
+	}
+}
+
+func TestExecuteAction_RetrySuccess_DataNil_ReturnsNil(t *testing.T) {
+	m := NewModel(nil) // display-only mode: data == nil
+	target := NeedsAttentionItem{BeadID: "forge-1", Anvil: "test"}
+	m.actionTarget = &target
+	m.needsAttention = []NeedsAttentionItem{target}
+	m.OnRetryBead = func(_, _ string) error { return nil }
+
+	cmd := m.executeAction(ActionRetry)
+	if cmd != nil {
+		t.Error("expected nil cmd when m.data is nil (no panic)")
+	}
+	if len(m.needsAttention) != 0 {
+		t.Errorf("expected item removed on success, got %d items", len(m.needsAttention))
+	}
+}
+
+func TestExecuteAction_DismissSuccess_DataNil_ReturnsNil(t *testing.T) {
+	m := NewModel(nil)
+	target := NeedsAttentionItem{BeadID: "forge-2", Anvil: "test"}
+	m.actionTarget = &target
+	m.needsAttention = []NeedsAttentionItem{target}
+	m.OnDismissBead = func(_, _ string) error { return nil }
+
+	cmd := m.executeAction(ActionDismiss)
+	if cmd != nil {
+		t.Error("expected nil cmd when m.data is nil (no panic)")
+	}
+	if len(m.needsAttention) != 0 {
+		t.Errorf("expected item removed on success, got %d items", len(m.needsAttention))
+	}
+}
+
+func TestExecuteAction_RetryError_ItemNotRemoved(t *testing.T) {
+	m := NewModel(nil)
+	target := NeedsAttentionItem{BeadID: "forge-3", Anvil: "test"}
+	m.actionTarget = &target
+	m.needsAttention = []NeedsAttentionItem{target}
+	m.OnRetryBead = func(_, _ string) error { return errors.New("retry failed") }
+
+	m.executeAction(ActionRetry)
+	if len(m.needsAttention) != 1 {
+		t.Errorf("expected item to remain on error, got %d items", len(m.needsAttention))
+	}
+}
+
+func TestExecuteAction_DismissError_ItemNotRemoved(t *testing.T) {
+	m := NewModel(nil)
+	target := NeedsAttentionItem{BeadID: "forge-4", Anvil: "test"}
+	m.actionTarget = &target
+	m.needsAttention = []NeedsAttentionItem{target}
+	m.OnDismissBead = func(_, _ string) error { return errors.New("dismiss failed") }
+
+	m.executeAction(ActionDismiss)
+	if len(m.needsAttention) != 1 {
+		t.Errorf("expected item to remain on error, got %d items", len(m.needsAttention))
+	}
+}

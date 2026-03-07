@@ -258,8 +258,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "k", "up":
 				m.actionMenuIdx = (m.actionMenuIdx + int(actionMenuCount) - 1) % int(actionMenuCount)
 			case "enter":
-				m.executeAction(ActionMenuChoice(m.actionMenuIdx))
+				cmd := m.executeAction(ActionMenuChoice(m.actionMenuIdx))
 				m.showActionMenu = false
+				return m, cmd
 			}
 			return m, nil
 		}
@@ -597,9 +598,9 @@ func (m *Model) selectedWorkerActivity() []string {
 }
 
 // executeAction runs the selected action menu choice against the target bead.
-func (m *Model) executeAction(choice ActionMenuChoice) {
+func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 	if m.actionTarget == nil {
-		return
+		return nil
 	}
 	bead := m.actionTarget
 	switch choice {
@@ -609,6 +610,12 @@ func (m *Model) executeAction(choice ActionMenuChoice) {
 				m.statusMsg = fmt.Sprintf("Failed to retry %s: %v", bead.BeadID, err)
 			} else {
 				m.statusMsg = fmt.Sprintf("Retry queued for %s", bead.BeadID)
+				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
+				m.statusMsgTime = time.Now()
+				if m.data != nil {
+					return FetchNeedsAttention(m.data)
+				}
+				return nil
 			}
 			m.statusMsgTime = time.Now()
 		} else {
@@ -621,6 +628,12 @@ func (m *Model) executeAction(choice ActionMenuChoice) {
 				m.statusMsg = fmt.Sprintf("Failed to dismiss %s: %v", bead.BeadID, err)
 			} else {
 				m.statusMsg = fmt.Sprintf("Dismissed %s", bead.BeadID)
+				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
+				m.statusMsgTime = time.Now()
+				if m.data != nil {
+					return FetchNeedsAttention(m.data)
+				}
+				return nil
 			}
 			m.statusMsgTime = time.Now()
 		} else {
@@ -633,12 +646,27 @@ func (m *Model) executeAction(choice ActionMenuChoice) {
 			if logPath == "" {
 				m.statusMsg = fmt.Sprintf("No logs found for %s", bead.BeadID)
 				m.statusMsgTime = time.Now()
-				return
+				return nil
 			}
 			m.logViewerTitle = fmt.Sprintf("Logs: %s — %s", bead.BeadID, logPath)
 			m.logViewerLines = lines
 			m.logViewerScroll = 0
 			m.showLogViewer = true
+		}
+	}
+	return nil
+}
+
+// removeNeedsAttentionItem removes the item with the given beadID and anvil from the
+// needsAttention list and adjusts the scroll position if necessary.
+func (m *Model) removeNeedsAttentionItem(beadID, anvil string) {
+	for i, item := range m.needsAttention {
+		if item.BeadID == beadID && item.Anvil == anvil {
+			m.needsAttention = append(m.needsAttention[:i], m.needsAttention[i+1:]...)
+			if m.needsAttentionScroll >= len(m.needsAttention) && m.needsAttentionScroll > 0 {
+				m.needsAttentionScroll--
+			}
+			return
 		}
 	}
 }
