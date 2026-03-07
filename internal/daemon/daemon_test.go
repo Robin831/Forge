@@ -762,6 +762,59 @@ func TestHandleIPC_DismissBead(t *testing.T) {
 	})
 }
 
+func TestResolveGoRaceDetection(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-race-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	forgeDir := filepath.Join(tmpDir, ".forge")
+	require.NoError(t, os.MkdirAll(forgeDir, 0o755))
+	temperYAMLPath := filepath.Join(forgeDir, "temper.yaml")
+
+	makeTrue := func() *bool { b := true; return &b }
+	makeFalse := func() *bool { b := false; return &b }
+
+	newDaemon := func(globalRace bool) *Daemon {
+		d := &Daemon{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		d.cfg.Store(&config.Config{
+			Settings: config.SettingsConfig{GoRaceDetection: globalRace},
+		})
+		return d
+	}
+
+	t.Run("global config used when no overrides", func(t *testing.T) {
+		os.Remove(temperYAMLPath)
+		assert.True(t, newDaemon(true).resolveGoRaceDetection(config.AnvilConfig{Path: tmpDir}))
+		assert.False(t, newDaemon(false).resolveGoRaceDetection(config.AnvilConfig{Path: tmpDir}))
+	})
+
+	t.Run("per-anvil config overrides global", func(t *testing.T) {
+		os.Remove(temperYAMLPath)
+		// global=false, per-anvil=true → true
+		assert.True(t, newDaemon(false).resolveGoRaceDetection(config.AnvilConfig{Path: tmpDir, GoRaceDetection: makeTrue()}))
+		// global=true, per-anvil=false → false
+		assert.False(t, newDaemon(true).resolveGoRaceDetection(config.AnvilConfig{Path: tmpDir, GoRaceDetection: makeFalse()}))
+	})
+
+	t.Run("temper.yaml overrides global and per-anvil config", func(t *testing.T) {
+		require.NoError(t, os.WriteFile(temperYAMLPath, []byte("go_race_detection: true\n"), 0o644))
+		// global=false, per-anvil=false, temper.yaml=true → true
+		assert.True(t, newDaemon(false).resolveGoRaceDetection(config.AnvilConfig{Path: tmpDir, GoRaceDetection: makeFalse()}))
+	})
+
+	t.Run("temper.yaml false overrides per-anvil true", func(t *testing.T) {
+		require.NoError(t, os.WriteFile(temperYAMLPath, []byte("go_race_detection: false\n"), 0o644))
+		// global=true, per-anvil=true, temper.yaml=false → false
+		assert.False(t, newDaemon(true).resolveGoRaceDetection(config.AnvilConfig{Path: tmpDir, GoRaceDetection: makeTrue()}))
+	})
+
+	t.Run("missing temper.yaml falls back to per-anvil config", func(t *testing.T) {
+		os.Remove(temperYAMLPath)
+		// global=false, per-anvil=true, no temper.yaml → true
+		assert.True(t, newDaemon(false).resolveGoRaceDetection(config.AnvilConfig{Path: tmpDir, GoRaceDetection: makeTrue()}))
+	})
+}
+
 func TestHandleIPC_ViewLogs(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-test-*")
 	require.NoError(t, err)

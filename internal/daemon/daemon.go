@@ -75,9 +75,12 @@ const (
 
 // temperCacheEntry caches a parsed per-anvil temper.yaml along with the file's
 // modification time so the file is only re-read when it changes on disk.
+// statErr is non-empty when the last os.Stat call returned a non-ENOENT error;
+// it is used to suppress repeated log spam when the file is unreadable.
 type temperCacheEntry struct {
-	cfg   *temper.TemperYAML
-	mtime time.Time
+	cfg     *temper.TemperYAML
+	mtime   time.Time
+	statErr string // last non-ENOENT stat error message; empty on success
 }
 
 // Daemon is the main Forge orchestration daemon.
@@ -1905,23 +1908,31 @@ func (d *Daemon) classifyBeadSection(bead poller.Bead) state.QueueSection {
 
 // loadAnvilTemperCached returns the parsed .forge/temper.yaml for the given anvil path,
 // using a per-path cache keyed on the file's modification time to avoid repeated I/O
-// on every dispatch. Errors are logged once per change rather than on every call.
+// on every dispatch. Errors are logged once per unique error message rather than on
+// every call; non-ENOENT stat errors are cached as sentinels so log spam is suppressed
+// even when the file is unreadable (e.g. permission denied).
 func (d *Daemon) loadAnvilTemperCached(anvilPath string) *temper.TemperYAML {
 	yamlPath := filepath.Join(anvilPath, ".forge", "temper.yaml")
 	info, statErr := os.Stat(yamlPath)
 
 	if statErr != nil {
 		if !os.IsNotExist(statErr) {
-			d.logger.Warn("temper: cannot stat per-anvil config", "path", yamlPath, "error", statErr)
+			// Cache the error as a sentinel so we only log when it changes.
+			errMsg := statErr.Error()
+			if entry, ok := d.temperCache.Load(anvilPath); !ok || entry.(*temperCacheEntry).statErr != errMsg {
+				d.logger.Warn("temper: cannot stat per-anvil config", "path", yamlPath, "error", statErr)
+				d.temperCache.Store(anvilPath, &temperCacheEntry{statErr: errMsg})
+			}
+		} else {
+			d.temperCache.Delete(anvilPath)
 		}
-		d.temperCache.Delete(anvilPath)
 		return nil
 	}
 
 	mtime := info.ModTime()
 	if entry, ok := d.temperCache.Load(anvilPath); ok {
 		cached := entry.(*temperCacheEntry)
-		if cached.mtime.Equal(mtime) {
+		if cached.statErr == "" && cached.mtime.Equal(mtime) {
 			return cached.cfg
 		}
 	}
