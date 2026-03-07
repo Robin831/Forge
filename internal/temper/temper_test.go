@@ -1,10 +1,14 @@
 package temper
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildSummary_IncludesFailedStepOutput(t *testing.T) {
@@ -73,4 +77,58 @@ func TestBuildSummary_IncludesOptionalWarnOutput(t *testing.T) {
 	assert.Contains(t, summary, "[WARN] lint")
 	assert.Contains(t, summary, "unused variable x")
 	assert.Contains(t, summary, "All required checks passed")
+}
+
+// goModDir creates a temp directory containing a go.mod so detectSteps
+// recognises the project as Go.
+func goModDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n"), 0o644))
+	return dir
+}
+
+func stepNames(steps []Step) []string {
+	names := make([]string, len(steps))
+	for i, s := range steps {
+		names[i] = s.Name
+	}
+	return names
+}
+
+func TestDefaultConfigWithRace_IncludesRaceStep(t *testing.T) {
+	dir := goModDir(t)
+	opts := &DetectOptions{DisableGolangciLint: true}
+
+	cfg := DefaultConfigWithRace(dir, opts, true)
+
+	assert.True(t, cfg.GoRaceDetection)
+	names := stepNames(cfg.Steps)
+	assert.Contains(t, names, "race", "expected a 'race' step when GoRaceDetection is true")
+
+	// Verify the race step has the expected command and args.
+	for _, s := range cfg.Steps {
+		if s.Name == "race" {
+			assert.Equal(t, "go", s.Command)
+			assert.Equal(t, []string{"test", "-race", "-short", "./..."}, s.Args)
+			assert.Equal(t, 10*time.Minute, s.Timeout)
+			return
+		}
+	}
+	t.Fatal("race step not found despite being in step names")
+}
+
+func TestDefaultConfigWithRace_ExcludesRaceStepWhenDisabled(t *testing.T) {
+	dir := goModDir(t)
+	opts := &DetectOptions{DisableGolangciLint: true}
+
+	cfg := DefaultConfigWithRace(dir, opts, false)
+
+	assert.False(t, cfg.GoRaceDetection)
+	names := stepNames(cfg.Steps)
+	assert.NotContains(t, names, "race", "should not have 'race' step when GoRaceDetection is false")
+	// Should still have the standard Go steps.
+	assert.Contains(t, names, "build")
+	assert.Contains(t, names, "vet")
+	assert.Contains(t, names, "test")
 }
