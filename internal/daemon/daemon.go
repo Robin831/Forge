@@ -1693,6 +1693,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
 		defer mergeCancel()
 		if err := ghpr.Merge(mergeCtx, anvilCfg.Path, mergeNumber, strategy); err != nil {
+			_ = d.db.LogEvent(state.EventPRMergeFailed,
+				fmt.Sprintf("PR #%d merge failed: %v", mergeNumber, err),
+				beadID, mergeAnvil)
+			d.logger.Error("PR merge failed", "pr_number", mergeNumber, "anvil", mergeAnvil, "error", err)
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("merge failed: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}

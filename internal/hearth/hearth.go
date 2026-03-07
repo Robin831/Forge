@@ -225,7 +225,8 @@ type Model struct {
 
 	// Status message (flashes briefly after an action)
 	statusMsg     string
-	statusMsgTime time.Time
+	statusMsgTime    time.Time
+	statusMsgIsError bool
 
 	// Event rendering cache
 	eventLinesCache       []string
@@ -521,8 +522,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MergeResultMsg:
 		if msg.Err != nil {
 			m.statusMsg = fmt.Sprintf("Failed to merge PR #%d: %v", msg.PRNumber, msg.Err)
+			m.statusMsgIsError = true
+			errEvent := EventItem{
+				Timestamp: time.Now().Format("15:04:05"),
+				Type:      "pr_merge_failed",
+				Message:   fmt.Sprintf("PR #%d merge failed: %v", msg.PRNumber, msg.Err),
+			}
+			m.events = append([]EventItem{errEvent}, m.events...)
+			m.eventRevision++
+			if m.eventAutoScroll {
+				m.eventScroll = 0
+			}
 		} else {
 			m.statusMsg = fmt.Sprintf("Merged PR #%d", msg.PRNumber)
+			m.statusMsgIsError = false
 		}
 		m.statusMsgTime = time.Now()
 
@@ -551,8 +564,16 @@ func (m *Model) View() string {
 
 	// Footer with status message or default hints
 	footerText := "Tab: switch panel • j/k: scroll • K: kill worker • Enter: actions/merge • l: label bead • f: follow • q: quit"
-	if m.statusMsg != "" && time.Since(m.statusMsgTime) < 5*time.Second {
-		footerText = statusMsgStyle.Render(m.statusMsg)
+	statusDuration := 5 * time.Second
+	if m.statusMsgIsError {
+		statusDuration = 10 * time.Second
+	}
+	if m.statusMsg != "" && time.Since(m.statusMsgTime) < statusDuration {
+		if m.statusMsgIsError {
+			footerText = statusErrorStyle.Render(m.statusMsg)
+		} else {
+			footerText = statusMsgStyle.Render(m.statusMsg)
+		}
 	}
 	footer := footerStyle.Width(m.width).Render(footerText)
 	footerH := lipgloss.Height(footer)
@@ -1709,6 +1730,10 @@ var (
 	statusMsgStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("82")).
 			Bold(true)
+
+	statusErrorStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("196")).
+				Bold(true)
 )
 
 // priorityStyle returns a colored priority indicator.

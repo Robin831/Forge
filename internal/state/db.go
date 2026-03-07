@@ -970,6 +970,7 @@ const (
 	EventWorkerStalled        EventType = "worker_stalled"
 	EventBeadTagged           EventType = "bead_tagged"
 	EventPRMergeRequested     EventType = "pr_merge_requested"
+	EventPRMergeFailed        EventType = "pr_merge_failed"
 	EventError                EventType = "error"
 	EventBeadRecovered        EventType = "bead_recovered"
 	EventDepcheckStarted      EventType = "depcheck_started"
