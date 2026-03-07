@@ -44,6 +44,10 @@ type AnvilConfig struct {
 	// for Go projects. When nil (default), golangci-lint runs if the
 	// binary is found on PATH. Set to a pointer to false to disable.
 	GolangciLint *bool `mapstructure:"golangci_lint"`
+	// GoRaceDetection enables the Go race detector (-race flag) as a
+	// separate temper step for this anvil. When nil, the global setting
+	// is used. Default off since -race slows tests and increases memory.
+	GoRaceDetection *bool `mapstructure:"go_race_detection"`
 }
 
 // SettingsConfig holds global operational settings.
@@ -113,6 +117,10 @@ type SettingsConfig struct {
 	// invocation per anvil (govulncheck downloads the vuln DB on first run).
 	// Defaults to 10 minutes.
 	VulncheckTimeout time.Duration `mapstructure:"vulncheck_timeout"`
+	// GoRaceDetection enables the Go race detector (-race flag) as a
+	// separate temper step globally. Per-anvil settings override this.
+	// Default: false.
+	GoRaceDetection bool `mapstructure:"go_race_detection"`
 }
 
 // NotificationsConfig holds webhook and notification settings.

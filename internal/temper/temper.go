@@ -17,6 +17,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
+	"gopkg.in/yaml.v3"
 )
 
 // StepResult captures the outcome of a single verification step.
@@ -74,6 +75,13 @@ type Step struct {
 type Config struct {
 	// Steps is the ordered list of verification steps.
 	Steps []Step
+	// GoRaceDetection is a configuration hint indicating whether Go race
+	// detection should be enabled (e.g., by adding a separate "race" step
+	// such as 'go test -race -short ./...'). It does not automatically
+	// modify Steps; callers are responsible for constructing Steps
+	// accordingly (e.g., via DefaultConfigWithRace). Default is false since
+	// -race slows tests and increases memory usage.
+	GoRaceDetection bool
 }
 
 // DetectOptions controls optional steps during auto-detection.
@@ -98,7 +106,43 @@ func DetectOptionsFromAnvilFlag(golangciLint *bool) *DetectOptions {
 // DefaultConfig returns a default config that auto-detects the project type.
 func DefaultConfig(worktreePath string, opts *DetectOptions) Config {
 	return Config{
-		Steps: detectSteps(worktreePath, opts),
+		Steps: detectSteps(worktreePath, opts, false),
+	}
+}
+
+// TemperYAML represents the per-anvil .forge/temper.yaml configuration.
+type TemperYAML struct {
+	GoRaceDetection *bool `yaml:"go_race_detection"`
+}
+
+// LoadAnvilConfig loads per-anvil temper configuration from .forge/temper.yaml
+// within the given anvil path. Returns (nil, nil) if the file does not exist.
+// Returns a non-nil error for read or parse failures so the caller can decide
+// how to surface it (e.g., log once per change, return structured error).
+func LoadAnvilConfig(anvilPath string) (*TemperYAML, error) {
+	path := filepath.Join(anvilPath, ".forge", "temper.yaml")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Config file is legitimately absent for this anvil.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("temper: failed to read config %s: %w", path, err)
+	}
+
+	var cfg TemperYAML
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("temper: failed to parse config %s: %w", path, err)
+	}
+	return &cfg, nil
+}
+
+// DefaultConfigWithRace returns a default config with race detection support.
+func DefaultConfigWithRace(worktreePath string, opts *DetectOptions, raceEnabled bool) Config {
+	return Config{
+		Steps:           detectSteps(worktreePath, opts, raceEnabled),
+		GoRaceDetection: raceEnabled,
 	}
 }
 
@@ -204,7 +248,7 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 }
 
 // detectSteps auto-detects project type and returns appropriate steps.
-func detectSteps(worktreePath string, opts *DetectOptions) []Step {
+func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 	var steps []Step
 
 	// Check for Go project
@@ -242,6 +286,14 @@ func detectSteps(worktreePath string, opts *DetectOptions) []Step {
 			Args:    []string{"test", "-short", "./..."},
 			Timeout: 5 * time.Minute,
 		})
+		if goRace {
+			steps = append(steps, Step{
+				Name:    "race",
+				Command: "go",
+				Args:    []string{"test", "-race", "-short", "./..."},
+				Timeout: 10 * time.Minute,
+			})
+		}
 	}
 
 	// Check for .NET project

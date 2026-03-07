@@ -51,6 +51,9 @@ type FixParams struct {
 	// temper.DefaultConfig so that per-anvil settings (e.g. DisableGolangciLint)
 	// are respected by the cifix worker.
 	DetectOptions *temper.DetectOptions
+	// GoRaceDetection enables a separate 'go test -race' step in Temper.
+	// Only used during auto-detection (when TemperConfig is nil).
+	GoRaceDetection bool
 	// Providers is the ordered list of AI providers to try.
 	// If empty, provider.Defaults() is used (Claude → Gemini).
 	Providers []provider.Provider
@@ -89,7 +92,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		// Step 1: Run Temper to reproduce failures
 		temperCfg := p.TemperConfig
 		if temperCfg == nil {
-			detected := temper.DefaultConfig(p.WorktreePath, p.DetectOptions)
+			detected := temper.DefaultConfigWithRace(p.WorktreePath, p.DetectOptions, p.GoRaceDetection)
 			temperCfg = &detected
 		}
 

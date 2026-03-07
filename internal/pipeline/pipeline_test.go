@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -709,6 +710,66 @@ func TestFormatWardenFeedback(t *testing.T) {
 	// so that retry prompts are never completely blank.
 	emptySummaryNoIssues := formatWardenFeedback("", nil)
 	assert.NotEmpty(t, emptySummaryNoIssues)
+}
+
+// TestGoRaceDetection_AutoConfig verifies that Params.GoRaceDetection is
+// plumbed into the auto-detected Temper config when TemperConfig is nil,
+// resulting in a "race" step being included for Go projects.
+func TestGoRaceDetection_AutoConfig(t *testing.T) {
+	db := newTestDB(t)
+
+	tests := []struct {
+		name         string
+		raceEnabled  bool
+		wantRaceStep bool
+	}{
+		{"race enabled", true, true},
+		{"race disabled", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params, _, _ := baseParams(t, db)
+
+			// Create a worktree with go.mod so Go auto-detection triggers the race step.
+			goWorktreeDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(goWorktreeDir, "go.mod"), []byte("module test\n\ngo 1.21\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			params.WorktreeCreator = func(_ context.Context, _, beadID string) (*worktree.Worktree, error) {
+				return &worktree.Worktree{
+					BeadID:    beadID,
+					AnvilPath: params.AnvilConfig.Path,
+					Path:      goWorktreeDir,
+					Branch:    "forge/" + beadID,
+				}, nil
+			}
+
+			params.GoRaceDetection = tt.raceEnabled
+			params.TemperConfig = nil // force auto-detection
+
+			var capturedConfig temper.Config
+			params.TemperRunner = func(_ context.Context, _ string, cfg temper.Config, _ *state.DB, _, _ string) *temper.Result {
+				capturedConfig = cfg
+				return &temper.Result{Passed: true}
+			}
+			params.WardenReviewer = func(_ context.Context, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+				return &warden.ReviewResult{Verdict: warden.VerdictApprove}, nil
+			}
+
+			Run(context.Background(), params)
+
+			hasRaceStep := false
+			for _, step := range capturedConfig.Steps {
+				if step.Name == "race" {
+					hasRaceStep = true
+					break
+				}
+			}
+			assert.Equal(t, tt.wantRaceStep, hasRaceStep, "race step presence should match GoRaceDetection flag")
+			assert.Equal(t, tt.raceEnabled, capturedConfig.GoRaceDetection, "GoRaceDetection should be plumbed to temper config")
+		})
+	}
 }
 
 // TestSchematic_PerAnvilDisable verifies that per-anvil SchematicEnabled=false

@@ -73,6 +73,16 @@ const (
 	MaxDispatchFailures = 3
 )
 
+// temperCacheEntry caches a parsed per-anvil temper.yaml along with the file's
+// modification time so the file is only re-read when it changes on disk.
+// statErr is non-empty when the last os.Stat call returned a non-ENOENT error;
+// it is used to suppress repeated log spam when the file is unreadable.
+type temperCacheEntry struct {
+	cfg     *temper.TemperYAML
+	mtime   time.Time
+	statErr string // last non-ENOENT stat error message; empty on success
+}
+
 // Daemon is the main Forge orchestration daemon.
 type Daemon struct {
 	cfg           atomic.Pointer[config.Config]
@@ -113,6 +123,11 @@ type Daemon struct {
 	// Cache for last poll results
 	lastBeads   []poller.Bead
 	lastBeadsMu sync.RWMutex
+
+	// Per-anvil temper.yaml cache keyed by anvil path.
+	// Avoids repeated filesystem I/O on every dispatch and de-duplicates
+	// log spam when the file is invalid or unreadable.
+	temperCache   sync.Map // map[string]*temperCacheEntry
 
 	// Periodic bead recovery counter (runs every N poll cycles)
 	pollCount atomic.Int64
@@ -472,17 +487,18 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			})
 			cifixDetectOpts := temper.DetectOptionsFromAnvilFlag(anvilCfg.GolangciLint)
 			res := cifix.Fix(ctx, cifix.FixParams{
-				WorktreePath:  wt.Path,
-				BeadID:        req.BeadID,
-				AnvilName:     req.Anvil,
-				AnvilPath:     anvilCfg.Path,
-				PRNumber:      req.PRNumber,
-				Branch:        req.Branch,
-				DB:            d.db,
-				WorkerID:      workerID,
-				ExtraFlags:    d.config().Settings.ClaudeFlags,
-				DetectOptions: cifixDetectOpts,
-				Providers:     provider.FromConfig(d.config().Settings.Providers),
+				WorktreePath:    wt.Path,
+				BeadID:          req.BeadID,
+				AnvilName:       req.Anvil,
+				AnvilPath:       anvilCfg.Path,
+				PRNumber:        req.PRNumber,
+				Branch:          req.Branch,
+				DB:              d.db,
+				WorkerID:        workerID,
+				ExtraFlags:      d.config().Settings.ClaudeFlags,
+				DetectOptions:   cifixDetectOpts,
+				GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
+				Providers:       provider.FromConfig(d.config().Settings.Providers),
 			})
 			status := state.WorkerDone
 			if res.Error != nil {
@@ -978,6 +994,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		AnvilConfig:     anvilCfg,
 		Bead:            bead,
 		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
+		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 		Providers:       provider.FromConfig(smithProviderSpecs),
 		Notifier:        d.notifier,
 	}
@@ -1893,6 +1910,63 @@ func (d *Daemon) classifyBeadSection(bead poller.Bead) state.QueueSection {
 		return state.QueueSectionUnlabeled
 	}
 	return state.QueueSectionReady
+}
+
+// loadAnvilTemperCached returns the parsed .forge/temper.yaml for the given anvil path,
+// using a per-path cache keyed on the file's modification time to avoid repeated I/O
+// on every dispatch. Errors are logged once per unique error message rather than on
+// every call; non-ENOENT stat errors are cached as sentinels so log spam is suppressed
+// even when the file is unreadable (e.g. permission denied).
+func (d *Daemon) loadAnvilTemperCached(anvilPath string) *temper.TemperYAML {
+	yamlPath := filepath.Join(anvilPath, ".forge", "temper.yaml")
+	info, statErr := os.Stat(yamlPath)
+
+	if statErr != nil {
+		if !os.IsNotExist(statErr) {
+			// Cache the error as a sentinel so we only log when it changes.
+			errMsg := statErr.Error()
+			if entry, ok := d.temperCache.Load(anvilPath); !ok || entry.(*temperCacheEntry).statErr != errMsg {
+				d.logger.Warn("temper: cannot stat per-anvil config", "path", yamlPath, "error", statErr)
+				d.temperCache.Store(anvilPath, &temperCacheEntry{statErr: errMsg})
+			}
+		} else {
+			d.temperCache.Delete(anvilPath)
+		}
+		return nil
+	}
+
+	mtime := info.ModTime()
+	if entry, ok := d.temperCache.Load(anvilPath); ok {
+		cached := entry.(*temperCacheEntry)
+		if cached.statErr == "" && cached.mtime.Equal(mtime) {
+			return cached.cfg
+		}
+	}
+
+	cfg, err := temper.LoadAnvilConfig(anvilPath)
+	if err != nil {
+		d.logger.Warn("temper: failed to load per-anvil config", "path", yamlPath, "error", err)
+		// Cache the failed load at this mtime so we don't spam logs on every dispatch.
+		d.temperCache.Store(anvilPath, &temperCacheEntry{cfg: nil, mtime: mtime})
+		return nil
+	}
+
+	d.temperCache.Store(anvilPath, &temperCacheEntry{cfg: cfg, mtime: mtime})
+	return cfg
+}
+
+// resolveGoRaceDetection resolves the effective Go race detection setting.
+// Priority: per-anvil .forge/temper.yaml > per-anvil forge.yaml config > global setting.
+// The .forge/temper.yaml is cached by mtime to avoid repeated filesystem I/O.
+func (d *Daemon) resolveGoRaceDetection(anvilCfg config.AnvilConfig) bool {
+	goRace := d.cfg.Load().Settings.GoRaceDetection
+	if anvilCfg.GoRaceDetection != nil {
+		goRace = *anvilCfg.GoRaceDetection
+	}
+	if anvilTemper := d.loadAnvilTemperCached(anvilCfg.Path); anvilTemper != nil && anvilTemper.GoRaceDetection != nil {
+		goRace = *anvilTemper.GoRaceDetection
+	}
+	return goRace
 }
 
 // shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.
