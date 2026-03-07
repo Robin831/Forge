@@ -60,14 +60,28 @@ type QueueItem struct {
 	Status   string
 }
 
+// AttentionReason categorizes why a bead needs human attention.
+type AttentionReason int
+
+const (
+	AttentionUnknown          AttentionReason = iota
+	AttentionDispatchExhausted                // Circuit breaker tripped after repeated dispatch failures
+	AttentionCIFixExhausted                   // CI fix attempts exhausted
+	AttentionReviewFixExhausted               // Review fix attempts exhausted
+	AttentionRebaseExhausted                  // Rebase attempts exhausted
+	AttentionClarification                    // Bead flagged as needing clarification
+	AttentionStalled                          // Worker stalled (no log activity)
+)
+
 // NeedsAttentionItem represents a bead requiring human attention.
 type NeedsAttentionItem struct {
-	BeadID   string
-	Title    string
-	Anvil    string
-	Reason   string
-	PRID     int // Non-zero when item originates from an exhausted PR
-	PRNumber int
+	BeadID         string
+	Title          string
+	Anvil          string
+	Reason         string
+	ReasonCategory AttentionReason
+	PRID           int // Non-zero when item originates from an exhausted PR
+	PRNumber       int
 }
 
 // WorkerItem represents a worker in the workers panel.
@@ -575,8 +589,29 @@ func (m *Model) renderLeftColumn(width, height int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
+// attentionReasonIcon returns a distinct icon and short label for each attention reason category.
+func attentionReasonIcon(cat AttentionReason) string {
+	switch cat {
+	case AttentionDispatchExhausted:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("⊘ DISPATCH")
+	case AttentionCIFixExhausted:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("🔧 CI FIX")
+	case AttentionReviewFixExhausted:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render("📝 REVIEW")
+	case AttentionRebaseExhausted:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render("↻ REBASE")
+	case AttentionClarification:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render("? CLARIFY")
+	case AttentionStalled:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("◼ STALLED")
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("⚠ UNKNOWN")
+	}
+}
+
 // renderNeedsAttention renders the Needs Attention sub-panel showing beads
-// that require human intervention (exhausted retries or clarification needed).
+// that require human intervention (e.g. exhausted dispatch/CI-fix/review-fix/rebase
+// attempts, clarification requests, or stalled workers).
 func (m *Model) renderNeedsAttention(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelNeedsAttention {
@@ -599,13 +634,14 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 			if item.PRNumber > 0 {
 				label = fmt.Sprintf("PR #%d %s", item.PRNumber, item.BeadID)
 			}
-			beadLine := fmt.Sprintf("⚠ %s %s", label, anvil)
+			icon := attentionReasonIcon(item.ReasonCategory)
+			beadLine := fmt.Sprintf("%s %s %s", icon, label, anvil)
 			if i == m.needsAttentionScroll {
 				beadLine = selectedStyle.Render(beadLine)
 			}
 			lines = append(lines, beadLine)
 
-			// Second line: reason (truncated)
+			// Second line: reason detail (truncated)
 			reason := item.Reason
 			if reason == "" {
 				reason = "(no reason)"

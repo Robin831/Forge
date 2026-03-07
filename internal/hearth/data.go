@@ -12,6 +12,35 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
+// classifyAttentionReason determines the AttentionReason category from a
+// NeedsAttentionBead's fields. The classification is ordered by specificity:
+// clarification flag, circuit breaker prefix, reason text patterns, stalled.
+func classifyAttentionReason(b state.NeedsAttentionBead) AttentionReason {
+	if b.ClarificationNeeded {
+		return AttentionClarification
+	}
+	reason := strings.ToLower(b.Reason)
+	if strings.HasPrefix(reason, "circuit breaker:") {
+		return AttentionDispatchExhausted
+	}
+	if strings.Contains(reason, "ci fix exhausted") {
+		return AttentionCIFixExhausted
+	}
+	if strings.Contains(reason, "review fix exhausted") {
+		return AttentionReviewFixExhausted
+	}
+	if strings.Contains(reason, "rebase exhausted") {
+		return AttentionRebaseExhausted
+	}
+	if strings.Contains(reason, "stalled") {
+		return AttentionStalled
+	}
+	if b.NeedsHuman {
+		return AttentionDispatchExhausted
+	}
+	return AttentionUnknown
+}
+
 // TickInterval is how often the TUI refreshes data.
 const TickInterval = 2 * time.Second
 
@@ -352,12 +381,13 @@ func FetchNeedsAttention(ds *DataSource) tea.Cmd {
 		var items []NeedsAttentionItem
 		for _, b := range beads {
 			items = append(items, NeedsAttentionItem{
-				BeadID:   b.BeadID,
-				Title:    b.Title,
-				Anvil:    b.Anvil,
-				Reason:   b.Reason,
-				PRID:     b.PRID,
-				PRNumber: b.PRNumber,
+				BeadID:         b.BeadID,
+				Title:          b.Title,
+				Anvil:          b.Anvil,
+				Reason:         b.Reason,
+				ReasonCategory: classifyAttentionReason(b),
+				PRID:           b.PRID,
+				PRNumber:       b.PRNumber,
 			})
 		}
 
