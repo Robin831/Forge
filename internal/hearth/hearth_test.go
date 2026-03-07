@@ -177,7 +177,7 @@ func TestRenderColumnsAlignedHeight(t *testing.T) {
 		height:  40,
 	}
 
-	topHeight, bottomHeight := m.getVerticalSplit()
+	topHeight, bottomHeight := m.getVerticalSplit(1, 1)
 	width := 40
 
 	leftColumn := m.renderLeftColumn(width, topHeight, bottomHeight)
@@ -899,5 +899,49 @@ func TestReadyToMergeErrorMsgAppendsEvent(t *testing.T) {
 	}
 	if !strings.Contains(m.events[0].Message, "ready-to-merge read failed") {
 		t.Errorf("expected 'ready-to-merge read failed' in event message, got %q", m.events[0].Message)
+	}
+}
+
+func TestGetVerticalSplitSumsToContentHeight(t *testing.T) {
+	for _, h := range []int{10, 24, 40, 80} {
+		m := Model{width: 120, height: h}
+		topHeight, bottomHeight := m.getVerticalSplit(1, 1)
+		contentHeight := h - 1 - 1 - 4 // header(1) + footer(1) + panel borders(4)
+		if contentHeight < 0 {
+			contentHeight = 0
+		}
+		if topHeight < 0 {
+			t.Errorf("height=%d: topHeight=%d is negative", h, topHeight)
+		}
+		if bottomHeight < 0 {
+			t.Errorf("height=%d: bottomHeight=%d is negative", h, bottomHeight)
+		}
+		if got := topHeight + bottomHeight; got != contentHeight {
+			t.Errorf("height=%d: topHeight(%d) + bottomHeight(%d) = %d, want %d",
+				h, topHeight, bottomHeight, got, contentHeight)
+		}
+	}
+}
+
+func TestViewHeaderVisibleAtTightTerminalHeight(t *testing.T) {
+	// Regression test: the Hearth header must appear first in the rendered output
+	// at any reasonable terminal height so it is not scrolled off-screen.
+	// Also verifies the rendered output does not exceed the terminal height,
+	// which would cause the terminal to scroll the header off-screen.
+	for _, h := range []int{10, 24, 40} {
+		m := Model{
+			width:  120,
+			height: h,
+			ready:  true,
+		}
+		rendered := m.View()
+		lines := strings.Split(rendered, "\n")
+		firstLine := lines[0]
+		if !strings.Contains(firstLine, "Forge") {
+			t.Errorf("height=%d: first rendered line does not contain header text, got: %q", h, firstLine)
+		}
+		if len(lines) > h {
+			t.Errorf("height=%d: rendered output has %d lines, exceeds terminal height and will scroll header off-screen", h, len(lines))
+		}
 	}
 }

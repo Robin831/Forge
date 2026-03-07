@@ -545,18 +545,9 @@ func (m *Model) View() string {
 		return "Initializing The Forge..."
 	}
 
-	queueWidth, workerWidth, activityWidth := m.getTopPanelWidths()
-	topHeight, bottomHeight := m.getVerticalSplit()
-
-	// Left column: Queue (top) + Needs Attention (bottom)
-	leftColumn := m.renderLeftColumn(queueWidth, topHeight, bottomHeight)
-	// Center: worker list (full height)
-	workerPanel := m.renderWorkerList(workerWidth, topHeight+bottomHeight)
-	// Right column: Live Activity (top) + Events (bottom)
-	rightColumn := m.renderRightColumn(activityWidth, topHeight, bottomHeight)
-
 	// Header
 	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
+	headerH := lipgloss.Height(header)
 
 	// Footer with status message or default hints
 	footerText := "Tab: switch panel • j/k: scroll • K: kill worker • Enter: actions/merge • l: label bead • f: follow • q: quit"
@@ -564,6 +555,17 @@ func (m *Model) View() string {
 		footerText = statusMsgStyle.Render(m.statusMsg)
 	}
 	footer := footerStyle.Width(m.width).Render(footerText)
+	footerH := lipgloss.Height(footer)
+
+	queueWidth, workerWidth, activityWidth := m.getTopPanelWidths()
+	topHeight, bottomHeight := m.getVerticalSplit(headerH, footerH)
+
+	// Left column: Queue (top) + Needs Attention (bottom)
+	leftColumn := m.renderLeftColumn(queueWidth, topHeight, bottomHeight)
+	// Center: worker list (full height)
+	workerPanel := m.renderWorkerList(workerWidth, topHeight+bottomHeight)
+	// Right column: Live Activity (top) + Events (bottom)
+	rightColumn := m.renderRightColumn(activityWidth, topHeight, bottomHeight)
 
 	// Final assembly
 	columns := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, workerPanel, rightColumn)
@@ -602,23 +604,25 @@ func (m *Model) getTopPanelWidths() (queueWidth, workerWidth, activityWidth int)
 	return
 }
 
-func (m *Model) getVerticalSplit() (topHeight, bottomHeight int) {
-	contentHeight := m.height - 4 // header + footer
+func (m *Model) getVerticalSplit(headerH, footerH int) (topHeight, bottomHeight int) {
+	// contentHeight is the total vertical space available for the top panels and
+	// the events panel, including their borders. We subtract the global
+	// header and footer rows, AND the panel borders(4) here to ensure
+	// stacked panels (2 borders each) fit.
+	contentHeight := m.height - headerH - footerH - 4
 	if contentHeight < 0 {
 		contentHeight = 0
 	}
 	// Give top panels 60%, bottom panels 40% (same split for left and right columns).
 	topHeight = contentHeight * 6 / 10
-	if contentHeight < 5 {
-		topHeight = contentHeight
-	} else {
+	if contentHeight >= 10 {
 		topHeight = max(topHeight, 5)
 	}
 	bottomHeight = contentHeight - topHeight
 	// Enforce a minimum bottom panel height of 4 lines so bordered panels
 	// remain renderable at small terminal sizes.
 	const minBottomHeight = 4
-	if bottomHeight < minBottomHeight && contentHeight >= 5+minBottomHeight {
+	if bottomHeight < minBottomHeight && contentHeight >= 10 {
 		bottomHeight = minBottomHeight
 		topHeight = contentHeight - bottomHeight
 	}
@@ -1003,6 +1007,9 @@ func (m *Model) renderQueue(width, height int) string {
 		}
 	}
 
+	if height <= 0 {
+		return style.Render("")
+	}
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
 }
@@ -1153,6 +1160,9 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 		}
 	}
 
+	if height <= 0 {
+		return style.Render("")
+	}
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
 }
@@ -1323,6 +1333,9 @@ func (m *Model) renderWorkerList(width, height int) string {
 		}
 	}
 
+	if height <= 0 {
+		return style.Render("")
+	}
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
 }
@@ -1379,6 +1392,9 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 		}
 	}
 
+	if height <= 0 {
+		return style.Render("")
+	}
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
 }
@@ -1411,6 +1427,9 @@ func (m *Model) renderEvents(width, height int) string {
 		}
 	}
 
+	if height <= 0 {
+		return style.Render("")
+	}
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
 }
