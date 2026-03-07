@@ -399,10 +399,17 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Start dependency update checker (if enabled)
 	if d.config().Settings.DepcheckInterval > 0 {
+		depcheckDisabled := make(map[string]bool)
+		for name, anvil := range d.config().Anvils {
+			if anvil.DepcheckEnabled != nil && !*anvil.DepcheckEnabled {
+				depcheckDisabled[name] = true
+			}
+		}
 		d.depcheckMonitor = depcheck.New(d.db,
 			d.config().Settings.DepcheckInterval,
 			d.config().Settings.DepcheckTimeout,
-			monitorAnvils)
+			monitorAnvils,
+			depcheckDisabled)
 		go func() {
 			if err := d.depcheckMonitor.Run(ctx); err != nil && err != context.Canceled {
 				d.logger.Error("Depcheck monitor error", "error", err)

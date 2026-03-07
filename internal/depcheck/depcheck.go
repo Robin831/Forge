@@ -1,65 +1,98 @@
-// Package depcheck periodically checks Go modules for outdated dependencies
-// across registered anvils. When updates are found, it creates beads so a Smith
-// agent can apply the updates. Patch/minor updates produce auto-dispatch beads;
-// major version bumps produce "needs attention" beads.
+// Package depcheck periodically checks registered anvils for outdated dependencies
+// across multiple ecosystems (Go, .NET/NuGet, npm). When updates are found, it
+// creates beads so a Smith agent can apply the updates. Patch/minor updates are
+// grouped into a single bead per ecosystem; major version bumps get individual beads.
 package depcheck
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
 )
 
-// ModuleUpdate describes an outdated Go module dependency.
-type ModuleUpdate struct {
-	Path    string // module path
-	Current string // current version
-	Latest  string // latest available version
-	Kind    string // "patch", "minor", or "major"
+// Ecosystem identifies the package manager that produced an update.
+type Ecosystem string
+
+const (
+	EcosystemGo     Ecosystem = "Go"
+	EcosystemDotnet Ecosystem = "NuGet"
+	EcosystemNpm    Ecosystem = "npm"
+)
+
+// DependencyUpdate describes an outdated dependency.
+type DependencyUpdate struct {
+	Ecosystem Ecosystem // Go, NuGet, npm
+	Package   string    // module/package name
+	Current   string    // current version
+	Latest    string    // latest available version
+	Kind      string    // "patch", "minor", or "major"
+	Subdir    string    // subdirectory within the anvil (empty for root)
 }
 
-// CheckResult holds the depcheck results for a single anvil.
-type CheckResult struct {
+// ScanResult holds the depcheck results for a single anvil.
+type ScanResult struct {
 	Anvil   string
 	Path    string
-	Patch   []ModuleUpdate // patch updates (auto-bead)
-	Minor   []ModuleUpdate // minor updates (auto-bead)
-	Major   []ModuleUpdate // major version bumps (needs attention)
+	Updates []DependencyUpdate
 	Error   error
 	Checked time.Time
 }
 
-// Monitor periodically checks Go anvils for outdated dependencies.
+// UpdatesByKind groups updates into patch+minor and major buckets.
+func (r ScanResult) UpdatesByKind() (patchMinor, major []DependencyUpdate) {
+	for _, u := range r.Updates {
+		if u.Kind == "major" {
+			major = append(major, u)
+		} else {
+			patchMinor = append(patchMinor, u)
+		}
+	}
+	return
+}
+
+// UpdatesByEcosystem groups updates by ecosystem.
+func (r ScanResult) UpdatesByEcosystem() map[Ecosystem][]DependencyUpdate {
+	m := make(map[Ecosystem][]DependencyUpdate)
+	for _, u := range r.Updates {
+		m[u.Ecosystem] = append(m[u.Ecosystem], u)
+	}
+	return m
+}
+
+// Monitor periodically checks anvils for outdated dependencies across ecosystems.
 type Monitor struct {
 	db         *state.DB
 	interval   time.Duration
 	timeout    time.Duration
 	anvilPaths map[string]string // anvil name -> path
+	disabled   map[string]bool   // anvil name -> depcheck_enabled=false
 }
 
 // New creates a dependency check monitor.
-func New(db *state.DB, interval, timeout time.Duration, anvilPaths map[string]string) *Monitor {
+// disabled maps anvil names to true when depcheck_enabled is explicitly false.
+func New(db *state.DB, interval, timeout time.Duration, anvilPaths map[string]string, disabled map[string]bool) *Monitor {
 	if interval < 1*time.Hour {
 		interval = 1 * time.Hour
 	}
 	if timeout < 1*time.Minute {
 		timeout = 1 * time.Minute
 	}
+	if disabled == nil {
+		disabled = make(map[string]bool)
+	}
 	return &Monitor{
 		db:         db,
 		interval:   interval,
 		timeout:    timeout,
 		anvilPaths: anvilPaths,
+		disabled:   disabled,
 	}
 }
 
@@ -86,13 +119,23 @@ func (m *Monitor) Run(ctx context.Context) error {
 	}
 }
 
-// checkAll runs dependency checks on all Go anvils.
+// CheckAll runs dependency checks on all anvils and returns results (for CLI use).
+func (m *Monitor) CheckAll(ctx context.Context) []ScanResult {
+	return m.checkAllResults(ctx)
+}
+
+// checkAll runs dependency checks on all anvils (for scheduled use, creates beads).
 func (m *Monitor) checkAll(ctx context.Context) {
 	log.Printf("[depcheck] Checking %d anvils for outdated dependencies", len(m.anvilPaths))
 
 	for name, path := range m.anvilPaths {
 		if ctx.Err() != nil {
 			return
+		}
+
+		if m.disabled[name] {
+			log.Printf("[depcheck] %s: skipped (depcheck_enabled: false)", name)
+			continue
 		}
 
 		result := m.checkAnvil(ctx, name, path)
@@ -103,128 +146,189 @@ func (m *Monitor) checkAll(ctx context.Context) {
 			continue
 		}
 
-		total := len(result.Patch) + len(result.Minor) + len(result.Major)
-		if total == 0 {
+		if len(result.Updates) == 0 {
 			log.Printf("[depcheck] %s: all dependencies up to date", name)
 			_ = m.db.LogEvent(state.EventDepcheckPassed,
 				fmt.Sprintf("All dependencies up to date in %s", name), "", name)
 			continue
 		}
 
-		log.Printf("[depcheck] %s: %d outdated (%d patch, %d minor, %d major)",
-			name, total, len(result.Patch), len(result.Minor), len(result.Major))
+		byEco := result.UpdatesByEcosystem()
+		var parts []string
+		for eco, ups := range byEco {
+			parts = append(parts, fmt.Sprintf("%d %s", len(ups), eco))
+		}
+		sort.Strings(parts)
+		log.Printf("[depcheck] %s: %d outdated (%s)",
+			name, len(result.Updates), strings.Join(parts, ", "))
 		_ = m.db.LogEvent(state.EventDepcheckFound,
-			fmt.Sprintf("Found %d outdated dependencies in %s (%d patch, %d minor, %d major)",
-				total, name, len(result.Patch), len(result.Minor), len(result.Major)),
+			fmt.Sprintf("Found %d outdated dependencies in %s (%s)",
+				len(result.Updates), name, strings.Join(parts, ", ")),
 			"", name)
 
 		m.createBeads(ctx, result)
 	}
 }
 
-// checkAnvil runs 'go list -m -u all' in an anvil directory if it has a go.mod.
-func (m *Monitor) checkAnvil(ctx context.Context, name, path string) CheckResult {
-	result := CheckResult{
+// checkAllResults is like checkAll but returns results instead of creating beads.
+func (m *Monitor) checkAllResults(ctx context.Context) []ScanResult {
+	var results []ScanResult
+	for name, path := range m.anvilPaths {
+		if ctx.Err() != nil {
+			break
+		}
+		if m.disabled[name] {
+			continue
+		}
+		results = append(results, m.checkAnvil(ctx, name, path))
+	}
+	return results
+}
+
+// checkAnvil discovers and scans all ecosystems present in an anvil.
+func (m *Monitor) checkAnvil(ctx context.Context, name, path string) ScanResult {
+	result := ScanResult{
 		Anvil:   name,
 		Path:    path,
 		Checked: time.Now(),
 	}
 
-	// Only check Go projects
-	if _, err := os.Stat(filepath.Join(path, "go.mod")); err != nil {
-		return result // not a Go project, skip silently
+	var allUpdates []DependencyUpdate
+
+	// Go: check for go.mod at root
+	if goUpdates, err := scanGo(ctx, path, m.timeout); err != nil {
+		log.Printf("[depcheck] %s: Go scan error: %v", name, err)
+	} else {
+		allUpdates = append(allUpdates, goUpdates...)
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, m.timeout)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "go", "list", "-m", "-u", "all"))
-	cmd.Dir = path
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	output, err := cmd.Output()
-	if err != nil {
-		result.Error = fmt.Errorf("go list -m -u all: %w: %s", err, stderr.String())
-		return result
-	}
-
-	updates := parseGoListOutput(string(output))
-	for _, u := range updates {
-		switch u.Kind {
-		case "patch":
-			result.Patch = append(result.Patch, u)
-		case "minor":
-			result.Minor = append(result.Minor, u)
-		case "major":
-			result.Major = append(result.Major, u)
+	// .NET: walk for *.csproj and *.sln files
+	dotnetRoots := findDotnetRoots(path)
+	for _, root := range dotnetRoots {
+		subdir := relativeSubdir(path, root)
+		if updates, err := scanDotnet(ctx, root, subdir, m.timeout); err != nil {
+			log.Printf("[depcheck] %s: .NET scan error in %s: %v", name, subdir, err)
+		} else {
+			allUpdates = append(allUpdates, updates...)
 		}
 	}
 
+	// npm: walk for package.json files (skip node_modules)
+	npmRoots := findNpmRoots(path)
+	for _, root := range npmRoots {
+		subdir := relativeSubdir(path, root)
+		if updates, err := scanNpm(ctx, root, subdir, m.timeout); err != nil {
+			log.Printf("[depcheck] %s: npm scan error in %s: %v", name, subdir, err)
+		} else {
+			allUpdates = append(allUpdates, updates...)
+		}
+	}
+
+	// Sort: major first, then minor, then patch; within same kind by package name
+	order := map[string]int{"major": 0, "minor": 1, "patch": 2}
+	sort.Slice(allUpdates, func(i, j int) bool {
+		if allUpdates[i].Kind != allUpdates[j].Kind {
+			return order[allUpdates[i].Kind] < order[allUpdates[j].Kind]
+		}
+		if allUpdates[i].Ecosystem != allUpdates[j].Ecosystem {
+			return allUpdates[i].Ecosystem < allUpdates[j].Ecosystem
+		}
+		return allUpdates[i].Package < allUpdates[j].Package
+	})
+
+	result.Updates = allUpdates
 	return result
 }
 
-// parseGoListOutput parses the output of 'go list -m -u all' and returns
-// modules that have updates available. Each output line looks like:
-//
-//	github.com/foo/bar v1.2.3 [v1.4.0]
-//
-// Lines without brackets have no update. The first line (the main module) is skipped.
-func parseGoListOutput(output string) []ModuleUpdate {
-	var updates []ModuleUpdate
+// relativeSubdir returns the relative path from base to dir, or "." if they're the same.
+func relativeSubdir(base, dir string) string {
+	rel, err := filepath.Rel(base, dir)
+	if err != nil || rel == "." {
+		return ""
+	}
+	return filepath.ToSlash(rel)
+}
 
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	for i, line := range lines {
-		if i == 0 {
-			continue // skip main module
+// findDotnetRoots finds directories containing *.sln or *.csproj files.
+// Returns unique directory paths, preferring sln directories over csproj.
+func findDotnetRoots(root string) []string {
+	seen := make(map[string]bool)
+	var roots []string
+
+	// Look for .sln files first (solution-level)
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
 		}
-
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+		if info.IsDir() {
+			name := info.Name()
+			if name == "node_modules" || name == ".git" || name == "bin" || name == "obj" || name == ".workers" {
+				return filepath.SkipDir
+			}
+			return nil
 		}
-
-		// Look for [vX.Y.Z] update marker
-		bracketStart := strings.Index(line, "[")
-		bracketEnd := strings.Index(line, "]")
-		if bracketStart < 0 || bracketEnd < 0 || bracketEnd <= bracketStart {
-			continue // no update available
+		if strings.HasSuffix(path, ".sln") {
+			dir := filepath.Dir(path)
+			if !seen[dir] {
+				seen[dir] = true
+				roots = append(roots, dir)
+			}
 		}
+		return nil
+	})
 
-		latest := line[bracketStart+1 : bracketEnd]
-		prefix := strings.TrimSpace(line[:bracketStart])
-		parts := strings.Fields(prefix)
-		if len(parts) < 2 {
-			continue
-		}
-
-		modPath := parts[0]
-		current := parts[1]
-
-		kind := classifyUpdate(current, latest)
-
-		updates = append(updates, ModuleUpdate{
-			Path:    modPath,
-			Current: current,
-			Latest:  latest,
-			Kind:    kind,
+	// If no .sln found, look for .csproj files
+	if len(roots) == 0 {
+		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			if info.IsDir() {
+				name := info.Name()
+				if name == "node_modules" || name == ".git" || name == "bin" || name == "obj" || name == ".workers" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if strings.HasSuffix(path, ".csproj") {
+				dir := filepath.Dir(path)
+				if !seen[dir] {
+					seen[dir] = true
+					roots = append(roots, dir)
+				}
+			}
+			return nil
 		})
 	}
 
-	order := map[string]int{"major": 0, "minor": 1, "patch": 2}
-	sort.Slice(updates, func(i, j int) bool {
-		if updates[i].Kind != updates[j].Kind {
-			// major first (needs attention), then minor, then patch
-			return order[updates[i].Kind] < order[updates[j].Kind]
+	return roots
+}
+
+// findNpmRoots finds directories containing package.json (skipping node_modules).
+func findNpmRoots(root string) []string {
+	var roots []string
+
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
 		}
-		return updates[i].Path < updates[j].Path
+		if info.IsDir() {
+			name := info.Name()
+			if name == "node_modules" || name == ".git" || name == ".workers" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.Name() == "package.json" {
+			roots = append(roots, filepath.Dir(path))
+		}
+		return nil
 	})
 
-	return updates
+	return roots
 }
 
 // classifyUpdate determines if an update is patch, minor, or major.
-// Versions are expected in semver format: vMAJOR.MINOR.PATCH
 func classifyUpdate(current, latest string) string {
 	cMaj, cMin, _ := parseSemver(current)
 	lMaj, lMin, _ := parseSemver(latest)
@@ -238,8 +342,8 @@ func classifyUpdate(current, latest string) string {
 	return "patch"
 }
 
-// parseSemver extracts major, minor, patch from a Go module version string.
-// Handles formats like v1.2.3, v1.2.3-pre, v0.0.0-date-hash (pseudo-versions).
+// parseSemver extracts major, minor, patch from a version string.
+// Handles formats like v1.2.3, 1.2.3, v1.2.3-pre, 0.0.0-date-hash.
 func parseSemver(v string) (major, minor, patch string) {
 	v = strings.TrimPrefix(v, "v")
 
@@ -259,112 +363,4 @@ func parseSemver(v string) (major, minor, patch string) {
 	default:
 		return "0", "0", "0"
 	}
-}
-
-// createBeads creates bead issues for the outdated dependencies found in an anvil.
-// Patch+minor updates go into a single auto-dispatch bead.
-// Major updates go into a separate "needs attention" bead.
-// Duplicate beads (same kind already open) are skipped to prevent queue flooding.
-func (m *Monitor) createBeads(ctx context.Context, result CheckResult) {
-	if len(result.Patch)+len(result.Minor) > 0 {
-		if !m.openBeadExists(ctx, result.Path, "Go dependencies (patch/minor)") {
-			m.createUpdateBead(ctx, result.Anvil, result.Path, "auto",
-				append(result.Patch, result.Minor...))
-		} else {
-			log.Printf("[depcheck] %s: open patch/minor update bead already exists, skipping", result.Anvil)
-		}
-	}
-
-	if len(result.Major) > 0 {
-		if !m.openBeadExists(ctx, result.Path, "Go major version updates") {
-			m.createUpdateBead(ctx, result.Anvil, result.Path, "major", result.Major)
-		} else {
-			log.Printf("[depcheck] %s: open major update bead already exists, skipping", result.Anvil)
-		}
-	}
-}
-
-// openBeadExists returns true if an open bead whose title contains phrase already
-// exists in the anvil's bead queue. This prevents duplicate update beads from
-// accumulating across weekly check cycles.
-func (m *Monitor) openBeadExists(ctx context.Context, anvilPath, phrase string) bool {
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "list", "--status=open", "--json"))
-	cmd.Dir = anvilPath
-
-	output, err := cmd.Output()
-	if err != nil {
-		// If we can't query, allow creation rather than silently suppressing beads.
-		return false
-	}
-
-	return strings.Contains(string(output), phrase)
-}
-
-// createUpdateBead runs 'bd create' to create a bead for dependency updates.
-func (m *Monitor) createUpdateBead(ctx context.Context, anvil, anvilPath, kind string, updates []ModuleUpdate) {
-	var title string
-	var priority string
-	var desc strings.Builder
-
-	switch kind {
-	case "auto":
-		title = fmt.Sprintf("Update %d Go dependencies (patch/minor)", len(updates))
-		priority = "3"
-		desc.WriteString("Automated dependency update for patch and minor version bumps.\n\n")
-		desc.WriteString("Run `go get -u` for each module below, then `go mod tidy`.\n\n")
-	case "major":
-		title = fmt.Sprintf("Review %d Go major version updates", len(updates))
-		priority = "2"
-		desc.WriteString("Major version updates detected. These may contain breaking changes and require manual review.\n\n")
-	}
-
-	desc.WriteString("## Outdated Modules\n\n")
-	desc.WriteString("| Module | Current | Latest | Type |\n")
-	desc.WriteString("|--------|---------|--------|------|\n")
-	for _, u := range updates {
-		desc.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", u.Path, u.Current, u.Latest, u.Kind))
-	}
-
-	if kind == "auto" {
-		desc.WriteString("\n## Instructions\n\n")
-		desc.WriteString("```bash\n")
-		for _, u := range updates {
-			desc.WriteString(fmt.Sprintf("go get %s@%s\n", u.Path, u.Latest))
-		}
-		desc.WriteString("go mod tidy\n")
-		desc.WriteString("```\n")
-	}
-
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	issueType := "chore"
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "create",
-		fmt.Sprintf("--title=%s", title),
-		fmt.Sprintf("--description=%s", desc.String()),
-		fmt.Sprintf("--type=%s", issueType),
-		fmt.Sprintf("--priority=%s", priority),
-		"--json",
-	))
-	cmd.Dir = anvilPath
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	output, err := cmd.Output()
-	if err != nil {
-		log.Printf("[depcheck] Failed to create bead for %s (%s): %v: %s", anvil, kind, err, stderr.String())
-		_ = m.db.LogEvent(state.EventDepcheckFailed,
-			fmt.Sprintf("Failed to create %s update bead for %s: %v", kind, anvil, err), "", anvil)
-		return
-	}
-
-	log.Printf("[depcheck] Created %s update bead for %s: %s", kind, anvil, strings.TrimSpace(string(output)))
-	_ = m.db.LogEvent(state.EventDepcheckBeadCreated,
-		fmt.Sprintf("Created %s dependency update bead for %s (%d modules)", kind, anvil, len(updates)),
-		"", anvil)
 }
