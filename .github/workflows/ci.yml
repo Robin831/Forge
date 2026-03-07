@@ -46,7 +46,7 @@ jobs:
             echo "  category: Added"
             echo "  - **Summary** - Description. (<bead-id>)"
             echo ""
-            echo "Valid categories: Added, Changed, Fixed, Removed"
+            echo "Valid categories: Added, Changed, Deprecated, Removed, Fixed, Security"
             echo ""
             echo "If this change is truly internal-only, add [no-changelog] to the PR title."
             exit 1

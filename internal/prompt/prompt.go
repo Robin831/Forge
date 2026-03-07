@@ -190,20 +190,22 @@ Do NOT escalate for:
 If your changes are user-visible (new features, bug fixes, behavior changes, config changes),
 you **MUST** create a changelog fragment file at:
 
-` + "`" + `changelog.d/{{.Bead.BeadID}}.en.md` + "`" + `
+` + "`" + `changelog.d/{{.Bead.BeadID}}.md` + "`" + `
 
 Use this exact format:
 
 ` + "`" + `` + "`" + `` + "`" + `markdown
-category: <Added|Changed|Fixed|Removed>
+category: <Added|Changed|Deprecated|Removed|Fixed|Security>
 - **Short bold summary of the change** - Additional detail explaining what changed and why. ({{.Bead.BeadID}})
 ` + "`" + `` + "`" + `` + "`" + `
 
 **Category guide:**
 - ` + "`" + `Added` + "`" + ` — new features or capabilities
 - ` + "`" + `Changed` + "`" + ` — modifications to existing behavior
+- ` + "`" + `Deprecated` + "`" + ` — features marked for future removal
+- ` + "`" + `Removed` + "`" + ` — features that have been removed
 - ` + "`" + `Fixed` + "`" + ` — bug fixes
-- ` + "`" + `Removed` + "`" + ` — removed features or deprecated items
+- ` + "`" + `Security` + "`" + ` — security-related fixes or improvements
 
 **Skip the fragment** only for purely internal changes (refactoring, test-only, CI config,
 documentation) that have zero user-visible effect.
