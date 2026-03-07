@@ -84,7 +84,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		// Step 1: Run Temper to reproduce failures
 		temperCfg := p.TemperConfig
 		if temperCfg == nil {
-			detected := temper.DefaultConfig(p.WorktreePath)
+			detected := temper.DefaultConfig(p.WorktreePath, nil)
 			temperCfg = &detected
 		}
 

@@ -72,10 +72,18 @@ type Config struct {
 	Steps []Step
 }
 
+// DetectOptions controls optional steps during auto-detection.
+type DetectOptions struct {
+	// DisableGolangciLint skips the golangci-lint step even if the binary
+	// is available. When false (default), golangci-lint is added as an
+	// optional step for Go projects if the binary is found on PATH.
+	DisableGolangciLint bool
+}
+
 // DefaultConfig returns a default config that auto-detects the project type.
-func DefaultConfig(worktreePath string) Config {
+func DefaultConfig(worktreePath string, opts *DetectOptions) Config {
 	return Config{
-		Steps: detectSteps(worktreePath),
+		Steps: detectSteps(worktreePath, opts),
 	}
 }
 
@@ -168,7 +176,7 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 }
 
 // detectSteps auto-detects project type and returns appropriate steps.
-func detectSteps(worktreePath string) []Step {
+func detectSteps(worktreePath string, opts *DetectOptions) []Step {
 	var steps []Step
 
 	// Check for Go project
@@ -185,6 +193,21 @@ func detectSteps(worktreePath string) []Step {
 			Args:    []string{"vet", "./..."},
 			Timeout: 2 * time.Minute,
 		})
+
+		// golangci-lint: optional step, skipped if binary not found or disabled
+		disableLint := opts != nil && opts.DisableGolangciLint
+		if !disableLint {
+			if _, err := exec.LookPath("golangci-lint"); err == nil {
+				steps = append(steps, Step{
+					Name:     "golangci-lint",
+					Command:  "golangci-lint",
+					Args:     []string{"run", "./..."},
+					Timeout:  3 * time.Minute,
+					Optional: true,
+				})
+			}
+		}
+
 		steps = append(steps, Step{
 			Name:    "test",
 			Command: "go",

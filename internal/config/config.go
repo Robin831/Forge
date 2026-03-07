@@ -40,6 +40,10 @@ type AnvilConfig struct {
 	// beads in this anvil. When nil, the global setting is used. Set to
 	// a pointer to false to disable per-anvil.
 	SchematicEnabled *bool `mapstructure:"schematic_enabled"`
+	// GolangciLint controls whether golangci-lint runs as a Temper step
+	// for Go projects. When nil (default), golangci-lint runs if the
+	// binary is found on PATH. Set to a pointer to false to disable.
+	GolangciLint *bool `mapstructure:"golangci_lint"`
 }
 
 // SettingsConfig holds global operational settings.
