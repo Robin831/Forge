@@ -702,8 +702,8 @@ func TestResetPRState_AllowsFreshDispatchAfterExhaustion(t *testing.T) {
 	m := New(db, testLogger(), handler)
 	ctx := context.Background()
 
-	// Exhaust CI fix attempts (maxCI=5): 5 fail/pass cycles fill the counter.
-	for i := 0; i < 5; i++ {
+	// Exhaust CI fix attempts: fail/pass cycles fill the counter up to the cap.
+	for i := 0; i < state.DefaultMaxCIFixAttempts; i++ {
 		m.HandleEvent(ctx, makeEvent(300, bellows.EventCIFailed))
 		m.HandleEvent(ctx, makeEvent(300, bellows.EventCIPassed))
 	}
@@ -716,8 +716,8 @@ func TestResetPRState_AllowsFreshDispatchAfterExhaustion(t *testing.T) {
 	}
 
 	st := m.GetState("test-anvil", 300)
-	if st.CIFixCount != 5 {
-		t.Fatalf("expected CIFixCount=5, got %d", st.CIFixCount)
+	if st.CIFixCount != state.DefaultMaxCIFixAttempts {
+		t.Fatalf("expected CIFixCount=%d, got %d", state.DefaultMaxCIFixAttempts, st.CIFixCount)
 	}
 
 	// Simulate retry: reset in-memory state.
