@@ -206,7 +206,7 @@ or other issues that are **not related to your current bead**. Do NOT fix them y
 instead, create a new bead so the issue is tracked for future work:
 
 ` + "`" + `` + "`" + `` + "`" + `bash
-bd create --title="<concise summary>" --description="<what you found and where>" --type=bug|task --priority=3 --deps discovered-from:{{.Bead.BeadID}}
+bd create --json --title="<concise summary>" --description="<what you found and where>" --type=bug|task --priority=3 --deps discovered-from:{{.Bead.BeadID}}
 ` + "`" + `` + "`" + `` + "`" + `
 
 Guidelines for discovered issues:
