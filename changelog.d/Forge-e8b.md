@@ -1,0 +1,2 @@
+category: Fixed
+- **Temper failure output now included in Smith retry feedback** - When Temper verification fails (build errors, test failures), the actual command output is now included in the feedback prompt sent to Smith on retry. Previously Smith only saw "test failed" without knowing why, forcing it to start over blindly. Now it gets the full error output (truncated to 4000 chars from the tail) so it can diagnose and fix the specific issues. (Forge-e8b)
