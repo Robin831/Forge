@@ -6,6 +6,8 @@ package depcheck
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -43,6 +45,31 @@ type ScanResult struct {
 	Updates []DependencyUpdate
 	Error   error
 	Checked time.Time
+}
+
+// MarshalJSON provides a custom JSON encoding for ScanResult that renders Error
+// as a string field, so that JSON output includes a meaningful error message.
+func (r ScanResult) MarshalJSON() ([]byte, error) {
+	type scanResultJSON struct {
+		Anvil   string             `json:"anvil"`
+		Path    string             `json:"path"`
+		Updates []DependencyUpdate `json:"updates"`
+		Error   string             `json:"error,omitempty"`
+		Checked time.Time          `json:"checked"`
+	}
+
+	out := scanResultJSON{
+		Anvil:   r.Anvil,
+		Path:    r.Path,
+		Updates: r.Updates,
+		Checked: r.Checked,
+	}
+
+	if r.Error != nil {
+		out.Error = r.Error.Error()
+	}
+
+	return json.Marshal(out)
 }
 
 // UpdatesByKind groups updates into patch+minor and major buckets.
@@ -194,10 +221,12 @@ func (m *Monitor) checkAnvil(ctx context.Context, name, path string) ScanResult 
 	}
 
 	var allUpdates []DependencyUpdate
+	var scanErrors []error
 
 	// Go: check for go.mod at root
 	if goUpdates, err := scanGo(ctx, path, m.timeout); err != nil {
 		log.Printf("[depcheck] %s: Go scan error: %v", name, err)
+		scanErrors = append(scanErrors, fmt.Errorf("Go: %w", err))
 	} else {
 		allUpdates = append(allUpdates, goUpdates...)
 	}
@@ -208,6 +237,7 @@ func (m *Monitor) checkAnvil(ctx context.Context, name, path string) ScanResult 
 		subdir := relativeSubdir(path, root)
 		if updates, err := scanDotnet(ctx, root, subdir, m.timeout); err != nil {
 			log.Printf("[depcheck] %s: .NET scan error in %s: %v", name, subdir, err)
+			scanErrors = append(scanErrors, fmt.Errorf(".NET (%s): %w", subdir, err))
 		} else {
 			allUpdates = append(allUpdates, updates...)
 		}
@@ -219,6 +249,7 @@ func (m *Monitor) checkAnvil(ctx context.Context, name, path string) ScanResult 
 		subdir := relativeSubdir(path, root)
 		if updates, err := scanNpm(ctx, root, subdir, m.timeout); err != nil {
 			log.Printf("[depcheck] %s: npm scan error in %s: %v", name, subdir, err)
+			scanErrors = append(scanErrors, fmt.Errorf("npm (%s): %w", subdir, err))
 		} else {
 			allUpdates = append(allUpdates, updates...)
 		}
@@ -237,10 +268,11 @@ func (m *Monitor) checkAnvil(ctx context.Context, name, path string) ScanResult 
 	})
 
 	result.Updates = allUpdates
+	result.Error = errors.Join(scanErrors...)
 	return result
 }
 
-// relativeSubdir returns the relative path from base to dir, or "." if they're the same.
+// relativeSubdir returns the relative path from base to dir, or "" if they're the same.
 func relativeSubdir(base, dir string) string {
 	rel, err := filepath.Rel(base, dir)
 	if err != nil || rel == "." {

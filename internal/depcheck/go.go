@@ -17,7 +17,10 @@ import (
 // Returns nil (no updates) if the directory is not a Go project.
 func scanGo(ctx context.Context, dir string, timeout time.Duration) ([]DependencyUpdate, error) {
 	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
-		return nil, nil // not a Go project, skip silently
+		if os.IsNotExist(err) {
+			return nil, nil // not a Go project, skip silently
+		}
+		return nil, fmt.Errorf("stat go.mod: %w", err)
 	}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
