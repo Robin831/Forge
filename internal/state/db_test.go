@@ -1,6 +1,7 @@
 package state
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1118,5 +1119,98 @@ func TestDB_NeedsAttentionBeads_IncludesExhaustedPRs(t *testing.T) {
 	}
 	if !found {
 		t.Error("exhausted PR not found in NeedsAttentionBeads results")
+	}
+}
+
+func TestDB_ReadyToMerge(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-rtm-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	insert := func(number int, status PRStatus, ciPassing, conflicting, unresolvedThreads bool) *PR {
+		t.Helper()
+		pr := &PR{
+			Number:    number,
+			Anvil:     "anvil-rtm",
+			BeadID:    fmt.Sprintf("bd-%d", number),
+			Branch:    fmt.Sprintf("branch-%d", number),
+			Status:    status,
+			CreatedAt: time.Now(),
+		}
+		if err := db.InsertPR(pr); err != nil {
+			t.Fatalf("InsertPR: %v", err)
+		}
+		// ci_passing defaults to 1 on insert; update lifecycle to set false if needed.
+		if err := db.UpdatePRLifecycle(pr.ID, 0, 0, 0, ciPassing); err != nil {
+			t.Fatalf("UpdatePRLifecycle: %v", err)
+		}
+		if err := db.UpdatePRMergeability(pr.ID, conflicting, unresolvedThreads); err != nil {
+			t.Fatalf("UpdatePRMergeability: %v", err)
+		}
+		return pr
+	}
+
+	// approved, CI passing, not conflicting, no unresolved threads → ready
+	prReady := insert(201, PRApproved, true, false, false)
+	// approved but CI failing → not ready
+	prCIFail := insert(202, PRApproved, false, false, false)
+	// approved, CI passing, conflicting → not ready
+	prConflict := insert(203, PRApproved, true, true, false)
+	// approved, CI passing, has unresolved threads → not ready
+	prThreads := insert(204, PRApproved, true, false, true)
+	// open (not approved) → not ready
+	prOpen := insert(205, PROpen, true, false, false)
+
+	// IsPRReadyToMerge
+	cases := []struct {
+		pr   *PR
+		want bool
+		name string
+	}{
+		{prReady, true, "approved+ci+no_conflict+no_threads"},
+		{prCIFail, false, "ci_failing"},
+		{prConflict, false, "conflicting"},
+		{prThreads, false, "unresolved_threads"},
+		{prOpen, false, "not_approved"},
+	}
+	for _, tc := range cases {
+		got, err := db.IsPRReadyToMerge(tc.pr.ID)
+		if err != nil {
+			t.Fatalf("IsPRReadyToMerge(%s): %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Errorf("IsPRReadyToMerge(%s): got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// ReadyToMergePRs should return only prReady
+	ready, err := db.ReadyToMergePRs()
+	if err != nil {
+		t.Fatalf("ReadyToMergePRs: %v", err)
+	}
+	if len(ready) != 1 {
+		t.Fatalf("ReadyToMergePRs: expected 1 result, got %d", len(ready))
+	}
+	if ready[0].Number != prReady.Number {
+		t.Errorf("ReadyToMergePRs: got PR #%d, want #%d", ready[0].Number, prReady.Number)
+	}
+
+	// UpdatePRMergeability: make prConflict non-conflicting → now ready
+	if err := db.UpdatePRMergeability(prConflict.ID, false, false); err != nil {
+		t.Fatalf("UpdatePRMergeability clear: %v", err)
+	}
+	ready, err = db.ReadyToMergePRs()
+	if err != nil {
+		t.Fatalf("ReadyToMergePRs after update: %v", err)
+	}
+	if len(ready) != 2 {
+		t.Errorf("ReadyToMergePRs after update: expected 2 results, got %d", len(ready))
 	}
 }

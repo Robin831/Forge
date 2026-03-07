@@ -323,8 +323,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "k", "up":
 				m.mergeMenuIdx = (m.mergeMenuIdx + int(mergeMenuCount) - 1) % int(mergeMenuCount)
 			case "enter":
-				m.executeMergeAction(MergeMenuChoice(m.mergeMenuIdx))
+				cmd := m.executeMergeAction(MergeMenuChoice(m.mergeMenuIdx))
 				m.showMergeMenu = false
+				return m, cmd
 			}
 			return m, nil
 		}
@@ -516,6 +517,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.prevEventCount = len(msg.Items)
+
+	case MergeResultMsg:
+		if msg.Err != nil {
+			m.statusMsg = fmt.Sprintf("Failed to merge PR #%d: %v", msg.PRNumber, msg.Err)
+		} else {
+			m.statusMsg = fmt.Sprintf("Merged PR #%d", msg.PRNumber)
+		}
+		m.statusMsgTime = time.Now()
 
 	case TickMsg:
 		// On each tick, refresh all panels and schedule the next tick
@@ -1220,26 +1229,35 @@ func (m *Model) renderMergeMenu() string {
 	return actionMenuStyle.Width(menuWidth).Render(content)
 }
 
-// executeMergeAction runs the selected merge menu choice.
-func (m *Model) executeMergeAction(choice MergeMenuChoice) {
+// MergeResultMsg is delivered asynchronously when a merge IPC call completes.
+type MergeResultMsg struct {
+	PRNumber int
+	Err      error
+}
+
+// executeMergeAction returns a tea.Cmd that runs the merge IPC call asynchronously,
+// keeping the Bubbletea UI responsive during the (potentially 60s) operation.
+func (m *Model) executeMergeAction(choice MergeMenuChoice) tea.Cmd {
 	if m.mergeTarget == nil {
-		return
+		return nil
 	}
 	pr := m.mergeTarget
 	switch choice {
 	case MergeActionMerge:
-		if m.OnMergePR != nil {
-			if err := m.OnMergePR(pr.PRID, pr.PRNumber, pr.Anvil); err != nil {
-				m.statusMsg = fmt.Sprintf("Failed to merge PR #%d: %v", pr.PRNumber, err)
-			} else {
-				m.statusMsg = fmt.Sprintf("Merged PR #%d", pr.PRNumber)
-			}
-			m.statusMsgTime = time.Now()
-		} else {
+		if m.OnMergePR == nil {
 			m.statusMsg = fmt.Sprintf("Merge action unavailable for PR #%d", pr.PRNumber)
 			m.statusMsgTime = time.Now()
+			return nil
+		}
+		m.statusMsg = fmt.Sprintf("Merging PR #%d…", pr.PRNumber)
+		m.statusMsgTime = time.Now()
+		prID, prNumber, anvil := pr.PRID, pr.PRNumber, pr.Anvil
+		cb := m.OnMergePR
+		return func() tea.Msg {
+			return MergeResultMsg{PRNumber: prNumber, Err: cb(prID, prNumber, anvil)}
 		}
 	}
+	return nil
 }
 
 // renderWorkers delegates to renderWorkerList for the center column.
