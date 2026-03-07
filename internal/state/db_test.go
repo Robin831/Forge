@@ -564,6 +564,109 @@ func TestDB_HasOpenPRForBead(t *testing.T) {
 	}
 }
 
+func TestDB_StalledWorkers(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create a log file that is "old" (modified 10 minutes ago)
+	logFile := filepath.Join(tmpDir, "smith-old.log")
+	if err := os.WriteFile(logFile, []byte("some log output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(logFile, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a log file that is "fresh"
+	freshLog := filepath.Join(tmpDir, "smith-fresh.log")
+	if err := os.WriteFile(freshLog, []byte("recent output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert workers
+	if err := db.InsertWorker(&Worker{
+		ID:        "w-old",
+		BeadID:    "BD-1",
+		Anvil:     "anvil-1",
+		Status:    WorkerRunning,
+		Phase:     "smith",
+		StartedAt: time.Now().Add(-15 * time.Minute),
+		LogPath:   logFile,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertWorker(&Worker{
+		ID:        "w-fresh",
+		BeadID:    "BD-2",
+		Anvil:     "anvil-1",
+		Status:    WorkerRunning,
+		Phase:     "smith",
+		StartedAt: time.Now().Add(-5 * time.Minute),
+		LogPath:   freshLog,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Query with 5-minute threshold — only the old worker should be stale
+	stalled, err := db.StalledWorkers(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stalled) != 1 {
+		t.Fatalf("expected 1 stalled worker, got %d", len(stalled))
+	}
+	if stalled[0].ID != "w-old" {
+		t.Errorf("expected w-old, got %s", stalled[0].ID)
+	}
+
+	// Mark as stalled
+	if err := db.MarkWorkerStalled("w-old"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify status changed
+	workers, err := db.ActiveWorkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, w := range workers {
+		if w.ID == "w-old" {
+			found = true
+			if w.Status != WorkerStalled {
+				t.Errorf("expected stalled status, got %s", w.Status)
+			}
+		}
+	}
+	if !found {
+		t.Error("stalled worker should still appear in ActiveWorkers")
+	}
+
+	// Stalled worker should appear in NeedsAttentionBeads
+	attention, err := db.NeedsAttentionBeads(DefaultMaxCIFixAttempts, DefaultMaxReviewFixAttempts, DefaultMaxRebaseAttempts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attention) != 1 {
+		t.Fatalf("expected 1 needs-attention item, got %d", len(attention))
+	}
+	if attention[0].BeadID != "BD-1" {
+		t.Errorf("expected BD-1 in needs attention, got %s", attention[0].BeadID)
+	}
+	if attention[0].Reason == "" {
+		t.Error("expected a reason for the stalled worker")
+	}
+}
+
 func TestDB_PendingRetries_ExcludesClarification(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

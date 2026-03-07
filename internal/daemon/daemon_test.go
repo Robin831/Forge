@@ -49,12 +49,12 @@ func TestHandleIPC_RunBead_Errors(t *testing.T) {
 	defer db.Close()
 
 	d := &Daemon{
-		cfg:           cfg,
 		db:            db,
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 	}
+	d.cfg.Store(cfg)
 
 	t.Run("invalid payload", func(t *testing.T) {
 		resp := d.handleIPC(ipc.Command{
@@ -152,12 +152,12 @@ exit 1
 	defer db.Close()
 
 	d := &Daemon{
-		cfg:           cfg,
 		db:            db,
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 	}
+	d.cfg.Store(cfg)
 
 	t.Run("successful dispatch via poll fallback", func(t *testing.T) {
 		payload, _ := json.Marshal(ipc.RunBeadPayload{
@@ -454,12 +454,12 @@ exit 0
 	}
 
 	d := &Daemon{
-		cfg:           cfg,
 		db:            db,
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 	}
+	d.cfg.Store(cfg)
 	d.costLimitLoggedDate.Store("")
 
 	countCostLimitEvents := func() int {
@@ -499,12 +499,12 @@ func TestHandleIPC_RetryBead(t *testing.T) {
 	defer db.Close()
 
 	d := &Daemon{
-		cfg:           &config.Config{},
 		db:            db,
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 	}
+	d.cfg.Store(&config.Config{})
 
 	t.Run("invalid payload", func(t *testing.T) {
 		resp := d.handleIPC(ipc.Command{Type: "retry_bead", Payload: []byte("invalid")})
@@ -555,12 +555,12 @@ func TestHandleIPC_DismissBead(t *testing.T) {
 	defer db.Close()
 
 	d := &Daemon{
-		cfg:           &config.Config{},
 		db:            db,
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 	}
+	d.cfg.Store(&config.Config{})
 
 	t.Run("invalid payload", func(t *testing.T) {
 		resp := d.handleIPC(ipc.Command{Type: "dismiss_bead", Payload: []byte("invalid")})
@@ -608,12 +608,12 @@ func TestHandleIPC_ViewLogs(t *testing.T) {
 	defer db.Close()
 
 	d := &Daemon{
-		cfg:           &config.Config{},
 		db:            db,
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 	}
+	d.cfg.Store(&config.Config{})
 
 	t.Run("invalid payload", func(t *testing.T) {
 		resp := d.handleIPC(ipc.Command{Type: "view_logs", Payload: []byte("invalid")})

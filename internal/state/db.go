@@ -105,6 +105,7 @@ func (db *DB) migrate() error {
 		{"workers", "title", `ALTER TABLE workers ADD COLUMN title TEXT NOT NULL DEFAULT ''`},
 		{"retries", "dispatch_failures", `ALTER TABLE retries ADD COLUMN dispatch_failures INTEGER NOT NULL DEFAULT 0`},
 		{"prs", "rebase_count", `ALTER TABLE prs ADD COLUMN rebase_count INTEGER NOT NULL DEFAULT 0`},
+		{"workers", "updated_at", `ALTER TABLE workers ADD COLUMN updated_at TEXT`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -292,6 +293,7 @@ const (
 	WorkerDone       WorkerStatus = "done"
 	WorkerFailed     WorkerStatus = "failed"
 	WorkerTimeout    WorkerStatus = "timeout"
+	WorkerStalled    WorkerStatus = "stalled"
 )
 
 // Worker represents a Smith worker entry.
@@ -351,29 +353,84 @@ func (db *DB) UpdateWorkerLogPath(id string, logPath string) error {
 	return err
 }
 
-// ActiveWorkers returns all workers with non-terminal status.
+// ActiveWorkers returns all workers with non-terminal status (including stalled).
 func (db *DB) ActiveWorkers() ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
+		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
+		ORDER BY started_at`)
+}
+
+// StalledWorkers returns active non-stalled workers whose log files have not
+// been modified within the given staleThreshold. Workers without a log path
+// are skipped. Already-stalled workers are excluded to avoid repeated
+// filesystem stat calls on log files that won't change their status.
+func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
+	if staleThreshold <= 0 {
+		return nil, nil
+	}
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
 		ORDER BY started_at`)
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().Add(-staleThreshold)
+	var stalled []Worker
+	for _, w := range workers {
+		if w.LogPath == "" {
+			continue
+		}
+		info, err := os.Stat(w.LogPath)
+		if err != nil {
+			// If the worker has been running longer than the stale threshold but its
+			// log file is missing or unreadable, treat it as stalled so it still
+			// surfaces for attention.
+			if w.StartedAt.Before(cutoff) {
+				stalled = append(stalled, w)
+			}
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			stalled = append(stalled, w)
+		}
+	}
+	return stalled, nil
+}
+
+// MarkWorkerStalled sets a worker's status to stalled and records the time.
+func (db *DB) MarkWorkerStalled(id string) error {
+	res, err := db.conn.Exec(
+		`UPDATE workers SET status = ?, updated_at = ?
+		 WHERE id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')`,
+		string(WorkerStalled), time.Now().Format(dbTimeLayout), id,
+	)
+	if err != nil {
+		return err
+	}
+	// Observe whether the transition actually occurred; ignore the count to avoid changing behavior.
+	_, _ = res.RowsAffected()
+	return nil
 }
 
 // ActiveDispatchWorkers returns active workers that are running primary dispatch
 // pipeline phases (smith, temper, warden). Bellows (PR monitoring) and lifecycle
 // workers (cifix, reviewfix) are excluded so they don't consume dispatch capacity slots.
+// Stalled workers are included so they continue to count against capacity and
+// prevent the daemon from over-subscribing while stalled processes are still running.
 func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
-		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
+		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
 		  AND phase NOT IN ('cifix', 'reviewfix', 'bellows')
 		ORDER BY started_at`)
 }
 
 // ActiveDispatchWorkersByAnvil returns active dispatch workers for a given anvil,
 // excluding bellows and lifecycle workers (cifix, reviewfix).
+// Stalled workers are included so they continue to count against per-anvil capacity.
 func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE anvil = ?
-		  AND status IN ('pending', 'running', 'reviewing', 'monitoring')
+		  AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
 		  AND phase NOT IN ('cifix', 'reviewfix', 'bellows')
 		ORDER BY started_at`, anvil)
 }
@@ -381,7 +438,7 @@ func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 // ActiveWorkerByBead returns the non-terminal worker for a given bead ID.
 func (db *DB) ActiveWorkerByBead(beadID string) (*Worker, error) {
 	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
-		FROM workers WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')
+		FROM workers WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
 		LIMIT 1`, beadID)
 	if err != nil {
 		return nil, err
@@ -397,7 +454,7 @@ func (db *DB) ActiveWorkerByBead(beadID string) (*Worker, error) {
 // iterating per-anvil to avoid false positives when two anvils share bead IDs.
 func (db *DB) ActiveWorkerByBeadAndAnvil(beadID, anvil string) (*Worker, error) {
 	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
-		FROM workers WHERE bead_id = ? AND anvil = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')
+		FROM workers WHERE bead_id = ? AND anvil = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
 		LIMIT 1`, beadID, anvil)
 	if err != nil {
 		return nil, err
@@ -412,7 +469,7 @@ func (db *DB) ActiveWorkerByBeadAndAnvil(beadID, anvil string) (*Worker, error) 
 func (db *DB) CompleteWorkersByBead(beadID string) error {
 	_, err := db.conn.Exec(
 		`UPDATE workers SET status = ?, completed_at = ?
-		 WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')`,
+		 WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')`,
 		string(WorkerDone), time.Now().Format(dbTimeLayout), beadID,
 	)
 	return err
@@ -807,6 +864,7 @@ const (
 	EventDispatchCircuitBreak EventType = "dispatch_circuit_break"
 	EventCostLimitHit         EventType = "cost_limit_hit"
 	EventSchematicSubBead     EventType = "schematic_sub_bead"
+	EventWorkerStalled        EventType = "worker_stalled"
 	EventError                EventType = "error"
 	EventBeadRecovered        EventType = "bead_recovered"
 )
@@ -1232,33 +1290,46 @@ type NeedsAttentionBead struct {
 	PRNumber int
 }
 
-// NeedsAttentionBeads returns all beads with needs_human=1 or clarification_needed=1,
-// enriched with title from queue_cache or workers tables. It also includes PRs
-// that have exhausted their CI-fix, review-fix, or rebase attempt limits.
+// NeedsAttentionBeads returns all beads with needs_human=1, clarification_needed=1,
+// or status=stalled, enriched with title from queue_cache or workers tables. It also
+// includes PRs that have exhausted their CI-fix, review-fix, or rebase attempt limits.
 // The maxCI/maxRev/maxRebase thresholds determine which PRs are considered exhausted.
 func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentionBead, error) {
 	rows, err := db.conn.Query(
-		`SELECT r.bead_id, r.anvil, r.needs_human, r.clarification_needed, r.last_error,
-		        COALESCE(NULLIF(q.title, ''), NULLIF(w.title, ''), '') AS title
-		 FROM retries r
-		 LEFT JOIN queue_cache q ON r.bead_id = q.bead_id AND r.anvil = q.anvil
-		 LEFT JOIN (
-		     SELECT bead_id, anvil, title
-		     FROM (
-		         SELECT bead_id, anvil, title,
-		                ROW_NUMBER() OVER (PARTITION BY bead_id, anvil ORDER BY started_at DESC) AS rn
-		         FROM workers
-		     )
-		     WHERE rn = 1
-		 ) w
-		   ON r.bead_id = w.bead_id AND r.anvil = w.anvil
-		 WHERE r.needs_human = 1 OR r.clarification_needed = 1
-		 ORDER BY r.updated_at DESC`)
+		`SELECT bead_id, anvil, needs_human, clarification_needed, reason, title
+		 FROM (
+		     SELECT r.bead_id, r.anvil, r.needs_human, r.clarification_needed, r.last_error AS reason,
+		            COALESCE(NULLIF(q.title, ''), NULLIF(w2.title, ''), '') AS title, r.updated_at
+		     FROM retries r
+		     LEFT JOIN queue_cache q ON r.bead_id = q.bead_id AND r.anvil = q.anvil
+		     LEFT JOIN (
+		         SELECT bead_id, anvil, title
+		         FROM (
+		             SELECT bead_id, anvil, title,
+		                    ROW_NUMBER() OVER (PARTITION BY bead_id, anvil ORDER BY started_at DESC) AS rn
+		             FROM workers
+		         )
+		         WHERE rn = 1
+		     ) w2
+		       ON r.bead_id = w2.bead_id AND r.anvil = w2.anvil
+		     WHERE r.needs_human = 1 OR r.clarification_needed = 1
+		     UNION ALL
+		     SELECT w.bead_id, w.anvil, 0 AS needs_human, 0 AS clarification_needed,
+		            'Worker stalled (no log activity)' AS reason,
+		            COALESCE(NULLIF(q2.title, ''), NULLIF(w.title, ''), '') AS title, COALESCE(w.updated_at, w.started_at) AS updated_at
+		     FROM workers w
+		     LEFT JOIN queue_cache q2 ON w.bead_id = q2.bead_id AND w.anvil = q2.anvil
+		     WHERE w.status = 'stalled'
+		 )
+		 ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
+	// seen maps bead+anvil key to its index in beads, enabling flag merging
+	// when the same bead appears in both the retries and stalled-workers branches.
+	seen := make(map[string]int)
 	var beads []NeedsAttentionBead
 	for rows.Next() {
 		var b NeedsAttentionBead
@@ -1268,6 +1339,36 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 		}
 		b.NeedsHuman = needsHuman != 0
 		b.ClarificationNeeded = clarNeeded != 0
+
+		key := b.BeadID + "\x00" + b.Anvil
+		if idx, dup := seen[key]; dup {
+			// Merge: OR the actionable flags so neither source's signal is lost.
+			// Prefer the reason from a row that carries flags (retry row) over
+			// the generic stalled reason.
+			existing := &beads[idx]
+			existing.NeedsHuman = existing.NeedsHuman || b.NeedsHuman
+			existing.ClarificationNeeded = existing.ClarificationNeeded || b.ClarificationNeeded
+			if (b.NeedsHuman || b.ClarificationNeeded) && b.Reason != "" {
+				existing.Reason = b.Reason
+			}
+			// Merge title as well:
+			// - If this row carries actionable flags (retry row), prefer its
+			//   non-empty title, which is derived from queue_cache or the
+			//   latest worker record.
+			// - If this row is from a stalled worker (no flags), only let it
+			//   supply a title when we don't already have one.
+			if b.Title != "" {
+				if b.NeedsHuman || b.ClarificationNeeded {
+					// Retry row: prefer its more specific title.
+					existing.Title = b.Title
+				} else if existing.Title == "" {
+					// Stalled-worker row: only fill in when we have no title yet.
+					existing.Title = b.Title
+				}
+			}
+			continue
+		}
+		seen[key] = len(beads)
 		beads = append(beads, b)
 	}
 	if err := rows.Err(); err != nil {
