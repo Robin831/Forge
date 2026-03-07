@@ -877,6 +877,10 @@ const (
 	EventDepcheckFound        EventType = "depcheck_found"
 	EventDepcheckFailed       EventType = "depcheck_failed"
 	EventDepcheckBeadCreated  EventType = "depcheck_bead_created"
+	EventVulnScanStarted      EventType = "vuln_scan_started"
+	EventVulnScanDone         EventType = "vuln_scan_done"
+	EventVulnScanFailed       EventType = "vuln_scan_failed"
+	EventVulnBeadCreated      EventType = "vuln_bead_created"
 )
 
 // Event represents a logged event.

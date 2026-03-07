@@ -103,6 +103,13 @@ type SettingsConfig struct {
 	// DepcheckTimeout is the maximum time allowed for a single 'go list -m -u all'
 	// invocation per anvil. Defaults to 5 minutes.
 	DepcheckTimeout time.Duration `mapstructure:"depcheck_timeout"`
+	// VulncheckInterval is how often govulncheck runs on registered Go anvils.
+	// Set to 0 to disable scheduled scanning. Default: 24h (daily).
+	VulncheckInterval time.Duration `mapstructure:"vulncheck_interval"`
+	// VulncheckTimeout is the maximum time allowed for a single govulncheck
+	// invocation per anvil (govulncheck downloads the vuln DB on first run).
+	// Defaults to 10 minutes.
+	VulncheckTimeout time.Duration `mapstructure:"vulncheck_timeout"`
 }
 
 // NotificationsConfig holds webhook and notification settings.
@@ -130,8 +137,10 @@ func Defaults() Config {
 			MaxReviewFixAttempts: 5,
 			MaxRebaseAttempts:    3,
 			StaleInterval:        5 * time.Minute,
-			DepcheckInterval:    168 * time.Hour, // weekly
-			DepcheckTimeout:     5 * time.Minute,
+			DepcheckInterval:     168 * time.Hour, // weekly
+			DepcheckTimeout:      5 * time.Minute,
+			VulncheckInterval:    24 * time.Hour,
+		VulncheckTimeout:     10 * time.Minute,
 		},
 	}
 }
@@ -156,6 +165,8 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.stale_interval", "5m")
 	v.SetDefault("settings.depcheck_interval", "168h")
 	v.SetDefault("settings.depcheck_timeout", "5m")
+	v.SetDefault("settings.vulncheck_interval", "24h")
+	v.SetDefault("settings.vulncheck_timeout", "10m")
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	v.SetEnvPrefix("FORGE")
@@ -247,6 +258,20 @@ func Load(configFile string) (*Config, error) {
 			return nil, fmt.Errorf("invalid depcheck_timeout %q: %w", raw, err)
 		}
 		cfg.Settings.DepcheckTimeout = d
+	}
+	if raw := v.GetString("settings.vulncheck_interval"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid vulncheck_interval %q: %w", raw, err)
+		}
+		cfg.Settings.VulncheckInterval = d
+	}
+	if raw := v.GetString("settings.vulncheck_timeout"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid vulncheck_timeout %q: %w", raw, err)
+		}
+		cfg.Settings.VulncheckTimeout = d
 	}
 
 	return &cfg, nil
