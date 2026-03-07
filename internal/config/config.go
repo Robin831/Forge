@@ -17,6 +17,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -185,7 +186,10 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.vulncheck_timeout", "10m")
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
+	// SetEnvKeyReplacer maps dotted config keys (settings.auto_learn_rules) to
+	// underscore env vars (FORGE_SETTINGS_AUTO_LEARN_RULES).
 	v.SetEnvPrefix("FORGE")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
 	// Config file resolution

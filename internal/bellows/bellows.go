@@ -52,7 +52,7 @@ type Monitor struct {
 	lastStatuses   map[string]*prSnapshot // anvil/PR number → last known state
 	refresh        chan struct{}           // channel to trigger immediate poll
 	autoLearnRules bool                   // auto-learn warden rules from Copilot comments on PR merge
-	learnMuMu      sync.Mutex             // protects learnMu map
+	learnMuGuard   sync.Mutex             // protects learnMu map
 	learnMu        map[string]*sync.Mutex // per-anvil mutex serializing auto-learn
 	learnSem       chan struct{}           // caps overall concurrent auto-learn goroutines
 }
@@ -213,10 +213,14 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 					return
 				}
 				defer func() { <-m.learnSem }()
+				// Bound the gh/claude subprocesses so a hang cannot hold
+				// the semaphore or per-anvil mutex indefinitely.
+				learnCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+				defer cancel()
 				// Serialize per-anvil so load→add→save is atomic per repo.
 				anvilMu.Lock()
 				defer anvilMu.Unlock()
-				m.learnRulesFromPR(ctx, pr.Anvil, anvilPath, prNum)
+				m.learnRulesFromPR(learnCtx, pr.Anvil, anvilPath, prNum)
 			}()
 		}
 	} else if newSnap.IsClosed && !lastSnap.IsClosed {
@@ -334,8 +338,8 @@ func (m *Monitor) ResetPRState(anvil string, prNumber int) {
 // getLearnMu returns the per-anvil mutex used to serialize auto-learn operations,
 // creating it on first use.
 func (m *Monitor) getLearnMu(anvil string) *sync.Mutex {
-	m.learnMuMu.Lock()
-	defer m.learnMuMu.Unlock()
+	m.learnMuGuard.Lock()
+	defer m.learnMuGuard.Unlock()
 	if m.learnMu[anvil] == nil {
 		m.learnMu[anvil] = &sync.Mutex{}
 	}
