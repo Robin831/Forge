@@ -415,6 +415,53 @@ func (m *Manager) ResetPRState(anvil string, prNumber int) {
 	st.Approved = false
 }
 
+// NotifyCIFixCompleted clears the CINeedsFix flag and resets CIPassing after
+// a CI fix worker finishes. This allows the next EventCIFailed (if CI still
+// fails after the fix attempt) to dispatch a new fix cycle rather than being
+// suppressed by the "already failing, skipping dispatch" guard at line 267.
+//
+// Without this, CIPassing stays false and CINeedsFix stays true after the fix
+// worker completes. When bellows re-detects CI failure, HandleEvent sees
+// CIPassing=false and silently drops the event, permanently sticking the PR.
+func (m *Manager) NotifyCIFixCompleted(anvil string, prNumber int) {
+	m.mu.Lock()
+	st, ok := m.states[m.key(anvil, prNumber)]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	st.CIPassing = true
+	st.CINeedsFix = false
+	dbID := st.ID
+	reviewNeedsFix := st.ReviewNeedsFix
+	ciFixCount := st.CIFixCount
+	reviewFixCnt := st.ReviewFixCnt
+	rebaseCount := st.RebaseCount
+	m.mu.Unlock()
+
+	m.logger.Info("CI fix cycle completed, reset CIPassing=true", "pr", prNumber, "anvil", anvil)
+
+	// Persist the cleared state so a daemon restart does not reload a stale
+	// needs_fix DB status. Only transition needs_fix → open when no review
+	// fix cycle is also active; if ReviewNeedsFix is set, the DB status must
+	// remain needs_fix so the review failure is preserved across restarts.
+	if dbID > 0 && !reviewNeedsFix {
+		if err := m.db.UpdatePRStatusIfNeedsFix(dbID, state.PROpen); err != nil {
+			m.logger.Warn("failed to persist PROpen after CI fix completed",
+				"pr", prNumber, "anvil", anvil, "error", err)
+		}
+	}
+
+	// Persist the updated CIPassing flag to the DB so bellows sees the
+	// correct state after a daemon restart.
+	if dbID > 0 {
+		if err := m.db.UpdatePRLifecycle(dbID, ciFixCount, reviewFixCnt, rebaseCount, true); err != nil {
+			m.logger.Warn("failed to persist CIPassing after CI fix completed",
+				"pr", prNumber, "anvil", anvil, "error", err)
+		}
+	}
+}
+
 // NotifyReviewFixCompleted clears the ReviewNeedsFix flag after a review fix
 // worker finishes. This allows the next EventReviewChanges (triggered
 // automatically by GitHub when the reviewer re-examines the updated push) to
