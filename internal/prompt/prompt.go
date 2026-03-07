@@ -210,10 +210,30 @@ category: <Added|Changed|Deprecated|Removed|Fixed|Security>
 **Skip the fragment** only for purely internal changes (refactoring, test-only, CI config,
 documentation) that have zero user-visible effect.
 
+## Discovering Unrelated Issues
+
+While working, you may notice preexisting bugs, code quality problems, missing tests,
+or other issues that are **not related to your current bead**. Do NOT fix them yourself —
+instead, create a new bead so the issue is tracked for future work:
+
+` + "`" + `` + "`" + `` + "`" + `bash
+bd create --json --title="<concise summary>" --description="<what you found and where>" --type=bug|task --priority=3 --deps discovered-from:{{.Bead.BeadID}}
+` + "`" + `` + "`" + `` + "`" + `
+
+Guidelines for discovered issues:
+- **Do create beads for**: preexisting bugs, error handling gaps, code smells, missing
+  validation, outdated dependencies, dead code, missing tests, security concerns
+- **Do NOT create beads for**: stylistic preferences, issues you are already fixing as
+  part of your current task, or problems that are trivially obvious from a linter
+- Use ` + "`" + `--type=bug` + "`" + ` for broken behavior, ` + "`" + `--type=task` + "`" + ` for improvements
+- Default to ` + "`" + `--priority=3` + "`" + ` (low) unless the issue is clearly more severe
+- Always link back with ` + "`" + `--deps discovered-from:{{.Bead.BeadID}}` + "`" + `
+- Keep descriptions specific: include file paths, function names, and what's wrong
+- Do not spend excessive time searching for issues — only log what you naturally encounter
+
 ## Constraints
 
-- Stay focused on this bead only — do not fix unrelated issues
-- If you discover blocking issues, note them in your commit message
+- Stay focused on this bead only — do not fix unrelated issues (create beads for them instead)
 - If the task is unclear, implement the most reasonable interpretation
 - Do not run tests, builds, or linters — Temper handles verification
 {{- if .Bead.PriorFeedback}}
