@@ -49,6 +49,7 @@ type Monitor struct {
 	handlers     []Handler
 	mu           sync.Mutex
 	lastStatuses map[string]*prSnapshot // anvil/PR number → last known state
+	refresh      chan struct{}          // channel to trigger immediate poll
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -72,6 +73,7 @@ func New(db *state.DB, interval time.Duration, anvilPaths map[string]string) *Mo
 		interval:     interval,
 		anvilPaths:   anvilPaths,
 		lastStatuses: make(map[string]*prSnapshot),
+		refresh:      make(chan struct{}, 1),
 	}
 }
 
@@ -80,6 +82,15 @@ func (m *Monitor) OnEvent(h Handler) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.handlers = append(m.handlers, h)
+}
+
+// Refresh triggers an immediate poll cycle.
+func (m *Monitor) Refresh() {
+	select {
+	case m.refresh <- struct{}{}:
+	default:
+		// Refresh already pending
+	}
 }
 
 // Run starts the polling loop. Blocks until ctx is canceled.
@@ -99,6 +110,9 @@ func (m *Monitor) Run(ctx context.Context) error {
 			log.Println("[bellows] Shutting down PR monitor")
 			return ctx.Err()
 		case <-ticker.C:
+			m.checkAll(ctx)
+		case <-m.refresh:
+			log.Println("[bellows] Immediate poll triggered via refresh")
 			m.checkAll(ctx)
 		}
 	}

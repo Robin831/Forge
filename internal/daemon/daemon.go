@@ -1164,7 +1164,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		return ipc.Response{Type: "ok", Payload: data}
 
 	case "refresh":
-		go d.pollAndDispatch(context.Background())
+		go func() {
+			d.pollAndDispatch(context.Background())
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.Refresh()
+			}
+		}()
 		data, _ := json.Marshal(map[string]string{"message": "poll triggered"})
 		return ipc.Response{Type: "ok", Payload: data}
 
@@ -1435,6 +1440,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.lifecycleMgr.ResetPRState(pr.Anvil, pr.Number)
 			if d.bellowsMonitor != nil {
 				d.bellowsMonitor.ResetPRState(pr.Anvil, pr.Number)
+				d.bellowsMonitor.Refresh()
 			}
 			_ = d.db.LogEvent(
 				state.EventRetryReset,
