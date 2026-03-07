@@ -522,6 +522,13 @@ func (m *Model) getVerticalSplit() (topHeight, bottomHeight int) {
 		topHeight = max(topHeight, 5)
 	}
 	bottomHeight = contentHeight - topHeight
+	// Enforce a minimum bottom panel height of 4 lines so bordered panels
+	// remain renderable at small terminal sizes.
+	const minBottomHeight = 4
+	if bottomHeight < minBottomHeight && contentHeight >= 5+minBottomHeight {
+		bottomHeight = minBottomHeight
+		topHeight = contentHeight - bottomHeight
+	}
 	return
 }
 
@@ -886,8 +893,11 @@ func (m *Model) renderRightColumn(width, topHeight, bottomHeight int) string {
 }
 
 // renderStackedColumn renders two sub-panels stacked vertically.
-// Two stacked panels add 4 border lines total vs 2 for a single panel,
-// so the bottom panel height is reduced by 2 to keep columns aligned.
+// Each lipgloss panel adds 2 border lines (top + bottom) to its height parameter.
+// Two stacked panels therefore produce 4 border lines total, whereas the single
+// center column produces only 2. The bottom panel's height is reduced by 2 so
+// that topHeight+bottomHeight+2 (single-panel rendered lines) equals
+// (topHeight+2)+(bottomHeight-2+2) = topHeight+bottomHeight+2 for the stacked column.
 func (m *Model) renderStackedColumn(width, topHeight, bottomHeight int,
 	renderTop, renderBottom func(int, int) string) string {
 	innerBottom := bottomHeight - 2
