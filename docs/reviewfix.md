@@ -51,18 +51,26 @@ The reviewer handle is configurable via `FixParams.Reviewer`. When empty it
 defaults to `copilot-pull-request-reviewer` (the handle used by GitHub Copilot
 Code Review).
 
-## Retry Limit
+## Retry Limits
 
-`FixParams.MaxAttempts` (configurable in `forge.yaml` via
-`settings.max_review_attempts`, default 2) caps the number of fix cycles per
-PR. After exhausting attempts, the PR is flagged `needs_human=1` in the state
-DB so the operator is alerted.
+Several settings control how many automated fix cycles run before a PR is flagged as needing human attention (`needs_human=1` in the state DB):
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `max_review_attempts` | `2` | Max Warden review iterations during the initial Smith pipeline. |
+| `max_review_fix_attempts` | `5` | Max review fix cycles per PR (Bellows-driven, post-PR-creation review comments). |
+| `max_ci_fix_attempts` | `5` | Max CI fix cycles per PR when CI fails after creation. |
+| `max_rebase_attempts` | `3` | Max conflict rebase attempts per PR before marking as exhausted. |
 
 ## Configuration
 
 ```yaml
 settings:
-  max_review_attempts: 2   # max fix+re-review cycles per PR
+  max_review_attempts: 2       # Warden iterations during initial pipeline
+  max_review_fix_attempts: 5   # Post-PR review fix cycles
+  max_ci_fix_attempts: 5       # Post-PR CI fix cycles
+  max_rebase_attempts: 3       # Conflict rebase attempts
+  bellows_interval: 2m         # How often Bellows polls for PR status changes
 ```
 
 To use a different reviewer (e.g. a human or another bot), supply

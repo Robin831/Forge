@@ -13,6 +13,7 @@ The Forge uses a blacksmith metaphor throughout:
 | **Warden**  | Review agent (validates Smith output)       |
 | **Temper**  | Build/lint/test verification                |
 | **Bellows** | PR monitor (CI failures, review comments)   |
+| **Schematic** | Pre-analysis worker (decomposes complex beads) |
 | **Anvil**   | Repository workspace                        |
 | **Heat**    | Work batch / session                        |
 
@@ -38,12 +39,12 @@ The Forge uses a blacksmith metaphor throughout:
 └─────────────────────────────────────────────┘
          │
          ▼
-┌──────────────────────────────┐
-│  TUI (Hearth)                │
-│  Queue    │         │Activity│
-│  Needs    │ Workers │Events  │
-│  Attn     │         │        │
-└──────────────────────────────┘
+┌──────────────────────────────────────┐
+│  TUI (Hearth)                        │
+│  Queue    │         │ Live Activity  │
+│  R.Merge  │ Workers │ Events         │
+│  Attn     │         │                │
+└──────────────────────────────────────┘
 ```
 
 ## Quick Start
@@ -91,8 +92,26 @@ settings:
   smith_timeout: 30m
   max_total_smiths: 3
   max_review_attempts: 2
-  claude_flags: "--dangerously-skip-permissions --max-turns 50"
+  max_ci_fix_attempts: 5       # CI fix cycles per PR (default 5)
+  max_review_fix_attempts: 5   # Review fix cycles per PR (default 5)
+  max_rebase_attempts: 3       # Conflict rebase attempts per PR (default 3)
+  daily_cost_limit: 50.00      # USD per day; 0 = no limit
+  bellows_interval: 2m         # PR monitor poll interval
+  merge_strategy: squash       # squash | merge | rebase
+  providers:
+    - claude
+    - gemini
+  smith_providers:             # Optional: separate chain for Smith/Warden
+    - claude/claude-opus-4-6
+  schematic_enabled: false     # Pre-analysis for complex beads
+  schematic_word_threshold: 100
+  claude_flags:
+    - --dangerously-skip-permissions
+    - --max-turns
+    - "50"
 ```
+
+See [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ### Auto-Dispatch Modes
 
@@ -106,8 +125,9 @@ settings:
 ## Worker Pipeline
 
 ```
-bd ready → Claim bead → Create worktree → Smith (Claude) → Temper (build/test)
-    → Warden (review) → PR creation → bd close → Bellows (monitor PR)
+bd ready → Claim bead → Create worktree → [Schematic (optional pre-analysis)]
+    → Smith (Claude) → Temper (build/test) → Warden (review)
+    → PR creation → bd close → Bellows (monitor PR, CI fix, review fix, rebase)
 ```
 
 Each step is tracked in SQLite state.db with full event logging.
@@ -132,10 +152,12 @@ Forge/
 │   ├── smith/          # Worker spawning and lifecycle
 │   ├── warden/         # Review agent
 │   ├── temper/         # Build/test verification
-│   ├── bellows/        # PR monitoring
-│   ├── hearth/         # Daemon and TUI
+│   ├── bellows/        # PR monitoring (CI fix, review fix, rebase)
+│   ├── schematic/      # Pre-analysis worker (decompose complex beads)
+│   ├── hearth/         # Daemon and TUI dashboard
 │   ├── state/          # SQLite state management
 │   └── bd/             # Beads CLI integration
+├── changelog.d/        # Changelog fragments (per-bead)
 ├── forge.yaml          # Configuration (user-created)
 ├── go.mod
 ├── go.sum

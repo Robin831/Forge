@@ -35,6 +35,13 @@ settings:
   smith_timeout: 30m
   max_total_smiths: 4
   max_review_attempts: 2
+  max_ci_fix_attempts: 5
+  max_review_fix_attempts: 5
+  max_rebase_attempts: 3
+  merge_strategy: squash
+  daily_cost_limit: 50.00
+  bellows_interval: 2m
+  stale_interval: 5m
   claude_flags:
     - --dangerously-skip-permissions
     - --max-turns
@@ -43,9 +50,15 @@ settings:
     - claude
     - gemini/gemini-2.5-pro
     - gemini/gemini-2.5-flash
+  smith_providers:
+    - claude/claude-opus-4-6
   rate_limit_backoff: 5m
   schematic_enabled: true
   schematic_word_threshold: 150
+  depcheck_interval: 168h
+  depcheck_timeout: 5m
+  vulncheck_interval: 24h
+  vulncheck_timeout: 10m
 
 notifications:
   enabled: true
@@ -68,6 +81,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `auto_dispatch_tag` | string | | Required when `auto_dispatch: tagged`. Beads must have this tag (case-insensitive) to be dispatched. |
 | `auto_dispatch_min_priority` | int | 0 | Required when `auto_dispatch: priority`. Only beads with priority <= this value are dispatched. Range: 0-4. |
 | `schematic_enabled` | bool\|null | null (use global) | Per-anvil override for `settings.schematic_enabled`. When set, takes precedence over the global setting. |
+| `golangci_lint` | bool\|null | null (auto-detect) | Per-anvil override for golangci-lint in Temper. When null, golangci-lint runs if the binary is found on PATH. Set to `false` to disable. |
 
 ### Auto-Dispatch Modes
 
@@ -88,12 +102,23 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `max_review_attempts` | int | `2` | `1` | Maximum Smith-Warden review iterations per bead. |
 | `claude_flags` | []string | `[]` | | Additional flags passed to the Claude CLI (or translated for other providers). |
 | `providers` | []string | `["claude", "gemini"]` | | Ordered provider fallback chain. See [Providers](providers.md). |
+| `smith_providers` | []string | `[]` (uses `providers`) | | Provider chain for Smith/Warden/Schematic only. Lets dispatch use a more capable model while lifecycle workers (cifix, reviewfix) use `providers`. Same syntax as `providers`. |
 | `rate_limit_backoff` | duration | `5m` | | How long to wait before retrying when all providers are rate-limited. |
 | `schematic_enabled` | bool | `false` | | Enable Schematic pre-worker globally for complex beads. |
 | `schematic_word_threshold` | int | `100` | | Minimum word count in bead description to trigger Schematic analysis. |
 | `bellows_interval` | duration | `2m` | `30s` | How often Bellows polls GitHub for PR status changes. |
+| `daily_cost_limit` | float | `0` (no limit) | | Maximum estimated USD spend per calendar day. When exceeded, auto-dispatch pauses until the next day. |
+| `max_ci_fix_attempts` | int | `5` | `1` | Maximum CI fix cycles per PR before marking as exhausted. |
+| `max_review_fix_attempts` | int | `5` | `1` | Maximum review fix cycles per PR before marking as exhausted. |
+| `max_rebase_attempts` | int | `3` | `1` | Maximum conflict rebase attempts per PR before marking as exhausted. |
+| `merge_strategy` | string | `"squash"` | | How PRs are merged from Hearth TUI. Valid: `squash`, `merge`, `rebase`. |
+| `stale_interval` | duration | `5m` | `30s` or `0` | How long a worker's log can go without modification before marking as stalled. `0` disables stale detection. |
+| `depcheck_interval` | duration | `168h` | `1h` or `0` | How often the dependency checker runs `go list -m -u all` on Go anvils. `0` disables. |
+| `depcheck_timeout` | duration | `5m` | | Maximum time for a single depcheck invocation per anvil. |
+| `vulncheck_interval` | duration | `24h` | `0` | How often `govulncheck` runs on registered Go anvils. `0` disables. |
+| `vulncheck_timeout` | duration | `10m` | | Maximum time for a single govulncheck invocation per anvil. |
 
-Duration values use Go syntax: `30s`, `5m`, `1h30m`, etc.
+Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
 
 ## Notifications
 
@@ -129,6 +154,16 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_SCHEMATIC_ENABLED` | `settings.schematic_enabled` |
 | `FORGE_SETTINGS_SCHEMATIC_WORD_THRESHOLD` | `settings.schematic_word_threshold` |
 | `FORGE_SETTINGS_BELLOWS_INTERVAL` | `settings.bellows_interval` |
+| `FORGE_SETTINGS_DAILY_COST_LIMIT` | `settings.daily_cost_limit` |
+| `FORGE_SETTINGS_MAX_CI_FIX_ATTEMPTS` | `settings.max_ci_fix_attempts` |
+| `FORGE_SETTINGS_MAX_REVIEW_FIX_ATTEMPTS` | `settings.max_review_fix_attempts` |
+| `FORGE_SETTINGS_MAX_REBASE_ATTEMPTS` | `settings.max_rebase_attempts` |
+| `FORGE_SETTINGS_MERGE_STRATEGY` | `settings.merge_strategy` |
+| `FORGE_SETTINGS_STALE_INTERVAL` | `settings.stale_interval` |
+| `FORGE_SETTINGS_DEPCHECK_INTERVAL` | `settings.depcheck_interval` |
+| `FORGE_SETTINGS_DEPCHECK_TIMEOUT` | `settings.depcheck_timeout` |
+| `FORGE_SETTINGS_VULNCHECK_INTERVAL` | `settings.vulncheck_interval` |
+| `FORGE_SETTINGS_VULNCHECK_TIMEOUT` | `settings.vulncheck_timeout` |
 | `FORGE_NOTIFICATIONS_ENABLED` | `notifications.enabled` |
 | `FORGE_NOTIFICATIONS_TEAMS_WEBHOOK_URL` | `notifications.teams_webhook_url` |
 
@@ -142,9 +177,15 @@ The config is validated at load time. Errors are reported as a list:
 
 - `max_total_smiths` must be >= 1
 - `max_review_attempts` must be >= 1
+- `max_ci_fix_attempts` must be >= 1
+- `max_review_fix_attempts` must be >= 1
+- `max_rebase_attempts` must be >= 1
 - `poll_interval` must be >= 10s
 - `smith_timeout` must be >= 1m
 - `bellows_interval` must be >= 30s
+- `daily_cost_limit` must be a non-negative finite number
+- `stale_interval` must be >= 30s when enabled, or 0 to disable
+- `depcheck_interval` must be >= 1h when enabled, or 0 to disable
 - Each anvil `path` must be non-empty
 - Each anvil `max_smiths` must be >= 0
 - `auto_dispatch` must be one of: `all`, `tagged`, `priority`, `off`
@@ -159,7 +200,8 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `smith_timeout` is re-read and used for newly started smiths
 - `max_total_smiths` is re-read and applied to subsequent scheduling decisions
 - `claude_flags` are re-read and used for newly started smiths
+- `smith_providers` are re-read and used for newly dispatched beads
 - `notifications.*` (webhook URL, enabled, events, etc.) are re-read and applied immediately
 - In-flight workers are **not** interrupted
 
-All other configuration changes (including `anvils.*`, `providers`, `rate_limit_backoff`, and any fields not listed above) **require a daemon restart** to take effect.
+All other configuration changes (including `anvils.*`, `providers`, `rate_limit_backoff`, `daily_cost_limit`, `merge_strategy`, and scheduling fields not listed above) **require a daemon restart** to take effect.
