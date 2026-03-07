@@ -116,30 +116,26 @@ type TemperYAML struct {
 }
 
 // LoadAnvilConfig loads per-anvil temper configuration from .forge/temper.yaml
-// within the given anvil path. Returns nil if the file does not exist.
-// Non-existence errors (permission denied, invalid YAML, etc.) are logged to
-// stderr so misconfiguration is visible rather than silently ignored.
-func LoadAnvilConfig(anvilPath string) *TemperYAML {
+// within the given anvil path. Returns (nil, nil) if the file does not exist.
+// Returns a non-nil error for read or parse failures so the caller can decide
+// how to surface it (e.g., log once per change, return structured error).
+func LoadAnvilConfig(anvilPath string) (*TemperYAML, error) {
 	path := filepath.Join(anvilPath, ".forge", "temper.yaml")
 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Config file is legitimately absent for this anvil.
-			return nil
+			return nil, nil
 		}
-		// Surface unexpected read errors to aid diagnosing misconfiguration.
-		fmt.Fprintf(os.Stderr, "temper: failed to read config %s: %v\n", path, err)
-		return nil
+		return nil, fmt.Errorf("temper: failed to read config %s: %w", path, err)
 	}
 
 	var cfg TemperYAML
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		// Surface parse errors instead of silently ignoring invalid YAML.
-		fmt.Fprintf(os.Stderr, "temper: failed to parse config %s: %v\n", path, err)
-		return nil
+		return nil, fmt.Errorf("temper: failed to parse config %s: %w", path, err)
 	}
-	return &cfg
+	return &cfg, nil
 }
 
 // DefaultConfigWithRace returns a default config with race detection support.
