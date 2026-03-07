@@ -45,9 +45,17 @@ func FetchCopilotComments(ctx context.Context, repoDir string, prNumber int) ([]
 		return nil, fmt.Errorf("gh api: %s (%w)", strings.TrimSpace(stderr.String()), err)
 	}
 
+	// gh api --paginate for REST endpoints concatenates multiple JSON arrays
+	// (e.g. [page1...][page2...]) which json.Unmarshal cannot parse as one
+	// array. Use a streaming decoder to handle the concatenated output.
 	var raw []ghReviewComment
-	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
-		return nil, fmt.Errorf("parsing gh response: %w", err)
+	dec := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
+	for dec.More() {
+		var page []ghReviewComment
+		if err := dec.Decode(&page); err != nil {
+			return nil, fmt.Errorf("parsing gh response: %w", err)
+		}
+		raw = append(raw, page...)
 	}
 
 	var comments []PRComment
