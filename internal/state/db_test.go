@@ -736,6 +736,80 @@ func TestDB_StalledWorkers(t *testing.T) {
 	}
 }
 
+func TestDB_StalledWorkers_ExcludesLongRunningPhases(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create stale log files for all workers
+	makeStaleLog := func(name string) string {
+		p := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(p, []byte("log"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-20 * time.Minute)
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// Smith worker — should be flagged as stale
+	if err := db.InsertWorker(&Worker{
+		ID: "w-smith", BeadID: "BD-1", Anvil: "anvil-1",
+		Status: WorkerRunning, Phase: "smith",
+		StartedAt: time.Now().Add(-25 * time.Minute),
+		LogPath:   makeStaleLog("smith.log"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Bellows worker — should be excluded
+	if err := db.InsertWorker(&Worker{
+		ID: "w-bellows", BeadID: "BD-2", Anvil: "anvil-1",
+		Status: WorkerRunning, Phase: "bellows",
+		StartedAt: time.Now().Add(-25 * time.Minute),
+		LogPath:   makeStaleLog("bellows.log"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Cifix worker — should be excluded
+	if err := db.InsertWorker(&Worker{
+		ID: "w-cifix", BeadID: "BD-3", Anvil: "anvil-1",
+		Status: WorkerRunning, Phase: "cifix",
+		StartedAt: time.Now().Add(-25 * time.Minute),
+		LogPath:   makeStaleLog("cifix.log"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Reviewfix worker — should be excluded
+	if err := db.InsertWorker(&Worker{
+		ID: "w-reviewfix", BeadID: "BD-4", Anvil: "anvil-1",
+		Status: WorkerRunning, Phase: "reviewfix",
+		StartedAt: time.Now().Add(-25 * time.Minute),
+		LogPath:   makeStaleLog("reviewfix.log"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stalled, err := db.StalledWorkers(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stalled) != 1 {
+		t.Fatalf("expected 1 stalled worker (smith only), got %d", len(stalled))
+	}
+	if stalled[0].ID != "w-smith" {
+		t.Errorf("expected w-smith, got %s", stalled[0].ID)
+	}
+}
+
 func TestDB_PendingRetries_ExcludesClarification(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

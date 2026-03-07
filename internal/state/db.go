@@ -368,12 +368,16 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 // been modified within the given staleThreshold. Workers without a log path
 // are skipped. Already-stalled workers are excluded to avoid repeated
 // filesystem stat calls on log files that won't change their status.
+// Long-running background workers (bellows, cifix, reviewfix) are excluded
+// because they only produce log output when external state changes (e.g. PR
+// events) and can be legitimately silent for long stretches.
 func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 	if staleThreshold <= 0 {
 		return nil, nil
 	}
 	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
+		  AND phase NOT IN ('bellows', 'cifix', 'reviewfix')
 		ORDER BY started_at`)
 	if err != nil {
 		return nil, err
