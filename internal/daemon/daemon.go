@@ -354,9 +354,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.bellowsMonitor = bellows.New(d.db, d.cfg.Load().Settings.BellowsInterval, monitorAnvils)
 	d.lifecycleMgr = lifecycle.New(d.db, d.logger, d.handleLifecycleAction)
 	d.lifecycleMgr.SetThresholds(
-		d.config().Settings.MaxCIFixAttempts,
-		d.config().Settings.MaxReviewFixAttempts,
-		d.config().Settings.MaxRebaseAttempts,
+		d.cfg.Load().Settings.MaxCIFixAttempts,
+		d.cfg.Load().Settings.MaxReviewFixAttempts,
+		d.cfg.Load().Settings.MaxRebaseAttempts,
 	)
 	if err := d.lifecycleMgr.Load(ctx); err != nil {
 		d.logger.Error("failed to load lifecycle states", "error", err)
@@ -735,7 +735,13 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 
 		// Also include in-progress beads from successful anvils.
-		inProgress, inProgressResults := p.PollInProgress(ctx)
+		// Build a sub-poller covering only the anvils that polled successfully to
+		// avoid running extra bd commands for anvils whose primary poll failed.
+		succeededConfigs := make(map[string]config.AnvilConfig, len(succeededAnvils))
+		for _, name := range succeededAnvils {
+			succeededConfigs[name] = cfg.Anvils[name]
+		}
+		inProgress, inProgressResults := poller.New(succeededConfigs).PollInProgress(ctx)
 		for _, r := range inProgressResults {
 			if r.Err != nil {
 				d.logger.Warn("poll in-progress error", "anvil", r.Name, "error", r.Err)
@@ -832,24 +838,30 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	thisCycleAnvil := make(map[string]int)
 
 	for _, bead := range beads {
-		// Skip beads already in flight
-		if _, inFlight := d.activeBeads.Load(bead.ID); inFlight {
+		// Atomically reserve this bead's slot; skip if another goroutine already
+		// claimed it (e.g. a concurrent manual run_bead dispatch). Using
+		// LoadOrStore closes the race that existed between Load and the later
+		// Store: a concurrent run_bead could slip in between those two calls.
+		if _, alreadyInFlight := d.activeBeads.LoadOrStore(bead.ID, true); alreadyInFlight {
 			continue
 		}
 
 		// Skip beads that need clarification (analogous to needs_human)
 		if _, needed := clarSet[bead.ID+"\x00"+bead.Anvil]; needed {
+			d.activeBeads.Delete(bead.ID)
 			continue
 		}
 
 		// Skip beads that are circuit-broken (needs_human=1 from dispatch failures or retries)
 		if _, broken := cbSet[bead.ID+"\x00"+bead.Anvil]; broken {
+			d.activeBeads.Delete(bead.ID)
 			continue
 		}
 
 		// Skip beads that already have an open PR (bellows should handle them)
 		if hasPR, err := d.db.HasOpenPRForBead(bead.ID, bead.Anvil); err == nil && hasPR {
 			d.logger.Debug("skipping bead with open PR", "bead", bead.ID)
+			d.activeBeads.Delete(bead.ID)
 			continue
 		}
 
@@ -857,6 +869,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 
 		// Apply auto-dispatch filtering
 		if !shouldDispatch(bead, anvilCfg) {
+			d.activeBeads.Delete(bead.ID)
 			continue
 		}
 
@@ -869,16 +882,21 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		if _, ok := anvilActive[bead.Anvil]; !ok {
 			cnt, err := worker.DispatchActiveCount(d.db, bead.Anvil)
 			if err != nil {
+				d.logger.Error("checking per-anvil capacity", "anvil", bead.Anvil, "error", err)
+				d.activeBeads.Delete(bead.ID)
+				anvilActive[bead.Anvil] = maxSmiths // treat as at-capacity for this cycle
 				continue
 			}
 			anvilActive[bead.Anvil] = cnt
 		}
 		if anvilActive[bead.Anvil]+thisCycleAnvil[bead.Anvil] >= maxSmiths {
+			d.activeBeads.Delete(bead.ID)
 			continue
 		}
 
 		// Check global capacity using snapshot + in-cycle count
 		if globalActive+thisCycleTotal >= maxTotal {
+			d.activeBeads.Delete(bead.ID)
 			break
 		}
 
@@ -886,10 +904,10 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		if err := d.claimBead(ctx, bead.ID, anvilCfg.Path); err != nil {
 			d.logger.Warn("failed to claim bead", "bead", bead.ID, "error", err)
 			d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("claim failed: %v", err))
+			d.activeBeads.Delete(bead.ID)
 			continue
 		}
 
-		d.activeBeads.Store(bead.ID, true)
 		thisCycleAnvil[bead.Anvil]++
 		thisCycleTotal++
 		d.wg.Add(1)

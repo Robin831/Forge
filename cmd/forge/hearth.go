@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/hearth"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
@@ -62,35 +63,49 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 		}
-		model.OnRetryBead = func(beadID, anvil string) {
+		model.OnRetryBead = func(beadID, anvil string) error {
 			client, err := ipc.NewClient()
 			if err != nil {
-				return
+				return err
 			}
 			defer client.Close()
 			payload, _ := json.Marshal(ipc.RetryBeadPayload{
 				BeadID: beadID,
 				Anvil:  anvil,
 			})
-			_, _ = client.Send(ipc.Command{
+			resp, err := client.Send(ipc.Command{
 				Type:    "retry_bead",
 				Payload: json.RawMessage(payload),
 			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return fmt.Errorf("daemon returned: %s", resp.Type)
+			}
+			return nil
 		}
-		model.OnDismissBead = func(beadID, anvil string) {
+		model.OnDismissBead = func(beadID, anvil string) error {
 			client, err := ipc.NewClient()
 			if err != nil {
-				return
+				return err
 			}
 			defer client.Close()
 			payload, _ := json.Marshal(ipc.DismissBeadPayload{
 				BeadID: beadID,
 				Anvil:  anvil,
 			})
-			_, _ = client.Send(ipc.Command{
+			resp, err := client.Send(ipc.Command{
 				Type:    "dismiss_bead",
 				Payload: json.RawMessage(payload),
 			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return fmt.Errorf("daemon returned: %s", resp.Type)
+			}
+			return nil
 		}
 		model.OnViewLogs = func(beadID string) (string, []string) {
 			client, err := ipc.NewClient()
@@ -114,10 +129,10 @@ var hearthCmd = &cobra.Command{
 			}
 			return result.LogPath, result.LastLines
 		}
-		model.OnTagBead = func(beadID, anvil string) {
+		model.OnTagBead = func(beadID, anvil string) error {
 			client, err := ipc.NewClient()
 			if err != nil {
-				return
+				return err
 			}
 			defer client.Close()
 
@@ -127,10 +142,17 @@ var hearthCmd = &cobra.Command{
 				BeadID: beadID,
 				Anvil:  anvil,
 			})
-			_, _ = client.Send(ipc.Command{
+			resp, err := client.Send(ipc.Command{
 				Type:    "tag_bead",
 				Payload: json.RawMessage(payload),
 			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return fmt.Errorf("daemon returned: %s", resp.Type)
+			}
+			return nil
 		}
 
 		p := tea.NewProgram(&model, tea.WithAltScreen())

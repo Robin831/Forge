@@ -42,20 +42,6 @@ const (
 	eventStripHeight = 8 // fixed height for the bottom event strip (including border)
 )
 
-// ActionMenuChoice identifies an action in the Needs Attention action menu.
-type ActionMenuChoice int
-
-const (
-	ActionRetry   ActionMenuChoice = iota // Re-queue the bead for processing
-	ActionDismiss                         // Dismiss the bead from the attention list
-	ActionViewLogs                        // Open the log viewer for the bead
-)
-
-// actionMenuLabels returns the display labels for each ActionMenuChoice, in order.
-func actionMenuLabels() []string {
-	return []string{"Retry", "Dismiss", "View Logs"}
-}
-
 // QueueItem represents a bead in the queue panel.
 type QueueItem struct {
 	BeadID   string
@@ -149,13 +135,13 @@ type Model struct {
 	OnKill func(workerID string, pid int)
 
 	// Callbacks for Needs Attention actions (set by the caller)
-	OnRetryBead   func(beadID, anvil string)
-	OnDismissBead func(beadID, anvil string)
+	OnRetryBead   func(beadID, anvil string) error
+	OnDismissBead func(beadID, anvil string) error
 	OnViewLogs    func(beadID string) (logPath string, lines []string)
 
 	// Callback for tagging a bead (set by the caller).
 	// Called with (beadID, anvil) when user presses 'l' on an unlabeled bead.
-	OnTagBead func(beadID, anvil string)
+	OnTagBead func(beadID, anvil string) error
 
 	// State
 	focused              Panel
@@ -316,7 +302,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.queueScroll < len(m.queue) {
 				item := m.queue[m.queueScroll]
 				if item.Section == "unlabeled" && m.OnTagBead != nil {
-					m.OnTagBead(item.BeadID, item.Anvil)
+					if err := m.OnTagBead(item.BeadID, item.Anvil); err != nil {
+						m.statusMsg = fmt.Sprintf("Failed to tag %s: %v", item.BeadID, err)
+					} else {
+						m.statusMsg = fmt.Sprintf("Tagged %s for dispatch", item.BeadID)
+					}
+					m.statusMsgTime = time.Now()
 				}
 			}
 		}
@@ -553,14 +544,26 @@ func (m *Model) executeAction(choice ActionMenuChoice) {
 	switch choice {
 	case ActionRetry:
 		if m.OnRetryBead != nil {
-			m.OnRetryBead(bead.BeadID, bead.Anvil)
-			m.statusMsg = fmt.Sprintf("Retry queued for %s", bead.BeadID)
+			if err := m.OnRetryBead(bead.BeadID, bead.Anvil); err != nil {
+				m.statusMsg = fmt.Sprintf("Failed to retry %s: %v", bead.BeadID, err)
+			} else {
+				m.statusMsg = fmt.Sprintf("Retry queued for %s", bead.BeadID)
+			}
+			m.statusMsgTime = time.Now()
+		} else {
+			m.statusMsg = fmt.Sprintf("Retry action unavailable for %s", bead.BeadID)
 			m.statusMsgTime = time.Now()
 		}
 	case ActionDismiss:
 		if m.OnDismissBead != nil {
-			m.OnDismissBead(bead.BeadID, bead.Anvil)
-			m.statusMsg = fmt.Sprintf("Dismissed %s", bead.BeadID)
+			if err := m.OnDismissBead(bead.BeadID, bead.Anvil); err != nil {
+				m.statusMsg = fmt.Sprintf("Failed to dismiss %s: %v", bead.BeadID, err)
+			} else {
+				m.statusMsg = fmt.Sprintf("Dismissed %s", bead.BeadID)
+			}
+			m.statusMsgTime = time.Now()
+		} else {
+			m.statusMsg = fmt.Sprintf("Dismiss action unavailable for %s", bead.BeadID)
 			m.statusMsgTime = time.Now()
 		}
 	case ActionViewLogs:
