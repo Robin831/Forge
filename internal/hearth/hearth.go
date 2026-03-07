@@ -1138,8 +1138,8 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 		if maxItems < 1 {
 			maxItems = 1
 		}
-		m.readyToMergeVP.AdjustViewport(viewHeight, len(m.readyToMerge))
-		start, end := m.readyToMergeVP.VisibleRange(viewHeight, len(m.readyToMerge))
+		m.readyToMergeVP.AdjustViewport(maxItems, len(m.readyToMerge))
+		start, end := m.readyToMergeVP.VisibleRange(maxItems, len(m.readyToMerge))
 		for i := start; i < end; i++ {
 			item := m.readyToMerge[i]
 			anvil := dimStyle.Render(item.Anvil)

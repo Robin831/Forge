@@ -888,9 +888,9 @@ func TestRenderReadyToMergeViewportRegression(t *testing.T) {
 	// height=7 → maxItems = 7-3 = 4. Cursor at index 2 (middle).
 	// Viewport should show items 0-3 (cursor visible, multiple adjacents present).
 	m := Model{
-		readyToMerge:       items,
-		readyToMergeScroll: 2,
-		focused:            PanelReadyToMerge,
+		readyToMerge:     items,
+		readyToMergeVP:   scrollViewport{cursor: 2},
+		focused:          PanelReadyToMerge,
 	}
 	rendered := m.renderReadyToMerge(80, 7)
 
@@ -909,8 +909,7 @@ func TestRenderReadyToMergeViewportRegression(t *testing.T) {
 	// Now simulate the list shrinking: only 2 items remain, viewStart may be
 	// stale. The viewport should clamp so both remaining items are shown.
 	m.readyToMerge = items[:2]
-	m.readyToMergeScroll = 1
-	m.readyToMergeViewStart = 3 // stale value from before shrink
+	m.readyToMergeVP = scrollViewport{cursor: 1, viewStart: 3} // stale viewStart from before shrink
 	rendered2 := m.renderReadyToMerge(80, 7)
 	for _, want := range []string{"bd-10", "bd-11"} {
 		if !strings.Contains(rendered2, want) {
