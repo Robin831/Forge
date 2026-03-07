@@ -358,10 +358,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}()
 
-	// Start stale worker detection loop
-	if d.config().Settings.StaleInterval > 0 {
-		go d.runStaleDetection(ctx)
-	}
+	// Start stale worker detection loop (always running; respects current config)
+	go d.runStaleDetection(ctx)
 
 	for {
 		select {
@@ -554,22 +552,23 @@ func (d *Daemon) drainPendingAction(ctx context.Context, beadID string) {
 // A worker is marked as stalled if its log file has not been modified for longer
 // than the configured stale_interval. This does not kill the process — it warns
 // the operator via the Needs Attention panel. The check runs approximately at
-// half the stale interval, but will not run more frequently than every 30s
-// (except when stale_interval itself is less than 30s, in which case it runs
-// at the stale_interval).
+// half the stale interval, with a minimum of 30s. When stale_interval is 0
+// (disabled), the goroutine idles at the 30s default rate so it can react if
+// the config is hot-reloaded to a positive value.
 func (d *Daemon) runStaleDetection(ctx context.Context) {
-	staleInterval := d.config().Settings.StaleInterval
-	checkInterval := staleInterval / 2
-	if checkInterval < 30*time.Second {
-		if staleInterval < 30*time.Second {
-			// For very small stale intervals, fall back to checking at the
-			// stale interval itself to avoid delaying detection past the
-			// configured threshold.
-			checkInterval = staleInterval
-		} else {
-			checkInterval = 30 * time.Second
+	const defaultCheckInterval = 30 * time.Second
+
+	checkIntervalFor := func(staleInterval time.Duration) time.Duration {
+		if staleInterval <= 0 {
+			return defaultCheckInterval
 		}
+		if half := staleInterval / 2; half > defaultCheckInterval {
+			return half
+		}
+		return defaultCheckInterval
 	}
+
+	checkInterval := checkIntervalFor(d.config().Settings.StaleInterval)
 	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
 
@@ -581,6 +580,11 @@ func (d *Daemon) runStaleDetection(ctx context.Context) {
 			// Re-read stale interval in case config was hot-reloaded
 			interval := d.config().Settings.StaleInterval
 			if interval <= 0 {
+				// Disabled; idle at the default rate to detect re-enablement.
+				if checkInterval != defaultCheckInterval {
+					ticker.Reset(defaultCheckInterval)
+					checkInterval = defaultCheckInterval
+				}
 				continue
 			}
 			stalled, err := d.db.StalledWorkers(interval)
@@ -601,19 +605,8 @@ func (d *Daemon) runStaleDetection(ctx context.Context) {
 					w.BeadID, w.Anvil)
 			}
 
-			// If the stale interval has changed, adjust the ticker cadence
-			newCheckInterval := interval / 2
-			if newCheckInterval < 30*time.Second {
-				if interval < 30*time.Second {
-					// For very small stale intervals, fall back to checking at the
-					// stale interval itself to avoid delaying detection past the
-					// configured threshold.
-					newCheckInterval = interval
-				} else {
-					newCheckInterval = 30 * time.Second
-				}
-			}
-			if newCheckInterval > 0 && newCheckInterval != checkInterval {
+			// Adjust ticker cadence if the stale interval changed.
+			if newCheckInterval := checkIntervalFor(interval); newCheckInterval != checkInterval {
 				ticker.Reset(newCheckInterval)
 				checkInterval = newCheckInterval
 			}
