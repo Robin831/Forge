@@ -115,6 +115,15 @@ type ViewLogsResponse struct {
 	LastLines []string `json:"last_lines"`
 }
 
+// TagBeadPayload is the payload for a "tag_bead" command that adds the
+// anvil's configured auto-dispatch label to a bead via bd update.
+// The daemon derives the tag from its own config; the client only needs
+// to supply the bead identity.
+type TagBeadPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`
+}
+
 // CommandHandler is called by the server for each incoming command.
 type CommandHandler func(cmd Command) Response
 

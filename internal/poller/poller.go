@@ -154,3 +154,65 @@ func (p *BeadPoller) PollSingle(ctx context.Context, name string) ([]Bead, error
 	}
 	return pollAnvil(ctx, name, anvil)
 }
+
+// PollInProgress runs 'bd list --status=in_progress --json' in each anvil directory
+// concurrently. It returns all in-progress beads, merged and sorted by priority, along
+// with per-anvil results so callers can distinguish "no in-progress beads" from
+// "bd list failed" and log errors accordingly.
+func (p *BeadPoller) PollInProgress(ctx context.Context) ([]Bead, []AnvilResult) {
+	results := make([]AnvilResult, 0, len(p.anvils))
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for name, anvil := range p.anvils {
+		wg.Add(1)
+		go func(name string, anvil config.AnvilConfig) {
+			defer wg.Done()
+			beads, err := pollInProgressAnvil(ctx, name, anvil)
+			mu.Lock()
+			results = append(results, AnvilResult{Name: name, Beads: beads, Err: err})
+			mu.Unlock()
+		}(name, anvil)
+	}
+	wg.Wait()
+
+	var all []Bead
+	for _, r := range results {
+		all = append(all, r.Beads...)
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Priority != all[j].Priority {
+			return all[i].Priority < all[j].Priority
+		}
+		return all[i].ID < all[j].ID
+	})
+	return all, results
+}
+
+// pollInProgressAnvil runs 'bd list --status=in_progress --json' in one anvil directory.
+func pollInProgressAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Bead, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "list", "--status=in_progress", "--json"))
+	cmd.Dir = anvil.Path
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("bd list --status=in_progress in %s (%s): %w: %s", name, anvil.Path, err, stderr.String())
+	}
+
+	var beads []Bead
+	if err := json.Unmarshal(output, &beads); err != nil {
+		return nil, fmt.Errorf("parsing bd list output for %s: %w", name, err)
+	}
+
+	for i := range beads {
+		beads[i].Anvil = name
+	}
+	return beads, nil
+}

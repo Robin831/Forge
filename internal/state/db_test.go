@@ -161,8 +161,77 @@ func TestDB_QueueCache(t *testing.T) {
 		t.Errorf("unexpected item: %+v", items[0])
 	}
 
+	// 3b. Section ordering: ready → unlabeled → in_progress, then priority within section.
+	// An empty Section is normalized to QueueSectionReady on insert.
+	sectioned := []QueueItem{
+		{BeadID: "bd-s3", Anvil: "anvil-a", Title: "In progress bead", Priority: 1, Status: "in_progress", Section: QueueSectionInProgress},
+		{BeadID: "bd-s1", Anvil: "anvil-a", Title: "Ready bead", Priority: 2, Status: "open", Section: QueueSectionReady},
+		{BeadID: "bd-s2", Anvil: "anvil-a", Title: "Unlabeled bead", Priority: 1, Status: "open", Section: QueueSectionUnlabeled},
+		{BeadID: "bd-s4", Anvil: "anvil-a", Title: "Empty section normalizes to ready", Priority: 0, Status: "open", Section: ""},
+	}
+	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-a", "anvil-b", "anvil-c"}, sectioned); err != nil {
+		t.Fatal(err)
+	}
+	items, err = db.QueueCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 4 {
+		t.Fatalf("expected 4 sectioned items, got %d", len(items))
+	}
+	// bd-s4 has empty section (normalized to ready) and priority 0, so it sorts first
+	if items[0].BeadID != "bd-s4" || items[0].Section != QueueSectionReady {
+		t.Errorf("expected bd-s4 (normalized ready, priority 0) first, got %s (%s)", items[0].BeadID, items[0].Section)
+	}
+	// bd-s1 is ready with priority 2, second among ready items
+	if items[1].BeadID != "bd-s1" || items[1].Section != QueueSectionReady {
+		t.Errorf("expected bd-s1 (ready) second, got %s (%s)", items[1].BeadID, items[1].Section)
+	}
+	// unlabeled third
+	if items[2].BeadID != "bd-s2" || items[2].Section != QueueSectionUnlabeled {
+		t.Errorf("expected bd-s2 (unlabeled) third, got %s (%s)", items[2].BeadID, items[2].Section)
+	}
+	// in_progress last
+	if items[3].BeadID != "bd-s3" || items[3].Section != QueueSectionInProgress {
+		t.Errorf("expected bd-s3 (in_progress) last, got %s (%s)", items[3].BeadID, items[3].Section)
+	}
+
+	// 3c. Labels round-trip: nil/empty labels stored as "[]", not "null"
+	withLabels := []QueueItem{
+		{BeadID: "bd-l1", Anvil: "anvil-l", Title: "Has labels", Priority: 1, Status: "open", Labels: `["dispatch"]`, Section: QueueSectionReady},
+		{BeadID: "bd-l2", Anvil: "anvil-l", Title: "No labels (empty JSON array)", Priority: 2, Status: "open", Labels: "[]", Section: QueueSectionUnlabeled}, // Explicit empty JSON array
+		{BeadID: "bd-l3", Anvil: "anvil-l", Title: "No labels (empty string)", Priority: 3, Status: "open", Labels: "", Section: QueueSectionUnlabeled}, // Empty string
+	}
+	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-a", "anvil-l"}, withLabels); err != nil {
+		t.Fatal(err)
+	}
+	items, err = db.QueueCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var l1, l2, l3 *QueueItem
+	for i := range items {
+		switch items[i].BeadID {
+		case "bd-l1":
+			l1 = &items[i]
+		case "bd-l2":
+			l2 = &items[i]
+		case "bd-l3":
+			l3 = &items[i]
+		}
+	}
+	if l1 == nil || l1.Labels != `["dispatch"]` {
+		t.Errorf("expected bd-l1 labels=[\"dispatch\"], got %v", l1)
+	}
+	if l2 == nil || l2.Labels != `[]` {
+		t.Errorf("expected bd-l2 labels=[], got %v", l2)
+	}
+	if l3 == nil || l3.Labels != `[]` {
+		t.Errorf("expected bd-l3 labels=[], got %v", l3)
+	}
+
 	// 4. Replacing with no items clears the cache for the specified anvils
-	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-c"}, nil); err != nil {
+	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-a", "anvil-b", "anvil-c", "anvil-l"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	items, err = db.QueueCache()

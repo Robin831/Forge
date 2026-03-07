@@ -63,37 +63,49 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 		}
-		model.OnRetryBead = func(beadID, anvil string, prID int) {
+		model.OnRetryBead = func(beadID, anvil string) error {
 			client, err := ipc.NewClient()
 			if err != nil {
-				return
+				return err
 			}
 			defer client.Close()
 			payload, _ := json.Marshal(ipc.RetryBeadPayload{
 				BeadID: beadID,
 				Anvil:  anvil,
-				PRID:   prID,
 			})
-			_, _ = client.Send(ipc.Command{
+			resp, err := client.Send(ipc.Command{
 				Type:    "retry_bead",
 				Payload: json.RawMessage(payload),
 			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return ipcError(resp)
+			}
+			return nil
 		}
-		model.OnDismissBead = func(beadID, anvil string, prID int) {
+		model.OnDismissBead = func(beadID, anvil string) error {
 			client, err := ipc.NewClient()
 			if err != nil {
-				return
+				return err
 			}
 			defer client.Close()
 			payload, _ := json.Marshal(ipc.DismissBeadPayload{
 				BeadID: beadID,
 				Anvil:  anvil,
-				PRID:   prID,
 			})
-			_, _ = client.Send(ipc.Command{
+			resp, err := client.Send(ipc.Command{
 				Type:    "dismiss_bead",
 				Payload: json.RawMessage(payload),
 			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return ipcError(resp)
+			}
+			return nil
 		}
 		model.OnViewLogs = func(beadID string) (string, []string) {
 			client, err := ipc.NewClient()
@@ -117,6 +129,31 @@ var hearthCmd = &cobra.Command{
 			}
 			return result.LogPath, result.LastLines
 		}
+		model.OnTagBead = func(beadID, anvil string) error {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			// The daemon derives the tag from its own (hot-reloaded) config, so
+			// the client only needs to send the bead identity.
+			payload, _ := json.Marshal(ipc.TagBeadPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+			})
+			resp, err := client.Send(ipc.Command{
+				Type:    "tag_bead",
+				Payload: json.RawMessage(payload),
+			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return ipcError(resp)
+			}
+			return nil
+		}
 
 		p := tea.NewProgram(&model, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
@@ -125,4 +162,13 @@ var hearthCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// ipcError extracts a human-readable error message from a daemon error response.
+func ipcError(resp *ipc.Response) error {
+	var payload struct{ Message string }
+	if json.Unmarshal(resp.Payload, &payload) == nil && payload.Message != "" {
+		return fmt.Errorf("daemon: %s", payload.Message)
+	}
+	return fmt.Errorf("daemon returned: %s", resp.Type)
 }

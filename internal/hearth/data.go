@@ -84,6 +84,7 @@ func FetchQueue(db *state.DB) tea.Cmd {
 				Anvil:    c.Anvil,
 				Priority: c.Priority,
 				Status:   c.Status,
+				Section:  string(c.Section),
 			})
 		}
 
