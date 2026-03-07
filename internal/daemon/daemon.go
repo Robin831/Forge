@@ -103,7 +103,7 @@ type Daemon struct {
 	// PR Monitoring (Bellows)
 	bellowsMonitor  *bellows.Monitor
 	lifecycleMgr    *lifecycle.Manager
-	depcheckMonitor *depcheck.Monitor
+	depcheckScanner *depcheck.Scanner
 
 	// Vulnerability scanning
 	vulnScanner *vulncheck.Scanner
@@ -399,13 +399,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Start dependency update checker (if enabled)
 	if d.config().Settings.DepcheckInterval > 0 {
-		d.depcheckMonitor = depcheck.New(d.db,
+		d.depcheckScanner = depcheck.New(d.db,
 			d.config().Settings.DepcheckInterval,
 			d.config().Settings.DepcheckTimeout,
 			monitorAnvils)
 		go func() {
-			if err := d.depcheckMonitor.Run(ctx); err != nil && err != context.Canceled {
-				d.logger.Error("Depcheck monitor error", "error", err)
+			if err := d.depcheckScanner.Run(ctx); err != nil && err != context.Canceled {
+				d.logger.Error("Depcheck scanner error", "error", err)
 			}
 		}()
 	}
