@@ -192,6 +192,7 @@ type Model struct {
 	needsAttentionScroll    int
 	needsAttentionViewStart int // viewport offset (separate from selection cursor)
 	readyToMergeScroll      int
+	readyToMergeViewStart   int // viewport offset (separate from selection cursor)
 	workerScroll            int
 	workerViewStart         int // viewport offset (separate from selection cursor)
 	activityScroll       int
@@ -470,6 +471,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if len(msg.Items) == 0 {
 			m.readyToMergeScroll = 0
+			m.readyToMergeViewStart = 0
 		}
 
 	case NeedsAttentionErrorMsg:
@@ -1187,11 +1189,32 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 	if len(m.readyToMerge) == 0 {
 		lines = append(lines, dimStyle.Render("None"))
 	} else if height > 3 {
-		viewHeight := height - 3
-		if viewHeight < 1 {
-			viewHeight = 1
+		maxItems := height - 3
+		if maxItems < 1 {
+			maxItems = 1
 		}
-		visible := visibleItems(m.readyToMergeScroll, len(m.readyToMerge), viewHeight)
+		// Adjust viewport to keep the selected item visible.
+		// readyToMergeScroll is the cursor; readyToMergeViewStart is the viewport offset.
+		if m.readyToMergeScroll < m.readyToMergeViewStart {
+			m.readyToMergeViewStart = m.readyToMergeScroll
+		}
+		if m.readyToMergeScroll >= m.readyToMergeViewStart+maxItems {
+			m.readyToMergeViewStart = m.readyToMergeScroll - maxItems + 1
+		}
+		if m.readyToMergeViewStart < 0 {
+			m.readyToMergeViewStart = 0
+		}
+		// Clamp viewport start so it doesn't hide items unnecessarily when the list shrinks.
+		total := len(m.readyToMerge)
+		if total <= maxItems {
+			m.readyToMergeViewStart = 0
+		} else {
+			maxStart := total - maxItems
+			if m.readyToMergeViewStart > maxStart {
+				m.readyToMergeViewStart = maxStart
+			}
+		}
+		visible := visibleItems(m.readyToMergeViewStart, len(m.readyToMerge), maxItems)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.readyToMerge[i]
 			anvil := dimStyle.Render(item.Anvil)
