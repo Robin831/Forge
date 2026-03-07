@@ -853,7 +853,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 
 		// Skip beads that are circuit-broken (needs_human=1 from dispatch failures or retries)
-		if _, broken := cbSet[bead.ID+"\x00"+bead.Anvil]; broken {
+		if _, broken := circuitBrokenSet[bead.ID+"\x00"+bead.Anvil]; broken {
 			d.activeBeads.Delete(bead.ID)
 			continue
 		}
