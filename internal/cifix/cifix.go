@@ -13,6 +13,7 @@ import (
 	"log"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -100,9 +101,10 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		log.Printf("[cifix] PR #%d attempt %d/%d", p.PRNumber, attempt, MaxAttempts)
 
 		// Step 1: Fetch GitHub check status to identify what's actually failing.
-		ghChecksOutput, err := fetchPRChecks(ctx, p.WorktreePath, p.PRNumber)
-		if err != nil {
-			log.Printf("[cifix] Warning: failed to fetch GitHub PR checks: %v", err)
+		ghChecksOutput, fetchErr := fetchPRChecks(ctx, p.WorktreePath, p.PRNumber)
+		ghChecksFetched := fetchErr == nil
+		if fetchErr != nil {
+			log.Printf("[cifix] Warning: failed to fetch GitHub PR checks: %v", fetchErr)
 		}
 		failingChecks := parseFailingChecks(ghChecksOutput)
 		if len(failingChecks) > 0 {
@@ -124,17 +126,22 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		result.LastTemperResult = temperResult
 
 		if temperResult.Passed {
-			if len(failingChecks) == 0 {
-				// Temper passes AND no GitHub checks are failing — truly fixed.
+			if !ghChecksFetched {
+				// GitHub check status is unknown — do not treat as fixed; spawn Smith to be safe.
+				log.Printf("[cifix] PR #%d: Temper passes but GitHub check status unknown (fetch failed) — spawning Smith to verify",
+					p.PRNumber)
+			} else if len(failingChecks) == 0 {
+				// Temper passes AND GitHub confirms no checks are failing — truly fixed.
 				log.Printf("[cifix] PR #%d: Temper passes and no GitHub checks failing — CI is fixed", p.PRNumber)
 				result.Fixed = true
 				result.Duration = time.Since(start)
 				return result
+			} else {
+				// Temper passes but GitHub has failing checks that Temper doesn't cover.
+				// Don't return early — spawn Smith to fix the GitHub-only failures.
+				log.Printf("[cifix] PR #%d: Temper passes locally but %d GitHub check(s) still failing — spawning Smith for GitHub-only fixes",
+					p.PRNumber, len(failingChecks))
 			}
-			// Temper passes but GitHub has failing checks that Temper doesn't cover.
-			// Don't return early — spawn Smith to fix the GitHub-only failures.
-			log.Printf("[cifix] PR #%d: Temper passes locally but %d GitHub check(s) still failing — spawning Smith for GitHub-only fixes",
-				p.PRNumber, len(failingChecks))
 		}
 
 		// Step 3: Fetch CI logs for failing checks to give Smith better context.
@@ -266,12 +273,26 @@ func buildCIFixPrompt(p FixParams, tr *temper.Result, ghChecks string, failingCh
 		}
 	}
 
+	// List failing GitHub checks (may overlap with local failures or be GitHub-only).
+	if len(failingChecks) > 0 {
+		fmt.Fprintf(&b, "## Failing GitHub Checks\n\n")
+		for _, check := range failingChecks {
+			fmt.Fprintf(&b, "- **%s** (status: %s)\n", check.Name, check.Status)
+		}
+		b.WriteString("\n")
+	}
+
 	// Include GitHub CI logs for failing checks that temper doesn't cover.
 	if len(ciLogs) > 0 {
 		fmt.Fprintf(&b, "## GitHub CI Logs for Failing Checks\n\n")
-		for checkName, logOutput := range ciLogs {
+		checkNames := make([]string, 0, len(ciLogs))
+		for name := range ciLogs {
+			checkNames = append(checkNames, name)
+		}
+		sort.Strings(checkNames)
+		for _, checkName := range checkNames {
 			fmt.Fprintf(&b, "### %s\n", checkName)
-			fmt.Fprintf(&b, "```\n%s\n```\n\n", truncateOutput(logOutput, 4000))
+			fmt.Fprintf(&b, "```\n%s\n```\n\n", truncateOutput(ciLogs[checkName], 4000))
 		}
 	}
 
@@ -314,12 +335,17 @@ Local build, lint, and test all pass. The failing checks are only enforced by Gi
 	}
 	b.WriteString("\n")
 
-	// Include CI logs for each failing check.
+	// Include CI logs for each failing check (sorted for stable output).
 	if len(ciLogs) > 0 {
 		fmt.Fprintf(&b, "## GitHub CI Logs\n\n")
-		for checkName, logOutput := range ciLogs {
+		checkNames := make([]string, 0, len(ciLogs))
+		for name := range ciLogs {
+			checkNames = append(checkNames, name)
+		}
+		sort.Strings(checkNames)
+		for _, checkName := range checkNames {
 			fmt.Fprintf(&b, "### %s\n", checkName)
-			fmt.Fprintf(&b, "```\n%s\n```\n\n", truncateOutput(logOutput, 4000))
+			fmt.Fprintf(&b, "```\n%s\n```\n\n", truncateOutput(ciLogs[checkName], 4000))
 		}
 	}
 
@@ -443,6 +469,9 @@ func fetchRunFailedLogs(ctx context.Context, worktreePath, runID string) (string
 	cmd.Dir = worktreePath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+			return "", fmt.Errorf("gh run view --log-failed: %w: %s", err, trimmed)
+		}
 		return "", fmt.Errorf("gh run view --log-failed: %w", err)
 	}
 	return string(out), nil
