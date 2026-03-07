@@ -264,44 +264,37 @@ func parseSemver(v string) (major, minor, patch string) {
 // createBeads creates bead issues for the outdated dependencies found in an anvil.
 // Patch+minor updates go into a single auto-dispatch bead.
 // Major updates go into a separate "needs attention" bead.
-// Duplicate beads (same kind already open) are skipped to prevent queue flooding.
+// Individual packages are deduplicated: any package with an existing open,
+// in-progress, or recently-closed bead (or an open PR) is filtered out.
 func (m *Monitor) createBeads(ctx context.Context, result CheckResult) {
-	if len(result.Patch)+len(result.Minor) > 0 {
-		if !m.openBeadExists(ctx, result.Path, "Go dependencies (patch/minor)") {
-			m.createUpdateBead(ctx, result.Anvil, result.Path, "auto",
-				append(result.Patch, result.Minor...))
-		} else {
-			log.Printf("[depcheck] %s: open patch/minor update bead already exists, skipping", result.Anvil)
-		}
+	auto := m.filterDuplicates(ctx, result.Anvil, result.Path,
+		append(result.Patch, result.Minor...))
+	if len(auto) > 0 {
+		m.createUpdateBead(ctx, result.Anvil, result.Path, "auto", auto)
 	}
 
-	if len(result.Major) > 0 {
-		if !m.openBeadExists(ctx, result.Path, "Go major version updates") {
-			m.createUpdateBead(ctx, result.Anvil, result.Path, "major", result.Major)
-		} else {
-			log.Printf("[depcheck] %s: open major update bead already exists, skipping", result.Anvil)
-		}
+	major := m.filterDuplicates(ctx, result.Anvil, result.Path, result.Major)
+	if len(major) > 0 {
+		m.createUpdateBead(ctx, result.Anvil, result.Path, "major", major)
 	}
 }
 
-// openBeadExists returns true if an open bead whose title contains phrase already
-// exists in the anvil's bead queue. This prevents duplicate update beads from
-// accumulating across weekly check cycles.
-func (m *Monitor) openBeadExists(ctx context.Context, anvilPath, phrase string) bool {
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "list", "--status=open", "--json"))
-	cmd.Dir = anvilPath
-
-	output, err := cmd.Output()
-	if err != nil {
-		// If we can't query, allow creation rather than silently suppressing beads.
-		return false
+// filterDuplicates removes updates that already have an existing bead (open,
+// in-progress, or recently closed) or an open PR referencing the package.
+func (m *Monitor) filterDuplicates(ctx context.Context, anvilName, anvilPath string, updates []ModuleUpdate) []ModuleUpdate {
+	if len(updates) == 0 {
+		return nil
 	}
 
-	return strings.Contains(string(output), phrase)
+	var filtered []ModuleUpdate
+	for _, u := range updates {
+		if DedupCheck(ctx, m.db, anvilPath, anvilName, u.Path, "Go") {
+			log.Printf("[depcheck] %s: skipping %s (duplicate bead exists)", anvilName, u.Path)
+			continue
+		}
+		filtered = append(filtered, u)
+	}
+	return filtered
 }
 
 // createUpdateBead runs 'bd create' to create a bead for dependency updates.
@@ -312,12 +305,12 @@ func (m *Monitor) createUpdateBead(ctx context.Context, anvil, anvilPath, kind s
 
 	switch kind {
 	case "auto":
-		title = fmt.Sprintf("Update %d Go dependencies (patch/minor)", len(updates))
+		title = fmt.Sprintf("Deps(Go): update %d dependencies (patch/minor)", len(updates))
 		priority = "3"
 		desc.WriteString("Automated dependency update for patch and minor version bumps.\n\n")
 		desc.WriteString("Run `go get -u` for each module below, then `go mod tidy`.\n\n")
 	case "major":
-		title = fmt.Sprintf("Review %d Go major version updates", len(updates))
+		title = fmt.Sprintf("Deps(Go): review %d major version updates", len(updates))
 		priority = "2"
 		desc.WriteString("Major version updates detected. These may contain breaking changes and require manual review.\n\n")
 	}
