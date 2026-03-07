@@ -1706,6 +1706,15 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			fmt.Sprintf("PR #%d merged successfully (strategy: %s)", mergeNumber, strategy),
 			beadID, mergeAnvil)
 		d.logger.Info("PR merged successfully", "pr_number", mergeNumber, "anvil", mergeAnvil, "strategy", strategy)
+		// Immediately update PR status so it disappears from the Ready to Merge panel
+		// without waiting for the next bellows poll cycle (up to 2 minutes).
+		_ = d.db.UpdatePRStatus(pr.ID, state.PRMerged)
+		_ = d.db.CompleteWorkersByBead(beadID)
+		// Trigger an immediate bellows poll so downstream lifecycle effects
+		// (bead close, worktree cleanup) happen promptly.
+		if d.bellowsMonitor != nil {
+			d.bellowsMonitor.Refresh()
+		}
 		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d merged", mergeNumber)})
 		return ipc.Response{Type: "ok", Payload: data}
 
