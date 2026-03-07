@@ -420,6 +420,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateQueueMsg:
 		m.queue = msg.Items
+		m.queueVP.ClampToTotal(len(msg.Items))
 		// Close the queue action menu if the target bead is no longer in the unlabeled section.
 		if m.showQueueActionMenu && m.queueActionTarget != nil {
 			found := false

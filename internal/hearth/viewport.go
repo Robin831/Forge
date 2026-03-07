@@ -34,6 +34,9 @@ func (v *scrollViewport) ClampToTotal(total int) {
 	if v.cursor >= total {
 		v.cursor = total - 1
 	}
+	if v.viewStart >= total {
+		v.viewStart = total - 1
+	}
 }
 
 // AdjustViewport ensures the cursor is visible within a viewport of the given
