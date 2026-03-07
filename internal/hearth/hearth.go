@@ -349,13 +349,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focused == PanelQueue && len(m.queue) > 0 &&
 				m.queueScroll < len(m.queue) {
 				item := m.queue[m.queueScroll]
-				if item.Section == "unlabeled" && m.OnTagBead != nil {
-					if err := m.OnTagBead(item.BeadID, item.Anvil); err != nil {
-						m.statusMsg = fmt.Sprintf("Failed to tag %s: %v", item.BeadID, err)
-					} else {
-						m.statusMsg = fmt.Sprintf("Tagged %s for dispatch", item.BeadID)
-					}
-					m.statusMsgTime = time.Now()
+				if item.Section == "unlabeled" {
+					m.queueActionTarget = &item
+					m.executeQueueAction(QueueActionLabel)
 				}
 			}
 		}
@@ -367,6 +363,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateQueueMsg:
 		m.queue = msg.Items
+		// Close the queue action menu if the target bead is no longer in the unlabeled section.
+		if m.showQueueActionMenu && m.queueActionTarget != nil {
+			found := false
+			for _, qi := range m.queue {
+				if qi.BeadID == m.queueActionTarget.BeadID && qi.Anvil == m.queueActionTarget.Anvil && qi.Section == "unlabeled" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.showQueueActionMenu = false
+				m.queueActionTarget = nil
+			}
+		}
 
 	case QueueErrorMsg:
 		// Preserve previous queue; surface the error in the events panel
@@ -658,25 +668,34 @@ func (m *Model) renderActionMenu() string {
 	return popup
 }
 
+// tagSelectedQueueItem tags the bead stored in queueActionTarget for dispatch.
+func (m *Model) tagSelectedQueueItem() {
+	if m.queueActionTarget == nil {
+		return
+	}
+	item := m.queueActionTarget
+	if m.OnTagBead != nil {
+		if err := m.OnTagBead(item.BeadID, item.Anvil); err != nil {
+			m.statusMsg = fmt.Sprintf("Failed to tag %s: %v", item.BeadID, err)
+		} else {
+			m.statusMsg = fmt.Sprintf("Tagged %s for dispatch", item.BeadID)
+		}
+		m.statusMsgTime = time.Now()
+	} else {
+		m.statusMsg = fmt.Sprintf("Label action unavailable for %s", item.BeadID)
+		m.statusMsgTime = time.Now()
+	}
+}
+
 // executeQueueAction runs the selected queue action menu choice against the target bead.
 func (m *Model) executeQueueAction(choice QueueActionMenuChoice) {
 	if m.queueActionTarget == nil {
 		return
 	}
-	item := m.queueActionTarget
+
 	switch choice {
 	case QueueActionLabel:
-		if m.OnTagBead != nil {
-			if err := m.OnTagBead(item.BeadID, item.Anvil); err != nil {
-				m.statusMsg = fmt.Sprintf("Failed to tag %s: %v", item.BeadID, err)
-			} else {
-				m.statusMsg = fmt.Sprintf("Tagged %s for dispatch", item.BeadID)
-			}
-			m.statusMsgTime = time.Now()
-		} else {
-			m.statusMsg = fmt.Sprintf("Label action unavailable for %s", item.BeadID)
-			m.statusMsgTime = time.Now()
-		}
+		m.tagSelectedQueueItem()
 	}
 }
 
