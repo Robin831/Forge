@@ -33,6 +33,9 @@ type StepResult struct {
 	Duration time.Duration
 	// Passed indicates whether the step succeeded.
 	Passed bool
+	// Optional mirrors the Step.Optional flag — failure here does not fail
+	// the overall check. Surfaced so summaries can render it distinctly.
+	Optional bool
 }
 
 // Result is the overall Temper verification result.
@@ -172,6 +175,7 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 		Output:   output.String(),
 		Duration: duration,
 		Passed:   passed,
+		Optional: step.Optional,
 	}
 }
 
@@ -266,15 +270,26 @@ func detectSteps(worktreePath string, opts *DetectOptions) []Step {
 // buildSummary creates a human-readable summary of the verification result.
 func buildSummary(r *Result) string {
 	var b strings.Builder
+	optionalWarnings := 0
 	for _, s := range r.Steps {
-		status := "PASS"
-		if !s.Passed {
+		var status string
+		switch {
+		case s.Passed:
+			status = "PASS"
+		case s.Optional:
+			status = "WARN"
+			optionalWarnings++
+		default:
 			status = "FAIL"
 		}
 		fmt.Fprintf(&b, "[%s] %s (%.1fs)\n", status, s.Name, s.Duration.Seconds())
 	}
 	if r.Passed {
-		fmt.Fprintf(&b, "\nAll checks passed in %.1fs", r.Duration.Seconds())
+		if optionalWarnings > 0 {
+			fmt.Fprintf(&b, "\nAll required checks passed in %.1fs (%d optional step(s) warned)", r.Duration.Seconds(), optionalWarnings)
+		} else {
+			fmt.Fprintf(&b, "\nAll checks passed in %.1fs", r.Duration.Seconds())
+		}
 	} else {
 		fmt.Fprintf(&b, "\nFailed at step: %s", r.FailedStep)
 	}

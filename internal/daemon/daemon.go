@@ -42,6 +42,7 @@ import (
 	"github.com/Robin831/Forge/internal/rebase"
 	"github.com/Robin831/Forge/internal/reviewfix"
 	"github.com/Robin831/Forge/internal/schematic"
+	"github.com/Robin831/Forge/internal/temper"
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/worker"
@@ -432,17 +433,22 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
 				StartedAt: time.Now(),
 			})
+			var cifixDetectOpts *temper.DetectOptions
+			if anvilCfg.GolangciLint != nil && !*anvilCfg.GolangciLint {
+				cifixDetectOpts = &temper.DetectOptions{DisableGolangciLint: true}
+			}
 			res := cifix.Fix(ctx, cifix.FixParams{
-				WorktreePath: wt.Path,
-				BeadID:       req.BeadID,
-				AnvilName:    req.Anvil,
-				AnvilPath:    anvilCfg.Path,
-				PRNumber:     req.PRNumber,
-				Branch:       req.Branch,
-				DB:           d.db,
-				WorkerID:     workerID,
-				ExtraFlags:   d.config().Settings.ClaudeFlags,
-				Providers:    provider.FromConfig(d.config().Settings.Providers),
+				WorktreePath:  wt.Path,
+				BeadID:        req.BeadID,
+				AnvilName:     req.Anvil,
+				AnvilPath:     anvilCfg.Path,
+				PRNumber:      req.PRNumber,
+				Branch:        req.Branch,
+				DB:            d.db,
+				WorkerID:      workerID,
+				ExtraFlags:    d.config().Settings.ClaudeFlags,
+				DetectOptions: cifixDetectOpts,
+				Providers:     provider.FromConfig(d.config().Settings.Providers),
 			})
 			status := state.WorkerDone
 			if res.Error != nil {
