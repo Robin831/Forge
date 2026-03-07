@@ -187,16 +187,13 @@ type Model struct {
 	OnMergePR func(prID, prNumber int, anvil string) error
 
 	// State
-	focused              Panel
-	queueScroll          int
-	needsAttentionScroll    int
-	needsAttentionViewStart int // viewport offset (separate from selection cursor)
-	readyToMergeScroll      int
-	readyToMergeViewStart   int // viewport offset (separate from selection cursor)
-	workerScroll            int
-	workerViewStart         int // viewport offset (separate from selection cursor)
-	activityScroll       int
-	eventScroll          int
+	focused        Panel
+	queueVP        scrollViewport
+	needsAttnVP    scrollViewport
+	readyToMergeVP scrollViewport
+	workerVP       scrollViewport
+	activityScroll int
+	eventScroll    int
 	eventAutoScroll      bool // true = follow new events
 	prevEventCount       int  // track event count for auto-scroll
 	width                int
@@ -369,8 +366,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "K":
 			// Kill selected worker
 			if m.focused == PanelWorkers && len(m.workers) > 0 &&
-				m.workerScroll < len(m.workers) {
-				w := m.workers[m.workerScroll]
+				m.workerVP.cursor < len(m.workers) {
+				w := m.workers[m.workerVP.cursor]
 				if m.OnKill != nil && w.PID > 0 {
 					m.OnKill(w.ID, w.PID)
 				}
@@ -379,16 +376,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			// Open action menu for selected Needs Attention bead
 			if m.focused == PanelNeedsAttention && len(m.needsAttention) > 0 &&
-				m.needsAttentionScroll < len(m.needsAttention) {
-				item := m.needsAttention[m.needsAttentionScroll]
+				m.needsAttnVP.cursor < len(m.needsAttention) {
+				item := m.needsAttention[m.needsAttnVP.cursor]
 				m.actionTarget = &item
 				m.actionMenuIdx = 0
 				m.showActionMenu = true
 			}
 			// Open queue action menu for selected unlabeled queue bead
 			if m.focused == PanelQueue && len(m.queue) > 0 &&
-				m.queueScroll < len(m.queue) {
-				item := m.queue[m.queueScroll]
+				m.queueVP.cursor < len(m.queue) {
+				item := m.queue[m.queueVP.cursor]
 				if item.Section == "unlabeled" {
 					m.queueActionTarget = &item
 					m.queueActionMenuIdx = 0
@@ -397,8 +394,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Open merge menu for selected Ready to Merge PR
 			if m.focused == PanelReadyToMerge && len(m.readyToMerge) > 0 &&
-				m.readyToMergeScroll < len(m.readyToMerge) {
-				item := m.readyToMerge[m.readyToMergeScroll]
+				m.readyToMergeVP.cursor < len(m.readyToMerge) {
+				item := m.readyToMerge[m.readyToMergeVP.cursor]
 				m.mergeTarget = &item
 				m.mergeMenuIdx = 0
 				m.showMergeMenu = true
@@ -407,8 +404,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "l":
 			// Label (tag) selected bead in the queue for auto-dispatch
 			if m.focused == PanelQueue && len(m.queue) > 0 &&
-				m.queueScroll < len(m.queue) {
-				item := m.queue[m.queueScroll]
+				m.queueVP.cursor < len(m.queue) {
+				item := m.queue[m.queueVP.cursor]
 				if item.Section == "unlabeled" {
 					m.queueActionTarget = &item
 					m.executeQueueAction(QueueActionLabel)
@@ -455,24 +452,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateNeedsAttentionMsg:
 		m.needsAttention = msg.Items
-		// Clamp selection when the needs attention list shrinks
-		if len(msg.Items) > 0 && m.needsAttentionScroll >= len(msg.Items) {
-			m.needsAttentionScroll = len(msg.Items) - 1
-		}
-		if len(msg.Items) == 0 {
-			m.needsAttentionScroll = 0
-			m.needsAttentionViewStart = 0
-		}
+		m.needsAttnVP.ClampToTotal(len(msg.Items))
 
 	case UpdateReadyToMergeMsg:
 		m.readyToMerge = msg.Items
-		if len(msg.Items) > 0 && m.readyToMergeScroll >= len(msg.Items) {
-			m.readyToMergeScroll = len(msg.Items) - 1
-		}
-		if len(msg.Items) == 0 {
-			m.readyToMergeScroll = 0
-			m.readyToMergeViewStart = 0
-		}
+		m.readyToMergeVP.ClampToTotal(len(msg.Items))
 
 	case NeedsAttentionErrorMsg:
 		errEvent := EventItem{
@@ -500,14 +484,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateWorkersMsg:
 		m.workers = msg.Items
-		// Clamp selection when the workers list shrinks
-		if len(msg.Items) > 0 && m.workerScroll >= len(msg.Items) {
-			m.workerScroll = len(msg.Items) - 1
-		}
-		if len(msg.Items) == 0 {
-			m.workerScroll = 0
-			m.workerViewStart = 0
-		}
+		m.workerVP.ClampToTotal(len(msg.Items))
 
 	case UpdateEventsMsg:
 		m.events = msg.Items
@@ -635,20 +612,15 @@ func (m *Model) getVerticalSplit(headerH, footerH int) (topHeight, bottomHeight 
 func (m *Model) scrollDown() {
 	switch m.focused {
 	case PanelQueue:
-		if m.queueScroll < len(m.queue)-1 {
-			m.queueScroll++
-		}
+		m.queueVP.ScrollDown(len(m.queue))
 	case PanelNeedsAttention:
-		if m.needsAttentionScroll < len(m.needsAttention)-1 {
-			m.needsAttentionScroll++
-		}
+		m.needsAttnVP.ScrollDown(len(m.needsAttention))
 	case PanelReadyToMerge:
-		if m.readyToMergeScroll < len(m.readyToMerge)-1 {
-			m.readyToMergeScroll++
-		}
+		m.readyToMergeVP.ScrollDown(len(m.readyToMerge))
 	case PanelWorkers:
-		if m.workerScroll < len(m.workers)-1 {
-			m.workerScroll++
+		prev := m.workerVP.cursor
+		m.workerVP.ScrollDown(len(m.workers))
+		if m.workerVP.cursor != prev {
 			m.activityScroll = 0
 		}
 	case PanelLiveActivity:
@@ -669,20 +641,15 @@ func (m *Model) scrollDown() {
 func (m *Model) scrollUp() {
 	switch m.focused {
 	case PanelQueue:
-		if m.queueScroll > 0 {
-			m.queueScroll--
-		}
+		m.queueVP.ScrollUp()
 	case PanelNeedsAttention:
-		if m.needsAttentionScroll > 0 {
-			m.needsAttentionScroll--
-		}
+		m.needsAttnVP.ScrollUp()
 	case PanelReadyToMerge:
-		if m.readyToMergeScroll > 0 {
-			m.readyToMergeScroll--
-		}
+		m.readyToMergeVP.ScrollUp()
 	case PanelWorkers:
-		if m.workerScroll > 0 {
-			m.workerScroll--
+		prev := m.workerVP.cursor
+		m.workerVP.ScrollUp()
+		if m.workerVP.cursor != prev {
 			m.activityScroll = 0
 		}
 	case PanelLiveActivity:
@@ -698,8 +665,8 @@ func (m *Model) scrollUp() {
 
 // selectedWorkerActivity returns the activity lines for the currently selected worker.
 func (m *Model) selectedWorkerActivity() []string {
-	if len(m.workers) > 0 && m.workerScroll < len(m.workers) {
-		return m.workers[m.workerScroll].ActivityLines
+	if len(m.workers) > 0 && m.workerVP.cursor < len(m.workers) {
+		return m.workers[m.workerVP.cursor].ActivityLines
 	}
 	return nil
 }
@@ -770,9 +737,7 @@ func (m *Model) removeNeedsAttentionItem(beadID, anvil string) {
 	for i, item := range m.needsAttention {
 		if item.BeadID == beadID && item.Anvil == anvil {
 			m.needsAttention = append(m.needsAttention[:i], m.needsAttention[i+1:]...)
-			if m.needsAttentionScroll >= len(m.needsAttention) && m.needsAttentionScroll > 0 {
-				m.needsAttentionScroll--
-			}
+			m.needsAttnVP.ClampToTotal(len(m.needsAttention))
 			return
 		}
 	}
@@ -973,7 +938,7 @@ func (m *Model) renderQueue(width, height int) string {
 			priority := priorityStyle(item.Priority)
 			anvil := dimStyle.Render(item.Anvil)
 			line := fmt.Sprintf("%s %s %s %s", priority, item.BeadID, anvil, truncate(item.Title, width-28))
-			if i == m.queueScroll {
+			if i == m.queueVP.cursor {
 				line = selectedStyle.Render(line)
 			}
 			rows = append(rows, displayRow{text: line, itemIdx: i})
@@ -982,7 +947,7 @@ func (m *Model) renderQueue(width, height int) string {
 		// Find display offset of the selected item so the view scrolls with selection.
 		selectedDisplayIdx := 0
 		for di, row := range rows {
-			if row.itemIdx == m.queueScroll {
+			if row.itemIdx == m.queueVP.cursor {
 				selectedDisplayIdx = di
 				break
 			}
@@ -1112,9 +1077,9 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 		if maxItems < 1 {
 			maxItems = 1
 		}
-		m.needsAttentionViewStart = clampViewStart(m.needsAttentionScroll, m.needsAttentionViewStart, maxItems, len(m.needsAttention))
-		visible := visibleItems(m.needsAttentionViewStart, len(m.needsAttention), maxItems)
-		for i := visible.start; i < visible.end; i++ {
+		m.needsAttnVP.AdjustViewport(maxItems, len(m.needsAttention))
+		start, end := m.needsAttnVP.VisibleRange(maxItems, len(m.needsAttention))
+		for i := start; i < end; i++ {
 			item := m.needsAttention[i]
 			anvil := dimStyle.Render(item.Anvil)
 			label := item.BeadID
@@ -1123,7 +1088,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 			}
 			icon := attentionReasonIcon(item.ReasonCategory)
 			beadLine := fmt.Sprintf("%s %s %s", icon, label, anvil)
-			if i == m.needsAttentionScroll {
+			if i == m.needsAttnVP.cursor {
 				beadLine = selectedStyle.Render(beadLine)
 			}
 			lines = append(lines, beadLine)
@@ -1134,7 +1099,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 				reason = "(no reason)"
 			}
 			reasonLine := "  " + dimStyle.Render(truncate(reason, width-6))
-			if i == m.needsAttentionScroll {
+			if i == m.needsAttnVP.cursor {
 				reasonLine = "  " + selectedStyle.Render(truncate(reason, width-6))
 			}
 			lines = append(lines, reasonLine)
@@ -1172,13 +1137,13 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 		if maxItems < 1 {
 			maxItems = 1
 		}
-		m.readyToMergeViewStart = clampViewStart(m.readyToMergeScroll, m.readyToMergeViewStart, maxItems, len(m.readyToMerge))
-		visible := visibleItems(m.readyToMergeViewStart, len(m.readyToMerge), maxItems)
-		for i := visible.start; i < visible.end; i++ {
+		m.readyToMergeVP.AdjustViewport(viewHeight, len(m.readyToMerge))
+		start, end := m.readyToMergeVP.VisibleRange(viewHeight, len(m.readyToMerge))
+		for i := start; i < end; i++ {
 			item := m.readyToMerge[i]
 			anvil := dimStyle.Render(item.Anvil)
 			line := fmt.Sprintf("PR #%d %s %s", item.PRNumber, item.BeadID, anvil)
-			if i == m.readyToMergeScroll {
+			if i == m.readyToMergeVP.cursor {
 				line = selectedStyle.Render(line)
 			}
 			lines = append(lines, line)
@@ -1278,16 +1243,16 @@ func (m *Model) renderWorkerList(width, height int) string {
 		if maxWorkers < 1 {
 			maxWorkers = 1
 		}
-		m.workerViewStart = clampViewStart(m.workerScroll, m.workerViewStart, maxWorkers, len(m.workers))
-		visible := visibleItems(m.workerViewStart, len(m.workers), maxWorkers)
-		for i := visible.start; i < visible.end; i++ {
+		m.workerVP.AdjustViewport(maxWorkers, len(m.workers))
+		start, end := m.workerVP.VisibleRange(maxWorkers, len(m.workers))
+		for i := start; i < end; i++ {
 			item := m.workers[i]
 			status := workerStatusStyle(item.Status)
 			phase := phaseTag(item.Type)
 			mainLine := fmt.Sprintf("%s %s %s %s %s",
 				status, phase, item.BeadID,
 				dimStyle.Render(item.Anvil), item.Duration)
-			if i == m.workerScroll {
+			if i == m.workerVP.cursor {
 				mainLine = selectedStyle.Render(mainLine)
 			}
 			lines = append(lines, mainLine)
@@ -1298,7 +1263,7 @@ func (m *Model) renderWorkerList(width, height int) string {
 				titleText = "(no title)"
 			}
 			titleLine := "    " + dimStyle.Render(truncate(titleText, width-8))
-			if i == m.workerScroll {
+			if i == m.workerVP.cursor {
 				titleLine = "    " + selectedStyle.Render(truncate(titleText, width-8))
 			}
 			lines = append(lines, titleLine)
@@ -1322,8 +1287,8 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 
 	// Build title with selected worker info
 	titleText := "Live Activity"
-	if len(m.workers) > 0 && m.workerScroll < len(m.workers) {
-		w := m.workers[m.workerScroll]
+	if len(m.workers) > 0 && m.workerVP.cursor < len(m.workers) {
+		w := m.workers[m.workerVP.cursor]
 		titleText = fmt.Sprintf("Live Activity — %s %s", w.BeadID, dimStyle.Render(w.Anvil))
 	}
 	title := activityPanelTitleStyle.Render(titleText)
