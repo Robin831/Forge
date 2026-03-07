@@ -338,9 +338,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.bellowsMonitor = bellows.New(d.db, d.config().Settings.BellowsInterval, monitorAnvils)
 	d.lifecycleMgr = lifecycle.New(d.db, d.logger, d.handleLifecycleAction)
 	d.lifecycleMgr.SetThresholds(
-		d.cfg.Settings.MaxCIFixAttempts,
-		d.cfg.Settings.MaxReviewFixAttempts,
-		d.cfg.Settings.MaxRebaseAttempts,
+		d.config().Settings.MaxCIFixAttempts,
+		d.config().Settings.MaxReviewFixAttempts,
+		d.config().Settings.MaxRebaseAttempts,
 	)
 	if err := d.lifecycleMgr.Load(ctx); err != nil {
 		d.logger.Error("failed to load lifecycle states", "error", err)

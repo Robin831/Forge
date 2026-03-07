@@ -652,7 +652,7 @@ func TestDB_StalledWorkers(t *testing.T) {
 	}
 
 	// Stalled worker should appear in NeedsAttentionBeads
-	attention, err := db.NeedsAttentionBeads()
+	attention, err := db.NeedsAttentionBeads(DefaultMaxCIFixAttempts, DefaultMaxReviewFixAttempts, DefaultMaxRebaseAttempts)
 	if err != nil {
 		t.Fatal(err)
 	}

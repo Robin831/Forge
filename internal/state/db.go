@@ -402,7 +402,7 @@ func (db *DB) MarkWorkerStalled(id string) error {
 	res, err := db.conn.Exec(
 		`UPDATE workers SET status = ?, updated_at = ?
 		 WHERE id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')`,
-		string(WorkerStalled), time.Now().Format(time.RFC3339), id,
+		string(WorkerStalled), time.Now().Format(dbTimeLayout), id,
 	)
 	if err != nil {
 		return err
@@ -470,7 +470,7 @@ func (db *DB) CompleteWorkersByBead(beadID string) error {
 	_, err := db.conn.Exec(
 		`UPDATE workers SET status = ?, completed_at = ?
 		 WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')`,
-		string(WorkerDone), time.Now().Format(time.RFC3339), beadID,
+		string(WorkerDone), time.Now().Format(dbTimeLayout), beadID,
 	)
 	return err
 }
