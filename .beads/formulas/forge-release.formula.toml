@@ -1,0 +1,63 @@
+# forge-release.formula.toml — Release automation for Forge
+#
+# Usage:
+#   bd formula run forge-release -- <version>
+#   e.g. bd formula run forge-release -- 0.2.0
+#
+# Steps:
+#   1. Assemble changelog fragments into CHANGELOG.md
+#   2. Commit the changelog update
+#   3. Create a semver git tag (v<version>)
+#   4. Push the tag (triggers the release workflow)
+
+[formula]
+name = "forge-release"
+description = "Assemble changelog, tag version, push to trigger GoReleaser"
+
+[[steps]]
+name = "validate-version"
+run = """
+VERSION="${1:?Pass version as argument, e.g. 0.2.0}"
+if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+  echo "ERROR: Version must be semver (e.g. 0.2.0 or 1.0.0-rc.1)" >&2
+  exit 1
+fi
+if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+  echo "ERROR: Tag v$VERSION already exists" >&2
+  exit 1
+fi
+echo "Releasing v$VERSION"
+"""
+
+[[steps]]
+name = "assemble-changelog"
+run = """
+VERSION="${1:?}"
+bash scripts/assemble-changelog.sh "$VERSION"
+"""
+
+[[steps]]
+name = "commit-changelog"
+run = """
+VERSION="${1:?}"
+git add CHANGELOG.md changelog.d/
+git diff --cached --quiet && echo "No changelog changes to commit" && exit 0
+git commit -m "docs: assemble changelog for v$VERSION"
+"""
+
+[[steps]]
+name = "tag-version"
+run = """
+VERSION="${1:?}"
+git tag -a "v$VERSION" -m "Release v$VERSION"
+echo "Created tag v$VERSION"
+"""
+
+[[steps]]
+name = "push-tag"
+run = """
+VERSION="${1:?}"
+git push origin HEAD
+git push origin "v$VERSION"
+echo "Pushed v$VERSION — GitHub Actions will run GoReleaser"
+"""
