@@ -28,7 +28,7 @@ jobs:
           HEAD="${{ github.event.pull_request.head.sha }}"
 
           # Check if any user-visible code was changed (exclude test-only, CI, docs)
-          CHANGED=$(git diff --name-only "$BASE" "$HEAD" | grep -vE '(_test\.go|\.github/|\.md$|changelog\.d/|testdata/)' || true)
+          CHANGED=$(git diff --name-only "$BASE...$HEAD" | grep -vE '(_test\.go|\.github/|\.md$|changelog\.d/|testdata/)' || true)
 
           if [ -z "$CHANGED" ]; then
             echo "No user-visible code changes — changelog fragment not required."
@@ -36,15 +36,17 @@ jobs:
           fi
 
           # Look for a changelog fragment in the diff
-          FRAGMENTS=$(git diff --name-only "$BASE" "$HEAD" | grep '^changelog\.d/' || true)
+          FRAGMENTS=$(git diff --name-only "$BASE...$HEAD" | grep '^changelog\.d/' || true)
 
           if [ -z "$FRAGMENTS" ]; then
             echo "::error::User-visible code was changed but no changelog.d/ fragment was added."
             echo ""
             echo "Please create a file like changelog.d/<bead-id>.en.md with:"
             echo ""
-            echo "  category: Added|Changed|Fixed|Removed"
-            echo "  - **Summary** - Description. (bead-id)"
+            echo "  category: Added"
+            echo "  - **Summary** - Description. (<bead-id>)"
+            echo ""
+            echo "Valid categories: Added, Changed, Fixed, Removed"
             echo ""
             echo "If this change is truly internal-only, add [no-changelog] to the PR title."
             exit 1
@@ -71,39 +73,3 @@ jobs:
 
       - name: Test
         run: go test -short ./...
-
-  changelog-check:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check for changelog fragment
-        env:
-          BRANCH: ${{ github.head_ref }}
-        run: |
-          # Get the bead ID from branch name (forge/<bead-id>)
-          BEAD_ID="${BRANCH#forge/}"
-
-          # Skip check if branch doesn't follow forge/ pattern
-          if [ "$BEAD_ID" = "$BRANCH" ]; then
-            echo "Branch does not follow forge/<bead-id> pattern, skipping check"
-            exit 0
-          fi
-
-          # Check for fragment file
-          if [ -f "changelog.d/${BEAD_ID}.md" ] || [ -f "changelog.d/${BEAD_ID}.en.md" ]; then
-            echo "Changelog fragment found for ${BEAD_ID}"
-          else
-            # Check if any non-internal files changed (skip if only tests/CI/docs)
-            CHANGED=$(git diff --name-only origin/main...HEAD -- \
-              ':!*_test.go' ':!.github/' ':!*.md' ':!changelog.d/' \
-              | head -1)
-            if [ -n "$CHANGED" ]; then
-              echo "::warning::No changelog fragment found for ${BEAD_ID}. If this PR includes user-visible changes, add changelog.d/${BEAD_ID}.md"
-            else
-              echo "No user-visible changes detected, fragment not required"
-            fi
-          fi

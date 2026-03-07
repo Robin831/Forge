@@ -195,7 +195,7 @@ you **MUST** create a changelog fragment file at:
 Use this exact format:
 
 ` + "`" + `` + "`" + `` + "`" + `markdown
-category: Added|Changed|Fixed|Removed
+category: <Added|Changed|Fixed|Removed>
 - **Short bold summary of the change** - Additional detail explaining what changed and why. ({{.Bead.BeadID}})
 ` + "`" + `` + "`" + `` + "`" + `
 
