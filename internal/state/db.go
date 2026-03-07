@@ -867,6 +867,11 @@ const (
 	EventWorkerStalled        EventType = "worker_stalled"
 	EventError                EventType = "error"
 	EventBeadRecovered        EventType = "bead_recovered"
+	EventDepcheckStarted      EventType = "depcheck_started"
+	EventDepcheckPassed       EventType = "depcheck_passed"
+	EventDepcheckFound        EventType = "depcheck_found"
+	EventDepcheckFailed       EventType = "depcheck_failed"
+	EventDepcheckBeadCreated  EventType = "depcheck_bead_created"
 )
 
 // Event represents a logged event.
