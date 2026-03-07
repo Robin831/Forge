@@ -272,7 +272,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.eventAutoScroll {
 					m.eventScroll = 0
 				}
-			} else if m.focused == PanelActivity {
+			} else if m.focused == PanelLiveActivity {
 				// Reset activity scroll to bottom (follow latest)
 				m.activityScroll = 0
 			}
@@ -936,17 +936,16 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 		if maxVisible < 1 {
 			maxVisible = 1
 		}
-		// Show newest entries first (reverse order), like the Events panel.
-		// activityScroll offsets from the newest end.
+		// activityScroll offsets from the newest end. Clamp it so the model
+		// doesn't get stuck at an invalid offset (e.g., after refresh).
+		if m.activityScroll < 0 {
+			m.activityScroll = 0
+		}
+		maxOffset := len(activityLines) - 1
+		if m.activityScroll > maxOffset {
+			m.activityScroll = maxOffset
+		}
 		end := len(activityLines) - m.activityScroll
-		if end < 0 {
-			end = 0
-		}
-		// Clamp so that we always show at least the oldest entry when scrolled
-		// past the start of the activity list.
-		if len(activityLines) > 0 && end == 0 {
-			end = 1
-		}
 		start := end - maxVisible
 		if start < 0 {
 			start = 0
