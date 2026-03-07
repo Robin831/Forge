@@ -83,9 +83,26 @@ func New(db *state.DB, logger *slog.Logger, handler ActionHandler) *Manager {
 		logger:    logger,
 		states:    make(map[string]*PRState),
 		handler:   handler,
-		maxCI:     5,
-		maxRev:    5,
-		maxRebase: 3,
+		maxCI:     state.DefaultMaxCIFixAttempts,
+		maxRev:    state.DefaultMaxReviewFixAttempts,
+		maxRebase: state.DefaultMaxRebaseAttempts,
+	}
+}
+
+// SetThresholds overrides the default max attempt limits. Zero values are
+// ignored (the existing default is kept). Must be called before any goroutines
+// call HandleEvent, or the caller must ensure exclusive access.
+func (m *Manager) SetThresholds(maxCI, maxRev, maxRebase int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if maxCI > 0 {
+		m.maxCI = maxCI
+	}
+	if maxRev > 0 {
+		m.maxRev = maxRev
+	}
+	if maxRebase > 0 {
+		m.maxRebase = maxRebase
 	}
 }
 
@@ -143,6 +160,7 @@ func (m *Manager) Load(ctx context.Context) error {
 			ReviewNeedsFix: false, // never restore; bellows will re-detect review comments
 			CIFixCount:     pr.CIFixCount,
 			ReviewFixCnt:   pr.ReviewFixCount,
+			RebaseCount:    pr.RebaseCount,
 		}
 		m.states[m.key(pr.Anvil, pr.Number)] = st
 		m.logger.Info("restored PR from DB",
@@ -150,7 +168,8 @@ func (m *Manager) Load(ctx context.Context) error {
 			"anvil", pr.Anvil,
 			"ci_passing", pr.CIPassing,
 			"ci_fixes", pr.CIFixCount,
-			"review_fixes", pr.ReviewFixCount)
+			"review_fixes", pr.ReviewFixCount,
+			"rebases", pr.RebaseCount)
 	}
 	return nil
 }
@@ -192,6 +211,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 				ReviewNeedsFix: pr.Status == state.PRNeedsFix && pr.CIPassing,
 				CIFixCount:     pr.CIFixCount,
 				ReviewFixCnt:   pr.ReviewFixCount,
+				RebaseCount:    pr.RebaseCount,
 			}
 		} else {
 			// Not found in DB — create new state and persist it
@@ -308,6 +328,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 	dbID := st.ID
 	ciFixCount := st.CIFixCount
 	reviewFixCnt := st.ReviewFixCnt
+	rebaseCount := st.RebaseCount
 	ciPassing := st.CIPassing
 	req := ActionRequest{
 		Action:   action,
@@ -325,7 +346,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 	}
 
 	if dbID > 0 {
-		if err := m.db.UpdatePRLifecycle(dbID, ciFixCount, reviewFixCnt, ciPassing); err != nil {
+		if err := m.db.UpdatePRLifecycle(dbID, ciFixCount, reviewFixCnt, rebaseCount, ciPassing); err != nil {
 			m.logger.Error("failed to update PR lifecycle in DB", "pr", event.PRNumber, "anvil", event.Anvil, "error", err)
 		}
 	}

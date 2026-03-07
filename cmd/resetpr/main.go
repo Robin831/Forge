@@ -33,7 +33,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "PR #%d not found: %v\n", num, err)
 			continue
 		}
-		if err := db.UpdatePRLifecycle(pr.ID, 0, 0, pr.CIPassing); err != nil {
+		if err := db.UpdatePRLifecycle(pr.ID, 0, 0, 0, pr.CIPassing); err != nil {
 			fmt.Fprintf(os.Stderr, "reset lifecycle pr #%d: %v\n", num, err)
 			continue
 		}

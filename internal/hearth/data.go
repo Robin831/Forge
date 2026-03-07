@@ -24,6 +24,10 @@ type TickMsg time.Time
 // DataSource holds the dependencies needed to feed the TUI panels.
 type DataSource struct {
 	DB *state.DB
+	// Exhaustion thresholds from config. Zero values fall back to state package defaults.
+	MaxCIFixAttempts     int
+	MaxReviewFixAttempts int
+	MaxRebaseAttempts    int
 }
 
 // Tick returns a Bubbletea command that sends a TickMsg after the interval.
@@ -332,19 +336,28 @@ func FetchEvents(db *state.DB, limit int) tea.Cmd {
 }
 
 // FetchNeedsAttention reads beads that need human intervention from the state DB.
-func FetchNeedsAttention(db *state.DB) tea.Cmd {
+// This includes both retry-exhausted beads and PRs that have exhausted their
+// CI-fix, review-fix, or rebase attempt limits. Thresholds are taken from ds
+// so the TUI stays in sync with the daemon's configured limits.
+func FetchNeedsAttention(ds *DataSource) tea.Cmd {
 	return func() tea.Msg {
-		beads, err := db.NeedsAttentionBeads()
+		beads, err := ds.DB.NeedsAttentionBeads(
+			ds.MaxCIFixAttempts,
+			ds.MaxReviewFixAttempts,
+			ds.MaxRebaseAttempts,
+		)
 		if err != nil {
 			return NeedsAttentionErrorMsg{Err: fmt.Errorf("failed to fetch needs attention beads: %w", err)}
 		}
 		var items []NeedsAttentionItem
 		for _, b := range beads {
 			items = append(items, NeedsAttentionItem{
-				BeadID: b.BeadID,
-				Title:  b.Title,
-				Anvil:  b.Anvil,
-				Reason: b.Reason,
+				BeadID:   b.BeadID,
+				Title:    b.Title,
+				Anvil:    b.Anvil,
+				Reason:   b.Reason,
+				PRID:     b.PRID,
+				PRNumber: b.PRNumber,
 			})
 		}
 
@@ -353,12 +366,12 @@ func FetchNeedsAttention(db *state.DB) tea.Cmd {
 }
 
 // FetchAll returns a batch command that refreshes all panels.
-func FetchAll(db *state.DB) tea.Cmd {
+func FetchAll(ds *DataSource) tea.Cmd {
 	return tea.Batch(
-		FetchQueue(db),
-		FetchNeedsAttention(db),
-		FetchWorkers(db),
-		FetchEvents(db, EventFetchLimit),
+		FetchQueue(ds.DB),
+		FetchNeedsAttention(ds),
+		FetchWorkers(ds.DB),
+		FetchEvents(ds.DB, EventFetchLimit),
 	)
 }
 

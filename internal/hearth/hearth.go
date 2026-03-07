@@ -37,6 +37,20 @@ const (
 	eventMsgMinWidth          = 20 // Minimum width before msg moves to next line
 )
 
+// ActionMenuChoice identifies an action in the Needs Attention action menu.
+type ActionMenuChoice int
+
+const (
+	ActionRetry   ActionMenuChoice = iota // Re-queue the bead for processing
+	ActionDismiss                         // Dismiss the bead from the attention list
+	ActionViewLogs                        // Open the log viewer for the bead
+)
+
+// actionMenuLabels returns the display labels for each ActionMenuChoice, in order.
+func actionMenuLabels() []string {
+	return []string{"Retry", "Dismiss", "View Logs"}
+}
+
 // QueueItem represents a bead in the queue panel.
 type QueueItem struct {
 	BeadID   string
@@ -48,10 +62,12 @@ type QueueItem struct {
 
 // NeedsAttentionItem represents a bead requiring human attention.
 type NeedsAttentionItem struct {
-	BeadID string
-	Title  string
-	Anvil  string
-	Reason string
+	BeadID   string
+	Title    string
+	Anvil    string
+	Reason   string
+	PRID     int // Non-zero when item originates from an exhausted PR
+	PRNumber int
 }
 
 // WorkerItem represents a worker in the workers panel.
@@ -92,6 +108,11 @@ type Model struct {
 	// Callback for interacting with the daemon (set by the caller)
 	OnKill func(workerID string, pid int)
 
+	// Callbacks for Needs Attention actions (set by the caller)
+	OnRetryBead   func(beadID, anvil string, prID int)
+	OnDismissBead func(beadID, anvil string, prID int)
+	OnViewLogs    func(beadID string) (logPath string, lines []string)
+
 	// State
 	focused              Panel
 	queueScroll          int
@@ -103,6 +124,21 @@ type Model struct {
 	width                int
 	height               int
 	ready                bool
+
+	// Action menu state (Needs Attention panel)
+	showActionMenu bool
+	actionTarget   *NeedsAttentionItem
+	actionMenuIdx  int
+
+	// Transient status message shown in the footer after an action
+	statusMsg     string
+	statusMsgTime time.Time
+
+	// Log viewer overlay
+	showLogViewer   bool
+	logViewerTitle  string
+	logViewerLines  []string
+	logViewerScroll int
 
 	// Event rendering cache
 	eventLinesCache       []string
@@ -130,7 +166,7 @@ func (m *Model) Init() tea.Cmd {
 	// Start the data tick cycle and do an initial fetch
 	if m.data != nil {
 		cmds = append(cmds, Tick())
-		cmds = append(cmds, FetchAll(m.data.DB))
+		cmds = append(cmds, FetchAll(m.data))
 	}
 
 	return tea.Batch(cmds...)
@@ -240,7 +276,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.data != nil {
 			return m, tea.Batch(
 				Tick(),
-				FetchAll(m.data.DB),
+				FetchAll(m.data),
 			)
 		}
 	}
@@ -341,6 +377,140 @@ func (m *Model) scrollUp() {
 	}
 }
 
+// selectedWorkerActivity returns the activity lines for the currently selected worker.
+func (m *Model) selectedWorkerActivity() []string {
+	if len(m.workers) > 0 && m.workerScroll < len(m.workers) {
+		return m.workers[m.workerScroll].ActivityLines
+	}
+	return nil
+}
+
+// executeAction runs the selected action menu choice against the target bead.
+func (m *Model) executeAction(choice ActionMenuChoice) {
+	if m.actionTarget == nil {
+		return
+	}
+	bead := m.actionTarget
+	switch choice {
+	case ActionRetry:
+		if m.OnRetryBead != nil {
+			m.OnRetryBead(bead.BeadID, bead.Anvil, bead.PRID)
+			if bead.PRNumber > 0 {
+				m.statusMsg = fmt.Sprintf("Retry queued for PR #%d (%s)", bead.PRNumber, bead.BeadID)
+			} else {
+				m.statusMsg = fmt.Sprintf("Retry queued for %s", bead.BeadID)
+			}
+			m.statusMsgTime = time.Now()
+		}
+	case ActionDismiss:
+		if m.OnDismissBead != nil {
+			m.OnDismissBead(bead.BeadID, bead.Anvil, bead.PRID)
+			if bead.PRNumber > 0 {
+				m.statusMsg = fmt.Sprintf("Dismissed PR #%d (%s)", bead.PRNumber, bead.BeadID)
+			} else {
+				m.statusMsg = fmt.Sprintf("Dismissed %s", bead.BeadID)
+			}
+			m.statusMsgTime = time.Now()
+		}
+	case ActionViewLogs:
+		if m.OnViewLogs != nil {
+			logPath, lines := m.OnViewLogs(bead.BeadID)
+			if logPath == "" {
+				m.statusMsg = fmt.Sprintf("No logs found for %s", bead.BeadID)
+				m.statusMsgTime = time.Now()
+				return
+			}
+			m.logViewerTitle = fmt.Sprintf("Logs: %s — %s", bead.BeadID, logPath)
+			m.logViewerLines = lines
+			m.logViewerScroll = 0
+			m.showLogViewer = true
+		}
+	}
+}
+
+// renderActionMenu renders the action menu overlay centered on screen.
+func (m *Model) renderActionMenu() string {
+	if m.actionTarget == nil {
+		return ""
+	}
+
+	menuWidth := 52
+	labels := actionMenuLabels()
+
+	var lines []string
+	title := fmt.Sprintf("Actions for %s", m.actionTarget.BeadID)
+	lines = append(lines, actionMenuTitleStyle.Render(title))
+	lines = append(lines, "")
+
+	for i, label := range labels {
+		cursor := "  "
+		if i == m.actionMenuIdx {
+			cursor = "> "
+			label = actionMenuSelectedStyle.Render(label)
+		} else {
+			label = dimStyle.Render(label)
+		}
+		lines = append(lines, cursor+label)
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render("Enter: select • Esc: close"))
+
+	content := strings.Join(lines, "\n")
+	popup := actionMenuStyle.Width(menuWidth).Render(content)
+
+	return popup
+}
+
+// renderLogViewer renders the log viewer overlay.
+func (m *Model) renderLogViewer() string {
+	viewerWidth := m.width - 8
+	if viewerWidth < 40 {
+		viewerWidth = 40
+	}
+	viewerHeight := m.height - 6
+	if viewerHeight < 10 {
+		viewerHeight = 10
+	}
+
+	var lines []string
+	lines = append(lines, actionMenuTitleStyle.Render(truncate(m.logViewerTitle, viewerWidth-4)))
+	lines = append(lines, "")
+
+	contentHeight := viewerHeight - 5 // title + margins + footer
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+
+	if len(m.logViewerLines) == 0 {
+		lines = append(lines, dimStyle.Render("(empty log)"))
+	} else {
+		visible := visibleItems(m.logViewerScroll, len(m.logViewerLines), contentHeight)
+		for i := visible.start; i < visible.end; i++ {
+			line := m.logViewerLines[i]
+			maxLen := viewerWidth - 4
+			if maxLen > 0 {
+				runes := []rune(line)
+				if len(runes) > maxLen {
+					if maxLen > 3 {
+						line = string(runes[:maxLen-3]) + "..."
+					} else {
+						line = string(runes[:maxLen])
+					}
+				}
+			}
+			lines = append(lines, dimStyle.Render(line))
+		}
+	}
+
+	lines = append(lines, "")
+	scrollInfo := fmt.Sprintf("Line %d/%d", m.logViewerScroll+1, max(len(m.logViewerLines), 1))
+	lines = append(lines, dimStyle.Render("j/k: scroll • Esc: close  "+scrollInfo))
+
+	content := strings.Join(lines, "\n")
+	return logViewerStyle.Width(viewerWidth).Height(viewerHeight).Render(content)
+}
+
 // renderQueue renders the queue panel.
 func (m *Model) renderQueue(width, height int) string {
 	style := panelStyle.Width(width)
@@ -416,7 +586,11 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 		for i := visible.start; i < visible.end; i++ {
 			item := m.needsAttention[i]
 			anvil := dimStyle.Render(item.Anvil)
-			beadLine := fmt.Sprintf("⚠ %s %s", item.BeadID, anvil)
+			label := item.BeadID
+			if item.PRNumber > 0 {
+				label = fmt.Sprintf("PR #%d %s", item.PRNumber, item.BeadID)
+			}
+			beadLine := fmt.Sprintf("⚠ %s %s", label, anvil)
 			if i == m.needsAttentionScroll {
 				beadLine = selectedStyle.Render(beadLine)
 			}
@@ -835,6 +1009,24 @@ var (
 				Bold(true).
 				Foreground(lipgloss.Color("196")).
 				MarginBottom(1)
+
+	actionMenuStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("208")).
+			Padding(1, 2)
+
+	actionMenuTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("208"))
+
+	actionMenuSelectedStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("255"))
+
+	logViewerStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("75")).
+			Padding(1, 2)
 )
 
 // priorityStyle returns a colored priority indicator.

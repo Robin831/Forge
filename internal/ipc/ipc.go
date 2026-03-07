@@ -87,16 +87,21 @@ type ClarificationPayload struct {
 
 // RetryBeadPayload is the payload for a "retry_bead" command.
 // Clears needs_human flag and resets retry count so the bead re-enters the queue.
+// When PRID > 0, the retry targets an exhausted PR (resetting fix counters and
+// status back to open) rather than the retries table.
 type RetryBeadPayload struct {
 	BeadID string `json:"bead_id"`
 	Anvil  string `json:"anvil"`
+	PRID   int    `json:"pr_id,omitempty"`
 }
 
 // DismissBeadPayload is the payload for a "dismiss_bead" command.
-// Removes the bead from the Needs Attention list.
+// Removes the bead from the Needs Attention list. When PRID > 0, the dismiss
+// targets an exhausted PR (setting status to closed) rather than the retries table.
 type DismissBeadPayload struct {
 	BeadID string `json:"bead_id"`
 	Anvil  string `json:"anvil"`
+	PRID   int    `json:"pr_id,omitempty"`
 }
 
 // ViewLogsPayload is the payload for a "view_logs" command.

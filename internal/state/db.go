@@ -104,6 +104,7 @@ func (db *DB) migrate() error {
 		{"retries", "clarification_needed", `ALTER TABLE retries ADD COLUMN clarification_needed INTEGER NOT NULL DEFAULT 0`},
 		{"workers", "title", `ALTER TABLE workers ADD COLUMN title TEXT NOT NULL DEFAULT ''`},
 		{"retries", "dispatch_failures", `ALTER TABLE retries ADD COLUMN dispatch_failures INTEGER NOT NULL DEFAULT 0`},
+		{"prs", "rebase_count", `ALTER TABLE prs ADD COLUMN rebase_count INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -171,7 +172,8 @@ CREATE TABLE IF NOT EXISTS prs (
     last_checked     TEXT,
     ci_fix_count     INTEGER NOT NULL DEFAULT 0,
     review_fix_count INTEGER NOT NULL DEFAULT 0,
-    ci_passing       INTEGER NOT NULL DEFAULT 1
+    ci_passing       INTEGER NOT NULL DEFAULT 1,
+    rebase_count     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -473,6 +475,14 @@ func (db *DB) queryWorkers(query string, args ...any) ([]Worker, error) {
 	return workers, rows.Err()
 }
 
+// Default lifecycle thresholds. These are used by NeedsAttentionBeads and can
+// be overridden via config (settings.max_ci_fix_attempts, etc.).
+const (
+	DefaultMaxCIFixAttempts     = 5
+	DefaultMaxReviewFixAttempts = 5
+	DefaultMaxRebaseAttempts    = 3
+)
+
 // PRStatus represents the lifecycle of a pull request.
 type PRStatus string
 
@@ -520,6 +530,7 @@ type PR struct {
 	LastChecked    *time.Time
 	CIFixCount     int
 	ReviewFixCount int
+	RebaseCount    int
 	CIPassing      bool
 }
 
@@ -543,8 +554,8 @@ func (db *DB) InsertPR(pr *PR) error {
 
 // PRByNumber returns the PR record for a given GitHub PR number, or nil if not found.
 func (db *DB) PRByNumber(number int) (*PR, error) {
-	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, ci_passing
-		FROM prs WHERE number = ? LIMIT 1`, number)
+	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing
+		FROM prs WHERE number = ? ORDER BY id DESC LIMIT 1`, number)
 	if err != nil {
 		return nil, err
 	}
@@ -575,27 +586,33 @@ func (db *DB) UpdatePRStatusIfNeedsFix(id int, status PRStatus) error {
 }
 
 // UpdatePRLifecycle updates the lifecycle state of a PR.
-func (db *DB) UpdatePRLifecycle(id int, ciFixCount, reviewFixCount int, ciPassing bool) error {
+func (db *DB) UpdatePRLifecycle(id int, ciFixCount, reviewFixCount, rebaseCount int, ciPassing bool) error {
 	passing := 0
 	if ciPassing {
 		passing = 1
 	}
 	_, err := db.conn.Exec(
-		`UPDATE prs SET ci_fix_count = ?, review_fix_count = ?, ci_passing = ? WHERE id = ?`,
-		ciFixCount, reviewFixCount, passing, id,
+		`UPDATE prs SET ci_fix_count = ?, review_fix_count = ?, rebase_count = ?, ci_passing = ? WHERE id = ?`,
+		ciFixCount, reviewFixCount, rebaseCount, passing, id,
 	)
 	return err
 }
 
+// GetPRByID returns a PR by its primary key id, or nil if not found.
+func (db *DB) GetPRByID(id int) (*PR, error) {
+	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing
+		FROM prs WHERE id = ?`, id)
+}
+
 // GetPRByNumber returns a PR by its anvil and number.
 func (db *DB) GetPRByNumber(anvil string, number int) (*PR, error) {
-	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, ci_passing
+	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing
 		FROM prs WHERE anvil = ? AND number = ? ORDER BY id DESC LIMIT 1`, anvil, number)
 }
 
 // OpenPRs returns all PRs with non-terminal status.
 func (db *DB) OpenPRs() ([]PR, error) {
-	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, ci_passing
+	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing
 		FROM prs WHERE status IN ` + nonTerminalPRStatusSQL() + `
 		ORDER BY created_at`)
 }
@@ -626,7 +643,7 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 		var lastChecked sql.NullString
 		var ciPassing int
 		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch,
-			&status, &createdAt, &lastChecked, &p.CIFixCount, &p.ReviewFixCount, &ciPassing); err != nil {
+			&status, &createdAt, &lastChecked, &p.CIFixCount, &p.ReviewFixCount, &p.RebaseCount, &ciPassing); err != nil {
 			return nil, err
 		}
 		p.Status = PRStatus(status)
@@ -652,6 +669,91 @@ func (db *DB) HasOpenPRForBead(beadID, anvil string) (bool, error) {
 		return false, err
 	}
 	return exists, nil
+}
+
+// ExhaustedPR represents a PR that has exhausted its CI-fix, review-fix, or
+// rebase attempt limits and needs human attention.
+type ExhaustedPR struct {
+	ID             int
+	Number         int
+	Anvil          string
+	BeadID         string
+	CIFixCount     int
+	ReviewFixCount int
+	RebaseCount    int
+	Reason         string
+}
+
+// ExhaustedPRs returns non-terminal PRs where any fix/rebase counter has reached
+// its threshold. The thresholds are passed as parameters so the caller can
+// source them from config or constants. Non-positive threshold values are
+// normalized to their intended defaults to avoid matching all PRs.
+func (db *DB) ExhaustedPRs(maxCI, maxRev, maxRebase int) ([]ExhaustedPR, error) {
+	if maxCI <= 0 {
+		maxCI = DefaultMaxCIFixAttempts
+	}
+	if maxRev <= 0 {
+		maxRev = DefaultMaxReviewFixAttempts
+	}
+	if maxRebase <= 0 {
+		maxRebase = DefaultMaxRebaseAttempts
+	}
+	rows, err := db.conn.Query(
+		`SELECT id, number, anvil, bead_id, ci_fix_count, review_fix_count, rebase_count
+		 FROM prs
+		 WHERE status IN `+nonTerminalPRStatusSQL()+`
+		   AND (ci_fix_count >= ? OR review_fix_count >= ? OR rebase_count >= ?)
+		 ORDER BY number DESC`,
+		maxCI, maxRev, maxRebase,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []ExhaustedPR
+	for rows.Next() {
+		var p ExhaustedPR
+		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID,
+			&p.CIFixCount, &p.ReviewFixCount, &p.RebaseCount); err != nil {
+			return nil, err
+		}
+		// Build human-readable reason
+		var reasons []string
+		if p.CIFixCount >= maxCI {
+			reasons = append(reasons, fmt.Sprintf("CI fix exhausted (%d/%d)", p.CIFixCount, maxCI))
+		}
+		if p.ReviewFixCount >= maxRev {
+			reasons = append(reasons, fmt.Sprintf("Review fix exhausted (%d/%d)", p.ReviewFixCount, maxRev))
+		}
+		if p.RebaseCount >= maxRebase {
+			reasons = append(reasons, fmt.Sprintf("Rebase exhausted (%d/%d)", p.RebaseCount, maxRebase))
+		}
+		p.Reason = strings.Join(reasons, "; ")
+		result = append(result, p)
+	}
+	return result, rows.Err()
+}
+
+// ResetPRFixCounts resets all fix/rebase counters on a PR and sets its status
+// back to open so Bellows re-detects and dispatches new fix cycles.
+func (db *DB) ResetPRFixCounts(id int) error {
+	_, err := db.conn.Exec(
+		`UPDATE prs SET ci_fix_count = 0, review_fix_count = 0, rebase_count = 0,
+		        ci_passing = 1, status = 'open', last_checked = ? WHERE id = ?`,
+		time.Now().Format(time.RFC3339), id,
+	)
+	return err
+}
+
+// DismissExhaustedPR marks an exhausted PR as closed so it no longer appears
+// in the Needs Attention panel.
+func (db *DB) DismissExhaustedPR(id int) error {
+	_, err := db.conn.Exec(
+		`UPDATE prs SET status = 'closed', last_checked = ? WHERE id = ?`,
+		time.Now().Format(time.RFC3339), id,
+	)
+	return err
 }
 
 // EventType categorizes events in the log.
@@ -1123,11 +1225,18 @@ type NeedsAttentionBead struct {
 	Reason              string
 	NeedsHuman          bool
 	ClarificationNeeded bool
+	// PRID is non-zero when this item originates from an exhausted PR rather
+	// than the retries table. The caller uses this to route retry/dismiss
+	// actions to the correct DB operation.
+	PRID     int
+	PRNumber int
 }
 
 // NeedsAttentionBeads returns all beads with needs_human=1 or clarification_needed=1,
-// enriched with title from queue_cache or workers tables.
-func (db *DB) NeedsAttentionBeads() ([]NeedsAttentionBead, error) {
+// enriched with title from queue_cache or workers tables. It also includes PRs
+// that have exhausted their CI-fix, review-fix, or rebase attempt limits.
+// The maxCI/maxRev/maxRebase thresholds determine which PRs are considered exhausted.
+func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentionBead, error) {
 	rows, err := db.conn.Query(
 		`SELECT r.bead_id, r.anvil, r.needs_human, r.clarification_needed, r.last_error,
 		        COALESCE(NULLIF(q.title, ''), NULLIF(w.title, ''), '') AS title
@@ -1161,7 +1270,27 @@ func (db *DB) NeedsAttentionBeads() ([]NeedsAttentionBead, error) {
 		b.ClarificationNeeded = clarNeeded != 0
 		beads = append(beads, b)
 	}
-	return beads, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Append exhausted PRs
+	exhausted, err := db.ExhaustedPRs(maxCI, maxRev, maxRebase)
+	if err != nil {
+		return beads, fmt.Errorf("fetching exhausted PRs: %w", err)
+	}
+	for _, ep := range exhausted {
+		beads = append(beads, NeedsAttentionBead{
+			BeadID:   ep.BeadID,
+			Anvil:    ep.Anvil,
+			Title:    fmt.Sprintf("PR #%d", ep.Number),
+			Reason:   ep.Reason,
+			PRID:     ep.ID,
+			PRNumber: ep.Number,
+		})
+	}
+
+	return beads, nil
 }
 
 // --- Cost tracking ---

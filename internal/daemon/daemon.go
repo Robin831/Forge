@@ -330,6 +330,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.bellowsMonitor = bellows.New(d.db, d.cfg.Settings.BellowsInterval, monitorAnvils)
 	d.lifecycleMgr = lifecycle.New(d.db, d.logger, d.handleLifecycleAction)
+	d.lifecycleMgr.SetThresholds(
+		d.cfg.Settings.MaxCIFixAttempts,
+		d.cfg.Settings.MaxReviewFixAttempts,
+		d.cfg.Settings.MaxRebaseAttempts,
+	)
 	if err := d.lifecycleMgr.Load(ctx); err != nil {
 		d.logger.Error("failed to load lifecycle states", "error", err)
 		return fmt.Errorf("daemon initialization failed: %w", err)
@@ -1202,6 +1207,27 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
+		// Exhausted PR retry: reset fix counters and status back to open
+		if rp.PRID > 0 {
+			pr, err := d.db.GetPRByID(rp.PRID)
+			if err != nil || pr == nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR %d not found", rp.PRID)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			if err := d.db.ResetPRFixCounts(rp.PRID); err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset PR fix counts: %v", err)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			_ = d.db.LogEvent(
+				state.EventRetryReset,
+				fmt.Sprintf("PR fix counts reset for PR %d (manual)", rp.PRID),
+				pr.BeadID,
+				pr.Anvil,
+			)
+			d.logger.Info("PR fix counts reset", "pr_id", rp.PRID, "bead", pr.BeadID, "anvil", pr.Anvil)
+			data, _ := json.Marshal(map[string]string{"message": "PR fix counts reset, status set to open"})
+			return ipc.Response{Type: "ok", Payload: data}
+		}
 		retry, err := d.db.GetRetry(rp.BeadID, rp.Anvil)
 		if err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to get retry state: %v", err)})
@@ -1231,6 +1257,27 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if dp.BeadID == "" || dp.Anvil == "" {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
 			return ipc.Response{Type: "error", Payload: msg}
+		}
+		// Exhausted PR dismiss: set status to closed
+		if dp.PRID > 0 {
+			pr, err := d.db.GetPRByID(dp.PRID)
+			if err != nil || pr == nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR %d not found", dp.PRID)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			if err := d.db.DismissExhaustedPR(dp.PRID); err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to dismiss exhausted PR: %v", err)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			_ = d.db.LogEvent(
+				state.EventBeadDismissed,
+				fmt.Sprintf("Exhausted PR %d dismissed (manual)", dp.PRID),
+				pr.BeadID,
+				pr.Anvil,
+			)
+			d.logger.Info("exhausted PR dismissed", "pr_id", dp.PRID, "bead", pr.BeadID, "anvil", pr.Anvil)
+			data, _ := json.Marshal(map[string]string{"message": "exhausted PR dismissed"})
+			return ipc.Response{Type: "ok", Payload: data}
 		}
 		if err := d.db.DismissRetry(dp.BeadID, dp.Anvil); err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to dismiss: %v", err)})
