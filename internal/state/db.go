@@ -840,6 +840,26 @@ func (db *DB) UpdatePRMergeability(id int, isConflicting, hasUnresolvedThreads b
 	return err
 }
 
+// IsPRReadyToMerge reports whether the given PR currently satisfies all
+// ready-to-merge conditions: approved status, CI passing, not conflicting,
+// and no unresolved review threads.
+func (db *DB) IsPRReadyToMerge(id int) (bool, error) {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM prs
+		 WHERE id = ?
+		   AND status = 'approved'
+		   AND ci_passing = 1
+		   AND is_conflicting = 0
+		   AND has_unresolved_threads = 0`,
+		id,
+	).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // ReadyToMergePR represents a PR that meets all conditions for merging.
 type ReadyToMergePR struct {
 	ID     int

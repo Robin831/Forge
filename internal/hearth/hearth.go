@@ -155,7 +155,7 @@ const (
 
 func mergeMenuLabels() [mergeMenuCount]string {
 	return [mergeMenuCount]string{
-		"Merge — Squash merge this PR",
+		"Merge — Merge this PR",
 	}
 }
 
@@ -1167,8 +1167,12 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 
 	if len(m.readyToMerge) == 0 {
 		lines = append(lines, dimStyle.Render("None"))
-	} else {
-		visible := visibleItems(m.readyToMergeScroll, len(m.readyToMerge), height-3)
+	} else if height > 3 {
+		viewHeight := height - 3
+		if viewHeight < 1 {
+			viewHeight = 1
+		}
+		visible := visibleItems(m.readyToMergeScroll, len(m.readyToMerge), viewHeight)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.readyToMerge[i]
 			anvil := dimStyle.Render(item.Anvil)

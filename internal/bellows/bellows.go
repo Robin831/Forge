@@ -266,6 +266,12 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d: review fix needed", pr.Number), pr.BeadID, pr.Anvil)
 	}
 
+	// If all merge-readiness conditions are met and the PR was in needs_fix,
+	// restore it to approved so the Ready-to-Merge panel picks it up again.
+	if newSnap.HasApproval && newSnap.CIPassing && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads {
+		_ = m.db.UpdatePRStatusIfNeedsFix(pr.ID, state.PRApproved)
+	}
+
 	// Persist mergeability state so the ready-to-merge panel stays current.
 	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.IsConflicting, newSnap.HasUnresolvedThreads)
 

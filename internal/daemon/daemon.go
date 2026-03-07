@@ -1605,6 +1605,32 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", mp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
+		// Validate PR readiness in state.db before attempting merge.
+		var pr *state.PR
+		var prErr error
+		if mp.PRID > 0 {
+			pr, prErr = d.db.GetPRByID(mp.PRID)
+		} else {
+			pr, prErr = d.db.GetPRByNumber(mp.Anvil, mp.PRNumber)
+		}
+		if prErr != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to load PR from state db: %v", prErr)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if pr == nil {
+			msg, _ := json.Marshal(map[string]string{"message": "PR not found in state db; cannot validate merge readiness"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		ready, readyErr := d.db.IsPRReadyToMerge(pr.ID)
+		if readyErr != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to check merge readiness: %v", readyErr)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if !ready {
+			msg, _ := json.Marshal(map[string]string{"message": "PR is not ready to merge (not approved, CI failing, conflicting, or has unresolved threads)"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		beadID := pr.BeadID
 		strategy := cfgSnapshot.Settings.MergeStrategy
 		if strategy == "" {
 			strategy = "squash"
@@ -1614,13 +1640,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if err := ghpr.Merge(mergeCtx, anvilCfg.Path, mp.PRNumber, strategy); err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("merge failed: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
-		}
-		// Look up the bead ID for event logging
-		beadID := ""
-		if mp.PRID > 0 {
-			if pr, err := d.db.GetPRByID(mp.PRID); err == nil && pr != nil {
-				beadID = pr.BeadID
-			}
 		}
 		_ = d.db.LogEvent(state.EventPRMergeRequested,
 			fmt.Sprintf("PR #%d merge requested (strategy: %s)", mp.PRNumber, strategy),
