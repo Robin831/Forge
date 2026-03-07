@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,8 +30,8 @@ type ghReviewComment struct {
 	} `json:"user"`
 }
 
-// FetchCopilotComments retrieves unresolved review comments from a PR
-// authored by copilot[bot] or github-actions[bot] via the gh CLI.
+// FetchCopilotComments retrieves review comments on a PR that were authored by
+// copilot[bot], github-actions[bot], or copilot via the gh CLI.
 func FetchCopilotComments(ctx context.Context, repoDir string, prNumber int) ([]PRComment, error) {
 	endpoint := fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/comments", prNumber)
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", "api", endpoint, "--paginate"))
@@ -149,8 +150,13 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 	for _, c := range comments {
 		prNums[c.PRNumber] = true
 	}
-	var sources []string
+	sortedNums := make([]int, 0, len(prNums))
 	for n := range prNums {
+		sortedNums = append(sortedNums, n)
+	}
+	sort.Ints(sortedNums)
+	var sources []string
+	for _, n := range sortedNums {
 		sources = append(sources, fmt.Sprintf("copilot:PR#%d", n))
 	}
 	rule.Source = strings.Join(sources, ", ")
@@ -159,9 +165,10 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 	return &rule, nil
 }
 
-// GroupComments groups similar comments by a simple heuristic:
-// comments on the same file path or with overlapping keywords.
-// Returns groups where each group contains related comments.
+// GroupComments groups similar comments by normalized comment body text.
+// Comments with identical (case-folded, whitespace-collapsed) body text are
+// merged into the same group. Returns groups where each group contains
+// related comments.
 func GroupComments(comments []PRComment) [][]PRComment {
 	if len(comments) == 0 {
 		return nil

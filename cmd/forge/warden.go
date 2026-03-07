@@ -39,7 +39,7 @@ var wardenCmd = &cobra.Command{
 var wardenLearnCmd = &cobra.Command{
 	Use:   "learn",
 	Short: "Learn review rules from Copilot comments on recent PRs",
-	Long: `Fetch unresolved Copilot review comments from recent or specified PRs,
+	Long: `Fetch Copilot review comments from recent or specified PRs,
 group and deduplicate them, use Claude to distill each unique pattern into
 a reusable review rule, and append to .forge/warden-rules.yaml.`,
 	Example: `  forge warden learn --anvil heimdall

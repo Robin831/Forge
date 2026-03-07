@@ -225,6 +225,8 @@ func buildReviewPrompt(beadID, diff, anvilPath string) string {
 		if checklist := rf.FormatChecklist(); checklist != "" {
 			rulesSection = "\n## Learned Review Rules\n\nThese are domain-specific patterns learned from past reviews. Check each one against the diff:\n\n" + checklist
 		}
+	} else {
+		fmt.Fprintf(os.Stderr, "warden: failed to load learned review rules for %s: %v\n", anvilPath, err)
 	}
 
 	return fmt.Sprintf(`You are a code reviewer (the "Warden") for an AI-generated pull request.

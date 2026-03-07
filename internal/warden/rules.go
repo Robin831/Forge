@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -98,9 +99,9 @@ func (rf *RulesFile) FormatChecklist() string {
 	if len(rf.Rules) == 0 {
 		return ""
 	}
-	var out string
+	var sb strings.Builder
 	for i, r := range rf.Rules {
-		out += fmt.Sprintf("%d. [ ] Check: %s (pattern: %s)\n", i+1, r.Check, r.Pattern)
+		fmt.Fprintf(&sb, "%d. [ ] Check: %s (pattern: %s)\n", i+1, r.Check, r.Pattern)
 	}
-	return out
+	return sb.String()
 }
