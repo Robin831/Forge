@@ -62,6 +62,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/temper` | Runs build/lint/test checks; auto-detects Go, .NET, Node |
 | `internal/warden` | Spawns a second Claude session to review Smith's diff |
 | `internal/bellows` | Monitors open PRs for CI failures, review comments, and merge conflicts |
+| `internal/depcheck` | Periodic Go module update checker — creates beads for outdated dependencies |
 | `internal/schematic` | Pre-analysis worker — decomposes complex beads or produces implementation plans |
 | `internal/poller` | Calls `bd ready` to get available beads from an anvil |
 | `internal/worktree` | Creates/removes `git worktree` branches for each bead |
@@ -89,6 +90,10 @@ bd ready (poller) → pipeline.Run()
   → if approved: ghpr.Create (gh pr create)
   → bellows monitors open PRs (CI fix, review fix, rebase)
   → worktree.Remove
+
+depcheck.Monitor (background, weekly by default)
+  → runs 'go list -m -u all' on each Go anvil
+  → creates beads for outdated dependencies (patch/minor auto-dispatch, major needs attention)
 ```
 
 ### State Database
@@ -106,7 +111,7 @@ The daemon exposes a named pipe (Windows: `\\.\pipe\forge`) or Unix socket. Mess
 
 ### Configuration
 
-Config resolution order: `--config` flag → `./forge.yaml` → `~/.forge/config.yaml`. Environment variables override with `FORGE_` prefix (e.g. `FORGE_SETTINGS_MAX_TOTAL_SMITHS=4`). The daemon hot-reloads the config file on change via fsnotify. See [docs/configuration.md](docs/configuration.md) for the full settings reference including `daily_cost_limit`, `max_ci_fix_attempts`, `max_review_fix_attempts`, `max_rebase_attempts`, `smith_providers`, `merge_strategy`, `schematic_enabled`, and more.
+Config resolution order: `--config` flag → `./forge.yaml` → `~/.forge/config.yaml`. Environment variables override with `FORGE_` prefix (e.g. `FORGE_SETTINGS_MAX_TOTAL_SMITHS=4`). The daemon hot-reloads the config file on change via fsnotify. See [docs/configuration.md](docs/configuration.md) for the full settings reference including `daily_cost_limit`, `max_ci_fix_attempts`, `max_review_fix_attempts`, `max_rebase_attempts`, `smith_providers`, `merge_strategy`, `schematic_enabled`, `depcheck_interval`, and more.
 
 ### Per-Anvil Smith Prompt Customization
 

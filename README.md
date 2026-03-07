@@ -14,6 +14,7 @@ The Forge uses a blacksmith metaphor throughout:
 | **Temper**  | Build/lint/test verification                |
 | **Bellows** | PR monitor (CI failures, review comments)   |
 | **Schematic** | Pre-analysis worker (decomposes complex beads) |
+| **Depcheck** | Periodic dependency update scanner            |
 | **Anvil**   | Repository workspace                        |
 | **Heat**    | Work batch / session                        |
 
@@ -132,6 +133,10 @@ bd ready → Claim bead → Create worktree → [Schematic (optional pre-analysi
 
 Each step is tracked in SQLite state.db with full event logging.
 
+### Dependency Scanning
+
+The daemon includes a **depcheck** monitor that periodically runs `go list -m -u all` on Go anvils to detect outdated dependencies. Patch and minor updates produce auto-dispatch beads; major version bumps produce "needs attention" beads for manual review. Configure via `depcheck_interval` (default: weekly) and `depcheck_timeout` in `forge.yaml`. Set `depcheck_interval: 0` to disable.
+
 ## Requirements
 
 - **Go 1.26+**
@@ -153,6 +158,7 @@ Forge/
 │   ├── warden/         # Review agent
 │   ├── temper/         # Build/test verification
 │   ├── bellows/        # PR monitoring (CI fix, review fix, rebase)
+│   ├── depcheck/       # Periodic Go dependency update checker
 │   ├── schematic/      # Pre-analysis worker (decompose complex beads)
 │   ├── hearth/         # Daemon and TUI dashboard
 │   ├── state/          # SQLite state management
