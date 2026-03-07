@@ -110,6 +110,7 @@ func (db *DB) migrate() error {
 		{"queue_cache", "section", `ALTER TABLE queue_cache ADD COLUMN section TEXT NOT NULL DEFAULT 'ready'`},
 		{"prs", "is_conflicting", `ALTER TABLE prs ADD COLUMN is_conflicting INTEGER NOT NULL DEFAULT 0`},
 		{"prs", "has_unresolved_threads", `ALTER TABLE prs ADD COLUMN has_unresolved_threads INTEGER NOT NULL DEFAULT 0`},
+		{"queue_cache", "assignee", `ALTER TABLE queue_cache ADD COLUMN assignee TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -969,6 +970,7 @@ const (
 	EventSchematicSubBead     EventType = "schematic_sub_bead"
 	EventWorkerStalled        EventType = "worker_stalled"
 	EventBeadTagged           EventType = "bead_tagged"
+	EventBeadClosed           EventType = "bead_closed"
 	EventPRMergeRequested     EventType = "pr_merge_requested"
 	EventPRMergeFailed        EventType = "pr_merge_failed"
 	EventError                EventType = "error"
@@ -1713,6 +1715,7 @@ type QueueItem struct {
 	Status   string
 	Labels   string       // JSON-encoded []string
 	Section  QueueSection // ready / unlabeled / in_progress
+	Assignee string
 }
 
 // ReplaceQueueCacheForAnvils atomically replaces the cached queue rows for the
@@ -1740,8 +1743,8 @@ func (db *DB) ReplaceQueueCacheForAnvils(anvils []string, items []QueueItem) err
 
 	now := time.Now().Format(dbTimeLayout)
 	stmt, err := tx.Prepare(
-		`INSERT INTO queue_cache (bead_id, anvil, title, priority, status, labels, section, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+		`INSERT INTO queue_cache (bead_id, anvil, title, priority, status, labels, section, assignee, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -1759,7 +1762,7 @@ func (db *DB) ReplaceQueueCacheForAnvils(anvils []string, items []QueueItem) err
 			section = string(QueueSectionReady)
 		}
 		if _, err := stmt.Exec(
-			item.BeadID, item.Anvil, item.Title, item.Priority, item.Status, labels, section, now,
+			item.BeadID, item.Anvil, item.Title, item.Priority, item.Status, labels, section, item.Assignee, now,
 		); err != nil {
 			return err
 		}
@@ -1772,7 +1775,7 @@ func (db *DB) ReplaceQueueCacheForAnvils(anvils []string, items []QueueItem) err
 // in_progress), then priority, bead ID, and anvil.
 func (db *DB) QueueCache() ([]QueueItem, error) {
 	rows, err := db.conn.Query(
-		`SELECT bead_id, anvil, title, priority, status, labels, section
+		`SELECT bead_id, anvil, title, priority, status, labels, section, assignee
 		 FROM queue_cache
 		 ORDER BY CASE section
 		   WHEN 'ready' THEN 0
@@ -1789,7 +1792,7 @@ func (db *DB) QueueCache() ([]QueueItem, error) {
 	for rows.Next() {
 		var item QueueItem
 		var section string
-		if err := rows.Scan(&item.BeadID, &item.Anvil, &item.Title, &item.Priority, &item.Status, &item.Labels, &section); err != nil {
+		if err := rows.Scan(&item.BeadID, &item.Anvil, &item.Title, &item.Priority, &item.Status, &item.Labels, &section, &item.Assignee); err != nil {
 			return nil, err
 		}
 		item.Section = QueueSection(section)

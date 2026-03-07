@@ -132,6 +132,13 @@ type TagBeadPayload struct {
 	Anvil  string `json:"anvil"`
 }
 
+// CloseBeadPayload is the payload for a "close_bead" command that closes
+// a bead via bd close.
+type CloseBeadPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`
+}
+
 // CommandHandler is called by the server for each incoming command.
 type CommandHandler func(cmd Command) Response
 
