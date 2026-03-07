@@ -147,6 +147,9 @@ func (s *Scanner) ScanAll(ctx context.Context) []ScanResult {
 		s.logger.Warn("govulncheck not found in PATH; install with: go install golang.org/x/vuln/cmd/govulncheck@latest")
 		s.db.LogEvent(state.EventVulnScanFailed,
 			"govulncheck not found in PATH — skipping all vulnerability scans", "", "")
+		results = append(results, ScanResult{
+			Err: fmt.Errorf("govulncheck not found in PATH"),
+		})
 		return results
 	}
 	s.govulncheckPath = govulncheckPath
