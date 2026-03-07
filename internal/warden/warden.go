@@ -312,16 +312,28 @@ func parseVerdict(output string, result *ReviewResult) {
 
 // extractJSON finds the first JSON object in the text that contains the given
 // requiredKey. When requiredKey is empty, any JSON object is returned.
-// Fenced ```json blocks are always returned (they are explicitly marked as JSON).
+// The requiredKey is matched as a quoted JSON key ("key") to avoid false
+// positives from occurrences inside string values.
 func extractJSON(text string, requiredKey string) string {
-	// 1. Look for ```json ... ``` blocks (Claude style) — always trusted
+	quotedKey := ""
+	if requiredKey != "" {
+		quotedKey = `"` + requiredKey + `"`
+	}
+
+	containsKey := func(s string) bool {
+		return quotedKey == "" || strings.Contains(s, quotedKey)
+	}
+
+	// 1. Look for ```json ... ``` blocks (Claude style)
 	if s := extractFencedBlock(text, "```json"); s != "" {
-		return s
+		if containsKey(s) {
+			return s
+		}
 	}
 
 	// 2. Look for plain ``` ... ``` blocks that contain the required key
 	if s := extractFencedBlock(text, "```"); s != "" {
-		if requiredKey == "" || strings.Contains(s, requiredKey) {
+		if containsKey(s) {
 			return s
 		}
 	}
@@ -339,7 +351,7 @@ func extractJSON(text string, requiredKey string) string {
 					depth--
 					if depth == 0 {
 						candidate := text[i : j+1]
-						if requiredKey == "" || strings.Contains(candidate, requiredKey) {
+						if containsKey(candidate) {
 							return candidate
 						}
 					}
