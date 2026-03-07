@@ -1426,30 +1426,30 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		cfgSnapshot2 := d.cfg.Load()
-		anvilCfg2, ok := cfgSnapshot2.Anvils[cp.Anvil]
+		cfgSnapshot := d.cfg.Load()
+		anvilCfg, ok := cfgSnapshot.Anvils[cp.Anvil]
 		if !ok {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", cp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if anvilCfg2.Path == "" {
+		if anvilCfg.Path == "" {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", cp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 		closeCtx, closeCancel := context.WithTimeout(d.runCtx, 30*time.Second)
 		defer closeCancel()
 		closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", cp.BeadID))
-		closeCmd.Dir = anvilCfg2.Path
+		closeCmd.Dir = anvilCfg.Path
 		if out, err := closeCmd.CombinedOutput(); err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd close failed: %v: %s", err, string(out))})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 		d.logger.Info("bead closed via TUI", "bead", cp.BeadID, "anvil", cp.Anvil)
 		_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Bead %s closed via TUI", cp.BeadID), cp.BeadID, cp.Anvil)
-		refreshCtx2, refreshCancel2 := context.WithTimeout(d.runCtx, 30*time.Second)
+		refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
 		go func() {
-			defer refreshCancel2()
-			d.pollAndDispatch(refreshCtx2)
+			defer refreshCancel()
+			d.pollAndDispatch(refreshCtx)
 		}()
 		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s closed", cp.BeadID)})
 		return ipc.Response{Type: "ok", Payload: data}
