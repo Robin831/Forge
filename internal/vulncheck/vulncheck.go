@@ -116,10 +116,11 @@ type ParsedVuln struct {
 
 // Scanner runs govulncheck on anvils.
 type Scanner struct {
-	db      *state.DB
-	logger  *slog.Logger
-	anvils  map[string]config.AnvilConfig
-	timeout time.Duration
+	db              *state.DB
+	logger          *slog.Logger
+	anvils          map[string]config.AnvilConfig
+	timeout         time.Duration
+	govulncheckPath string // resolved path to govulncheck binary; set by ScanAll
 }
 
 // New creates a Scanner. timeout caps each govulncheck subprocess; pass 0 to
@@ -139,6 +140,19 @@ func New(db *state.DB, logger *slog.Logger, anvils map[string]config.AnvilConfig
 // ScanAll runs govulncheck on all Go-based anvils and returns results.
 func (s *Scanner) ScanAll(ctx context.Context) []ScanResult {
 	var results []ScanResult
+
+	// Verify govulncheck is installed before attempting any scans.
+	govulncheckPath, err := exec.LookPath("govulncheck")
+	if err != nil {
+		s.logger.Warn("govulncheck not found in PATH; install with: go install golang.org/x/vuln/cmd/govulncheck@latest")
+		s.db.LogEvent(state.EventVulnScanFailed,
+			"govulncheck not found in PATH — skipping all vulnerability scans", "", "")
+		results = append(results, ScanResult{
+			Err: fmt.Errorf("govulncheck not found in PATH"),
+		})
+		return results
+	}
+	s.govulncheckPath = govulncheckPath
 
 	for name, anvil := range s.anvils {
 		if ctx.Err() != nil {
@@ -184,7 +198,7 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) ScanResult {
 	scanCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(scanCtx, "govulncheck", "-json", "./...")
+	cmd := exec.CommandContext(scanCtx, s.govulncheckPath, "-json", "./...")
 	cmd.Dir = path
 	executil.HideWindow(cmd)
 
