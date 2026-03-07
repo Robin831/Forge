@@ -36,9 +36,10 @@ jobs:
           fetch-depth: 0
 
       - name: Check for changelog fragment
+        env:
+          BRANCH: ${{ github.head_ref }}
         run: |
           # Get the bead ID from branch name (forge/<bead-id>)
-          BRANCH="${{ github.head_ref }}"
           BEAD_ID="${BRANCH#forge/}"
 
           # Skip check if branch doesn't follow forge/ pattern

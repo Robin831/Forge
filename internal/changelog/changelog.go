@@ -72,10 +72,12 @@ func ParseFragment(path string) (Fragment, error) {
 		return Fragment{}, fmt.Errorf("fragment %s: missing 'category:' header", path)
 	}
 
-	if !isValidCategory(frag.Category) {
+	canonical, ok := canonicalCategory(frag.Category)
+	if !ok {
 		return Fragment{}, fmt.Errorf("fragment %s: invalid category %q (valid: %s)",
 			path, frag.Category, strings.Join(Categories, ", "))
 	}
+	frag.Category = canonical
 
 	if len(frag.Bullets) == 0 {
 		return Fragment{}, fmt.Errorf("fragment %s: no changelog entries", path)
@@ -193,13 +195,15 @@ func UpdateChangelog(changelogPath string, fragments []Fragment) (string, error)
 	return content[:unreleasedStart] + unreleased + "\n" + content[sectionEnd:], nil
 }
 
-func isValidCategory(cat string) bool {
+// canonicalCategory returns the canonical (title-case) category name for cat,
+// performing a case-insensitive match. Returns ("", false) if cat is not valid.
+func canonicalCategory(cat string) (string, bool) {
 	for _, c := range Categories {
 		if strings.EqualFold(c, cat) {
-			return true
+			return c, true
 		}
 	}
-	return false
+	return "", false
 }
 
 // ValidateFragmentExists checks if a changelog fragment exists for the given bead ID.
