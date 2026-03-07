@@ -185,6 +185,20 @@ Do NOT escalate for:
 - Minor ambiguity you can resolve with a reasonable default
 - Missing documentation you can infer from code
 
+## Changelog Fragment
+
+If your changes are **user-visible** (new features, bug fixes, behavior changes, removals),
+create a changelog fragment at ` + "`" + `changelog.d/{{.Bead.BeadID}}.md` + "`" + ` with this format:
+
+` + "`" + `` + "`" + `` + "`" + `markdown
+category: Added|Changed|Deprecated|Removed|Fixed|Security
+
+- **Short summary** - Description of the change ({{.Bead.BeadID}})
+` + "`" + `` + "`" + `` + "`" + `
+
+Pick the category that best fits. Skip the fragment for internal-only changes
+(refactoring, tests, CI) that don't affect users.
+
 ## Constraints
 
 - Stay focused on this bead only — do not fix unrelated issues
