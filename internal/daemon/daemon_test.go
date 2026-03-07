@@ -998,3 +998,78 @@ func TestHandleIPC_TagBead(t *testing.T) {
 		assert.Contains(t, msg["message"], "forge-ready")
 	})
 }
+
+func TestHandleIPC_CloseBead(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {
+				Path:            tmpDir,
+				AutoDispatchTag: "forge-ready",
+			},
+			"no-path-anvil": {
+				Path:            "",
+				AutoDispatchTag: "forge-ready",
+			},
+		},
+	})
+
+	t.Run("invalid JSON payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "close_bead", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid close_bead payload")
+	})
+
+	t.Run("missing bead_id", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.CloseBeadPayload{Anvil: "test-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "close_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("missing anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.CloseBeadPayload{BeadID: "BEAD-1"})
+		resp := d.handleIPC(ipc.Command{Type: "close_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("unknown anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.CloseBeadPayload{BeadID: "BEAD-1", Anvil: "unknown-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "close_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "not found")
+	})
+
+	t.Run("anvil with empty path", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.CloseBeadPayload{BeadID: "BEAD-1", Anvil: "no-path-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "close_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "no path configured")
+	})
+}

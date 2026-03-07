@@ -628,6 +628,75 @@ func TestQueueActionMenuLabelOnTagBeadError(t *testing.T) {
 	}
 }
 
+func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
+	var closedBead, closedAnvil string
+	m := Model{
+		focused: PanelQueue,
+		queue: []QueueItem{
+			{BeadID: "bd-close-1", Anvil: "forge", Section: "unlabeled"},
+		},
+		queueVP: scrollViewport{cursor: 0},
+		OnCloseBead: func(beadID, anvil string) error {
+			closedBead = beadID
+			closedAnvil = anvil
+			return nil
+		},
+	}
+	// Open the menu
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.showQueueActionMenu {
+		t.Fatal("expected menu open after Enter")
+	}
+	// Navigate to "Close" (index 1) and select it
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if closedBead != "bd-close-1" || closedAnvil != "forge" {
+		t.Errorf("OnCloseBead called with (%q, %q), want (bd-close-1, forge)", closedBead, closedAnvil)
+	}
+	if !strings.Contains(m.statusMsg, "bd-close-1") {
+		t.Errorf("expected statusMsg to mention bd-close-1, got %q", m.statusMsg)
+	}
+	if m.showQueueActionMenu {
+		t.Error("expected menu to close after close action")
+	}
+}
+
+func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
+	m := Model{
+		focused: PanelQueue,
+		queue: []QueueItem{
+			{BeadID: "bd-close-2", Anvil: "forge", Section: "unlabeled"},
+		},
+		queueVP: scrollViewport{cursor: 0},
+		OnCloseBead: func(beadID, anvil string) error {
+			return errors.New("bd close failed")
+		},
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(m.statusMsg, "Failed to close") {
+		t.Errorf("expected failure statusMsg, got %q", m.statusMsg)
+	}
+}
+
+func TestQueueActionMenuCloseNilOnCloseBead(t *testing.T) {
+	m := Model{
+		focused: PanelQueue,
+		queue: []QueueItem{
+			{BeadID: "bd-close-3", Anvil: "forge", Section: "unlabeled"},
+		},
+		queueVP: scrollViewport{cursor: 0},
+		// OnCloseBead intentionally nil
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(m.statusMsg, "unavailable") {
+		t.Errorf("expected 'unavailable' statusMsg, got %q", m.statusMsg)
+	}
+}
+
 func TestRenderQueueActionMenuContainsBeadID(t *testing.T) {
 	item := QueueItem{BeadID: "bd-5", Anvil: "test", Section: "unlabeled"}
 	m := Model{

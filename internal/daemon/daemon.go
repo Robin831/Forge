@@ -764,6 +764,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 				Status:   b.Status,
 				Labels:   string(labelsJSON),
 				Section:  section,
+				Assignee: b.Assignee,
 			})
 		}
 
@@ -797,6 +798,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 				Status:   b.Status,
 				Labels:   string(labelsJSON),
 				Section:  state.QueueSectionInProgress,
+				Assignee: b.Assignee,
 			})
 		}
 
@@ -1413,6 +1415,44 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q added", tag)})
 		return ipc.Response{Type: "ok", Payload: data}
 
+
+	case "close_bead":
+		var cp ipc.CloseBeadPayload
+		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid close_bead payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if cp.BeadID == "" || cp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		cfgSnapshot := d.cfg.Load()
+		anvilCfg, ok := cfgSnapshot.Anvils[cp.Anvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", cp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if anvilCfg.Path == "" {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", cp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		closeCtx, closeCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		defer closeCancel()
+		closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", cp.BeadID))
+		closeCmd.Dir = anvilCfg.Path
+		if out, err := closeCmd.CombinedOutput(); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd close failed: %v: %s", err, string(out))})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		d.logger.Info("bead closed via TUI", "bead", cp.BeadID, "anvil", cp.Anvil)
+		_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Bead %s closed via TUI", cp.BeadID), cp.BeadID, cp.Anvil)
+		refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		go func() {
+			defer refreshCancel()
+			d.pollAndDispatch(refreshCtx)
+		}()
+		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s closed", cp.BeadID)})
+		return ipc.Response{Type: "ok", Payload: data}
 
 	case "clear_clarification":
 		var cp ipc.ClarificationPayload

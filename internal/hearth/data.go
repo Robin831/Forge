@@ -85,6 +85,7 @@ func FetchQueue(db *state.DB) tea.Cmd {
 				Priority: c.Priority,
 				Status:   c.Status,
 				Section:  string(c.Section),
+				Assignee: c.Assignee,
 			})
 		}
 

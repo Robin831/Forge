@@ -49,6 +49,7 @@ type QueueItem struct {
 	Priority int
 	Status   string
 	Section  string // "ready", "unlabeled", "in_progress"
+	Assignee string
 }
 
 // AttentionReason categorizes why a bead needs human attention.
@@ -133,14 +134,16 @@ type QueueActionMenuChoice int
 
 const (
 	QueueActionLabel QueueActionMenuChoice = iota
+	QueueActionClose
 
-	queueActionMenuCount = QueueActionLabel + 1
+	queueActionMenuCount = QueueActionClose + 1
 )
 
 // queueActionMenuLabels returns the display labels for the queue action menu.
 func queueActionMenuLabels() [queueActionMenuCount]string {
 	return [queueActionMenuCount]string{
 		"Label for dispatch — Tag bead for auto-dispatch",
+		"Close             — Close this bead",
 	}
 }
 
@@ -182,6 +185,9 @@ type Model struct {
 	// Callback for tagging a bead (set by the caller).
 	// Called with (beadID, anvil) when user presses 'l' on an unlabeled bead.
 	OnTagBead func(beadID, anvil string) error
+
+	// Callback for closing a bead (set by the caller).
+	OnCloseBead func(beadID, anvil string) error
 
 	// Callback for merging a PR (set by the caller).
 	OnMergePR func(prID, prNumber int, anvil string) error
@@ -824,6 +830,25 @@ func (m *Model) executeQueueAction(choice QueueActionMenuChoice) {
 	switch choice {
 	case QueueActionLabel:
 		m.tagSelectedQueueItem()
+	case QueueActionClose:
+		m.closeSelectedQueueItem()
+	}
+}
+
+// closeSelectedQueueItem closes the bead stored in queueActionTarget.
+func (m *Model) closeSelectedQueueItem() {
+	if m.queueActionTarget == nil {
+		return
+	}
+	item := m.queueActionTarget
+	if m.OnCloseBead != nil {
+		if err := m.OnCloseBead(item.BeadID, item.Anvil); err != nil {
+			m.setStatus(fmt.Sprintf("Failed to close %s: %v", item.BeadID, err), true)
+		} else {
+			m.setStatus(fmt.Sprintf("Closed %s", item.BeadID), false)
+		}
+	} else {
+		m.setStatus(fmt.Sprintf("Close action unavailable for %s", item.BeadID), false)
 	}
 }
 
@@ -943,7 +968,7 @@ func (m *Model) renderQueue(width, height int) string {
 		// Build all display rows (section headers + items) mapped to item indices.
 		type displayRow struct {
 			text    string
-			itemIdx int // -1 for section headers
+			itemIdx int // -1 for section headers and sub-lines
 		}
 		var rows []displayRow
 		lastSection := ""
@@ -956,11 +981,31 @@ func (m *Model) renderQueue(width, height int) string {
 			}
 			priority := priorityStyle(item.Priority)
 			anvil := dimStyle.Render(item.Anvil)
-			line := fmt.Sprintf("%s %s %s %s", priority, item.BeadID, anvil, truncate(item.Title, width-28))
+			mainLine := fmt.Sprintf("%s %s %s", priority, item.BeadID, anvil)
 			if i == m.queueVP.cursor {
-				line = selectedStyle.Render(line)
+				mainLine = selectedStyle.Render(mainLine)
 			}
-			rows = append(rows, displayRow{text: line, itemIdx: i})
+			rows = append(rows, displayRow{text: mainLine, itemIdx: i})
+
+			// Second line: bead title
+			titleText := sanitizeTitle(item.Title)
+			if titleText == "" {
+				titleText = "(no title)"
+			}
+			titleLine := "    " + dimStyle.Render(truncate(titleText, width-8))
+			if i == m.queueVP.cursor {
+				titleLine = "    " + selectedStyle.Render(truncate(titleText, width-8))
+			}
+			rows = append(rows, displayRow{text: titleLine, itemIdx: -1})
+
+			// Third line for in-progress beads: assignee
+			if item.Section == "in_progress" && item.Assignee != "" {
+				assigneeLine := "    " + dimStyle.Render("@ "+item.Assignee)
+				if i == m.queueVP.cursor {
+					assigneeLine = "    " + selectedStyle.Render("@ "+item.Assignee)
+				}
+				rows = append(rows, displayRow{text: assigneeLine, itemIdx: -1})
+			}
 		}
 
 		// Find display offset of the selected item so the view scrolls with selection.

@@ -180,6 +180,30 @@ var hearthCmd = &cobra.Command{
 			return nil
 		}
 
+		model.OnCloseBead = func(beadID, anvil string) error {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			payload, _ := json.Marshal(ipc.CloseBeadPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+			})
+			resp, err := client.Send(ipc.Command{
+				Type:    "close_bead",
+				Payload: json.RawMessage(payload),
+			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return ipcError(resp)
+			}
+			return nil
+		}
+
 		p := tea.NewProgram(&model, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
