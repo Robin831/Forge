@@ -1433,6 +1433,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				return ipc.Response{Type: "error", Payload: msg}
 			}
 			d.lifecycleMgr.ResetPRState(pr.Anvil, pr.Number)
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.ResetPRState(pr.Anvil, pr.Number)
+			}
 			_ = d.db.LogEvent(
 				state.EventRetryReset,
 				fmt.Sprintf("PR fix counts reset for PR %d (manual)", rp.PRID),

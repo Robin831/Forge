@@ -281,6 +281,17 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	m.mu.Unlock()
 }
 
+// ResetPRState clears the internal status cache for a PR. This should be called
+// when a PR is manually reset so that status changes (e.g. from failing back
+// to passing) are re-detected on the next poll cycle even if the state
+// is the same as it was before the reset.
+func (m *Monitor) ResetPRState(anvil string, prNumber int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := fmt.Sprintf("%s/%d", anvil, prNumber)
+	delete(m.lastStatuses, key)
+}
+
 // emit calls all registered handlers with the given event.
 func (m *Monitor) emit(ctx context.Context, event PREvent) {
 	m.mu.Lock()

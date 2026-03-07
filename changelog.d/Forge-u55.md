@@ -1,2 +1,2 @@
 category: Fixed
-- **Retry action on exhausted PRs now correctly resets counters** - Fixed a bug where the Hearth TUI "Retry" action did not pass the PR ID to the daemon, causing exhausted PRs (like those in Rebase Exhausted) to not be correctly reset. Also fixed the daemon's retry handler to properly call the database reset logic. (Forge-u55)
+- **Fix PR retry not re-triggering Bellows events** - Fixed an issue where retrying an exhausted PR (e.g., Rebase exhausted) would not trigger a new worker cycle because the PR monitor's internal status cache was not cleared. (Forge-u55)

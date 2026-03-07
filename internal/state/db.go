@@ -824,7 +824,7 @@ func (db *DB) ResetPRFixCounts(id int) error {
 	_, err := db.conn.Exec(
 		`UPDATE prs SET ci_fix_count = 0, review_fix_count = 0, rebase_count = 0,
 		        ci_passing = 1, status = 'open', last_checked = ? WHERE id = ?`,
-		time.Now().Format(time.RFC3339), id,
+		time.Now().Format(dbTimeLayout), id,
 	)
 	return err
 }
