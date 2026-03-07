@@ -46,6 +46,7 @@ import (
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
+	"github.com/Robin831/Forge/internal/vulncheck"
 	"github.com/Robin831/Forge/internal/worker"
 	"github.com/Robin831/Forge/internal/worktree"
 )
@@ -93,6 +94,9 @@ type Daemon struct {
 	bellowsMonitor  *bellows.Monitor
 	lifecycleMgr    *lifecycle.Manager
 	depcheckMonitor *depcheck.Monitor
+
+	// Vulnerability scanning
+	vulnScanner *vulncheck.Scanner
 
 	// Teams notifications (nil = disabled)
 	notifier *notify.Notifier
@@ -390,6 +394,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 		}()
 	}
+
+	// Start vulnerability scanning loop
+	d.vulnScanner = vulncheck.New(d.db, d.logger, d.config().Anvils)
+	go d.vulnScanner.RunScheduled(ctx, d.config().Settings.VulncheckInterval)
 
 	for {
 		select {
