@@ -70,11 +70,41 @@ func TestParseBeadTime(t *testing.T) {
 }
 
 func TestRecentlyClosedFiltering(t *testing.T) {
-	// Verify the time comparison logic: a bead closed 3 days ago is within the 7-day window.
-	cutoff := time.Now().AddDate(0, 0, -7)
-	threeDaysAgo := time.Now().AddDate(0, 0, -3)
-	tenDaysAgo := time.Now().AddDate(0, 0, -10)
+	now := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
+	cutoff := now.AddDate(0, 0, -7)
 
-	assert.True(t, threeDaysAgo.After(cutoff), "3 days ago should be after the 7-day cutoff")
-	assert.False(t, tenDaysAgo.After(cutoff), "10 days ago should be before the 7-day cutoff")
+	recentBead := bdBead{
+		Title:    "Deps(Go): update github.com/foo/bar v1.0.0 → v1.1.0",
+		ClosedAt: now.AddDate(0, 0, -3).Format(time.RFC3339),
+	}
+	oldBead := bdBead{
+		Title:    "Deps(Go): update github.com/foo/bar v1.0.0 → v1.1.0",
+		ClosedAt: now.AddDate(0, 0, -10).Format(time.RFC3339),
+	}
+	otherPkgBead := bdBead{
+		Title:    "Deps(Go): update github.com/baz/qux v2.0.0 → v2.1.0",
+		ClosedAt: now.AddDate(0, 0, -1).Format(time.RFC3339),
+	}
+	noTimeBead := bdBead{
+		Title: "Deps(Go): update github.com/foo/bar v1.0.0 → v1.1.0",
+		// no ClosedAt or UpdatedAt
+	}
+
+	// Bead closed 3 days ago — within the 7-day window.
+	assert.True(t, isRecentlyClosedBeadAt([]bdBead{recentBead}, "github.com/foo/bar", cutoff))
+
+	// Bead closed 10 days ago — outside the window.
+	assert.False(t, isRecentlyClosedBeadAt([]bdBead{oldBead}, "github.com/foo/bar", cutoff))
+
+	// Bead for a different package — should not match.
+	assert.False(t, isRecentlyClosedBeadAt([]bdBead{otherPkgBead}, "github.com/foo/bar", cutoff))
+
+	// Mix of old and recent for the same package — recent one matches.
+	assert.True(t, isRecentlyClosedBeadAt([]bdBead{oldBead, recentBead}, "github.com/foo/bar", cutoff))
+
+	// Bead with no timestamp — should not match (skip safely).
+	assert.False(t, isRecentlyClosedBeadAt([]bdBead{noTimeBead}, "github.com/foo/bar", cutoff))
+
+	// Empty slice — no match.
+	assert.False(t, isRecentlyClosedBeadAt(nil, "github.com/foo/bar", cutoff))
 }

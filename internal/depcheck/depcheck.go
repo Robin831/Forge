@@ -266,14 +266,16 @@ func parseSemver(v string) (major, minor, patch string) {
 // Major updates go into a separate "needs attention" bead.
 // Individual packages are deduplicated: any package with an existing open,
 // in-progress, or recently-closed bead (or an open PR) is filtered out.
+// The bead/PR state is fetched once per cycle via BuildDedupCache.
 func (m *Monitor) createBeads(ctx context.Context, result CheckResult) {
-	auto := m.filterDuplicates(ctx, result.Anvil, result.Path,
-		append(result.Patch, result.Minor...))
+	cache := BuildDedupCache(ctx, m.db, result.Path, result.Anvil)
+
+	auto := m.filterDuplicates(result.Anvil, cache, append(result.Patch, result.Minor...))
 	if len(auto) > 0 {
 		m.createUpdateBead(ctx, result.Anvil, result.Path, "auto", auto)
 	}
 
-	major := m.filterDuplicates(ctx, result.Anvil, result.Path, result.Major)
+	major := m.filterDuplicates(result.Anvil, cache, result.Major)
 	if len(major) > 0 {
 		m.createUpdateBead(ctx, result.Anvil, result.Path, "major", major)
 	}
@@ -281,14 +283,15 @@ func (m *Monitor) createBeads(ctx context.Context, result CheckResult) {
 
 // filterDuplicates removes updates that already have an existing bead (open,
 // in-progress, or recently closed) or an open PR referencing the package.
-func (m *Monitor) filterDuplicates(ctx context.Context, anvilName, anvilPath string, updates []ModuleUpdate) []ModuleUpdate {
+// It uses a pre-built DedupCache to avoid per-module external-command fanout.
+func (m *Monitor) filterDuplicates(anvilName string, cache *DedupCache, updates []ModuleUpdate) []ModuleUpdate {
 	if len(updates) == 0 {
 		return nil
 	}
 
 	var filtered []ModuleUpdate
 	for _, u := range updates {
-		if DedupCheck(ctx, m.db, anvilPath, anvilName, u.Path, "Go") {
+		if DedupCheckWithCache(cache, u.Path) {
 			log.Printf("[depcheck] %s: skipping %s (duplicate bead exists)", anvilName, u.Path)
 			continue
 		}

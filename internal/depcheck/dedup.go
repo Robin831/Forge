@@ -34,84 +34,17 @@ type bdBead struct {
 // (open, in-progress, or recently closed within 7 days), or if an open PR
 // references a bead that mentions the package. This prevents duplicate
 // dependency update beads from accumulating.
+//
+// For checking many packages in a single cycle, prefer building a DedupCache
+// with BuildDedupCache and calling DedupCheckWithCache to avoid per-package
+// external-command fanout.
 func DedupCheck(ctx context.Context, db *state.DB, anvilPath, anvilName, packageName, ecosystem string) bool {
-	// 1. Check open and in-progress beads.
-	if found := beadExistsInStatus(ctx, anvilPath, packageName, "open"); found {
-		log.Printf("[depcheck] Dedup: found open bead for %s in %s", packageName, anvilName)
-		return true
+	cache := BuildDedupCache(ctx, db, anvilPath, anvilName)
+	found := DedupCheckWithCache(cache, packageName)
+	if found {
+		log.Printf("[depcheck] Dedup: found existing bead/PR for %s in %s", packageName, anvilName)
 	}
-	if found := beadExistsInStatus(ctx, anvilPath, packageName, "in_progress"); found {
-		log.Printf("[depcheck] Dedup: found in-progress bead for %s in %s", packageName, anvilName)
-		return true
-	}
-
-	// 2. Check open PRs in state DB — their associated beads may reference the package.
-	if found := prBeadReferencesPackage(ctx, db, anvilPath, anvilName, packageName); found {
-		log.Printf("[depcheck] Dedup: found open PR bead for %s in %s", packageName, anvilName)
-		return true
-	}
-
-	// 3. Check recently closed beads (last 7 days).
-	if found := recentlyClosedBeadExists(ctx, anvilPath, packageName); found {
-		log.Printf("[depcheck] Dedup: found recently closed bead for %s in %s", packageName, anvilName)
-		return true
-	}
-
-	return false
-}
-
-// beadExistsInStatus checks whether any bead with the given status mentions
-// the package name in its title or description.
-func beadExistsInStatus(ctx context.Context, anvilPath, packageName, status string) bool {
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "list", fmt.Sprintf("--status=%s", status), "--json"))
-	cmd.Dir = anvilPath
-
-	output, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-
-	return containsPackageRef(output, packageName)
-}
-
-// prBeadReferencesPackage checks if any open PR's associated bead mentions the package.
-// It fetches open PRs from the state DB, then queries bd show for each bead.
-func prBeadReferencesPackage(ctx context.Context, db *state.DB, anvilPath, anvilName, packageName string) bool {
-	if db == nil {
-		return false
-	}
-
-	prs, err := db.OpenPRs()
-	if err != nil {
-		return false
-	}
-
-	for _, pr := range prs {
-		if pr.Anvil != anvilName {
-			continue
-		}
-		// Query the bead details for this PR's bead ID.
-		cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-			"bd", "show", pr.BeadID, "--json"))
-		cmd.Dir = anvilPath
-
-		output, err := cmd.Output()
-		cancel()
-		if err != nil {
-			continue
-		}
-
-		if containsPackageRef(output, packageName) {
-			return true
-		}
-	}
-
-	return false
+	return found
 }
 
 // recentlyClosedBeadExists checks if a bead mentioning the package was closed
@@ -131,11 +64,19 @@ func recentlyClosedBeadExists(ctx context.Context, anvilPath, packageName string
 
 	var beads []bdBead
 	if err := json.Unmarshal(output, &beads); err != nil {
-		// If JSON parsing fails, fall back to simple string search.
-		return false
+		// If JSON parsing fails, fall back to a simple string-based check.
+		// We conservatively treat any reference in the closed-beads output
+		// as a recently-closed bead to avoid opening duplicates.
+		return containsPackageRef(output, packageName)
 	}
 
 	cutoff := time.Now().AddDate(0, 0, -7)
+	return isRecentlyClosedBeadAt(beads, packageName, cutoff)
+}
+
+// isRecentlyClosedBeadAt checks whether any bead in the slice mentions packageName
+// and was closed after cutoff. Extracted for testability.
+func isRecentlyClosedBeadAt(beads []bdBead, packageName string, cutoff time.Time) bool {
 	for _, b := range beads {
 		if !mentionsPackage(b, packageName) {
 			continue
@@ -156,8 +97,91 @@ func recentlyClosedBeadExists(ctx context.Context, anvilPath, packageName string
 			return true
 		}
 	}
-
 	return false
+}
+
+// DedupCache holds pre-fetched bead and PR data for a single anvil.
+// Build once per depcheck cycle with BuildDedupCache, then query cheaply
+// with DedupCheckWithCache instead of spawning external commands per module.
+type DedupCache struct {
+	openRaw       []byte   // raw JSON from bd list --status=open
+	inProgressRaw []byte   // raw JSON from bd list --status=in_progress
+	closedBeads   []bdBead // parsed closed beads for time-based filtering
+	closedRaw     []byte   // raw closed output for fallback string search
+	prBeadOutputs [][]byte // raw JSON from bd show for each open PR's bead
+}
+
+// BuildDedupCache fetches bead state once for an anvil, avoiding per-module
+// external-command fanout in DedupCheckWithCache.
+func BuildDedupCache(ctx context.Context, db *state.DB, anvilPath, anvilName string) *DedupCache {
+	cache := &DedupCache{}
+
+	cache.openRaw = fetchBeadList(ctx, anvilPath, "open")
+	cache.inProgressRaw = fetchBeadList(ctx, anvilPath, "in_progress")
+
+	closedRaw := fetchBeadList(ctx, anvilPath, "closed")
+	cache.closedRaw = closedRaw
+	_ = json.Unmarshal(closedRaw, &cache.closedBeads) // best-effort; fallback handled in DedupCheckWithCache
+
+	if db != nil {
+		if prs, err := db.OpenPRs(); err == nil {
+			for _, pr := range prs {
+				if pr.Anvil != anvilName {
+					continue
+				}
+				if out := fetchBeadShow(ctx, anvilPath, pr.BeadID); len(out) > 0 {
+					cache.prBeadOutputs = append(cache.prBeadOutputs, out)
+				}
+			}
+		}
+	}
+
+	return cache
+}
+
+// fetchBeadList runs bd list for the given status and returns raw output.
+func fetchBeadList(ctx context.Context, anvilPath, status string) []byte {
+	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
+		"bd", "list", fmt.Sprintf("--status=%s", status), "--json"))
+	cmd.Dir = anvilPath
+	out, _ := cmd.Output()
+	return out
+}
+
+// fetchBeadShow runs bd show for a single bead ID and returns raw output.
+func fetchBeadShow(ctx context.Context, anvilPath, beadID string) []byte {
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
+		"bd", "show", beadID, "--json"))
+	cmd.Dir = anvilPath
+	out, _ := cmd.Output()
+	return out
+}
+
+// DedupCheckWithCache checks whether a package already has an existing bead
+// using pre-fetched data from BuildDedupCache.
+func DedupCheckWithCache(cache *DedupCache, packageName string) bool {
+	if containsPackageRef(cache.openRaw, packageName) {
+		return true
+	}
+	if containsPackageRef(cache.inProgressRaw, packageName) {
+		return true
+	}
+	for _, prOut := range cache.prBeadOutputs {
+		if containsPackageRef(prOut, packageName) {
+			return true
+		}
+	}
+	// Check recently closed: if JSON parse failed we have closedBeads==nil,
+	// fall back to raw string search.
+	if len(cache.closedBeads) == 0 && len(cache.closedRaw) > 0 {
+		return containsPackageRef(cache.closedRaw, packageName)
+	}
+	cutoff := time.Now().AddDate(0, 0, -7)
+	return isRecentlyClosedBeadAt(cache.closedBeads, packageName, cutoff)
 }
 
 // containsPackageRef checks if the bd JSON output references the package name.
