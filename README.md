@@ -42,8 +42,8 @@ The Forge uses a blacksmith metaphor throughout:
 ┌──────────────────────────────────────┐
 │  TUI (Hearth)                        │
 │  Queue    │         │ Live Activity  │
-│  Needs    │ Workers │ Ready to Merge │
-│  Attn     │         │ Events         │
+│  R.Merge  │ Workers │ Events         │
+│  Attn     │         │                │
 └──────────────────────────────────────┘
 ```
 

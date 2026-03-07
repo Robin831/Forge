@@ -54,9 +54,9 @@ forge hearth
 ```
 
 Three-column layout with six panels:
-- **Left column**: Queue (ready beads) and Needs Attention (beads requiring human intervention)
+- **Left column**: Queue (ready beads), Ready to Merge (PRs passing CI and approved), and Needs Attention (beads requiring human intervention)
 - **Center column**: Workers (active Smith, Temper, Warden, CIFix, ReviewFix processes)
-- **Right column**: Live Activity (streaming worker log), Ready to Merge (PRs passing CI and approved), and Events (timestamped event log)
+- **Right column**: Live Activity (streaming worker log) and Events (timestamped event log)
 
 ### `forge doctor`
 
@@ -195,6 +195,7 @@ forge scan --anvil heimdall   # Scan a specific anvil
 | Flag | Description |
 |------|-------------|
 | `-a, --anvil` | Scan only this anvil (optional; default: all) |
+| `--create-beads` | Automatically create beads for discovered vulnerabilities (default: true) |
 
 ## History
 
@@ -292,5 +293,9 @@ Check that changelog fragments exist for the specified bead IDs.
 ```bash
 forge changelog validate Forge-abc Forge-xyz
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--dir` | Root directory containing `changelog.d/` (default: `.`) |
 
 Exits non-zero if any bead is missing a fragment.

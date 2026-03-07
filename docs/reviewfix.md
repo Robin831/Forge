@@ -58,7 +58,7 @@ Several settings control how many automated fix cycles run before a PR is flagge
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `max_review_attempts` | `2` | Max Warden review iterations during the initial Smith pipeline. |
-| `max_review_fix_attempts` | `5` | Max review fix cycles per PR (Bellows-driven, post-merge review comments). |
+| `max_review_fix_attempts` | `5` | Max review fix cycles per PR (Bellows-driven, post-PR-creation review comments). |
 | `max_ci_fix_attempts` | `5` | Max CI fix cycles per PR when CI fails after creation. |
 | `max_rebase_attempts` | `3` | Max conflict rebase attempts per PR before marking as exhausted. |
 

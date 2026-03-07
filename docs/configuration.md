@@ -200,7 +200,8 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `smith_timeout` is re-read and used for newly started smiths
 - `max_total_smiths` is re-read and applied to subsequent scheduling decisions
 - `claude_flags` are re-read and used for newly started smiths
+- `smith_providers` are re-read and used for newly dispatched beads
 - `notifications.*` (webhook URL, enabled, events, etc.) are re-read and applied immediately
 - In-flight workers are **not** interrupted
 
-All other configuration changes (including `anvils.*`, `providers`, `smith_providers`, `rate_limit_backoff`, `daily_cost_limit`, `merge_strategy`, and scheduling fields not listed above) **require a daemon restart** to take effect.
+All other configuration changes (including `anvils.*`, `providers`, `rate_limit_backoff`, `daily_cost_limit`, `merge_strategy`, and scheduling fields not listed above) **require a daemon restart** to take effect.
