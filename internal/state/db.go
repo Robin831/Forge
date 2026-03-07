@@ -300,6 +300,13 @@ const (
 	WorkerStalled    WorkerStatus = "stalled"
 )
 
+// backgroundPhases is the SQL IN-list literal for worker phases that run as
+// long-lived background workers. These phases only produce log output when
+// external state changes (e.g. PR events) and can be legitimately silent for
+// long stretches, so they are excluded from stale detection and dispatch
+// capacity queries. Update this constant when new background phases are added.
+const backgroundPhases = "'bellows', 'cifix', 'reviewfix'"
+
 // Worker represents a Smith worker entry.
 type Worker struct {
 	ID          string
@@ -377,7 +384,7 @@ func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 	}
 	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
-		  AND phase NOT IN ('bellows', 'cifix', 'reviewfix')
+		  AND phase NOT IN (` + backgroundPhases + `)
 		ORDER BY started_at`)
 	if err != nil {
 		return nil, err
@@ -428,7 +435,7 @@ func (db *DB) MarkWorkerStalled(id string) error {
 func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
-		  AND phase NOT IN ('cifix', 'reviewfix', 'bellows')
+		  AND phase NOT IN (` + backgroundPhases + `)
 		ORDER BY started_at`)
 }
 
@@ -439,7 +446,7 @@ func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE anvil = ?
 		  AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
-		  AND phase NOT IN ('cifix', 'reviewfix', 'bellows')
+		  AND phase NOT IN (` + backgroundPhases + `)
 		ORDER BY started_at`, anvil)
 }
 
