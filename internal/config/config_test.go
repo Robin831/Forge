@@ -20,11 +20,14 @@ func TestConfig_Validate(t *testing.T) {
 			name: "valid config",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths:  4,
-					MaxReviewAttempts: 5,
-					PollInterval:    1 * time.Minute,
-					SmithTimeout:    30 * time.Minute,
-					BellowsInterval: 2 * time.Minute,
+					MaxTotalSmiths:       4,
+					MaxReviewAttempts:    5,
+					PollInterval:         1 * time.Minute,
+					SmithTimeout:         30 * time.Minute,
+					BellowsInterval:      2 * time.Minute,
+					MaxCIFixAttempts:     5,
+					MaxReviewFixAttempts: 5,
+					MaxRebaseAttempts:    3,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -53,17 +56,23 @@ func TestConfig_Validate(t *testing.T) {
 				"settings.poll_interval must be >= 10s",
 				"settings.smith_timeout must be >= 1m",
 				"settings.bellows_interval must be >= 30s",
+				"settings.max_ci_fix_attempts must be >= 1",
+				"settings.max_review_fix_attempts must be >= 1",
+				"settings.max_rebase_attempts must be >= 1",
 			},
 		},
 		{
 			name: "invalid anvil path",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths:  4,
-					MaxReviewAttempts: 5,
-					PollInterval:    1 * time.Minute,
-					SmithTimeout:    30 * time.Minute,
-					BellowsInterval: 2 * time.Minute,
+					MaxTotalSmiths:       4,
+					MaxReviewAttempts:    5,
+					PollInterval:         1 * time.Minute,
+					SmithTimeout:         30 * time.Minute,
+					BellowsInterval:      2 * time.Minute,
+					MaxCIFixAttempts:     5,
+					MaxReviewFixAttempts: 5,
+					MaxRebaseAttempts:    3,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -79,11 +88,14 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid auto_dispatch mode",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths:  4,
-					MaxReviewAttempts: 5,
-					PollInterval:    1 * time.Minute,
-					SmithTimeout:    30 * time.Minute,
-					BellowsInterval: 2 * time.Minute,
+					MaxTotalSmiths:       4,
+					MaxReviewAttempts:    5,
+					PollInterval:         1 * time.Minute,
+					SmithTimeout:         30 * time.Minute,
+					BellowsInterval:      2 * time.Minute,
+					MaxCIFixAttempts:     5,
+					MaxReviewFixAttempts: 5,
+					MaxRebaseAttempts:    3,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -100,11 +112,14 @@ func TestConfig_Validate(t *testing.T) {
 			name: "missing tag for tagged mode",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths:  4,
-					MaxReviewAttempts: 5,
-					PollInterval:    1 * time.Minute,
-					SmithTimeout:    30 * time.Minute,
-					BellowsInterval: 2 * time.Minute,
+					MaxTotalSmiths:       4,
+					MaxReviewAttempts:    5,
+					PollInterval:         1 * time.Minute,
+					SmithTimeout:         30 * time.Minute,
+					BellowsInterval:      2 * time.Minute,
+					MaxCIFixAttempts:     5,
+					MaxReviewFixAttempts: 5,
+					MaxRebaseAttempts:    3,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -122,11 +137,14 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid priority for priority mode",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths:  4,
-					MaxReviewAttempts: 5,
-					PollInterval:    1 * time.Minute,
-					SmithTimeout:    30 * time.Minute,
-					BellowsInterval: 2 * time.Minute,
+					MaxTotalSmiths:       4,
+					MaxReviewAttempts:    5,
+					PollInterval:         1 * time.Minute,
+					SmithTimeout:         30 * time.Minute,
+					BellowsInterval:      2 * time.Minute,
+					MaxCIFixAttempts:     5,
+					MaxReviewFixAttempts: 5,
+					MaxRebaseAttempts:    3,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -163,6 +181,9 @@ func TestDefaults(t *testing.T) {
 	assert.Equal(t, 4, cfg.Settings.MaxTotalSmiths)
 	assert.Equal(t, 5*time.Minute, cfg.Settings.RateLimitBackoff)
 	assert.Equal(t, 2*time.Minute, cfg.Settings.BellowsInterval)
+	assert.Equal(t, 5, cfg.Settings.MaxCIFixAttempts)
+	assert.Equal(t, 5, cfg.Settings.MaxReviewFixAttempts)
+	assert.Equal(t, 3, cfg.Settings.MaxRebaseAttempts)
 	assert.NotNil(t, cfg.Anvils)
 }
 
@@ -287,6 +308,40 @@ settings:
 
 	_, err := Load(cfgPath)
 	assert.ErrorContains(t, err, "bellows_interval")
+}
+
+func TestLoad_LifecycleRetryCaps(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  max_ci_fix_attempts: 10
+  max_review_fix_attempts: 8
+  max_rebase_attempts: 6
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 10, cfg.Settings.MaxCIFixAttempts)
+	assert.Equal(t, 8, cfg.Settings.MaxReviewFixAttempts)
+	assert.Equal(t, 6, cfg.Settings.MaxRebaseAttempts)
+}
+
+func TestLoad_LifecycleRetryCaps_Defaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  max_total_smiths: 2
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 5, cfg.Settings.MaxCIFixAttempts)
+	assert.Equal(t, 5, cfg.Settings.MaxReviewFixAttempts)
+	assert.Equal(t, 3, cfg.Settings.MaxRebaseAttempts)
 }
 
 func TestLoad_InvalidPollInterval(t *testing.T) {
