@@ -219,6 +219,14 @@ func buildReviewPrompt(beadID, diff, anvilPath string) string {
 		agentsMD = string(data)
 	}
 
+	// Load learned review rules for this anvil
+	rulesSection := ""
+	if rf, err := LoadRules(anvilPath); err == nil {
+		if checklist := rf.FormatChecklist(); checklist != "" {
+			rulesSection = "\n## Learned Review Rules\n\nThese are domain-specific patterns learned from past reviews. Check each one against the diff:\n\n" + checklist
+		}
+	}
+
 	return fmt.Sprintf(`You are a code reviewer (the "Warden") for an AI-generated pull request.
 
 ## REQUIRED: Output Your Verdict JSON Block First
@@ -249,7 +257,7 @@ After outputting the JSON verdict above, review the following git diff:
 3. Check for completeness — does it fully implement what was requested?
 4. Check for safety — any security issues, resource leaks, error handling gaps?
 5. Check for tests — are there adequate tests for the changes?
-
+%s
 ## Git Diff
 
 %s
@@ -258,6 +266,7 @@ After outputting the JSON verdict above, review the following git diff:
 %s`,
 		"Use the following JSON format, replacing each field with your actual verdict, summary, and issues:\n\n```json\n{\"verdict\": \"approve\", \"summary\": \"\", \"issues\": []}\n```\n\nSet `verdict` to one of: `approve`, `reject`, `request_changes`.",
 		beadID,
+		rulesSection,
 		"```diff\n"+truncateDiff(diff, 50000)+"\n```",
 		conditionalSection("## Repository Guidelines (AGENTS.md)", agentsMD),
 		"Be thorough but practical. Focus on issues that would cause bugs or maintenance problems.",
