@@ -192,6 +192,7 @@ type Model struct {
 	needsAttentionScroll    int
 	needsAttentionViewStart int // viewport offset (separate from selection cursor)
 	readyToMergeScroll      int
+	readyToMergeViewStart   int // viewport offset (separate from selection cursor)
 	workerScroll            int
 	workerViewStart         int // viewport offset (separate from selection cursor)
 	activityScroll       int
@@ -470,6 +471,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if len(msg.Items) == 0 {
 			m.readyToMergeScroll = 0
+			m.readyToMergeViewStart = 0
 		}
 
 	case NeedsAttentionErrorMsg:
@@ -1110,28 +1112,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 		if maxItems < 1 {
 			maxItems = 1
 		}
-		// Adjust viewport to keep the selected item visible.
-		// needsAttentionScroll is the cursor; needsAttentionViewStart is the viewport offset.
-		if m.needsAttentionScroll < m.needsAttentionViewStart {
-			m.needsAttentionViewStart = m.needsAttentionScroll
-		}
-		if m.needsAttentionScroll >= m.needsAttentionViewStart+maxItems {
-			m.needsAttentionViewStart = m.needsAttentionScroll - maxItems + 1
-		}
-		if m.needsAttentionViewStart < 0 {
-			m.needsAttentionViewStart = 0
-		}
-		// Clamp viewport start so it doesn't hide items unnecessarily when the list shrinks.
-		total := len(m.needsAttention)
-		if total <= maxItems {
-			// Everything fits; no need to scroll.
-			m.needsAttentionViewStart = 0
-		} else {
-			maxStart := total - maxItems
-			if m.needsAttentionViewStart > maxStart {
-				m.needsAttentionViewStart = maxStart
-			}
-		}
+		m.needsAttentionViewStart = clampViewStart(m.needsAttentionScroll, m.needsAttentionViewStart, maxItems, len(m.needsAttention))
 		visible := visibleItems(m.needsAttentionViewStart, len(m.needsAttention), maxItems)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.needsAttention[i]
@@ -1187,11 +1168,12 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 	if len(m.readyToMerge) == 0 {
 		lines = append(lines, dimStyle.Render("None"))
 	} else if height > 3 {
-		viewHeight := height - 3
-		if viewHeight < 1 {
-			viewHeight = 1
+		maxItems := height - 3
+		if maxItems < 1 {
+			maxItems = 1
 		}
-		visible := visibleItems(m.readyToMergeScroll, len(m.readyToMerge), viewHeight)
+		m.readyToMergeViewStart = clampViewStart(m.readyToMergeScroll, m.readyToMergeViewStart, maxItems, len(m.readyToMerge))
+		visible := visibleItems(m.readyToMergeViewStart, len(m.readyToMerge), maxItems)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.readyToMerge[i]
 			anvil := dimStyle.Render(item.Anvil)
@@ -1296,17 +1278,7 @@ func (m *Model) renderWorkerList(width, height int) string {
 		if maxWorkers < 1 {
 			maxWorkers = 1
 		}
-		// Adjust viewport to keep the selected worker visible.
-		// workerScroll is the cursor; workerViewStart is the viewport offset.
-		if m.workerScroll < m.workerViewStart {
-			m.workerViewStart = m.workerScroll
-		}
-		if m.workerScroll >= m.workerViewStart+maxWorkers {
-			m.workerViewStart = m.workerScroll - maxWorkers + 1
-		}
-		if m.workerViewStart < 0 {
-			m.workerViewStart = 0
-		}
+		m.workerViewStart = clampViewStart(m.workerScroll, m.workerViewStart, maxWorkers, len(m.workers))
 		visible := visibleItems(m.workerViewStart, len(m.workers), maxWorkers)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.workers[i]
@@ -1850,6 +1822,30 @@ func visibleItems(scroll, total, viewHeight int) visibleRange {
 		start = total
 	}
 	return visibleRange{start: start, end: end}
+}
+
+// clampViewStart returns an updated viewStart that keeps cursor inside the
+// visible [viewStart, viewStart+maxItems) window and prevents the viewport
+// from leaving gaps at the end when the list shrinks.
+func clampViewStart(cursor, viewStart, maxItems, total int) int {
+	if cursor < viewStart {
+		viewStart = cursor
+	}
+	if cursor >= viewStart+maxItems {
+		viewStart = cursor - maxItems + 1
+	}
+	if viewStart < 0 {
+		viewStart = 0
+	}
+	if total <= maxItems {
+		viewStart = 0
+	} else {
+		maxStart := total - maxItems
+		if viewStart > maxStart {
+			viewStart = maxStart
+		}
+	}
+	return viewStart
 }
 
 // ansiEscapeLen returns the number of runes consumed by an ANSI CSI escape
