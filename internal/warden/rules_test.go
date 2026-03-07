@@ -110,7 +110,7 @@ func TestParsePaginatedComments_MultiPage(t *testing.T) {
 	assert.Equal(t, "page2 comment", got[1].Body)
 }
 
-func TestGroupComments(t *testing.T) {
+func TestGroupComments_ExactMatch(t *testing.T) {
 	comments := []PRComment{
 		{Body: "Check for data races", PRNumber: 1},
 		{Body: "Missing error check", PRNumber: 1},
@@ -125,4 +125,60 @@ func TestGroupComments(t *testing.T) {
 	assert.Len(t, groups[0], 2)
 	// Second group should have 2 comments (body normalized to same)
 	assert.Len(t, groups[1], 2)
+}
+
+func TestGroupComments_SemanticMerge(t *testing.T) {
+	// Comments about the same pattern but with different wording should be
+	// merged into the same group via keyword overlap.
+	comments := []PRComment{
+		{Body: "missing error check on Open()", PRNumber: 1},
+		{Body: "error from ReadFile not handled — missing check", PRNumber: 2},
+		{Body: "possible data race on shared counter", PRNumber: 3},
+		{Body: "data race: concurrent access to shared map", PRNumber: 4},
+	}
+
+	groups := GroupComments(comments)
+	// Should produce 2 groups: error-handling and data-race
+	assert.Len(t, groups, 2)
+
+	// Each semantic cluster should contain 2 comments
+	assert.Len(t, groups[0], 2)
+	assert.Len(t, groups[1], 2)
+}
+
+func TestGroupComments_NoMergeDissimilar(t *testing.T) {
+	// Comments about completely different topics must stay separate.
+	comments := []PRComment{
+		{Body: "SQL injection vulnerability in user query builder", PRNumber: 1},
+		{Body: "unused import should be removed from module", PRNumber: 2},
+		{Body: "missing unit test coverage for edge case", PRNumber: 3},
+	}
+
+	groups := GroupComments(comments)
+	assert.Len(t, groups, 3)
+}
+
+func TestExtractKeywords(t *testing.T) {
+	kw := extractKeywords("The missing error check should be handled")
+	assert.Contains(t, kw, "missing")
+	assert.Contains(t, kw, "error")
+	assert.Contains(t, kw, "check")
+	assert.Contains(t, kw, "handled")
+	// Stop words removed
+	assert.NotContains(t, kw, "the")
+	assert.NotContains(t, kw, "should")
+}
+
+func TestJaccardSimilarity(t *testing.T) {
+	a := map[string]bool{"error": true, "check": true, "missing": true}
+	b := map[string]bool{"error": true, "handled": true, "missing": true, "check": true}
+
+	sim := jaccardSimilarity(a, b)
+	// intersection=3, union=4, sim=0.75
+	assert.InDelta(t, 0.75, sim, 0.01)
+
+	// Completely disjoint sets
+	c := map[string]bool{"data": true, "race": true}
+	sim2 := jaccardSimilarity(a, c)
+	assert.InDelta(t, 0.0, sim2, 0.01)
 }
