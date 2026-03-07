@@ -33,10 +33,19 @@ forge status                          # Show daemon status (via IPC)
 forge hearth                          # Open TUI dashboard
 forge anvil add <name> <path>         # Register a repository
 forge anvil list                      # List registered anvils
+forge anvil remove <name>             # Deregister an anvil
 forge queue list                      # Show queued beads
+forge queue run <id>                  # Manually dispatch a bead
+forge queue clarify <id>              # Mark bead as needing clarification
+forge queue unclarify <id>            # Clear clarification flag
+forge queue retry <id>                # Reset dispatch circuit breaker
 forge history                         # Show recent worker history
-forge autostart enable                # Enable auto-start via Windows Task Scheduler
+forge history events                  # Show event log
+forge scan                            # Run govulncheck on Go anvils
+forge autostart install               # Enable auto-start via Windows Task Scheduler
 forge doctor                          # Check dependencies (bd, claude, gh, git)
+forge changelog assemble              # Assemble changelog.d into CHANGELOG.md
+forge changelog validate <bead-ids>   # Check fragments exist for beads
 ```
 
 ## Architecture
@@ -48,16 +57,17 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | Package | Role |
 |---------|------|
 | `internal/daemon` | Main background process. Runs the poll loop, manages IPC server, hot-reloads config |
-| `internal/pipeline` | Orchestrates one bead through Smith → Temper → Warden, up to 3 iterations |
+| `internal/pipeline` | Orchestrates one bead through Schematic → Smith → Temper → Warden |
 | `internal/smith` | Spawns `claude` CLI as a subprocess in a worktree |
 | `internal/temper` | Runs build/lint/test checks; auto-detects Go, .NET, Node |
 | `internal/warden` | Spawns a second Claude session to review Smith's diff |
-| `internal/bellows` | Monitors open PRs for CI failures and review comments |
+| `internal/bellows` | Monitors open PRs for CI failures, review comments, and merge conflicts |
+| `internal/schematic` | Pre-analysis worker — decomposes complex beads or produces implementation plans |
 | `internal/poller` | Calls `bd ready` to get available beads from an anvil |
 | `internal/worktree` | Creates/removes `git worktree` branches for each bead |
 | `internal/state` | SQLite at `~/.forge/state.db` — workers, prs, events, retries, costs |
 | `internal/ipc` | Named pipe (Windows) / Unix socket daemon↔CLI protocol; newline-delimited JSON |
-| `internal/hearth` | Bubbletea TUI: three-panel (Queue / Workers / Events) |
+| `internal/hearth` | Bubbletea TUI: three-column layout (Queue+NeedsAttention / Workers / LiveActivity+ReadyToMerge+Events) |
 | `internal/config` | Viper config loading — `forge.yaml` in cwd or `~/.forge/config.yaml` |
 | `internal/prompt` | Builds the Smith prompt from bead metadata + AGENTS.md/CLAUDE.md/README.md |
 | `internal/hotreload` | fsnotify watcher — reloads `forge.yaml` without restart |
@@ -71,12 +81,13 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 ```
 bd ready (poller) → pipeline.Run()
   → worktree.Create (git worktree add)
+  → schematic.Analyze (optional pre-analysis: plan, decompose, or skip)
   → smith.Spawn (claude CLI subprocess, reads prompt from prompt.Builder)
   → temper.Run (go build/vet/test or dotnet or npm)
   → warden.Review (second claude session, reviews diff)
-  → if request_changes: loop back to Smith (max 3 iterations)
+  → if request_changes: loop back to Smith (max max_review_attempts iterations)
   → if approved: ghpr.Create (gh pr create)
-  → bellows monitors open PRs
+  → bellows monitors open PRs (CI fix, review fix, rebase)
   → worktree.Remove
 ```
 
@@ -95,7 +106,7 @@ The daemon exposes a named pipe (Windows: `\\.\pipe\forge`) or Unix socket. Mess
 
 ### Configuration
 
-Config resolution order: `--config` flag → `./forge.yaml` → `~/.forge/config.yaml`. Environment variables override with `FORGE_` prefix (e.g. `FORGE_SETTINGS_MAX_TOTAL_SMITHS=4`). The daemon hot-reloads the config file on change via fsnotify.
+Config resolution order: `--config` flag → `./forge.yaml` → `~/.forge/config.yaml`. Environment variables override with `FORGE_` prefix (e.g. `FORGE_SETTINGS_MAX_TOTAL_SMITHS=4`). The daemon hot-reloads the config file on change via fsnotify. See [docs/configuration.md](docs/configuration.md) for the full settings reference including `daily_cost_limit`, `max_ci_fix_attempts`, `max_review_fix_attempts`, `max_rebase_attempts`, `smith_providers`, `merge_strategy`, `schematic_enabled`, and more.
 
 ### Per-Anvil Smith Prompt Customization
 

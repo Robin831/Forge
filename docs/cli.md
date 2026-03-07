@@ -53,10 +53,10 @@ Open the TUI dashboard. Requires the daemon to be running.
 forge hearth
 ```
 
-Three-panel interface:
-- **Queue** — ready beads across all anvils
-- **Workers** — active Smith processes
-- **Events** — timestamped event log
+Three-column layout with six panels:
+- **Left column**: Queue (ready beads) and Needs Attention (beads requiring human intervention)
+- **Center column**: Workers (active Smith, Temper, Warden, CIFix, ReviewFix processes)
+- **Right column**: Live Activity (streaming worker log), Ready to Merge (PRs passing CI and approved), and Events (timestamped event log)
 
 ### `forge doctor`
 
@@ -169,6 +169,33 @@ forge queue unclarify BD-42 --anvil heimdall
 |------|-------------|
 | `-a, --anvil` | Anvil name (required) |
 
+### `forge queue retry <id>`
+
+Reset the dispatch circuit breaker for a bead so it can be retried.
+
+```bash
+forge queue retry BD-42 --anvil heimdall
+```
+
+| Flag | Description |
+|------|-------------|
+| `-a, --anvil` | Anvil name (required) |
+
+## Scanning
+
+### `forge scan`
+
+Run `govulncheck` on registered Go anvils to check for known vulnerabilities.
+
+```bash
+forge scan                    # Scan all anvils
+forge scan --anvil heimdall   # Scan a specific anvil
+```
+
+| Flag | Description |
+|------|-------------|
+| `-a, --anvil` | Scan only this anvil (optional; default: all) |
+
 ## History
 
 ### `forge history`
@@ -239,3 +266,31 @@ Generate the Task Scheduler XML without registering it.
 ```bash
 forge autostart generate
 ```
+
+## Changelog Fragments
+
+### `forge changelog assemble`
+
+Assemble `changelog.d/` fragments into `CHANGELOG.md`.
+
+```bash
+forge changelog assemble
+forge changelog assemble --dir . --output CHANGELOG.md
+forge changelog assemble --dry-run
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dir` | Directory containing `changelog.d/` (default: `.`) |
+| `--output` | Output file path (default: `CHANGELOG.md`) |
+| `--dry-run` | Print assembled output without writing |
+
+### `forge changelog validate`
+
+Check that changelog fragments exist for the specified bead IDs.
+
+```bash
+forge changelog validate Forge-abc Forge-xyz
+```
+
+Exits non-zero if any bead is missing a fragment.

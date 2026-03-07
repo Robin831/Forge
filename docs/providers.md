@@ -10,10 +10,29 @@ settings:
     - claude
     - gemini/gemini-2.5-pro
     - gemini/gemini-2.5-flash
+  smith_providers:
+    - claude/claude-opus-4-6
   rate_limit_backoff: 5m
 ```
 
-Default: `["claude", "gemini"]` when unset.
+Default for `providers`: `["claude", "gemini"]` when unset.
+
+### `smith_providers` vs `providers`
+
+| Setting | Used by | Purpose |
+|---------|---------|---------|
+| `providers` | CI fix, review fix, rebase workers | General-purpose provider chain for lifecycle workers. |
+| `smith_providers` | Smith, Warden, Schematic | Dispatch pipeline provider chain. Falls back to `providers` when empty. |
+
+This split lets you run a more capable (and expensive) model for initial implementation while using a lighter model for automated fix cycles. For example:
+
+```yaml
+settings:
+  providers:
+    - claude                     # Lifecycle workers use default Claude
+  smith_providers:
+    - claude/claude-opus-4-6     # Smith gets Opus for complex implementation
+```
 
 ## Provider String Syntax
 
