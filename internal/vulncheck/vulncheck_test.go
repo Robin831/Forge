@@ -1,6 +1,8 @@
 package vulncheck
 
 import (
+	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -122,4 +124,31 @@ func TestTruncate(t *testing.T) {
 	assert.Equal(t, "hello", truncate("hello", 10))
 	assert.Equal(t, "hel...", truncate("hello world", 6))
 	assert.Equal(t, "hello world", truncate("hello world", 100))
+}
+
+func TestScanAllUnavailable(t *testing.T) {
+	// Construct a scanner with available=false to simulate missing govulncheck.
+	s := &Scanner{
+		logger:    slog.Default(),
+		available: false,
+	}
+	assert.False(t, s.Available())
+
+	results := s.ScanAll(context.Background())
+	require.Len(t, results, 1)
+	assert.Error(t, results[0].Err)
+	assert.Contains(t, results[0].Err.Error(), "govulncheck not found")
+}
+
+func TestRunScheduledExitsWhenUnavailable(t *testing.T) {
+	s := &Scanner{
+		logger:    slog.Default(),
+		available: false,
+	}
+
+	// RunScheduled should return immediately when govulncheck is unavailable.
+	// If it blocks, the test will time out.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.RunScheduled(ctx, 1) // interval > 0 but should still exit
 }

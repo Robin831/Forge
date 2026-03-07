@@ -118,6 +118,10 @@ type SettingsConfig struct {
 	// invocation per anvil (govulncheck downloads the vuln DB on first run).
 	// Defaults to 10 minutes.
 	VulncheckTimeout time.Duration `mapstructure:"vulncheck_timeout"`
+	// VulncheckEnabled controls whether vulnerability scanning is active.
+	// When false, scheduled scanning and "forge scan" are disabled regardless
+	// of VulncheckInterval. Default: true.
+	VulncheckEnabled *bool `mapstructure:"vulncheck_enabled"`
 	// GoRaceDetection enables the Go race detector (-race flag) as a
 	// separate temper step globally. Per-anvil settings override this.
 	// Default: false.
@@ -127,6 +131,14 @@ type SettingsConfig struct {
 	// comments, distill them into rules via Claude, and save them to the
 	// anvil's .forge/warden-rules.yaml. Default: false.
 	AutoLearnRules bool `mapstructure:"auto_learn_rules"`
+}
+
+// IsVulncheckEnabled returns true unless vulncheck_enabled is explicitly false.
+func (s SettingsConfig) IsVulncheckEnabled() bool {
+	if s.VulncheckEnabled == nil {
+		return true
+	}
+	return *s.VulncheckEnabled
 }
 
 // NotificationsConfig holds webhook and notification settings.
@@ -184,6 +196,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.depcheck_timeout", "5m")
 	v.SetDefault("settings.vulncheck_interval", "24h")
 	v.SetDefault("settings.vulncheck_timeout", "10m")
+	v.SetDefault("settings.vulncheck_enabled", true)
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	// SetEnvKeyReplacer maps dotted config keys (settings.auto_learn_rules) to

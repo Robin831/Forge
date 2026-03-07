@@ -58,7 +58,10 @@ var doctorCmd = &cobra.Command{
 		// 8. Check anvils configured
 		checks = append(checks, checkAnvils())
 
-		// 9. Check autostart registration (Windows only)
+		// 9. Check govulncheck (optional — needed for vulnerability scanning)
+		checks = append(checks, checkGovulncheck())
+
+		// 10. Check autostart registration (Windows only)
 		if runtime.GOOS == "windows" {
 			checks = append(checks, checkAutostart())
 		}
@@ -272,6 +275,22 @@ func checkAnvils() checkResult {
 		Name:   "Anvils configured",
 		Status: "ok",
 		Detail: fmt.Sprintf("%d anvils registered", count),
+	}
+}
+
+func checkGovulncheck() checkResult {
+	path, err := exec.LookPath("govulncheck")
+	if err != nil {
+		return checkResult{
+			Name:   "govulncheck",
+			Status: "warn",
+			Detail: "not installed — vulnerability scanning disabled. Install with: go install golang.org/x/vuln/cmd/govulncheck@latest",
+		}
+	}
+	return checkResult{
+		Name:   "govulncheck",
+		Status: "ok",
+		Detail: path,
 	}
 }
 

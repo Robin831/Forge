@@ -357,6 +357,22 @@ settings:
 	assert.ErrorContains(t, err, "poll_interval")
 }
 
+func TestIsVulncheckEnabled(t *testing.T) {
+	// nil (not set) → default true
+	s := SettingsConfig{}
+	assert.True(t, s.IsVulncheckEnabled())
+
+	// explicitly true
+	tr := true
+	s.VulncheckEnabled = &tr
+	assert.True(t, s.IsVulncheckEnabled())
+
+	// explicitly false
+	fa := false
+	s.VulncheckEnabled = &fa
+	assert.False(t, s.IsVulncheckEnabled())
+}
+
 func TestLoad_NoFile_UsesDefaults(t *testing.T) {
 	// Load with a path that doesn't exist → viper.ConfigFileNotFoundError → uses defaults
 	cfg, err := Load("/nonexistent/forge.yaml")

@@ -61,6 +61,9 @@ appropriate priority based on severity.`,
 		}))
 
 		scanner := vulncheck.New(db, logger, anvils, cfg.Settings.VulncheckTimeout)
+		if !scanner.Available() {
+			return fmt.Errorf("govulncheck is not installed. Install with: go install golang.org/x/vuln/cmd/govulncheck@latest")
+		}
 		results := scanner.ScanAll(rootCtx)
 
 		// Create beads regardless of output format

@@ -57,6 +57,7 @@ settings:
   schematic_word_threshold: 150
   depcheck_interval: 168h
   depcheck_timeout: 5m
+  vulncheck_enabled: true
   vulncheck_interval: 24h
   vulncheck_timeout: 10m
   auto_learn_rules: true
@@ -116,6 +117,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `stale_interval` | duration | `5m` | `30s` or `0` | How long a worker's log can go without modification before marking as stalled. `0` disables stale detection. |
 | `depcheck_interval` | duration | `168h` | `1h` or `0` | How often the dependency checker runs `go list -m -u all` on Go anvils. `0` disables. |
 | `depcheck_timeout` | duration | `5m` | | Maximum time for a single depcheck invocation per anvil. |
+| `vulncheck_enabled` | bool | `true` | | Enable/disable vulnerability scanning entirely. When `false`, scheduled scanning and `forge scan` are disabled. |
 | `vulncheck_interval` | duration | `24h` | `0` | How often `govulncheck` runs on registered Go anvils. `0` disables. |
 | `vulncheck_timeout` | duration | `10m` | | Maximum time for a single govulncheck invocation per anvil. |
 | `auto_learn_rules` | bool | `false` | | Automatically learn Warden review rules from Copilot comments when a PR is merged. Rules are saved to each anvil's `.forge/warden-rules.yaml`. |
@@ -164,6 +166,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_STALE_INTERVAL` | `settings.stale_interval` |
 | `FORGE_SETTINGS_DEPCHECK_INTERVAL` | `settings.depcheck_interval` |
 | `FORGE_SETTINGS_DEPCHECK_TIMEOUT` | `settings.depcheck_timeout` |
+| `FORGE_SETTINGS_VULNCHECK_ENABLED` | `settings.vulncheck_enabled` |
 | `FORGE_SETTINGS_VULNCHECK_INTERVAL` | `settings.vulncheck_interval` |
 | `FORGE_SETTINGS_VULNCHECK_TIMEOUT` | `settings.vulncheck_timeout` |
 | `FORGE_SETTINGS_AUTO_LEARN_RULES` | `settings.auto_learn_rules` |
