@@ -118,6 +118,57 @@ func TestDefaultConfigWithRace_IncludesRaceStep(t *testing.T) {
 	t.Fatal("race step not found despite being in step names")
 }
 
+func TestLoadAnvilConfig_ReturnsNilWhenFileAbsent(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg, err := LoadAnvilConfig(dir)
+
+	assert.NoError(t, err)
+	assert.Nil(t, cfg, "should return nil config when .forge/temper.yaml does not exist")
+}
+
+func TestLoadAnvilConfig_ParsesValidYAML(t *testing.T) {
+	dir := t.TempDir()
+	forgeDir := filepath.Join(dir, ".forge")
+	require.NoError(t, os.MkdirAll(forgeDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(forgeDir, "temper.yaml"), []byte("go_race_detection: true\n"), 0o644))
+
+	cfg, err := LoadAnvilConfig(dir)
+
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	require.NotNil(t, cfg.GoRaceDetection)
+	assert.True(t, *cfg.GoRaceDetection)
+}
+
+func TestLoadAnvilConfig_ReturnsErrorForCorruptYAML(t *testing.T) {
+	dir := t.TempDir()
+	forgeDir := filepath.Join(dir, ".forge")
+	require.NoError(t, os.MkdirAll(forgeDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(forgeDir, "temper.yaml"), []byte("{{not valid yaml"), 0o644))
+
+	cfg, err := LoadAnvilConfig(dir)
+
+	assert.Error(t, err, "corrupt YAML should return an error, not be silently swallowed")
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "failed to parse config")
+}
+
+func TestLoadAnvilConfig_ReturnsErrorForUnreadableFile(t *testing.T) {
+	// Make temper.yaml a directory so os.ReadFile fails with a non-ENOENT
+	// error on all platforms (including Windows where path-not-found is
+	// treated as ENOENT by os.IsNotExist).
+	dir := t.TempDir()
+	forgeDir := filepath.Join(dir, ".forge")
+	require.NoError(t, os.MkdirAll(filepath.Join(forgeDir, "temper.yaml"), 0o755))
+
+	cfg, err := LoadAnvilConfig(dir)
+
+	assert.Error(t, err, "non-ENOENT read errors should be returned, not swallowed")
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "failed to read config")
+}
+
 func TestDefaultConfigWithRace_ExcludesRaceStepWhenDisabled(t *testing.T) {
 	dir := goModDir(t)
 	opts := &DetectOptions{DisableGolangciLint: true}
