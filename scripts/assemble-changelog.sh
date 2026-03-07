@@ -15,14 +15,14 @@ CHANGELOG="CHANGELOG.md"
 FRAGMENT_DIR="changelog.d"
 DATE=$(date -u +%Y-%m-%d)
 
-if [ ! -d "$FRAGMENT_DIR" ] || [ -z "$(ls -A "$FRAGMENT_DIR"/*.md 2>/dev/null)" ]; then
+if [ ! -d "$FRAGMENT_DIR" ] || ! compgen -G "$FRAGMENT_DIR"/*.en.md > /dev/null; then
   echo "No changelog fragments found in $FRAGMENT_DIR/" >&2
   exit 0
 fi
 
 # Collect fragments grouped by category
 declare -A CATEGORIES
-for f in "$FRAGMENT_DIR"/*.md; do
+for f in "$FRAGMENT_DIR"/*.en.md; do
   cat_line=$(head -1 "$f")
   category=$(echo "$cat_line" | sed 's/^category:[[:space:]]*//')
   # Everything after the first line is the content
@@ -43,20 +43,32 @@ for category in Added Changed Deprecated Removed Fixed Security; do
     unset "CATEGORIES[$category]"
   fi
 done
-# Any remaining non-standard categories
-for category in "${!CATEGORIES[@]}"; do
+# Any remaining non-standard categories (sorted for deterministic output)
+for category in $(printf '%s\n' "${!CATEGORIES[@]}" | sort); do
   SECTION+=$'\n'"### $category"$'\n'$'\n'
   SECTION+="${CATEGORIES[$category]}"$'\n'
 done
 
 # Prepend to CHANGELOG.md (or create it)
 if [ -f "$CHANGELOG" ]; then
-  # Insert after the first header line (# Changelog)
+  # Insert new section after the intro block, before the first release heading (## [)
   TMPFILE=$(mktemp)
-  head -1 "$CHANGELOG" > "$TMPFILE"
-  echo "" >> "$TMPFILE"
-  echo "$SECTION" >> "$TMPFILE"
-  tail -n +2 "$CHANGELOG" >> "$TMPFILE"
+  awk -v section="$SECTION" '
+    BEGIN { inserted = 0 }
+    NR == 1 { print; next }
+    !inserted && $0 ~ /^## \[/ {
+      print "";
+      print section;
+      inserted = 1;
+    }
+    { print }
+    END {
+      if (!inserted) {
+        print "";
+        print section;
+      }
+    }
+  ' "$CHANGELOG" > "$TMPFILE"
   mv -f "$TMPFILE" "$CHANGELOG"
 else
   {
@@ -67,6 +79,6 @@ else
 fi
 
 # Remove consumed fragments
-rm -f "$FRAGMENT_DIR"/*.md
+rm -f "$FRAGMENT_DIR"/*.en.md
 
 echo "Assembled $VERSION changelog from fragments into $CHANGELOG"
