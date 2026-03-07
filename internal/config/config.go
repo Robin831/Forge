@@ -330,6 +330,9 @@ func Save(cfg *Config, path string) error {
 	v.Set("settings.rate_limit_backoff", cfg.Settings.RateLimitBackoff.String())
 	v.Set("settings.bellows_interval", cfg.Settings.BellowsInterval.String())
 	v.Set("settings.stale_interval", cfg.Settings.StaleInterval.String())
+	v.Set("settings.max_ci_fix_attempts", cfg.Settings.MaxCIFixAttempts)
+	v.Set("settings.max_review_fix_attempts", cfg.Settings.MaxReviewFixAttempts)
+	v.Set("settings.max_rebase_attempts", cfg.Settings.MaxRebaseAttempts)
 
 	// Ensure directory exists
 	dir := filepath.Dir(path)

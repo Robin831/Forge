@@ -8,6 +8,9 @@
 //   - settings.claude_flags
 //   - settings.providers
 //   - settings.smith_providers
+//   - settings.max_ci_fix_attempts (applied immediately to lifecycle manager)
+//   - settings.max_review_fix_attempts (applied immediately to lifecycle manager)
+//   - settings.max_rebase_attempts (applied immediately to lifecycle manager)
 //   - notifications.* (all notification settings)
 //   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
 //
