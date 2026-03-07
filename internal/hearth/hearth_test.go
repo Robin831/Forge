@@ -51,7 +51,7 @@ func TestRenderWorkerListScrollRespectsTwoLinesPerWorker(t *testing.T) {
 		{ID: "w4", BeadID: "bd-4", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-3"},
 		{ID: "w5", BeadID: "bd-5", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-4"},
 	}
-	m := Model{workers: workers, focused: PanelWorkers, workerScroll: 0}
+	m := Model{workers: workers, focused: PanelWorkers, workerVP: scrollViewport{cursor: 0}}
 
 	rendered := m.renderWorkerList(60, 10)
 
@@ -79,7 +79,7 @@ func TestRenderWorkerListViewportScrollsToShowSelected(t *testing.T) {
 		{ID: "w4", BeadID: "bd-4", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-3"},
 		{ID: "w5", BeadID: "bd-5", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-4"},
 	}
-	m := Model{workers: workers, focused: PanelWorkers, workerScroll: 4}
+	m := Model{workers: workers, focused: PanelWorkers, workerVP: scrollViewport{cursor: 4}}
 
 	rendered := m.renderWorkerList(60, 10)
 
@@ -272,7 +272,7 @@ func TestRenderWorkerActivityNewestFirst(t *testing.T) {
 				ActivityLines: []string{"oldest entry", "middle entry", "newest entry"},
 			},
 		},
-		workerScroll: 0,
+		workerVP: scrollViewport{cursor: 0},
 	}
 
 	// Use a large height so all lines are visible
@@ -507,7 +507,7 @@ func TestActivityScrollChangesVisibleLine(t *testing.T) {
 			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
 				ActivityLines: lines},
 		},
-		workerScroll:   0,
+		workerVP: scrollViewport{cursor: 0},
 		activityScroll: 0,
 		focused:        PanelLiveActivity,
 	}
@@ -535,7 +535,7 @@ func TestActivityScrollClampPastEnd(t *testing.T) {
 			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
 				ActivityLines: lines},
 		},
-		workerScroll:   0,
+		workerVP: scrollViewport{cursor: 0},
 		activityScroll: 100, // way past the end
 		focused:        PanelLiveActivity,
 	}
@@ -553,7 +553,7 @@ func TestEnterOnUnlabeledQueueItemOpensMenu(t *testing.T) {
 		queue: []QueueItem{
 			{BeadID: "bd-1", Anvil: "test", Section: "unlabeled"},
 		},
-		queueScroll: 0,
+		queueVP: scrollViewport{cursor: 0},
 	}
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if !m.showQueueActionMenu {
@@ -570,7 +570,7 @@ func TestEnterOnReadyQueueItemDoesNotOpenMenu(t *testing.T) {
 		queue: []QueueItem{
 			{BeadID: "bd-2", Anvil: "test", Section: "ready"},
 		},
-		queueScroll: 0,
+		queueVP: scrollViewport{cursor: 0},
 	}
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.showQueueActionMenu {
@@ -585,7 +585,7 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 		queue: []QueueItem{
 			{BeadID: "bd-3", Anvil: "forge", Section: "unlabeled"},
 		},
-		queueScroll: 0,
+		queueVP: scrollViewport{cursor: 0},
 		OnTagBead: func(beadID, anvil string) error {
 			taggedBead = beadID
 			taggedAnvil = anvil
@@ -616,7 +616,7 @@ func TestQueueActionMenuLabelOnTagBeadError(t *testing.T) {
 		queue: []QueueItem{
 			{BeadID: "bd-4", Anvil: "forge", Section: "unlabeled"},
 		},
-		queueScroll: 0,
+		queueVP: scrollViewport{cursor: 0},
 		OnTagBead: func(beadID, anvil string) error {
 			return errors.New("network error")
 		},
@@ -686,7 +686,7 @@ func TestRemoveNeedsAttentionItem_MiddleElement(t *testing.T) {
 	m.needsAttention = []NeedsAttentionItem{
 		{BeadID: "a", Anvil: "repo"}, {BeadID: "b", Anvil: "repo"}, {BeadID: "c", Anvil: "repo"},
 	}
-	m.needsAttentionScroll = 1
+	m.needsAttnVP.cursor = 1
 	m.removeNeedsAttentionItem("b", "repo")
 	if len(m.needsAttention) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(m.needsAttention))
@@ -699,26 +699,26 @@ func TestRemoveNeedsAttentionItem_MiddleElement(t *testing.T) {
 func TestRemoveNeedsAttentionItem_LastElement_AdjustsScroll(t *testing.T) {
 	m := NewModel(nil)
 	m.needsAttention = []NeedsAttentionItem{{BeadID: "a", Anvil: "repo"}, {BeadID: "b", Anvil: "repo"}}
-	m.needsAttentionScroll = 1 // pointing at last element "b"
+	m.needsAttnVP.cursor = 1 // pointing at last element "b"
 	m.removeNeedsAttentionItem("b", "repo")
 	if len(m.needsAttention) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(m.needsAttention))
 	}
-	if m.needsAttentionScroll != 0 {
-		t.Errorf("expected scroll decremented to 0, got %d", m.needsAttentionScroll)
+	if m.needsAttnVP.cursor != 0 {
+		t.Errorf("expected scroll decremented to 0, got %d", m.needsAttnVP.cursor)
 	}
 }
 
 func TestRemoveNeedsAttentionItem_OnlyElement_ScrollStaysZero(t *testing.T) {
 	m := NewModel(nil)
 	m.needsAttention = []NeedsAttentionItem{{BeadID: "only", Anvil: "repo"}}
-	m.needsAttentionScroll = 0
+	m.needsAttnVP.cursor = 0
 	m.removeNeedsAttentionItem("only", "repo")
 	if len(m.needsAttention) != 0 {
 		t.Fatalf("expected 0 items, got %d", len(m.needsAttention))
 	}
-	if m.needsAttentionScroll != 0 {
-		t.Errorf("expected scroll to stay 0, got %d", m.needsAttentionScroll)
+	if m.needsAttnVP.cursor != 0 {
+		t.Errorf("expected scroll to stay 0, got %d", m.needsAttnVP.cursor)
 	}
 }
 
@@ -854,7 +854,7 @@ func TestRenderReadyToMergeSelectionHighlighting(t *testing.T) {
 			{PRID: 1, PRNumber: 10, BeadID: "bd-20", Anvil: "forge"},
 			{PRID: 2, PRNumber: 11, BeadID: "bd-21", Anvil: "forge"},
 		},
-		readyToMergeScroll: 0,
+		readyToMergeVP: scrollViewport{cursor: 0},
 		focused:            PanelReadyToMerge,
 	}
 	// With scroll=0, first item (bd-20) should be selected/visible.
@@ -864,7 +864,7 @@ func TestRenderReadyToMergeSelectionHighlighting(t *testing.T) {
 	}
 
 	// With scroll=1, second item (bd-21) should be selected/visible.
-	m.readyToMergeScroll = 1
+	m.readyToMergeVP.cursor = 1
 	rendered1 := m.renderReadyToMerge(80, 20)
 	if !strings.Contains(rendered1, "bd-21") {
 		t.Errorf("expected selected item bd-21 visible at scroll=1:\n%s", rendered1)
@@ -888,9 +888,9 @@ func TestRenderReadyToMergeViewportRegression(t *testing.T) {
 	// height=7 → maxItems = 7-3 = 4. Cursor at index 2 (middle).
 	// Viewport should show items 0-3 (cursor visible, multiple adjacents present).
 	m := Model{
-		readyToMerge:       items,
-		readyToMergeScroll: 2,
-		focused:            PanelReadyToMerge,
+		readyToMerge:     items,
+		readyToMergeVP:   scrollViewport{cursor: 2},
+		focused:          PanelReadyToMerge,
 	}
 	rendered := m.renderReadyToMerge(80, 7)
 
@@ -909,8 +909,7 @@ func TestRenderReadyToMergeViewportRegression(t *testing.T) {
 	// Now simulate the list shrinking: only 2 items remain, viewStart may be
 	// stale. The viewport should clamp so both remaining items are shown.
 	m.readyToMerge = items[:2]
-	m.readyToMergeScroll = 1
-	m.readyToMergeViewStart = 3 // stale value from before shrink
+	m.readyToMergeVP = scrollViewport{cursor: 1, viewStart: 3} // stale viewStart from before shrink
 	rendered2 := m.renderReadyToMerge(80, 7)
 	for _, want := range []string{"bd-10", "bd-11"} {
 		if !strings.Contains(rendered2, want) {
