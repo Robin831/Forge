@@ -28,6 +28,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/cifix"
+	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ghpr"
@@ -88,8 +89,9 @@ type Daemon struct {
 	promptBuilder  *prompt.Builder
 
 	// PR Monitoring (Bellows)
-	bellowsMonitor *bellows.Monitor
-	lifecycleMgr   *lifecycle.Manager
+	bellowsMonitor  *bellows.Monitor
+	lifecycleMgr    *lifecycle.Manager
+	depcheckMonitor *depcheck.Monitor
 
 	// Teams notifications (nil = disabled)
 	notifier *notify.Notifier
@@ -360,6 +362,19 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Start stale worker detection loop (always running; respects current config)
 	go d.runStaleDetection(ctx)
+
+	// Start dependency update checker (if enabled)
+	if d.config().Settings.DepcheckInterval > 0 {
+		d.depcheckMonitor = depcheck.New(d.db,
+			d.config().Settings.DepcheckInterval,
+			d.config().Settings.DepcheckTimeout,
+			monitorAnvils)
+		go func() {
+			if err := d.depcheckMonitor.Run(ctx); err != nil && err != context.Canceled {
+				d.logger.Error("Depcheck monitor error", "error", err)
+			}
+		}()
+	}
 
 	for {
 		select {

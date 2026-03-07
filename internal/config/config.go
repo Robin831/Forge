@@ -93,6 +93,12 @@ type SettingsConfig struct {
 	// modified before the worker is marked as stalled. A value of 0 disables
 	// stale detection. Defaults to 5 minutes.
 	StaleInterval time.Duration `mapstructure:"stale_interval"`
+	// DepcheckInterval is how often the dependency checker runs 'go list -m -u all'
+	// on Go anvils. A value of 0 disables depcheck. Defaults to 168h (weekly).
+	DepcheckInterval time.Duration `mapstructure:"depcheck_interval"`
+	// DepcheckTimeout is the maximum time allowed for a single 'go list -m -u all'
+	// invocation per anvil. Defaults to 5 minutes.
+	DepcheckTimeout time.Duration `mapstructure:"depcheck_timeout"`
 }
 
 // NotificationsConfig holds webhook and notification settings.
@@ -120,6 +126,8 @@ func Defaults() Config {
 			MaxReviewFixAttempts: 5,
 			MaxRebaseAttempts:    3,
 			StaleInterval:        5 * time.Minute,
+			DepcheckInterval:    168 * time.Hour, // weekly
+			DepcheckTimeout:     5 * time.Minute,
 		},
 	}
 }
@@ -142,6 +150,8 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.max_review_fix_attempts", 5)
 	v.SetDefault("settings.max_rebase_attempts", 3)
 	v.SetDefault("settings.stale_interval", "5m")
+	v.SetDefault("settings.depcheck_interval", "168h")
+	v.SetDefault("settings.depcheck_timeout", "5m")
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	v.SetEnvPrefix("FORGE")
@@ -220,6 +230,20 @@ func Load(configFile string) (*Config, error) {
 		}
 		cfg.Settings.StaleInterval = d
 	}
+	if raw := v.GetString("settings.depcheck_interval"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid depcheck_interval %q: %w", raw, err)
+		}
+		cfg.Settings.DepcheckInterval = d
+	}
+	if raw := v.GetString("settings.depcheck_timeout"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid depcheck_timeout %q: %w", raw, err)
+		}
+		cfg.Settings.DepcheckTimeout = d
+	}
 
 	return &cfg, nil
 }
@@ -272,6 +296,15 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "settings.stale_interval must not be negative (set to 0 to disable)")
 	} else if c.Settings.StaleInterval > 0 && c.Settings.StaleInterval < 30*time.Second {
 		errs = append(errs, "settings.stale_interval must be >= 30s when enabled (or 0 to disable)")
+	}
+
+	if c.Settings.DepcheckInterval < 0 {
+		errs = append(errs, "settings.depcheck_interval must not be negative (set to 0 to disable)")
+	} else if c.Settings.DepcheckInterval > 0 && c.Settings.DepcheckInterval < 1*time.Hour {
+		errs = append(errs, "settings.depcheck_interval must be >= 1h when enabled (or 0 to disable)")
+	}
+	if c.Settings.DepcheckTimeout < 0 {
+		errs = append(errs, "settings.depcheck_timeout must not be negative")
 	}
 
 	for name, anvil := range c.Anvils {
