@@ -118,6 +118,7 @@ type Model struct {
 	queueScroll          int
 	needsAttentionScroll int
 	workerScroll         int
+	workerViewStart      int // viewport offset (separate from selection cursor)
 	eventScroll          int
 	eventAutoScroll      bool // true = follow new events
 	prevEventCount       int  // track event count for auto-scroll
@@ -259,6 +260,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateWorkersMsg:
 		m.workers = msg.Items
+		// Clamp selection when the workers list shrinks
+		if len(msg.Items) > 0 && m.workerScroll >= len(msg.Items) {
+			m.workerScroll = len(msg.Items) - 1
+		}
+		if len(msg.Items) == 0 {
+			m.workerScroll = 0
+			m.workerViewStart = 0
+		}
 
 	case UpdateEventsMsg:
 		m.events = msg.Items
@@ -664,7 +673,18 @@ func (m *Model) renderWorkerList(width, height int) string {
 		if maxWorkers < 1 {
 			maxWorkers = 1
 		}
-		visible := visibleItems(m.workerScroll, len(m.workers), maxWorkers)
+		// Adjust viewport to keep the selected worker visible.
+		// workerScroll is the cursor; workerViewStart is the viewport offset.
+		if m.workerScroll < m.workerViewStart {
+			m.workerViewStart = m.workerScroll
+		}
+		if m.workerScroll >= m.workerViewStart+maxWorkers {
+			m.workerViewStart = m.workerScroll - maxWorkers + 1
+		}
+		if m.workerViewStart < 0 {
+			m.workerViewStart = 0
+		}
+		visible := visibleItems(m.workerViewStart, len(m.workers), maxWorkers)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.workers[i]
 			status := workerStatusStyle(item.Status)

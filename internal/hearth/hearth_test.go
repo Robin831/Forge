@@ -64,6 +64,35 @@ func TestRenderWorkerListScrollRespectsTwoLinesPerWorker(t *testing.T) {
 	}
 }
 
+func TestRenderWorkerListViewportScrollsToShowSelected(t *testing.T) {
+	// height=10 → maxLines=6, slotsPerWorker=2, maxWorkers=3.
+	// With workerScroll=4 (last worker), the viewport should shift so that
+	// workers 2-4 are visible and workers 0-1 are clipped.
+	workers := []WorkerItem{
+		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-0"},
+		{ID: "w2", BeadID: "bd-2", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-1"},
+		{ID: "w3", BeadID: "bd-3", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-2"},
+		{ID: "w4", BeadID: "bd-4", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-3"},
+		{ID: "w5", BeadID: "bd-5", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-4"},
+	}
+	m := Model{workers: workers, focused: PanelWorkers, workerScroll: 4}
+
+	rendered := m.renderWorkerList(60, 10)
+
+	// The selected worker (index 4) and its neighbours must be visible.
+	for _, visible := range []string{"title-2", "title-3", "title-4"} {
+		if !strings.Contains(rendered, visible) {
+			t.Errorf("expected %q to be visible when workerScroll=4:\n%s", visible, rendered)
+		}
+	}
+	// Workers scrolled out of view must not appear.
+	for _, hidden := range []string{"title-0", "title-1"} {
+		if strings.Contains(rendered, hidden) {
+			t.Errorf("expected %q to be clipped (not visible) when workerScroll=4:\n%s", hidden, rendered)
+		}
+	}
+}
+
 func TestSanitizeTitle(t *testing.T) {
 	tests := []struct {
 		input string
