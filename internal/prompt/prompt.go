@@ -187,17 +187,28 @@ Do NOT escalate for:
 
 ## Changelog Fragment
 
-If your changes are **user-visible** (new features, bug fixes, behavior changes, removals),
-create a changelog fragment at ` + "`" + `changelog.d/{{.Bead.BeadID}}.md` + "`" + ` with this format:
+If your changes are user-visible (new features, bug fixes, behavior changes, config changes),
+you **MUST** create a changelog fragment file at:
+
+` + "`" + `changelog.d/{{.Bead.BeadID}}.md` + "`" + `
+
+Use this exact format:
 
 ` + "`" + `` + "`" + `` + "`" + `markdown
-category: Added|Changed|Deprecated|Removed|Fixed|Security
-
-- **Short summary** - Description of the change ({{.Bead.BeadID}})
+category: <Added|Changed|Deprecated|Removed|Fixed|Security>
+- **Short bold summary of the change** - Additional detail explaining what changed and why. ({{.Bead.BeadID}})
 ` + "`" + `` + "`" + `` + "`" + `
 
-Pick the category that best fits. Skip the fragment for internal-only changes
-(refactoring, tests, CI) that don't affect users.
+**Category guide:**
+- ` + "`" + `Added` + "`" + ` — new features or capabilities
+- ` + "`" + `Changed` + "`" + ` — modifications to existing behavior
+- ` + "`" + `Deprecated` + "`" + ` — features marked for future removal
+- ` + "`" + `Removed` + "`" + ` — features that have been removed
+- ` + "`" + `Fixed` + "`" + ` — bug fixes
+- ` + "`" + `Security` + "`" + ` — security-related fixes or improvements
+
+**Skip the fragment** only for purely internal changes (refactoring, test-only, CI config,
+documentation) that have zero user-visible effect.
 
 ## Constraints
 
