@@ -115,6 +115,14 @@ type ViewLogsResponse struct {
 	LastLines []string `json:"last_lines"`
 }
 
+// MergePRPayload is the payload for a "merge_pr" command.
+// Triggers a squash merge (or configured strategy) of a ready-to-merge PR.
+type MergePRPayload struct {
+	PRID     int    `json:"pr_id"`
+	PRNumber int    `json:"pr_number"`
+	Anvil    string `json:"anvil"`
+}
+
 // TagBeadPayload is the payload for a "tag_bead" command that adds the
 // anvil's configured auto-dispatch label to a bead via bd update.
 // The daemon derives the tag from its own config; the client only needs

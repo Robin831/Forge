@@ -1589,6 +1589,93 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(resp)
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "merge_pr":
+		var mp ipc.MergePRPayload
+		if err := json.Unmarshal(cmd.Payload, &mp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid merge_pr payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		// Comment 4: allow pr_id-only requests; pr_number can be derived from DB.
+		if (mp.PRID <= 0 && mp.PRNumber <= 0) || mp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "anvil and either pr_id or pr_number are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		// Load the PR record first so we can derive authoritative anvil and number.
+		var pr *state.PR
+		var prErr error
+		if mp.PRID > 0 {
+			pr, prErr = d.db.GetPRByID(mp.PRID)
+		} else {
+			pr, prErr = d.db.GetPRByNumber(mp.Anvil, mp.PRNumber)
+		}
+		if prErr != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to load PR from state db: %v", prErr)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if pr == nil {
+			msg, _ := json.Marshal(map[string]string{"message": "PR not found in state db; cannot validate merge readiness"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		// Comment 3 & 5: derive authoritative anvil and PR number from the DB record.
+		// Validate that the payload's anvil matches what we loaded, to catch stale/buggy clients.
+		if mp.PRID > 0 && mp.Anvil != "" && mp.Anvil != pr.Anvil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil mismatch: payload has %q but PR %d belongs to %q", mp.Anvil, mp.PRID, pr.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		mergeAnvil := pr.Anvil
+		mergeNumber := pr.Number
+		cfgSnapshot := d.cfg.Load()
+		anvilCfg, ok := cfgSnapshot.Anvils[mergeAnvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", mergeAnvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		// Validate cached readiness from state.db.
+		ready, readyErr := d.db.IsPRReadyToMerge(pr.ID)
+		if readyErr != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to check merge readiness: %v", readyErr)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if !ready {
+			msg, _ := json.Marshal(map[string]string{"message": "PR is not ready to merge (not approved, CI failing, conflicting, or has unresolved threads)"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		// Comment 6: re-check live GitHub status immediately before merging to avoid
+		// acting on stale cached state from between Bellows polls.
+		liveCtx, liveCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		liveStatus, liveErr := ghpr.CheckStatus(liveCtx, anvilCfg.Path, mergeNumber)
+		liveCancel()
+		if liveErr != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("could not verify live PR status: %v", liveErr)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if !liveStatus.HasApproval() || !liveStatus.CIsPassing() || liveStatus.Mergeable == "CONFLICTING" || liveStatus.UnresolvedThreads > 0 {
+			msg, _ := json.Marshal(map[string]string{"message": "PR failed live readiness check (approval, CI, conflicts, or unresolved threads)"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		beadID := pr.BeadID
+		strategy := cfgSnapshot.Settings.MergeStrategy
+		if strategy == "" {
+			strategy = "squash"
+		}
+		// Comment 7: log the merge request before attempting, so the event is always recorded.
+		_ = d.db.LogEvent(state.EventPRMergeRequested,
+			fmt.Sprintf("PR #%d merge requested (strategy: %s)", mergeNumber, strategy),
+			beadID, mergeAnvil)
+		d.logger.Info("PR merge requested", "pr_number", mergeNumber, "anvil", mergeAnvil, "strategy", strategy)
+		mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
+		defer mergeCancel()
+		if err := ghpr.Merge(mergeCtx, anvilCfg.Path, mergeNumber, strategy); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("merge failed: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		_ = d.db.LogEvent(state.EventPRMerged,
+			fmt.Sprintf("PR #%d merged successfully (strategy: %s)", mergeNumber, strategy),
+			beadID, mergeAnvil)
+		d.logger.Info("PR merged successfully", "pr_number", mergeNumber, "anvil", mergeAnvil, "strategy", strategy)
+		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d merged", mergeNumber)})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}

@@ -396,11 +396,33 @@ func FetchNeedsAttention(ds *DataSource) tea.Cmd {
 	}
 }
 
+// FetchReadyToMerge reads PRs that are ready to merge from the state DB.
+func FetchReadyToMerge(db *state.DB) tea.Cmd {
+	return func() tea.Msg {
+		prs, err := db.ReadyToMergePRs()
+		if err != nil {
+			return ReadyToMergeErrorMsg{Err: fmt.Errorf("failed to fetch ready-to-merge PRs: %w", err)}
+		}
+		var items []ReadyToMergeItem
+		for _, p := range prs {
+			items = append(items, ReadyToMergeItem{
+				PRID:     p.ID,
+				PRNumber: p.Number,
+				BeadID:   p.BeadID,
+				Anvil:    p.Anvil,
+				Branch:   p.Branch,
+			})
+		}
+		return UpdateReadyToMergeMsg{Items: items}
+	}
+}
+
 // FetchAll returns a batch command that refreshes all panels.
 func FetchAll(ds *DataSource) tea.Cmd {
 	return tea.Batch(
 		FetchQueue(ds.DB),
 		FetchNeedsAttention(ds),
+		FetchReadyToMerge(ds.DB),
 		FetchWorkers(ds.DB),
 		FetchEvents(ds.DB, EventFetchLimit),
 	)

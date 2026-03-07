@@ -26,6 +26,7 @@ type Panel int
 const (
 	PanelQueue Panel = iota
 	PanelNeedsAttention
+	PanelReadyToMerge
 	PanelWorkers
 	PanelLiveActivity
 	PanelEvents
@@ -72,6 +73,15 @@ type NeedsAttentionItem struct {
 	ReasonCategory AttentionReason
 	PRID           int // Non-zero when item originates from an exhausted PR
 	PRNumber       int
+}
+
+// ReadyToMergeItem represents a PR ready to merge.
+type ReadyToMergeItem struct {
+	PRID     int
+	PRNumber int
+	BeadID   string
+	Anvil    string
+	Branch   string
 }
 
 // WorkerItem represents a worker in the workers panel.
@@ -134,11 +144,27 @@ func queueActionMenuLabels() [queueActionMenuCount]string {
 	}
 }
 
+// MergeMenuChoice represents an action on a ready-to-merge PR.
+type MergeMenuChoice int
+
+const (
+	MergeActionMerge MergeMenuChoice = iota
+
+	mergeMenuCount = MergeActionMerge + 1
+)
+
+func mergeMenuLabels() [mergeMenuCount]string {
+	return [mergeMenuCount]string{
+		"Merge — Merge this PR",
+	}
+}
+
 // Model is the Bubbletea model for the Hearth TUI.
 type Model struct {
 	// Panels
 	queue          []QueueItem
 	needsAttention []NeedsAttentionItem
+	readyToMerge   []ReadyToMergeItem
 	workers        []WorkerItem
 	events         []EventItem
 
@@ -157,11 +183,15 @@ type Model struct {
 	// Called with (beadID, anvil) when user presses 'l' on an unlabeled bead.
 	OnTagBead func(beadID, anvil string) error
 
+	// Callback for merging a PR (set by the caller).
+	OnMergePR func(prID, prNumber int, anvil string) error
+
 	// State
 	focused              Panel
 	queueScroll          int
 	needsAttentionScroll    int
 	needsAttentionViewStart int // viewport offset (separate from selection cursor)
+	readyToMergeScroll      int
 	workerScroll            int
 	workerViewStart         int // viewport offset (separate from selection cursor)
 	activityScroll       int
@@ -181,6 +211,11 @@ type Model struct {
 	showQueueActionMenu bool
 	queueActionMenuIdx  int
 	queueActionTarget   *QueueItem // bead the queue menu is open for
+
+	// Merge menu overlay state
+	showMergeMenu bool
+	mergeMenuIdx  int
+	mergeTarget   *ReadyToMergeItem
 
 	// Log viewer overlay state
 	showLogViewer  bool
@@ -278,6 +313,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Merge menu overlay intercepts keys when open
+		if m.showMergeMenu {
+			switch msg.String() {
+			case "esc", "q":
+				m.showMergeMenu = false
+			case "j", "down":
+				m.mergeMenuIdx = (m.mergeMenuIdx + 1) % int(mergeMenuCount)
+			case "k", "up":
+				m.mergeMenuIdx = (m.mergeMenuIdx + int(mergeMenuCount) - 1) % int(mergeMenuCount)
+			case "enter":
+				cmd := m.executeMergeAction(MergeMenuChoice(m.mergeMenuIdx))
+				m.showMergeMenu = false
+				return m, cmd
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -342,6 +394,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.showQueueActionMenu = true
 				}
 			}
+			// Open merge menu for selected Ready to Merge PR
+			if m.focused == PanelReadyToMerge && len(m.readyToMerge) > 0 &&
+				m.readyToMergeScroll < len(m.readyToMerge) {
+				item := m.readyToMerge[m.readyToMergeScroll]
+				m.mergeTarget = &item
+				m.mergeMenuIdx = 0
+				m.showMergeMenu = true
+			}
 
 		case "l":
 			// Label (tag) selected bead in the queue for auto-dispatch
@@ -403,11 +463,32 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.needsAttentionViewStart = 0
 		}
 
+	case UpdateReadyToMergeMsg:
+		m.readyToMerge = msg.Items
+		if len(msg.Items) > 0 && m.readyToMergeScroll >= len(msg.Items) {
+			m.readyToMergeScroll = len(msg.Items) - 1
+		}
+		if len(msg.Items) == 0 {
+			m.readyToMergeScroll = 0
+		}
+
 	case NeedsAttentionErrorMsg:
 		errEvent := EventItem{
 			Timestamp: time.Now().Format("15:04:05"),
 			Type:      "error",
 			Message:   fmt.Sprintf("needs attention read failed: %v", msg.Err),
+		}
+		m.events = append([]EventItem{errEvent}, m.events...)
+		m.eventRevision++
+		if m.eventAutoScroll {
+			m.eventScroll = 0
+		}
+
+	case ReadyToMergeErrorMsg:
+		errEvent := EventItem{
+			Timestamp: time.Now().Format("15:04:05"),
+			Type:      "error",
+			Message:   fmt.Sprintf("ready-to-merge read failed: %v", msg.Err),
 		}
 		m.events = append([]EventItem{errEvent}, m.events...)
 		m.eventRevision++
@@ -436,6 +517,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.prevEventCount = len(msg.Items)
+
+	case MergeResultMsg:
+		if msg.Err != nil {
+			m.statusMsg = fmt.Sprintf("Failed to merge PR #%d: %v", msg.PRNumber, msg.Err)
+		} else {
+			m.statusMsg = fmt.Sprintf("Merged PR #%d", msg.PRNumber)
+		}
+		m.statusMsgTime = time.Now()
 
 	case TickMsg:
 		// On each tick, refresh all panels and schedule the next tick
@@ -470,7 +559,7 @@ func (m *Model) View() string {
 	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
 
 	// Footer with status message or default hints
-	footerText := "Tab: switch panel • j/k: scroll • K: kill worker • Enter: actions • l: label bead • f: follow • q: quit"
+	footerText := "Tab: switch panel • j/k: scroll • K: kill worker • Enter: actions/merge • l: label bead • f: follow • q: quit"
 	if m.statusMsg != "" && time.Since(m.statusMsgTime) < 5*time.Second {
 		footerText = statusMsgStyle.Render(m.statusMsg)
 	}
@@ -493,6 +582,9 @@ func (m *Model) View() string {
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.showQueueActionMenu {
 		overlay := m.renderQueueActionMenu()
+		view = placeOverlay(m.width, m.height, overlay, view)
+	} else if m.showMergeMenu {
+		overlay := m.renderMergeMenu()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	}
 
@@ -544,6 +636,10 @@ func (m *Model) scrollDown() {
 		if m.needsAttentionScroll < len(m.needsAttention)-1 {
 			m.needsAttentionScroll++
 		}
+	case PanelReadyToMerge:
+		if m.readyToMergeScroll < len(m.readyToMerge)-1 {
+			m.readyToMergeScroll++
+		}
 	case PanelWorkers:
 		if m.workerScroll < len(m.workers)-1 {
 			m.workerScroll++
@@ -573,6 +669,10 @@ func (m *Model) scrollUp() {
 	case PanelNeedsAttention:
 		if m.needsAttentionScroll > 0 {
 			m.needsAttentionScroll--
+		}
+	case PanelReadyToMerge:
+		if m.readyToMergeScroll > 0 {
+			m.readyToMergeScroll--
 		}
 	case PanelWorkers:
 		if m.workerScroll > 0 {
@@ -907,10 +1007,33 @@ func (m *Model) renderQueue(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderLeftColumn splits the left column into Queue (top) and Needs Attention (bottom).
+// renderLeftColumn splits the left column into Queue (top), Ready to Merge (middle),
+// and Needs Attention (bottom).
 func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
-	return m.renderStackedColumn(width, topHeight, bottomHeight,
-		m.renderQueue, m.renderNeedsAttention)
+	height := topHeight + bottomHeight
+	// Three sub-panels add 6 border lines total vs 2 for a single panel.
+	// Deduct the extra 4 so combined height matches sibling columns.
+	innerHeight := height - 4
+	if innerHeight < 0 {
+		innerHeight = 0
+	}
+
+	// Give queue 50%, ready-to-merge 20%, needs attention 30%.
+	queueHeight := innerHeight * 5 / 10
+	mergeHeight := innerHeight * 2 / 10
+	if innerHeight < 8 {
+		queueHeight = innerHeight
+		mergeHeight = 0
+	} else {
+		queueHeight = max(queueHeight, 5)
+		mergeHeight = max(mergeHeight, 3)
+	}
+	attentionHeight := innerHeight - queueHeight - mergeHeight
+
+	top := m.renderQueue(width, queueHeight)
+	middle := m.renderReadyToMerge(width, mergeHeight)
+	bottom := m.renderNeedsAttention(width, attentionHeight)
+	return lipgloss.JoinVertical(lipgloss.Left, top, middle, bottom)
 }
 
 // renderRightColumn renders Live Activity (top) + Events (bottom), mirroring
@@ -1032,6 +1155,109 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
+}
+
+// renderReadyToMerge renders the Ready to Merge sub-panel showing PRs that
+// meet all conditions for merging.
+func (m *Model) renderReadyToMerge(width, height int) string {
+	if height <= 0 {
+		return ""
+	}
+
+	style := panelStyle.Width(width)
+	if m.focused == PanelReadyToMerge {
+		style = focusedPanelStyle.Width(width)
+	}
+
+	title := readyToMergeTitleStyle.Render(fmt.Sprintf("Ready to Merge (%d)", len(m.readyToMerge)))
+
+	var lines []string
+	lines = append(lines, title)
+
+	if len(m.readyToMerge) == 0 {
+		lines = append(lines, dimStyle.Render("None"))
+	} else if height > 3 {
+		viewHeight := height - 3
+		if viewHeight < 1 {
+			viewHeight = 1
+		}
+		visible := visibleItems(m.readyToMergeScroll, len(m.readyToMerge), viewHeight)
+		for i := visible.start; i < visible.end; i++ {
+			item := m.readyToMerge[i]
+			anvil := dimStyle.Render(item.Anvil)
+			line := fmt.Sprintf("PR #%d %s %s", item.PRNumber, item.BeadID, anvil)
+			if i == m.readyToMergeScroll {
+				line = selectedStyle.Render(line)
+			}
+			lines = append(lines, line)
+		}
+	}
+
+	content := strings.Join(lines, "\n")
+	return style.Height(height).Render(content)
+}
+
+// renderMergeMenu renders the merge action menu overlay.
+func (m *Model) renderMergeMenu() string {
+	if m.mergeTarget == nil {
+		return ""
+	}
+
+	menuWidth := 52
+	labels := mergeMenuLabels()
+
+	var lines []string
+	title := fmt.Sprintf("PR #%d — %s", m.mergeTarget.PRNumber, m.mergeTarget.BeadID)
+	lines = append(lines, actionMenuTitleStyle.Render(title))
+	lines = append(lines, "")
+
+	for i, label := range labels {
+		cursor := "  "
+		if i == m.mergeMenuIdx {
+			cursor = "> "
+			label = actionMenuSelectedStyle.Render(label)
+		} else {
+			label = dimStyle.Render(label)
+		}
+		lines = append(lines, cursor+label)
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render("Enter: select • Esc: close"))
+
+	content := strings.Join(lines, "\n")
+	return actionMenuStyle.Width(menuWidth).Render(content)
+}
+
+// MergeResultMsg is delivered asynchronously when a merge IPC call completes.
+type MergeResultMsg struct {
+	PRNumber int
+	Err      error
+}
+
+// executeMergeAction returns a tea.Cmd that runs the merge IPC call asynchronously,
+// keeping the Bubbletea UI responsive during the (potentially 60s) operation.
+func (m *Model) executeMergeAction(choice MergeMenuChoice) tea.Cmd {
+	if m.mergeTarget == nil {
+		return nil
+	}
+	pr := m.mergeTarget
+	switch choice {
+	case MergeActionMerge:
+		if m.OnMergePR == nil {
+			m.statusMsg = fmt.Sprintf("Merge action unavailable for PR #%d", pr.PRNumber)
+			m.statusMsgTime = time.Now()
+			return nil
+		}
+		m.statusMsg = fmt.Sprintf("Merging PR #%d…", pr.PRNumber)
+		m.statusMsgTime = time.Now()
+		prID, prNumber, anvil := pr.PRID, pr.PRNumber, pr.Anvil
+		cb := m.OnMergePR
+		return func() tea.Msg {
+			return MergeResultMsg{PRNumber: prNumber, Err: cb(prID, prNumber, anvil)}
+		}
+	}
+	return nil
 }
 
 // renderWorkers delegates to renderWorkerList for the center column.
@@ -1371,8 +1597,14 @@ type QueueErrorMsg struct{ Err error }
 // UpdateNeedsAttentionMsg updates the needs attention panel.
 type UpdateNeedsAttentionMsg struct{ Items []NeedsAttentionItem }
 
+// UpdateReadyToMergeMsg updates the ready to merge panel.
+type UpdateReadyToMergeMsg struct{ Items []ReadyToMergeItem }
+
 // NeedsAttentionErrorMsg signals that reading the needs-attention beads failed.
 type NeedsAttentionErrorMsg struct{ Err error }
+
+// ReadyToMergeErrorMsg signals that reading the ready-to-merge PRs failed.
+type ReadyToMergeErrorMsg struct{ Err error }
 
 // UpdateWorkersMsg updates the workers panel.
 type UpdateWorkersMsg struct{ Items []WorkerItem }
@@ -1430,6 +1662,11 @@ var (
 	needsAttentionTitleStyle = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("196")).
+				MarginBottom(1)
+
+	readyToMergeTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("82")).
 				MarginBottom(1)
 
 	actionMenuStyle = lipgloss.NewStyle().
