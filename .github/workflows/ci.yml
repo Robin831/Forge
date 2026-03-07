@@ -7,6 +7,51 @@ on:
     branches: [main]
 
 jobs:
+  changelog-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for changelog fragment
+        run: |
+          # Allow opting out with [no-changelog] in the PR title
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          if echo "$PR_TITLE" | grep -qi '\[no-changelog\]'; then
+            echo "PR title contains [no-changelog] — skipping check."
+            exit 0
+          fi
+
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          # Check if any user-visible code was changed (exclude test-only, CI, docs)
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD" | grep -vE '(_test\.go|\.github/|\.md$|changelog\.d/|testdata/)' || true)
+
+          if [ -z "$CHANGED" ]; then
+            echo "No user-visible code changes — changelog fragment not required."
+            exit 0
+          fi
+
+          # Look for a changelog fragment in the diff
+          FRAGMENTS=$(git diff --name-only "$BASE" "$HEAD" | grep '^changelog\.d/' || true)
+
+          if [ -z "$FRAGMENTS" ]; then
+            echo "::error::User-visible code was changed but no changelog.d/ fragment was added."
+            echo ""
+            echo "Please create a file like changelog.d/<bead-id>.en.md with:"
+            echo ""
+            echo "  category: Added|Changed|Fixed|Removed"
+            echo "  - **Summary** - Description. (bead-id)"
+            echo ""
+            echo "If this change is truly internal-only, add [no-changelog] to the PR title."
+            exit 1
+          fi
+
+          echo "Changelog fragment found: $FRAGMENTS"
+
   build-and-test:
     runs-on: ubuntu-latest
     steps:
