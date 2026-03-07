@@ -314,8 +314,10 @@ func extractKeywords(body string) []string {
 
 // jaccardSimilarity returns |A ∩ B| / |A ∪ B|.
 func jaccardSimilarity(a, b map[string]bool) float64 {
+	// Treat two empty keyword sets as providing no evidence of similarity
+	// to avoid over-merging comments that extract to zero keywords.
 	if len(a) == 0 && len(b) == 0 {
-		return 1.0
+		return 0.0
 	}
 	inter := 0
 	for w := range a {

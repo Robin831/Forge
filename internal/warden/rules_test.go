@@ -181,4 +181,10 @@ func TestJaccardSimilarity(t *testing.T) {
 	c := map[string]bool{"data": true, "race": true}
 	sim2 := jaccardSimilarity(a, c)
 	assert.InDelta(t, 0.0, sim2, 0.01)
+
+	// Both empty — should return 0.0, not 1.0, to avoid merging zero-keyword comments
+	empty1 := map[string]bool{}
+	empty2 := map[string]bool{}
+	sim3 := jaccardSimilarity(empty1, empty2)
+	assert.InDelta(t, 0.0, sim3, 0.01)
 }
