@@ -82,6 +82,9 @@ type Params struct {
 	Bead            poller.Bead
 	ExtraFlags      []string
 	TemperConfig    *temper.Config // nil = auto-detect
+	// GoRaceDetection enables a separate 'go test -race' step in Temper.
+	// Only used during auto-detection (when TemperConfig is nil).
+	GoRaceDetection bool
 	// Providers is the ordered list of AI providers to try.
 	// If empty, provider.Defaults() is used (Claude → Gemini).
 	Providers []provider.Provider
@@ -476,7 +479,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		_ = p.DB.UpdateWorkerPhase(workerID, "temper")
 		temperCfg := p.TemperConfig
 		if temperCfg == nil {
-			detected := temper.DefaultConfig(wt.Path, temper.DetectOptionsFromAnvilFlag(p.AnvilConfig.GolangciLint))
+			detected := temper.DefaultConfigWithRace(wt.Path, temper.DetectOptionsFromAnvilFlag(p.AnvilConfig.GolangciLint), p.GoRaceDetection)
 			temperCfg = &detected
 		}
 

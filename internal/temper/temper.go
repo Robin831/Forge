@@ -17,6 +17,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
+	"gopkg.in/yaml.v3"
 )
 
 // StepResult captures the outcome of a single verification step.
@@ -74,6 +75,10 @@ type Step struct {
 type Config struct {
 	// Steps is the ordered list of verification steps.
 	Steps []Step
+	// GoRaceDetection enables a separate "race" step that runs
+	// 'go test -race -short ./...' after the normal test step.
+	// Default is false since -race slows tests and increases memory usage.
+	GoRaceDetection bool
 }
 
 // DetectOptions controls optional steps during auto-detection.
@@ -98,7 +103,34 @@ func DetectOptionsFromAnvilFlag(golangciLint *bool) *DetectOptions {
 // DefaultConfig returns a default config that auto-detects the project type.
 func DefaultConfig(worktreePath string, opts *DetectOptions) Config {
 	return Config{
-		Steps: detectSteps(worktreePath, opts),
+		Steps: detectSteps(worktreePath, opts, false),
+	}
+}
+
+// TemperYAML represents the per-anvil .forge/temper.yaml configuration.
+type TemperYAML struct {
+	GoRaceDetection *bool `yaml:"go_race_detection"`
+}
+
+// LoadAnvilConfig loads per-anvil temper configuration from .forge/temper.yaml
+// within the given anvil path. Returns nil if the file does not exist.
+func LoadAnvilConfig(anvilPath string) *TemperYAML {
+	data, err := os.ReadFile(filepath.Join(anvilPath, ".forge", "temper.yaml"))
+	if err != nil {
+		return nil
+	}
+	var cfg TemperYAML
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil
+	}
+	return &cfg
+}
+
+// DefaultConfigWithRace returns a default config with race detection support.
+func DefaultConfigWithRace(worktreePath string, opts *DetectOptions, raceEnabled bool) Config {
+	return Config{
+		Steps:           detectSteps(worktreePath, opts, raceEnabled),
+		GoRaceDetection: raceEnabled,
 	}
 }
 
@@ -204,7 +236,7 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 }
 
 // detectSteps auto-detects project type and returns appropriate steps.
-func detectSteps(worktreePath string, opts *DetectOptions) []Step {
+func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 	var steps []Step
 
 	// Check for Go project
@@ -242,6 +274,14 @@ func detectSteps(worktreePath string, opts *DetectOptions) []Step {
 			Args:    []string{"test", "-short", "./..."},
 			Timeout: 5 * time.Minute,
 		})
+		if goRace {
+			steps = append(steps, Step{
+				Name:    "race",
+				Command: "go",
+				Args:    []string{"test", "-race", "-short", "./..."},
+				Timeout: 10 * time.Minute,
+			})
+		}
 	}
 
 	// Check for .NET project

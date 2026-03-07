@@ -472,17 +472,18 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			})
 			cifixDetectOpts := temper.DetectOptionsFromAnvilFlag(anvilCfg.GolangciLint)
 			res := cifix.Fix(ctx, cifix.FixParams{
-				WorktreePath:  wt.Path,
-				BeadID:        req.BeadID,
-				AnvilName:     req.Anvil,
-				AnvilPath:     anvilCfg.Path,
-				PRNumber:      req.PRNumber,
-				Branch:        req.Branch,
-				DB:            d.db,
-				WorkerID:      workerID,
-				ExtraFlags:    d.config().Settings.ClaudeFlags,
-				DetectOptions: cifixDetectOpts,
-				Providers:     provider.FromConfig(d.config().Settings.Providers),
+				WorktreePath:    wt.Path,
+				BeadID:          req.BeadID,
+				AnvilName:       req.Anvil,
+				AnvilPath:       anvilCfg.Path,
+				PRNumber:        req.PRNumber,
+				Branch:          req.Branch,
+				DB:              d.db,
+				WorkerID:        workerID,
+				ExtraFlags:      d.config().Settings.ClaudeFlags,
+				DetectOptions:   cifixDetectOpts,
+				GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
+				Providers:       provider.FromConfig(d.config().Settings.Providers),
 			})
 			status := state.WorkerDone
 			if res.Error != nil {
@@ -978,6 +979,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		AnvilConfig:     anvilCfg,
 		Bead:            bead,
 		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
+		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 		Providers:       provider.FromConfig(smithProviderSpecs),
 		Notifier:        d.notifier,
 	}
@@ -1887,6 +1889,19 @@ func (d *Daemon) classifyBeadSection(bead poller.Bead) state.QueueSection {
 		return state.QueueSectionUnlabeled
 	}
 	return state.QueueSectionReady
+}
+
+// resolveGoRaceDetection resolves the effective Go race detection setting.
+// Priority: per-anvil .forge/temper.yaml > per-anvil forge.yaml config > global setting.
+func (d *Daemon) resolveGoRaceDetection(anvilCfg config.AnvilConfig) bool {
+	goRace := d.cfg.Load().Settings.GoRaceDetection
+	if anvilCfg.GoRaceDetection != nil {
+		goRace = *anvilCfg.GoRaceDetection
+	}
+	if anvilTemper := temper.LoadAnvilConfig(anvilCfg.Path); anvilTemper != nil && anvilTemper.GoRaceDetection != nil {
+		goRace = *anvilTemper.GoRaceDetection
+	}
+	return goRace
 }
 
 // shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.
