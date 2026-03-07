@@ -1,7 +1,7 @@
 // Package hearth provides The Forge's TUI dashboard using Bubbletea.
 //
 // The TUI has three columns:
-//   - Queue / Needs Attention (left column, stacked): Pending and stuck beads
+//   - Queue / Ready to Merge / Needs Attention (left column, stacked): Pending, mergeable, and stuck beads
 //   - Workers (center column): Active Smith processes
 //   - Live Activity / Events (right column, stacked): Streaming log + event log
 //
@@ -25,8 +25,8 @@ type Panel int
 
 const (
 	PanelQueue Panel = iota
-	PanelNeedsAttention
 	PanelReadyToMerge
+	PanelNeedsAttention
 	PanelWorkers
 	PanelLiveActivity
 	PanelEvents
@@ -560,7 +560,7 @@ func (m *Model) View() string {
 	queueWidth, workerWidth, activityWidth := m.getTopPanelWidths()
 	topHeight, bottomHeight := m.getVerticalSplit(headerH, footerH)
 
-	// Left column: Queue (top) + Needs Attention (bottom)
+	// Left column: Queue (top) + Ready to Merge (middle) + Needs Attention (bottom)
 	leftColumn := m.renderLeftColumn(queueWidth, topHeight, bottomHeight)
 	// Center: worker list (full height)
 	workerPanel := m.renderWorkerList(workerWidth, topHeight+bottomHeight)
