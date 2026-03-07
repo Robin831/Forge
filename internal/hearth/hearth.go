@@ -839,6 +839,17 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 		if m.needsAttentionViewStart < 0 {
 			m.needsAttentionViewStart = 0
 		}
+		// Clamp viewport start so it doesn't hide items unnecessarily when the list shrinks.
+		total := len(m.needsAttention)
+		if total <= maxItems {
+			// Everything fits; no need to scroll.
+			m.needsAttentionViewStart = 0
+		} else {
+			maxStart := total - maxItems
+			if m.needsAttentionViewStart > maxStart {
+				m.needsAttentionViewStart = maxStart
+			}
+		}
 		visible := visibleItems(m.needsAttentionViewStart, len(m.needsAttention), maxItems)
 		for i := visible.start; i < visible.end; i++ {
 			item := m.needsAttention[i]
