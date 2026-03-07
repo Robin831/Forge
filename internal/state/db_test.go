@@ -1018,6 +1018,12 @@ func TestDB_ResetPRFixCounts(t *testing.T) {
 	if !pr2.CIPassing {
 		t.Error("ci_passing should be reset to true")
 	}
+	if pr2.IsConflicting {
+		t.Error("is_conflicting should be reset to false")
+	}
+	if pr2.HasUnresolvedThreads {
+		t.Error("has_unresolved_threads should be reset to false")
+	}
 	if pr2.Status != PROpen {
 		t.Errorf("status should be open after reset, got %s", pr2.Status)
 	}

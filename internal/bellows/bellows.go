@@ -177,8 +177,19 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	}
 	_ = isFirstCheck // used implicitly via seeded lastSnap
 
-	// Detect transitions and emit events
-	if status.IsMerged() && !lastSnap.IsMerged {
+	// Detect transitions and emit events. We re-acquire the lock and re-check the 
+	// last status to ensure a concurrent ResetPRState haven't cleared it.
+	m.mu.Lock()
+	lastSnap = m.lastStatuses[key]
+	if lastSnap == nil {
+		// Reset occurred during poll: treat as first check to ensure transitions are detected.
+		lastSnap = &prSnapshot{CIPassing: true}
+	}
+	// Update snapshot while holding the lock
+	m.lastStatuses[key] = newSnap
+	m.mu.Unlock()
+
+	if newSnap.IsMerged && !lastSnap.IsMerged {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
@@ -289,10 +300,6 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	// Persist mergeability state so the ready-to-merge panel stays current.
 	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.IsConflicting, newSnap.HasUnresolvedThreads)
 
-	// Update snapshot
-	m.mu.Lock()
-	m.lastStatuses[key] = newSnap
-	m.mu.Unlock()
 }
 
 // ResetPRState clears the internal status cache for a PR. This should be called

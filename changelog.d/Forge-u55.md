@@ -1,2 +1,2 @@
 category: Fixed
-- **Fix bead and PR retry not re-triggering workers immediately** - Fixed an issue where retrying an exhausted PR (e.g., Rebase exhausted) or a circuit-broken bead would not trigger a new worker cycle immediately because no immediate poll or refresh was triggered. All retry actions now trigger an immediate poll or Bellows refresh. (Forge-u55)
+- **Retry action for exhausted PRs** - Fixed a race condition in the Bellows monitor that could cause manual retries of exhausted PRs (e.g., Rebase exhausted) to be ignored by the background monitoring loop. (Forge-u55)
