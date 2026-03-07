@@ -1292,6 +1292,15 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset PR fix counts: %v", err)})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
+			// Reset the lifecycle manager's in-memory state so new Bellows
+			// events dispatch fresh fix/rebase workers instead of being
+			// silently dropped as "already exhausted".
+			if d.lifecycleMgr == nil {
+				d.logger.Error("lifecycle manager not ready for retry_bead PR reset", "pr_id", rp.PRID, "bead", pr.BeadID, "anvil", pr.Anvil)
+				msg, _ := json.Marshal(map[string]string{"message": "lifecycle manager not ready"})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			d.lifecycleMgr.ResetPRState(pr.Anvil, pr.Number)
 			_ = d.db.LogEvent(
 				state.EventRetryReset,
 				fmt.Sprintf("PR fix counts reset for PR %d (manual)", rp.PRID),

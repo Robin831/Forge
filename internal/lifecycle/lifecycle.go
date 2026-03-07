@@ -393,6 +393,28 @@ func (m *Manager) Remove(anvil string, prNumber int) {
 	delete(m.states, m.key(anvil, prNumber))
 }
 
+// ResetPRState resets the in-memory lifecycle state for a PR so that new
+// Bellows events can dispatch fresh fix/rebase workers. This must be called
+// alongside ResetPRFixCounts (which resets the DB) to keep the two in sync.
+// Without this, the lifecycle manager still believes the PR is exhausted
+// after a retry and silently drops incoming events.
+func (m *Manager) ResetPRState(anvil string, prNumber int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.states[m.key(anvil, prNumber)]
+	if !ok {
+		return
+	}
+	st.CIFixCount = 0
+	st.ReviewFixCnt = 0
+	st.RebaseCount = 0
+	st.CINeedsFix = false
+	st.ReviewNeedsFix = false
+	st.CIPassing = true
+	st.Conflicting = false
+	st.Approved = false
+}
+
 // NotifyReviewFixCompleted clears the ReviewNeedsFix flag after a review fix
 // worker finishes. This allows the next EventReviewChanges (triggered
 // automatically by GitHub when the reviewer re-examines the updated push) to
