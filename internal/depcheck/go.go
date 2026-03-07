@@ -18,8 +18,17 @@ import (
 // Returns nil if the anvil is not a Go project.
 func (s *Scanner) scanGo(ctx context.Context, anvil, path string) *CheckResult {
 	// Only check Go projects
-	if _, err := os.Stat(filepath.Join(path, "go.mod")); err != nil {
-		return nil // not a Go project
+	modPath := filepath.Join(path, "go.mod")
+	if _, err := os.Stat(modPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil // not a Go project
+		}
+		return &CheckResult{
+			Anvil:   anvil,
+			Path:    path,
+			Checked: time.Now(),
+			Error:   fmt.Errorf("stat %s: %w", modPath, err),
+		}
 	}
 
 	result := &CheckResult{
