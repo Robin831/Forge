@@ -42,7 +42,8 @@ type StepResult struct {
 type Result struct {
 	// Steps is the ordered list of step results.
 	Steps []StepResult
-	// Passed is true if ALL steps passed.
+	// Passed is true if all required steps passed (optional steps may have
+	// warned without affecting this flag).
 	Passed bool
 	// Duration is the total time for all steps.
 	Duration time.Duration
@@ -83,6 +84,17 @@ type DetectOptions struct {
 	DisableGolangciLint bool
 }
 
+// DetectOptionsFromAnvilFlag converts a nullable boolean anvil config flag into
+// DetectOptions. When golangciLint is non-nil and false, golangci-lint is
+// disabled. This centralises the anvil-config → DetectOptions translation so
+// all call sites stay in sync when new detection toggles are added.
+func DetectOptionsFromAnvilFlag(golangciLint *bool) *DetectOptions {
+	if golangciLint != nil && !*golangciLint {
+		return &DetectOptions{DisableGolangciLint: true}
+	}
+	return nil
+}
+
 // DefaultConfig returns a default config that auto-detects the project type.
 func DefaultConfig(worktreePath string, opts *DetectOptions) Config {
 	return Config{
@@ -117,7 +129,19 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 
 	if db != nil {
 		if result.Passed {
-			_ = db.LogEvent(state.EventTemperPassed, fmt.Sprintf("All checks passed in %.1fs", result.Duration.Seconds()), beadID, anvil)
+			optWarn := 0
+			for _, s := range result.Steps {
+				if s.Optional && !s.Passed {
+					optWarn++
+				}
+			}
+			var msg string
+			if optWarn > 0 {
+				msg = fmt.Sprintf("All required checks passed in %.1fs (%d optional step(s) warned)", result.Duration.Seconds(), optWarn)
+			} else {
+				msg = fmt.Sprintf("All required checks passed in %.1fs (no optional warnings)", result.Duration.Seconds())
+			}
+			_ = db.LogEvent(state.EventTemperPassed, msg, beadID, anvil)
 		} else {
 			_ = db.LogEvent(state.EventTemperFailed, fmt.Sprintf("Failed at step %q in %.1fs", result.FailedStep, result.Duration.Seconds()), beadID, anvil)
 		}
@@ -288,7 +312,7 @@ func buildSummary(r *Result) string {
 		if optionalWarnings > 0 {
 			fmt.Fprintf(&b, "\nAll required checks passed in %.1fs (%d optional step(s) warned)", r.Duration.Seconds(), optionalWarnings)
 		} else {
-			fmt.Fprintf(&b, "\nAll checks passed in %.1fs", r.Duration.Seconds())
+			fmt.Fprintf(&b, "\nAll required checks passed in %.1fs (no optional warnings)", r.Duration.Seconds())
 		}
 	} else {
 		fmt.Fprintf(&b, "\nFailed at step: %s", r.FailedStep)

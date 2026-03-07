@@ -42,9 +42,9 @@ import (
 	"github.com/Robin831/Forge/internal/rebase"
 	"github.com/Robin831/Forge/internal/reviewfix"
 	"github.com/Robin831/Forge/internal/schematic"
-	"github.com/Robin831/Forge/internal/temper"
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/temper"
 	"github.com/Robin831/Forge/internal/worker"
 	"github.com/Robin831/Forge/internal/worktree"
 )
@@ -433,10 +433,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
 				StartedAt: time.Now(),
 			})
-			var cifixDetectOpts *temper.DetectOptions
-			if anvilCfg.GolangciLint != nil && !*anvilCfg.GolangciLint {
-				cifixDetectOpts = &temper.DetectOptions{DisableGolangciLint: true}
-			}
+			cifixDetectOpts := temper.DetectOptionsFromAnvilFlag(anvilCfg.GolangciLint)
 			res := cifix.Fix(ctx, cifix.FixParams{
 				WorktreePath:  wt.Path,
 				BeadID:        req.BeadID,

@@ -476,11 +476,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		_ = p.DB.UpdateWorkerPhase(workerID, "temper")
 		temperCfg := p.TemperConfig
 		if temperCfg == nil {
-			var detectOpts *temper.DetectOptions
-			if p.AnvilConfig.GolangciLint != nil && !*p.AnvilConfig.GolangciLint {
-				detectOpts = &temper.DetectOptions{DisableGolangciLint: true}
-			}
-			detected := temper.DefaultConfig(wt.Path, detectOpts)
+			detected := temper.DefaultConfig(wt.Path, temper.DetectOptionsFromAnvilFlag(p.AnvilConfig.GolangciLint))
 			temperCfg = &detected
 		}
 
