@@ -1,7 +1,8 @@
 // Package depcheck periodically checks registered anvils for outdated
-// dependencies across multiple ecosystems (Go, .NET, npm). When updates are
-// found it creates beads so a Smith agent can apply them. Patch/minor updates
-// produce auto-dispatch beads; major version bumps produce "needs attention" beads.
+// dependencies, starting with Go and designed to support additional ecosystems
+// (.NET, npm) in the future. When updates are found it creates beads so a
+// Smith agent can apply them. Patch/minor updates produce auto-dispatch beads;
+// major version bumps produce "needs attention" beads.
 package depcheck
 
 import (
