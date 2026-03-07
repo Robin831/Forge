@@ -689,6 +689,70 @@ func TestCIAndReviewFixesAreIndependent(t *testing.T) {
 	}
 }
 
+// TestResetPRState_AllowsFreshDispatchAfterExhaustion verifies that calling
+// ResetPRState clears the in-memory lifecycle state so that new Bellows events
+// dispatch fresh fix workers. Without this reset, the lifecycle manager still
+// thinks the PR is exhausted and silently drops events after a DB-only retry.
+func TestResetPRState_AllowsFreshDispatchAfterExhaustion(t *testing.T) {
+	db := newTestDB(t)
+	var dispatched []ActionRequest
+	handler := func(_ context.Context, req ActionRequest) {
+		dispatched = append(dispatched, req)
+	}
+	m := New(db, testLogger(), handler)
+	ctx := context.Background()
+
+	// Exhaust CI fix attempts (maxCI=5): 5 fail/pass cycles fill the counter.
+	for i := 0; i < 5; i++ {
+		m.HandleEvent(ctx, makeEvent(300, bellows.EventCIFailed))
+		m.HandleEvent(ctx, makeEvent(300, bellows.EventCIPassed))
+	}
+
+	// Next CI failure should be exhausted (no dispatch).
+	dispatched = dispatched[:0]
+	m.HandleEvent(ctx, makeEvent(300, bellows.EventCIFailed))
+	if len(dispatched) != 0 {
+		t.Fatalf("expected 0 dispatches after exhaustion, got %d", len(dispatched))
+	}
+
+	st := m.GetState("test-anvil", 300)
+	if st.CIFixCount != 5 {
+		t.Fatalf("expected CIFixCount=5, got %d", st.CIFixCount)
+	}
+
+	// Simulate retry: reset in-memory state.
+	m.ResetPRState("test-anvil", 300)
+
+	st = m.GetState("test-anvil", 300)
+	if st.CIFixCount != 0 {
+		t.Errorf("expected CIFixCount=0 after reset, got %d", st.CIFixCount)
+	}
+	if !st.CIPassing {
+		t.Error("expected CIPassing=true after reset")
+	}
+	if st.CINeedsFix {
+		t.Error("expected CINeedsFix=false after reset")
+	}
+
+	// New CI failure should now dispatch a fix worker.
+	m.HandleEvent(ctx, makeEvent(300, bellows.EventCIFailed))
+	if len(dispatched) != 1 || dispatched[0].Action != ActionFixCI {
+		t.Fatalf("expected 1 ActionFixCI dispatch after reset, got %v", dispatched)
+	}
+	st = m.GetState("test-anvil", 300)
+	if st.CIFixCount != 1 {
+		t.Errorf("expected CIFixCount=1 after fresh dispatch, got %d", st.CIFixCount)
+	}
+}
+
+// TestResetPRState_Noop verifies ResetPRState is safe to call for unknown PRs.
+func TestResetPRState_Noop(t *testing.T) {
+	db := newTestDB(t)
+	m := New(db, testLogger(), nil)
+	// Should not panic.
+	m.ResetPRState("nonexistent-anvil", 999)
+}
+
 // TestNotifyReviewFixCompleted_DoesNotClearCINeedsFixWhileFailing verifies that
 // completing a review fix does not clear a CI-related needs-fix state when CI
 // is still failing. This guards against regressions where NotifyReviewFixCompleted
