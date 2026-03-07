@@ -226,7 +226,8 @@ type Model struct {
 
 	// Status message (flashes briefly after an action)
 	statusMsg     string
-	statusMsgTime time.Time
+	statusMsgTime    time.Time
+	statusMsgIsError bool
 
 	// Event rendering cache
 	eventLinesCache       []string
@@ -522,11 +523,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case MergeResultMsg:
 		if msg.Err != nil {
-			m.statusMsg = fmt.Sprintf("Failed to merge PR #%d: %v", msg.PRNumber, msg.Err)
+			errSummary := strings.SplitN(msg.Err.Error(), "\n", 2)[0]
+			m.setStatus(fmt.Sprintf("Failed to merge PR #%d: %s", msg.PRNumber, errSummary), true)
+			errEvent := EventItem{
+				Timestamp: time.Now().Format("15:04:05"),
+				Type:      "pr_merge_failed",
+				Message:   fmt.Sprintf("PR #%d merge failed: %s", msg.PRNumber, errSummary),
+			}
+			m.events = append([]EventItem{errEvent}, m.events...)
+			m.eventRevision++
+			if m.eventAutoScroll {
+				m.eventScroll = 0
+			}
 		} else {
-			m.statusMsg = fmt.Sprintf("Merged PR #%d", msg.PRNumber)
+			m.setStatus(fmt.Sprintf("Merged PR #%d", msg.PRNumber), false)
 		}
-		m.statusMsgTime = time.Now()
 
 	case TickMsg:
 		// On each tick, refresh all panels and schedule the next tick
@@ -553,8 +564,16 @@ func (m *Model) View() string {
 
 	// Footer with status message or default hints
 	footerText := "Tab: switch panel • j/k: scroll • K: kill worker • Enter: actions/merge • l: label bead • f: follow • q: quit"
-	if m.statusMsg != "" && time.Since(m.statusMsgTime) < 5*time.Second {
-		footerText = statusMsgStyle.Render(m.statusMsg)
+	statusDuration := 5 * time.Second
+	if m.statusMsgIsError {
+		statusDuration = 10 * time.Second
+	}
+	if m.statusMsg != "" && time.Since(m.statusMsgTime) < statusDuration {
+		if m.statusMsgIsError {
+			footerText = statusErrorStyle.Render(m.statusMsg)
+		} else {
+			footerText = statusMsgStyle.Render(m.statusMsg)
+		}
 	}
 	footer := footerStyle.Width(m.width).Render(footerText)
 	footerH := lipgloss.Height(footer)
@@ -704,6 +723,14 @@ func (m *Model) selectedWorkerActivity() []string {
 	return nil
 }
 
+// setStatus sets the status message, error flag, and timestamp together.
+// Callers should pass isError=true only for genuine failures; all other messages use false.
+func (m *Model) setStatus(msg string, isError bool) {
+	m.statusMsg = msg
+	m.statusMsgIsError = isError
+	m.statusMsgTime = time.Now()
+}
+
 // executeAction runs the selected action menu choice against the target bead.
 func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 	if m.actionTarget == nil {
@@ -714,45 +741,38 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 	case ActionRetry:
 		if m.OnRetryBead != nil {
 			if err := m.OnRetryBead(bead.BeadID, bead.Anvil, bead.PRID); err != nil {
-				m.statusMsg = fmt.Sprintf("Failed to retry %s: %v", bead.BeadID, err)
+				m.setStatus(fmt.Sprintf("Failed to retry %s: %v", bead.BeadID, err), true)
 			} else {
-				m.statusMsg = fmt.Sprintf("Retry queued for %s", bead.BeadID)
+				m.setStatus(fmt.Sprintf("Retry queued for %s", bead.BeadID), false)
 				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
-				m.statusMsgTime = time.Now()
 				if m.data != nil {
 					return FetchNeedsAttention(m.data)
 				}
 				return nil
 			}
-			m.statusMsgTime = time.Now()
 		} else {
-			m.statusMsg = fmt.Sprintf("Retry action unavailable for %s", bead.BeadID)
-			m.statusMsgTime = time.Now()
+			m.setStatus(fmt.Sprintf("Retry action unavailable for %s", bead.BeadID), false)
 		}
 	case ActionDismiss:
 		if m.OnDismissBead != nil {
 			if err := m.OnDismissBead(bead.BeadID, bead.Anvil, bead.PRID); err != nil {
-				m.statusMsg = fmt.Sprintf("Failed to dismiss %s: %v", bead.BeadID, err)
+				m.setStatus(fmt.Sprintf("Failed to dismiss %s: %v", bead.BeadID, err), true)
 			} else {
-				m.statusMsg = fmt.Sprintf("Dismissed %s", bead.BeadID)
+				m.setStatus(fmt.Sprintf("Dismissed %s", bead.BeadID), false)
 				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
-				m.statusMsgTime = time.Now()
 				if m.data != nil {
 					return FetchNeedsAttention(m.data)
 				}
 				return nil
 			}
-			m.statusMsgTime = time.Now()
 		} else {
-			m.statusMsg = fmt.Sprintf("Dismiss action unavailable for %s", bead.BeadID)
-			m.statusMsgTime = time.Now()
+			m.setStatus(fmt.Sprintf("Dismiss action unavailable for %s", bead.BeadID), false)
 		}
 	case ActionViewLogs:
 		if m.OnViewLogs != nil {
 			logPath, lines := m.OnViewLogs(bead.BeadID)
 			if logPath == "" {
-				m.statusMsg = fmt.Sprintf("No logs found for %s", bead.BeadID)
-				m.statusMsgTime = time.Now()
+				m.setStatus(fmt.Sprintf("No logs found for %s", bead.BeadID), false)
 				return nil
 			}
 			m.logViewerTitle = fmt.Sprintf("Logs: %s — %s", bead.BeadID, logPath)
@@ -820,14 +840,12 @@ func (m *Model) tagSelectedQueueItem() {
 	item := m.queueActionTarget
 	if m.OnTagBead != nil {
 		if err := m.OnTagBead(item.BeadID, item.Anvil); err != nil {
-			m.statusMsg = fmt.Sprintf("Failed to tag %s: %v", item.BeadID, err)
+			m.setStatus(fmt.Sprintf("Failed to tag %s: %v", item.BeadID, err), true)
 		} else {
-			m.statusMsg = fmt.Sprintf("Tagged %s for dispatch", item.BeadID)
+			m.setStatus(fmt.Sprintf("Tagged %s for dispatch", item.BeadID), false)
 		}
-		m.statusMsgTime = time.Now()
 	} else {
-		m.statusMsg = fmt.Sprintf("Label action unavailable for %s", item.BeadID)
-		m.statusMsgTime = time.Now()
+		m.setStatus(fmt.Sprintf("Label action unavailable for %s", item.BeadID), false)
 	}
 }
 
@@ -1237,12 +1255,10 @@ func (m *Model) executeMergeAction(choice MergeMenuChoice) tea.Cmd {
 	switch choice {
 	case MergeActionMerge:
 		if m.OnMergePR == nil {
-			m.statusMsg = fmt.Sprintf("Merge action unavailable for PR #%d", pr.PRNumber)
-			m.statusMsgTime = time.Now()
+			m.setStatus(fmt.Sprintf("Merge action unavailable for PR #%d", pr.PRNumber), false)
 			return nil
 		}
-		m.statusMsg = fmt.Sprintf("Merging PR #%d…", pr.PRNumber)
-		m.statusMsgTime = time.Now()
+		m.setStatus(fmt.Sprintf("Merging PR #%d…", pr.PRNumber), false)
 		prID, prNumber, anvil := pr.PRID, pr.PRNumber, pr.Anvil
 		cb := m.OnMergePR
 		return func() tea.Msg {
@@ -1681,6 +1697,10 @@ var (
 	statusMsgStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("82")).
 			Bold(true)
+
+	statusErrorStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("196")).
+				Bold(true)
 )
 
 // priorityStyle returns a colored priority indicator.
