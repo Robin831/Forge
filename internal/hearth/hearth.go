@@ -612,7 +612,10 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				m.statusMsg = fmt.Sprintf("Retry queued for %s", bead.BeadID)
 				m.removeNeedsAttentionItem(bead.BeadID)
 				m.statusMsgTime = time.Now()
-				return FetchNeedsAttention(m.data)
+				if m.data != nil {
+					return FetchNeedsAttention(m.data)
+				}
+				return nil
 			}
 			m.statusMsgTime = time.Now()
 		} else {
@@ -627,7 +630,10 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				m.statusMsg = fmt.Sprintf("Dismissed %s", bead.BeadID)
 				m.removeNeedsAttentionItem(bead.BeadID)
 				m.statusMsgTime = time.Now()
-				return FetchNeedsAttention(m.data)
+				if m.data != nil {
+					return FetchNeedsAttention(m.data)
+				}
+				return nil
 			}
 			m.statusMsgTime = time.Now()
 		} else {
