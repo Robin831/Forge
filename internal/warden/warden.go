@@ -267,7 +267,7 @@ After outputting the JSON verdict above, review the following git diff:
 // parseVerdict extracts the structured verdict from Claude's output.
 func parseVerdict(output string, result *ReviewResult) {
 	// Try to find a JSON block in the output
-	jsonStr := extractJSON(output)
+	jsonStr := extractJSON(output, "verdict")
 	if jsonStr != "" {
 		var parsed struct {
 			Verdict string        `json:"verdict"`
@@ -310,19 +310,23 @@ func parseVerdict(output string, result *ReviewResult) {
 }
 
 
-// extractJSON finds the first JSON object in the text that looks like a verdict.
-func extractJSON(text string) string {
-	// 1. Look for ```json ... ``` blocks (Claude style)
+// extractJSON finds the first JSON object in the text that contains the given
+// requiredKey. When requiredKey is empty, any JSON object is returned.
+// Fenced ```json blocks are always returned (they are explicitly marked as JSON).
+func extractJSON(text string, requiredKey string) string {
+	// 1. Look for ```json ... ``` blocks (Claude style) — always trusted
 	if s := extractFencedBlock(text, "```json"); s != "" {
 		return s
 	}
 
-	// 2. Look for plain ``` ... ``` blocks that contain "verdict" (Gemini style)
-	if s := extractFencedBlock(text, "```"); s != "" && strings.Contains(s, "verdict") {
-		return s
+	// 2. Look for plain ``` ... ``` blocks that contain the required key
+	if s := extractFencedBlock(text, "```"); s != "" {
+		if requiredKey == "" || strings.Contains(s, requiredKey) {
+			return s
+		}
 	}
 
-	// 3. Look for raw JSON objects containing "verdict"
+	// 3. Look for raw JSON objects containing the required key
 	for i := 0; i < len(text); i++ {
 		if text[i] == '{' {
 			// Find matching closing brace
@@ -335,7 +339,7 @@ func extractJSON(text string) string {
 					depth--
 					if depth == 0 {
 						candidate := text[i : j+1]
-						if strings.Contains(candidate, "verdict") {
+						if requiredKey == "" || strings.Contains(candidate, requiredKey) {
 							return candidate
 						}
 					}
