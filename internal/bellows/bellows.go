@@ -164,8 +164,8 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		IsConflicting:        status.Mergeable == "CONFLICTING",
 	}
 
-	// Detect transitions and emit events. We re-acquire the lock and re-check the 
-	// last status to ensure a concurrent ResetPRState haven't cleared it.
+	// Detect transitions and emit events. We re-acquire the lock and re-check the
+	// last status to ensure a concurrent ResetPRState call hasn't cleared it.
 	m.mu.Lock()
 	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
 	lastSnap := m.lastStatuses[key]

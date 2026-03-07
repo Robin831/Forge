@@ -457,7 +457,7 @@ func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, started_at, completed_at, log_path
 		FROM workers WHERE anvil = ?
 		  AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
-		  AND phase NOT IN (` + backgroundPhases + `)
+		  AND phase NOT IN (`+backgroundPhases+`)
 		ORDER BY started_at`, anvil)
 }
 
@@ -570,11 +570,11 @@ const (
 type PRStatus string
 
 const (
-	PROpen      PRStatus = "open"
-	PRApproved  PRStatus = "approved"
-	PRMerged    PRStatus = "merged"
-	PRClosed    PRStatus = "closed"
-	PRNeedsFix  PRStatus = "needs_fix"
+	PROpen     PRStatus = "open"
+	PRApproved PRStatus = "approved"
+	PRMerged   PRStatus = "merged"
+	PRClosed   PRStatus = "closed"
+	PRNeedsFix PRStatus = "needs_fix"
 )
 
 // nonTerminalPRStatuses lists every PR status that is not yet resolved.
@@ -603,18 +603,18 @@ func nonTerminalPRStatusSQL() string {
 
 // PR represents a pull request entry.
 type PR struct {
-	ID             int
-	Number         int
-	Anvil          string
-	BeadID         string
-	Branch         string
-	Status         PRStatus
-	CreatedAt      time.Time
-	LastChecked    *time.Time
-	CIFixCount     int
-	ReviewFixCount int
-	RebaseCount    int
-	CIPassing      bool
+	ID                   int
+	Number               int
+	Anvil                string
+	BeadID               string
+	Branch               string
+	Status               PRStatus
+	CreatedAt            time.Time
+	LastChecked          *time.Time
+	CIFixCount           int
+	ReviewFixCount       int
+	RebaseCount          int
+	CIPassing            bool
 	IsConflicting        bool
 	HasUnresolvedThreads bool
 }
@@ -917,42 +917,42 @@ func (db *DB) DismissExhaustedPR(id int) error {
 type EventType string
 
 const (
-	EventDaemonStarted  EventType = "daemon_started"
-	EventDaemonStopped  EventType = "daemon_stopped"
-	EventConfigReload   EventType = "config_reload"
-	EventOrphanCleanup  EventType = "orphan_cleanup"
-	EventPoll           EventType = "poll"
-	EventPollError      EventType = "poll_error"
-	EventBeadClaimed    EventType = "bead_claimed"
-	EventSmithStarted   EventType = "smith_started"
-	EventSmithDone      EventType = "smith_done"
-	EventSmithStats     EventType = "smith_stats"
-	EventSmithFailed    EventType = "smith_failed"
-	EventWardenStarted  EventType = "warden_started"
-	EventWardenPass     EventType = "warden_pass"
-	EventWardenReject   EventType = "warden_reject"
-	EventTemperStarted  EventType = "temper_started"
-	EventTemperPassed   EventType = "temper_passed"
-	EventTemperFailed   EventType = "temper_failed"
-	EventBellowsStarted EventType = "bellows_started"
-	EventCIFailed       EventType = "ci_failed"
-	EventCIFixStarted   EventType = "ci_fix_started"
-	EventCIFixSuccess   EventType = "ci_fix_success"
-	EventCIFixFailed    EventType = "ci_fix_failed"
-	EventReviewChanges          EventType = "review_changes"
-	EventReviewFixStarted        EventType = "review_fix_started"
-	EventReviewFixSuccess        EventType = "review_fix_success"
-	EventReviewFixFailed         EventType = "review_fix_failed"
-	EventReviewThreadResolved    EventType = "review_thread_resolved"
-	EventReviewFixSmithError     EventType = "review_fix_smith_error"
-	EventPRCreated      EventType = "pr_created"
-	EventPRMerged       EventType = "pr_merged"
-	EventPRClosed       EventType = "pr_closed"
-	EventPRConflicting  EventType = "pr_conflicting"
-	EventPRNeedsFix     EventType = "pr_needs_fix"
-	EventRebaseStarted  EventType = "rebase_started"
-	EventRebaseSuccess  EventType = "rebase_success"
-	EventRebaseFailed   EventType = "rebase_failed"
+	EventDaemonStarted        EventType = "daemon_started"
+	EventDaemonStopped        EventType = "daemon_stopped"
+	EventConfigReload         EventType = "config_reload"
+	EventOrphanCleanup        EventType = "orphan_cleanup"
+	EventPoll                 EventType = "poll"
+	EventPollError            EventType = "poll_error"
+	EventBeadClaimed          EventType = "bead_claimed"
+	EventSmithStarted         EventType = "smith_started"
+	EventSmithDone            EventType = "smith_done"
+	EventSmithStats           EventType = "smith_stats"
+	EventSmithFailed          EventType = "smith_failed"
+	EventWardenStarted        EventType = "warden_started"
+	EventWardenPass           EventType = "warden_pass"
+	EventWardenReject         EventType = "warden_reject"
+	EventTemperStarted        EventType = "temper_started"
+	EventTemperPassed         EventType = "temper_passed"
+	EventTemperFailed         EventType = "temper_failed"
+	EventBellowsStarted       EventType = "bellows_started"
+	EventCIFailed             EventType = "ci_failed"
+	EventCIFixStarted         EventType = "ci_fix_started"
+	EventCIFixSuccess         EventType = "ci_fix_success"
+	EventCIFixFailed          EventType = "ci_fix_failed"
+	EventReviewChanges        EventType = "review_changes"
+	EventReviewFixStarted     EventType = "review_fix_started"
+	EventReviewFixSuccess     EventType = "review_fix_success"
+	EventReviewFixFailed      EventType = "review_fix_failed"
+	EventReviewThreadResolved EventType = "review_thread_resolved"
+	EventReviewFixSmithError  EventType = "review_fix_smith_error"
+	EventPRCreated            EventType = "pr_created"
+	EventPRMerged             EventType = "pr_merged"
+	EventPRClosed             EventType = "pr_closed"
+	EventPRConflicting        EventType = "pr_conflicting"
+	EventPRNeedsFix           EventType = "pr_needs_fix"
+	EventRebaseStarted        EventType = "rebase_started"
+	EventRebaseSuccess        EventType = "rebase_success"
+	EventRebaseFailed         EventType = "rebase_failed"
 	EventLifecycleExhausted   EventType = "lifecycle_exhausted"
 	EventClarificationNeeded  EventType = "clarification_needed"
 	EventClarificationCleared EventType = "clarification_cleared"
@@ -1028,15 +1028,15 @@ func (db *DB) RecentEvents(n int) ([]Event, error) {
 
 // RetryRecord tracks retry state for a bead.
 type RetryRecord struct {
-	BeadID               string
-	Anvil                string
-	RetryCount           int
-	NextRetry            *time.Time
-	NeedsHuman           bool
-	ClarificationNeeded  bool
-	DispatchFailures     int
-	LastError            string
-	UpdatedAt            time.Time
+	BeadID              string
+	Anvil               string
+	RetryCount          int
+	NextRetry           *time.Time
+	NeedsHuman          bool
+	ClarificationNeeded bool
+	DispatchFailures    int
+	LastError           string
+	UpdatedAt           time.Time
 }
 
 // GetRetry returns the retry record for a bead, or nil if none exists.
@@ -1693,7 +1693,7 @@ func (db *DB) GetAllProviderQuotas() (map[string]provider.Quota, error) {
 type QueueSection string
 
 const (
-	QueueSectionReady      QueueSection = "ready"      // will be auto-dispatched
+	QueueSectionReady      QueueSection = "ready"       // will be auto-dispatched
 	QueueSectionUnlabeled  QueueSection = "unlabeled"   // available but not tagged for dispatch
 	QueueSectionInProgress QueueSection = "in_progress" // currently being worked on
 )

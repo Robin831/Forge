@@ -1165,7 +1165,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 	case "refresh":
 		go func() {
-			d.pollAndDispatch(context.Background())
+			d.pollAndDispatch(d.runCtx)
 			if d.bellowsMonitor != nil {
 				d.bellowsMonitor.Refresh()
 			}
@@ -1443,7 +1443,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				d.bellowsMonitor.Refresh()
 			}
 			// Trigger a poll as well to catch any other ready work or updates.
-			go d.pollAndDispatch(context.Background())
+			go d.pollAndDispatch(d.runCtx)
 
 			_ = d.db.LogEvent(
 				state.EventRetryReset,
@@ -1469,7 +1469,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Info("circuit breaker reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
 
 			// Trigger a poll immediately after resetting the circuit breaker.
-			go d.pollAndDispatch(context.Background())
+			go d.pollAndDispatch(d.runCtx)
 
 			data, _ := json.Marshal(map[string]string{"message": "circuit breaker reset"})
 			return ipc.Response{Type: "ok", Payload: data}
@@ -1485,7 +1485,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
 
 		// Trigger a poll immediately after resetting retry state.
-		go d.pollAndDispatch(context.Background())
+		go d.pollAndDispatch(d.runCtx)
 
 		data, _ := json.Marshal(map[string]string{"message": "retry reset"})
 		return ipc.Response{Type: "ok", Payload: data}

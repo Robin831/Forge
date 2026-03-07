@@ -158,6 +158,7 @@ exit 1
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
 	}
 	d.cfg.Store(cfg)
 
@@ -508,6 +509,7 @@ func TestHandleIPC_RetryBead(t *testing.T) {
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
 	}
 	d.cfg.Store(&config.Config{})
 
@@ -580,6 +582,7 @@ func TestHandleIPC_RetryBead_ExhaustedPR(t *testing.T) {
 		promptBuilder:  prompt.NewBuilder(),
 		lifecycleMgr:   lm,
 		bellowsMonitor: bm,
+		runCtx:         context.Background(),
 	}
 	d.cfg.Store(&config.Config{
 		Anvils: map[string]config.AnvilConfig{
@@ -626,9 +629,9 @@ func TestHandleIPC_RetryBead_ExhaustedPR(t *testing.T) {
 	require.NotNil(t, st)
 	require.Equal(t, state.DefaultMaxRebaseAttempts, st.RebaseCount, "setup: lifecycle should be exhausted")
 
-	// Seed bellows snapshot cache so it has a prior state to compare against.
-	// (In production this is populated by prior checkAll polls.)
-	bm.ResetPRState("test-anvil", 42) // ensure it's empty first
+	// Reset bellows snapshot cache so this retry starts with no prior snapshot state.
+	// (In production this cache would be populated by prior checkAll polls.)
+	bm.ResetPRState("test-anvil", 42)
 
 	// --- Execute retry via IPC ---
 	payload, _ := json.Marshal(ipc.RetryBeadPayload{
