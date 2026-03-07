@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/Robin831/Forge/internal/state"
 )
 
 func TestRenderWorkerListShowsTitle(t *testing.T) {
@@ -162,8 +164,8 @@ func TestRenderWorkersDoesNotExceedLeftColumn(t *testing.T) {
 func TestRenderNeedsAttentionShowsItems(t *testing.T) {
 	m := Model{
 		needsAttention: []NeedsAttentionItem{
-			{BeadID: "bd-42", Anvil: "heimdall", Reason: "exhausted retries"},
-			{BeadID: "bd-99", Anvil: "metadata", Reason: "clarification needed"},
+			{BeadID: "bd-42", Anvil: "heimdall", Reason: "exhausted retries", ReasonCategory: AttentionDispatchExhausted},
+			{BeadID: "bd-99", Anvil: "metadata", Reason: "clarification needed", ReasonCategory: AttentionClarification},
 		},
 		focused: PanelNeedsAttention,
 	}
@@ -176,6 +178,43 @@ func TestRenderNeedsAttentionShowsItems(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "Needs Attention (2)") {
 		t.Errorf("expected 'Needs Attention (2)' title in rendered output:\n%s", rendered)
+	}
+	// Verify category-specific labels appear
+	if !strings.Contains(rendered, "DISPATCH") {
+		t.Errorf("expected DISPATCH label for dispatch-exhausted item:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "CLARIFY") {
+		t.Errorf("expected CLARIFY label for clarification item:\n%s", rendered)
+	}
+}
+
+func TestRenderNeedsAttentionReasonCategories(t *testing.T) {
+	tests := []struct {
+		name     string
+		category AttentionReason
+		wantText string
+	}{
+		{"dispatch exhausted", AttentionDispatchExhausted, "DISPATCH"},
+		{"CI fix exhausted", AttentionCIFixExhausted, "CI FIX"},
+		{"review fix exhausted", AttentionReviewFixExhausted, "REVIEW"},
+		{"rebase exhausted", AttentionRebaseExhausted, "REBASE"},
+		{"clarification", AttentionClarification, "CLARIFY"},
+		{"stalled", AttentionStalled, "STALLED"},
+		{"unknown", AttentionUnknown, "UNKNOWN"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := Model{
+				needsAttention: []NeedsAttentionItem{
+					{BeadID: "bd-1", Anvil: "test", Reason: "test reason", ReasonCategory: tt.category},
+				},
+				focused: PanelNeedsAttention,
+			}
+			rendered := m.renderNeedsAttention(80, 20)
+			if !strings.Contains(rendered, tt.wantText) {
+				t.Errorf("expected %q label in rendered output for category %d:\n%s", tt.wantText, tt.category, rendered)
+			}
+		})
 	}
 }
 
@@ -280,6 +319,63 @@ func TestParseWorkerActivityGemini(t *testing.T) {
 	// Verify accumulated text: "I will read the file."
 	if !strings.Contains(entries[0], "I will read the file.") {
 		t.Errorf("expected accumulated text in entry[0], got %q", entries[0])
+	}
+}
+
+func TestClassifyAttentionReason(t *testing.T) {
+	tests := []struct {
+		name string
+		bead state.NeedsAttentionBead
+		want AttentionReason
+	}{
+		{
+			name: "clarification takes priority",
+			bead: state.NeedsAttentionBead{ClarificationNeeded: true, NeedsHuman: true, Reason: "circuit breaker: too many failures"},
+			want: AttentionClarification,
+		},
+		{
+			name: "circuit breaker prefix",
+			bead: state.NeedsAttentionBead{NeedsHuman: true, Reason: "circuit breaker: dispatch failed 5 times"},
+			want: AttentionDispatchExhausted,
+		},
+		{
+			name: "CI fix exhausted",
+			bead: state.NeedsAttentionBead{Reason: "CI fix exhausted (5/5)"},
+			want: AttentionCIFixExhausted,
+		},
+		{
+			name: "review fix exhausted",
+			bead: state.NeedsAttentionBead{Reason: "Review fix exhausted (3/3)"},
+			want: AttentionReviewFixExhausted,
+		},
+		{
+			name: "rebase exhausted",
+			bead: state.NeedsAttentionBead{Reason: "Rebase exhausted (2/2)"},
+			want: AttentionRebaseExhausted,
+		},
+		{
+			name: "worker stalled",
+			bead: state.NeedsAttentionBead{Reason: "Worker stalled (no log activity)"},
+			want: AttentionStalled,
+		},
+		{
+			name: "needs_human without circuit breaker",
+			bead: state.NeedsAttentionBead{NeedsHuman: true, Reason: "max retries exceeded"},
+			want: AttentionDispatchExhausted,
+		},
+		{
+			name: "unknown reason",
+			bead: state.NeedsAttentionBead{Reason: "something else entirely"},
+			want: AttentionUnknown,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyAttentionReason(tt.bead)
+			if got != tt.want {
+				t.Errorf("classifyAttentionReason() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
