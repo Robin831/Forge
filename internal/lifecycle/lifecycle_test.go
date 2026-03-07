@@ -743,6 +743,22 @@ func TestResetPRState_AllowsFreshDispatchAfterExhaustion(t *testing.T) {
 	if st.CIFixCount != 1 {
 		t.Errorf("expected CIFixCount=1 after fresh dispatch, got %d", st.CIFixCount)
 	}
+
+	// Test rebase exhaustion reset
+	for i := 0; i < state.DefaultMaxRebaseAttempts; i++ {
+		m.HandleEvent(ctx, makeEvent(400, bellows.EventPRConflicting))
+	}
+	dispatched = dispatched[:0]
+	m.HandleEvent(ctx, makeEvent(400, bellows.EventPRConflicting))
+	if len(dispatched) != 0 {
+		t.Errorf("expected 0 rebase dispatches after exhaustion, got %d", len(dispatched))
+	}
+
+	m.ResetPRState("test-anvil", 400)
+	m.HandleEvent(ctx, makeEvent(400, bellows.EventPRConflicting))
+	if len(dispatched) != 1 || dispatched[0].Action != ActionRebase {
+		t.Errorf("expected 1 ActionRebase dispatch after reset, got %v", dispatched)
+	}
 }
 
 // TestResetPRState_Noop verifies ResetPRState is safe to call for unknown PRs.

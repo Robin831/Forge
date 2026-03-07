@@ -154,18 +154,6 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		return
 	}
 
-	m.mu.Lock()
-	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
-	lastSnap := m.lastStatuses[key]
-	isFirstCheck := lastSnap == nil
-	if lastSnap == nil {
-		// Seed CIPassing=true so that a PR that is already failing when the
-		// daemon starts (or after a restart) still triggers an EventCIFailed
-		// on the very first poll.
-		lastSnap = &prSnapshot{CIPassing: true}
-	}
-	m.mu.Unlock()
-
 	newSnap := &prSnapshot{
 		CIPassing:            status.CIsPassing(),
 		HasApproval:          status.HasApproval(),
@@ -175,14 +163,16 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		IsClosed:             status.IsClosed(),
 		IsConflicting:        status.Mergeable == "CONFLICTING",
 	}
-	_ = isFirstCheck // used implicitly via seeded lastSnap
 
 	// Detect transitions and emit events. We re-acquire the lock and re-check the 
 	// last status to ensure a concurrent ResetPRState haven't cleared it.
 	m.mu.Lock()
-	lastSnap = m.lastStatuses[key]
+	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
+	lastSnap := m.lastStatuses[key]
 	if lastSnap == nil {
 		// Reset occurred during poll: treat as first check to ensure transitions are detected.
+		// Seed with "good" states so that if the PR is already in a "bad" state (failing,
+		// conflicting, etc.), the transition will be detected on this first poll.
 		lastSnap = &prSnapshot{CIPassing: true}
 	}
 	// Update snapshot while holding the lock
@@ -202,7 +192,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
 		_ = m.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
-	} else if status.IsClosed() && !lastSnap.IsClosed {
+	} else if newSnap.IsClosed && !lastSnap.IsClosed {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
@@ -266,8 +256,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   fmt.Sprintf("PR #%d has merge conflicts with base branch", pr.Number),
 			Timestamp: time.Now(),
 		})
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
 		_ = m.db.LogEvent(state.EventPRConflicting,
-			fmt.Sprintf("PR #%d: merge conflict detected — manual rebase required", pr.Number),
+			fmt.Sprintf("PR #%d: merge conflict detected", pr.Number),
 			pr.BeadID, pr.Anvil)
 	}
 

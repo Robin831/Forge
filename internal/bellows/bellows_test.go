@@ -76,7 +76,7 @@ func TestEventConstants(t *testing.T) {
 	// Verify event constants are distinct non-empty strings
 	constants := []string{
 		EventCIPassed, EventCIFailed, EventReviewApproved,
-		EventReviewChanges, EventPRMerged, EventPRClosed,
+		EventReviewChanges, EventPRMerged, EventPRClosed, EventPRConflicting,
 	}
 	seen := make(map[string]bool)
 	for _, c := range constants {
@@ -148,6 +148,18 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 			noEvents: []string{EventReviewChanges},
 		},
 		{
+			name:       "conflict detected → pr_conflicting",
+			old:        prSnapshot{IsConflicting: false},
+			new:        prSnapshot{IsConflicting: true},
+			wantEvents: []string{EventPRConflicting},
+		},
+		{
+			name:    "conflict persists → no new event",
+			old:     prSnapshot{IsConflicting: true},
+			new:     prSnapshot{IsConflicting: true},
+			noEvents: []string{EventPRConflicting},
+		},
+		{
 			name:       "PR merged → pr_merged",
 			old:        prSnapshot{IsMerged: false},
 			new:        prSnapshot{IsMerged: true},
@@ -198,6 +210,10 @@ func computeTransitionEvents(old, new *prSnapshot) []string {
 
 	if (new.NeedsChanges && !old.NeedsChanges) || (new.HasUnresolvedThreads && !old.HasUnresolvedThreads) {
 		events = append(events, EventReviewChanges)
+	}
+
+	if new.IsConflicting && !old.IsConflicting {
+		events = append(events, EventPRConflicting)
 	}
 
 	return events
