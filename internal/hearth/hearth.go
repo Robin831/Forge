@@ -601,7 +601,8 @@ func attentionReasonIcon(cat AttentionReason) string {
 }
 
 // renderNeedsAttention renders the Needs Attention sub-panel showing beads
-// that require human intervention (exhausted retries or clarification needed).
+// that require human intervention (e.g. exhausted dispatch/CI-fix/review-fix/rebase
+// attempts, clarification requests, or stalled workers).
 func (m *Model) renderNeedsAttention(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelNeedsAttention {
