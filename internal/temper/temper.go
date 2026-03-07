@@ -75,9 +75,12 @@ type Step struct {
 type Config struct {
 	// Steps is the ordered list of verification steps.
 	Steps []Step
-	// GoRaceDetection enables a separate "race" step that runs
-	// 'go test -race -short ./...' after the normal test step.
-	// Default is false since -race slows tests and increases memory usage.
+	// GoRaceDetection is a configuration hint indicating whether Go race
+	// detection should be enabled (e.g., by adding a separate "race" step
+	// such as 'go test -race -short ./...'). It does not automatically
+	// modify Steps; callers are responsible for constructing Steps
+	// accordingly (e.g., via DefaultConfigWithRace). Default is false since
+	// -race slows tests and increases memory usage.
 	GoRaceDetection bool
 }
 
@@ -114,13 +117,26 @@ type TemperYAML struct {
 
 // LoadAnvilConfig loads per-anvil temper configuration from .forge/temper.yaml
 // within the given anvil path. Returns nil if the file does not exist.
+// Non-existence errors (permission denied, invalid YAML, etc.) are logged to
+// stderr so misconfiguration is visible rather than silently ignored.
 func LoadAnvilConfig(anvilPath string) *TemperYAML {
-	data, err := os.ReadFile(filepath.Join(anvilPath, ".forge", "temper.yaml"))
+	path := filepath.Join(anvilPath, ".forge", "temper.yaml")
+
+	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// Config file is legitimately absent for this anvil.
+			return nil
+		}
+		// Surface unexpected read errors to aid diagnosing misconfiguration.
+		fmt.Fprintf(os.Stderr, "temper: failed to read config %s: %v\n", path, err)
 		return nil
 	}
+
 	var cfg TemperYAML
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		// Surface parse errors instead of silently ignoring invalid YAML.
+		fmt.Fprintf(os.Stderr, "temper: failed to parse config %s: %v\n", path, err)
 		return nil
 	}
 	return &cfg
