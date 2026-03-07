@@ -14,6 +14,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/warden"
 )
 
 // Event types emitted by the Bellows monitor.
@@ -43,13 +44,14 @@ type Handler func(ctx context.Context, event PREvent)
 
 // Monitor watches open PRs and dispatches events on status changes.
 type Monitor struct {
-	db           *state.DB
-	interval     time.Duration
-	anvilPaths   map[string]string // anvil name → path
-	handlers     []Handler
-	mu           sync.Mutex
-	lastStatuses map[string]*prSnapshot // anvil/PR number → last known state
-	refresh      chan struct{}          // channel to trigger immediate poll
+	db             *state.DB
+	interval       time.Duration
+	anvilPaths     map[string]string // anvil name → path
+	handlers       []Handler
+	mu             sync.Mutex
+	lastStatuses   map[string]*prSnapshot // anvil/PR number → last known state
+	refresh        chan struct{}          // channel to trigger immediate poll
+	autoLearnRules bool                  // auto-learn warden rules from Copilot comments on PR merge
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -63,17 +65,19 @@ type prSnapshot struct {
 	IsConflicting        bool
 }
 
-// New creates a Bellows monitor.
-func New(db *state.DB, interval time.Duration, anvilPaths map[string]string) *Monitor {
+// New creates a Bellows monitor. When autoLearnRules is true, bellows will
+// automatically learn warden review rules from Copilot comments on PR merge.
+func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, autoLearnRules bool) *Monitor {
 	if interval < 30*time.Second {
 		interval = 30 * time.Second
 	}
 	return &Monitor{
-		db:           db,
-		interval:     interval,
-		anvilPaths:   anvilPaths,
-		lastStatuses: make(map[string]*prSnapshot),
-		refresh:      make(chan struct{}, 1),
+		db:             db,
+		interval:       interval,
+		anvilPaths:     anvilPaths,
+		lastStatuses:   make(map[string]*prSnapshot),
+		refresh:        make(chan struct{}, 1),
+		autoLearnRules: autoLearnRules,
 	}
 }
 
@@ -192,6 +196,10 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
 		_ = m.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
+
+		if m.autoLearnRules {
+			go m.learnRulesFromPR(ctx, pr.Anvil, anvilPath, pr.Number)
+		}
 	} else if newSnap.IsClosed && !lastSnap.IsClosed {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
@@ -302,6 +310,55 @@ func (m *Monitor) ResetPRState(anvil string, prNumber int) {
 	defer m.mu.Unlock()
 	key := fmt.Sprintf("%s/%d", anvil, prNumber)
 	delete(m.lastStatuses, key)
+}
+
+// learnRulesFromPR fetches Copilot review comments from a merged PR,
+// distills them into warden rules, and saves them to the anvil's rules file.
+func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath string, prNumber int) {
+	comments, err := warden.FetchCopilotComments(ctx, anvilPath, prNumber)
+	if err != nil {
+		log.Printf("[bellows] Auto-learn: error fetching Copilot comments for PR #%d (%s): %v", prNumber, anvilName, err)
+		_ = m.db.LogEvent("auto_learn_error", fmt.Sprintf("PR #%d: failed to fetch Copilot comments: %v", prNumber, err), "", anvilName)
+		return
+	}
+	if len(comments) == 0 {
+		log.Printf("[bellows] Auto-learn: no Copilot comments on PR #%d (%s), skipping", prNumber, anvilName)
+		return
+	}
+
+	groups := warden.GroupComments(comments)
+	rf, err := warden.LoadRules(anvilPath)
+	if err != nil {
+		log.Printf("[bellows] Auto-learn: error loading existing rules for %s: %v", anvilName, err)
+		_ = m.db.LogEvent("auto_learn_error", fmt.Sprintf("PR #%d: failed to load rules: %v", prNumber, err), "", anvilName)
+		return
+	}
+
+	added := 0
+	for _, group := range groups {
+		rule, err := warden.DistillRule(ctx, group, anvilPath)
+		if err != nil {
+			log.Printf("[bellows] Auto-learn: error distilling rule from PR #%d (%s): %v", prNumber, anvilName, err)
+			continue
+		}
+		if rf.AddRule(*rule) {
+			added++
+		}
+	}
+
+	if added == 0 {
+		log.Printf("[bellows] Auto-learn: no new rules from PR #%d (%s)", prNumber, anvilName)
+		return
+	}
+
+	if err := warden.SaveRules(anvilPath, rf); err != nil {
+		log.Printf("[bellows] Auto-learn: error saving rules for %s: %v", anvilName, err)
+		_ = m.db.LogEvent("auto_learn_error", fmt.Sprintf("PR #%d: failed to save rules: %v", prNumber, err), "", anvilName)
+		return
+	}
+
+	log.Printf("[bellows] Auto-learn: added %d new rule(s) from PR #%d (%s)", added, prNumber, anvilName)
+	_ = m.db.LogEvent("auto_learn_rules", fmt.Sprintf("PR #%d: learned %d new rule(s)", prNumber, added), "", anvilName)
 }
 
 // emit calls all registered handlers with the given event.
