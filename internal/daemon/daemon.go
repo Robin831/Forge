@@ -28,8 +28,8 @@ import (
 
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/cifix"
-	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/hotreload"

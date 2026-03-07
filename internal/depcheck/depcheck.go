@@ -53,7 +53,7 @@ func New(db *state.DB, interval, timeout time.Duration, anvilPaths map[string]st
 		interval = 1 * time.Hour
 	}
 	if timeout < 1*time.Minute {
-		timeout = 5 * time.Minute
+		timeout = 1 * time.Minute
 	}
 	return &Monitor{
 		db:         db,
@@ -211,10 +211,10 @@ func parseGoListOutput(output string) []ModuleUpdate {
 		})
 	}
 
+	order := map[string]int{"major": 0, "minor": 1, "patch": 2}
 	sort.Slice(updates, func(i, j int) bool {
 		if updates[i].Kind != updates[j].Kind {
 			// major first (needs attention), then minor, then patch
-			order := map[string]int{"major": 0, "minor": 1, "patch": 2}
 			return order[updates[i].Kind] < order[updates[j].Kind]
 		}
 		return updates[i].Path < updates[j].Path
@@ -264,15 +264,44 @@ func parseSemver(v string) (major, minor, patch string) {
 // createBeads creates bead issues for the outdated dependencies found in an anvil.
 // Patch+minor updates go into a single auto-dispatch bead.
 // Major updates go into a separate "needs attention" bead.
+// Duplicate beads (same kind already open) are skipped to prevent queue flooding.
 func (m *Monitor) createBeads(ctx context.Context, result CheckResult) {
 	if len(result.Patch)+len(result.Minor) > 0 {
-		m.createUpdateBead(ctx, result.Anvil, result.Path, "auto",
-			append(result.Patch, result.Minor...))
+		if !m.openBeadExists(ctx, result.Path, "Go dependencies (patch/minor)") {
+			m.createUpdateBead(ctx, result.Anvil, result.Path, "auto",
+				append(result.Patch, result.Minor...))
+		} else {
+			log.Printf("[depcheck] %s: open patch/minor update bead already exists, skipping", result.Anvil)
+		}
 	}
 
 	if len(result.Major) > 0 {
-		m.createUpdateBead(ctx, result.Anvil, result.Path, "major", result.Major)
+		if !m.openBeadExists(ctx, result.Path, "Go major version updates") {
+			m.createUpdateBead(ctx, result.Anvil, result.Path, "major", result.Major)
+		} else {
+			log.Printf("[depcheck] %s: open major update bead already exists, skipping", result.Anvil)
+		}
 	}
+}
+
+// openBeadExists returns true if an open bead whose title contains phrase already
+// exists in the anvil's bead queue. This prevents duplicate update beads from
+// accumulating across weekly check cycles.
+func (m *Monitor) openBeadExists(ctx context.Context, anvilPath, phrase string) bool {
+	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
+		"bd", "list", "--status=open", "--json"))
+	cmd.Dir = anvilPath
+
+	output, err := cmd.Output()
+	if err != nil {
+		// If we can't query, allow creation rather than silently suppressing beads.
+		return false
+	}
+
+	return strings.Contains(string(output), phrase)
 }
 
 // createUpdateBead runs 'bd create' to create a bead for dependency updates.
