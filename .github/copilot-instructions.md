@@ -9,9 +9,12 @@ Always reference `AGENTS.md` and `CLAUDE.md` in the root of the repository as th
 Forge uses a **blacksmith metaphor** for its architecture. Please understand and use this terminology:
 - **Hearth**: The daemon process and TUI dashboard.
 - **Smith**: The implementation worker (a Claude Code session).
-- **Temper**: Build, lint, and test verification.
-- **Warden**: The review agent that validates Smith's output.
-- **Bellows**: Monitors open PRs for CI failures and review comments.
+- **Temper**: Build, lint, and test verification (Go, .NET, Node).
+- **Warden**: The review agent that validates Smith's output and learns rules from Copilot comments.
+- **Bellows**: Monitors open PRs for CI failures, review comments, and merge conflicts.
+- **Schematic**: Pre-analysis worker that decomposes complex beads or produces implementation plans.
+- **Crucible**: Orchestrates parent beads with children on feature branches (epic-level work).
+- **Depcheck**: Multi-language dependency update scanner (Go, .NET, Node).
 - **Poller**: Fetches available work (beads).
 
 ## What to Look For (Focus Areas)
@@ -21,6 +24,9 @@ When reviewing code, pay special attention to:
 - **state.db transaction safety**: Verify that SQLite operations handle transactions correctly and safely.
 - **Provider fallback chain correctness**: Check that provider fallbacks behave correctly and exhaustively.
 - **Worktree cleanup on error paths**: Ensure `git worktree` instances are always cleaned up, even when errors occur or processes panic/fail.
+- **Cost tracking accuracy**: Verify token usage and cost estimates are computed and recorded correctly.
+- **Crucible branch management**: Ensure epic feature branches are created, merged, and cleaned up properly.
+- **Warden rule persistence**: Verify learned rules are correctly stored in and loaded from `.forge/warden-rules.yaml`.
 
 ## Patterns to Avoid (Flag These)
 Please flag any code that introduces the following:

@@ -42,10 +42,18 @@ forge queue retry <id>                # Reset dispatch circuit breaker
 forge history                         # Show recent worker history
 forge history events                  # Show event log
 forge scan                            # Run govulncheck on Go anvils
+forge scan --anvil <name>             # Scan a specific anvil
 forge autostart install               # Enable auto-start via Windows Task Scheduler
+forge autostart remove                # Remove autostart task
+forge autostart status                # Check autostart registration
+forge autostart generate              # Generate Task Scheduler XML
 forge doctor                          # Check dependencies (bd, claude, gh, git)
 forge changelog assemble              # Assemble changelog.d into CHANGELOG.md
 forge changelog validate <bead-ids>   # Check fragments exist for beads
+forge warden learn --anvil <name>     # Learn review rules from Copilot comments
+forge warden list --anvil <name>      # List learned review rules
+forge warden forget <id> --anvil <name>  # Remove a learned rule
+forge version                         # Print version information
 ```
 
 ## Architecture
@@ -60,18 +68,29 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/pipeline` | Orchestrates one bead through Schematic → Smith → Temper → Warden |
 | `internal/smith` | Spawns `claude` CLI as a subprocess in a worktree |
 | `internal/temper` | Runs build/lint/test checks; auto-detects Go, .NET, Node |
-| `internal/warden` | Spawns a second Claude session to review Smith's diff |
+| `internal/warden` | Code review agent — validates Smith's diff, learns rules from Copilot comments |
 | `internal/bellows` | Monitors open PRs for CI failures, review comments, and merge conflicts |
 | `internal/crucible` | Orchestrates parent beads with children on feature branches — auto-detects, sequences, merges |
-| `internal/depcheck` | Periodic Go module update checker — creates beads for outdated dependencies |
+| `internal/depcheck` | Multi-language dependency update scanner (Go, .NET, Node) — creates beads for outdated deps |
+| `internal/vulncheck` | Vulnerability scanning via `govulncheck` — creates prioritized beads |
 | `internal/schematic` | Pre-analysis worker — decomposes complex beads or produces implementation plans |
-| `internal/poller` | Calls `bd ready` to get available beads from an anvil |
+| `internal/cifix` | CI failure fix worker — spawns Smith with targeted fix prompt |
+| `internal/reviewfix` | Review comment fix worker — addresses PR review feedback |
+| `internal/rebase` | Conflict rebase handling for merge conflicts |
+| `internal/poller` | Calls `bd ready` to get available beads from an anvil; detects Crucible candidates |
 | `internal/worktree` | Creates/removes `git worktree` branches for each bead |
 | `internal/state` | SQLite at `~/.forge/state.db` — workers, prs, events, retries, costs |
+| `internal/cost` | Token usage and USD cost tracking per bead and per day |
 | `internal/ipc` | Named pipe (Windows) / Unix socket daemon↔CLI protocol; newline-delimited JSON |
-| `internal/hearth` | Bubbletea TUI: three-column layout (Queue+ReadyToMerge+NeedsAttention / Workers / LiveActivity+Events) |
+| `internal/hearth` | Bubbletea TUI: three-column layout (Queue+Crucibles+ReadyToMerge+NeedsAttention / Workers / LiveActivity+Events) |
 | `internal/config` | Viper config loading — `forge.yaml` in cwd or `~/.forge/config.yaml` |
 | `internal/prompt` | Builds the Smith prompt from bead metadata + AGENTS.md/CLAUDE.md/README.md |
+| `internal/provider` | AI provider fallback chain (Claude, Gemini, Copilot) with rate limit handling |
+| `internal/ghpr` | GitHub PR creation and management via `gh` CLI |
+| `internal/changelog` | Changelog fragment parsing and assembly |
+| `internal/lifecycle` | Worker lifecycle management |
+| `internal/retry` | Exponential backoff and retry logic |
+| `internal/watchdog` | Stale worker detection |
 | `internal/hotreload` | fsnotify watcher — reloads `forge.yaml` without restart |
 | `internal/notify` | MS Teams Adaptive Card webhooks |
 | `internal/shutdown` | Graceful shutdown: SIGINT drain, orphan worktree cleanup |
@@ -102,8 +121,12 @@ Crucible path (parent beads with children):
       → bellows monitors final PR (CI fix, review, merge → close parent)
 
 depcheck.Monitor (background, weekly by default)
-  → runs 'go list -m -u all' on each Go anvil
+  → scans each anvil for outdated dependencies (Go, .NET, Node)
   → creates beads for outdated dependencies (patch/minor auto-dispatch, major needs attention)
+
+vulncheck.Monitor (background, daily by default)
+  → runs govulncheck on Go anvils
+  → creates prioritized beads for discovered vulnerabilities
 ```
 
 ### State Database

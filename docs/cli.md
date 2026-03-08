@@ -299,3 +299,41 @@ forge changelog validate Forge-abc Forge-xyz
 | `--dir` | Root directory containing `changelog.d/` (default: `.`) |
 
 Exits non-zero if any bead is missing a fragment.
+
+## Warden Rule Management
+
+### `forge warden learn`
+
+Learn review rules from GitHub Copilot comments on recently merged PRs for an anvil. Rules are saved to `<anvil-path>/.forge/warden-rules.yaml`.
+
+```bash
+forge warden learn --anvil heimdall
+```
+
+| Flag | Description |
+|------|-------------|
+| `-a, --anvil` | Anvil name (required) |
+
+### `forge warden list`
+
+List all learned review rules for an anvil.
+
+```bash
+forge warden list --anvil heimdall
+```
+
+| Flag | Description |
+|------|-------------|
+| `-a, --anvil` | Anvil name (required) |
+
+### `forge warden forget`
+
+Remove a learned rule by ID.
+
+```bash
+forge warden forget <rule-id> --anvil heimdall
+```
+
+| Flag | Description |
+|------|-------------|
+| `-a, --anvil` | Anvil name (required) |
