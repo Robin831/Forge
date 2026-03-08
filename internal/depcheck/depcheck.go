@@ -107,9 +107,8 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 		fn   func(ctx context.Context, anvil, path string) *CheckResult
 	}{
 		{"Go", s.scanGo},
-		// Future ecosystem scanners are added here:
-		// {"dotnet", s.scanDotnet},
-		// {"npm", s.scanNpm},
+		{"NuGet", s.scanDotnet},
+		{"npm", s.scanNpm},
 	}
 
 	for _, sc := range scanners {
@@ -189,8 +188,15 @@ func (s *Scanner) createUpdateBead(ctx context.Context, result *CheckResult, kin
 		desc.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", update.Path, update.Current, update.Latest, update.Kind))
 		desc.WriteString("\n## Instructions\n\n")
 		desc.WriteString("```bash\n")
-		desc.WriteString(fmt.Sprintf("go get %s@%s\n", update.Path, update.Latest))
-		desc.WriteString("go mod tidy\n")
+		switch result.Ecosystem {
+		case "Go":
+			desc.WriteString(fmt.Sprintf("go get %s@%s\n", update.Path, update.Latest))
+			desc.WriteString("go mod tidy\n")
+		case "NuGet":
+			desc.WriteString(fmt.Sprintf("dotnet add package %s --version %s\n", update.Path, update.Latest))
+		case "npm":
+			desc.WriteString(fmt.Sprintf("npm install %s@%s\n", update.Path, update.Latest))
+		}
 		desc.WriteString("```\n")
 	case "major":
 		priority = "2"
