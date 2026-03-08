@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -114,52 +113,6 @@ func parseGoListOutput(output string) []ModuleUpdate {
 		})
 	}
 
-	order := map[string]int{"major": 0, "minor": 1, "patch": 2}
-	sort.Slice(updates, func(i, j int) bool {
-		if updates[i].Kind != updates[j].Kind {
-			// major first (needs attention), then minor, then patch
-			return order[updates[i].Kind] < order[updates[j].Kind]
-		}
-		return updates[i].Path < updates[j].Path
-	})
-
+	sortUpdates(updates)
 	return updates
-}
-
-// classifyUpdate determines if an update is patch, minor, or major.
-// Versions are expected in semver format: vMAJOR.MINOR.PATCH
-func classifyUpdate(current, latest string) string {
-	cMaj, cMin, _ := parseSemver(current)
-	lMaj, lMin, _ := parseSemver(latest)
-
-	if cMaj != lMaj {
-		return "major"
-	}
-	if cMin != lMin {
-		return "minor"
-	}
-	return "patch"
-}
-
-// parseSemver extracts major, minor, patch from a Go module version string.
-// Handles formats like v1.2.3, v1.2.3-pre, v0.0.0-date-hash (pseudo-versions).
-func parseSemver(v string) (major, minor, patch string) {
-	v = strings.TrimPrefix(v, "v")
-
-	// Strip any pre-release suffix for comparison
-	if idx := strings.Index(v, "-"); idx >= 0 {
-		v = v[:idx]
-	}
-
-	parts := strings.SplitN(v, ".", 3)
-	switch len(parts) {
-	case 3:
-		return parts[0], parts[1], parts[2]
-	case 2:
-		return parts[0], parts[1], "0"
-	case 1:
-		return parts[0], "0", "0"
-	default:
-		return "0", "0", "0"
-	}
 }

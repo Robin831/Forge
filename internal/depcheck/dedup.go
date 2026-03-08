@@ -148,10 +148,11 @@ func DedupCheckWithCache(cache *DedupCache, packageName string) bool {
 			return true
 		}
 	}
-	// Check recently closed: if JSON parse failed we have closedBeads==nil,
-	// fall back to raw string search.
-	if len(cache.closedBeads) == 0 && len(cache.closedRaw) > 0 {
-		return containsPackageRef(cache.closedRaw, packageName)
+	// Check recently closed. If we have no parsed closed beads, treat this as
+	// "unknown" rather than definitively suppressing new beads based on raw
+	// output, to avoid disabling the 7-day recency window.
+	if len(cache.closedBeads) == 0 {
+		return false
 	}
 	cutoff := time.Now().AddDate(0, 0, -7)
 	return isRecentlyClosedBeadAt(cache.closedBeads, packageName, cutoff)
@@ -180,9 +181,44 @@ func containsPackageRef(output []byte, packageName string) bool {
 	return false
 }
 
-// mentionsPackage checks if a bead's title or description contains the package name.
+// mentionsPackage checks if a bead's title or description refers to the package name.
 func mentionsPackage(b bdBead, packageName string) bool {
-	return strings.Contains(b.Title, packageName) || strings.Contains(b.Description, packageName)
+	return textMentionsPackage(b.Title, packageName) || textMentionsPackage(b.Description, packageName)
+}
+
+// textMentionsPackage performs a more precise package-name match than a raw substring.
+// It prefers the standardized bead title pattern
+//
+//	"Deps(<ecosystem>): update <package> <old> → <new>"
+//
+// and otherwise requires the package name to appear on clear word boundaries
+// to avoid matching substrings of other package names (e.g., "react" in "react-dom").
+func textMentionsPackage(text, packageName string) bool {
+	if text == "" || packageName == "" {
+		return false
+	}
+
+	// Prefer the standardized bead title format, which includes
+	// " update <package> " for dependency updates.
+	if strings.Contains(text, " update "+packageName+" ") {
+		return true
+	}
+
+	// Fallback: require the package name to appear on space boundaries.
+	if text == packageName {
+		return true
+	}
+	if strings.HasPrefix(text, packageName+" ") {
+		return true
+	}
+	if strings.HasSuffix(text, " "+packageName) {
+		return true
+	}
+	if strings.Contains(text, " "+packageName+" ") {
+		return true
+	}
+
+	return false
 }
 
 // parseBeadTime attempts to parse a timestamp from bd's JSON output.

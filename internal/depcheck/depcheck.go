@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -147,10 +148,62 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 	}
 }
 
+// sortUpdates sorts ModuleUpdate slices by kind (major first) then path.
+// Used by all ecosystem scanners for consistent output ordering.
+func sortUpdates(updates []ModuleUpdate) {
+	order := map[string]int{"major": 0, "minor": 1, "patch": 2}
+	sort.Slice(updates, func(i, j int) bool {
+		if updates[i].Kind != updates[j].Kind {
+			return order[updates[i].Kind] < order[updates[j].Kind]
+		}
+		return updates[i].Path < updates[j].Path
+	})
+}
+
+// classifyUpdate determines if an update is patch, minor, or major.
+// Versions may use semver (vMAJOR.MINOR.PATCH) or bare numeric formats
+// (e.g. npm uses "1.2.3" without the v prefix; .NET uses "1.2.3").
+func classifyUpdate(current, latest string) string {
+	cMaj, cMin, _ := parseSemver(current)
+	lMaj, lMin, _ := parseSemver(latest)
+
+	if cMaj != lMaj {
+		return "major"
+	}
+	if cMin != lMin {
+		return "minor"
+	}
+	return "patch"
+}
+
+// parseSemver extracts major, minor, patch from a version string.
+// Handles formats like v1.2.3, 1.2.3, v1.2.3-pre, and
+// v0.0.0-date-hash (Go pseudo-versions).
+func parseSemver(v string) (major, minor, patch string) {
+	v = strings.TrimPrefix(v, "v")
+
+	// Strip any pre-release suffix for comparison
+	if idx := strings.Index(v, "-"); idx >= 0 {
+		v = v[:idx]
+	}
+
+	parts := strings.SplitN(v, ".", 3)
+	switch len(parts) {
+	case 3:
+		return parts[0], parts[1], parts[2]
+	case 2:
+		return parts[0], parts[1], "0"
+	case 1:
+		return parts[0], "0", "0"
+	default:
+		return "0", "0", "0"
+	}
+}
+
 // createBeads creates bead issues for the outdated dependencies found in an anvil.
 // Each module gets its own bead so that dedup, PR tracking, and agent assignment
-// are per-module. A DedupCache is built once per anvil to avoid spawning one
-// external command per module.
+// are per-module. A DedupCache is built for this scan result (per ecosystem in
+// scanAnvil) to avoid spawning one external command per module.
 func (s *Scanner) createBeads(ctx context.Context, result *CheckResult) {
 	cache := BuildDedupCache(ctx, s.db, result.Path, result.Anvil)
 

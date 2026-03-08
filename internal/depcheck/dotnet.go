@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -89,7 +88,7 @@ func findDotnetProjects(root string) []string {
 		dir := filepath.Dir(csproj)
 		covered := false
 		for slnDir := range slnDirs {
-			if strings.HasPrefix(dir, slnDir) {
+			if dir == slnDir || strings.HasPrefix(dir, slnDir+string(filepath.Separator)) {
 				covered = true
 				break
 			}
@@ -181,13 +180,6 @@ func runDotnetOutdated(ctx context.Context, timeout time.Duration, dir, projFile
 		}
 	}
 
-	order := map[string]int{"major": 0, "minor": 1, "patch": 2}
-	sort.Slice(updates, func(i, j int) bool {
-		if updates[i].Kind != updates[j].Kind {
-			return order[updates[i].Kind] < order[updates[j].Kind]
-		}
-		return updates[i].Path < updates[j].Path
-	})
-
+	sortUpdates(updates)
 	return updates, nil
 }

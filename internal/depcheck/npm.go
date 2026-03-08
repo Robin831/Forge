@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -95,9 +95,16 @@ func runNpmOutdated(ctx context.Context, timeout time.Duration, dir string) ([]M
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	// npm outdated returns exit code 1 when outdated packages exist,
-	// so we ignore the error and check the output instead.
-	_ = cmd.Run()
+	// npm outdated exits with code 1 when outdated packages exist — that is
+	// expected. Any other error type (binary not found, context cancelled, etc.)
+	// indicates the scan could not run at all and should be propagated.
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return nil, fmt.Errorf("npm outdated: %w", err)
+		}
+		// ExitError is expected when packages are outdated; continue parsing.
+	}
 
 	output := strings.TrimSpace(stdout.String())
 	if output == "" || output == "{}" {
@@ -127,13 +134,6 @@ func runNpmOutdated(ctx context.Context, timeout time.Duration, dir string) ([]M
 		})
 	}
 
-	order := map[string]int{"major": 0, "minor": 1, "patch": 2}
-	sort.Slice(updates, func(i, j int) bool {
-		if updates[i].Kind != updates[j].Kind {
-			return order[updates[i].Kind] < order[updates[j].Kind]
-		}
-		return updates[i].Path < updates[j].Path
-	})
-
+	sortUpdates(updates)
 	return updates, nil
 }
