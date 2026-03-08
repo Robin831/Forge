@@ -17,26 +17,19 @@ import (
 // to avoid adding sequential latency when there are many beads.
 //
 // This is needed because `bd ready --json` may not include the blocks field.
-// Only beads that are not already epic-type are checked (epics use their own
-// flow via ResolveEpicBranches).
+// All bead types are checked — any bead (feature, task, etc.) can have
+// children that need to be resolved.
 func ResolveBlocks(ctx context.Context, beads []Bead, anvilPaths map[string]string) {
 	type result struct {
 		index  int
 		blocks []string
 	}
 
-	// Identify beads that need resolution and collect unique lookups.
-	type lookupKey struct {
-		anvil  string
-		beadID string
-	}
+	// Identify beads that need resolution.
 	needed := make([]int, 0, len(beads))
 	for i := range beads {
 		b := &beads[i]
 		if len(b.Blocks) > 0 {
-			continue
-		}
-		if IsEpicBead(*b) {
 			continue
 		}
 		if _, ok := anvilPaths[b.Anvil]; !ok {

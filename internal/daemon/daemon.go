@@ -1003,7 +1003,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	// Handle epic beads: create the feature branch and mark in_progress,
 	// but skip the full pipeline (no code changes needed for the branch itself).
 	if poller.IsEpicBead(bead) {
-		epicBranch := poller.ExtractEpicBranch(bead)
+		epicBranch := poller.ExtractParentBranch(bead)
 		if epicBranch != "" {
 			d.logger.Info("creating epic branch", "bead", bead.ID, "branch", epicBranch)
 			if err := d.worktreeMgr.CreateEpicBranch(ctx, anvilCfg.Path, epicBranch); err != nil {

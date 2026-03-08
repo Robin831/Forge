@@ -49,6 +49,7 @@ func TestExtractEpicBranch_NotEpicNoLabel(t *testing.T) {
 		ID:        "task-1",
 		IssueType: "task",
 	}
+	// Non-epic, non-feature beads without an epic-branch label should not assume a default branch.
 	assert.Equal(t, "", ExtractEpicBranch(b))
 }
 
@@ -71,6 +72,25 @@ func TestIsEpicBead(t *testing.T) {
 			assert.Equal(t, tt.want, IsEpicBead(b))
 		})
 	}
+}
+
+func TestExtractEpicBranch_FeatureDefault(t *testing.T) {
+	b := Bead{
+		ID:        "feat-42",
+		IssueType: "feature",
+	}
+	// ExtractEpicBranch preserves legacy behavior: non-epic beads without
+	// an explicit label return empty. Use ExtractParentBranch for defaults.
+	assert.Equal(t, "", ExtractEpicBranch(b))
+}
+
+func TestExtractParentBranch_FeatureDefault(t *testing.T) {
+	b := Bead{
+		ID:        "feat-42",
+		IssueType: "feature",
+	}
+	// ExtractParentBranch returns a default feature/ branch for non-epics.
+	assert.Equal(t, "feature/feat-42", ExtractParentBranch(b))
 }
 
 func TestExtractEpicBranch_CaseInsensitiveLabel(t *testing.T) {
