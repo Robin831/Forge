@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -418,6 +419,47 @@ func FetchReadyToMerge(db *state.DB) tea.Cmd {
 	}
 }
 
+// FetchCrucibles reads active Crucible statuses from the daemon via IPC.
+func FetchCrucibles() tea.Cmd {
+	return func() tea.Msg {
+		client, err := ipc.NewClient()
+		if err != nil {
+			return UpdateCruciblesMsg{Items: nil}
+		}
+		defer client.Close()
+
+		resp, err := client.Send(ipc.Command{Type: "crucibles"})
+		if err != nil {
+			return UpdateCruciblesMsg{Items: nil}
+		}
+		if resp.Type != "ok" {
+			return UpdateCruciblesMsg{Items: nil}
+		}
+
+		var cr ipc.CruciblesResponse
+		if err := json.Unmarshal(resp.Payload, &cr); err != nil {
+			return UpdateCruciblesMsg{Items: nil}
+		}
+
+		var items []CrucibleItem
+		for _, c := range cr.Crucibles {
+			items = append(items, CrucibleItem{
+				ParentID:          c.ParentID,
+				ParentTitle:       c.ParentTitle,
+				Anvil:             c.Anvil,
+				Branch:            c.Branch,
+				Phase:             c.Phase,
+				TotalChildren:     c.TotalChildren,
+				CompletedChildren: c.CompletedChildren,
+				CurrentChild:      c.CurrentChild,
+				StartedAt:         c.StartedAt,
+			})
+		}
+
+		return UpdateCruciblesMsg{Items: items}
+	}
+}
+
 // FetchAll returns a batch command that refreshes all panels.
 func FetchAll(ds *DataSource) tea.Cmd {
 	return tea.Batch(
@@ -426,6 +468,7 @@ func FetchAll(ds *DataSource) tea.Cmd {
 		FetchReadyToMerge(ds.DB),
 		FetchWorkers(ds.DB),
 		FetchEvents(ds.DB, EventFetchLimit),
+		FetchCrucibles(),
 	)
 }
 

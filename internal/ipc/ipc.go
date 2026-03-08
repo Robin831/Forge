@@ -139,6 +139,24 @@ type CloseBeadPayload struct {
 	Anvil  string `json:"anvil"`
 }
 
+// CrucibleStatusItem represents an active Crucible's current state.
+type CrucibleStatusItem struct {
+	ParentID          string `json:"parent_id"`
+	ParentTitle       string `json:"parent_title"`
+	Anvil             string `json:"anvil"`
+	Branch            string `json:"branch"`
+	Phase             string `json:"phase"` // "started", "dispatching", "waiting", "final_pr", "complete", "paused"
+	TotalChildren     int    `json:"total_children"`
+	CompletedChildren int    `json:"completed_children"`
+	CurrentChild      string `json:"current_child"`
+	StartedAt         string `json:"started_at"`
+}
+
+// CruciblesResponse is the response payload for a "crucibles" command.
+type CruciblesResponse struct {
+	Crucibles []CrucibleStatusItem `json:"crucibles"`
+}
+
 // CommandHandler is called by the server for each incoming command.
 type CommandHandler func(cmd Command) Response
 
