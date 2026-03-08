@@ -85,9 +85,19 @@ func ResolveEpicBranches(ctx context.Context, beads []Bead, anvilPaths map[strin
 	}
 }
 
+// parentBeadResponse combines Bead fields with dependents for parent lookup.
+// We need dependents to verify the bead actually has children before returning
+// a default branch.
+type parentBeadResponse struct {
+	Bead
+	Dependents []bdShowDependent `json:"dependents"`
+}
+
 // lookupEpicBranch fetches a parent bead's details and extracts the feature
-// branch name. Any parent bead (epic, feature, etc.) can have a branch —
-// the check is based on the bead having children, not its type.
+// branch name. It only returns a branch for beads that have an explicit
+// epic-branch label, are epics, or actually have children (dependents with
+// type "blocks"). This prevents ordinary dependency relationships (e.g.
+// task blocks task) from generating spurious feature branches.
 func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -106,13 +116,36 @@ func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 	// bd show --json may return an array with a single element: [{...}]
 	output = unwrapJSONArray(output)
 
-	var parent Bead
-	if err := json.Unmarshal(output, &parent); err != nil {
+	var resp parentBeadResponse
+	if err := json.Unmarshal(output, &resp); err != nil {
 		log.Printf("lookupEpicBranch: failed to unmarshal bd show %s output: %v", parentID, err)
 		return ""
 	}
 
-	return ExtractParentBranch(parent)
+	// Guard: only return a branch for beads that have an explicit label,
+	// are epics, or actually have children. This prevents ordinary
+	// dependency relationships from creating non-existent base branches.
+	hasExplicitLabel := false
+	for _, label := range resp.Labels {
+		if strings.HasPrefix(strings.ToLower(label), strings.ToLower(EpicBranchLabelPrefix)) {
+			hasExplicitLabel = true
+			break
+		}
+	}
+
+	hasChildren := false
+	for _, dep := range resp.Dependents {
+		if dep.DependencyType == "blocks" {
+			hasChildren = true
+			break
+		}
+	}
+
+	if !hasExplicitLabel && !hasChildren && !strings.EqualFold(resp.IssueType, "epic") {
+		return ""
+	}
+
+	return ExtractParentBranch(resp.Bead)
 }
 
 // DefaultFeatureBranchPrefix is the branch name prefix used for non-epic
@@ -141,10 +174,30 @@ func ExtractParentBranch(b Bead) string {
 	return DefaultFeatureBranchPrefix + sanitizeBeadID(b.ID)
 }
 
-// ExtractEpicBranch is a backward-compatible wrapper for ExtractParentBranch.
+// ExtractEpicBranch is a backward-compatible wrapper that preserves the
+// legacy semantics used by older callers. It mirrors the label parsing
+// logic of ExtractParentBranch, but for non-epic beads without an explicit
+// epic-branch label it returns the empty string instead of a default feature
+// branch. New code should prefer ExtractParentBranch.
+//
 // Deprecated: Use ExtractParentBranch instead.
 func ExtractEpicBranch(b Bead) string {
-	return ExtractParentBranch(b)
+	for _, label := range b.Labels {
+		if strings.HasPrefix(strings.ToLower(label), strings.ToLower(EpicBranchLabelPrefix)) {
+			branch := strings.TrimPrefix(label, label[:len(EpicBranchLabelPrefix)])
+			branch = strings.TrimSpace(branch)
+			if branch != "" {
+				return branch
+			}
+		}
+	}
+
+	// Legacy default: only epics get an implicit default branch. Non-epic
+	// beads without an explicit label return the empty string.
+	if strings.EqualFold(b.IssueType, "epic") {
+		return DefaultEpicBranchPrefix + sanitizeBeadID(b.ID)
+	}
+	return ""
 }
 
 // IsEpicBead returns true if the bead is an epic type. This is used by the

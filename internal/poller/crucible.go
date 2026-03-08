@@ -25,11 +25,7 @@ func ResolveBlocks(ctx context.Context, beads []Bead, anvilPaths map[string]stri
 		blocks []string
 	}
 
-	// Identify beads that need resolution and collect unique lookups.
-	type lookupKey struct {
-		anvil  string
-		beadID string
-	}
+	// Identify beads that need resolution.
 	needed := make([]int, 0, len(beads))
 	for i := range beads {
 		b := &beads[i]
