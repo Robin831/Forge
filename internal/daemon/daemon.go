@@ -1024,17 +1024,18 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			smithProviderSpecs = d.cfg.Load().Settings.Providers
 		}
 		crucibleParams := crucible.Params{
-			DB:              d.db,
-			Logger:          d.logger,
-			WorktreeManager: d.worktreeMgr,
-			PromptBuilder:   d.promptBuilder,
-			ParentBead:      bead,
-			AnvilName:       bead.Anvil,
-			AnvilConfig:     anvilCfg,
-			ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
-			Providers:       provider.FromConfig(smithProviderSpecs),
-			GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
-			SmithTimeout:    d.cfg.Load().Settings.SmithTimeout,
+			DB:                        d.db,
+			Logger:                    d.logger,
+			WorktreeManager:           d.worktreeMgr,
+			PromptBuilder:             d.promptBuilder,
+			ParentBead:                bead,
+			AnvilName:                 bead.Anvil,
+			AnvilConfig:               anvilCfg,
+			ExtraFlags:                d.cfg.Load().Settings.ClaudeFlags,
+			Providers:                 provider.FromConfig(smithProviderSpecs),
+			GoRaceDetection:           d.resolveGoRaceDetection(anvilCfg),
+			SmithTimeout:              d.cfg.Load().Settings.SmithTimeout,
+			AutoMergeCrucibleChildren: d.cfg.Load().Settings.IsAutoMergeCrucibleChildren(),
 		}
 		if d.cfg.Load().Settings.SchematicEnabled {
 			wordThreshold := d.cfg.Load().Settings.SchematicWordThreshold
@@ -1048,7 +1049,12 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			crucibleParams.SchematicConfig = &schemCfg
 		}
 
-		result := crucible.Run(ctx, crucibleParams)
+		// IMPORTANT: derive crucibleCtx from context.Background(), NOT from the
+		// daemon's ctx. This ensures that a graceful shutdown (SIGINT/SIGTERM)
+		// does not cancel in-flight Crucible children mid-pipeline, which could
+		// result in lost partially-completed child PRs. Each child pipeline
+		// manages its own smith timeout internally.
+		result := crucible.Run(context.Background(), crucibleParams)
 		if result.Error != nil {
 			d.logger.Error("crucible failed", "bead", bead.ID, "error", result.Error)
 			if result.PausedChildID != "" {
@@ -1062,10 +1068,14 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		}
 		if result.Success {
 			_ = d.db.ClearRetry(bead.ID, bead.Anvil)
+			finalPRURL := ""
+			if result.FinalPR != nil {
+				finalPRURL = result.FinalPR.URL
+			}
 			d.logger.Info("crucible completed",
 				"bead", bead.ID,
 				"children", result.ChildrenDone,
-				"final_pr", result.FinalPR.URL)
+				"final_pr", finalPRURL)
 			// Parent bead stays open — bellows will close it when the final PR merges.
 			_ = d.db.LogEvent(state.EventCrucibleComplete,
 				fmt.Sprintf("Crucible %s complete: %d children merged, final PR created",

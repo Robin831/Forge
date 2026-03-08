@@ -51,13 +51,20 @@ type Params struct {
 	// StatusCallback is called when crucible state changes (for TUI tracking).
 	StatusCallback func(Status)
 
+	// AutoMergeCrucibleChildren controls whether child PRs are automatically
+	// merged (squash) into the feature branch after the pipeline succeeds.
+	// When false, child PRs are created but not merged (human review required).
+	// Default: true (zero value auto-merges).
+	AutoMergeCrucibleChildren bool
+
 	// Test injection points — when non-nil these replace the real implementations.
-	PipelineRunner func(ctx context.Context, p pipeline.Params) *pipeline.Outcome
-	PRCreator      func(ctx context.Context, p ghpr.CreateParams) (*ghpr.PR, error)
-	ChildFetcher   func(ctx context.Context, parentID, dir string) ([]poller.Bead, error)
-	PRMerger       func(ctx context.Context, prNumber int, dir string) error
-	BeadClaimer    func(ctx context.Context, beadID, dir string) error
-	BeadCloser     func(ctx context.Context, beadID, dir string) error
+	PipelineRunner     func(ctx context.Context, p pipeline.Params) *pipeline.Outcome
+	PRCreator          func(ctx context.Context, p ghpr.CreateParams) (*ghpr.PR, error)
+	ChildFetcher       func(ctx context.Context, parentID, dir string) ([]poller.Bead, error)
+	PRMerger           func(ctx context.Context, prNumber int, dir string) error
+	BeadClaimer        func(ctx context.Context, beadID, dir string) error
+	BeadCloser         func(ctx context.Context, beadID, dir string) error
+	EpicBranchCreator  func(ctx context.Context, dir, branch string) error
 }
 
 // Status tracks the current state of a Crucible for monitoring.
@@ -99,7 +106,7 @@ func Run(ctx context.Context, p Params) *Result {
 		p.ParentBead.ID)
 
 	// 1. Create feature branch from main.
-	if err := p.WorktreeManager.CreateEpicBranch(ctx, anvilPath, branch); err != nil {
+	if err := p.createEpicBranch(ctx, anvilPath, branch); err != nil {
 		return &Result{Error: fmt.Errorf("creating feature branch: %w", err)}
 	}
 
@@ -122,7 +129,7 @@ func Run(ctx context.Context, p Params) *Result {
 	}
 
 	log.Info("crucible children resolved", "count", len(sorted))
-	p.emitEvent(state.EventCrucibleStarted,
+	p.emitEvent(state.EventCrucibleChildDispatched,
 		fmt.Sprintf("Crucible %s: %d children queued on branch %s", p.ParentBead.ID, len(sorted), branch),
 		p.ParentBead.ID)
 
@@ -230,7 +237,12 @@ func Run(ctx context.Context, p Params) *Result {
 			fmt.Sprintf("Crucible %s: child %s PR #%d created against %s", p.ParentBead.ID, child.ID, pr.Number, branch),
 			child.ID)
 
-		// Merge child PR into feature branch (auto-merge since it's not main).
+		// Merge child PR into feature branch when auto-merge is enabled.
+		// When AutoMergeCrucibleChildren is false, PRs are left open for human review.
+		if !p.AutoMergeCrucibleChildren {
+			log.Info("auto-merge disabled, skipping merge for child PR", "child", child.ID, "pr", pr.Number)
+			continue
+		}
 		if err := p.mergePR(ctx, pr.Number, anvilPath); err != nil {
 			log.Error("failed to merge child PR", "child", child.ID, "pr", pr.Number, "error", err)
 			p.emitEvent(state.EventCrucibleChildFailed,
@@ -363,6 +375,7 @@ func FetchChildren(ctx context.Context, parentID, dir string) ([]poller.Bead, er
 		child, err := FetchBead(ctx, childID, dir)
 		if err != nil {
 			// Log and skip — a missing child shouldn't block the whole Crucible.
+			slog.Warn("failed to fetch child bead", "parent_id", parentID, "child_id", childID, "dir", dir, "error", err)
 			continue
 		}
 		// Only include open children (not already closed or in_progress by someone else).
@@ -510,6 +523,14 @@ func (p *Params) closeBead(ctx context.Context, beadID, dir string) error {
 	return nil
 }
 
+// createEpicBranch creates the feature branch, using the injected creator if set.
+func (p *Params) createEpicBranch(ctx context.Context, dir, branch string) error {
+	if p.EpicBranchCreator != nil {
+		return p.EpicBranchCreator(ctx, dir, branch)
+	}
+	return p.WorktreeManager.CreateEpicBranch(ctx, dir, branch)
+}
+
 // emitEvent logs an event to the state DB.
 func (p *Params) emitEvent(eventType state.EventType, msg, beadID string) {
 	if p.DB != nil {
@@ -551,6 +572,7 @@ func sanitizeID(id string) string {
 		" ", "-",
 		":", "-",
 		"\\", "-",
+		"/", "-",
 	)
 	return r.Replace(id)
 }

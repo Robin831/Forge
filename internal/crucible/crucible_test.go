@@ -12,7 +12,6 @@ import (
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/state"
-	"github.com/Robin831/Forge/internal/worktree"
 )
 
 // testDB creates a temporary state DB for testing.
@@ -34,31 +33,30 @@ func TestRun_NoChildren(t *testing.T) {
 	p := Params{
 		DB:     db,
 		Logger: logger,
-		WorktreeManager: &worktree.Manager{WorkersDir: t.TempDir()},
 		ParentBead: poller.Bead{
 			ID:    "parent-1",
 			Title: "Parent bead",
 		},
 		AnvilName:   "test-anvil",
 		AnvilConfig: config.AnvilConfig{Path: t.TempDir()},
+		EpicBranchCreator: func(ctx context.Context, dir, branch string) error {
+			return nil // succeed without git
+		},
 		ChildFetcher: func(ctx context.Context, parentID, dir string) ([]poller.Bead, error) {
 			return nil, nil // No children
 		},
 	}
 
-	// Mock CreateEpicBranch since we don't have a real git repo.
-	// The crucible calls WorktreeManager.CreateEpicBranch which needs git.
-	// For this test, we need to either mock it or skip. Let's test the child
-	// fetcher returning no children by verifying the result.
-	// Since CreateEpicBranch will fail without git, we verify the error path.
 	result := Run(context.Background(), p)
 
-	// CreateEpicBranch will fail in test env (no git repo), which is expected.
-	if result.Error == nil {
-		// If it somehow succeeds (unlikely without git), verify success.
-		if !result.Success {
-			t.Fatal("expected success when no children")
-		}
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Success {
+		t.Fatal("expected success when no children")
+	}
+	if result.ChildrenDone != 0 {
+		t.Errorf("expected 0 children done, got %d", result.ChildrenDone)
 	}
 }
 
@@ -75,13 +73,17 @@ func TestRun_WithChildren_MockPipeline(t *testing.T) {
 	p := Params{
 		DB:     db,
 		Logger: logger,
-		WorktreeManager: &worktree.Manager{WorkersDir: t.TempDir()},
 		ParentBead: poller.Bead{
 			ID:    "parent-1",
 			Title: "Parent bead",
 		},
-		AnvilName:   "test-anvil",
-		AnvilConfig: config.AnvilConfig{Path: t.TempDir()},
+		AnvilName:                 "test-anvil",
+		AnvilConfig:               config.AnvilConfig{Path: t.TempDir()},
+		AutoMergeCrucibleChildren: true,
+
+		EpicBranchCreator: func(ctx context.Context, dir, branch string) error {
+			return nil // succeed without git
+		},
 
 		ChildFetcher: func(ctx context.Context, parentID, dir string) ([]poller.Bead, error) {
 			return []poller.Bead{
@@ -119,53 +121,51 @@ func TestRun_WithChildren_MockPipeline(t *testing.T) {
 		},
 	}
 
-	// We need to mock CreateEpicBranch. Since we can't easily mock the
-	// worktree manager, this test will fail at CreateEpicBranch. For a full
-	// integration test, we'd need a git repo. Let's test just the logic path.
 	result := Run(context.Background(), p)
 
-	// CreateEpicBranch fails in test (no git), so test the error case.
-	if result.Error == nil {
-		// Verify child dispatch order: child-1 before child-2 (topo sorted).
-		if len(dispatchedChildren) != 2 {
-			t.Fatalf("expected 2 dispatches, got %d", len(dispatchedChildren))
-		}
-		if dispatchedChildren[0] != "child-1" {
-			t.Errorf("expected child-1 first, got %s", dispatchedChildren[0])
-		}
-		if dispatchedChildren[1] != "child-2" {
-			t.Errorf("expected child-2 second, got %s", dispatchedChildren[1])
-		}
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
 
-		// Verify child PRs target the feature branch.
-		for _, pr := range createdPRs[:2] { // First 2 are child PRs
-			if pr.Base != "feature/parent-1" {
-				t.Errorf("child PR base should be feature/parent-1, got %s", pr.Base)
-			}
-		}
+	// Verify child dispatch order: child-1 before child-2 (topo sorted).
+	if len(dispatchedChildren) != 2 {
+		t.Fatalf("expected 2 dispatches, got %d", len(dispatchedChildren))
+	}
+	if dispatchedChildren[0] != "child-1" {
+		t.Errorf("expected child-1 first, got %s", dispatchedChildren[0])
+	}
+	if dispatchedChildren[1] != "child-2" {
+		t.Errorf("expected child-2 second, got %s", dispatchedChildren[1])
+	}
 
-		// Verify final PR targets main (empty base).
-		if len(createdPRs) >= 3 && createdPRs[2].Base != "" {
-			t.Errorf("final PR base should be empty (main), got %s", createdPRs[2].Base)
+	// Verify child PRs target the feature branch.
+	for _, pr := range createdPRs[:2] { // First 2 are child PRs
+		if pr.Base != "feature/parent-1" {
+			t.Errorf("child PR base should be feature/parent-1, got %s", pr.Base)
 		}
+	}
 
-		// Verify children were merged.
-		if len(mergedPRs) != 2 {
-			t.Errorf("expected 2 merged PRs, got %d", len(mergedPRs))
-		}
+	// Verify final PR targets main (empty base).
+	if len(createdPRs) >= 3 && createdPRs[2].Base != "" {
+		t.Errorf("final PR base should be empty (main), got %s", createdPRs[2].Base)
+	}
 
-		// Verify children were closed.
-		if len(closedBeads) != 2 {
-			t.Errorf("expected 2 closed beads, got %d", len(closedBeads))
-		}
+	// Verify children were merged.
+	if len(mergedPRs) != 2 {
+		t.Errorf("expected 2 merged PRs, got %d", len(mergedPRs))
+	}
 
-		// Verify result.
-		if !result.Success {
-			t.Error("expected success")
-		}
-		if result.ChildrenTotal != 2 {
-			t.Errorf("expected 2 children total, got %d", result.ChildrenTotal)
-		}
+	// Verify children were closed.
+	if len(closedBeads) != 2 {
+		t.Errorf("expected 2 closed beads, got %d", len(closedBeads))
+	}
+
+	// Verify result.
+	if !result.Success {
+		t.Error("expected success")
+	}
+	if result.ChildrenTotal != 2 {
+		t.Errorf("expected 2 children total, got %d", result.ChildrenTotal)
 	}
 }
 
@@ -176,13 +176,16 @@ func TestRun_ChildPipelineFailure_Pauses(t *testing.T) {
 	p := Params{
 		DB:     db,
 		Logger: logger,
-		WorktreeManager: &worktree.Manager{WorkersDir: t.TempDir()},
 		ParentBead: poller.Bead{
 			ID:    "parent-1",
 			Title: "Parent bead",
 		},
 		AnvilName:   "test-anvil",
 		AnvilConfig: config.AnvilConfig{Path: t.TempDir()},
+
+		EpicBranchCreator: func(ctx context.Context, dir, branch string) error {
+			return nil // succeed without git
+		},
 
 		ChildFetcher: func(ctx context.Context, parentID, dir string) ([]poller.Bead, error) {
 			return []poller.Bead{
@@ -204,11 +207,12 @@ func TestRun_ChildPipelineFailure_Pauses(t *testing.T) {
 
 	result := Run(context.Background(), p)
 
-	// CreateEpicBranch will fail in test, but if it succeeds:
 	if result.Error == nil {
 		t.Fatal("expected error when child pipeline fails")
 	}
-	// The error should be about feature branch creation (test env) or child failure.
+	if result.PausedChildID != "child-1" {
+		t.Errorf("expected paused child to be child-1, got %q", result.PausedChildID)
+	}
 }
 
 func TestIsCrucibleCandidate(t *testing.T) {
@@ -290,6 +294,7 @@ func TestSanitizeID(t *testing.T) {
 		{"with:colons", "with-colons"},
 		{"with\\backslashes", "with-backslashes"},
 		{"Forge-abc", "Forge-abc"},
+		{"project/123", "project-123"},
 	}
 
 	for _, tt := range tests {

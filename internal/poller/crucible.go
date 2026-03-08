@@ -6,48 +6,68 @@ import (
 	"encoding/json"
 	"log"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
 )
 
 // ResolveBlocks enriches ready beads with their blocks (children) field by
-// calling `bd show <id> --json` for each bead. Results are cached per poll
-// cycle to avoid duplicate calls.
+// calling `bd show <id> --json` for each bead. Lookups are run concurrently
+// to avoid adding sequential latency when there are many beads.
 //
 // This is needed because `bd ready --json` may not include the blocks field.
 // Only beads that are not already epic-type are checked (epics use their own
 // flow via ResolveEpicBranches).
 func ResolveBlocks(ctx context.Context, beads []Bead, anvilPaths map[string]string) {
-	cache := make(map[string][]string) // "anvil:beadID" → blocks
+	type result struct {
+		index  int
+		blocks []string
+	}
 
+	// Identify beads that need resolution and collect unique lookups.
+	type lookupKey struct {
+		anvil  string
+		beadID string
+	}
+	needed := make([]int, 0, len(beads))
 	for i := range beads {
 		b := &beads[i]
-
-		// Skip beads that already have blocks populated.
 		if len(b.Blocks) > 0 {
 			continue
 		}
-
-		// Skip epic beads — they have their own dispatch flow.
 		if IsEpicBead(*b) {
 			continue
 		}
-
-		anvilPath, ok := anvilPaths[b.Anvil]
-		if !ok {
+		if _, ok := anvilPaths[b.Anvil]; !ok {
 			continue
 		}
+		needed = append(needed, i)
+	}
 
-		cacheKey := b.Anvil + ":" + b.ID
-		if blocks, cached := cache[cacheKey]; cached {
-			b.Blocks = blocks
-			continue
-		}
+	if len(needed) == 0 {
+		return
+	}
 
-		blocks := lookupBlocks(ctx, b.ID, anvilPath)
-		cache[cacheKey] = blocks
-		b.Blocks = blocks
+	results := make([]result, len(needed))
+	var wg sync.WaitGroup
+	wg.Add(len(needed))
+
+	for j, i := range needed {
+		j, i := j, i // capture loop vars
+		go func() {
+			defer wg.Done()
+			b := beads[i]
+			anvilPath := anvilPaths[b.Anvil]
+			blocks := lookupBlocks(ctx, b.ID, anvilPath)
+			results[j] = result{index: i, blocks: blocks}
+		}()
+	}
+
+	wg.Wait()
+
+	for _, r := range results {
+		beads[r.index].Blocks = r.blocks
 	}
 }
 
