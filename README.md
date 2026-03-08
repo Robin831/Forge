@@ -14,7 +14,7 @@ The Forge uses a blacksmith metaphor throughout:
 | **Temper**  | Build/lint/test verification                |
 | **Bellows** | PR monitor (CI failures, review comments)   |
 | **Schematic** | Pre-analysis worker (decomposes complex beads) |
-| **Depcheck** | Periodic dependency update scanner            |
+| **Depcheck** | Periodic Go module dependency update scanner  |
 | **Anvil**   | Repository workspace                        |
 | **Heat**    | Work batch / session                        |
 
