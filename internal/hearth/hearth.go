@@ -328,8 +328,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "k", "up":
 				m.queueActionMenuIdx = (m.queueActionMenuIdx + int(queueActionMenuCount) - 1) % int(queueActionMenuCount)
 			case "enter":
-				m.executeQueueAction(QueueActionMenuChoice(m.queueActionMenuIdx))
+				cmd := m.executeQueueAction(QueueActionMenuChoice(m.queueActionMenuIdx))
 				m.showQueueActionMenu = false
+				return m, cmd
 			}
 			return m, nil
 		}
@@ -437,7 +438,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				item := m.queue[m.queueVP.cursor]
 				if item.Section == "unlabeled" {
 					m.queueActionTarget = &item
-					m.executeQueueAction(QueueActionLabel)
+					cmd := m.executeQueueAction(QueueActionLabel)
+					return m, cmd
 				}
 			}
 		}
@@ -530,6 +532,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.prevEventCount = len(msg.Items)
+
+	case QueueActionResultMsg:
+		if msg.Err != nil {
+			if msg.Action == "tag" {
+				m.setStatus(fmt.Sprintf("Failed to tag %s: %v", msg.BeadID, msg.Err), true)
+			} else {
+				m.setStatus(fmt.Sprintf("Failed to close %s: %v", msg.BeadID, msg.Err), true)
+			}
+		} else {
+			if msg.Action == "tag" {
+				m.setStatus(fmt.Sprintf("Tagged %s for dispatch", msg.BeadID), false)
+			} else {
+				m.setStatus(fmt.Sprintf("Closed %s", msg.BeadID), false)
+			}
+		}
 
 	case MergeResultMsg:
 		if msg.Err != nil {
@@ -834,51 +851,62 @@ func (m *Model) renderActionMenu() string {
 	return popup
 }
 
-// tagSelectedQueueItem tags the bead stored in queueActionTarget for dispatch.
-func (m *Model) tagSelectedQueueItem() {
-	if m.queueActionTarget == nil {
-		return
-	}
-	item := m.queueActionTarget
-	if m.OnTagBead != nil {
-		if err := m.OnTagBead(item.BeadID, item.Anvil); err != nil {
-			m.setStatus(fmt.Sprintf("Failed to tag %s: %v", item.BeadID, err), true)
-		} else {
-			m.setStatus(fmt.Sprintf("Tagged %s for dispatch", item.BeadID), false)
-		}
-	} else {
-		m.setStatus(fmt.Sprintf("Label action unavailable for %s", item.BeadID), false)
-	}
+// QueueActionResultMsg is delivered asynchronously when a queue action (tag/close) completes.
+type QueueActionResultMsg struct {
+	BeadID string
+	Action string // "tag" or "close"
+	Err    error
 }
 
-// executeQueueAction runs the selected queue action menu choice against the target bead.
-func (m *Model) executeQueueAction(choice QueueActionMenuChoice) {
+// executeQueueAction returns a tea.Cmd that runs the queue action asynchronously,
+// keeping the Bubbletea UI responsive during the IPC round-trip.
+func (m *Model) executeQueueAction(choice QueueActionMenuChoice) tea.Cmd {
 	if m.queueActionTarget == nil {
-		return
+		return nil
 	}
 
 	switch choice {
 	case QueueActionLabel:
-		m.tagSelectedQueueItem()
+		return m.tagSelectedQueueItem()
 	case QueueActionClose:
-		m.closeSelectedQueueItem()
+		return m.closeSelectedQueueItem()
+	}
+	return nil
+}
+
+// tagSelectedQueueItem tags the bead stored in queueActionTarget for dispatch.
+func (m *Model) tagSelectedQueueItem() tea.Cmd {
+	if m.queueActionTarget == nil {
+		return nil
+	}
+	item := m.queueActionTarget
+	if m.OnTagBead == nil {
+		m.setStatus(fmt.Sprintf("Label action unavailable for %s", item.BeadID), false)
+		return nil
+	}
+	m.setStatus(fmt.Sprintf("Tagging %s…", item.BeadID), false)
+	beadID, anvil := item.BeadID, item.Anvil
+	cb := m.OnTagBead
+	return func() tea.Msg {
+		return QueueActionResultMsg{BeadID: beadID, Action: "tag", Err: cb(beadID, anvil)}
 	}
 }
 
 // closeSelectedQueueItem closes the bead stored in queueActionTarget.
-func (m *Model) closeSelectedQueueItem() {
+func (m *Model) closeSelectedQueueItem() tea.Cmd {
 	if m.queueActionTarget == nil {
-		return
+		return nil
 	}
 	item := m.queueActionTarget
-	if m.OnCloseBead != nil {
-		if err := m.OnCloseBead(item.BeadID, item.Anvil); err != nil {
-			m.setStatus(fmt.Sprintf("Failed to close %s: %v", item.BeadID, err), true)
-		} else {
-			m.setStatus(fmt.Sprintf("Closed %s", item.BeadID), false)
-		}
-	} else {
+	if m.OnCloseBead == nil {
 		m.setStatus(fmt.Sprintf("Close action unavailable for %s", item.BeadID), false)
+		return nil
+	}
+	m.setStatus(fmt.Sprintf("Closing %s…", item.BeadID), false)
+	beadID, anvil := item.BeadID, item.Anvil
+	cb := m.OnCloseBead
+	return func() tea.Msg {
+		return QueueActionResultMsg{BeadID: beadID, Action: "close", Err: cb(beadID, anvil)}
 	}
 }
 
