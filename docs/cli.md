@@ -53,8 +53,8 @@ Open the TUI dashboard. Requires the daemon to be running.
 forge hearth
 ```
 
-Three-column layout with six panels:
-- **Left column**: Queue (ready beads), Ready to Merge (PRs passing CI and approved), and Needs Attention (beads requiring human intervention)
+Three-column layout with up to seven panels:
+- **Left column**: Queue (ready beads), Crucibles (active epic orchestrations, shown when present), Ready to Merge (PRs passing CI and approved), and Needs Attention (beads requiring human intervention)
 - **Center column**: Workers (active Smith, Temper, Warden, CIFix, ReviewFix processes)
 - **Right column**: Live Activity (streaming worker log) and Events (timestamped event log)
 
@@ -299,3 +299,41 @@ forge changelog validate Forge-abc Forge-xyz
 | `--dir` | Root directory containing `changelog.d/` (default: `.`) |
 
 Exits non-zero if any bead is missing a fragment.
+
+## Warden Rule Management
+
+### `forge warden learn`
+
+Learn review rules from GitHub Copilot comments on recently merged PRs for an anvil. Rules are saved to `<anvil-path>/.forge/warden-rules.yaml`.
+
+```bash
+forge warden learn --anvil heimdall
+```
+
+| Flag | Description |
+|------|-------------|
+| `-a, --anvil` | Anvil name (required) |
+
+### `forge warden list`
+
+List all learned review rules for an anvil.
+
+```bash
+forge warden list --anvil heimdall
+```
+
+| Flag | Description |
+|------|-------------|
+| `-a, --anvil` | Anvil name (required) |
+
+### `forge warden forget`
+
+Remove a learned rule by ID.
+
+```bash
+forge warden forget <rule-id> --anvil heimdall
+```
+
+| Flag | Description |
+|------|-------------|
+| `-a, --anvil` | Anvil name (required) |

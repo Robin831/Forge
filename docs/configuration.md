@@ -86,6 +86,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `auto_dispatch_min_priority` | int | 0 | Required when `auto_dispatch: priority`. Only beads with priority <= this value are dispatched. Range: 0-4. |
 | `schematic_enabled` | bool\|null | null (use global) | Per-anvil override for `settings.schematic_enabled`. When set, takes precedence over the global setting. |
 | `golangci_lint` | bool\|null | null (auto-detect) | Per-anvil override for golangci-lint in Temper. When null, golangci-lint runs if the binary is found on PATH. Set to `false` to disable. |
+| `go_race_detection` | bool | `false` | Enable the `-race` flag for Go tests in Temper. |
 
 ### Auto-Dispatch Modes
 
@@ -117,7 +118,8 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `max_rebase_attempts` | int | `3` | `1` | Maximum conflict rebase attempts per PR before marking as exhausted. |
 | `merge_strategy` | string | `"squash"` | | How PRs are merged from Hearth TUI. Valid: `squash`, `merge`, `rebase`. |
 | `stale_interval` | duration | `5m` | `30s` or `0` | How long a worker's log can go without modification before marking as stalled. `0` disables stale detection. |
-| `depcheck_interval` | duration | `168h` | `1h` or `0` | How often the dependency checker runs `go list -m -u all` on Go anvils. `0` disables. |
+| `go_race_detection` | bool | `false` | | Enable the `-race` flag for Go tests in Temper globally. Per-anvil `go_race_detection` overrides this. |
+| `depcheck_interval` | duration | `168h` | `1h` or `0` | How often the dependency checker scans anvils for outdated dependencies (Go, .NET, Node). `0` disables. |
 | `depcheck_timeout` | duration | `5m` | | Maximum time for a single depcheck invocation per anvil. |
 | `vulncheck_enabled` | bool | `true` | | Enable/disable vulnerability scanning entirely. When `false`, scheduled scanning and `forge scan` are disabled. |
 | `vulncheck_interval` | duration | `24h` | `0` | How often `govulncheck` runs on registered Go anvils. `0` disables. |
@@ -174,6 +176,9 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_VULNCHECK_INTERVAL` | `settings.vulncheck_interval` |
 | `FORGE_SETTINGS_VULNCHECK_TIMEOUT` | `settings.vulncheck_timeout` |
 | `FORGE_SETTINGS_AUTO_LEARN_RULES` | `settings.auto_learn_rules` |
+| `FORGE_SETTINGS_GO_RACE_DETECTION` | `settings.go_race_detection` |
+| `FORGE_SETTINGS_CRUCIBLE_ENABLED` | `settings.crucible_enabled` |
+| `FORGE_SETTINGS_AUTO_MERGE_CRUCIBLE_CHILDREN` | `settings.auto_merge_crucible_children` |
 | `FORGE_NOTIFICATIONS_ENABLED` | `notifications.enabled` |
 | `FORGE_NOTIFICATIONS_TEAMS_WEBHOOK_URL` | `notifications.teams_webhook_url` |
 
