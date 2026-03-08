@@ -112,18 +112,18 @@ func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 		return ""
 	}
 
-	return ExtractEpicBranch(parent)
+	return ExtractParentBranch(parent)
 }
 
 // DefaultFeatureBranchPrefix is the branch name prefix used for non-epic
 // parent beads (e.g. features) that have no explicit epic-branch label.
 const DefaultFeatureBranchPrefix = "feature/"
 
-// ExtractEpicBranch extracts the feature branch name from a bead's labels.
-// It looks for a label with the "epic-branch:" prefix. If none is found,
-// it returns a default branch: "epic/<bead-id>" for epics, or
+// ExtractParentBranch extracts the shared feature branch name from a parent
+// bead's labels. It looks for a label with the "epic-branch:" prefix. If none
+// is found, it returns a default branch: "epic/<bead-id>" for epics, or
 // "feature/<bead-id>" for other types (e.g. features with children).
-func ExtractEpicBranch(b Bead) string {
+func ExtractParentBranch(b Bead) string {
 	for _, label := range b.Labels {
 		if strings.HasPrefix(strings.ToLower(label), strings.ToLower(EpicBranchLabelPrefix)) {
 			branch := strings.TrimPrefix(label, label[:len(EpicBranchLabelPrefix)])
@@ -139,6 +139,12 @@ func ExtractEpicBranch(b Bead) string {
 		return DefaultEpicBranchPrefix + sanitizeBeadID(b.ID)
 	}
 	return DefaultFeatureBranchPrefix + sanitizeBeadID(b.ID)
+}
+
+// ExtractEpicBranch is a backward-compatible wrapper for ExtractParentBranch.
+// Deprecated: Use ExtractParentBranch instead.
+func ExtractEpicBranch(b Bead) string {
+	return ExtractParentBranch(b)
 }
 
 // IsEpicBead returns true if the bead is an epic type. This is used by the

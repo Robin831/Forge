@@ -17,8 +17,8 @@ import (
 // to avoid adding sequential latency when there are many beads.
 //
 // This is needed because `bd ready --json` may not include the blocks field.
-// All bead types are checked — any bead (epic, feature, task, etc.) can have
-// children and be eligible for Crucible orchestration.
+// All bead types are checked — any bead (feature, task, etc.) can have
+// children that need to be resolved.
 func ResolveBlocks(ctx context.Context, beads []Bead, anvilPaths map[string]string) {
 	type result struct {
 		index  int
