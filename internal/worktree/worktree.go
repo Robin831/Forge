@@ -83,9 +83,11 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		return nil, fmt.Errorf("creating workers directory: %w", err)
 	}
 
-	// Check if worktree already exists
+	// If worktree already exists, reuse it. This happens when a lifecycle
+	// action (CI fix, review fix, rebase) fires while the worktree from the
+	// original pipeline hasn't been cleaned up yet.
 	if _, err := os.Stat(worktreePath); err == nil {
-		return nil, fmt.Errorf("worktree already exists at %s", worktreePath)
+		return &Worktree{Path: worktreePath, Branch: targetBranch}, nil
 	}
 
 	// Fetch origin
