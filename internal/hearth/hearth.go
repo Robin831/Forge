@@ -44,13 +44,14 @@ const (
 
 // QueueItem represents a bead in the queue panel.
 type QueueItem struct {
-	BeadID   string
-	Title    string
-	Anvil    string
-	Priority int
-	Status   string
-	Section  string // "ready", "unlabeled", "in_progress"
-	Assignee string
+	BeadID      string
+	Title       string
+	Description string
+	Anvil       string
+	Priority    int
+	Status      string
+	Section     string // "ready", "unlabeled", "in_progress"
+	Assignee    string
 }
 
 // AttentionReason categorizes why a bead needs human attention.
@@ -824,11 +825,17 @@ func (m *Model) renderActionMenu() string {
 	}
 
 	menuWidth := 52
+	contentWidth := menuWidth - 4 // account for padding
 	labels := actionMenuLabels()
 
 	var lines []string
 	title := fmt.Sprintf("Actions for %s", m.actionTarget.BeadID)
 	lines = append(lines, actionMenuTitleStyle.Render(title))
+
+	if m.actionTarget.Title != "" {
+		lines = append(lines, dimStyle.Render(truncate(m.actionTarget.Title, contentWidth)))
+	}
+
 	lines = append(lines, "")
 
 	for i, label := range labels {
@@ -917,11 +924,42 @@ func (m *Model) renderQueueActionMenu() string {
 	}
 
 	menuWidth := 52
+	contentWidth := menuWidth - 4 // account for padding
 	labels := queueActionMenuLabels()
 
 	var lines []string
 	title := fmt.Sprintf("Actions for %s", m.queueActionTarget.BeadID)
 	lines = append(lines, actionMenuTitleStyle.Render(title))
+
+	if m.queueActionTarget.Title != "" {
+		lines = append(lines, dimStyle.Render(truncate(m.queueActionTarget.Title, contentWidth)))
+	}
+	if m.queueActionTarget.Description != "" {
+		lines = append(lines, "")
+		// Word-wrap description to fit popup width, max 3 lines.
+		desc := m.queueActionTarget.Description
+		for i := 0; i < 3; i++ {
+			if len(desc) == 0 {
+				break
+			}
+			if len(desc) <= contentWidth {
+				lines = append(lines, dimStyle.Render(desc))
+				desc = ""
+				break
+			}
+			// Find last space within width for word wrap.
+			cut := contentWidth
+			if idx := strings.LastIndex(desc[:cut], " "); idx > 0 {
+				cut = idx
+			}
+			lines = append(lines, dimStyle.Render(desc[:cut]))
+			desc = strings.TrimLeft(desc[cut:], " ")
+		}
+		if len(desc) > 0 {
+			lines = append(lines, dimStyle.Render("..."))
+		}
+	}
+
 	lines = append(lines, "")
 
 	for i, label := range labels {
