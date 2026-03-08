@@ -61,6 +61,8 @@ settings:
   vulncheck_interval: 24h
   vulncheck_timeout: 10m
   auto_learn_rules: true
+  crucible_enabled: true
+  auto_merge_crucible_children: true
 
 notifications:
   enabled: true
@@ -121,6 +123,8 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `vulncheck_interval` | duration | `24h` | `0` | How often `govulncheck` runs on registered Go anvils. `0` disables. |
 | `vulncheck_timeout` | duration | `10m` | | Maximum time for a single govulncheck invocation per anvil. |
 | `auto_learn_rules` | bool | `false` | | Automatically learn Warden review rules from Copilot comments when a PR is merged. Rules are saved to each anvil's `.forge/warden-rules.yaml`. |
+| `crucible_enabled` | bool | `false` | | Enable Crucible auto-orchestration for parent beads with children. When a ready bead blocks other beads, the Crucible creates a feature branch, dispatches children in topological order, merges each child PR, then creates a final PR to main. |
+| `auto_merge_crucible_children` | bool | `true` | | Auto-merge child PRs targeting a Crucible feature branch after the pipeline succeeds. Set to `false` to require manual merge of child PRs. |
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
 

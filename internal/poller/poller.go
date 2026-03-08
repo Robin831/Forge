@@ -29,6 +29,8 @@ type Bead struct {
 	Assignee    string   `json:"assignee"`
 	Parent      string   `json:"parent"`
 	Labels      []string `json:"labels"`
+	Blocks      []string `json:"blocks"`      // Bead IDs that this bead blocks (children)
+	DependsOn   []string `json:"depends_on"`   // Bead IDs that this bead depends on
 
 	// Forge-injected: which anvil this bead belongs to
 	Anvil string `json:"-"`

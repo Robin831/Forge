@@ -29,6 +29,7 @@ import (
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/cifix"
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ghpr"
@@ -728,6 +729,13 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	}
 	poller.ResolveEpicBranches(ctx, beads, anvilPaths)
 
+	// When Crucible is enabled, enrich beads with their blocks (children)
+	// so we can detect parent beads that should be dispatched through the
+	// Crucible instead of the normal pipeline.
+	if cfg.Settings.CrucibleEnabled {
+		poller.ResolveBlocks(ctx, beads, anvilPaths)
+	}
+
 	// Update cache
 	d.lastBeadsMu.Lock()
 	d.lastBeads = beads
@@ -1003,6 +1011,68 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			// Do not close the epic or run the pipeline.
 			return
 		}
+	}
+
+	// Handle Crucible beads: parent beads that block children. The Crucible
+	// orchestrates all children on a feature branch, merging each child's PR
+	// before dispatching the next, then creates a final PR to main.
+	if d.cfg.Load().Settings.CrucibleEnabled && crucible.IsCrucibleCandidate(bead) {
+		d.logger.Info("dispatching crucible", "bead", bead.ID, "children", len(bead.Blocks))
+
+		smithProviderSpecs := d.cfg.Load().Settings.SmithProviders
+		if len(smithProviderSpecs) == 0 {
+			smithProviderSpecs = d.cfg.Load().Settings.Providers
+		}
+		crucibleParams := crucible.Params{
+			DB:              d.db,
+			Logger:          d.logger,
+			WorktreeManager: d.worktreeMgr,
+			PromptBuilder:   d.promptBuilder,
+			ParentBead:      bead,
+			AnvilName:       bead.Anvil,
+			AnvilConfig:     anvilCfg,
+			ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
+			Providers:       provider.FromConfig(smithProviderSpecs),
+			GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
+			SmithTimeout:    d.cfg.Load().Settings.SmithTimeout,
+		}
+		if d.cfg.Load().Settings.SchematicEnabled {
+			wordThreshold := d.cfg.Load().Settings.SchematicWordThreshold
+			if wordThreshold <= 0 {
+				wordThreshold = 100
+			}
+			schemCfg := schematic.DefaultConfig()
+			schemCfg.Enabled = true
+			schemCfg.WordThreshold = wordThreshold
+			schemCfg.ExtraFlags = d.cfg.Load().Settings.ClaudeFlags
+			crucibleParams.SchematicConfig = &schemCfg
+		}
+
+		result := crucible.Run(ctx, crucibleParams)
+		if result.Error != nil {
+			d.logger.Error("crucible failed", "bead", bead.ID, "error", result.Error)
+			if result.PausedChildID != "" {
+				d.recordDispatchFailure(bead.ID, bead.Anvil,
+					fmt.Sprintf("crucible paused: child %s failed", result.PausedChildID))
+			} else {
+				d.recordDispatchFailure(bead.ID, bead.Anvil,
+					fmt.Sprintf("crucible error: %v", result.Error))
+			}
+			return
+		}
+		if result.Success {
+			_ = d.db.ClearRetry(bead.ID, bead.Anvil)
+			d.logger.Info("crucible completed",
+				"bead", bead.ID,
+				"children", result.ChildrenDone,
+				"final_pr", result.FinalPR.URL)
+			// Parent bead stays open — bellows will close it when the final PR merges.
+			_ = d.db.LogEvent(state.EventCrucibleComplete,
+				fmt.Sprintf("Crucible %s complete: %d children merged, final PR created",
+					bead.ID, result.ChildrenDone),
+				bead.ID, bead.Anvil)
+		}
+		return
 	}
 
 	// Apply smith timeout.

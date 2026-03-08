@@ -62,6 +62,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/temper` | Runs build/lint/test checks; auto-detects Go, .NET, Node |
 | `internal/warden` | Spawns a second Claude session to review Smith's diff |
 | `internal/bellows` | Monitors open PRs for CI failures, review comments, and merge conflicts |
+| `internal/crucible` | Orchestrates parent beads with children on feature branches — auto-detects, sequences, merges |
 | `internal/depcheck` | Periodic Go module update checker — creates beads for outdated dependencies |
 | `internal/schematic` | Pre-analysis worker — decomposes complex beads or produces implementation plans |
 | `internal/poller` | Calls `bd ready` to get available beads from an anvil |
@@ -90,6 +91,15 @@ bd ready (poller) → pipeline.Run()
   → if approved: ghpr.Create (gh pr create)
   → bellows monitors open PRs (CI fix, review fix, rebase)
   → worktree.Remove
+
+Crucible path (parent beads with children):
+  bd ready (poller) → detect bead.Blocks (children)
+    → crucible.Run()
+      → worktree.CreateEpicBranch (feature/<parent-id>)
+      → fetch children via bd show, topological sort
+      → for each child: pipeline.Run() → ghpr.Create(base=feature branch) → gh pr merge
+      → ghpr.Create(feature branch → main) — final PR
+      → bellows monitors final PR (CI fix, review, merge → close parent)
 
 depcheck.Monitor (background, weekly by default)
   → runs 'go list -m -u all' on each Go anvil
