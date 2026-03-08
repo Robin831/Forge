@@ -597,16 +597,22 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 	if !m.showQueueActionMenu {
 		t.Fatal("expected menu open after Enter")
 	}
-	// Select the label action
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Select the label action — menu closes immediately, returns async cmd
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.showQueueActionMenu {
+		t.Error("expected menu to close immediately after label action")
+	}
+	// Execute the async command and deliver result
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd for async tag operation")
+	}
+	msg := cmd()
+	_, _ = m.Update(msg)
 	if taggedBead != "bd-3" || taggedAnvil != "forge" {
 		t.Errorf("OnTagBead called with (%q, %q), want (bd-3, forge)", taggedBead, taggedAnvil)
 	}
 	if !strings.Contains(m.statusMsg, "bd-3") {
 		t.Errorf("expected statusMsg to mention bd-3, got %q", m.statusMsg)
-	}
-	if m.showQueueActionMenu {
-		t.Error("expected menu to close after label action")
 	}
 }
 
@@ -622,7 +628,12 @@ func TestQueueActionMenuLabelOnTagBeadError(t *testing.T) {
 		},
 	}
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd for async tag operation")
+	}
+	msg := cmd()
+	_, _ = m.Update(msg)
 	if !strings.Contains(m.statusMsg, "Failed to tag") {
 		t.Errorf("expected failure statusMsg, got %q", m.statusMsg)
 	}
@@ -649,15 +660,20 @@ func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
 	}
 	// Navigate to "Close" (index 1) and select it
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.showQueueActionMenu {
+		t.Error("expected menu to close immediately after close action")
+	}
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd for async close operation")
+	}
+	msg := cmd()
+	_, _ = m.Update(msg)
 	if closedBead != "bd-close-1" || closedAnvil != "forge" {
 		t.Errorf("OnCloseBead called with (%q, %q), want (bd-close-1, forge)", closedBead, closedAnvil)
 	}
 	if !strings.Contains(m.statusMsg, "bd-close-1") {
 		t.Errorf("expected statusMsg to mention bd-close-1, got %q", m.statusMsg)
-	}
-	if m.showQueueActionMenu {
-		t.Error("expected menu to close after close action")
 	}
 }
 
@@ -674,7 +690,12 @@ func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
 	}
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd for async close operation")
+	}
+	msg := cmd()
+	_, _ = m.Update(msg)
 	if !strings.Contains(m.statusMsg, "Failed to close") {
 		t.Errorf("expected failure statusMsg, got %q", m.statusMsg)
 	}
