@@ -83,11 +83,18 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		return nil, fmt.Errorf("creating workers directory: %w", err)
 	}
 
-	// If worktree already exists, reuse it. This happens when a lifecycle
-	// action (CI fix, review fix, rebase) fires while the worktree from the
-	// original pipeline hasn't been cleaned up yet.
+	// If worktree directory already exists, check whether it is a valid git
+	// worktree. If so, reset it to a clean state and reuse it. If not (e.g.
+	// leftover directory from a failed run), remove it so we can create fresh.
 	if _, err := os.Stat(worktreePath); err == nil {
-		return &Worktree{Path: worktreePath, Branch: targetBranch}, nil
+		if isValidWorktree(ctx, worktreePath) {
+			// Reset the working tree to HEAD so it's clean for the next action.
+			_ = gitCmd(ctx, worktreePath, "checkout", "--force", "HEAD")
+			_ = gitCmd(ctx, worktreePath, "clean", "-fd")
+			return &Worktree{Path: worktreePath, Branch: targetBranch}, nil
+		}
+		// Not a valid worktree — remove the stale directory.
+		_ = os.RemoveAll(worktreePath)
 	}
 
 	// Fetch origin
@@ -283,6 +290,12 @@ func resolveBaseRef(ctx context.Context, repoPath string) (string, error) {
 	}
 
 	return "", fmt.Errorf("neither origin/main nor origin/master found")
+}
+
+// isValidWorktree checks whether a directory is a valid git worktree by running
+// git rev-parse --is-inside-work-tree inside it.
+func isValidWorktree(ctx context.Context, dir string) bool {
+	return gitCmd(ctx, dir, "rev-parse", "--is-inside-work-tree") == nil
 }
 
 // gitCmd runs a git command in the given directory with a timeout.
