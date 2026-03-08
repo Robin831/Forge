@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1061,11 +1062,14 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		// result in lost partially-completed child PRs. Each child pipeline
 		// manages its own smith timeout internally.
 		result := crucible.Run(context.Background(), crucibleParams)
-		// Clean up completed/failed crucible status after a short delay so
-		// the TUI can show the terminal state briefly before removal.
+		// Clean up completed crucible status after a short delay so
+		// the TUI can observe the terminal "complete" state before removal.
 		defer func() {
 			if result.Error == nil {
-				d.crucibleStatuses.Delete(bead.ID)
+				beadID := bead.ID
+				time.AfterFunc(2*time.Second, func() {
+					d.crucibleStatuses.Delete(beadID)
+				})
 			}
 			// On error/pause, keep the status visible so the TUI shows it.
 		}()
@@ -1316,6 +1320,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				StartedAt:         s.StartedAt.Format("15:04:05"),
 			})
 			return true
+		})
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].StartedAt != items[j].StartedAt {
+				return items[i].StartedAt < items[j].StartedAt
+			}
+			return items[i].ParentID < items[j].ParentID
 		})
 		resp := ipc.CruciblesResponse{Crucibles: items}
 		data, _ := json.Marshal(resp)

@@ -357,9 +357,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "tab":
 			m.focused = (m.focused + 1) % panelCount
+			if m.focused == PanelCrucibles && len(m.crucibles) == 0 {
+				m.focused = (m.focused + 1) % panelCount
+			}
 
 		case "shift+tab":
 			m.focused = (m.focused + panelCount - 1) % panelCount
+			if m.focused == PanelCrucibles && len(m.crucibles) == 0 {
+				m.focused = (m.focused + panelCount - 1) % panelCount
+			}
 
 		case "j", "down":
 			m.scrollDown()
@@ -1069,8 +1075,9 @@ func (m *Model) renderQueue(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderLeftColumn splits the left column into Queue (top), Ready to Merge (middle),
-// and Needs Attention (bottom).
+// renderLeftColumn splits the left column into Queue (top), optionally Crucibles
+// (when active), Ready to Merge, and Needs Attention (bottom). When crucibles are
+// active, it renders 4 stacked panels; otherwise 3.
 func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	height := topHeight + bottomHeight
 
@@ -1206,7 +1213,10 @@ func (m *Model) renderCrucibles(width, height int) string {
 			} else {
 				titleText := c.ParentTitle
 				maxTitle := width - 6
-				if maxTitle > 0 && len(titleText) > maxTitle {
+				if maxTitle < 4 {
+					maxTitle = 4
+				}
+				if len(titleText) > maxTitle {
 					titleText = titleText[:maxTitle-3] + "..."
 				}
 				line3 = dimStyle.Render(fmt.Sprintf("  %s", titleText))
