@@ -6,12 +6,17 @@
 package bellows
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/warden"
@@ -349,18 +354,16 @@ func (m *Monitor) getLearnMu(anvil string) *sync.Mutex {
 }
 
 // learnRulesFromPR fetches Copilot review comments from a merged PR,
-// distills them into warden rules, and saves them to the anvil's rules file.
-// The caller is responsible for holding the per-anvil learn mutex so that the
-// load→add→save sequence is atomic with respect to other goroutines.
+// distills them into warden rules, and creates a PR with the updated rules
+// file so the changes are reviewable. The caller is responsible for holding
+// the per-anvil learn mutex so that concurrent learns don't race.
 func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath string, prNumber int) {
 	if ctx.Err() != nil {
-		// Context canceled or deadline exceeded; treat as normal shutdown.
 		return
 	}
 
 	comments, err := warden.FetchCopilotComments(ctx, anvilPath, prNumber)
 	if err != nil {
-		// If the context was canceled while fetching, treat it as a non-error.
 		if ctx.Err() != nil {
 			return
 		}
@@ -374,7 +377,47 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath str
 	}
 
 	groups := warden.GroupComments(comments)
-	rf, err := warden.LoadRules(anvilPath)
+
+	// Create a temporary worktree to prepare the rules update branch.
+	branchName := fmt.Sprintf("forge/warden-learn-%d", prNumber)
+	wtPath := filepath.Join(anvilPath, ".workers", fmt.Sprintf("warden-learn-%d", prNumber))
+
+	defer func() {
+		// Clean up worktree and local branch (best effort).
+		_ = bellowsGit(ctx, anvilPath, "worktree", "remove", "--force", wtPath)
+		_ = bellowsGit(ctx, anvilPath, "worktree", "prune")
+		_ = bellowsGit(ctx, anvilPath, "branch", "-D", branchName)
+		_ = os.RemoveAll(wtPath)
+	}()
+
+	// Fetch and resolve base ref.
+	if err := bellowsGit(ctx, anvilPath, "fetch", "origin"); err != nil {
+		log.Printf("[bellows] Auto-learn: git fetch failed for %s: %v", anvilName, err)
+		_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: git fetch failed: %v", prNumber, err), "", anvilName)
+		return
+	}
+
+	baseRef, err := resolveBaseRef(ctx, anvilPath)
+	if err != nil {
+		log.Printf("[bellows] Auto-learn: no base branch for %s: %v", anvilName, err)
+		_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: no base branch found: %v", prNumber, err), "", anvilName)
+		return
+	}
+
+	// Create the .workers directory and worktree.
+	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
+		log.Printf("[bellows] Auto-learn: failed to create workers dir for %s: %v", anvilName, err)
+		return
+	}
+
+	if err := bellowsGit(ctx, anvilPath, "worktree", "add", "-f", "-b", branchName, wtPath, baseRef); err != nil {
+		log.Printf("[bellows] Auto-learn: worktree add failed for %s: %v", anvilName, err)
+		_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: worktree creation failed: %v", prNumber, err), "", anvilName)
+		return
+	}
+
+	// Load existing rules from the worktree (reflects main branch state).
+	rf, err := warden.LoadRules(wtPath)
 	if err != nil {
 		log.Printf("[bellows] Auto-learn: error loading existing rules for %s: %v", anvilName, err)
 		_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: failed to load rules: %v", prNumber, err), "", anvilName)
@@ -386,7 +429,7 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath str
 		if ctx.Err() != nil {
 			return
 		}
-		rule, err := warden.DistillRule(ctx, group, anvilPath)
+		rule, err := warden.DistillRule(ctx, group, wtPath)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -404,14 +447,87 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath str
 		return
 	}
 
-	if err := warden.SaveRules(anvilPath, rf); err != nil {
+	// Save rules to the worktree, then commit, push, and create a PR.
+	if err := warden.SaveRules(wtPath, rf); err != nil {
 		log.Printf("[bellows] Auto-learn: error saving rules for %s: %v", anvilName, err)
 		_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: failed to save rules: %v", prNumber, err), "", anvilName)
 		return
 	}
 
-	log.Printf("[bellows] Auto-learn: added %d new rule(s) from PR #%d (%s)", added, prNumber, anvilName)
-	_ = m.db.LogEvent(state.EventAutoLearnRules, fmt.Sprintf("PR #%d: learned %d new rule(s)", prNumber, added), "", anvilName)
+	if err := bellowsGit(ctx, wtPath, "add", warden.RulesFileName); err != nil {
+		log.Printf("[bellows] Auto-learn: git add failed for %s: %v", anvilName, err)
+		_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: git add failed: %v", prNumber, err), "", anvilName)
+		return
+	}
+
+	commitMsg := fmt.Sprintf("forge: learn %d warden rule(s) from PR #%d", added, prNumber)
+	if err := bellowsGit(ctx, wtPath, "commit", "-m", commitMsg); err != nil {
+		log.Printf("[bellows] Auto-learn: git commit failed for %s: %v", anvilName, err)
+		_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: git commit failed: %v", prNumber, err), "", anvilName)
+		return
+	}
+
+	if err := bellowsGit(ctx, wtPath, "push", "-u", "origin", branchName); err != nil {
+		log.Printf("[bellows] Auto-learn: git push failed for %s: %v", anvilName, err)
+		_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: git push failed: %v", prNumber, err), "", anvilName)
+		return
+	}
+
+	// Create a reviewable PR with the learned rules.
+	prBody := fmt.Sprintf(
+		"## Warden Rule Learning\n\n"+
+			"Learned **%d** new review rule(s) from Copilot comments on PR #%d.\n\n"+
+			"These rules will be applied by Warden during future code reviews.\n"+
+			"Review the rules in `%s` and merge if they look correct.\n\n"+
+			"---\n*Generated by [The Forge](https://github.com/Robin831/Forge) auto-learn*",
+		added, prNumber, warden.RulesFileName,
+	)
+
+	pr, err := ghpr.Create(ctx, ghpr.CreateParams{
+		WorktreePath: wtPath,
+		Title:        fmt.Sprintf("forge: learn %d warden rule(s) from PR #%d", added, prNumber),
+		Body:         prBody,
+		Branch:       branchName,
+		AnvilName:    anvilName,
+		DB:           m.db,
+	})
+	if err != nil {
+		log.Printf("[bellows] Auto-learn: PR creation failed for %s: %v", anvilName, err)
+		_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: rule PR creation failed: %v", prNumber, err), "", anvilName)
+		return
+	}
+
+	log.Printf("[bellows] Auto-learn: created PR #%d with %d new rule(s) from PR #%d (%s)", pr.Number, added, prNumber, anvilName)
+	_ = m.db.LogEvent(state.EventWardenRuleLearned, fmt.Sprintf("PR #%d: learned %d rule(s), created PR #%d", prNumber, added, pr.Number), "", anvilName)
+}
+
+// resolveBaseRef determines whether the repo uses origin/main or origin/master.
+func resolveBaseRef(ctx context.Context, repoPath string) (string, error) {
+	if err := bellowsGit(ctx, repoPath, "rev-parse", "--verify", "origin/main"); err == nil {
+		return "origin/main", nil
+	}
+	if err := bellowsGit(ctx, repoPath, "rev-parse", "--verify", "origin/master"); err == nil {
+		return "origin/master", nil
+	}
+	return "", fmt.Errorf("neither origin/main nor origin/master found")
+}
+
+// bellowsGit runs a git command in the given directory, capturing stderr for
+// error reporting. Uses a 60-second timeout to prevent hangs.
+func bellowsGit(ctx context.Context, dir string, args ...string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
+	cmd.Dir = dir
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git %s: %s (%w)", args[0], stderr.String(), err)
+	}
+	return nil
 }
 
 // emit calls all registered handlers with the given event.
