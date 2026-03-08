@@ -25,6 +25,7 @@ type Panel int
 
 const (
 	PanelQueue Panel = iota
+	PanelCrucibles
 	PanelReadyToMerge
 	PanelNeedsAttention
 	PanelWorkers
@@ -109,6 +110,19 @@ type EventItem struct {
 	BeadID    string
 }
 
+// CrucibleItem represents an active Crucible in the TUI.
+type CrucibleItem struct {
+	ParentID          string
+	ParentTitle       string
+	Anvil             string
+	Branch            string
+	Phase             string // "started", "dispatching", "waiting", "final_pr", "complete", "paused"
+	TotalChildren     int
+	CompletedChildren int
+	CurrentChild      string
+	StartedAt         string
+}
+
 // ActionMenuChoice represents an action the user can take on a Needs Attention bead.
 type ActionMenuChoice int
 
@@ -166,6 +180,7 @@ func mergeMenuLabels() [mergeMenuCount]string {
 type Model struct {
 	// Panels
 	queue          []QueueItem
+	crucibles      []CrucibleItem
 	needsAttention []NeedsAttentionItem
 	readyToMerge   []ReadyToMergeItem
 	workers        []WorkerItem
@@ -195,6 +210,7 @@ type Model struct {
 	// State
 	focused        Panel
 	queueVP        scrollViewport
+	crucibleVP     scrollViewport
 	needsAttnVP    scrollViewport
 	readyToMergeVP scrollViewport
 	workerVP       scrollViewport
@@ -458,6 +474,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.eventScroll = 0
 		}
 
+	case UpdateCruciblesMsg:
+		m.crucibles = msg.Items
+		m.crucibleVP.ClampToTotal(len(msg.Items))
+
 	case UpdateNeedsAttentionMsg:
 		m.needsAttention = msg.Items
 		m.needsAttnVP.ClampToTotal(len(msg.Items))
@@ -639,6 +659,8 @@ func (m *Model) scrollDown() {
 	switch m.focused {
 	case PanelQueue:
 		m.queueVP.ScrollDown(len(m.queue))
+	case PanelCrucibles:
+		m.crucibleVP.ScrollDown(len(m.crucibles))
 	case PanelNeedsAttention:
 		m.needsAttnVP.ScrollDown(len(m.needsAttention))
 	case PanelReadyToMerge:
@@ -668,6 +690,8 @@ func (m *Model) scrollUp() {
 	switch m.focused {
 	case PanelQueue:
 		m.queueVP.ScrollUp()
+	case PanelCrucibles:
+		m.crucibleVP.ScrollUp()
 	case PanelNeedsAttention:
 		m.needsAttnVP.ScrollUp()
 	case PanelReadyToMerge:
@@ -1049,14 +1073,48 @@ func (m *Model) renderQueue(width, height int) string {
 // and Needs Attention (bottom).
 func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	height := topHeight + bottomHeight
-	// Three sub-panels add 6 border lines total vs 2 for a single panel.
-	// Deduct the extra 4 so combined height matches sibling columns.
-	innerHeight := height - 4
+
+	// Count panels to render: Queue + ReadyToMerge + NeedsAttention + optionally Crucibles.
+	hasCrucibles := len(m.crucibles) > 0
+	panelN := 3
+	if hasCrucibles {
+		panelN = 4
+	}
+
+	// Each sub-panel adds 2 border lines. Deduct extra borders beyond one panel.
+	innerHeight := height - (panelN-1)*2
 	if innerHeight < 0 {
 		innerHeight = 0
 	}
 
-	// Give queue 50%, ready-to-merge 20%, needs attention 30%.
+	if hasCrucibles {
+		// Queue 40%, Crucible 20%, ReadyToMerge 15%, NeedsAttention 25%.
+		queueHeight := innerHeight * 4 / 10
+		crucibleHeight := innerHeight * 2 / 10
+		mergeHeight := innerHeight * 15 / 100
+		if innerHeight < 12 {
+			queueHeight = innerHeight
+			crucibleHeight = 0
+			mergeHeight = 0
+		} else {
+			queueHeight = max(queueHeight, 5)
+			crucibleHeight = max(crucibleHeight, 4)
+			mergeHeight = max(mergeHeight, 3)
+		}
+		attentionHeight := innerHeight - queueHeight - crucibleHeight - mergeHeight
+
+		top := m.renderQueue(width, queueHeight)
+		cruc := m.renderCrucibles(width, crucibleHeight)
+		mid := m.renderReadyToMerge(width, mergeHeight)
+		bot := m.renderNeedsAttention(width, attentionHeight)
+		return lipgloss.JoinVertical(lipgloss.Left, top, cruc, mid, bot)
+	}
+
+	// No active crucibles — original 3-panel layout.
+	innerHeight = height - 4
+	if innerHeight < 0 {
+		innerHeight = 0
+	}
 	queueHeight := innerHeight * 5 / 10
 	mergeHeight := innerHeight * 2 / 10
 	if innerHeight < 8 {
@@ -1072,6 +1130,94 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	middle := m.renderReadyToMerge(width, mergeHeight)
 	bottom := m.renderNeedsAttention(width, attentionHeight)
 	return lipgloss.JoinVertical(lipgloss.Left, top, middle, bottom)
+}
+
+// cruciblePhaseStyle returns a styled phase label for Crucible status display.
+func cruciblePhaseStyle(phase string) string {
+	switch phase {
+	case "dispatching":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("▶ DISPATCH")
+	case "final_pr":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("⤴ FINAL PR")
+	case "complete":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("✓ COMPLETE")
+	case "paused":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("⏸ PAUSED")
+	case "started":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render("◉ STARTED")
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("? " + phase)
+	}
+}
+
+// renderCrucibles renders the Crucibles sub-panel showing active epic orchestrations.
+func (m *Model) renderCrucibles(width, height int) string {
+	style := panelStyle.Width(width)
+	if m.focused == PanelCrucibles {
+		style = focusedPanelStyle.Width(width)
+	}
+
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("208"))
+	title := titleStyle.Render(fmt.Sprintf("Crucibles (%d)", len(m.crucibles)))
+
+	var lines []string
+	lines = append(lines, title)
+
+	if len(m.crucibles) == 0 {
+		lines = append(lines, dimStyle.Render("None"))
+	} else {
+		// Each crucible uses 3 display lines: phase+parent, progress, current child.
+		maxLines := height - 3
+		linesPerItem := 3
+		maxItems := maxLines / linesPerItem
+		if maxItems < 1 {
+			maxItems = 1
+		}
+
+		m.crucibleVP.AdjustViewport(maxItems, len(m.crucibles))
+		start, end := m.crucibleVP.VisibleRange(maxItems, len(m.crucibles))
+
+		for i := start; i < end; i++ {
+			c := m.crucibles[i]
+			selected := m.focused == PanelCrucibles && i == m.crucibleVP.cursor
+
+			// Line 1: phase icon + parent ID + anvil
+			line1 := fmt.Sprintf("%s %s %s", cruciblePhaseStyle(c.Phase), c.ParentID, dimStyle.Render(c.Anvil))
+			if selected {
+				line1 = selectedStyle.Render(fmt.Sprintf("▸ %s %s %s", c.Phase, c.ParentID, c.Anvil))
+			}
+
+			// Line 2: progress bar + fraction
+			progress := fmt.Sprintf("  Children: %d/%d", c.CompletedChildren, c.TotalChildren)
+			if c.TotalChildren > 0 {
+				barWidth := width - 22
+				if barWidth < 5 {
+					barWidth = 5
+				}
+				filled := barWidth * c.CompletedChildren / c.TotalChildren
+				bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+				progress = fmt.Sprintf("  %s %d/%d", bar, c.CompletedChildren, c.TotalChildren)
+			}
+
+			// Line 3: current child or title (truncated)
+			var line3 string
+			if c.CurrentChild != "" {
+				line3 = dimStyle.Render(fmt.Sprintf("  → %s", c.CurrentChild))
+			} else {
+				titleText := c.ParentTitle
+				maxTitle := width - 6
+				if maxTitle > 0 && len(titleText) > maxTitle {
+					titleText = titleText[:maxTitle-3] + "..."
+				}
+				line3 = dimStyle.Render(fmt.Sprintf("  %s", titleText))
+			}
+
+			lines = append(lines, line1, progress, line3)
+		}
+	}
+
+	content := strings.Join(lines, "\n")
+	return style.Height(height).Render(content)
 }
 
 // renderRightColumn renders Live Activity (top) + Events (bottom), mirroring
@@ -1611,6 +1757,9 @@ type UpdateQueueMsg struct{ Items []QueueItem }
 // The model preserves the previous queue data so the UI doesn't
 // flip to "No pending beads" on a transient DB error.
 type QueueErrorMsg struct{ Err error }
+
+// UpdateCruciblesMsg updates the crucibles panel.
+type UpdateCruciblesMsg struct{ Items []CrucibleItem }
 
 // UpdateNeedsAttentionMsg updates the needs attention panel.
 type UpdateNeedsAttentionMsg struct{ Items []NeedsAttentionItem }

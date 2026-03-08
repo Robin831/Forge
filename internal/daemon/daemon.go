@@ -130,6 +130,9 @@ type Daemon struct {
 	// log spam when the file is invalid or unreadable.
 	temperCache   sync.Map // map[string]*temperCacheEntry
 
+	// Active Crucible statuses (parentBeadID -> crucible.Status)
+	crucibleStatuses sync.Map
+
 	// Periodic bead recovery counter (runs every N poll cycles)
 	pollCount atomic.Int64
 
@@ -1036,6 +1039,9 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			GoRaceDetection:           d.resolveGoRaceDetection(anvilCfg),
 			SmithTimeout:              d.cfg.Load().Settings.SmithTimeout,
 			AutoMergeCrucibleChildren: d.cfg.Load().Settings.IsAutoMergeCrucibleChildren(),
+			StatusCallback: func(s crucible.Status) {
+				d.crucibleStatuses.Store(bead.ID, s)
+			},
 		}
 		if d.cfg.Load().Settings.SchematicEnabled {
 			wordThreshold := d.cfg.Load().Settings.SchematicWordThreshold
@@ -1055,6 +1061,14 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		// result in lost partially-completed child PRs. Each child pipeline
 		// manages its own smith timeout internally.
 		result := crucible.Run(context.Background(), crucibleParams)
+		// Clean up completed/failed crucible status after a short delay so
+		// the TUI can show the terminal state briefly before removal.
+		defer func() {
+			if result.Error == nil {
+				d.crucibleStatuses.Delete(bead.ID)
+			}
+			// On error/pause, keep the status visible so the TUI shows it.
+		}()
 		if result.Error != nil {
 			d.logger.Error("crucible failed", "bead", bead.ID, "error", result.Error)
 			if result.PausedChildID != "" {
@@ -1237,6 +1251,19 @@ func (d *Daemon) claimBead(ctx context.Context, beadID, anvilPath string) error 
 	return nil
 }
 
+// crucibleParentTitle looks up the title for a crucible's parent bead
+// from the last polled beads. Returns the bead ID if not found.
+func (d *Daemon) crucibleParentTitle(parentID string) string {
+	d.lastBeadsMu.RLock()
+	defer d.lastBeadsMu.RUnlock()
+	for _, b := range d.lastBeads {
+		if b.ID == parentID {
+			return b.Title
+		}
+	}
+	return parentID
+}
+
 // closeBead marks a bead as closed via bd close.
 func (d *Daemon) closeBead(ctx context.Context, beadID, anvilPath string) error {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "close", beadID, "--reason=Implemented by Forge", "--json"))
@@ -1272,6 +1299,27 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		data, _ := json.Marshal(payload)
 		return ipc.Response{Type: "status", Payload: data}
+
+	case "crucibles":
+		var items []ipc.CrucibleStatusItem
+		d.crucibleStatuses.Range(func(key, value any) bool {
+			s := value.(crucible.Status)
+			items = append(items, ipc.CrucibleStatusItem{
+				ParentID:          s.ParentID,
+				ParentTitle:       d.crucibleParentTitle(s.ParentID),
+				Anvil:             s.Anvil,
+				Branch:            s.Branch,
+				Phase:             s.Phase,
+				TotalChildren:     s.TotalChildren,
+				CompletedChildren: s.CompletedChildren,
+				CurrentChild:      s.CurrentChild,
+				StartedAt:         s.StartedAt.Format("15:04:05"),
+			})
+			return true
+		})
+		resp := ipc.CruciblesResponse{Crucibles: items}
+		data, _ := json.Marshal(resp)
+		return ipc.Response{Type: "ok", Payload: data}
 
 	case "kill_worker":
 		var kp ipc.KillWorkerPayload
