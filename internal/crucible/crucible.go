@@ -359,7 +359,9 @@ func (p *Params) fetchChildren(ctx context.Context, parentID, dir string) ([]pol
 }
 
 // FetchChildren calls `bd show <parentID> --json` to get the parent's blocks,
-// then fetches each child's full details.
+// then recursively fetches all descendants (children, grandchildren, etc.).
+// This ensures the Crucible processes the entire dependency tree, not just
+// direct children.
 func FetchChildren(ctx context.Context, parentID, dir string) ([]poller.Bead, error) {
 	parent, err := FetchBead(ctx, parentID, dir)
 	if err != nil {
@@ -370,21 +372,41 @@ func FetchChildren(ctx context.Context, parentID, dir string) ([]poller.Bead, er
 		return nil, nil
 	}
 
-	var children []poller.Bead
-	for _, childID := range parent.Blocks {
-		child, err := FetchBead(ctx, childID, dir)
-		if err != nil {
-			// Log and skip — a missing child shouldn't block the whole Crucible.
-			slog.Warn("failed to fetch child bead", "parent_id", parentID, "child_id", childID, "dir", dir, "error", err)
+	// BFS to collect all descendants, avoiding cycles.
+	seen := map[string]bool{parentID: true}
+	queue := make([]string, len(parent.Blocks))
+	copy(queue, parent.Blocks)
+
+	var all []poller.Bead
+	for len(queue) > 0 {
+		childID := queue[0]
+		queue = queue[1:]
+
+		if seen[childID] {
 			continue
 		}
-		// Only include open children (not already closed or in_progress by someone else).
+		seen[childID] = true
+
+		child, err := FetchBead(ctx, childID, dir)
+		if err != nil {
+			slog.Warn("failed to fetch descendant bead", "parent_id", parentID, "child_id", childID, "dir", dir, "error", err)
+			continue
+		}
+
+		// Only include open descendants.
 		if strings.EqualFold(child.Status, "open") {
-			children = append(children, child)
+			all = append(all, child)
+		}
+
+		// Enqueue grandchildren.
+		for _, gcID := range child.Blocks {
+			if !seen[gcID] {
+				queue = append(queue, gcID)
+			}
 		}
 	}
 
-	return children, nil
+	return all, nil
 }
 
 // bdShowBead extends the Bead with the raw dependents array that bd returns
@@ -551,7 +573,7 @@ func (p *Params) closeBead(ctx context.Context, beadID, dir string) error {
 	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "close", beadID, "--reason=Crucible child completed", "--json"))
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "close", beadID, "--force", "--reason=Crucible child completed", "--json"))
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
