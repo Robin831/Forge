@@ -85,9 +85,9 @@ func ResolveEpicBranches(ctx context.Context, beads []Bead, anvilPaths map[strin
 	}
 }
 
-// lookupEpicBranch fetches a parent bead's details and extracts the epic
-// branch name. Returns empty string if the parent is not an epic or has no
-// branch configured.
+// lookupEpicBranch fetches a parent bead's details and extracts the feature
+// branch name. Any parent bead (epic, feature, etc.) can have a branch —
+// the check is based on the bead having children, not its type.
 func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -112,17 +112,17 @@ func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 		return ""
 	}
 
-	// Only resolve for epic-type beads
-	if !strings.EqualFold(parent.IssueType, "epic") {
-		return ""
-	}
-
 	return ExtractEpicBranch(parent)
 }
 
-// ExtractEpicBranch extracts the epic branch name from a bead's labels.
-// It looks for a label with the "epic-branch:" prefix. If none is found
-// and the bead is an epic, it returns the default "epic/<bead-id>".
+// DefaultFeatureBranchPrefix is the branch name prefix used for non-epic
+// parent beads (e.g. features) that have no explicit epic-branch label.
+const DefaultFeatureBranchPrefix = "feature/"
+
+// ExtractEpicBranch extracts the feature branch name from a bead's labels.
+// It looks for a label with the "epic-branch:" prefix. If none is found,
+// it returns a default branch: "epic/<bead-id>" for epics, or
+// "feature/<bead-id>" for other types (e.g. features with children).
 func ExtractEpicBranch(b Bead) string {
 	for _, label := range b.Labels {
 		if strings.HasPrefix(strings.ToLower(label), strings.ToLower(EpicBranchLabelPrefix)) {
@@ -134,14 +134,16 @@ func ExtractEpicBranch(b Bead) string {
 		}
 	}
 
-	// Default convention: epic/<bead-id>
+	// Default convention based on type.
 	if strings.EqualFold(b.IssueType, "epic") {
 		return DefaultEpicBranchPrefix + sanitizeBeadID(b.ID)
 	}
-	return ""
+	return DefaultFeatureBranchPrefix + sanitizeBeadID(b.ID)
 }
 
-// IsEpicBead returns true if the bead is an epic type.
+// IsEpicBead returns true if the bead is an epic type. This is used by the
+// daemon for the legacy epic branch creation path. For Crucible candidacy,
+// use crucible.IsCrucibleCandidate which checks for children (Blocks) instead.
 func IsEpicBead(b Bead) bool {
 	return strings.EqualFold(b.IssueType, "epic")
 }
