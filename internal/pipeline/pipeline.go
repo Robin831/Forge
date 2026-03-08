@@ -549,6 +549,17 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerMonitoring)
 			_ = p.DB.UpdateWorkerPhase(workerID, "bellows")
 			_ = p.DB.LogEvent(state.EventWardenPass, reviewResult.Summary, p.Bead.ID, p.AnvilName)
+
+			// Ensure the branch is pushed to the remote before the worktree
+			// is cleaned up. Smith is instructed to push, but as a safety net
+			// we push here too — this is critical for the Crucible flow where
+			// the PR is created after the pipeline returns.
+			pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", wt.Branch))
+			pushCmd.Dir = wt.Path
+			if pushErr := pushCmd.Run(); pushErr != nil {
+				log.Printf("[pipeline:%s] Warning: explicit push failed (Smith may have already pushed): %v", workerID, pushErr)
+			}
+
 			outcome.Duration = time.Since(start)
 			return outcome
 
