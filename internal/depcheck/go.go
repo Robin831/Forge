@@ -3,17 +3,19 @@ package depcheck
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
 )
 
-// scanGo runs 'go list -m -u all' in an anvil directory if it has a go.mod.
+// scanGo runs 'go list -m -u -json all' in an anvil directory if it has a go.mod.
+// Only direct dependencies are included — indirect (transitive) deps cannot be
+// independently upgraded and would cause Smith to produce no-diff results.
 // Returns nil if the anvil is not a Go project.
 func (s *Scanner) scanGo(ctx context.Context, anvil, path string) *CheckResult {
 	// Only check Go projects
@@ -40,18 +42,18 @@ func (s *Scanner) scanGo(ctx context.Context, anvil, path string) *CheckResult {
 	cmdCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "go", "list", "-m", "-u", "all"))
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "go", "list", "-m", "-u", "-json", "all"))
 	cmd.Dir = path
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
-		result.Error = fmt.Errorf("go list -m -u all: %w: %s", err, stderr.String())
+		result.Error = fmt.Errorf("go list -m -u -json all: %w: %s", err, stderr.String())
 		return result
 	}
 
-	updates := parseGoListOutput(string(output))
+	updates := parseGoJSONOutput(output)
 	for _, u := range updates {
 		switch u.Kind {
 		case "patch":
@@ -66,49 +68,43 @@ func (s *Scanner) scanGo(ctx context.Context, anvil, path string) *CheckResult {
 	return result
 }
 
-// parseGoListOutput parses the output of 'go list -m -u all' and returns
-// modules that have updates available. Each output line looks like:
-//
-//	github.com/foo/bar v1.2.3 [v1.4.0]
-//
-// Lines without brackets have no update. The first line (the main module) is skipped.
-func parseGoListOutput(output string) []ModuleUpdate {
+// goModule represents a single module entry from 'go list -m -u -json all'.
+type goModule struct {
+	Path     string    `json:"Path"`
+	Version  string    `json:"Version"`
+	Indirect bool      `json:"Indirect"`
+	Main     bool      `json:"Main"`
+	Update   *goUpdate `json:"Update"`
+}
+
+type goUpdate struct {
+	Path    string `json:"Path"`
+	Version string `json:"Version"`
+}
+
+// parseGoJSONOutput parses the JSON-stream output of 'go list -m -u -json all'.
+// go list -json outputs concatenated JSON objects (not an array), so we use
+// a streaming decoder. Only direct dependencies with available updates are returned.
+func parseGoJSONOutput(data []byte) []ModuleUpdate {
 	var updates []ModuleUpdate
 
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	for i, line := range lines {
-		if i == 0 {
-			continue // skip main module
+	dec := json.NewDecoder(bytes.NewReader(data))
+	for dec.More() {
+		var mod goModule
+		if err := dec.Decode(&mod); err != nil {
+			break
 		}
 
-		line = strings.TrimSpace(line)
-		if line == "" {
+		// Skip the main module, indirect deps, and modules without updates.
+		if mod.Main || mod.Indirect || mod.Update == nil {
 			continue
 		}
 
-		// Look for [vX.Y.Z] update marker
-		bracketStart := strings.Index(line, "[")
-		bracketEnd := strings.Index(line, "]")
-		if bracketStart < 0 || bracketEnd < 0 || bracketEnd <= bracketStart {
-			continue // no update available
-		}
-
-		latest := line[bracketStart+1 : bracketEnd]
-		prefix := strings.TrimSpace(line[:bracketStart])
-		parts := strings.Fields(prefix)
-		if len(parts) < 2 {
-			continue
-		}
-
-		modPath := parts[0]
-		current := parts[1]
-
-		kind := classifyUpdate(current, latest)
-
+		kind := classifyUpdate(mod.Version, mod.Update.Version)
 		updates = append(updates, ModuleUpdate{
-			Path:    modPath,
-			Current: current,
-			Latest:  latest,
+			Path:    mod.Path,
+			Current: mod.Version,
+			Latest:  mod.Update.Version,
 			Kind:    kind,
 		})
 	}
