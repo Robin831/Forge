@@ -28,13 +28,14 @@ type ModuleUpdate struct {
 
 // CheckResult holds the depcheck results for a single anvil.
 type CheckResult struct {
-	Anvil   string
-	Path    string
-	Patch   []ModuleUpdate // patch updates (auto-bead)
-	Minor   []ModuleUpdate // minor updates (auto-bead)
-	Major   []ModuleUpdate // major version bumps (needs attention)
-	Error   error
-	Checked time.Time
+	Anvil     string
+	Path      string
+	Ecosystem string         // e.g. "Go", ".NET", "npm"
+	Patch     []ModuleUpdate // patch updates (auto-bead)
+	Minor     []ModuleUpdate // minor updates (auto-bead)
+	Major     []ModuleUpdate // major version bumps (needs attention)
+	Error     error
+	Checked   time.Time
 }
 
 // Scanner checks anvils for outdated dependencies across all supported ecosystems.
@@ -147,85 +148,58 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 	}
 }
 
-// dedupCheck returns true if an open bead whose title contains phrase already
-// exists in the anvil's bead queue. This prevents duplicate update beads from
-// accumulating across check cycles. It is shared by all ecosystem scanners.
-func (s *Scanner) dedupCheck(ctx context.Context, anvilPath, phrase string) bool {
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "list", "--status=open", "--json"))
-	cmd.Dir = anvilPath
-
-	output, err := cmd.Output()
-	if err != nil {
-		// If we can't query, allow creation rather than silently suppressing beads.
-		return false
-	}
-
-	return strings.Contains(string(output), phrase)
-}
-
 // createBeads creates bead issues for the outdated dependencies found in an anvil.
-// Patch+minor updates go into a single auto-dispatch bead.
-// Major updates go into a separate "needs attention" bead.
-// Duplicate beads (same kind already open) are skipped via dedupCheck.
+// Each module gets its own bead so that dedup, PR tracking, and agent assignment
+// are per-module. A DedupCache is built once per anvil to avoid spawning one
+// external command per module.
 func (s *Scanner) createBeads(ctx context.Context, result *CheckResult) {
-	if len(result.Patch)+len(result.Minor) > 0 {
-		phrase := fmt.Sprintf("%s dependencies (patch/minor)", ecosystemLabel(result))
-		if !s.dedupCheck(ctx, result.Path, phrase) {
-			s.createUpdateBead(ctx, result, "auto",
-				append(result.Patch, result.Minor...))
-		} else {
-			log.Printf("[depcheck] %s: open patch/minor update bead already exists, skipping", result.Anvil)
+	cache := BuildDedupCache(ctx, s.db, result.Path, result.Anvil)
+
+	for _, u := range append(result.Patch, result.Minor...) {
+		if DedupCheckWithCache(cache, u.Path) {
+			log.Printf("[depcheck] %s: bead/PR already exists for %s, skipping", result.Anvil, u.Path)
+			continue
 		}
+		s.createUpdateBead(ctx, result, "auto", u)
 	}
 
-	if len(result.Major) > 0 {
-		phrase := fmt.Sprintf("%s major version updates", ecosystemLabel(result))
-		if !s.dedupCheck(ctx, result.Path, phrase) {
-			s.createUpdateBead(ctx, result, "major", result.Major)
-		} else {
-			log.Printf("[depcheck] %s: open major update bead already exists, skipping", result.Anvil)
+	for _, u := range result.Major {
+		if DedupCheckWithCache(cache, u.Path) {
+			log.Printf("[depcheck] %s: bead/PR already exists for %s, skipping", result.Anvil, u.Path)
+			continue
 		}
+		s.createUpdateBead(ctx, result, "major", u)
 	}
 }
 
-// createUpdateBead runs 'bd create' to create a bead for dependency updates.
-func (s *Scanner) createUpdateBead(ctx context.Context, result *CheckResult, kind string, updates []ModuleUpdate) {
-	label := ecosystemLabel(result)
-	var title string
+// createUpdateBead runs 'bd create' to create a bead for a single dependency update.
+func (s *Scanner) createUpdateBead(ctx context.Context, result *CheckResult, kind string, update ModuleUpdate) {
+	title := BeadTitle(result.Ecosystem, update.Path, update.Current, update.Latest)
 	var priority string
 	var desc strings.Builder
 
 	switch kind {
 	case "auto":
-		title = fmt.Sprintf("Update %d %s dependencies (patch/minor)", len(updates), label)
 		priority = "3"
-		desc.WriteString(fmt.Sprintf("Automated dependency update for %s patch and minor version bumps.\n\n", label))
-		desc.WriteString("Run the appropriate update commands for each module below, then tidy.\n\n")
-	case "major":
-		title = fmt.Sprintf("Review %d %s major version updates", len(updates), label)
-		priority = "2"
-		desc.WriteString(fmt.Sprintf("%s major version updates detected. These may contain breaking changes and require manual review.\n\n", label))
-	}
-
-	desc.WriteString("## Outdated Modules\n\n")
-	desc.WriteString("| Module | Current | Latest | Type |\n")
-	desc.WriteString("|--------|---------|--------|------|\n")
-	for _, u := range updates {
-		desc.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", u.Path, u.Current, u.Latest, u.Kind))
-	}
-
-	if kind == "auto" {
+		desc.WriteString(fmt.Sprintf("Automated %s dependency update: %s %s → %s.\n\n",
+			result.Ecosystem, update.Path, update.Current, update.Latest))
+		desc.WriteString("## Module\n\n")
+		desc.WriteString("| Module | Current | Latest | Type |\n")
+		desc.WriteString("|--------|---------|--------|------|\n")
+		desc.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", update.Path, update.Current, update.Latest, update.Kind))
 		desc.WriteString("\n## Instructions\n\n")
 		desc.WriteString("```bash\n")
-		for _, u := range updates {
-			desc.WriteString(fmt.Sprintf("go get %s@%s\n", u.Path, u.Latest))
-		}
+		desc.WriteString(fmt.Sprintf("go get %s@%s\n", update.Path, update.Latest))
 		desc.WriteString("go mod tidy\n")
 		desc.WriteString("```\n")
+	case "major":
+		priority = "2"
+		desc.WriteString(fmt.Sprintf("%s major version update: %s %s → %s. This may contain breaking changes and requires manual review.\n\n",
+			result.Ecosystem, update.Path, update.Current, update.Latest))
+		desc.WriteString("## Module\n\n")
+		desc.WriteString("| Module | Current | Latest | Type |\n")
+		desc.WriteString("|--------|---------|--------|------|\n")
+		desc.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", update.Path, update.Current, update.Latest, update.Kind))
 	}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -252,18 +226,8 @@ func (s *Scanner) createUpdateBead(ctx context.Context, result *CheckResult, kin
 		return
 	}
 
-	log.Printf("[depcheck] Created %s update bead for %s: %s", kind, result.Anvil, strings.TrimSpace(string(output)))
+	log.Printf("[depcheck] Created %s update bead for %s (%s): %s", kind, result.Anvil, update.Path, strings.TrimSpace(string(output)))
 	_ = s.db.LogEvent(state.EventDepcheckBeadCreated,
-		fmt.Sprintf("Created %s dependency update bead for %s (%d modules)", kind, result.Anvil, len(updates)),
+		fmt.Sprintf("Created %s dependency update bead for %s (%s %s → %s)", kind, result.Anvil, update.Path, update.Current, update.Latest),
 		"", result.Anvil)
-}
-
-// ecosystemLabel returns a human-readable label for the ecosystem that produced
-// the given CheckResult. Currently always "Go" but will extend to ".NET" and
-// "npm" as those scanners are added.
-func ecosystemLabel(_ *CheckResult) string {
-	// For now all results come from scanGo. When scanDotnet / scanNpm are
-	// added, CheckResult will carry an Ecosystem field and this function
-	// will switch on it.
-	return "Go"
 }

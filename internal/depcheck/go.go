@@ -32,9 +32,10 @@ func (s *Scanner) scanGo(ctx context.Context, anvil, path string) *CheckResult {
 	}
 
 	result := &CheckResult{
-		Anvil:   anvil,
-		Path:    path,
-		Checked: time.Now(),
+		Anvil:     anvil,
+		Path:      path,
+		Ecosystem: "Go",
+		Checked:   time.Now(),
 	}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, s.timeout)
