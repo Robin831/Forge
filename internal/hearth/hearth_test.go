@@ -40,6 +40,34 @@ func TestRenderWorkerListNoTitle(t *testing.T) {
 	}
 }
 
+func TestRenderWorkerListWithPRNumber(t *testing.T) {
+	m := Model{
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "cifix",
+				Title: "fix CI", PRNumber: 42},
+		},
+		focused: PanelWorkers,
+	}
+	rendered := m.renderWorkerList(60, 20)
+	if !strings.Contains(rendered, "PR#42") {
+		t.Errorf("expected 'PR#42' when PRNumber > 0 in rendered output:\n%s", rendered)
+	}
+}
+
+func TestRenderWorkerListWithoutPRNumber(t *testing.T) {
+	m := Model{
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+				Title: "some task", PRNumber: 0},
+		},
+		focused: PanelWorkers,
+	}
+	rendered := m.renderWorkerList(60, 20)
+	if strings.Contains(rendered, "PR#") {
+		t.Errorf("expected no 'PR#' when PRNumber is 0 in rendered output:\n%s", rendered)
+	}
+}
+
 func TestRenderWorkerListScrollRespectsTwoLinesPerWorker(t *testing.T) {
 	// Build more workers than fit in the panel to verify scroll/clipping.
 	// height=10 → maxLines = 10-4 = 6, slotsPerWorker=2, maxWorkers=3.

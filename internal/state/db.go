@@ -322,7 +322,7 @@ const (
 // external state changes (e.g. PR events) and can be legitimately silent for
 // long stretches, so they are excluded from stale detection and dispatch
 // capacity queries. Update this constant when new background phases are added.
-const backgroundPhases = "'bellows', 'cifix', 'reviewfix'"
+const backgroundPhases = "'bellows', 'cifix', 'reviewfix', 'rebase'"
 
 // Worker represents a Smith worker entry.
 type Worker struct {
@@ -447,7 +447,7 @@ func (db *DB) MarkWorkerStalled(id string) error {
 
 // ActiveDispatchWorkers returns active workers that are running primary dispatch
 // pipeline phases (smith, temper, warden). Bellows (PR monitoring) and lifecycle
-// workers (cifix, reviewfix) are excluded so they don't consume dispatch capacity slots.
+// workers (cifix, reviewfix, rebase) are excluded so they don't consume dispatch capacity slots.
 // Stalled workers are included so they continue to count against capacity and
 // prevent the daemon from over-subscribing while stalled processes are still running.
 func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
@@ -458,7 +458,7 @@ func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 }
 
 // ActiveDispatchWorkersByAnvil returns active dispatch workers for a given anvil,
-// excluding bellows and lifecycle workers (cifix, reviewfix).
+// excluding bellows and lifecycle workers (cifix, reviewfix, rebase).
 // Stalled workers are included so they continue to count against per-anvil capacity.
 func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
