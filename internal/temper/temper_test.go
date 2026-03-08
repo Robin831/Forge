@@ -169,6 +169,80 @@ func TestLoadAnvilConfig_ReturnsErrorForUnreadableFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to read config")
 }
 
+func TestDetectSteps_NodeAtRoot(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+
+	steps := detectSteps(dir, nil, false)
+	names := stepNames(steps)
+	assert.Contains(t, names, "lint")
+	assert.Contains(t, names, "test")
+	// Root node steps should have empty Dir.
+	for _, s := range steps {
+		if s.Name == "lint" || s.Name == "test" {
+			assert.Empty(t, s.Dir, "root node step should have empty Dir")
+		}
+	}
+}
+
+func TestDetectSteps_NodeInSubdirectory(t *testing.T) {
+	dir := t.TempDir()
+	// Go at root, Node in web/
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "web"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "web", "package.json"), []byte("{}"), 0o644))
+
+	opts := &DetectOptions{DisableGolangciLint: true}
+	steps := detectSteps(dir, opts, false)
+	names := stepNames(steps)
+
+	// Should have Go steps
+	assert.Contains(t, names, "build")
+	assert.Contains(t, names, "vet")
+	assert.Contains(t, names, "test")
+
+	// Should have prefixed Node steps with Dir set
+	assert.Contains(t, names, "web:lint")
+	assert.Contains(t, names, "web:test")
+	for _, s := range steps {
+		if s.Name == "web:lint" || s.Name == "web:test" {
+			assert.Equal(t, "web", s.Dir)
+		}
+	}
+}
+
+func TestDetectSteps_MultipleNodeSubdirs(t *testing.T) {
+	dir := t.TempDir()
+	for _, sub := range []string{"web", "client"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, sub), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, sub, "package.json"), []byte("{}"), 0o644))
+	}
+
+	steps := detectSteps(dir, nil, false)
+	names := stepNames(steps)
+
+	// Both subdirs detected, no root
+	assert.NotContains(t, names, "lint")
+	assert.Contains(t, names, "web:lint")
+	assert.Contains(t, names, "web:test")
+	assert.Contains(t, names, "client:lint")
+	assert.Contains(t, names, "client:test")
+}
+
+func TestDetectSteps_NodeRootAndSubdir(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "frontend"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "frontend", "package.json"), []byte("{}"), 0o644))
+
+	steps := detectSteps(dir, nil, false)
+	names := stepNames(steps)
+
+	// Both root and subdirectory should be detected
+	assert.Contains(t, names, "lint")
+	assert.Contains(t, names, "frontend:lint")
+}
+
 func TestDefaultConfigWithRace_ExcludesRaceStepWhenDisabled(t *testing.T) {
 	dir := goModDir(t)
 	opts := &DetectOptions{DisableGolangciLint: true}
