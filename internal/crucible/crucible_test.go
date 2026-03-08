@@ -155,9 +155,9 @@ func TestRun_WithChildren_MockPipeline(t *testing.T) {
 		t.Errorf("expected 2 merged PRs, got %d", len(mergedPRs))
 	}
 
-	// Verify children were closed.
-	if len(closedBeads) != 2 {
-		t.Errorf("expected 2 closed beads, got %d", len(closedBeads))
+	// Verify children + parent were closed.
+	if len(closedBeads) != 3 {
+		t.Errorf("expected 3 closed beads (2 children + parent), got %d", len(closedBeads))
 	}
 
 	// Verify result.

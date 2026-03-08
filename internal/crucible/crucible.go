@@ -313,6 +313,11 @@ func Run(ctx context.Context, p Params) *Result {
 		CompletedChildren: len(sorted),
 	})
 
+	// Close the parent bead now that the final PR is created.
+	if err := p.closeBead(ctx, p.ParentBead.ID, anvilPath); err != nil {
+		log.Warn("failed to close parent bead", "parent", p.ParentBead.ID, "error", err)
+	}
+
 	return &Result{
 		Success:       true,
 		FinalPR:       finalPR,
