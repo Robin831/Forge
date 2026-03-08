@@ -22,33 +22,66 @@ const EpicBranchLabelPrefix = "epic-branch:"
 // "epic/<epic-id>".
 const DefaultEpicBranchPrefix = "epic/"
 
-// ResolveEpicBranches enriches beads that have a parent epic with the epic's
-// branch name. It calls `bd show <parent-id> --json` for each unique parent
-// to discover the branch, caching results to avoid duplicate calls.
+// epicBranchLookupFunc is the function used to look up epic branch names.
+// It defaults to lookupEpicBranch but can be replaced in tests.
+var epicBranchLookupFunc = lookupEpicBranch
+
+// ResolveEpicBranches enriches beads that belong to an epic with the epic's
+// branch name. It discovers the epic relationship via two paths:
+//
+//  1. Parent field: child.Parent is set to an epic bead ID (legacy).
+//  2. Blocks field: child.Blocks contains an epic-type bead ID, meaning the
+//     child blocks the epic in the dependency graph. This is the preferred
+//     approach because beads with a parent set are hidden from `bd ready`.
+//
+// It calls `bd show <id> --json` for each unique candidate, caching results
+// to avoid duplicate calls.
 func ResolveEpicBranches(ctx context.Context, beads []Bead, anvilPaths map[string]string) {
-	// Cache parent lookups: parentID → resolved branch (empty string = not an epic)
+	// Cache lookups: "anvil:beadID" → resolved branch (empty string = not an epic)
 	cache := make(map[string]string)
 
 	for i := range beads {
 		b := &beads[i]
-		if b.Parent == "" {
-			continue
-		}
 
 		anvilPath, ok := anvilPaths[b.Anvil]
 		if !ok {
 			continue
 		}
 
-		cacheKey := b.Anvil + ":" + b.Parent
-		if branch, cached := cache[cacheKey]; cached {
+		// Path 1: explicit parent field (legacy)
+		if b.Parent != "" {
+			cacheKey := b.Anvil + ":" + b.Parent
+			if branch, cached := cache[cacheKey]; cached {
+				b.EpicBranch = branch
+				continue
+			}
+			branch := epicBranchLookupFunc(ctx, b.Parent, anvilPath)
+			cache[cacheKey] = branch
 			b.EpicBranch = branch
 			continue
 		}
 
-		branch := lookupEpicBranch(ctx, b.Parent, anvilPath)
-		cache[cacheKey] = branch
-		b.EpicBranch = branch
+		// Path 2: check if any bead this one blocks is an epic.
+		// A child that blocks an epic should be routed through the epic's
+		// feature branch without needing the parent field set.
+		if len(b.Blocks) > 0 {
+			for _, blockedID := range b.Blocks {
+				cacheKey := b.Anvil + ":" + blockedID
+				if branch, cached := cache[cacheKey]; cached {
+					if branch != "" {
+						b.EpicBranch = branch
+						break
+					}
+					continue
+				}
+				branch := epicBranchLookupFunc(ctx, blockedID, anvilPath)
+				cache[cacheKey] = branch
+				if branch != "" {
+					b.EpicBranch = branch
+					break
+				}
+			}
+		}
 	}
 }
 
@@ -70,8 +103,12 @@ func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 		return ""
 	}
 
+	// bd show --json may return an array with a single element: [{...}]
+	output = unwrapJSONArray(output)
+
 	var parent Bead
 	if err := json.Unmarshal(output, &parent); err != nil {
+		log.Printf("lookupEpicBranch: failed to unmarshal bd show %s output: %v", parentID, err)
 		return ""
 	}
 
