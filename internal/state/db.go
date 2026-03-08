@@ -111,6 +111,7 @@ func (db *DB) migrate() error {
 		{"prs", "is_conflicting", `ALTER TABLE prs ADD COLUMN is_conflicting INTEGER NOT NULL DEFAULT 0`},
 		{"prs", "has_unresolved_threads", `ALTER TABLE prs ADD COLUMN has_unresolved_threads INTEGER NOT NULL DEFAULT 0`},
 		{"queue_cache", "assignee", `ALTER TABLE queue_cache ADD COLUMN assignee TEXT NOT NULL DEFAULT ''`},
+		{"prs", "base_branch", `ALTER TABLE prs ADD COLUMN base_branch TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -609,6 +610,7 @@ type PR struct {
 	Anvil                string
 	BeadID               string
 	Branch               string
+	BaseBranch           string // Target branch for the PR (empty = repo default base branch)
 	Status               PRStatus
 	CreatedAt            time.Time
 	LastChecked          *time.Time
@@ -625,9 +627,9 @@ type PR struct {
 // for new PRs, avoiding silent insertion of a failing PR due to Go's zero-value false.
 func (db *DB) InsertPR(pr *PR) error {
 	res, err := db.conn.Exec(
-		`INSERT INTO prs (number, anvil, bead_id, branch, status, created_at, ci_fix_count, review_fix_count)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		pr.Number, pr.Anvil, pr.BeadID, pr.Branch, string(pr.Status),
+		`INSERT INTO prs (number, anvil, bead_id, branch, base_branch, status, created_at, ci_fix_count, review_fix_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		pr.Number, pr.Anvil, pr.BeadID, pr.Branch, pr.BaseBranch, string(pr.Status),
 		pr.CreatedAt.Format(dbTimeLayout), pr.CIFixCount, pr.ReviewFixCount,
 	)
 	if err != nil {
@@ -640,7 +642,7 @@ func (db *DB) InsertPR(pr *PR) error {
 
 // PRByNumber returns the PR record for a given GitHub PR number, or nil if not found.
 func (db *DB) PRByNumber(number int) (*PR, error) {
-	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads
+	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads
 		FROM prs WHERE number = ? ORDER BY id DESC LIMIT 1`, number)
 	if err != nil {
 		return nil, err
@@ -686,19 +688,19 @@ func (db *DB) UpdatePRLifecycle(id int, ciFixCount, reviewFixCount, rebaseCount 
 
 // GetPRByID returns a PR by its primary key id, or nil if not found.
 func (db *DB) GetPRByID(id int) (*PR, error) {
-	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads
+	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads
 		FROM prs WHERE id = ?`, id)
 }
 
 // GetPRByNumber returns a PR by its anvil and number.
 func (db *DB) GetPRByNumber(anvil string, number int) (*PR, error) {
-	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads
+	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads
 		FROM prs WHERE anvil = ? AND number = ? ORDER BY id DESC LIMIT 1`, anvil, number)
 }
 
 // OpenPRs returns all PRs with non-terminal status.
 func (db *DB) OpenPRs() ([]PR, error) {
-	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads
+	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads
 		FROM prs WHERE status IN ` + nonTerminalPRStatusSQL() + `
 		ORDER BY created_at`)
 }
@@ -728,7 +730,7 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 		var createdAt string
 		var lastChecked sql.NullString
 		var ciPassing, isConflicting, hasThreads int
-		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch,
+		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch, &p.BaseBranch,
 			&status, &createdAt, &lastChecked, &p.CIFixCount, &p.ReviewFixCount, &p.RebaseCount, &ciPassing, &isConflicting, &hasThreads); err != nil {
 			return nil, err
 		}

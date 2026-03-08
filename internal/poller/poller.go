@@ -32,6 +32,9 @@ type Bead struct {
 
 	// Forge-injected: which anvil this bead belongs to
 	Anvil string `json:"-"`
+	// Forge-injected: epic branch name resolved from parent epic's labels.
+	// When set, this bead should branch from and PR to this branch instead of main.
+	EpicBranch string `json:"-"`
 }
 
 // AnvilResult holds the poll result for a single anvil.

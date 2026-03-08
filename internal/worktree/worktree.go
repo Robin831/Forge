@@ -27,6 +27,19 @@ type Worktree struct {
 	Path string
 	// Branch is the git branch name.
 	Branch string
+	// BaseBranch is the branch this worktree was branched from.
+	// Empty means the default (main/master).
+	BaseBranch string
+}
+
+// CreateOptions controls worktree creation behaviour.
+type CreateOptions struct {
+	// Branch overrides the target branch name. Default: forge/<beadID>.
+	Branch string
+	// BaseBranch overrides the base ref to branch from. Default: origin/main
+	// or origin/master (auto-detected). When set, the worktree branches from
+	// origin/<BaseBranch> instead.
+	BaseBranch string
 }
 
 // Manager handles creating and tearing down worktrees.
@@ -46,13 +59,22 @@ func NewManager() *Manager {
 // Otherwise, it creates a new branch named forge/<bead-id> from origin/main or
 // origin/master (whichever exists, resolved by resolveBaseRef).
 func (m *Manager) Create(ctx context.Context, anvilPath, beadID string, branch ...string) (*Worktree, error) {
+	opts := CreateOptions{}
+	if len(branch) > 0 {
+		opts.Branch = branch[0]
+	}
+	return m.CreateWithOptions(ctx, anvilPath, beadID, opts)
+}
+
+// CreateWithOptions creates a new worktree with full control over branch and
+// base ref. When opts.BaseBranch is set, the worktree branches from
+// origin/<BaseBranch> instead of origin/main.
+func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID string, opts CreateOptions) (*Worktree, error) {
 	workersDir := filepath.Join(anvilPath, m.WorkersDir)
 	worktreePath := filepath.Join(workersDir, sanitizePath(beadID))
 
-	targetBranch := ""
-	if len(branch) > 0 && branch[0] != "" {
-		targetBranch = branch[0]
-	} else {
+	targetBranch := opts.Branch
+	if targetBranch == "" {
 		targetBranch = "forge/" + sanitizePath(beadID)
 	}
 
@@ -89,10 +111,21 @@ func (m *Manager) Create(ctx context.Context, anvilPath, beadID string, branch .
 			}
 		}
 	} else {
-		// Determine base ref (origin/main or origin/master)
-		baseRef, err := resolveBaseRef(ctx, anvilPath)
-		if err != nil {
-			return nil, fmt.Errorf("resolving base ref: %w", err)
+		// Determine base ref: use explicit BaseBranch if provided, otherwise
+		// auto-detect origin/main or origin/master.
+		var baseRef string
+		if opts.BaseBranch != "" {
+			baseRef = "origin/" + opts.BaseBranch
+			// Verify the base branch exists on origin
+			if err := gitCmd(ctx, anvilPath, "rev-parse", "--verify", baseRef); err != nil {
+				return nil, fmt.Errorf("base branch %q not found on origin (ref %q): %w", opts.BaseBranch, baseRef, err)
+			}
+		} else {
+			var err error
+			baseRef, err = resolveBaseRef(ctx, anvilPath)
+			if err != nil {
+				return nil, fmt.Errorf("resolving base ref: %w", err)
+			}
 		}
 
 		// Create worktree with new branch
@@ -108,11 +141,64 @@ func (m *Manager) Create(ctx context.Context, anvilPath, beadID string, branch .
 	}
 
 	return &Worktree{
-		BeadID:    beadID,
-		AnvilPath: anvilPath,
-		Path:      worktreePath,
-		Branch:    targetBranch,
+		BeadID:     beadID,
+		AnvilPath:  anvilPath,
+		Path:       worktreePath,
+		Branch:     targetBranch,
+		BaseBranch: opts.BaseBranch,
 	}, nil
+}
+
+// CreateEpicBranch creates or verifies an epic feature branch from main and
+// pushes it to origin. This is used when an epic bead is first picked up —
+// the branch is created without any code changes so child beads can branch
+// from it.
+func (m *Manager) CreateEpicBranch(ctx context.Context, anvilPath, branchName string) error {
+	// Validate branchName before passing to git. Bead labels are user-controlled,
+	// so a name starting with "-" could be interpreted as a git flag.
+	if err := validateBranchName(ctx, anvilPath, branchName); err != nil {
+		return err
+	}
+
+	// Fetch origin
+	if err := gitCmd(ctx, anvilPath, "fetch", "origin"); err != nil {
+		return fmt.Errorf("git fetch: %w", err)
+	}
+
+	// Check if the branch already exists
+	if branchExists(ctx, anvilPath, branchName) {
+		return nil // Already exists, nothing to do
+	}
+
+	// Determine base ref (origin/main or origin/master)
+	baseRef, err := resolveBaseRef(ctx, anvilPath)
+	if err != nil {
+		return fmt.Errorf("resolving base ref: %w", err)
+	}
+
+	// Use -- to prevent branchName from being parsed as a git option.
+	if err := gitCmd(ctx, anvilPath, "branch", "--", branchName, baseRef); err != nil {
+		return fmt.Errorf("creating epic branch %s: %w", branchName, err)
+	}
+
+	// Push to origin — -- ends option parsing before the refspec.
+	if err := gitCmd(ctx, anvilPath, "push", "-u", "origin", "--", branchName); err != nil {
+		return fmt.Errorf("pushing epic branch %s: %w", branchName, err)
+	}
+
+	return nil
+}
+
+// validateBranchName checks that branchName is a valid git branch name and
+// does not start with "-" (which git could interpret as a flag).
+func validateBranchName(ctx context.Context, dir, branchName string) error {
+	if strings.HasPrefix(branchName, "-") {
+		return fmt.Errorf("invalid branch name %q: must not start with '-'", branchName)
+	}
+	if err := gitCmd(ctx, dir, "check-ref-format", "--branch", branchName); err != nil {
+		return fmt.Errorf("invalid branch name %q: %w", branchName, err)
+	}
+	return nil
 }
 
 // branchExists checks if a branch exists locally or on origin.
