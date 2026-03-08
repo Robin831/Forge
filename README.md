@@ -176,7 +176,7 @@ Enable with `crucible_enabled: true` in `forge.yaml`.
 
 The **depcheck** monitor periodically scans anvils for outdated dependencies across multiple ecosystems:
 - **Go**: `go list -m -u all`
-- **Node**: npm/yarn outdated detection
+- **Node**: npm outdated detection (via `npm outdated --json`)
 - **.NET**: NuGet package update detection
 
 Patch and minor updates produce auto-dispatch beads; major version bumps produce "needs attention" beads for manual review. Configure via `depcheck_interval` (default: weekly) and `depcheck_timeout`. Set `depcheck_interval: 0` to disable.
@@ -220,6 +220,7 @@ Forge/
 ├── cmd/forge/            # CLI entry point (Cobra commands)
 │   └── main.go
 ├── internal/
+│   ├── autostart/        # Windows Task Scheduler integration
 │   ├── bellows/          # PR monitoring (CI fix, review fix, rebase)
 │   ├── changelog/        # Changelog fragment parsing & assembly
 │   ├── cifix/            # CI failure fix worker
@@ -229,6 +230,7 @@ Forge/
 │   ├── daemon/           # Main background process, poll loop, IPC server
 │   ├── depcheck/         # Multi-language dependency update scanner
 │   ├── executil/         # Platform-specific process execution
+│   ├── forge/            # Core Forge types and interfaces
 │   ├── ghpr/             # GitHub PR creation & management
 │   ├── hearth/           # Bubbletea TUI dashboard
 │   ├── hotreload/        # fsnotify config watcher

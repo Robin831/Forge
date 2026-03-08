@@ -86,7 +86,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `auto_dispatch_min_priority` | int | 0 | Required when `auto_dispatch: priority`. Only beads with priority <= this value are dispatched. Range: 0-4. |
 | `schematic_enabled` | bool\|null | null (use global) | Per-anvil override for `settings.schematic_enabled`. When set, takes precedence over the global setting. |
 | `golangci_lint` | bool\|null | null (auto-detect) | Per-anvil override for golangci-lint in Temper. When null, golangci-lint runs if the binary is found on PATH. Set to `false` to disable. |
-| `go_race_detection` | bool | `false` | Enable the `-race` flag for Go tests in Temper. |
+| `go_race_detection` | bool\|null | null (use global) | Per-anvil override for `settings.go_race_detection`. When set, enables or disables the `-race` flag for Go tests in Temper and takes precedence over the global setting. |
 
 ### Auto-Dispatch Modes
 

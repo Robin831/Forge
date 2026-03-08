@@ -313,6 +313,8 @@ forge warden learn --anvil heimdall
 | Flag | Description |
 |------|-------------|
 | `-a, --anvil` | Anvil name (required) |
+| `-p, --pr` | One or more PR numbers to learn from (can be repeated) |
+| `-n, --dry-run` | Show what rules would be learned without writing them |
 
 ### `forge warden list`
 
