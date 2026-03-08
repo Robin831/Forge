@@ -22,6 +22,10 @@ const EpicBranchLabelPrefix = "epic-branch:"
 // "epic/<epic-id>".
 const DefaultEpicBranchPrefix = "epic/"
 
+// epicBranchLookupFunc is the function used to look up epic branch names.
+// It defaults to lookupEpicBranch but can be replaced in tests.
+var epicBranchLookupFunc = lookupEpicBranch
+
 // ResolveEpicBranches enriches beads that belong to an epic with the epic's
 // branch name. It discovers the epic relationship via two paths:
 //
@@ -51,7 +55,7 @@ func ResolveEpicBranches(ctx context.Context, beads []Bead, anvilPaths map[strin
 				b.EpicBranch = branch
 				continue
 			}
-			branch := lookupEpicBranch(ctx, b.Parent, anvilPath)
+			branch := epicBranchLookupFunc(ctx, b.Parent, anvilPath)
 			cache[cacheKey] = branch
 			b.EpicBranch = branch
 			continue
@@ -70,7 +74,7 @@ func ResolveEpicBranches(ctx context.Context, beads []Bead, anvilPaths map[strin
 					}
 					continue
 				}
-				branch := lookupEpicBranch(ctx, blockedID, anvilPath)
+				branch := epicBranchLookupFunc(ctx, blockedID, anvilPath)
 				cache[cacheKey] = branch
 				if branch != "" {
 					b.EpicBranch = branch
@@ -99,8 +103,12 @@ func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 		return ""
 	}
 
+	// bd show --json may return an array with a single element: [{...}]
+	output = unwrapJSONArray(output)
+
 	var parent Bead
 	if err := json.Unmarshal(output, &parent); err != nil {
+		log.Printf("lookupEpicBranch: failed to unmarshal bd show %s output: %v", parentID, err)
 		return ""
 	}
 

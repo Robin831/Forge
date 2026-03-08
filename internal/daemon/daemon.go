@@ -1471,16 +1471,21 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 		// Resolve epic branch if not already populated from the poll cache.
 		// Detection works via parent field (legacy) or blocks (preferred).
+		// When Crucible is enabled we first resolve blocks so that epic
+		// relationships can be derived even when the original ready JSON
+		// omitted the blocks field.
 		if targetBead.EpicBranch == "" {
-			needsResolve := targetBead.Parent != "" || len(targetBead.Blocks) > 0
-			if needsResolve {
-				anvilPath := d.cfg.Load().Anvils[targetBead.Anvil].Path
-				if anvilPath != "" {
-					paths := map[string]string{targetBead.Anvil: anvilPath}
-					single := []poller.Bead{*targetBead}
-					poller.ResolveEpicBranches(context.Background(), single, paths)
-					targetBead.EpicBranch = single[0].EpicBranch
+			anvilPath := d.cfg.Load().Anvils[targetBead.Anvil].Path
+			if anvilPath != "" {
+				paths := map[string]string{targetBead.Anvil: anvilPath}
+				single := []poller.Bead{*targetBead}
+				// First resolve blocks for this bead so epic relationships can be
+				// derived even when the original ready JSON omitted `blocks`.
+				if d.cfg.Load().Settings.CrucibleEnabled {
+					poller.ResolveBlocks(context.Background(), single, paths)
 				}
+				poller.ResolveEpicBranches(context.Background(), single, paths)
+				targetBead.EpicBranch = single[0].EpicBranch
 			}
 		}
 
