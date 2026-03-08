@@ -825,7 +825,7 @@ func (m *Model) renderActionMenu() string {
 	}
 
 	menuWidth := 52
-	contentWidth := menuWidth - 4 // account for padding
+	contentWidth := menuWidth - actionMenuStyle.GetHorizontalFrameSize()
 	labels := actionMenuLabels()
 
 	var lines []string
@@ -924,7 +924,7 @@ func (m *Model) renderQueueActionMenu() string {
 	}
 
 	menuWidth := 52
-	contentWidth := menuWidth - 4 // account for padding
+	contentWidth := menuWidth - actionMenuStyle.GetHorizontalFrameSize()
 	labels := queueActionMenuLabels()
 
 	var lines []string
@@ -937,26 +937,21 @@ func (m *Model) renderQueueActionMenu() string {
 	if m.queueActionTarget.Description != "" {
 		lines = append(lines, "")
 		// Word-wrap description to fit popup width, max 3 lines.
-		desc := m.queueActionTarget.Description
-		for i := 0; i < 3; i++ {
-			if len(desc) == 0 {
-				break
+		wrapped := wordWrap(m.queueActionTarget.Description, contentWidth)
+		if len(wrapped) <= 3 {
+			for _, line := range wrapped {
+				lines = append(lines, dimStyle.Render(line))
 			}
-			if len(desc) <= contentWidth {
-				lines = append(lines, dimStyle.Render(desc))
-				desc = ""
-				break
+		} else {
+			for i := 0; i < 2; i++ {
+				lines = append(lines, dimStyle.Render(wrapped[i]))
 			}
-			// Find last space within width for word wrap.
-			cut := contentWidth
-			if idx := strings.LastIndex(desc[:cut], " "); idx > 0 {
-				cut = idx
+			// Truncate 3rd line and append ellipsis to indicate more text.
+			third := []rune(wrapped[2])
+			if len(third) > contentWidth-3 {
+				third = third[:contentWidth-3]
 			}
-			lines = append(lines, dimStyle.Render(desc[:cut]))
-			desc = strings.TrimLeft(desc[cut:], " ")
-		}
-		if len(desc) > 0 {
-			lines = append(lines, dimStyle.Render("..."))
+			lines = append(lines, dimStyle.Render(string(third)+"..."))
 		}
 	}
 
@@ -2212,10 +2207,11 @@ func truncate(s string, maxLen int) string {
 	if maxLen < 4 {
 		maxLen = 4
 	}
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }
 
 // wordWrapCount returns the number of lines wordWrap would produce without
