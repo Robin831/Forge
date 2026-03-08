@@ -995,6 +995,7 @@ const (
 	EventVulnBeadCreated      EventType = "vuln_bead_created"
 	EventAutoLearnError       EventType = "auto_learn_error"
 	EventAutoLearnRules       EventType = "auto_learn_rules"
+	EventWardenRuleLearned    EventType = "warden_rule_learned"
 
 	// Crucible events — parent bead orchestration with children on feature branches.
 	EventCrucibleStarted          EventType = "crucible_started"
