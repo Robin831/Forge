@@ -312,20 +312,28 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 		})
 	}
 
-	// Check for Node.js project
-	if fileExists(worktreePath, "package.json") {
+	// Check for Node.js project — at root and common subdirectories.
+	for _, nodeDir := range detectNodeDirs(worktreePath) {
+		prefix := ""
+		dir := ""
+		if nodeDir != "" {
+			prefix = nodeDir + ":"
+			dir = nodeDir
+		}
 		steps = append(steps, Step{
-			Name:    "lint",
-			Command: "npm",
-			Args:    []string{"run", "lint"},
-			Timeout: 2 * time.Minute,
+			Name:     prefix + "lint",
+			Command:  "npm",
+			Args:     []string{"run", "lint"},
+			Dir:      dir,
+			Timeout:  2 * time.Minute,
 			Optional: true, // lint might not be configured
 		})
 		steps = append(steps, Step{
-			Name:    "test",
-			Command: "npm",
-			Args:    []string{"run", "test:run"},
-			Timeout: 5 * time.Minute,
+			Name:     prefix + "test",
+			Command:  "npm",
+			Args:     []string{"run", "test:run"},
+			Dir:      dir,
+			Timeout:  5 * time.Minute,
 			Optional: true, // test script might not exist
 		})
 	}
@@ -388,6 +396,25 @@ func buildSummary(r *Result) string {
 		fmt.Fprintf(&b, "\nFailed at step: %s", r.FailedStep)
 	}
 	return b.String()
+}
+
+// nodeSubdirs is the list of common subdirectories where a Node.js project
+// might live in hybrid repositories (e.g., Go at root, Node in web/).
+var nodeSubdirs = []string{"web", "frontend", "client", "app", "ui"}
+
+// detectNodeDirs returns the relative directories containing a package.json.
+// An empty string entry means the root directory.
+func detectNodeDirs(worktreePath string) []string {
+	var dirs []string
+	if fileExists(worktreePath, "package.json") {
+		dirs = append(dirs, "")
+	}
+	for _, sub := range nodeSubdirs {
+		if fileExists(filepath.Join(worktreePath, sub), "package.json") {
+			dirs = append(dirs, sub)
+		}
+	}
+	return dirs
 }
 
 // fileExists checks if a file exists at the given path.
