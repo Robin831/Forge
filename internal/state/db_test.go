@@ -1140,7 +1140,7 @@ func TestDB_ReadyToMerge(t *testing.T) {
 	}
 	defer db.Close()
 
-	insert := func(number int, status PRStatus, ciPassing, conflicting, unresolvedThreads bool) *PR {
+	insert := func(number int, status PRStatus, ciPassing, conflicting, unresolvedThreads, pendingReviews bool) *PR {
 		t.Helper()
 		pr := &PR{
 			Number:    number,
@@ -1157,24 +1157,26 @@ func TestDB_ReadyToMerge(t *testing.T) {
 		if err := db.UpdatePRLifecycle(pr.ID, 0, 0, 0, ciPassing); err != nil {
 			t.Fatalf("UpdatePRLifecycle: %v", err)
 		}
-		if err := db.UpdatePRMergeability(pr.ID, conflicting, unresolvedThreads); err != nil {
+		if err := db.UpdatePRMergeability(pr.ID, conflicting, unresolvedThreads, pendingReviews); err != nil {
 			t.Fatalf("UpdatePRMergeability: %v", err)
 		}
 		return pr
 	}
 
-	// approved, CI passing, not conflicting, no unresolved threads → ready
-	prReady := insert(201, PRApproved, true, false, false)
+	// approved, CI passing, not conflicting, no unresolved threads, no pending reviews → ready
+	prReady := insert(201, PRApproved, true, false, false, false)
 	// approved but CI failing → not ready
-	prCIFail := insert(202, PRApproved, false, false, false)
+	prCIFail := insert(202, PRApproved, false, false, false, false)
 	// approved, CI passing, conflicting → not ready
-	prConflict := insert(203, PRApproved, true, true, false)
+	prConflict := insert(203, PRApproved, true, true, false, false)
 	// approved, CI passing, has unresolved threads → not ready
-	prThreads := insert(204, PRApproved, true, false, true)
+	prThreads := insert(204, PRApproved, true, false, true, false)
 	// open (not approved) but all conditions met → ready (approval not required)
-	prOpen := insert(205, PROpen, true, false, false)
+	prOpen := insert(205, PROpen, true, false, false, false)
 	// needs_fix → not ready (active fix cycle)
-	prNeedsFix := insert(206, PRNeedsFix, true, false, false)
+	prNeedsFix := insert(206, PRNeedsFix, true, false, false, false)
+	// approved, CI passing, but has pending review requests → not ready
+	prPendingReview := insert(207, PRApproved, true, false, false, true)
 
 	// IsPRReadyToMerge
 	cases := []struct {
@@ -1188,6 +1190,7 @@ func TestDB_ReadyToMerge(t *testing.T) {
 		{prThreads, false, "unresolved_threads"},
 		{prOpen, true, "open_all_conditions_met"},
 		{prNeedsFix, false, "needs_fix"},
+		{prPendingReview, false, "pending_reviews"},
 	}
 	for _, tc := range cases {
 		got, err := db.IsPRReadyToMerge(tc.pr.ID)
@@ -1209,7 +1212,7 @@ func TestDB_ReadyToMerge(t *testing.T) {
 	}
 
 	// UpdatePRMergeability: make prConflict non-conflicting → now ready
-	if err := db.UpdatePRMergeability(prConflict.ID, false, false); err != nil {
+	if err := db.UpdatePRMergeability(prConflict.ID, false, false, false); err != nil {
 		t.Fatalf("UpdatePRMergeability clear: %v", err)
 	}
 	ready, err = db.ReadyToMergePRs()

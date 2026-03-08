@@ -171,7 +171,7 @@ func Merge(ctx context.Context, worktreePath string, prNumber int, strategy stri
 func CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, error) {
 	args := []string{
 		"pr", "view", fmt.Sprintf("%d", prNumber),
-		"--json", "state,statusCheckRollup,reviews,mergeable,headRefName",
+		"--json", "state,statusCheckRollup,reviews,reviewRequests,mergeable,headRefName",
 	}
 
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
@@ -362,12 +362,13 @@ func ParseRepoURL(url string) (owner, repo string, err error) {
 
 // PRStatus represents the GitHub state of a PR.
 type PRStatus struct {
-	State             string     `json:"state"`
-	StatusCheckRollup []CheckRun  `json:"statusCheckRollup"`
-	Reviews           []Review    `json:"reviews"`
-	Mergeable         string     `json:"mergeable"`
-	UnresolvedThreads int        `json:"unresolvedThreads"`
-	HeadRefName       string     `json:"headRefName"`
+	State             string           `json:"state"`
+	StatusCheckRollup []CheckRun       `json:"statusCheckRollup"`
+	Reviews           []Review         `json:"reviews"`
+	ReviewRequests    []ReviewRequest  `json:"reviewRequests"`
+	Mergeable         string           `json:"mergeable"`
+	UnresolvedThreads int              `json:"unresolvedThreads"`
+	HeadRefName       string           `json:"headRefName"`
 }
 
 // CheckRun represents a CI check on the PR.
@@ -387,6 +388,14 @@ type Review struct {
 	Author ReviewAuthor `json:"author"`
 	State  string       `json:"state"`
 	Body   string       `json:"body"`
+}
+
+// ReviewRequest represents a pending review request on a PR.
+// GitHub returns either a user login or a team slug depending on the request type.
+type ReviewRequest struct {
+	Login string `json:"login"`
+	Slug  string `json:"slug"`
+	Name  string `json:"name"`
 }
 
 // IsMerged returns true if the PR has been merged.
@@ -430,6 +439,12 @@ func (s *PRStatus) NeedsChanges() bool {
 		}
 	}
 	return s.UnresolvedThreads > 0
+}
+
+// HasPendingReviewRequests returns true if there are outstanding review requests
+// that have not yet been fulfilled (i.e., the reviewer hasn't submitted a review).
+func (s *PRStatus) HasPendingReviewRequests() bool {
+	return len(s.ReviewRequests) > 0
 }
 
 // buildDefaultBody creates a standard PR body referencing the bead.
