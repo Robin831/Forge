@@ -124,6 +124,24 @@ func TestPRStatus_NeedsChanges(t *testing.T) {
 	}
 }
 
+func TestPRStatus_HasPendingReviewRequests(t *testing.T) {
+	tests := []struct {
+		name   string
+		status PRStatus
+		want   bool
+	}{
+		{"no review requests", PRStatus{}, false},
+		{"one pending user review", PRStatus{ReviewRequests: []ReviewRequest{{Login: "copilot"}}}, true},
+		{"one pending team review", PRStatus{ReviewRequests: []ReviewRequest{{Slug: "my-team"}}}, true},
+		{"multiple pending reviews", PRStatus{ReviewRequests: []ReviewRequest{{Login: "alice"}, {Login: "bob"}}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.status.HasPendingReviewRequests())
+		})
+	}
+}
+
 // TestReviewAuthorUnmarshal is a regression test for the bug where Review.Author
 // was typed as string and failed JSON unmarshaling when GitHub returned a nested
 // {"login":"..."} object, silently producing empty reviews and suppressing all

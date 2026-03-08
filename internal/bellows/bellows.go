@@ -63,6 +63,7 @@ type prSnapshot struct {
 	HasApproval          bool
 	NeedsChanges         bool
 	HasUnresolvedThreads bool
+	HasPendingReviews    bool
 	IsMerged             bool
 	IsClosed             bool
 	IsConflicting        bool
@@ -168,6 +169,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		HasApproval:          status.HasApproval(),
 		NeedsChanges:         status.NeedsChanges(),
 		HasUnresolvedThreads: status.UnresolvedThreads > 0,
+		HasPendingReviews:    status.HasPendingReviewRequests(),
 		IsMerged:             status.IsMerged(),
 		IsClosed:             status.IsClosed(),
 		IsConflicting:        status.Mergeable == "CONFLICTING",
@@ -315,12 +317,12 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 
 	// If all merge-readiness conditions are met and the PR was in needs_fix,
 	// restore it to approved so the Ready-to-Merge panel picks it up again.
-	if newSnap.HasApproval && newSnap.CIPassing && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads {
+	if newSnap.HasApproval && newSnap.CIPassing && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews {
 		_ = m.db.UpdatePRStatusIfNeedsFix(pr.ID, state.PRApproved)
 	}
 
 	// Persist mergeability state so the ready-to-merge panel stays current.
-	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.IsConflicting, newSnap.HasUnresolvedThreads)
+	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews)
 
 }
 
