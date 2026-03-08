@@ -438,7 +438,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				item := m.queue[m.queueVP.cursor]
 				if item.Section == "unlabeled" {
 					m.queueActionTarget = &item
-					m.executeQueueAction(QueueActionLabel)
+					cmd := m.executeQueueAction(QueueActionLabel)
+					return m, cmd
 				}
 			}
 		}
