@@ -724,21 +724,25 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	p := poller.New(cfg.Anvils)
 	beads, results := p.Poll(ctx)
 
-	// Resolve epic branches for beads that have a parent epic. This enriches
-	// each bead's EpicBranch field so dispatchBead can branch from and PR to
-	// the correct epic branch.
 	anvilPaths := make(map[string]string, len(cfg.Anvils))
 	for name, anvil := range cfg.Anvils {
 		anvilPaths[name] = anvil.Path
 	}
-	poller.ResolveEpicBranches(ctx, beads, anvilPaths)
 
 	// When Crucible is enabled, enrich beads with their blocks (children)
 	// so we can detect parent beads that should be dispatched through the
-	// Crucible instead of the normal pipeline.
+	// Crucible instead of the normal pipeline. This must run before
+	// ResolveEpicBranches because epic branch detection now also checks
+	// whether a bead blocks an epic-type bead.
 	if cfg.Settings.CrucibleEnabled {
 		poller.ResolveBlocks(ctx, beads, anvilPaths)
 	}
+
+	// Resolve epic branches for beads that belong to an epic. This enriches
+	// each bead's EpicBranch field so dispatchBead can branch from and PR to
+	// the correct epic branch. Detection works via the parent field (legacy)
+	// or via the blocks/blocked_by dependency graph (preferred).
+	poller.ResolveEpicBranches(ctx, beads, anvilPaths)
 
 	// Update cache
 	d.lastBeadsMu.Lock()
@@ -1465,15 +1469,18 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.ResetDispatchFailures(targetBead.ID, targetBead.Anvil)
 		}
 
-		// Resolve epic branch if the bead has a parent epic and EpicBranch
-		// wasn't already populated from the poll cache.
-		if targetBead.EpicBranch == "" && targetBead.Parent != "" {
-			anvilPath := d.cfg.Load().Anvils[targetBead.Anvil].Path
-			if anvilPath != "" {
-				paths := map[string]string{targetBead.Anvil: anvilPath}
-				single := []poller.Bead{*targetBead}
-				poller.ResolveEpicBranches(context.Background(), single, paths)
-				targetBead.EpicBranch = single[0].EpicBranch
+		// Resolve epic branch if not already populated from the poll cache.
+		// Detection works via parent field (legacy) or blocks (preferred).
+		if targetBead.EpicBranch == "" {
+			needsResolve := targetBead.Parent != "" || len(targetBead.Blocks) > 0
+			if needsResolve {
+				anvilPath := d.cfg.Load().Anvils[targetBead.Anvil].Path
+				if anvilPath != "" {
+					paths := map[string]string{targetBead.Anvil: anvilPath}
+					single := []poller.Bead{*targetBead}
+					poller.ResolveEpicBranches(context.Background(), single, paths)
+					targetBead.EpicBranch = single[0].EpicBranch
+				}
 			}
 		}
 
