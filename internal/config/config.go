@@ -131,6 +131,15 @@ type SettingsConfig struct {
 	// comments, distill them into rules via Claude, and save them to the
 	// anvil's .forge/warden-rules.yaml. Default: false.
 	AutoLearnRules bool `mapstructure:"auto_learn_rules"`
+	// CrucibleEnabled enables automatic Crucible orchestration for parent beads
+	// that have children (blocks other beads). When true, the daemon detects
+	// parent beads during polling and dispatches them through the Crucible
+	// instead of the normal pipeline. Default: false.
+	CrucibleEnabled bool `mapstructure:"crucible_enabled"`
+	// AutoMergeCrucibleChildren controls whether child PRs targeting a Crucible
+	// feature branch are automatically merged (squash) after the pipeline
+	// succeeds. Default: true.
+	AutoMergeCrucibleChildren *bool `mapstructure:"auto_merge_crucible_children"`
 }
 
 // IsVulncheckEnabled returns true unless vulncheck_enabled is explicitly false.
@@ -139,6 +148,15 @@ func (s SettingsConfig) IsVulncheckEnabled() bool {
 		return true
 	}
 	return *s.VulncheckEnabled
+}
+
+// IsAutoMergeCrucibleChildren returns true unless auto_merge_crucible_children
+// is explicitly false. Defaults to true.
+func (s SettingsConfig) IsAutoMergeCrucibleChildren() bool {
+	if s.AutoMergeCrucibleChildren == nil {
+		return true
+	}
+	return *s.AutoMergeCrucibleChildren
 }
 
 // NotificationsConfig holds webhook and notification settings.

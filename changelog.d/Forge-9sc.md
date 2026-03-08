@@ -1,0 +1,2 @@
+category: Added
+- **Crucible: auto-orchestrate parent beads with children on feature branches** - When `crucible_enabled: true`, the Forge automatically detects parent beads that block other beads and orchestrates their children on a feature branch. Children are dispatched in topological order through the normal pipeline, their PRs are merged into the feature branch, and a final PR is created against main. No special bead type or label required — the dependency structure is the signal. (Forge-9sc)
