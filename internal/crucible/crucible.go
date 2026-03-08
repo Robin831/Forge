@@ -387,7 +387,19 @@ func FetchChildren(ctx context.Context, parentID, dir string) ([]poller.Bead, er
 	return children, nil
 }
 
+// bdShowBead extends the Bead with the raw dependents array that bd returns
+// instead of a flat "blocks" field.
+type bdShowBead struct {
+	poller.Bead
+	Dependents []struct {
+		ID             string `json:"id"`
+		DependencyType string `json:"dependency_type"`
+	} `json:"dependents"`
+}
+
 // FetchBead calls `bd show <beadID> --json` and returns the parsed bead.
+// bd show returns dependents as an array of objects with dependency_type,
+// not a flat "blocks" array, so we extract blocks from the dependents.
 func FetchBead(ctx context.Context, beadID, dir string) (poller.Bead, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -402,11 +414,36 @@ func FetchBead(ctx context.Context, beadID, dir string) (poller.Bead, error) {
 		return poller.Bead{}, fmt.Errorf("bd show %s: %w: %s", beadID, err, stderr.String())
 	}
 
-	var bead poller.Bead
-	if err := json.Unmarshal(output, &bead); err != nil {
+	// bd show --json may return an array with a single element: [{...}]
+	output = unwrapJSONArray(output)
+
+	var raw bdShowBead
+	if err := json.Unmarshal(output, &raw); err != nil {
 		return poller.Bead{}, fmt.Errorf("parsing bd show %s: %w", beadID, err)
 	}
+
+	bead := raw.Bead
+	// Extract blocks from the dependents array.
+	for _, dep := range raw.Dependents {
+		if dep.DependencyType == "blocks" {
+			bead.Blocks = append(bead.Blocks, dep.ID)
+		}
+	}
 	return bead, nil
+}
+
+// unwrapJSONArray strips a wrapping JSON array if the output is `[{...}]`,
+// returning just `{...}`. bd show --json returns an array with one element.
+func unwrapJSONArray(data []byte) []byte {
+	data = bytes.TrimSpace(data)
+	if len(data) > 1 && data[0] == '[' {
+		start := bytes.IndexByte(data, '{')
+		end := bytes.LastIndexByte(data, '}')
+		if start >= 0 && end > start {
+			return data[start : end+1]
+		}
+	}
+	return data
 }
 
 // createPR creates a pull request (or uses the injected PRCreator for testing).
