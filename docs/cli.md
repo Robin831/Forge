@@ -53,8 +53,8 @@ Open the TUI dashboard. Requires the daemon to be running.
 forge hearth
 ```
 
-Three-column layout with six panels:
-- **Left column**: Queue (ready beads), Ready to Merge (PRs passing CI and approved), and Needs Attention (beads requiring human intervention)
+Three-column layout with up to seven panels:
+- **Left column**: Queue (ready beads), Crucibles (active epic orchestrations, shown when present), Ready to Merge (PRs passing CI and approved), and Needs Attention (beads requiring human intervention)
 - **Center column**: Workers (active Smith, Temper, Warden, CIFix, ReviewFix processes)
 - **Right column**: Live Activity (streaming worker log) and Events (timestamped event log)
 

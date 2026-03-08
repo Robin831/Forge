@@ -82,7 +82,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/state` | SQLite at `~/.forge/state.db` — workers, prs, events, retries, costs |
 | `internal/cost` | Token usage and USD cost tracking per bead and per day |
 | `internal/ipc` | Named pipe (Windows) / Unix socket daemon↔CLI protocol; newline-delimited JSON |
-| `internal/hearth` | Bubbletea TUI: three-column layout (Queue+Crucibles+ReadyToMerge+NeedsAttention / Workers / LiveActivity+Events) |
+| `internal/hearth` | Bubbletea TUI: three-column layout (Queue+Crucibles(when active)+ReadyToMerge+NeedsAttention / Workers / LiveActivity+Events) |
 | `internal/config` | Viper config loading — `forge.yaml` in cwd or `~/.forge/config.yaml` |
 | `internal/prompt` | Builds the Smith prompt from bead metadata + AGENTS.md/CLAUDE.md/README.md |
 | `internal/provider` | AI provider fallback chain (Claude, Gemini, Copilot) with rate limit handling |
