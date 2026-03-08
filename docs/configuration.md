@@ -196,6 +196,7 @@ The config is validated at load time. Errors are reported as a list:
 - `daily_cost_limit` must be a non-negative finite number
 - `stale_interval` must be >= 30s when enabled, or 0 to disable
 - `depcheck_interval` must be >= 1h when enabled, or 0 to disable
+- `depcheck_timeout` must not be negative
 - Each anvil `path` must be non-empty
 - Each anvil `max_smiths` must be >= 0
 - `auto_dispatch` must be one of: `all`, `tagged`, `priority`, `off`
