@@ -783,14 +783,15 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			labelsJSON, _ := json.Marshal(b.Labels)
 			section := d.classifyBeadSection(b)
 			cacheItems = append(cacheItems, state.QueueItem{
-				BeadID:   b.ID,
-				Anvil:    b.Anvil,
-				Title:    b.Title,
-				Priority: b.Priority,
-				Status:   b.Status,
-				Labels:   string(labelsJSON),
-				Section:  section,
-				Assignee: b.Assignee,
+				BeadID:      b.ID,
+				Anvil:       b.Anvil,
+				Title:       b.Title,
+				Description: b.Description,
+				Priority:    b.Priority,
+				Status:      b.Status,
+				Labels:      string(labelsJSON),
+				Section:     section,
+				Assignee:    b.Assignee,
 			})
 		}
 
@@ -817,14 +818,15 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			}
 			labelsJSON, _ := json.Marshal(b.Labels)
 			cacheItems = append(cacheItems, state.QueueItem{
-				BeadID:   b.ID,
-				Anvil:    b.Anvil,
-				Title:    b.Title,
-				Priority: b.Priority,
-				Status:   b.Status,
-				Labels:   string(labelsJSON),
-				Section:  state.QueueSectionInProgress,
-				Assignee: b.Assignee,
+				BeadID:      b.ID,
+				Anvil:       b.Anvil,
+				Title:       b.Title,
+				Description: b.Description,
+				Priority:    b.Priority,
+				Status:      b.Status,
+				Labels:      string(labelsJSON),
+				Section:     state.QueueSectionInProgress,
+				Assignee:    b.Assignee,
 			})
 		}
 

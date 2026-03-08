@@ -736,6 +736,71 @@ func TestRenderQueueActionMenuContainsBeadID(t *testing.T) {
 	}
 }
 
+func TestRenderQueueActionMenuShowsTitle(t *testing.T) {
+	item := QueueItem{BeadID: "bd-t1", Anvil: "test", Title: "Implement feature X", Section: "unlabeled"}
+	m := Model{
+		showQueueActionMenu: true,
+		queueActionTarget:   &item,
+		queueActionMenuIdx:  0,
+		width:               80,
+		height:              24,
+	}
+	rendered := m.renderQueueActionMenu()
+	if !strings.Contains(rendered, "Implement feature X") {
+		t.Errorf("expected title in renderQueueActionMenu output:\n%s", rendered)
+	}
+}
+
+func TestRenderQueueActionMenuWrapsDescription(t *testing.T) {
+	// Description longer than content width should be word-wrapped.
+	item := QueueItem{
+		BeadID:      "bd-t2",
+		Anvil:       "test",
+		Title:       "Test bead",
+		Description: "This is a fairly long description that should be wrapped across multiple lines in the popup",
+		Section:     "unlabeled",
+	}
+	m := Model{
+		showQueueActionMenu: true,
+		queueActionTarget:   &item,
+		queueActionMenuIdx:  0,
+		width:               80,
+		height:              24,
+	}
+	rendered := m.renderQueueActionMenu()
+	if !strings.Contains(rendered, "Test bead") {
+		t.Errorf("expected title in output:\n%s", rendered)
+	}
+	// The description text should appear (at least partially).
+	if !strings.Contains(rendered, "fairly long") {
+		t.Errorf("expected description text in output:\n%s", rendered)
+	}
+}
+
+func TestRenderQueueActionMenuTruncatesLongDescription(t *testing.T) {
+	// Very long description should be capped at 3 lines with ellipsis on the last line.
+	longDesc := strings.Repeat("word ", 100) // 500 chars
+	item := QueueItem{
+		BeadID:      "bd-t3",
+		Anvil:       "test",
+		Title:       "Test",
+		Description: longDesc,
+		Section:     "unlabeled",
+	}
+	m := Model{
+		showQueueActionMenu: true,
+		queueActionTarget:   &item,
+		queueActionMenuIdx:  0,
+		width:               80,
+		height:              24,
+	}
+	rendered := m.renderQueueActionMenu()
+	// Should contain ellipsis for truncated description.
+	if !strings.Contains(rendered, "...") {
+		t.Errorf("expected ellipsis for truncated description:\n%s", rendered)
+	}
+}
+
 func TestUpdateQueueMsgClosesMenuWhenTargetRemoved(t *testing.T) {
 	item := QueueItem{BeadID: "bd-6", Anvil: "test", Section: "unlabeled"}
 	m := Model{

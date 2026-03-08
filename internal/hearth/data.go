@@ -80,13 +80,14 @@ func FetchQueue(db *state.DB) tea.Cmd {
 		var items []QueueItem
 		for _, c := range cached {
 			items = append(items, QueueItem{
-				BeadID:   c.BeadID,
-				Title:    c.Title,
-				Anvil:    c.Anvil,
-				Priority: c.Priority,
-				Status:   c.Status,
-				Section:  string(c.Section),
-				Assignee: c.Assignee,
+				BeadID:      c.BeadID,
+				Title:       c.Title,
+				Description: c.Description,
+				Anvil:       c.Anvil,
+				Priority:    c.Priority,
+				Status:      c.Status,
+				Section:     string(c.Section),
+				Assignee:    c.Assignee,
 			})
 		}
 

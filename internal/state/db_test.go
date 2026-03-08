@@ -273,6 +273,41 @@ func TestDB_QueueCache(t *testing.T) {
 	}
 }
 
+func TestDB_QueueCacheDescriptionRoundTrip(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	input := []QueueItem{
+		{BeadID: "bd-d1", Anvil: "anvil-a", Title: "With desc", Description: "A detailed description", Priority: 1, Status: "open"},
+		{BeadID: "bd-d2", Anvil: "anvil-a", Title: "No desc", Description: "", Priority: 2, Status: "open"},
+	}
+	if err := db.ReplaceQueueCacheForAnvils([]string{"anvil-a"}, input); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := db.QueueCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0].Description != "A detailed description" {
+		t.Errorf("expected description 'A detailed description', got %q", items[0].Description)
+	}
+	if items[1].Description != "" {
+		t.Errorf("expected empty description, got %q", items[1].Description)
+	}
+}
+
 func TestDB_SetClarificationNeeded(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {
