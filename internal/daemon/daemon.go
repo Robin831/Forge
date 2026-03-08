@@ -492,6 +492,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Status:    state.WorkerRunning,
 				Phase:     "cifix",
 				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
+				PRNumber:  req.PRNumber,
 				StartedAt: time.Now(),
 			})
 			cifixDetectOpts := temper.DetectOptionsFromAnvilFlag(anvilCfg.GolangciLint)
@@ -529,6 +530,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Status:    state.WorkerRunning,
 				Phase:     "reviewfix",
 				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
+				PRNumber:  req.PRNumber,
 				StartedAt: time.Now(),
 			})
 			res := reviewfix.Fix(ctx, reviewfix.FixParams{
@@ -575,6 +577,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Status:    state.WorkerRunning,
 				Phase:     "rebase",
 				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
+				PRNumber:  req.PRNumber,
 				StartedAt: time.Now(),
 			})
 			res := rebase.Rebase(ctx, rebase.Params{

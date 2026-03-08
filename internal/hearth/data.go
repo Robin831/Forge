@@ -130,6 +130,7 @@ func FetchWorkers(db *state.DB) tea.Cmd {
 				Status:        string(w.Status),
 				Duration:      duration,
 				Type:          wType,
+				PRNumber:      w.PRNumber,
 				LastLog:       lastLog,
 				PID:           w.PID,
 				LogPath:       w.LogPath,
@@ -155,6 +156,8 @@ func inferWorkerType(id string, status state.WorkerStatus) string {
 		return "cifix"
 	case len(id) > 10 && id[:10] == "reviewfix-":
 		return "reviewfix"
+	case len(id) > 7 && id[:7] == "rebase-":
+		return "rebase"
 	}
 	// Fall back to status-based guess
 	if status == state.WorkerReviewing {
