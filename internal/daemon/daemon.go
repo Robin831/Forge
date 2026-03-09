@@ -406,10 +406,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Start dependency update checker (if enabled)
 	if d.config().Settings.DepcheckInterval > 0 {
+		depcheckAnvils := filterDepcheckAnvils(monitorAnvils, d.cfg.Load().Anvils)
+		for name := range monitorAnvils {
+			if _, ok := depcheckAnvils[name]; !ok {
+				d.logger.Info("Skipping anvil for depcheck (depcheck_enabled=false)", "anvil", name)
+			}
+		}
 		d.depcheckScanner = depcheck.New(d.db,
 			d.config().Settings.DepcheckInterval,
 			d.config().Settings.DepcheckTimeout,
-			monitorAnvils)
+			depcheckAnvils)
 		go func() {
 			if err := d.depcheckScanner.Run(ctx); err != nil && err != context.Canceled {
 				d.logger.Error("Depcheck scanner error", "error", err)
@@ -2253,4 +2259,17 @@ func shouldDispatch(bead poller.Bead, anvilCfg config.AnvilConfig) bool {
 		slog.Warn("unknown auto_dispatch mode; disabling auto-dispatch for safety", "mode", anvilCfg.AutoDispatch)
 		return false
 	}
+}
+
+// filterDepcheckAnvils returns the subset of anvils that should be scanned by
+// depcheck. Anvils with DepcheckEnabled explicitly set to false are excluded.
+func filterDepcheckAnvils(anvils map[string]string, anvilCfgs map[string]config.AnvilConfig) map[string]string {
+	result := make(map[string]string, len(anvils))
+	for name, path := range anvils {
+		if ac, ok := anvilCfgs[name]; ok && ac.DepcheckEnabled != nil && !*ac.DepcheckEnabled {
+			continue
+		}
+		result[name] = path
+	}
+	return result
 }

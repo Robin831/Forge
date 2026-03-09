@@ -144,3 +144,34 @@ func TestShouldDispatch(t *testing.T) {
 		})
 	}
 }
+
+func TestFilterDepcheckAnvils(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+
+	allAnvils := map[string]string{
+		"enabled":  "/path/enabled",
+		"disabled": "/path/disabled",
+		"default":  "/path/default",
+		"no-cfg":   "/path/no-cfg",
+	}
+
+	anvilCfgs := map[string]config.AnvilConfig{
+		"enabled":  {DepcheckEnabled: boolPtr(true)},
+		"disabled": {DepcheckEnabled: boolPtr(false)},
+		"default":  {DepcheckEnabled: nil},
+		// "no-cfg" intentionally absent from config
+	}
+
+	result := filterDepcheckAnvils(allAnvils, anvilCfgs)
+
+	// Explicitly enabled → included
+	assert.Contains(t, result, "enabled")
+	// Explicitly disabled → excluded
+	assert.NotContains(t, result, "disabled")
+	// nil (default) → included
+	assert.Contains(t, result, "default")
+	// Not in config at all → included
+	assert.Contains(t, result, "no-cfg")
+	// Correct count
+	assert.Len(t, result, 3)
+}
