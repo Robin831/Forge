@@ -451,8 +451,9 @@ func FetchBead(ctx context.Context, beadID, dir string) (poller.Bead, error) {
 
 	bead := raw.Bead
 	// Extract blocks from the dependents array.
+	// Both "blocks" and "parent-child" dependency types indicate children.
 	for _, dep := range raw.Dependents {
-		if dep.DependencyType == "blocks" {
+		if dep.DependencyType == "blocks" || dep.DependencyType == "parent-child" {
 			bead.Blocks = append(bead.Blocks, dep.ID)
 		}
 	}
