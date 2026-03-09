@@ -218,16 +218,9 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 		if geminiTextBuf.Len() == 0 {
 			return
 		}
-		text := strings.ReplaceAll(geminiTextBuf.String(), "\n", " ")
-		text = strings.TrimSpace(text)
+		raw := geminiTextBuf.String()
 		geminiTextBuf.Reset()
-		if text == "" {
-			return
-		}
-		if len(text) > 70 {
-			text = text[:67] + "..."
-		}
-		entries = append(entries, fmt.Sprintf("[text] %s", text))
+		entries = append(entries, formatMultiLineEntry("[text] ", "       ", raw, 3)...)
 	}
 
 	for _, line := range rawLines {
@@ -283,23 +276,9 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 					}
 					entries = append(entries, fmt.Sprintf("[tool] %s %s", block.Name, inputStr))
 				case "text":
-					text := strings.ReplaceAll(block.Text, "\n", " ")
-					text = strings.TrimSpace(text)
-					if text != "" {
-						if len(text) > 70 {
-							text = text[:67] + "..."
-						}
-						entries = append(entries, fmt.Sprintf("[text] %s", text))
-					}
+					entries = append(entries, formatMultiLineEntry("[text] ", "       ", block.Text, 3)...)
 				case "thinking":
-					thinking := strings.ReplaceAll(block.Thinking, "\n", " ")
-					thinking = strings.TrimSpace(thinking)
-					if thinking != "" {
-						if len(thinking) > 60 {
-							thinking = thinking[:57] + "..."
-						}
-						entries = append(entries, fmt.Sprintf("[think] %s", thinking))
-					}
+					entries = append(entries, formatMultiLineEntry("[think] ", "        ", block.Thinking, 3)...)
 				}
 			}
 		case "message":
@@ -350,6 +329,39 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 		entries = entries[len(entries)-maxEntries:]
 	}
 	return entries
+}
+
+// formatMultiLineEntry splits raw text into up to maxLines non-empty lines.
+// The first line gets the given prefix (e.g. "[text] "), continuation lines
+// get contPrefix (spaces matching the prefix width). Each line is truncated
+// to 70 characters. Returns nil if the text is empty.
+func formatMultiLineEntry(prefix, contPrefix, raw string, maxLines int) []string {
+	var kept []string
+	for _, tl := range strings.Split(raw, "\n") {
+		tl = strings.TrimSpace(tl)
+		if tl == "" {
+			continue
+		}
+		kept = append(kept, tl)
+		if len(kept) >= maxLines {
+			break
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	var result []string
+	for i, line := range kept {
+		if len(line) > 70 {
+			line = line[:67] + "..."
+		}
+		if i == 0 {
+			result = append(result, prefix+line)
+		} else {
+			result = append(result, contPrefix+line)
+		}
+	}
+	return result
 }
 
 // FetchEvents reads recent events from the state DB.
