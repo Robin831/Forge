@@ -1025,6 +1025,7 @@ const (
 	EventDepcheckFound        EventType = "depcheck_found"
 	EventDepcheckFailed       EventType = "depcheck_failed"
 	EventDepcheckBeadCreated  EventType = "depcheck_bead_created"
+	EventDepcheckDedup        EventType = "depcheck_dedup"
 	EventVulnScanStarted      EventType = "vuln_scan_started"
 	EventVulnScanDone         EventType = "vuln_scan_done"
 	EventVulnScanFailed       EventType = "vuln_scan_failed"
