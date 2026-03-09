@@ -40,6 +40,7 @@ settings:
   max_rebase_attempts: 3
   merge_strategy: squash
   daily_cost_limit: 50.00
+  copilot_daily_request_limit: 300  # 300 for Pro, 1500 for Pro+
   bellows_interval: 2m
   stale_interval: 5m
   claude_flags:
@@ -114,6 +115,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `schematic_word_threshold` | int | `100` | | Minimum word count in bead description to trigger Schematic analysis. |
 | `bellows_interval` | duration | `2m` | `30s` | How often Bellows polls GitHub for PR status changes. |
 | `daily_cost_limit` | float | `0` (no limit) | | Maximum estimated USD spend per calendar day. When exceeded, auto-dispatch pauses until the next day. |
+| `copilot_daily_request_limit` | int | `0` (no limit) | | Maximum weighted Copilot premium requests per calendar day (e.g. 300 for Pro, 1500 for Pro+). When exceeded, the Copilot provider is skipped in the fallback chain. Displayed as a progress indicator in the Hearth Usage panel. |
 | `max_ci_fix_attempts` | int | `5` | `1` | Maximum CI fix cycles per PR before marking as exhausted. |
 | `max_review_fix_attempts` | int | `5` | `1` | Maximum review fix cycles per PR before marking as exhausted. |
 | `max_rebase_attempts` | int | `3` | `1` | Maximum conflict rebase attempts per PR before marking as exhausted. |
@@ -166,6 +168,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_SCHEMATIC_WORD_THRESHOLD` | `settings.schematic_word_threshold` |
 | `FORGE_SETTINGS_BELLOWS_INTERVAL` | `settings.bellows_interval` |
 | `FORGE_SETTINGS_DAILY_COST_LIMIT` | `settings.daily_cost_limit` |
+| `FORGE_SETTINGS_COPILOT_DAILY_REQUEST_LIMIT` | `settings.copilot_daily_request_limit` |
 | `FORGE_SETTINGS_MAX_CI_FIX_ATTEMPTS` | `settings.max_ci_fix_attempts` |
 | `FORGE_SETTINGS_MAX_REVIEW_FIX_ATTEMPTS` | `settings.max_review_fix_attempts` |
 | `FORGE_SETTINGS_MAX_REBASE_ATTEMPTS` | `settings.max_rebase_attempts` |
