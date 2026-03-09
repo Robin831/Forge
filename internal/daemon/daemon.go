@@ -1998,8 +1998,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("could not verify live PR status: %v", liveErr)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if !liveStatus.CIsPassing() || liveStatus.Mergeable == "CONFLICTING" || liveStatus.UnresolvedThreads > 0 {
-			msg, _ := json.Marshal(map[string]string{"message": "PR failed live readiness check (CI failing, conflicts, or unresolved threads)"})
+		if !liveStatus.CIsPassing() || liveStatus.Mergeable == "CONFLICTING" || liveStatus.UnresolvedThreads > 0 || liveStatus.HasPendingReviewRequests() {
+			msg, _ := json.Marshal(map[string]string{"message": "PR failed live readiness check (CI failing, conflicts, unresolved threads, or pending reviews)"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 		beadID := pr.BeadID

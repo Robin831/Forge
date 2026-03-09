@@ -1259,6 +1259,60 @@ func TestDB_ReadyToMerge(t *testing.T) {
 	}
 }
 
+// TestDB_InsertPR_DefaultsPendingReviews verifies that newly inserted PRs
+// default to has_pending_reviews=1 so they don't appear in Ready to Merge
+// until bellows confirms no reviews are pending.
+func TestDB_InsertPR_DefaultsPendingReviews(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-pending-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	pr := &PR{
+		Number:    999,
+		Anvil:     "anvil-pending",
+		BeadID:    "bd-999",
+		Branch:    "branch-999",
+		Status:    PROpen,
+		CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(pr); err != nil {
+		t.Fatalf("InsertPR: %v", err)
+	}
+	// Make CI pass explicitly (default is 1 so it should already be passing).
+	if err := db.UpdatePRLifecycle(pr.ID, 0, 0, 0, true); err != nil {
+		t.Fatalf("UpdatePRLifecycle: %v", err)
+	}
+
+	// Without calling UpdatePRMergeability, the PR should NOT be ready to merge
+	// because has_pending_reviews defaults to 1.
+	ready, err := db.IsPRReadyToMerge(pr.ID)
+	if err != nil {
+		t.Fatalf("IsPRReadyToMerge: %v", err)
+	}
+	if ready {
+		t.Error("newly inserted PR should not be ready to merge (has_pending_reviews should default to 1)")
+	}
+
+	// After bellows confirms no pending reviews, the PR should be ready.
+	if err := db.UpdatePRMergeability(pr.ID, false, false, false); err != nil {
+		t.Fatalf("UpdatePRMergeability: %v", err)
+	}
+	ready, err = db.IsPRReadyToMerge(pr.ID)
+	if err != nil {
+		t.Fatalf("IsPRReadyToMerge: %v", err)
+	}
+	if !ready {
+		t.Error("PR should be ready to merge after bellows confirms no pending reviews")
+	}
+}
+
 func TestDB_HasWorkerRecord(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

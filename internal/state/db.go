@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS prs (
     rebase_count            INTEGER NOT NULL DEFAULT 0,
     is_conflicting          INTEGER NOT NULL DEFAULT 0,
     has_unresolved_threads  INTEGER NOT NULL DEFAULT 0,
-    has_pending_reviews     INTEGER NOT NULL DEFAULT 0
+    has_pending_reviews     INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -668,10 +668,13 @@ type PR struct {
 // InsertPR adds a new PR record.
 // ci_passing is intentionally omitted so the DB default (1 = passing) always applies
 // for new PRs, avoiding silent insertion of a failing PR due to Go's zero-value false.
+// has_pending_reviews is explicitly set to 1 (pending) so new PRs don't appear in
+// Ready to Merge until bellows confirms no reviews are pending. This closes the race
+// window where GitHub assigns reviewers (e.g. Copilot) asynchronously after PR creation.
 func (db *DB) InsertPR(pr *PR) error {
 	res, err := db.conn.Exec(
-		`INSERT INTO prs (number, anvil, bead_id, branch, base_branch, status, created_at, ci_fix_count, review_fix_count)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO prs (number, anvil, bead_id, branch, base_branch, status, created_at, ci_fix_count, review_fix_count, has_pending_reviews)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 		pr.Number, pr.Anvil, pr.BeadID, pr.Branch, pr.BaseBranch, string(pr.Status),
 		pr.CreatedAt.Format(dbTimeLayout), pr.CIFixCount, pr.ReviewFixCount,
 	)
