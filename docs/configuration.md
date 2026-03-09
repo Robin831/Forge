@@ -115,7 +115,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `schematic_word_threshold` | int | `100` | | Minimum word count in bead description to trigger Schematic analysis. |
 | `bellows_interval` | duration | `2m` | `30s` | How often Bellows polls GitHub for PR status changes. |
 | `daily_cost_limit` | float | `0` (no limit) | | Maximum estimated USD spend per calendar day. When exceeded, auto-dispatch pauses until the next day. |
-| `copilot_daily_request_limit` | int | `0` (no limit) | | Maximum weighted Copilot premium requests per calendar day (e.g. 300 for Pro, 1500 for Pro+). When exceeded, the Copilot provider is skipped in the fallback chain. Displayed as a progress indicator in the Hearth Usage panel. |
+| `copilot_daily_request_limit` | int | `0` (no limit) | | Maximum weighted Copilot premium requests per calendar day (e.g. 300 for Pro, 1500 for Pro+). When the limit is reached or exceeded, the Copilot provider is skipped in the fallback chain. Displayed as a progress indicator in the Hearth Usage panel. |
 | `max_ci_fix_attempts` | int | `5` | `1` | Maximum CI fix cycles per PR before marking as exhausted. |
 | `max_review_fix_attempts` | int | `5` | `1` | Maximum review fix cycles per PR before marking as exhausted. |
 | `max_rebase_attempts` | int | `3` | `1` | Maximum conflict rebase attempts per PR before marking as exhausted. |
