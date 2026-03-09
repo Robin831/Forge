@@ -404,6 +404,63 @@ anvils:
 	assert.Nil(t, cfg.Anvils["default-repo"].DepcheckEnabled)
 }
 
+func TestSave_RoundTrip_PreservesAllFields(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+
+	depcheckFalse := false
+	vulnTrue := true
+
+	original := Defaults()
+	original.Anvils["myrepo"] = AnvilConfig{
+		Path:            "/some/path",
+		MaxSmiths:       2,
+		AutoDispatch:    "tagged",
+		AutoDispatchTag: "forgeReady",
+		DepcheckEnabled: &depcheckFalse,
+	}
+	original.Settings.Providers = []string{
+		"claude/claude-sonnet-4-6",
+		"gemini/gemini-2.5-pro",
+		"gemini/gemini-2.5-flash",
+	}
+	original.Settings.SmithProviders = []string{
+		"claude/claude-opus-4-6",
+		"gemini/gemini-2.5-pro",
+	}
+	original.Settings.MaxTotalSmiths = 7
+	original.Settings.CrucibleEnabled = true
+	original.Settings.AutoLearnRules = true
+	original.Settings.VulncheckEnabled = &vulnTrue
+
+	// Save → Load round-trip.
+	require.NoError(t, Save(&original, cfgPath))
+
+	loaded, err := Load(cfgPath)
+	require.NoError(t, err)
+
+	// Providers must survive.
+	assert.Equal(t, original.Settings.Providers, loaded.Settings.Providers,
+		"providers must survive Save→Load round-trip")
+	assert.Equal(t, original.Settings.SmithProviders, loaded.Settings.SmithProviders,
+		"smith_providers must survive Save→Load round-trip")
+
+	// Anvil optional bools.
+	require.NotNil(t, loaded.Anvils["myrepo"].DepcheckEnabled)
+	assert.False(t, *loaded.Anvils["myrepo"].DepcheckEnabled)
+
+	// Other settings.
+	assert.Equal(t, 7, loaded.Settings.MaxTotalSmiths)
+	assert.True(t, loaded.Settings.CrucibleEnabled)
+	assert.True(t, loaded.Settings.AutoLearnRules)
+	require.NotNil(t, loaded.Settings.VulncheckEnabled)
+	assert.True(t, *loaded.Settings.VulncheckEnabled)
+
+	// Durations should round-trip as strings, not nanoseconds.
+	assert.Equal(t, original.Settings.PollInterval, loaded.Settings.PollInterval)
+	assert.Equal(t, original.Settings.SmithTimeout, loaded.Settings.SmithTimeout)
+}
+
 func TestLoad_NoFile_UsesDefaults(t *testing.T) {
 	// Load with a path that doesn't exist → viper.ConfigFileNotFoundError → uses defaults
 	cfg, err := Load("/nonexistent/forge.yaml")

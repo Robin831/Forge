@@ -21,129 +21,210 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 // Config is the top-level configuration for The Forge.
 type Config struct {
-	Anvils        map[string]AnvilConfig `mapstructure:"anvils"`
-	Settings      SettingsConfig         `mapstructure:"settings"`
-	Notifications NotificationsConfig    `mapstructure:"notifications"`
+	Anvils        map[string]AnvilConfig `mapstructure:"anvils" yaml:"anvils"`
+	Settings      SettingsConfig         `mapstructure:"settings" yaml:"settings"`
+	Notifications NotificationsConfig    `mapstructure:"notifications" yaml:"notifications,omitempty"`
 }
 
 // AnvilConfig defines a registered repository (anvil).
 type AnvilConfig struct {
-	Path                    string `mapstructure:"path"`
-	MaxSmiths               int    `mapstructure:"max_smiths"`
-	AutoDispatch            string `mapstructure:"auto_dispatch"`
-	AutoDispatchTag         string `mapstructure:"auto_dispatch_tag"`
-	AutoDispatchMinPriority int    `mapstructure:"auto_dispatch_min_priority"`
+	Path                    string `mapstructure:"path" yaml:"path"`
+	MaxSmiths               int    `mapstructure:"max_smiths" yaml:"max_smiths"`
+	AutoDispatch            string `mapstructure:"auto_dispatch" yaml:"auto_dispatch"`
+	AutoDispatchTag         string `mapstructure:"auto_dispatch_tag" yaml:"auto_dispatch_tag,omitempty"`
+	AutoDispatchMinPriority int    `mapstructure:"auto_dispatch_min_priority" yaml:"auto_dispatch_min_priority"`
 	// SchematicEnabled controls whether the Schematic pre-worker runs for
 	// beads in this anvil. When nil, the global setting is used. Set to
 	// a pointer to false to disable per-anvil.
-	SchematicEnabled *bool `mapstructure:"schematic_enabled"`
+	SchematicEnabled *bool `mapstructure:"schematic_enabled" yaml:"schematic_enabled,omitempty"`
 	// GolangciLint controls whether golangci-lint runs as a Temper step
 	// for Go projects. When nil (default), golangci-lint runs if the
 	// binary is found on PATH. Set to a pointer to false to disable.
-	GolangciLint *bool `mapstructure:"golangci_lint"`
+	GolangciLint *bool `mapstructure:"golangci_lint" yaml:"golangci_lint,omitempty"`
 	// GoRaceDetection enables the Go race detector (-race flag) as a
 	// separate temper step for this anvil. When nil, the global setting
 	// is used. Default off since -race slows tests and increases memory.
-	GoRaceDetection *bool `mapstructure:"go_race_detection"`
+	GoRaceDetection *bool `mapstructure:"go_race_detection" yaml:"go_race_detection,omitempty"`
 	// DepcheckEnabled controls whether the depcheck monitor scans this
 	// anvil for outdated dependencies. When nil (default), depcheck runs
 	// as normal (opt-out). Set to false to skip this anvil entirely.
-	DepcheckEnabled *bool `mapstructure:"depcheck_enabled"`
+	DepcheckEnabled *bool `mapstructure:"depcheck_enabled" yaml:"depcheck_enabled,omitempty"`
 }
 
 // SettingsConfig holds global operational settings.
 type SettingsConfig struct {
-	PollInterval  time.Duration `mapstructure:"poll_interval"`
-	SmithTimeout  time.Duration `mapstructure:"smith_timeout"`
-	MaxTotalSmiths int          `mapstructure:"max_total_smiths"`
-	MaxReviewAttempts int       `mapstructure:"max_review_attempts"`
-	ClaudeFlags   []string      `mapstructure:"claude_flags"`
+	PollInterval  time.Duration `mapstructure:"poll_interval" yaml:"poll_interval"`
+	SmithTimeout  time.Duration `mapstructure:"smith_timeout" yaml:"smith_timeout"`
+	MaxTotalSmiths int          `mapstructure:"max_total_smiths" yaml:"max_total_smiths"`
+	MaxReviewAttempts int       `mapstructure:"max_review_attempts" yaml:"max_review_attempts"`
+	ClaudeFlags   []string      `mapstructure:"claude_flags" yaml:"claude_flags"`
 	// Providers is the ordered list of AI providers to try.
 	// Each entry is a Kind string ("claude", "gemini") or "kind:command" pair.
 	// When a provider signals a rate limit the next one in the list is tried.
 	// Defaults to ["claude", "gemini"] when empty.
-	Providers     []string      `mapstructure:"providers"`
+	Providers     []string      `mapstructure:"providers" yaml:"providers,omitempty"`
 	// RateLimitBackoff is how long dispatchBead waits after releasing a bead
 	// back to open when all providers are rate limited. During this window the
 	// bead slot stays reserved (activeBeads) so the poller does not
 	// immediately re-claim it. Defaults to 5 minutes.
-	RateLimitBackoff time.Duration `mapstructure:"rate_limit_backoff"`
+	RateLimitBackoff time.Duration `mapstructure:"rate_limit_backoff" yaml:"rate_limit_backoff"`
 	// SmithProviders is the ordered list of AI providers used specifically for
 	// dispatch pipeline (Smith + Warden + Schematic). When empty, Providers is
 	// used as fallback. This lets smiths run a more capable model (e.g.
 	// claude/claude-opus-4-6) while lifecycle workers (cifix, reviewfix) use a
 	// lighter model. Accepts the same "kind/model" format as Providers.
-	SmithProviders []string `mapstructure:"smith_providers"`
+	SmithProviders []string `mapstructure:"smith_providers" yaml:"smith_providers,omitempty"`
 	// SchematicEnabled enables the Schematic pre-worker globally. When true,
 	// beads that exceed the word threshold or carry the "decompose" tag are
 	// analysed before Smith starts. Default: false.
-	SchematicEnabled bool `mapstructure:"schematic_enabled"`
+	SchematicEnabled bool `mapstructure:"schematic_enabled" yaml:"schematic_enabled"`
 	// SchematicWordThreshold is the minimum word count in a bead description
 	// to trigger automatic schematic analysis. When this value is zero or
 	// unset, the daemon applies an effective default of 100.
-	SchematicWordThreshold int `mapstructure:"schematic_word_threshold"`
+	SchematicWordThreshold int `mapstructure:"schematic_word_threshold" yaml:"schematic_word_threshold,omitempty"`
 	// BellowsInterval is how often the Bellows PR monitor polls GitHub for
 	// status changes on open PRs. Defaults to 2 minutes.
-	BellowsInterval time.Duration `mapstructure:"bellows_interval"`
+	BellowsInterval time.Duration `mapstructure:"bellows_interval" yaml:"bellows_interval"`
 	// DailyCostLimit is the maximum estimated USD spend per calendar day.
 	// When the running total exceeds this value, auto-dispatch is paused until
 	// the next calendar day. Zero means no limit (default).
-	DailyCostLimit float64 `mapstructure:"daily_cost_limit"`
+	DailyCostLimit float64 `mapstructure:"daily_cost_limit" yaml:"daily_cost_limit,omitempty"`
 	// MaxCIFixAttempts is the maximum number of CI fix cycles per PR before
 	// the PR is considered exhausted. Default: 5.
-	MaxCIFixAttempts int `mapstructure:"max_ci_fix_attempts"`
+	MaxCIFixAttempts int `mapstructure:"max_ci_fix_attempts" yaml:"max_ci_fix_attempts"`
 	// MaxReviewFixAttempts is the maximum number of review fix cycles per PR
 	// before the PR is considered exhausted. Default: 5.
-	MaxReviewFixAttempts int `mapstructure:"max_review_fix_attempts"`
+	MaxReviewFixAttempts int `mapstructure:"max_review_fix_attempts" yaml:"max_review_fix_attempts"`
 	// MaxRebaseAttempts is the maximum number of conflict rebase attempts per
 	// PR before the PR is considered exhausted. Default: 3.
-	MaxRebaseAttempts int `mapstructure:"max_rebase_attempts"`
+	MaxRebaseAttempts int `mapstructure:"max_rebase_attempts" yaml:"max_rebase_attempts"`
 	// MergeStrategy controls how PRs are merged from the Hearth TUI.
 	// Valid values: "squash" (default), "merge", "rebase".
-	MergeStrategy string `mapstructure:"merge_strategy"`
+	MergeStrategy string `mapstructure:"merge_strategy" yaml:"merge_strategy,omitempty"`
 	// StaleInterval is how long a worker's log file can go without being
 	// modified before the worker is marked as stalled. A value of 0 disables
 	// stale detection. Defaults to 5 minutes.
-	StaleInterval time.Duration `mapstructure:"stale_interval"`
+	StaleInterval time.Duration `mapstructure:"stale_interval" yaml:"stale_interval"`
 	// DepcheckInterval is how often the dependency checker runs 'go list -m -u all'
 	// on Go anvils. A value of 0 disables depcheck. Defaults to 168h (weekly).
-	DepcheckInterval time.Duration `mapstructure:"depcheck_interval"`
+	DepcheckInterval time.Duration `mapstructure:"depcheck_interval" yaml:"depcheck_interval,omitempty"`
 	// DepcheckTimeout is the maximum time allowed for a single 'go list -m -u all'
 	// invocation per anvil. Defaults to 5 minutes.
-	DepcheckTimeout time.Duration `mapstructure:"depcheck_timeout"`
+	DepcheckTimeout time.Duration `mapstructure:"depcheck_timeout" yaml:"depcheck_timeout,omitempty"`
 	// VulncheckInterval is how often govulncheck runs on registered Go anvils.
 	// Set to 0 to disable scheduled scanning. Default: 24h (daily).
-	VulncheckInterval time.Duration `mapstructure:"vulncheck_interval"`
+	VulncheckInterval time.Duration `mapstructure:"vulncheck_interval" yaml:"vulncheck_interval,omitempty"`
 	// VulncheckTimeout is the maximum time allowed for a single govulncheck
 	// invocation per anvil (govulncheck downloads the vuln DB on first run).
 	// Defaults to 10 minutes.
-	VulncheckTimeout time.Duration `mapstructure:"vulncheck_timeout"`
+	VulncheckTimeout time.Duration `mapstructure:"vulncheck_timeout" yaml:"vulncheck_timeout,omitempty"`
 	// VulncheckEnabled controls whether vulnerability scanning is active.
 	// When false, scheduled scanning and "forge scan" are disabled regardless
 	// of VulncheckInterval. Default: true.
-	VulncheckEnabled *bool `mapstructure:"vulncheck_enabled"`
+	VulncheckEnabled *bool `mapstructure:"vulncheck_enabled" yaml:"vulncheck_enabled,omitempty"`
 	// GoRaceDetection enables the Go race detector (-race flag) as a
 	// separate temper step globally. Per-anvil settings override this.
 	// Default: false.
-	GoRaceDetection bool `mapstructure:"go_race_detection"`
+	GoRaceDetection bool `mapstructure:"go_race_detection" yaml:"go_race_detection"`
 	// AutoLearnRules enables automatic learning of Warden review rules from
 	// Copilot comments when a PR is merged. Bellows will fetch Copilot review
 	// comments, distill them into rules via Claude, and save them to the
 	// anvil's .forge/warden-rules.yaml. Default: false.
-	AutoLearnRules bool `mapstructure:"auto_learn_rules"`
+	AutoLearnRules bool `mapstructure:"auto_learn_rules" yaml:"auto_learn_rules"`
 	// CrucibleEnabled enables automatic Crucible orchestration for parent beads
 	// that have children (blocks other beads). When true, the daemon detects
 	// parent beads during polling and dispatches them through the Crucible
 	// instead of the normal pipeline. Default: false.
-	CrucibleEnabled bool `mapstructure:"crucible_enabled"`
+	CrucibleEnabled bool `mapstructure:"crucible_enabled" yaml:"crucible_enabled"`
 	// AutoMergeCrucibleChildren controls whether child PRs targeting a Crucible
 	// feature branch are automatically merged (squash) after the pipeline
 	// succeeds. Default: true.
-	AutoMergeCrucibleChildren *bool `mapstructure:"auto_merge_crucible_children"`
+	AutoMergeCrucibleChildren *bool `mapstructure:"auto_merge_crucible_children" yaml:"auto_merge_crucible_children,omitempty"`
+}
+
+// durationString returns the duration string, or omits zero values.
+func durationString(d time.Duration) string {
+	return d.String()
+}
+
+// MarshalYAML serialises SettingsConfig with time.Duration fields as
+// human-readable strings (e.g. "30s", "5m0s") instead of nanosecond ints.
+func (s SettingsConfig) MarshalYAML() (interface{}, error) {
+	// Shadow struct with durations replaced by strings.
+	type shadow struct {
+		PollInterval             string   `yaml:"poll_interval"`
+		SmithTimeout             string   `yaml:"smith_timeout"`
+		MaxTotalSmiths           int      `yaml:"max_total_smiths"`
+		MaxReviewAttempts        int      `yaml:"max_review_attempts"`
+		ClaudeFlags              []string `yaml:"claude_flags"`
+		Providers                []string `yaml:"providers,omitempty"`
+		RateLimitBackoff         string   `yaml:"rate_limit_backoff"`
+		SmithProviders           []string `yaml:"smith_providers,omitempty"`
+		SchematicEnabled         bool     `yaml:"schematic_enabled"`
+		SchematicWordThreshold   int      `yaml:"schematic_word_threshold,omitempty"`
+		BellowsInterval          string   `yaml:"bellows_interval"`
+		DailyCostLimit           float64  `yaml:"daily_cost_limit,omitempty"`
+		MaxCIFixAttempts         int      `yaml:"max_ci_fix_attempts"`
+		MaxReviewFixAttempts     int      `yaml:"max_review_fix_attempts"`
+		MaxRebaseAttempts        int      `yaml:"max_rebase_attempts"`
+		MergeStrategy            string   `yaml:"merge_strategy,omitempty"`
+		StaleInterval            string   `yaml:"stale_interval"`
+		DepcheckInterval         string   `yaml:"depcheck_interval,omitempty"`
+		DepcheckTimeout          string   `yaml:"depcheck_timeout,omitempty"`
+		VulncheckInterval        string   `yaml:"vulncheck_interval,omitempty"`
+		VulncheckTimeout         string   `yaml:"vulncheck_timeout,omitempty"`
+		VulncheckEnabled         *bool    `yaml:"vulncheck_enabled,omitempty"`
+		GoRaceDetection          bool     `yaml:"go_race_detection"`
+		AutoLearnRules           bool     `yaml:"auto_learn_rules"`
+		CrucibleEnabled          bool     `yaml:"crucible_enabled"`
+		AutoMergeCrucibleChildren *bool   `yaml:"auto_merge_crucible_children,omitempty"`
+	}
+
+	sh := shadow{
+		PollInterval:              durationString(s.PollInterval),
+		SmithTimeout:              durationString(s.SmithTimeout),
+		MaxTotalSmiths:            s.MaxTotalSmiths,
+		MaxReviewAttempts:         s.MaxReviewAttempts,
+		ClaudeFlags:               s.ClaudeFlags,
+		Providers:                 s.Providers,
+		RateLimitBackoff:          durationString(s.RateLimitBackoff),
+		SmithProviders:            s.SmithProviders,
+		SchematicEnabled:          s.SchematicEnabled,
+		SchematicWordThreshold:    s.SchematicWordThreshold,
+		BellowsInterval:           durationString(s.BellowsInterval),
+		DailyCostLimit:            s.DailyCostLimit,
+		MaxCIFixAttempts:          s.MaxCIFixAttempts,
+		MaxReviewFixAttempts:      s.MaxReviewFixAttempts,
+		MaxRebaseAttempts:         s.MaxRebaseAttempts,
+		MergeStrategy:             s.MergeStrategy,
+		StaleInterval:             durationString(s.StaleInterval),
+		VulncheckEnabled:          s.VulncheckEnabled,
+		GoRaceDetection:           s.GoRaceDetection,
+		AutoLearnRules:            s.AutoLearnRules,
+		CrucibleEnabled:           s.CrucibleEnabled,
+		AutoMergeCrucibleChildren: s.AutoMergeCrucibleChildren,
+	}
+
+	// Only include non-zero optional durations.
+	if s.DepcheckInterval > 0 {
+		sh.DepcheckInterval = durationString(s.DepcheckInterval)
+	}
+	if s.DepcheckTimeout > 0 {
+		sh.DepcheckTimeout = durationString(s.DepcheckTimeout)
+	}
+	if s.VulncheckInterval > 0 {
+		sh.VulncheckInterval = durationString(s.VulncheckInterval)
+	}
+	if s.VulncheckTimeout > 0 {
+		sh.VulncheckTimeout = durationString(s.VulncheckTimeout)
+	}
+
+	return sh, nil
 }
 
 // IsVulncheckEnabled returns true unless vulncheck_enabled is explicitly false.
@@ -165,10 +246,10 @@ func (s SettingsConfig) IsAutoMergeCrucibleChildren() bool {
 
 // NotificationsConfig holds webhook and notification settings.
 type NotificationsConfig struct {
-	TeamsWebhookURL string `mapstructure:"teams_webhook_url"`
-	Enabled         bool   `mapstructure:"enabled"`
+	TeamsWebhookURL string `mapstructure:"teams_webhook_url" yaml:"teams_webhook_url,omitempty"`
+	Enabled         bool   `mapstructure:"enabled" yaml:"enabled"`
 	// Events to notify on. Empty = all. Options: pr_created, bead_failed, daily_cost, worker_done, bead_decomposed.
-	Events []string `mapstructure:"events"`
+	Events []string `mapstructure:"events" yaml:"events,omitempty"`
 }
 
 // Defaults returns a Config with sensible default values.
@@ -427,35 +508,19 @@ func (c *Config) Validate() []string {
 }
 
 // Save writes the config to the specified file path in YAML format.
+// It uses yaml.Marshal with yaml struct tags so that every config field
+// is persisted automatically — no new field can be silently dropped.
 func Save(cfg *Config, path string) error {
-	v := viper.New()
-
-	// Set all values from our config struct
-	for name, anvil := range cfg.Anvils {
-		v.Set("anvils."+name+".path", anvil.Path)
-		v.Set("anvils."+name+".max_smiths", anvil.MaxSmiths)
-		v.Set("anvils."+name+".auto_dispatch", anvil.AutoDispatch)
-		v.Set("anvils."+name+".auto_dispatch_tag", anvil.AutoDispatchTag)
-		v.Set("anvils."+name+".auto_dispatch_min_priority", anvil.AutoDispatchMinPriority)
-	}
-
-	v.Set("settings.poll_interval", cfg.Settings.PollInterval.String())
-	v.Set("settings.smith_timeout", cfg.Settings.SmithTimeout.String())
-	v.Set("settings.max_total_smiths", cfg.Settings.MaxTotalSmiths)
-	v.Set("settings.max_review_attempts", cfg.Settings.MaxReviewAttempts)
-	v.Set("settings.claude_flags", cfg.Settings.ClaudeFlags)
-	v.Set("settings.rate_limit_backoff", cfg.Settings.RateLimitBackoff.String())
-	v.Set("settings.bellows_interval", cfg.Settings.BellowsInterval.String())
-	v.Set("settings.stale_interval", cfg.Settings.StaleInterval.String())
-	v.Set("settings.max_ci_fix_attempts", cfg.Settings.MaxCIFixAttempts)
-	v.Set("settings.max_review_fix_attempts", cfg.Settings.MaxReviewFixAttempts)
-	v.Set("settings.max_rebase_attempts", cfg.Settings.MaxRebaseAttempts)
-
-	// Ensure directory exists
+	// Ensure directory exists.
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
 
-	return v.WriteConfigAs(path)
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshalling config: %w", err)
+	}
+
+	return os.WriteFile(path, data, 0o644)
 }
