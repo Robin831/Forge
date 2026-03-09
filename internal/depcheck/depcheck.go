@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
@@ -45,6 +46,7 @@ type Scanner struct {
 	interval   time.Duration
 	timeout    time.Duration
 	anvilPaths map[string]string // anvil name -> path
+	mu         sync.RWMutex
 }
 
 // New creates a dependency check scanner.
@@ -61,6 +63,18 @@ func New(db *state.DB, interval, timeout time.Duration, anvilPaths map[string]st
 		timeout:    timeout,
 		anvilPaths: anvilPaths,
 	}
+}
+
+// UpdateAnvilPaths replaces the set of anvils to scan. This is safe to call
+// while Run is active and takes effect on the next scan cycle.
+func (s *Scanner) UpdateAnvilPaths(paths map[string]string) {
+	copied := make(map[string]string, len(paths))
+	for k, v := range paths {
+		copied[k] = v
+	}
+	s.mu.Lock()
+	s.anvilPaths = copied
+	s.mu.Unlock()
 }
 
 // Run starts the periodic check loop. Blocks until ctx is canceled.
@@ -88,9 +102,16 @@ func (s *Scanner) Run(ctx context.Context) error {
 
 // ScanAll runs dependency checks on all anvils across all supported ecosystems.
 func (s *Scanner) ScanAll(ctx context.Context) {
-	log.Printf("[depcheck] Checking %d anvils for outdated dependencies", len(s.anvilPaths))
+	s.mu.RLock()
+	anvils := make(map[string]string, len(s.anvilPaths))
+	for k, v := range s.anvilPaths {
+		anvils[k] = v
+	}
+	s.mu.RUnlock()
 
-	for name, path := range s.anvilPaths {
+	log.Printf("[depcheck] Checking %d anvils for outdated dependencies", len(anvils))
+
+	for name, path := range anvils {
 		if ctx.Err() != nil {
 			return
 		}
