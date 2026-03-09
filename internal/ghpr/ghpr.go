@@ -130,21 +130,20 @@ func Create(ctx context.Context, p CreateParams) (*PR, error) {
 				p.AnvilName,
 			)
 
-			// Check conflict and thread state immediately so the DB reflects
-			// reality before the first bellows poll. For has_pending_reviews,
-			// we always preserve the safe default (true) set by InsertPR —
-			// GitHub may assign reviewers (e.g. Copilot) asynchronously after
-			// PR creation, so a light check this early would miss them. Bellows
-			// is the authoritative source for clearing has_pending_reviews.
+			// Run a light mergeability check immediately so the DB reflects
+			// current merge conflict state before the first Bellows poll.
+			// Unresolved thread counts are not populated by this light check;
+			// Bellows' full status check later is the authoritative source for
+			// both unresolved threads and clearing has_pending_reviews. We keep
+			// the safe default (true) from InsertPR until Bellows confirms otherwise.
 			if status, err := CheckStatusLight(ctx, p.WorktreePath, prNumber); err != nil {
 				log.Printf("[ghpr] warning: failed to CheckStatusLight for PR #%d (worktree %q): %v", prNumber, p.WorktreePath, err)
 			} else if dbPR.ID != 0 {
-				m := MergeabilityFromStatus(status)
 				if err := p.DB.UpdatePRMergeability(
 					dbPR.ID,
-					m.HasConflicts,
-					m.HasUnresolvedThreads,
-					true, // keep pending until bellows confirms
+					status.Mergeable == "CONFLICTING", // only conflict state is reliable from CheckStatusLight
+					false,                             // unresolved threads not fetched; Bellows is authoritative
+					true,                              // keep pending reviews safe default until Bellows confirms
 				); err != nil {
 					log.Printf("[ghpr] warning: failed to UpdatePRMergeability for PR record %d (PR #%d): %v", dbPR.ID, prNumber, err)
 				}
