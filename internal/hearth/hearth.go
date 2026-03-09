@@ -68,7 +68,7 @@ type queueNavItem struct {
 // an expanded group.
 type activityNavItem struct {
 	isGroupHeader bool   // true for collapsed/collapsible summary lines
-	groupIdx      int    // index into the underlying groups slice (oldest=0)
+	groupType     string // event type key for expansion toggling (e.g. "tool", "think")
 	text          string // raw display text (unstyled)
 }
 
@@ -236,7 +236,7 @@ type Model struct {
 	readyToMergeVP scrollViewport
 	workerVP         scrollViewport
 	activityVP       scrollViewport
-	activityExpanded map[int]bool      // group index → expanded override (nil = default)
+	activityExpanded map[string]bool   // event type → expanded override (nil = default)
 	activityNavItems []activityNavItem // flat display items for Live Activity
 	eventScroll      int
 	eventAutoScroll      bool // true = follow new events
@@ -293,7 +293,7 @@ func NewModel(ds *DataSource) Model {
 		data:                ds,
 		eventAutoScroll:     true,
 		queueExpandedAnvils: make(map[string]bool),
-		activityExpanded:    make(map[int]bool),
+		activityExpanded:    make(map[string]bool),
 	}
 }
 
@@ -470,9 +470,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				nav := m.activityNavItems[m.activityVP.cursor]
 				if nav.isGroupHeader {
 					if m.activityExpanded == nil {
-						m.activityExpanded = make(map[int]bool)
+						m.activityExpanded = make(map[string]bool)
 					}
-					m.activityExpanded[nav.groupIdx] = true
+					m.activityExpanded[nav.groupType] = true
 					m.rebuildActivityNav()
 				}
 			}
@@ -502,9 +502,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				nav := m.activityNavItems[m.activityVP.cursor]
 				if !nav.isGroupHeader {
 					if m.activityExpanded == nil {
-						m.activityExpanded = make(map[int]bool)
+						m.activityExpanded = make(map[string]bool)
 					}
-					m.activityExpanded[nav.groupIdx] = false
+					m.activityExpanded[nav.groupType] = false
 					m.rebuildActivityNav()
 				}
 			}
@@ -2564,28 +2564,15 @@ type activityGroup struct {
 	lines     []string
 }
 
-// groupActivityLines collapses consecutive same-type activity entries into
-// groups. The last (newest) group is expanded; older groups are collapsed
-// into a single summary line like "▸ [tool] x5 — Read, Edit, Grep".
+// groupActivityLines merges all same-type activity entries into persistent
+// groups. The last group (by first-appearance order) is expanded; others
+// are collapsed into a single summary line like "▸ [tool] x5 — Read, Edit".
 func groupActivityLines(lines []string) []string {
 	if len(lines) == 0 {
 		return nil
 	}
 
-	// Build groups of consecutive same-type entries.
-	var groups []activityGroup
-	for _, line := range lines {
-		typ := activityLineType(line)
-		if typ == "" && len(groups) > 0 {
-			// Continuation line — append to current group.
-			groups[len(groups)-1].lines = append(groups[len(groups)-1].lines, line)
-			continue
-		}
-		if len(groups) == 0 || typ != groups[len(groups)-1].eventType {
-			groups = append(groups, activityGroup{eventType: typ})
-		}
-		groups[len(groups)-1].lines = append(groups[len(groups)-1].lines, line)
-	}
+	groups := buildActivityGroups(lines)
 
 	// Single group or fewer — no collapsing needed.
 	if len(groups) <= 1 {
@@ -2648,30 +2635,30 @@ func (m *Model) groupedWorkerActivity() []string {
 }
 
 // rebuildActivityNav rebuilds the flat display items for the Live Activity panel
-// from the currently selected worker's activity. Groups are displayed
-// newest-first; each group is either expanded (individual lines) or collapsed
-// (single summary header). By default the newest group is expanded.
+// from the currently selected worker's activity. One persistent group per event
+// type is shown, newest-first by last occurrence. Each group is either expanded
+// (individual lines) or collapsed (single summary header with count).
 func (m *Model) rebuildActivityNav() {
 	rawLines := m.selectedWorkerActivity()
 	groups := buildActivityGroups(rawLines)
 
 	m.activityNavItems = nil
-	// Iterate newest-first so the latest activity appears at the top.
+	// Iterate newest-first so the group with the most recent activity is on top.
 	for ri := len(groups) - 1; ri >= 0; ri-- {
 		g := groups[ri]
-		expanded := m.isActivityGroupExpanded(ri, len(groups), g.eventType)
+		expanded := m.isActivityGroupExpanded(g.eventType)
 		if !expanded {
 			m.activityNavItems = append(m.activityNavItems, activityNavItem{
 				isGroupHeader: true,
-				groupIdx:      ri,
+				groupType:     g.eventType,
 				text:          collapseActivityGroup(g),
 			})
 		} else {
 			// Expanded: show individual lines newest-first (reverse chronological).
 			for li := len(g.lines) - 1; li >= 0; li-- {
 				m.activityNavItems = append(m.activityNavItems, activityNavItem{
-					groupIdx: ri,
-					text:     g.lines[li],
+					groupType: g.eventType,
+					text:      g.lines[li],
 				})
 			}
 		}
@@ -2681,14 +2668,10 @@ func (m *Model) rebuildActivityNav() {
 
 // isActivityGroupExpanded returns whether a group should be expanded.
 // If the user has toggled the group, their choice is respected. Otherwise
-// the newest group and "think" groups default to expanded.
-func (m *Model) isActivityGroupExpanded(groupIdx, totalGroups int, eventType string) bool {
-	if expanded, set := m.activityExpanded[groupIdx]; set {
+// "think" groups default to expanded; everything else is collapsed.
+func (m *Model) isActivityGroupExpanded(eventType string) bool {
+	if expanded, set := m.activityExpanded[eventType]; set {
 		return expanded
-	}
-	// Newest group is always expanded.
-	if groupIdx == totalGroups-1 {
-		return true
 	}
 	// Think groups are expanded by default so reasoning is visible.
 	return eventType == "think"
@@ -2698,27 +2681,43 @@ func (m *Model) isActivityGroupExpanded(groupIdx, totalGroups int, eventType str
 // used when the selected worker changes.
 func (m *Model) resetActivityState() {
 	m.activityVP = scrollViewport{}
-	m.activityExpanded = make(map[int]bool)
+	m.activityExpanded = make(map[string]bool)
 	m.rebuildActivityNav()
 }
 
-// buildActivityGroups groups consecutive same-type activity entries.
-// This is the grouping logic extracted for reuse by rebuildActivityNav.
+// buildActivityGroups merges all activity entries by event type into one
+// persistent group per type. Groups are returned in the order their type
+// first appeared, with a counter that grows as new events arrive.
+// Lines without a [type] prefix are treated as continuation lines and
+// appended to the most recent typed group; if no typed group exists yet
+// they form a "text" group.
 func buildActivityGroups(lines []string) []activityGroup {
 	if len(lines) == 0 {
 		return nil
 	}
+	idx := map[string]int{} // event type → index in groups
 	var groups []activityGroup
+	var lastType string
 	for _, line := range lines {
 		typ := activityLineType(line)
-		if typ == "" && len(groups) > 0 {
-			groups[len(groups)-1].lines = append(groups[len(groups)-1].lines, line)
+		if typ == "" {
+			// Continuation line — append to last known type's group.
+			if lastType == "" {
+				// No typed group yet; create a "text" bucket.
+				lastType = "text"
+				idx[lastType] = len(groups)
+				groups = append(groups, activityGroup{eventType: lastType})
+			}
+			groups[idx[lastType]].lines = append(groups[idx[lastType]].lines, line)
 			continue
 		}
-		if len(groups) == 0 || typ != groups[len(groups)-1].eventType {
-			groups = append(groups, activityGroup{eventType: typ})
+		lastType = typ
+		if i, ok := idx[typ]; ok {
+			groups[i].lines = append(groups[i].lines, line)
+		} else {
+			idx[typ] = len(groups)
+			groups = append(groups, activityGroup{eventType: typ, lines: []string{line}})
 		}
-		groups[len(groups)-1].lines = append(groups[len(groups)-1].lines, line)
 	}
 	return groups
 }

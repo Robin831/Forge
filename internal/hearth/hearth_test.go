@@ -203,7 +203,7 @@ func TestRenderColumnsAlignedHeight(t *testing.T) {
 		focused:          PanelWorkers,
 		width:            120,
 		height:           40,
-		activityExpanded: make(map[int]bool),
+		activityExpanded: make(map[string]bool),
 	}
 	m.rebuildActivityNav()
 
@@ -378,15 +378,16 @@ func TestRenderNeedsAttentionEmpty(t *testing.T) {
 }
 
 func TestRenderWorkerActivityNewestFirst(t *testing.T) {
+	// Use [think] prefix so the single group defaults to expanded.
 	m := Model{
 		workers: []WorkerItem{
 			{
 				ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
-				ActivityLines: []string{"oldest entry", "middle entry", "newest entry"},
+				ActivityLines: []string{"[think] oldest entry", "[think] middle entry", "[think] newest entry"},
 			},
 		},
 		workerVP:         scrollViewport{cursor: 0},
-		activityExpanded: make(map[int]bool),
+		activityExpanded: make(map[string]bool),
 	}
 	m.rebuildActivityNav()
 
@@ -616,14 +617,15 @@ func TestWordWrap(t *testing.T) {
 }
 
 func TestActivityScrollChangesVisibleLine(t *testing.T) {
-	lines := []string{"line-0", "line-1", "line-2", "line-3", "line-4"}
+	// Use [think] prefix so the group defaults to expanded.
+	lines := []string{"[think] line-0", "[think] line-1", "[think] line-2", "[think] line-3", "[think] line-4"}
 	m := Model{
 		workers: []WorkerItem{
 			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
 				ActivityLines: lines},
 		},
 		workerVP:         scrollViewport{cursor: 0},
-		activityExpanded: make(map[int]bool),
+		activityExpanded: make(map[string]bool),
 		focused:          PanelLiveActivity,
 	}
 	m.rebuildActivityNav()
@@ -643,7 +645,8 @@ func TestActivityScrollChangesVisibleLine(t *testing.T) {
 }
 
 func TestActivityScrollClampPastEnd(t *testing.T) {
-	lines := []string{"alpha", "beta", "gamma"}
+	// Use [think] prefix so the group defaults to expanded.
+	lines := []string{"[think] alpha", "[think] beta", "[think] gamma"}
 	// activityVP.cursor larger than total simulates a stale scroll after
 	// the worker's activity list shrinks on refresh.
 	m := Model{
@@ -653,7 +656,7 @@ func TestActivityScrollClampPastEnd(t *testing.T) {
 		},
 		workerVP:         scrollViewport{cursor: 0},
 		activityVP:       scrollViewport{cursor: 100}, // way past the end
-		activityExpanded: make(map[int]bool),
+		activityExpanded: make(map[string]bool),
 		focused:          PanelLiveActivity,
 	}
 	m.rebuildActivityNav()
