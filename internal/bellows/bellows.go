@@ -56,7 +56,7 @@ type Monitor struct {
 	mu             sync.Mutex
 	lastStatuses   map[string]*prSnapshot // anvil/PR number → last known state
 	refresh        chan struct{}           // channel to trigger immediate poll
-	autoLearnRules bool                   // auto-learn warden rules from Copilot comments on PR merge
+	autoLearnRules func() bool            // auto-learn warden rules from Copilot comments on PR merge
 	learnMuGuard   sync.Mutex             // protects learnMu map
 	learnMu        map[string]*sync.Mutex // per-anvil mutex serializing auto-learn
 	learnSem       chan struct{}           // caps overall concurrent auto-learn goroutines
@@ -74,9 +74,10 @@ type prSnapshot struct {
 	IsConflicting        bool
 }
 
-// New creates a Bellows monitor. When autoLearnRules is true, bellows will
-// automatically learn warden review rules from Copilot comments on PR merge.
-func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, autoLearnRules bool) *Monitor {
+// New creates a Bellows monitor. The autoLearnRules function is called on each
+// PR merge to check whether warden rule learning is enabled, so hot-reloaded
+// config changes take effect without restarting the daemon.
+func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, autoLearnRules func() bool) *Monitor {
 	if interval < 30*time.Second {
 		interval = 30 * time.Second
 	}
@@ -209,7 +210,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
 
-		if m.autoLearnRules {
+		if m.autoLearnRules != nil && m.autoLearnRules() {
 			anvilMu := m.getLearnMu(pr.Anvil)
 			prNum := pr.Number
 			go func() {
