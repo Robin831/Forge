@@ -464,11 +464,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-			// Live Activity: expand collapsed group header, or collapse expanded group
+			// Live Activity: expand collapsed group header (Enter expands; Esc collapses)
 			if m.focused == PanelLiveActivity && len(m.activityNavItems) > 0 &&
 				m.activityVP.cursor < len(m.activityNavItems) {
 				nav := m.activityNavItems[m.activityVP.cursor]
 				if nav.isGroupHeader {
+					if m.activityExpanded == nil {
+						m.activityExpanded = make(map[int]bool)
+					}
 					m.activityExpanded[nav.groupIdx] = true
 					m.rebuildActivityNav()
 				}
@@ -498,6 +501,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activityVP.cursor < len(m.activityNavItems) {
 				nav := m.activityNavItems[m.activityVP.cursor]
 				if !nav.isGroupHeader {
+					if m.activityExpanded == nil {
+						m.activityExpanded = make(map[int]bool)
+					}
 					m.activityExpanded[nav.groupIdx] = false
 					m.rebuildActivityNav()
 				}
@@ -597,9 +603,28 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case UpdateWorkersMsg:
+		// Capture the currently selected worker ID before clamping, so we can
+		// detect when ClampToTotal shifts the cursor to a different worker.
+		prevCursor := m.workerVP.cursor
+		var prevWorkerID string
+		if prevCursor >= 0 && prevCursor < len(m.workers) {
+			prevWorkerID = m.workers[prevCursor].ID
+		}
+
 		m.workers = msg.Items
 		m.workerVP.ClampToTotal(len(msg.Items))
-		m.rebuildActivityNav()
+
+		// Reset live activity state if the selected worker implicitly changed.
+		newCursor := m.workerVP.cursor
+		var newWorkerID string
+		if newCursor >= 0 && newCursor < len(m.workers) {
+			newWorkerID = m.workers[newCursor].ID
+		}
+		if prevWorkerID != "" && newWorkerID != "" && prevWorkerID != newWorkerID {
+			m.resetActivityState()
+		} else {
+			m.rebuildActivityNav()
+		}
 
 	case UpdateUsageMsg:
 		m.usage = msg.Data
@@ -1845,8 +1870,8 @@ func (m *Model) renderUsagePanel(width, height int) string {
 
 // renderWorkerActivity renders the activity panel: a live log view for the
 // currently selected worker, parsed from its stream-json log file.
-// Groups of consecutive same-type events are collapsible; press Enter to
-// expand/collapse. The newest activity appears at the top.
+// Groups of consecutive same-type events are collapsible; press Enter to expand
+// and Esc to collapse. The newest activity appears at the top.
 func (m *Model) renderWorkerActivity(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelLiveActivity {
