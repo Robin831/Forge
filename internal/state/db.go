@@ -360,8 +360,11 @@ type Worker struct {
 
 // InsertWorker adds a new worker record.
 func (db *DB) InsertWorker(w *Worker) error {
+	// INSERT OR REPLACE so that a pending claim row (inserted at claim time to
+	// survive the claim→worktree crash window) is atomically overwritten when
+	// the pipeline records the fully-initialized running worker.
 	_, err := db.conn.Exec(
-		`INSERT INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path)
+		`INSERT OR REPLACE INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.BeadID, w.Anvil, w.Branch, w.PID, string(w.Status), w.Phase, w.Title,
 		w.PRNumber, w.StartedAt.Format(dbTimeLayout), w.LogPath,

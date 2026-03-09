@@ -121,6 +121,13 @@ type Params struct {
 	BeadReleaser func(beadID, anvilPath string) error
 	// SchematicRunner overrides schematic.Run. Used in tests.
 	SchematicRunner func(ctx context.Context, cfg schematic.Config, bead poller.Bead, anvilPath string, pv provider.Provider) *schematic.Result
+
+	// WorkerID is the pre-generated worker ID to use for the state.db record.
+	// When set (e.g. because the daemon inserted a pending worker row at claim
+	// time to survive the claim→worktree crash window), the pipeline reuses
+	// this ID so the pending row is overwritten by the running row on insert.
+	// If empty, the pipeline generates a fresh ID as usual.
+	WorkerID string
 }
 
 // releaseBead resets a bead status to open via the bd CLI. It always uses a
@@ -147,7 +154,10 @@ func releaseBead(beadID, anvilPath string) error {
 func Run(ctx context.Context, p Params) *Outcome {
 	start := time.Now()
 	outcome := &Outcome{}
-	workerID := fmt.Sprintf("%s-%s-%d", p.AnvilName, p.Bead.ID, time.Now().Unix())
+	workerID := p.WorkerID
+	if workerID == "" {
+		workerID = fmt.Sprintf("%s-%s-%d", p.AnvilName, p.Bead.ID, time.Now().Unix())
+	}
 	outcome.WorkerID = workerID
 
 	// Resolve injectable dependencies, falling back to defaults.
@@ -186,6 +196,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 	log.Printf("[pipeline:%s] Creating worktree for bead %s", workerID, p.Bead.ID)
 	wt, err := createWorktree(ctx, p.AnvilConfig.Path, p.Bead.ID)
 	if err != nil {
+		// Mark the pending worker row (inserted at claim time) as failed so it
+		// no longer counts against capacity checks.
+		if p.DB != nil && workerID != "" {
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+		}
 		outcome.Error = fmt.Errorf("creating worktree: %w", err)
 		outcome.Duration = time.Since(start)
 		return outcome
