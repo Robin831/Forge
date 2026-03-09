@@ -37,6 +37,13 @@ func DefaultPricing() Pricing {
 	}
 }
 
+// CopilotPricing returns approximate GitHub Copilot pricing.
+// Copilot runs Claude models under the hood; we use Claude's pricing as a
+// reasonable cost estimate for token-level tracking.
+func CopilotPricing() Pricing {
+	return DefaultPricing()
+}
+
 // GeminiPricing returns approximate Gemini 1.5 Pro pricing.
 func GeminiPricing() Pricing {
 	return Pricing{

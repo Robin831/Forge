@@ -81,12 +81,9 @@ func (p Provider) Label() string {
 
 // Format returns the output format this provider writes to stdout.
 func (p Provider) Format() OutputFormat {
-	switch p.Kind {
-	case Copilot:
-		return PlainText
-	default:
-		return StreamJSON
-	}
+	// All supported providers now emit structured JSONL (stream-json).
+	// Copilot CLI supports --output-format json since mid-2025.
+	return StreamJSON
 }
 
 // BuildArgs returns the full argument list for a one-shot non-interactive run.
@@ -177,16 +174,19 @@ func (p Provider) geminiArgs(claudeFlags []string) []string {
 
 func (p Provider) copilotArgs(claudeFlags []string) []string {
 	// GitHub Copilot CLI:
-	//   copilot -p - --yolo --silent --model claude-sonnet-4.6 --no-auto-update
+	//   copilot -p - --yolo --output-format json --model claude-sonnet-4.6 --no-auto-update
 	//
-	// -p -       = read prompt from stdin (avoids Windows command-line length limit)
-	// --yolo     = --allow-all-tools + --allow-all-paths + --allow-all-urls
-	// --silent   = output only the agent response, no stats (plain text)
-	// --model    = use Claude Sonnet 4.6 (best autonomous-coding model available)
-	// --no-auto-update = avoid interactive update prompts in CI/daemon context
+	// -p -              = read prompt from stdin (avoids Windows command-line length limit)
+	// --yolo            = --allow-all-tools + --allow-all-paths + --allow-all-urls
+	// --output-format json = emit JSONL events (enables token counting & cost estimation)
+	// --model           = use Claude Sonnet 4.6 (best autonomous-coding model available)
+	// --no-auto-update  = avoid interactive update prompts in CI/daemon context
 	//
 	// Unrecognised claude flags (--max-turns, --tools, --verbose, etc.) are dropped.
-	model := "claude-sonnet-4.6"
+	model := p.Model
+	if model == "" {
+		model = "claude-sonnet-4.6"
+	}
 
 	// Allow callers to override the model via a --model flag in claudeFlags.
 	for i := 0; i+1 < len(claudeFlags); i++ {
@@ -199,7 +199,7 @@ func (p Provider) copilotArgs(claudeFlags []string) []string {
 	return []string{
 		"-p", "-",
 		"--yolo",
-		"--silent",
+		"--output-format", "json",
 		"--model", model,
 		"--no-auto-update",
 	}

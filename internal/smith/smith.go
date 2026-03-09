@@ -247,6 +247,17 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 			result.FullOutput = result.Output
 		}
 
+		// Estimate cost for Copilot when the JSONL didn't include total_cost_usd
+		// (Copilot is subscription-based so the field is often zero).
+		if pv.Kind == provider.Copilot && result.CostUSD == 0 && (result.TokensIn > 0 || result.TokensOut > 0) {
+			u := cost.Usage{
+				InputTokens:  result.TokensIn,
+				OutputTokens: result.TokensOut,
+			}
+			u.Calculate(cost.CopilotPricing())
+			result.CostUSD = u.EstimatedCostUSD
+		}
+
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				result.ExitCode = exitErr.ExitCode()

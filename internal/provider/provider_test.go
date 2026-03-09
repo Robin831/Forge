@@ -34,7 +34,7 @@ func TestProvider_Format(t *testing.T) {
 	}{
 		{"claude is StreamJSON", Provider{Kind: Claude}, StreamJSON},
 		{"gemini is StreamJSON", Provider{Kind: Gemini}, StreamJSON},
-		{"copilot is PlainText", Provider{Kind: Copilot}, PlainText},
+		{"copilot is StreamJSON", Provider{Kind: Copilot}, StreamJSON},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -157,7 +157,9 @@ func TestProvider_BuildArgs_Copilot(t *testing.T) {
 	p := Provider{Kind: Copilot}
 	args := p.BuildArgs(nil)
 	assert.Contains(t, args, "--yolo")
-	assert.Contains(t, args, "--silent")
+	assert.Contains(t, args, "--output-format")
+	assert.Contains(t, args, "json")
+	assert.NotContains(t, args, "--silent")
 	assert.Contains(t, args, "--model")
 	assert.Contains(t, args, "--no-auto-update")
 	assert.Contains(t, args, "-p")
@@ -191,6 +193,36 @@ func TestProvider_BuildArgs_Copilot_CustomModel(t *testing.T) {
 	}
 	assert.NotEqual(t, -1, modelIdx)
 	assert.Equal(t, "claude-opus-4", args[modelIdx])
+}
+
+func TestProvider_BuildArgs_Copilot_ProviderModelField(t *testing.T) {
+	// Provider.Model is honored for Copilot (config-driven model selection).
+	p := Provider{Kind: Copilot, Model: "claude-opus-4-6"}
+	args := p.BuildArgs(nil)
+	modelIdx := -1
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) {
+			modelIdx = i + 1
+			break
+		}
+	}
+	assert.NotEqual(t, -1, modelIdx, "expected --model flag")
+	assert.Equal(t, "claude-opus-4-6", args[modelIdx])
+}
+
+func TestProvider_BuildArgs_Copilot_ClaudeFlagModelOverridesProviderModel(t *testing.T) {
+	// --model in claude_flags takes precedence over Provider.Model for Copilot.
+	p := Provider{Kind: Copilot, Model: "claude-opus-4-6"}
+	args := p.BuildArgs([]string{"--model", "claude-sonnet-4.6"})
+	modelIdx := -1
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) {
+			modelIdx = i + 1
+			break
+		}
+	}
+	assert.NotEqual(t, -1, modelIdx, "expected --model flag")
+	assert.Equal(t, "claude-sonnet-4.6", args[modelIdx])
 }
 
 func TestDefaults(t *testing.T) {
