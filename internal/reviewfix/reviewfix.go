@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/provider"
@@ -162,6 +163,11 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			// is not a successful session and must not suppress the fallback.
 			if smithResult.ResultSubtype == "success" && !smithResult.IsError {
 				smithResult.RateLimited = false
+			}
+			if pv.Kind == provider.Copilot && !smithResult.RateLimited {
+				if m := cost.CopilotPremiumMultiplier(pv.Model); m > 0 {
+					_ = p.DB.AddCopilotRequest(cost.Today(), m)
+				}
 			}
 			if !smithResult.RateLimited {
 				activeProviderIdx = pi
