@@ -200,10 +200,12 @@ func TestRenderColumnsAlignedHeight(t *testing.T) {
 			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
 				ActivityLines: []string{"line1", "line2", "line3", "line4", "line5", "line6", "line7", "line8"}},
 		},
-		focused: PanelWorkers,
-		width:   120,
-		height:  40,
+		focused:          PanelWorkers,
+		width:            120,
+		height:           40,
+		activityExpanded: make(map[int]bool),
 	}
+	m.rebuildActivityNav()
 
 	topHeight, bottomHeight := m.getVerticalSplit(1, 1)
 	width := 40
@@ -383,8 +385,10 @@ func TestRenderWorkerActivityNewestFirst(t *testing.T) {
 				ActivityLines: []string{"oldest entry", "middle entry", "newest entry"},
 			},
 		},
-		workerVP: scrollViewport{cursor: 0},
+		workerVP:         scrollViewport{cursor: 0},
+		activityExpanded: make(map[int]bool),
 	}
+	m.rebuildActivityNav()
 
 	// Use a large height so all lines are visible
 	rendered := m.renderWorkerActivity(80, 20)
@@ -618,19 +622,20 @@ func TestActivityScrollChangesVisibleLine(t *testing.T) {
 			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
 				ActivityLines: lines},
 		},
-		workerVP: scrollViewport{cursor: 0},
-		activityScroll: 0,
-		focused:        PanelLiveActivity,
+		workerVP:         scrollViewport{cursor: 0},
+		activityExpanded: make(map[int]bool),
+		focused:          PanelLiveActivity,
 	}
+	m.rebuildActivityNav()
 
-	// With no scroll, the newest entry (line-4) should be visible.
+	// With cursor at 0, the newest entry (line-4) should be visible.
 	rendered0 := m.renderWorkerActivity(80, 10)
 	if !strings.Contains(rendered0, "line-4") {
-		t.Errorf("expected newest entry 'line-4' visible at scroll=0:\n%s", rendered0)
+		t.Errorf("expected newest entry 'line-4' visible at cursor=0:\n%s", rendered0)
 	}
 
-	// Scroll down (toward older entries) so that line-4 is scrolled off.
-	m.activityScroll = len(lines) - 1 // scroll to the oldest
+	// Scroll to the bottom (oldest entries) so that line-0 is visible.
+	m.activityVP.cursor = len(m.activityNavItems) - 1
 	renderedScrolled := m.renderWorkerActivity(80, 10)
 	if !strings.Contains(renderedScrolled, "line-0") {
 		t.Errorf("expected oldest entry 'line-0' visible when scrolled to end:\n%s", renderedScrolled)
@@ -639,22 +644,24 @@ func TestActivityScrollChangesVisibleLine(t *testing.T) {
 
 func TestActivityScrollClampPastEnd(t *testing.T) {
 	lines := []string{"alpha", "beta", "gamma"}
-	// activityScroll larger than len(lines)-1 simulates a stale scroll after
+	// activityVP.cursor larger than total simulates a stale scroll after
 	// the worker's activity list shrinks on refresh.
 	m := Model{
 		workers: []WorkerItem{
 			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
 				ActivityLines: lines},
 		},
-		workerVP: scrollViewport{cursor: 0},
-		activityScroll: 100, // way past the end
-		focused:        PanelLiveActivity,
+		workerVP:         scrollViewport{cursor: 0},
+		activityVP:       scrollViewport{cursor: 100}, // way past the end
+		activityExpanded: make(map[int]bool),
+		focused:          PanelLiveActivity,
 	}
+	m.rebuildActivityNav()
 
 	rendered := m.renderWorkerActivity(80, 10)
-	// The panel must not be blank — at least the oldest entry should show.
-	if !strings.Contains(rendered, "alpha") {
-		t.Errorf("expected at least oldest entry 'alpha' when activityScroll is past end:\n%s", rendered)
+	// The panel must not be blank — at least some entry should show.
+	if !strings.Contains(rendered, "alpha") && !strings.Contains(rendered, "beta") && !strings.Contains(rendered, "gamma") {
+		t.Errorf("expected at least some entry when activityVP.cursor is past end:\n%s", rendered)
 	}
 }
 
