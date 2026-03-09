@@ -808,9 +808,18 @@ func (m *Model) rebuildQueueNav() {
 		m.queueExpandedAnvils = make(map[string]bool)
 	}
 
-	// Collect unique anvils in display order (first appearance).
+	// Collect unique anvils. Start with registered anvils from config (sorted),
+	// then append any anvils found in queue data that weren't in the config.
 	seen := map[string]bool{}
 	var anvilOrder []string
+	if m.data != nil {
+		for _, name := range m.data.AnvilNames {
+			if !seen[name] {
+				seen[name] = true
+				anvilOrder = append(anvilOrder, name)
+			}
+		}
+	}
 	for _, item := range m.queue {
 		if !seen[item.Anvil] {
 			seen[item.Anvil] = true
@@ -851,10 +860,12 @@ func (m *Model) rebuildQueueNav() {
 	m.queueVP.ClampToTotal(len(m.queueNavItems))
 }
 
-// ensureQueueNav lazily builds queueNavItems if the queue has items but nav
-// hasn't been built yet (e.g. when queue is set directly in tests).
+// ensureQueueNav lazily builds queueNavItems if nav hasn't been built yet
+// (e.g. when queue is set directly in tests or when registered anvils exist
+// but have no beads).
 func (m *Model) ensureQueueNav() {
-	if len(m.queueNavItems) == 0 && len(m.queue) > 0 {
+	hasAnvils := m.data != nil && len(m.data.AnvilNames) > 1
+	if len(m.queueNavItems) == 0 && (len(m.queue) > 0 || hasAnvils) {
 		m.rebuildQueueNav()
 	}
 }
@@ -1177,7 +1188,9 @@ func (m *Model) renderQueue(width, height int) string {
 	var lines []string
 	lines = append(lines, title)
 
-	if len(m.queue) == 0 {
+	m.ensureQueueNav()
+
+	if len(m.queueNavItems) == 0 {
 		lines = append(lines, dimStyle.Render("No pending beads"))
 	} else {
 		// Count beads per anvil for header display.

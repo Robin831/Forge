@@ -58,6 +58,9 @@ type DataSource struct {
 	MaxCIFixAttempts     int
 	MaxReviewFixAttempts int
 	MaxRebaseAttempts    int
+	// AnvilNames lists all registered anvil names (sorted) so the Queue panel
+	// can show empty anvils with a (0) count.
+	AnvilNames []string
 }
 
 // Tick returns a Bubbletea command that sends a TickMsg after the interval.

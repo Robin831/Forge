@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -40,11 +41,18 @@ var hearthCmd = &cobra.Command{
 			*cfg = config.Defaults()
 		}
 
+		anvilNames := make([]string, 0, len(cfg.Anvils))
+		for name := range cfg.Anvils {
+			anvilNames = append(anvilNames, name)
+		}
+		sort.Strings(anvilNames)
+
 		ds := &hearth.DataSource{
 			DB:                   db,
 			MaxCIFixAttempts:     cfg.Settings.MaxCIFixAttempts,
 			MaxReviewFixAttempts: cfg.Settings.MaxReviewFixAttempts,
 			MaxRebaseAttempts:    cfg.Settings.MaxRebaseAttempts,
+			AnvilNames:          anvilNames,
 		}
 
 		model := hearth.NewModel(ds)
