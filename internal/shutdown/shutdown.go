@@ -285,9 +285,9 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 				continue
 			}
 
-			// Skip beads that were recently claimed: the worker row may not yet
-			// have been inserted into state.db (it happens after worktree
-			// creation, which can take a few seconds). Only recover beads that
+			// Skip beads that were recently claimed: the pending worker row is
+			// inserted at claim time, but a brand-new claim may not yet have
+			// aged enough to be considered orphaned. Only recover beads that
 			// have been in_progress longer than orphanMinAge.
 			if !bead.UpdatedAt.IsZero() && time.Since(bead.UpdatedAt) < orphanMinAge {
 				m.logger.Debug("skipping recently-claimed bead", "bead", beadID, "age", time.Since(bead.UpdatedAt).Round(time.Second))

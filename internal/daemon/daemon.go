@@ -988,10 +988,17 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			continue
 		}
 
+		// Insert a pending worker row immediately after claiming so that orphan
+		// recovery can identify this as a Forge-owned bead even if the process
+		// crashes before the pipeline inserts the running row (the known
+		// claim→worktree crash window). The pipeline overwrites this row via
+		// INSERT OR REPLACE when it starts.
+		claimWorkerID := d.insertPendingWorker(bead.ID, bead.Anvil, bead.Title)
+
 		thisCycleAnvil[bead.Anvil]++
 		thisCycleTotal++
 		d.wg.Add(1)
-		go d.dispatchBead(ctx, bead, anvilCfg)
+		go d.dispatchBead(ctx, bead, anvilCfg, claimWorkerID)
 	}
 
 	// Optionally log a summary of this poll cycle's dispatch activity.
@@ -1001,7 +1008,9 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 }
 
 // dispatchBead runs the full pipeline for a single bead in a goroutine.
-func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig) {
+// claimWorkerID is the ID of the pending worker row inserted at claim time;
+// it is passed into the pipeline so the running row overwrites the pending one.
+func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string) {
 	defer d.wg.Done()
 	// Drain order: activeBeads.Delete runs first (registered last → LIFO),
 	// then drainPendingAction fires so any parked lifecycle action sees the bead as free.
@@ -1156,6 +1165,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
 		Notifier:        d.notifier,
 		BaseBranch:      bead.EpicBranch,
+		WorkerID:        claimWorkerID,
 	}
 	if d.cfg.Load().Settings.SchematicEnabled {
 		wordThreshold := d.cfg.Load().Settings.SchematicWordThreshold
@@ -1261,6 +1271,32 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	if err := d.closeBead(pipelineCtx, bead.ID, anvilCfg.Path); err != nil {
 		d.logger.Warn("failed to close bead", "bead", bead.ID, "error", err)
 	}
+}
+
+// insertPendingWorker writes a minimal WorkerPending row to state.db immediately
+// after claiming a bead. This closes the crash window between bd marking the
+// bead in_progress and the pipeline inserting its running worker row: orphan
+// recovery uses HasWorkerRecord to distinguish Forge-claimed beads from beads
+// owned by humans or other tools, so without this row a crash during worktree
+// creation would leave the bead stuck in_progress forever.
+//
+// Returns the generated worker ID so the caller can pass it to the pipeline,
+// which will overwrite this row (via INSERT OR REPLACE) once the full running
+// record is available.
+func (d *Daemon) insertPendingWorker(beadID, anvilName, title string) string {
+	workerID := fmt.Sprintf("%s-%s-%d", anvilName, beadID, time.Now().Unix())
+	w := &state.Worker{
+		ID:        workerID,
+		BeadID:    beadID,
+		Anvil:     anvilName,
+		Status:    state.WorkerPending,
+		Title:     title,
+		StartedAt: time.Now(),
+	}
+	if err := d.db.InsertWorker(w); err != nil {
+		d.logger.Warn("failed to insert pending worker row at claim time", "bead", beadID, "error", err)
+	}
+	return workerID
 }
 
 // claimBead marks a bead as in_progress via bd update --claim.
@@ -1552,8 +1588,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
+		// Insert a pending worker row immediately after claiming so orphan
+		// recovery can identify this as Forge-owned in the claim→worktree window.
+		claimWorkerID := d.insertPendingWorker(targetBead.ID, targetBead.Anvil, targetBead.Title)
+
 		d.wg.Add(1)
-		go d.dispatchBead(context.Background(), *targetBead, anvilCfg)
+		go d.dispatchBead(context.Background(), *targetBead, anvilCfg, claimWorkerID)
 
 		data, _ := json.Marshal(map[string]string{"message": "dispatched"})
 		return ipc.Response{Type: "ok", Payload: data}
