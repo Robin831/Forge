@@ -143,22 +143,15 @@ func Spawn(ctx context.Context, worktreePath, promptText, logDir string, extraFl
 //
 // logDir is where the session log file is written.
 func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*Process, error) {
-	var args []string
-	if pv.PromptViaStdin() {
-		// Claude and Gemini read the prompt from stdin (-p - / positional arg).
-		args = pv.BuildArgs(extraFlags)
-	} else {
-		// Copilot CLI doesn't support stdin prompts; pass via -p argument.
-		args = pv.BuildArgsWithPrompt(extraFlags, promptText)
-	}
+	args := pv.BuildArgs(extraFlags)
 
 	cmd := exec.CommandContext(ctx, pv.Cmd(), args...)
 	cmd.Dir = worktreePath
 
-	// Deliver the prompt via stdin for providers that support it.
-	if pv.PromptViaStdin() {
-		cmd.Stdin = strings.NewReader(promptText)
-	}
+	// Deliver the prompt via stdin. Claude uses -p -, Gemini reads stdin
+	// when no positional prompt is given, and Copilot reads stdin when -p
+	// is omitted (detects piped input and runs non-interactively).
+	cmd.Stdin = strings.NewReader(promptText)
 
 	// Strip CLAUDECODE so claude doesn't refuse to run inside another session.
 	env := os.Environ()
