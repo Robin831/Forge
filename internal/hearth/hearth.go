@@ -464,15 +464,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-			// Live Activity: expand collapsed group header (Enter expands; Esc collapses)
+			// Live Activity: toggle group expand/collapse
 			if m.focused == PanelLiveActivity && len(m.activityNavItems) > 0 &&
 				m.activityVP.cursor < len(m.activityNavItems) {
 				nav := m.activityNavItems[m.activityVP.cursor]
-				if nav.isGroupHeader {
+				if nav.groupType != "" {
 					if m.activityExpanded == nil {
 						m.activityExpanded = make(map[string]bool)
 					}
-					m.activityExpanded[nav.groupType] = true
+					cur := m.isActivityGroupExpanded(nav.groupType)
+					m.activityExpanded[nav.groupType] = !cur
 					m.rebuildActivityNav()
 				}
 			}
@@ -2627,6 +2628,18 @@ func collapseActivityGroup(g activityGroup) string {
 	return fmt.Sprintf("▸ [%s] x%d", g.eventType, count)
 }
 
+// expandActivityGroup produces the header line for an expanded group.
+// Uses ▾ to indicate the group is open and can be collapsed.
+func expandActivityGroup(g activityGroup) string {
+	count := 0
+	for _, line := range g.lines {
+		if activityLineType(line) != "" {
+			count++
+		}
+	}
+	return fmt.Sprintf("▾ [%s] x%d", g.eventType, count)
+}
+
 // groupedWorkerActivity returns the grouped activity lines for the currently
 // selected worker. The last group of consecutive same-type events is expanded
 // while older groups are collapsed into summary headers.
@@ -2636,8 +2649,8 @@ func (m *Model) groupedWorkerActivity() []string {
 
 // rebuildActivityNav rebuilds the flat display items for the Live Activity panel
 // from the currently selected worker's activity. One persistent group per event
-// type is shown, newest-first by last occurrence. Each group is either expanded
-// (individual lines) or collapsed (single summary header with count).
+// type is shown, newest-first by last occurrence. Each group always has a header
+// line (▸ collapsed / ▾ expanded); expanded groups show indented child lines.
 func (m *Model) rebuildActivityNav() {
 	rawLines := m.selectedWorkerActivity()
 	groups := buildActivityGroups(rawLines)
@@ -2654,11 +2667,16 @@ func (m *Model) rebuildActivityNav() {
 				text:          collapseActivityGroup(g),
 			})
 		} else {
-			// Expanded: show individual lines newest-first (reverse chronological).
+			// Expanded: header with ▾, then indented child lines newest-first.
+			m.activityNavItems = append(m.activityNavItems, activityNavItem{
+				isGroupHeader: true,
+				groupType:     g.eventType,
+				text:          expandActivityGroup(g),
+			})
 			for li := len(g.lines) - 1; li >= 0; li-- {
 				m.activityNavItems = append(m.activityNavItems, activityNavItem{
 					groupType: g.eventType,
-					text:      g.lines[li],
+					text:      "  " + g.lines[li],
 				})
 			}
 		}
