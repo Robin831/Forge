@@ -21,6 +21,7 @@ package hotreload
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -67,6 +68,12 @@ func (w *Watcher) Current() *config.Config {
 }
 
 // Start begins watching the config file. Blocks until Stop() or error.
+//
+// We watch the parent directory instead of the file itself because many editors
+// (and tools like Viper) save files via write-to-temp + rename. On Windows this
+// causes fsnotify to lose the watch on the original inode, silently dropping all
+// subsequent events. Watching the directory catches Create/Rename events for the
+// config filename regardless of how the file is written.
 func (w *Watcher) Start() error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -74,11 +81,18 @@ func (w *Watcher) Start() error {
 	}
 	defer watcher.Close()
 
-	if err := watcher.Add(w.configFile); err != nil {
-		return fmt.Errorf("watching %s: %w", w.configFile, err)
+	absPath, err := filepath.Abs(w.configFile)
+	if err != nil {
+		return fmt.Errorf("resolving config path: %w", err)
+	}
+	configDir := filepath.Dir(absPath)
+	configBase := filepath.Base(absPath)
+
+	if err := watcher.Add(configDir); err != nil {
+		return fmt.Errorf("watching directory %s: %w", configDir, err)
 	}
 
-	w.logger.Info("config hot-reload started", "file", w.configFile)
+	w.logger.Info("config hot-reload started", "file", absPath, "dir", configDir)
 
 	var debounceTimer *time.Timer
 	for {
@@ -91,7 +105,11 @@ func (w *Watcher) Start() error {
 			if !ok {
 				return nil
 			}
-			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+			// Only react to events for our config file.
+			if filepath.Base(event.Name) != configBase {
+				continue
+			}
+			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) {
 				// Debounce rapid write events (editors write multiple times)
 				if debounceTimer != nil {
 					debounceTimer.Stop()
