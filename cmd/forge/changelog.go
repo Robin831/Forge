@@ -13,6 +13,7 @@ import (
 func init() {
 	changelogAssembleCmd.Flags().String("dir", ".", "Root directory containing changelog.d/")
 	changelogAssembleCmd.Flags().String("output", "CHANGELOG.md", "Output file name")
+	changelogAssembleCmd.Flags().String("version", "", "Version to use in the heading (e.g. 0.2.0); defaults to [Unreleased]")
 	changelogAssembleCmd.Flags().Bool("dry-run", false, "Print assembled changelog without writing")
 
 	changelogValidateCmd.Flags().String("dir", ".", "Root directory containing changelog.d/")
@@ -32,13 +33,15 @@ var changelogAssembleCmd = &cobra.Command{
 	Use:   "assemble",
 	Short: "Assemble changelog.d fragments into CHANGELOG.md",
 	Long: `Reads all changelog fragments from changelog.d/ and assembles them into
-the [Unreleased] section of CHANGELOG.md. Fragments are grouped by category
-(Added, Changed, Deprecated, Removed, Fixed, Security).
+CHANGELOG.md. Fragments are grouped by category (Added, Changed, Deprecated,
+Removed, Fixed, Security).
 
-Use --dry-run to preview without writing.`,
+Use --version to set a release version heading (e.g. --version 0.2.0) instead
+of the default [Unreleased]. Use --dry-run to preview without writing.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir, _ := cmd.Flags().GetString("dir")
 		output, _ := cmd.Flags().GetString("output")
+		version, _ := cmd.Flags().GetString("version")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 		fragDir := filepath.Join(dir, "changelog.d")
@@ -53,7 +56,7 @@ Use --dry-run to preview without writing.`,
 		}
 
 		clPath := filepath.Join(dir, output)
-		content, err := changelog.UpdateChangelog(clPath, fragments)
+		content, err := changelog.UpdateChangelog(clPath, fragments, version)
 		if err != nil {
 			return fmt.Errorf("assembling changelog: %w", err)
 		}

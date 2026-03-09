@@ -87,7 +87,7 @@ func TestCollectAndAssemble(t *testing.T) {
 		t.Fatalf("got %d fragments, want 3", len(fragments))
 	}
 
-	result := Assemble(fragments)
+	result := Assemble(fragments, "")
 	if !strings.Contains(result, "## [Unreleased]") {
 		t.Error("missing [Unreleased] header")
 	}
@@ -110,7 +110,7 @@ func TestUpdateChangelogNewFile(t *testing.T) {
 		{BeadID: "Forge-a", Category: "Added", Bullets: []string{"- **Feature** - desc (Forge-a)"}},
 	}
 
-	content, err := UpdateChangelog(clPath, fragments)
+	content, err := UpdateChangelog(clPath, fragments, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestUpdateChangelogExisting(t *testing.T) {
 		{BeadID: "Forge-b", Category: "Fixed", Bullets: []string{"- **New fix** - desc (Forge-b)"}},
 	}
 
-	content, err := UpdateChangelog(clPath, fragments)
+	content, err := UpdateChangelog(clPath, fragments, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

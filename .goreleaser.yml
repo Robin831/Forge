@@ -36,7 +36,7 @@ checksum:
   name_template: "checksums.txt"
 
 changelog:
-  use: github-native
+  skip: true
 
 release:
   github:

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Valid changelog categories, in the order they appear in the assembled output.
@@ -114,8 +115,10 @@ func CollectFragments(dir string) ([]Fragment, error) {
 	return fragments, nil
 }
 
-// Assemble builds an [Unreleased] section from fragments, grouped by category.
-func Assemble(fragments []Fragment) string {
+// Assemble builds a changelog section from fragments, grouped by category.
+// If version is empty, the heading is [Unreleased]. Otherwise it uses the
+// version and today's date, e.g. ## [0.2.0] - 2026-03-09.
+func Assemble(fragments []Fragment, version string) string {
 	if len(fragments) == 0 {
 		return ""
 	}
@@ -127,7 +130,12 @@ func Assemble(fragments []Fragment) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("## [Unreleased]\n")
+	if version == "" {
+		sb.WriteString("## [Unreleased]\n")
+	} else {
+		now := time.Now().UTC().Format("2006-01-02")
+		fmt.Fprintf(&sb, "## [%s] - %s\n", version, now)
+	}
 
 	for _, cat := range Categories {
 		bullets, ok := grouped[cat]
@@ -146,9 +154,10 @@ func Assemble(fragments []Fragment) string {
 
 // UpdateChangelog reads an existing CHANGELOG.md, replaces the [Unreleased]
 // section with assembled fragments, and returns the new content.
-// If the file doesn't exist, a new one is created.
-func UpdateChangelog(changelogPath string, fragments []Fragment) (string, error) {
-	unreleased := Assemble(fragments)
+// If version is non-empty the section heading uses that version and today's
+// date instead of [Unreleased]. If the file doesn't exist, a new one is created.
+func UpdateChangelog(changelogPath string, fragments []Fragment, version string) (string, error) {
+	unreleased := Assemble(fragments, version)
 	if unreleased == "" {
 		return "", fmt.Errorf("no fragments to assemble")
 	}
