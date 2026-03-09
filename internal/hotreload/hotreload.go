@@ -71,9 +71,9 @@ func (w *Watcher) Current() *config.Config {
 //
 // We watch the parent directory instead of the file itself because many editors
 // (and tools like Viper) save files via write-to-temp + rename. On Windows this
-// causes fsnotify to lose the watch on the original inode, silently dropping all
-// subsequent events. Watching the directory catches Create/Rename events for the
-// config filename regardless of how the file is written.
+// can cause fsnotify to stop delivering events for the original file after the
+// rename. Watching the directory catches Create/Rename events for the config
+// filename regardless of how the file is written.
 func (w *Watcher) Start() error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -85,6 +85,7 @@ func (w *Watcher) Start() error {
 	if err != nil {
 		return fmt.Errorf("resolving config path: %w", err)
 	}
+	w.configFile = absPath // normalize once so reload() uses the same resolved path
 	configDir := filepath.Dir(absPath)
 	configBase := filepath.Base(absPath)
 
