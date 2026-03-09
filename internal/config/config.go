@@ -136,6 +136,12 @@ type SettingsConfig struct {
 	// comments, distill them into rules via Claude, and save them to the
 	// anvil's .forge/warden-rules.yaml. Default: false.
 	AutoLearnRules bool `mapstructure:"auto_learn_rules" yaml:"auto_learn_rules"`
+	// CopilotDailyRequestLimit is the maximum number of weighted Copilot
+	// premium requests per calendar day. When the running total exceeds this
+	// value, the Copilot provider is skipped in the fallback chain (other
+	// providers are unaffected). Zero means no limit (default).
+	// Premium requests are weighted by model multiplier (e.g. opus 4.6 = 3x).
+	CopilotDailyRequestLimit int `mapstructure:"copilot_daily_request_limit" yaml:"copilot_daily_request_limit,omitempty"`
 	// CrucibleEnabled enables automatic Crucible orchestration for parent beads
 	// that have children (blocks other beads). When true, the daemon detects
 	// parent beads during polling and dispatches them through the Crucible
@@ -181,6 +187,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		VulncheckEnabled         *bool    `yaml:"vulncheck_enabled,omitempty"`
 		GoRaceDetection          bool     `yaml:"go_race_detection"`
 		AutoLearnRules           bool     `yaml:"auto_learn_rules"`
+		CopilotDailyRequestLimit int      `yaml:"copilot_daily_request_limit,omitempty"`
 		CrucibleEnabled          bool     `yaml:"crucible_enabled"`
 		AutoMergeCrucibleChildren *bool   `yaml:"auto_merge_crucible_children,omitempty"`
 	}
@@ -206,6 +213,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		VulncheckEnabled:          s.VulncheckEnabled,
 		GoRaceDetection:           s.GoRaceDetection,
 		AutoLearnRules:            s.AutoLearnRules,
+		CopilotDailyRequestLimit:  s.CopilotDailyRequestLimit,
 		CrucibleEnabled:           s.CrucibleEnabled,
 		AutoMergeCrucibleChildren: s.AutoMergeCrucibleChildren,
 	}
@@ -470,6 +478,10 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.MaxRebaseAttempts < 1 {
 		errs = append(errs, "settings.max_rebase_attempts must be >= 1")
+	}
+
+	if c.Settings.CopilotDailyRequestLimit < 0 {
+		errs = append(errs, "settings.copilot_daily_request_limit must be >= 0 (0 = no limit)")
 	}
 
 	if c.Settings.DepcheckInterval < 0 {
