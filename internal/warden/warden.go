@@ -337,16 +337,19 @@ func parseClaudeVerdict(output string, result *ReviewResult) {
 		strings.Contains(strings.ToLower(output), "lgtm") ||
 		strings.Contains(strings.ToLower(output), "looks good to merge"):
 		result.Verdict = VerdictApprove
-		result.Summary = "Inferred approval from output (claude fallback)"
 	case strings.Contains(norm, `"verdict":"reject"`):
 		result.Verdict = VerdictReject
-		result.Summary = "Inferred rejection from output (claude fallback)"
 	case strings.Contains(norm, `"verdict":"request_changes"`):
 		result.Verdict = VerdictRequestChanges
-		result.Summary = "Inferred request_changes from output (claude fallback)"
 	default:
 		result.Verdict = VerdictApprove
 		result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
+		return
+	}
+	// Try to salvage the summary field from the raw output.
+	result.Summary = extractQuotedField(output, "summary")
+	if result.Summary == "" {
+		result.Summary = fmt.Sprintf("Verdict: %s (parsed from unstructured output)", result.Verdict)
 	}
 }
 
@@ -360,39 +363,28 @@ func parseGeminiVerdict(output string, result *ReviewResult) {
 	switch {
 	case strings.Contains(norm, `"verdict":"approve"`):
 		result.Verdict = VerdictApprove
-		result.Summary = "Inferred approval from output (gemini fallback)"
-		return
 	case strings.Contains(norm, `"verdict":"request_changes"`):
 		result.Verdict = VerdictRequestChanges
-		result.Summary = "Inferred request_changes from output (gemini fallback)"
-		return
 	case strings.Contains(norm, `"verdict":"reject"`):
 		result.Verdict = VerdictReject
-		result.Summary = "Inferred rejection from output (gemini fallback)"
-		return
+	default:
+		// Gemini sometimes uses "Verdict: approve" or "**Verdict:** approve" in prose.
+		if v, ok := extractKeyValueVerdict(lower); ok {
+			result.Verdict = v
+		} else if containsAny(lower, "lgtm", "looks good to merge", "approve this", "code is correct and ready") {
+			result.Verdict = VerdictApprove
+		} else if !strings.Contains(lower, "no changes needed") && containsAny(lower, "changes needed", "changes need to", "request changes", "needs to be fixed", "issues that should be addressed") {
+			result.Verdict = VerdictRequestChanges
+		} else {
+			result.Verdict = VerdictApprove
+			result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
+			return
+		}
 	}
-
-	// Gemini sometimes uses "Verdict: approve" or "**Verdict:** approve" in prose.
-	if v, ok := extractKeyValueVerdict(lower); ok {
-		result.Verdict = v
-		result.Summary = "Inferred verdict from key-value line (gemini fallback)"
-		return
+	result.Summary = extractQuotedField(output, "summary")
+	if result.Summary == "" {
+		result.Summary = fmt.Sprintf("Verdict: %s (parsed from unstructured output)", result.Verdict)
 	}
-
-	// Natural language signals.
-	if containsAny(lower, "lgtm", "looks good to merge", "approve this", "code is correct and ready") {
-		result.Verdict = VerdictApprove
-		result.Summary = "Inferred approval from prose (gemini fallback)"
-		return
-	}
-	if !strings.Contains(lower, "no changes needed") && containsAny(lower, "changes needed", "changes need to", "request changes", "needs to be fixed", "issues that should be addressed") {
-		result.Verdict = VerdictRequestChanges
-		result.Summary = "Inferred request_changes from prose (gemini fallback)"
-		return
-	}
-
-	result.Verdict = VerdictApprove
-	result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
 }
 
 // parseCopilotVerdict handles fallback parsing for Copilot (Haiku) output.
@@ -406,62 +398,43 @@ func parseCopilotVerdict(output string, result *ReviewResult) {
 	switch {
 	case strings.Contains(norm, `"verdict":"approve"`):
 		result.Verdict = VerdictApprove
-		result.Summary = "Inferred approval from output (copilot fallback)"
-		return
 	case strings.Contains(norm, `"verdict":"request_changes"`):
 		result.Verdict = VerdictRequestChanges
-		result.Summary = "Inferred request_changes from output (copilot fallback)"
-		return
 	case strings.Contains(norm, `"verdict":"reject"`):
 		result.Verdict = VerdictReject
-		result.Summary = "Inferred rejection from output (copilot fallback)"
-		return
+	default:
+		// Key-value style: "Verdict: approve", "**Verdict**: request_changes", etc.
+		if v, ok := extractKeyValueVerdict(lower); ok {
+			result.Verdict = v
+		} else if containsAny(lower,
+			"lgtm", "looks good to merge", "looks good to me",
+			"i approve", "approve this", "approved",
+			"code is correct and ready", "ready to merge",
+			"no issues found", "no significant issues",
+		) {
+			result.Verdict = VerdictApprove
+		} else if containsAny(lower,
+			"i reject", "rejecting this", "fundamental problem",
+			"requires a complete rethink", "cannot approve",
+		) {
+			result.Verdict = VerdictReject
+		} else if !strings.Contains(lower, "no changes needed") && containsAny(lower,
+			"request changes", "requesting changes", "changes requested",
+			"changes needed", "changes need to", "needs to be fixed", "should be addressed",
+			"issues that need", "please fix", "must be fixed",
+			"several issues", "some issues",
+		) {
+			result.Verdict = VerdictRequestChanges
+		} else {
+			result.Verdict = VerdictApprove
+			result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
+			return
+		}
 	}
-
-	// Key-value style: "Verdict: approve", "**Verdict**: request_changes", etc.
-	if v, ok := extractKeyValueVerdict(lower); ok {
-		result.Verdict = v
-		result.Summary = "Inferred verdict from key-value line (copilot fallback)"
-		return
+	result.Summary = extractQuotedField(output, "summary")
+	if result.Summary == "" {
+		result.Summary = fmt.Sprintf("Verdict: %s (parsed from unstructured output)", result.Verdict)
 	}
-
-	// Copilot/Haiku approval signals — broader set than other providers.
-	if containsAny(lower,
-		"lgtm", "looks good to merge", "looks good to me",
-		"i approve", "approve this", "approved",
-		"code is correct and ready", "ready to merge",
-		"no issues found", "no significant issues",
-	) {
-		result.Verdict = VerdictApprove
-		result.Summary = "Inferred approval from prose (copilot fallback)"
-		return
-	}
-
-	// Rejection signals.
-	if containsAny(lower,
-		"i reject", "rejecting this", "fundamental problem",
-		"requires a complete rethink", "cannot approve",
-	) {
-		result.Verdict = VerdictReject
-		result.Summary = "Inferred rejection from prose (copilot fallback)"
-		return
-	}
-
-	// Request-changes signals — check AFTER rejection to avoid false positives.
-	// Guard against "no changes needed" which is an approval signal.
-	if !strings.Contains(lower, "no changes needed") && containsAny(lower,
-		"request changes", "requesting changes", "changes requested",
-		"changes needed", "changes need to", "needs to be fixed", "should be addressed",
-		"issues that need", "please fix", "must be fixed",
-		"several issues", "some issues",
-	) {
-		result.Verdict = VerdictRequestChanges
-		result.Summary = "Inferred request_changes from prose (copilot fallback)"
-		return
-	}
-
-	result.Verdict = VerdictApprove
-	result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
 }
 
 // extractKeyValueVerdict looks for "verdict: <value>" or "**verdict**: <value>"
@@ -589,6 +562,44 @@ func extractFencedBlock(text, fence string) string {
 		return ""
 	}
 	return strings.TrimSpace(text[start : start+end])
+}
+
+// extractQuotedField extracts the value of a JSON-style "key": "value" pair
+// from raw text. Handles cases where the full JSON didn't parse but individual
+// fields are present. Returns "" if the field is not found.
+func extractQuotedField(text, field string) string {
+	// Search for "field" : "value" with flexible whitespace.
+	// Try both with and without spaces stripped.
+	patterns := []string{
+		`"` + field + `"`,
+	}
+	for _, pat := range patterns {
+		idx := strings.Index(text, pat)
+		if idx == -1 {
+			continue
+		}
+		// Find the colon after the key
+		rest := text[idx+len(pat):]
+		rest = strings.TrimLeft(rest, " \t\n\r")
+		if len(rest) == 0 || rest[0] != ':' {
+			continue
+		}
+		rest = strings.TrimLeft(rest[1:], " \t\n\r")
+		if len(rest) == 0 || rest[0] != '"' {
+			continue
+		}
+		// Extract the quoted value
+		rest = rest[1:]
+		end := strings.IndexByte(rest, '"')
+		if end == -1 {
+			continue
+		}
+		val := rest[:end]
+		if val != "" {
+			return val
+		}
+	}
+	return ""
 }
 
 // truncateDiff limits the diff size to avoid token overflow.

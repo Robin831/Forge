@@ -627,7 +627,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 			log.Printf("[pipeline:%s] Warden rejected", workerID)
 			outcome.Verdict = warden.VerdictReject
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
-			_ = p.DB.LogEvent(state.EventWardenReject, reviewResult.Summary, p.Bead.ID, p.AnvilName)
+			_ = p.DB.LogEvent(state.EventWardenReject,
+				fmt.Sprintf("Verdict: reject — %s", wardenEventSummary(reviewResult)),
+				p.Bead.ID, p.AnvilName)
 			if reviewResult.NoDiff {
 				// Smith produced no diff — release the bead back to open so
 				// a human can investigate and retry rather than leaving it
@@ -654,7 +656,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		case warden.VerdictRequestChanges:
 			log.Printf("[pipeline:%s] Warden requests changes (iteration %d)", workerID, iteration)
 			_ = p.DB.LogEvent(state.EventWardenReject,
-				fmt.Sprintf("Request changes (iteration %d): %s", iteration, reviewResult.Summary),
+				fmt.Sprintf("Request changes (iteration %d/%d): %s", iteration, MaxIterations, wardenEventSummary(reviewResult)),
 				p.Bead.ID, p.AnvilName)
 
 			if iteration < MaxIterations {
@@ -729,6 +731,35 @@ func formatWardenFeedback(summary string, issues []warden.ReviewIssue) string {
 		return "Warden requested changes but did not provide details."
 	}
 	return result
+}
+
+// wardenEventSummary produces a concise human-readable summary for the event log.
+// It shows the actual review feedback (summary + issues) instead of internal
+// parsing metadata like "Inferred request_changes from output (claude fallback)".
+func wardenEventSummary(r *warden.ReviewResult) string {
+	// Prefer the real summary if it doesn't look like an internal fallback message.
+	summary := r.Summary
+	if strings.HasPrefix(summary, "Inferred ") || strings.HasPrefix(summary, "Could not parse") {
+		summary = ""
+	}
+
+	// Build a compact issues list.
+	var parts []string
+	if summary != "" {
+		parts = append(parts, summary)
+	}
+	for _, issue := range r.Issues {
+		msg := issue.Message
+		if issue.File != "" {
+			msg = fmt.Sprintf("%s (%s)", msg, issue.File)
+		}
+		parts = append(parts, msg)
+	}
+
+	if len(parts) == 0 {
+		return "No details provided"
+	}
+	return strings.Join(parts, "; ")
 }
 
 // buildFixPrompt creates a prompt for Smith to fix issues found by Temper or Warden.
