@@ -410,7 +410,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		depcheckAnvils := make(map[string]string, len(monitorAnvils))
 		for name, path := range monitorAnvils {
 			if ac, ok := d.cfg.Load().Anvils[name]; ok && ac.DepcheckEnabled != nil && !*ac.DepcheckEnabled {
-				log.Printf("[depcheck] Skipping anvil %q (depcheck_enabled=false)", name)
+				d.logger.Info("Skipping anvil for depcheck (depcheck_enabled=false)", "anvil", name)
 				continue
 			}
 			depcheckAnvils[name] = path
