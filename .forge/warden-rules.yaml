@@ -215,3 +215,15 @@ rules:
       check: Verify that collections built from map/sync.Map iteration are sorted deterministically before being returned to callers, to prevent UI list jumping and cursor/viewport issues
       source: copilot:PR#121
       added: "2026-03-09"
+    - id: nullable-bool-doc-mismatch
+      category: other
+      pattern: Documentation describing a config field as `bool` with a fixed default when the actual Go type is `*bool` (pointer/nullable)
+      check: Verify that documentation for nullable/pointer config fields accurately reflects the tri-state nature (true/false/null) and documents the nil behavior (e.g., 'use global setting') rather than showing a simple bool with a fixed default
+      source: copilot:PR#131
+      added: "2026-03-09"
+    - id: test-new-config-behavior
+      category: testing
+      pattern: New config fields or flags that filter, gate, or change operational behavior
+      check: Verify that new configuration options affecting runtime behavior (feature toggles, per-entity filters, operational flags) have unit tests covering both enabled and disabled paths to prevent regressions
+      source: copilot:PR#131
+      added: "2026-03-09"
