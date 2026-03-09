@@ -195,6 +195,13 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			if smithResult.ResultSubtype == "success" && !smithResult.IsError {
 				smithResult.RateLimited = false
 			}
+			// Persist quota for every attempt (including rate-limited ones) so the
+			// dashboard does not undercount in the all-providers-rate-limited case.
+			if smithResult.Quota != nil && p.DB != nil {
+				if err := p.DB.UpsertProviderQuota(string(pv.Kind), smithResult.Quota); err != nil {
+					log.Printf("[cifix] PR #%d: Failed to update provider %s quota in DB: %v", p.PRNumber, pv.Label(), err)
+				}
+			}
 			if pv.Kind == provider.Copilot && !smithResult.RateLimited {
 				if m := cost.CopilotPremiumMultiplier(pv.Model); m > 0 && p.DB != nil {
 					_ = p.DB.AddCopilotRequest(cost.Today(), m)

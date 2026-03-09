@@ -800,3 +800,39 @@ func TestSchematic_PerAnvilDisable(t *testing.T) {
 	assert.True(t, outcome.Success)
 	assert.False(t, schematicCalled, "Schematic should not run when per-anvil disabled")
 }
+
+// TestSchematic_Quota_PersistedToStateDB verifies that when Schematic returns a
+// non-nil Quota, the pipeline persists it to provider_quotas in state.db.
+func TestSchematic_Quota_PersistedToStateDB(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	params.WardenReviewer = func(_ context.Context, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	schemCfg := schematic.Config{Enabled: true, WordThreshold: 1}
+	params.SchematicConfig = &schemCfg
+	params.Bead.Description = "Implement the feature with enough words to trigger schematic"
+	params.SchematicRunner = func(_ context.Context, _ schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
+		return &schematic.Result{
+			Action: schematic.ActionPlan,
+			Plan:   "1. Write code",
+			Reason: "Simple plan",
+			Quota: &provider.Quota{
+				RequestsLimit:     100,
+				RequestsRemaining: 42,
+			},
+		}
+	}
+
+	outcome := Run(context.Background(), params)
+	require.True(t, outcome.Success)
+
+	// The schematic quota must have been written to provider_quotas.
+	got, err := db.GetProviderQuota(string(params.Providers[0].Kind))
+	require.NoError(t, err)
+	require.NotNil(t, got, "expected a quota row for provider %s", params.Providers[0].Kind)
+	assert.Equal(t, 100, got.RequestsLimit)
+	assert.Equal(t, 42, got.RequestsRemaining)
+}

@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,6 +132,13 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 			return nil, fmt.Errorf("spawning warden (%s): %w", pv.Label(), err)
 		}
 		smithResult = process.Wait()
+		// Persist quota for every attempt (including rate-limited ones) so the
+		// dashboard does not undercount in the all-providers-rate-limited case.
+		if smithResult.Quota != nil && db != nil {
+			if err := db.UpsertProviderQuota(string(pv.Kind), smithResult.Quota); err != nil {
+				log.Printf("[warden:%s] Failed to update provider %s quota in DB: %v", beadID, pv.Label(), err)
+			}
+		}
 		if !smithResult.RateLimited {
 			usedProvider = pv
 			break

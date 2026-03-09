@@ -65,6 +65,8 @@ type Result struct {
 	Duration time.Duration
 	// CostUSD is the estimated cost of the AI session.
 	CostUSD float64
+	// Quota holds rate-limit quota data from the AI session, if available.
+	Quota *provider.Quota
 	// Error is set if the schematic failed.
 	Error error
 }
@@ -169,6 +171,7 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 	result := &Result{
 		Duration: time.Since(start),
 		CostUSD:  smithResult.CostUSD,
+		Quota:    smithResult.Quota,
 	}
 
 	if smithResult.RateLimited {
