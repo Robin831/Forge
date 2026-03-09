@@ -34,7 +34,7 @@ func TestProvider_Format(t *testing.T) {
 	}{
 		{"claude is StreamJSON", Provider{Kind: Claude}, StreamJSON},
 		{"gemini is StreamJSON", Provider{Kind: Gemini}, StreamJSON},
-		{"copilot is PlainText", Provider{Kind: Copilot}, PlainText},
+		{"copilot is StreamJSON", Provider{Kind: Copilot}, StreamJSON},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -157,7 +157,9 @@ func TestProvider_BuildArgs_Copilot(t *testing.T) {
 	p := Provider{Kind: Copilot}
 	args := p.BuildArgs(nil)
 	assert.Contains(t, args, "--yolo")
-	assert.Contains(t, args, "--silent")
+	assert.Contains(t, args, "--output-format")
+	assert.Contains(t, args, "json")
+	assert.NotContains(t, args, "--silent")
 	assert.Contains(t, args, "--model")
 	assert.Contains(t, args, "--no-auto-update")
 	assert.Contains(t, args, "-p")
