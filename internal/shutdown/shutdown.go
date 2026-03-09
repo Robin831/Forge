@@ -247,7 +247,10 @@ const orphanMinAge = 5 * time.Minute
 // RecoverOrphanedBeads detects beads with status=in_progress in the beads DB
 // that have no active worker and no open PR in Forge's state DB. These are
 // beads that were claimed but orphaned (e.g., daemon crashed mid-session).
-// Only beads belonging to this Forge's configured anvils are considered.
+// Only beads belonging to this Forge's configured anvils are considered, and
+// only beads that Forge has previously claimed (i.e., have a worker record in
+// state.db) are eligible for recovery — beads set to in_progress by humans or
+// external tools are left untouched.
 // This runs both at startup and periodically during normal operation (every
 // 10 poll cycles) so recovery is not limited to crash scenarios.
 // Returns the number of beads recovered.
@@ -263,6 +266,19 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 
 		for _, bead := range beads {
 			beadID := bead.ID
+
+			// Only recover beads that Forge has previously claimed. Beads can
+			// be in_progress because a human or another tool (e.g. Copilot) is
+			// working on them — we must not reset those.
+			hasRecord, err := m.db.HasWorkerRecord(beadID, anvilName)
+			if err != nil {
+				m.logger.Warn("failed to check worker record", "bead", beadID, "error", err)
+				continue
+			}
+			if !hasRecord {
+				m.logger.Debug("skipping bead not previously claimed by Forge", "bead", beadID, "anvil", anvilName)
+				continue
+			}
 
 			// Skip beads that were recently claimed: the worker row may not yet
 			// have been inserted into state.db (it happens after worktree
@@ -295,7 +311,7 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 				continue // has an open PR, not orphaned
 			}
 
-			// This bead is orphaned — reset it to open
+			// This bead was claimed by Forge but has no active worker or PR — it's orphaned
 			m.logger.Warn("found orphaned in-progress bead", "bead", beadID, "anvil", anvilName)
 			if err := m.resetBead(beadID, anvilPath); err != nil {
 				m.logger.Warn("failed to reset orphaned bead", "bead", beadID, "error", err)

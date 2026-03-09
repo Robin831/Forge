@@ -498,6 +498,22 @@ func (db *DB) ActiveWorkerByBeadAndAnvil(beadID, anvil string) (*Worker, error) 
 	return &workers[0], nil
 }
 
+// HasWorkerRecord returns true if Forge has ever had a worker for the given
+// bead in the given anvil (any status). This is used by orphan recovery to
+// distinguish beads that Forge previously claimed from beads that are
+// in_progress because a human or external tool is working on them.
+func (db *DB) HasWorkerRecord(beadID, anvil string) (bool, error) {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM workers WHERE bead_id = ? AND anvil = ?`,
+		beadID, anvil,
+	).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // CompleteWorkersByBead marks all non-terminal workers for a bead as Done.
 func (db *DB) CompleteWorkersByBead(beadID string) error {
 	_, err := db.conn.Exec(
