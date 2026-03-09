@@ -276,23 +276,13 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 				continue
 			}
 			if !hasRecord {
-				// Primary guard: if we have no worker record, this bead may have
-				// been claimed by a human or an external tool. To avoid stomping
-				// on active non-Forge work, we only treat such beads as orphan
-				// candidates if they are clearly stale.
-				age := time.Since(bead.UpdatedAt)
-				// If we don't have a meaningful timestamp or the bead is still
-				// relatively recent, skip it as non-Forge or currently active.
-				if bead.UpdatedAt.IsZero() || age < 3*orphanMinAge {
-					m.logger.Debug("skipping bead without worker record (not stale enough to treat as orphan)", "bead", beadID, "anvil", anvilName, "age", age.Round(time.Second))
-					continue
-				}
-				// Fallback: this bead has been in_progress for significantly
-				// longer than orphanMinAge with no worker record. This can
-				// happen if Forge crashed after marking the bead in_progress
-				// but before inserting the worker row. Allow it to proceed to
-				// the active-worker / open-PR checks as an orphan candidate.
-				m.logger.Warn("treating stale bead without worker record as orphan candidate", "bead", beadID, "anvil", anvilName, "age", age.Round(time.Second))
+				// No worker record means Forge never claimed this bead. It was
+				// set to in_progress by a human or an external tool (e.g.
+				// Copilot). Never reset these — we must not touch beads that
+				// Forge didn't claim, regardless of how long they've been
+				// in_progress.
+				m.logger.Debug("skipping bead without worker record (not claimed by Forge)", "bead", beadID, "anvil", anvilName)
+				continue
 			}
 
 			// Skip beads that were recently claimed: the worker row may not yet
