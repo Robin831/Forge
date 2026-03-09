@@ -124,6 +124,22 @@ func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Be
 		beads[i].Anvil = name
 	}
 
+	// Build Blocks lists from children's Parent references.
+	// bd ready returns children with a "parent" field but the parent bead
+	// itself doesn't include a "blocks" array. We reconstruct it here so
+	// that IsCrucibleCandidate can detect epics with children.
+	beadIdx := make(map[string]int, len(beads))
+	for i := range beads {
+		beadIdx[beads[i].ID] = i
+	}
+	for _, b := range beads {
+		if b.Parent != "" {
+			if idx, ok := beadIdx[b.Parent]; ok {
+				beads[idx].Blocks = append(beads[idx].Blocks, b.ID)
+			}
+		}
+	}
+
 	// Filter out beads that are already assigned (claimed by another agent)
 	// or tagged as needing clarification.
 	var eligible []Bead

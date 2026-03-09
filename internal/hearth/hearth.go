@@ -416,7 +416,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focused == PanelWorkers && len(m.workers) > 0 &&
 				m.workerVP.cursor < len(m.workers) {
 				w := m.workers[m.workerVP.cursor]
-				if m.OnKill != nil && w.PID > 0 {
+				if m.OnKill != nil {
 					m.OnKill(w.ID, w.PID)
 				}
 			}
