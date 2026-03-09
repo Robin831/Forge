@@ -63,6 +63,15 @@ type queueNavItem struct {
 	beadIdx   int // index into Model.queue; -1 for anvil headers
 }
 
+// activityNavItem represents a single display row in the Live Activity panel.
+// It is either a collapsed group header (togglable) or an individual line from
+// an expanded group.
+type activityNavItem struct {
+	isGroupHeader bool   // true for collapsed/collapsible summary lines
+	groupIdx      int    // index into the underlying groups slice (oldest=0)
+	text          string // raw display text (unstyled)
+}
+
 // AttentionReason categorizes why a bead needs human attention.
 type AttentionReason int
 
@@ -225,9 +234,11 @@ type Model struct {
 	crucibleVP     scrollViewport
 	needsAttnVP    scrollViewport
 	readyToMergeVP scrollViewport
-	workerVP       scrollViewport
-	activityScroll int
-	eventScroll    int
+	workerVP         scrollViewport
+	activityVP       scrollViewport
+	activityExpanded map[int]bool      // group index → expanded override (nil = default)
+	activityNavItems []activityNavItem // flat display items for Live Activity
+	eventScroll      int
 	eventAutoScroll      bool // true = follow new events
 	prevEventCount       int  // track event count for auto-scroll
 	width                int
@@ -282,6 +293,7 @@ func NewModel(ds *DataSource) Model {
 		data:                ds,
 		eventAutoScroll:     true,
 		queueExpandedAnvils: make(map[string]bool),
+		activityExpanded:    make(map[int]bool),
 	}
 }
 
@@ -407,8 +419,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.eventScroll = 0
 				}
 			} else if m.focused == PanelLiveActivity {
-				// Reset activity scroll to bottom (follow latest)
-				m.activityScroll = 0
+				// Reset activity scroll to top (follow latest — newest items first)
+				m.activityVP.cursor = 0
+				m.activityVP.viewStart = 0
 			}
 
 		case "K":
@@ -451,6 +464,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			// Live Activity: expand collapsed group header (Enter expands; Esc collapses)
+			if m.focused == PanelLiveActivity && len(m.activityNavItems) > 0 &&
+				m.activityVP.cursor < len(m.activityNavItems) {
+				nav := m.activityNavItems[m.activityVP.cursor]
+				if nav.isGroupHeader {
+					if m.activityExpanded == nil {
+						m.activityExpanded = make(map[int]bool)
+					}
+					m.activityExpanded[nav.groupIdx] = true
+					m.rebuildActivityNav()
+				}
+			}
 			// Open merge menu for selected Ready to Merge PR
 			if m.focused == PanelReadyToMerge && len(m.readyToMerge) > 0 &&
 				m.readyToMergeVP.cursor < len(m.readyToMerge) {
@@ -471,6 +496,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "esc":
+			// Live Activity: collapse the group at the cursor
+			if m.focused == PanelLiveActivity && len(m.activityNavItems) > 0 &&
+				m.activityVP.cursor < len(m.activityNavItems) {
+				nav := m.activityNavItems[m.activityVP.cursor]
+				if !nav.isGroupHeader {
+					if m.activityExpanded == nil {
+						m.activityExpanded = make(map[int]bool)
+					}
+					m.activityExpanded[nav.groupIdx] = false
+					m.rebuildActivityNav()
+				}
+			}
 			// Collapse the anvil containing the selected bead
 			if m.focused == PanelQueue && m.queueGrouped {
 				m.ensureQueueNav()
@@ -566,8 +603,28 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case UpdateWorkersMsg:
+		// Capture the currently selected worker ID before clamping, so we can
+		// detect when ClampToTotal shifts the cursor to a different worker.
+		prevCursor := m.workerVP.cursor
+		var prevWorkerID string
+		if prevCursor >= 0 && prevCursor < len(m.workers) {
+			prevWorkerID = m.workers[prevCursor].ID
+		}
+
 		m.workers = msg.Items
 		m.workerVP.ClampToTotal(len(msg.Items))
+
+		// Reset live activity state if the selected worker implicitly changed.
+		newCursor := m.workerVP.cursor
+		var newWorkerID string
+		if newCursor >= 0 && newCursor < len(m.workers) {
+			newWorkerID = m.workers[newCursor].ID
+		}
+		if prevWorkerID != "" && newWorkerID != "" && prevWorkerID != newWorkerID {
+			m.resetActivityState()
+		} else {
+			m.rebuildActivityNav()
+		}
 
 	case UpdateUsageMsg:
 		m.usage = msg.Data
@@ -743,13 +800,10 @@ func (m *Model) scrollDown() {
 		prev := m.workerVP.cursor
 		m.workerVP.ScrollDown(len(m.workers))
 		if m.workerVP.cursor != prev {
-			m.activityScroll = 0
+			m.resetActivityState()
 		}
 	case PanelLiveActivity:
-		activity := m.groupedWorkerActivity()
-		if m.activityScroll < len(activity)-1 {
-			m.activityScroll++
-		}
+		m.activityVP.ScrollDown(len(m.activityNavItems))
 	case PanelEvents:
 		_, _, aw := m.getTopPanelWidths()
 		totalLines := m.eventTotalLineCount(aw)
@@ -775,12 +829,10 @@ func (m *Model) scrollUp() {
 		prev := m.workerVP.cursor
 		m.workerVP.ScrollUp()
 		if m.workerVP.cursor != prev {
-			m.activityScroll = 0
+			m.resetActivityState()
 		}
 	case PanelLiveActivity:
-		if m.activityScroll > 0 {
-			m.activityScroll--
-		}
+		m.activityVP.ScrollUp()
 	case PanelEvents:
 		if m.eventScroll > 0 {
 			m.eventScroll--
@@ -1818,6 +1870,8 @@ func (m *Model) renderUsagePanel(width, height int) string {
 
 // renderWorkerActivity renders the activity panel: a live log view for the
 // currently selected worker, parsed from its stream-json log file.
+// Groups of consecutive same-type events are collapsible; press Enter to expand
+// and Esc to collapse. The newest activity appears at the top.
 func (m *Model) renderWorkerActivity(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelLiveActivity {
@@ -1835,9 +1889,7 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 	var lines []string
 	lines = append(lines, title)
 
-	activityLines := m.groupedWorkerActivity()
-
-	if len(activityLines) == 0 {
+	if len(m.activityNavItems) == 0 {
 		if len(m.workers) == 0 {
 			lines = append(lines, dimStyle.Render("No active workers"))
 		} else {
@@ -1849,26 +1901,20 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 		if maxVisible < 1 {
 			maxVisible = 1
 		}
-		// activityScroll offsets from the newest end. Clamp it so the model
-		// doesn't get stuck at an invalid offset (e.g., after refresh).
-		if m.activityScroll < 0 {
-			m.activityScroll = 0
-		}
-		maxOffset := len(activityLines) - 1
-		if m.activityScroll > maxOffset {
-			m.activityScroll = maxOffset
-		}
-		end := len(activityLines) - m.activityScroll
-		start := end - maxVisible
-		if start < 0 {
-			start = 0
-		}
-		for i := end - 1; i >= start; i-- {
-			line := truncate(activityLines[i], width-4)
-			// Collapsed summary lines start with "▸" — apply dim styling
-			// after truncation to avoid cutting through ANSI escape sequences.
-			if strings.HasPrefix(activityLines[i], "▸") {
+		total := len(m.activityNavItems)
+		m.activityVP.ClampToTotal(total)
+		m.activityVP.AdjustViewport(maxVisible, total)
+		start, end := m.activityVP.VisibleRange(maxVisible, total)
+		for i := start; i < end; i++ {
+			nav := m.activityNavItems[i]
+			line := truncate(nav.text, width-4)
+			if nav.isGroupHeader {
+				// Collapsed summary — dim with "▸" prefix
 				line = dimStyle.Render(line)
+			}
+			// Highlight cursor row when panel is focused
+			if m.focused == PanelLiveActivity && i == m.activityVP.cursor {
+				line = selectedStyle.Render(line)
 			}
 			lines = append(lines, line)
 		}
@@ -2583,6 +2629,77 @@ func collapseActivityGroup(g activityGroup) string {
 // while older groups are collapsed into summary headers.
 func (m *Model) groupedWorkerActivity() []string {
 	return groupActivityLines(m.selectedWorkerActivity())
+}
+
+// rebuildActivityNav rebuilds the flat display items for the Live Activity panel
+// from the currently selected worker's activity. Groups are displayed
+// newest-first; each group is either expanded (individual lines) or collapsed
+// (single summary header). By default the newest group is expanded.
+func (m *Model) rebuildActivityNav() {
+	rawLines := m.selectedWorkerActivity()
+	groups := buildActivityGroups(rawLines)
+
+	m.activityNavItems = nil
+	// Iterate newest-first so the latest activity appears at the top.
+	for ri := len(groups) - 1; ri >= 0; ri-- {
+		g := groups[ri]
+		expanded := m.isActivityGroupExpanded(ri, len(groups))
+		if !expanded {
+			m.activityNavItems = append(m.activityNavItems, activityNavItem{
+				isGroupHeader: true,
+				groupIdx:      ri,
+				text:          collapseActivityGroup(g),
+			})
+		} else {
+			// Expanded: show individual lines newest-first (reverse chronological).
+			for li := len(g.lines) - 1; li >= 0; li-- {
+				m.activityNavItems = append(m.activityNavItems, activityNavItem{
+					groupIdx: ri,
+					text:     g.lines[li],
+				})
+			}
+		}
+	}
+	m.activityVP.ClampToTotal(len(m.activityNavItems))
+}
+
+// isActivityGroupExpanded returns whether a group should be expanded.
+// If the user has toggled the group, their choice is respected. Otherwise
+// the newest group (last index) defaults to expanded.
+func (m *Model) isActivityGroupExpanded(groupIdx, totalGroups int) bool {
+	if expanded, set := m.activityExpanded[groupIdx]; set {
+		return expanded
+	}
+	return groupIdx == totalGroups-1
+}
+
+// resetActivityState clears the activity viewport and expansion state,
+// used when the selected worker changes.
+func (m *Model) resetActivityState() {
+	m.activityVP = scrollViewport{}
+	m.activityExpanded = make(map[int]bool)
+	m.rebuildActivityNav()
+}
+
+// buildActivityGroups groups consecutive same-type activity entries.
+// This is the grouping logic extracted for reuse by rebuildActivityNav.
+func buildActivityGroups(lines []string) []activityGroup {
+	if len(lines) == 0 {
+		return nil
+	}
+	var groups []activityGroup
+	for _, line := range lines {
+		typ := activityLineType(line)
+		if typ == "" && len(groups) > 0 {
+			groups[len(groups)-1].lines = append(groups[len(groups)-1].lines, line)
+			continue
+		}
+		if len(groups) == 0 || typ != groups[len(groups)-1].eventType {
+			groups = append(groups, activityGroup{eventType: typ})
+		}
+		groups[len(groups)-1].lines = append(groups[len(groups)-1].lines, line)
+	}
+	return groups
 }
 
 // wordWrapCount returns the number of lines wordWrap would produce without
