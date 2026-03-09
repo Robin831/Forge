@@ -209,18 +209,101 @@ func TestRenderColumnsAlignedHeight(t *testing.T) {
 	width := 40
 
 	leftColumn := m.renderLeftColumn(width, topHeight, bottomHeight)
-	workerPanel := m.renderWorkers(width, topHeight+bottomHeight)
+	centerColumn := m.renderCenterColumn(width, topHeight, bottomHeight)
 	rightColumn := m.renderRightColumn(width, topHeight, bottomHeight)
 
 	leftLines := strings.Count(strings.TrimRight(leftColumn, "\n"), "\n") + 1
-	workerLines := strings.Count(strings.TrimRight(workerPanel, "\n"), "\n") + 1
+	centerLines := strings.Count(strings.TrimRight(centerColumn, "\n"), "\n") + 1
 	rightLines := strings.Count(strings.TrimRight(rightColumn, "\n"), "\n") + 1
 
-	if leftLines != workerLines {
-		t.Errorf("left column produced %d lines, workers produced %d lines — should match", leftLines, workerLines)
+	if leftLines != centerLines {
+		t.Errorf("left column produced %d lines, center produced %d lines — should match", leftLines, centerLines)
 	}
-	if rightLines != workerLines {
-		t.Errorf("right column produced %d lines, workers produced %d lines — should match", rightLines, workerLines)
+	if rightLines != centerLines {
+		t.Errorf("right column produced %d lines, center produced %d lines — should match", rightLines, centerLines)
+	}
+}
+
+func TestRenderUsagePanelNoData(t *testing.T) {
+	m := Model{focused: PanelWorkers}
+	rendered := m.renderUsagePanel(60, 8)
+	if !strings.Contains(rendered, "Usage") {
+		t.Errorf("expected 'Usage' title in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "No usage today") {
+		t.Errorf("expected 'No usage today' when no data:\n%s", rendered)
+	}
+}
+
+func TestRenderUsagePanelWithData(t *testing.T) {
+	m := Model{
+		focused: PanelWorkers,
+		usage: UsageData{
+			Providers: []ProviderUsage{
+				{Provider: "claude", Cost: 0.05, InputTokens: 1500, OutputTokens: 300},
+			},
+			TotalCost:   0.05,
+			CostLimit:   1.0,
+			CopilotUsed: 5,
+			CopilotLimit: 50,
+		},
+	}
+	rendered := m.renderUsagePanel(60, 8)
+	if !strings.Contains(rendered, "Claude") {
+		t.Errorf("expected provider 'Claude' in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Total") {
+		t.Errorf("expected 'Total' line in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Copilot") {
+		t.Errorf("expected 'Copilot' line in rendered output:\n%s", rendered)
+	}
+}
+
+func TestRenderUsagePanelZeroHeight(t *testing.T) {
+	m := Model{focused: PanelWorkers}
+	// Should not panic at boundary height
+	rendered := m.renderUsagePanel(60, 0)
+	if rendered == "" {
+		t.Errorf("expected non-empty output even at height 0")
+	}
+}
+
+func TestRenderCenterColumnSmallTerminal(t *testing.T) {
+	m := Model{
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+				Title: "some task"},
+		},
+		focused: PanelWorkers,
+		height:  18,
+	}
+	// fullHeight < 20 should fall back to workers-only
+	rendered := m.renderCenterColumn(60, 9, 9)
+	if !strings.Contains(rendered, "Workers") {
+		t.Errorf("expected 'Workers' panel in small terminal output:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "Usage") {
+		t.Errorf("expected no 'Usage' panel when terminal is too small:\n%s", rendered)
+	}
+}
+
+func TestRenderCenterColumnLargeTerminal(t *testing.T) {
+	m := Model{
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+				Title: "some task"},
+		},
+		focused: PanelWorkers,
+		height:  50,
+	}
+	// fullHeight >= 20 should show both Workers and Usage panels
+	rendered := m.renderCenterColumn(60, 25, 25)
+	if !strings.Contains(rendered, "Workers") {
+		t.Errorf("expected 'Workers' panel in large terminal output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Usage") {
+		t.Errorf("expected 'Usage' panel in large terminal output:\n%s", rendered)
 	}
 }
 

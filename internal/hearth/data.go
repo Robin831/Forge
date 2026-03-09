@@ -485,7 +485,7 @@ func FormatTokens(n int) string {
 		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
 	}
 	if n >= 1_000 {
-		return fmt.Sprintf("%dk", n/1_000)
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
 	}
 	return fmt.Sprintf("%d", n)
 }
@@ -545,9 +545,6 @@ func FetchUsage(ds *DataSource) tea.Cmd {
 		// Copilot premium requests
 		if used, err := ds.DB.GetCopilotRequestsOn(today); err == nil {
 			data.CopilotUsed = used
-		}
-		if limit, err := ds.DB.GetCopilotRequestLimit(today); err == nil && limit > 0 {
-			data.CopilotLimit = limit
 		}
 
 		return UpdateUsageMsg{Data: data}

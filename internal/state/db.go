@@ -1652,19 +1652,6 @@ func (db *DB) GetProviderDailyCosts(date string) ([]ProviderDailyCost, error) {
 	return costs, rows.Err()
 }
 
-// GetCopilotRequestLimit returns the request limit for copilot premium requests
-// for the given date. Returns 0 if no row exists yet.
-func (db *DB) GetCopilotRequestLimit(date string) (int, error) {
-	var limit int
-	err := db.conn.QueryRow(
-		`SELECT request_limit FROM copilot_premium_requests WHERE date = ?`, date).
-		Scan(&limit)
-	if err == sql.ErrNoRows {
-		return 0, nil
-	}
-	return limit, err
-}
-
 // GetDailyCost returns cost data for a specific date.
 func (db *DB) GetDailyCost(date string) (inputTokens, outputTokens, cacheRead, cacheWrite int, cost, limit float64, err error) {
 	err = db.conn.QueryRow(

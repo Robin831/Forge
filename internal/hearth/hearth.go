@@ -1748,14 +1748,10 @@ func (m *Model) renderCenterColumn(width, topHeight, bottomHeight int) string {
 		return m.renderWorkerList(width, fullHeight)
 	}
 
-	workerHeight := fullHeight - usagePanelHeight + 2 // +2: stacked panels share 2 border lines
-	if workerHeight < 6 {
-		workerHeight = 6
-		usagePanelHeight = fullHeight - workerHeight
-	}
+	workerHeight := fullHeight - usagePanelHeight
 
 	top := m.renderWorkerList(width, workerHeight)
-	bottom := m.renderUsagePanel(width, usagePanelHeight-2) // -2 for stacked border accounting
+	bottom := m.renderUsagePanel(width, usagePanelHeight-2) // -2 for inner content (border adds 2)
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
