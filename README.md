@@ -110,6 +110,7 @@ settings:
   max_review_fix_attempts: 5   # Review fix cycles per PR (default 5)
   max_rebase_attempts: 3       # Conflict rebase attempts per PR (default 3)
   daily_cost_limit: 50.00      # USD per day; 0 = no limit
+  copilot_daily_request_limit: 300  # 300 for Pro, 1500 for Pro+; 0 = no limit
   bellows_interval: 2m         # PR monitor poll interval
   merge_strategy: squash       # squash | merge | rebase
   providers:
