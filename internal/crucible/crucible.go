@@ -158,6 +158,20 @@ func Run(ctx context.Context, p Params) *Result {
 			continue
 		}
 
+		// Auto-close orchestration meta-tasks that the Crucible already handles
+		// (branch creation, committing/pushing, PR creation). These are workflow
+		// steps intended for manual execution that the Crucible subsumes.
+		if isOrchestrationTask(child) {
+			log.Info("auto-closing orchestration meta-task", "child", child.ID, "title", child.Title)
+			p.emitEvent(state.EventCrucibleChildMerged,
+				fmt.Sprintf("Crucible %s: auto-closed orchestration task %s (%s)", p.ParentBead.ID, child.ID, child.Title),
+				child.ID)
+			if err := p.closeBead(ctx, child.ID, anvilPath); err != nil {
+				log.Warn("failed to close orchestration task", "child", child.ID, "error", err)
+			}
+			continue
+		}
+
 		log.Info("dispatching crucible child", "child", child.ID, "index", i+1, "total", len(sorted))
 		p.emitEvent(state.EventCrucibleChildDispatched,
 			fmt.Sprintf("Crucible %s: dispatching child %s (%d/%d)", p.ParentBead.ID, child.ID, i+1, len(sorted)),
@@ -622,6 +636,68 @@ func (p *Params) updateStatus(s Status) {
 	if p.StatusCallback != nil {
 		p.StatusCallback(s)
 	}
+}
+
+// isOrchestrationTask returns true if a child bead describes a workflow step
+// that the Crucible already handles automatically (branch creation, committing,
+// pushing, PR creation). These meta-tasks are common in manually-planned epics
+// but redundant when the Crucible orchestrates the work.
+func isOrchestrationTask(b poller.Bead) bool {
+	text := strings.ToLower(b.Title + " " + b.Description)
+
+	// Branch creation — the Crucible creates the feature branch.
+	if matchesOrchestrationPattern(text, []string{
+		"create feature branch",
+		"create branch",
+		"checkout -b",
+		"git checkout -b",
+		"git fetch origin",
+	}) {
+		return true
+	}
+
+	// Committing and pushing — the pipeline handles git operations.
+	if matchesOrchestrationPattern(text, []string{
+		"commit and push",
+		"git commit",
+		"git push",
+		"push to remote",
+		"push changes",
+	}) {
+		// Only match if the task is purely about committing, not about
+		// making changes AND committing.
+		titleLower := strings.ToLower(b.Title)
+		if strings.Contains(titleLower, "commit") ||
+			strings.Contains(titleLower, "push") {
+			return true
+		}
+	}
+
+	// PR creation — the Crucible creates PRs for each child and the final PR.
+	if matchesOrchestrationPattern(text, []string{
+		"create pull request",
+		"create pr",
+		"gh pr create",
+		"open pull request",
+	}) {
+		titleLower := strings.ToLower(b.Title)
+		if strings.Contains(titleLower, "pull request") ||
+			strings.Contains(titleLower, "create pr") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// matchesOrchestrationPattern checks if the text contains any of the given patterns.
+func matchesOrchestrationPattern(text string, patterns []string) bool {
+	for _, p := range patterns {
+		if strings.Contains(text, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasExternalBlockers returns true if the child has unresolved dependencies

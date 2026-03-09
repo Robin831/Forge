@@ -320,6 +320,31 @@ func TestIsCrucibleCandidate(t *testing.T) {
 	}
 }
 
+func TestIsOrchestrationTask(t *testing.T) {
+	tests := []struct {
+		name  string
+		bead  poller.Bead
+		want  bool
+	}{
+		{"branch creation", poller.Bead{Title: "Create feature branch", Description: "git checkout -b feature/foo"}, true},
+		{"commit and push", poller.Bead{Title: "Commit and push changes", Description: "git add && git commit"}, true},
+		{"create PR", poller.Bead{Title: "Create pull request", Description: "gh pr create --title ..."}, true},
+		{"actual work", poller.Bead{Title: "Update API packages", Description: "dotnet add package Foo"}, false},
+		{"check task", poller.Bead{Title: "Check outdated API packages", Description: "dotnet list package --outdated"}, false},
+		{"run tests", poller.Bead{Title: "Run API tests and format", Description: "dotnet test"}, false},
+		{"update changelogs", poller.Bead{Title: "Update changelogs", Description: "Update CHANGELOG.md"}, false},
+		{"push in description only", poller.Bead{Title: "Update client packages", Description: "ncu -u && npm install && git push"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isOrchestrationTask(tt.bead)
+			if got != tt.want {
+				t.Errorf("isOrchestrationTask(%q) = %v, want %v", tt.bead.Title, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHasExternalBlockers(t *testing.T) {
 	siblings := []poller.Bead{
 		{ID: "child-1"},
