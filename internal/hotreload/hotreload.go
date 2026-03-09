@@ -13,6 +13,7 @@
 //   - settings.max_rebase_attempts (applied immediately to lifecycle manager)
 //   - notifications.* (all notification settings)
 //   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
+//   - anvils.<name>.path (changes to existing anvils' path; updates bellows and depcheck)
 //   - anvils.* adding or removing anvil entries (updates bellows and depcheck)
 package hotreload
 
@@ -207,7 +208,8 @@ func applyChanges(old, new *config.Config) []string {
 					name, oldAnvil.MaxSmiths, newAnvil.MaxSmiths))
 			}
 			if oldAnvil.Path != newAnvil.Path {
-				changes = append(changes, fmt.Sprintf("anvil %s path changed", name))
+				changes = append(changes, fmt.Sprintf("anvil %s path: %q → %q",
+				name, oldAnvil.Path, newAnvil.Path))
 			}
 		} else {
 			changes = append(changes, fmt.Sprintf("anvil %s added", name))

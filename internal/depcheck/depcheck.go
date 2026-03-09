@@ -68,8 +68,12 @@ func New(db *state.DB, interval, timeout time.Duration, anvilPaths map[string]st
 // UpdateAnvilPaths replaces the set of anvils to scan. This is safe to call
 // while Run is active and takes effect on the next scan cycle.
 func (s *Scanner) UpdateAnvilPaths(paths map[string]string) {
+	copied := make(map[string]string, len(paths))
+	for k, v := range paths {
+		copied[k] = v
+	}
 	s.mu.Lock()
-	s.anvilPaths = paths
+	s.anvilPaths = copied
 	s.mu.Unlock()
 }
 

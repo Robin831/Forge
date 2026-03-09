@@ -104,8 +104,24 @@ func (m *Monitor) OnEvent(h Handler) {
 // UpdateAnvilPaths replaces the set of monitored anvil paths. This is safe to
 // call while Run is active and takes effect on the next poll cycle.
 func (m *Monitor) UpdateAnvilPaths(paths map[string]string) {
+	copied := make(map[string]string, len(paths))
+	for k, v := range paths {
+		copied[k] = v
+	}
 	m.pathsMu.Lock()
-	m.anvilPaths = paths
+	// Retain paths for anvils that still have open PRs so removed anvils
+	// don't produce repeated "Unknown anvil" warnings every poll cycle.
+	if prs, err := m.db.OpenPRs(); err == nil {
+		for i := range prs {
+			name := prs[i].Anvil
+			if _, inNew := copied[name]; !inNew {
+				if oldPath, inOld := m.anvilPaths[name]; inOld {
+					copied[name] = oldPath
+				}
+			}
+		}
+	}
+	m.anvilPaths = copied
 	m.pathsMu.Unlock()
 }
 
