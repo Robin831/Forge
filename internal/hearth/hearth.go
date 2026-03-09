@@ -1792,7 +1792,7 @@ func (m *Model) renderUsagePanel(width, height int) string {
 
 		// Copilot premium requests (if any)
 		if m.usage.CopilotUsed > 0 || m.usage.CopilotLimit > 0 {
-			copilotLine := fmt.Sprintf("Copilot  %.0f", m.usage.CopilotUsed)
+			copilotLine := fmt.Sprintf("Copilot  %s", formatCopilotRequests(m.usage.CopilotUsed))
 			if m.usage.CopilotLimit > 0 {
 				copilotLine += fmt.Sprintf("/%d premium req", m.usage.CopilotLimit)
 			} else {

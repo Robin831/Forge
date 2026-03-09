@@ -8,7 +8,11 @@
       "Bash(python3:*)",
       "Bash(forge history:*)",
       "Bash(go:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(copilot:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.github.com)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

@@ -490,6 +490,15 @@ func FormatTokens(n int) string {
 	return fmt.Sprintf("%d", n)
 }
 
+// formatCopilotRequests formats a fractional premium request count for display.
+// Shows "5" for whole numbers, "5.33" for fractional values.
+func formatCopilotRequests(n float64) string {
+	if n == float64(int(n)) {
+		return fmt.Sprintf("%.0f", n)
+	}
+	return fmt.Sprintf("%.2f", n)
+}
+
 // UsageData holds the aggregated usage information for the Usage panel.
 type UsageData struct {
 	Providers    []ProviderUsage

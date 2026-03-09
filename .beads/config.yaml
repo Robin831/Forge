@@ -50,7 +50,7 @@ dolt:
 # main is not protected here
 # sync-branch: "beads-sync"
 
-# Disable automatic JSONL backup (auto-enable is suppressed when set explicitly here)
-# Main is not protected, so backup is recommended for safety (can also use BEADS_BACKUP_ENABLED)
-# backup:
-#  enabled: false
+# Disable automatic JSONL backup - beads DB is on remote Dolt server (kubectl port-forward)
+# so local JSONL backup is redundant (can also use BEADS_BACKUP_ENABLED)
+backup:
+  enabled: false
