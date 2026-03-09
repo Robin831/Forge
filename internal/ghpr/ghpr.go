@@ -271,6 +271,16 @@ func CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*PRSta
 		log.Printf("[ghpr] Warning: could not fetch unresolved thread count for PR #%d: %v", prNumber, err)
 	}
 
+	// Fetch pending review requests via GraphQL. The gh CLI's --json
+	// reviewRequests field does not include Bot reviewers (e.g., Copilot),
+	// so we use GraphQL which returns all reviewer types.
+	gqlRequests, err := FetchPendingReviewRequests(ctx, worktreePath, prNumber)
+	if err == nil {
+		status.ReviewRequests = gqlRequests
+	} else {
+		log.Printf("[ghpr] Warning: could not fetch pending review requests for PR #%d: %v (falling back to gh pr view data)", prNumber, err)
+	}
+
 	return &status, nil
 }
 
@@ -355,6 +365,86 @@ func FetchUnresolvedThreadCount(ctx context.Context, worktreePath string, prNumb
 		cursor = gqlData.Data.Repository.PullRequest.ReviewThreads.PageInfo.EndCursor
 	}
 	return count, nil
+}
+
+// FetchPendingReviewRequests uses GraphQL to check for pending review requests,
+// including Bot reviewers (e.g., copilot-pull-request-reviewer) that the gh CLI's
+// --json reviewRequests field does not serialize.
+func FetchPendingReviewRequests(ctx context.Context, worktreePath string, prNumber int) ([]ReviewRequest, error) {
+	owner, repo, err := GetRepoOwnerAndName(ctx, worktreePath)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
+	query($owner:String!, $repo:String!, $pr:Int!) {
+		repository(owner:$owner, name:$repo) {
+			pullRequest(number:$pr) {
+				reviewRequests(first:25) {
+					nodes {
+						requestedReviewer {
+							__typename
+							... on User { login }
+							... on Team { slug name }
+							... on Bot  { login }
+							... on Mannequin { login }
+						}
+					}
+				}
+			}
+		}
+	}`
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh",
+		"api", "graphql",
+		"-f", "query="+query,
+		"-f", "owner="+owner,
+		"-f", "repo="+repo,
+		"-F", fmt.Sprintf("pr=%d", prNumber),
+	))
+	cmd.Dir = worktreePath
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr.String())
+	}
+
+	var gqlData struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewRequests struct {
+						Nodes []struct {
+							RequestedReviewer struct {
+								TypeName string `json:"__typename"`
+								Login    string `json:"login"`
+								Slug     string `json:"slug"`
+								Name     string `json:"name"`
+							} `json:"requestedReviewer"`
+						} `json:"nodes"`
+					} `json:"reviewRequests"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(stdout.Bytes(), &gqlData); err != nil {
+		return nil, fmt.Errorf("parsing graphql response: %w", err)
+	}
+
+	var requests []ReviewRequest
+	for _, node := range gqlData.Data.Repository.PullRequest.ReviewRequests.Nodes {
+		r := node.RequestedReviewer
+		requests = append(requests, ReviewRequest{
+			Login: r.Login,
+			Slug:  r.Slug,
+			Name:  r.Name,
+		})
+	}
+	return requests, nil
 }
 
 // OpenPR is a lightweight view of a GitHub PR used for reconciliation.
