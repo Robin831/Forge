@@ -269,3 +269,27 @@ rules:
       check: When a function has an early return based on a value X, verify that subsequent guards on values derived from X are actually reachable. If a prior check guarantees X >= N, and Y is computed as X - constant, then guards like Y < M may be dead code when M <= N - constant.
       source: copilot:PR#147
       added: "2026-03-09"
+    - id: nil-map-write-guard
+      category: error-handling
+      pattern: Assigning into a map field without checking if the map has been initialized
+      check: Before writing to a map field, verify the map is non-nil. If the struct can be constructed as a zero value (common in tests), lazily initialize the map before the first write (e.g., `if m.myMap == nil { m.myMap = make(map[K]V) }`) or ensure all constructors call the proper initializer.
+      source: copilot:PR#156
+      added: "2026-03-09"
+    - id: cursor-identity-after-clamp
+      category: ui
+      pattern: List/cursor state updated via ClampToTotal or similar re-index after the backing collection changes (e.g., worker list refresh)
+      check: When the backing list changes and the cursor is clamped or shifted, verify that any associated state tied to the previously-selected item (expansion, scroll position, sub-cursors) is detected as stale and reset. Compare the selected item's identity (e.g., ID) before and after the update; if it changed, reset dependent state.
+      source: copilot:PR#156
+      added: "2026-03-09"
+    - id: docstring-matches-keybindings
+      category: ui
+      pattern: Comments or docstrings that describe keyboard shortcuts or key bindings
+      check: Verify that docstrings and comments describing key bindings match the actual key handling implementation. If a comment says a key does X, confirm the keypress handler actually does X — update the comment or the code so they agree.
+      source: copilot:PR#156
+      added: "2026-03-09"
+    - id: comment-matches-behavior
+      category: style
+      pattern: Code comments describing toggle/bidirectional behavior (e.g. 'expand or collapse', 'enable/disable', 'add or remove') near handlers that only implement one direction
+      check: Verify that inline comments accurately describe what the code actually does — if only one branch of a described toggle is implemented here, the comment should reflect the actual behavior or reference where the other branch lives
+      source: copilot:PR#156
+      added: "2026-03-09"
