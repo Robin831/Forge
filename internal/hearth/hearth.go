@@ -54,6 +54,14 @@ type QueueItem struct {
 	Assignee    string
 }
 
+// queueNavItem represents a navigable item in the grouped queue panel.
+// It is either a collapsible anvil header or a reference to a bead.
+type queueNavItem struct {
+	isAnvil   bool
+	anvilName string
+	beadIdx   int // index into Model.queue; -1 for anvil headers
+}
+
 // AttentionReason categorizes why a bead needs human attention.
 type AttentionReason int
 
@@ -250,6 +258,11 @@ type Model struct {
 	statusMsgTime    time.Time
 	statusMsgIsError bool
 
+	// Queue anvil grouping state — groups beads by anvil when 2+ anvils present.
+	queueExpandedAnvils map[string]bool   // per-anvil expanded/collapsed state
+	queueNavItems       []queueNavItem    // navigable items (anvil headers + beads)
+	queueGrouped        bool              // true when 2+ anvils trigger grouping
+
 	// Event rendering cache
 	eventLinesCache       []string
 	eventWidthCache       int
@@ -263,9 +276,10 @@ type Model struct {
 // Pass nil for DataSource to run in display-only mode (no polling).
 func NewModel(ds *DataSource) Model {
 	return Model{
-		focused:         PanelQueue,
-		data:            ds,
-		eventAutoScroll: true,
+		focused:             PanelQueue,
+		data:                ds,
+		eventAutoScroll:     true,
+		queueExpandedAnvils: make(map[string]bool),
 	}
 }
 
@@ -414,14 +428,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.actionMenuIdx = 0
 				m.showActionMenu = true
 			}
-			// Open queue action menu for selected unlabeled queue bead
-			if m.focused == PanelQueue && len(m.queue) > 0 &&
-				m.queueVP.cursor < len(m.queue) {
-				item := m.queue[m.queueVP.cursor]
-				if item.Section == "unlabeled" {
-					m.queueActionTarget = &item
-					m.queueActionMenuIdx = 0
-					m.showQueueActionMenu = true
+			// Queue panel: toggle anvil expand/collapse or open action menu for unlabeled beads
+			if m.focused == PanelQueue {
+				m.ensureQueueNav()
+				if len(m.queueNavItems) > 0 && m.queueVP.cursor < len(m.queueNavItems) {
+					nav := m.queueNavItems[m.queueVP.cursor]
+					if nav.isAnvil {
+						m.queueExpandedAnvils[nav.anvilName] = !m.queueExpandedAnvils[nav.anvilName]
+						m.rebuildQueueNav()
+					} else if nav.beadIdx >= 0 && nav.beadIdx < len(m.queue) {
+						item := m.queue[nav.beadIdx]
+						if item.Section == "unlabeled" {
+							m.queueActionTarget = &item
+							m.queueActionMenuIdx = 0
+							m.showQueueActionMenu = true
+						}
+					}
 				}
 			}
 			// Open merge menu for selected Ready to Merge PR
@@ -435,13 +457,31 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "l":
 			// Label (tag) selected bead in the queue for auto-dispatch
-			if m.focused == PanelQueue && len(m.queue) > 0 &&
-				m.queueVP.cursor < len(m.queue) {
-				item := m.queue[m.queueVP.cursor]
-				if item.Section == "unlabeled" {
-					m.queueActionTarget = &item
+			if m.focused == PanelQueue {
+				if bead := m.selectedQueueBead(); bead != nil && bead.Section == "unlabeled" {
+					m.queueActionTarget = bead
 					cmd := m.executeQueueAction(QueueActionLabel)
 					return m, cmd
+				}
+			}
+
+		case "esc":
+			// Collapse the anvil containing the selected bead
+			if m.focused == PanelQueue && m.queueGrouped {
+				m.ensureQueueNav()
+				if m.queueVP.cursor < len(m.queueNavItems) {
+					nav := m.queueNavItems[m.queueVP.cursor]
+					if !nav.isAnvil && nav.anvilName != "" {
+						target := nav.anvilName
+						m.queueExpandedAnvils[target] = false
+						m.rebuildQueueNav()
+						for i, n := range m.queueNavItems {
+							if n.isAnvil && n.anvilName == target {
+								m.queueVP.cursor = i
+								break
+							}
+						}
+					}
 				}
 			}
 		}
@@ -453,7 +493,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateQueueMsg:
 		m.queue = msg.Items
-		m.queueVP.ClampToTotal(len(msg.Items))
+		m.rebuildQueueNav()
 		// Close the queue action menu if the target bead is no longer in the unlabeled section.
 		if m.showQueueActionMenu && m.queueActionTarget != nil {
 			found := false
@@ -683,7 +723,8 @@ func (m *Model) getVerticalSplit(headerH, footerH int) (topHeight, bottomHeight 
 func (m *Model) scrollDown() {
 	switch m.focused {
 	case PanelQueue:
-		m.queueVP.ScrollDown(len(m.queue))
+		m.ensureQueueNav()
+		m.queueVP.ScrollDown(len(m.queueNavItems))
 	case PanelCrucibles:
 		m.crucibleVP.ScrollDown(len(m.crucibles))
 	case PanelNeedsAttention:
@@ -714,6 +755,7 @@ func (m *Model) scrollDown() {
 func (m *Model) scrollUp() {
 	switch m.focused {
 	case PanelQueue:
+		m.ensureQueueNav()
 		m.queueVP.ScrollUp()
 	case PanelCrucibles:
 		m.crucibleVP.ScrollUp()
@@ -752,6 +794,80 @@ func (m *Model) setStatus(msg string, isError bool) {
 	m.statusMsg = msg
 	m.statusMsgIsError = isError
 	m.statusMsgTime = time.Now()
+}
+
+// rebuildQueueNav rebuilds the navigable item list for the queue panel.
+// When 2+ anvils are present, items are grouped under collapsible anvil headers.
+// When only 1 anvil exists, items are listed flat (no headers).
+func (m *Model) rebuildQueueNav() {
+	m.queueNavItems = nil
+
+	// Collect unique anvils in display order (first appearance).
+	seen := map[string]bool{}
+	var anvilOrder []string
+	for _, item := range m.queue {
+		if !seen[item.Anvil] {
+			seen[item.Anvil] = true
+			anvilOrder = append(anvilOrder, item.Anvil)
+		}
+	}
+
+	m.queueGrouped = len(anvilOrder) > 1
+
+	if !m.queueGrouped {
+		// Single anvil: nav items are direct bead references (no headers).
+		for i := range m.queue {
+			m.queueNavItems = append(m.queueNavItems, queueNavItem{beadIdx: i})
+		}
+	} else {
+		// Multiple anvils: group under collapsible headers.
+		anvilBeads := map[string][]int{} // anvil → indices into m.queue
+		for i, item := range m.queue {
+			anvilBeads[item.Anvil] = append(anvilBeads[item.Anvil], i)
+		}
+		for _, anvil := range anvilOrder {
+			m.queueNavItems = append(m.queueNavItems, queueNavItem{
+				isAnvil:   true,
+				anvilName: anvil,
+				beadIdx:   -1,
+			})
+			if m.queueExpandedAnvils[anvil] {
+				for _, idx := range anvilBeads[anvil] {
+					m.queueNavItems = append(m.queueNavItems, queueNavItem{
+						anvilName: anvil,
+						beadIdx:   idx,
+					})
+				}
+			}
+		}
+	}
+
+	m.queueVP.ClampToTotal(len(m.queueNavItems))
+}
+
+// ensureQueueNav lazily builds queueNavItems if the queue has items but nav
+// hasn't been built yet (e.g. when queue is set directly in tests).
+func (m *Model) ensureQueueNav() {
+	if len(m.queueNavItems) == 0 && len(m.queue) > 0 {
+		if m.queueExpandedAnvils == nil {
+			m.queueExpandedAnvils = make(map[string]bool)
+		}
+		m.rebuildQueueNav()
+	}
+}
+
+// selectedQueueBead returns the QueueItem under the cursor, or nil if the
+// cursor is on an anvil header or out of range.
+func (m *Model) selectedQueueBead() *QueueItem {
+	if len(m.queueNavItems) == 0 || m.queueVP.cursor >= len(m.queueNavItems) {
+		return nil
+	}
+	nav := m.queueNavItems[m.queueVP.cursor]
+	if nav.isAnvil || nav.beadIdx < 0 || nav.beadIdx >= len(m.queue) {
+		return nil
+	}
+	item := m.queue[nav.beadIdx]
+	return &item
 }
 
 // executeAction runs the selected action menu choice against the target bead.
@@ -1041,9 +1157,12 @@ var sectionHeaders = map[string]string{
 	"in_progress": sectionHeaderInProgress,
 }
 
-// renderQueue renders the queue panel with section headers for
-// Ready / Unlabeled / In Progress groups.
+// renderQueue renders the queue panel. When multiple anvils are present,
+// beads are grouped under collapsible anvil headers. With a single anvil
+// the flat section-header layout is preserved.
 func (m *Model) renderQueue(width, height int) string {
+	m.ensureQueueNav()
+
 	style := panelStyle.Width(width)
 	if m.focused == PanelQueue {
 		style = focusedPanelStyle.Width(width)
@@ -1057,53 +1176,87 @@ func (m *Model) renderQueue(width, height int) string {
 	if len(m.queue) == 0 {
 		lines = append(lines, dimStyle.Render("No pending beads"))
 	} else {
-		// Build all display rows (section headers + items) mapped to item indices.
+		// Count beads per anvil for header display.
+		anvilCounts := map[string]int{}
+		for _, item := range m.queue {
+			anvilCounts[item.Anvil]++
+		}
+
 		type displayRow struct {
-			text    string
-			itemIdx int // -1 for section headers and sub-lines
+			text   string
+			navIdx int // index into queueNavItems; -1 for non-selectable rows
 		}
 		var rows []displayRow
 		lastSection := ""
-		for i, item := range m.queue {
+
+		for ni, nav := range m.queueNavItems {
+			if nav.isAnvil {
+				// Collapsible anvil header.
+				arrow := "▸"
+				if m.queueExpandedAnvils[nav.anvilName] {
+					arrow = "▾"
+				}
+				headerText := fmt.Sprintf("%s %s (%d)", arrow, nav.anvilName, anvilCounts[nav.anvilName])
+				if ni == m.queueVP.cursor {
+					headerText = selectedStyle.Render(headerText)
+				}
+				rows = append(rows, displayRow{text: headerText, navIdx: ni})
+				lastSection = "" // reset for each anvil
+				continue
+			}
+
+			item := m.queue[nav.beadIdx]
+			indent := ""
+			if m.queueGrouped {
+				indent = "  "
+			}
+
+			// Section header within the (expanded) group.
 			if item.Section != lastSection {
 				if hdr, ok := sectionHeaders[item.Section]; ok {
-					rows = append(rows, displayRow{text: hdr, itemIdx: -1})
+					rows = append(rows, displayRow{text: indent + hdr, navIdx: -1})
 				}
 				lastSection = item.Section
 			}
+
+			// Main bead line.
 			priority := priorityStyle(item.Priority)
-			anvil := dimStyle.Render(item.Anvil)
-			mainLine := fmt.Sprintf("%s %s %s", priority, item.BeadID, anvil)
-			if i == m.queueVP.cursor {
+			anvilSuffix := ""
+			if !m.queueGrouped {
+				anvilSuffix = " " + dimStyle.Render(item.Anvil)
+			}
+			mainLine := fmt.Sprintf("%s%s %s%s", indent, priority, item.BeadID, anvilSuffix)
+			if ni == m.queueVP.cursor {
 				mainLine = selectedStyle.Render(mainLine)
 			}
-			rows = append(rows, displayRow{text: mainLine, itemIdx: i})
+			rows = append(rows, displayRow{text: mainLine, navIdx: ni})
 
-			// Second line: bead title
+			// Title line.
 			titleText := sanitizeTitle(item.Title)
 			if titleText == "" {
 				titleText = "(no title)"
 			}
-			titleLine := "    " + dimStyle.Render(truncate(titleText, width-8))
-			if i == m.queueVP.cursor {
-				titleLine = "    " + selectedStyle.Render(truncate(titleText, width-8))
+			titleIndent := indent + "    "
+			titleLine := titleIndent + dimStyle.Render(truncate(titleText, width-8))
+			if ni == m.queueVP.cursor {
+				titleLine = titleIndent + selectedStyle.Render(truncate(titleText, width-8))
 			}
-			rows = append(rows, displayRow{text: titleLine, itemIdx: -1})
+			rows = append(rows, displayRow{text: titleLine, navIdx: -1})
 
-			// Third line for in-progress beads: assignee
+			// Assignee line for in-progress beads.
 			if item.Section == "in_progress" && item.Assignee != "" {
-				assigneeLine := "    " + dimStyle.Render("@ "+item.Assignee)
-				if i == m.queueVP.cursor {
-					assigneeLine = "    " + selectedStyle.Render("@ "+item.Assignee)
+				assigneeLine := titleIndent + dimStyle.Render("@ "+item.Assignee)
+				if ni == m.queueVP.cursor {
+					assigneeLine = titleIndent + selectedStyle.Render("@ "+item.Assignee)
 				}
-				rows = append(rows, displayRow{text: assigneeLine, itemIdx: -1})
+				rows = append(rows, displayRow{text: assigneeLine, navIdx: -1})
 			}
 		}
 
 		// Find display offset of the selected item so the view scrolls with selection.
 		selectedDisplayIdx := 0
 		for di, row := range rows {
-			if row.itemIdx == m.queueVP.cursor {
+			if row.navIdx == m.queueVP.cursor {
 				selectedDisplayIdx = di
 				break
 			}
