@@ -1,0 +1,217 @@
+rules:
+    - id: background-phases-constant-sync
+      category: other
+      pattern: Adding a new worker phase or pipeline stage that runs as a background process
+      check: Verify that the backgroundPhases constant in internal/state/db.go includes the new phase, so it is excluded from stall detection and dispatch capacity counting. Also update any doc comments that enumerate background phases (e.g. on ActiveDispatchWorkers, ActiveDispatchWorkersByAnvil, StalledWorkers).
+      source: copilot:PR#130
+      added: "2026-03-09"
+    - id: test-new-render-behavior
+      category: testing
+      pattern: New conditional rendering logic added to a function that already has test coverage
+      check: When adding new display/rendering branches to a function with existing test coverage, verify that test cases are added for both the truthy and falsy paths of the new condition
+      source: copilot:PR#130
+      added: "2026-03-09"
+    - id: reuse-worktree-manager
+      category: other
+      pattern: Code that calls git worktree add/remove, git fetch, or manages branch creation/deletion outside of internal/worktree
+      check: Verify that worktree operations use internal/worktree.Manager instead of reimplementing git worktree creation, cleanup, fetch, or branch management. This ensures consistent handling of edge cases (existing branches/worktrees, remote-only branches) and maintains the standard .workers layout across all Forge components.
+      source: copilot:PR#129
+      added: "2026-03-09"
+    - id: new-logic-needs-tests
+      category: testing
+      pattern: New conditional logic paths or failure modes added to a package that already has unit tests
+      check: Verify that new logic paths (especially those with multiple failure modes like branch resolution, external tool invocation, or state-dependent behavior) have corresponding unit tests — either by injecting dependencies for isolation or by factoring decisions into pure functions that can be tested directly
+      source: copilot:PR#129
+      added: "2026-03-09"
+    - id: pr-base-branch-consistency
+      category: other
+      pattern: Creating a PR via ghpr.Create without explicitly setting the Base field, especially when a base branch has already been resolved elsewhere in the code
+      check: Verify that when creating a PR, the Base branch is explicitly passed to ghpr.CreateParams using the already-resolved base ref (without origin/ prefix), rather than relying on the default. This prevents PRs from targeting the wrong branch when a repo uses master instead of main.
+      source: copilot:PR#129
+      added: "2026-03-09"
+    - id: pr-creation-requires-bead-id-or-skip-flag
+      category: other
+      pattern: ghpr.Create calls that insert PRs into the state DB without a BeadID or distinguishing type
+      check: Verify that every ghpr.Create call either sets a BeadID or is explicitly excluded from bellows monitoring, to prevent untracked PRs from being treated as normal work PRs and triggering unintended side-effects (e.g., infinite auto-learn loops)
+      source: copilot:PR#129
+      added: "2026-03-09"
+    - id: cleanup-defer-canceled-ctx
+      category: concurrency
+      pattern: defer cleanup functions that run git or subprocess commands using a parent context parameter
+      check: Verify that cleanup/teardown defers use context.Background() with a short timeout instead of the passed-in context, so cleanup still runs when the parent context is canceled (shutdown/timeout)
+      source: copilot:PR#129
+      added: "2026-03-09"
+    - id: unique-branch-worktree-names
+      category: error-handling
+      pattern: Creating git branch names or worktree paths derived solely from deterministic identifiers (e.g., PR number, bead ID) without a unique component
+      check: Verify that branch names and worktree paths include a unique component (e.g., timestamp or random suffix) to prevent collisions on retry after a crash, or that existing branches/worktrees are detected and reused gracefully
+      source: copilot:PR#129
+      added: "2026-03-09"
+    - id: truncation-off-by-one
+      category: ui
+      pattern: Code that truncates text to N lines and then appends an ellipsis or overflow indicator on an additional line
+      check: Verify that any ellipsis or truncation indicator is included within the stated line limit, not appended as an extra line beyond it
+      source: copilot:PR#128
+      added: "2026-03-09"
+    - id: utf8-safe-truncation
+      category: ui
+      pattern: String slicing by byte index (s[:n]) on user-visible text
+      check: Verify that string truncation is rune-safe and does not slice through multi-byte UTF-8 characters. Use []rune slicing or runewidth.Truncate instead of byte-based slicing.
+      source: copilot:PR#128
+      added: "2026-03-09"
+    - id: new-ui-behavior-needs-tests
+      category: testing
+      pattern: Changes that introduce or modify user-visible UI output in components that already have rendering tests
+      check: Verify that new or changed user-visible behavior (new fields displayed, text wrapping, truncation/ellipsis) has corresponding test coverage in the existing test file, asserting expected output format and edge cases
+      source: copilot:PR#128
+      added: "2026-03-09"
+    - id: changelog-matches-implementation
+      category: other
+      pattern: Changelog or release note entries that describe UI changes or new features
+      check: Verify that changelog descriptions accurately reflect the actual code changes — if the changelog claims a feature applies to multiple views or components, confirm each one was actually modified to support it
+      source: copilot:PR#128
+      added: "2026-03-09"
+    - id: use-style-frame-size
+      category: ui
+      pattern: Calculating content width by subtracting a hardcoded number from a styled container width (e.g. `width - 4`, `width - 2`) instead of using the style's frame size methods
+      check: Verify that content width calculations use the style's GetHorizontalFrameSize() or GetVerticalFrameSize() methods rather than hardcoded offsets, so truncation and layout stay correct if border or padding values change
+      source: copilot:PR#128
+      added: "2026-03-09"
+    - id: popup-content-width-frame-size
+      category: ui
+      pattern: Manual arithmetic to compute content width inside a styled container (e.g. `width - N` for padding/border)
+      check: Use GetHorizontalFrameSize() (or GetVerticalFrameSize()) from the lipgloss style instead of hard-coded offsets so content width stays consistent when padding or border styles change
+      source: copilot:PR#128
+      added: "2026-03-09"
+    - id: utf8-safe-string-ops
+      category: ui
+      pattern: Using len() or byte-slicing on strings that may contain non-ASCII text, especially for display width calculations or truncation
+      check: Verify that string measurement and slicing uses rune-aware operations (or existing helpers like wordWrap) instead of byte-level len()/slicing, which can split multi-byte UTF-8 characters and produce incorrect width calculations
+      source: copilot:PR#128
+      added: "2026-03-09"
+    - id: naming-matches-semantics
+      category: style
+      pattern: Function, constant, or type names that reference a specific concept (e.g. 'Epic') but the implementation handles a broader or different concept
+      check: Verify that function/constant/type names accurately reflect their actual scope and behavior. When semantics broaden beyond the original name, rename to match (e.g. ExtractEpicBranch → ExtractParentBranch) and keep the old name as a deprecated wrapper for backward compatibility.
+      source: copilot:PR#126
+      added: "2026-03-09"
+    - id: comment-code-consistency
+      category: other
+      pattern: Code comments or docstrings that describe behavior, eligibility, or control flow
+      check: Verify that comments accurately reflect the actual code behavior and control flow. When a comment claims something is eligible, enabled, or handled, trace the execution path to confirm the code actually supports that claim. Update comments to match reality or fix the code to match the intent.
+      source: copilot:PR#126
+      added: "2026-03-09"
+    - id: changelog-matches-behavior
+      category: other
+      pattern: Changelog entries or documentation describing feature behavior changes
+      check: Verify that changelog entries and documentation accurately describe the actual implemented behavior, including any exceptions or edge cases where legacy paths or special handling still apply
+      source: copilot:PR#126
+      added: "2026-03-09"
+    - id: bd-show-json-array-unwrap
+      category: error-handling
+      pattern: Unmarshaling output from `bd show --json` into a single struct without handling the array wrapper
+      check: Verify that code consuming `bd show --json` output handles both single-object (`{...}`) and single-element-array (`[{...}]`) forms, and logs unmarshal failures (including stderr and raw output) instead of silently returning zero values
+      source: copilot:PR#126
+      added: "2026-03-09"
+    - id: default-epic-branch-scope
+      category: testing
+      pattern: Default branch name assignment for beads/issues based on type (e.g., feature/<id>)
+      check: Verify that default epic/feature branch names are only assigned to appropriate bead types (epics, features) — not broadly to all types like tasks or bugs, which could accidentally force non-existent base branches in unrelated dependency graphs
+      source: copilot:PR#126
+      added: "2026-03-09"
+    - id: epic-branch-guard
+      category: other
+      pattern: Code that resolves or assigns epic/feature branches based on bead relationships (parent, blocks, dependencies)
+      check: Verify that epic branch resolution only applies to actual parent-child (epic/feature) relationships, not ordinary task dependencies. Unconditionally deriving a feature branch name like `feature/<id>` from any related bead can cause pipelines and PRs to target non-existent base branches. Ensure there is a guard — such as checking for an explicit label, restricting to epic/feature bead types, or verifying the bead actually has children — before assigning an epic branch.
+      source: copilot:PR#126
+      added: "2026-03-09"
+    - id: wrapper-preserves-original-semantics
+      category: other
+      pattern: A function is described as a backward-compatible wrapper or compatibility shim around a new function
+      check: Verify the wrapper actually preserves the original behavior. If the underlying function's semantics changed (e.g., new default return values), the wrapper must replicate the old behavior — not just delegate to the new function. Update comments and names to accurately reflect whether compatibility is truly maintained.
+      source: copilot:PR#126
+      added: "2026-03-09"
+    - id: remove-unused-scaffolding
+      category: style
+      pattern: Code contains types, variables, or comments suggesting functionality (like deduplication) that is not actually implemented
+      check: Verify that declared types, variables, and structural comments correspond to actual implemented behavior — remove scaffolding for unimplemented features or implement the implied functionality
+      source: copilot:PR#126
+      added: "2026-03-09"
+    - id: bd-show-json-unwrap-array
+      category: error-handling
+      pattern: Code that unmarshals output from `bd show --json` directly into a struct without preprocessing
+      check: Verify that `unwrapJSONArray` is called before `json.Unmarshal` when processing `bd show --json` output, since the command may return either `{...}` or `[{...}]` depending on context. Also verify that unmarshal errors are logged rather than silently ignored.
+      source: copilot:PR#125
+      added: "2026-03-09"
+    - id: manual-dispatch-epic-branch-resolution
+      category: other
+      pattern: Manual bead dispatch (e.g. IPC `run_bead`) where a bead's `Blocks` field may be empty or unresolved before epic branch resolution
+      check: When manually dispatching a bead, verify that `Blocks` is resolved (e.g. via `poller.ResolveBlocks`) before calling `ResolveEpicBranches`, so that beads blocking an epic are correctly assigned an `EpicBranch` instead of creating PRs against main
+      source: copilot:PR#125
+      added: "2026-03-09"
+    - id: new-detection-paths-need-tests
+      category: testing
+      pattern: Adding a new detection/resolution path to an existing function
+      check: Verify that new detection paths have corresponding unit tests, especially when the path involves external calls (e.g., shelling out to CLI tools) — these should be injectable/mockable so tests don't depend on external processes
+      source: copilot:PR#125
+      added: "2026-03-09"
+    - id: bubbletea-cmd-must-be-dispatched
+      category: ui
+      pattern: A Bubbletea method returns a tea.Cmd but the call site discards it instead of returning or batching it
+      check: Verify that every call to a function returning tea.Cmd actually dispatches the command via return or tea.Batch — a discarded Cmd means the async operation silently never executes
+      source: copilot:PR#123
+      added: "2026-03-09"
+    - id: nullable-bool-config-docs
+      category: other
+      pattern: Documentation for optional/nullable config fields that use pointer types (*bool, *int, etc.) in Go structs
+      check: Verify that docs accurately reflect nullable types as `type|null` with default `null (use global/default)` rather than showing them as plain non-nullable types with a hardcoded default. Document that when set, the per-scope value overrides the global setting.
+      source: copilot:PR#122
+      added: "2026-03-09"
+    - id: cli-docs-match-cobra-flags
+      category: other
+      pattern: CLI documentation or help text for a command that has flags registered in Cobra
+      check: Verify that all flags wired in the Cobra command definition (including shorthand aliases like -p, -n) are documented in the CLI reference docs. Missing flags means the docs don't match the actual interface.
+      source: copilot:PR#122
+      added: "2026-03-09"
+    - id: docs-match-implementation
+      category: other
+      pattern: Documentation or comments describing supported tools, formats, or integrations
+      check: Verify that documentation accurately reflects the current implementation — do not claim support for tools, formats, or integrations that are not actually implemented in the code
+      source: copilot:PR#122
+      added: "2026-03-09"
+    - id: exhaustive-list-completeness
+      category: other
+      pattern: Documentation or comments that enumerate items from a known set (packages, config keys, enum values, CLI commands)
+      check: When a list claims or appears to be comprehensive, verify all items are included. If the list is intentionally partial, ensure it says so explicitly (e.g., 'key packages include…') to avoid misleading readers into thinking unlisted items don't exist
+      source: copilot:PR#122
+      added: "2026-03-09"
+    - id: clamp-before-slice
+      category: error-handling
+      pattern: Arithmetic on terminal/container width used as a slice bound (e.g. `text[:width - N]`)
+      check: Verify the computed slice index is clamped to a safe minimum (>= 0, and >= offset+1 when subtracting further) so narrow dimensions cannot produce a negative or out-of-bounds slice bound
+      source: copilot:PR#121
+      added: "2026-03-09"
+    - id: hidden-panel-focus-cycle
+      category: ui
+      pattern: A panel or UI element is included in a focus/tab cycle but can be conditionally hidden or not rendered
+      check: Verify that conditionally-hidden panels are excluded from the focus cycle when not visible, or are always rendered (even if empty), so focus never lands on a non-rendered element
+      source: copilot:PR#121
+      added: "2026-03-09"
+    - id: doc-comment-accuracy
+      category: style
+      pattern: Function or method doc comments that describe behavior, layout, or parameters
+      check: Verify that doc comments accurately reflect the current behavior of the function, especially after changes that add conditional paths or new UI panels
+      source: copilot:PR#121
+      added: "2026-03-09"
+    - id: delayed-status-cleanup
+      category: ui
+      pattern: Deferred deletion of UI-visible status/state immediately after completion
+      check: When removing a status entry that the UI displays, ensure there is an actual delay (e.g., time.AfterFunc) before deletion so the terminal state is visible for at least one refresh cycle. Do not delete immediately if a comment or intent says 'after a short delay'.
+      source: copilot:PR#121
+      added: "2026-03-09"
+    - id: sort-ipc-collections
+      category: ui
+      pattern: sync.Map.Range or map iteration results returned via IPC for display in TUI/CLI
+      check: Verify that collections built from map/sync.Map iteration are sorted deterministically before being returned to callers, to prevent UI list jumping and cursor/viewport issues
+      source: copilot:PR#121
+      added: "2026-03-09"
