@@ -28,9 +28,9 @@ function Write-Err($msg)  { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 
 
 Write-Step "Detecting platform..."
 
-if ($IsLinux) {
+if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)) {
     $OS = "linux"
-} elseif ($IsMacOS) {
+} elseif ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)) {
     $OS = "darwin"
 } else {
     $OS = "windows"
@@ -144,16 +144,29 @@ try {
         Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
 
         $ActualHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLower()
-        $ExpectedLine = Get-Content $ChecksumPath | Where-Object { $_ -match $AssetName }
+        $escapedName = [regex]::Escape($AssetName)
+        $pattern = "$escapedName`$"
+        $matchingLines = Get-Content $ChecksumPath | Where-Object { $_ -match $pattern }
 
-        if ($ExpectedLine) {
+        if ($matchingLines -is [array]) {
+            $lineCount = $matchingLines.Count
+        } elseif ($matchingLines) {
+            $lineCount = 1
+        } else {
+            $lineCount = 0
+        }
+
+        if ($lineCount -eq 1) {
+            $ExpectedLine = if ($matchingLines -is [array]) { $matchingLines[0] } else { $matchingLines }
             $ExpectedHash = ($ExpectedLine -split '\s+')[0].ToLower()
             if ($ActualHash -ne $ExpectedHash) {
                 Write-Err "Checksum mismatch!`n  Expected: $ExpectedHash`n  Actual:   $ActualHash"
             }
             Write-Ok "SHA256 verified."
-        } else {
+        } elseif ($lineCount -eq 0) {
             Write-Host "   Warning: no checksum entry for $AssetName in checksums.txt — skipping verification." -ForegroundColor Yellow
+        } else {
+            Write-Err "Multiple checksum entries found for $AssetName in checksums.txt — cannot verify uniquely."
         }
     } else {
         Write-Host "   Warning: checksums.txt not found in release — skipping verification." -ForegroundColor Yellow
@@ -179,6 +192,12 @@ try {
     }
 
     Copy-Item -Path $ExtractedBinary.FullName -Destination $BinaryPath -Force
+
+    if ($OS -ne "windows") {
+        # Ensure the forge binary is executable on Unix-like systems.
+        & chmod +x -- $BinaryPath
+    }
+
     Write-Ok "Installed to $BinaryPath"
 
     # --- Add to PATH (Windows user-level) ------------------------------------

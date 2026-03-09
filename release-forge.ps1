@@ -56,7 +56,11 @@ try {
     Write-Step "Checking tag $Tag..."
     $existingTag = git tag -l $Tag
     if ($existingTag) {
-        Write-Err "Tag $Tag already exists."
+        Write-Err "Tag $Tag already exists locally."
+    }
+    $remoteTag = git ls-remote --tags origin $Tag
+    if ($remoteTag) {
+        Write-Err "Tag $Tag already exists on origin."
     }
     Write-Ok "Tag $Tag is available."
 
@@ -69,9 +73,9 @@ try {
     # --- Assemble changelog ---
 
     Write-Step "Assembling changelog..."
-    forge changelog assemble
+    go run ./cmd/forge changelog assemble
     if ($LASTEXITCODE -ne 0) {
-        Write-Err "'forge changelog assemble' failed."
+        Write-Err "'go run ./cmd/forge changelog assemble' failed."
     }
     Write-Ok "Changelog assembled."
 
