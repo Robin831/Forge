@@ -245,3 +245,27 @@ rules:
       check: Verify the changelog fragment filename matches the current PR's bead ID (changelog.d/<bead-id>.md) and that the trailing bead reference in the bullet text also matches the same bead ID
       source: copilot:PR#143
       added: "2026-03-09"
+    - id: no-dead-db-columns
+      category: other
+      pattern: Database schema defines columns or query functions whose results are consumed in application logic
+      check: Verify that every queried database column is actually written to somewhere in the codebase. A column that is never populated will always return its default value, making any read-side logic (e.g., conditional overrides) dead code. Also check that the read path does not shadow outer error variables when handling the query result.
+      source: copilot:PR#147
+      added: "2026-03-09"
+    - id: new-render-paths-need-tests
+      category: testing
+      pattern: New or renamed rendering/UI functions that replace existing ones called in View() or main render paths
+      check: Verify that new rendering functions have corresponding test coverage, and that existing tests are updated to call the new function signatures rather than stale ones they replaced
+      source: copilot:PR#147
+      added: "2026-03-09"
+    - id: format-precision-loss
+      category: ui
+      pattern: Integer division or truncating format verbs (e.g. %d) applied to numeric display values that discard meaningful fractional parts
+      check: Verify that numeric formatting preserves appropriate precision — e.g. use %.1f instead of %d when dividing values for human-readable display, so 1500 renders as '1.5k' not '1k'
+      source: copilot:PR#147
+      added: "2026-03-09"
+    - id: unreachable-dead-code-guard
+      category: style
+      pattern: Defensive guard clauses on computed values that are already constrained by earlier returns
+      check: When a function has an early return based on a value X, verify that subsequent guards on values derived from X are actually reachable. If a prior check guarantees X >= N, and Y is computed as X - constant, then guards like Y < M may be dead code when M <= N - constant.
+      source: copilot:PR#147
+      added: "2026-03-09"
