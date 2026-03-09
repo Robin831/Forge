@@ -658,6 +658,254 @@ func TestActivityScrollClampPastEnd(t *testing.T) {
 	}
 }
 
+func TestFormatMultiLineEntry(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		maxLines  int
+		wantLen   int
+		wantFirst string
+		wantSecond string
+	}{
+		{
+			name:      "single line",
+			raw:       "hello world",
+			maxLines:  3,
+			wantLen:   1,
+			wantFirst: "[text] hello world",
+		},
+		{
+			name:      "multi-line uses continuation prefix",
+			raw:       "line one\nline two\nline three",
+			maxLines:  3,
+			wantLen:   3,
+			wantFirst: "[text] line one",
+			wantSecond: "       line two",
+		},
+		{
+			name:      "blank lines skipped",
+			raw:       "first\n\n\nsecond",
+			maxLines:  3,
+			wantLen:   2,
+			wantFirst: "[text] first",
+			wantSecond: "       second",
+		},
+		{
+			name:      "maxLines truncates output",
+			raw:       "a\nb\nc\nd",
+			maxLines:  2,
+			wantLen:   2,
+			wantFirst: "[text] a",
+			wantSecond: "       b",
+		},
+		{
+			name:     "empty raw returns nil",
+			raw:      "",
+			maxLines: 3,
+			wantLen:  0,
+		},
+		{
+			name:     "only blank lines returns nil",
+			raw:      "\n\n\n",
+			maxLines: 3,
+			wantLen:  0,
+		},
+		{
+			name:      "long line truncated by runes not bytes",
+			raw:       string([]rune("日本語テキスト abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890 end")),
+			maxLines:  1,
+			wantLen:   1,
+			wantFirst: "[text] " + string([]rune("日本語テキスト abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890 end")[:67]) + "...",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatMultiLineEntry("[text] ", "       ", tt.raw, tt.maxLines)
+			if len(got) != tt.wantLen {
+				t.Errorf("got %d lines, want %d: %v", len(got), tt.wantLen, got)
+				return
+			}
+			if tt.wantLen > 0 && got[0] != tt.wantFirst {
+				t.Errorf("first line = %q, want %q", got[0], tt.wantFirst)
+			}
+			if tt.wantLen > 1 && got[1] != tt.wantSecond {
+				t.Errorf("second line = %q, want %q", got[1], tt.wantSecond)
+			}
+		})
+	}
+}
+
+func TestGroupActivityLines(t *testing.T) {
+	t.Run("empty input returns nil", func(t *testing.T) {
+		got := groupActivityLines(nil)
+		if got != nil {
+			t.Errorf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("single group is returned unchanged", func(t *testing.T) {
+		lines := []string{"[tool] Read x", "[tool] Edit y"}
+		got := groupActivityLines(lines)
+		if !reflect.DeepEqual(got, lines) {
+			t.Errorf("got %v, want %v", got, lines)
+		}
+	})
+
+	t.Run("last group is expanded, older groups collapsed", func(t *testing.T) {
+		lines := []string{
+			"[tool] Read x",
+			"[tool] Edit y",
+			"[text] some text",
+			"[text] more text",
+		}
+		got := groupActivityLines(lines)
+		// Expect: 1 collapsed tool summary + 2 expanded text lines
+		if len(got) != 3 {
+			t.Fatalf("got %d lines, want 3: %v", len(got), got)
+		}
+		if !strings.HasPrefix(got[0], "▸ [tool] x2") {
+			t.Errorf("collapsed summary = %q, want prefix '▸ [tool] x2'", got[0])
+		}
+		if got[1] != "[text] some text" {
+			t.Errorf("got[1] = %q, want '[text] some text'", got[1])
+		}
+		if got[2] != "[text] more text" {
+			t.Errorf("got[2] = %q, want '[text] more text'", got[2])
+		}
+	})
+
+	t.Run("continuation lines stay with their group", func(t *testing.T) {
+		lines := []string{
+			"[text] first line",
+			"       continuation",
+			"[tool] Read x",
+		}
+		got := groupActivityLines(lines)
+		// text group (with continuation) is collapsed; tool group expanded.
+		if len(got) != 2 {
+			t.Fatalf("got %d lines, want 2: %v", len(got), got)
+		}
+		if !strings.HasPrefix(got[0], "▸ [text] x1") {
+			t.Errorf("collapsed summary = %q, want prefix '▸ [text] x1'", got[0])
+		}
+		if got[1] != "[tool] Read x" {
+			t.Errorf("got[1] = %q, want '[tool] Read x'", got[1])
+		}
+	})
+}
+
+func TestCollapseActivityGroup(t *testing.T) {
+	t.Run("tool group extracts names", func(t *testing.T) {
+		g := activityGroup{
+			eventType: "tool",
+			lines: []string{
+				"[tool] Read /tmp/foo",
+				"[tool] Edit /tmp/bar",
+				"[tool] Grep pattern",
+			},
+		}
+		got := collapseActivityGroup(g)
+		want := "▸ [tool] x3 — Read, Edit, Grep"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("tool group deduplicates consecutive names", func(t *testing.T) {
+		g := activityGroup{
+			eventType: "tool",
+			lines: []string{
+				"[tool] Read /a",
+				"[tool] Read /b",
+				"[tool] Edit /c",
+			},
+		}
+		got := collapseActivityGroup(g)
+		want := "▸ [tool] x3 — Read, Edit"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("non-tool group no names", func(t *testing.T) {
+		g := activityGroup{
+			eventType: "text",
+			lines:     []string{"[text] hello", "[text] world"},
+		}
+		got := collapseActivityGroup(g)
+		want := "▸ [text] x2"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("continuation lines not counted as entries", func(t *testing.T) {
+		g := activityGroup{
+			eventType: "text",
+			lines:     []string{"[text] hello", "       more text"},
+		}
+		got := collapseActivityGroup(g)
+		want := "▸ [text] x1"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("result is plain text without ANSI escapes", func(t *testing.T) {
+		g := activityGroup{
+			eventType: "tool",
+			lines:     []string{"[tool] Read /x"},
+		}
+		got := collapseActivityGroup(g)
+		// Plain text should contain no ESC bytes (no ANSI escapes).
+		if strings.ContainsRune(got, '\x1b') {
+			t.Errorf("collapseActivityGroup returned ANSI-styled string; want plain text: %q", got)
+		}
+	})
+}
+
+func TestParseWorkerActivityMultiLineText(t *testing.T) {
+	// Text and thinking blocks with embedded newlines should produce
+	// continuation-indented entries (up to 3 lines each).
+	logContent := `{"type":"system","subtype":"init","session_id":"ml"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"First line\nSecond line\nThird line\nFourth line (should be dropped)"}]}}
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Think line 1\nThink line 2"}]}}
+{"type":"result","subtype":"success"}
+`
+	logPath := filepath.Join(t.TempDir(), "smith.log")
+	if err := os.WriteFile(logPath, []byte(logContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := parseWorkerActivity(logPath, 100)
+
+	// Expect: 3 text lines + 2 think lines + 1 result line = 6
+	if len(entries) != 6 {
+		t.Fatalf("got %d entries, want 6: %v", len(entries), entries)
+	}
+	if !strings.HasPrefix(entries[0], "[text] ") {
+		t.Errorf("entries[0] = %q, want '[text] ' prefix", entries[0])
+	}
+	if !strings.HasPrefix(entries[1], "       ") {
+		t.Errorf("entries[1] = %q, want continuation indent", entries[1])
+	}
+	if !strings.HasPrefix(entries[2], "       ") {
+		t.Errorf("entries[2] = %q, want continuation indent", entries[2])
+	}
+	// Fourth line should have been dropped (maxLines=3).
+	for _, e := range entries {
+		if strings.Contains(e, "Fourth") {
+			t.Errorf("fourth line should have been dropped, but found in entries: %v", entries)
+		}
+	}
+	if !strings.HasPrefix(entries[3], "[think] ") {
+		t.Errorf("entries[3] = %q, want '[think] ' prefix", entries[3])
+	}
+	if !strings.HasPrefix(entries[4], "        ") {
+		t.Errorf("entries[4] = %q, want think continuation indent", entries[4])
+	}
+}
+
 func TestEnterOnUnlabeledQueueItemOpensMenu(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,

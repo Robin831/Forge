@@ -746,7 +746,7 @@ func (m *Model) scrollDown() {
 			m.activityScroll = 0
 		}
 	case PanelLiveActivity:
-		activity := m.selectedWorkerActivity()
+		activity := m.groupedWorkerActivity()
 		if m.activityScroll < len(activity)-1 {
 			m.activityScroll++
 		}
@@ -1835,7 +1835,7 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 	var lines []string
 	lines = append(lines, title)
 
-	activityLines := m.selectedWorkerActivity()
+	activityLines := m.groupedWorkerActivity()
 
 	if len(activityLines) == 0 {
 		if len(m.workers) == 0 {
@@ -1864,7 +1864,13 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 			start = 0
 		}
 		for i := end - 1; i >= start; i-- {
-			lines = append(lines, truncate(activityLines[i], width-4))
+			line := truncate(activityLines[i], width-4)
+			// Collapsed summary lines start with "▸" — apply dim styling
+			// after truncation to avoid cutting through ANSI escape sequences.
+			if strings.HasPrefix(activityLines[i], "▸") {
+				line = dimStyle.Render(line)
+			}
+			lines = append(lines, line)
 		}
 	}
 
@@ -2474,6 +2480,109 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen-3]) + "..."
+}
+
+// activityLineType extracts the event type tag from an activity line.
+// Lines like "[tool] Read ..." return "tool". Continuation lines (starting
+// with spaces) return "" to indicate they belong to the previous entry.
+func activityLineType(line string) string {
+	if len(line) == 0 || line[0] != '[' {
+		return ""
+	}
+	end := strings.IndexByte(line, ']')
+	if end < 2 {
+		return ""
+	}
+	return line[1:end]
+}
+
+// activityGroup represents a run of consecutive events sharing the same type.
+type activityGroup struct {
+	eventType string
+	lines     []string
+}
+
+// groupActivityLines collapses consecutive same-type activity entries into
+// groups. The last (newest) group is expanded; older groups are collapsed
+// into a single summary line like "▸ [tool] x5 — Read, Edit, Grep".
+func groupActivityLines(lines []string) []string {
+	if len(lines) == 0 {
+		return nil
+	}
+
+	// Build groups of consecutive same-type entries.
+	var groups []activityGroup
+	for _, line := range lines {
+		typ := activityLineType(line)
+		if typ == "" && len(groups) > 0 {
+			// Continuation line — append to current group.
+			groups[len(groups)-1].lines = append(groups[len(groups)-1].lines, line)
+			continue
+		}
+		if len(groups) == 0 || typ != groups[len(groups)-1].eventType {
+			groups = append(groups, activityGroup{eventType: typ})
+		}
+		groups[len(groups)-1].lines = append(groups[len(groups)-1].lines, line)
+	}
+
+	// Single group or fewer — no collapsing needed.
+	if len(groups) <= 1 {
+		return lines
+	}
+
+	var result []string
+	for i, g := range groups {
+		if i == len(groups)-1 {
+			// Last group: fully expanded.
+			result = append(result, g.lines...)
+		} else {
+			result = append(result, collapseActivityGroup(g))
+		}
+	}
+	return result
+}
+
+// collapseActivityGroup produces a single unstyled summary line for a group.
+// For tool groups it extracts tool names: "▸ [tool] x5 — Read, Edit, Grep"
+// For other types: "▸ [text] x3"
+// The caller is responsible for applying any visual styling after truncation.
+func collapseActivityGroup(g activityGroup) string {
+	// Count primary entries (not continuation lines).
+	count := 0
+	var names []string
+	for _, line := range g.lines {
+		typ := activityLineType(line)
+		if typ == "" {
+			continue // continuation line
+		}
+		count++
+		if g.eventType == "tool" {
+			// Extract tool name: "[tool] ToolName ..."
+			rest := line[len("[tool] "):]
+			if sp := strings.IndexByte(rest, ' '); sp > 0 {
+				rest = rest[:sp]
+			}
+			// Deduplicate consecutive names for readability.
+			if len(names) == 0 || names[len(names)-1] != rest {
+				names = append(names, rest)
+			}
+		}
+	}
+	if len(names) > 0 {
+		summary := strings.Join(names, ", ")
+		if len([]rune(summary)) > 40 {
+			summary = string([]rune(summary)[:37]) + "..."
+		}
+		return fmt.Sprintf("▸ [%s] x%d — %s", g.eventType, count, summary)
+	}
+	return fmt.Sprintf("▸ [%s] x%d", g.eventType, count)
+}
+
+// groupedWorkerActivity returns the grouped activity lines for the currently
+// selected worker. The last group of consecutive same-type events is expanded
+// while older groups are collapsed into summary headers.
+func (m *Model) groupedWorkerActivity() []string {
+	return groupActivityLines(m.selectedWorkerActivity())
 }
 
 // wordWrapCount returns the number of lines wordWrap would produce without
