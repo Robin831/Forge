@@ -182,6 +182,20 @@ func Run(ctx context.Context, p Params) *Result {
 
 		// Run pipeline for child, targeting the feature branch.
 		childResult := p.runChildPipeline(ctx, child, branch)
+
+		// NoDiff children (e.g. check-only tasks that investigate but produce
+		// no code changes) are not failures — close them and continue.
+		if childResult.NeedsHuman && childResult.ReviewResult != nil && childResult.ReviewResult.NoDiff {
+			log.Info("crucible child produced no diff, closing and continuing", "child", child.ID)
+			p.emitEvent(state.EventCrucibleChildMerged,
+				fmt.Sprintf("Crucible %s: child %s completed with no changes (check-only)", p.ParentBead.ID, child.ID),
+				child.ID)
+			if err := p.closeBead(ctx, child.ID, anvilPath); err != nil {
+				log.Warn("failed to close no-diff child bead", "child", child.ID, "error", err)
+			}
+			continue
+		}
+
 		if childResult.Error != nil || !childResult.Success {
 			reason := "pipeline failed"
 			if childResult.Error != nil {

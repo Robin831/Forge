@@ -12,6 +12,7 @@ import (
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/warden"
 )
 
 // testDB creates a temporary state DB for testing.
@@ -212,6 +213,89 @@ func TestRun_ChildPipelineFailure_Pauses(t *testing.T) {
 	}
 	if result.PausedChildID != "child-1" {
 		t.Errorf("expected paused child to be child-1, got %q", result.PausedChildID)
+	}
+}
+
+func TestRun_NoDiffChild_ClosesAndContinues(t *testing.T) {
+	db := testDB(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	var closedBeads []string
+	var createdPRs []ghpr.CreateParams
+
+	p := Params{
+		DB:     db,
+		Logger: logger,
+		ParentBead: poller.Bead{
+			ID:    "parent-1",
+			Title: "Parent bead",
+		},
+		AnvilName:                "test-anvil",
+		AnvilConfig:              config.AnvilConfig{Path: t.TempDir()},
+		AutoMergeCrucibleChildren: true,
+
+		EpicBranchCreator: func(ctx context.Context, dir, branch string) error {
+			return nil
+		},
+
+		ChildFetcher: func(ctx context.Context, parentID, dir string) ([]poller.Bead, error) {
+			return []poller.Bead{
+				{ID: "check-child", Title: "Check something", DependsOn: []string{"parent-1"}},
+				{ID: "code-child", Title: "Do code work", DependsOn: []string{"parent-1"}},
+			}, nil
+		},
+
+		PipelineRunner: func(ctx context.Context, pp pipeline.Params) *pipeline.Outcome {
+			if pp.Bead.ID == "check-child" {
+				// NoDiff child — check-only task with no code changes
+				return &pipeline.Outcome{
+					Success:    false,
+					NeedsHuman: true,
+					ReviewResult: &warden.ReviewResult{
+						Verdict: warden.VerdictReject,
+						NoDiff:  true,
+						Summary: "No changes detected",
+					},
+				}
+			}
+			return &pipeline.Outcome{
+				Success: true,
+				Branch:  "worktree-branch",
+			}
+		},
+
+		BeadClaimer: func(ctx context.Context, beadID, dir string) error {
+			return nil
+		},
+
+		BeadCloser: func(ctx context.Context, beadID, dir string) error {
+			closedBeads = append(closedBeads, beadID)
+			return nil
+		},
+
+		PRCreator: func(ctx context.Context, params ghpr.CreateParams) (*ghpr.PR, error) {
+			createdPRs = append(createdPRs, params)
+			return &ghpr.PR{Number: len(createdPRs)}, nil
+		},
+
+		PRMerger: func(ctx context.Context, prNumber int, dir string) error {
+			return nil
+		},
+	}
+
+	result := Run(context.Background(), p)
+
+	if !result.Success {
+		t.Fatalf("expected success, got error: %v", result.Error)
+	}
+	// check-child should be closed (no-diff), code-child should be closed (merged),
+	// plus parent closed = 3 total
+	if len(closedBeads) != 3 {
+		t.Errorf("expected 3 closed beads, got %d: %v", len(closedBeads), closedBeads)
+	}
+	// Only code-child + final PR should be created (not check-child since it had no changes)
+	if len(createdPRs) != 2 {
+		t.Errorf("expected 2 PRs (code-child + final), got %d", len(createdPRs))
 	}
 }
 
