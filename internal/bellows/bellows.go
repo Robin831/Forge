@@ -486,7 +486,7 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath str
 
 	pr, err := ghpr.Create(ctx, ghpr.CreateParams{
 		WorktreePath: wtPath,
-		Title:        fmt.Sprintf("forge: learn %d warden rule(s) from PR #%d", added, prNumber),
+		Title:        fmt.Sprintf("forge: learn %d warden rule(s) from PR #%d [no-changelog]", added, prNumber),
 		Body:         prBody,
 		Branch:       branchName,
 		AnvilName:    anvilName,
