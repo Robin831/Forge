@@ -195,6 +195,36 @@ func TestProvider_BuildArgs_Copilot_CustomModel(t *testing.T) {
 	assert.Equal(t, "claude-opus-4", args[modelIdx])
 }
 
+func TestProvider_BuildArgs_Copilot_ProviderModelField(t *testing.T) {
+	// Provider.Model is honored for Copilot (config-driven model selection).
+	p := Provider{Kind: Copilot, Model: "claude-opus-4-6"}
+	args := p.BuildArgs(nil)
+	modelIdx := -1
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) {
+			modelIdx = i + 1
+			break
+		}
+	}
+	assert.NotEqual(t, -1, modelIdx, "expected --model flag")
+	assert.Equal(t, "claude-opus-4-6", args[modelIdx])
+}
+
+func TestProvider_BuildArgs_Copilot_ClaudeFlagModelOverridesProviderModel(t *testing.T) {
+	// --model in claude_flags takes precedence over Provider.Model for Copilot.
+	p := Provider{Kind: Copilot, Model: "claude-opus-4-6"}
+	args := p.BuildArgs([]string{"--model", "claude-sonnet-4.6"})
+	modelIdx := -1
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) {
+			modelIdx = i + 1
+			break
+		}
+	}
+	assert.NotEqual(t, -1, modelIdx, "expected --model flag")
+	assert.Equal(t, "claude-sonnet-4.6", args[modelIdx])
+}
+
 func TestDefaults(t *testing.T) {
 	providers := Defaults()
 	assert.Len(t, providers, 2)

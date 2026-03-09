@@ -183,7 +183,10 @@ func (p Provider) copilotArgs(claudeFlags []string) []string {
 	// --no-auto-update  = avoid interactive update prompts in CI/daemon context
 	//
 	// Unrecognised claude flags (--max-turns, --tools, --verbose, etc.) are dropped.
-	model := "claude-sonnet-4.6"
+	model := p.Model
+	if model == "" {
+		model = "claude-sonnet-4.6"
+	}
 
 	// Allow callers to override the model via a --model flag in claudeFlags.
 	for i := 0; i+1 < len(claudeFlags); i++ {
