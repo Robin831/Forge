@@ -1905,18 +1905,30 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 		m.activityVP.ClampToTotal(total)
 		m.activityVP.AdjustViewport(maxVisible, total)
 		start, end := m.activityVP.VisibleRange(maxVisible, total)
+		contentWidth := width - 4
+		if contentWidth < 10 {
+			contentWidth = 10
+		}
 		for i := start; i < end; i++ {
 			nav := m.activityNavItems[i]
-			line := truncate(nav.text, width-4)
 			if nav.isGroupHeader {
-				// Collapsed summary — dim with "▸" prefix
-				line = dimStyle.Render(line)
+				// Collapsed group header — visible but distinct
+				line := truncate(nav.text, contentWidth)
+				line = activityGroupHeaderStyle.Render(line)
+				if m.focused == PanelLiveActivity && i == m.activityVP.cursor {
+					line = selectedStyle.Render(nav.text)
+				}
+				lines = append(lines, line)
+			} else {
+				// Expanded line — word wrap to show full text
+				wrapped := wordWrap(nav.text, contentWidth)
+				for wi, wl := range wrapped {
+					if m.focused == PanelLiveActivity && i == m.activityVP.cursor && wi == 0 {
+						wl = selectedStyle.Render(wl)
+					}
+					lines = append(lines, wl)
+				}
 			}
-			// Highlight cursor row when panel is focused
-			if m.focused == PanelLiveActivity && i == m.activityVP.cursor {
-				line = selectedStyle.Render(line)
-			}
-			lines = append(lines, line)
 		}
 	}
 
@@ -2208,6 +2220,10 @@ var (
 				Bold(true).
 				Foreground(lipgloss.Color("245")).
 				MarginBottom(1)
+
+	activityGroupHeaderStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("245")).
+					Bold(true)
 
 	needsAttentionTitleStyle = lipgloss.NewStyle().
 				Bold(true).
@@ -2643,7 +2659,7 @@ func (m *Model) rebuildActivityNav() {
 	// Iterate newest-first so the latest activity appears at the top.
 	for ri := len(groups) - 1; ri >= 0; ri-- {
 		g := groups[ri]
-		expanded := m.isActivityGroupExpanded(ri, len(groups))
+		expanded := m.isActivityGroupExpanded(ri, len(groups), g.eventType)
 		if !expanded {
 			m.activityNavItems = append(m.activityNavItems, activityNavItem{
 				isGroupHeader: true,
@@ -2665,12 +2681,17 @@ func (m *Model) rebuildActivityNav() {
 
 // isActivityGroupExpanded returns whether a group should be expanded.
 // If the user has toggled the group, their choice is respected. Otherwise
-// the newest group (last index) defaults to expanded.
-func (m *Model) isActivityGroupExpanded(groupIdx, totalGroups int) bool {
+// the newest group and "think" groups default to expanded.
+func (m *Model) isActivityGroupExpanded(groupIdx, totalGroups int, eventType string) bool {
 	if expanded, set := m.activityExpanded[groupIdx]; set {
 		return expanded
 	}
-	return groupIdx == totalGroups-1
+	// Newest group is always expanded.
+	if groupIdx == totalGroups-1 {
+		return true
+	}
+	// Think groups are expanded by default so reasoning is visible.
+	return eventType == "think"
 }
 
 // resetActivityState clears the activity viewport and expansion state,
