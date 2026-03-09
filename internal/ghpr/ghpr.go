@@ -123,6 +123,18 @@ func Create(ctx context.Context, p CreateParams) (*PR, error) {
 		_ = p.DB.InsertPR(dbPR)
 		_ = p.DB.LogEvent(state.EventPRCreated,
 			fmt.Sprintf("PR #%d: %s", prNumber, prURL), p.BeadID, p.AnvilName)
+
+		// Immediately check review status so has_pending_reviews is set before
+		// the first bellows poll, closing the race window where a PR with pending
+		// review requests briefly appears in "Ready to Merge".
+		if status, err := CheckStatus(ctx, p.WorktreePath, prNumber); err == nil {
+			_ = p.DB.UpdatePRMergeability(
+				dbPR.ID,
+				status.Mergeable == "CONFLICTING",
+				status.UnresolvedThreads > 0,
+				status.HasPendingReviewRequests(),
+			)
+		}
 	}
 
 	return pr, nil
