@@ -155,7 +155,7 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 	if outputText == "" {
 		outputText = smithResult.Output
 	}
-	parseVerdict(outputText, result)
+	parseVerdict(outputText, usedProvider.Kind, result)
 
 	if db != nil {
 		evtType := state.EventWardenPass
@@ -280,9 +280,14 @@ After outputting the JSON verdict above, review the following git diff:
 	)
 }
 
-// parseVerdict extracts the structured verdict from Claude's output.
-func parseVerdict(output string, result *ReviewResult) {
-	// Try to find a JSON block in the output
+// parseVerdict extracts the structured verdict from the review output.
+// providerKind enables provider-specific fallback heuristics when the primary
+// JSON extraction fails. Each provider has different tendencies:
+//   - Claude: reliably emits fenced ```json blocks
+//   - Gemini: sometimes uses plain ``` blocks or embeds JSON in prose
+//   - Copilot (Haiku): often outputs natural language verdicts without JSON
+func parseVerdict(output string, providerKind provider.Kind, result *ReviewResult) {
+	// Phase 1: Try structured JSON extraction — works across all providers.
 	jsonStr := extractJSON(output, "verdict")
 	if jsonStr != "" {
 		var parsed struct {
@@ -304,25 +309,201 @@ func parseVerdict(output string, result *ReviewResult) {
 		}
 	}
 
-	// Fallback: scan for verdict value with several formatting variants
-	// (handles missing spaces, Gemini markdown quirks, etc.)
+	// Phase 2: Provider-specific fallback heuristics.
+	switch providerKind {
+	case provider.Copilot:
+		parseCopilotVerdict(output, result)
+	case provider.Gemini:
+		parseGeminiVerdict(output, result)
+	default:
+		parseClaudeVerdict(output, result)
+	}
+}
+
+// parseClaudeVerdict handles fallback parsing for Claude output.
+// Claude almost always emits valid JSON; this is a rare edge case.
+func parseClaudeVerdict(output string, result *ReviewResult) {
 	norm := strings.ToLower(strings.ReplaceAll(output, " ", ""))
 	switch {
 	case strings.Contains(norm, `"verdict":"approve"`) ||
 		strings.Contains(strings.ToLower(output), "lgtm") ||
 		strings.Contains(strings.ToLower(output), "looks good to merge"):
 		result.Verdict = VerdictApprove
-		result.Summary = "Inferred approval from output"
+		result.Summary = "Inferred approval from output (claude fallback)"
 	case strings.Contains(norm, `"verdict":"reject"`):
 		result.Verdict = VerdictReject
-		result.Summary = "Inferred rejection from output"
+		result.Summary = "Inferred rejection from output (claude fallback)"
+	case strings.Contains(norm, `"verdict":"request_changes"`):
+		result.Verdict = VerdictRequestChanges
+		result.Summary = "Inferred request_changes from output (claude fallback)"
 	default:
-		// Do NOT scan for "request_changes" in prose — the prompt itself advertises
-		// that verdict value, so any parse failure would spuriously trigger it.
-		// If JSON extraction failed entirely, default to approve for human review.
 		result.Verdict = VerdictApprove
 		result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
 	}
+}
+
+// parseGeminiVerdict handles fallback parsing for Gemini output.
+// Gemini may wrap verdicts in markdown bold, headers, or key-value lines.
+func parseGeminiVerdict(output string, result *ReviewResult) {
+	lower := strings.ToLower(output)
+	norm := strings.ToLower(strings.ReplaceAll(output, " ", ""))
+
+	// First try the same JSON-fragment checks.
+	switch {
+	case strings.Contains(norm, `"verdict":"approve"`):
+		result.Verdict = VerdictApprove
+		result.Summary = "Inferred approval from output (gemini fallback)"
+		return
+	case strings.Contains(norm, `"verdict":"request_changes"`):
+		result.Verdict = VerdictRequestChanges
+		result.Summary = "Inferred request_changes from output (gemini fallback)"
+		return
+	case strings.Contains(norm, `"verdict":"reject"`):
+		result.Verdict = VerdictReject
+		result.Summary = "Inferred rejection from output (gemini fallback)"
+		return
+	}
+
+	// Gemini sometimes uses "Verdict: approve" or "**Verdict:** approve" in prose.
+	if v, ok := extractKeyValueVerdict(lower); ok {
+		result.Verdict = v
+		result.Summary = "Inferred verdict from key-value line (gemini fallback)"
+		return
+	}
+
+	// Natural language signals.
+	if containsAny(lower, "lgtm", "looks good to merge", "approve this", "code is correct and ready") {
+		result.Verdict = VerdictApprove
+		result.Summary = "Inferred approval from prose (gemini fallback)"
+		return
+	}
+	if !strings.Contains(lower, "no changes needed") && containsAny(lower, "changes needed", "changes need to", "request changes", "needs to be fixed", "issues that should be addressed") {
+		result.Verdict = VerdictRequestChanges
+		result.Summary = "Inferred request_changes from prose (gemini fallback)"
+		return
+	}
+
+	result.Verdict = VerdictApprove
+	result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
+}
+
+// parseCopilotVerdict handles fallback parsing for Copilot (Haiku) output.
+// Haiku frequently outputs natural language reviews without any JSON, so
+// this parser is the most aggressive at extracting verdicts from prose.
+func parseCopilotVerdict(output string, result *ReviewResult) {
+	lower := strings.ToLower(output)
+	norm := strings.ToLower(strings.ReplaceAll(output, " ", ""))
+
+	// Try JSON fragments first (sometimes Copilot does emit partial JSON).
+	switch {
+	case strings.Contains(norm, `"verdict":"approve"`):
+		result.Verdict = VerdictApprove
+		result.Summary = "Inferred approval from output (copilot fallback)"
+		return
+	case strings.Contains(norm, `"verdict":"request_changes"`):
+		result.Verdict = VerdictRequestChanges
+		result.Summary = "Inferred request_changes from output (copilot fallback)"
+		return
+	case strings.Contains(norm, `"verdict":"reject"`):
+		result.Verdict = VerdictReject
+		result.Summary = "Inferred rejection from output (copilot fallback)"
+		return
+	}
+
+	// Key-value style: "Verdict: approve", "**Verdict**: request_changes", etc.
+	if v, ok := extractKeyValueVerdict(lower); ok {
+		result.Verdict = v
+		result.Summary = "Inferred verdict from key-value line (copilot fallback)"
+		return
+	}
+
+	// Copilot/Haiku approval signals — broader set than other providers.
+	if containsAny(lower,
+		"lgtm", "looks good to merge", "looks good to me",
+		"i approve", "approve this", "approved",
+		"code is correct and ready", "ready to merge",
+		"no issues found", "no significant issues",
+	) {
+		result.Verdict = VerdictApprove
+		result.Summary = "Inferred approval from prose (copilot fallback)"
+		return
+	}
+
+	// Rejection signals.
+	if containsAny(lower,
+		"i reject", "rejecting this", "fundamental problem",
+		"requires a complete rethink", "cannot approve",
+	) {
+		result.Verdict = VerdictReject
+		result.Summary = "Inferred rejection from prose (copilot fallback)"
+		return
+	}
+
+	// Request-changes signals — check AFTER rejection to avoid false positives.
+	// Guard against "no changes needed" which is an approval signal.
+	if !strings.Contains(lower, "no changes needed") && containsAny(lower,
+		"request changes", "requesting changes", "changes requested",
+		"changes needed", "changes need to", "needs to be fixed", "should be addressed",
+		"issues that need", "please fix", "must be fixed",
+		"several issues", "some issues",
+	) {
+		result.Verdict = VerdictRequestChanges
+		result.Summary = "Inferred request_changes from prose (copilot fallback)"
+		return
+	}
+
+	result.Verdict = VerdictApprove
+	result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
+}
+
+// extractKeyValueVerdict looks for "verdict: <value>" or "**verdict**: <value>"
+// patterns in lowercased text. Returns the verdict and true if found.
+func extractKeyValueVerdict(lower string) (Verdict, bool) {
+	// Match patterns like "verdict: approve", "verdict : request_changes",
+	// "**verdict:** approve", "**verdict**: reject"
+	patterns := []string{
+		"verdict:",
+		"verdict :",
+		"**verdict**:",
+		"**verdict** :",
+		"**verdict:**",
+	}
+	for _, pat := range patterns {
+		idx := strings.Index(lower, pat)
+		if idx == -1 {
+			continue
+		}
+		// Extract the word(s) after the colon.
+		after := strings.TrimSpace(lower[idx+len(pat):])
+		// Take only the first line / first few words.
+		if nl := strings.IndexAny(after, "\n\r"); nl != -1 {
+			after = after[:nl]
+		}
+		after = strings.TrimSpace(after)
+		// Strip surrounding quotes, backticks, bold markers.
+		after = strings.Trim(after, "\"'`*")
+		after = strings.TrimSpace(after)
+
+		switch {
+		case strings.HasPrefix(after, "approve"):
+			return VerdictApprove, true
+		case strings.HasPrefix(after, "request_changes") || strings.HasPrefix(after, "request changes"):
+			return VerdictRequestChanges, true
+		case strings.HasPrefix(after, "reject"):
+			return VerdictReject, true
+		}
+	}
+	return "", false
+}
+
+// containsAny returns true if s contains any of the given substrings.
+func containsAny(s string, substrs ...string) bool {
+	for _, sub := range substrs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 
