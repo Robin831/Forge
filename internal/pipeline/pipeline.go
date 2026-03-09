@@ -266,6 +266,13 @@ func Run(ctx context.Context, p Params) *Outcome {
 			sResult := runSchematic(ctx, schemCfg, p.Bead, p.AnvilConfig.Path, providers[0])
 			outcome.SchematicResult = sResult
 
+			// Persist provider quota from the schematic's claude session.
+			if sResult.Quota != nil {
+				if err := p.DB.UpsertProviderQuota(string(providers[0].Kind), sResult.Quota); err != nil {
+					log.Printf("[pipeline:%s] Failed to update provider %s quota from schematic: %v", workerID, providers[0].Label(), err)
+				}
+			}
+
 			// Record Copilot premium request for schematic if applicable.
 			if providers[0].Kind == provider.Copilot && sResult.Action != schematic.ActionSkip {
 				if m := cost.CopilotPremiumMultiplier(providers[0].Model); m > 0 {

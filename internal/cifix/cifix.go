@@ -206,6 +206,14 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			}
 		}
 
+		// Persist provider quota from the cifix claude session.
+		if smithResult.Quota != nil && p.DB != nil {
+			pv := providers[activeProviderIdx]
+			if err := p.DB.UpsertProviderQuota(string(pv.Kind), smithResult.Quota); err != nil {
+				log.Printf("[cifix] PR #%d: Failed to update provider %s quota in DB: %v", p.PRNumber, pv.Label(), err)
+			}
+		}
+
 		if smithResult.RateLimited {
 			log.Printf("[cifix] PR #%d: All providers rate limited on attempt %d", p.PRNumber, attempt)
 			_ = p.DB.LogEvent(state.EventCIFixFailed,

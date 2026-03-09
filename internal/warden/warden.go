@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,6 +142,13 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 		}
 		// All providers exhausted
 		return nil, fmt.Errorf("all warden providers rate limited")
+	}
+
+	// Persist provider quota from the warden's claude session.
+	if smithResult.Quota != nil && db != nil {
+		if err := db.UpsertProviderQuota(string(usedProvider.Kind), smithResult.Quota); err != nil {
+			log.Printf("[warden:%s] Failed to update provider %s quota in DB: %v", beadID, usedProvider.Label(), err)
+		}
 	}
 
 	result := &ReviewResult{
