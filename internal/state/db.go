@@ -200,6 +200,7 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_workers_status ON workers(status);
 CREATE INDEX IF NOT EXISTS idx_workers_anvil ON workers(anvil);
+CREATE INDEX IF NOT EXISTS idx_workers_bead_anvil ON workers(bead_id, anvil);
 CREATE INDEX IF NOT EXISTS idx_prs_status ON prs(status);
 CREATE INDEX IF NOT EXISTS idx_prs_anvil ON prs(anvil);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
@@ -496,6 +497,22 @@ func (db *DB) ActiveWorkerByBeadAndAnvil(beadID, anvil string) (*Worker, error) 
 		return nil, nil
 	}
 	return &workers[0], nil
+}
+
+// HasWorkerRecord returns true if Forge has ever had a worker for the given
+// bead in the given anvil (any status). This is used by orphan recovery to
+// distinguish beads that Forge previously claimed from beads that are
+// in_progress because a human or external tool is working on them.
+func (db *DB) HasWorkerRecord(beadID, anvil string) (bool, error) {
+	var exists bool
+	err := db.conn.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM workers WHERE bead_id = ? AND anvil = ?)`,
+		beadID, anvil,
+	).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 // CompleteWorkersByBead marks all non-terminal workers for a bead as Done.

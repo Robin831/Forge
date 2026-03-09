@@ -1258,3 +1258,56 @@ func TestDB_ReadyToMerge(t *testing.T) {
 		t.Errorf("ReadyToMergePRs after update: expected 3 results, got %d", len(ready))
 	}
 }
+
+func TestDB_HasWorkerRecord(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// No record yet — should return false.
+	has, err := db.HasWorkerRecord("bd-orphan-1", "anvil-1")
+	if err != nil {
+		t.Fatalf("HasWorkerRecord: %v", err)
+	}
+	if has {
+		t.Fatal("expected no worker record before insert")
+	}
+
+	// Insert a worker (any status).
+	w := &Worker{
+		ID:        "w-1",
+		BeadID:    "bd-orphan-1",
+		Anvil:     "anvil-1",
+		Status:    WorkerDone,
+		StartedAt: time.Now(),
+	}
+	if err := db.InsertWorker(w); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+
+	// Now should return true.
+	has, err = db.HasWorkerRecord("bd-orphan-1", "anvil-1")
+	if err != nil {
+		t.Fatalf("HasWorkerRecord after insert: %v", err)
+	}
+	if !has {
+		t.Fatal("expected worker record after insert")
+	}
+
+	// Different anvil — should return false.
+	has, err = db.HasWorkerRecord("bd-orphan-1", "anvil-2")
+	if err != nil {
+		t.Fatalf("HasWorkerRecord different anvil: %v", err)
+	}
+	if has {
+		t.Fatal("expected no worker record for different anvil")
+	}
+}
