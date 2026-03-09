@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/notify"
 	"github.com/Robin831/Forge/internal/poller"
@@ -250,6 +251,13 @@ func Run(ctx context.Context, p Params) *Outcome {
 			sResult := runSchematic(ctx, schemCfg, p.Bead, p.AnvilConfig.Path, providers[0])
 			outcome.SchematicResult = sResult
 
+			// Record Copilot premium request for schematic if applicable.
+			if providers[0].Kind == provider.Copilot && sResult.Action != schematic.ActionSkip {
+				if m := cost.CopilotPremiumMultiplier(providers[0].Model); m > 0 {
+					_ = p.DB.AddCopilotRequest(cost.Today(), m)
+				}
+			}
+
 			switch sResult.Action {
 			case schematic.ActionDecompose:
 				log.Printf("[pipeline:%s] Schematic decomposed bead into %d sub-beads",
@@ -411,6 +419,17 @@ func Run(ctx context.Context, p Params) *Outcome {
 				}
 			}
 
+			// Record Copilot premium request if this was a copilot invocation
+			// that completed (not rate limited).
+			if pv.Kind == provider.Copilot && !smithResult.RateLimited {
+				multiplier := cost.CopilotPremiumMultiplier(pv.Model)
+				if multiplier > 0 {
+					if err := p.DB.AddCopilotRequest(cost.Today(), multiplier); err != nil {
+						log.Printf("[pipeline:%s] Failed to record copilot premium request: %v", workerID, err)
+					}
+				}
+			}
+
 			if !smithResult.RateLimited {
 				activeProviderIdx = pi // remember for the next iteration
 				break
@@ -540,6 +559,16 @@ func Run(ctx context.Context, p Params) *Outcome {
 		}
 
 		outcome.ReviewResult = reviewResult
+
+		// Record Copilot premium request for warden review if applicable.
+		if reviewResult.UsedProvider != nil && reviewResult.UsedProvider.Kind == provider.Copilot {
+			multiplier := cost.CopilotPremiumMultiplier(reviewResult.UsedProvider.Model)
+			if multiplier > 0 {
+				if err := p.DB.AddCopilotRequest(cost.Today(), multiplier); err != nil {
+					log.Printf("[pipeline:%s] Failed to record copilot premium request for warden: %v", workerID, err)
+				}
+			}
+		}
 
 		switch reviewResult.Verdict {
 		case warden.VerdictApprove:

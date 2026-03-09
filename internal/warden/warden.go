@@ -41,6 +41,8 @@ const wardenMaxTurns = 5
 type ReviewResult struct {
 	// Verdict is the review decision.
 	Verdict Verdict
+	// UsedProvider records which provider actually completed the review.
+	UsedProvider *provider.Provider
 	// Summary is a brief summary of the review.
 	Summary string
 	// Issues is a list of specific issues found.
@@ -122,6 +124,7 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 	var smithResult *smith.Result
 	// For non-Claude providers --max-turns is translated/dropped;
 	// pass flags as-is (provider.BuildArgs handles translation).
+	var usedProvider provider.Provider
 	for pi, pv := range pvList {
 		process, err := smith.SpawnWithProvider(ctx, worktreePath, prompt, logDir, pv, wardenFlags)
 		if err != nil {
@@ -129,6 +132,7 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 		}
 		smithResult = process.Wait()
 		if !smithResult.RateLimited {
+			usedProvider = pv
 			break
 		}
 		if pi+1 < len(pvList) {
@@ -140,9 +144,10 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 	}
 
 	result := &ReviewResult{
-		RawOutput: smithResult.Output,
-		Duration:  time.Since(start),
-		CostUSD:   smithResult.CostUSD,
+		RawOutput:    smithResult.Output,
+		Duration:     time.Since(start),
+		CostUSD:      smithResult.CostUSD,
+		UsedProvider: &usedProvider,
 	}
 
 	// Parse the verdict from the full text output (stream-json result field)

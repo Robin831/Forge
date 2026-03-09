@@ -518,7 +518,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				ExtraFlags:      d.config().Settings.ClaudeFlags,
 				DetectOptions:   cifixDetectOpts,
 				GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
-				Providers:       provider.FromConfig(d.config().Settings.Providers),
+				Providers:       d.filterCopilotIfLimited(provider.FromConfig(d.config().Settings.Providers)),
 			})
 			status := state.WorkerDone
 			if res.Error != nil {
@@ -554,7 +554,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				WorkerID:     workerID,
 				MaxAttempts:  d.cfg.Load().Settings.MaxReviewAttempts,
 				ExtraFlags:   d.cfg.Load().Settings.ClaudeFlags,
-				Providers:    provider.FromConfig(d.cfg.Load().Settings.Providers),
+				Providers:    d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers)),
 			})
 			status := state.WorkerDone
 			if res.Error != nil {
@@ -600,7 +600,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				DB:           d.db,
 				WorkerID:     workerID,
 				ExtraFlags:   d.cfg.Load().Settings.ClaudeFlags,
-				Providers:    provider.FromConfig(d.cfg.Load().Settings.Providers),
+				Providers:    d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers)),
 			})
 			status := state.WorkerDone
 			if !res.Success {
@@ -1055,7 +1055,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			AnvilName:                 bead.Anvil,
 			AnvilConfig:               anvilCfg,
 			ExtraFlags:                d.cfg.Load().Settings.ClaudeFlags,
-			Providers:                 provider.FromConfig(smithProviderSpecs),
+			Providers:                 d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
 			GoRaceDetection:           d.resolveGoRaceDetection(anvilCfg),
 			SmithTimeout:              d.cfg.Load().Settings.SmithTimeout,
 			AutoMergeCrucibleChildren: d.cfg.Load().Settings.IsAutoMergeCrucibleChildren(),
@@ -1153,7 +1153,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		Bead:            bead,
 		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
-		Providers:       provider.FromConfig(smithProviderSpecs),
+		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
 		Notifier:        d.notifier,
 		BaseBranch:      bead.EpicBranch,
 	}
@@ -1307,18 +1307,23 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		quotas, _ := d.db.GetAllProviderQuotas()
 		todayCost, _ := d.db.GetTodayCost()
 		costLimit := d.cfg.Load().Settings.DailyCostLimit
+		copilotReqs, _ := d.db.GetTodayCopilotRequests()
+		copilotLimit := d.cfg.Load().Settings.CopilotDailyRequestLimit
 		payload := ipc.StatusPayload{
-			Running:         true,
-			PID:             os.Getpid(),
-			Uptime:          time.Since(d.startTime).Round(time.Second).String(),
-			Workers:         len(workers),
-			QueueSize:       0, // Updated during poll
-			OpenPRs:         len(prs),
-			LastPoll:        "n/a",
-			Quotas:          quotas,
-			DailyCost:       todayCost,
-			DailyCostLimit:  costLimit,
-			CostLimitPaused: costLimit > 0 && todayCost >= costLimit,
+			Running:                true,
+			PID:                    os.Getpid(),
+			Uptime:                 time.Since(d.startTime).Round(time.Second).String(),
+			Workers:                len(workers),
+			QueueSize:              0, // Updated during poll
+			OpenPRs:                len(prs),
+			LastPoll:               "n/a",
+			Quotas:                 quotas,
+			DailyCost:              todayCost,
+			DailyCostLimit:         costLimit,
+			CostLimitPaused:        costLimit > 0 && todayCost >= costLimit,
+			CopilotPremiumRequests: copilotReqs,
+			CopilotRequestLimit:    copilotLimit,
+			CopilotLimitReached:    copilotLimit > 0 && copilotReqs >= float64(copilotLimit),
 		}
 		data, _ := json.Marshal(payload)
 		return ipc.Response{Type: "status", Payload: data}
@@ -2234,6 +2239,36 @@ func (d *Daemon) resolveGoRaceDetection(anvilCfg config.AnvilConfig) bool {
 		goRace = *anvilTemper.GoRaceDetection
 	}
 	return goRace
+}
+
+// filterCopilotIfLimited removes copilot providers from the list when the
+// daily copilot premium request limit has been reached. If the limit is 0
+// (unlimited) or not yet reached, the list is returned unchanged.
+func (d *Daemon) filterCopilotIfLimited(providers []provider.Provider) []provider.Provider {
+	limit := d.cfg.Load().Settings.CopilotDailyRequestLimit
+	if limit <= 0 {
+		return providers
+	}
+	used, err := d.db.GetTodayCopilotRequests()
+	if err != nil {
+		d.logger.Error("checking copilot premium requests", "error", err)
+		return providers
+	}
+	if used < float64(limit) {
+		return providers
+	}
+	// Filter out copilot providers.
+	filtered := make([]provider.Provider, 0, len(providers))
+	for _, pv := range providers {
+		if pv.Kind != provider.Copilot {
+			filtered = append(filtered, pv)
+		}
+	}
+	if len(filtered) < len(providers) {
+		d.logger.Info("copilot daily request limit reached, skipping copilot provider",
+			"used", fmt.Sprintf("%.1f", used), "limit", limit)
+	}
+	return filtered
 }
 
 // shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.

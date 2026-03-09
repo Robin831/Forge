@@ -64,6 +64,12 @@ type StatusPayload struct {
 	// currently paused due to hitting the daily cost limit. Manual run_bead
 	// dispatch remains allowed while this flag is true.
 	CostLimitPaused  bool                      `json:"cost_limit_paused,omitempty"`
+	// CopilotPremiumRequests is the weighted count of Copilot premium requests used today.
+	CopilotPremiumRequests float64 `json:"copilot_premium_requests,omitempty"`
+	// CopilotRequestLimit is the configured daily limit (0 = no limit).
+	CopilotRequestLimit int `json:"copilot_request_limit,omitempty"`
+	// CopilotLimitReached is true when the copilot daily request limit has been reached.
+	CopilotLimitReached bool `json:"copilot_limit_reached,omitempty"`
 }
 
 // KillWorkerPayload is the payload for a "kill_worker" command.

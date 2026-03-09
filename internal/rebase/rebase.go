@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
@@ -118,6 +119,11 @@ func (p *Params) rebaseWithSmith(ctx context.Context, providers []provider.Provi
 		if result.RateLimited {
 			lastErr = fmt.Errorf("provider %s rate-limited", pv.Label())
 			continue
+		}
+		if pv.Kind == provider.Copilot {
+			if m := cost.CopilotPremiumMultiplier(pv.Model); m > 0 && p.DB != nil {
+				_ = p.DB.AddCopilotRequest(cost.Today(), m)
+			}
 		}
 		if result.ExitCode != 0 || result.IsError {
 			return fmt.Errorf("Smith (%s) exited %d (subtype=%s)", pv.Label(), result.ExitCode, result.ResultSubtype)

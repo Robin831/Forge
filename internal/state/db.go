@@ -253,6 +253,12 @@ CREATE TABLE IF NOT EXISTS provider_quotas (
     updated_at         TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS copilot_premium_requests (
+    date             TEXT PRIMARY KEY,
+    requests_used    REAL NOT NULL DEFAULT 0,
+    request_limit    INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS queue_cache (
     bead_id     TEXT NOT NULL,
     anvil       TEXT NOT NULL,
@@ -1668,6 +1674,40 @@ func (db *DB) RecentDailyCosts(n int) ([]struct {
 		costs = append(costs, c)
 	}
 	return costs, rows.Err()
+}
+
+// --- Copilot Premium Request tracking ---
+
+// AddCopilotRequest records a Copilot premium request for today, weighted by
+// the model's multiplier (e.g. opus 4.6 = 3x per invocation).
+func (db *DB) AddCopilotRequest(date string, multiplier float64) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO copilot_premium_requests (date, requests_used)
+		 VALUES (?, ?)
+		 ON CONFLICT(date) DO UPDATE SET
+			requests_used = requests_used + excluded.requests_used`,
+		date, multiplier,
+	)
+	return err
+}
+
+// GetTodayCopilotRequests returns the total weighted premium requests used
+// today. Returns 0 if no row exists yet.
+func (db *DB) GetTodayCopilotRequests() (float64, error) {
+	return db.GetCopilotRequestsOn(time.Now().Format("2006-01-02"))
+}
+
+// GetCopilotRequestsOn returns the total weighted premium requests for the
+// given date (YYYY-MM-DD). Returns 0 if no row exists yet.
+func (db *DB) GetCopilotRequestsOn(date string) (float64, error) {
+	var used float64
+	err := db.conn.QueryRow(
+		`SELECT requests_used FROM copilot_premium_requests WHERE date = ?`, date).
+		Scan(&used)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return used, err
 }
 
 // --- Provider Quota tracking ---
