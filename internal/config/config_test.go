@@ -373,6 +373,37 @@ func TestIsVulncheckEnabled(t *testing.T) {
 	assert.False(t, s.IsVulncheckEnabled())
 }
 
+func TestLoad_DepcheckEnabled(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+anvils:
+  enabled-repo:
+    path: /some/path
+    depcheck_enabled: true
+  disabled-repo:
+    path: /other/path
+    depcheck_enabled: false
+  default-repo:
+    path: /default/path
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+
+	// Explicitly enabled
+	require.NotNil(t, cfg.Anvils["enabled-repo"].DepcheckEnabled)
+	assert.True(t, *cfg.Anvils["enabled-repo"].DepcheckEnabled)
+
+	// Explicitly disabled
+	require.NotNil(t, cfg.Anvils["disabled-repo"].DepcheckEnabled)
+	assert.False(t, *cfg.Anvils["disabled-repo"].DepcheckEnabled)
+
+	// Not set (nil = use default)
+	assert.Nil(t, cfg.Anvils["default-repo"].DepcheckEnabled)
+}
+
 func TestLoad_NoFile_UsesDefaults(t *testing.T) {
 	// Load with a path that doesn't exist → viper.ConfigFileNotFoundError → uses defaults
 	cfg, err := Load("/nonexistent/forge.yaml")
