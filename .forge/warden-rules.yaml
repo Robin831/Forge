@@ -239,3 +239,9 @@ rules:
       check: Verify that comments use platform-neutral terminology or explicitly qualify platform-specific terms. For example, use 'file identity' or 'file handle' instead of 'inode' when the code runs on Windows, where inodes do not exist in the Unix sense.
       source: copilot:PR#133
       added: "2026-03-09"
+    - id: changelog-fragment-bead-id-match
+      category: style
+      pattern: Adding or modifying files in changelog.d/
+      check: Verify the changelog fragment filename matches the current PR's bead ID (changelog.d/<bead-id>.md) and that the trailing bead reference in the bullet text also matches the same bead ID
+      source: copilot:PR#143
+      added: "2026-03-09"
