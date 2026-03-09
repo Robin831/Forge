@@ -352,8 +352,8 @@ func formatMultiLineEntry(prefix, contPrefix, raw string, maxLines int) []string
 	}
 	var result []string
 	for i, line := range kept {
-		if len(line) > 70 {
-			line = line[:67] + "..."
+		if len([]rune(line)) > 70 {
+			line = string([]rune(line)[:67]) + "..."
 		}
 		if i == 0 {
 			result = append(result, prefix+line)

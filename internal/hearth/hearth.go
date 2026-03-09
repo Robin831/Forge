@@ -1864,7 +1864,13 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 			start = 0
 		}
 		for i := end - 1; i >= start; i-- {
-			lines = append(lines, truncate(activityLines[i], width-4))
+			line := truncate(activityLines[i], width-4)
+			// Collapsed summary lines start with "▸" — apply dim styling
+			// after truncation to avoid cutting through ANSI escape sequences.
+			if strings.HasPrefix(activityLines[i], "▸") {
+				line = dimStyle.Render(line)
+			}
+			lines = append(lines, line)
 		}
 	}
 
@@ -2498,7 +2504,7 @@ type activityGroup struct {
 
 // groupActivityLines collapses consecutive same-type activity entries into
 // groups. The last (newest) group is expanded; older groups are collapsed
-// into a single summary line like "▸ [tool] ×5 — Read, Edit, Grep".
+// into a single summary line like "▸ [tool] x5 — Read, Edit, Grep".
 func groupActivityLines(lines []string) []string {
 	if len(lines) == 0 {
 		return nil
@@ -2536,9 +2542,10 @@ func groupActivityLines(lines []string) []string {
 	return result
 }
 
-// collapseActivityGroup produces a single summary line for a group.
-// For tool groups it extracts tool names: "▸ [tool] ×5 — Read, Edit, Grep"
-// For other types: "▸ [text] ×3"
+// collapseActivityGroup produces a single unstyled summary line for a group.
+// For tool groups it extracts tool names: "▸ [tool] x5 — Read, Edit, Grep"
+// For other types: "▸ [text] x3"
+// The caller is responsible for applying any visual styling after truncation.
 func collapseActivityGroup(g activityGroup) string {
 	// Count primary entries (not continuation lines).
 	count := 0
@@ -2561,22 +2568,14 @@ func collapseActivityGroup(g activityGroup) string {
 			}
 		}
 	}
-	header := fmt.Sprintf("%s %s[%s] x%d",
-		dimStyle.Render("▸"),
-		dimStyle.Render(""),
-		g.eventType, count)
 	if len(names) > 0 {
 		summary := strings.Join(names, ", ")
-		if len(summary) > 40 {
-			summary = summary[:37] + "..."
+		if len([]rune(summary)) > 40 {
+			summary = string([]rune(summary)[:37]) + "..."
 		}
-		header = fmt.Sprintf("%s %s",
-			dimStyle.Render(fmt.Sprintf("▸ [%s] x%d", g.eventType, count)),
-			dimStyle.Render("— "+summary))
-	} else {
-		header = dimStyle.Render(fmt.Sprintf("▸ [%s] x%d", g.eventType, count))
+		return fmt.Sprintf("▸ [%s] x%d — %s", g.eventType, count, summary)
 	}
-	return header
+	return fmt.Sprintf("▸ [%s] x%d", g.eventType, count)
 }
 
 // groupedWorkerActivity returns the grouped activity lines for the currently
