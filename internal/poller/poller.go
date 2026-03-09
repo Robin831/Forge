@@ -29,14 +29,22 @@ type Bead struct {
 	Assignee    string   `json:"assignee"`
 	Parent      string   `json:"parent"`
 	Labels      []string `json:"labels"`
-	Blocks      []string `json:"blocks"`      // Bead IDs that this bead blocks (children)
-	DependsOn   []string `json:"depends_on"`   // Bead IDs that this bead depends on
+	Blocks       []string      `json:"blocks"`        // Bead IDs that this bead blocks (children)
+	DependsOn    []string      `json:"depends_on"`    // Bead IDs that this bead depends on
+	Dependencies []BeadDep     `json:"dependencies"`  // Detailed dependency info from bd
 
 	// Forge-injected: which anvil this bead belongs to
 	Anvil string `json:"-"`
 	// Forge-injected: epic branch name resolved from parent epic's labels.
 	// When set, this bead should branch from and PR to this branch instead of main.
 	EpicBranch string `json:"-"`
+}
+
+// BeadDep represents a dependency entry in the bd JSON output.
+type BeadDep struct {
+	IssueID     string `json:"issue_id"`
+	DependsOnID string `json:"depends_on_id"`
+	Type        string `json:"type"` // "parent-child", "blocks", etc.
 }
 
 // AnvilResult holds the poll result for a single anvil.
@@ -124,18 +132,47 @@ func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Be
 		beads[i].Anvil = name
 	}
 
-	// Build Blocks lists from children's Parent references.
-	// bd ready returns children with a "parent" field but the parent bead
-	// itself doesn't include a "blocks" array. We reconstruct it here so
-	// that IsCrucibleCandidate can detect epics with children.
+	// Build Blocks lists from children's Parent references and Dependencies.
+	// bd ready returns children with a "parent" field and/or a "dependencies"
+	// array, but the parent bead itself may not include a "blocks" array.
+	// We reconstruct it here so that IsCrucibleCandidate can detect parents
+	// with children.
 	beadIdx := make(map[string]int, len(beads))
 	for i := range beads {
 		beadIdx[beads[i].ID] = i
 	}
+	blocksSet := make(map[string]map[string]bool) // parent ID -> set of child IDs
+	addBlock := func(parentID, childID string) {
+		if _, ok := beadIdx[parentID]; !ok {
+			return
+		}
+		if blocksSet[parentID] == nil {
+			blocksSet[parentID] = make(map[string]bool)
+		}
+		blocksSet[parentID][childID] = true
+	}
 	for _, b := range beads {
+		// Parent field directly links child to parent
 		if b.Parent != "" {
-			if idx, ok := beadIdx[b.Parent]; ok {
-				beads[idx].Blocks = append(beads[idx].Blocks, b.ID)
+			addBlock(b.Parent, b.ID)
+		}
+		// Dependencies array may contain parent-child or blocks relationships
+		for _, dep := range b.Dependencies {
+			if dep.DependsOnID != "" && dep.DependsOnID != b.ID {
+				addBlock(dep.DependsOnID, b.ID)
+			}
+		}
+	}
+	for parentID, children := range blocksSet {
+		idx := beadIdx[parentID]
+		// Merge with any existing Blocks from the JSON
+		existing := make(map[string]bool, len(beads[idx].Blocks))
+		for _, id := range beads[idx].Blocks {
+			existing[id] = true
+		}
+		for childID := range children {
+			if !existing[childID] {
+				beads[idx].Blocks = append(beads[idx].Blocks, childID)
 			}
 		}
 	}
