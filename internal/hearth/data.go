@@ -61,6 +61,9 @@ type DataSource struct {
 	// AnvilNames lists all registered anvil names (sorted) so the Queue panel
 	// can show empty anvils with a (0) count.
 	AnvilNames []string
+	// Cost limits from config for the Usage panel display.
+	DailyCostLimit           float64
+	CopilotDailyRequestLimit int
 }
 
 // Tick returns a Bubbletea command that sends a TickMsg after the interval.
@@ -467,6 +470,87 @@ func FetchCrucibles() tea.Cmd {
 	}
 }
 
+// FormatCost formats a USD cost for display.
+func FormatCost(usd float64) string {
+	if usd < 0.01 {
+		return fmt.Sprintf("$%.4f", usd)
+	}
+	return fmt.Sprintf("$%.2f", usd)
+}
+
+// FormatTokens formats a token count for compact display.
+// Returns "1.2M" for millions, "340k" for thousands, or the raw number for small values.
+func FormatTokens(n int) string {
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	if n >= 1_000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+// UsageData holds the aggregated usage information for the Usage panel.
+type UsageData struct {
+	Providers    []ProviderUsage
+	TotalCost    float64
+	CostLimit    float64 // 0 = no limit
+	CopilotUsed  float64
+	CopilotLimit int // 0 = no limit
+}
+
+// ProviderUsage holds cost/token data for a single provider.
+type ProviderUsage struct {
+	Provider     string
+	Cost         float64
+	InputTokens  int
+	OutputTokens int
+}
+
+// UpdateUsageMsg carries refreshed usage data to the TUI.
+type UpdateUsageMsg struct {
+	Data UsageData
+}
+
+// FetchUsage reads today's per-provider costs and copilot premium requests.
+func FetchUsage(ds *DataSource) tea.Cmd {
+	return func() tea.Msg {
+		today := time.Now().Format("2006-01-02")
+
+		var data UsageData
+		data.CostLimit = ds.DailyCostLimit
+		data.CopilotLimit = ds.CopilotDailyRequestLimit
+
+		// Per-provider costs
+		provCosts, err := ds.DB.GetProviderDailyCosts(today)
+		if err == nil {
+			for _, pc := range provCosts {
+				data.Providers = append(data.Providers, ProviderUsage{
+					Provider:     pc.Provider,
+					Cost:         pc.EstimatedCost,
+					InputTokens:  pc.InputTokens,
+					OutputTokens: pc.OutputTokens,
+				})
+				data.TotalCost += pc.EstimatedCost
+			}
+		}
+
+		// If no per-provider data, fall back to aggregate daily cost
+		if len(data.Providers) == 0 {
+			if totalCost, err := ds.DB.GetTodayCostOn(today); err == nil && totalCost > 0 {
+				data.TotalCost = totalCost
+			}
+		}
+
+		// Copilot premium requests
+		if used, err := ds.DB.GetCopilotRequestsOn(today); err == nil {
+			data.CopilotUsed = used
+		}
+
+		return UpdateUsageMsg{Data: data}
+	}
+}
+
 // FetchAll returns a batch command that refreshes all panels.
 func FetchAll(ds *DataSource) tea.Cmd {
 	return tea.Batch(
@@ -476,13 +560,6 @@ func FetchAll(ds *DataSource) tea.Cmd {
 		FetchWorkers(ds.DB),
 		FetchEvents(ds.DB, EventFetchLimit),
 		FetchCrucibles(),
+		FetchUsage(ds),
 	)
-}
-
-// FormatCost formats a USD cost for display.
-func FormatCost(usd float64) string {
-	if usd < 0.01 {
-		return fmt.Sprintf("$%.4f", usd)
-	}
-	return fmt.Sprintf("$%.2f", usd)
 }

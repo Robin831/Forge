@@ -259,6 +259,17 @@ CREATE TABLE IF NOT EXISTS copilot_premium_requests (
     request_limit    INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS provider_daily_costs (
+    date             TEXT NOT NULL,
+    provider         TEXT NOT NULL,
+    input_tokens     INTEGER NOT NULL DEFAULT 0,
+    output_tokens    INTEGER NOT NULL DEFAULT 0,
+    cache_read       INTEGER NOT NULL DEFAULT 0,
+    cache_write      INTEGER NOT NULL DEFAULT 0,
+    estimated_cost   REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (date, provider)
+);
+
 CREATE TABLE IF NOT EXISTS queue_cache (
     bead_id     TEXT NOT NULL,
     anvil       TEXT NOT NULL,
@@ -1592,6 +1603,53 @@ func (db *DB) AddDailyCost(date string, input, output, cacheRead, cacheWrite int
 		date, input, output, cacheRead, cacheWrite, cost,
 	)
 	return err
+}
+
+// AddProviderDailyCost adds token usage to a specific provider's daily aggregate.
+func (db *DB) AddProviderDailyCost(date, prov string, input, output, cacheRead, cacheWrite int, cost float64) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO provider_daily_costs (date, provider, input_tokens, output_tokens, cache_read, cache_write, estimated_cost)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(date, provider) DO UPDATE SET
+			input_tokens = input_tokens + excluded.input_tokens,
+			output_tokens = output_tokens + excluded.output_tokens,
+			cache_read = cache_read + excluded.cache_read,
+			cache_write = cache_write + excluded.cache_write,
+			estimated_cost = estimated_cost + excluded.estimated_cost`,
+		date, prov, input, output, cacheRead, cacheWrite, cost,
+	)
+	return err
+}
+
+// ProviderDailyCost holds per-provider cost data for a single day.
+type ProviderDailyCost struct {
+	Provider      string
+	InputTokens   int
+	OutputTokens  int
+	CacheRead     int
+	CacheWrite    int
+	EstimatedCost float64
+}
+
+// GetProviderDailyCosts returns per-provider cost data for a given date.
+func (db *DB) GetProviderDailyCosts(date string) ([]ProviderDailyCost, error) {
+	rows, err := db.conn.Query(
+		`SELECT provider, input_tokens, output_tokens, cache_read, cache_write, estimated_cost
+		 FROM provider_daily_costs WHERE date = ? ORDER BY estimated_cost DESC`, date)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var costs []ProviderDailyCost
+	for rows.Next() {
+		var c ProviderDailyCost
+		if err := rows.Scan(&c.Provider, &c.InputTokens, &c.OutputTokens, &c.CacheRead, &c.CacheWrite, &c.EstimatedCost); err != nil {
+			return nil, err
+		}
+		costs = append(costs, c)
+	}
+	return costs, rows.Err()
 }
 
 // GetDailyCost returns cost data for a specific date.
