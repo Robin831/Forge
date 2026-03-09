@@ -120,20 +120,34 @@ func Create(ctx context.Context, p CreateParams) (*PR, error) {
 			Status:     state.PROpen,
 			CreatedAt:  pr.Created,
 		}
-		_ = p.DB.InsertPR(dbPR)
-		_ = p.DB.LogEvent(state.EventPRCreated,
-			fmt.Sprintf("PR #%d: %s", prNumber, prURL), p.BeadID, p.AnvilName)
-
-		// Immediately check review status so has_pending_reviews is set before
-		// the first bellows poll, closing the race window where a PR with pending
-		// review requests briefly appears in "Ready to Merge".
-		if status, err := CheckStatus(ctx, p.WorktreePath, prNumber); err == nil {
-			_ = p.DB.UpdatePRMergeability(
-				dbPR.ID,
-				status.Mergeable == "CONFLICTING",
-				status.UnresolvedThreads > 0,
-				status.HasPendingReviewRequests(),
+		if err := p.DB.InsertPR(dbPR); err != nil {
+			log.Printf("[ghpr] failed to insert PR in DB (bead=%s, anvil=%s, number=%d): %v", p.BeadID, p.AnvilName, prNumber, err)
+		} else {
+			_ = p.DB.LogEvent(
+				state.EventPRCreated,
+				fmt.Sprintf("PR #%d: %s", prNumber, prURL),
+				p.BeadID,
+				p.AnvilName,
 			)
+
+			// Immediately check review status so has_pending_reviews is set before
+			// the first bellows poll, closing the race window where a PR with pending
+			// review requests briefly appears in "Ready to Merge".
+			// Uses CheckStatusLight to avoid the expensive GraphQL unresolved-thread
+			// pagination — we only need reviewRequests and mergeable here.
+			if status, err := CheckStatusLight(ctx, p.WorktreePath, prNumber); err != nil {
+				log.Printf("[ghpr] warning: failed to CheckStatusLight for PR #%d (worktree %q): %v", prNumber, p.WorktreePath, err)
+			} else if dbPR.ID != 0 {
+				m := MergeabilityFromStatus(status)
+				if err := p.DB.UpdatePRMergeability(
+					dbPR.ID,
+					m.HasConflicts,
+					m.HasUnresolvedThreads,
+					m.HasPendingReviews,
+				); err != nil {
+					log.Printf("[ghpr] warning: failed to UpdatePRMergeability for PR record %d (PR #%d): %v", dbPR.ID, prNumber, err)
+				}
+			}
 		}
 	}
 
@@ -177,6 +191,53 @@ func Merge(ctx context.Context, worktreePath string, prNumber int, strategy stri
 
 	log.Printf("[ghpr] Merged PR #%d", prNumber)
 	return nil
+}
+
+// MergeabilityInputs holds the computed boolean inputs for UpdatePRMergeability,
+// extracted from a PRStatus. This struct exists so the conversion logic can be
+// unit-tested without invoking the gh CLI.
+type MergeabilityInputs struct {
+	HasConflicts          bool
+	HasUnresolvedThreads  bool
+	HasPendingReviews     bool
+}
+
+// MergeabilityFromStatus converts a PRStatus into the boolean inputs needed by
+// state.DB.UpdatePRMergeability.
+func MergeabilityFromStatus(s *PRStatus) MergeabilityInputs {
+	return MergeabilityInputs{
+		HasConflicts:         s.Mergeable == "CONFLICTING",
+		HasUnresolvedThreads: s.UnresolvedThreads > 0,
+		HasPendingReviews:    s.HasPendingReviewRequests(),
+	}
+}
+
+// CheckStatusLight gets the review-request and mergeable state of a PR without
+// fetching unresolved thread counts (which requires expensive GraphQL pagination).
+// Use this when you only need reviewRequests/mergeable — e.g., right after PR creation.
+func CheckStatusLight(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, error) {
+	args := []string{
+		"pr", "view", fmt.Sprintf("%d", prNumber),
+		"--json", "state,reviewRequests,mergeable",
+	}
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
+	cmd.Dir = worktreePath
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh pr view failed: %w\nstderr: %s", err, stderr.String())
+	}
+
+	var status PRStatus
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		return nil, fmt.Errorf("parsing pr status: %w", err)
+	}
+
+	return &status, nil
 }
 
 // CheckStatus gets the current status of a PR via gh pr view.

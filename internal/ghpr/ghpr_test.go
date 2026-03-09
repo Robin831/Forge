@@ -142,6 +142,60 @@ func TestPRStatus_HasPendingReviewRequests(t *testing.T) {
 	}
 }
 
+func TestMergeabilityFromStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status PRStatus
+		want   MergeabilityInputs
+	}{
+		{
+			"clean PR",
+			PRStatus{Mergeable: "MERGEABLE"},
+			MergeabilityInputs{},
+		},
+		{
+			"conflicting",
+			PRStatus{Mergeable: "CONFLICTING"},
+			MergeabilityInputs{HasConflicts: true},
+		},
+		{
+			"pending reviews",
+			PRStatus{
+				Mergeable:      "MERGEABLE",
+				ReviewRequests: []ReviewRequest{{Login: "alice"}},
+			},
+			MergeabilityInputs{HasPendingReviews: true},
+		},
+		{
+			"unresolved threads",
+			PRStatus{
+				Mergeable:         "MERGEABLE",
+				UnresolvedThreads: 3,
+			},
+			MergeabilityInputs{HasUnresolvedThreads: true},
+		},
+		{
+			"all flags set",
+			PRStatus{
+				Mergeable:         "CONFLICTING",
+				UnresolvedThreads: 1,
+				ReviewRequests:    []ReviewRequest{{Slug: "team-a"}},
+			},
+			MergeabilityInputs{
+				HasConflicts:         true,
+				HasUnresolvedThreads: true,
+				HasPendingReviews:    true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MergeabilityFromStatus(&tt.status)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // TestReviewAuthorUnmarshal is a regression test for the bug where Review.Author
 // was typed as string and failed JSON unmarshaling when GitHub returned a nested
 // {"login":"..."} object, silently producing empty reviews and suppressing all
