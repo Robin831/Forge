@@ -1912,22 +1912,29 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 		}
 		for i := start; i < end; i++ {
 			nav := m.activityNavItems[i]
+			isCursor := m.focused == PanelLiveActivity && i == m.activityVP.cursor
 			if nav.isGroupHeader {
-				// Collapsed group header — visible but distinct
+				// Group header (▸ collapsed / ▾ expanded)
 				line := truncate(nav.text, contentWidth)
-				line = activityGroupHeaderStyle.Render(line)
-				if m.focused == PanelLiveActivity && i == m.activityVP.cursor {
-					line = selectedStyle.Render(nav.text)
+				if isCursor {
+					line = selectedStyle.Render(line)
+				} else {
+					line = activityGroupHeaderStyle.Render(line)
 				}
 				lines = append(lines, line)
 			} else {
-				// Expanded line — word wrap to show full text
-				wrapped := wordWrap(nav.text, contentWidth)
+				// Expanded child line — wrap to reduced width, then indent each line
+				childWidth := contentWidth - 2
+				if childWidth < 10 {
+					childWidth = 10
+				}
+				wrapped := wordWrap(nav.text, childWidth)
 				for wi, wl := range wrapped {
-					if m.focused == PanelLiveActivity && i == m.activityVP.cursor && wi == 0 {
-						wl = selectedStyle.Render(wl)
+					indented := "  " + wl
+					if isCursor && wi == 0 {
+						indented = selectedStyle.Render(indented)
 					}
-					lines = append(lines, wl)
+					lines = append(lines, indented)
 				}
 			}
 		}
@@ -2676,7 +2683,7 @@ func (m *Model) rebuildActivityNav() {
 			for li := len(g.lines) - 1; li >= 0; li-- {
 				m.activityNavItems = append(m.activityNavItems, activityNavItem{
 					groupType: g.eventType,
-					text:      "  " + g.lines[li],
+					text:      g.lines[li],
 				})
 			}
 		}
