@@ -29,6 +29,7 @@ const (
 	PanelReadyToMerge
 	PanelNeedsAttention
 	PanelWorkers
+	PanelUsage
 	PanelLiveActivity
 	PanelEvents
 
@@ -195,6 +196,7 @@ type Model struct {
 	readyToMerge   []ReadyToMergeItem
 	workers        []WorkerItem
 	events         []EventItem
+	usage          UsageData
 
 	// Data source for polling
 	data *DataSource
@@ -567,6 +569,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.workers = msg.Items
 		m.workerVP.ClampToTotal(len(msg.Items))
 
+	case UpdateUsageMsg:
+		m.usage = msg.Data
+
 	case UpdateEventsMsg:
 		m.events = msg.Items
 		m.eventRevision++
@@ -655,13 +660,13 @@ func (m *Model) View() string {
 
 	// Left column: Queue (top) + Ready to Merge (middle) + Needs Attention (bottom)
 	leftColumn := m.renderLeftColumn(queueWidth, topHeight, bottomHeight)
-	// Center: worker list (full height)
-	workerPanel := m.renderWorkerList(workerWidth, topHeight+bottomHeight)
+	// Center: worker list (top ~85%) + Usage panel (bottom ~15%)
+	centerColumn := m.renderCenterColumn(workerWidth, topHeight, bottomHeight)
 	// Right column: Live Activity (top) + Events (bottom)
 	rightColumn := m.renderRightColumn(activityWidth, topHeight, bottomHeight)
 
 	// Final assembly
-	columns := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, workerPanel, rightColumn)
+	columns := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, centerColumn, rightColumn)
 	view := lipgloss.JoinVertical(lipgloss.Left,
 		header,
 		columns,
@@ -1722,6 +1727,90 @@ func (m *Model) renderWorkerList(width, height int) string {
 			}
 			lines = append(lines, titleLine)
 		}
+	}
+
+	if height <= 0 {
+		return style.Render("")
+	}
+	content := strings.Join(lines, "\n")
+	return style.Height(height).Render(content)
+}
+
+// renderCenterColumn renders Workers (top) + Usage (bottom), splitting the
+// center column using the same stacked pattern as the right column.
+func (m *Model) renderCenterColumn(width, topHeight, bottomHeight int) string {
+	fullHeight := topHeight + bottomHeight
+
+	// Usage panel gets a compact fixed height (~8 lines content + 2 border = 10).
+	usagePanelHeight := 10
+	if fullHeight < 20 {
+		// Terminal too small for a split — render workers only.
+		return m.renderWorkerList(width, fullHeight)
+	}
+
+	workerHeight := fullHeight - usagePanelHeight + 2 // +2: stacked panels share 2 border lines
+	if workerHeight < 6 {
+		workerHeight = 6
+		usagePanelHeight = fullHeight - workerHeight
+	}
+
+	top := m.renderWorkerList(width, workerHeight)
+	bottom := m.renderUsagePanel(width, usagePanelHeight-2) // -2 for stacked border accounting
+	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
+}
+
+// renderUsagePanel renders a compact panel showing today's per-provider costs,
+// copilot premium requests, and total cost vs limit.
+func (m *Model) renderUsagePanel(width, height int) string {
+	style := panelStyle.Width(width)
+	if m.focused == PanelUsage {
+		style = focusedPanelStyle.Width(width)
+	}
+
+	title := panelTitleStyle.Render("Usage")
+
+	var lines []string
+	lines = append(lines, title)
+
+	if len(m.usage.Providers) == 0 && m.usage.TotalCost == 0 && m.usage.CopilotUsed == 0 {
+		lines = append(lines, dimStyle.Render("No usage today"))
+	} else {
+		// Per-provider lines
+		for _, p := range m.usage.Providers {
+			name := p.Provider
+			if len(name) > 0 {
+				name = strings.ToUpper(name[:1]) + name[1:]
+			}
+			if len(name) > 8 {
+				name = name[:8]
+			}
+			// Pad provider name to 8 chars for alignment
+			for len(name) < 8 {
+				name += " "
+			}
+			line := fmt.Sprintf("%s %s  %s in / %s out",
+				name, FormatCost(p.Cost),
+				FormatTokens(p.InputTokens), FormatTokens(p.OutputTokens))
+			lines = append(lines, line)
+		}
+
+		// Copilot premium requests (if any)
+		if m.usage.CopilotUsed > 0 || m.usage.CopilotLimit > 0 {
+			copilotLine := fmt.Sprintf("Copilot  %.0f", m.usage.CopilotUsed)
+			if m.usage.CopilotLimit > 0 {
+				copilotLine += fmt.Sprintf("/%d premium req", m.usage.CopilotLimit)
+			} else {
+				copilotLine += " premium req"
+			}
+			lines = append(lines, copilotLine)
+		}
+
+		// Total line
+		totalLine := fmt.Sprintf("Total    %s", FormatCost(m.usage.TotalCost))
+		if m.usage.CostLimit > 0 {
+			totalLine += fmt.Sprintf(" / %s limit", FormatCost(m.usage.CostLimit))
+		}
+		lines = append(lines, totalLine)
 	}
 
 	if height <= 0 {

@@ -48,11 +48,13 @@ var hearthCmd = &cobra.Command{
 		sort.Strings(anvilNames)
 
 		ds := &hearth.DataSource{
-			DB:                   db,
-			MaxCIFixAttempts:     cfg.Settings.MaxCIFixAttempts,
-			MaxReviewFixAttempts: cfg.Settings.MaxReviewFixAttempts,
-			MaxRebaseAttempts:    cfg.Settings.MaxRebaseAttempts,
-			AnvilNames:          anvilNames,
+			DB:                       db,
+			MaxCIFixAttempts:         cfg.Settings.MaxCIFixAttempts,
+			MaxReviewFixAttempts:     cfg.Settings.MaxReviewFixAttempts,
+			MaxRebaseAttempts:        cfg.Settings.MaxRebaseAttempts,
+			AnvilNames:              anvilNames,
+			DailyCostLimit:           cfg.Settings.DailyCostLimit,
+			CopilotDailyRequestLimit: cfg.Settings.CopilotDailyRequestLimit,
 		}
 
 		model := hearth.NewModel(ds)

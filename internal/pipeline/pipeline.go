@@ -430,6 +430,15 @@ func Run(ctx context.Context, p Params) *Outcome {
 				}
 			}
 
+			// Record per-provider and aggregate daily costs for non-rate-limited completions.
+			if !smithResult.RateLimited && (smithResult.TokensIn > 0 || smithResult.TokensOut > 0 || smithResult.CostUSD > 0) {
+				today := cost.Today()
+				pvName := string(pv.Kind)
+				_ = p.DB.AddDailyCost(today, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
+				_ = p.DB.AddProviderDailyCost(today, pvName, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
+				_ = p.DB.AddBeadCost(p.Bead.ID, p.AnvilName, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
+			}
+
 			if !smithResult.RateLimited {
 				activeProviderIdx = pi // remember for the next iteration
 				break
