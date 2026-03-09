@@ -227,3 +227,15 @@ rules:
       check: Verify that new configuration options affecting runtime behavior (feature toggles, per-entity filters, operational flags) have unit tests covering both enabled and disabled paths to prevent regressions
       source: copilot:PR#131
       added: "2026-03-09"
+    - id: normalize-path-once
+      category: other
+      pattern: A file path is resolved/normalized in one function but the original (possibly relative) path is used elsewhere in the same struct
+      check: When a path is normalized (e.g., via filepath.Abs or filepath.EvalSymlinks), verify the normalized value is stored back or used consistently across all operations (logging, watching, loading) to avoid mismatches if the working directory changes
+      source: copilot:PR#133
+      added: "2026-03-09"
+    - id: platform-accurate-terminology
+      category: style
+      pattern: Comments or documentation referencing platform-specific concepts (e.g., 'inode', 'symlink', 'fork') in cross-platform code
+      check: Verify that comments use platform-neutral terminology or explicitly qualify platform-specific terms. For example, use 'file identity' or 'file handle' instead of 'inode' when the code runs on Windows, where inodes do not exist in the Unix sense.
+      source: copilot:PR#133
+      added: "2026-03-09"
