@@ -231,6 +231,9 @@ func (s *Scanner) createBeads(ctx context.Context, result *CheckResult) {
 	for _, u := range append(result.Patch, result.Minor...) {
 		if DedupCheckWithCache(cache, u.Path) {
 			log.Printf("[depcheck] %s: bead/PR already exists for %s, skipping", result.Anvil, u.Path)
+			_ = s.db.LogEvent(state.EventDepcheckDedup,
+				fmt.Sprintf("Skipped duplicate %s dependency update for %s (%s → %s)", result.Ecosystem, u.Path, u.Current, u.Latest),
+				"", result.Anvil)
 			continue
 		}
 		s.createUpdateBead(ctx, result, "auto", u)
@@ -239,6 +242,9 @@ func (s *Scanner) createBeads(ctx context.Context, result *CheckResult) {
 	for _, u := range result.Major {
 		if DedupCheckWithCache(cache, u.Path) {
 			log.Printf("[depcheck] %s: bead/PR already exists for %s, skipping", result.Anvil, u.Path)
+			_ = s.db.LogEvent(state.EventDepcheckDedup,
+				fmt.Sprintf("Skipped duplicate %s dependency update for %s (%s → %s)", result.Ecosystem, u.Path, u.Current, u.Latest),
+				"", result.Anvil)
 			continue
 		}
 		s.createUpdateBead(ctx, result, "major", u)
