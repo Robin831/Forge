@@ -349,6 +349,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 					new.Settings.MaxRebaseAttempts,
 				)
 			}
+			// Update bellows and depcheck when anvils change
+			d.updateAnvilPaths(old, new)
 			d.db.LogEvent(state.EventConfigReload, "Configuration reloaded", "", "")
 		})
 		go func() {
@@ -2258,6 +2260,55 @@ func shouldDispatch(bead poller.Bead, anvilCfg config.AnvilConfig) bool {
 		// Validate() prevents this in practice but guard against runtime surprises.
 		slog.Warn("unknown auto_dispatch mode; disabling auto-dispatch for safety", "mode", anvilCfg.AutoDispatch)
 		return false
+	}
+}
+
+// updateAnvilPaths is called from the hot-reload callback when the set of
+// configured anvils changes. It pushes updated path maps into bellows and
+// depcheck so they pick up additions, removals, and path changes without a
+// daemon restart.
+func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
+	// Quick check: did anvils actually change?
+	changed := len(old.Anvils) != len(new.Anvils)
+	if !changed {
+		for name, newAnvil := range new.Anvils {
+			oldAnvil, ok := old.Anvils[name]
+			if !ok || oldAnvil.Path != newAnvil.Path {
+				changed = true
+				break
+			}
+			// Also detect depcheck_enabled toggle
+			oldDE := oldAnvil.DepcheckEnabled
+			newDE := newAnvil.DepcheckEnabled
+			if (oldDE == nil) != (newDE == nil) || (oldDE != nil && newDE != nil && *oldDE != *newDE) {
+				changed = true
+				break
+			}
+		}
+	}
+	if !changed {
+		return
+	}
+
+	// Build new anvil path map
+	paths := make(map[string]string, len(new.Anvils))
+	for name, a := range new.Anvils {
+		if a.Path != "" {
+			paths[name] = a.Path
+		}
+	}
+
+	// Update bellows monitor
+	if d.bellowsMonitor != nil {
+		d.bellowsMonitor.UpdateAnvilPaths(paths)
+		d.logger.Info("updated bellows anvil paths", "count", len(paths))
+	}
+
+	// Update depcheck scanner (filter by depcheck_enabled)
+	if d.depcheckScanner != nil {
+		depcheckPaths := filterDepcheckAnvils(paths, new.Anvils)
+		d.depcheckScanner.UpdateAnvilPaths(depcheckPaths)
+		d.logger.Info("updated depcheck anvil paths", "count", len(depcheckPaths))
 	}
 }
 

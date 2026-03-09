@@ -52,6 +52,7 @@ type Monitor struct {
 	db             *state.DB
 	interval       time.Duration
 	anvilPaths     map[string]string // anvil name → path
+	pathsMu        sync.RWMutex     // protects anvilPaths
 	handlers       []Handler
 	mu             sync.Mutex
 	lastStatuses   map[string]*prSnapshot // anvil/PR number → last known state
@@ -98,6 +99,14 @@ func (m *Monitor) OnEvent(h Handler) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.handlers = append(m.handlers, h)
+}
+
+// UpdateAnvilPaths replaces the set of monitored anvil paths. This is safe to
+// call while Run is active and takes effect on the next poll cycle.
+func (m *Monitor) UpdateAnvilPaths(paths map[string]string) {
+	m.pathsMu.Lock()
+	m.anvilPaths = paths
+	m.pathsMu.Unlock()
 }
 
 // Refresh triggers an immediate poll cycle.
@@ -158,7 +167,9 @@ func (m *Monitor) checkAll(ctx context.Context) {
 
 // checkPR polls a single PR and emits events for any state changes.
 func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
+	m.pathsMu.RLock()
 	anvilPath, ok := m.anvilPaths[pr.Anvil]
+	m.pathsMu.RUnlock()
 	if !ok {
 		log.Printf("[bellows] Unknown anvil %s for PR #%d", pr.Anvil, pr.Number)
 		return

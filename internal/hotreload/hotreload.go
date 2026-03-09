@@ -13,9 +13,7 @@
 //   - settings.max_rebase_attempts (applied immediately to lifecycle manager)
 //   - notifications.* (all notification settings)
 //   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
-//
-// NOT hot-reloadable (require restart):
-//   - anvils.* adding or removing anvil entries
+//   - anvils.* adding or removing anvil entries (updates bellows and depcheck)
 package hotreload
 
 import (
@@ -201,19 +199,23 @@ func applyChanges(old, new *config.Config) []string {
 			old.Settings.MaxRebaseAttempts, new.Settings.MaxRebaseAttempts))
 	}
 
-	// Warn about non-reloadable changes
-	if len(old.Anvils) != len(new.Anvils) {
-		changes = append(changes, "WARNING: anvil changes require restart")
-	} else {
-		// Report per-anvil max_smiths changes (these ARE hot-reloadable since
-		// pollAndDispatch reads d.cfg.Anvils each cycle via the OnChange callback)
-		for name, newAnvil := range new.Anvils {
-			if oldAnvil, ok := old.Anvils[name]; ok {
-				if oldAnvil.MaxSmiths != newAnvil.MaxSmiths {
-					changes = append(changes, fmt.Sprintf("anvil %s max_smiths: %d → %d",
-						name, oldAnvil.MaxSmiths, newAnvil.MaxSmiths))
-				}
+	// Detect anvil changes (add, remove, path change, max_smiths)
+	for name, newAnvil := range new.Anvils {
+		if oldAnvil, ok := old.Anvils[name]; ok {
+			if oldAnvil.MaxSmiths != newAnvil.MaxSmiths {
+				changes = append(changes, fmt.Sprintf("anvil %s max_smiths: %d → %d",
+					name, oldAnvil.MaxSmiths, newAnvil.MaxSmiths))
 			}
+			if oldAnvil.Path != newAnvil.Path {
+				changes = append(changes, fmt.Sprintf("anvil %s path changed", name))
+			}
+		} else {
+			changes = append(changes, fmt.Sprintf("anvil %s added", name))
+		}
+	}
+	for name := range old.Anvils {
+		if _, ok := new.Anvils[name]; !ok {
+			changes = append(changes, fmt.Sprintf("anvil %s removed", name))
 		}
 	}
 
