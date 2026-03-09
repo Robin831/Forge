@@ -1,2 +1,0 @@
-category: Fixed
-- **CI fix worker completion now resets lifecycle state** - After a CI fix worker completed, the lifecycle manager's CIPassing flag stayed false, causing all subsequent CI failure events from bellows to be silently dropped. The PR would get permanently stuck in needs_fix status with no new fix workers dispatched. Added NotifyCIFixCompleted() to properly reset the lifecycle state after a successful CI fix. (Forge-lx3)

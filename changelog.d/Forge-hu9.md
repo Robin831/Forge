@@ -1,2 +1,0 @@
-category: Added
-- **Epic/feature branch support for multi-bead work** - Epic beads now automatically create a shared feature branch. Child beads branch from and create PRs targeting the epic branch instead of main. Epic branches are detected via parent epic relationships, with branch names configurable through `epic-branch:<name>` labels or defaulting to `epic/<bead-id>`. Rebase operations on epic child PRs correctly target the epic branch. (Forge-hu9)

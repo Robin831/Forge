@@ -1,2 +1,0 @@
-category: Fixed
-- **Merged PR no longer lingers in Ready to Merge panel** - After merging a PR via the TUI, the daemon now immediately updates the PR status to 'merged' and completes associated workers, removing it from the Ready to Merge panel instantly instead of waiting up to 2 minutes for the next bellows poll cycle. A bellows refresh is also triggered for prompt downstream cleanup. (Forge-y6m)

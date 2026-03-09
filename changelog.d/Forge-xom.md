@@ -1,2 +1,0 @@
-category: Fixed
-- **Extract shared scroll viewport helper for Hearth panels** - Replaced duplicated per-panel scroll logic with a shared `scrollViewport` struct that manages cursor selection and viewport offset independently. This fixes the Ready to Merge panel where the viewport jumped with the cursor instead of scrolling smoothly, and prevents future panels from reintroducing the same bug. (Forge-xom)

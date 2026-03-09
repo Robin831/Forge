@@ -1,2 +1,0 @@
-category: Added
-- **Warden learnable review rules** - The Warden can now accumulate domain-specific review rules from Copilot feedback. Rules are stored per-anvil in `.forge/warden-rules.yaml` and automatically included in the review prompt. Use `forge warden learn --anvil <name>` to distill rules from Copilot PR comments, `forge warden list` to view them, and `forge warden forget` to remove stale rules. (Forge-fox)

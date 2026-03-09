@@ -1,2 +1,0 @@
-category: Fixed
-- **CIFix worker now handles GitHub-only CI checks** - Previously, when GitHub CI failed on checks that Temper doesn't cover (e.g. changelog-check), the cifix worker would run Temper locally, see it pass, and return "fixed" — burning a ci_fix_count attempt for nothing. Now cifix fetches the failing check names from GitHub before deciding, and spawns Smith with the actual CI failure logs and check-specific guidance when there are GitHub-only failures. (Forge-v22)
