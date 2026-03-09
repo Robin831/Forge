@@ -197,6 +197,7 @@ func TestProvider_BuildArgs_Copilot_CustomModel(t *testing.T) {
 
 func TestProvider_BuildArgs_Copilot_ProviderModelField(t *testing.T) {
 	// Provider.Model is honored for Copilot (config-driven model selection).
+	// Dashes in version are translated to dots for Copilot CLI compatibility.
 	p := Provider{Kind: Copilot, Model: "claude-opus-4-6"}
 	args := p.BuildArgs(nil)
 	modelIdx := -1
@@ -207,7 +208,7 @@ func TestProvider_BuildArgs_Copilot_ProviderModelField(t *testing.T) {
 		}
 	}
 	assert.NotEqual(t, -1, modelIdx, "expected --model flag")
-	assert.Equal(t, "claude-opus-4-6", args[modelIdx])
+	assert.Equal(t, "claude-opus-4.6", args[modelIdx])
 }
 
 func TestProvider_BuildArgs_Copilot_ClaudeFlagModelOverridesProviderModel(t *testing.T) {

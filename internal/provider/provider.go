@@ -196,6 +196,11 @@ func (p Provider) copilotArgs(claudeFlags []string) []string {
 		}
 	}
 
+	// Copilot CLI uses dots in version numbers (claude-haiku-4.5) while the
+	// Anthropic convention uses dashes (claude-haiku-4-5). Translate so users
+	// can use either format in forge.yaml.
+	model = copilotModelName(model)
+
 	return []string{
 		"-p", "-",
 		"--yolo",
@@ -203,6 +208,27 @@ func (p Provider) copilotArgs(claudeFlags []string) []string {
 		"--model", model,
 		"--no-auto-update",
 	}
+}
+
+// copilotModelName translates a model ID from Anthropic's dash convention
+// (claude-haiku-4-5) to Copilot CLI's dot convention (claude-haiku-4.5).
+// If the model already uses dots or isn't a recognized pattern, it's returned as-is.
+func copilotModelName(model string) string {
+	// Known prefixes for Claude models used in Copilot.
+	prefixes := []string{
+		"claude-sonnet-",
+		"claude-haiku-",
+		"claude-opus-",
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(model, prefix) {
+			version := model[len(prefix):]
+			// Replace the first dash with a dot in the version part (e.g. "4-5" → "4.5").
+			version = strings.Replace(version, "-", ".", 1)
+			return prefix + version
+		}
+	}
+	return model
 }
 
 // Defaults returns the default ordered list of providers.
