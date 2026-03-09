@@ -1254,3 +1254,182 @@ func TestSetStatusResetsErrorFlag(t *testing.T) {
 		t.Error("expected statusMsgTime to be set")
 	}
 }
+
+// --- Queue grouping / navigation tests ---
+
+func TestRebuildQueueNav_SingleAnvil_NoHeaders(t *testing.T) {
+	m := Model{
+		queue: []QueueItem{
+			{BeadID: "bd-1", Anvil: "repo"},
+			{BeadID: "bd-2", Anvil: "repo"},
+		},
+	}
+	m.rebuildQueueNav()
+	if m.queueGrouped {
+		t.Error("expected queueGrouped=false for single anvil")
+	}
+	if len(m.queueNavItems) != 2 {
+		t.Fatalf("expected 2 nav items, got %d", len(m.queueNavItems))
+	}
+	for i, nav := range m.queueNavItems {
+		if nav.isAnvil {
+			t.Errorf("nav item %d should not be an anvil header", i)
+		}
+		if nav.beadIdx != i {
+			t.Errorf("nav item %d: expected beadIdx=%d, got %d", i, i, nav.beadIdx)
+		}
+	}
+}
+
+func TestRebuildQueueNav_MultiAnvil_CollapsedByDefault(t *testing.T) {
+	m := Model{
+		queue: []QueueItem{
+			{BeadID: "bd-1", Anvil: "alpha"},
+			{BeadID: "bd-2", Anvil: "beta"},
+		},
+	}
+	m.rebuildQueueNav()
+	if !m.queueGrouped {
+		t.Error("expected queueGrouped=true for multiple anvils")
+	}
+	// Collapsed: should only have 2 anvil headers, no bead items.
+	if len(m.queueNavItems) != 2 {
+		t.Fatalf("expected 2 nav items (headers only), got %d", len(m.queueNavItems))
+	}
+	for _, nav := range m.queueNavItems {
+		if !nav.isAnvil {
+			t.Error("expected all nav items to be anvil headers when collapsed")
+		}
+	}
+}
+
+func TestRebuildQueueNav_MultiAnvil_ExpandedShowsBeads(t *testing.T) {
+	m := Model{
+		queue: []QueueItem{
+			{BeadID: "bd-1", Anvil: "alpha"},
+			{BeadID: "bd-2", Anvil: "alpha"},
+			{BeadID: "bd-3", Anvil: "beta"},
+		},
+		queueExpandedAnvils: map[string]bool{"alpha": true},
+	}
+	m.rebuildQueueNav()
+	// alpha header + 2 beads + beta header = 4
+	if len(m.queueNavItems) != 4 {
+		t.Fatalf("expected 4 nav items, got %d", len(m.queueNavItems))
+	}
+	if !m.queueNavItems[0].isAnvil || m.queueNavItems[0].anvilName != "alpha" {
+		t.Error("expected first item to be alpha header")
+	}
+	if m.queueNavItems[1].beadIdx != 0 || m.queueNavItems[2].beadIdx != 1 {
+		t.Error("expected alpha beads at indices 0,1")
+	}
+	if !m.queueNavItems[3].isAnvil || m.queueNavItems[3].anvilName != "beta" {
+		t.Error("expected last item to be beta header")
+	}
+}
+
+func TestRebuildQueueNav_NilExpandedAnvils_NoPanic(t *testing.T) {
+	m := Model{
+		queue: []QueueItem{
+			{BeadID: "bd-1", Anvil: "alpha"},
+			{BeadID: "bd-2", Anvil: "beta"},
+		},
+		// queueExpandedAnvils intentionally nil
+	}
+	// Should not panic
+	m.rebuildQueueNav()
+	if m.queueExpandedAnvils == nil {
+		t.Error("expected queueExpandedAnvils to be initialized")
+	}
+}
+
+func TestEnterTogglesAnvilExpansion(t *testing.T) {
+	m := Model{
+		focused: PanelQueue,
+		queue: []QueueItem{
+			{BeadID: "bd-1", Anvil: "alpha"},
+			{BeadID: "bd-2", Anvil: "beta"},
+		},
+		queueVP: scrollViewport{cursor: 0},
+	}
+	// First Enter: expand alpha
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.queueExpandedAnvils["alpha"] {
+		t.Error("expected alpha to be expanded after Enter")
+	}
+	// Should now have: alpha header + bd-1 + beta header = 3
+	if len(m.queueNavItems) != 3 {
+		t.Fatalf("expected 3 nav items after expand, got %d", len(m.queueNavItems))
+	}
+	// Second Enter on alpha header: collapse
+	m.queueVP.cursor = 0
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.queueExpandedAnvils["alpha"] {
+		t.Error("expected alpha to be collapsed after second Enter")
+	}
+	if len(m.queueNavItems) != 2 {
+		t.Fatalf("expected 2 nav items after collapse, got %d", len(m.queueNavItems))
+	}
+}
+
+func TestEscCollapsesToAnvilHeader(t *testing.T) {
+	m := Model{
+		focused: PanelQueue,
+		queue: []QueueItem{
+			{BeadID: "bd-1", Anvil: "alpha"},
+			{BeadID: "bd-2", Anvil: "alpha"},
+			{BeadID: "bd-3", Anvil: "beta"},
+		},
+		queueExpandedAnvils: map[string]bool{"alpha": true},
+	}
+	m.rebuildQueueNav()
+	// Cursor on a bead inside alpha (index 1 = first bead under alpha)
+	m.queueVP.cursor = 1
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.queueExpandedAnvils["alpha"] {
+		t.Error("expected alpha to be collapsed after Esc")
+	}
+	// Cursor should jump to alpha header
+	if m.queueVP.cursor != 0 {
+		t.Errorf("expected cursor at 0 (alpha header), got %d", m.queueVP.cursor)
+	}
+}
+
+func TestSelectedQueueBead_DirectQueueSet_NoExplicitNav(t *testing.T) {
+	m := Model{
+		queue: []QueueItem{
+			{BeadID: "bd-1", Anvil: "test", Section: "ready"},
+		},
+		queueVP: scrollViewport{cursor: 0},
+		// queueNavItems intentionally not built — selectedQueueBead should handle it
+	}
+	bead := m.selectedQueueBead()
+	if bead == nil {
+		t.Fatal("expected selectedQueueBead to return a bead after lazy nav build")
+	}
+	if bead.BeadID != "bd-1" {
+		t.Errorf("expected BeadID=bd-1, got %s", bead.BeadID)
+	}
+}
+
+func TestCursorClampedOnCollapse(t *testing.T) {
+	m := Model{
+		focused: PanelQueue,
+		queue: []QueueItem{
+			{BeadID: "bd-1", Anvil: "alpha"},
+			{BeadID: "bd-2", Anvil: "alpha"},
+			{BeadID: "bd-3", Anvil: "beta"},
+		},
+		queueExpandedAnvils: map[string]bool{"alpha": true, "beta": true},
+	}
+	m.rebuildQueueNav()
+	// alpha header, bd-1, bd-2, beta header, bd-3 = 5 items
+	m.queueVP.cursor = 4 // pointing at bd-3
+	// Collapse beta via Esc
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	// After collapse: alpha header, bd-1, bd-2, beta header = 4 items
+	// Cursor should be at beta header (index 3)
+	if m.queueVP.cursor >= len(m.queueNavItems) {
+		t.Errorf("cursor %d out of range (nav has %d items)", m.queueVP.cursor, len(m.queueNavItems))
+	}
+}

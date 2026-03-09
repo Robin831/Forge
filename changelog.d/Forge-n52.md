@@ -1,0 +1,2 @@
+category: Added
+- **Hearth Queue: collapsible anvil sections** - When multiple anvils are registered, the Queue panel groups beads under collapsible anvil headers showing bead counts (e.g. "forge (3)"). Press Enter to expand/collapse an anvil; press Esc inside an expanded anvil to collapse it. Beads within each anvil remain grouped by status (Ready / Unlabeled / In Progress). Single-anvil setups keep the existing flat layout. (Forge-n52)
