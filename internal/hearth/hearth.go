@@ -434,6 +434,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.queueNavItems) > 0 && m.queueVP.cursor < len(m.queueNavItems) {
 					nav := m.queueNavItems[m.queueVP.cursor]
 					if nav.isAnvil {
+						if m.queueExpandedAnvils == nil {
+							m.queueExpandedAnvils = make(map[string]bool)
+						}
 						m.queueExpandedAnvils[nav.anvilName] = !m.queueExpandedAnvils[nav.anvilName]
 						m.rebuildQueueNav()
 					} else if nav.beadIdx >= 0 && nav.beadIdx < len(m.queue) {
@@ -801,6 +804,9 @@ func (m *Model) setStatus(msg string, isError bool) {
 // When only 1 anvil exists, items are listed flat (no headers).
 func (m *Model) rebuildQueueNav() {
 	m.queueNavItems = nil
+	if m.queueExpandedAnvils == nil {
+		m.queueExpandedAnvils = make(map[string]bool)
+	}
 
 	// Collect unique anvils in display order (first appearance).
 	seen := map[string]bool{}
@@ -849,9 +855,6 @@ func (m *Model) rebuildQueueNav() {
 // hasn't been built yet (e.g. when queue is set directly in tests).
 func (m *Model) ensureQueueNav() {
 	if len(m.queueNavItems) == 0 && len(m.queue) > 0 {
-		if m.queueExpandedAnvils == nil {
-			m.queueExpandedAnvils = make(map[string]bool)
-		}
 		m.rebuildQueueNav()
 	}
 }
@@ -859,6 +862,7 @@ func (m *Model) ensureQueueNav() {
 // selectedQueueBead returns the QueueItem under the cursor, or nil if the
 // cursor is on an anvil header or out of range.
 func (m *Model) selectedQueueBead() *QueueItem {
+	m.ensureQueueNav()
 	if len(m.queueNavItems) == 0 || m.queueVP.cursor >= len(m.queueNavItems) {
 		return nil
 	}
