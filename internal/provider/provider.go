@@ -86,11 +86,29 @@ func (p Provider) Format() OutputFormat {
 	return StreamJSON
 }
 
+// BuildArgsWithPrompt returns args with the prompt text injected as an argument.
+// Used for providers like Copilot that don't support stdin prompt delivery.
+func (p Provider) BuildArgsWithPrompt(claudeFlags []string, prompt string) []string {
+	args := p.BuildArgs(claudeFlags)
+	// Prepend -p <prompt> so Copilot receives the prompt as an argument.
+	return append([]string{"-p", prompt}, args...)
+}
+
+// PromptViaStdin returns true if this provider reads the prompt from stdin.
+// When false, the caller must write the prompt to a file and pass the path
+// via BuildArgsWithPromptFile instead of BuildArgs.
+func (p Provider) PromptViaStdin() bool {
+	return p.Kind != Copilot
+}
+
 // BuildArgs returns the full argument list for a one-shot non-interactive run.
 //
 // The prompt text is NOT included in the returned args — it must be written to
 // the process's stdin instead.  This avoids the Windows CreateProcess
 // command-line length limit (32 767 chars) for large Forge prompts.
+//
+// For providers where PromptViaStdin() returns false (e.g. Copilot), use
+// BuildArgsWithPromptFile instead.
 //
 // claudeFlags are additional flags specified by callers (e.g. --max-turns or
 // --tools "").  For non-Claude providers these are translated where possible
@@ -201,8 +219,10 @@ func (p Provider) copilotArgs(claudeFlags []string) []string {
 	// can use either format in forge.yaml.
 	model = copilotModelName(model)
 
+	// Copilot CLI does NOT support reading the prompt from stdin via "-p -".
+	// The prompt placeholder is filled by SpawnWithProvider which writes a
+	// temp file and calls BuildArgsWithPromptFile to inject the path.
 	return []string{
-		"-p", "-",
 		"--yolo",
 		"--output-format", "json",
 		"--model", model,

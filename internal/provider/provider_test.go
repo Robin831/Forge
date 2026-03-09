@@ -162,8 +162,16 @@ func TestProvider_BuildArgs_Copilot(t *testing.T) {
 	assert.NotContains(t, args, "--silent")
 	assert.Contains(t, args, "--model")
 	assert.Contains(t, args, "--no-auto-update")
-	assert.Contains(t, args, "-p")
-	assert.Contains(t, args, "-")
+	// Copilot does not include -p in BuildArgs (prompt is passed via BuildArgsWithPrompt).
+	assert.NotContains(t, args, "-p")
+}
+
+func TestProvider_BuildArgsWithPrompt_Copilot(t *testing.T) {
+	p := Provider{Kind: Copilot}
+	args := p.BuildArgsWithPrompt(nil, "test prompt")
+	assert.Equal(t, "-p", args[0])
+	assert.Equal(t, "test prompt", args[1])
+	assert.Contains(t, args, "--yolo")
 }
 
 func TestProvider_BuildArgs_Copilot_DefaultModel(t *testing.T) {
