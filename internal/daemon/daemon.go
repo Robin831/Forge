@@ -1024,9 +1024,11 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 
 	d.logger.Info("dispatching bead", "bead", bead.ID, "anvil", bead.Anvil, "title", bead.Title)
 
-	// Handle epic beads: create the feature branch and mark in_progress,
-	// but skip the full pipeline (no code changes needed for the branch itself).
-	if poller.IsEpicBead(bead) {
+	// Handle epic beads: when the Crucible is enabled and the bead has children,
+	// fall through to the Crucible path which handles branch creation, child
+	// orchestration, and final PR. The legacy path only applies to epics that
+	// either have no children or when the Crucible is disabled.
+	if poller.IsEpicBead(bead) && !(d.cfg.Load().Settings.CrucibleEnabled && crucible.IsCrucibleCandidate(bead)) {
 		epicBranch := poller.ExtractParentBranch(bead)
 		if epicBranch != "" {
 			d.logger.Info("creating epic branch", "bead", bead.ID, "branch", epicBranch)
