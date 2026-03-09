@@ -406,10 +406,19 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Start dependency update checker (if enabled)
 	if d.config().Settings.DepcheckInterval > 0 {
+		// Filter out anvils that have depcheck_enabled explicitly set to false.
+		depcheckAnvils := make(map[string]string, len(monitorAnvils))
+		for name, path := range monitorAnvils {
+			if ac, ok := d.cfg.Load().Anvils[name]; ok && ac.DepcheckEnabled != nil && !*ac.DepcheckEnabled {
+				log.Printf("[depcheck] Skipping anvil %q (depcheck_enabled=false)", name)
+				continue
+			}
+			depcheckAnvils[name] = path
+		}
 		d.depcheckScanner = depcheck.New(d.db,
 			d.config().Settings.DepcheckInterval,
 			d.config().Settings.DepcheckTimeout,
-			monitorAnvils)
+			depcheckAnvils)
 		go func() {
 			if err := d.depcheckScanner.Run(ctx); err != nil && err != context.Canceled {
 				d.logger.Error("Depcheck scanner error", "error", err)

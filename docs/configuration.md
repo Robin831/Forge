@@ -87,6 +87,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `schematic_enabled` | bool\|null | null (use global) | Per-anvil override for `settings.schematic_enabled`. When set, takes precedence over the global setting. |
 | `golangci_lint` | bool\|null | null (auto-detect) | Per-anvil override for golangci-lint in Temper. When null, golangci-lint runs if the binary is found on PATH. Set to `false` to disable. |
 | `go_race_detection` | bool | `false` | Enable the `-race` flag for Go tests in Temper. |
+| `depcheck_enabled` | bool\|null | null (enabled) | Per-anvil toggle for depcheck scanning. When null, depcheck runs as normal. Set to `false` to skip this anvil entirely. |
 
 ### Auto-Dispatch Modes
 

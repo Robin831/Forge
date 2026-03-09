@@ -49,6 +49,10 @@ type AnvilConfig struct {
 	// separate temper step for this anvil. When nil, the global setting
 	// is used. Default off since -race slows tests and increases memory.
 	GoRaceDetection *bool `mapstructure:"go_race_detection"`
+	// DepcheckEnabled controls whether the depcheck monitor scans this
+	// anvil for outdated dependencies. When nil (default), depcheck runs
+	// as normal (opt-out). Set to false to skip this anvil entirely.
+	DepcheckEnabled *bool `mapstructure:"depcheck_enabled"`
 }
 
 // SettingsConfig holds global operational settings.
