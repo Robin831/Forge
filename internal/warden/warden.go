@@ -377,7 +377,7 @@ func parseGeminiVerdict(output string, result *ReviewResult) {
 		result.Summary = "Inferred approval from prose (gemini fallback)"
 		return
 	}
-	if containsAny(lower, "changes need", "request changes", "needs to be fixed", "issues that should be addressed") {
+	if !strings.Contains(lower, "no changes needed") && containsAny(lower, "changes needed", "changes need to", "request changes", "needs to be fixed", "issues that should be addressed") {
 		result.Verdict = VerdictRequestChanges
 		result.Summary = "Inferred request_changes from prose (gemini fallback)"
 		return
@@ -440,9 +440,10 @@ func parseCopilotVerdict(output string, result *ReviewResult) {
 	}
 
 	// Request-changes signals — check AFTER rejection to avoid false positives.
-	if containsAny(lower,
+	// Guard against "no changes needed" which is an approval signal.
+	if !strings.Contains(lower, "no changes needed") && containsAny(lower,
 		"request changes", "requesting changes", "changes requested",
-		"changes need", "needs to be fixed", "should be addressed",
+		"changes needed", "changes need to", "needs to be fixed", "should be addressed",
 		"issues that need", "please fix", "must be fixed",
 		"several issues", "some issues",
 	) {
@@ -460,7 +461,13 @@ func parseCopilotVerdict(output string, result *ReviewResult) {
 func extractKeyValueVerdict(lower string) (Verdict, bool) {
 	// Match patterns like "verdict: approve", "verdict : request_changes",
 	// "**verdict:** approve", "**verdict**: reject"
-	patterns := []string{"verdict:", "**verdict**:", "**verdict:**"}
+	patterns := []string{
+		"verdict:",
+		"verdict :",
+		"**verdict**:",
+		"**verdict** :",
+		"**verdict:**",
+	}
 	for _, pat := range patterns {
 		idx := strings.Index(lower, pat)
 		if idx == -1 {
