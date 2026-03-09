@@ -9,18 +9,19 @@ try {
     Write-Host "Stopping Forge..." -ForegroundColor Yellow
     forge down
 
+    # Wait for the forge process to exit
+    Write-Host "Waiting for Forge process to exit..." -ForegroundColor Yellow
+    while (Get-Process -Name forge -ErrorAction SilentlyContinue) {
+        Write-Host "." -NoNewline
+        Start-Sleep -Seconds 1
+    }
+    Write-Host " done"
+
     Write-Host "Pulling latest..." -ForegroundColor Yellow
     git pull
 
     Write-Host "Building..." -ForegroundColor Yellow
     go install .\cmd\forge\
-
-    Write-Host "Waiting 30s for cleanup..." -ForegroundColor Yellow
-    foreach ($i in 30..1) {
-        Write-Host "`r$i seconds remaining..." -NoNewline
-        Start-Sleep -Seconds 1
-    }
-    Write-Host ""
 
     Write-Host "Starting Forge..." -ForegroundColor Green
     forge up
