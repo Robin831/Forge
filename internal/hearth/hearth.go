@@ -96,7 +96,8 @@ type WorkerItem struct {
 	Status        string
 	Duration      string
 	CostUSD       float64
-	Type          string   // "smith", "warden", "temper", "cifix", "reviewfix"
+	Type          string   // "smith", "warden", "temper", "cifix", "reviewfix", "rebase"
+	PRNumber      int      // PR number for bellows-triggered workers
 	LastLog       string   // Last line from the worker log
 	PID           int      // Process ID for kill
 	LogPath       string   // Path to the worker's log file
@@ -1528,8 +1529,12 @@ func (m *Model) renderWorkerList(width, height int) string {
 			item := m.workers[i]
 			status := workerStatusStyle(item.Status)
 			phase := phaseTag(item.Type)
+			beadAndPR := item.BeadID
+			if item.PRNumber > 0 {
+				beadAndPR = fmt.Sprintf("%s PR#%d", item.BeadID, item.PRNumber)
+			}
 			mainLine := fmt.Sprintf("%s %s %s %s %s",
-				status, phase, item.BeadID,
+				status, phase, beadAndPR,
 				dimStyle.Render(item.Anvil), item.Duration)
 			if i == m.workerVP.cursor {
 				mainLine = selectedStyle.Render(mainLine)
@@ -1981,6 +1986,8 @@ func workerTypeIcon(t string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("🔧")
 	case "reviewfix":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render("📝")
+	case "rebase":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("🔀")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("?")
 	}
