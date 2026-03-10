@@ -296,8 +296,8 @@ rules:
     - id: needs-human-circuit-breaker-prefix
       category: error-handling
       pattern: Code calling markChildNeedsHuman or writing needs_human=1 retry records with a LastError string
-      check: Verify the LastError value starts with a 'circuit breaker:' prefix so the daemon's DispatchCircuitBrokenBeadIDSet filter in the dispatch loop will match it and prevent re-dispatch. A needs_human record with a non-matching prefix will be ignored by that dispatch filter and the bead may be re-dispatched unexpectedly.
-      source: copilot:PR#166
+      check: Verify that error message prefixes accurately identify the originating subsystem or failure mode. Do not reuse prefixes from unrelated code paths (e.g. using 'circuit breaker:' for a crucible child failure) as this conflates failure modes and misleads operators reading logs or state. This guidance supersedes any older advice to force 'circuit breaker:' prefixes on generic needs_human errors — dispatch now relies on NeedsHumanBeadIDSet(), not on specific LastError prefixes, so choose a prefix that accurately reflects the actual failure mode.
+      source: copilot:PR#169
       added: "2026-03-10"
     - id: handle-db-upsert-errors
       category: error-handling
@@ -310,18 +310,6 @@ rules:
       pattern: UpsertRetry called with a partially-populated RetryRecord struct
       check: Verify that UpsertRetry does not silently overwrite existing retry state (retry_count, next_retry, dispatch_failures, clarification_needed). Load the existing record first and only update the fields you intend to change, preserving counters and backoff state.
       source: copilot:PR#166
-      added: "2026-03-10"
-    - id: accurate-error-prefix
-      category: error-handling
-      pattern: Code that sets LastError or error messages using a prefix from a different subsystem or failure mode than the one actually being handled
-      check: Verify that error message prefixes accurately identify the originating subsystem or failure mode. Do not reuse prefixes from unrelated code paths (e.g. using 'circuit breaker:' for a crucible child failure) as this conflates failure modes and misleads operators reading logs or state.
-      source: copilot:PR#169
-      added: "2026-03-10"
-    - id: rename-broadened-functions
-      category: style
-      pattern: A function's scope or behavior is widened (e.g., returning a broader set of results) but its name still reflects the original, narrower purpose
-      check: Verify that function names, variable names, and surrounding terminology accurately describe the current behavior after any scope changes — rename them if the old name would mislead future readers
-      source: copilot:PR#169
       added: "2026-03-10"
     - id: test-dispatch-eligibility-filters
       category: testing
