@@ -1143,7 +1143,7 @@ func (m *Model) renderQueueActionMenu() string {
 		return ""
 	}
 
-	menuWidth := 60
+	menuWidth := 68
 	contentWidth := menuWidth - actionMenuStyle.GetHorizontalFrameSize()
 	labels := queueActionMenuLabels()
 
@@ -1171,22 +1171,22 @@ func (m *Model) renderQueueActionMenu() string {
 	}
 	if m.queueActionTarget.Description != "" {
 		lines = append(lines, "")
-		// Word-wrap description to fit popup width, max 3 lines.
+		// Word-wrap description to fit popup width, max 5 lines.
 		wrapped := wordWrap(m.queueActionTarget.Description, contentWidth)
-		if len(wrapped) <= 3 {
+		if len(wrapped) <= 5 {
 			for _, line := range wrapped {
 				lines = append(lines, dimStyle.Render(line))
 			}
 		} else {
-			for i := 0; i < 2; i++ {
+			for i := 0; i < 4; i++ {
 				lines = append(lines, dimStyle.Render(wrapped[i]))
 			}
-			// Truncate 3rd line and append ellipsis to indicate more text.
-			third := []rune(wrapped[2])
-			if len(third) > contentWidth-3 {
-				third = third[:contentWidth-3]
+			// Truncate 5th line and append ellipsis to indicate more text.
+			fifth := []rune(wrapped[4])
+			if len(fifth) > contentWidth-3 {
+				fifth = fifth[:contentWidth-3]
 			}
-			lines = append(lines, dimStyle.Render(string(third)+"..."))
+			lines = append(lines, dimStyle.Render(string(fifth)+"..."))
 		}
 	}
 

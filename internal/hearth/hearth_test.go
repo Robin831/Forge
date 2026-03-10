@@ -1171,7 +1171,7 @@ func TestRenderQueueActionMenuWrapsDescription(t *testing.T) {
 }
 
 func TestRenderQueueActionMenuTruncatesLongDescription(t *testing.T) {
-	// Very long description should be capped at 3 lines with ellipsis on the last line.
+	// Very long description should be capped at 5 lines with ellipsis on the last line.
 	longDesc := strings.Repeat("word ", 100) // 500 chars
 	item := QueueItem{
 		BeadID:      "bd-t3",
