@@ -262,7 +262,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 				// Serialize per-anvil so load→add→save is atomic per repo.
 				anvilMu.Lock()
 				defer anvilMu.Unlock()
-				m.learnRulesFromPR(learnCtx, pr.Anvil, anvilPath, prNum)
+				m.learnRulesFromPR(learnCtx, pr.Anvil, anvilPath, pr.BeadID, prNum)
 			}()
 		}
 	} else if newSnap.IsClosed && !lastSnap.IsClosed {
@@ -415,7 +415,7 @@ func (m *Monitor) getLearnMu(anvil string) *sync.Mutex {
 // distills them into warden rules, and creates a PR with the updated rules
 // file so the changes are reviewable. The caller is responsible for holding
 // the per-anvil learn mutex so that concurrent learns don't race.
-func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath string, prNumber int) {
+func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, beadID string, prNumber int) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -431,6 +431,7 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath str
 	}
 	if len(comments) == 0 {
 		log.Printf("[bellows] Auto-learn: no Copilot comments on PR #%d (%s), skipping", prNumber, anvilName)
+		_ = m.db.LogEvent(state.EventAutoLearnSkipped, fmt.Sprintf("%s PR #%d: no Copilot comments, skipping auto-learn", anvilName, prNumber), beadID, anvilName)
 		return
 	}
 
@@ -483,6 +484,7 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath str
 	}
 
 	added := 0
+	distillErrors := 0
 	for _, group := range groups {
 		if ctx.Err() != nil {
 			return
@@ -493,6 +495,7 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath str
 				return
 			}
 			log.Printf("[bellows] Auto-learn: error distilling rule from PR #%d (%s): %v", prNumber, anvilName, err)
+			distillErrors++
 			continue
 		}
 		if rf.AddRule(*rule) {
@@ -501,7 +504,13 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath str
 	}
 
 	if added == 0 {
-		log.Printf("[bellows] Auto-learn: no new rules from PR #%d (%s)", prNumber, anvilName)
+		if distillErrors > 0 {
+			log.Printf("[bellows] Auto-learn: no new rules from PR #%d (%s); %d distillation error(s)", prNumber, anvilName, distillErrors)
+			_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("%s PR #%d: no new rules — %d of %d comment group(s) failed to distill", anvilName, prNumber, distillErrors, len(groups)), beadID, anvilName)
+		} else {
+			log.Printf("[bellows] Auto-learn: no new rules from PR #%d (%s)", prNumber, anvilName)
+			_ = m.db.LogEvent(state.EventAutoLearnSkipped, fmt.Sprintf("%s PR #%d: no new rules from %d comment(s)", anvilName, prNumber, len(comments)), beadID, anvilName)
+		}
 		return
 	}
 
