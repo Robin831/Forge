@@ -64,6 +64,7 @@ type Params struct {
 	PRMerger           func(ctx context.Context, prNumber int, dir string) error
 	BeadClaimer        func(ctx context.Context, beadID, dir string) error
 	BeadCloser         func(ctx context.Context, beadID, dir string) error
+	BeadResetter       func(ctx context.Context, beadID, dir string) error
 	EpicBranchCreator  func(ctx context.Context, dir, branch string) error
 }
 
@@ -216,6 +217,15 @@ func Run(ctx context.Context, p Params) *Result {
 				reason = childResult.Error.Error()
 			}
 			log.Error("crucible child failed", "child", child.ID, "reason", reason)
+
+			// Reset the child bead to open so orphan recovery doesn't pick it up,
+			// then mark it needs_human in state.db so the poller won't re-dispatch
+			// it as a standalone bead outside crucible context.
+			if err := p.resetBead(ctx, child.ID, anvilPath); err != nil {
+				log.Warn("failed to reset failed child bead to open", "child", child.ID, "error", err)
+			}
+			p.markChildNeedsHuman(child.ID, reason)
+
 			p.emitEvent(state.EventCrucibleChildFailed,
 				fmt.Sprintf("Crucible %s: child %s failed — %s", p.ParentBead.ID, child.ID, reason),
 				child.ID)
@@ -627,6 +637,37 @@ func (p *Params) closeBead(ctx context.Context, beadID, dir string) error {
 		return fmt.Errorf("bd close %s: %w: %s", beadID, err, out)
 	}
 	return nil
+}
+
+// resetBead resets a bead back to open status.
+func (p *Params) resetBead(ctx context.Context, beadID, dir string) error {
+	if p.BeadResetter != nil {
+		return p.BeadResetter(ctx, beadID, dir)
+	}
+	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "update", beadID, "--status=open", "--json"))
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("bd update %s --status=open: %w: %s", beadID, err, out)
+	}
+	return nil
+}
+
+// markChildNeedsHuman marks a failed crucible child as needs_human in the
+// state DB so the poller won't dispatch it as a standalone bead.
+func (p *Params) markChildNeedsHuman(beadID, reason string) {
+	if p.DB == nil {
+		return
+	}
+	_ = p.DB.UpsertRetry(&state.RetryRecord{
+		BeadID:     beadID,
+		Anvil:      p.AnvilName,
+		NeedsHuman: true,
+		LastError:  fmt.Sprintf("crucible child failed: %s", reason),
+	})
 }
 
 // createEpicBranch creates the feature branch, using the injected creator if set.
