@@ -293,3 +293,21 @@ rules:
       check: Verify that inline comments accurately describe what the code actually does — if only one branch of a described toggle is implemented here, the comment should reflect the actual behavior or reference where the other branch lives
       source: copilot:PR#156
       added: "2026-03-09"
+    - id: needs-human-circuit-breaker-prefix
+      category: error-handling
+      pattern: Code calling markChildNeedsHuman or writing needs_human=1 retry records with a LastError string
+      check: Verify the LastError value starts with 'circuit breaker:' prefix so the daemon's DispatchCircuitBrokenBeadIDSet filter will match it and prevent re-dispatch. A needs_human record with a non-matching prefix will be ignored by the poller and the bead may be re-dispatched unexpectedly.
+      source: copilot:PR#166
+      added: "2026-03-10"
+    - id: handle-db-upsert-errors
+      category: error-handling
+      pattern: Calling DB.UpsertRetry, DB.Upsert, or similar state DB write methods without checking or handling the returned error
+      check: Verify that errors returned from state DB write operations (UpsertRetry, UpdateWorker, InsertEvent, etc.) are handled — at minimum logged with context (bead_id, anvil, operation). Discarding these errors can leave the system in an inconsistent state (e.g., a bead reset to open but not marked needs_human, causing infinite dispatch loops).
+      source: copilot:PR#166
+      added: "2026-03-10"
+    - id: preserve-existing-retry-state
+      category: error-handling
+      pattern: UpsertRetry called with a partially-populated RetryRecord struct
+      check: Verify that UpsertRetry does not silently overwrite existing retry state (retry_count, next_retry, dispatch_failures, clarification_needed). Load the existing record first and only update the fields you intend to change, preserving counters and backoff state.
+      source: copilot:PR#166
+      added: "2026-03-10"
