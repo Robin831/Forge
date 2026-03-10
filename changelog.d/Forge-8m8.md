@@ -1,2 +1,0 @@
-category: Changed
-- **Hearth Live Activity: grouped events and expanded text preview** - Consecutive events of the same type (tool, text, think, etc.) are now collapsed into summary headers (e.g. "▸ [tool] x5 — Read, Edit, Grep") with the most recent group expanded. Text and thinking blocks now show up to 3 lines instead of 1, giving operators better visibility into what smiths are doing. (Forge-8m8)

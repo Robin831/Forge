@@ -1,2 +1,0 @@
-category: Added
-- **Warden provider-specific verdict parsing** - The Warden now uses provider-aware fallback heuristics when parsing review verdicts. Claude, Gemini, and Copilot each have tailored parsing strategies: Copilot/Haiku outputs are parsed for natural language approval/rejection signals, Gemini outputs check for key-value verdict lines and markdown formatting, and Claude retains its existing JSON-first approach. This eliminates false "Could not parse structured verdict" fallbacks when non-Claude providers produce the review. (Forge-wrj)
