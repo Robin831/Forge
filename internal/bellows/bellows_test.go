@@ -11,22 +11,22 @@ import (
 
 func TestNew_MinimumInterval(t *testing.T) {
 	// Intervals below 30s should be clamped to 30s
-	m := New(nil, 5*time.Second, nil, nil)
+	m := New(nil, 5*time.Second, nil, nil, nil)
 	assert.Equal(t, 30*time.Second, m.interval)
 }
 
 func TestNew_IntervalAboveMin(t *testing.T) {
-	m := New(nil, 2*time.Minute, nil, nil)
+	m := New(nil, 2*time.Minute, nil, nil, nil)
 	assert.Equal(t, 2*time.Minute, m.interval)
 }
 
 func TestNew_ExactMinimum(t *testing.T) {
-	m := New(nil, 30*time.Second, nil, nil)
+	m := New(nil, 30*time.Second, nil, nil, nil)
 	assert.Equal(t, 30*time.Second, m.interval)
 }
 
 func TestOnEvent_RegistersHandler(t *testing.T) {
-	m := New(nil, time.Minute, nil, nil)
+	m := New(nil, time.Minute, nil, nil, nil)
 	m.mu.Lock()
 	initial := len(m.handlers)
 	m.mu.Unlock()
@@ -41,7 +41,7 @@ func TestOnEvent_RegistersHandler(t *testing.T) {
 }
 
 func TestEmit_DispatchesToAllHandlers(t *testing.T) {
-	m := New(nil, time.Minute, nil, nil)
+	m := New(nil, time.Minute, nil, nil, nil)
 
 	var mu sync.Mutex
 	var received []string
@@ -190,6 +190,13 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 // returning the event types that would be emitted for a given state change.
 // This is used only in tests to verify the logic is correct.
 func computeTransitionEvents(old, new *prSnapshot) []string {
+	return computeTransitionEventsWithPR(old, new, "", 0, 5)
+}
+
+// computeTransitionEventsWithPR extends computeTransitionEvents with PR-level
+// state for the secondary CI retry check. prStatus and ciFixCount come from
+// the state.PR record; maxCI is the configured max CI fix attempts.
+func computeTransitionEventsWithPR(old, new *prSnapshot, prStatus string, ciFixCount, maxCI int) []string {
 	var events []string
 
 	if new.IsMerged && !old.IsMerged {
@@ -202,6 +209,11 @@ func computeTransitionEvents(old, new *prSnapshot) []string {
 		events = append(events, EventCIPassed)
 	} else if !new.CIPassing && old.CIPassing {
 		events = append(events, EventCIFailed)
+	} else if !new.CIPassing && !old.CIPassing {
+		// Secondary check: CI still failing after a completed fix attempt.
+		if prStatus != "needs_fix" && ciFixCount > 0 && ciFixCount < maxCI {
+			events = append(events, EventCIFailed)
+		}
 	}
 
 	if new.HasApproval && !old.HasApproval {
@@ -217,4 +229,85 @@ func computeTransitionEvents(old, new *prSnapshot) []string {
 	}
 
 	return events
+}
+
+// TestCIFixRetryLogic verifies the secondary CI failure detection that
+// re-emits EventCIFailed when a previous cifix attempt completed but CI
+// is still failing. This is the core fix for the retry gap.
+func TestCIFixRetryLogic(t *testing.T) {
+	tests := []struct {
+		name       string
+		old        prSnapshot
+		new        prSnapshot
+		prStatus   string
+		ciFixCount int
+		maxCI      int
+		wantCIFail bool
+	}{
+		{
+			name:       "CI still failing, fix completed (status=open), retries remain → ci_failed",
+			old:        prSnapshot{CIPassing: false},
+			new:        prSnapshot{CIPassing: false},
+			prStatus:   "open",
+			ciFixCount: 1,
+			maxCI:      5,
+			wantCIFail: true,
+		},
+		{
+			name:       "CI still failing, fix in progress (status=needs_fix) → no event",
+			old:        prSnapshot{CIPassing: false},
+			new:        prSnapshot{CIPassing: false},
+			prStatus:   "needs_fix",
+			ciFixCount: 1,
+			maxCI:      5,
+			wantCIFail: false,
+		},
+		{
+			name:       "CI still failing, max attempts reached → no event",
+			old:        prSnapshot{CIPassing: false},
+			new:        prSnapshot{CIPassing: false},
+			prStatus:   "open",
+			ciFixCount: 5,
+			maxCI:      5,
+			wantCIFail: false,
+		},
+		{
+			name:       "CI still failing, no previous fix attempts → no event",
+			old:        prSnapshot{CIPassing: false},
+			new:        prSnapshot{CIPassing: false},
+			prStatus:   "open",
+			ciFixCount: 0,
+			maxCI:      5,
+			wantCIFail: false,
+		},
+		{
+			name:       "CI still failing, attempt 4 of 5 → ci_failed",
+			old:        prSnapshot{CIPassing: false},
+			new:        prSnapshot{CIPassing: false},
+			prStatus:   "open",
+			ciFixCount: 4,
+			maxCI:      5,
+			wantCIFail: true,
+		},
+		{
+			name:       "CI transition passing→failing still works normally",
+			old:        prSnapshot{CIPassing: true},
+			new:        prSnapshot{CIPassing: false},
+			prStatus:   "open",
+			ciFixCount: 0,
+			maxCI:      5,
+			wantCIFail: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fired := computeTransitionEventsWithPR(&tt.old, &tt.new, tt.prStatus, tt.ciFixCount, tt.maxCI)
+			if tt.wantCIFail {
+				assert.Contains(t, fired, EventCIFailed)
+			} else {
+				assert.NotContains(t, fired, EventCIFailed)
+			}
+		})
+	}
 }

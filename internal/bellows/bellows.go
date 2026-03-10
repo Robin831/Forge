@@ -49,18 +49,19 @@ type Handler func(ctx context.Context, event PREvent)
 
 // Monitor watches open PRs and dispatches events on status changes.
 type Monitor struct {
-	db             *state.DB
-	interval       time.Duration
-	anvilPaths     map[string]string // anvil name → path
-	pathsMu        sync.RWMutex     // protects anvilPaths
-	handlers       []Handler
-	mu             sync.Mutex
-	lastStatuses   map[string]*prSnapshot // anvil/PR number → last known state
-	refresh        chan struct{}           // channel to trigger immediate poll
-	autoLearnRules func() bool            // auto-learn warden rules from Copilot comments on PR merge
-	learnMuGuard   sync.Mutex             // protects learnMu map
-	learnMu        map[string]*sync.Mutex // per-anvil mutex serializing auto-learn
-	learnSem       chan struct{}           // caps overall concurrent auto-learn goroutines
+	db               *state.DB
+	interval         time.Duration
+	anvilPaths       map[string]string // anvil name → path
+	pathsMu          sync.RWMutex     // protects anvilPaths
+	handlers         []Handler
+	mu               sync.Mutex
+	lastStatuses     map[string]*prSnapshot // anvil/PR number → last known state
+	refresh          chan struct{}           // channel to trigger immediate poll
+	autoLearnRules   func() bool            // auto-learn warden rules from Copilot comments on PR merge
+	maxCIFixAttempts func() int             // returns current max CI fix attempts from config
+	learnMuGuard     sync.Mutex             // protects learnMu map
+	learnMu          map[string]*sync.Mutex // per-anvil mutex serializing auto-learn
+	learnSem         chan struct{}           // caps overall concurrent auto-learn goroutines
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -77,20 +78,26 @@ type prSnapshot struct {
 
 // New creates a Bellows monitor. The autoLearnRules function is called on each
 // PR merge to check whether warden rule learning is enabled, so hot-reloaded
-// config changes take effect without restarting the daemon.
-func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, autoLearnRules func() bool) *Monitor {
+// config changes take effect without restarting the daemon. The maxCIFixAttempts
+// function returns the current max CI fix attempts from config (may be nil, in
+// which case the state.DefaultMaxCIFixAttempts is used).
+func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, autoLearnRules func() bool, maxCIFixAttempts func() int) *Monitor {
 	if interval < 30*time.Second {
 		interval = 30 * time.Second
 	}
+	if maxCIFixAttempts == nil {
+		maxCIFixAttempts = func() int { return state.DefaultMaxCIFixAttempts }
+	}
 	return &Monitor{
-		db:             db,
-		interval:       interval,
-		anvilPaths:     anvilPaths,
-		lastStatuses:   make(map[string]*prSnapshot),
-		refresh:        make(chan struct{}, 1),
-		autoLearnRules: autoLearnRules,
-		learnMu:        make(map[string]*sync.Mutex),
-		learnSem:       make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
+		db:               db,
+		interval:         interval,
+		anvilPaths:       anvilPaths,
+		lastStatuses:     make(map[string]*prSnapshot),
+		refresh:          make(chan struct{}, 1),
+		autoLearnRules:   autoLearnRules,
+		maxCIFixAttempts: maxCIFixAttempts,
+		learnMu:          make(map[string]*sync.Mutex),
+		learnSem:         make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
 	}
 }
 
@@ -296,6 +303,27 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
 		_ = m.db.LogEvent(state.EventCIFailed, fmt.Sprintf("PR #%d CI checks failed", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d CI failed", pr.Number), pr.BeadID, pr.Anvil)
+	} else if !newSnap.CIPassing && !lastSnap.CIPassing {
+		// CI is still failing with no transition. Check if a previous cifix
+		// attempt completed (PR status reset to open) and retries remain.
+		// This catches the gap where NotifyCIFixCompleted() clears the fix
+		// state but bellows never re-emits EventCIFailed because it only
+		// detected transitions.
+		maxCI := m.maxCIFixAttempts()
+		if pr.Status != state.PRNeedsFix && pr.CIFixCount > 0 && pr.CIFixCount < maxCI {
+			m.emit(ctx, PREvent{
+				PRNumber:  pr.Number,
+				BeadID:    pr.BeadID,
+				Anvil:     pr.Anvil,
+				Branch:    status.HeadRefName,
+				EventType: EventCIFailed,
+				Details:   fmt.Sprintf("CI checks still failing after fix attempt %d/%d", pr.CIFixCount, maxCI),
+				Timestamp: time.Now(),
+			})
+			_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
+			_ = m.db.LogEvent(state.EventCIFailed, fmt.Sprintf("PR #%d CI still failing (attempt %d/%d)", pr.Number, pr.CIFixCount, maxCI), pr.BeadID, pr.Anvil)
+			_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d CI fix retry needed", pr.Number), pr.BeadID, pr.Anvil)
+		}
 	}
 
 	if newSnap.HasApproval && !lastSnap.HasApproval {
