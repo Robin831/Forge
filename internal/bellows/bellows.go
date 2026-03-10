@@ -431,6 +431,7 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath str
 	}
 	if len(comments) == 0 {
 		log.Printf("[bellows] Auto-learn: no Copilot comments on PR #%d (%s), skipping", prNumber, anvilName)
+		_ = m.db.LogEvent(state.EventAutoLearnSkipped, fmt.Sprintf("PR #%d: no Copilot comments, skipping auto-learn", prNumber), "", anvilName)
 		return
 	}
 
@@ -502,6 +503,7 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath str
 
 	if added == 0 {
 		log.Printf("[bellows] Auto-learn: no new rules from PR #%d (%s)", prNumber, anvilName)
+		_ = m.db.LogEvent(state.EventAutoLearnSkipped, fmt.Sprintf("PR #%d: no new rules from %d comment(s)", prNumber, len(comments)), "", anvilName)
 		return
 	}
 

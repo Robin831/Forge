@@ -1043,6 +1043,7 @@ const (
 	EventVulnScanFailed       EventType = "vuln_scan_failed"
 	EventVulnBeadCreated      EventType = "vuln_bead_created"
 	EventAutoLearnError       EventType = "auto_learn_error"
+	EventAutoLearnSkipped     EventType = "auto_learn_skipped"
 	EventAutoLearnRules       EventType = "auto_learn_rules"
 	EventWardenRuleLearned    EventType = "warden_rule_learned"
 
