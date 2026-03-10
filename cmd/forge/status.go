@@ -58,46 +58,47 @@ var statusCmd = &cobra.Command{
 						return nil
 					}
 					var s ipc.StatusPayload
-					_ = json.Unmarshal(resp.Payload, &s)
-
-					if briefOutput {
-						fmt.Println(formatBrief(true, s.Workers, s.QueueSize, s.OpenPRs, s.DailyCost, s.LastPoll))
-						return nil
-					}
-
-					tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-					fmt.Fprintf(tw, "Daemon\tRunning (PID %d)\n", s.PID)
-					fmt.Fprintf(tw, "Uptime\t%s\n", s.Uptime)
-					fmt.Fprintf(tw, "Workers\t%d active\n", s.Workers)
-					fmt.Fprintf(tw, "Queue\t%d beads\n", s.QueueSize)
-					fmt.Fprintf(tw, "Open PRs\t%d\n", s.OpenPRs)
-					fmt.Fprintf(tw, "Last Poll\t%s\n", s.LastPoll)
-					if s.DailyCostLimit > 0 {
-						fmt.Fprintf(tw, "Daily Cost\t$%.2f / $%.2f\n", s.DailyCost, s.DailyCostLimit)
-						if s.CostLimitPaused {
-							fmt.Fprintf(tw, "Cost Status\tauto-dispatch paused (limit reached)\n")
+					if err := json.Unmarshal(resp.Payload, &s); err == nil {
+						if briefOutput {
+							fmt.Println(formatBrief(true, s.Workers, s.QueueSize, s.OpenPRs, s.DailyCost, s.LastPoll))
+							return nil
 						}
-					} else if s.DailyCost > 0 {
-						fmt.Fprintf(tw, "Daily Cost\t$%.2f (no limit)\n", s.DailyCost)
-					}
-					tw.Flush()
 
-					if len(s.Quotas) > 0 {
-						fmt.Printf("\nProvider Quotas:\n")
-						tw = tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-						fmt.Fprintf(tw, "PROVIDER\tREQUESTS\tTOKENS\tRESET\n")
-						for pv, q := range s.Quotas {
-							reqStr := fmt.Sprintf("%d/%d", q.RequestsRemaining, q.RequestsLimit)
-							tokStr := fmt.Sprintf("%d/%d", q.TokensRemaining, q.TokensLimit)
-							resetStr := "n/a"
-							if q.RequestsReset != nil {
-								resetStr = time.Until(*q.RequestsReset).Round(time.Minute).String()
+						tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+						fmt.Fprintf(tw, "Daemon\tRunning (PID %d)\n", s.PID)
+						fmt.Fprintf(tw, "Uptime\t%s\n", s.Uptime)
+						fmt.Fprintf(tw, "Workers\t%d active\n", s.Workers)
+						fmt.Fprintf(tw, "Queue\t%d beads\n", s.QueueSize)
+						fmt.Fprintf(tw, "Open PRs\t%d\n", s.OpenPRs)
+						fmt.Fprintf(tw, "Last Poll\t%s\n", s.LastPoll)
+						if s.DailyCostLimit > 0 {
+							fmt.Fprintf(tw, "Daily Cost\t$%.2f / $%.2f\n", s.DailyCost, s.DailyCostLimit)
+							if s.CostLimitPaused {
+								fmt.Fprintf(tw, "Cost Status\tauto-dispatch paused (limit reached)\n")
 							}
-							fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", pv, reqStr, tokStr, resetStr)
+						} else if s.DailyCost > 0 {
+							fmt.Fprintf(tw, "Daily Cost\t$%.2f (no limit)\n", s.DailyCost)
 						}
 						tw.Flush()
+
+						if len(s.Quotas) > 0 {
+							fmt.Printf("\nProvider Quotas:\n")
+							tw = tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+							fmt.Fprintf(tw, "PROVIDER\tREQUESTS\tTOKENS\tRESET\n")
+							for pv, q := range s.Quotas {
+								reqStr := fmt.Sprintf("%d/%d", q.RequestsRemaining, q.RequestsLimit)
+								tokStr := fmt.Sprintf("%d/%d", q.TokensRemaining, q.TokensLimit)
+								resetStr := "n/a"
+								if q.RequestsReset != nil {
+									resetStr = time.Until(*q.RequestsReset).Round(time.Minute).String()
+								}
+								fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", pv, reqStr, tokStr, resetStr)
+							}
+							tw.Flush()
+						}
+						return nil
 					}
-					return nil
+					// Malformed IPC response: fall through to state-DB fallback below.
 				}
 			}
 		}

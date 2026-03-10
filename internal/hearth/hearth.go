@@ -272,6 +272,7 @@ type Model struct {
 	daemonWorkers   int       // active worker count from daemon
 	daemonQueueSize int       // queue size from daemon
 	daemonUptime    string    // daemon uptime string
+	healthTickCount int       // counts ticks; health IPC fires every healthTickDivisor ticks
 
 	// Status message (flashes briefly after an action)
 	statusMsg     string
@@ -312,6 +313,7 @@ func (m *Model) Init() tea.Cmd {
 	if m.data != nil {
 		cmds = append(cmds, Tick())
 		cmds = append(cmds, FetchAll(m.data))
+		cmds = append(cmds, FetchDaemonHealth())
 	}
 
 	return tea.Batch(cmds...)
@@ -689,12 +691,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case TickMsg:
-		// On each tick, refresh all panels and schedule the next tick
+		// On each tick, refresh all panels and schedule the next tick.
+		// Daemon health is checked every healthTickDivisor ticks to avoid
+		// issuing a full IPC status round-trip on every 2s cycle.
 		if m.data != nil {
-			return m, tea.Batch(
-				Tick(),
-				FetchAll(m.data),
-			)
+			m.healthTickCount++
+			cmds := []tea.Cmd{Tick(), FetchAll(m.data)}
+			if m.healthTickCount%healthTickDivisor == 0 {
+				cmds = append(cmds, FetchDaemonHealth())
+			}
+			return m, tea.Batch(cmds...)
 		}
 	}
 

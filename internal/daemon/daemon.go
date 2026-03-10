@@ -1353,7 +1353,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		costLimit := d.cfg.Load().Settings.DailyCostLimit
 		copilotReqs, _ := d.db.GetTodayCopilotRequests()
 		copilotLimit := d.cfg.Load().Settings.CopilotDailyRequestLimit
-		queueItems, _ := d.db.QueueCache()
+		queueCount, _ := d.db.QueueCount()
 		lastPoll := "n/a"
 		if t, ok := d.lastPollTime.Load().(time.Time); ok && !t.IsZero() {
 			lastPoll = time.Since(t).Round(time.Second).String() + " ago"
@@ -1363,7 +1363,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			PID:                    os.Getpid(),
 			Uptime:                 time.Since(d.startTime).Round(time.Second).String(),
 			Workers:                len(workers),
-			QueueSize:              len(queueItems),
+			QueueSize:              queueCount,
 			OpenPRs:                len(prs),
 			LastPoll:               lastPoll,
 			Quotas:                 quotas,
