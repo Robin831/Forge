@@ -136,7 +136,7 @@ type CrucibleItem struct {
 	ParentTitle       string
 	Anvil             string
 	Branch            string
-	Phase             string // "started", "dispatching", "waiting", "final_pr", "complete", "paused"
+	Phase             string // "started", "parent", "dispatching", "waiting", "final_pr", "complete", "paused"
 	TotalChildren     int
 	CompletedChildren int
 	CurrentChild      string
@@ -1477,6 +1477,8 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 // cruciblePhaseStyle returns a styled phase label for Crucible status display.
 func cruciblePhaseStyle(phase string) string {
 	switch phase {
+	case "parent":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("⚙ PARENT")
 	case "dispatching":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("▶ DISPATCH")
 	case "final_pr":
