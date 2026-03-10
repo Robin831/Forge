@@ -211,13 +211,19 @@ func Run(ctx context.Context, p Params) *Outcome {
 		removeWorktree(ctx, p.AnvilConfig.Path, wt)
 	}()
 
-	// Record worker in state DB
+	// Record worker in state DB. Default phase to "smith"; if the Schematic
+	// pre-worker is enabled it will be overwritten to "schematic" below.
+	initialPhase := "smith"
+	if p.SchematicConfig != nil {
+		initialPhase = "schematic"
+	}
 	dbWorker := &state.Worker{
 		ID:        workerID,
 		BeadID:    p.Bead.ID,
 		Anvil:     p.AnvilName,
 		Branch:    wt.Branch,
 		Status:    state.WorkerRunning,
+		Phase:     initialPhase,
 		Title:     p.Bead.Title,
 		StartedAt: time.Now(),
 	}
