@@ -34,7 +34,7 @@ import (
 )
 
 // MaxIterations is the maximum number of Smith-Warden cycles.
-const MaxIterations = 3
+const MaxIterations = 5
 
 // Outcome represents the final result of the pipeline.
 type Outcome struct {
