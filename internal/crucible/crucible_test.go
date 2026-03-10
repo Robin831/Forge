@@ -11,6 +11,8 @@ import (
 	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
+	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/warden"
 )
@@ -390,6 +392,286 @@ func TestHasExternalBlockers(t *testing.T) {
 				t.Errorf("hasExternalBlockers() = %v, want %v", got, tt.expect)
 			}
 		})
+	}
+}
+
+func TestRun_ParentHasWork_RunsParentFirst(t *testing.T) {
+	db := testDB(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	var pipelineOrder []string
+	var createdPRs []ghpr.CreateParams
+	var mergedPRs []int
+	var closedBeads []string
+	prCounter := 0
+
+	schemCfg := &schematic.Config{Enabled: true, WordThreshold: 1}
+
+	p := Params{
+		DB:     db,
+		Logger: logger,
+		ParentBead: poller.Bead{
+			ID:          "parent-1",
+			Title:       "Parent with own work",
+			Description: "This parent has implementation work",
+		},
+		AnvilName:                "test-anvil",
+		AnvilConfig:              config.AnvilConfig{Path: t.TempDir()},
+		AutoMergeCrucibleChildren: true,
+		SchematicConfig:          schemCfg,
+		Providers:                []provider.Provider{{Kind: "claude"}},
+
+		EpicBranchCreator: func(ctx context.Context, dir, branch string) error {
+			return nil
+		},
+
+		SchematicRunner: func(ctx context.Context, cfg schematic.Config, bead poller.Bead, anvilPath string, pv provider.Provider) *schematic.Result {
+			return &schematic.Result{
+				Action: schematic.ActionPlan,
+				Plan:   "Step 1: do parent work",
+			}
+		},
+
+		ChildFetcher: func(ctx context.Context, parentID, dir string) ([]poller.Bead, error) {
+			return []poller.Bead{
+				{ID: "child-1", Title: "Child task", DependsOn: []string{"parent-1"}},
+			}, nil
+		},
+
+		PipelineRunner: func(ctx context.Context, pp pipeline.Params) *pipeline.Outcome {
+			pipelineOrder = append(pipelineOrder, pp.Bead.ID)
+			return &pipeline.Outcome{
+				Success: true,
+				Branch:  fmt.Sprintf("forge/%s", pp.Bead.ID),
+			}
+		},
+
+		PRCreator: func(ctx context.Context, pp ghpr.CreateParams) (*ghpr.PR, error) {
+			prCounter++
+			createdPRs = append(createdPRs, pp)
+			return &ghpr.PR{Number: prCounter, URL: fmt.Sprintf("https://github.com/test/pr/%d", prCounter)}, nil
+		},
+
+		PRMerger: func(ctx context.Context, prNumber int, dir string) error {
+			mergedPRs = append(mergedPRs, prNumber)
+			return nil
+		},
+
+		BeadClaimer: func(ctx context.Context, beadID, dir string) error {
+			return nil
+		},
+
+		BeadCloser: func(ctx context.Context, beadID, dir string) error {
+			closedBeads = append(closedBeads, beadID)
+			return nil
+		},
+	}
+
+	result := Run(context.Background(), p)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+
+	// Parent should run BEFORE child.
+	if len(pipelineOrder) != 2 {
+		t.Fatalf("expected 2 pipeline runs, got %d: %v", len(pipelineOrder), pipelineOrder)
+	}
+	if pipelineOrder[0] != "parent-1" {
+		t.Errorf("expected parent-1 first, got %s", pipelineOrder[0])
+	}
+	if pipelineOrder[1] != "child-1" {
+		t.Errorf("expected child-1 second, got %s", pipelineOrder[1])
+	}
+
+	// PRs: parent PR (against feature branch) + child PR (against feature branch) + final PR
+	if len(createdPRs) != 3 {
+		t.Fatalf("expected 3 PRs, got %d", len(createdPRs))
+	}
+	// Parent PR targets feature branch.
+	if createdPRs[0].Base != "feature/parent-1" {
+		t.Errorf("parent PR base should be feature/parent-1, got %s", createdPRs[0].Base)
+	}
+	// Child PR targets feature branch.
+	if createdPRs[1].Base != "feature/parent-1" {
+		t.Errorf("child PR base should be feature/parent-1, got %s", createdPRs[1].Base)
+	}
+	// Final PR targets main.
+	if createdPRs[2].Base != "" {
+		t.Errorf("final PR base should be empty (main), got %s", createdPRs[2].Base)
+	}
+
+	// Both parent and child PRs should be merged, plus final is not merged by crucible.
+	if len(mergedPRs) != 2 {
+		t.Errorf("expected 2 merged PRs (parent + child), got %d", len(mergedPRs))
+	}
+}
+
+func TestRun_SchematicSkip_OrchestratorOnly(t *testing.T) {
+	db := testDB(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	var pipelineOrder []string
+	prCounter := 0
+	schemCfg := &schematic.Config{Enabled: true, WordThreshold: 1}
+
+	p := Params{
+		DB:     db,
+		Logger: logger,
+		ParentBead: poller.Bead{
+			ID:          "parent-1",
+			Title:       "Pure orchestrator",
+			Description: "This parent just coordinates children",
+		},
+		AnvilName:                "test-anvil",
+		AnvilConfig:              config.AnvilConfig{Path: t.TempDir()},
+		AutoMergeCrucibleChildren: true,
+		SchematicConfig:          schemCfg,
+		Providers:                []provider.Provider{{Kind: "claude"}},
+
+		EpicBranchCreator: func(ctx context.Context, dir, branch string) error {
+			return nil
+		},
+
+		SchematicRunner: func(ctx context.Context, cfg schematic.Config, bead poller.Bead, anvilPath string, pv provider.Provider) *schematic.Result {
+			return &schematic.Result{
+				Action: schematic.ActionSkip,
+				Reason: "Simple orchestration bead",
+			}
+		},
+
+		ChildFetcher: func(ctx context.Context, parentID, dir string) ([]poller.Bead, error) {
+			return []poller.Bead{
+				{ID: "child-1", Title: "Child task", DependsOn: []string{"parent-1"}},
+			}, nil
+		},
+
+		PipelineRunner: func(ctx context.Context, pp pipeline.Params) *pipeline.Outcome {
+			pipelineOrder = append(pipelineOrder, pp.Bead.ID)
+			return &pipeline.Outcome{
+				Success: true,
+				Branch:  fmt.Sprintf("forge/%s", pp.Bead.ID),
+			}
+		},
+
+		PRCreator: func(ctx context.Context, pp ghpr.CreateParams) (*ghpr.PR, error) {
+			prCounter++
+			return &ghpr.PR{Number: prCounter}, nil
+		},
+
+		PRMerger: func(ctx context.Context, prNumber int, dir string) error {
+			return nil
+		},
+
+		BeadClaimer: func(ctx context.Context, beadID, dir string) error {
+			return nil
+		},
+
+		BeadCloser: func(ctx context.Context, beadID, dir string) error {
+			return nil
+		},
+	}
+
+	result := Run(context.Background(), p)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+
+	// Only child should run through pipeline (no parent pipeline run).
+	if len(pipelineOrder) != 1 {
+		t.Fatalf("expected 1 pipeline run, got %d: %v", len(pipelineOrder), pipelineOrder)
+	}
+	if pipelineOrder[0] != "child-1" {
+		t.Errorf("expected child-1, got %s", pipelineOrder[0])
+	}
+}
+
+func TestRun_ParentHasWork_NoChildren_CreatesFinalPR(t *testing.T) {
+	db := testDB(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	var createdPRs []ghpr.CreateParams
+	prCounter := 0
+	schemCfg := &schematic.Config{Enabled: true, WordThreshold: 1}
+
+	p := Params{
+		DB:     db,
+		Logger: logger,
+		ParentBead: poller.Bead{
+			ID:          "parent-1",
+			Title:       "Parent with work, no children",
+			Description: "This parent has work but no children to orchestrate",
+		},
+		AnvilName:                "test-anvil",
+		AnvilConfig:              config.AnvilConfig{Path: t.TempDir()},
+		AutoMergeCrucibleChildren: true,
+		SchematicConfig:          schemCfg,
+		Providers:                []provider.Provider{{Kind: "claude"}},
+
+		EpicBranchCreator: func(ctx context.Context, dir, branch string) error {
+			return nil
+		},
+
+		SchematicRunner: func(ctx context.Context, cfg schematic.Config, bead poller.Bead, anvilPath string, pv provider.Provider) *schematic.Result {
+			return &schematic.Result{
+				Action: schematic.ActionPlan,
+				Plan:   "Step 1: do parent work",
+			}
+		},
+
+		ChildFetcher: func(ctx context.Context, parentID, dir string) ([]poller.Bead, error) {
+			return nil, nil // No children
+		},
+
+		PipelineRunner: func(ctx context.Context, pp pipeline.Params) *pipeline.Outcome {
+			return &pipeline.Outcome{
+				Success: true,
+				Branch:  "forge/parent-1",
+			}
+		},
+
+		PRCreator: func(ctx context.Context, pp ghpr.CreateParams) (*ghpr.PR, error) {
+			prCounter++
+			createdPRs = append(createdPRs, pp)
+			return &ghpr.PR{Number: prCounter}, nil
+		},
+
+		PRMerger: func(ctx context.Context, prNumber int, dir string) error {
+			return nil
+		},
+
+		BeadClaimer: func(ctx context.Context, beadID, dir string) error {
+			return nil
+		},
+
+		BeadCloser: func(ctx context.Context, beadID, dir string) error {
+			return nil
+		},
+	}
+
+	result := Run(context.Background(), p)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+
+	// Should have parent PR (merged to feature branch) + final PR (feature → main).
+	if len(createdPRs) != 2 {
+		t.Fatalf("expected 2 PRs (parent + final), got %d", len(createdPRs))
+	}
+	// Final PR targets main.
+	if createdPRs[1].Base != "" {
+		t.Errorf("final PR base should be empty (main), got %s", createdPRs[1].Base)
 	}
 }
 
