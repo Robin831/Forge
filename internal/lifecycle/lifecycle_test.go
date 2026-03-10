@@ -924,3 +924,47 @@ func TestNotifyCIFixCompleted_Noop(t *testing.T) {
 	// Should not panic.
 	m.NotifyCIFixCompleted("nonexistent-anvil", 999)
 }
+
+// TestCIFixRetryFlowToExhaustion exercises the full CI fix retry loop:
+// repeated EventCIFailed → dispatch → NotifyCIFixCompleted → next EventCIFailed,
+// verifying that each cycle dispatches until maxCI is reached and then stops.
+// This is the end-to-end scenario for the bellows cache-reset fix: after each
+// cifix completes, bellows resets its snapshot, re-detects CI failure, and emits
+// a new EventCIFailed — lifecycle must dispatch each time until exhaustion.
+func TestCIFixRetryFlowToExhaustion(t *testing.T) {
+	db := newTestDB(t)
+	var dispatched []ActionRequest
+	handler := func(_ context.Context, req ActionRequest) {
+		dispatched = append(dispatched, req)
+	}
+	m := New(db, testLogger(), handler)
+	m.SetThresholds(5, 0, 0) // maxCI = 5
+	ctx := context.Background()
+
+	for i := 1; i <= 5; i++ {
+		dispatched = dispatched[:0]
+		m.HandleEvent(ctx, makeEvent(700, bellows.EventCIFailed))
+		if len(dispatched) != 1 || dispatched[0].Action != ActionFixCI {
+			t.Fatalf("cycle %d: expected ActionFixCI dispatch, got %v", i, dispatched)
+		}
+		st := m.GetState("test-anvil", 700)
+		if st.CIFixCount != i {
+			t.Fatalf("cycle %d: expected CIFixCount=%d, got %d", i, i, st.CIFixCount)
+		}
+		// Simulate cifix worker completing (CI still broken).
+		m.NotifyCIFixCompleted("test-anvil", 700)
+	}
+
+	// Cycle 6: maxCI exhausted — should NOT dispatch.
+	dispatched = dispatched[:0]
+	m.HandleEvent(ctx, makeEvent(700, bellows.EventCIFailed))
+	for _, d := range dispatched {
+		if d.Action == ActionFixCI {
+			t.Fatal("cycle 6: expected no ActionFixCI after exhaustion, but got one")
+		}
+	}
+	st := m.GetState("test-anvil", 700)
+	if st.CIFixCount != 5 {
+		t.Errorf("after exhaustion: expected CIFixCount=5, got %d", st.CIFixCount)
+	}
+}

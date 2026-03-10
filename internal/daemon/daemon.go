@@ -532,6 +532,14 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			// can reset any suppression state and allow future CI-failure
 			// detection to trigger additional attempts as needed.
 			d.lifecycleMgr.NotifyCIFixCompleted(req.Anvil, req.PRNumber)
+			// Reset the bellows snapshot cache so the next poll sees a fresh
+			// state transition. Without this, bellows sees CI still failing
+			// (same as last snapshot) and never re-emits EventCIFailed,
+			// preventing the lifecycle manager from dispatching retries.
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
+				d.bellowsMonitor.Refresh()
+			}
 
 		case lifecycle.ActionFixReview:
 			d.logger.Info("spawning review fix worker", "pr", req.PRNumber, "bead", req.BeadID)
