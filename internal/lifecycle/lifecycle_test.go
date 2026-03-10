@@ -925,12 +925,12 @@ func TestNotifyCIFixCompleted_Noop(t *testing.T) {
 	m.NotifyCIFixCompleted("nonexistent-anvil", 999)
 }
 
-// TestCIFixRetryFlowToExhaustion exercises the full CI fix retry loop:
+// TestCIFixRetryFlowToExhaustion exercises the lifecycle CI fix retry loop:
 // repeated EventCIFailed → dispatch → NotifyCIFixCompleted → next EventCIFailed,
 // verifying that each cycle dispatches until maxCI is reached and then stops.
-// This is the end-to-end scenario for the bellows cache-reset fix: after each
-// cifix completes, bellows resets its snapshot, re-detects CI failure, and emits
-// a new EventCIFailed — lifecycle must dispatch each time until exhaustion.
+// This simulates the sequence of events bellows would produce after each cache
+// reset (re-detecting CI failure and emitting EventCIFailed), but only tests
+// lifecycle's handling of those events, not bellows' snapshot behavior itself.
 func TestCIFixRetryFlowToExhaustion(t *testing.T) {
 	db := newTestDB(t)
 	var dispatched []ActionRequest
