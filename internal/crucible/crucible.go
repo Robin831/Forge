@@ -66,6 +66,7 @@ type Params struct {
 	BeadCloser         func(ctx context.Context, beadID, dir string) error
 	BeadResetter       func(ctx context.Context, beadID, dir string) error
 	EpicBranchCreator  func(ctx context.Context, dir, branch string) error
+	SchematicRunner    func(ctx context.Context, cfg schematic.Config, bead poller.Bead, anvilPath string, pv provider.Provider) *schematic.Result
 }
 
 // Status tracks the current state of a Crucible for monitoring.
@@ -73,7 +74,7 @@ type Status struct {
 	ParentID          string
 	Anvil             string
 	Branch            string
-	Phase             string // "started", "dispatching", "waiting", "final_pr", "complete", "paused"
+	Phase             string // "started", "parent", "dispatching", "waiting", "final_pr", "complete", "paused"
 	TotalChildren     int
 	CompletedChildren int
 	CurrentChild      string
@@ -111,16 +112,124 @@ func Run(ctx context.Context, p Params) *Result {
 		return &Result{Error: fmt.Errorf("creating feature branch: %w", err)}
 	}
 
+	// 1b. Run schematic on the parent bead to detect parent-has-work mode.
+	parentHasWork := false
+	if p.SchematicConfig != nil && len(p.Providers) > 0 {
+		schemResult := p.runSchematic(ctx, *p.SchematicConfig, p.ParentBead, anvilPath, p.Providers[0])
+		if schemResult != nil && schemResult.Action == schematic.ActionPlan {
+			parentHasWork = true
+			log.Info("parent bead has own work, running parent-first mode", "plan_len", len(schemResult.Plan))
+			p.emitEvent(state.EventCrucibleStarted,
+				fmt.Sprintf("Crucible %s: parent has implementation work, running parent-first", p.ParentBead.ID),
+				p.ParentBead.ID)
+
+			p.updateStatus(Status{
+				ParentID:  p.ParentBead.ID,
+				Anvil:     p.AnvilName,
+				Branch:    branch,
+				Phase:     "parent",
+				StartedAt: time.Now(),
+			})
+
+			// Run parent through the pipeline targeting the feature branch.
+			parentOutcome := p.runChildPipeline(ctx, p.ParentBead, branch)
+
+			if parentOutcome.NeedsHuman || parentOutcome.Error != nil || !parentOutcome.Success {
+				reason := "parent pipeline failed"
+				if parentOutcome.Error != nil {
+					reason = parentOutcome.Error.Error()
+				}
+				// NoDiff from parent is acceptable — continue to children.
+				if parentOutcome.ReviewResult != nil && parentOutcome.ReviewResult.NoDiff {
+					log.Info("parent pipeline produced no diff, continuing to children")
+					parentHasWork = false
+				} else {
+					log.Error("parent pipeline failed", "reason", reason)
+					p.emitEvent(state.EventCruciblePaused,
+						fmt.Sprintf("Crucible %s paused: parent pipeline failed — %s", p.ParentBead.ID, reason),
+						p.ParentBead.ID)
+					p.updateStatus(Status{
+						ParentID: p.ParentBead.ID,
+						Anvil:    p.AnvilName,
+						Branch:   branch,
+						Phase:    "paused",
+					})
+					return &Result{
+						PausedChildID: p.ParentBead.ID,
+						Error:         fmt.Errorf("parent pipeline failed: %s", reason),
+					}
+				}
+			}
+
+			// If parent produced changes, create a PR and merge into the feature branch.
+			if parentHasWork && parentOutcome.Branch != "" {
+				var changeSummary string
+				if parentOutcome.ReviewResult != nil && parentOutcome.ReviewResult.Summary != "" {
+					changeSummary = parentOutcome.ReviewResult.Summary
+				}
+
+				pr, err := p.createPR(ctx, ghpr.CreateParams{
+					WorktreePath:    anvilPath,
+					BeadID:          p.ParentBead.ID,
+					Title:           fmt.Sprintf("%s (parent) (%s)", p.ParentBead.Title, p.ParentBead.ID),
+					Branch:          parentOutcome.Branch,
+					Base:            branch,
+					AnvilName:       p.AnvilName,
+					DB:              p.DB,
+					BeadTitle:       p.ParentBead.Title,
+					BeadDescription: p.ParentBead.Description,
+					BeadType:        p.ParentBead.IssueType,
+					ChangeSummary:   changeSummary,
+				})
+				if err != nil {
+					log.Error("failed to create parent PR", "error", err)
+					// Continue — the branch changes are still pushed.
+				} else if p.AutoMergeCrucibleChildren {
+					if err := p.mergePR(ctx, pr.Number, anvilPath); err != nil {
+						log.Error("failed to merge parent PR", "pr", pr.Number, "error", err)
+						p.emitEvent(state.EventCruciblePaused,
+							fmt.Sprintf("Crucible %s paused: parent PR #%d merge failed", p.ParentBead.ID, pr.Number),
+							p.ParentBead.ID)
+						p.updateStatus(Status{
+							ParentID: p.ParentBead.ID,
+							Anvil:    p.AnvilName,
+							Branch:   branch,
+							Phase:    "paused",
+						})
+						return &Result{
+							PausedChildID: p.ParentBead.ID,
+							Error:         fmt.Errorf("parent PR #%d merge failed: %w", pr.Number, err),
+						}
+					}
+					log.Info("parent work merged into feature branch", "pr", pr.Number)
+					p.emitEvent(state.EventCrucibleChildMerged,
+						fmt.Sprintf("Crucible %s: parent work merged into %s via PR #%d", p.ParentBead.ID, branch, pr.Number),
+						p.ParentBead.ID)
+				}
+			}
+		} else if schemResult != nil && schemResult.Action == schematic.ActionClarify {
+			log.Warn("parent bead needs clarification", "reason", schemResult.Reason)
+			p.emitEvent(state.EventCruciblePaused,
+				fmt.Sprintf("Crucible %s paused: parent needs clarification — %s", p.ParentBead.ID, schemResult.Reason),
+				p.ParentBead.ID)
+			return &Result{
+				PausedChildID: p.ParentBead.ID,
+				Error:         fmt.Errorf("parent needs clarification: %s", schemResult.Reason),
+			}
+		}
+	}
+
 	// 2. Fetch children.
 	children, err := p.fetchChildren(ctx, p.ParentBead.ID, anvilPath)
 	if err != nil {
 		return &Result{Error: fmt.Errorf("fetching children: %w", err)}
 	}
-	if len(children) == 0 {
-		log.Info("no children found, creating final PR directly")
-		// No children — create final PR from feature branch (which is identical to main).
-		// This is a no-op edge case; just return success.
+	if len(children) == 0 && !parentHasWork {
+		log.Info("no children found and no parent work, nothing to do")
 		return &Result{Success: true, ChildrenDone: 0, ChildrenTotal: 0}
+	}
+	if len(children) == 0 {
+		log.Info("no children found but parent has work, skipping to final PR")
 	}
 
 	// 3. Topological sort.
@@ -523,6 +632,14 @@ func unwrapJSONArray(data []byte) []byte {
 		}
 	}
 	return data
+}
+
+// runSchematic runs schematic analysis on a bead (or uses the injected SchematicRunner for testing).
+func (p *Params) runSchematic(ctx context.Context, cfg schematic.Config, bead poller.Bead, anvilPath string, pv provider.Provider) *schematic.Result {
+	if p.SchematicRunner != nil {
+		return p.SchematicRunner(ctx, cfg, bead, anvilPath, pv)
+	}
+	return schematic.Run(ctx, cfg, bead, anvilPath, pv)
 }
 
 // createPR creates a pull request (or uses the injected PRCreator for testing).
