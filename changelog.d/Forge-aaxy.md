@@ -1,0 +1,2 @@
+category: Fixed
+- **PR titles and descriptions are now always in English** - When beads have non-English titles or descriptions (e.g. Norwegian), the PR title is derived from the Smith's English commit message instead of the raw bead title, and the PR body leads with the English change summary from Warden review. The original bead description is preserved under an "Original Issue" section for context. (Forge-aaxy)

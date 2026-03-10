@@ -154,12 +154,13 @@ Main repository: {{.Bead.AnvilPath}}
 
 1. **Implement the task** described above fully and completely
 2. **Follow the repository's coding standards** (see context below)
-3. **Do NOT run builds, tests, or linters** — the Temper verification step runs build, lint, and test checks automatically after you finish. Focus your time on implementation.
-4. **Commit your changes** with a clear commit message referencing the bead:
+3. **All output must be in English** — commit messages, changelog fragments, code comments, and any other written output must be in English regardless of the language used in the bead title or description above. If the bead is written in another language, understand the intent and produce all your work in English.
+4. **Do NOT run builds, tests, or linters** — the Temper verification step runs build, lint, and test checks automatically after you finish. Focus your time on implementation.
+5. **Commit your changes** with a clear commit message referencing the bead:
    - Format: "feat: <description>" or "fix: <description>"
    - Include "Bead: {{.Bead.BeadID}}" in the commit body
-5. **Push your branch** to the remote: git push -u origin {{.Bead.Branch}}
-6. **Do not create a PR** — that will be handled by the orchestrator
+6. **Push your branch** to the remote: git push -u origin {{.Bead.Branch}}
+7. **Do not create a PR** — that will be handled by the orchestrator
 
 ## Escalation — When to Ask for Human Help
 

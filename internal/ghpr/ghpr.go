@@ -69,6 +69,13 @@ func Create(ctx context.Context, p CreateParams) (*PR, error) {
 
 	if p.Title == "" {
 		p.Title = fmt.Sprintf("forge: %s", p.BeadID)
+	} else {
+		// Try to derive an English title from the branch's commit message
+		// subject, since bead titles may be in a non-English language (e.g.
+		// Norwegian) which produces garbled characters in PR titles.
+		if subject := commitSubject(ctx, p.WorktreePath, p.Branch); subject != "" {
+			p.Title = fmt.Sprintf("%s (%s)", subject, p.BeadID)
+		}
 	}
 
 	if p.Body == "" {
@@ -620,27 +627,59 @@ func (s *PRStatus) HasPendingReviewRequests() bool {
 	return len(s.ReviewRequests) > 0
 }
 
+// commitSubject returns the subject line of the most recent commit on the
+// given branch. It uses `git log` to read the commit message, which Smith
+// writes in English regardless of the bead's language. Returns empty string
+// on any error.
+func commitSubject(ctx context.Context, worktreePath, branch string) string {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "log", branch, "--format=%s", "-1"))
+	cmd.Dir = worktreePath
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		// Retry with origin-prefixed ref (branch may only exist on remote).
+		cmd2 := executil.HideWindow(exec.CommandContext(ctx, "git", "log", "origin/"+branch, "--format=%s", "-1"))
+		cmd2.Dir = worktreePath
+		var stdout2 bytes.Buffer
+		cmd2.Stdout = &stdout2
+		if err2 := cmd2.Run(); err2 != nil {
+			return ""
+		}
+		return strings.TrimSpace(stdout2.String())
+	}
+	return strings.TrimSpace(stdout.String())
+}
+
 // buildDefaultBody creates a structured PR body from bead metadata and change context.
+// The body is written in English: the change summary (from Warden review) is used as
+// the primary description, and the original bead description is included as context
+// in case it is in a non-English language.
 func buildDefaultBody(p CreateParams) string {
 	var b strings.Builder
 
-	// Header with bead type and title
-	if p.BeadType != "" && p.BeadTitle != "" {
-		fmt.Fprintf(&b, "## %s: %s\n\n", p.BeadType, p.BeadTitle)
-	} else if p.BeadTitle != "" {
-		fmt.Fprintf(&b, "## %s\n\n", p.BeadTitle)
-	}
-
-	// Bead description (the problem/task)
-	if p.BeadDescription != "" {
-		b.WriteString(p.BeadDescription)
-		b.WriteString("\n\n")
-	}
-
-	// What changed
+	// Lead with change summary (English, from Warden review) when available.
 	if p.ChangeSummary != "" {
 		b.WriteString("## Changes\n\n")
 		b.WriteString(p.ChangeSummary)
+		b.WriteString("\n\n")
+	}
+
+	// Include the original bead description as context. It may be in a
+	// non-English language, so we label it clearly.
+	if p.BeadDescription != "" {
+		header := "## Original Issue"
+		if p.BeadType != "" {
+			header = fmt.Sprintf("## Original Issue (%s)", p.BeadType)
+		}
+		if p.BeadTitle != "" {
+			fmt.Fprintf(&b, "%s: %s\n\n", header, p.BeadTitle)
+		} else {
+			fmt.Fprintf(&b, "%s\n\n", header)
+		}
+		b.WriteString(p.BeadDescription)
 		b.WriteString("\n\n")
 	}
 
