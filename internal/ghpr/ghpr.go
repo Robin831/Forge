@@ -61,22 +61,36 @@ type CreateParams struct {
 	ChangeSummary string
 }
 
+// selectTitle determines the PR title to use. If the title is empty a default
+// is generated from the bead ID. Otherwise it attempts to derive an English
+// title from the most recent commit subject on the branch — UNLESS the
+// provided title contains special CI markers like "[no-changelog]", which
+// callers such as Bellows rely on to control CI behaviour.
+func selectTitle(ctx context.Context, p CreateParams) string {
+	if p.Title == "" {
+		return fmt.Sprintf("forge: %s", p.BeadID)
+	}
+	// Preserve explicitly provided titles that contain special markers used
+	// by callers like Bellows for CI (e.g. "[no-changelog]").
+	if strings.Contains(p.Title, "[no-changelog]") {
+		return p.Title
+	}
+	// Try to derive an English title from the branch's commit message subject,
+	// since bead titles may be in a non-English language (e.g. Norwegian)
+	// which produces garbled characters in PR titles.
+	if subject := commitSubject(ctx, p.WorktreePath, p.Branch); subject != "" {
+		return fmt.Sprintf("%s (%s)", subject, p.BeadID)
+	}
+	return p.Title
+}
+
 // Create files a pull request using the gh CLI and records it in the state DB.
 func Create(ctx context.Context, p CreateParams) (*PR, error) {
 	if p.Base == "" {
 		p.Base = "main"
 	}
 
-	if p.Title == "" {
-		p.Title = fmt.Sprintf("forge: %s", p.BeadID)
-	} else {
-		// Try to derive an English title from the branch's commit message
-		// subject, since bead titles may be in a non-English language (e.g.
-		// Norwegian) which produces garbled characters in PR titles.
-		if subject := commitSubject(ctx, p.WorktreePath, p.Branch); subject != "" {
-			p.Title = fmt.Sprintf("%s (%s)", subject, p.BeadID)
-		}
-	}
+	p.Title = selectTitle(ctx, p)
 
 	if p.Body == "" {
 		p.Body = buildDefaultBody(p)

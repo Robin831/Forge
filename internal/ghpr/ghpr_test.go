@@ -1,7 +1,11 @@
 package ghpr
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -288,5 +292,93 @@ func TestReviewAuthorUnmarshal(t *testing.T) {
 	assert.Equal(t, "APPROVED", status.Reviews[1].State)
 	assert.True(t, status.NeedsChanges(), "CHANGES_REQUESTED review should cause NeedsChanges")
 	assert.True(t, status.HasApproval(), "APPROVED review should be detected")
+}
+
+// makeTestRepo creates a temporary git repository with a single commit using
+// the given commit message and returns the repo directory.
+func makeTestRepo(t *testing.T, commitMsg string) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test User",
+			"GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=Test User",
+			"GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-m", commitMsg)
+	return dir
+}
+
+func TestCommitSubject(t *testing.T) {
+	dir := makeTestRepo(t, "Add initial file")
+
+	t.Run("branch exists locally", func(t *testing.T) {
+		subject := commitSubject(context.Background(), dir, "main")
+		assert.Equal(t, "Add initial file", subject)
+	})
+
+	t.Run("branch does not exist locally or remotely", func(t *testing.T) {
+		subject := commitSubject(context.Background(), dir, "nonexistent-branch-xyz")
+		assert.Equal(t, "", subject)
+	})
+}
+
+func TestSelectTitle(t *testing.T) {
+	dir := makeTestRepo(t, "English commit subject")
+
+	t.Run("empty title gets default forge prefix", func(t *testing.T) {
+		p := CreateParams{BeadID: "Forge-test", WorktreePath: dir, Branch: "main"}
+		got := selectTitle(context.Background(), p)
+		assert.Equal(t, "forge: Forge-test", got)
+	})
+
+	t.Run("title is derived from commit subject", func(t *testing.T) {
+		p := CreateParams{
+			BeadID:       "Forge-test",
+			Title:        "Opprinnelig norsk tittel",
+			WorktreePath: dir,
+			Branch:       "main",
+		}
+		got := selectTitle(context.Background(), p)
+		assert.Equal(t, "English commit subject (Forge-test)", got)
+	})
+
+	t.Run("title with [no-changelog] is preserved unchanged", func(t *testing.T) {
+		originalTitle := "forge: learn rules [no-changelog]"
+		p := CreateParams{
+			BeadID:       "Forge-test",
+			Title:        originalTitle,
+			WorktreePath: dir,
+			Branch:       "main",
+		}
+		got := selectTitle(context.Background(), p)
+		assert.Equal(t, originalTitle, got, "title with [no-changelog] must not be overridden")
+	})
+
+	t.Run("non-existent branch keeps original title", func(t *testing.T) {
+		p := CreateParams{
+			BeadID:       "Forge-test",
+			Title:        "Some provided title",
+			WorktreePath: dir,
+			Branch:       "nonexistent-branch-xyz",
+		}
+		got := selectTitle(context.Background(), p)
+		assert.Equal(t, "Some provided title", got)
+	})
 }
 
