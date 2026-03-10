@@ -1135,7 +1135,9 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 
 			if !checkResult.NeedsCrucible {
 				d.logger.Info("schematic says standalone dispatch", "bead", bead.ID, "reason", checkResult.Reason)
-				// Fall through to normal pipeline below
+				// Clear epic branch so the normal pipeline creates a worktree
+				// from main instead of a non-existent feature branch.
+				bead.EpicBranch = ""
 				goto normalPipeline
 			}
 			d.logger.Info("schematic confirms crucible needed", "bead", bead.ID, "reason", checkResult.Reason)
