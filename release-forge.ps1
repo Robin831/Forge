@@ -167,7 +167,8 @@ try {
 
     Write-Step "Generating release notes..."
     $releaseNotes = Generate-ReleaseNotes -Version $Version
-    Set-Content -Path ".release-notes.md" -Value $releaseNotes -Encoding UTF8
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText((Join-Path $PWD ".release-notes.md"), $releaseNotes, $utf8NoBom)
     Write-Ok "Release notes written to .release-notes.md"
 
     # --- Commit changelog changes ---
