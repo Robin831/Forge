@@ -317,3 +317,15 @@ rules:
       check: When modifying query filters that determine dispatch eligibility (e.g. which beads are blocked, need human attention, or are circuit-broken), verify that a unit test exists asserting which rows are included and excluded by the new filter criteria — covering edge cases like different reason strings, flag combinations, and boundary values
       source: copilot:PR#169
       added: "2026-03-10"
+    - id: event-include-bead-anvil-context
+      category: ui
+      pattern: Logging or emitting events (especially skip/no-op events) that reference a PR number or external identifier without including the associated BeadID and anvil name
+      check: When logging to the Hearth event log via state.DB.LogEvent, always pass bead_id and anvil fields when that context is known. Because Hearth does not currently display the structured Anvil field, include the anvil name in the message text only when it materially helps operators correlate behavior across anvils. If bead_id is unknown or blank but you reference a PR or other external identifier, include the BeadID string in the message so the event remains traceable; daemon/lifecycle events with no associated bead do not need artificial bead/anvil context.
+      source: copilot:PR#171
+      added: "2026-03-10"
+    - id: auto-learn-skip-event-context
+      category: error-handling
+      pattern: Logging a skip or no-op event in a background worker (e.g., auto-learn, bellows monitor) where identifying context (bead ID, anvil name) or suppressed error counts may be missing
+      check: Verify that skip/no-op events include all relevant identifiers (bead ID, anvil name) so they are traceable in dashboards and logs. When the skip is caused by upstream failures (e.g., all distillation calls errored), track the failure count and either include it in the skip message or emit a dedicated error event instead of silently skipping.
+      source: copilot:PR#171
+      added: "2026-03-10"
