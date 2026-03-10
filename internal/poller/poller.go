@@ -156,9 +156,11 @@ func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Be
 		if b.Parent != "" {
 			addBlock(b.Parent, b.ID)
 		}
-		// Dependencies array may contain parent-child or blocks relationships
+		// Only parent-child dependencies indicate crucible relationships.
+		// Generic "blocks" dependencies are just sequencing — the poller
+		// already handles those because blocked beads don't appear in bd ready.
 		for _, dep := range b.Dependencies {
-			if dep.DependsOnID != "" && dep.DependsOnID != b.ID {
+			if dep.Type == "parent-child" && dep.DependsOnID != "" && dep.DependsOnID != b.ID {
 				addBlock(dep.DependsOnID, b.ID)
 			}
 		}

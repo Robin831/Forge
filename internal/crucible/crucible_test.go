@@ -307,7 +307,9 @@ func TestIsCrucibleCandidate(t *testing.T) {
 	}{
 		{"no blocks", poller.Bead{ID: "a"}, false},
 		{"empty blocks", poller.Bead{ID: "a", Blocks: []string{}}, false},
-		{"has blocks", poller.Bead{ID: "a", Blocks: []string{"b"}}, true},
+		{"has blocks but not epic", poller.Bead{ID: "a", Blocks: []string{"b"}}, false},
+		{"epic with blocks", poller.Bead{ID: "a", IssueType: "epic", Blocks: []string{"b"}}, true},
+		{"epic without blocks", poller.Bead{ID: "a", IssueType: "epic"}, false},
 	}
 
 	for _, tt := range tests {

@@ -748,5 +748,5 @@ func sanitizeID(id string) string {
 // IsCrucibleCandidate returns true if a bead has children (blocks other beads)
 // and is therefore a Crucible candidate.
 func IsCrucibleCandidate(b poller.Bead) bool {
-	return len(b.Blocks) > 0
+	return poller.IsEpicBead(b) && len(b.Blocks) > 0
 }
