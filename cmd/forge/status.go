@@ -14,13 +14,34 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var briefOutput bool
+
 func init() {
+	statusCmd.Flags().BoolVar(&briefOutput, "brief", false, "One-line output suitable for shell prompts or status bars")
 	rootCmd.AddCommand(statusCmd)
+}
+
+// formatBrief renders a single-line status summary.
+// Example: "⚒ 2 smiths | 5 queued | 3 PRs | $1.23 | polled 30s ago"
+// When daemon is down: "⚒ DOWN"
+func formatBrief(running bool, workers, queueSize, openPRs int, dailyCost float64, lastPoll string) string {
+	if !running {
+		return "⚒ DOWN"
+	}
+	line := fmt.Sprintf("⚒ %d smiths | %d queued | %d PRs", workers, queueSize, openPRs)
+	if dailyCost > 0 {
+		line += fmt.Sprintf(" | $%.2f", dailyCost)
+	}
+	if lastPoll != "" && lastPoll != "n/a" {
+		line += fmt.Sprintf(" | polled %s", lastPoll)
+	}
+	return line
 }
 
 var statusCmd = &cobra.Command{
 	Use:     "status",
 	Short:   "Show current daemon and worker status",
+	Long:    "Shows daemon health, active workers, queue size, and cost information.\n\nUse --brief for a single-line summary suitable for shell prompts or status bars:\n  forge status --brief\n  # Output: ⚒ 2 smiths | 5 queued | 3 PRs | $1.23 | polled 30s ago",
 	GroupID: "daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pid, running := daemon.IsRunning()
@@ -38,12 +59,19 @@ var statusCmd = &cobra.Command{
 					}
 					var s ipc.StatusPayload
 					_ = json.Unmarshal(resp.Payload, &s)
+
+					if briefOutput {
+						fmt.Println(formatBrief(true, s.Workers, s.QueueSize, s.OpenPRs, s.DailyCost, s.LastPoll))
+						return nil
+					}
+
 					tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 					fmt.Fprintf(tw, "Daemon\tRunning (PID %d)\n", s.PID)
 					fmt.Fprintf(tw, "Uptime\t%s\n", s.Uptime)
 					fmt.Fprintf(tw, "Workers\t%d active\n", s.Workers)
 					fmt.Fprintf(tw, "Queue\t%d beads\n", s.QueueSize)
 					fmt.Fprintf(tw, "Open PRs\t%d\n", s.OpenPRs)
+					fmt.Fprintf(tw, "Last Poll\t%s\n", s.LastPoll)
 					if s.DailyCostLimit > 0 {
 						fmt.Fprintf(tw, "Daily Cost\t$%.2f / $%.2f\n", s.DailyCost, s.DailyCostLimit)
 						if s.CostLimitPaused {
@@ -74,9 +102,19 @@ var statusCmd = &cobra.Command{
 			}
 		}
 
+		// Brief mode without daemon: just report down
+		if briefOutput && !running {
+			fmt.Println(formatBrief(false, 0, 0, 0, 0, ""))
+			return nil
+		}
+
 		// Fallback: read from state DB directly
 		db, err := state.Open("")
 		if err != nil {
+			if briefOutput {
+				fmt.Println(formatBrief(running, 0, 0, 0, 0, ""))
+				return nil
+			}
 			return fmt.Errorf("opening state database: %w", err)
 		}
 		defer db.Close()
@@ -86,6 +124,11 @@ var statusCmd = &cobra.Command{
 		events, _ := db.RecentEvents(5)
 		quotas, _ := db.GetAllProviderQuotas()
 		todayCost, _ := db.GetTodayCost()
+
+		if briefOutput {
+			fmt.Println(formatBrief(running, len(workers), 0, len(prs), todayCost, ""))
+			return nil
+		}
 
 		type statusData struct {
 			DaemonRunning bool                      `json:"daemon_running"`

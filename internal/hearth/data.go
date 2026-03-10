@@ -572,6 +572,44 @@ func FetchUsage(ds *DataSource) tea.Cmd {
 	}
 }
 
+// UpdateDaemonHealthMsg carries the result of a daemon health check to the TUI.
+type UpdateDaemonHealthMsg struct {
+	Connected bool
+	Workers   int
+	QueueSize int
+	LastPoll  string
+	Uptime    string
+}
+
+// FetchDaemonHealth probes the daemon via IPC and returns connectivity status.
+func FetchDaemonHealth() tea.Cmd {
+	return func() tea.Msg {
+		client, err := ipc.NewClient()
+		if err != nil {
+			return UpdateDaemonHealthMsg{Connected: false}
+		}
+		defer client.Close()
+
+		resp, err := client.Send(ipc.Command{Type: "status"})
+		if err != nil || resp.Type != "status" {
+			return UpdateDaemonHealthMsg{Connected: false}
+		}
+
+		var s ipc.StatusPayload
+		if err := json.Unmarshal(resp.Payload, &s); err != nil {
+			return UpdateDaemonHealthMsg{Connected: false}
+		}
+
+		return UpdateDaemonHealthMsg{
+			Connected: true,
+			Workers:   s.Workers,
+			QueueSize: s.QueueSize,
+			LastPoll:  s.LastPoll,
+			Uptime:    s.Uptime,
+		}
+	}
+}
+
 // FetchAll returns a batch command that refreshes all panels.
 func FetchAll(ds *DataSource) tea.Cmd {
 	return tea.Batch(
@@ -582,5 +620,6 @@ func FetchAll(ds *DataSource) tea.Cmd {
 		FetchEvents(ds.DB, EventFetchLimit),
 		FetchCrucibles(),
 		FetchUsage(ds),
+		FetchDaemonHealth(),
 	)
 }

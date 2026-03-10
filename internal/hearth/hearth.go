@@ -266,6 +266,13 @@ type Model struct {
 	logViewerLines []string
 	logViewerScroll int
 
+	// Daemon health indicator
+	daemonConnected bool      // true when last IPC status check succeeded
+	daemonLastPoll  string    // e.g. "30s ago" or "n/a"
+	daemonWorkers   int       // active worker count from daemon
+	daemonQueueSize int       // queue size from daemon
+	daemonUptime    string    // daemon uptime string
+
 	// Status message (flashes briefly after an action)
 	statusMsg     string
 	statusMsgTime    time.Time
@@ -630,6 +637,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UpdateUsageMsg:
 		m.usage = msg.Data
 
+	case UpdateDaemonHealthMsg:
+		m.daemonConnected = msg.Connected
+		m.daemonLastPoll = msg.LastPoll
+		m.daemonWorkers = msg.Workers
+		m.daemonQueueSize = msg.QueueSize
+		m.daemonUptime = msg.Uptime
+
 	case UpdateEventsMsg:
 		m.events = msg.Items
 		m.eventRevision++
@@ -693,8 +707,18 @@ func (m *Model) View() string {
 		return "Initializing The Forge..."
 	}
 
-	// Header
-	header := headerStyle.Width(m.width).Render("🔥 The Forge — Hearth Dashboard")
+	// Header with daemon health indicator
+	headerText := "🔥 The Forge — Hearth Dashboard"
+	if m.daemonConnected {
+		indicator := daemonConnectedStyle.Render("● Connected")
+		if m.daemonLastPoll != "" && m.daemonLastPoll != "n/a" {
+			indicator += dimStyle.Render(" (polled " + m.daemonLastPoll + ")")
+		}
+		headerText += "  " + indicator
+	} else {
+		headerText += "  " + daemonDisconnectedStyle.Render("○ Disconnected")
+	}
+	header := headerStyle.Width(m.width).Render(headerText)
 	headerH := lipgloss.Height(header)
 
 	// Footer with status message or default hints
@@ -2266,6 +2290,13 @@ var (
 			Bold(true)
 
 	statusErrorStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("196")).
+				Bold(true)
+
+	daemonConnectedStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("82"))
+
+	daemonDisconnectedStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("196")).
 				Bold(true)
 )
