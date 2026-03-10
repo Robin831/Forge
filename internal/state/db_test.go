@@ -1192,7 +1192,7 @@ func TestDB_ReadyToMerge(t *testing.T) {
 		if err := db.UpdatePRLifecycle(pr.ID, 0, 0, 0, ciPassing); err != nil {
 			t.Fatalf("UpdatePRLifecycle: %v", err)
 		}
-		if err := db.UpdatePRMergeability(pr.ID, conflicting, unresolvedThreads, pendingReviews); err != nil {
+		if err := db.UpdatePRMergeability(pr.ID, ciPassing, conflicting, unresolvedThreads, pendingReviews); err != nil {
 			t.Fatalf("UpdatePRMergeability: %v", err)
 		}
 		return pr
@@ -1247,7 +1247,7 @@ func TestDB_ReadyToMerge(t *testing.T) {
 	}
 
 	// UpdatePRMergeability: make prConflict non-conflicting → now ready
-	if err := db.UpdatePRMergeability(prConflict.ID, false, false, false); err != nil {
+	if err := db.UpdatePRMergeability(prConflict.ID, true, false, false, false); err != nil {
 		t.Fatalf("UpdatePRMergeability clear: %v", err)
 	}
 	ready, err = db.ReadyToMergePRs()
@@ -1301,7 +1301,7 @@ func TestDB_InsertPR_DefaultsPendingReviews(t *testing.T) {
 	}
 
 	// After bellows confirms no pending reviews, the PR should be ready.
-	if err := db.UpdatePRMergeability(pr.ID, false, false, false); err != nil {
+	if err := db.UpdatePRMergeability(pr.ID, true, false, false, false); err != nil {
 		t.Fatalf("UpdatePRMergeability: %v", err)
 	}
 	ready, err = db.IsPRReadyToMerge(pr.ID)

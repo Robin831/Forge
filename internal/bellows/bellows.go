@@ -355,7 +355,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	}
 
 	// Persist mergeability state so the ready-to-merge panel stays current.
-	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews)
+	// Include ci_passing so the Ready to Merge panel reflects the latest CI
+	// status every poll cycle, not just on CI transition events.
+	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews)
 
 }
 

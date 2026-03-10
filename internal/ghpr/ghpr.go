@@ -141,6 +141,7 @@ func Create(ctx context.Context, p CreateParams) (*PR, error) {
 			} else if dbPR.ID != 0 {
 				if err := p.DB.UpdatePRMergeability(
 					dbPR.ID,
+					false,                             // CI hasn't run yet; Bellows is authoritative
 					status.Mergeable == "CONFLICTING", // only conflict state is reliable from CheckStatusLight
 					false,                             // unresolved threads not fetched; Bellows is authoritative
 					true,                              // keep pending reviews safe default until Bellows confirms

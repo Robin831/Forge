@@ -432,6 +432,12 @@ func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 	var stalled []Worker
 	for _, w := range workers {
 		if w.LogPath == "" {
+			// Pending workers have no log path yet. If the worker has been
+			// pending longer than the stale threshold, treat it as stalled —
+			// the dispatch goroutine likely died before the pipeline started.
+			if w.StartedAt.Before(cutoff) {
+				stalled = append(stalled, w)
+			}
 			continue
 		}
 		info, err := os.Stat(w.LogPath)
@@ -887,10 +893,10 @@ func (db *DB) ResetPRFixCounts(id int) error {
 
 // UpdatePRMergeability persists the conflict, unresolved thread, and pending review state for a PR.
 // Called by Bellows on each poll to keep the ready-to-merge view current.
-func (db *DB) UpdatePRMergeability(id int, isConflicting, hasUnresolvedThreads, hasPendingReviews bool) error {
+func (db *DB) UpdatePRMergeability(id int, ciPassing, isConflicting, hasUnresolvedThreads, hasPendingReviews bool) error {
 	_, err := db.conn.Exec(
-		`UPDATE prs SET is_conflicting = ?, has_unresolved_threads = ?, has_pending_reviews = ?, last_checked = ? WHERE id = ?`,
-		boolToInt(isConflicting), boolToInt(hasUnresolvedThreads), boolToInt(hasPendingReviews),
+		`UPDATE prs SET ci_passing = ?, is_conflicting = ?, has_unresolved_threads = ?, has_pending_reviews = ?, last_checked = ? WHERE id = ?`,
+		boolToInt(ciPassing), boolToInt(isConflicting), boolToInt(hasUnresolvedThreads), boolToInt(hasPendingReviews),
 		time.Now().Format(dbTimeLayout), id,
 	)
 	return err
