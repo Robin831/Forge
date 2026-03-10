@@ -85,6 +85,9 @@ func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, aut
 	if interval < 30*time.Second {
 		interval = 30 * time.Second
 	}
+	if maxCIFixAttempts == nil {
+		maxCIFixAttempts = func() int { return state.DefaultMaxCIFixAttempts }
+	}
 	return &Monitor{
 		db:               db,
 		interval:         interval,
@@ -93,7 +96,7 @@ func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, aut
 		refresh:          make(chan struct{}, 1),
 		autoLearnRules:   autoLearnRules,
 		maxCIFixAttempts: maxCIFixAttempts,
-		learnMu:         make(map[string]*sync.Mutex),
+		learnMu:          make(map[string]*sync.Mutex),
 		learnSem:         make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
 	}
 }
@@ -306,10 +309,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		// This catches the gap where NotifyCIFixCompleted() clears the fix
 		// state but bellows never re-emits EventCIFailed because it only
 		// detected transitions.
-		maxCI := state.DefaultMaxCIFixAttempts
-		if m.maxCIFixAttempts != nil {
-			maxCI = m.maxCIFixAttempts()
-		}
+		maxCI := m.maxCIFixAttempts()
 		if pr.Status != state.PRNeedsFix && pr.CIFixCount > 0 && pr.CIFixCount < maxCI {
 			m.emit(ctx, PREvent{
 				PRNumber:  pr.Number,
