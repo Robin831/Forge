@@ -320,7 +320,7 @@ rules:
     - id: event-include-bead-anvil-context
       category: ui
       pattern: Logging or emitting events (especially skip/no-op events) that reference a PR number or external identifier without including the associated BeadID and anvil name
-      check: Verify that every event emitted to the Hearth event log includes both the BeadID and anvil name in the message so operators can unambiguously correlate events across anvils and filter by bead
+      check: When logging to the Hearth event log via state.DB.LogEvent, always pass bead_id and anvil fields when that context is known. Because Hearth does not currently display the structured Anvil field, include the anvil name in the message text only when it materially helps operators correlate behavior across anvils. If bead_id is unknown or blank but you reference a PR or other external identifier, include the BeadID string in the message so the event remains traceable; daemon/lifecycle events with no associated bead do not need artificial bead/anvil context.
       source: copilot:PR#171
       added: "2026-03-10"
     - id: auto-learn-skip-event-context
