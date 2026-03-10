@@ -1117,6 +1117,33 @@ func TestRenderQueueActionMenuShowsTitle(t *testing.T) {
 	}
 }
 
+func TestRenderQueueActionMenuTruncatesLongTitle(t *testing.T) {
+	// A title that wraps to more than 2 lines should show 2 lines with ellipsis on the second.
+	longTitle := strings.Repeat("word ", 30) // ~150 chars, will wrap well beyond 2 lines at 60 cols
+	item := QueueItem{
+		BeadID:  "bd-lt1",
+		Anvil:   "test",
+		Title:   longTitle,
+		Section: "unlabeled",
+	}
+	m := Model{
+		showQueueActionMenu: true,
+		queueActionTarget:   &item,
+		queueActionMenuIdx:  0,
+		width:               80,
+		height:              24,
+	}
+	rendered := m.renderQueueActionMenu()
+	// Should contain ellipsis indicating title was truncated.
+	if !strings.Contains(rendered, "...") {
+		t.Errorf("expected ellipsis for truncated title:\n%s", rendered)
+	}
+	// Should still contain the bead ID.
+	if !strings.Contains(rendered, "bd-lt1") {
+		t.Errorf("expected bead ID in output:\n%s", rendered)
+	}
+}
+
 func TestRenderQueueActionMenuWrapsDescription(t *testing.T) {
 	// Description longer than content width should be word-wrapped.
 	item := QueueItem{

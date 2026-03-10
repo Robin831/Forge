@@ -1113,7 +1113,7 @@ func (m *Model) renderQueueActionMenu() string {
 		return ""
 	}
 
-	menuWidth := 52
+	menuWidth := 60
 	contentWidth := menuWidth - actionMenuStyle.GetHorizontalFrameSize()
 	labels := queueActionMenuLabels()
 
@@ -1122,7 +1122,22 @@ func (m *Model) renderQueueActionMenu() string {
 	lines = append(lines, actionMenuTitleStyle.Render(title))
 
 	if m.queueActionTarget.Title != "" {
-		lines = append(lines, dimStyle.Render(truncate(m.queueActionTarget.Title, contentWidth)))
+		// Sanitize and word-wrap title to fit popup width, max 2 lines.
+		safeTitle := sanitizeTitle(m.queueActionTarget.Title)
+		wrapped := wordWrap(safeTitle, contentWidth)
+		if len(wrapped) <= 2 {
+			for _, line := range wrapped {
+				lines = append(lines, dimStyle.Render(line))
+			}
+		} else {
+			// Show first line as-is, truncate second line and append ellipsis.
+			lines = append(lines, dimStyle.Render(wrapped[0]))
+			second := []rune(wrapped[1])
+			if len(second) > contentWidth-3 {
+				second = second[:contentWidth-3]
+			}
+			lines = append(lines, dimStyle.Render(string(second)+"..."))
+		}
 	}
 	if m.queueActionTarget.Description != "" {
 		lines = append(lines, "")
