@@ -311,3 +311,21 @@ rules:
       check: Verify that UpsertRetry does not silently overwrite existing retry state (retry_count, next_retry, dispatch_failures, clarification_needed). Load the existing record first and only update the fields you intend to change, preserving counters and backoff state.
       source: copilot:PR#166
       added: "2026-03-10"
+    - id: accurate-error-prefix
+      category: error-handling
+      pattern: Code that sets LastError or error messages using a prefix from a different subsystem or failure mode than the one actually being handled
+      check: Verify that error message prefixes accurately identify the originating subsystem or failure mode. Do not reuse prefixes from unrelated code paths (e.g. using 'circuit breaker:' for a crucible child failure) as this conflates failure modes and misleads operators reading logs or state.
+      source: copilot:PR#169
+      added: "2026-03-10"
+    - id: rename-broadened-functions
+      category: style
+      pattern: A function's scope or behavior is widened (e.g., returning a broader set of results) but its name still reflects the original, narrower purpose
+      check: Verify that function names, variable names, and surrounding terminology accurately describe the current behavior after any scope changes — rename them if the old name would mislead future readers
+      source: copilot:PR#169
+      added: "2026-03-10"
+    - id: test-dispatch-eligibility-filters
+      category: testing
+      pattern: Changes to SQL queries or filter logic in state/db.go that affect bead dispatch eligibility sets (e.g. needs_human, clarification_needed, circuit breaker filters)
+      check: When modifying query filters that determine dispatch eligibility (e.g. which beads are blocked, need human attention, or are circuit-broken), verify that a unit test exists asserting which rows are included and excluded by the new filter criteria — covering edge cases like different reason strings, flag combinations, and boundary values
+      source: copilot:PR#169
+      added: "2026-03-10"
