@@ -340,7 +340,7 @@ const (
 // external state changes (e.g. PR events) and can be legitimately silent for
 // long stretches, so they are excluded from stale detection and dispatch
 // capacity queries. Update this constant when new background phases are added.
-const backgroundPhases = "'bellows', 'cifix', 'reviewfix', 'rebase'"
+const backgroundPhases = "'bellows', 'cifix', 'reviewfix', 'rebase', 'crucible'"
 
 // Worker represents a Smith worker entry.
 type Worker struct {
