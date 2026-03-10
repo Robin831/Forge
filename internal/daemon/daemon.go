@@ -1253,14 +1253,24 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	// Create PR — run gh from the main repo dir since the branch is already pushed.
 	// Use pipelineCtx (background-derived) so PR creation succeeds even during
 	// graceful shutdown.
+	// Build a change summary from warden review if available.
+	var changeSummary string
+	if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" {
+		changeSummary = outcome.ReviewResult.Summary
+	}
+
 	pr, err := ghpr.Create(pipelineCtx, ghpr.CreateParams{
-		WorktreePath: anvilCfg.Path,
-		BeadID:       bead.ID,
-		Title:        fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
-		Branch:       outcome.Branch,
-		Base:         bead.EpicBranch, // empty = repo default branch (omits --base in gh pr create)
-		AnvilName:    bead.Anvil,
-		DB:           d.db,
+		WorktreePath:    anvilCfg.Path,
+		BeadID:          bead.ID,
+		Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
+		Branch:          outcome.Branch,
+		Base:            bead.EpicBranch, // empty = repo default branch (omits --base in gh pr create)
+		AnvilName:       bead.Anvil,
+		DB:              d.db,
+		BeadTitle:       bead.Title,
+		BeadDescription: bead.Description,
+		BeadType:        bead.IssueType,
+		ChangeSummary:   changeSummary,
 	})
 	if err != nil {
 		d.logger.Error("PR creation failed", "bead", bead.ID, "error", err)
