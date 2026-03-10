@@ -389,19 +389,10 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 		subBeads = append(subBeads, SubBead{ID: created.ID, Title: task})
 	}
 
-	// Close the parent — its work is done (decomposed into children).
-	// Children are independent and will be dispatched individually.
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer closeCancel()
-	closeCmd := executil.HideWindow(exec.CommandContext(closeCtx,
-		"bd", "close", parent.ID, "--reason=Decomposed into sub-beads", "--json",
-	))
-	closeCmd.Dir = anvilPath
-	if out, err := closeCmd.CombinedOutput(); err != nil {
-		log.Printf("[schematic:%s] Warning: failed to close decomposed parent: %v: %s", parent.ID, err, out)
-		// Fall back to resetting to open — children still block it
-		resetParent()
-	}
+	// Keep the parent open-but-blocked: its work is represented by its sub-beads.
+	// Downstream beads can depend on blocks:<parent>, and will only be ready once
+	// the children complete and unblock the parent.
+	resetParent()
 
 	return subBeads, nil
 }
