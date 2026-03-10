@@ -61,15 +61,36 @@ type CreateParams struct {
 	ChangeSummary string
 }
 
+// selectTitle determines the PR title to use. If the title is empty a default
+// is generated from the bead ID. Otherwise it attempts to derive an English
+// title from the most recent commit subject on the branch — UNLESS the
+// provided title contains special CI markers like "[no-changelog]", which
+// callers such as Bellows rely on to control CI behaviour.
+func selectTitle(ctx context.Context, p CreateParams) string {
+	if p.Title == "" {
+		return fmt.Sprintf("forge: %s", p.BeadID)
+	}
+	// Preserve explicitly provided titles that contain special markers used
+	// by callers like Bellows for CI (e.g. "[no-changelog]").
+	if strings.Contains(p.Title, "[no-changelog]") {
+		return p.Title
+	}
+	// Try to derive an English title from the branch's commit message subject,
+	// since bead titles may be in a non-English language (e.g. Norwegian)
+	// which produces garbled characters in PR titles.
+	if subject := commitSubject(ctx, p.WorktreePath, p.Branch); subject != "" {
+		return fmt.Sprintf("%s (%s)", subject, p.BeadID)
+	}
+	return p.Title
+}
+
 // Create files a pull request using the gh CLI and records it in the state DB.
 func Create(ctx context.Context, p CreateParams) (*PR, error) {
 	if p.Base == "" {
 		p.Base = "main"
 	}
 
-	if p.Title == "" {
-		p.Title = fmt.Sprintf("forge: %s", p.BeadID)
-	}
+	p.Title = selectTitle(ctx, p)
 
 	if p.Body == "" {
 		p.Body = buildDefaultBody(p)
@@ -620,27 +641,59 @@ func (s *PRStatus) HasPendingReviewRequests() bool {
 	return len(s.ReviewRequests) > 0
 }
 
+// commitSubject returns the subject line of the most recent commit on the
+// given branch. It uses `git log` to read the commit message, which Smith
+// writes in English regardless of the bead's language. Returns empty string
+// on any error.
+func commitSubject(ctx context.Context, worktreePath, branch string) string {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "log", branch, "--format=%s", "-1"))
+	cmd.Dir = worktreePath
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		// Retry with origin-prefixed ref (branch may only exist on remote).
+		cmd2 := executil.HideWindow(exec.CommandContext(ctx, "git", "log", "origin/"+branch, "--format=%s", "-1"))
+		cmd2.Dir = worktreePath
+		var stdout2 bytes.Buffer
+		cmd2.Stdout = &stdout2
+		if err2 := cmd2.Run(); err2 != nil {
+			return ""
+		}
+		return strings.TrimSpace(stdout2.String())
+	}
+	return strings.TrimSpace(stdout.String())
+}
+
 // buildDefaultBody creates a structured PR body from bead metadata and change context.
+// The body is written in English: the change summary (from Warden review) is used as
+// the primary description, and the original bead description is included as context
+// in case it is in a non-English language.
 func buildDefaultBody(p CreateParams) string {
 	var b strings.Builder
 
-	// Header with bead type and title
-	if p.BeadType != "" && p.BeadTitle != "" {
-		fmt.Fprintf(&b, "## %s: %s\n\n", p.BeadType, p.BeadTitle)
-	} else if p.BeadTitle != "" {
-		fmt.Fprintf(&b, "## %s\n\n", p.BeadTitle)
-	}
-
-	// Bead description (the problem/task)
-	if p.BeadDescription != "" {
-		b.WriteString(p.BeadDescription)
-		b.WriteString("\n\n")
-	}
-
-	// What changed
+	// Lead with change summary (English, from Warden review) when available.
 	if p.ChangeSummary != "" {
 		b.WriteString("## Changes\n\n")
 		b.WriteString(p.ChangeSummary)
+		b.WriteString("\n\n")
+	}
+
+	// Include the original bead description as context. It may be in a
+	// non-English language, so we label it clearly.
+	if p.BeadDescription != "" {
+		header := "## Original Issue"
+		if p.BeadType != "" {
+			header = fmt.Sprintf("## Original Issue (%s)", p.BeadType)
+		}
+		if p.BeadTitle != "" {
+			fmt.Fprintf(&b, "%s: %s\n\n", header, p.BeadTitle)
+		} else {
+			fmt.Fprintf(&b, "%s\n\n", header)
+		}
+		b.WriteString(p.BeadDescription)
 		b.WriteString("\n\n")
 	}
 
