@@ -75,6 +75,16 @@ const (
 	MaxDispatchFailures = 3
 )
 
+// bellowsMonitorIface defines the subset of *bellows.Monitor used by the daemon,
+// allowing a test double to be injected in unit tests.
+type bellowsMonitorIface interface {
+	OnEvent(h bellows.Handler)
+	UpdateAnvilPaths(paths map[string]string)
+	Refresh()
+	Run(ctx context.Context) error
+	ResetPRState(anvil string, prNumber int)
+}
+
 // temperCacheEntry caches a parsed per-anvil temper.yaml along with the file's
 // modification time so the file is only re-read when it changes on disk.
 // statErr is non-empty when the last os.Stat call returned a non-ENOENT error;
@@ -103,7 +113,7 @@ type Daemon struct {
 	promptBuilder  *prompt.Builder
 
 	// PR Monitoring (Bellows)
-	bellowsMonitor  *bellows.Monitor
+	bellowsMonitor  bellowsMonitorIface
 	lifecycleMgr    *lifecycle.Manager
 	depcheckScanner *depcheck.Scanner
 
@@ -532,6 +542,19 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			// can reset any suppression state and allow future CI-failure
 			// detection to trigger additional attempts as needed.
 			d.lifecycleMgr.NotifyCIFixCompleted(req.Anvil, req.PRNumber)
+			// Reset the bellows snapshot cache so the next poll sees a fresh
+			// state transition. Without this, bellows sees CI still failing
+			// (same as last snapshot) and never re-emits EventCIFailed,
+			// preventing the lifecycle manager from dispatching retries.
+			if d.bellowsMonitor != nil {
+				// Reset the snapshot only; do not trigger an immediate Refresh()
+				// here because CI checks may still be pending. An immediate poll
+				// would see "not yet passing" and could emit EventCIFailed while
+				// checks are still running, burning through cifix retries before
+				// CI has a chance to complete. The regular poll interval is
+				// sufficient to re-detect failure once CI settles.
+				d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
+			}
 
 		case lifecycle.ActionFixReview:
 			d.logger.Info("spawning review fix worker", "pr", req.PRNumber, "bead", req.BeadID)

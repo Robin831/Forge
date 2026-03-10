@@ -1,0 +1,2 @@
+category: Fixed
+- **Bellows now retries CI fixes after failed attempts** - After a cifix worker completes without fixing CI, bellows resets its snapshot cache for the PR so the next poll re-detects the CI failure and dispatches another fix attempt. Previously, bellows only fired EventCIFailed on state transitions (passing→failing), so a stable failing state after a failed cifix was never re-detected, leaving the PR stuck with no retries. (Forge-bzk6)
