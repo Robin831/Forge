@@ -888,10 +888,10 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		return
 	}
 
-	// Preload circuit-broken beads (needs_human=1) to avoid dispatching poison beads.
-	circuitBrokenSet, circuitBrokenErr := d.db.DispatchCircuitBrokenBeadIDSet()
-	if circuitBrokenErr != nil {
-		d.logger.Error("loading circuit-broken set; skipping dispatch this poll cycle", "error", circuitBrokenErr)
+	// Preload needs-human beads (needs_human=1) to avoid dispatching them automatically.
+	needsHumanSet, needsHumanErr := d.db.NeedsHumanBeadIDSet()
+	if needsHumanErr != nil {
+		d.logger.Error("loading needs-human set; skipping dispatch this poll cycle", "error", needsHumanErr)
 		return
 	}
 
@@ -959,8 +959,8 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			continue
 		}
 
-		// Skip beads that are circuit-broken (needs_human=1 from dispatch failures or retries)
-		if _, broken := circuitBrokenSet[bead.ID+"\x00"+bead.Anvil]; broken {
+		// Skip beads that need human attention (needs_human=1)
+		if _, broken := needsHumanSet[bead.ID+"\x00"+bead.Anvil]; broken {
 			d.activeBeads.Delete(bead.ID)
 			continue
 		}

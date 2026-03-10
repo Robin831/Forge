@@ -1378,11 +1378,15 @@ func (db *DB) ResetDispatchFailures(beadID, anvil string) error {
 	return err
 }
 
-// DispatchCircuitBrokenBeadIDSet returns a set of "beadID\x00anvil" keys for
-// all beads marked needs_human=1 (dispatch circuit breaker, crucible child
-// failures, etc.). This allows callers to do a single query and then O(1)
-// membership checks in the dispatch loop.
-func (db *DB) DispatchCircuitBrokenBeadIDSet() (map[string]struct{}, error) {
+// NeedsHumanBeadIDSet returns a set of "beadID\x00anvil" keys for
+// all beads currently marked needs_human=1 in the retries table. This
+// intentionally includes any reason that set needs_human (dispatch circuit
+// breaker trips, crucible child failures, exhausted retries, clarification
+// needed that escalated to human review, etc.), and excludes all rows where
+// needs_human=0. Callers can use this set for O(1) membership checks in the
+// dispatch loop to determine which beads are not eligible for automatic
+// dispatch.
+func (db *DB) NeedsHumanBeadIDSet() (map[string]struct{}, error) {
 	rows, err := db.conn.Query(
 		`SELECT bead_id, anvil FROM retries WHERE needs_human = 1`)
 	if err != nil {

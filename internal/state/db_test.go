@@ -1365,3 +1365,64 @@ func TestDB_HasWorkerRecord(t *testing.T) {
 		t.Fatal("expected no worker record for different anvil")
 	}
 }
+
+func TestDB_NeedsHumanBeadIDSet(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	upsert := func(beadID, anvil string, needsHuman bool, lastError string) {
+		t.Helper()
+		if err := db.UpsertRetry(&RetryRecord{
+			BeadID:    beadID,
+			Anvil:     anvil,
+			NeedsHuman: needsHuman,
+			LastError: lastError,
+		}); err != nil {
+			t.Fatalf("UpsertRetry(%s): %v", beadID, err)
+		}
+	}
+
+	// needs_human=1 with dispatch circuit breaker reason
+	upsert("bd-1", "anvil-a", true, "circuit breaker: too many failures")
+	// needs_human=1 with crucible child failure reason (non-circuit-breaker prefix)
+	upsert("bd-2", "anvil-a", true, "crucible child failed: temper rejected")
+	// needs_human=1 with exhausted retries reason
+	upsert("bd-3", "anvil-b", true, "exhausted retries")
+	// needs_human=0 — should NOT appear in set
+	upsert("bd-4", "anvil-a", false, "")
+
+	set, err := db.NeedsHumanBeadIDSet()
+	if err != nil {
+		t.Fatalf("NeedsHumanBeadIDSet: %v", err)
+	}
+
+	included := []struct{ id, anvil string }{
+		{"bd-1", "anvil-a"},
+		{"bd-2", "anvil-a"},
+		{"bd-3", "anvil-b"},
+	}
+	for _, tc := range included {
+		key := tc.id + "\x00" + tc.anvil
+		if _, ok := set[key]; !ok {
+			t.Errorf("expected %s/%s to be in NeedsHumanBeadIDSet", tc.id, tc.anvil)
+		}
+	}
+
+	// needs_human=0 must be excluded
+	excluded := "bd-4\x00anvil-a"
+	if _, ok := set[excluded]; ok {
+		t.Errorf("expected bd-4/anvil-a to be excluded from NeedsHumanBeadIDSet (needs_human=0)")
+	}
+
+	if len(set) != 3 {
+		t.Errorf("expected 3 entries in set, got %d", len(set))
+	}
+}

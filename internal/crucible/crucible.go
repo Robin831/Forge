@@ -679,7 +679,7 @@ func (p *Params) markChildNeedsHuman(beadID, reason string) {
 
 	// Update only the fields we care about, preserving everything else.
 	rec.NeedsHuman = true
-	rec.LastError = fmt.Sprintf("circuit breaker: crucible child failed: %s", reason)
+	rec.LastError = fmt.Sprintf("crucible child failed: %s", reason)
 
 	if err := p.DB.UpsertRetry(rec); err != nil {
 		log.Error("failed to mark child as needs_human", "error", err)
