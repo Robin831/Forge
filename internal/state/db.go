@@ -1379,12 +1379,12 @@ func (db *DB) ResetDispatchFailures(beadID, anvil string) error {
 }
 
 // DispatchCircuitBrokenBeadIDSet returns a set of "beadID\x00anvil" keys for
-// beads that are circuit-broken via the dispatch circuit breaker
-// (needs_human=1 with a "circuit breaker:" last_error). This allows callers to
-// do a single query and then O(1) membership checks in the dispatch loop.
+// all beads marked needs_human=1 (dispatch circuit breaker, crucible child
+// failures, etc.). This allows callers to do a single query and then O(1)
+// membership checks in the dispatch loop.
 func (db *DB) DispatchCircuitBrokenBeadIDSet() (map[string]struct{}, error) {
 	rows, err := db.conn.Query(
-		`SELECT bead_id, anvil FROM retries WHERE needs_human = 1 AND last_error LIKE 'circuit breaker:%'`)
+		`SELECT bead_id, anvil FROM retries WHERE needs_human = 1`)
 	if err != nil {
 		return nil, err
 	}
