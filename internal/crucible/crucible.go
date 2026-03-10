@@ -241,15 +241,25 @@ func Run(ctx context.Context, p Params) *Result {
 			}
 		}
 
+		// Build change summary from warden review if available.
+		var childChangeSummary string
+		if childResult.ReviewResult != nil && childResult.ReviewResult.Summary != "" {
+			childChangeSummary = childResult.ReviewResult.Summary
+		}
+
 		// Create PR from child branch → feature branch.
 		pr, err := p.createPR(ctx, ghpr.CreateParams{
-			WorktreePath: anvilPath,
-			BeadID:       child.ID,
-			Title:        fmt.Sprintf("%s (%s)", child.Title, child.ID),
-			Branch:       childResult.Branch,
-			Base:         branch,
-			AnvilName:    p.AnvilName,
-			DB:           p.DB,
+			WorktreePath:    anvilPath,
+			BeadID:          child.ID,
+			Title:           fmt.Sprintf("%s (%s)", child.Title, child.ID),
+			Branch:          childResult.Branch,
+			Base:            branch,
+			AnvilName:       p.AnvilName,
+			DB:              p.DB,
+			BeadTitle:       child.Title,
+			BeadDescription: child.Description,
+			BeadType:        child.IssueType,
+			ChangeSummary:   childChangeSummary,
 		})
 		if err != nil {
 			log.Error("failed to create child PR", "child", child.ID, "error", err)
@@ -311,13 +321,16 @@ func Run(ctx context.Context, p Params) *Result {
 	})
 
 	finalPR, err := p.createPR(ctx, ghpr.CreateParams{
-		WorktreePath: anvilPath,
-		BeadID:       p.ParentBead.ID,
-		Title:        fmt.Sprintf("%s (%s)", p.ParentBead.Title, p.ParentBead.ID),
-		Branch:       branch,
-		Base:         "", // main (repo default)
-		AnvilName:    p.AnvilName,
-		DB:           p.DB,
+		WorktreePath:    anvilPath,
+		BeadID:          p.ParentBead.ID,
+		Title:           fmt.Sprintf("%s (%s)", p.ParentBead.Title, p.ParentBead.ID),
+		Branch:          branch,
+		Base:            "", // empty = default branch (main); ghpr.Create normalizes "" → "main"
+		AnvilName:       p.AnvilName,
+		DB:              p.DB,
+		BeadTitle:       p.ParentBead.Title,
+		BeadDescription: p.ParentBead.Description,
+		BeadType:        p.ParentBead.IssueType,
 	})
 	if err != nil {
 		return &Result{
