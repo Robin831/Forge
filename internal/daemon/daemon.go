@@ -393,6 +393,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.bellowsMonitor = bellows.New(d.db, d.cfg.Load().Settings.BellowsInterval, monitorAnvils, func() bool {
 		return d.cfg.Load().Settings.AutoLearnRules
+	}, func() int {
+		return d.cfg.Load().Settings.MaxCIFixAttempts
 	})
 	d.lifecycleMgr = lifecycle.New(d.db, d.logger, d.handleLifecycleAction)
 	d.lifecycleMgr.SetThresholds(
