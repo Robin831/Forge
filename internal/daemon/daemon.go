@@ -1057,6 +1057,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	// orchestrates all children on a feature branch, merging each child's PR
 	// before dispatching the next, then creates a final PR to main.
 	if d.cfg.Load().Settings.CrucibleEnabled && crucible.IsCrucibleCandidate(bead) {
+		_ = d.db.UpdateWorkerPhase(claimWorkerID, "crucible")
 		d.logger.Info("dispatching crucible", "bead", bead.ID, "children", len(bead.Blocks))
 
 		smithProviderSpecs := d.cfg.Load().Settings.SmithProviders
