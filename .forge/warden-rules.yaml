@@ -296,12 +296,12 @@ rules:
     - id: needs-human-circuit-breaker-prefix
       category: error-handling
       pattern: Code calling markChildNeedsHuman or writing needs_human=1 retry records with a LastError string
-      check: Verify the LastError value starts with 'circuit breaker:' prefix so the daemon's DispatchCircuitBrokenBeadIDSet filter will match it and prevent re-dispatch. A needs_human record with a non-matching prefix will be ignored by the poller and the bead may be re-dispatched unexpectedly.
+      check: Verify the LastError value starts with a 'circuit breaker:' prefix so the daemon's DispatchCircuitBrokenBeadIDSet filter in the dispatch loop will match it and prevent re-dispatch. A needs_human record with a non-matching prefix will be ignored by that dispatch filter and the bead may be re-dispatched unexpectedly.
       source: copilot:PR#166
       added: "2026-03-10"
     - id: handle-db-upsert-errors
       category: error-handling
-      pattern: Calling DB.UpsertRetry, DB.Upsert, or similar state DB write methods without checking or handling the returned error
+      pattern: Calling state DB write methods like UpsertRetry, UpdateWorker, InsertEvent without checking or handling the returned error
       check: Verify that errors returned from state DB write operations (UpsertRetry, UpdateWorker, InsertEvent, etc.) are handled — at minimum logged with context (bead_id, anvil, operation). Discarding these errors can leave the system in an inconsistent state (e.g., a bead reset to open but not marked needs_human, causing infinite dispatch loops).
       source: copilot:PR#166
       added: "2026-03-10"
