@@ -45,6 +45,10 @@ func classifyAttentionReason(b state.NeedsAttentionBead) AttentionReason {
 // TickInterval is how often the TUI refreshes data.
 const TickInterval = 2 * time.Second
 
+// healthTickDivisor controls how often the daemon health IPC check runs relative
+// to the main tick. At TickInterval=2s and divisor=5, health is checked every 10s.
+const healthTickDivisor = 5
+
 // EventFetchLimit is the maximum number of events retrieved for the Events panel.
 const EventFetchLimit = 100
 
@@ -572,7 +576,47 @@ func FetchUsage(ds *DataSource) tea.Cmd {
 	}
 }
 
+// UpdateDaemonHealthMsg carries the result of a daemon health check to the TUI.
+type UpdateDaemonHealthMsg struct {
+	Connected bool
+	Workers   int
+	QueueSize int
+	LastPoll  string
+	Uptime    string
+}
+
+// FetchDaemonHealth probes the daemon via IPC and returns connectivity status.
+func FetchDaemonHealth() tea.Cmd {
+	return func() tea.Msg {
+		client, err := ipc.NewClient()
+		if err != nil {
+			return UpdateDaemonHealthMsg{Connected: false}
+		}
+		defer client.Close()
+
+		resp, err := client.Send(ipc.Command{Type: "status"})
+		if err != nil || resp.Type != "status" {
+			return UpdateDaemonHealthMsg{Connected: false}
+		}
+
+		var s ipc.StatusPayload
+		if err := json.Unmarshal(resp.Payload, &s); err != nil {
+			return UpdateDaemonHealthMsg{Connected: false}
+		}
+
+		return UpdateDaemonHealthMsg{
+			Connected: true,
+			Workers:   s.Workers,
+			QueueSize: s.QueueSize,
+			LastPoll:  s.LastPoll,
+			Uptime:    s.Uptime,
+		}
+	}
+}
+
 // FetchAll returns a batch command that refreshes all panels.
+// Daemon health is NOT included here; it is fetched on a slower cadence
+// controlled by healthTickDivisor in the TickMsg handler.
 func FetchAll(ds *DataSource) tea.Cmd {
 	return tea.Batch(
 		FetchQueue(ds.DB),

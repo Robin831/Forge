@@ -137,6 +137,9 @@ type Daemon struct {
 	// Periodic bead recovery counter (runs every N poll cycles)
 	pollCount atomic.Int64
 
+	// Last successful poll timestamp
+	lastPollTime atomic.Value // stores time.Time
+
 	// Cost limit: tracks which date we last logged the cost_limit_hit event
 	// to avoid spamming the event log every poll cycle.
 	costLimitLoggedDate atomic.Value // stores string (YYYY-MM-DD)
@@ -848,6 +851,9 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 	}
 
+	// Record poll completion time
+	d.lastPollTime.Store(time.Now())
+
 	// Preload all clarification-needed bead IDs once per poll cycle to avoid N+1 queries.
 	// Fail-closed: if the DB query fails, skip dispatch this cycle so beads that need
 	// clarification are not accidentally started during a transient DB error.
@@ -1347,14 +1353,19 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		costLimit := d.cfg.Load().Settings.DailyCostLimit
 		copilotReqs, _ := d.db.GetTodayCopilotRequests()
 		copilotLimit := d.cfg.Load().Settings.CopilotDailyRequestLimit
+		queueCount, _ := d.db.QueueCount()
+		lastPoll := "n/a"
+		if t, ok := d.lastPollTime.Load().(time.Time); ok && !t.IsZero() {
+			lastPoll = time.Since(t).Round(time.Second).String() + " ago"
+		}
 		payload := ipc.StatusPayload{
 			Running:                true,
 			PID:                    os.Getpid(),
 			Uptime:                 time.Since(d.startTime).Round(time.Second).String(),
 			Workers:                len(workers),
-			QueueSize:              0, // Updated during poll
+			QueueSize:              queueCount,
 			OpenPRs:                len(prs),
-			LastPoll:               "n/a",
+			LastPoll:               lastPoll,
 			Quotas:                 quotas,
 			DailyCost:              todayCost,
 			DailyCostLimit:         costLimit,

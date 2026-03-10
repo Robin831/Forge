@@ -1952,6 +1952,15 @@ func (db *DB) QueueCache() ([]QueueItem, error) {
 	return items, rows.Err()
 }
 
+// QueueCount returns the number of items currently in the queue cache.
+// It is a lightweight alternative to QueueCache() for callers that only need
+// the count, avoiding a full row scan and allocation.
+func (db *DB) QueueCount() (int, error) {
+	var count int
+	err := db.conn.QueryRow(`SELECT COUNT(*) FROM queue_cache`).Scan(&count)
+	return count, err
+}
+
 // BeadTitle returns the display title for a bead, consulting queue_cache first
 // then falling back to the most recent workers entry. Returns an empty string
 // if no title is found.
