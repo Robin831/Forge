@@ -224,7 +224,9 @@ func Run(ctx context.Context, p Params) *Result {
 			if err := p.resetBead(ctx, child.ID, anvilPath); err != nil {
 				log.Warn("failed to reset failed child bead to open", "child", child.ID, "error", err)
 			}
-			p.markChildNeedsHuman(child.ID, reason)
+			if err := p.markChildNeedsHuman(child.ID, reason); err != nil {
+				log.Error("failed to mark crucible child as needs_human", "child", child.ID, "error", err)
+			}
 
 			p.emitEvent(state.EventCrucibleChildFailed,
 				fmt.Sprintf("Crucible %s: child %s failed — %s", p.ParentBead.ID, child.ID, reason),
@@ -658,16 +660,40 @@ func (p *Params) resetBead(ctx context.Context, beadID, dir string) error {
 
 // markChildNeedsHuman marks a failed crucible child as needs_human in the
 // state DB so the poller won't dispatch it as a standalone bead.
-func (p *Params) markChildNeedsHuman(beadID, reason string) {
+// Uses a "circuit breaker:" prefix on LastError so DispatchCircuitBrokenBeadIDSet
+// picks it up and the daemon skips re-dispatch.
+// Preserves any existing retry counters (retry_count, dispatch_failures, etc.)
+// by loading the current record before updating.
+func (p *Params) markChildNeedsHuman(beadID, reason string) error {
 	if p.DB == nil {
-		return
+		return nil
 	}
-	_ = p.DB.UpsertRetry(&state.RetryRecord{
-		BeadID:     beadID,
-		Anvil:      p.AnvilName,
-		NeedsHuman: true,
-		LastError:  fmt.Sprintf("crucible child failed: %s", reason),
-	})
+
+	// Preserve any existing retry state (counters, next_retry, etc.) by
+	// loading the current record and only updating NeedsHuman and LastError.
+	var rec *state.RetryRecord
+	if existing, err := p.DB.GetRetry(beadID, p.AnvilName); err == nil && existing != nil {
+		rec = existing
+	} else {
+		rec = &state.RetryRecord{
+			BeadID: beadID,
+			Anvil:  p.AnvilName,
+		}
+	}
+
+	rec.NeedsHuman = true
+	rec.LastError = fmt.Sprintf("circuit breaker: crucible child failed: %s", reason)
+
+	if err := p.DB.UpsertRetry(rec); err != nil {
+		slog.Error("failed to mark crucible child bead as needs_human",
+			"bead_id", beadID,
+			"anvil", p.AnvilName,
+			"reason", reason,
+			"err", err,
+		)
+		return err
+	}
+	return nil
 }
 
 // createEpicBranch creates the feature branch, using the injected creator if set.

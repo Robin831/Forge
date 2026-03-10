@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/config"
@@ -238,8 +239,8 @@ func TestRun_ChildPipelineFailure_Pauses(t *testing.T) {
 	if !retry.NeedsHuman {
 		t.Error("expected child-1 to be marked needs_human")
 	}
-	if retry.LastError == "" {
-		t.Error("expected last_error to contain failure reason")
+	if !strings.HasPrefix(retry.LastError, "circuit breaker:") {
+		t.Errorf("expected last_error to have 'circuit breaker:' prefix for poller filtering, got %q", retry.LastError)
 	}
 }
 
