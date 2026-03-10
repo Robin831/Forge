@@ -43,6 +43,10 @@ const (
 	// ActionClarify means the bead requires human clarification and should not
 	// be worked on yet.
 	ActionClarify Action = "clarify"
+
+	// ActionCrucible means the bead has children that need to be orchestrated
+	// together on a feature branch (crucible mode).
+	ActionCrucible Action = "crucible"
 )
 
 // SubBead holds the ID and title of a created sub-bead.
@@ -69,6 +73,22 @@ type Result struct {
 	Quota *provider.Quota
 	// Error is set if the schematic failed.
 	Error error
+}
+
+// CrucibleCheckResult captures whether a bead with children needs crucible
+// orchestration or can be dispatched as a standalone bead.
+type CrucibleCheckResult struct {
+	// NeedsCrucible is true when the children should be orchestrated on a
+	// feature branch rather than dispatched individually.
+	NeedsCrucible bool
+	// Reason explains the decision.
+	Reason string
+	// Duration is how long the check took.
+	Duration time.Duration
+	// CostUSD is the estimated cost of the AI session.
+	CostUSD float64
+	// Quota holds rate-limit quota data from the AI session, if available.
+	Quota *provider.Quota
 }
 
 // Config controls Schematic behavior.
@@ -435,6 +455,210 @@ Output your verdict as a JSON block FIRST, before any explanation:
 
 Keep sub_tasks to 2-5 items. Each should be a clear, self-contained task title.
 For "plan", provide concrete steps: which files to modify, what to add, what to test.
+`)
+
+	return b.String()
+}
+
+// ChildBead is a lightweight summary of a child bead for the crucible check prompt.
+type ChildBead struct {
+	ID          string
+	Title       string
+	Description string
+}
+
+// RunCrucibleCheck determines whether a bead with children needs crucible
+// orchestration (sequential work on a feature branch) or can be dispatched
+// as a standalone bead with children handled individually.
+//
+// This is a lightweight schematic call that only inspects the relationship
+// between parent and children — it does not produce implementation plans.
+func RunCrucibleCheck(ctx context.Context, cfg Config, parent poller.Bead, children []ChildBead, anvilPath string, pv provider.Provider) *CrucibleCheckResult {
+	start := time.Now()
+
+	if !cfg.Enabled {
+		return &CrucibleCheckResult{
+			NeedsCrucible: false,
+			Reason:        "Schematic disabled — defaulting to standalone dispatch",
+			Duration:      time.Since(start),
+		}
+	}
+
+	promptText := buildCruciblePrompt(parent, children)
+
+	log.Printf("[schematic:%s] Running crucible check (provider: %s)", parent.ID, pv.Label())
+
+	workDir, err := os.MkdirTemp("", "forge-crucible-check-*")
+	if err != nil {
+		return &CrucibleCheckResult{
+			NeedsCrucible: false,
+			Reason:        fmt.Sprintf("Failed to create temp dir: %v — defaulting to standalone", err),
+			Duration:      time.Since(start),
+		}
+	}
+	defer os.RemoveAll(workDir)
+
+	logDir := filepath.Join(workDir, "logs")
+	extraFlags := append([]string{"--max-turns", "5"}, cfg.ExtraFlags...)
+	process, err := smith.SpawnWithProvider(ctx, workDir, promptText, logDir, pv, extraFlags)
+	if err != nil {
+		return &CrucibleCheckResult{
+			NeedsCrucible: false,
+			Reason:        fmt.Sprintf("Failed to spawn session: %v — defaulting to standalone", err),
+			Duration:      time.Since(start),
+		}
+	}
+
+	smithResult := process.Wait()
+
+	result := &CrucibleCheckResult{
+		Duration: time.Since(start),
+		CostUSD:  smithResult.CostUSD,
+		Quota:    smithResult.Quota,
+	}
+
+	if smithResult.ExitCode != 0 || smithResult.RateLimited {
+		result.Reason = "Schematic session failed — defaulting to standalone"
+		return result
+	}
+
+	output := smithResult.FullOutput
+	if output == "" {
+		output = smithResult.Output
+	}
+
+	verdict, err := parseCrucibleVerdict(output)
+	if err != nil {
+		result.Reason = fmt.Sprintf("Could not parse crucible verdict — defaulting to standalone: %v", err)
+		return result
+	}
+
+	result.NeedsCrucible = verdict.NeedsCrucible
+	result.Reason = verdict.Reason
+	return result
+}
+
+// crucibleVerdict is the JSON structure returned by the crucible check prompt.
+type crucibleVerdict struct {
+	NeedsCrucible bool   `json:"needs_crucible"`
+	Reason        string `json:"reason"`
+}
+
+// parseCrucibleVerdict extracts the crucible decision from AI output.
+func parseCrucibleVerdict(output string) (*crucibleVerdict, error) {
+	// Try JSON in ```json fences
+	if idx := strings.Index(output, "```json"); idx >= 0 {
+		start := idx + len("```json")
+		if end := strings.Index(output[start:], "```"); end >= 0 {
+			var v crucibleVerdict
+			if err := json.Unmarshal([]byte(strings.TrimSpace(output[start:start+end])), &v); err == nil {
+				return &v, nil
+			}
+		}
+	}
+
+	// Try plain ``` fences
+	if idx := strings.Index(output, "```"); idx >= 0 {
+		start := idx + 3
+		if nl := strings.Index(output[start:], "\n"); nl >= 0 {
+			start += nl + 1
+		}
+		if end := strings.Index(output[start:], "```"); end >= 0 {
+			block := strings.TrimSpace(output[start : start+end])
+			if strings.Contains(block, "needs_crucible") {
+				var v crucibleVerdict
+				if err := json.Unmarshal([]byte(block), &v); err == nil {
+					return &v, nil
+				}
+			}
+		}
+	}
+
+	// Scan for raw JSON objects
+	for i := 0; i < len(output); i++ {
+		if output[i] != '{' {
+			continue
+		}
+		depth := 0
+		for j := i; j < len(output); j++ {
+			switch output[j] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					block := output[i : j+1]
+					if strings.Contains(block, `"needs_crucible"`) {
+						var v crucibleVerdict
+						if err := json.Unmarshal([]byte(block), &v); err == nil {
+							return &v, nil
+						}
+					}
+					i = j
+					break
+				}
+			}
+			if depth == 0 {
+				break
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("no valid crucible verdict JSON found in output")
+}
+
+// buildCruciblePrompt creates the prompt for the crucible check.
+func buildCruciblePrompt(parent poller.Bead, children []ChildBead) string {
+	var b strings.Builder
+
+	b.WriteString(`You are a software architect determining how related work items should be orchestrated.
+
+## Parent Bead
+
+`)
+	b.WriteString("**ID**: ")
+	b.WriteString(parent.ID)
+	b.WriteString("\n**Title**: ")
+	b.WriteString(parent.Title)
+	b.WriteString("\n**Type**: ")
+	b.WriteString(parent.IssueType)
+	b.WriteString("\n\n### Description\n\n")
+	b.WriteString(parent.Description)
+	b.WriteString("\n\n## Children (beads that depend on the parent)\n\n")
+
+	for i, child := range children {
+		b.WriteString(fmt.Sprintf("### Child %d: %s\n", i+1, child.ID))
+		b.WriteString("**Title**: ")
+		b.WriteString(child.Title)
+		b.WriteString("\n**Description**: ")
+		b.WriteString(child.Description)
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString(`## Your Task
+
+Determine whether these beads need **crucible orchestration** (sequential work on a shared feature branch) or can be dispatched **individually** as standalone work items.
+
+**Crucible orchestration** means: create a feature branch, complete the parent first, then each child in order — each building on the previous one's merged code. Use this when:
+- The children depend on the parent's code changes being present
+- The children modify the same files or build on each other's work
+- The work forms a logical sequence where order matters for correctness
+
+**Standalone dispatch** means: each bead is dispatched independently on its own branch. Use this when:
+- The beads are independent pieces of work that happen to relate to the same goal
+- Each bead can be implemented and tested without the others
+- The dependency is just about priority/ordering, not code dependencies
+
+## Output Format
+
+Output your verdict as a JSON block:
+
+` + "```json" + `
+{
+  "needs_crucible": true|false,
+  "reason": "Brief explanation"
+}
+` + "```" + `
 `)
 
 	return b.String()

@@ -113,3 +113,43 @@ func TestBuildPrompt_ContainsBeadInfo(t *testing.T) {
 	assert.Contains(t, p, "Implement OAuth login flow")
 	assert.Contains(t, p, "plan|decompose|clarify")
 }
+
+func TestParseCrucibleVerdict_JSONFence(t *testing.T) {
+	output := "```json\n" + `{"needs_crucible": true, "reason": "Children modify same files"}` + "\n```"
+	v, err := parseCrucibleVerdict(output)
+	require.NoError(t, err)
+	assert.True(t, v.NeedsCrucible)
+	assert.Equal(t, "Children modify same files", v.Reason)
+}
+
+func TestParseCrucibleVerdict_False(t *testing.T) {
+	output := `{"needs_crucible": false, "reason": "Independent tasks"}`
+	v, err := parseCrucibleVerdict(output)
+	require.NoError(t, err)
+	assert.False(t, v.NeedsCrucible)
+}
+
+func TestParseCrucibleVerdict_NoJSON(t *testing.T) {
+	_, err := parseCrucibleVerdict("No structured output here")
+	assert.Error(t, err)
+}
+
+func TestBuildCruciblePrompt(t *testing.T) {
+	parent := poller.Bead{
+		ID:          "parent-1",
+		Title:       "Auth system",
+		IssueType:   "feature",
+		Description: "Implement full auth",
+	}
+	children := []ChildBead{
+		{ID: "child-1", Title: "Login page", Description: "Build login UI"},
+		{ID: "child-2", Title: "Session mgmt", Description: "Cookie handling"},
+	}
+	p := buildCruciblePrompt(parent, children)
+	assert.Contains(t, p, "parent-1")
+	assert.Contains(t, p, "Auth system")
+	assert.Contains(t, p, "child-1")
+	assert.Contains(t, p, "Login page")
+	assert.Contains(t, p, "child-2")
+	assert.Contains(t, p, "needs_crucible")
+}

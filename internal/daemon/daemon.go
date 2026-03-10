@@ -1079,7 +1079,66 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	// Handle Crucible beads: parent beads that block children. The Crucible
 	// orchestrates all children on a feature branch, merging each child's PR
 	// before dispatching the next, then creates a final PR to main.
+	//
+	// When the schematic is enabled, we ask it to inspect the parent+children
+	// relationship before committing to crucible mode. This prevents simple
+	// sequencing dependencies (bd dep add) from triggering a full feature-branch
+	// orchestration when the beads are actually independent.
 	if d.cfg.Load().Settings.CrucibleEnabled && crucible.IsCrucibleCandidate(bead) {
+		// Run schematic crucible check if enabled — determines whether the
+		// children genuinely need orchestration or are just sequenced.
+		if d.cfg.Load().Settings.SchematicEnabled {
+			_ = d.db.UpdateWorkerPhase(claimWorkerID, "schematic")
+			_ = d.db.LogEvent(state.EventSchematicStarted,
+				fmt.Sprintf("Crucible check: inspecting %s with %d children", bead.ID, len(bead.Blocks)),
+				bead.ID, bead.Anvil)
+
+			schemCfg := schematic.DefaultConfig()
+			schemCfg.Enabled = true
+			schemCfg.ExtraFlags = d.cfg.Load().Settings.ClaudeFlags
+
+			smithProviders := d.cfg.Load().Settings.SmithProviders
+			if len(smithProviders) == 0 {
+				smithProviders = d.cfg.Load().Settings.Providers
+			}
+			providers := d.filterCopilotIfLimited(provider.FromConfig(smithProviders))
+
+			// Fetch child details for the prompt
+			var children []schematic.ChildBead
+			for _, childID := range bead.Blocks {
+				child, err := crucible.FetchBead(ctx, childID, anvilCfg.Path)
+				if err != nil {
+					d.logger.Warn("crucible check: failed to fetch child", "child", childID, "error", err)
+					continue
+				}
+				children = append(children, schematic.ChildBead{
+					ID:          child.ID,
+					Title:       child.Title,
+					Description: child.Description,
+				})
+			}
+
+			checkResult := schematic.RunCrucibleCheck(ctx, schemCfg, bead, children, anvilCfg.Path, providers[0])
+
+			if checkResult.Quota != nil {
+				if err := d.db.UpsertProviderQuota(string(providers[0].Kind), checkResult.Quota); err != nil {
+					d.logger.Warn("failed to update provider quota from crucible check", "error", err)
+				}
+			}
+
+			_ = d.db.LogEvent(state.EventSchematicDone,
+				fmt.Sprintf("Crucible check: %s → needs_crucible=%v (%s)",
+					bead.ID, checkResult.NeedsCrucible, checkResult.Reason),
+				bead.ID, bead.Anvil)
+
+			if !checkResult.NeedsCrucible {
+				d.logger.Info("schematic says standalone dispatch", "bead", bead.ID, "reason", checkResult.Reason)
+				// Fall through to normal pipeline below
+				goto normalPipeline
+			}
+			d.logger.Info("schematic confirms crucible needed", "bead", bead.ID, "reason", checkResult.Reason)
+		}
+
 		_ = d.db.UpdateWorkerPhase(claimWorkerID, "crucible")
 		d.logger.Info("dispatching crucible", "bead", bead.ID, "children", len(bead.Blocks))
 
@@ -1163,6 +1222,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		return
 	}
 
+normalPipeline:
 	// Apply smith timeout.
 	// IMPORTANT: derive pipelineCtx from context.Background(), NOT from the
 	// daemon's ctx. This ensures that a graceful shutdown (SIGINT/SIGTERM)
