@@ -174,6 +174,8 @@ func TestRun_ChildPipelineFailure_Pauses(t *testing.T) {
 	db := testDB(t)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
+	var resetBeads []string
+
 	p := Params{
 		DB:     db,
 		Logger: logger,
@@ -204,6 +206,11 @@ func TestRun_ChildPipelineFailure_Pauses(t *testing.T) {
 		BeadClaimer: func(ctx context.Context, beadID, dir string) error {
 			return nil
 		},
+
+		BeadResetter: func(ctx context.Context, beadID, dir string) error {
+			resetBeads = append(resetBeads, beadID)
+			return nil
+		},
 	}
 
 	result := Run(context.Background(), p)
@@ -213,6 +220,26 @@ func TestRun_ChildPipelineFailure_Pauses(t *testing.T) {
 	}
 	if result.PausedChildID != "child-1" {
 		t.Errorf("expected paused child to be child-1, got %q", result.PausedChildID)
+	}
+
+	// Verify child bead was reset to open.
+	if len(resetBeads) != 1 || resetBeads[0] != "child-1" {
+		t.Errorf("expected child-1 to be reset, got %v", resetBeads)
+	}
+
+	// Verify child bead is marked needs_human in state DB.
+	retry, err := db.GetRetry("child-1", "test-anvil")
+	if err != nil {
+		t.Fatalf("failed to get retry record: %v", err)
+	}
+	if retry == nil {
+		t.Fatal("expected retry record for child-1, got nil")
+	}
+	if !retry.NeedsHuman {
+		t.Error("expected child-1 to be marked needs_human")
+	}
+	if retry.LastError == "" {
+		t.Error("expected last_error to contain failure reason")
 	}
 }
 
