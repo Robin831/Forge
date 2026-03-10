@@ -658,16 +658,32 @@ func (p *Params) resetBead(ctx context.Context, beadID, dir string) error {
 
 // markChildNeedsHuman marks a failed crucible child as needs_human in the
 // state DB so the poller won't dispatch it as a standalone bead.
+// It loads any existing retry record first to preserve retry counters.
 func (p *Params) markChildNeedsHuman(beadID, reason string) {
 	if p.DB == nil {
 		return
 	}
-	_ = p.DB.UpsertRetry(&state.RetryRecord{
-		BeadID:     beadID,
-		Anvil:      p.AnvilName,
-		NeedsHuman: true,
-		LastError:  fmt.Sprintf("crucible child failed: %s", reason),
-	})
+	log := p.Logger.With("child", beadID)
+
+	// Load existing record to preserve retry counters (dispatch_failures, retry_count, etc.).
+	rec, err := p.DB.GetRetry(beadID, p.AnvilName)
+	if err != nil || rec == nil {
+		if err != nil {
+			log.Warn("failed to load existing retry record, creating new one", "error", err)
+		}
+		rec = &state.RetryRecord{
+			BeadID: beadID,
+			Anvil:  p.AnvilName,
+		}
+	}
+
+	// Update only the fields we care about, preserving everything else.
+	rec.NeedsHuman = true
+	rec.LastError = fmt.Sprintf("crucible child failed: %s", reason)
+
+	if err := p.DB.UpsertRetry(rec); err != nil {
+		log.Error("failed to mark child as needs_human", "error", err)
+	}
 }
 
 // createEpicBranch creates the feature branch, using the injected creator if set.
