@@ -22,6 +22,27 @@ function Write-Err($msg)  { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 
 
 # --- Generate-ReleaseNotes ---
 
+function Condense-ChangelogItems {
+    # Transforms verbose changelog bullets into concise one-liners.
+    # Input:  "- **Bold title** - Long explanation... (Forge-xyz)"
+    # Output: "- Bold title (Forge-xyz)"
+    param([string]$Text)
+    $lines = $Text -split "`n"
+    $condensed = @()
+    foreach ($line in $lines) {
+        if ($line -match '^\s*-\s+\*\*(.+?)\*\*') {
+            $title = $Matches[1]
+            # Extract bead ID if present
+            $beadRef = ""
+            if ($line -match '\((Forge-\w+)\)\s*$') {
+                $beadRef = " ($($Matches[1]))"
+            }
+            $condensed += "- $title$beadRef"
+        }
+    }
+    return ($condensed -join "`n")
+}
+
 function Generate-ReleaseNotes {
     param([string]$Version)
 
@@ -46,7 +67,7 @@ function Generate-ReleaseNotes {
 
         foreach ($sub in $subMatches) {
             $category = $sub.Groups[1].Value
-            $items = $sub.Groups[2].Value.Trim()
+            $items = Condense-ChangelogItems $sub.Groups[2].Value.Trim()
             if (-not $items) { continue }
 
             switch ($category) {
