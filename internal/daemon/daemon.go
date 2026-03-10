@@ -1373,8 +1373,12 @@ normalPipeline:
 
 	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
 
-	// Close the bead — also use pipelineCtx for the same reason.
-	if err := d.closeBead(pipelineCtx, bead.ID, anvilCfg.Path); err != nil {
+	// Close the bead — unless other beads depend on it. When dependents exist,
+	// closing now would unblock them before this PR is merged, causing them to
+	// build on stale main. Bellows will close the bead after the PR merges.
+	if len(bead.Blocks) > 0 {
+		d.logger.Info("bead has dependents, deferring close until PR merges", "bead", bead.ID, "dependents", len(bead.Blocks))
+	} else if err := d.closeBead(pipelineCtx, bead.ID, anvilCfg.Path); err != nil {
 		d.logger.Warn("failed to close bead", "bead", bead.ID, "error", err)
 	}
 }
