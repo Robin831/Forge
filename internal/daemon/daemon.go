@@ -219,6 +219,13 @@ func New(cfg *config.Config) (*Daemon, error) {
 		promptBuilder: prompt.NewBuilder(),
 		notifier:      notifier,
 	}
+	// Wire up the crucible-active check so orphan recovery skips parent beads
+	// that are currently being orchestrated by an in-process Crucible run.
+	d.shutdownMgr.SetCrucibleActiveCheck(func(beadID string) bool {
+		_, active := d.crucibleStatuses.Load(beadID)
+		return active
+	})
+
 	// Initialize costLimitLoggedDate so Load() is always safe (zero atomic.Value
 	// returns nil on Load, which is fine for type assertion, but Store("")
 	// makes the intent explicit and avoids any future ambiguity).

@@ -49,6 +49,13 @@ type Manager struct {
 	logger      *slog.Logger
 	gracePeriod time.Duration
 	anvils      map[string]string // anvil name -> directory path
+
+	// isCrucibleActive, when set, is called during orphan recovery to check
+	// whether a given bead ID is currently being orchestrated by a Crucible.
+	// Crucible parent beads are in_progress without a direct worker row, so
+	// orphan recovery must not reset them. This callback is set by the daemon
+	// after construction via SetCrucibleActiveCheck.
+	isCrucibleActive func(beadID string) bool
 }
 
 // NewManager creates a new shutdown manager.
@@ -60,6 +67,14 @@ func NewManager(db *state.DB, wm *worktree.Manager, logger *slog.Logger, anvils 
 		gracePeriod: DefaultGracePeriod,
 		anvils:      anvils,
 	}
+}
+
+// SetCrucibleActiveCheck registers a callback that orphan recovery uses to
+// determine whether a bead ID has an active Crucible run. If the callback
+// returns true the bead is skipped — it is not orphaned, just managed by the
+// Crucible rather than a direct worker row.
+func (m *Manager) SetCrucibleActiveCheck(fn func(beadID string) bool) {
+	m.isCrucibleActive = fn
 }
 
 // SetGracePeriod configures the shutdown grace period.
@@ -282,6 +297,19 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 				// Forge didn't claim, regardless of how long they've been
 				// in_progress.
 				m.logger.Debug("skipping bead without worker record (not claimed by Forge)", "bead", beadID, "anvil", anvilName)
+				continue
+			}
+
+			// Skip beads that are currently being orchestrated by the Crucible.
+			// Crucible parent beads are in_progress for the duration of the
+			// entire feature-branch orchestration, but they may not always have
+			// an active worker row in state.db (e.g. if the daemon was briefly
+			// interrupted and the pending worker was cleaned up on startup while
+			// the Crucible goroutine is still running in-process). The
+			// crucibleStatuses map is the authoritative in-memory source for
+			// this — if the Crucible is live, the bead is not orphaned.
+			if m.isCrucibleActive != nil && m.isCrucibleActive(beadID) {
+				m.logger.Debug("skipping bead with active crucible", "bead", beadID, "anvil", anvilName)
 				continue
 			}
 
