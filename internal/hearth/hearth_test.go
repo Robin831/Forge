@@ -378,7 +378,6 @@ func TestRenderNeedsAttentionEmpty(t *testing.T) {
 }
 
 func TestRenderWorkerActivityNewestFirst(t *testing.T) {
-	// Use [think] prefix so the single group defaults to expanded.
 	m := Model{
 		workers: []WorkerItem{
 			{
@@ -387,7 +386,7 @@ func TestRenderWorkerActivityNewestFirst(t *testing.T) {
 			},
 		},
 		workerVP:         scrollViewport{cursor: 0},
-		activityExpanded: make(map[string]bool),
+		activityExpanded: map[string]bool{"think": true},
 	}
 	m.rebuildActivityNav()
 
@@ -617,7 +616,6 @@ func TestWordWrap(t *testing.T) {
 }
 
 func TestActivityScrollChangesVisibleLine(t *testing.T) {
-	// Use [think] prefix so the group defaults to expanded.
 	lines := []string{"[think] line-0", "[think] line-1", "[think] line-2", "[think] line-3", "[think] line-4"}
 	m := Model{
 		workers: []WorkerItem{
@@ -625,7 +623,7 @@ func TestActivityScrollChangesVisibleLine(t *testing.T) {
 				ActivityLines: lines},
 		},
 		workerVP:         scrollViewport{cursor: 0},
-		activityExpanded: make(map[string]bool),
+		activityExpanded: map[string]bool{"think": true},
 		focused:          PanelLiveActivity,
 	}
 	m.rebuildActivityNav()
@@ -645,7 +643,6 @@ func TestActivityScrollChangesVisibleLine(t *testing.T) {
 }
 
 func TestActivityScrollClampPastEnd(t *testing.T) {
-	// Use [think] prefix so the group defaults to expanded.
 	lines := []string{"[think] alpha", "[think] beta", "[think] gamma"}
 	// activityVP.cursor larger than total simulates a stale scroll after
 	// the worker's activity list shrinks on refresh.
@@ -656,7 +653,7 @@ func TestActivityScrollClampPastEnd(t *testing.T) {
 		},
 		workerVP:         scrollViewport{cursor: 0},
 		activityVP:       scrollViewport{cursor: 100}, // way past the end
-		activityExpanded: make(map[string]bool),
+		activityExpanded: map[string]bool{"think": true},
 		focused:          PanelLiveActivity,
 	}
 	m.rebuildActivityNav()

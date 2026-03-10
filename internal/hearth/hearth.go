@@ -2693,13 +2693,12 @@ func (m *Model) rebuildActivityNav() {
 
 // isActivityGroupExpanded returns whether a group should be expanded.
 // If the user has toggled the group, their choice is respected. Otherwise
-// "think" groups default to expanded; everything else is collapsed.
+// all groups default to collapsed.
 func (m *Model) isActivityGroupExpanded(eventType string) bool {
 	if expanded, set := m.activityExpanded[eventType]; set {
 		return expanded
 	}
-	// Think groups are expanded by default so reasoning is visible.
-	return eventType == "think"
+	return false
 }
 
 // resetActivityState clears the activity viewport and expansion state,
