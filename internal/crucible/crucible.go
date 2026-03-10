@@ -325,7 +325,7 @@ func Run(ctx context.Context, p Params) *Result {
 		BeadID:          p.ParentBead.ID,
 		Title:           fmt.Sprintf("%s (%s)", p.ParentBead.Title, p.ParentBead.ID),
 		Branch:          branch,
-		Base:            "", // main (repo default)
+		Base:            "main", // explicitly target main (ghpr.Create also normalizes "" → "main")
 		AnvilName:       p.AnvilName,
 		DB:              p.DB,
 		BeadTitle:       p.ParentBead.Title,
