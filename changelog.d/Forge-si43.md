@@ -1,0 +1,2 @@
+category: Changed
+- **Rich webhook payloads with pre-formatted summary and structured metadata** - Generic webhook POSTs now use a unified `WebhookPayload` schema with `source` (always `"forge"`), `summary` (human-readable one-liner), `event`, `detail`, `url`, `repo`, `version`, `bead`, and `pr` fields. Receivers such as Hytte can display rich notifications without guessing field meanings. The `release_published` summary is auto-generated from the version and repository name; `pr_ready_to_merge` includes the PR title and anvil name. (Forge-si43)

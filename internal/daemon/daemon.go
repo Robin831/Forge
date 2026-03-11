@@ -705,13 +705,18 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 		}
 		cfg := d.cfg.Load()
 		if cfg != nil && cfg.Notifications.Enabled {
-			payload := notify.PRReadyToMergePayload{
-				Event:    "pr_ready_to_merge",
-				Anvil:    anvil,
-				BeadID:   beadID,
-				PRNumber: prNumber,
-				PRURL:    prURL,
-				PRTitle:  title,
+			summary := fmt.Sprintf("PR #%d ready to merge: %s (%s)", prNumber, title, anvil)
+			if title == "" {
+				summary = fmt.Sprintf("PR #%d ready to merge (%s)", prNumber, anvil)
+			}
+			payload := notify.WebhookPayload{
+				Source:  "forge",
+				Summary: summary,
+				Event:   "pr_ready_to_merge",
+				URL:     prURL,
+				Repo:    anvil,
+				Bead:    beadID,
+				PR:      prNumber,
 			}
 			for _, u := range cfg.Notifications.PRReadyWebhookURLs {
 				notify.SendGenericPRReadyToMerge(ctx, u, payload, d.logger)
