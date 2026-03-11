@@ -155,7 +155,7 @@ func releaseBead(beadID, anvilPath string) error {
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("bd update %s --status=open --assignee=: %w: %s", beadID, err, out)
+		return fmt.Errorf("bd update %s --status=open --assignee= --json: %w: %s", beadID, err, out)
 	}
 	return nil
 }

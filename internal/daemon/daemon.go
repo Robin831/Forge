@@ -1917,13 +1917,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			// previous pipeline failure left the assignee set the bead would
 			// remain permanently invisible after the circuit breaker reset.
 			if anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]; ok && anvilCfg.Path != "" {
-				clearCtx, clearCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				clearCtx, clearCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+				defer clearCancel()
 				clearCmd := executil.HideWindow(exec.CommandContext(clearCtx, "bd", "update", rp.BeadID, "--assignee=", "--json"))
 				clearCmd.Dir = anvilCfg.Path
-				if clearErr := clearCmd.Run(); clearErr != nil {
-					d.logger.Warn("failed to clear bead assignee after circuit breaker reset", "bead", rp.BeadID, "error", clearErr)
+				if output, clearErr := clearCmd.CombinedOutput(); clearErr != nil {
+					d.logger.Warn("failed to clear bead assignee after circuit breaker reset", "bead", rp.BeadID, "error", clearErr, "output", string(output))
 				}
-				clearCancel()
 			}
 
 			// Trigger a poll immediately after resetting the circuit breaker.
@@ -1947,13 +1947,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// previous pipeline failure left the assignee set the bead would
 		// remain permanently invisible after the retry reset.
 		if anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]; ok && anvilCfg.Path != "" {
-			clearCtx, clearCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			clearCtx, clearCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+			defer clearCancel()
 			clearCmd := executil.HideWindow(exec.CommandContext(clearCtx, "bd", "update", rp.BeadID, "--assignee=", "--json"))
 			clearCmd.Dir = anvilCfg.Path
-			if clearErr := clearCmd.Run(); clearErr != nil {
-				d.logger.Warn("failed to clear bead assignee after retry reset", "bead", rp.BeadID, "error", clearErr)
+			if output, clearErr := clearCmd.CombinedOutput(); clearErr != nil {
+				d.logger.Warn("failed to clear bead assignee after retry reset", "bead", rp.BeadID, "error", clearErr, "output", string(output))
 			}
-			clearCancel()
 		}
 
 		// Trigger a poll immediately after resetting retry state.
