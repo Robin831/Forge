@@ -1912,6 +1912,20 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Circuit breaker reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
 			d.logger.Info("circuit breaker reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
 
+			// Clear the bead assignee so the poller can re-dispatch it.
+			// The poller filters out beads with a non-empty assignee, so if the
+			// previous pipeline failure left the assignee set the bead would
+			// remain permanently invisible after the circuit breaker reset.
+			if anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]; ok && anvilCfg.Path != "" {
+				clearCtx, clearCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				clearCmd := executil.HideWindow(exec.CommandContext(clearCtx, "bd", "update", rp.BeadID, "--assignee=", "--json"))
+				clearCmd.Dir = anvilCfg.Path
+				if clearErr := clearCmd.Run(); clearErr != nil {
+					d.logger.Warn("failed to clear bead assignee after circuit breaker reset", "bead", rp.BeadID, "error", clearErr)
+				}
+				clearCancel()
+			}
+
 			// Trigger a poll immediately after resetting the circuit breaker.
 			go d.pollAndDispatch(d.runCtx)
 
@@ -1927,6 +1941,20 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Retry reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
 		d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
+
+		// Clear the bead assignee so the poller can re-dispatch it.
+		// The poller filters out beads with a non-empty assignee, so if the
+		// previous pipeline failure left the assignee set the bead would
+		// remain permanently invisible after the retry reset.
+		if anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]; ok && anvilCfg.Path != "" {
+			clearCtx, clearCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			clearCmd := executil.HideWindow(exec.CommandContext(clearCtx, "bd", "update", rp.BeadID, "--assignee=", "--json"))
+			clearCmd.Dir = anvilCfg.Path
+			if clearErr := clearCmd.Run(); clearErr != nil {
+				d.logger.Warn("failed to clear bead assignee after retry reset", "bead", rp.BeadID, "error", clearErr)
+			}
+			clearCancel()
+		}
 
 		// Trigger a poll immediately after resetting retry state.
 		go d.pollAndDispatch(d.runCtx)
