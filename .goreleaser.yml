@@ -57,7 +57,7 @@ release:
     To install a specific version:
 
     ```bash
-    VERSION={{.Tag}} curl -fsSL https://raw.githubusercontent.com/Robin831/Forge/main/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/Robin831/Forge/main/install.sh | VERSION={{.Tag}} bash
     ```
 
     ### Windows

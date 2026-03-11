@@ -42,8 +42,8 @@ fi
 VERSION_NUM="${VERSION#v}"
 
 # ── Skip if already current ────────────────────────────────────────────────────
-if command -v "$BINARY" > /dev/null 2>&1; then
-  INSTALLED_VERSION="$("$BINARY" version 2>/dev/null || true)"
+if [ -x "${INSTALL_DIR}/${BINARY}" ]; then
+  INSTALLED_VERSION="$("${INSTALL_DIR}/${BINARY}" version 2>/dev/null || true)"
   if echo "$INSTALLED_VERSION" | grep -qF "$VERSION_NUM"; then
     echo "Forge ${VERSION} is already installed — nothing to do."
     exit 0
@@ -88,6 +88,11 @@ if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
 fi
 
 # ── Extract and install ────────────────────────────────────────────────────────
+if ! command -v unzip > /dev/null 2>&1; then
+  echo "ERROR: unzip is required but not found. Install it with your package manager (e.g. apt-get install unzip)." >&2
+  exit 1
+fi
+
 mkdir -p "$INSTALL_DIR"
 
 echo "Installing Forge to ${INSTALL_DIR}/${BINARY}..."
