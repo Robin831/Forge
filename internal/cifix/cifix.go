@@ -23,6 +23,7 @@ import (
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
+	"github.com/Robin831/Forge/internal/warden"
 )
 
 // MaxAttempts is the maximum number of CI fix attempts per PR.
@@ -166,6 +167,12 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			fmt.Sprintf("PR #%d: attempt %d, failed step: %s", p.PRNumber, attempt, failedStep),
 			p.BeadID, p.AnvilName)
 
+		// Snapshot HEAD so we can compute the fix diff after Smith completes.
+		baseCommit, revParseErr := gitRevParse(ctx, p.WorktreePath, "HEAD")
+		if revParseErr != nil {
+			log.Printf("[cifix] PR #%d: failed to snapshot HEAD for warden learning: %v", p.PRNumber, revParseErr)
+		}
+
 		// Step 5: Spawn Smith.
 		logDir := p.WorktreePath + "/.forge-logs"
 		var smithResult *smith.Result
@@ -242,6 +249,30 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				fmt.Sprintf("PR #%d: Fixed on attempt %d", p.PRNumber, attempt),
 				p.BeadID, p.AnvilName)
 			result.Duration = time.Since(start)
+
+			// Learn from this CI fix: compute diff synchronously, then learn asynchronously
+			// so the success path returns without waiting for Claude distillation.
+			if baseCommit != "" {
+				fixDiff, diffErr := gitDiff(ctx, p.WorktreePath, baseCommit, "HEAD")
+				if diffErr != nil {
+					log.Printf("[cifix] PR #%d: failed to compute fix diff for warden learning: %v", p.PRNumber, diffErr)
+				} else {
+					prNum := p.PRNumber
+					anvilPath, worktreePath := p.AnvilPath, p.WorktreePath
+					logsCopy := make(map[string]string, len(ciLogs))
+					for k, v := range ciLogs {
+						logsCopy[k] = v
+					}
+					go func() {
+						learnCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+						defer cancel()
+						if err := warden.LearnFromCIFix(learnCtx, anvilPath, worktreePath, logsCopy, fixDiff, prNum); err != nil {
+							log.Printf("[cifix] PR #%d: warden learn from CI fix: %v", prNum, err)
+						}
+					}()
+				}
+			}
+
 			return result
 		}
 
@@ -508,4 +539,28 @@ func truncateOutput(output string, maxLen int) string {
 		return output
 	}
 	return "... (truncated)\n" + output[len(output)-maxLen:]
+}
+
+// gitRevParse resolves a git ref (e.g. "HEAD") to its commit hash.
+func gitRevParse(ctx context.Context, dir, ref string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", ref)
+	executil.HideWindow(cmd)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse %s: %s (%w)", ref, strings.TrimSpace(string(out)), err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// gitDiff returns the diff between two commits in the given directory.
+func gitDiff(ctx context.Context, dir, from, to string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", from+".."+to)
+	executil.HideWindow(cmd)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git diff %s..%s: %s (%w)", from, to, strings.TrimSpace(string(out)), err)
+	}
+	return string(out), nil
 }
