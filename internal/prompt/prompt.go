@@ -151,8 +151,8 @@ Branch: {{.Bead.Branch}}
 Main repository: {{.Bead.AnvilPath}}
 
 **IMPORTANT: Working directory confinement** — All git operations must stay within
-your assigned worktree ({{.Bead.WorktreePath}}). Never use `cd` to navigate outside
-this directory. Never run `git checkout`, `git reset`, `git switch`, or any other
+your assigned worktree ({{.Bead.WorktreePath}}). Never use cd to navigate outside
+this directory. Never run git checkout, git reset, git switch, or any other
 branch-manipulating command on any path outside your worktree. The main repository
 at {{.Bead.AnvilPath}} must not be touched directly — doing so will corrupt the
 environment for other workers.
