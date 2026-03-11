@@ -315,8 +315,12 @@ func CurrentBranch(ctx context.Context, repoPath string) (string, error) {
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "rev-parse", "--abbrev-ref", "HEAD"))
 	cmd.Dir = repoPath
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return "", fmt.Errorf("git rev-parse --abbrev-ref HEAD: %s: %w", msg, err)
+		}
 		return "", fmt.Errorf("git rev-parse --abbrev-ref HEAD: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
@@ -343,8 +347,8 @@ func VerifyAndRecoverMain(ctx context.Context, repoPath string) (recovered bool,
 		return false, currentBranch, nil
 	}
 
-	// Attempt recovery
-	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	// Attempt recovery with a bounded timeout, honoring caller cancellation.
+	recoveryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	var checkoutErr error

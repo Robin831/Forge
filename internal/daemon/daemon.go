@@ -2694,23 +2694,26 @@ func filterDepcheckAnvils(anvils map[string]string, anvilCfgs map[string]config.
 // Returns an error only if recovery is attempted and fails. If the current
 // branch cannot be determined, the function is a no-op (non-fatal).
 func verifyAnvilOnMain(ctx context.Context, logger *slog.Logger, anvilPath string) error {
-	recovered, currentBranch, err := worktree.VerifyAndRecoverMain(ctx, anvilPath)
+	if strings.TrimSpace(anvilPath) == "" {
+		logger.Warn("verifyAnvilOnMain: empty anvil path; skipping branch verification")
+		return nil
+	}
+
+	recovered, originalBranch, err := worktree.VerifyAndRecoverMain(ctx, anvilPath)
 	if err != nil {
-		if currentBranch == "" {
+		if originalBranch == "" {
 			// Cannot determine current branch — non-fatal, just warn.
 			logger.Warn("verifyAnvilOnMain: could not determine current branch",
 				"anvil", anvilPath, "error", err)
 			return nil
 		}
 		return fmt.Errorf("anvil %q is checked out to %q instead of main/master and checkout recovery failed: %w",
-			anvilPath, currentBranch, err)
+			anvilPath, originalBranch, err)
 	}
 
 	if recovered {
-		logger.Warn("anvil repo was not on main/master — attempting recovery",
-			"anvil", anvilPath, "current_branch", currentBranch)
-		logger.Info("anvil repo recovered to main branch",
-			"anvil", anvilPath)
+		logger.Warn("anvil repo was not on main/master — performed recovery checkout",
+			"anvil", anvilPath, "original_branch", originalBranch)
 	}
 
 	return nil
