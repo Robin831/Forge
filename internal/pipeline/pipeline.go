@@ -224,7 +224,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 		if persistDir, err := preserveWorktreeLogs(wt.Path, p.Bead.ID); err != nil {
 			log.Printf("[pipeline:%s] Warning: failed to preserve smith logs: %v", workerID, err)
 		} else if persistDir != "" && p.DB != nil {
-			_ = p.DB.UpdateWorkerLogPath(workerID, persistDir)
+			if err := p.DB.UpdateWorkerLogPath(workerID, persistDir); err != nil {
+				log.Printf("[pipeline:%s] Warning: failed to update worker log path in DB: %v", workerID, err)
+			}
 		}
 		removeWorktree(ctx, p.AnvilConfig.Path, wt)
 	}()

@@ -837,6 +837,87 @@ func TestSchematic_Quota_PersistedToStateDB(t *testing.T) {
 	assert.Equal(t, 42, got.RequestsRemaining)
 }
 
+// TestPreserveWorktreeLogs_NoLogDir returns empty string and no error when
+// the .forge-logs directory does not exist in the worktree.
+func TestPreserveWorktreeLogs_NoLogDir(t *testing.T) {
+	wtDir := t.TempDir()
+	dst, err := preserveWorktreeLogs(wtDir, "bead-xyz")
+	require.NoError(t, err)
+	assert.Empty(t, dst, "no destination dir expected when source does not exist")
+}
+
+// TestPreserveWorktreeLogs_EmptyLogDir returns empty string and no error when
+// the .forge-logs directory exists but contains no files.
+func TestPreserveWorktreeLogs_EmptyLogDir(t *testing.T) {
+	wtDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(wtDir, ".forge-logs"), 0o755))
+
+	dst, err := preserveWorktreeLogs(wtDir, "bead-empty")
+	require.NoError(t, err)
+	assert.Empty(t, dst, "no destination dir expected when log dir is empty")
+}
+
+// TestPreserveWorktreeLogs_CopiesFiles verifies that log files are copied to
+// ~/.forge/logs/<beadID>/ and the returned path points to that directory.
+func TestPreserveWorktreeLogs_CopiesFiles(t *testing.T) {
+	// Redirect the home directory so we don't pollute the real ~/.forge/logs.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // Windows
+
+	wtDir := t.TempDir()
+	logSrc := filepath.Join(wtDir, ".forge-logs")
+	require.NoError(t, os.MkdirAll(logSrc, 0o755))
+
+	// Create two log files.
+	require.NoError(t, os.WriteFile(filepath.Join(logSrc, "smith.log"), []byte("smith output"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(logSrc, "session.log"), []byte("session data"), 0o644))
+
+	dst, err := preserveWorktreeLogs(wtDir, "bead-abc")
+	require.NoError(t, err)
+	require.NotEmpty(t, dst)
+
+	// The destination directory should be inside fakeHome/.forge/logs/bead-abc.
+	assert.Contains(t, dst, "bead-abc")
+
+	// Both files should exist at the destination.
+	smithContent, readErr := os.ReadFile(filepath.Join(dst, "smith.log"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "smith output", string(smithContent))
+
+	sessionContent, readErr := os.ReadFile(filepath.Join(dst, "session.log"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "session data", string(sessionContent))
+}
+
+// TestPreserveWorktreeLogs_SkipsSubdirs verifies that subdirectories inside
+// .forge-logs are not copied (only plain files are preserved).
+func TestPreserveWorktreeLogs_SkipsSubdirs(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome)
+
+	wtDir := t.TempDir()
+	logSrc := filepath.Join(wtDir, ".forge-logs")
+	require.NoError(t, os.MkdirAll(logSrc, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(logSrc, "output.log"), []byte("data"), 0o644))
+	// A nested sub-directory that should be ignored.
+	require.NoError(t, os.MkdirAll(filepath.Join(logSrc, "subdir"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(logSrc, "subdir", "nested.log"), []byte("nested"), 0o644))
+
+	dst, err := preserveWorktreeLogs(wtDir, "bead-sub")
+	require.NoError(t, err)
+	require.NotEmpty(t, dst)
+
+	// The plain log should be copied.
+	_, statErr := os.Stat(filepath.Join(dst, "output.log"))
+	require.NoError(t, statErr)
+
+	// The subdir itself should NOT be copied (preserveWorktreeLogs skips dirs).
+	_, statErr = os.Stat(filepath.Join(dst, "subdir"))
+	require.True(t, os.IsNotExist(statErr), "subdirectory should not be copied to persistent log dir")
+}
+
 // TestMaxIterations_StopsAfterConfiguredCap verifies that when Params.MaxIterations
 // is set to a small value, the pipeline stops after that many Smith-Warden cycles
 // even if Warden keeps requesting changes.
