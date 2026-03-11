@@ -2431,6 +2431,126 @@ func TestUpdatePendingOrphansMsgOpensDialog(t *testing.T) {
 	}
 }
 
+// --- crucibleProgressColor ---
+
+func TestCrucibleProgressColorComplete(t *testing.T) {
+	got := crucibleProgressColor("complete")
+	if got != "82" {
+		t.Errorf("crucibleProgressColor(complete) = %q, want %q (green)", got, "82")
+	}
+}
+
+func TestCrucibleProgressColorPaused(t *testing.T) {
+	got := crucibleProgressColor("paused")
+	if got != "196" {
+		t.Errorf("crucibleProgressColor(paused) = %q, want %q (red)", got, "196")
+	}
+}
+
+func TestCrucibleProgressColorDefault(t *testing.T) {
+	for _, phase := range []string{"started", "dispatching", "final_pr", "waiting", ""} {
+		got := crucibleProgressColor(phase)
+		if got != "226" {
+			t.Errorf("crucibleProgressColor(%q) = %q, want %q (yellow)", phase, got, "226")
+		}
+	}
+}
+
+// --- renderCrucibles ---
+
+func TestRenderCruciblesEmpty(t *testing.T) {
+	m := Model{focused: PanelQueue}
+	rendered := m.renderCrucibles(60, 10)
+	if !strings.Contains(rendered, "None") {
+		t.Errorf("expected 'None' when no crucibles, got:\n%s", rendered)
+	}
+}
+
+func TestRenderCruciblesShowsParentIDAndCount(t *testing.T) {
+	m := Model{
+		focused: PanelCrucibles,
+		crucibles: []CrucibleItem{
+			{
+				ParentID:          "Forge-epic1",
+				ParentTitle:       "Big epic feature",
+				Anvil:             "heimdall",
+				Phase:             "dispatching",
+				TotalChildren:     5,
+				CompletedChildren: 2,
+				CurrentChild:      "Forge-child3",
+			},
+		},
+	}
+	rendered := m.renderCrucibles(80, 20)
+	if !strings.Contains(rendered, "Forge-epic1") {
+		t.Errorf("expected parent ID 'Forge-epic1' in crucibles output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "2/5") {
+		t.Errorf("expected count '2/5' in crucibles output:\n%s", rendered)
+	}
+}
+
+func TestRenderCruciblesShowsCurrentChild(t *testing.T) {
+	m := Model{
+		focused: PanelQueue,
+		crucibles: []CrucibleItem{
+			{
+				ParentID:          "Forge-ep2",
+				Anvil:             "test",
+				Phase:             "started",
+				TotalChildren:     3,
+				CompletedChildren: 1,
+				CurrentChild:      "Forge-child2",
+			},
+		},
+	}
+	rendered := m.renderCrucibles(80, 20)
+	if !strings.Contains(rendered, "Forge-child2") {
+		t.Errorf("expected current child 'Forge-child2' in crucibles output:\n%s", rendered)
+	}
+}
+
+func TestRenderCruciblesTitleFallbackWhenNoCurrentChild(t *testing.T) {
+	m := Model{
+		focused: PanelQueue,
+		crucibles: []CrucibleItem{
+			{
+				ParentID:          "Forge-ep3",
+				ParentTitle:       "No child yet",
+				Anvil:             "test",
+				Phase:             "started",
+				TotalChildren:     3,
+				CompletedChildren: 0,
+				CurrentChild:      "",
+			},
+		},
+	}
+	rendered := m.renderCrucibles(80, 20)
+	if !strings.Contains(rendered, "No child yet") {
+		t.Errorf("expected parent title 'No child yet' when no current child:\n%s", rendered)
+	}
+}
+
+func TestRenderCruciblesProgressBarPresentWhenChildrenNonZero(t *testing.T) {
+	m := Model{
+		focused: PanelQueue,
+		crucibles: []CrucibleItem{
+			{
+				ParentID:          "Forge-bar",
+				Anvil:             "test",
+				Phase:             "dispatching",
+				TotalChildren:     4,
+				CompletedChildren: 2,
+			},
+		},
+	}
+	rendered := m.renderCrucibles(80, 20)
+	// Progress bar emits block chars; at minimum we expect the fraction label.
+	if !strings.Contains(rendered, "2/4") {
+		t.Errorf("expected fraction '2/4' with progress bar in crucibles output:\n%s", rendered)
+	}
+}
+
 func TestUpdatePendingOrphansMsgDeduplicates(t *testing.T) {
 	existing := PendingOrphanItem{BeadID: "Forge-dup", Anvil: "test", Title: "dup"}
 	m := Model{
