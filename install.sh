@@ -30,6 +30,16 @@ case "$ARCH_RAW" in
   *) echo "ERROR: Unsupported architecture: $ARCH_RAW" >&2; exit 1 ;;
 esac
 
+# ── Check required tools ───────────────────────────────────────────────────────
+if ! command -v tar > /dev/null 2>&1; then
+  echo "ERROR: 'tar' is required but not found." >&2
+  echo "Install it with your package manager, e.g.:" >&2
+  echo "  Debian/Ubuntu: sudo apt-get install tar" >&2
+  echo "  Alpine:        sudo apk add tar" >&2
+  echo "  macOS:         tar is pre-installed; reinstall Xcode Command Line Tools if missing" >&2
+  exit 1
+fi
+
 # ── Resolve version ────────────────────────────────────────────────────────────
 if [ -z "${VERSION:-}" ]; then
   echo "Fetching latest Forge release..."
@@ -55,7 +65,8 @@ if [ -x "${INSTALL_DIR}/${BINARY}" ]; then
   fi
 fi
 
-ASSET_NAME="${BINARY}_${VERSION_NUM}_${OS}_${ARCH}.zip"
+ARCHIVE_EXT="tar.gz"
+ASSET_NAME="${BINARY}_${VERSION_NUM}_${OS}_${ARCH}.${ARCHIVE_EXT}"
 BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 ASSET_URL="${BASE_URL}/${ASSET_NAME}"
 CHECKSUM_URL="${BASE_URL}/checksums.txt"
@@ -65,7 +76,22 @@ TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t forge.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "Downloading Forge ${VERSION} (${OS}/${ARCH})..."
-curl -fsSL -o "${TMP_DIR}/${ASSET_NAME}" "$ASSET_URL"
+if ! curl -fsSL -o "${TMP_DIR}/${ASSET_NAME}" "$ASSET_URL" 2>/dev/null; then
+  # tar.gz not available — fall back to zip for older releases that only published zip
+  echo "tar.gz asset not found, falling back to zip..."
+  if ! command -v unzip > /dev/null 2>&1; then
+    echo "ERROR: 'unzip' is required for this release but not found." >&2
+    echo "Install it with your package manager, e.g.:" >&2
+    echo "  Debian/Ubuntu: sudo apt-get install unzip" >&2
+    echo "  Alpine:        sudo apk add unzip" >&2
+    exit 1
+  fi
+  ARCHIVE_EXT="zip"
+  ASSET_NAME="${BINARY}_${VERSION_NUM}_${OS}_${ARCH}.${ARCHIVE_EXT}"
+  ASSET_URL="${BASE_URL}/${ASSET_NAME}"
+  curl -fsSL -o "${TMP_DIR}/${ASSET_NAME}" "$ASSET_URL"
+fi
+
 curl -fsSL -o "${TMP_DIR}/checksums.txt" "$CHECKSUM_URL"
 
 # ── Verify SHA256 ──────────────────────────────────────────────────────────────
@@ -93,15 +119,14 @@ if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
 fi
 
 # ── Extract and install ────────────────────────────────────────────────────────
-if ! command -v unzip > /dev/null 2>&1; then
-  echo "ERROR: unzip is required but not found. Install it with your package manager (e.g. apt-get install unzip)." >&2
-  exit 1
-fi
-
 mkdir -p "$INSTALL_DIR"
 
 echo "Installing Forge to ${INSTALL_DIR}/${BINARY}..."
-unzip -o -q "${TMP_DIR}/${ASSET_NAME}" "${BINARY}" -d "$TMP_DIR"
+if [ "$ARCHIVE_EXT" = "tar.gz" ]; then
+  tar -xz -f "${TMP_DIR}/${ASSET_NAME}" -C "$TMP_DIR" "${BINARY}"
+else
+  unzip -q -o "${TMP_DIR}/${ASSET_NAME}" "${BINARY}" -d "$TMP_DIR"
+fi
 install -m 0755 "${TMP_DIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 
 # ── PATH advice ────────────────────────────────────────────────────────────────
