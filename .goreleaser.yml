@@ -28,21 +28,15 @@ builds:
         goarch: arm64
 
 archives:
-  - id: unix
-    format: tar.gz
+  - id: default
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    builds:
-      - forge
-    goos:
-      - linux
-      - darwin
-  - id: windows
-    format: zip
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    builds:
-      - forge
-    goos:
-      - windows
+    format_overrides:
+      - goos: windows
+        format: zip
+      - goos: darwin
+        format: tar.gz
+      - goos: linux
+        format: tar.gz
 
 checksum:
   name_template: "checksums.txt"
@@ -59,6 +53,21 @@ scoops:
     description: Autonomous AI orchestrator that coordinates Claude Code agents across git repositories
     license: MIT
     skip_upload: auto
+
+brews:
+  - name: forge
+    repository:
+      owner: Robin831
+      name: homebrew-forge
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/Robin831/Forge"
+    description: "Autonomous AI orchestrator for multi-repo development"
+    license: "MIT"
+    skip_upload: auto
+    install: |
+      bin.install "forge"
+    test: |
+      system "#{bin}/forge", "version"
 
 release:
   github:
