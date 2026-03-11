@@ -248,7 +248,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 			d.logger.Warn("failed to record pending orphan", "bead", beadID, "error", err)
 			return false // fall back to auto-recover on DB error
 		}
-		_ = d.db.LogEvent(state.EventBeadRecovered,
+		_ = d.db.LogEvent(state.EventOrphanCleanup,
 			fmt.Sprintf("Orphan %s deferred to Hearth dialog", beadID), beadID, anvil)
 		return true
 	}
@@ -2287,7 +2287,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Info("orphan recovered by user", "bead", rp.BeadID, "anvil", rp.Anvil)
 			go d.pollAndDispatch(d.runCtx)
 		case "close":
-			closeCtx, closeCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+			// Use context.Background() so this bd close call is not interrupted
+			// if the daemon is concurrently shutting down. The user explicitly
+			// chose to close this orphan, and the operation must complete.
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer closeCancel()
 			closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", rp.BeadID))
 			closeCmd.Dir = anvilCfg.Path
@@ -2298,7 +2301,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Orphan %s closed by user (work completed)", rp.BeadID), rp.BeadID, rp.Anvil)
 			d.logger.Info("orphan closed by user (completed)", "bead", rp.BeadID, "anvil", rp.Anvil)
 		case "discard":
-			discardCtx, discardCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+			// Use context.Background() so this bd close call is not interrupted
+			// if the daemon is concurrently shutting down. The user explicitly
+			// chose to discard this orphan, and the operation must complete.
+			discardCtx, discardCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer discardCancel()
 			discardCmd := executil.HideWindow(exec.CommandContext(discardCtx, "bd", "close", rp.BeadID, `--reason=Discarded by user during orphan recovery`))
 			discardCmd.Dir = anvilCfg.Path
