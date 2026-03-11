@@ -431,3 +431,9 @@ rules:
       check: Verify that the implementation actually matches what the doc comment claims — if a comment says a condition is special-cased, the code must contain that special-case logic, and vice versa
       source: copilot:PR#192
       added: "2026-03-11"
+    - id: pr-description-accuracy
+      category: other
+      pattern: PR description claims no functional changes but code modifies runtime behavior, UI rendering, or user-facing output
+      check: Verify that the PR description accurately reflects the scope of changes — if code alters UI behavior, runtime logic, or user-facing output, the description must not claim 'no functional changes'
+      source: copilot:PR#193
+      added: "2026-03-11"
