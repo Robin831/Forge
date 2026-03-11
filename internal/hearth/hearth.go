@@ -545,6 +545,38 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case tea.MouseMsg:
+		// Dismiss overlays on left or right mouse button press
+		if msg.Action == tea.MouseActionPress &&
+			(msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight) {
+			if m.showLogViewer || m.showActionMenu || m.showQueueActionMenu || m.showMergeMenu {
+				m.showLogViewer = false
+				m.showActionMenu = false
+				m.showQueueActionMenu = false
+				m.showMergeMenu = false
+				return m, nil
+			}
+		}
+		switch {
+		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
+			// Click to focus the panel under the cursor
+			m.focused = m.panelAtPos(msg.X, msg.Y)
+		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonWheelUp:
+			// Scroll the panel under the cursor up
+			m.focused = m.panelAtPos(msg.X, msg.Y)
+			m.scrollUp()
+			if m.focused == PanelEvents {
+				m.eventAutoScroll = false
+			}
+		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonWheelDown:
+			// Scroll the panel under the cursor down
+			m.focused = m.panelAtPos(msg.X, msg.Y)
+			m.scrollDown()
+			if m.focused == PanelEvents {
+				m.eventAutoScroll = false
+			}
+		}
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -720,6 +752,31 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View implements tea.Model.
+// computeHeaderH returns the rendered height of the header bar.
+// It is called by both View() and panelAtPos() to keep hit-testing in sync
+// without mutating model state inside View().
+func (m *Model) computeHeaderH() int {
+	headerText := "🔥 The Forge — Hearth Dashboard"
+	if m.daemonConnected {
+		indicator := daemonConnectedStyle.Render("● Connected")
+		if m.daemonLastPoll != "" && m.daemonLastPoll != "n/a" {
+			indicator += dimStyle.Render(" (polled " + m.daemonLastPoll + ")")
+		}
+		headerText += "  " + indicator
+	} else {
+		headerText += "  " + daemonDisconnectedStyle.Render("○ Disconnected")
+	}
+	return lipgloss.Height(headerStyle.Width(m.width).Render(headerText))
+}
+
+// computeFooterH returns the rendered height of the footer bar.
+// It uses the default hint text (status messages are at most 1 line).
+// It is called by panelAtPos() to mirror the layout used by View().
+func (m *Model) computeFooterH() int {
+	footerText := "Tab: switch panel \u2022 j/k/wheel: scroll \u2022 K: kill worker \u2022 Enter: actions/merge \u2022 l: label bead \u2022 f: follow \u2022 q: quit"
+	return lipgloss.Height(footerStyle.Width(m.width).Render(footerText))
+}
+
 func (m *Model) View() string {
 	if !m.ready {
 		return "Initializing The Forge..."
@@ -740,7 +797,7 @@ func (m *Model) View() string {
 	headerH := lipgloss.Height(header)
 
 	// Footer with status message or default hints
-	footerText := "Tab: switch panel • j/k: scroll • K: kill worker • Enter: actions/merge • l: label bead • f: follow • q: quit"
+	footerText := "Tab: switch panel • j/k/wheel: scroll • K: kill worker • Enter: actions/merge • l: label bead • f: follow • q: quit"
 	statusDuration := 5 * time.Second
 	if m.statusMsgIsError {
 		statusDuration = 10 * time.Second
@@ -825,6 +882,104 @@ func (m *Model) getVerticalSplit(headerH, footerH int) (topHeight, bottomHeight 
 		topHeight = contentHeight - bottomHeight
 	}
 	return
+}
+
+// panelBorderEachSide is the number of terminal columns consumed by one side
+// of a panel border (lipgloss RoundedBorder = 1 char per side).
+const panelBorderEachSide = 1
+
+// panelAtPos returns the Panel at the given terminal (x, y) coordinate.
+// Used for mouse click focus and scroll targeting. Out-of-range positions
+// (header, footer, or outside the terminal) return the current focused panel.
+// The vertical split is computed using the same getVerticalSplit helper as
+// View() to keep hit-testing in sync with the rendered layout.
+func (m *Model) panelAtPos(x, y int) Panel {
+	queueWidth, workerWidth, _ := m.getTopPanelWidths()
+
+	// Determine column x boundaries.
+	// Each panel has panelBorderEachSide chars on both left and right.
+	// leftEnd is the inclusive rightmost column of the left panel (0-indexed).
+	// centerEnd is the inclusive rightmost column of the center panel.
+	leftColumnWidth := queueWidth + 2*panelBorderEachSide
+	centerColumnWidth := workerWidth + 2*panelBorderEachSide
+	leftEnd := leftColumnWidth - 1
+	centerEnd := leftColumnWidth + centerColumnWidth - 1
+
+	// Compute header and footer heights without mutating model state.
+	hh := m.computeHeaderH()
+	if hh <= 0 {
+		hh = 1
+	}
+	fh := m.computeFooterH()
+	if fh <= 0 {
+		fh = 1
+	}
+
+	// Rows in the header or footer region return the current focused panel.
+	if y < hh || y >= m.height-fh {
+		return m.focused
+	}
+
+	// Use the same vertical split as View() for accurate hit-testing.
+	topH, bottomH := m.getVerticalSplit(hh, fh)
+	if topH <= 0 {
+		return m.focused
+	}
+
+	contentY := y - hh
+	// The top panel occupies topH inner rows + 2 border rows (top + bottom border).
+	topRegionH := topH + 2
+
+	switch {
+	case x <= leftEnd:
+		// Left column: Queue/Crucibles (top region) or ReadyToMerge/NeedsAttention (bottom region).
+		if contentY < topRegionH {
+			if len(m.crucibles) > 0 {
+				// When crucibles are present, split the top region between Queue (upper)
+				// and Crucibles (lower) so both can be focused via mouse.
+				queueTopH := topRegionH / 2
+				if queueTopH < 1 {
+					queueTopH = 1
+				}
+				if contentY < queueTopH {
+					return PanelQueue
+				}
+				return PanelCrucibles
+			}
+			// No crucibles: entire top region is Queue.
+			return PanelQueue
+		}
+		// Bottom section: split evenly between ReadyToMerge (upper) and NeedsAttention (lower).
+		bottomRegionY := contentY - topRegionH
+		bottomRegionH := bottomH + 2 // inner + 2 border rows
+		if bottomRegionH <= 0 {
+			return PanelReadyToMerge
+		}
+		halfBottom := bottomRegionH / 2
+		if bottomRegionY < halfBottom {
+			return PanelReadyToMerge
+		}
+		return PanelNeedsAttention
+	case x <= centerEnd:
+		// Center column: Workers (top) + Usage panel (bottom, fixed height 10).
+		fullH := topH + bottomH
+		if fullH >= 20 {
+			const usagePanelHeight = 10
+			workerH := fullH - usagePanelHeight
+			// Worker panel occupies workerH inner rows + 2 border rows.
+			if contentY < workerH+2 {
+				return PanelWorkers
+			}
+			return PanelUsage
+		}
+		return PanelWorkers
+	default:
+		// Right column: LiveActivity (top) or Events (bottom).
+		if contentY < topRegionH {
+			return PanelLiveActivity
+		}
+		return PanelEvents
+	}
 }
 
 // scrollDown scrolls the focused panel down.

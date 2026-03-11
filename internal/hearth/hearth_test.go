@@ -1966,3 +1966,209 @@ func TestCursorClampedOnCollapse(t *testing.T) {
 		t.Errorf("cursor %d out of range (nav has %d items)", m.queueVP.cursor, len(m.queueNavItems))
 	}
 }
+
+// --- panelAtPos ---
+
+// newTestModelForPanelAtPos returns a Model configured for deterministic panelAtPos tests.
+// width=120, height=40; computeHeaderH() renders a 1-line header at this width.
+func newTestModelForPanelAtPos() Model {
+	return Model{
+		width:   120,
+		height:  40,
+		focused: PanelWorkers, // default focused panel returned for out-of-range hits
+	}
+}
+
+// panelBoundaries returns the x/y split points for a 120x40 model using the
+// same layout math as View() and panelAtPos().
+//
+//	queueWidth=23, workerWidth=29
+//	leftEnd=24, centerEnd=55
+//	headerH=1, footerH=1 (single-line header/footer at width=120)
+//	topH=20, topRegionH=22 (topH inner rows + 2 border rows)
+func panelBoundaries(m Model) (leftEnd, centerEnd, topRegionH, headerH int) {
+	queueWidth, workerWidth, _ := m.getTopPanelWidths()
+	leftColumnWidth := queueWidth + 2*panelBorderEachSide
+	centerColumnWidth := workerWidth + 2*panelBorderEachSide
+	leftEnd = leftColumnWidth - 1
+	centerEnd = leftColumnWidth + centerColumnWidth - 1
+	headerH = m.computeHeaderH()
+	footerH := m.computeFooterH()
+	topH, _ := m.getVerticalSplit(headerH, footerH)
+	topRegionH = topH + 2 // inner rows + 2 border rows
+	return
+}
+
+func TestPanelAtPosLeftColumn_TopHalf_ReturnsQueue(t *testing.T) {
+	m := newTestModelForPanelAtPos()
+	leftEnd, _, topRegionH, headerH := panelBoundaries(m)
+	// Click inside the left column in the top region (no crucibles).
+	x := leftEnd - 1
+	y := headerH + topRegionH/2
+	got := m.panelAtPos(x, y)
+	if got != PanelQueue {
+		t.Errorf("panelAtPos(%d,%d) = %v, want PanelQueue", x, y, got)
+	}
+}
+
+func TestPanelAtPosLeftColumn_TopHalf_WithCrucibles_ReturnsBothQueueAndCrucibles(t *testing.T) {
+	m := newTestModelForPanelAtPos()
+	m.crucibles = []CrucibleItem{{ParentID: "bd-c1"}}
+	leftEnd, _, topRegionH, headerH := panelBoundaries(m)
+
+	// Scan the top-left region and ensure both Queue and Crucibles are present,
+	// with Queue appearing above Crucibles.
+	x := leftEnd - 1
+	var queueY, cruciblesY int = -1, -1
+	topStartY := headerH + 1
+	topEndY := headerH + topRegionH - 1
+	if topEndY >= m.height-1 {
+		topEndY = m.height - 2
+	}
+	for y := topStartY; y <= topEndY; y++ {
+		panel := m.panelAtPos(x, y)
+		if panel == PanelQueue && queueY == -1 {
+			queueY = y
+		}
+		if panel == PanelCrucibles && cruciblesY == -1 {
+			cruciblesY = y
+		}
+	}
+	if queueY == -1 {
+		t.Fatalf("expected to find PanelQueue in top-left region, but did not (x=%d, y in [%d,%d])", x, topStartY, topEndY)
+	}
+	if cruciblesY == -1 {
+		t.Fatalf("expected to find PanelCrucibles in top-left region when crucibles present, but did not (x=%d, y in [%d,%d])", x, topStartY, topEndY)
+	}
+	if !(queueY < cruciblesY) {
+		t.Errorf("expected PanelQueue to appear above PanelCrucibles in top-left region, got queueY=%d, cruciblesY=%d", queueY, cruciblesY)
+	}
+}
+
+func TestPanelAtPosLeftColumn_BottomHalf_ReturnsReadyToMerge(t *testing.T) {
+	m := newTestModelForPanelAtPos()
+	leftEnd, _, topRegionH, headerH := panelBoundaries(m)
+
+	// Scan the bottom-left region to ensure ReadyToMerge is present, and that
+	// if NeedsAttention is also present, ReadyToMerge appears above it.
+	x := leftEnd - 1
+	var readyY, needsY int = -1, -1
+	bottomStartY := headerH + topRegionH + 1
+	bottomEndY := m.height - 2
+	for y := bottomStartY; y <= bottomEndY; y++ {
+		panel := m.panelAtPos(x, y)
+		if panel == PanelReadyToMerge && readyY == -1 {
+			readyY = y
+		}
+		if panel == PanelNeedsAttention && needsY == -1 {
+			needsY = y
+		}
+	}
+	if readyY == -1 {
+		t.Fatalf("expected to find PanelReadyToMerge in bottom-left region, but did not (x=%d, y in [%d,%d])", x, bottomStartY, bottomEndY)
+	}
+	// If both panels are present, ReadyToMerge should be above NeedsAttention.
+	if needsY != -1 && !(readyY < needsY) {
+		t.Errorf("expected PanelReadyToMerge to appear above PanelNeedsAttention in bottom-left region, got readyY=%d, needsY=%d", readyY, needsY)
+	}
+}
+
+func TestPanelAtPosLeftColumn_BottomHalf_ReturnsNeedsAttention(t *testing.T) {
+	m := newTestModelForPanelAtPos()
+	leftEnd, _, topRegionH, headerH := panelBoundaries(m)
+
+	// Scan the bottom-left region to ensure NeedsAttention is present, and that
+	// if ReadyToMerge is also present, ReadyToMerge appears above it.
+	x := leftEnd - 1
+	var readyY, needsY int = -1, -1
+	bottomStartY := headerH + topRegionH + 1
+	bottomEndY := m.height - 2
+	for y := bottomStartY; y <= bottomEndY; y++ {
+		panel := m.panelAtPos(x, y)
+		if panel == PanelReadyToMerge && readyY == -1 {
+			readyY = y
+		}
+		if panel == PanelNeedsAttention && needsY == -1 {
+			needsY = y
+		}
+	}
+	if needsY == -1 {
+		t.Fatalf("expected to find PanelNeedsAttention in bottom-left region, but did not (x=%d, y in [%d,%d])", x, bottomStartY, bottomEndY)
+	}
+	// If both panels are present, ReadyToMerge should be above NeedsAttention.
+	if readyY != -1 && !(readyY < needsY) {
+		t.Errorf("expected PanelReadyToMerge to appear above PanelNeedsAttention in bottom-left region, got readyY=%d, needsY=%d", readyY, needsY)
+	}
+}
+
+func TestPanelAtPosCenterColumn_ReturnsWorkersAndUsage(t *testing.T) {
+	m := newTestModelForPanelAtPos()
+	leftEnd, centerEnd, _, headerH := panelBoundaries(m)
+	x := leftEnd + 5
+	if x > centerEnd {
+		x = (leftEnd + centerEnd) / 2
+	}
+
+	// Scan the center column to find both Workers and Usage panels.
+	var workersY, usageY int = -1, -1
+	for y := headerH + 1; y < m.height-1; y++ {
+		panel := m.panelAtPos(x, y)
+		if panel == PanelWorkers && workersY == -1 {
+			workersY = y
+		}
+		if panel == PanelUsage && usageY == -1 {
+			usageY = y
+		}
+	}
+	if workersY == -1 {
+		t.Fatalf("expected to find PanelWorkers in center column, but did not")
+	}
+	if usageY == -1 {
+		t.Fatalf("expected to find PanelUsage in center column, but did not")
+	}
+	if !(workersY < usageY) {
+		t.Errorf("expected PanelWorkers to appear above PanelUsage, got workersY=%d, usageY=%d", workersY, usageY)
+	}
+}
+
+func TestPanelAtPosRightColumn_TopHalf_ReturnsLiveActivity(t *testing.T) {
+	m := newTestModelForPanelAtPos()
+	_, centerEnd, topRegionH, headerH := panelBoundaries(m)
+	x := centerEnd + 5
+	y := headerH + topRegionH/2
+	got := m.panelAtPos(x, y)
+	if got != PanelLiveActivity {
+		t.Errorf("panelAtPos(%d,%d) = %v, want PanelLiveActivity", x, y, got)
+	}
+}
+
+func TestPanelAtPosRightColumn_BottomHalf_ReturnsEvents(t *testing.T) {
+	m := newTestModelForPanelAtPos()
+	_, centerEnd, topRegionH, headerH := panelBoundaries(m)
+	x := centerEnd + 5
+	y := headerH + topRegionH + 1
+	got := m.panelAtPos(x, y)
+	if got != PanelEvents {
+		t.Errorf("panelAtPos(%d,%d) = %v, want PanelEvents", x, y, got)
+	}
+}
+
+func TestPanelAtPosHeaderRow_ReturnsFocused(t *testing.T) {
+	m := newTestModelForPanelAtPos()
+	m.focused = PanelLiveActivity
+	// y=0 is always in the header row.
+	got := m.panelAtPos(50, 0)
+	if got != PanelLiveActivity {
+		t.Errorf("panelAtPos in header row = %v, want focused panel (PanelLiveActivity)", got)
+	}
+}
+
+func TestPanelAtPosFooterRow_ReturnsFocused(t *testing.T) {
+	m := newTestModelForPanelAtPos()
+	m.focused = PanelQueue
+	// y >= height-1 is the footer row.
+	got := m.panelAtPos(50, m.height-1)
+	if got != PanelQueue {
+		t.Errorf("panelAtPos in footer row = %v, want focused panel (PanelQueue)", got)
+	}
+}
