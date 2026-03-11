@@ -374,12 +374,12 @@ rules:
     - id: docker-ghcr-workflow-permissions
       category: other
       pattern: GoReleaser or workflow config that builds/pushes container images to GHCR
-      check: 'Verify the GitHub Actions workflow grants `packages: write` permission to GITHUB_TOKEN and includes QEMU + buildx setup steps for multi-arch image builds — without these the release job will fail silently and images won''t be published'
+      check: 'Verify the GitHub Actions workflow grants `packages: write` permission to GITHUB_TOKEN for GHCR pushes. If the workflow builds and publishes multi-architecture images, also ensure it sets up QEMU and Docker buildx before the GoReleaser or docker build step. Missing permissions or required setup will typically surface as explicit 403 or build errors rather than a successful run with missing images.'
       source: copilot:PR#191
       added: "2026-03-11"
     - id: dockerfile-non-root-user
       category: security
-      pattern: Dockerfile without a USER directive that runs as root by default
-      check: Verify that Dockerfiles create and switch to a non-root user (via USER directive) to reduce blast radius, especially when containers may mount host workspaces or secrets
+      pattern: Production or runtime Dockerfile without a USER directive that runs as root by default
+      check: Prefer that production/runtime Dockerfiles run as a non-root user (typically via a USER directive). If the image intentionally runs as root, verify there is a documented justification and that an alternative hardening strategy is in place (for example, dropping privileges in the entrypoint or restricting capabilities/FS access).
       source: copilot:PR#191
       added: "2026-03-11"
