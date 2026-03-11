@@ -1400,8 +1400,14 @@ func (m *Model) logViewerDimensions() (int, int) {
 	if viewerHeight < 10 {
 		viewerHeight = 10
 	}
-	vpWidth := viewerWidth - 4  // subtract border (2) + padding (2 per side)
-	vpHeight := viewerHeight - 5 // title + blank + blank + footer + border/padding overhead
+	// Use style frame size methods instead of hardcoded offsets so the layout
+	// stays correct if border or padding values change.
+	vpWidth := viewerWidth - logViewerStyle.GetHorizontalFrameSize()
+	// Fixed content lines: title + blank line + blank line + footer = 4
+	vpHeight := viewerHeight - logViewerStyle.GetVerticalFrameSize() - 4
+	if vpWidth < 1 {
+		vpWidth = 1
+	}
 	if vpHeight < 1 {
 		vpHeight = 1
 	}
@@ -1420,7 +1426,7 @@ func (m *Model) renderLogViewer() string {
 	}
 
 	var lines []string
-	lines = append(lines, actionMenuTitleStyle.Render(truncate(m.logViewerTitle, viewerWidth-4)))
+	lines = append(lines, actionMenuTitleStyle.Render(truncate(m.logViewerTitle, viewerWidth-logViewerStyle.GetHorizontalFrameSize())))
 	lines = append(lines, "")
 
 	if len(m.logViewerLines) == 0 {
