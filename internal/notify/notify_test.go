@@ -232,7 +232,11 @@ func TestSendGenericRelease_TagOmittedWhenEmpty(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	raw := getBody()
-	if strings.Contains(string(raw), `"tag"`) {
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal response body: %v", err)
+	}
+	if _, ok := parsed["tag"]; ok {
 		t.Error("expected 'tag' to be omitted from JSON when empty")
 	}
 }

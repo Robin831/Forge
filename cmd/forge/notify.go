@@ -27,8 +27,10 @@ func init() {
 }
 
 // repoNameFromURL extracts the repository name from a GitHub URL.
+// repoNameFromURL extracts the repository name from the second path segment of any URL.
 // e.g. "https://github.com/Robin831/Forge/releases/tag/v1.0.0" → "Forge"
-// Returns an empty string if the URL cannot be parsed or has no recognisable repo segment.
+// The host is not validated; any URL with path /<owner>/<repo>/... is accepted.
+// Returns an empty string if the URL cannot be parsed or has fewer than two path segments.
 func repoNameFromURL(rawURL string) string {
 	if rawURL == "" {
 		return ""

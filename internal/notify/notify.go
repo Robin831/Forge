@@ -275,8 +275,9 @@ func (n *Notifier) PRReadyToMerge(ctx context.Context, anvil, beadID string, prN
 // It provides a pre-formatted summary and structured metadata so receivers can
 // display rich notifications without parsing event-specific fields.
 //
-// All Forge webhook POSTs use this schema. The source field is always "forge" so
-// receivers can identify the origin and apply the appropriate badge or routing.
+// All generic/non-Teams Forge webhook POSTs use this schema. Teams webhooks instead
+// receive Adaptive Card JSON. The source field is always "forge" so receivers can
+// identify the origin and apply the appropriate badge or routing.
 type WebhookPayload struct {
 	Source  string `json:"source"`            // Always "forge"
 	Summary string `json:"summary"`           // Pre-formatted human-readable one-liner for list view
@@ -301,7 +302,7 @@ func SendGenericPRReadyToMerge(ctx context.Context, webhookURL string, payload W
 // This is used for non-Teams endpoints such as dashboards or custom receivers.
 // Errors are logged but do not cause a fatal failure.
 func SendGenericRelease(ctx context.Context, webhookURL string, payload WebhookPayload, logger *slog.Logger) {
-	sendGenericWebhook(ctx, webhookURL, payload, "release", logger)
+	sendGenericWebhook(ctx, webhookURL, payload, payload.Event, logger)
 }
 
 // sendGenericWebhook marshals payload and POSTs it to webhookURL.
