@@ -1475,6 +1475,23 @@ func (db *DB) DismissRetry(beadID, anvil string) error {
 	return nil
 }
 
+// LastWorkerBranchForBead returns the branch from the most recent worker record
+// for a given bead in a given anvil. Returns an empty string (not an error) if
+// no worker record exists yet.
+func (db *DB) LastWorkerBranchForBead(beadID, anvil string) (string, error) {
+	var branch string
+	err := db.conn.QueryRow(
+		`SELECT branch FROM workers WHERE bead_id = ? AND anvil = ?
+		 ORDER BY started_at DESC LIMIT 1`, beadID, anvil).Scan(&branch)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return branch, nil
+}
+
 // LastWorkerLogPath returns the log path from the most recent worker for a bead.
 func (db *DB) LastWorkerLogPath(beadID string) (string, error) {
 	var logPath string

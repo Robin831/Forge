@@ -284,7 +284,7 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 	m.logger.Info("checking for orphaned in-progress beads")
 
 	for anvilName, anvilPath := range m.anvils {
-		beads, err := m.listInProgressBeads(anvilPath)
+		beads, err := m.listInProgressBeads(anvilName, anvilPath)
 		if err != nil {
 			m.logger.Warn("failed to list in-progress beads", "anvil", anvilName, "error", err)
 			continue
@@ -360,7 +360,7 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 
 			// If a callback is registered (e.g., Hearth is connected), give it the
 			// chance to defer recovery to the user dialog instead of auto-recovering.
-			if m.OnOrphanFound != nil && m.OnOrphanFound(beadID, anvilName, bead.Title, "") {
+			if m.OnOrphanFound != nil && m.OnOrphanFound(beadID, anvilName, bead.Title, bead.Branch) {
 				m.logger.Info("orphaned bead deferred to Hearth dialog", "bead", beadID, "anvil", anvilName)
 				// Do not increment recovered — the bead has not been reset yet.
 				continue
@@ -388,16 +388,18 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 	return recovered
 }
 
-// inProgressBead holds the id, title, and last-update time of an in-progress bead.
+// inProgressBead holds the id, title, branch, and last-update time of an in-progress bead.
 type inProgressBead struct {
 	ID        string
 	Title     string
+	Branch    string
 	UpdatedAt time.Time
 }
 
 // listInProgressBeads returns in-progress beads for an anvil, including their
-// last-updated timestamps so callers can filter by age.
-func (m *Manager) listInProgressBeads(anvilPath string) ([]inProgressBead, error) {
+// last-updated timestamps and most-recent worker branch so callers can filter
+// by age and display the branch in dialogs.
+func (m *Manager) listInProgressBeads(anvilName, anvilPath string) ([]inProgressBead, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -429,6 +431,11 @@ func (m *Manager) listInProgressBeads(anvilPath string) ([]inProgressBead, error
 		// Parse RFC3339 timestamp; zero value if missing/unparseable (treated as old).
 		if t, err := time.Parse(time.RFC3339, b.UpdatedAt); err == nil {
 			beads[i].UpdatedAt = t
+		}
+		// Best-effort: populate branch from the most recent worker record in
+		// state.db so the orphan dialog can show which branch was in use.
+		if branch, err := m.db.LastWorkerBranchForBead(b.ID, anvilName); err == nil {
+			beads[i].Branch = branch
 		}
 	}
 	return beads, nil

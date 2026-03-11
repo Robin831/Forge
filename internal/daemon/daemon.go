@@ -2275,14 +2275,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found or has no path", rp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		// Remove from pending orphans list regardless of action outcome.
-		_ = d.db.RemovePendingOrphan(rp.BeadID, rp.Anvil)
 		switch rp.Action {
 		case "recover":
 			if err := d.shutdownMgr.ResetBead(rp.BeadID, anvilCfg.Path); err != nil {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to recover bead: %v", err)})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
+			_ = d.db.RemovePendingOrphan(rp.BeadID, rp.Anvil)
 			_ = d.db.LogEvent(state.EventBeadRecovered, fmt.Sprintf("Orphan %s recovered by user via Hearth", rp.BeadID), rp.BeadID, rp.Anvil)
 			d.logger.Info("orphan recovered by user", "bead", rp.BeadID, "anvil", rp.Anvil)
 			go d.pollAndDispatch(d.runCtx)
@@ -2298,8 +2297,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd close failed: %v: %s", err, string(out))})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
+			_ = d.db.RemovePendingOrphan(rp.BeadID, rp.Anvil)
 			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Orphan %s closed by user (work completed)", rp.BeadID), rp.BeadID, rp.Anvil)
 			d.logger.Info("orphan closed by user (completed)", "bead", rp.BeadID, "anvil", rp.Anvil)
+			// Refresh queue state so Hearth reflects the closed orphan immediately.
+			go d.pollAndDispatch(d.runCtx)
 		case "discard":
 			// Use context.Background() so this bd close call is not interrupted
 			// if the daemon is concurrently shutting down. The user explicitly
@@ -2312,8 +2314,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd close failed: %v: %s", err, string(out))})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
+			_ = d.db.RemovePendingOrphan(rp.BeadID, rp.Anvil)
 			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Orphan %s discarded by user", rp.BeadID), rp.BeadID, rp.Anvil)
 			d.logger.Info("orphan discarded by user", "bead", rp.BeadID, "anvil", rp.Anvil)
+			// Refresh queue state so Hearth reflects the discarded orphan immediately.
+			go d.pollAndDispatch(d.runCtx)
 		default:
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("unknown orphan action: %q", rp.Action)})
 			return ipc.Response{Type: "error", Payload: msg}
