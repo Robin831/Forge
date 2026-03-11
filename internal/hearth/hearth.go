@@ -244,6 +244,7 @@ type Model struct {
 	prevEventCount       int  // track event count for auto-scroll
 	width                int
 	height               int
+	headerH              int // cached header height for mouse hit-testing
 	ready                bool
 
 	// Action menu overlay state (Needs Attention)
@@ -545,6 +546,38 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case tea.MouseMsg:
+		// Dismiss overlays on any button press
+		if msg.Action == tea.MouseActionPress &&
+			(msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight) {
+			if m.showLogViewer || m.showActionMenu || m.showQueueActionMenu || m.showMergeMenu {
+				m.showLogViewer = false
+				m.showActionMenu = false
+				m.showQueueActionMenu = false
+				m.showMergeMenu = false
+				return m, nil
+			}
+		}
+		switch {
+		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
+			// Click to focus the panel under the cursor
+			m.focused = m.panelAtPos(msg.X, msg.Y)
+		case msg.Button == tea.MouseButtonWheelUp:
+			// Scroll the panel under the cursor up
+			m.focused = m.panelAtPos(msg.X, msg.Y)
+			m.scrollUp()
+			if m.focused == PanelEvents {
+				m.eventAutoScroll = false
+			}
+		case msg.Button == tea.MouseButtonWheelDown:
+			// Scroll the panel under the cursor down
+			m.focused = m.panelAtPos(msg.X, msg.Y)
+			m.scrollDown()
+			if m.focused == PanelEvents {
+				m.eventAutoScroll = false
+			}
+		}
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -738,9 +771,10 @@ func (m *Model) View() string {
 	}
 	header := headerStyle.Width(m.width).Render(headerText)
 	headerH := lipgloss.Height(header)
+	m.headerH = headerH
 
 	// Footer with status message or default hints
-	footerText := "Tab: switch panel • j/k: scroll • K: kill worker • Enter: actions/merge • l: label bead • f: follow • q: quit"
+	footerText := "Tab: switch panel • j/k/wheel: scroll • click: focus panel • K: kill worker • Enter: actions/merge • l: label bead • f: follow • q: quit"
 	statusDuration := 5 * time.Second
 	if m.statusMsgIsError {
 		statusDuration = 10 * time.Second
@@ -825,6 +859,73 @@ func (m *Model) getVerticalSplit(headerH, footerH int) (topHeight, bottomHeight 
 		topHeight = contentHeight - bottomHeight
 	}
 	return
+}
+
+// panelAtPos returns the Panel at the given terminal (x, y) coordinate.
+// Used for mouse click focus and scroll targeting. When the position is
+// ambiguous (e.g. on a border or out of range) the current focused panel
+// is returned unchanged.
+func (m *Model) panelAtPos(x, y int) Panel {
+	queueWidth, workerWidth, _ := m.getTopPanelWidths()
+
+	// Determine column by x coordinate.
+	// Column boundaries (borders add ~2 chars between columns).
+	leftEnd := queueWidth + 1
+	centerEnd := leftEnd + workerWidth + 2
+
+	// Use stored headerH (updated each View() call); fall back to 1.
+	hh := m.headerH
+	if hh <= 0 {
+		hh = 1
+	}
+
+	// Rows above the content area or at/below bottom are ignored.
+	if y < hh || y >= m.height-1 {
+		return m.focused
+	}
+
+	contentY := y - hh
+	// Subtract header row and one footer row from total height.
+	contentH := m.height - hh - 1
+	if contentH <= 0 {
+		return m.focused
+	}
+
+	// Determine vertical split: top 60%, bottom 40% (mirrors getVerticalSplit).
+	topH := contentH * 6 / 10
+	if topH < 1 {
+		topH = 1
+	}
+
+	switch {
+	case x <= leftEnd:
+		// Left column: Queue/Crucibles (top) or ReadyToMerge/NeedsAttention (bottom)
+		if contentY < topH {
+			if len(m.crucibles) > 0 {
+				return PanelCrucibles
+			}
+			return PanelQueue
+		}
+		// Bottom half: split evenly between ReadyToMerge and NeedsAttention
+		bottomH := contentH - topH
+		if bottomH <= 0 {
+			return PanelReadyToMerge
+		}
+		halfBottom := bottomH / 2
+		if contentY-topH < halfBottom {
+			return PanelReadyToMerge
+		}
+		return PanelNeedsAttention
+	case x <= centerEnd:
+		// Center column: Workers (top) + Usage (bottom)
+		return PanelWorkers
+	default:
+		// Right column: LiveActivity (top) or Events (bottom)
+		if contentY < topH {
+			return PanelLiveActivity
+		}
+		return PanelEvents
+	}
 }
 
 // scrollDown scrolls the focused panel down.
