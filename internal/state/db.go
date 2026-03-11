@@ -1102,6 +1102,22 @@ func (db *DB) LogEvent(typ EventType, message, beadID, anvil string) error {
 	return err
 }
 
+// HasEventForDate reports whether any event of the given type was logged on
+// the specified date (YYYY-MM-DD). It is used to deduplicate notifications
+// that should fire at most once per calendar day (e.g. cost_limit_hit) even
+// across daemon restarts, which would otherwise reset in-memory guards.
+func (db *DB) HasEventForDate(eventType EventType, date string) (bool, error) {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM events WHERE type = ? AND timestamp LIKE ?`,
+		string(eventType), date+"%",
+	).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // RecentEvents returns the most recent n events.
 func (db *DB) RecentEvents(n int) ([]Event, error) {
 	rows, err := db.conn.Query(

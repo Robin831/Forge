@@ -1045,9 +1045,18 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			return
 		}
 		if todayCost >= costLimit {
-			// Log the event only once per day to avoid spamming.
+			// Notify once per calendar day — even across daemon restarts.
+			// Use a DB-backed check (persists across restarts) with an
+			// in-memory fast-path to avoid a DB query on every poll cycle.
 			prev, _ := d.costLimitLoggedDate.Load().(string)
-			if prev != today {
+			alreadyNotified := prev == today
+			if !alreadyNotified {
+				// Check DB in case the daemon restarted after notifying today.
+				if notified, err := d.db.HasEventForDate(state.EventCostLimitHit, today); err == nil {
+					alreadyNotified = notified
+				}
+			}
+			if !alreadyNotified {
 				d.costLimitLoggedDate.Store(today)
 				_ = d.db.LogEvent(state.EventCostLimitHit,
 					fmt.Sprintf("Daily cost $%.2f reached limit $%.2f — dispatch paused", todayCost, costLimit),
@@ -1068,6 +1077,9 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 						d.dispatcher.Dispatch(notifCtx, notify.EventDailyCost, "", "", msg)
 					}
 				}(today, todayCost, costLimit)
+			} else if prev != today {
+				// Update in-memory cache to skip the DB query on future poll cycles.
+				d.costLimitLoggedDate.Store(today)
 			}
 			return
 		}
