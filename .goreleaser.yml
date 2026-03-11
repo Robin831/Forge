@@ -45,24 +45,3 @@ release:
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"
-  body_template: |
-    ## Installation
-
-    ### Linux & macOS (one-liner)
-
-    ```bash
-    curl -fsSL https://raw.githubusercontent.com/Robin831/Forge/main/install.sh | bash
-    ```
-
-    To install a specific version:
-
-    ```bash
-    curl -fsSL https://raw.githubusercontent.com/Robin831/Forge/main/install.sh | VERSION={{.Tag}} bash
-    ```
-
-    ### Windows
-
-    Download the `forge_{{.Version}}_windows_amd64.zip` asset below and extract `forge.exe` to a directory on your `%PATH%`.
-
-    ---
-    **Checksums** are in `checksums.txt`.
