@@ -1717,6 +1717,9 @@ func (m *Model) renderMergeMenu() string {
 	}
 
 	menuWidth := 68
+	if m.width > 0 && m.width < menuWidth {
+		menuWidth = m.width
+	}
 	contentWidth := menuWidth - actionMenuStyle.GetHorizontalFrameSize()
 	labels := mergeMenuLabels()
 
