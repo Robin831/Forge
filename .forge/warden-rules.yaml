@@ -353,3 +353,9 @@ rules:
       check: Verify that doc comments accurately describe the exact conditions handled by the code. If the code uses <= 0 but the comment says 'when zero', update the comment to say 'when zero or negative' (or tighten the condition to match the comment).
       source: copilot:PR#178
       added: "2026-03-11"
+    - id: cross-repo-token-permissions
+      category: security
+      pattern: CI/CD configuration publishes artifacts to external repositories (e.g., Scoop buckets, Homebrew taps, package registries in separate repos)
+      check: Verify that the workflow provides a token with write access to the target repository. The default GITHUB_TOKEN is scoped to the current repo only and cannot push to external repos — a dedicated PAT or fine-grained token with appropriate permissions must be configured.
+      source: copilot:PR#186
+      added: "2026-03-11"
