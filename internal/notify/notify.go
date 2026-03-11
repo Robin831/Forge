@@ -1,7 +1,8 @@
-// Package notify sends notifications to Microsoft Teams via incoming webhooks.
+// Package notify sends notifications to webhook endpoints.
 //
-// Notifications are formatted as Adaptive Cards (schema v1.4) for rich display
-// in Teams channels. Each event type has a dedicated card template.
+// Teams webhooks receive rich Adaptive Cards (schema v1.4) formatted for display
+// in Teams channels. Generic JSON payloads are also supported for custom
+// receivers such as dashboards and Slack integrations (see SendGenericRelease).
 //
 // Disabled by default — configure notifications.teams_webhook_url in forge.yaml.
 package notify
@@ -231,8 +232,9 @@ func (n *Notifier) ReleasePublished(ctx context.Context, version, tag, releaseUR
 		facts = append(facts, cardFact{Title: "Release", Value: fmt.Sprintf("[View on GitHub](%s)", releaseURL)})
 	}
 	if changelogSummary != "" {
-		if len(changelogSummary) > 500 {
-			changelogSummary = changelogSummary[:500] + "..."
+		runes := []rune(changelogSummary)
+		if len(runes) > 500 {
+			changelogSummary = string(runes[:500]) + "..."
 		}
 		facts = append(facts, cardFact{Title: "Changes", Value: changelogSummary})
 	}
