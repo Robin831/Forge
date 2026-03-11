@@ -296,6 +296,11 @@ type Model struct {
 	eventCountCache       int
 	eventRevision         int // incremented on every UpdateEventsMsg to detect content changes
 	eventRevisionCache    int
+
+	// Toast notifications
+	toasts           []toast // active toasts, newest first
+	nextToastID      int     // monotonically increasing ID for dismissal matching
+	lastSeenEventKey string  // fingerprint of most-recent event from last poll cycle
 }
 
 // NewModel creates a new Hearth TUI model.
@@ -700,7 +705,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.daemonQueueSize = msg.QueueSize
 		m.daemonUptime = msg.Uptime
 
+	case toastDismissMsg:
+		newToasts := m.toasts[:0]
+		for _, t := range m.toasts {
+			if t.id != msg.id {
+				newToasts = append(newToasts, t)
+			}
+		}
+		m.toasts = newToasts
+
 	case UpdateEventsMsg:
+		// Capture the fingerprint of the most-recent event before updating, so
+		// we can detect which events are new this cycle.
+		prevKey := m.lastSeenEventKey
+
 		m.events = msg.Items
 		m.eventRevision++
 		// Auto-scroll to bottom if enabled and new events arrived
@@ -710,6 +728,35 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.prevEventCount = len(msg.Items)
+
+		// Update the last-seen key for the next cycle.
+		if len(msg.Items) > 0 {
+			m.lastSeenEventKey = toastEventKey(msg.Items[0])
+		}
+
+		// Detect new events and fire toast notifications for notable ones.
+		// prevKey == "" means this is the first poll; skip toasting on startup.
+		var toastCmds []tea.Cmd
+		if prevKey != "" {
+			for _, ev := range msg.Items {
+				if toastEventKey(ev) == prevKey {
+					break // reached already-seen events
+				}
+				if tmsg, isError, ok := toastForEvent(ev); ok {
+					t := toast{id: m.nextToastID, message: tmsg, isError: isError}
+					m.nextToastID++
+					// Append so newest is last (closest to footer); cap at maxToasts by dropping oldest.
+					m.toasts = append(m.toasts, t)
+					if len(m.toasts) > maxToasts {
+						m.toasts = m.toasts[1:]
+					}
+					toastCmds = append(toastCmds, scheduleToastDismiss(t.id))
+				}
+			}
+		}
+		if len(toastCmds) > 0 {
+			return m, tea.Batch(toastCmds...)
+		}
 
 	case QueueActionResultMsg:
 		if msg.Err != nil {
@@ -844,6 +891,11 @@ func (m *Model) View() string {
 		columns,
 		footer,
 	)
+
+	// Render toast notifications above the footer, below any action menus.
+	if toastStr := m.renderToasts(); toastStr != "" {
+		view = placeToastsOverlay(m.width, m.height, footerH, toastStr, view)
+	}
 
 	// Render overlays on top
 	if m.showLogViewer {
@@ -2757,33 +2809,10 @@ func visualToRuneIndex(s string, col int) int {
 	return i
 }
 
-// placeOverlay centers the overlay string on top of the background string.
-func placeOverlay(width, height int, overlay, background string) string {
-	overlayLines := strings.Split(overlay, "\n")
-	bgLines := strings.Split(background, "\n")
-
-	// Ensure background has enough lines
-	for len(bgLines) < height {
-		bgLines = append(bgLines, "")
-	}
-
-	overlayHeight := len(overlayLines)
-	overlayWidth := 0
-	for _, l := range overlayLines {
-		if w := lipgloss.Width(l); w > overlayWidth {
-			overlayWidth = w
-		}
-	}
-
-	startY := (height - overlayHeight) / 2
-	startX := (width - overlayWidth) / 2
-	if startY < 0 {
-		startY = 0
-	}
-	if startX < 0 {
-		startX = 0
-	}
-
+// placeOverlayAt composites overlayLines onto bgLines at position (startX, startY).
+// It is the shared ANSI-safe implementation used by placeOverlay and placeToastsOverlay,
+// preventing the two callers from drifting apart over time.
+func placeOverlayAt(startX, startY, overlayWidth int, overlayLines, bgLines []string) {
 	for i, overlayLine := range overlayLines {
 		bgIdx := startY + i
 		if bgIdx >= len(bgLines) {
@@ -2816,7 +2845,36 @@ func placeOverlay(width, height int, overlay, background string) string {
 		}
 		bgLines[bgIdx] = string(result)
 	}
+}
 
+// placeOverlay centers the overlay string on top of the background string.
+func placeOverlay(width, height int, overlay, background string) string {
+	overlayLines := strings.Split(overlay, "\n")
+	bgLines := strings.Split(background, "\n")
+
+	// Ensure background has enough lines
+	for len(bgLines) < height {
+		bgLines = append(bgLines, "")
+	}
+
+	overlayHeight := len(overlayLines)
+	overlayWidth := 0
+	for _, l := range overlayLines {
+		if w := lipgloss.Width(l); w > overlayWidth {
+			overlayWidth = w
+		}
+	}
+
+	startY := (height - overlayHeight) / 2
+	startX := (width - overlayWidth) / 2
+	if startY < 0 {
+		startY = 0
+	}
+	if startX < 0 {
+		startX = 0
+	}
+
+	placeOverlayAt(startX, startY, overlayWidth, overlayLines, bgLines)
 	return strings.Join(bgLines[:height], "\n")
 }
 
