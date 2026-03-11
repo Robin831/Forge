@@ -439,6 +439,7 @@ func FetchReadyToMerge(db *state.DB) tea.Cmd {
 				BeadID:   p.BeadID,
 				Anvil:    p.Anvil,
 				Branch:   p.Branch,
+				Title:    p.Title,
 			})
 		}
 		return UpdateReadyToMergeMsg{Items: items}

@@ -933,20 +933,33 @@ type ReadyToMergePR struct {
 	Anvil  string
 	BeadID string
 	Branch string
+	Title  string
 }
 
 // ReadyToMergePRs returns PRs where: CI passing, not conflicting,
 // no unresolved review threads, no pending review requests, and not in a terminal/fix state.
+// Title is resolved with a best-effort lookup from queue_cache or workers.
 func (db *DB) ReadyToMergePRs() ([]ReadyToMergePR, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, number, anvil, bead_id, branch
-		 FROM prs
-		 WHERE status IN ('approved', 'open')
-		   AND ci_passing = 1
-		   AND is_conflicting = 0
-		   AND has_unresolved_threads = 0
-		   AND has_pending_reviews = 0
-		 ORDER BY number`,
+		`SELECT p.id, p.number, p.anvil, p.bead_id, p.branch,
+		        COALESCE(NULLIF(q.title, ''), NULLIF(w.title, ''), '') AS title
+		 FROM prs p
+		 LEFT JOIN queue_cache q ON p.bead_id = q.bead_id AND p.anvil = q.anvil
+		 LEFT JOIN (
+		     SELECT bead_id, anvil, title
+		     FROM (
+		         SELECT bead_id, anvil, title,
+		                ROW_NUMBER() OVER (PARTITION BY bead_id, anvil ORDER BY started_at DESC) AS rn
+		         FROM workers
+		     )
+		     WHERE rn = 1
+		 ) w ON p.bead_id = w.bead_id AND p.anvil = w.anvil
+		 WHERE p.status IN ('approved', 'open')
+		   AND p.ci_passing = 1
+		   AND p.is_conflicting = 0
+		   AND p.has_unresolved_threads = 0
+		   AND p.has_pending_reviews = 0
+		 ORDER BY p.number`,
 	)
 	if err != nil {
 		return nil, err
@@ -956,7 +969,7 @@ func (db *DB) ReadyToMergePRs() ([]ReadyToMergePR, error) {
 	var result []ReadyToMergePR
 	for rows.Next() {
 		var p ReadyToMergePR
-		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch); err != nil {
+		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch, &p.Title); err != nil {
 			return nil, err
 		}
 		result = append(result, p)
