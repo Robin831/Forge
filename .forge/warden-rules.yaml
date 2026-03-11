@@ -437,3 +437,39 @@ rules:
       check: Verify that the PR description accurately reflects the scope of changes — if code alters UI behavior, runtime logic, or user-facing output, the description must not claim 'no functional changes'
       source: copilot:PR#193
       added: "2026-03-11"
+    - id: unique-event-fingerprint
+      category: ui
+      pattern: Building a deduplication or fingerprint key from display-formatted or partial fields of an event/record
+      check: Verify that deduplication keys include a stable unique identifier (e.g., DB row ID) and all distinguishing fields (such as BeadID and full-precision timestamps), rather than relying on display-only formatted values that can collide across records
+      source: copilot:PR#195
+      added: "2026-03-11"
+    - id: toast-stack-ordering
+      category: ui
+      pattern: Prepending items to a display list that is rendered in slice order
+      check: Verify that the insertion order (prepend vs append) matches the intended visual order. If newest items should appear closest to a fixed UI edge (e.g., footer), ensure the storage order and render iteration produce that result — prepending newest while iterating in slice order places newest *furthest* from the end.
+      source: copilot:PR#195
+      added: "2026-03-11"
+    - id: toast-fallback-ordering
+      category: ui
+      pattern: Building display messages with a chain of fallbacks where an early fallback (e.g. raw ID) shadows a more descriptive synthesized message
+      check: When constructing user-facing messages with multiple fallback values, verify that more descriptive/synthesized fallbacks are preferred over raw identifiers. A bare ID pre-filling the message variable can make later event-specific fallbacks unreachable.
+      source: copilot:PR#195
+      added: "2026-03-11"
+    - id: pr-description-matches-implementation
+      category: other
+      pattern: PR title, description, or changelog mentions a specific library, API, or mechanism
+      check: Verify that the actual implementation uses the library/API/mechanism described in the PR title, description, and changelog. If a different approach was used, ensure the PR metadata is updated to accurately reflect the real implementation.
+      source: copilot:PR#195
+      added: "2026-03-11"
+    - id: no-duplicate-overlay-helpers
+      category: ui
+      pattern: New overlay/positioning helper function that performs ANSI-safe slicing, padding, or string overlay insertion
+      check: Verify the new helper does not duplicate logic already present in an existing overlay function. If similar logic exists, extract a shared helper with configurable placement rather than maintaining parallel implementations that can drift.
+      source: copilot:PR#195
+      added: "2026-03-11"
+    - id: test-name-matches-intent
+      category: testing
+      pattern: Test function names or comments that reference concepts not actually tested (e.g., naming a test after an internal detail like 'NoParticle' when the test verifies 'NoPanic')
+      check: Verify that test function names and their doc comments accurately describe the behavior being tested, not internal implementation details or leftover naming from earlier drafts
+      source: copilot:PR#195
+      added: "2026-03-11"
