@@ -232,6 +232,27 @@ func New(cfg *config.Config) (*Daemon, error) {
 		return active
 	})
 
+	// Wire up the orphan-found callback to defer recovery to the Hearth dialog
+	// when a TUI client is connected. When no client is connected (headless/CI),
+	// the callback returns false and auto-recovery proceeds as before.
+	d.shutdownMgr.OnOrphanFound = func(beadID, anvil, title, branch string) bool {
+		if d.ipc == nil || !d.ipc.HasClients() {
+			return false // no Hearth client — auto-recover
+		}
+		// Avoid duplicate entries if the bead is already pending a user decision.
+		if already, err := d.db.IsPendingOrphan(beadID, anvil); err == nil && already {
+			return true // already queued in the dialog, skip
+		}
+		// Record the orphan so Hearth's polling loop can show the dialog.
+		if err := d.db.AddPendingOrphan(beadID, anvil, title, branch); err != nil {
+			d.logger.Warn("failed to record pending orphan", "bead", beadID, "error", err)
+			return false // fall back to auto-recover on DB error
+		}
+		_ = d.db.LogEvent(state.EventOrphanCleanup,
+			fmt.Sprintf("Orphan %s deferred to Hearth dialog", beadID), beadID, anvil)
+		return true
+	}
+
 	// Initialize costLimitLoggedDate so Load() is always safe (zero atomic.Value
 	// returns nil on Load, which is fine for type assertion, but Store("")
 	// makes the intent explicit and avoids any future ambiguity).
@@ -2259,6 +2280,73 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.bellowsMonitor.Refresh()
 		}
 		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d merged", mergeNumber)})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "resolve_orphan":
+		var rp ipc.ResolveOrphanPayload
+		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid resolve_orphan payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if rp.BeadID == "" || rp.Anvil == "" || rp.Action == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id, anvil, and action are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		cfgSnapshot := d.cfg.Load()
+		anvilCfg, ok := cfgSnapshot.Anvils[rp.Anvil]
+		if !ok || anvilCfg.Path == "" {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found or has no path", rp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		switch rp.Action {
+		case "recover":
+			if err := d.shutdownMgr.ResetBead(rp.BeadID, anvilCfg.Path); err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to recover bead: %v", err)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			_ = d.db.RemovePendingOrphan(rp.BeadID, rp.Anvil)
+			_ = d.db.LogEvent(state.EventBeadRecovered, fmt.Sprintf("Orphan %s recovered by user via Hearth", rp.BeadID), rp.BeadID, rp.Anvil)
+			d.logger.Info("orphan recovered by user", "bead", rp.BeadID, "anvil", rp.Anvil)
+			go d.pollAndDispatch(d.runCtx)
+		case "close":
+			// Use context.Background() so this bd close call is not interrupted
+			// if the daemon is concurrently shutting down. The user explicitly
+			// chose to close this orphan, and the operation must complete.
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer closeCancel()
+			closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", rp.BeadID))
+			closeCmd.Dir = anvilCfg.Path
+			if out, err := closeCmd.CombinedOutput(); err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd close failed: %v: %s", err, string(out))})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			_ = d.db.RemovePendingOrphan(rp.BeadID, rp.Anvil)
+			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Orphan %s closed by user (work completed)", rp.BeadID), rp.BeadID, rp.Anvil)
+			d.logger.Info("orphan closed by user (completed)", "bead", rp.BeadID, "anvil", rp.Anvil)
+			// Refresh queue state so Hearth reflects the closed orphan immediately.
+			go d.pollAndDispatch(d.runCtx)
+		case "discard":
+			// Use context.Background() so this bd close call is not interrupted
+			// if the daemon is concurrently shutting down. The user explicitly
+			// chose to discard this orphan, and the operation must complete.
+			discardCtx, discardCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer discardCancel()
+			discardCmd := executil.HideWindow(exec.CommandContext(discardCtx, "bd", "close", rp.BeadID, `--reason=Discarded by user during orphan recovery`))
+			discardCmd.Dir = anvilCfg.Path
+			if out, err := discardCmd.CombinedOutput(); err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd close failed: %v: %s", err, string(out))})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			_ = d.db.RemovePendingOrphan(rp.BeadID, rp.Anvil)
+			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Orphan %s discarded by user", rp.BeadID), rp.BeadID, rp.Anvil)
+			d.logger.Info("orphan discarded by user", "bead", rp.BeadID, "anvil", rp.Anvil)
+			// Refresh queue state so Hearth reflects the discarded orphan immediately.
+			go d.pollAndDispatch(d.runCtx)
+		default:
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("unknown orphan action: %q", rp.Action)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("orphan %s handled: %s", rp.BeadID, rp.Action)})
 		return ipc.Response{Type: "ok", Payload: data}
 
 	default:

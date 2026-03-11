@@ -281,6 +281,15 @@ CREATE TABLE IF NOT EXISTS queue_cache (
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (bead_id, anvil)
 );
+
+CREATE TABLE IF NOT EXISTS pending_orphans (
+    bead_id    TEXT NOT NULL,
+    anvil      TEXT NOT NULL,
+    title      TEXT NOT NULL DEFAULT '',
+    branch     TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (bead_id, anvil)
+);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
@@ -1466,6 +1475,23 @@ func (db *DB) DismissRetry(beadID, anvil string) error {
 	return nil
 }
 
+// LastWorkerBranchForBead returns the branch from the most recent worker record
+// for a given bead in a given anvil. Returns an empty string (not an error) if
+// no worker record exists yet.
+func (db *DB) LastWorkerBranchForBead(beadID, anvil string) (string, error) {
+	var branch string
+	err := db.conn.QueryRow(
+		`SELECT branch FROM workers WHERE bead_id = ? AND anvil = ?
+		 ORDER BY started_at DESC LIMIT 1`, beadID, anvil).Scan(&branch)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return branch, nil
+}
+
 // LastWorkerLogPath returns the log path from the most recent worker for a bead.
 func (db *DB) LastWorkerLogPath(beadID string) (string, error) {
 	var logPath string
@@ -2030,4 +2056,66 @@ func (db *DB) GetProviderQuota(pv string) (*provider.Quota, error) {
 		q.TokensReset = &t
 	}
 	return &q, nil
+}
+
+// PendingOrphan represents a bead awaiting user decision during orphan recovery.
+type PendingOrphan struct {
+	BeadID    string
+	Anvil     string
+	Title     string
+	Branch    string
+	CreatedAt time.Time
+}
+
+// AddPendingOrphan records a bead that needs user review before recovery.
+// If the bead is already pending, it is a no-op.
+func (db *DB) AddPendingOrphan(beadID, anvil, title, branch string) error {
+	_, err := db.conn.Exec(
+		`INSERT OR IGNORE INTO pending_orphans (bead_id, anvil, title, branch, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		beadID, anvil, title, branch, time.Now().UTC().Format(dbTimeLayout),
+	)
+	return err
+}
+
+// IsPendingOrphan reports whether the given bead is already in the pending_orphans list.
+func (db *DB) IsPendingOrphan(beadID, anvil string) (bool, error) {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM pending_orphans WHERE bead_id = ? AND anvil = ?`,
+		beadID, anvil,
+	).Scan(&count)
+	return count > 0, err
+}
+
+// ListPendingOrphans returns all beads awaiting user decision, ordered by creation time.
+func (db *DB) ListPendingOrphans() ([]PendingOrphan, error) {
+	rows, err := db.conn.Query(
+		`SELECT bead_id, anvil, title, branch, created_at FROM pending_orphans ORDER BY created_at`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []PendingOrphan
+	for rows.Next() {
+		var o PendingOrphan
+		var createdAt string
+		if err := rows.Scan(&o.BeadID, &o.Anvil, &o.Title, &o.Branch, &createdAt); err != nil {
+			return nil, err
+		}
+		o.CreatedAt = parseTime(createdAt)
+		items = append(items, o)
+	}
+	return items, rows.Err()
+}
+
+// RemovePendingOrphan removes a bead from the pending_orphans list.
+func (db *DB) RemovePendingOrphan(beadID, anvil string) error {
+	_, err := db.conn.Exec(
+		`DELETE FROM pending_orphans WHERE bead_id = ? AND anvil = ?`,
+		beadID, anvil,
+	)
+	return err
 }

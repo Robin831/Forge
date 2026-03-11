@@ -215,6 +215,31 @@ var hearthCmd = &cobra.Command{
 			return nil
 		}
 
+		model.OnResolveOrphan = func(beadID, anvil, action string) error {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			payload, _ := json.Marshal(ipc.ResolveOrphanPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+				Action: action,
+			})
+			resp, err := client.Send(ipc.Command{
+				Type:    "resolve_orphan",
+				Payload: json.RawMessage(payload),
+			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return ipcError(resp)
+			}
+			return nil
+		}
+
 		noMouse, _ := cmd.Flags().GetBool("no-mouse")
 		opts := []tea.ProgramOption{tea.WithAltScreen()}
 		if !noMouse {

@@ -145,6 +145,15 @@ type CloseBeadPayload struct {
 	Anvil  string `json:"anvil"`
 }
 
+// ResolveOrphanPayload is the payload for a "resolve_orphan" command.
+// Sent by Hearth to the daemon when the user picks an action for an orphaned bead.
+// Action is one of "recover", "close", or "discard".
+type ResolveOrphanPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`
+	Action string `json:"action"` // "recover" | "close" | "discard"
+}
+
 // CrucibleStatusItem represents an active Crucible's current state.
 type CrucibleStatusItem struct {
 	ParentID          string `json:"parent_id"`
@@ -237,6 +246,13 @@ func (s *Server) Broadcast(evt Event) {
 		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		_, _ = conn.Write(data)
 	}
+}
+
+// HasClients reports whether any IPC clients are currently connected.
+func (s *Server) HasClients() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.clients) > 0
 }
 
 // Close shuts down the server and all client connections.

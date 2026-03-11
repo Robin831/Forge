@@ -1,0 +1,2 @@
+category: Changed
+- **Hearth now prompts before recovering orphan beads** - When the daemon detects an orphaned in-progress bead and Hearth is connected, it defers recovery to a dialog asking the user whether to Recover (reopen and re-queue), Close (mark work as completed), or Discard (close without retry). In headless/CI mode with no Hearth client, the existing auto-recovery behaviour is preserved. (Forge-zp4z)

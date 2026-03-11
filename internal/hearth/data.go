@@ -631,6 +631,39 @@ func FetchDaemonHealth() tea.Cmd {
 	}
 }
 
+// PendingOrphanItem represents an orphaned bead awaiting user decision in Hearth.
+type PendingOrphanItem struct {
+	BeadID string
+	Anvil  string
+	Title  string
+	Branch string
+}
+
+// UpdatePendingOrphansMsg carries the list of pending orphans to the TUI.
+type UpdatePendingOrphansMsg struct {
+	Items []PendingOrphanItem
+}
+
+// FetchPendingOrphans reads orphaned beads awaiting user decision from the state DB.
+func FetchPendingOrphans(db *state.DB) tea.Cmd {
+	return func() tea.Msg {
+		orphans, err := db.ListPendingOrphans()
+		if err != nil {
+			return UpdatePendingOrphansMsg{Items: nil}
+		}
+		var items []PendingOrphanItem
+		for _, o := range orphans {
+			items = append(items, PendingOrphanItem{
+				BeadID: o.BeadID,
+				Anvil:  o.Anvil,
+				Title:  o.Title,
+				Branch: o.Branch,
+			})
+		}
+		return UpdatePendingOrphansMsg{Items: items}
+	}
+}
+
 // FetchAll returns a batch command that refreshes all panels.
 // Daemon health is NOT included here; it is fetched on a slower cadence
 // controlled by healthTickDivisor in the TickMsg handler.
@@ -643,5 +676,6 @@ func FetchAll(ds *DataSource) tea.Cmd {
 		FetchEvents(ds.DB, EventFetchLimit),
 		FetchCrucibles(),
 		FetchUsage(ds),
+		FetchPendingOrphans(ds.DB),
 	)
 }
