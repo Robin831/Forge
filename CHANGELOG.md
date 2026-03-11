@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.3.1] - 2026-03-11
+
+### Added
+
+- **Homebrew tap support for macOS installation** - Configure GoReleaser to publish a Homebrew formula to `Robin831/homebrew-forge`, enabling `brew install Robin831/forge/forge` on macOS. Formula is auto-published on stable releases. (Forge-mx3g)
+- **Scoop manifest for Windows installation** - GoReleaser now publishes a Scoop manifest to the `Robin831/scoop-forge` bucket, enabling `scoop install forge` as an alternative to the PowerShell install script. (Forge-dzzm)
+- **tar.gz archives for Linux and macOS releases** - GoReleaser now produces `.tar.gz` archives for Linux and macOS targets in addition to `.zip` for Windows. The `install.sh` script has been updated to use `tar` (universally available) instead of `unzip`, removing the need to install an extra package on minimal containers. (Forge-3cjf)
+
+
 ## [0.3.0] - 2026-03-11
 
 ### Added
