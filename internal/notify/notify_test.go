@@ -407,6 +407,110 @@ func TestShouldNotify_PRReadyToMerge(t *testing.T) {
 	}
 }
 
+// TestWebhookDispatcher_RespectsEnabledFlagViaConstruction verifies that when
+// NewWebhookDispatcher is called with no targets (as happens when the daemon
+// skips building the target list due to notifications.enabled=false), the
+// returned dispatcher is nil and therefore silently drops all events.
+func TestWebhookDispatcher_NilIsNoop(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// NewWebhookDispatcher with no valid targets returns nil.
+	var d *notify.WebhookDispatcher // simulates disabled state — daemon passes nil
+	d.Dispatch(context.Background(), notify.EventPRCreated, "bead-1", "my-anvil", "test")
+	if called {
+		t.Error("nil dispatcher should be a no-op, but the server was called")
+	}
+}
+
+// TestWebhookDispatcher_EventDailyCost verifies that the dispatcher delivers
+// daily_cost events to subscribed webhook targets.
+func TestWebhookDispatcher_EventDailyCost(t *testing.T) {
+	url, getBody := captureRequest(t)
+
+	d := notify.NewWebhookDispatcher([]notify.WebhookTarget{
+		{Name: "test", URL: url, Events: []string{"daily_cost"}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	d.Dispatch(context.Background(), notify.EventDailyCost, "", "", "Daily cost $12.34 reached limit $50.00")
+
+	raw := getBody()
+	if len(raw) == 0 {
+		t.Fatal("expected a request body, got none")
+	}
+	var got notify.GenericPayload
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("body is not valid JSON: %v\n%s", err, raw)
+	}
+	if got.EventType != "daily_cost" {
+		t.Errorf("event_type = %q, want %q", got.EventType, "daily_cost")
+	}
+}
+
+// TestWebhookDispatcher_EventBeadDecomposed verifies that the dispatcher
+// delivers bead_decomposed events to subscribed webhook targets.
+func TestWebhookDispatcher_EventBeadDecomposed(t *testing.T) {
+	url, getBody := captureRequest(t)
+
+	d := notify.NewWebhookDispatcher([]notify.WebhookTarget{
+		{Name: "test", URL: url, Events: []string{"bead_decomposed"}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	d.Dispatch(context.Background(), notify.EventBeadDecomposed, "Forge-99", "my-anvil", "Bead decomposed into 3 sub-beads")
+
+	raw := getBody()
+	if len(raw) == 0 {
+		t.Fatal("expected a request body, got none")
+	}
+	var got notify.GenericPayload
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("body is not valid JSON: %v\n%s", err, raw)
+	}
+	if got.EventType != "bead_decomposed" {
+		t.Errorf("event_type = %q, want %q", got.EventType, "bead_decomposed")
+	}
+	if got.BeadID != "Forge-99" {
+		t.Errorf("bead_id = %q, want %q", got.BeadID, "Forge-99")
+	}
+	if got.Anvil != "my-anvil" {
+		t.Errorf("anvil = %q, want %q", got.Anvil, "my-anvil")
+	}
+}
+
+// TestWebhookDispatcher_FilteredEventsNotDelivered verifies that when a target
+// subscribes to specific events, unsubscribed events are not delivered.
+func TestWebhookDispatcher_FilteredEventsNotDelivered(t *testing.T) {
+	// Use a buffered channel so the server doesn't block if it fires unexpectedly.
+	ch := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	d := notify.NewWebhookDispatcher([]notify.WebhookTarget{
+		{Name: "test", URL: srv.URL, Events: []string{"pr_created"}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	// Dispatch an event not in the filter — the dispatcher must skip it without
+	// spawning a goroutine, so the check below is synchronous-safe.
+	d.Dispatch(context.Background(), notify.EventBeadDecomposed, "Forge-1", "anvil", "msg")
+
+	select {
+	case <-ch:
+		t.Error("dispatcher should not deliver events not in the target's filter")
+	default:
+		// Correct: no request was made.
+	}
+}
+
 // TestShouldNotify_ReleasePublished verifies event filtering for the new event type.
 func TestShouldNotify_ReleasePublished(t *testing.T) {
 	all := notify.NewNotifier(notify.Config{

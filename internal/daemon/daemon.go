@@ -205,15 +205,20 @@ func New(cfg *config.Config) (*Daemon, error) {
 	}
 
 	// Build generic webhook dispatcher from the new webhooks config.
-	var webhookTargets []notify.WebhookTarget
-	for _, w := range cfg.Notifications.Webhooks {
-		webhookTargets = append(webhookTargets, notify.WebhookTarget{
-			Name:   w.Name,
-			URL:    w.URL,
-			Events: w.Events,
-		})
+	// Respects the global notifications.enabled flag — no targets are built
+	// when notifications are disabled, so the dispatcher returns nil (no-op).
+	var dispatcher *notify.WebhookDispatcher
+	if cfg.Notifications.Enabled {
+		var webhookTargets []notify.WebhookTarget
+		for _, w := range cfg.Notifications.Webhooks {
+			webhookTargets = append(webhookTargets, notify.WebhookTarget{
+				Name:   w.Name,
+				URL:    w.URL,
+				Events: w.Events,
+			})
+		}
+		dispatcher = notify.NewWebhookDispatcher(webhookTargets, logger)
 	}
-	dispatcher := notify.NewWebhookDispatcher(webhookTargets, logger)
 
 	d := &Daemon{
 		db:            db,
@@ -1050,6 +1055,19 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 				d.logger.Warn("daily cost limit reached, dispatch paused",
 					"cost", fmt.Sprintf("$%.2f", todayCost),
 					"limit", fmt.Sprintf("$%.2f", costLimit))
+
+				// Fire daily_cost notifications — once per day when the limit is hit.
+				go func(date string, cost, limit float64) {
+					notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					if d.notifier != nil {
+						d.notifier.DailyCost(notifCtx, date, cost, limit, 0, 0)
+					}
+					if d.dispatcher != nil {
+						msg := fmt.Sprintf("Daily cost $%.2f reached limit $%.2f", cost, limit)
+						d.dispatcher.Dispatch(notifCtx, notify.EventDailyCost, "", "", msg)
+					}
+				}(today, todayCost, costLimit)
 			}
 			return
 		}
@@ -1431,6 +1449,19 @@ normalPipeline:
 
 	if !outcome.Success {
 		if outcome.Decomposed {
+			// Dispatch bead_decomposed to generic webhook targets.
+			if d.dispatcher != nil {
+				childCount := 0
+				if outcome.SchematicResult != nil {
+					childCount = len(outcome.SchematicResult.SubBeads)
+				}
+				dispatchMsg := fmt.Sprintf("Bead decomposed into %d sub-beads", childCount)
+				go func(beadID, anvil, msg string) {
+					notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					d.dispatcher.Dispatch(notifCtx, notify.EventBeadDecomposed, beadID, anvil, msg)
+				}(bead.ID, bead.Anvil, dispatchMsg)
+			}
 			d.applyDecomposedOutcome(bead, anvilCfg, outcome.SchematicResult)
 			return
 		}
