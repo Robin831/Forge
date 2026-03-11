@@ -365,3 +365,21 @@ rules:
       check: Verify the Homebrew description is a concise one-liner. Long descriptions trigger `brew audit` warnings and tap CI noise.
       source: copilot:PR#187
       added: "2026-03-11"
+    - id: docker-registry-auth
+      category: security
+      pattern: Docker image publishing configuration (e.g., GoReleaser dockers/docker_manifests, CI docker push steps) targeting a container registry like GHCR
+      check: Verify that registry authentication is configured — either credentials (username/password or token) in the publishing tool config, or a prior docker login step in the CI workflow — so that image pushes do not fail at release time
+      source: copilot:PR#191
+      added: "2026-03-11"
+    - id: docker-ghcr-workflow-permissions
+      category: other
+      pattern: GoReleaser or workflow config that builds/pushes container images to GHCR
+      check: 'Verify the GitHub Actions workflow grants `packages: write` permission to GITHUB_TOKEN for GHCR pushes. If the workflow builds and publishes multi-architecture images, also ensure it sets up QEMU and Docker buildx before the GoReleaser or docker build step. Missing permissions or required setup will typically surface as explicit 403 or build errors rather than a successful run with missing images.'
+      source: copilot:PR#191
+      added: "2026-03-11"
+    - id: dockerfile-non-root-user
+      category: security
+      pattern: Production or runtime Dockerfile without a USER directive that runs as root by default
+      check: Prefer that production/runtime Dockerfiles run as a non-root user (typically via a USER directive). If the image intentionally runs as root, verify there is a documented justification and that an alternative hardening strategy is in place (for example, dropping privileges in the entrypoint or restricting capabilities/FS access).
+      source: copilot:PR#191
+      added: "2026-03-11"
