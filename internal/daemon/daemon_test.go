@@ -1115,7 +1115,7 @@ func TestApplyDecomposedOutcome(t *testing.T) {
 			Action:   schematic.ActionDecompose,
 			SubBeads: []schematic.SubBead{{ID: "child-1", Title: "Child task"}},
 		}
-		d.applyDecomposedOutcome(beadID, anvil, sr)
+		d.applyDecomposedOutcome(poller.Bead{ID: beadID, Anvil: anvil}, config.AnvilConfig{}, sr)
 
 		// Retry record should be gone (ClearRetry deleted it).
 		r, err = db.GetRetry(beadID, anvil)
@@ -1137,7 +1137,7 @@ func TestApplyDecomposedOutcome(t *testing.T) {
 			SubBeads: nil,
 			Reason:   "bead too ambiguous",
 		}
-		d.applyDecomposedOutcome(beadID, anvil, sr)
+		d.applyDecomposedOutcome(poller.Bead{ID: beadID, Anvil: anvil}, config.AnvilConfig{}, sr)
 
 		// A dispatch failure should now be recorded.
 		r, err = db.GetRetry(beadID, anvil)
@@ -1151,7 +1151,7 @@ func TestApplyDecomposedOutcome(t *testing.T) {
 	t.Run("no sub-beads: nil schematic result uses default reason", func(t *testing.T) {
 		const beadID = "DECOMP-NIL-RESULT"
 
-		d.applyDecomposedOutcome(beadID, anvil, nil)
+		d.applyDecomposedOutcome(poller.Bead{ID: beadID, Anvil: anvil}, config.AnvilConfig{}, nil)
 
 		r, err := db.GetRetry(beadID, anvil)
 		require.NoError(t, err)
