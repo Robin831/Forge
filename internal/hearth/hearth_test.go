@@ -2444,3 +2444,37 @@ func TestUpdatePendingOrphansMsgDeduplicates(t *testing.T) {
 		t.Errorf("expected orphanQueue to remain empty after dedup, got %d items", len(m.orphanQueue))
 	}
 }
+
+func TestDefaultFooterHintsMouseEnabled(t *testing.T) {
+	m := Model{mouseEnabled: true}
+	hint := m.defaultFooterHints()
+	if !strings.Contains(hint, "m: disable mouse (select text)") {
+		t.Errorf("expected 'disable mouse (select text)' hint when mouse is enabled, got: %q", hint)
+	}
+	if strings.Contains(hint, "m: enable mouse") {
+		t.Errorf("unexpected 'enable mouse' hint when mouse is already enabled, got: %q", hint)
+	}
+}
+
+func TestDefaultFooterHintsMouseDisabled(t *testing.T) {
+	m := Model{mouseEnabled: false}
+	hint := m.defaultFooterHints()
+	if !strings.Contains(hint, "m: enable mouse") {
+		t.Errorf("expected 'enable mouse' hint when mouse is disabled, got: %q", hint)
+	}
+	if strings.Contains(hint, "disable mouse") {
+		t.Errorf("unexpected 'disable mouse' hint when mouse is already disabled, got: %q", hint)
+	}
+}
+
+func TestDefaultFooterHintsContainsCommonKeys(t *testing.T) {
+	for _, mouseEnabled := range []bool{true, false} {
+		m := Model{mouseEnabled: mouseEnabled}
+		hint := m.defaultFooterHints()
+		for _, key := range []string{"Tab", "j/k", "q: quit"} {
+			if !strings.Contains(hint, key) {
+				t.Errorf("mouseEnabled=%v: expected %q in footer hints, got: %q", mouseEnabled, key, hint)
+			}
+		}
+	}
+}
