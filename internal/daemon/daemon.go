@@ -2694,11 +2694,7 @@ func filterDepcheckAnvils(anvils map[string]string, anvilCfgs map[string]config.
 // Returns an error only if recovery is attempted and fails. If the current
 // branch cannot be determined, the function is a no-op (non-fatal).
 func verifyAnvilOnMain(ctx context.Context, logger *slog.Logger, anvilPath string) error {
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	branchCmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "rev-parse", "--abbrev-ref", "HEAD"))
-	branchCmd.Dir = anvilPath
-	out, err := branchCmd.CombinedOutput()
-	cancel()
+	currentBranch, err := worktree.CurrentBranch(ctx, anvilPath)
 	if err != nil {
 		// Cannot determine current branch — non-fatal, just warn.
 		logger.Warn("verifyAnvilOnMain: could not determine current branch",
@@ -2706,7 +2702,6 @@ func verifyAnvilOnMain(ctx context.Context, logger *slog.Logger, anvilPath strin
 		return nil
 	}
 
-	currentBranch := strings.TrimSpace(string(out))
 	if currentBranch == "main" || currentBranch == "master" || currentBranch == "HEAD" {
 		return nil
 	}

@@ -306,11 +306,10 @@ func isValidWorktree(ctx context.Context, dir string) bool {
 	return gitCmd(ctx, dir, "rev-parse", "--is-inside-work-tree") == nil
 }
 
-// assertOnMainBranch returns an error if the repository at repoPath is not
-// checked out to main, master, or a detached HEAD. This is a pre-flight guard
-// before creating a worktree — if a previous smith accidentally checked out a
-// feature branch in the main repo, this prevents further corruption.
-func assertOnMainBranch(ctx context.Context, repoPath string) error {
+// CurrentBranch returns the currently checked-out branch name for the
+// repository at repoPath. Returns "HEAD" for detached HEAD state.
+// Returns an error if git cannot determine the branch.
+func CurrentBranch(ctx context.Context, repoPath string) (string, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -318,13 +317,30 @@ func assertOnMainBranch(ctx context.Context, repoPath string) error {
 	cmd.Dir = repoPath
 	out, err := cmd.Output()
 	if err != nil {
+		return "", fmt.Errorf("git rev-parse --abbrev-ref HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// isMainBranch reports whether branch is a valid default branch name (main,
+// master, or detached HEAD).
+func isMainBranch(branch string) bool {
+	return branch == "main" || branch == "master" || branch == "HEAD"
+}
+
+// assertOnMainBranch returns an error if the repository at repoPath is not
+// checked out to main, master, or a detached HEAD. This is a pre-flight guard
+// before creating a worktree — if a previous smith accidentally checked out a
+// feature branch in the main repo, this prevents further corruption.
+func assertOnMainBranch(ctx context.Context, repoPath string) error {
+	currentBranch, err := CurrentBranch(ctx, repoPath)
+	if err != nil {
 		// Cannot determine current branch — allow creation to proceed; the
 		// subsequent git fetch will fail more informatively if something is broken.
 		return nil
 	}
 
-	currentBranch := strings.TrimSpace(string(out))
-	if currentBranch == "main" || currentBranch == "master" || currentBranch == "HEAD" {
+	if isMainBranch(currentBranch) {
 		return nil
 	}
 
