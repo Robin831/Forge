@@ -127,6 +127,9 @@ func toastForEvent(ev EventItem) (message string, isError bool, ok bool) {
 		}
 		return "✓ " + firstOf(msg, beadMsg), false, true
 
+	case "warden_hard_reject":
+		return "✗ " + firstOf(msg, "Warden hard-rejected"), true, true
+
 	case "smith_failed":
 		return "✗ " + firstOf(msg, "Smith failed"), true, true
 

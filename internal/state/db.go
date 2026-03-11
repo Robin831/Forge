@@ -1014,6 +1014,7 @@ const (
 	EventWardenStarted        EventType = "warden_started"
 	EventWardenPass           EventType = "warden_pass"
 	EventWardenReject         EventType = "warden_reject"
+	EventWardenHardReject     EventType = "warden_hard_reject"
 	EventTemperStarted        EventType = "temper_started"
 	EventTemperPassed         EventType = "temper_passed"
 	EventTemperFailed         EventType = "temper_failed"

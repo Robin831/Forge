@@ -102,7 +102,7 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 			NoDiff:   true,
 		}
 		if db != nil {
-			_ = db.LogEvent(state.EventWardenReject,
+			_ = db.LogEvent(state.EventWardenHardReject,
 				fmt.Sprintf("Verdict: %s — %s", result.Verdict, result.Summary),
 				beadID, anvilName)
 		}
@@ -166,9 +166,14 @@ func Review(ctx context.Context, worktreePath, beadID, anvilPath string, db *sta
 	parseVerdict(outputText, usedProvider.Kind, result)
 
 	if db != nil {
-		evtType := state.EventWardenPass
-		if result.Verdict == VerdictReject || result.Verdict == VerdictRequestChanges {
+		var evtType state.EventType
+		switch result.Verdict {
+		case VerdictReject:
+			evtType = state.EventWardenHardReject
+		case VerdictRequestChanges:
 			evtType = state.EventWardenReject
+		default:
+			evtType = state.EventWardenPass
 		}
 		_ = db.LogEvent(evtType, fmt.Sprintf("Verdict: %s — %s", result.Verdict, result.Summary), beadID, anvilName)
 	}
