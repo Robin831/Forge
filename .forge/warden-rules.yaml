@@ -355,15 +355,9 @@ rules:
       added: "2026-03-11"
     - id: cross-repo-token-permissions
       category: security
-      pattern: CI/CD configuration publishes artifacts to external repositories (e.g., Scoop buckets, Homebrew taps, package registries in separate repos)
-      check: Verify that the workflow provides a token with write access to the target repository. The default GITHUB_TOKEN is scoped to the current repo only and cannot push to external repos — a dedicated PAT or fine-grained token with appropriate permissions must be configured.
-      source: copilot:PR#186
-      added: "2026-03-11"
-    - id: cross-repo-token-scope
-      category: security
-      pattern: GoReleaser or CI workflow publishing artifacts to a different repository (e.g. Homebrew tap, Scoop bucket, separate package repo)
-      check: Verify that the workflow uses a dedicated secret (PAT or fine-grained token) with write access to the target repository, not the default GITHUB_TOKEN which is scoped only to the current repo
-      source: copilot:PR#187
+      pattern: CI/CD or GoReleaser configuration publishes artifacts to an external repository (e.g., Homebrew tap, Scoop bucket, separate package registry)
+      check: Verify that the workflow uses a dedicated secret (PAT or fine-grained token) with write access to the target repository. The default GITHUB_TOKEN is scoped to the current repo only and cannot push to external repos — using it for cross-repo publishing will silently fail or error.
+      source: copilot:PR#186,PR#187
       added: "2026-03-11"
     - id: homebrew-desc-length
       category: style
