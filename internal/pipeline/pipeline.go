@@ -646,10 +646,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 			return outcome
 
 		case warden.VerdictReject:
-			log.Printf("[pipeline:%s] Warden rejected", workerID)
+			log.Printf("[pipeline:%s] Warden hard-rejected", workerID)
 			outcome.Verdict = warden.VerdictReject
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
-			_ = p.DB.LogEvent(state.EventWardenReject,
+			_ = p.DB.LogEvent(state.EventWardenHardReject,
 				fmt.Sprintf("Verdict: reject — %s", wardenEventSummary(reviewResult)),
 				p.Bead.ID, p.AnvilName)
 			if reviewResult.NoDiff {
@@ -661,12 +661,12 @@ func Run(ctx context.Context, p Params) *Outcome {
 				log.Printf("[pipeline:%s] No-diff rejection — releasing bead %s back to open for human review", workerID, p.Bead.ID)
 				if releaseErr := doRelease(p.Bead.ID, p.AnvilConfig.Path); releaseErr != nil {
 					log.Printf("[pipeline:%s] Failed to release bead %s back to open: %v", workerID, p.Bead.ID, releaseErr)
-					_ = p.DB.LogEvent(state.EventWardenReject,
+					_ = p.DB.LogEvent(state.EventWardenHardReject,
 						fmt.Sprintf("Failed to release bead back to open after no-diff: %v", releaseErr),
 						p.Bead.ID, p.AnvilName)
 				} else {
 					log.Printf("[pipeline:%s] Bead %s released back to open (no-diff)", workerID, p.Bead.ID)
-					_ = p.DB.LogEvent(state.EventWardenReject,
+					_ = p.DB.LogEvent(state.EventWardenHardReject,
 						"Bead released back to open — Smith produced no diff, needs human attention",
 						p.Bead.ID, p.AnvilName)
 					outcome.NeedsHuman = true
