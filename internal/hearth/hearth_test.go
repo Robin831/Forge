@@ -2242,3 +2242,205 @@ func TestLogViewerDimensionsMinClamped(t *testing.T) {
 		t.Errorf("vpHeight = %d, want >= 1", vpHeight)
 	}
 }
+
+// --- Orphan dialog ---
+
+func TestRenderOrphanDialogShowsBeadIDAndTitle(t *testing.T) {
+	item := PendingOrphanItem{BeadID: "Forge-abc1", Anvil: "heimdall", Title: "Fix login timeout bug"}
+	m := Model{
+		showOrphanDialog: true,
+		orphanTarget:     &item,
+		orphanDialogIdx:  0,
+	}
+	rendered := m.renderOrphanDialog()
+	if !strings.Contains(rendered, "Forge-abc1") {
+		t.Errorf("expected bead ID 'Forge-abc1' in orphan dialog:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Fix login timeout bug") {
+		t.Errorf("expected title 'Fix login timeout bug' in orphan dialog:\n%s", rendered)
+	}
+}
+
+func TestRenderOrphanDialogShowsAllChoices(t *testing.T) {
+	item := PendingOrphanItem{BeadID: "Forge-xyz", Anvil: "test", Title: "Some work"}
+	m := Model{
+		showOrphanDialog: true,
+		orphanTarget:     &item,
+		orphanDialogIdx:  0,
+	}
+	rendered := m.renderOrphanDialog()
+	if !strings.Contains(rendered, "Recover") {
+		t.Errorf("expected 'Recover' option in orphan dialog:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Close") {
+		t.Errorf("expected 'Close' option in orphan dialog:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Discard") {
+		t.Errorf("expected 'Discard' option in orphan dialog:\n%s", rendered)
+	}
+}
+
+func TestRenderOrphanDialogShowsPendingCount(t *testing.T) {
+	item := PendingOrphanItem{BeadID: "Forge-1", Anvil: "test", Title: "first"}
+	extra := PendingOrphanItem{BeadID: "Forge-2", Anvil: "test", Title: "second"}
+	m := Model{
+		showOrphanDialog: true,
+		orphanTarget:     &item,
+		orphanDialogIdx:  0,
+		orphanQueue:      []PendingOrphanItem{extra},
+	}
+	rendered := m.renderOrphanDialog()
+	if !strings.Contains(rendered, "1 more pending") {
+		t.Errorf("expected pending count hint in orphan dialog:\n%s", rendered)
+	}
+}
+
+func TestRenderOrphanDialogNilTargetReturnsEmpty(t *testing.T) {
+	m := Model{showOrphanDialog: false, orphanTarget: nil}
+	rendered := m.renderOrphanDialog()
+	if rendered != "" {
+		t.Errorf("expected empty string when orphanTarget is nil, got: %q", rendered)
+	}
+}
+
+func TestOrphanDialogKeyboardNavigation(t *testing.T) {
+	item := PendingOrphanItem{BeadID: "Forge-nav", Anvil: "test", Title: "nav test"}
+	m := Model{
+		showOrphanDialog: true,
+		orphanTarget:     &item,
+		orphanDialogIdx:  0,
+	}
+
+	// j moves selection down
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if m.orphanDialogIdx != 1 {
+		t.Errorf("expected orphanDialogIdx=1 after 'j', got %d", m.orphanDialogIdx)
+	}
+
+	// k moves selection up
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if m.orphanDialogIdx != 0 {
+		t.Errorf("expected orphanDialogIdx=0 after 'k', got %d", m.orphanDialogIdx)
+	}
+
+	// k wraps around (0 -> last)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if m.orphanDialogIdx != int(orphanDialogChoiceCount)-1 {
+		t.Errorf("expected orphanDialogIdx=%d after wrap, got %d", int(orphanDialogChoiceCount)-1, m.orphanDialogIdx)
+	}
+}
+
+func TestOrphanDialogEscSkipsOrphan(t *testing.T) {
+	item := PendingOrphanItem{BeadID: "Forge-esc", Anvil: "test", Title: "esc test"}
+	m := Model{
+		showOrphanDialog: true,
+		orphanTarget:     &item,
+		orphanDialogIdx:  0,
+	}
+
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.showOrphanDialog {
+		t.Error("expected showOrphanDialog=false after Esc")
+	}
+	if m.orphanTarget != nil {
+		t.Error("expected orphanTarget=nil after Esc")
+	}
+}
+
+func TestOrphanDialogEnterCallsOnResolveOrphan(t *testing.T) {
+	var resolvedBead, resolvedAnvil, resolvedAction string
+	item := PendingOrphanItem{BeadID: "Forge-res", Anvil: "heimdall", Title: "resolve me"}
+	m := Model{
+		showOrphanDialog: true,
+		orphanTarget:     &item,
+		orphanDialogIdx:  0, // Recover
+		OnResolveOrphan: func(beadID, anvil, action string) error {
+			resolvedBead = beadID
+			resolvedAnvil = anvil
+			resolvedAction = action
+			return nil
+		},
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd after Enter on orphan dialog")
+	}
+	// Execute the async command
+	msg := cmd()
+	_, _ = m.Update(msg)
+
+	if resolvedBead != "Forge-res" {
+		t.Errorf("expected resolvedBead=Forge-res, got %q", resolvedBead)
+	}
+	if resolvedAnvil != "heimdall" {
+		t.Errorf("expected resolvedAnvil=heimdall, got %q", resolvedAnvil)
+	}
+	if resolvedAction != "recover" {
+		t.Errorf("expected resolvedAction=recover, got %q", resolvedAction)
+	}
+}
+
+func TestOrphanDialogMouseWheelBlocked(t *testing.T) {
+	item := PendingOrphanItem{BeadID: "Forge-wheel", Anvil: "test", Title: "wheel test"}
+	m := Model{
+		showOrphanDialog: true,
+		orphanTarget:     &item,
+		focused:          PanelQueue,
+		width:            120,
+		height:           40,
+	}
+	initialFocused := m.focused
+
+	// Wheel up should not change focus or scroll
+	_, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelUp,
+		X:      60,
+		Y:      20,
+	})
+	if m.focused != initialFocused {
+		t.Errorf("mouse wheel up should not change focus during orphan dialog, got %v", m.focused)
+	}
+
+	// Wheel down should not change focus or scroll
+	_, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelDown,
+		X:      60,
+		Y:      20,
+	})
+	if m.focused != initialFocused {
+		t.Errorf("mouse wheel down should not change focus during orphan dialog, got %v", m.focused)
+	}
+}
+
+func TestUpdatePendingOrphansMsgOpensDialog(t *testing.T) {
+	m := Model{
+		showOrphanDialog: false,
+		orphanTarget:     nil,
+	}
+	item := PendingOrphanItem{BeadID: "Forge-poll", Anvil: "test", Title: "polled orphan"}
+	_, _ = m.Update(UpdatePendingOrphansMsg{Items: []PendingOrphanItem{item}})
+
+	if !m.showOrphanDialog {
+		t.Error("expected showOrphanDialog=true after UpdatePendingOrphansMsg with items")
+	}
+	if m.orphanTarget == nil || m.orphanTarget.BeadID != "Forge-poll" {
+		t.Errorf("expected orphanTarget.BeadID=Forge-poll, got %v", m.orphanTarget)
+	}
+}
+
+func TestUpdatePendingOrphansMsgDeduplicates(t *testing.T) {
+	existing := PendingOrphanItem{BeadID: "Forge-dup", Anvil: "test", Title: "dup"}
+	m := Model{
+		showOrphanDialog: true,
+		orphanTarget:     &existing,
+		orphanQueue:      []PendingOrphanItem{},
+	}
+	// Sending the same bead again should not add it to the queue
+	_, _ = m.Update(UpdatePendingOrphansMsg{Items: []PendingOrphanItem{existing}})
+	if len(m.orphanQueue) != 0 {
+		t.Errorf("expected orphanQueue to remain empty after dedup, got %d items", len(m.orphanQueue))
+	}
+}

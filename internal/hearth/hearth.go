@@ -618,13 +618,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logViewerVP, cmd = m.logViewerVP.Update(msg)
 			return m, cmd
 		}
+		// Orphan dialog requires explicit keyboard action; consume all mouse events.
+		if m.showOrphanDialog {
+			return m, nil
+		}
 		// Dismiss overlays on left or right mouse button press
 		if msg.Action == tea.MouseActionPress &&
 			(msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight) {
-			if m.showOrphanDialog {
-				// Orphan dialog requires explicit keyboard action; mouse click is ignored.
-				return m, nil
-			}
 			if m.showActionMenu || m.showQueueActionMenu || m.showMergeMenu {
 				m.showActionMenu = false
 				m.showQueueActionMenu = false
