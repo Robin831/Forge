@@ -59,8 +59,9 @@ brews:
     repository:
       owner: Robin831
       name: homebrew-forge
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/Robin831/Forge"
-    description: "Autonomous AI orchestrator that coordinates Claude Code agents across multiple git repositories"
+    description: "Autonomous AI orchestrator for multi-repo development"
     license: "MIT"
     skip_upload: auto
     install: |
