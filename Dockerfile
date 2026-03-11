@@ -5,6 +5,10 @@ RUN apk add --no-cache \
     git \
     openssh-client
 
-COPY forge /usr/local/bin/forge
+RUN addgroup -S forge && adduser -S forge -G forge
+
+COPY --chown=forge:forge forge /usr/local/bin/forge
+
+USER forge
 
 ENTRYPOINT ["forge"]
