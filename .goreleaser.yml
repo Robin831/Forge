@@ -69,6 +69,53 @@ brews:
     test: |
       system "#{bin}/forge", "version"
 
+dockers:
+  - id: forge-amd64
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/robin831/forge:{{ .Tag }}-amd64"
+      - "ghcr.io/robin831/forge:latest-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.description=Autonomous AI orchestrator for multi-repo development"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.source=https://github.com/Robin831/Forge"
+      - "--label=org.opencontainers.image.licenses=MIT"
+    dockerfile: Dockerfile
+    use: buildx
+
+  - id: forge-arm64
+    goos: linux
+    goarch: arm64
+    image_templates:
+      - "ghcr.io/robin831/forge:{{ .Tag }}-arm64"
+      - "ghcr.io/robin831/forge:latest-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.description=Autonomous AI orchestrator for multi-repo development"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.source=https://github.com/Robin831/Forge"
+      - "--label=org.opencontainers.image.licenses=MIT"
+    dockerfile: Dockerfile
+    use: buildx
+
+docker_manifests:
+  - name_template: "ghcr.io/robin831/forge:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/robin831/forge:{{ .Tag }}-amd64"
+      - "ghcr.io/robin831/forge:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/robin831/forge:latest"
+    image_templates:
+      - "ghcr.io/robin831/forge:latest-amd64"
+      - "ghcr.io/robin831/forge:latest-arm64"
+
 release:
   github:
     owner: Robin831
