@@ -126,6 +126,9 @@ type Daemon struct {
 	// pipeline goroutines safely read via Load().
 	notifier atomic.Pointer[notify.Notifier]
 
+	// Generic webhook dispatcher (nil = no generic webhooks configured)
+	dispatcher *notify.WebhookDispatcher
+
 	cancel     context.CancelFunc // cancels the Run context for graceful shutdown
 	runCtx     context.Context    // the live run context; set in Run() after signal/cancel wiring
 
@@ -201,6 +204,17 @@ func New(cfg *config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("invalid Teams webhook URL: %w", err)
 	}
 
+	// Build generic webhook dispatcher from the new webhooks config.
+	var webhookTargets []notify.WebhookTarget
+	for _, w := range cfg.Notifications.Webhooks {
+		webhookTargets = append(webhookTargets, notify.WebhookTarget{
+			Name:   w.Name,
+			URL:    w.URL,
+			Events: w.Events,
+		})
+	}
+	dispatcher := notify.NewWebhookDispatcher(webhookTargets, logger)
+
 	d := &Daemon{
 		db:            db,
 		logger:        logger,
@@ -211,6 +225,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
+		dispatcher:    dispatcher,
 	}
 	d.notifier.Store(notifier)
 	// Wire up the crucible-active check so orphan recovery skips parent beads
@@ -695,7 +710,9 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 	if event.EventType != bellows.EventPRReadyToMerge {
 		return
 	}
-	if d.notifier.Load() == nil && len(d.cfg.Load().Notifications.PRReadyWebhookURLs) == 0 {
+	cfg := d.cfg.Load()
+	hasLegacyURLs := cfg != nil && len(cfg.Notifications.PRReadyWebhookURLs) > 0
+	if d.notifier.Load() == nil && d.dispatcher == nil && !hasLegacyURLs {
 		return
 	}
 	title := d.db.BeadTitle(event.BeadID, event.Anvil)
@@ -703,7 +720,12 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 		if n := d.notifier.Load(); n != nil {
 			n.PRReadyToMerge(ctx, anvil, beadID, prNumber, prURL, title)
 		}
-		cfg := d.cfg.Load()
+		// Dispatch to generic webhook targets (new webhooks[] config).
+		if d.dispatcher != nil {
+			msg := fmt.Sprintf("PR #%d ready to merge: %s", prNumber, prURL)
+			d.dispatcher.Dispatch(ctx, notify.EventPRReadyToMerge, beadID, anvil, msg)
+		}
+		// Legacy pr_ready_webhook_urls support.
 		if cfg != nil && cfg.Notifications.Enabled {
 			summary := fmt.Sprintf("PR #%d ready to merge: %s (%s)", prNumber, title, anvil)
 			if title == "" {
@@ -1478,6 +1500,28 @@ normalPipeline:
 	}
 
 	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
+
+	// Send PR-created notifications.
+	go func(anvil, beadID, prURL, prTitle string, prNumber int, dur time.Duration) {
+		notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if d.notifier != nil {
+			d.notifier.PRCreated(notifCtx, anvil, beadID, prNumber, prURL, prTitle)
+		}
+		if d.dispatcher != nil {
+			msg := fmt.Sprintf("PR #%d created: %s", prNumber, prURL)
+			d.dispatcher.Dispatch(notifCtx, notify.EventPRCreated, beadID, anvil, msg)
+		}
+		// Worker-done notification fires here alongside PR creation since
+		// the pipeline worker is complete at this point.
+		if d.notifier != nil {
+			d.notifier.WorkerDone(notifCtx, anvil, beadID, claimWorkerID, dur)
+		}
+		if d.dispatcher != nil {
+			msg := fmt.Sprintf("Worker completed in %s; PR #%d created", dur.Round(time.Second), prNumber)
+			d.dispatcher.Dispatch(notifCtx, notify.EventWorkerDone, beadID, anvil, msg)
+		}
+	}(bead.Anvil, bead.ID, pr.URL, bead.Title, pr.Number, outcome.Duration)
 
 	// Close the bead — unless other beads depend on it. When dependents exist,
 	// closing now would unblock them before this PR is merged, causing them to
@@ -2503,7 +2547,8 @@ func (d *Daemon) isBeadClarificationNeeded(beadID, anvil string) (bool, error) {
 }
 
 // recordDispatchFailure increments the dispatch failure counter for a bead and
-// logs a circuit-break event if the threshold is reached.
+// logs a circuit-break event if the threshold is reached. When the circuit
+// breaker trips, a bead_failed notification is sent to configured webhooks.
 func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 	count, broken, err := d.db.IncrementDispatchFailures(beadID, anvil, MaxDispatchFailures, reason)
 	if err != nil {
@@ -2514,6 +2559,19 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 		msg := fmt.Sprintf("Bead %s circuit-broken after %d consecutive dispatch failures: %s", beadID, count, reason)
 		d.logger.Warn(msg, "bead", beadID, "anvil", anvil)
 		_ = d.db.LogEvent(state.EventDispatchCircuitBreak, msg, beadID, anvil)
+
+		// Fire bead-failed notifications asynchronously.
+		go func(beadID, anvil, reason string, count int) {
+			notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if d.notifier != nil {
+				d.notifier.BeadFailed(notifCtx, anvil, beadID, count, reason)
+			}
+			if d.dispatcher != nil {
+				failMsg := fmt.Sprintf("Bead failed after %d dispatch attempts: %s", count, reason)
+				d.dispatcher.Dispatch(notifCtx, notify.EventBeadFailed, beadID, anvil, failMsg)
+			}
+		}(beadID, anvil, reason, count)
 	}
 }
 

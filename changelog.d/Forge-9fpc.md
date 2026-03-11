@@ -1,0 +1,2 @@
+category: Added
+- **Multiple generic webhook targets in notifications** - Added `notifications.webhooks[]` config to send a uniform JSON payload (`event_type`, `bead_id`, `anvil`, `message`, `timestamp`) to any HTTP endpoint. Each target can filter events independently. The Teams webhook keeps its Adaptive Card format; generic targets receive the simpler payload. Added `release` event type for generic webhooks alongside the existing `release_published` Teams event. (Forge-9fpc)

@@ -35,13 +35,18 @@ const (
 type EventType string
 
 const (
-	EventPRCreated         EventType = "pr_created"
-	EventBeadFailed        EventType = "bead_failed"
-	EventDailyCost         EventType = "daily_cost"
-	EventWorkerDone        EventType = "worker_done"
-	EventBeadDecomposed    EventType = "bead_decomposed"
-	EventReleasePublished  EventType = "release_published"
-	EventPRReadyToMerge    EventType = "pr_ready_to_merge"
+	EventPRCreated        EventType = "pr_created"
+	EventBeadFailed       EventType = "bead_failed"
+	EventDailyCost        EventType = "daily_cost"
+	EventWorkerDone       EventType = "worker_done"
+	EventBeadDecomposed   EventType = "bead_decomposed"
+	EventReleasePublished EventType = "release_published"
+	EventPRReadyToMerge   EventType = "pr_ready_to_merge"
+	// EventRelease is the event type used in generic webhook event filters for
+	// release notifications. Teams webhooks use EventReleasePublished and
+	// receive Adaptive Cards; generic webhooks use EventRelease and receive a
+	// simple GenericPayload.
+	EventRelease EventType = "release"
 )
 
 // Notifier sends notifications to Teams.
@@ -348,6 +353,133 @@ func sendGenericWebhook(ctx context.Context, webhookURL string, payload WebhookP
 
 	if logger != nil {
 		logger.Debug("webhook notification sent", "event", eventLabel, "url", webhookURL, "status", resp.StatusCode)
+	}
+}
+
+// --- Generic webhook dispatcher ---
+
+// WebhookTarget represents a single generic JSON webhook target.
+// It is the notify-package counterpart of config.WebhookTargetConfig.
+type WebhookTarget struct {
+	Name   string
+	URL    string
+	Events []string // Empty = subscribe to all events
+}
+
+// GenericPayload is the uniform JSON payload sent to generic (non-Teams) webhook
+// targets. Unlike the Teams Adaptive Cards, every event produces the same
+// structure so receivers can handle all events with a single schema.
+type GenericPayload struct {
+	EventType string    `json:"event_type"`
+	BeadID    string    `json:"bead_id,omitempty"`
+	Anvil     string    `json:"anvil,omitempty"`
+	Message   string    `json:"message,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+type dispatchTarget struct {
+	name   string
+	url    string
+	events map[EventType]bool // empty = all events
+}
+
+// WebhookDispatcher sends events to configured generic JSON webhook targets.
+// Each target can subscribe to a specific subset of events.
+// A nil WebhookDispatcher is safe to use — all methods become no-ops.
+type WebhookDispatcher struct {
+	targets []dispatchTarget
+	logger  *slog.Logger
+	client  *http.Client
+}
+
+// NewWebhookDispatcher creates a dispatcher from a list of webhook targets.
+// Returns nil if no valid targets are configured (empty list or all URLs empty).
+func NewWebhookDispatcher(targets []WebhookTarget, logger *slog.Logger) *WebhookDispatcher {
+	var dts []dispatchTarget
+	for _, t := range targets {
+		if t.URL == "" {
+			continue
+		}
+		events := make(map[EventType]bool)
+		for _, e := range t.Events {
+			events[EventType(e)] = true
+		}
+		dts = append(dts, dispatchTarget{
+			name:   t.Name,
+			url:    t.URL,
+			events: events,
+		})
+	}
+	if len(dts) == 0 {
+		return nil
+	}
+	return &WebhookDispatcher{
+		targets: dts,
+		logger:  logger,
+		client:  &http.Client{Timeout: webhookTimeout},
+	}
+}
+
+// Dispatch sends a GenericPayload to all webhook targets that subscribe to the
+// given event. Each delivery is dispatched in its own goroutine so the caller
+// is never blocked by a slow or unreachable webhook.
+func (d *WebhookDispatcher) Dispatch(ctx context.Context, event EventType, beadID, anvil, message string) {
+	if d == nil {
+		return
+	}
+	payload := GenericPayload{
+		EventType: string(event),
+		BeadID:    beadID,
+		Anvil:     anvil,
+		Message:   message,
+		Timestamp: time.Now().UTC(),
+	}
+	for _, t := range d.targets {
+		if len(t.events) > 0 && !t.events[event] {
+			continue
+		}
+		t := t // capture loop variable for goroutine
+		go d.sendToTarget(ctx, t, payload)
+	}
+}
+
+func (d *WebhookDispatcher) sendToTarget(ctx context.Context, t dispatchTarget, payload GenericPayload) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		if d.logger != nil {
+			d.logger.Error("failed to marshal webhook payload", "webhook", t.name, "error", err)
+		}
+		return
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.url, bytes.NewReader(body))
+	if err != nil {
+		if d.logger != nil {
+			d.logger.Error("failed to create webhook request", "webhook", t.name, "error", err)
+		}
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := d.client.Do(req)
+	if err != nil {
+		if d.logger != nil {
+			d.logger.Warn("webhook delivery failed", "webhook", t.name, "url", t.url, "error", err)
+		}
+		return
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode >= 400 {
+		if d.logger != nil {
+			d.logger.Warn("webhook returned error status", "webhook", t.name, "url", t.url, "status", resp.StatusCode)
+		}
+		return
+	}
+
+	if d.logger != nil {
+		d.logger.Debug("webhook notification sent", "webhook", t.name, "event", string(payload.EventType), "status", resp.StatusCode)
 	}
 }
 

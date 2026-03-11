@@ -259,8 +259,25 @@ func (s SettingsConfig) IsAutoMergeCrucibleChildren() bool {
 	return *s.AutoMergeCrucibleChildren
 }
 
+// TeamsNotificationConfig holds configuration for the MS Teams webhook.
+// Used in the new nested notifications.teams config structure.
+type TeamsNotificationConfig struct {
+	WebhookURL string   `mapstructure:"webhook_url" yaml:"webhook_url,omitempty"`
+	Events     []string `mapstructure:"events" yaml:"events,omitempty"`
+}
+
+// WebhookTargetConfig defines a single generic JSON webhook target.
+// Each target receives a simple JSON payload (not an Adaptive Card) and can
+// filter which events it receives.
+type WebhookTargetConfig struct {
+	Name   string   `mapstructure:"name" yaml:"name"`
+	URL    string   `mapstructure:"url" yaml:"url"`
+	Events []string `mapstructure:"events" yaml:"events,omitempty"`
+}
+
 // NotificationsConfig holds webhook and notification settings.
 type NotificationsConfig struct {
+	// Legacy flat fields — kept for backward compatibility.
 	TeamsWebhookURL string `mapstructure:"teams_webhook_url" yaml:"teams_webhook_url,omitempty"`
 	Enabled         bool   `mapstructure:"enabled" yaml:"enabled"`
 	// Events to notify on. Empty = all. Options: pr_created, bead_failed, daily_cost, worker_done, bead_decomposed, release_published, pr_ready_to_merge.
@@ -275,6 +292,32 @@ type NotificationsConfig struct {
 	// These receive a simple JSON object (not a Teams Adaptive Card) suitable
 	// for custom dashboards or other receivers.
 	PRReadyWebhookURLs []string `mapstructure:"pr_ready_webhook_urls" yaml:"pr_ready_webhook_urls,omitempty"`
+
+	// Teams holds the new nested Teams webhook configuration.
+	// If set, takes precedence over the legacy teams_webhook_url and events fields.
+	Teams TeamsNotificationConfig `mapstructure:"teams" yaml:"teams,omitempty"`
+	// Webhooks is a list of generic JSON webhook targets. Each target can filter
+	// events independently. Supported events: pr_created, worker_done, bead_failed,
+	// bead_decomposed, pr_ready_to_merge, release, daily_cost.
+	Webhooks []WebhookTargetConfig `mapstructure:"webhooks" yaml:"webhooks,omitempty"`
+}
+
+// ResolvedTeamsURL returns the effective Teams webhook URL.
+// The new nested teams.webhook_url takes precedence over the legacy teams_webhook_url field.
+func (n NotificationsConfig) ResolvedTeamsURL() string {
+	if n.Teams.WebhookURL != "" {
+		return n.Teams.WebhookURL
+	}
+	return n.TeamsWebhookURL
+}
+
+// ResolvedTeamsEvents returns the effective Teams event filter.
+// The new nested teams.events takes precedence over the legacy events field.
+func (n NotificationsConfig) ResolvedTeamsEvents() []string {
+	if len(n.Teams.Events) > 0 {
+		return n.Teams.Events
+	}
+	return n.Events
 }
 
 // Defaults returns a Config with sensible default values.

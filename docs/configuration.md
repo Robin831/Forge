@@ -137,24 +137,83 @@ Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
 
 ## Notifications
 
+Forge supports two styles of webhook notifications:
+
+1. **MS Teams** — Rich Adaptive Cards with color-coded severity, configured under `notifications.teams` (or the legacy `notifications.teams_webhook_url` field).
+2. **Generic webhooks** — Simple JSON payloads (`event_type`, `bead_id`, `anvil`, `message`, `timestamp`) delivered to any HTTP endpoint, configured under `notifications.webhooks`.
+
+### Example Configuration
+
+```yaml
+notifications:
+  enabled: true
+
+  # MS Teams (Adaptive Card format)
+  teams:
+    webhook_url: 'https://outlook.webhook.office.com/webhookb2/...'
+    events: [bead_failed, daily_cost, pr_ready_to_merge]  # empty = all
+
+  # Generic JSON webhooks (one or more targets)
+  webhooks:
+    - name: hytte-dashboard
+      url: 'https://hytte.app/api/webhooks/forge'
+      events: [pr_created, worker_done, release]  # empty = all
+    - name: slack
+      url: 'https://hooks.slack.com/services/...'
+      events: [bead_failed]
+```
+
+### Top-Level Fields
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `false` | Enable MS Teams webhook notifications. |
-| `teams_webhook_url` | string | | Teams incoming webhook URL (HTTPS). |
-| `events` | []string | `[]` (all) | Event filter. Empty means all events. |
+| `enabled` | bool | `false` | Master switch — disables all notifications when false. |
+| `teams_webhook_url` | string | | Legacy flat-style Teams webhook URL. Use `teams.webhook_url` instead. |
+| `events` | []string | `[]` (all) | Legacy flat-style Teams event filter. Use `teams.events` instead. |
+| `release_webhook_urls` | []string | | Legacy list of generic-JSON URLs for `release_published` events. |
+| `pr_ready_webhook_urls` | []string | | Legacy list of generic-JSON URLs for `pr_ready_to_merge` events. |
+
+### `notifications.teams`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `webhook_url` | string | | Teams incoming webhook URL (HTTPS required). Overrides `teams_webhook_url`. |
+| `events` | []string | `[]` (all) | Event filter. Overrides the top-level `events` field. |
+
+### `notifications.webhooks[]`
+
+Each entry in the list defines a generic JSON webhook target.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | | Friendly name for logging. |
+| `url` | string | | Target URL (HTTPS recommended). |
+| `events` | []string | `[]` (all) | Event filter. Empty means subscribe to all events. |
 
 ### Supported Events
 
-| Event | Description |
-|-------|-------------|
-| `pr_created` | A pull request was created. |
-| `bead_failed` | A bead exhausted retries and needs human intervention. |
-| `daily_cost` | Daily token usage and cost summary. |
-| `worker_done` | A worker successfully completed its pipeline. |
-| `bead_decomposed` | Schematic split a bead into sub-beads; the parent is now blocked. |
-| `pr_ready_to_merge` | A PR passed CI and warden approval and is ready to merge. |
+| Event | Teams | Generic | Description |
+|-------|-------|---------|-------------|
+| `pr_created` | ✓ | ✓ | A pull request was created. |
+| `bead_failed` | ✓ | ✓ | A bead exhausted retries and needs human intervention. |
+| `daily_cost` | ✓ | ✓ | Daily token usage and cost summary. |
+| `worker_done` | ✓ | ✓ | A worker successfully completed its pipeline. |
+| `bead_decomposed` | ✓ | ✓ | Schematic split a bead into sub-beads; the parent is now blocked. |
+| `pr_ready_to_merge` | ✓ | ✓ | A PR passed CI and warden approval and is ready to merge. |
+| `release_published` | ✓ | — | New Forge release (Teams Adaptive Card, via `forge notify release`). |
+| `release` | — | ✓ | New Forge release (GenericPayload, via `forge notify release`). |
 
-Notifications are sent as MS Teams Adaptive Cards with color-coded severity.
+Teams webhooks receive rich Adaptive Cards. Generic webhook targets receive a uniform JSON object:
+
+```json
+{
+  "event_type": "pr_created",
+  "bead_id": "Forge-42",
+  "anvil": "heimdall",
+  "message": "PR #7 created: https://github.com/org/repo/pull/7",
+  "timestamp": "2026-03-11T10:00:00Z"
+}
+```
 
 ## Environment Variable Overrides
 
