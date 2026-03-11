@@ -40,3 +40,41 @@ jobs:
           if [ -f .release-notes.md ]; then
             gh release edit "$TAG" --notes-file .release-notes.md
           fi
+
+      - name: Notify webhooks on release
+        if: success()
+        env:
+          RELEASE_WEBHOOK_URL: ${{ secrets.RELEASE_WEBHOOK_URL }}
+          TEAMS_RELEASE_WEBHOOK_URL: ${{ secrets.TEAMS_RELEASE_WEBHOOK_URL }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          REPO="${GITHUB_REPOSITORY}"
+          RELEASE_URL="https://github.com/${REPO}/releases/tag/${TAG}"
+
+          CHANGELOG=""
+          if [ -f .release-notes.md ]; then
+            # Read up to 30 lines, collapse newlines, escape JSON special chars
+            CHANGELOG=$(head -30 .release-notes.md | tr '\n' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g')
+          fi
+
+          # Generic JSON payload consumed by custom receivers (dashboards, bots, etc.)
+          PAYLOAD=$(printf '{"event":"release_published","version":"%s","tag":"%s","release_url":"%s","changelog_summary":"%s"}' \
+            "${TAG}" "${TAG}" "${RELEASE_URL}" "${CHANGELOG}")
+
+          # Send to generic JSON webhook (Hytte dashboard, Slack, custom receivers)
+          if [ -n "${RELEASE_WEBHOOK_URL}" ]; then
+            curl -sf -X POST "${RELEASE_WEBHOOK_URL}" \
+              -H "Content-Type: application/json" \
+              --data-binary "${PAYLOAD}" \
+              && echo "Notified RELEASE_WEBHOOK_URL (${TAG})" \
+              || echo "Warning: RELEASE_WEBHOOK_URL notification failed (non-fatal)"
+          fi
+
+          # Send to Teams webhook (also accepts generic JSON via Incoming Webhook connector)
+          if [ -n "${TEAMS_RELEASE_WEBHOOK_URL}" ]; then
+            curl -sf -X POST "${TEAMS_RELEASE_WEBHOOK_URL}" \
+              -H "Content-Type: application/json" \
+              --data-binary "${PAYLOAD}" \
+              && echo "Notified Teams webhook (${TAG})" \
+              || echo "Warning: Teams webhook notification failed (non-fatal)"
+          fi

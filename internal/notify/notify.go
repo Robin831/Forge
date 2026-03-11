@@ -33,11 +33,12 @@ const (
 type EventType string
 
 const (
-	EventPRCreated      EventType = "pr_created"
-	EventBeadFailed     EventType = "bead_failed"
-	EventDailyCost      EventType = "daily_cost"
-	EventWorkerDone     EventType = "worker_done"
-	EventBeadDecomposed EventType = "bead_decomposed"
+	EventPRCreated         EventType = "pr_created"
+	EventBeadFailed        EventType = "bead_failed"
+	EventDailyCost         EventType = "daily_cost"
+	EventWorkerDone        EventType = "worker_done"
+	EventBeadDecomposed    EventType = "bead_decomposed"
+	EventReleasePublished  EventType = "release_published"
 )
 
 // Notifier sends notifications to Teams.
@@ -212,6 +213,89 @@ func (n *Notifier) WorkerDone(ctx context.Context, anvil, beadID, workerID strin
 	)
 
 	n.send(ctx, card)
+}
+
+// ReleasePublished sends a notification when a new Forge release is published.
+func (n *Notifier) ReleasePublished(ctx context.Context, version, tag, releaseURL, changelogSummary string) {
+	if !n.ShouldNotify(EventReleasePublished) {
+		return
+	}
+
+	facts := []cardFact{
+		{Title: "Version", Value: version},
+	}
+	if tag != "" && tag != version {
+		facts = append(facts, cardFact{Title: "Tag", Value: tag})
+	}
+	if releaseURL != "" {
+		facts = append(facts, cardFact{Title: "Release", Value: fmt.Sprintf("[View on GitHub](%s)", releaseURL)})
+	}
+	if changelogSummary != "" {
+		if len(changelogSummary) > 500 {
+			changelogSummary = changelogSummary[:500] + "..."
+		}
+		facts = append(facts, cardFact{Title: "Changes", Value: changelogSummary})
+	}
+
+	card := adaptiveCard("🚀 Forge Release Published", "good", facts)
+	n.send(ctx, card)
+}
+
+// ReleasePayload is the generic JSON payload sent to non-Teams webhook URLs
+// on release. Compatible with any webhook receiver (Slack, custom dashboards).
+type ReleasePayload struct {
+	Event            string `json:"event"`
+	Version          string `json:"version"`
+	Tag              string `json:"tag"`
+	ReleaseURL       string `json:"release_url,omitempty"`
+	ChangelogSummary string `json:"changelog_summary,omitempty"`
+}
+
+// SendGenericRelease posts a generic JSON release payload to any webhook URL.
+// This is used for non-Teams endpoints such as dashboards or custom receivers.
+// Errors are logged but do not cause a fatal failure.
+func SendGenericRelease(ctx context.Context, webhookURL string, payload ReleasePayload, logger *slog.Logger) {
+	if webhookURL == "" {
+		return
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		if logger != nil {
+			logger.Error("failed to marshal release payload", "error", err)
+		}
+		return
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
+	if err != nil {
+		if logger != nil {
+			logger.Error("failed to create release webhook request", "url", webhookURL, "error", err)
+		}
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: webhookTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("release webhook failed", "url", webhookURL, "error", err)
+		}
+		return
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Warn("release webhook returned error", "url", webhookURL, "status", resp.StatusCode)
+		}
+		return
+	}
+
+	if logger != nil {
+		logger.Debug("release notification sent", "url", webhookURL, "status", resp.StatusCode)
+	}
 }
 
 // --- Adaptive Card helpers ---
