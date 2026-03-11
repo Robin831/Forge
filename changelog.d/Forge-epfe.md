@@ -1,0 +1,2 @@
+category: Fixed
+- **Orphan recovery no longer resets active Crucible parent beads** - The periodic orphan recovery scan previously could reset a Crucible parent bead back to `open` when its pending worker row was absent or terminal, even though the Crucible goroutine was still running. The recovery now consults the in-process `crucibleStatuses` map and skips any bead that has an active Crucible run. (Forge-epfe)

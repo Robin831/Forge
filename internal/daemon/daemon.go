@@ -219,6 +219,15 @@ func New(cfg *config.Config) (*Daemon, error) {
 		promptBuilder: prompt.NewBuilder(),
 		notifier:      notifier,
 	}
+	// Wire up the crucible-active check so orphan recovery skips parent beads
+	// that are currently being orchestrated by an in-process Crucible run.
+	// The key is "anvil/beadID" to avoid false positives when two anvils share
+	// the same bead ID.
+	d.shutdownMgr.SetCrucibleActiveCheck(func(beadID, anvil string) bool {
+		_, active := d.crucibleStatuses.Load(anvil + "/" + beadID)
+		return active
+	})
+
 	// Initialize costLimitLoggedDate so Load() is always safe (zero atomic.Value
 	// returns nil on Load, which is fine for type assertion, but Store("")
 	// makes the intent explicit and avoids any future ambiguity).
@@ -1164,7 +1173,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			SmithTimeout:              d.cfg.Load().Settings.SmithTimeout,
 			AutoMergeCrucibleChildren: d.cfg.Load().Settings.IsAutoMergeCrucibleChildren(),
 			StatusCallback: func(s crucible.Status) {
-				d.crucibleStatuses.Store(bead.ID, s)
+				d.crucibleStatuses.Store(bead.Anvil+"/"+bead.ID, s)
 			},
 		}
 		if d.cfg.Load().Settings.SchematicEnabled {
@@ -1189,9 +1198,9 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		// the TUI can observe the terminal "complete" state before removal.
 		defer func() {
 			if result.Error == nil {
-				beadID := bead.ID
+				crucibleKey := bead.Anvil + "/" + bead.ID
 				time.AfterFunc(2*time.Second, func() {
-					d.crucibleStatuses.Delete(beadID)
+					d.crucibleStatuses.Delete(crucibleKey)
 				})
 			}
 			// On error/pause, keep the status visible so the TUI shows it.
