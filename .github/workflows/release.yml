@@ -29,3 +29,4 @@ jobs:
           args: release --clean --release-notes .release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SCOOP_BUCKET_PAT: ${{ secrets.SCOOP_BUCKET_PAT }}

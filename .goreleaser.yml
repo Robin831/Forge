@@ -42,6 +42,7 @@ scoops:
   - repository:
       owner: Robin831
       name: scoop-forge
+      token: "{{ .Env.SCOOP_BUCKET_PAT }}"
     homepage: https://github.com/Robin831/Forge
     description: Autonomous AI orchestrator that coordinates Claude Code agents across git repositories
     license: MIT
