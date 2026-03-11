@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -187,6 +189,161 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 	rule.Source = strings.Join(sources, ", ")
 	rule.Added = time.Now().Format("2006-01-02")
 
+	return &rule, nil
+}
+
+// lintRulePattern matches ESLint-style rule IDs such as:
+//   - react-hooks/exhaustive-deps
+//   - @typescript-eslint/no-floating-promises
+var lintRulePattern = regexp.MustCompile(`(?:@[a-z0-9][a-z0-9-]*/)?[a-z][a-z0-9-]*/[a-z][a-z0-9-]+`)
+
+// extractLintRuleNames scans CI log output for ESLint-style rule IDs and
+// returns the unique set, sorted for deterministic ordering.
+func extractLintRuleNames(logs map[string]string) []string {
+	seen := make(map[string]bool)
+	for _, logContent := range logs {
+		for _, match := range lintRulePattern.FindAllString(logContent, -1) {
+			seen[match] = true
+		}
+	}
+	rules := make([]string, 0, len(seen))
+	for r := range seen {
+		rules = append(rules, r)
+	}
+	sort.Strings(rules)
+	return rules
+}
+
+// LearnFromCIFix extracts lint rule patterns from CI failure logs and the
+// subsequent fix diff, then stores them as warden rules so future Smith
+// sessions avoid the anti-patterns before they reach CI.
+//
+// It is intentionally non-fatal: callers should log any returned error but
+// not let it block the successful CI fix result from being recorded.
+func LearnFromCIFix(ctx context.Context, anvilPath, repoDir string, failingLogs map[string]string, fixDiff string, prNumber int) error {
+	if len(failingLogs) == 0 || fixDiff == "" {
+		return nil
+	}
+
+	ruleNames := extractLintRuleNames(failingLogs)
+	if len(ruleNames) == 0 {
+		return nil
+	}
+
+	rf, err := LoadRules(anvilPath)
+	if err != nil {
+		return fmt.Errorf("loading rules: %w", err)
+	}
+
+	// Build a set of existing rule IDs to skip duplicates without calling Claude.
+	existingIDs := make(map[string]bool)
+	for _, r := range rf.Rules {
+		existingIDs[r.ID] = true
+	}
+
+	source := fmt.Sprintf("cifix:PR#%d", prNumber)
+	changed := false
+
+	for _, ruleName := range ruleNames {
+		// Derive a candidate rule ID: strip @ and replace / with -.
+		ruleID := strings.ReplaceAll(strings.TrimPrefix(ruleName, "@"), "/", "-")
+		if existingIDs[ruleID] {
+			continue
+		}
+
+		rule, err := distillCIFixRule(ctx, ruleName, ruleID, failingLogs, fixDiff, source, repoDir)
+		if err != nil {
+			log.Printf("[warden] LearnFromCIFix: distill rule %q: %v", ruleName, err)
+			continue
+		}
+
+		if rf.AddRule(*rule) {
+			existingIDs[rule.ID] = true
+			changed = true
+			log.Printf("[warden] Learned new CI fix rule: %s (source: %s)", rule.ID, rule.Source)
+		}
+	}
+
+	if changed {
+		return SaveRules(anvilPath, rf)
+	}
+	return nil
+}
+
+// distillCIFixRule asks Claude to convert a CI lint failure pattern and its
+// fix diff into a structured warden Rule.
+func distillCIFixRule(ctx context.Context, ruleName, ruleID string, failingLogs map[string]string, fixDiff, source, repoDir string) (*Rule, error) {
+	// Collect log lines that mention this specific rule.
+	var ruleLines []string
+	for _, logContent := range failingLogs {
+		for _, line := range strings.Split(logContent, "\n") {
+			if strings.Contains(line, ruleName) {
+				trimmed := strings.TrimSpace(line)
+				if trimmed != "" {
+					ruleLines = append(ruleLines, trimmed)
+				}
+			}
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("You are creating a code review rule from a CI lint failure that was subsequently fixed.\n\n")
+	fmt.Fprintf(&sb, "The failing ESLint rule was: **%s**\n\n", ruleName)
+
+	if len(ruleLines) > 0 {
+		limit := 20
+		if len(ruleLines) < limit {
+			limit = len(ruleLines)
+		}
+		sb.WriteString("## Failing Log Lines\n\n```\n")
+		sb.WriteString(strings.Join(ruleLines[:limit], "\n"))
+		sb.WriteString("\n```\n\n")
+	}
+
+	truncated := fixDiff
+	const maxDiffLen = 3000
+	if len(truncated) > maxDiffLen {
+		truncated = "... (truncated)\n" + truncated[len(truncated)-maxDiffLen:]
+	}
+	fmt.Fprintf(&sb, "## Fix Diff\n\n```diff\n%s\n```\n\n", truncated)
+
+	fmt.Fprintf(&sb, `## Output Format
+
+Respond with ONLY a JSON object (no markdown fences, no explanation) using this exact format:
+
+{"id": %q, "category": "concurrency|ui|error-handling|security|testing|performance|style|other", "pattern": "What code pattern triggers this lint rule", "check": "What the reviewer should verify to avoid this lint violation"}
+`, ruleID)
+
+	prompt := sb.String()
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "claude", "--print", "--max-turns", "1", "-p", prompt))
+	cmd.Dir = repoDir
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("claude distill: %s (%w)", strings.TrimSpace(stderr.String()), err)
+	}
+
+	output := strings.TrimSpace(stdout.String())
+	jsonStr := extractJSON(output)
+	if jsonStr == "" {
+		jsonStr = output
+	}
+
+	var rule Rule
+	if err := json.Unmarshal([]byte(jsonStr), &rule); err != nil {
+		return nil, fmt.Errorf("parsing distilled rule: %w (output: %s)", err, output)
+	}
+
+	if rule.ID == "" || rule.Check == "" {
+		return nil, fmt.Errorf("distilled rule missing required fields (id or check)")
+	}
+
+	rule.Source = source
+	rule.Added = time.Now().Format("2006-01-02")
 	return &rule, nil
 }
 

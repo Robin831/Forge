@@ -23,6 +23,7 @@ import (
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
+	"github.com/Robin831/Forge/internal/warden"
 )
 
 // MaxAttempts is the maximum number of CI fix attempts per PR.
@@ -166,6 +167,9 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			fmt.Sprintf("PR #%d: attempt %d, failed step: %s", p.PRNumber, attempt, failedStep),
 			p.BeadID, p.AnvilName)
 
+		// Snapshot HEAD so we can compute the fix diff after Smith completes.
+		baseCommit, _ := gitRevParse(ctx, p.WorktreePath, "HEAD")
+
 		// Step 5: Spawn Smith.
 		logDir := p.WorktreePath + "/.forge-logs"
 		var smithResult *smith.Result
@@ -242,6 +246,17 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				fmt.Sprintf("PR #%d: Fixed on attempt %d", p.PRNumber, attempt),
 				p.BeadID, p.AnvilName)
 			result.Duration = time.Since(start)
+
+			// Learn from this CI fix: extract lint rule patterns and store as warden rules.
+			if baseCommit != "" {
+				fixDiff, diffErr := gitDiff(ctx, p.WorktreePath, baseCommit, "HEAD")
+				if diffErr != nil {
+					log.Printf("[cifix] PR #%d: failed to compute fix diff for warden learning: %v", p.PRNumber, diffErr)
+				} else if err := warden.LearnFromCIFix(ctx, p.AnvilPath, p.WorktreePath, ciLogs, fixDiff, p.PRNumber); err != nil {
+					log.Printf("[cifix] PR #%d: warden learn from CI fix: %v", p.PRNumber, err)
+				}
+			}
+
 			return result
 		}
 
@@ -508,4 +523,28 @@ func truncateOutput(output string, maxLen int) string {
 		return output
 	}
 	return "... (truncated)\n" + output[len(output)-maxLen:]
+}
+
+// gitRevParse resolves a git ref (e.g. "HEAD") to its commit hash.
+func gitRevParse(ctx context.Context, dir, ref string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", ref)
+	executil.HideWindow(cmd)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// gitDiff returns the diff between two commits in the given directory.
+func gitDiff(ctx context.Context, dir, from, to string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", from+".."+to)
+	executil.HideWindow(cmd)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
