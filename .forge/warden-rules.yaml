@@ -383,3 +383,51 @@ rules:
       check: Prefer that production/runtime Dockerfiles run as a non-root user (typically via a USER directive). If the image intentionally runs as root, verify there is a documented justification and that an alternative hardening strategy is in place (for example, dropping privileges in the entrypoint or restricting capabilities/FS access).
       source: copilot:PR#191
       added: "2026-03-11"
+    - id: test-layout-must-match-render-logic
+      category: testing
+      pattern: Tests that assert which UI panel occupies a screen coordinate or region
+      check: When testing UI hit-testing or coordinate-based panel lookups, verify that test assertions use the same height calculations and panel stacking order as the actual render functions — do not hardcode simplified region-to-panel mappings that diverge from how View() lays out subpanels (e.g. stacked Queue/Crucibles, ReadyToMerge/NeedsAttention splits)
+      source: copilot:PR#192
+      added: "2026-03-11"
+    - id: test-layout-sync
+      category: testing
+      pattern: Test helpers that compute expected UI panel positions or layout boundaries using their own formulas
+      check: Verify that test layout calculations exactly mirror the production rendering logic (same height computations, same split ratios, same fixed-size regions) rather than reimplementing layout math that can drift out of sync with the real UI
+      source: copilot:PR#192
+      added: "2026-03-11"
+    - id: comment-should-match-condition
+      category: style
+      pattern: A code comment describes behavior more broadly than the actual conditional logic implements
+      check: Verify that comments accurately describe the scope of the condition they annotate — if the code only handles specific cases (e.g., left/right click), the comment should not claim broader behavior (e.g., 'any button press')
+      source: copilot:PR#192
+      added: "2026-03-11"
+    - id: mouse-wheel-action-gate
+      category: ui
+      pattern: Bubbletea mouse message handling with WheelUp/WheelDown cases when mouse cell motion is enabled
+      check: Verify that WheelUp/WheelDown handlers check msg.Action == tea.MouseActionPress to prevent spurious scrolling from motion/release events when tea.WithMouseCellMotion() is active
+      source: copilot:PR#192
+      added: "2026-03-11"
+    - id: hit-test-covers-all-subpanels
+      category: ui
+      pattern: A panel position/hit-test function that maps screen coordinates to panel identifiers, where a single column or region contains multiple stacked sub-panels
+      check: Verify that hit-testing logic distinguishes between all visually distinct sub-panels within a column — not just the primary one. If a column renders multiple panels (e.g., a list above and a usage/status panel below), the coordinate mapping must check the y-position against each sub-panel's boundary and return the correct panel identifier, otherwise mouse focus and scroll events will target the wrong panel.
+      source: copilot:PR#192
+      added: "2026-03-11"
+    - id: hearth-mouse-panel-hit-testing
+      category: ui
+      pattern: Mouse click hit-testing in multi-panel layouts where panels are conditionally shown or split
+      check: Verify that mouse hit-testing logic mirrors the actual rendering layout. When panels are conditionally stacked or split (e.g., Queue and Crucibles sharing a column), the click target regions must use the same height calculations as the render function, so each visible panel remains individually focusable via mouse.
+      source: copilot:PR#192
+      added: "2026-03-11"
+    - id: layout-math-consistency
+      category: ui
+      pattern: Hit-testing, click/scroll mapping, or coordinate translation logic that duplicates layout calculations from a separate rendering/view function
+      check: Verify that mouse/input position mapping uses the exact same layout computation as the rendering code — factor shared geometry (header height, footer height, column splits, panel borders, minimums) into a single helper used by both the view/render path and the hit-testing/input-handling path, so they cannot diverge at different terminal sizes or when content wraps
+      source: copilot:PR#192
+      added: "2026-03-11"
+    - id: doc-comment-matches-implementation
+      category: other
+      pattern: Doc comments or function comments that describe specific behavior, edge cases, or special-case handling
+      check: Verify that the implementation actually matches what the doc comment claims — if a comment says a condition is special-cased, the code must contain that special-case logic, and vice versa
+      source: copilot:PR#192
+      added: "2026-03-11"
