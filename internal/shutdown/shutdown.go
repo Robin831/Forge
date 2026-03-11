@@ -58,6 +58,13 @@ type Manager struct {
 	// This callback is set by the daemon after construction via
 	// SetCrucibleActiveCheck.
 	isCrucibleActive func(beadID, anvil string) bool
+
+	// OnOrphanFound, when set, is called when an orphaned bead is detected
+	// before auto-recovery. If it returns true, the bead has been handled
+	// externally (e.g. deferred to the Hearth dialog) and should NOT be
+	// auto-recovered. If nil or returns false, auto-recovery proceeds as
+	// before. Set by the daemon after construction.
+	OnOrphanFound func(beadID, anvil, title, branch string) bool
 }
 
 // NewManager creates a new shutdown manager.
@@ -348,8 +355,18 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 				continue // has an open PR, not orphaned
 			}
 
-			// This bead was claimed by Forge but has no active worker or PR — it's orphaned
+			// This bead was claimed by Forge but has no active worker or PR — it's orphaned.
 			m.logger.Warn("found orphaned in-progress bead", "bead", beadID, "anvil", anvilName)
+
+			// If a callback is registered (e.g., Hearth is connected), give it the
+			// chance to defer recovery to the user dialog instead of auto-recovering.
+			if m.OnOrphanFound != nil && m.OnOrphanFound(beadID, anvilName, bead.Title, "") {
+				m.logger.Info("orphaned bead deferred to Hearth dialog", "bead", beadID, "anvil", anvilName)
+				// Do not increment recovered — the bead has not been reset yet.
+				continue
+			}
+
+			// Fall through to auto-recovery (headless/CI mode or no Hearth client).
 			if err := m.resetBead(beadID, anvilPath); err != nil {
 				m.logger.Warn("failed to reset orphaned bead", "bead", beadID, "error", err)
 				continue
@@ -371,9 +388,10 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 	return recovered
 }
 
-// inProgressBead holds the id and last-update time of an in-progress bead.
+// inProgressBead holds the id, title, and last-update time of an in-progress bead.
 type inProgressBead struct {
 	ID        string
+	Title     string
 	UpdatedAt time.Time
 }
 
@@ -394,9 +412,10 @@ func (m *Manager) listInProgressBeads(anvilPath string) ([]inProgressBead, error
 		return nil, fmt.Errorf("bd list --status=in_progress --json: %w\n%s", err, stderr.String())
 	}
 
-	// Parse JSON array of beads — we need "id" and "updated_at".
+	// Parse JSON array of beads — we need "id", "title", and "updated_at".
 	var raw []struct {
 		ID        string `json:"id"`
+		Title     string `json:"title"`
 		UpdatedAt string `json:"updated_at"`
 	}
 	if err := json.Unmarshal(stdout, &raw); err != nil {
@@ -406,12 +425,20 @@ func (m *Manager) listInProgressBeads(anvilPath string) ([]inProgressBead, error
 	beads := make([]inProgressBead, len(raw))
 	for i, b := range raw {
 		beads[i].ID = b.ID
+		beads[i].Title = b.Title
 		// Parse RFC3339 timestamp; zero value if missing/unparseable (treated as old).
 		if t, err := time.Parse(time.RFC3339, b.UpdatedAt); err == nil {
 			beads[i].UpdatedAt = t
 		}
 	}
 	return beads, nil
+}
+
+// ResetBead marks a bead as open via bd update and clears the assignee.
+// This is exported so the daemon's IPC handler can reset a bead when the user
+// chooses the "Recover" action in the orphan dialog.
+func (m *Manager) ResetBead(beadID, anvilPath string) error {
+	return m.resetBead(beadID, anvilPath)
 }
 
 // CleanupWorktrees removes all worktrees across all anvils (for full shutdown).

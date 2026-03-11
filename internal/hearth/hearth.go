@@ -198,6 +198,32 @@ func mergeMenuLabels() [mergeMenuCount]string {
 	}
 }
 
+// OrphanDialogChoice represents an action for an orphaned bead.
+type OrphanDialogChoice int
+
+const (
+	OrphanActionRecover OrphanDialogChoice = iota
+	OrphanActionClose
+	OrphanActionDiscard
+
+	orphanDialogChoiceCount = OrphanActionDiscard + 1
+)
+
+func orphanDialogLabels() [orphanDialogChoiceCount]string {
+	return [orphanDialogChoiceCount]string{
+		"Recover — reopen and re-queue for work",
+		"Close   — mark done (work already completed)",
+		"Discard — close without retry",
+	}
+}
+
+// OrphanResolveResultMsg is delivered asynchronously when an orphan resolve action completes.
+type OrphanResolveResultMsg struct {
+	BeadID string
+	Action string
+	Err    error
+}
+
 // Model is the Bubbletea model for the Hearth TUI.
 type Model struct {
 	// Panels
@@ -230,6 +256,10 @@ type Model struct {
 	// Callback for merging a PR (set by the caller).
 	OnMergePR func(prID, prNumber int, anvil string) error
 
+	// Callback for resolving an orphaned bead (set by the caller).
+	// Called with (beadID, anvil, action) where action is "recover", "close", or "discard".
+	OnResolveOrphan func(beadID, anvil, action string) error
+
 	// State
 	focused        Panel
 	queueVP        scrollViewport
@@ -261,6 +291,12 @@ type Model struct {
 	showMergeMenu bool
 	mergeMenuIdx  int
 	mergeTarget   *ReadyToMergeItem
+
+	// Orphan dialog overlay state — shown when orphaned beads need user decision.
+	orphanQueue       []PendingOrphanItem // beads awaiting user decision
+	showOrphanDialog  bool
+	orphanDialogIdx   int
+	orphanTarget      *PendingOrphanItem // bead currently shown in dialog
 
 	// Log viewer overlay state
 	showLogViewer  bool
@@ -398,6 +434,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd := m.executeMergeAction(MergeMenuChoice(m.mergeMenuIdx))
 				m.showMergeMenu = false
 				return m, cmd
+			}
+			return m, nil
+		}
+
+		// Orphan dialog intercepts all keys when open
+		if m.showOrphanDialog {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "j", "down":
+				m.orphanDialogIdx = (m.orphanDialogIdx + 1) % int(orphanDialogChoiceCount)
+			case "k", "up":
+				m.orphanDialogIdx = (m.orphanDialogIdx + int(orphanDialogChoiceCount) - 1) % int(orphanDialogChoiceCount)
+			case "enter":
+				cmd := m.executeOrphanAction(OrphanDialogChoice(m.orphanDialogIdx))
+				return m, cmd
+			case "esc", "q":
+				// Esc = skip this orphan for now; it will reappear on the next poll.
+				m.showOrphanDialog = false
+				m.orphanTarget = nil
+				m.dequeueNextOrphan()
 			}
 			return m, nil
 		}
@@ -564,6 +621,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Dismiss overlays on left or right mouse button press
 		if msg.Action == tea.MouseActionPress &&
 			(msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight) {
+			if m.showOrphanDialog {
+				// Orphan dialog requires explicit keyboard action; mouse click is ignored.
+				return m, nil
+			}
 			if m.showActionMenu || m.showQueueActionMenu || m.showMergeMenu {
 				m.showActionMenu = false
 				m.showQueueActionMenu = false
@@ -646,6 +707,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UpdateReadyToMergeMsg:
 		m.readyToMerge = msg.Items
 		m.readyToMergeVP.ClampToTotal(len(msg.Items))
+
+	case UpdatePendingOrphansMsg:
+		// Merge newly discovered orphans into the queue, avoiding duplicates.
+		existing := make(map[string]bool, len(m.orphanQueue))
+		for _, o := range m.orphanQueue {
+			existing[o.Anvil+"/"+o.BeadID] = true
+		}
+		if m.orphanTarget != nil {
+			existing[m.orphanTarget.Anvil+"/"+m.orphanTarget.BeadID] = true
+		}
+		for _, item := range msg.Items {
+			if !existing[item.Anvil+"/"+item.BeadID] {
+				m.orphanQueue = append(m.orphanQueue, item)
+			}
+		}
+		// Show dialog if not already visible and we have queued orphans.
+		if !m.showOrphanDialog && len(m.orphanQueue) > 0 {
+			m.dequeueNextOrphan()
+		}
 
 	case NeedsAttentionErrorMsg:
 		errEvent := EventItem{
@@ -770,6 +850,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setStatus(fmt.Sprintf("Tagged %s for dispatch", msg.BeadID), false)
 			} else {
 				m.setStatus(fmt.Sprintf("Closed %s", msg.BeadID), false)
+			}
+		}
+
+	case OrphanResolveResultMsg:
+		if msg.Err != nil {
+			m.setStatus(fmt.Sprintf("Failed to resolve orphan %s: %v", msg.BeadID, msg.Err), true)
+		} else {
+			switch msg.Action {
+			case "recover":
+				m.setStatus(fmt.Sprintf("Orphan %s recovered — re-queued for work", msg.BeadID), false)
+			case "close":
+				m.setStatus(fmt.Sprintf("Orphan %s closed (work completed)", msg.BeadID), false)
+			case "discard":
+				m.setStatus(fmt.Sprintf("Orphan %s discarded", msg.BeadID), false)
 			}
 		}
 
@@ -900,6 +994,9 @@ func (m *Model) View() string {
 	// Render overlays on top
 	if m.showLogViewer {
 		overlay := m.renderLogViewer()
+		view = placeOverlay(m.width, m.height, overlay, view)
+	} else if m.showOrphanDialog {
+		overlay := m.renderOrphanDialog()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.showActionMenu {
 		overlay := m.renderActionMenu()
@@ -1312,6 +1409,99 @@ func (m *Model) renderActionMenu() string {
 	popup := actionMenuStyle.Width(menuWidth).Render(content)
 
 	return popup
+}
+
+// dequeueNextOrphan shows the next orphan from the queue, or hides the dialog
+// if the queue is empty.
+func (m *Model) dequeueNextOrphan() {
+	if len(m.orphanQueue) == 0 {
+		m.showOrphanDialog = false
+		m.orphanTarget = nil
+		return
+	}
+	item := m.orphanQueue[0]
+	m.orphanQueue = m.orphanQueue[1:]
+	m.orphanTarget = &item
+	m.orphanDialogIdx = 0
+	m.showOrphanDialog = true
+}
+
+// executeOrphanAction sends the user's resolution choice to the daemon.
+func (m *Model) executeOrphanAction(choice OrphanDialogChoice) tea.Cmd {
+	if m.orphanTarget == nil {
+		m.showOrphanDialog = false
+		return nil
+	}
+	target := m.orphanTarget
+	m.showOrphanDialog = false
+	m.orphanTarget = nil
+	m.dequeueNextOrphan()
+
+	var action string
+	switch choice {
+	case OrphanActionRecover:
+		action = "recover"
+	case OrphanActionClose:
+		action = "close"
+	case OrphanActionDiscard:
+		action = "discard"
+	default:
+		return nil
+	}
+
+	if m.OnResolveOrphan == nil {
+		m.setStatus(fmt.Sprintf("Orphan resolution unavailable for %s", target.BeadID), true)
+		return nil
+	}
+
+	beadID, anvil := target.BeadID, target.Anvil
+	cb := m.OnResolveOrphan
+	return func() tea.Msg {
+		return OrphanResolveResultMsg{BeadID: beadID, Action: action, Err: cb(beadID, anvil, action)}
+	}
+}
+
+// renderOrphanDialog renders the orphan recovery dialog overlay.
+func (m *Model) renderOrphanDialog() string {
+	if m.orphanTarget == nil {
+		return ""
+	}
+	target := m.orphanTarget
+	menuWidth := 62
+	contentWidth := menuWidth - actionMenuStyle.GetHorizontalFrameSize()
+	labels := orphanDialogLabels()
+
+	var lines []string
+	lines = append(lines, actionMenuTitleStyle.Render("Orphan Worker Detected"))
+
+	titleLine := target.BeadID
+	if target.Title != "" {
+		titleLine += ": " + truncate(target.Title, contentWidth-len(target.BeadID)-2)
+	}
+	lines = append(lines, dimStyle.Render(titleLine))
+	lines = append(lines, dimStyle.Render("No active worker found. What should happen?"))
+	lines = append(lines, "")
+
+	for i, label := range labels {
+		cursor := "  "
+		if i == m.orphanDialogIdx {
+			cursor = "> "
+			label = actionMenuSelectedStyle.Render(label)
+		} else {
+			label = dimStyle.Render(label)
+		}
+		lines = append(lines, cursor+label)
+	}
+
+	lines = append(lines, "")
+	hint := "j/k: move  Enter: select  Esc: skip"
+	if pending := len(m.orphanQueue); pending > 0 {
+		hint += fmt.Sprintf("  (%d more pending)", pending)
+	}
+	lines = append(lines, dimStyle.Render(hint))
+
+	content := strings.Join(lines, "\n")
+	return actionMenuStyle.Width(menuWidth).Render(content)
 }
 
 // QueueActionResultMsg is delivered asynchronously when a queue action (tag/close) completes.
