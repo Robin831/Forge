@@ -436,16 +436,18 @@ func (m *Manager) CleanupWorktrees() {
 	}
 }
 
-// resetBead marks a bead as open via bd update.
+// resetBead marks a bead as open via bd update and clears the assignee.
+// Clearing the assignee is required so the poller can re-dispatch the bead —
+// the poller filters out any bead with a non-empty assignee.
 func (m *Manager) resetBead(beadID, anvilPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open", "--json"))
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open", "--assignee=", "--json"))
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("bd update %s --status=open --json: %w\n%s", beadID, err, out)
+		return fmt.Errorf("bd update %s --status=open --assignee= --json: %w\n%s", beadID, err, out)
 	}
 	return nil
 }

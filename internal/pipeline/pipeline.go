@@ -148,11 +148,14 @@ type Params struct {
 func releaseBead(beadID, anvilPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open", "--json"))
+	// Clear both status and assignee so the poller can re-dispatch the bead.
+	// The poller filters out any bead with a non-empty assignee (poller.go),
+	// so failing to clear the assignee would leave the bead permanently invisible.
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open", "--assignee=", "--json"))
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("bd update %s --status=open: %w: %s", beadID, err, out)
+		return fmt.Errorf("bd update %s --status=open --assignee= --json: %w: %s", beadID, err, out)
 	}
 	return nil
 }
