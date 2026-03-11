@@ -270,6 +270,11 @@ type NotificationsConfig struct {
 	// These receive a simple JSON object (not a Teams Adaptive Card) suitable
 	// for custom dashboards or other receivers.
 	ReleaseWebhookURLs []string `mapstructure:"release_webhook_urls" yaml:"release_webhook_urls,omitempty"`
+	// PRReadyWebhookURLs is a list of generic JSON webhook URLs that receive
+	// a pr_ready_to_merge payload when a PR enters ready-to-merge state.
+	// These receive a simple JSON object (not a Teams Adaptive Card) suitable
+	// for custom dashboards or other receivers.
+	PRReadyWebhookURLs []string `mapstructure:"pr_ready_webhook_urls" yaml:"pr_ready_webhook_urls,omitempty"`
 }
 
 // Defaults returns a Config with sensible default values.

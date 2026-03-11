@@ -228,7 +228,13 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		// Reset occurred during poll: treat as first check to ensure transitions are detected.
 		// Seed with "good" states so that if the PR is already in a "bad" state (failing,
 		// conflicting, etc.), the transition will be detected on this first poll.
-		lastSnap = &prSnapshot{CIPassing: true}
+		// For readiness fields, seed from newSnap to avoid spurious pr_ready_to_merge
+		// notifications on daemon restart for PRs that were already ready.
+		lastSnap = &prSnapshot{
+			CIPassing:         true,
+			HasApproval:       newSnap.HasApproval,
+			HasPendingReviews: newSnap.HasPendingReviews,
+		}
 	}
 	// Update snapshot while holding the lock
 	m.lastStatuses[key] = newSnap

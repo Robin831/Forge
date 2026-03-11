@@ -669,15 +669,34 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 
 // handleBellowsNotifications sends webhook notifications for PR status events.
 // It is registered as a second bellows event handler alongside lifecycleMgr.HandleEvent.
+// Notifications are dispatched asynchronously to avoid blocking Bellows polling.
 func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.PREvent) {
 	if event.EventType != bellows.EventPRReadyToMerge {
 		return
 	}
-	if d.notifier == nil {
+	if d.notifier == nil && len(d.cfg.Load().Notifications.PRReadyWebhookURLs) == 0 {
 		return
 	}
 	title := d.db.BeadTitle(event.BeadID, event.Anvil)
-	d.notifier.PRReadyToMerge(ctx, event.Anvil, event.BeadID, event.PRNumber, event.PRURL, title)
+	go func(anvil, beadID string, prNumber int, prURL, title string) {
+		if d.notifier != nil {
+			d.notifier.PRReadyToMerge(ctx, anvil, beadID, prNumber, prURL, title)
+		}
+		cfg := d.cfg.Load()
+		if cfg != nil && cfg.Notifications.Enabled {
+			payload := notify.PRReadyToMergePayload{
+				Event:    "pr_ready_to_merge",
+				Anvil:    anvil,
+				BeadID:   beadID,
+				PRNumber: prNumber,
+				PRURL:    prURL,
+				PRTitle:  title,
+			}
+			for _, u := range cfg.Notifications.PRReadyWebhookURLs {
+				notify.SendGenericPRReadyToMerge(ctx, u, payload, d.logger)
+			}
+		}
+	}(event.Anvil, event.BeadID, event.PRNumber, event.PRURL, title)
 }
 
 // drainPendingAction checks whether a lifecycle action was parked for beadID
