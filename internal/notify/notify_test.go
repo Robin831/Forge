@@ -25,13 +25,18 @@ func newTestNotifier(t *testing.T, webhookURL string) *notify.Notifier {
 // captureRequest starts a test server that captures the first incoming request body.
 func captureRequest(t *testing.T) (serverURL string, body func() []byte) {
 	t.Helper()
-	var captured []byte
+	ch := make(chan []byte, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		captured, _ = io.ReadAll(r.Body)
+		b, _ := io.ReadAll(r.Body)
+		// Capture only the first request body without blocking on subsequent requests.
+		select {
+		case ch <- b:
+		default:
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(srv.Close)
-	return srv.URL, func() []byte { return captured }
+	return srv.URL, func() []byte { return <-ch }
 }
 
 // TestReleasePublished_SendsAdaptiveCard verifies that ReleasePublished posts a

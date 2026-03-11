@@ -61,18 +61,18 @@ Example (from a release script):
 			Level: slog.LevelInfo,
 		}))
 
-		// Resolve Teams webhook URL: flag > env var > config
+		// Resolve Teams webhook URL: flag > env var > config (only if notifications are enabled)
 		teamsURL := webhookURLFlag
 		if teamsURL == "" {
 			teamsURL = os.Getenv("FORGE_NOTIFICATIONS_TEAMS_WEBHOOK_URL")
 		}
-		if teamsURL == "" && cfg != nil {
+		if teamsURL == "" && cfg != nil && cfg.Notifications.Enabled {
 			teamsURL = cfg.Notifications.TeamsWebhookURL
 		}
 
-		// Collect generic webhook URLs: flag + config
+		// Collect generic webhook URLs: flag + config (only if notifications are enabled)
 		allExtraURLs := append([]string{}, extraURLs...)
-		if cfg != nil {
+		if cfg != nil && cfg.Notifications.Enabled {
 			allExtraURLs = append(allExtraURLs, cfg.Notifications.ReleaseWebhookURLs...)
 		}
 		// Also check env var for a single generic webhook URL
@@ -80,7 +80,7 @@ Example (from a release script):
 			allExtraURLs = append(allExtraURLs, envURL)
 		}
 
-		sent := 0
+		attempted := 0
 
 		// Send Teams Adaptive Card
 		if teamsURL != "" {
@@ -93,9 +93,9 @@ Example (from a release script):
 				Enabled:    true,
 			}, logger)
 			n.ReleasePublished(rootCtx, version, tag, releaseURL, changelogSummary)
-			sent++
+			attempted++
 			if !jsonOutput {
-				fmt.Printf("Notified Teams webhook (%s)\n", version)
+				fmt.Printf("Attempted Teams webhook notification (%s)\n", version)
 			}
 		}
 
@@ -113,18 +113,18 @@ Example (from a release script):
 				continue
 			}
 			notify.SendGenericRelease(rootCtx, u, payload, logger)
-			sent++
+			attempted++
 			if !jsonOutput {
-				fmt.Printf("Notified webhook: %s (%s)\n", u, version)
+				fmt.Printf("Attempted webhook notification: %s (%s)\n", u, version)
 			}
 		}
 
-		if sent == 0 {
+		if attempted == 0 {
 			fmt.Fprintln(os.Stderr, "No webhook URLs configured. Set notifications.teams_webhook_url or notifications.release_webhook_urls in forge.yaml, or use --webhook-url / --extra-url flags.")
 		}
 
 		if jsonOutput {
-			fmt.Printf(`{"sent":%d,"version":%q}`+"\n", sent, version)
+			fmt.Printf(`{"attempted":%d,"version":%q}`+"\n", attempted, version)
 		}
 
 		return nil

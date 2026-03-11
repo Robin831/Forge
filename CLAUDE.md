@@ -60,7 +60,7 @@ forge notify release \
   --release-url https://github.com/org/forge/releases/tag/v1.2.3 \
   --changelog "- Added X\n- Fixed Y" \
   --webhook-url https://... \
-  --extra-url https://...    # All flags (--tag/--release-url/--changelog/--webhook-url/--extra-url optional)
+  --extra-url https://...    # --version required; other flags (--tag/--release-url/--changelog/--webhook-url/--extra-url) optional
 forge version                         # Print version information
 ```
 

@@ -4,7 +4,8 @@
 // in Teams channels. Generic JSON payloads are also supported for custom
 // receivers such as dashboards and Slack integrations (see SendGenericRelease).
 //
-// Disabled by default — configure notifications.teams_webhook_url in forge.yaml.
+// Disabled by default — configure notifications.teams_webhook_url and/or
+// notifications.release_webhook_urls (notifications.*) in forge.yaml.
 package notify
 
 import (
