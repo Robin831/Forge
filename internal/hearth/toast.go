@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 const (
@@ -50,6 +51,30 @@ var (
 			Foreground(lipgloss.Color("255"))
 )
 
+// truncateToVisualWidth truncates s so its visual width (counting wide chars as
+// 2 columns) does not exceed maxWidth, then appends suffix. If the string fits
+// within maxWidth it is returned unchanged (suffix not added).
+func truncateToVisualWidth(s string, maxWidth int, suffix string) string {
+	if lipgloss.Width(s) <= maxWidth {
+		return s
+	}
+	limit := maxWidth - lipgloss.Width(suffix)
+	if limit <= 0 {
+		return suffix
+	}
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := runewidth.RuneWidth(r)
+		if w+rw > limit {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+	}
+	return b.String() + suffix
+}
+
 // renderToasts renders the active toasts stacked vertically (newest last, so
 // newest appears at the bottom closest to the footer).
 func (m *Model) renderToasts() string {
@@ -58,10 +83,7 @@ func (m *Model) renderToasts() string {
 	}
 	parts := make([]string, len(m.toasts))
 	for i, t := range m.toasts {
-		text := t.message
-		if lipgloss.Width(text) > toastMaxWidth {
-			text = string([]rune(text)[:toastMaxWidth-3]) + "..."
-		}
+		text := truncateToVisualWidth(t.message, toastMaxWidth, "...")
 		if t.isError {
 			parts[i] = toastErrorStyle.Render(text)
 		} else {
