@@ -2711,7 +2711,7 @@ func verifyAnvilOnMain(ctx context.Context, logger *slog.Logger, anvilPath strin
 
 	// Try to checkout main, then master.
 	for _, branch := range []string{"main", "master"} {
-		checkoutCtx, checkoutCancel := context.WithTimeout(ctx, 30*time.Second)
+		checkoutCtx, checkoutCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		cmd := executil.HideWindow(exec.CommandContext(checkoutCtx, "git", "checkout", branch))
 		cmd.Dir = anvilPath
 		checkoutErr := cmd.Run()
