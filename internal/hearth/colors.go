@@ -4,6 +4,8 @@ import "github.com/charmbracelet/lipgloss"
 
 // Adaptive color palette — each pair auto-switches between dark and light
 // terminal backgrounds via lipgloss.AdaptiveColor (dark value / light value).
+// This is a functional behavior change: colors rendered on light terminals
+// will differ from the previous hardcoded dark-terminal-only values.
 //
 // Dark values are the original terminal-256 codes tuned for dark backgrounds.
 // Light values use darker equivalents that maintain contrast on light backgrounds.
