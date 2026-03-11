@@ -97,6 +97,14 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		_ = os.RemoveAll(worktreePath)
 	}
 
+	// Safety check: ensure the main repo is on main/master before creating a
+	// worktree. If a previous smith ran git checkout in the parent directory
+	// (corrupting the working environment), refuse immediately rather than
+	// silently proceeding on a wrong base.
+	if err := assertOnMainBranch(ctx, anvilPath); err != nil {
+		return nil, fmt.Errorf("anvil branch safety check: %w", err)
+	}
+
 	// Fetch origin
 	if err := gitCmd(ctx, anvilPath, "fetch", "origin"); err != nil {
 		return nil, fmt.Errorf("git fetch: %w", err)
@@ -296,6 +304,82 @@ func resolveBaseRef(ctx context.Context, repoPath string) (string, error) {
 // git rev-parse --is-inside-work-tree inside it.
 func isValidWorktree(ctx context.Context, dir string) bool {
 	return gitCmd(ctx, dir, "rev-parse", "--is-inside-work-tree") == nil
+}
+
+// CurrentBranch returns the currently checked-out branch name for the
+// repository at repoPath. Returns "HEAD" for detached HEAD state.
+// Returns an error if git cannot determine the branch.
+func CurrentBranch(ctx context.Context, repoPath string) (string, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "rev-parse", "--abbrev-ref", "HEAD"))
+	cmd.Dir = repoPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return "", fmt.Errorf("git rev-parse --abbrev-ref HEAD: %s: %w", msg, err)
+		}
+		return "", fmt.Errorf("git rev-parse --abbrev-ref HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// isMainBranch reports whether branch is a valid default branch name (main,
+// master, or detached HEAD).
+func isMainBranch(branch string) bool {
+	return branch == "main" || branch == "master" || branch == "HEAD"
+}
+
+// VerifyAndRecoverMain checks that the repository at repoPath is checked out to
+// main, master, or a detached HEAD. If it is on a different branch, it attempts
+// to recover by checking out main or master. It returns a boolean indicating whether
+// recovery was attempted, the name of the original branch, and any error that occurred.
+// If the current branch cannot be determined, it returns false, "", and the error.
+func VerifyAndRecoverMain(ctx context.Context, repoPath string) (recovered bool, originalBranch string, err error) {
+	currentBranch, err := CurrentBranch(ctx, repoPath)
+	if err != nil {
+		return false, "", fmt.Errorf("getting current branch: %w", err)
+	}
+
+	if isMainBranch(currentBranch) {
+		return false, currentBranch, nil
+	}
+
+	// Attempt recovery with a bounded timeout, honoring caller cancellation.
+	recoveryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var checkoutErr error
+	for _, branch := range []string{"main", "master"} {
+		checkoutErr = gitCmd(recoveryCtx, repoPath, "checkout", branch)
+		if checkoutErr == nil {
+			return true, currentBranch, nil
+		}
+	}
+
+	return true, currentBranch, fmt.Errorf("failed to checkout main or master: %w", checkoutErr)
+}
+
+// assertOnMainBranch returns an error if the repository at repoPath is not
+// checked out to main, master, or a detached HEAD. This is a pre-flight guard
+// before creating a worktree — if a previous smith accidentally checked out a
+// feature branch in the main repo, this prevents further corruption.
+func assertOnMainBranch(ctx context.Context, repoPath string) error {
+	currentBranch, err := CurrentBranch(ctx, repoPath)
+	if err != nil {
+		// Cannot determine current branch — allow creation to proceed; the
+		// subsequent git fetch will fail more informatively if something is broken.
+		return nil
+	}
+
+	if isMainBranch(currentBranch) {
+		return nil
+	}
+
+	return fmt.Errorf("main repo is checked out to %q instead of main/master — "+
+		"refusing to create worktree to prevent environment corruption", currentBranch)
 }
 
 // gitCmd runs a git command in the given directory with a timeout.

@@ -817,6 +817,18 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		maxTotal = 4
 	}
 
+	// Verify each anvil is checked out to main/master before polling.
+	// A smith subprocess running git commands in the parent directory can
+	// corrupt the working environment for all subsequent workers.
+	for name, anvil := range cfg.Anvils {
+		if err := verifyAnvilOnMain(ctx, d.logger, anvil.Path); err != nil {
+			d.logger.Error("anvil branch check failed — polling will continue but dispatch may be affected",
+				"anvil", name, "error", err)
+			_ = d.db.LogEvent(state.EventPollError,
+				fmt.Sprintf("anvil branch check failed: %v", err), "", name)
+		}
+	}
+
 	// Always poll so the Hearth TUI queue cache stays current even when all
 	// smith slots are occupied. Capacity is checked below before dispatching.
 	p := poller.New(cfg.Anvils)
@@ -1111,6 +1123,17 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	defer d.activeBeads.Delete(bead.ID)
 
 	d.logger.Info("dispatching bead", "bead", bead.ID, "anvil", bead.Anvil, "title", bead.Title)
+
+	// Re-verify the anvil is on main/master immediately before spawning any
+	// subprocess. This catches race conditions where the branch changed between
+	// the poll-loop check and actual dispatch.
+	if err := verifyAnvilOnMain(ctx, d.logger, anvilCfg.Path); err != nil {
+		d.logger.Error("anvil branch check failed at dispatch time, aborting bead",
+			"bead", bead.ID, "anvil", bead.Anvil, "error", err)
+		d.recordDispatchFailure(bead.ID, bead.Anvil,
+			fmt.Sprintf("anvil branch check failed: %v", err))
+		return
+	}
 
 	// Handle epic beads: when the Crucible is enabled and the bead has children,
 	// fall through to the Crucible path which handles branch creation, child
@@ -2662,4 +2685,36 @@ func filterDepcheckAnvils(anvils map[string]string, anvilCfgs map[string]config.
 		result[name] = path
 	}
 	return result
+}
+
+// verifyAnvilOnMain checks that the anvil root directory is checked out to
+// main or master. If the repo is on a different branch (e.g. because a
+// smith subprocess ran git checkout in the parent directory), it logs a
+// warning and attempts to recover by checking out main/master.
+// Returns an error only if recovery is attempted and fails. If the current
+// branch cannot be determined, the function is a no-op (non-fatal).
+func verifyAnvilOnMain(ctx context.Context, logger *slog.Logger, anvilPath string) error {
+	if strings.TrimSpace(anvilPath) == "" {
+		logger.Warn("verifyAnvilOnMain: empty anvil path; skipping branch verification")
+		return nil
+	}
+
+	recovered, originalBranch, err := worktree.VerifyAndRecoverMain(ctx, anvilPath)
+	if err != nil {
+		if originalBranch == "" {
+			// Cannot determine current branch — non-fatal, just warn.
+			logger.Warn("verifyAnvilOnMain: could not determine current branch",
+				"anvil", anvilPath, "error", err)
+			return nil
+		}
+		return fmt.Errorf("anvil %q is checked out to %q instead of main/master and checkout recovery failed: %w",
+			anvilPath, originalBranch, err)
+	}
+
+	if recovered {
+		logger.Warn("anvil repo was not on main/master — performed recovery checkout",
+			"anvil", anvilPath, "original_branch", originalBranch)
+	}
+
+	return nil
 }
