@@ -96,16 +96,15 @@ func (m *Model) renderToasts() string {
 // toastEventKey returns a fingerprint string for an EventItem, used to detect
 // which events are new since the last poll cycle.
 func toastEventKey(ev EventItem) string {
-	return ev.Timestamp + "\x00" + ev.Type + "\x00" + ev.Message
+	return ev.Timestamp + "\x00" + ev.Type + "\x00" + ev.BeadID + "\x00" + ev.Message
 }
 
 // toastForEvent returns the toast message, error flag, and true if the event
 // type warrants a toast notification. Returns ("", false, false) otherwise.
 func toastForEvent(ev EventItem) (message string, isError bool, ok bool) {
+	// Use the first line of the event message as the primary display value.
+	// Event-specific synthesized fallbacks (e.g. "bd-55 closed") are used when msg is empty.
 	msg := ev.Message
-	if msg == "" {
-		msg = ev.BeadID
-	}
 	// Trim to first line only — event messages can include multi-line details.
 	if nl := strings.IndexByte(msg, '\n'); nl != -1 {
 		msg = msg[:nl]
@@ -158,6 +157,7 @@ func firstOf(s, fallback string) string {
 
 // placeToastsOverlay places the overlay string at the bottom-center of the
 // background, positioned just above the footer (last footerH rows).
+// It delegates the ANSI-safe line compositing to placeOverlayAt.
 func placeToastsOverlay(width, height, footerH int, overlay, background string) string {
 	overlayLines := strings.Split(overlay, "\n")
 	bgLines := strings.Split(background, "\n")
@@ -183,28 +183,6 @@ func placeToastsOverlay(width, height, footerH int, overlay, background string) 
 		startX = 0
 	}
 
-	for i, overlayLine := range overlayLines {
-		bgIdx := startY + i
-		if bgIdx >= len(bgLines) {
-			break
-		}
-		bgLine := bgLines[bgIdx]
-		bgRunes := []rune(bgLine)
-		olRunes := []rune(overlayLine)
-
-		bgCutStart := visualToRuneIndex(bgLine, startX)
-		var result []rune
-		result = append(result, bgRunes[:bgCutStart]...)
-		for lipgloss.Width(string(result)) < startX {
-			result = append(result, ' ')
-		}
-		result = append(result, olRunes...)
-		bgCutEnd := visualToRuneIndex(bgLine, startX+overlayWidth)
-		if bgCutEnd < len(bgRunes) {
-			result = append(result, bgRunes[bgCutEnd:]...)
-		}
-		bgLines[bgIdx] = string(result)
-	}
-
+	placeOverlayAt(startX, startY, overlayWidth, overlayLines, bgLines)
 	return strings.Join(bgLines[:height], "\n")
 }

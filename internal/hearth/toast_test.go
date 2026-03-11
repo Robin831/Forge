@@ -112,9 +112,9 @@ func TestRenderToasts_MultipleToasts(t *testing.T) {
 	}
 }
 
-// TestRenderToasts_WideCharNoParticle verifies that a wide-character message
+// TestRenderToasts_WideCharNoPanic verifies that a wide-character message
 // does not cause a panic and is truncated to fit within toastMaxWidth.
-func TestRenderToasts_WideCharNoParticle(t *testing.T) {
+func TestRenderToasts_WideCharNoPanic(t *testing.T) {
 	// 35 CJK chars = visual width 70 > toastMaxWidth (60).
 	// Previous code would panic slicing []rune(text)[:57] on a 35-rune slice.
 	msg := strings.Repeat("漢", 35)
@@ -182,7 +182,8 @@ func TestToastForEvent_PRMerged(t *testing.T) {
 	}
 }
 
-// TestToastForEvent_BeadClosed verifies bead_closed event uses BeadID fallback.
+// TestToastForEvent_BeadClosed verifies bead_closed event uses synthesized fallback
+// "bd-55 closed" (not just the raw BeadID) when Message is empty.
 func TestToastForEvent_BeadClosed(t *testing.T) {
 	ev := EventItem{Type: "bead_closed", BeadID: "bd-55", Message: ""}
 	msg, isError, ok := toastForEvent(ev)
@@ -192,8 +193,8 @@ func TestToastForEvent_BeadClosed(t *testing.T) {
 	if isError {
 		t.Error("expected isError=false for bead_closed")
 	}
-	if !strings.Contains(msg, "bd-55") {
-		t.Errorf("expected BeadID in message, got %q", msg)
+	if !strings.Contains(msg, "bd-55 closed") {
+		t.Errorf("expected synthesized fallback 'bd-55 closed' in message, got %q", msg)
 	}
 }
 
@@ -209,7 +210,8 @@ func TestToastForEvent_SmithFailed(t *testing.T) {
 	}
 }
 
-// TestToastForEvent_LifecycleExhausted verifies lifecycle_exhausted is an error toast.
+// TestToastForEvent_LifecycleExhausted verifies lifecycle_exhausted is an error toast
+// with synthesized fallback "bd-7 needs attention" (not just the raw BeadID).
 func TestToastForEvent_LifecycleExhausted(t *testing.T) {
 	ev := EventItem{Type: "lifecycle_exhausted", BeadID: "bd-7", Message: ""}
 	msg, isError, ok := toastForEvent(ev)
@@ -219,8 +221,8 @@ func TestToastForEvent_LifecycleExhausted(t *testing.T) {
 	if !isError {
 		t.Error("expected isError=true for lifecycle_exhausted")
 	}
-	if !strings.Contains(msg, "bd-7") {
-		t.Errorf("expected BeadID in message, got %q", msg)
+	if !strings.Contains(msg, "bd-7 needs attention") {
+		t.Errorf("expected synthesized fallback 'bd-7 needs attention' in message, got %q", msg)
 	}
 }
 

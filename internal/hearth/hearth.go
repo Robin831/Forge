@@ -698,10 +698,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if tmsg, isError, ok := toastForEvent(ev); ok {
 					t := toast{id: m.nextToastID, message: tmsg, isError: isError}
 					m.nextToastID++
-					// Prepend so newest appears first; cap at maxToasts.
-					m.toasts = append([]toast{t}, m.toasts...)
+					// Append so newest is last (closest to footer); cap at maxToasts by dropping oldest.
+					m.toasts = append(m.toasts, t)
 					if len(m.toasts) > maxToasts {
-						m.toasts = m.toasts[:maxToasts]
+						m.toasts = m.toasts[1:]
 					}
 					toastCmds = append(toastCmds, scheduleToastDismiss(t.id))
 				}
@@ -2631,33 +2631,10 @@ func visualToRuneIndex(s string, col int) int {
 	return i
 }
 
-// placeOverlay centers the overlay string on top of the background string.
-func placeOverlay(width, height int, overlay, background string) string {
-	overlayLines := strings.Split(overlay, "\n")
-	bgLines := strings.Split(background, "\n")
-
-	// Ensure background has enough lines
-	for len(bgLines) < height {
-		bgLines = append(bgLines, "")
-	}
-
-	overlayHeight := len(overlayLines)
-	overlayWidth := 0
-	for _, l := range overlayLines {
-		if w := lipgloss.Width(l); w > overlayWidth {
-			overlayWidth = w
-		}
-	}
-
-	startY := (height - overlayHeight) / 2
-	startX := (width - overlayWidth) / 2
-	if startY < 0 {
-		startY = 0
-	}
-	if startX < 0 {
-		startX = 0
-	}
-
+// placeOverlayAt composites overlayLines onto bgLines at position (startX, startY).
+// It is the shared ANSI-safe implementation used by placeOverlay and placeToastsOverlay,
+// preventing the two callers from drifting apart over time.
+func placeOverlayAt(startX, startY, overlayWidth int, overlayLines, bgLines []string) {
 	for i, overlayLine := range overlayLines {
 		bgIdx := startY + i
 		if bgIdx >= len(bgLines) {
@@ -2690,7 +2667,36 @@ func placeOverlay(width, height int, overlay, background string) string {
 		}
 		bgLines[bgIdx] = string(result)
 	}
+}
 
+// placeOverlay centers the overlay string on top of the background string.
+func placeOverlay(width, height int, overlay, background string) string {
+	overlayLines := strings.Split(overlay, "\n")
+	bgLines := strings.Split(background, "\n")
+
+	// Ensure background has enough lines
+	for len(bgLines) < height {
+		bgLines = append(bgLines, "")
+	}
+
+	overlayHeight := len(overlayLines)
+	overlayWidth := 0
+	for _, l := range overlayLines {
+		if w := lipgloss.Width(l); w > overlayWidth {
+			overlayWidth = w
+		}
+	}
+
+	startY := (height - overlayHeight) / 2
+	startX := (width - overlayWidth) / 2
+	if startY < 0 {
+		startY = 0
+	}
+	if startX < 0 {
+		startX = 0
+	}
+
+	placeOverlayAt(startX, startY, overlayWidth, overlayLines, bgLines)
 	return strings.Join(bgLines[:height], "\n")
 }
 
