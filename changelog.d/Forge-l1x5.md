@@ -1,2 +1,0 @@
-category: Fixed
-- **PR title now reflects bead intent instead of incidental commit messages** - `ghpr.selectTitle` previously derived the PR title from the Smith's most recent commit subject, which could describe a secondary fix discovered during implementation rather than the bead's primary goal. The PR title is now anchored to the bead title (with bead ID suffix) when available, falling back to the commit subject only when no structured bead title is provided. (Forge-l1x5)

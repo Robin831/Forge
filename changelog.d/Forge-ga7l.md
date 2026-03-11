@@ -1,2 +1,0 @@
-category: Added
-- **`max_pipeline_iterations` config setting** - The pipeline's Smith-Warden loop now reads its iteration cap from `settings.max_pipeline_iterations` in `forge.yaml` (default: 5) instead of a hardcoded constant. Previously this was always 5 with no way to tune it. The existing `max_review_attempts` setting remains unchanged and continues to control the Bellows review-fix cycles after PR creation. (Forge-ga7l)

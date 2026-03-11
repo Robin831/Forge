@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.3.0] - 2026-03-11
+
+### Added
+
+- **Auto-learn skip events in Hearth event log** - When bellows auto-learn finds no Copilot comments or no new rules on a merged PR, an `auto_learn_skipped` event is now logged to the Hearth event log so operators can confirm the feature is running. (Forge-7spt)
+- **One-liner install script for Linux and macOS** - Added `install.sh` at the repo root that detects OS/arch, fetches the latest (or a pinned) release from GitHub, verifies the SHA256 checksum, and installs the `forge` binary to `~/bin`. The GoReleaser release body now includes the install command so it appears on every GitHub release page. (Forge-t3ba)
+- **Spinner animations for active workers and crucible phases** - The Hearth TUI now shows animated braille dot spinners (⣾⣽⣻⢿⡿⣟⣯⣷) next to running and reviewing workers, and next to active crucible phases (dispatching, started, final_pr), making it immediately obvious which workers are actively processing versus stalled. The spinner updates at 100ms intervals independently of the 2-second data refresh cycle. (Forge-3gjk)
+- **`max_pipeline_iterations` config setting** - The pipeline's Smith-Warden loop now reads its iteration cap from `settings.max_pipeline_iterations` in `forge.yaml` (default: 5) instead of a hardcoded constant. Previously this was always 5 with no way to tune it. The existing `max_review_attempts` setting remains unchanged and continues to control the Bellows review-fix cycles after PR creation. (Forge-ga7l)
+
+### Changed
+
+- **Hearth Ready to Merge action menu now shows PR title** - The merge action menu displays the bead title (resolved from queue cache or worker history) below the PR number header, matching the Queue action menu style. The menu width is also increased from 52 to 68 to match Queue action menu dimensions. (Forge-cqc6)
+
+### Fixed
+
+- **Bellows reliably retries CI fixes after failed attempts** - Bellows now directly detects when CI is still failing after a completed cifix attempt and re-emits EventCIFailed to trigger retries, rather than relying solely on snapshot cache resets which had timing issues with pending CI checks. (Forge-bzk6)
+- **Crucible child failure no longer causes orphan recovery loop** - When a crucible child fails, the child bead is now reset to open and marked needs_human so orphan recovery won't pick it up and dispatch it as a standalone bead outside crucible context. (Forge-flf0)
+- **Crucible child failures now correctly prevent standalone re-dispatch** - Failed crucible children use the "circuit breaker:" LastError prefix and the dispatch filter now checks all needs_human=1 rows, preventing re-dispatch outside crucible context. Also preserves existing retry counters and logs UpsertRetry errors. (Forge-roki)
+- **Decomposed child beads now inherit the parent's auto_dispatch tag** - When Schematic decomposes a bead into children, the daemon now copies the `forgeReady` label (or whatever `auto_dispatch_tag` is configured) from the parent to each child, so they are picked up by the poller immediately instead of sitting in the queue forever. (Forge-fk5f)
+- **Decomposed flag no longer clears retry record when no children created** - When schematic ran with `ActionDecompose` but produced zero sub-beads, the daemon incorrectly cleared the retry record, causing the bead to silently disappear instead of surfacing in Needs Attention. Now the retry record is only cleared when actual child beads were created. (Forge-0qj7)
+- **Failed pipeline now clears bead assignee on release** - When a pipeline fails and the bead is released back to open status, the assignee is now also cleared so the poller can re-dispatch the bead. Previously, the assignee set during claim was never cleared on failure, causing the bead to remain permanently invisible to the poller. `releaseBead` (pipeline.go), `resetBead` (shutdown.go), and the `forge queue retry` IPC handler (daemon.go) now include `--assignee=` in the `bd update` call. Note: other paths that reset bead status (e.g. Crucible and Schematic parent resets) are not changed by this fix. (Forge-3kdt)
+- **Orphan recovery no longer resets active Crucible parent beads** - The periodic orphan recovery scan previously could reset a Crucible parent bead back to `open` when its pending worker row was absent or terminal, even though the Crucible goroutine was still running. The recovery now consults the in-process `crucibleStatuses` map and skips any bead that has an active Crucible run. (Forge-epfe)
+- **PR title now reflects bead intent instead of incidental commit messages** - `ghpr.selectTitle` previously derived the PR title from the Smith's most recent commit subject, which could describe a secondary fix discovered during implementation rather than the bead's primary goal. The PR title is now anchored to the bead title (with bead ID suffix) when available, falling back to the commit subject only when no structured bead title is provided. (Forge-l1x5)
+- **PR titles and descriptions now prefer English when available** - When beads have non-English titles or descriptions (e.g. Norwegian), the PR title attempts to use Smith's English commit subject when available instead of the raw bead title, and the PR body leads with the English change summary from Warden review when present. The original bead description is preserved under an "Original Issue" section for context. (Forge-aaxy)
+
+
 
 ## [0.2.0] - 2026-03-10
 
