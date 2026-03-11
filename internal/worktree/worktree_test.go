@@ -136,3 +136,65 @@ func TestAssertOnMainBranch_NotAGitRepo(t *testing.T) {
 		t.Errorf("assertOnMainBranch on non-repo: expected nil (non-fatal), got %v", err)
 	}
 }
+
+func TestVerifyAndRecoverMain_OnMain(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "main")
+
+	recovered, branch, err := VerifyAndRecoverMain(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if recovered {
+		t.Errorf("expected recovered=false on main branch")
+	}
+	if branch != "main" {
+		t.Errorf("expected branch=main, got %q", branch)
+	}
+}
+
+func TestVerifyAndRecoverMain_OnFeatureBranch(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "main")
+
+	// Simulate environment corruption: checkout a feature branch.
+	cmd := exec.Command("git", "checkout", "-b", "forge/Forge-x1bs")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout -b: %v\n%s", err, out)
+	}
+
+	recovered, branch, err := VerifyAndRecoverMain(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("unexpected error during recovery: %v", err)
+	}
+	if !recovered {
+		t.Errorf("expected recovered=true on feature branch")
+	}
+	if branch != "forge/Forge-x1bs" {
+		t.Errorf("expected original branch=forge/Forge-x1bs, got %q", branch)
+	}
+
+	// Verify we are back on main
+	current, _ := CurrentBranch(context.Background(), dir)
+	if current != "main" {
+		t.Errorf("expected to be recovered to main, got %q", current)
+	}
+}
+
+func TestVerifyAndRecoverMain_RecoveryFails(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "feature-only")
+	// There is no main/master branch, so recovery should fail.
+
+	recovered, branch, err := VerifyAndRecoverMain(context.Background(), dir)
+	if err == nil {
+		t.Fatalf("expected error when recovery fails, got nil")
+	}
+	if !recovered {
+		t.Errorf("expected recovered=true since recovery was attempted")
+	}
+	if branch != "feature-only" {
+		t.Errorf("expected original branch=feature-only, got %q", branch)
+	}
+}

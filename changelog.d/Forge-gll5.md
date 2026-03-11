@@ -1,2 +1,2 @@
 category: Fixed
-- **Prevent worktree feature branch hijacking** - Fixed a bug where a canceled daemon shutdown could cause the `verifyAnvilOnMain` recovery process to fail, potentially leaving the main repository checked out to a feature branch. (Forge-gll5)
+- **Fixed main branch hijacking by worktree feature branches** - Moved the branch recovery logic to the worktree package with unit tests and added checks in the daemon to verify the anvil root is on main/master to prevent working environment corruption. (Forge-gll5)

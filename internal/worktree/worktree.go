@@ -328,6 +328,36 @@ func isMainBranch(branch string) bool {
 	return branch == "main" || branch == "master" || branch == "HEAD"
 }
 
+// VerifyAndRecoverMain checks that the repository at repoPath is checked out to
+// main, master, or a detached HEAD. If it is on a different branch, it attempts
+// to recover by checking out main or master. It returns a boolean indicating whether
+// recovery was attempted, the name of the original branch, and any error that occurred.
+// If the current branch cannot be determined, it returns false, "", and the error.
+func VerifyAndRecoverMain(ctx context.Context, repoPath string) (recovered bool, originalBranch string, err error) {
+	currentBranch, err := CurrentBranch(ctx, repoPath)
+	if err != nil {
+		return false, "", fmt.Errorf("getting current branch: %w", err)
+	}
+
+	if isMainBranch(currentBranch) {
+		return false, currentBranch, nil
+	}
+
+	// Attempt recovery
+	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+
+	var checkoutErr error
+	for _, branch := range []string{"main", "master"} {
+		checkoutErr = gitCmd(recoveryCtx, repoPath, "checkout", branch)
+		if checkoutErr == nil {
+			return true, currentBranch, nil
+		}
+	}
+
+	return true, currentBranch, fmt.Errorf("failed to checkout main or master: %w", checkoutErr)
+}
+
 // assertOnMainBranch returns an error if the repository at repoPath is not
 // checked out to main, master, or a detached HEAD. This is a pre-flight guard
 // before creating a worktree — if a previous smith accidentally checked out a

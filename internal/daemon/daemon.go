@@ -2694,35 +2694,24 @@ func filterDepcheckAnvils(anvils map[string]string, anvilCfgs map[string]config.
 // Returns an error only if recovery is attempted and fails. If the current
 // branch cannot be determined, the function is a no-op (non-fatal).
 func verifyAnvilOnMain(ctx context.Context, logger *slog.Logger, anvilPath string) error {
-	currentBranch, err := worktree.CurrentBranch(ctx, anvilPath)
+	recovered, currentBranch, err := worktree.VerifyAndRecoverMain(ctx, anvilPath)
 	if err != nil {
-		// Cannot determine current branch — non-fatal, just warn.
-		logger.Warn("verifyAnvilOnMain: could not determine current branch",
-			"anvil", anvilPath, "error", err)
-		return nil
-	}
-
-	if currentBranch == "main" || currentBranch == "master" || currentBranch == "HEAD" {
-		return nil
-	}
-
-	logger.Warn("anvil repo is not on main/master — attempting recovery",
-		"anvil", anvilPath, "current_branch", currentBranch)
-
-	// Try to checkout main, then master.
-	for _, branch := range []string{"main", "master"} {
-		checkoutCtx, checkoutCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		cmd := executil.HideWindow(exec.CommandContext(checkoutCtx, "git", "checkout", branch))
-		cmd.Dir = anvilPath
-		checkoutErr := cmd.Run()
-		checkoutCancel()
-		if checkoutErr == nil {
-			logger.Info("anvil repo recovered to main branch",
-				"anvil", anvilPath, "branch", branch)
+		if currentBranch == "" {
+			// Cannot determine current branch — non-fatal, just warn.
+			logger.Warn("verifyAnvilOnMain: could not determine current branch",
+				"anvil", anvilPath, "error", err)
 			return nil
 		}
+		return fmt.Errorf("anvil %q is checked out to %q instead of main/master and checkout recovery failed: %w",
+			anvilPath, currentBranch, err)
 	}
 
-	return fmt.Errorf("anvil %q is checked out to %q instead of main/master and checkout recovery failed",
-		anvilPath, currentBranch)
+	if recovered {
+		logger.Warn("anvil repo was not on main/master — attempting recovery",
+			"anvil", anvilPath, "current_branch", currentBranch)
+		logger.Info("anvil repo recovered to main branch",
+			"anvil", anvilPath)
+	}
+
+	return nil
 }
