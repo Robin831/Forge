@@ -13,8 +13,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -218,6 +221,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 	outcome.Branch = wt.Branch
 	defer func() {
 		log.Printf("[pipeline:%s] Cleaning up worktree", workerID)
+		if persistDir, err := preserveWorktreeLogs(wt.Path, p.Bead.ID); err != nil {
+			log.Printf("[pipeline:%s] Warning: failed to preserve smith logs: %v", workerID, err)
+		} else if persistDir != "" && p.DB != nil {
+			_ = p.DB.UpdateWorkerLogPath(workerID, persistDir)
+		}
 		removeWorktree(ctx, p.AnvilConfig.Path, wt)
 	}()
 
@@ -839,4 +847,63 @@ Branch: %s
 		beadCtx.WorktreePath, beadCtx.Branch)
 
 	return b.String()
+}
+
+// preserveWorktreeLogs copies smith log files from the worktree's .forge-logs
+// directory to a persistent location at ~/.forge/logs/<beadID>/ before the
+// worktree is removed. Returns the destination directory path, or an empty
+// string if no logs were found. The DB log_path is updated by the caller to
+// point to this persistent directory so post-mortem debugging remains possible
+// after worktree cleanup.
+func preserveWorktreeLogs(worktreePath, beadID string) (string, error) {
+	srcDir := filepath.Join(worktreePath, ".forge-logs")
+	entries, err := os.ReadDir(srcDir)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading log dir: %w", err)
+	}
+	if len(entries) == 0 {
+		return "", nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home dir: %w", err)
+	}
+	dstDir := filepath.Join(home, ".forge", "logs", beadID)
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		return "", fmt.Errorf("creating persistent log dir: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		src := filepath.Join(srcDir, entry.Name())
+		dst := filepath.Join(dstDir, entry.Name())
+		if err := copyFile(src, dst); err != nil {
+			log.Printf("[pipeline] Warning: failed to copy log %s: %v", entry.Name(), err)
+		}
+	}
+	return dstDir, nil
+}
+
+// copyFile copies a single file from src to dst.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
