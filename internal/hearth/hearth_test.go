@@ -1979,102 +1979,163 @@ func newTestModelForPanelAtPos() Model {
 	}
 }
 
-// panelBoundaries returns the x/y split points for a 120x40 model.
+// panelBoundaries returns the x/y split points for a 120x40 model using the
+// same layout math as View() and panelAtPos().
 //
 //	queueWidth=23, workerWidth=29
 //	leftEnd=24, centerEnd=55
-//	headerH=1 (single-line header at width=120)
-//	contentH=38, topH=22 (60% of 38)
-func panelBoundaries(m Model) (leftEnd, centerEnd, topH, headerH int) {
+//	headerH=1, footerH=1 (single-line header/footer at width=120)
+//	topH=20, topRegionH=22 (topH inner rows + 2 border rows)
+func panelBoundaries(m Model) (leftEnd, centerEnd, topRegionH, headerH int) {
 	queueWidth, workerWidth, _ := m.getTopPanelWidths()
 	leftColumnWidth := queueWidth + 2*panelBorderEachSide
 	centerColumnWidth := workerWidth + 2*panelBorderEachSide
 	leftEnd = leftColumnWidth - 1
 	centerEnd = leftColumnWidth + centerColumnWidth - 1
 	headerH = m.computeHeaderH()
-	contentH := m.height - headerH - 1
-	topH = contentH * 6 / 10
-	if topH < 1 {
-		topH = 1
-	}
+	footerH := m.computeFooterH()
+	topH, _ := m.getVerticalSplit(headerH, footerH)
+	topRegionH = topH + 2 // inner rows + 2 border rows
 	return
 }
 
 func TestPanelAtPosLeftColumn_TopHalf_ReturnsQueue(t *testing.T) {
 	m := newTestModelForPanelAtPos()
-	leftEnd, _, topH, headerH := panelBoundaries(m)
-	// Click inside the left column in the top half.
+	leftEnd, _, topRegionH, headerH := panelBoundaries(m)
+	// Click inside the left column in the top region (no crucibles).
 	x := leftEnd - 1
-	y := headerH + topH/2
+	y := headerH + topRegionH/2
 	got := m.panelAtPos(x, y)
 	if got != PanelQueue {
 		t.Errorf("panelAtPos(%d,%d) = %v, want PanelQueue", x, y, got)
 	}
 }
 
-func TestPanelAtPosLeftColumn_TopHalf_WithCrucibles_ReturnsCrucibles(t *testing.T) {
+func TestPanelAtPosLeftColumn_TopHalf_WithCrucibles_ReturnsBothQueueAndCrucibles(t *testing.T) {
 	m := newTestModelForPanelAtPos()
 	m.crucibles = []CrucibleItem{{ParentID: "bd-c1"}}
-	leftEnd, _, topH, headerH := panelBoundaries(m)
+	leftEnd, _, topRegionH, headerH := panelBoundaries(m)
+
+	// Scan the top-left region and ensure both Queue and Crucibles are present,
+	// with Queue appearing above Crucibles.
 	x := leftEnd - 1
-	y := headerH + topH/2
-	got := m.panelAtPos(x, y)
-	if got != PanelCrucibles {
-		t.Errorf("panelAtPos(%d,%d) = %v, want PanelCrucibles when crucibles present", x, y, got)
+	var queueY, cruciblesY int = -1, -1
+	topStartY := headerH + 1
+	topEndY := headerH + topRegionH - 1
+	if topEndY >= m.height-1 {
+		topEndY = m.height - 2
+	}
+	for y := topStartY; y <= topEndY; y++ {
+		panel := m.panelAtPos(x, y)
+		if panel == PanelQueue && queueY == -1 {
+			queueY = y
+		}
+		if panel == PanelCrucibles && cruciblesY == -1 {
+			cruciblesY = y
+		}
+	}
+	if queueY == -1 {
+		t.Fatalf("expected to find PanelQueue in top-left region, but did not (x=%d, y in [%d,%d])", x, topStartY, topEndY)
+	}
+	if cruciblesY == -1 {
+		t.Fatalf("expected to find PanelCrucibles in top-left region when crucibles present, but did not (x=%d, y in [%d,%d])", x, topStartY, topEndY)
+	}
+	if !(queueY < cruciblesY) {
+		t.Errorf("expected PanelQueue to appear above PanelCrucibles in top-left region, got queueY=%d, cruciblesY=%d", queueY, cruciblesY)
 	}
 }
 
 func TestPanelAtPosLeftColumn_BottomHalf_ReturnsReadyToMerge(t *testing.T) {
 	m := newTestModelForPanelAtPos()
-	leftEnd, _, topH, headerH := panelBoundaries(m)
-	// Click just below the split line — should be ReadyToMerge (upper bottom half).
+	leftEnd, _, topRegionH, headerH := panelBoundaries(m)
+
+	// Scan the bottom-left region to ensure ReadyToMerge is present, and that
+	// if NeedsAttention is also present, ReadyToMerge appears above it.
 	x := leftEnd - 1
-	y := headerH + topH + 1
-	got := m.panelAtPos(x, y)
-	if got != PanelReadyToMerge {
-		t.Errorf("panelAtPos(%d,%d) = %v, want PanelReadyToMerge", x, y, got)
+	var readyY, needsY int = -1, -1
+	bottomStartY := headerH + topRegionH + 1
+	bottomEndY := m.height - 2
+	for y := bottomStartY; y <= bottomEndY; y++ {
+		panel := m.panelAtPos(x, y)
+		if panel == PanelReadyToMerge && readyY == -1 {
+			readyY = y
+		}
+		if panel == PanelNeedsAttention && needsY == -1 {
+			needsY = y
+		}
+	}
+	if readyY == -1 {
+		t.Fatalf("expected to find PanelReadyToMerge in bottom-left region, but did not (x=%d, y in [%d,%d])", x, bottomStartY, bottomEndY)
+	}
+	// If both panels are present, ReadyToMerge should be above NeedsAttention.
+	if needsY != -1 && !(readyY < needsY) {
+		t.Errorf("expected PanelReadyToMerge to appear above PanelNeedsAttention in bottom-left region, got readyY=%d, needsY=%d", readyY, needsY)
 	}
 }
 
 func TestPanelAtPosLeftColumn_BottomHalf_ReturnsNeedsAttention(t *testing.T) {
 	m := newTestModelForPanelAtPos()
-	leftEnd, _, topH, headerH := panelBoundaries(m)
-	contentH := m.height - headerH - 1
-	bottomH := contentH - topH
-	// Click in the lower half of the bottom section — NeedsAttention.
+	leftEnd, _, topRegionH, headerH := panelBoundaries(m)
+
+	// Scan the bottom-left region to ensure NeedsAttention is present, and that
+	// if ReadyToMerge is also present, ReadyToMerge appears above it.
 	x := leftEnd - 1
-	y := headerH + topH + bottomH*3/4
-	if y >= m.height-1 {
-		y = m.height - 2
+	var readyY, needsY int = -1, -1
+	bottomStartY := headerH + topRegionH + 1
+	bottomEndY := m.height - 2
+	for y := bottomStartY; y <= bottomEndY; y++ {
+		panel := m.panelAtPos(x, y)
+		if panel == PanelReadyToMerge && readyY == -1 {
+			readyY = y
+		}
+		if panel == PanelNeedsAttention && needsY == -1 {
+			needsY = y
+		}
 	}
-	got := m.panelAtPos(x, y)
-	if got != PanelNeedsAttention {
-		t.Errorf("panelAtPos(%d,%d) = %v, want PanelNeedsAttention", x, y, got)
+	if needsY == -1 {
+		t.Fatalf("expected to find PanelNeedsAttention in bottom-left region, but did not (x=%d, y in [%d,%d])", x, bottomStartY, bottomEndY)
+	}
+	// If both panels are present, ReadyToMerge should be above NeedsAttention.
+	if readyY != -1 && !(readyY < needsY) {
+		t.Errorf("expected PanelReadyToMerge to appear above PanelNeedsAttention in bottom-left region, got readyY=%d, needsY=%d", readyY, needsY)
 	}
 }
 
-func TestPanelAtPosCenterColumn_ReturnsWorkers(t *testing.T) {
+func TestPanelAtPosCenterColumn_ReturnsWorkersAndUsage(t *testing.T) {
 	m := newTestModelForPanelAtPos()
-	_, centerEnd, topH, headerH := panelBoundaries(m)
-	leftEnd, _, _, _ := panelBoundaries(m)
-	// Click in the center column in both top and bottom half.
-	for _, y := range []int{headerH + topH/2, headerH + topH + 1} {
-		x := leftEnd + 5
-		if x > centerEnd {
-			x = (leftEnd + centerEnd) / 2
+	leftEnd, centerEnd, _, headerH := panelBoundaries(m)
+	x := leftEnd + 5
+	if x > centerEnd {
+		x = (leftEnd + centerEnd) / 2
+	}
+
+	// Scan the center column to find both Workers and Usage panels.
+	var workersY, usageY int = -1, -1
+	for y := headerH + 1; y < m.height-1; y++ {
+		panel := m.panelAtPos(x, y)
+		if panel == PanelWorkers && workersY == -1 {
+			workersY = y
 		}
-		got := m.panelAtPos(x, y)
-		if got != PanelWorkers {
-			t.Errorf("panelAtPos(%d,%d) = %v, want PanelWorkers", x, y, got)
+		if panel == PanelUsage && usageY == -1 {
+			usageY = y
 		}
+	}
+	if workersY == -1 {
+		t.Fatalf("expected to find PanelWorkers in center column, but did not")
+	}
+	if usageY == -1 {
+		t.Fatalf("expected to find PanelUsage in center column, but did not")
+	}
+	if !(workersY < usageY) {
+		t.Errorf("expected PanelWorkers to appear above PanelUsage, got workersY=%d, usageY=%d", workersY, usageY)
 	}
 }
 
 func TestPanelAtPosRightColumn_TopHalf_ReturnsLiveActivity(t *testing.T) {
 	m := newTestModelForPanelAtPos()
-	_, centerEnd, topH, headerH := panelBoundaries(m)
+	_, centerEnd, topRegionH, headerH := panelBoundaries(m)
 	x := centerEnd + 5
-	y := headerH + topH/2
+	y := headerH + topRegionH/2
 	got := m.panelAtPos(x, y)
 	if got != PanelLiveActivity {
 		t.Errorf("panelAtPos(%d,%d) = %v, want PanelLiveActivity", x, y, got)
@@ -2083,9 +2144,9 @@ func TestPanelAtPosRightColumn_TopHalf_ReturnsLiveActivity(t *testing.T) {
 
 func TestPanelAtPosRightColumn_BottomHalf_ReturnsEvents(t *testing.T) {
 	m := newTestModelForPanelAtPos()
-	_, centerEnd, topH, headerH := panelBoundaries(m)
+	_, centerEnd, topRegionH, headerH := panelBoundaries(m)
 	x := centerEnd + 5
-	y := headerH + topH + 1
+	y := headerH + topRegionH + 1
 	got := m.panelAtPos(x, y)
 	if got != PanelEvents {
 		t.Errorf("panelAtPos(%d,%d) = %v, want PanelEvents", x, y, got)
