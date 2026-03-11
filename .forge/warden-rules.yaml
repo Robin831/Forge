@@ -329,3 +329,9 @@ rules:
       check: Verify that skip/no-op events include all relevant identifiers (bead ID, anvil name) so they are traceable in dashboards and logs. When the skip is caused by upstream failures (e.g., all distillation calls errored), track the failure count and either include it in the skip message or emit a dedicated error event instead of silently skipping.
       source: copilot:PR#171
       added: "2026-03-10"
+    - id: test-exercises-described-scenario
+      category: testing
+      pattern: Test function name describes a specific scenario (e.g. narrow width, negative index, empty input) but the test setup does not actually produce that condition due to hardcoded values or internal logic
+      check: Verify that the test setup actually triggers the scenario described in the test name. If the code under test uses fixed/hardcoded values that ignore the test's input, either refactor the code to accept the relevant parameter or adjust the test to exercise the real code path.
+      source: copilot:PR#175
+      added: "2026-03-11"
