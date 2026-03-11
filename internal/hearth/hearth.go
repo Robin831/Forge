@@ -265,7 +265,7 @@ type Model struct {
 	// Log viewer overlay state
 	showLogViewer  bool
 	logViewerTitle string
-	logViewerLines []string
+	logViewerEmpty bool // true when the log has no lines; use viewport as content source of truth
 	logViewPort    viewport.Model
 
 	// Daemon health indicator
@@ -1194,7 +1194,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				return nil
 			}
 			m.logViewerTitle = fmt.Sprintf("Logs: %s — %s", bead.BeadID, logPath)
-			m.logViewerLines = lines
+			m.logViewerEmpty = len(lines) == 0
 			vpWidth, vpHeight := m.logViewerDimensions()
 			m.logViewPort = viewport.New(vpWidth, vpHeight)
 			m.logViewPort.SetContent(strings.Join(lines, "\n"))
@@ -1429,7 +1429,7 @@ func (m *Model) renderLogViewer() string {
 	lines = append(lines, actionMenuTitleStyle.Render(truncate(m.logViewerTitle, viewerWidth-logViewerStyle.GetHorizontalFrameSize())))
 	lines = append(lines, "")
 
-	if len(m.logViewerLines) == 0 {
+	if m.logViewerEmpty {
 		lines = append(lines, dimStyle.Render("(empty log)"))
 	} else {
 		lines = append(lines, m.logViewPort.View())

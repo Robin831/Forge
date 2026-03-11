@@ -2183,7 +2183,7 @@ func TestRenderLogViewerShowsTitleAndContent(t *testing.T) {
 		height:         40,
 		showLogViewer:  true,
 		logViewerTitle: "bd-42 worker.log",
-		logViewerLines: []string{"line one", "line two", "line three"},
+		logViewerEmpty: false,
 		logViewPort:    vp,
 	}
 	rendered := m.renderLogViewer()
@@ -2201,11 +2201,11 @@ func TestRenderLogViewerEmptyLines(t *testing.T) {
 		height:         40,
 		showLogViewer:  true,
 		logViewerTitle: "empty.log",
-		logViewerLines: nil,
+		logViewerEmpty: true,
 	}
 	rendered := m.renderLogViewer()
 	if !strings.Contains(rendered, "empty log") {
-		t.Errorf("expected '(empty log)' message when logViewerLines is nil:\n%s", rendered)
+		t.Errorf("expected '(empty log)' message when logViewerEmpty is true:\n%s", rendered)
 	}
 }
 
