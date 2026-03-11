@@ -238,7 +238,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 	d.costLimitLoggedDate.Store("")
 	d.cfg.Store(cfg)
 	d.labelAdder = func(anvilPath, beadID, tag string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(d.runCtx, 30*time.Second)
 		defer cancel()
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--add-label", tag))
 		cmd.Dir = anvilPath
@@ -2362,24 +2362,32 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 		// dispatch tag, copy that tag to each child so they are eligible for
 		// immediate dispatch by the poller.
 		if anvilCfg.AutoDispatch == "tagged" && anvilCfg.AutoDispatchTag != "" {
-			parentHasTag := false
-			for _, lbl := range bead.Labels {
-				if strings.EqualFold(lbl, anvilCfg.AutoDispatchTag) {
-					parentHasTag = true
-					break
+			if d.labelAdder == nil {
+				d.logger.Warn("labelAdder is nil; skipping auto_dispatch tag propagation to child beads",
+					"parent", beadID, "tag", anvilCfg.AutoDispatchTag)
+			} else {
+				parentHasTag := false
+				for _, lbl := range bead.Labels {
+					if strings.EqualFold(lbl, anvilCfg.AutoDispatchTag) {
+						parentHasTag = true
+						break
+					}
 				}
-			}
-			if parentHasTag {
-				for _, sub := range sr.SubBeads {
-					if err := d.labelAdder(anvilCfg.Path, sub.ID, anvilCfg.AutoDispatchTag); err != nil {
-						d.logger.Warn("failed to copy auto_dispatch tag to child bead",
-							"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag, "error", err)
-					} else {
-						d.logger.Info("copied auto_dispatch tag to child bead",
-							"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag)
-						_ = d.db.LogEvent(state.EventBeadTagged,
-							fmt.Sprintf("Label %q propagated to child bead %s from decomposed parent %s", anvilCfg.AutoDispatchTag, sub.ID, beadID),
-							sub.ID, anvil)
+				if parentHasTag {
+					for _, sub := range sr.SubBeads {
+						if err := d.labelAdder(anvilCfg.Path, sub.ID, anvilCfg.AutoDispatchTag); err != nil {
+							d.logger.Warn("failed to copy auto_dispatch tag to child bead",
+								"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag, "error", err)
+							reason := fmt.Sprintf("failed to propagate auto_dispatch tag %q to child bead %s: %v",
+								anvilCfg.AutoDispatchTag, sub.ID, err)
+							d.recordDispatchFailure(beadID, anvil, reason)
+						} else {
+							d.logger.Info("copied auto_dispatch tag to child bead",
+								"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag)
+							_ = d.db.LogEvent(state.EventBeadTagged,
+								fmt.Sprintf("Label %q propagated to child bead %s from decomposed parent %s", anvilCfg.AutoDispatchTag, sub.ID, beadID),
+								sub.ID, anvil)
+						}
 					}
 				}
 			}
