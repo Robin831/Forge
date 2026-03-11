@@ -61,27 +61,40 @@ type CreateParams struct {
 	ChangeSummary string
 }
 
-// selectTitle determines the PR title to use. If the title is empty a default
-// is generated from the bead ID. Otherwise it attempts to derive an English
-// title from the most recent commit subject on the branch — UNLESS the
-// provided title contains special CI markers like "[no-changelog]", which
-// callers such as Bellows rely on to control CI behaviour.
+// selectTitle determines the PR title to use.
+//
+// Priority order:
+//  1. Titles containing special CI markers (e.g. "[no-changelog]") are
+//     preserved verbatim — callers such as Bellows rely on these markers.
+//  2. When BeadTitle is set, the PR title is anchored to the bead's stated
+//     intent ("BeadTitle (BeadID)"). This prevents the Smith's last commit
+//     message — which may describe an incidental fix discovered during
+//     implementation — from overriding the PR title.
+//  3. Fall back to the branch's commit subject when no BeadTitle is available
+//     (e.g. callers that do not populate BeadTitle).
+//  4. Use the explicitly provided Title as-is if the commit subject is empty.
+//  5. Return "forge: BeadID" when no other information is available.
 func selectTitle(ctx context.Context, p CreateParams) string {
-	if p.Title == "" {
-		return fmt.Sprintf("forge: %s", p.BeadID)
-	}
 	// Preserve explicitly provided titles that contain special markers used
 	// by callers like Bellows for CI (e.g. "[no-changelog]").
 	if strings.Contains(p.Title, "[no-changelog]") {
 		return p.Title
 	}
-	// Try to derive an English title from the branch's commit message subject,
-	// since bead titles may be in a non-English language (e.g. Norwegian)
-	// which produces garbled characters in PR titles.
+	// Anchor to the bead title when available so the PR title reflects the
+	// bead's intent rather than whatever the Smith committed last.
+	if p.BeadTitle != "" {
+		return fmt.Sprintf("%s (%s)", p.BeadTitle, p.BeadID)
+	}
+	// No structured bead title: try the branch's commit subject. Smith writes
+	// commit messages in English, so this is a reasonable fallback.
 	if subject := commitSubject(ctx, p.WorktreePath, p.Branch); subject != "" {
 		return fmt.Sprintf("%s (%s)", subject, p.BeadID)
 	}
-	return p.Title
+	// Use the explicitly provided title if commit subject lookup failed.
+	if p.Title != "" {
+		return p.Title
+	}
+	return fmt.Sprintf("forge: %s", p.BeadID)
 }
 
 // Create files a pull request using the gh CLI and records it in the state DB.
