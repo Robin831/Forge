@@ -2184,7 +2184,7 @@ func TestRenderLogViewerShowsTitleAndContent(t *testing.T) {
 		showLogViewer:  true,
 		logViewerTitle: "bd-42 worker.log",
 		logViewerEmpty: false,
-		logViewPort:    vp,
+		logViewerVP:    vp,
 	}
 	rendered := m.renderLogViewer()
 	if !strings.Contains(rendered, "bd-42 worker.log") {

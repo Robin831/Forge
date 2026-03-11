@@ -266,7 +266,7 @@ type Model struct {
 	showLogViewer  bool
 	logViewerTitle string
 	logViewerEmpty bool // true when the log has no lines; use viewport as content source of truth
-	logViewPort    viewport.Model
+	logViewerVP    viewport.Model
 
 	// Daemon health indicator
 	daemonConnected bool      // true when last IPC status check succeeded
@@ -338,7 +338,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showLogViewer = false
 			default:
 				var cmd tea.Cmd
-				m.logViewPort, cmd = m.logViewPort.Update(msg)
+				m.logViewerVP, cmd = m.logViewerVP.Update(msg)
 				return m, cmd
 			}
 			return m, nil
@@ -546,7 +546,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Forward mouse events to log viewer when it's open
 		if m.showLogViewer {
 			var cmd tea.Cmd
-			m.logViewPort, cmd = m.logViewPort.Update(msg)
+			m.logViewerVP, cmd = m.logViewerVP.Update(msg)
 			return m, cmd
 		}
 		// Dismiss overlays on left or right mouse button press
@@ -586,8 +586,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 		if m.showLogViewer {
 			vpWidth, vpHeight := m.logViewerDimensions()
-			m.logViewPort.Width = vpWidth
-			m.logViewPort.Height = vpHeight
+			m.logViewerVP.Width = vpWidth
+			m.logViewerVP.Height = vpHeight
 		}
 
 
@@ -1196,8 +1196,8 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 			m.logViewerTitle = fmt.Sprintf("Logs: %s — %s", bead.BeadID, logPath)
 			m.logViewerEmpty = len(lines) == 0
 			vpWidth, vpHeight := m.logViewerDimensions()
-			m.logViewPort = viewport.New(vpWidth, vpHeight)
-			m.logViewPort.SetContent(strings.Join(lines, "\n"))
+			m.logViewerVP = viewport.New(vpWidth, vpHeight)
+			m.logViewerVP.SetContent(strings.Join(lines, "\n"))
 			m.showLogViewer = true
 		}
 	}
@@ -1432,11 +1432,11 @@ func (m *Model) renderLogViewer() string {
 	if m.logViewerEmpty {
 		lines = append(lines, dimStyle.Render("(empty log)"))
 	} else {
-		lines = append(lines, m.logViewPort.View())
+		lines = append(lines, m.logViewerVP.View())
 	}
 
 	lines = append(lines, "")
-	scrollPct := int(m.logViewPort.ScrollPercent() * 100)
+	scrollPct := int(m.logViewerVP.ScrollPercent() * 100)
 	lines = append(lines, dimStyle.Render(fmt.Sprintf("j/k/mouse: scroll • Esc: close  %d%%", scrollPct)))
 
 	content := strings.Join(lines, "\n")
