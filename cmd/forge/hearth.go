@@ -17,6 +17,7 @@ import (
 
 func init() {
 	rootCmd.AddCommand(hearthCmd)
+	hearthCmd.Flags().Bool("no-mouse", false, "disable mouse reporting (restores normal terminal text selection)")
 }
 
 var hearthCmd = &cobra.Command{
@@ -214,7 +215,14 @@ var hearthCmd = &cobra.Command{
 			return nil
 		}
 
-		p := tea.NewProgram(&model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		noMouse, _ := cmd.Flags().GetBool("no-mouse")
+		opts := []tea.ProgramOption{tea.WithAltScreen()}
+		if !noMouse {
+			// Mouse reporting enables wheel scrolling in the log viewer.
+			// If text selection is needed, pass --no-mouse or hold Shift while clicking.
+			opts = append(opts, tea.WithMouseCellMotion())
+		}
+		p := tea.NewProgram(&model, opts...)
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			return err

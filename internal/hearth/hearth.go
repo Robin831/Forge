@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -264,8 +265,8 @@ type Model struct {
 	// Log viewer overlay state
 	showLogViewer  bool
 	logViewerTitle string
-	logViewerLines []string
-	logViewerScroll int
+	logViewerEmpty bool // true when the log has no lines; use viewport as content source of truth
+	logViewerVP    viewport.Model
 
 	// Daemon health indicator
 	daemonConnected bool      // true when last IPC status check succeeded
@@ -333,16 +334,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Log viewer overlay intercepts all keys
 		if m.showLogViewer {
 			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
 			case "q", "esc":
 				m.showLogViewer = false
-			case "j", "down":
-				if m.logViewerScroll < len(m.logViewerLines)-1 {
-					m.logViewerScroll++
-				}
-			case "k", "up":
-				if m.logViewerScroll > 0 {
-					m.logViewerScroll--
-				}
+			default:
+				var cmd tea.Cmd
+				m.logViewerVP, cmd = m.logViewerVP.Update(msg)
+				return m, cmd
 			}
 			return m, nil
 		}
@@ -546,11 +545,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
+		// Dismiss log viewer on left or right click; forward wheel events to viewport
+		if m.showLogViewer {
+			if msg.Action == tea.MouseActionPress &&
+				(msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight) {
+				m.showLogViewer = false
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.logViewerVP, cmd = m.logViewerVP.Update(msg)
+			return m, cmd
+		}
 		// Dismiss overlays on left or right mouse button press
 		if msg.Action == tea.MouseActionPress &&
 			(msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight) {
-			if m.showLogViewer || m.showActionMenu || m.showQueueActionMenu || m.showMergeMenu {
-				m.showLogViewer = false
+			if m.showActionMenu || m.showQueueActionMenu || m.showMergeMenu {
 				m.showActionMenu = false
 				m.showQueueActionMenu = false
 				m.showMergeMenu = false
@@ -581,6 +590,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
+		if m.showLogViewer {
+			vpWidth, vpHeight := m.logViewerDimensions()
+			m.logViewerVP.Width = vpWidth
+			m.logViewerVP.Height = vpHeight
+		}
+
 
 	case UpdateQueueMsg:
 		m.queue = msg.Items
@@ -1185,8 +1200,10 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				return nil
 			}
 			m.logViewerTitle = fmt.Sprintf("Logs: %s — %s", bead.BeadID, logPath)
-			m.logViewerLines = lines
-			m.logViewerScroll = 0
+			m.logViewerEmpty = len(lines) == 0
+			vpWidth, vpHeight := m.logViewerDimensions()
+			m.logViewerVP = viewport.New(vpWidth, vpHeight)
+			m.logViewerVP.SetContent(strings.Join(lines, "\n"))
 			m.showLogViewer = true
 		}
 	}
@@ -1379,6 +1396,30 @@ func (m *Model) renderQueueActionMenu() string {
 	return popup
 }
 
+// logViewerDimensions returns the (viewportWidth, viewportHeight) for the log viewer.
+func (m *Model) logViewerDimensions() (int, int) {
+	viewerWidth := m.width - 8
+	if viewerWidth < 40 {
+		viewerWidth = 40
+	}
+	viewerHeight := m.height - 6
+	if viewerHeight < 10 {
+		viewerHeight = 10
+	}
+	// Use style frame size methods instead of hardcoded offsets so the layout
+	// stays correct if border or padding values change.
+	vpWidth := viewerWidth - logViewerStyle.GetHorizontalFrameSize()
+	// Fixed content lines: title + blank line + blank line + footer = 4
+	vpHeight := viewerHeight - logViewerStyle.GetVerticalFrameSize() - 4
+	if vpWidth < 1 {
+		vpWidth = 1
+	}
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	return vpWidth, vpHeight
+}
+
 // renderLogViewer renders the log viewer overlay.
 func (m *Model) renderLogViewer() string {
 	viewerWidth := m.width - 8
@@ -1391,38 +1432,18 @@ func (m *Model) renderLogViewer() string {
 	}
 
 	var lines []string
-	lines = append(lines, actionMenuTitleStyle.Render(truncate(m.logViewerTitle, viewerWidth-4)))
+	lines = append(lines, actionMenuTitleStyle.Render(truncate(m.logViewerTitle, viewerWidth-logViewerStyle.GetHorizontalFrameSize())))
 	lines = append(lines, "")
 
-	contentHeight := viewerHeight - 5 // title + margins + footer
-	if contentHeight < 1 {
-		contentHeight = 1
-	}
-
-	if len(m.logViewerLines) == 0 {
+	if m.logViewerEmpty {
 		lines = append(lines, dimStyle.Render("(empty log)"))
 	} else {
-		visible := visibleItems(m.logViewerScroll, len(m.logViewerLines), contentHeight)
-		for i := visible.start; i < visible.end; i++ {
-			line := m.logViewerLines[i]
-			maxLen := viewerWidth - 4
-			if maxLen > 0 {
-				runes := []rune(line)
-				if len(runes) > maxLen {
-					if maxLen > 3 {
-						line = string(runes[:maxLen-3]) + "..."
-					} else {
-						line = string(runes[:maxLen])
-					}
-				}
-			}
-			lines = append(lines, dimStyle.Render(line))
-		}
+		lines = append(lines, m.logViewerVP.View())
 	}
 
 	lines = append(lines, "")
-	scrollInfo := fmt.Sprintf("Line %d/%d", m.logViewerScroll+1, max(len(m.logViewerLines), 1))
-	lines = append(lines, dimStyle.Render("j/k: scroll • Esc: close  "+scrollInfo))
+	scrollPct := int(m.logViewerVP.ScrollPercent() * 100)
+	lines = append(lines, dimStyle.Render(fmt.Sprintf("j/k/mouse: scroll • Esc: close  %d%%", scrollPct)))
 
 	content := strings.Join(lines, "\n")
 	return logViewerStyle.Width(viewerWidth).Height(viewerHeight).Render(content)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -2170,5 +2171,74 @@ func TestPanelAtPosFooterRow_ReturnsFocused(t *testing.T) {
 	got := m.panelAtPos(50, m.height-1)
 	if got != PanelQueue {
 		t.Errorf("panelAtPos in footer row = %v, want focused panel (PanelQueue)", got)
+	}
+}
+
+func TestRenderLogViewerShowsTitleAndContent(t *testing.T) {
+	vpWidth, vpHeight := 80, 10
+	vp := viewport.New(vpWidth, vpHeight)
+	vp.SetContent("line one\nline two\nline three")
+	m := Model{
+		width:          120,
+		height:         40,
+		showLogViewer:  true,
+		logViewerTitle: "bd-42 worker.log",
+		logViewerEmpty: false,
+		logViewerVP:    vp,
+	}
+	rendered := m.renderLogViewer()
+	if !strings.Contains(rendered, "bd-42 worker.log") {
+		t.Errorf("expected log viewer title in output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "line one") {
+		t.Errorf("expected log content in output:\n%s", rendered)
+	}
+}
+
+func TestRenderLogViewerEmptyLines(t *testing.T) {
+	m := Model{
+		width:          120,
+		height:         40,
+		showLogViewer:  true,
+		logViewerTitle: "empty.log",
+		logViewerEmpty: true,
+	}
+	rendered := m.renderLogViewer()
+	if !strings.Contains(rendered, "empty log") {
+		t.Errorf("expected '(empty log)' message when logViewerEmpty is true:\n%s", rendered)
+	}
+}
+
+func TestLogViewerDimensionsRespectStyleFrameSize(t *testing.T) {
+	m := Model{width: 120, height: 40}
+	vpWidth, vpHeight := m.logViewerDimensions()
+
+	frameH := logViewerStyle.GetHorizontalFrameSize()
+	frameV := logViewerStyle.GetVerticalFrameSize()
+
+	viewerWidth := 120 - 8 // m.width - 8
+	viewerHeight := 40 - 6 // m.height - 6
+
+	wantWidth := viewerWidth - frameH
+	// 4 fixed content lines: title + blank + blank + footer
+	wantHeight := viewerHeight - frameV - 4
+
+	if vpWidth != wantWidth {
+		t.Errorf("vpWidth = %d, want %d (viewerWidth %d - frameH %d)", vpWidth, wantWidth, viewerWidth, frameH)
+	}
+	if vpHeight != wantHeight {
+		t.Errorf("vpHeight = %d, want %d (viewerHeight %d - frameV %d - 4)", vpHeight, wantHeight, viewerHeight, frameV)
+	}
+}
+
+func TestLogViewerDimensionsMinClamped(t *testing.T) {
+	// Very small terminal should clamp to minimums
+	m := Model{width: 10, height: 8}
+	vpWidth, vpHeight := m.logViewerDimensions()
+	if vpWidth < 1 {
+		t.Errorf("vpWidth = %d, want >= 1", vpWidth)
+	}
+	if vpHeight < 1 {
+		t.Errorf("vpHeight = %d, want >= 1", vpHeight)
 	}
 }
