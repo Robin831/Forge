@@ -155,6 +155,37 @@ func TestToastForEvent_WardenPass(t *testing.T) {
 	}
 }
 
+// TestToastForEvent_WardenHardReject verifies warden_hard_reject event produces
+// an error toast with the correct message and isError=true.
+func TestToastForEvent_WardenHardReject(t *testing.T) {
+	t.Run("with message", func(t *testing.T) {
+		ev := EventItem{Type: "warden_hard_reject", Message: "review failed permanently"}
+		msg, isError, ok := toastForEvent(ev)
+		if !ok {
+			t.Fatal("expected ok=true for warden_hard_reject")
+		}
+		if !isError {
+			t.Error("expected isError=true for warden_hard_reject")
+		}
+		if !strings.Contains(msg, "review failed permanently") {
+			t.Errorf("unexpected message: %q", msg)
+		}
+	})
+	t.Run("fallback message", func(t *testing.T) {
+		ev := EventItem{Type: "warden_hard_reject", Message: ""}
+		msg, isError, ok := toastForEvent(ev)
+		if !ok {
+			t.Fatal("expected ok=true for warden_hard_reject with empty message")
+		}
+		if !isError {
+			t.Error("expected isError=true for warden_hard_reject")
+		}
+		if !strings.Contains(msg, "Warden hard-rejected") {
+			t.Errorf("expected fallback 'Warden hard-rejected' in message, got %q", msg)
+		}
+	})
+}
+
 // TestToastForEvent_PRCreated verifies pr_created event produces a toast.
 func TestToastForEvent_PRCreated(t *testing.T) {
 	ev := EventItem{Type: "pr_created", Message: "PR #77 created"}
