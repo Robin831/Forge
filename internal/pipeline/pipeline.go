@@ -221,12 +221,8 @@ func Run(ctx context.Context, p Params) *Outcome {
 	outcome.Branch = wt.Branch
 	defer func() {
 		log.Printf("[pipeline:%s] Cleaning up worktree", workerID)
-		if persistDir, err := preserveWorktreeLogs(wt.Path, p.Bead.ID); err != nil {
+		if _, err := preserveWorktreeLogs(wt.Path, p.Bead.ID); err != nil {
 			log.Printf("[pipeline:%s] Warning: failed to preserve smith logs: %v", workerID, err)
-		} else if persistDir != "" && p.DB != nil {
-			if err := p.DB.UpdateWorkerLogPath(workerID, persistDir); err != nil {
-				log.Printf("[pipeline:%s] Warning: failed to update worker log path in DB: %v", workerID, err)
-			}
 		}
 		removeWorktree(ctx, p.AnvilConfig.Path, wt)
 	}()
@@ -866,46 +862,70 @@ func preserveWorktreeLogs(worktreePath, beadID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading log dir: %w", err)
 	}
-	if len(entries) == 0 {
+
+	// Filter to regular files only before creating any directories.
+	var fileEntries []os.DirEntry
+	for _, e := range entries {
+		if !e.IsDir() {
+			fileEntries = append(fileEntries, e)
+		}
+	}
+	if len(fileEntries) == 0 {
 		return "", nil
 	}
+
+	// Sanitize beadID so it is safe to embed in a file path: replace path
+	// separators and strip ".." segments to prevent traversal outside ~/.forge/logs/.
+	safeID := strings.ReplaceAll(beadID, "/", "_")
+	safeID = strings.ReplaceAll(safeID, `\`, "_")
+	safeID = strings.ReplaceAll(safeID, "..", "__")
 
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolving home dir: %w", err)
 	}
-	dstDir := filepath.Join(home, ".forge", "logs", beadID)
+	dstDir := filepath.Join(home, ".forge", "logs", safeID)
 	if err := os.MkdirAll(dstDir, 0o755); err != nil {
 		return "", fmt.Errorf("creating persistent log dir: %w", err)
 	}
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
+	for _, entry := range fileEntries {
 		src := filepath.Join(srcDir, entry.Name())
 		dst := filepath.Join(dstDir, entry.Name())
 		if err := copyFile(src, dst); err != nil {
-			log.Printf("[pipeline] Warning: failed to copy log %s: %v", entry.Name(), err)
+			log.Printf("[pipeline:%s] Warning: failed to copy log %s: %v", beadID, entry.Name(), err)
 		}
 	}
 	return dstDir, nil
 }
 
 // copyFile copies a single file from src to dst.
-func copyFile(src, dst string) error {
+func copyFile(src, dst string) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() {
+		if cerr := in.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() {
+		if cerr := out.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
-	_, err = io.Copy(out, in)
-	return err
+	if _, err = io.Copy(out, in); err != nil {
+		return err
+	}
+	if err = out.Sync(); err != nil {
+		return err
+	}
+	return nil
 }

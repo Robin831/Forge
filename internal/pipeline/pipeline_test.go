@@ -877,8 +877,9 @@ func TestPreserveWorktreeLogs_CopiesFiles(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, dst)
 
-	// The destination directory should be inside fakeHome/.forge/logs/bead-abc.
-	assert.Contains(t, dst, "bead-abc")
+	// The destination directory should be exactly fakeHome/.forge/logs/bead-abc.
+	expectedDir := filepath.Join(fakeHome, ".forge", "logs", "bead-abc")
+	assert.Equal(t, expectedDir, dst)
 
 	// Both files should exist at the destination.
 	smithContent, readErr := os.ReadFile(filepath.Join(dst, "smith.log"))
