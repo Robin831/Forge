@@ -10,6 +10,11 @@ set -euo pipefail
 REPO="Robin831/Forge"
 BINARY="forge"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/bin}"
+case "$INSTALL_DIR" in
+  "~"|"~/"*)
+    INSTALL_DIR="${HOME}${INSTALL_DIR#\~}"
+    ;;
+esac
 
 # ── OS / arch detection ────────────────────────────────────────────────────────
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -56,7 +61,7 @@ ASSET_URL="${BASE_URL}/${ASSET_NAME}"
 CHECKSUM_URL="${BASE_URL}/checksums.txt"
 
 # ── Download to temp dir ───────────────────────────────────────────────────────
-TMP_DIR="$(mktemp -d)"
+TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t forge.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "Downloading Forge ${VERSION} (${OS}/${ARCH})..."
@@ -107,7 +112,7 @@ case ":${PATH}:" in
     echo "NOTE: ${INSTALL_DIR} is not in your PATH."
     echo "Add the following line to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
     echo ""
-    echo "  export PATH=\"\$HOME/bin:\$PATH\""
+    echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
     echo ""
     ;;
 esac
