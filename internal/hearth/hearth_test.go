@@ -1831,6 +1831,120 @@ func TestSelectedQueueBead_DirectQueueSet_NoExplicitNav(t *testing.T) {
 	}
 }
 
+func TestWorkerStatusStyleAnimated(t *testing.T) {
+	frame := "⣾"
+	tests := []struct {
+		status   string
+		wantText string
+	}{
+		{"running", frame},
+		{"reviewing", frame},
+	}
+	for _, tt := range tests {
+		got := workerStatusStyle(tt.status, frame)
+		if !strings.Contains(got, tt.wantText) {
+			t.Errorf("workerStatusStyle(%q, %q): expected spinner frame in output, got %q", tt.status, frame, got)
+		}
+	}
+}
+
+func TestWorkerStatusStyleStatic(t *testing.T) {
+	frame := "⣾" // should be ignored for static statuses
+	tests := []struct {
+		status   string
+		wantText string
+	}{
+		{"monitoring", "○"},
+		{"done", "✓"},
+		{"failed", "✗"},
+		{"unknown", "○"},
+	}
+	for _, tt := range tests {
+		got := workerStatusStyle(tt.status, frame)
+		if !strings.Contains(got, tt.wantText) {
+			t.Errorf("workerStatusStyle(%q, %q): expected %q in output, got %q", tt.status, frame, tt.wantText, got)
+		}
+		// Static statuses must not embed the spinner frame
+		if tt.status != "running" && tt.status != "reviewing" && strings.Contains(got, frame) {
+			t.Errorf("workerStatusStyle(%q, %q): static status must not contain spinner frame, got %q", tt.status, frame, got)
+		}
+	}
+}
+
+func TestWorkerStatusStyleFrameChanges(t *testing.T) {
+	// Different frames should produce different output for animated statuses.
+	out1 := workerStatusStyle("running", "⣾")
+	out2 := workerStatusStyle("running", "⣽")
+	if out1 == out2 {
+		t.Errorf("workerStatusStyle(running): different frames should produce different output")
+	}
+}
+
+func TestCruciblePhaseStyleAnimated(t *testing.T) {
+	frame := "⣾"
+	tests := []struct {
+		phase    string
+		wantText string
+	}{
+		{"dispatching", frame},
+		{"final_pr", frame},
+		{"started", frame},
+	}
+	for _, tt := range tests {
+		got := cruciblePhaseStyle(tt.phase, frame)
+		if !strings.Contains(got, tt.wantText) {
+			t.Errorf("cruciblePhaseStyle(%q, %q): expected spinner frame in output, got %q", tt.phase, frame, got)
+		}
+	}
+}
+
+func TestCruciblePhaseStyleStatic(t *testing.T) {
+	frame := "⣾" // should be ignored for static phases
+	tests := []struct {
+		phase    string
+		wantText string
+	}{
+		{"complete", "✓"},
+		{"paused", "⏸"},
+		{"weird_phase", "weird_phase"},
+	}
+	for _, tt := range tests {
+		got := cruciblePhaseStyle(tt.phase, frame)
+		if !strings.Contains(got, tt.wantText) {
+			t.Errorf("cruciblePhaseStyle(%q, %q): expected %q in output, got %q", tt.phase, frame, tt.wantText, got)
+		}
+	}
+}
+
+func TestCruciblePhaseStyleLabels(t *testing.T) {
+	frame := "⣾"
+	tests := []struct {
+		phase     string
+		wantLabel string
+	}{
+		{"dispatching", "DISPATCH"},
+		{"final_pr", "FINAL PR"},
+		{"complete", "COMPLETE"},
+		{"paused", "PAUSED"},
+		{"started", "STARTED"},
+	}
+	for _, tt := range tests {
+		got := cruciblePhaseStyle(tt.phase, frame)
+		if !strings.Contains(got, tt.wantLabel) {
+			t.Errorf("cruciblePhaseStyle(%q): expected label %q in output, got %q", tt.phase, tt.wantLabel, got)
+		}
+	}
+}
+
+func TestCruciblePhaseStyleFrameChanges(t *testing.T) {
+	// Different frames should produce different output for animated phases.
+	out1 := cruciblePhaseStyle("dispatching", "⣾")
+	out2 := cruciblePhaseStyle("dispatching", "⣽")
+	if out1 == out2 {
+		t.Errorf("cruciblePhaseStyle(dispatching): different frames should produce different output")
+	}
+}
+
 func TestCursorClampedOnCollapse(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,

@@ -285,6 +285,9 @@ type Model struct {
 	queueNavItems       []queueNavItem    // navigable items (anvil headers + beads)
 	queueGrouped        bool              // true when 2+ anvils trigger grouping
 
+	// Spinner animation frame index (advances every SpinnerInterval).
+	spinnerFrame int
+
 	// Event rendering cache
 	eventLinesCache       []string
 	eventWidthCache       int
@@ -310,8 +313,11 @@ func NewModel(ds *DataSource) Model {
 func (m *Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{tea.SetWindowTitle("The Forge — Hearth")}
 
-	// Start the data tick cycle and do an initial fetch
+	// Start the data tick cycle, spinner animation, and do an initial fetch when
+	// a data source is present. In display-only mode (m.data == nil), avoid
+	// scheduling periodic ticks to reduce unnecessary CPU usage.
 	if m.data != nil {
+		cmds = append(cmds, SpinnerTick())
 		cmds = append(cmds, Tick())
 		cmds = append(cmds, FetchAll(m.data))
 		cmds = append(cmds, FetchDaemonHealth())
@@ -703,6 +709,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		}
+
+	case SpinnerTickMsg:
+		// Advance spinner frame and schedule the next spinner tick.
+		m.spinnerFrame = (m.spinnerFrame + 1) % len(SpinnerFrames)
+		return m, SpinnerTick()
 	}
 
 	return m, nil
@@ -1476,18 +1487,19 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 }
 
 // cruciblePhaseStyle returns a styled phase label for Crucible status display.
-func cruciblePhaseStyle(phase string) string {
+// frame is the current spinner animation frame, used for active phases.
+func cruciblePhaseStyle(phase, frame string) string {
 	switch phase {
 	case "dispatching":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("▶ DISPATCH")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render(frame + " DISPATCH")
 	case "final_pr":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("⤴ FINAL PR")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(frame + " FINAL PR")
 	case "complete":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("✓ COMPLETE")
 	case "paused":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("⏸ PAUSED")
 	case "started":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render("◉ STARTED")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render(frame + " STARTED")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("? " + phase)
 	}
@@ -1519,15 +1531,17 @@ func (m *Model) renderCrucibles(width, height int) string {
 
 		m.crucibleVP.AdjustViewport(maxItems, len(m.crucibles))
 		start, end := m.crucibleVP.VisibleRange(maxItems, len(m.crucibles))
+		frame := SpinnerFrames[m.spinnerFrame%len(SpinnerFrames)]
 
 		for i := start; i < end; i++ {
 			c := m.crucibles[i]
 			selected := m.focused == PanelCrucibles && i == m.crucibleVP.cursor
 
 			// Line 1: phase icon + parent ID + anvil
-			line1 := fmt.Sprintf("%s %s %s", cruciblePhaseStyle(c.Phase), c.ParentID, dimStyle.Render(c.Anvil))
+			baseLine1 := fmt.Sprintf("%s %s %s", cruciblePhaseStyle(c.Phase, frame), c.ParentID, dimStyle.Render(c.Anvil))
+			line1 := baseLine1
 			if selected {
-				line1 = selectedStyle.Render(fmt.Sprintf("▸ %s %s %s", c.Phase, c.ParentID, c.Anvil))
+				line1 = selectedStyle.Render(fmt.Sprintf("▸ %s", baseLine1))
 			}
 
 			// Line 2: progress bar + fraction
@@ -1827,9 +1841,10 @@ func (m *Model) renderWorkerList(width, height int) string {
 		}
 		m.workerVP.AdjustViewport(maxWorkers, len(m.workers))
 		start, end := m.workerVP.VisibleRange(maxWorkers, len(m.workers))
+		frame := SpinnerFrames[m.spinnerFrame%len(SpinnerFrames)]
 		for i := start; i < end; i++ {
 			item := m.workers[i]
-			status := workerStatusStyle(item.Status)
+			status := workerStatusStyle(item.Status, frame)
 			phase := phaseTag(item.Type)
 			beadAndPR := item.BeadID
 			if item.PRNumber > 0 {
@@ -2368,12 +2383,13 @@ func priorityStyle(p int) string {
 }
 
 // workerStatusStyle returns a colored status indicator.
-func workerStatusStyle(status string) string {
+// frame is the current spinner animation frame, used for active (running/reviewing) states.
+func workerStatusStyle(status, frame string) string {
 	switch status {
 	case "running":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Render("●")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Render(frame)
 	case "reviewing":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render("◐")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render(frame)
 	case "monitoring":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("○")
 	case "done":

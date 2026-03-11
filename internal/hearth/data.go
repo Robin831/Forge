@@ -55,6 +55,22 @@ const EventFetchLimit = 100
 // TickMsg triggers a data refresh cycle.
 type TickMsg time.Time
 
+// SpinnerInterval is how often the spinner animation advances.
+const SpinnerInterval = 100 * time.Millisecond
+
+// SpinnerTickMsg advances the spinner animation frame.
+type SpinnerTickMsg time.Time
+
+// SpinnerFrames are the animation frames for active workers (braille dots pattern).
+var SpinnerFrames = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+
+// SpinnerTick returns a Bubbletea command that sends a SpinnerTickMsg after SpinnerInterval.
+func SpinnerTick() tea.Cmd {
+	return tea.Tick(SpinnerInterval, func(t time.Time) tea.Msg {
+		return SpinnerTickMsg(t)
+	})
+}
+
 // DataSource holds the dependencies needed to feed the TUI panels.
 type DataSource struct {
 	DB *state.DB
