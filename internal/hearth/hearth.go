@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1904,6 +1905,19 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, top, middle, bottom)
 }
 
+// crucibleProgressColor returns the terminal color code for the bubbles progress
+// bar based on crucible phase: green for complete, red for paused (failure), yellow otherwise.
+func crucibleProgressColor(phase string) string {
+	switch phase {
+	case "complete":
+		return "82"  // green
+	case "paused":
+		return "196" // red
+	default:
+		return "226" // yellow
+	}
+}
+
 // cruciblePhaseStyle returns a styled phase label for Crucible status display.
 // frame is the current spinner animation frame, used for active phases.
 func cruciblePhaseStyle(phase, frame string) string {
@@ -1963,15 +1977,19 @@ func (m *Model) renderCrucibles(width, height int) string {
 			}
 
 			// Line 2: progress bar + fraction
-			progress := fmt.Sprintf("  Children: %d/%d", c.CompletedChildren, c.TotalChildren)
+			progressLine := fmt.Sprintf("  Children: %d/%d", c.CompletedChildren, c.TotalChildren)
 			if c.TotalChildren > 0 {
 				barWidth := width - 22
 				if barWidth < 5 {
 					barWidth = 5
 				}
-				filled := barWidth * c.CompletedChildren / c.TotalChildren
-				bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
-				progress = fmt.Sprintf("  %s %d/%d", bar, c.CompletedChildren, c.TotalChildren)
+				fraction := float64(c.CompletedChildren) / float64(c.TotalChildren)
+				pb := progress.New(
+					progress.WithSolidFill(crucibleProgressColor(c.Phase)),
+					progress.WithoutPercentage(),
+					progress.WithWidth(barWidth),
+				)
+				progressLine = fmt.Sprintf("  %s %d/%d", pb.ViewAs(fraction), c.CompletedChildren, c.TotalChildren)
 			}
 
 			// Line 3: current child or title (truncated)
@@ -1990,7 +2008,7 @@ func (m *Model) renderCrucibles(width, height int) string {
 				line3 = dimStyle.Render(fmt.Sprintf("  %s", titleText))
 			}
 
-			lines = append(lines, line1, progress, line3)
+			lines = append(lines, line1, progressLine, line3)
 		}
 	}
 
