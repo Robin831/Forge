@@ -543,6 +543,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
+		// Forward mouse events to log viewer when it's open
+		if m.showLogViewer {
+			var cmd tea.Cmd
+			m.logViewPort, cmd = m.logViewPort.Update(msg)
+			return m, cmd
+		}
 		// Dismiss overlays on left or right mouse button press
 		if msg.Action == tea.MouseActionPress &&
 			(msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight) {
@@ -584,12 +590,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logViewPort.Height = vpHeight
 		}
 
-	case tea.MouseMsg:
-		if m.showLogViewer {
-			var cmd tea.Cmd
-			m.logViewPort, cmd = m.logViewPort.Update(msg)
-			return m, cmd
-		}
 
 	case UpdateQueueMsg:
 		m.queue = msg.Items
