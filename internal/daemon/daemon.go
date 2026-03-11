@@ -1051,7 +1051,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		// A Claude subprocess may have accidentally run git checkout in the parent
 		// repository instead of its worktree, corrupting the working environment for
 		// all subsequent workers. Detect and auto-restore before dispatching.
-		if err := worktree.CheckAndRestoreMainBranch(ctx, anvilCfg.Path); err != nil {
+		if err := worktree.CheckAndRestoreMainBranch(ctx, anvilCfg.Path, d.logger); err != nil {
 			d.logger.Warn("anvil root is not on main branch; skipping dispatch until restored",
 				"anvil", bead.Anvil, "error", err)
 			_ = d.db.LogEvent(state.EventPollError,

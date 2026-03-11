@@ -203,7 +203,7 @@ func TestCheckAndRestoreMainBranch_AlreadyOnMain(t *testing.T) {
 	dir := t.TempDir()
 	initTestRepo(t, dir, "main")
 
-	if err := CheckAndRestoreMainBranch(context.Background(), dir); err != nil {
+	if err := CheckAndRestoreMainBranch(context.Background(), dir, nil); err != nil {
 		t.Errorf("CheckAndRestoreMainBranch on main: unexpected error: %v", err)
 	}
 }
@@ -212,7 +212,7 @@ func TestCheckAndRestoreMainBranch_AlreadyOnMaster(t *testing.T) {
 	dir := t.TempDir()
 	initTestRepo(t, dir, "master")
 
-	if err := CheckAndRestoreMainBranch(context.Background(), dir); err != nil {
+	if err := CheckAndRestoreMainBranch(context.Background(), dir, nil); err != nil {
 		t.Errorf("CheckAndRestoreMainBranch on master: unexpected error: %v", err)
 	}
 }
@@ -228,7 +228,7 @@ func TestCheckAndRestoreMainBranch_RestoresFromFeatureBranch(t *testing.T) {
 		t.Fatalf("git checkout -b: %v\n%s", err, out)
 	}
 
-	if err := CheckAndRestoreMainBranch(context.Background(), dir); err != nil {
+	if err := CheckAndRestoreMainBranch(context.Background(), dir, nil); err != nil {
 		t.Fatalf("CheckAndRestoreMainBranch: unexpected error: %v", err)
 	}
 
@@ -244,7 +244,7 @@ func TestCheckAndRestoreMainBranch_ErrorWhenNoMainOrMaster(t *testing.T) {
 	initTestRepo(t, dir, "feature-only")
 	// There is no main/master branch, so restore should fail with an error.
 
-	err := CheckAndRestoreMainBranch(context.Background(), dir)
+	err := CheckAndRestoreMainBranch(context.Background(), dir, nil)
 	if err == nil {
 		t.Fatal("expected error when no main/master branch exists, got nil")
 	}

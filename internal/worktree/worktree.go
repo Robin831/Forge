@@ -8,6 +8,7 @@ package worktree
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -400,18 +401,24 @@ func gitCmd(ctx context.Context, dir string, args ...string) error {
 // happen when a Claude subprocess mistakenly runs git checkout in the parent
 // repository instead of its worktree — this function attempts to restore it.
 //
+// The logger parameter is used to emit a structured warning when recovery is
+// performed. If logger is nil, slog.Default() is used as a fallback.
+//
 // Returns nil if the anvil is already on the correct branch (or HEAD-detached),
 // or after a successful restore. Returns an error if the branch cannot be
 // determined or the restore fails.
-func CheckAndRestoreMainBranch(ctx context.Context, anvilPath string) error {
+func CheckAndRestoreMainBranch(ctx context.Context, anvilPath string, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	recovered, originalBranch, err := VerifyAndRecoverMain(ctx, anvilPath)
 	if err != nil {
 		return fmt.Errorf("anvil root %q is on branch %q; auto-restore failed: %w",
 			anvilPath, originalBranch, err)
 	}
 	if recovered {
-		fmt.Fprintf(os.Stderr, "Warning: anvil root %q was on branch %q, auto-restored to main/master\n",
-			anvilPath, originalBranch)
+		logger.Warn("anvil root was on a feature branch; auto-restored to main/master",
+			"anvil_path", anvilPath, "original_branch", originalBranch)
 	}
 	return nil
 }
