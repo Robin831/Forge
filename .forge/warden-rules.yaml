@@ -335,3 +335,21 @@ rules:
       check: Verify that the test setup actually triggers the scenario described in the test name. If the code under test uses fixed/hardcoded values that ignore the test's input, either refactor the code to accept the relevant parameter or adjust the test to exercise the real code path.
       source: copilot:PR#175
       added: "2026-03-11"
+    - id: hot-reload-claim-accuracy
+      category: other
+      pattern: Changelog or documentation claims a config setting is hot-reloadable
+      check: Verify the setting is actually tracked in the hot-reload allowlist (internal/hotreload/hotreload.go:applyChanges). If it is not in the allowlist, either add it there and update the Hot Reload docs, or remove the hot-reloadable claim from the changelog/docs.
+      source: copilot:PR#178
+      added: "2026-03-11"
+    - id: config-override-needs-test
+      category: testing
+      pattern: Adding a new configurable parameter or field that overrides default behavior
+      check: Verify that unit tests exercise the new override by setting it to a boundary value (e.g., minimum) and confirming the overridden behavior takes effect
+      source: copilot:PR#178
+      added: "2026-03-11"
+    - id: comment-matches-implementation
+      category: style
+      pattern: Code comments describing behavior for specific values (e.g., 'when zero', 'if nil', 'when empty') next to implementation that handles a broader range (e.g., <= 0, != nil, len > 0)
+      check: Verify that doc comments accurately describe the exact conditions handled by the code. If the code uses <= 0 but the comment says 'when zero', update the comment to say 'when zero or negative' (or tighten the condition to match the comment).
+      source: copilot:PR#178
+      added: "2026-03-11"
