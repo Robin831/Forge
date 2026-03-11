@@ -1,0 +1,2 @@
+category: Changed
+- **Hearth TUI now adapts colors for light and dark terminal backgrounds** - All color definitions in the Hearth dashboard have been migrated to `lipgloss.AdaptiveColor` pairs, replacing hardcoded dark-terminal-only color codes. Users with light terminal backgrounds now get proper contrast for all UI elements including panel borders, status indicators, priority labels, phase tags, and event types. (Forge-l0a8)
