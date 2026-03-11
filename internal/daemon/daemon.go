@@ -19,8 +19,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -120,8 +121,10 @@ type Daemon struct {
 	// Vulnerability scanning
 	vulnScanner *vulncheck.Scanner
 
-	// Teams notifications (nil = disabled)
-	notifier *notify.Notifier
+	// Teams notifications (nil = disabled). Uses atomic.Pointer so the hot-reload
+	// callback can swap in a new Notifier without a mutex while concurrent
+	// pipeline goroutines safely read via Load().
+	notifier atomic.Pointer[notify.Notifier]
 
 	cancel     context.CancelFunc // cancels the Run context for graceful shutdown
 	runCtx     context.Context    // the live run context; set in Run() after signal/cancel wiring
@@ -191,25 +194,12 @@ func New(cfg *config.Config) (*Daemon, error) {
 
 	wtMgr := worktree.NewManager()
 
-	webhookURL := cfg.Notifications.TeamsWebhookURL
-	trimmedWebhookURL := strings.TrimSpace(webhookURL)
-	if cfg.Notifications.Enabled && trimmedWebhookURL != "" {
-		formatted, err := notify.FormatWebhookURL(trimmedWebhookURL)
-		if err != nil {
-			db.Close()
-			logFile.Close()
-			return nil, fmt.Errorf("invalid Teams webhook URL: %w", err)
-		}
-		webhookURL = formatted
-	} else if !cfg.Notifications.Enabled && trimmedWebhookURL != "" {
-		logger.Warn("Teams webhook URL is set but notifications are disabled; skipping URL validation")
+	notifier, err := newNotifierFromConfig(cfg, logger)
+	if err != nil {
+		db.Close()
+		logFile.Close()
+		return nil, fmt.Errorf("invalid Teams webhook URL: %w", err)
 	}
-
-	notifier := notify.NewNotifier(notify.Config{
-		WebhookURL: webhookURL,
-		Enabled:    cfg.Notifications.Enabled,
-		Events:     cfg.Notifications.Events,
-	}, logger)
 
 	d := &Daemon{
 		db:            db,
@@ -221,8 +211,8 @@ func New(cfg *config.Config) (*Daemon, error) {
 		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
-		notifier:      notifier,
 	}
+	d.notifier.Store(notifier)
 	// Wire up the crucible-active check so orphan recovery skips parent beads
 	// that are currently being orchestrated by an in-process Crucible run.
 	// The key is "anvil/beadID" to avoid false positives when two anvils share
@@ -406,6 +396,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 					new.Settings.MaxReviewFixAttempts,
 					new.Settings.MaxRebaseAttempts,
 				)
+			}
+			// Recreate the notifier when any notification setting changes so
+			// that webhook URL, enabled flag, or event filters take effect
+			// immediately without a daemon restart.
+			if old.Notifications.Enabled != new.Notifications.Enabled ||
+				old.Notifications.TeamsWebhookURL != new.Notifications.TeamsWebhookURL ||
+				!slices.Equal(old.Notifications.Events, new.Notifications.Events) {
+				if n := d.buildNotifier(new); n != nil {
+					d.notifier.Store(n)
+				}
 			}
 			// Update bellows and depcheck when anvils change
 			d.updateAnvilPaths(old, new)
@@ -695,13 +695,13 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 	if event.EventType != bellows.EventPRReadyToMerge {
 		return
 	}
-	if d.notifier == nil && len(d.cfg.Load().Notifications.PRReadyWebhookURLs) == 0 {
+	if d.notifier.Load() == nil && len(d.cfg.Load().Notifications.PRReadyWebhookURLs) == 0 {
 		return
 	}
 	title := d.db.BeadTitle(event.BeadID, event.Anvil)
 	go func(anvil, beadID string, prNumber int, prURL, title string) {
-		if d.notifier != nil {
-			d.notifier.PRReadyToMerge(ctx, anvil, beadID, prNumber, prURL, title)
+		if n := d.notifier.Load(); n != nil {
+			n.PRReadyToMerge(ctx, anvil, beadID, prNumber, prURL, title)
 		}
 		cfg := d.cfg.Load()
 		if cfg != nil && cfg.Notifications.Enabled {
@@ -1361,7 +1361,7 @@ normalPipeline:
 		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
-		Notifier:        d.notifier,
+		Notifier:        d.notifier.Load(),
 		BaseBranch:      bead.EpicBranch,
 		WorkerID:        claimWorkerID,
 		MaxIterations:   d.cfg.Load().Settings.MaxPipelineIterations,
@@ -2760,6 +2760,55 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 		d.depcheckScanner.UpdateAnvilPaths(depcheckPaths)
 		d.logger.Info("updated depcheck anvil paths", "count", len(depcheckPaths))
 	}
+}
+
+// buildNotifier constructs a new *notify.Notifier from the given config.
+// On URL validation failure it falls back to the raw (unformatted) URL rather
+// than returning nil, so a config typo during hot-reload cannot accidentally
+// disable notifications that were previously working.
+func (d *Daemon) buildNotifier(cfg *config.Config) *notify.Notifier {
+	n, err := newNotifierFromConfig(cfg, d.logger)
+	if err != nil {
+		// URL validation failed; build with the raw URL to keep the notifier
+		// non-nil and avoid silently disabling an otherwise valid notification
+		// setup due to a transient config typo.
+		d.logger.Error("invalid Teams webhook URL in reloaded config; using raw URL", "error", err)
+		n = notify.NewNotifier(notify.Config{
+			WebhookURL: strings.TrimSpace(cfg.Notifications.TeamsWebhookURL),
+			Enabled:    cfg.Notifications.Enabled,
+			Events:     cfg.Notifications.Events,
+		}, d.logger)
+	}
+	if n != nil {
+		d.logger.Info("notifications config reloaded", "enabled", cfg.Notifications.Enabled)
+	} else {
+		d.logger.Info("notifications disabled by reloaded config")
+	}
+	return n
+}
+
+// newNotifierFromConfig constructs a *notify.Notifier from cfg, validating and
+// normalising the Teams webhook URL. It is the shared implementation used by
+// both the startup path (New) and the hot-reload path (buildNotifier) so that
+// the two cannot drift in behaviour or logging over time.
+func newNotifierFromConfig(cfg *config.Config, logger *slog.Logger) (*notify.Notifier, error) {
+	webhookURL := cfg.Notifications.TeamsWebhookURL
+	trimmedURL := strings.TrimSpace(webhookURL)
+	if cfg.Notifications.Enabled && trimmedURL != "" {
+		formatted, err := notify.FormatWebhookURL(trimmedURL)
+		if err != nil {
+			return nil, err
+		}
+		webhookURL = formatted
+	} else if !cfg.Notifications.Enabled && trimmedURL != "" {
+		logger.Warn("Teams webhook URL is set but notifications are disabled; skipping URL validation")
+	}
+	n := notify.NewNotifier(notify.Config{
+		WebhookURL: webhookURL,
+		Enabled:    cfg.Notifications.Enabled,
+		Events:     cfg.Notifications.Events,
+	}, logger)
+	return n, nil
 }
 
 // filterDepcheckAnvils returns the subset of anvils that should be scanned by
