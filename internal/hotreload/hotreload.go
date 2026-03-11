@@ -204,6 +204,10 @@ func applyChanges(old, new *config.Config) []string {
 			old.Notifications.Enabled, new.Notifications.Enabled))
 	}
 
+	if !sliceEqual(old.Notifications.Events, new.Notifications.Events) {
+		changes = append(changes, "notifications.events changed")
+	}
+
 	if old.Settings.MaxCIFixAttempts != new.Settings.MaxCIFixAttempts {
 		changes = append(changes, fmt.Sprintf("max_ci_fix_attempts: %d → %d",
 			old.Settings.MaxCIFixAttempts, new.Settings.MaxCIFixAttempts))
