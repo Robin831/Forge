@@ -244,7 +244,6 @@ type Model struct {
 	prevEventCount       int  // track event count for auto-scroll
 	width                int
 	height               int
-	headerH              int // cached header height for mouse hit-testing
 	ready                bool
 
 	// Action menu overlay state (Needs Attention)
@@ -753,6 +752,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View implements tea.Model.
+// computeHeaderH returns the rendered height of the header bar.
+// It is called by both View() and panelAtPos() to keep hit-testing in sync
+// without mutating model state inside View().
+func (m *Model) computeHeaderH() int {
+	headerText := "🔥 The Forge — Hearth Dashboard"
+	if m.daemonConnected {
+		indicator := daemonConnectedStyle.Render("● Connected")
+		if m.daemonLastPoll != "" && m.daemonLastPoll != "n/a" {
+			indicator += dimStyle.Render(" (polled " + m.daemonLastPoll + ")")
+		}
+		headerText += "  " + indicator
+	} else {
+		headerText += "  " + daemonDisconnectedStyle.Render("○ Disconnected")
+	}
+	return lipgloss.Height(headerStyle.Width(m.width).Render(headerText))
+}
+
 func (m *Model) View() string {
 	if !m.ready {
 		return "Initializing The Forge..."
@@ -771,7 +787,6 @@ func (m *Model) View() string {
 	}
 	header := headerStyle.Width(m.width).Render(headerText)
 	headerH := lipgloss.Height(header)
-	m.headerH = headerH
 
 	// Footer with status message or default hints
 	footerText := "Tab: switch panel • j/k/wheel: scroll • K: kill worker • Enter: actions/merge • l: label bead • f: follow • q: quit"
@@ -861,6 +876,10 @@ func (m *Model) getVerticalSplit(headerH, footerH int) (topHeight, bottomHeight 
 	return
 }
 
+// panelBorderEachSide is the number of terminal columns consumed by one side
+// of a panel border (lipgloss RoundedBorder = 1 char per side).
+const panelBorderEachSide = 1
+
 // panelAtPos returns the Panel at the given terminal (x, y) coordinate.
 // Used for mouse click focus and scroll targeting. When the position is
 // ambiguous (e.g. on a border or out of range) the current focused panel
@@ -868,13 +887,17 @@ func (m *Model) getVerticalSplit(headerH, footerH int) (topHeight, bottomHeight 
 func (m *Model) panelAtPos(x, y int) Panel {
 	queueWidth, workerWidth, _ := m.getTopPanelWidths()
 
-	// Determine column by x coordinate.
-	// Column boundaries (borders add ~2 chars between columns).
-	leftEnd := queueWidth + 1
-	centerEnd := leftEnd + workerWidth + 2
+	// Determine column x boundaries.
+	// Each panel has panelBorderEachSide chars on both left and right.
+	// leftEnd is the inclusive rightmost column of the left panel (0-indexed).
+	// centerEnd is the inclusive rightmost column of the center panel.
+	leftColumnWidth := queueWidth + 2*panelBorderEachSide
+	centerColumnWidth := workerWidth + 2*panelBorderEachSide
+	leftEnd := leftColumnWidth - 1
+	centerEnd := leftColumnWidth + centerColumnWidth - 1
 
-	// Use stored headerH (updated each View() call); fall back to 1.
-	hh := m.headerH
+	// Compute header height without mutating model state.
+	hh := m.computeHeaderH()
 	if hh <= 0 {
 		hh = 1
 	}
