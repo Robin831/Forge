@@ -1,2 +1,2 @@
 category: Fixed
-- **Fixed main branch hijacking by worktree feature branches** - Moved the branch recovery logic to the worktree package with unit tests and added checks in the daemon to verify the anvil root is on main/master to prevent working environment corruption. (Forge-gll5)
+- **Prevent main repo branch hijack by worktree feature branches** - Added a pre-dispatch safety check in the daemon poll loop that verifies each anvil root is on its default branch (main/master) before spawning a worker. If the branch has been corrupted, it is automatically restored. Also added explicit git safety instructions to the smith prompt, telling Claude never to run branch-changing git commands outside its worktree directory. (Forge-gll5)

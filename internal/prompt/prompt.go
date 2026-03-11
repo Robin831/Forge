@@ -150,12 +150,11 @@ You are working in a git worktree at: {{.Bead.WorktreePath}}
 Branch: {{.Bead.Branch}}
 Main repository: {{.Bead.AnvilPath}}
 
-**IMPORTANT: Working directory confinement** — All git operations must stay within
-your assigned worktree ({{.Bead.WorktreePath}}). Never use cd to navigate outside
-this directory. Never run git checkout, git reset, git switch, or any other
-branch-manipulating command on any path outside your worktree. The main repository
-at {{.Bead.AnvilPath}} must not be touched directly — doing so will corrupt the
-environment for other workers.
+**Git safety rules — read carefully:**
+- ALL git operations must be performed inside your worktree ({{.Bead.WorktreePath}}) only
+- **NEVER** run git checkout, git switch, git reset, or any branch-changing command in the main repository ({{.Bead.AnvilPath}})
+- **NEVER** cd to the main repository path and run git commands there
+- The main repository must remain on its default branch at all times; touching it corrupts every other worker
 
 ## Instructions
 
