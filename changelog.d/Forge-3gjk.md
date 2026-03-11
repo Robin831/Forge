@@ -1,0 +1,2 @@
+category: Added
+- **Spinner animations for active workers and crucible phases** - The Hearth TUI now shows animated braille dot spinners (⣾⣽⣻⢿⡿⣟⣯⣷) next to running and reviewing workers, and next to active crucible phases (dispatching, started, final_pr), making it immediately obvious which workers are actively processing versus stalled. The spinner updates at 100ms intervals independently of the 2-second data refresh cycle. (Forge-3gjk)
