@@ -153,6 +153,10 @@ type Daemon struct {
 	// Cost limit: tracks which date we last logged the cost_limit_hit event
 	// to avoid spamming the event log every poll cycle.
 	costLimitLoggedDate atomic.Value // stores string (YYYY-MM-DD)
+
+	// labelAdder adds a label to a bead via the bd CLI. Defaults to the real
+	// bd-update implementation; may be replaced in tests to avoid exec.Command.
+	labelAdder func(anvilPath, beadID, tag string) error
 }
 
 // New creates a new daemon instance.
@@ -233,6 +237,17 @@ func New(cfg *config.Config) (*Daemon, error) {
 	// makes the intent explicit and avoids any future ambiguity).
 	d.costLimitLoggedDate.Store("")
 	d.cfg.Store(cfg)
+	d.labelAdder = func(anvilPath, beadID, tag string) error {
+		ctx, cancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		defer cancel()
+		cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--add-label", tag))
+		cmd.Dir = anvilPath
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, out)
+		}
+		return nil
+	}
 	// Default runCtx to context.Background() so IPC handlers that access it
 	// before Run() wires up the real context (e.g. early tag_bead commands)
 	// never receive a nil context.
@@ -1312,7 +1327,7 @@ normalPipeline:
 
 	if !outcome.Success {
 		if outcome.Decomposed {
-			d.applyDecomposedOutcome(bead.ID, bead.Anvil, outcome.SchematicResult)
+			d.applyDecomposedOutcome(bead, anvilCfg, outcome.SchematicResult)
 			return
 		}
 		if outcome.NeedsHuman {
@@ -2355,9 +2370,13 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 
 // applyDecomposedOutcome updates the retry record after a Schematic decompose
 // result. When real sub-beads were created it clears any prior dispatch
-// failures; when none were produced it records a failure so the bead surfaces
-// in Needs Attention and can reach the circuit breaker.
-func (d *Daemon) applyDecomposedOutcome(beadID, anvil string, sr *schematic.Result) {
+// failures and propagates the parent's auto_dispatch tag (if any) to each
+// child so they are picked up by the poller immediately; when none were
+// produced it records a failure so the bead surfaces in Needs Attention and
+// can reach the circuit breaker.
+func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilConfig, sr *schematic.Result) {
+	beadID := bead.ID
+	anvil := bead.Anvil
 	childCount := 0
 	if sr != nil {
 		childCount = len(sr.SubBeads)
@@ -2366,6 +2385,41 @@ func (d *Daemon) applyDecomposedOutcome(beadID, anvil string, sr *schematic.Resu
 		d.logger.Info("bead decomposed into sub-beads", "bead", beadID, "count", childCount)
 		// Decomposition is intentional, not a failure — clear any prior dispatch failures.
 		_ = d.db.ClearRetry(beadID, anvil)
+
+		// When the anvil uses tagged auto_dispatch and the parent has the
+		// dispatch tag, copy that tag to each child so they are eligible for
+		// immediate dispatch by the poller.
+		if anvilCfg.AutoDispatch == "tagged" && anvilCfg.AutoDispatchTag != "" {
+			if d.labelAdder == nil {
+				d.logger.Warn("labelAdder is nil; skipping auto_dispatch tag propagation to child beads",
+					"parent", beadID, "tag", anvilCfg.AutoDispatchTag)
+			} else {
+				parentHasTag := false
+				for _, lbl := range bead.Labels {
+					if strings.EqualFold(lbl, anvilCfg.AutoDispatchTag) {
+						parentHasTag = true
+						break
+					}
+				}
+				if parentHasTag {
+					for _, sub := range sr.SubBeads {
+						if err := d.labelAdder(anvilCfg.Path, sub.ID, anvilCfg.AutoDispatchTag); err != nil {
+							d.logger.Warn("failed to copy auto_dispatch tag to child bead",
+								"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag, "error", err)
+							reason := fmt.Sprintf("failed to propagate auto_dispatch tag %q to child bead %s: %v",
+								anvilCfg.AutoDispatchTag, sub.ID, err)
+							d.recordDispatchFailure(beadID, anvil, reason)
+						} else {
+							d.logger.Info("copied auto_dispatch tag to child bead",
+								"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag)
+							_ = d.db.LogEvent(state.EventBeadTagged,
+								fmt.Sprintf("Label %q propagated to child bead %s from decomposed parent %s", anvilCfg.AutoDispatchTag, sub.ID, beadID),
+								sub.ID, anvil)
+						}
+					}
+				}
+			}
+		}
 		return
 	}
 	// Decomposition produced no children — preserve the retry record so the bead

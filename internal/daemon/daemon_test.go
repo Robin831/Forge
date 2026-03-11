@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -1115,7 +1116,7 @@ func TestApplyDecomposedOutcome(t *testing.T) {
 			Action:   schematic.ActionDecompose,
 			SubBeads: []schematic.SubBead{{ID: "child-1", Title: "Child task"}},
 		}
-		d.applyDecomposedOutcome(beadID, anvil, sr)
+		d.applyDecomposedOutcome(poller.Bead{ID: beadID, Anvil: anvil}, config.AnvilConfig{}, sr)
 
 		// Retry record should be gone (ClearRetry deleted it).
 		r, err = db.GetRetry(beadID, anvil)
@@ -1137,7 +1138,7 @@ func TestApplyDecomposedOutcome(t *testing.T) {
 			SubBeads: nil,
 			Reason:   "bead too ambiguous",
 		}
-		d.applyDecomposedOutcome(beadID, anvil, sr)
+		d.applyDecomposedOutcome(poller.Bead{ID: beadID, Anvil: anvil}, config.AnvilConfig{}, sr)
 
 		// A dispatch failure should now be recorded.
 		r, err = db.GetRetry(beadID, anvil)
@@ -1151,12 +1152,114 @@ func TestApplyDecomposedOutcome(t *testing.T) {
 	t.Run("no sub-beads: nil schematic result uses default reason", func(t *testing.T) {
 		const beadID = "DECOMP-NIL-RESULT"
 
-		d.applyDecomposedOutcome(beadID, anvil, nil)
+		d.applyDecomposedOutcome(poller.Bead{ID: beadID, Anvil: anvil}, config.AnvilConfig{}, nil)
 
 		r, err := db.GetRetry(beadID, anvil)
 		require.NoError(t, err)
 		require.NotNil(t, r)
 		assert.Equal(t, 1, r.DispatchFailures)
 		assert.Equal(t, "decomposition produced no child beads", r.LastError)
+	})
+
+	t.Run("tagged auto_dispatch: copies tag to children when parent has it", func(t *testing.T) {
+		const beadID = "DECOMP-TAGGED-PARENT"
+
+		// Track which children received the label.
+		var mu sync.Mutex
+		labeled := map[string]string{} // childID -> tag
+
+		d.labelAdder = func(anvilPath, childID, tag string) error {
+			mu.Lock()
+			defer mu.Unlock()
+			labeled[childID] = tag
+			return nil
+		}
+		defer func() { d.labelAdder = nil }()
+
+		sr := &schematic.Result{
+			Action: schematic.ActionDecompose,
+			SubBeads: []schematic.SubBead{
+				{ID: "child-a", Title: "Child A"},
+				{ID: "child-b", Title: "Child B"},
+			},
+		}
+		parentBead := poller.Bead{
+			ID:     beadID,
+			Anvil:  anvil,
+			Labels: []string{"forgeReady"},
+		}
+		anvilCfg := config.AnvilConfig{
+			AutoDispatch:    "tagged",
+			AutoDispatchTag: "forgeReady",
+		}
+
+		d.applyDecomposedOutcome(parentBead, anvilCfg, sr)
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, "forgeReady", labeled["child-a"], "child-a should receive the forgeReady tag")
+		assert.Equal(t, "forgeReady", labeled["child-b"], "child-b should receive the forgeReady tag")
+
+		// Retry record should be cleared (successful decomposition).
+		r, err := db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		assert.Nil(t, r, "retry record should be cleared after successful decomposition")
+	})
+
+	t.Run("tagged auto_dispatch: skips tagging when parent lacks the tag", func(t *testing.T) {
+		const beadID = "DECOMP-TAGGED-NO-PARENT-TAG"
+
+		called := false
+		d.labelAdder = func(anvilPath, childID, tag string) error {
+			called = true
+			return nil
+		}
+		defer func() { d.labelAdder = nil }()
+
+		sr := &schematic.Result{
+			Action:   schematic.ActionDecompose,
+			SubBeads: []schematic.SubBead{{ID: "child-c", Title: "Child C"}},
+		}
+		parentBead := poller.Bead{
+			ID:     beadID,
+			Anvil:  anvil,
+			Labels: []string{"someOtherLabel"},
+		}
+		anvilCfg := config.AnvilConfig{
+			AutoDispatch:    "tagged",
+			AutoDispatchTag: "forgeReady",
+		}
+
+		d.applyDecomposedOutcome(parentBead, anvilCfg, sr)
+
+		assert.False(t, called, "labelAdder should not be called when parent lacks the dispatch tag")
+	})
+
+	t.Run("non-tagged auto_dispatch: skips tagging entirely", func(t *testing.T) {
+		const beadID = "DECOMP-ALL-DISPATCH"
+
+		called := false
+		d.labelAdder = func(anvilPath, childID, tag string) error {
+			called = true
+			return nil
+		}
+		defer func() { d.labelAdder = nil }()
+
+		sr := &schematic.Result{
+			Action:   schematic.ActionDecompose,
+			SubBeads: []schematic.SubBead{{ID: "child-d", Title: "Child D"}},
+		}
+		parentBead := poller.Bead{
+			ID:     beadID,
+			Anvil:  anvil,
+			Labels: []string{"forgeReady"},
+		}
+		anvilCfg := config.AnvilConfig{
+			AutoDispatch: "all",
+		}
+
+		d.applyDecomposedOutcome(parentBead, anvilCfg, sr)
+
+		assert.False(t, called, "labelAdder should not be called for non-tagged auto_dispatch mode")
 	})
 }
