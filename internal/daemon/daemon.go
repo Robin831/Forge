@@ -120,8 +120,10 @@ type Daemon struct {
 	// Vulnerability scanning
 	vulnScanner *vulncheck.Scanner
 
-	// Teams notifications (nil = disabled)
-	notifier *notify.Notifier
+	// Teams notifications (nil = disabled). Uses atomic.Pointer so the hot-reload
+	// callback can swap in a new Notifier without a mutex while concurrent
+	// pipeline goroutines safely read via Load().
+	notifier atomic.Pointer[notify.Notifier]
 
 	cancel     context.CancelFunc // cancels the Run context for graceful shutdown
 	runCtx     context.Context    // the live run context; set in Run() after signal/cancel wiring
@@ -221,8 +223,8 @@ func New(cfg *config.Config) (*Daemon, error) {
 		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
-		notifier:      notifier,
 	}
+	d.notifier.Store(notifier)
 	// Wire up the crucible-active check so orphan recovery skips parent beads
 	// that are currently being orchestrated by an in-process Crucible run.
 	// The key is "anvil/beadID" to avoid false positives when two anvils share
@@ -406,6 +408,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 					new.Settings.MaxReviewFixAttempts,
 					new.Settings.MaxRebaseAttempts,
 				)
+			}
+			// Recreate the notifier when any notification setting changes so
+			// that webhook URL, enabled flag, or event filters take effect
+			// immediately without a daemon restart.
+			if old.Notifications.Enabled != new.Notifications.Enabled ||
+				old.Notifications.TeamsWebhookURL != new.Notifications.TeamsWebhookURL ||
+				!sliceEqualStr(old.Notifications.Events, new.Notifications.Events) {
+				d.notifier.Store(d.buildNotifier(new))
 			}
 			// Update bellows and depcheck when anvils change
 			d.updateAnvilPaths(old, new)
@@ -695,13 +705,13 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 	if event.EventType != bellows.EventPRReadyToMerge {
 		return
 	}
-	if d.notifier == nil && len(d.cfg.Load().Notifications.PRReadyWebhookURLs) == 0 {
+	if d.notifier.Load() == nil && len(d.cfg.Load().Notifications.PRReadyWebhookURLs) == 0 {
 		return
 	}
 	title := d.db.BeadTitle(event.BeadID, event.Anvil)
 	go func(anvil, beadID string, prNumber int, prURL, title string) {
-		if d.notifier != nil {
-			d.notifier.PRReadyToMerge(ctx, anvil, beadID, prNumber, prURL, title)
+		if n := d.notifier.Load(); n != nil {
+			n.PRReadyToMerge(ctx, anvil, beadID, prNumber, prURL, title)
 		}
 		cfg := d.cfg.Load()
 		if cfg != nil && cfg.Notifications.Enabled {
@@ -1361,7 +1371,7 @@ normalPipeline:
 		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
-		Notifier:        d.notifier,
+		Notifier:        d.notifier.Load(),
 		BaseBranch:      bead.EpicBranch,
 		WorkerID:        claimWorkerID,
 		MaxIterations:   d.cfg.Load().Settings.MaxPipelineIterations,
@@ -2760,6 +2770,48 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 		d.depcheckScanner.UpdateAnvilPaths(depcheckPaths)
 		d.logger.Info("updated depcheck anvil paths", "count", len(depcheckPaths))
 	}
+}
+
+// buildNotifier constructs a new *notify.Notifier from the given config,
+// validating and normalising the Teams webhook URL. Returns nil when
+// notifications are disabled or no URL is configured.
+func (d *Daemon) buildNotifier(cfg *config.Config) *notify.Notifier {
+	webhookURL := cfg.Notifications.TeamsWebhookURL
+	trimmedURL := strings.TrimSpace(webhookURL)
+	if cfg.Notifications.Enabled && trimmedURL != "" {
+		formatted, err := notify.FormatWebhookURL(trimmedURL)
+		if err != nil {
+			d.logger.Error("invalid Teams webhook URL in reloaded config; notifications disabled", "error", err)
+			return nil
+		}
+		webhookURL = formatted
+	} else if !cfg.Notifications.Enabled && trimmedURL != "" {
+		d.logger.Warn("Teams webhook URL is set but notifications are disabled")
+	}
+	n := notify.NewNotifier(notify.Config{
+		WebhookURL: webhookURL,
+		Enabled:    cfg.Notifications.Enabled,
+		Events:     cfg.Notifications.Events,
+	}, d.logger)
+	if n != nil {
+		d.logger.Info("notifications config reloaded", "enabled", cfg.Notifications.Enabled)
+	} else {
+		d.logger.Info("notifications disabled by reloaded config")
+	}
+	return n
+}
+
+// sliceEqualStr reports whether two string slices are equal element-by-element.
+func sliceEqualStr(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // filterDepcheckAnvils returns the subset of anvils that should be scanned by

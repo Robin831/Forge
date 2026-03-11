@@ -1,0 +1,2 @@
+category: Added
+- **Hot-reload notifications config without daemon restart** - Changes to `notifications.enabled`, `notifications.teams_webhook_url`, or `notifications.events` in `forge.yaml` are now applied immediately via the hot-reload watcher. The notifier is atomically recreated so in-flight workers are unaffected. Previously a full `forge down` / `forge up` cycle was required to pick up notification setting changes. (Forge-0ld8)
