@@ -1312,9 +1312,7 @@ normalPipeline:
 
 	if !outcome.Success {
 		if outcome.Decomposed {
-			d.logger.Info("bead decomposed into sub-beads", "bead", bead.ID)
-			// Decomposition is intentional, not a failure — clear any prior dispatch failures.
-			_ = d.db.ClearRetry(bead.ID, bead.Anvil)
+			d.applyDecomposedOutcome(bead.ID, bead.Anvil, outcome.SchematicResult)
 			return
 		}
 		if outcome.NeedsHuman {
@@ -2325,6 +2323,31 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 		d.logger.Warn(msg, "bead", beadID, "anvil", anvil)
 		_ = d.db.LogEvent(state.EventDispatchCircuitBreak, msg, beadID, anvil)
 	}
+}
+
+// applyDecomposedOutcome updates the retry record after a Schematic decompose
+// result. When real sub-beads were created it clears any prior dispatch
+// failures; when none were produced it records a failure so the bead surfaces
+// in Needs Attention and can reach the circuit breaker.
+func (d *Daemon) applyDecomposedOutcome(beadID, anvil string, sr *schematic.Result) {
+	childCount := 0
+	if sr != nil {
+		childCount = len(sr.SubBeads)
+	}
+	if childCount > 0 {
+		d.logger.Info("bead decomposed into sub-beads", "bead", beadID, "count", childCount)
+		// Decomposition is intentional, not a failure — clear any prior dispatch failures.
+		_ = d.db.ClearRetry(beadID, anvil)
+		return
+	}
+	// Decomposition produced no children — preserve the retry record so the bead
+	// surfaces in Needs Attention rather than silently disappearing.
+	reason := "decomposition produced no child beads"
+	if sr != nil && sr.Reason != "" {
+		reason = reason + ": " + sr.Reason
+	}
+	d.logger.Warn("bead decomposition produced no children; recording as dispatch failure", "bead", beadID, "reason", reason)
+	d.recordDispatchFailure(beadID, anvil, reason)
 }
 
 // classifyBeadSection determines which queue section a bead belongs to based

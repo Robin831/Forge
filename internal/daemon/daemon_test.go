@@ -16,6 +16,7 @@ import (
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
 	"github.com/Robin831/Forge/internal/poller"
+	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/worktree"
@@ -1071,5 +1072,91 @@ func TestHandleIPC_CloseBead(t *testing.T) {
 		var msg map[string]string
 		_ = json.Unmarshal(resp.Payload, &msg)
 		assert.Contains(t, msg["message"], "no path configured")
+	})
+}
+
+// TestApplyDecomposedOutcome verifies the retry/circuit-breaker behavior of
+// applyDecomposedOutcome:
+//
+//	(a) when SubBeads > 0 the retry record is cleared and no dispatch failure is recorded.
+//	(b) when SubBeads is empty the retry record is preserved/incremented.
+func TestApplyDecomposedOutcome(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-decomposed-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	d.cfg.Store(&config.Config{})
+
+	const anvil = "test-anvil"
+
+	t.Run("with sub-beads: clears retry record, no dispatch failure", func(t *testing.T) {
+		const beadID = "DECOMP-WITH-CHILDREN"
+
+		// Pre-seed a prior dispatch failure to confirm it gets cleared.
+		_, _, err := db.IncrementDispatchFailures(beadID, anvil, 10, "prior failure")
+		require.NoError(t, err)
+
+		r, err := db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		require.NotNil(t, r)
+		require.Equal(t, 1, r.DispatchFailures, "setup: dispatch failures should be 1")
+
+		// Call with non-empty SubBeads: should clear the retry record.
+		sr := &schematic.Result{
+			Action:   schematic.ActionDecompose,
+			SubBeads: []schematic.SubBead{{ID: "child-1", Title: "Child task"}},
+		}
+		d.applyDecomposedOutcome(beadID, anvil, sr)
+
+		// Retry record should be gone (ClearRetry deleted it).
+		r, err = db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		assert.Nil(t, r, "retry record should be cleared when sub-beads were created")
+	})
+
+	t.Run("no sub-beads: preserves and increments retry record", func(t *testing.T) {
+		const beadID = "DECOMP-NO-CHILDREN"
+
+		// No prior retry record.
+		r, err := db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		assert.Nil(t, r, "setup: no retry record should exist yet")
+
+		// Call with empty SubBeads: should record a dispatch failure.
+		sr := &schematic.Result{
+			Action:   schematic.ActionDecompose,
+			SubBeads: nil,
+			Reason:   "bead too ambiguous",
+		}
+		d.applyDecomposedOutcome(beadID, anvil, sr)
+
+		// A dispatch failure should now be recorded.
+		r, err = db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		require.NotNil(t, r, "retry record should exist after empty decomposition")
+		assert.Equal(t, 1, r.DispatchFailures, "dispatch failures should be incremented")
+		assert.Contains(t, r.LastError, "decomposition produced no child beads")
+		assert.Contains(t, r.LastError, "bead too ambiguous", "failure reason should include schematic reason")
+	})
+
+	t.Run("no sub-beads: nil schematic result uses default reason", func(t *testing.T) {
+		const beadID = "DECOMP-NIL-RESULT"
+
+		d.applyDecomposedOutcome(beadID, anvil, nil)
+
+		r, err := db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		require.NotNil(t, r)
+		assert.Equal(t, 1, r.DispatchFailures)
+		assert.Equal(t, "decomposition produced no child beads", r.LastError)
 	})
 }
