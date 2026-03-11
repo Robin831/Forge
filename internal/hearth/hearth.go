@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -265,7 +266,7 @@ type Model struct {
 	showLogViewer  bool
 	logViewerTitle string
 	logViewerLines []string
-	logViewerScroll int
+	logViewPort    viewport.Model
 
 	// Daemon health indicator
 	daemonConnected bool      // true when last IPC status check succeeded
@@ -335,14 +336,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "q", "esc":
 				m.showLogViewer = false
-			case "j", "down":
-				if m.logViewerScroll < len(m.logViewerLines)-1 {
-					m.logViewerScroll++
-				}
-			case "k", "up":
-				if m.logViewerScroll > 0 {
-					m.logViewerScroll--
-				}
+			default:
+				var cmd tea.Cmd
+				m.logViewPort, cmd = m.logViewPort.Update(msg)
+				return m, cmd
 			}
 			return m, nil
 		}
@@ -581,6 +578,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
+		if m.showLogViewer {
+			vpWidth, vpHeight := m.logViewerDimensions()
+			m.logViewPort.Width = vpWidth
+			m.logViewPort.Height = vpHeight
+		}
+
+	case tea.MouseMsg:
+		if m.showLogViewer {
+			var cmd tea.Cmd
+			m.logViewPort, cmd = m.logViewPort.Update(msg)
+			return m, cmd
+		}
 
 	case UpdateQueueMsg:
 		m.queue = msg.Items
@@ -1186,7 +1195,9 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 			}
 			m.logViewerTitle = fmt.Sprintf("Logs: %s — %s", bead.BeadID, logPath)
 			m.logViewerLines = lines
-			m.logViewerScroll = 0
+			vpWidth, vpHeight := m.logViewerDimensions()
+			m.logViewPort = viewport.New(vpWidth, vpHeight)
+			m.logViewPort.SetContent(strings.Join(lines, "\n"))
 			m.showLogViewer = true
 		}
 	}
@@ -1379,6 +1390,24 @@ func (m *Model) renderQueueActionMenu() string {
 	return popup
 }
 
+// logViewerDimensions returns the (viewportWidth, viewportHeight) for the log viewer.
+func (m *Model) logViewerDimensions() (int, int) {
+	viewerWidth := m.width - 8
+	if viewerWidth < 40 {
+		viewerWidth = 40
+	}
+	viewerHeight := m.height - 6
+	if viewerHeight < 10 {
+		viewerHeight = 10
+	}
+	vpWidth := viewerWidth - 4  // subtract border (2) + padding (2 per side)
+	vpHeight := viewerHeight - 5 // title + blank + blank + footer + border/padding overhead
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	return vpWidth, vpHeight
+}
+
 // renderLogViewer renders the log viewer overlay.
 func (m *Model) renderLogViewer() string {
 	viewerWidth := m.width - 8
@@ -1394,35 +1423,15 @@ func (m *Model) renderLogViewer() string {
 	lines = append(lines, actionMenuTitleStyle.Render(truncate(m.logViewerTitle, viewerWidth-4)))
 	lines = append(lines, "")
 
-	contentHeight := viewerHeight - 5 // title + margins + footer
-	if contentHeight < 1 {
-		contentHeight = 1
-	}
-
 	if len(m.logViewerLines) == 0 {
 		lines = append(lines, dimStyle.Render("(empty log)"))
 	} else {
-		visible := visibleItems(m.logViewerScroll, len(m.logViewerLines), contentHeight)
-		for i := visible.start; i < visible.end; i++ {
-			line := m.logViewerLines[i]
-			maxLen := viewerWidth - 4
-			if maxLen > 0 {
-				runes := []rune(line)
-				if len(runes) > maxLen {
-					if maxLen > 3 {
-						line = string(runes[:maxLen-3]) + "..."
-					} else {
-						line = string(runes[:maxLen])
-					}
-				}
-			}
-			lines = append(lines, dimStyle.Render(line))
-		}
+		lines = append(lines, m.logViewPort.View())
 	}
 
 	lines = append(lines, "")
-	scrollInfo := fmt.Sprintf("Line %d/%d", m.logViewerScroll+1, max(len(m.logViewerLines), 1))
-	lines = append(lines, dimStyle.Render("j/k: scroll • Esc: close  "+scrollInfo))
+	scrollPct := int(m.logViewPort.ScrollPercent() * 100)
+	lines = append(lines, dimStyle.Render(fmt.Sprintf("j/k/mouse: scroll • Esc: close  %d%%", scrollPct)))
 
 	content := strings.Join(lines, "\n")
 	return logViewerStyle.Width(viewerWidth).Height(viewerHeight).Render(content)
