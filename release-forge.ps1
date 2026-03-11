@@ -83,6 +83,12 @@ function Generate-ReleaseNotes {
 
     [void]$sb.AppendLine("## Install")
     [void]$sb.AppendLine("")
+    [void]$sb.AppendLine("**Linux / macOS:**")
+    [void]$sb.AppendLine('```bash')
+    [void]$sb.AppendLine('curl -fsSL https://raw.githubusercontent.com/Robin831/Forge/main/install.sh | bash')
+    [void]$sb.AppendLine('```')
+    [void]$sb.AppendLine("")
+    [void]$sb.AppendLine("**Windows:**")
     [void]$sb.AppendLine('```powershell')
     [void]$sb.AppendLine('irm https://raw.githubusercontent.com/Robin831/Forge/main/install.ps1 | iex')
     [void]$sb.AppendLine('```')
