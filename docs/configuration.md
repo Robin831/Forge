@@ -152,6 +152,7 @@ Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
 | `daily_cost` | Daily token usage and cost summary. |
 | `worker_done` | A worker successfully completed its pipeline. |
 | `bead_decomposed` | Schematic split a bead into sub-beads; the parent is now blocked. |
+| `pr_ready_to_merge` | A PR passed CI and warden approval and is ready to merge. |
 
 Notifications are sent as MS Teams Adaptive Cards with color-coded severity.
 

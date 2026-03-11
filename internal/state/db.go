@@ -1041,6 +1041,7 @@ const (
 	EventWorkerStalled        EventType = "worker_stalled"
 	EventBeadTagged           EventType = "bead_tagged"
 	EventBeadClosed           EventType = "bead_closed"
+	EventPRReadyToMerge       EventType = "pr_ready_to_merge"
 	EventPRMergeRequested     EventType = "pr_merge_requested"
 	EventPRMergeFailed        EventType = "pr_merge_failed"
 	EventError                EventType = "error"

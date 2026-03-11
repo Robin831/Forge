@@ -24,13 +24,14 @@ import (
 
 // Event types emitted by the Bellows monitor.
 const (
-	EventCIPassed        = "ci_passed"
-	EventCIFailed        = "ci_failed"
-	EventReviewApproved  = "review_approved"
-	EventReviewChanges   = "review_changes_requested"
-	EventPRMerged        = "pr_merged"
-	EventPRClosed        = "pr_closed"
-	EventPRConflicting   = "pr_conflicting"
+	EventCIPassed          = "ci_passed"
+	EventCIFailed          = "ci_failed"
+	EventReviewApproved    = "review_approved"
+	EventReviewChanges     = "review_changes_requested"
+	EventPRMerged          = "pr_merged"
+	EventPRClosed          = "pr_closed"
+	EventPRConflicting     = "pr_conflicting"
+	EventPRReadyToMerge    = "pr_ready_to_merge"
 )
 
 // PREvent is emitted when a PR status changes.
@@ -42,6 +43,9 @@ type PREvent struct {
 	EventType string
 	Details   string
 	Timestamp time.Time
+	// PRURL is the GitHub URL of the PR, populated for events that need it
+	// (e.g. pr_ready_to_merge).
+	PRURL string
 }
 
 // Handler is called when a PR event is detected.
@@ -380,6 +384,26 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	// restore it to approved so the Ready-to-Merge panel picks it up again.
 	if newSnap.HasApproval && newSnap.CIPassing && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews {
 		_ = m.db.UpdatePRStatusIfNeedsFix(pr.ID, state.PRApproved)
+	}
+
+	// Detect transition to fully ready-to-merge state (approved + CI passing +
+	// no conflicts, unresolved threads, or pending reviews).
+	newReady := newSnap.HasApproval && newSnap.CIPassing && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews
+	lastReady := lastSnap.HasApproval && lastSnap.CIPassing && !lastSnap.IsConflicting && !lastSnap.HasUnresolvedThreads && !lastSnap.HasPendingReviews
+	if newReady && !lastReady {
+		m.emit(ctx, PREvent{
+			PRNumber:  pr.Number,
+			BeadID:    pr.BeadID,
+			Anvil:     pr.Anvil,
+			Branch:    status.HeadRefName,
+			EventType: EventPRReadyToMerge,
+			Details:   fmt.Sprintf("PR #%d is ready to merge (CI passing, approved, no blocking reviews)", pr.Number),
+			Timestamp: time.Now(),
+			PRURL:     status.URL,
+		})
+		_ = m.db.LogEvent(state.EventPRReadyToMerge,
+			fmt.Sprintf("PR #%d ready to merge", pr.Number),
+			pr.BeadID, pr.Anvil)
 	}
 
 	// Persist mergeability state so the ready-to-merge panel stays current.

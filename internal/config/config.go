@@ -263,7 +263,7 @@ func (s SettingsConfig) IsAutoMergeCrucibleChildren() bool {
 type NotificationsConfig struct {
 	TeamsWebhookURL string `mapstructure:"teams_webhook_url" yaml:"teams_webhook_url,omitempty"`
 	Enabled         bool   `mapstructure:"enabled" yaml:"enabled"`
-	// Events to notify on. Empty = all. Options: pr_created, bead_failed, daily_cost, worker_done, bead_decomposed, release_published.
+	// Events to notify on. Empty = all. Options: pr_created, bead_failed, daily_cost, worker_done, bead_decomposed, release_published, pr_ready_to_merge.
 	Events []string `mapstructure:"events" yaml:"events,omitempty"`
 	// ReleaseWebhookURLs is a list of generic JSON webhook URLs that receive
 	// a release_published payload when 'forge notify release' is called.

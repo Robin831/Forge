@@ -297,7 +297,7 @@ func CheckStatusLight(ctx context.Context, worktreePath string, prNumber int) (*
 func CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, error) {
 	args := []string{
 		"pr", "view", fmt.Sprintf("%d", prNumber),
-		"--json", "state,statusCheckRollup,reviews,reviewRequests,mergeable,headRefName",
+		"--json", "state,statusCheckRollup,reviews,reviewRequests,mergeable,headRefName,url",
 	}
 
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
@@ -585,6 +585,7 @@ type PRStatus struct {
 	Mergeable         string           `json:"mergeable"`
 	UnresolvedThreads int              `json:"unresolvedThreads"`
 	HeadRefName       string           `json:"headRefName"`
+	URL               string           `json:"url"`
 }
 
 // CheckRun represents a CI check on the PR.

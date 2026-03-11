@@ -41,6 +41,7 @@ const (
 	EventWorkerDone        EventType = "worker_done"
 	EventBeadDecomposed    EventType = "bead_decomposed"
 	EventReleasePublished  EventType = "release_published"
+	EventPRReadyToMerge    EventType = "pr_ready_to_merge"
 )
 
 // Notifier sends notifications to Teams.
@@ -242,6 +243,90 @@ func (n *Notifier) ReleasePublished(ctx context.Context, version, tag, releaseUR
 
 	card := adaptiveCard("🚀 Forge Release Published", "good", facts)
 	n.send(ctx, card)
+}
+
+// PRReadyToMerge sends a notification when a PR is ready to merge (CI passing
+// and warden-approved with no blocking reviews or conflicts).
+func (n *Notifier) PRReadyToMerge(ctx context.Context, anvil, beadID string, prNumber int, prURL, title string) {
+	if !n.ShouldNotify(EventPRReadyToMerge) {
+		return
+	}
+
+	prLink := fmt.Sprintf("#%d", prNumber)
+	if prURL != "" {
+		prLink = fmt.Sprintf("[#%d](%s)", prNumber, prURL)
+	}
+
+	card := adaptiveCard(
+		"✅ PR Ready to Merge",
+		"good",
+		[]cardFact{
+			{Title: "Anvil", Value: anvil},
+			{Title: "Bead", Value: beadID},
+			{Title: "PR", Value: prLink},
+			{Title: "Title", Value: title},
+		},
+	)
+
+	n.send(ctx, card)
+}
+
+// PRReadyToMergePayload is the generic JSON payload sent to non-Teams webhook URLs
+// when a PR enters the ready-to-merge state.
+type PRReadyToMergePayload struct {
+	Event    string `json:"event"`
+	Anvil    string `json:"anvil"`
+	BeadID   string `json:"bead_id"`
+	PRNumber int    `json:"pr_number"`
+	PRURL    string `json:"pr_url,omitempty"`
+	PRTitle  string `json:"pr_title,omitempty"`
+}
+
+// SendGenericPRReadyToMerge posts a generic JSON pr_ready_to_merge payload to any webhook URL.
+// This is used for non-Teams endpoints such as dashboards or custom receivers.
+// Errors are logged but do not cause a fatal failure.
+func SendGenericPRReadyToMerge(ctx context.Context, webhookURL string, payload PRReadyToMergePayload, logger *slog.Logger) {
+	if webhookURL == "" {
+		return
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		if logger != nil {
+			logger.Error("failed to marshal pr_ready_to_merge payload", "error", err)
+		}
+		return
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
+	if err != nil {
+		if logger != nil {
+			logger.Error("failed to create pr_ready_to_merge webhook request", "url", webhookURL, "error", err)
+		}
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: webhookTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("pr_ready_to_merge webhook failed", "url", webhookURL, "error", err)
+		}
+		return
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Warn("pr_ready_to_merge webhook returned error", "url", webhookURL, "status", resp.StatusCode)
+		}
+		return
+	}
+
+	if logger != nil {
+		logger.Debug("pr_ready_to_merge notification sent", "url", webhookURL, "status", resp.StatusCode)
+	}
 }
 
 // ReleasePayload is the generic JSON payload sent to non-Teams webhook URLs

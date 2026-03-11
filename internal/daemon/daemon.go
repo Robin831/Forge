@@ -431,6 +431,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("daemon initialization failed: %w", err)
 	}
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
+	d.bellowsMonitor.OnEvent(d.handleBellowsNotifications)
 
 	// Reconcile: register any GitHub PRs not yet tracked in the state DB.
 	// This handles PRs created before the current DB or after a DB reset.
@@ -664,6 +665,19 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			_ = d.db.UpdateWorkerStatus(workerID, status)
 		}
 	}()
+}
+
+// handleBellowsNotifications sends webhook notifications for PR status events.
+// It is registered as a second bellows event handler alongside lifecycleMgr.HandleEvent.
+func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.PREvent) {
+	if event.EventType != bellows.EventPRReadyToMerge {
+		return
+	}
+	if d.notifier == nil {
+		return
+	}
+	title := d.db.BeadTitle(event.BeadID, event.Anvil)
+	d.notifier.PRReadyToMerge(ctx, event.Anvil, event.BeadID, event.PRNumber, event.PRURL, title)
 }
 
 // drainPendingAction checks whether a lifecycle action was parked for beadID
