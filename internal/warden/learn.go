@@ -120,6 +120,21 @@ func FetchRecentPRNumbers(ctx context.Context, repoDir string, limit int) ([]int
 	return nums, nil
 }
 
+// claudeRunner executes the claude CLI with the given prompt and returns its
+// stdout output. It is a package-level variable so tests can inject a stub
+// without spawning a real process.
+var claudeRunner = func(ctx context.Context, dir, prompt string) ([]byte, error) {
+	var stdout, stderr bytes.Buffer
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "claude", "--print", "--max-turns", "1", "-p", prompt))
+	cmd.Dir = dir
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("claude: %s (%w)", strings.TrimSpace(stderr.String()), err)
+	}
+	return stdout.Bytes(), nil
+}
+
 // DistillRule uses a Claude session to convert a set of similar review
 // comments into a single warden rule. Returns the rule or an error.
 func DistillRule(ctx context.Context, comments []PRComment, repoDir string) (*Rule, error) {
@@ -144,19 +159,13 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 
 	prompt := sb.String()
 
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "claude", "--print", "--max-turns", "1", "-p", prompt))
-	cmd.Dir = repoDir
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("claude distill: %s (%w)", strings.TrimSpace(stderr.String()), err)
+	raw, err := claudeRunner(ctx, repoDir, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("claude distill: %w", err)
 	}
 
 	// Extract JSON from Claude's output
-	output := strings.TrimSpace(stdout.String())
+	output := strings.TrimSpace(string(raw))
 	jsonStr := extractJSON(output)
 	if jsonStr == "" {
 		// Try the raw output directly
@@ -305,8 +314,8 @@ func distillCIFixRule(ctx context.Context, ruleName, ruleID string, failingLogs 
 
 	truncated := fixDiff
 	const maxDiffLen = 3000
-	if len(truncated) > maxDiffLen {
-		truncated = "... (truncated)\n" + truncated[len(truncated)-maxDiffLen:]
+	if runes := []rune(truncated); len(runes) > maxDiffLen {
+		truncated = "... (truncated)\n" + string(runes[len(runes)-maxDiffLen:])
 	}
 	fmt.Fprintf(&sb, "## Fix Diff\n\n```diff\n%s\n```\n\n", truncated)
 
@@ -319,18 +328,12 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) using this 
 
 	prompt := sb.String()
 
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "claude", "--print", "--max-turns", "1", "-p", prompt))
-	cmd.Dir = repoDir
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("claude distill: %s (%w)", strings.TrimSpace(stderr.String()), err)
+	raw, err := claudeRunner(ctx, repoDir, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("claude distill: %w", err)
 	}
 
-	output := strings.TrimSpace(stdout.String())
+	output := strings.TrimSpace(string(raw))
 	jsonStr := extractJSON(output)
 	if jsonStr == "" {
 		jsonStr = output

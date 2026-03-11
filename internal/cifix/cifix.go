@@ -168,7 +168,10 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			p.BeadID, p.AnvilName)
 
 		// Snapshot HEAD so we can compute the fix diff after Smith completes.
-		baseCommit, _ := gitRevParse(ctx, p.WorktreePath, "HEAD")
+		baseCommit, revParseErr := gitRevParse(ctx, p.WorktreePath, "HEAD")
+		if revParseErr != nil {
+			log.Printf("[cifix] PR #%d: failed to snapshot HEAD for warden learning: %v", p.PRNumber, revParseErr)
+		}
 
 		// Step 5: Spawn Smith.
 		logDir := p.WorktreePath + "/.forge-logs"

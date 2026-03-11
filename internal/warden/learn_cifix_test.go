@@ -2,6 +2,7 @@ package warden
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -114,6 +115,45 @@ func TestLearnFromCIFix_SkipExisting(t *testing.T) {
 	}
 	if len(loaded.Rules) != 1 {
 		t.Errorf("expected 1 rule (unchanged), got %d", len(loaded.Rules))
+	}
+}
+
+// TestLearnFromCIFix_DistillsNewRule verifies that LearnFromCIFix calls the
+// claude runner and stores a new rule when the rule ID does not yet exist.
+func TestLearnFromCIFix_DistillsNewRule(t *testing.T) {
+	anvilPath := t.TempDir()
+
+	// Stub out claudeRunner so no real process is spawned.
+	old := claudeRunner
+	t.Cleanup(func() { claudeRunner = old })
+	claudeRunner = func(_ context.Context, _, _ string) ([]byte, error) {
+		return []byte(`{"id":"react-hooks-exhaustive-deps","category":"ui","pattern":"missing dep in useEffect","check":"ensure all used values are in the deps array"}`), nil
+	}
+
+	logs := map[string]string{
+		"eslint": "  2:5  error  React Hook issue  react-hooks/exhaustive-deps",
+	}
+	fixDiff := "diff --git a/src/Foo.tsx b/src/Foo.tsx\n--- a/src/Foo.tsx\n+++ b/src/Foo.tsx\n@@ -1 +1 @@\n-bad\n+good"
+
+	ctx := context.Background()
+	if err := LearnFromCIFix(ctx, anvilPath, anvilPath, logs, fixDiff, 99); err != nil {
+		t.Fatalf("LearnFromCIFix returned unexpected error: %v", err)
+	}
+
+	loaded, err := LoadRules(anvilPath)
+	if err != nil {
+		t.Fatalf("LoadRules: %v", err)
+	}
+	if len(loaded.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(loaded.Rules))
+	}
+	r := loaded.Rules[0]
+	if r.ID != "react-hooks-exhaustive-deps" {
+		t.Errorf("unexpected rule ID %q", r.ID)
+	}
+	wantSource := fmt.Sprintf("cifix:PR#%d", 99)
+	if r.Source != wantSource {
+		t.Errorf("expected source %q, got %q", wantSource, r.Source)
 	}
 }
 
