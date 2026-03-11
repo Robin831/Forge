@@ -359,3 +359,15 @@ rules:
       check: Verify that the workflow provides a token with write access to the target repository. The default GITHUB_TOKEN is scoped to the current repo only and cannot push to external repos — a dedicated PAT or fine-grained token with appropriate permissions must be configured.
       source: copilot:PR#186
       added: "2026-03-11"
+    - id: cross-repo-token-scope
+      category: security
+      pattern: GoReleaser or CI workflow publishing artifacts to a different repository (e.g. Homebrew tap, Scoop bucket, separate package repo)
+      check: Verify that the workflow uses a dedicated secret (PAT or fine-grained token) with write access to the target repository, not the default GITHUB_TOKEN which is scoped only to the current repo
+      source: copilot:PR#187
+      added: "2026-03-11"
+    - id: homebrew-desc-length
+      category: style
+      pattern: Homebrew formula or goreleaser brew section with a `desc` or `description` field
+      check: Verify the Homebrew description is a concise one-liner. Long descriptions trigger `brew audit` warnings and tap CI noise.
+      source: copilot:PR#187
+      added: "2026-03-11"
