@@ -2478,3 +2478,39 @@ func TestDefaultFooterHintsContainsCommonKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestMouseToggleKeyEnablesMouseWhenDisabled(t *testing.T) {
+	m := &Model{mouseEnabled: false}
+	newModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	updated := newModel.(*Model)
+	if !updated.mouseEnabled {
+		t.Error("expected mouseEnabled=true after pressing 'm' when mouse was disabled")
+	}
+	if cmd == nil {
+		t.Fatal("expected a non-nil tea.Cmd to enable mouse")
+	}
+	// EnableMouseCellMotion returns an unexported enableMouseCellMotionMsg; verify via type name.
+	msg := cmd()
+	typeName := reflect.TypeOf(msg).Name()
+	if typeName != "enableMouseCellMotionMsg" {
+		t.Errorf("expected enableMouseCellMotionMsg from cmd, got %T", msg)
+	}
+}
+
+func TestMouseToggleKeyDisablesMouseWhenEnabled(t *testing.T) {
+	m := &Model{mouseEnabled: true}
+	newModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	updated := newModel.(*Model)
+	if updated.mouseEnabled {
+		t.Error("expected mouseEnabled=false after pressing 'm' when mouse was enabled")
+	}
+	if cmd == nil {
+		t.Fatal("expected a non-nil tea.Cmd to disable mouse")
+	}
+	// DisableMouse returns an unexported disableMouseMsg; verify via type name.
+	msg := cmd()
+	typeName := reflect.TypeOf(msg).Name()
+	if typeName != "disableMouseMsg" {
+		t.Errorf("expected disableMouseMsg from cmd, got %T", msg)
+	}
+}
