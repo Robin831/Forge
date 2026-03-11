@@ -105,6 +105,7 @@ settings:
   poll_interval: 5m
   smith_timeout: 30m
   max_total_smiths: 3
+  max_pipeline_iterations: 5   # Smith-Warden cycles in the pipeline loop (default 5)
   max_review_attempts: 2
   max_ci_fix_attempts: 5       # CI fix cycles per PR (default 5)
   max_review_fix_attempts: 5   # Review fix cycles per PR (default 5)

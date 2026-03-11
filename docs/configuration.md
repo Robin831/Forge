@@ -34,6 +34,7 @@ settings:
   poll_interval: 5m
   smith_timeout: 30m
   max_total_smiths: 4
+  max_pipeline_iterations: 5
   max_review_attempts: 2
   max_ci_fix_attempts: 5
   max_review_fix_attempts: 5
@@ -106,7 +107,8 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `poll_interval` | duration | `5m` | `10s` | How often the poller checks for ready beads. |
 | `smith_timeout` | duration | `30m` | `1m` | Maximum time a Smith worker can run before being killed. |
 | `max_total_smiths` | int | `4` | `1` | Global limit on concurrent Smith workers across all anvils. |
-| `max_review_attempts` | int | `2` | `1` | Maximum Smith-Warden review iterations per bead. |
+| `max_pipeline_iterations` | int | `5` | `1` | Maximum Smith-Warden cycles in the initial pipeline loop before declaring failure. Controls how many times Smith can revise its implementation based on Temper or Warden feedback during a single bead run. |
+| `max_review_attempts` | int | `2` | `1` | Maximum review-fix cycles Bellows will attempt on a PR when reviewers request changes after the PR is created. |
 | `claude_flags` | []string | `[]` | | Additional flags passed to the Claude CLI (or translated for other providers). |
 | `providers` | []string | `["claude", "gemini"]` | | Ordered provider fallback chain. See [Providers](providers.md). |
 | `smith_providers` | []string | `[]` (uses `providers`) | | Provider chain for Smith/Warden/Schematic only. Lets dispatch use a more capable model while lifecycle workers (cifix, reviewfix) use `providers`. Same syntax as `providers`. |
@@ -162,6 +164,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_POLL_INTERVAL` | `settings.poll_interval` |
 | `FORGE_SETTINGS_SMITH_TIMEOUT` | `settings.smith_timeout` |
 | `FORGE_SETTINGS_MAX_TOTAL_SMITHS` | `settings.max_total_smiths` |
+| `FORGE_SETTINGS_MAX_PIPELINE_ITERATIONS` | `settings.max_pipeline_iterations` |
 | `FORGE_SETTINGS_MAX_REVIEW_ATTEMPTS` | `settings.max_review_attempts` |
 | `FORGE_SETTINGS_RATE_LIMIT_BACKOFF` | `settings.rate_limit_backoff` |
 | `FORGE_SETTINGS_SCHEMATIC_ENABLED` | `settings.schematic_enabled` |
@@ -195,6 +198,7 @@ Per-anvil configuration is best managed in the YAML file, as the flat environmen
 The config is validated at load time. Errors are reported as a list:
 
 - `max_total_smiths` must be >= 1
+- `max_pipeline_iterations` must be >= 1
 - `max_review_attempts` must be >= 1
 - `max_ci_fix_attempts` must be >= 1
 - `max_review_fix_attempts` must be >= 1

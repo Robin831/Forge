@@ -42,11 +42,12 @@ type Params struct {
 	AnvilName   string
 	AnvilConfig config.AnvilConfig
 
-	ExtraFlags      []string
-	Providers       []provider.Provider
-	SchematicConfig *schematic.Config
-	GoRaceDetection bool
-	SmithTimeout    time.Duration
+	ExtraFlags            []string
+	Providers             []provider.Provider
+	SchematicConfig       *schematic.Config
+	GoRaceDetection       bool
+	SmithTimeout          time.Duration
+	MaxPipelineIterations int
 
 	// StatusCallback is called when crucible state changes (for TUI tracking).
 	StatusCallback func(Status)
@@ -507,6 +508,7 @@ func (p *Params) runChildPipeline(ctx context.Context, child poller.Bead, baseBr
 		Providers:       p.Providers,
 		BaseBranch:      baseBranch,
 		SchematicConfig: p.SchematicConfig,
+		MaxIterations:   p.MaxPipelineIterations,
 	}
 
 	if p.PipelineRunner != nil {

@@ -62,6 +62,11 @@ type SettingsConfig struct {
 	SmithTimeout  time.Duration `mapstructure:"smith_timeout" yaml:"smith_timeout"`
 	MaxTotalSmiths int          `mapstructure:"max_total_smiths" yaml:"max_total_smiths"`
 	MaxReviewAttempts int       `mapstructure:"max_review_attempts" yaml:"max_review_attempts"`
+	// MaxPipelineIterations is the maximum number of Smith-Warden cycles
+	// in the initial pipeline loop before declaring failure. This controls
+	// how many times Smith can be asked to revise its implementation based
+	// on Temper or Warden feedback during a single bead run. Default: 5.
+	MaxPipelineIterations int   `mapstructure:"max_pipeline_iterations" yaml:"max_pipeline_iterations"`
 	ClaudeFlags   []string      `mapstructure:"claude_flags" yaml:"claude_flags"`
 	// Providers is the ordered list of AI providers to try.
 	// Each entry is a Kind string ("claude", "gemini") or "kind:command" pair.
@@ -167,6 +172,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		SmithTimeout             string   `yaml:"smith_timeout"`
 		MaxTotalSmiths           int      `yaml:"max_total_smiths"`
 		MaxReviewAttempts        int      `yaml:"max_review_attempts"`
+		MaxPipelineIterations    int      `yaml:"max_pipeline_iterations"`
 		ClaudeFlags              []string `yaml:"claude_flags"`
 		Providers                []string `yaml:"providers,omitempty"`
 		RateLimitBackoff         string   `yaml:"rate_limit_backoff"`
@@ -197,6 +203,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		SmithTimeout:              durationString(s.SmithTimeout),
 		MaxTotalSmiths:            s.MaxTotalSmiths,
 		MaxReviewAttempts:         s.MaxReviewAttempts,
+		MaxPipelineIterations:     s.MaxPipelineIterations,
 		ClaudeFlags:               s.ClaudeFlags,
 		Providers:                 s.Providers,
 		RateLimitBackoff:          durationString(s.RateLimitBackoff),
@@ -267,8 +274,9 @@ func Defaults() Config {
 		Settings: SettingsConfig{
 			PollInterval:         5 * time.Minute,
 			SmithTimeout:         30 * time.Minute,
-			MaxTotalSmiths:       4,
-			MaxReviewAttempts:    2,
+			MaxTotalSmiths:         4,
+			MaxReviewAttempts:      2,
+			MaxPipelineIterations:  5,
 			ClaudeFlags:          []string{},
 			// No Providers default here — provider.FromConfig handles empty slice.
 			RateLimitBackoff:     5 * time.Minute,
@@ -296,6 +304,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.smith_timeout", "30m")
 	v.SetDefault("settings.max_total_smiths", 4)
 	v.SetDefault("settings.max_review_attempts", 2)
+	v.SetDefault("settings.max_pipeline_iterations", 5)
 	v.SetDefault("settings.claude_flags", []string{})
 	v.SetDefault("settings.rate_limit_backoff", "5m")
 	v.SetDefault("settings.bellows_interval", "2m")
@@ -452,6 +461,9 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.MaxReviewAttempts < 1 {
 		errs = append(errs, "settings.max_review_attempts must be >= 1")
+	}
+	if c.Settings.MaxPipelineIterations < 1 {
+		errs = append(errs, "settings.max_pipeline_iterations must be >= 1")
 	}
 	if c.Settings.PollInterval < 10*time.Second {
 		errs = append(errs, "settings.poll_interval must be >= 10s")
