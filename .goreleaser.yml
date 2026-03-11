@@ -28,9 +28,21 @@ builds:
         goarch: arm64
 
 archives:
-  - id: default
+  - id: unix
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    builds:
+      - forge
+    goos:
+      - linux
+      - darwin
+  - id: windows
     format: zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    builds:
+      - forge
+    goos:
+      - windows
 
 checksum:
   name_template: "checksums.txt"

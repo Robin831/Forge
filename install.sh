@@ -55,7 +55,7 @@ if [ -x "${INSTALL_DIR}/${BINARY}" ]; then
   fi
 fi
 
-ASSET_NAME="${BINARY}_${VERSION_NUM}_${OS}_${ARCH}.zip"
+ASSET_NAME="${BINARY}_${VERSION_NUM}_${OS}_${ARCH}.tar.gz"
 BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 ASSET_URL="${BASE_URL}/${ASSET_NAME}"
 CHECKSUM_URL="${BASE_URL}/checksums.txt"
@@ -93,15 +93,10 @@ if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
 fi
 
 # ── Extract and install ────────────────────────────────────────────────────────
-if ! command -v unzip > /dev/null 2>&1; then
-  echo "ERROR: unzip is required but not found. Install it with your package manager (e.g. apt-get install unzip)." >&2
-  exit 1
-fi
-
 mkdir -p "$INSTALL_DIR"
 
 echo "Installing Forge to ${INSTALL_DIR}/${BINARY}..."
-unzip -o -q "${TMP_DIR}/${ASSET_NAME}" "${BINARY}" -d "$TMP_DIR"
+tar -xz -f "${TMP_DIR}/${ASSET_NAME}" -C "$TMP_DIR" "${BINARY}"
 install -m 0755 "${TMP_DIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 
 # ── PATH advice ────────────────────────────────────────────────────────────────
