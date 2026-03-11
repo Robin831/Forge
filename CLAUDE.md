@@ -53,6 +53,7 @@ forge changelog validate <bead-ids>   # Check fragments exist for beads
 forge warden learn --anvil <name>     # Learn review rules from Copilot comments
 forge warden list --anvil <name>      # List learned review rules
 forge warden forget <id> --anvil <name>  # Remove a learned rule
+forge notify release --version v1.2.3  # Send release notification to configured webhooks
 forge version                         # Print version information
 ```
 

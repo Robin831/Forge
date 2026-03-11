@@ -63,6 +63,29 @@ func TestReleasePublished_SendsAdaptiveCard(t *testing.T) {
 	}
 }
 
+// TestReleasePublished_TagDiffersFromVersion verifies that when the tag differs
+// from the version string, both values appear in the card body.
+func TestReleasePublished_TagDiffersFromVersion(t *testing.T) {
+	url, getBody := captureRequest(t)
+	n := newTestNotifier(t, url)
+
+	// version is bare (e.g. "2.0.0"), tag includes the "v" prefix ("v2.0.0")
+	n.ReleasePublished(context.Background(), "2.0.0", "v2.0.0",
+		"https://github.com/org/repo/releases/tag/v2.0.0", "")
+
+	raw := getBody()
+	if len(raw) == 0 {
+		t.Fatal("expected a request body, got none")
+	}
+
+	body := string(raw)
+	for _, want := range []string{"2.0.0", "v2.0.0", "Tag"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected body to contain %q\nbody: %s", want, body)
+		}
+	}
+}
+
 // TestReleasePublished_TruncatesLongChangelog verifies that changelogs longer
 // than 500 runes are truncated safely without splitting multibyte characters.
 func TestReleasePublished_TruncatesLongChangelog(t *testing.T) {

@@ -53,13 +53,18 @@ jobs:
 
           CHANGELOG=""
           if [ -f .release-notes.md ]; then
-            # Read up to 30 lines, collapse newlines, escape JSON special chars
-            CHANGELOG=$(head -30 .release-notes.md | tr '\n' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g')
+            # Read up to 30 lines and collapse newlines; jq handles all JSON escaping below
+            CHANGELOG=$(head -30 .release-notes.md | tr '\n' ' ')
           fi
 
-          # Generic JSON payload consumed by custom receivers (dashboards, bots, etc.)
-          PAYLOAD=$(printf '{"event":"release_published","version":"%s","tag":"%s","release_url":"%s","changelog_summary":"%s"}' \
-            "${TAG}" "${TAG}" "${RELEASE_URL}" "${CHANGELOG}")
+          # Use jq to construct the JSON payload so all control characters are safely escaped
+          PAYLOAD=$(jq -n \
+            --arg event "release_published" \
+            --arg version "${TAG}" \
+            --arg tag "${TAG}" \
+            --arg release_url "${RELEASE_URL}" \
+            --arg changelog "${CHANGELOG}" \
+            '{"event":$event,"version":$version,"tag":$tag,"release_url":$release_url,"changelog_summary":$changelog}')
 
           # Send to generic JSON webhook (Hytte dashboard, Slack, custom receivers)
           if [ -n "${RELEASE_WEBHOOK_URL}" ]; then
