@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/notify"
 )
@@ -508,6 +509,39 @@ func TestWebhookDispatcher_FilteredEventsNotDelivered(t *testing.T) {
 		t.Error("dispatcher should not deliver events not in the target's filter")
 	default:
 		// Correct: no request was made.
+	}
+}
+
+// TestWebhookDispatcher_DeliversAfterCallerContextCancelled verifies that
+// Dispatch still delivers webhooks even when the caller cancels its context
+// immediately after Dispatch returns (the common "defer cancel()" pattern in
+// the daemon). This is a regression test for the context cancellation race.
+func TestWebhookDispatcher_DeliversAfterCallerContextCancelled(t *testing.T) {
+	ch := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	d := notify.NewWebhookDispatcher([]notify.WebhookTarget{
+		{Name: "test", URL: srv.URL},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	// Simulate the daemon pattern: create a context, dispatch, then cancel
+	// immediately — as if the caller did "defer cancel()" and then returned.
+	ctx, cancel := context.WithCancel(context.Background())
+	d.Dispatch(ctx, notify.EventPRCreated, "Forge-1", "anvil", "test")
+	cancel() // cancel immediately, before the goroutine can complete the HTTP request
+
+	select {
+	case <-ch:
+		// Correct: webhook was delivered despite caller context cancellation.
+	case <-time.After(5 * time.Second):
+		t.Error("webhook was not delivered after caller context was cancelled — context cancellation race not fixed")
 	}
 }
 

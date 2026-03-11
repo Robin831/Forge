@@ -423,6 +423,11 @@ func NewWebhookDispatcher(targets []WebhookTarget, logger *slog.Logger) *Webhook
 // Dispatch sends a GenericPayload to all webhook targets that subscribe to the
 // given event. Each delivery is dispatched in its own goroutine so the caller
 // is never blocked by a slow or unreachable webhook.
+//
+// Dispatch detaches from the caller's context via context.WithoutCancel so
+// that goroutines are not cancelled when the caller cancels its own context
+// (e.g. via a deferred cancel()). Context values are preserved for tracing.
+// The HTTP client's Timeout enforces the delivery deadline.
 func (d *WebhookDispatcher) Dispatch(ctx context.Context, event EventType, beadID, anvil, message string) {
 	if d == nil {
 		return
@@ -434,12 +439,16 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event EventType, beadI
 		Message:   message,
 		Timestamp: time.Now().UTC(),
 	}
+	// Detach from caller's context to prevent a cancellation race: Dispatch is
+	// fire-and-forget and the caller's deferred cancel() fires as soon as this
+	// function returns, before the HTTP goroutines have a chance to complete.
+	sendCtx := context.WithoutCancel(ctx)
 	for _, t := range d.targets {
 		if len(t.events) > 0 && !t.events[event] {
 			continue
 		}
 		t := t // capture loop variable for goroutine
-		go d.sendToTarget(ctx, t, payload)
+		go d.sendToTarget(sendCtx, t, payload)
 	}
 }
 
