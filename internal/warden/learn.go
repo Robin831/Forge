@@ -195,7 +195,10 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 // lintRulePattern matches ESLint-style rule IDs such as:
 //   - react-hooks/exhaustive-deps
 //   - @typescript-eslint/no-floating-promises
-var lintRulePattern = regexp.MustCompile(`(?:@[a-z0-9][a-z0-9-]*/)?[a-z][a-z0-9-]*/[a-z][a-z0-9-]+`)
+//
+// The rule name portion must contain at least one hyphen to distinguish lint
+// rules from file paths (e.g. src/index would otherwise match).
+var lintRulePattern = regexp.MustCompile(`@?[a-z0-9][a-z0-9-]*/[a-z][a-z0-9-]*-[a-z0-9-]+`)
 
 // extractLintRuleNames scans CI log output for ESLint-style rule IDs and
 // returns the unique set, sorted for deterministic ordering.
