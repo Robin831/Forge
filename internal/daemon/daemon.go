@@ -1310,9 +1310,20 @@ normalPipeline:
 
 	if !outcome.Success {
 		if outcome.Decomposed {
-			d.logger.Info("bead decomposed into sub-beads", "bead", bead.ID)
-			// Decomposition is intentional, not a failure — clear any prior dispatch failures.
-			_ = d.db.ClearRetry(bead.ID, bead.Anvil)
+			childCount := 0
+			if outcome.SchematicResult != nil {
+				childCount = len(outcome.SchematicResult.SubBeads)
+			}
+			if childCount > 0 {
+				d.logger.Info("bead decomposed into sub-beads", "bead", bead.ID, "count", childCount)
+				// Decomposition is intentional, not a failure — clear any prior dispatch failures.
+				_ = d.db.ClearRetry(bead.ID, bead.Anvil)
+				return
+			}
+			// Decomposition produced no children — preserve the retry record so the bead
+			// surfaces in Needs Attention rather than silently disappearing.
+			d.logger.Warn("bead decomposition produced no children; recording as dispatch failure", "bead", bead.ID)
+			d.recordDispatchFailure(bead.ID, bead.Anvil, "decomposition produced no child beads")
 			return
 		}
 		if outcome.NeedsHuman {
