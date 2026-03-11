@@ -241,10 +241,12 @@ var hearthCmd = &cobra.Command{
 		}
 
 		noMouse, _ := cmd.Flags().GetBool("no-mouse")
+		mouseEnabled := !noMouse
+		model.SetMouseEnabled(mouseEnabled)
 		opts := []tea.ProgramOption{tea.WithAltScreen()}
-		if !noMouse {
-			// Mouse reporting enables wheel scrolling in the log viewer.
-			// If text selection is needed, pass --no-mouse or hold Shift while clicking.
+		if mouseEnabled {
+			// Mouse reporting enables click-to-focus and wheel scrolling.
+			// Press 'm' inside Hearth to toggle mouse off and restore terminal text selection.
 			opts = append(opts, tea.WithMouseCellMotion())
 		}
 		p := tea.NewProgram(&model, opts...)
