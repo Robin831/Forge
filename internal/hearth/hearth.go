@@ -103,6 +103,7 @@ type ReadyToMergeItem struct {
 	BeadID   string
 	Anvil    string
 	Branch   string
+	Title    string
 }
 
 // WorkerItem represents a worker in the workers panel.
@@ -1715,12 +1716,40 @@ func (m *Model) renderMergeMenu() string {
 		return ""
 	}
 
-	menuWidth := 52
+	menuWidth := 68
+	if m.width > 0 && m.width < menuWidth {
+		menuWidth = m.width
+	}
+	contentWidth := menuWidth - actionMenuStyle.GetHorizontalFrameSize()
 	labels := mergeMenuLabels()
 
 	var lines []string
 	title := fmt.Sprintf("PR #%d — %s", m.mergeTarget.PRNumber, m.mergeTarget.BeadID)
 	lines = append(lines, actionMenuTitleStyle.Render(title))
+
+	if m.mergeTarget.Title != "" {
+		// Sanitize and word-wrap PR title to fit popup width, max 2 lines.
+		safeTitle := sanitizeTitle(m.mergeTarget.Title)
+		wrapped := wordWrap(safeTitle, contentWidth)
+		if len(wrapped) <= 2 {
+			for _, line := range wrapped {
+				lines = append(lines, dimStyle.Render(line))
+			}
+		} else {
+			// Show first line as-is, truncate second line and append ellipsis.
+			lines = append(lines, dimStyle.Render(wrapped[0]))
+			second := []rune(wrapped[1])
+			maxSecond := contentWidth - 3
+			if maxSecond < 0 {
+				maxSecond = 0
+			}
+			if len(second) > maxSecond {
+				second = second[:maxSecond]
+			}
+			lines = append(lines, dimStyle.Render(string(second)+"..."))
+		}
+	}
+
 	lines = append(lines, "")
 
 	for i, label := range labels {
