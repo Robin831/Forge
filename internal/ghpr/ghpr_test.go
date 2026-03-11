@@ -341,16 +341,29 @@ func TestCommitSubject(t *testing.T) {
 func TestSelectTitle(t *testing.T) {
 	dir := makeTestRepo(t, "English commit subject")
 
-	t.Run("empty title gets default forge prefix", func(t *testing.T) {
-		p := CreateParams{BeadID: "Forge-test", WorktreePath: dir, Branch: "main"}
+	t.Run("no title and no bead title gets default forge prefix", func(t *testing.T) {
+		p := CreateParams{BeadID: "Forge-test", WorktreePath: dir, Branch: "nonexistent-branch-xyz"}
 		got := selectTitle(context.Background(), p)
 		assert.Equal(t, "forge: Forge-test", got)
 	})
 
-	t.Run("title is derived from commit subject", func(t *testing.T) {
+	t.Run("bead title takes precedence over commit subject", func(t *testing.T) {
+		// The Smith's last commit may describe an incidental fix; the bead title
+		// must win so the PR reflects the bead's stated intent.
 		p := CreateParams{
 			BeadID:       "Forge-test",
-			Title:        "Opprinnelig norsk tittel",
+			Title:        "feat: fix some incidental bug found during implementation",
+			BeadTitle:    "Show PR title in Ready to Merge action menu",
+			WorktreePath: dir,
+			Branch:       "main",
+		}
+		got := selectTitle(context.Background(), p)
+		assert.Equal(t, "Show PR title in Ready to Merge action menu (Forge-test)", got)
+	})
+
+	t.Run("commit subject is used as fallback when no bead title is set", func(t *testing.T) {
+		p := CreateParams{
+			BeadID:       "Forge-test",
 			WorktreePath: dir,
 			Branch:       "main",
 		}
@@ -358,11 +371,12 @@ func TestSelectTitle(t *testing.T) {
 		assert.Equal(t, "English commit subject (Forge-test)", got)
 	})
 
-	t.Run("title with [no-changelog] is preserved unchanged", func(t *testing.T) {
+	t.Run("title with [no-changelog] is preserved unchanged even when bead title is set", func(t *testing.T) {
 		originalTitle := "forge: learn rules [no-changelog]"
 		p := CreateParams{
 			BeadID:       "Forge-test",
 			Title:        originalTitle,
+			BeadTitle:    "Auto-learn warden rules",
 			WorktreePath: dir,
 			Branch:       "main",
 		}
@@ -370,7 +384,7 @@ func TestSelectTitle(t *testing.T) {
 		assert.Equal(t, originalTitle, got, "title with [no-changelog] must not be overridden")
 	})
 
-	t.Run("non-existent branch keeps original title", func(t *testing.T) {
+	t.Run("non-existent branch with no bead title keeps original title", func(t *testing.T) {
 		p := CreateParams{
 			BeadID:       "Forge-test",
 			Title:        "Some provided title",
@@ -379,6 +393,21 @@ func TestSelectTitle(t *testing.T) {
 		}
 		got := selectTitle(context.Background(), p)
 		assert.Equal(t, "Some provided title", got)
+	})
+
+	t.Run("crucible parent title with (parent) suffix is preserved when already anchored", func(t *testing.T) {
+		// Crucible sets Title = "<bead title> (parent) (<bead ID>)" alongside
+		// BeadTitle = "<bead title>". The (parent) disambiguator must survive.
+		p := CreateParams{
+			BeadID:       "Forge-test",
+			Title:        "Add widget support (parent) (Forge-test)",
+			BeadTitle:    "Add widget support",
+			WorktreePath: dir,
+			Branch:       "main",
+		}
+		got := selectTitle(context.Background(), p)
+		assert.Equal(t, "Add widget support (parent) (Forge-test)", got,
+			"title already anchored to bead ID must not be overwritten by BeadTitle")
 	})
 }
 
