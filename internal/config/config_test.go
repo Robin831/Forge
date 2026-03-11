@@ -20,14 +20,15 @@ func TestConfig_Validate(t *testing.T) {
 			name: "valid config",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths:       4,
-					MaxReviewAttempts:    5,
-					PollInterval:         1 * time.Minute,
-					SmithTimeout:         30 * time.Minute,
-					BellowsInterval:      2 * time.Minute,
-					MaxCIFixAttempts:     5,
-					MaxReviewFixAttempts: 5,
-					MaxRebaseAttempts:    3,
+					MaxTotalSmiths:        4,
+					MaxReviewAttempts:     5,
+					MaxPipelineIterations: 5,
+					PollInterval:          1 * time.Minute,
+					SmithTimeout:          30 * time.Minute,
+					BellowsInterval:       2 * time.Minute,
+					MaxCIFixAttempts:      5,
+					MaxReviewFixAttempts:  5,
+					MaxRebaseAttempts:     3,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -53,6 +54,7 @@ func TestConfig_Validate(t *testing.T) {
 			expected: []string{
 				"settings.max_total_smiths must be >= 1",
 				"settings.max_review_attempts must be >= 1",
+				"settings.max_pipeline_iterations must be >= 1",
 				"settings.poll_interval must be >= 10s",
 				"settings.smith_timeout must be >= 1m",
 				"settings.bellows_interval must be >= 30s",
@@ -65,14 +67,15 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid anvil path",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths:       4,
-					MaxReviewAttempts:    5,
-					PollInterval:         1 * time.Minute,
-					SmithTimeout:         30 * time.Minute,
-					BellowsInterval:      2 * time.Minute,
-					MaxCIFixAttempts:     5,
-					MaxReviewFixAttempts: 5,
-					MaxRebaseAttempts:    3,
+					MaxTotalSmiths:        4,
+					MaxReviewAttempts:     5,
+					MaxPipelineIterations: 5,
+					PollInterval:          1 * time.Minute,
+					SmithTimeout:          30 * time.Minute,
+					BellowsInterval:       2 * time.Minute,
+					MaxCIFixAttempts:      5,
+					MaxReviewFixAttempts:  5,
+					MaxRebaseAttempts:     3,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -88,14 +91,15 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid auto_dispatch mode",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths:       4,
-					MaxReviewAttempts:    5,
-					PollInterval:         1 * time.Minute,
-					SmithTimeout:         30 * time.Minute,
-					BellowsInterval:      2 * time.Minute,
-					MaxCIFixAttempts:     5,
-					MaxReviewFixAttempts: 5,
-					MaxRebaseAttempts:    3,
+					MaxTotalSmiths:        4,
+					MaxReviewAttempts:     5,
+					MaxPipelineIterations: 5,
+					PollInterval:          1 * time.Minute,
+					SmithTimeout:          30 * time.Minute,
+					BellowsInterval:       2 * time.Minute,
+					MaxCIFixAttempts:      5,
+					MaxReviewFixAttempts:  5,
+					MaxRebaseAttempts:     3,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -112,14 +116,15 @@ func TestConfig_Validate(t *testing.T) {
 			name: "missing tag for tagged mode",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths:       4,
-					MaxReviewAttempts:    5,
-					PollInterval:         1 * time.Minute,
-					SmithTimeout:         30 * time.Minute,
-					BellowsInterval:      2 * time.Minute,
-					MaxCIFixAttempts:     5,
-					MaxReviewFixAttempts: 5,
-					MaxRebaseAttempts:    3,
+					MaxTotalSmiths:        4,
+					MaxReviewAttempts:     5,
+					MaxPipelineIterations: 5,
+					PollInterval:          1 * time.Minute,
+					SmithTimeout:          30 * time.Minute,
+					BellowsInterval:       2 * time.Minute,
+					MaxCIFixAttempts:      5,
+					MaxReviewFixAttempts:  5,
+					MaxRebaseAttempts:     3,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {
@@ -137,14 +142,15 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid priority for priority mode",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths:       4,
-					MaxReviewAttempts:    5,
-					PollInterval:         1 * time.Minute,
-					SmithTimeout:         30 * time.Minute,
-					BellowsInterval:      2 * time.Minute,
-					MaxCIFixAttempts:     5,
-					MaxReviewFixAttempts: 5,
-					MaxRebaseAttempts:    3,
+					MaxTotalSmiths:        4,
+					MaxReviewAttempts:     5,
+					MaxPipelineIterations: 5,
+					PollInterval:          1 * time.Minute,
+					SmithTimeout:          30 * time.Minute,
+					BellowsInterval:       2 * time.Minute,
+					MaxCIFixAttempts:      5,
+					MaxReviewFixAttempts:  5,
+					MaxRebaseAttempts:     3,
 				},
 				Anvils: map[string]AnvilConfig{
 					"test": {

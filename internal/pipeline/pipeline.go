@@ -33,7 +33,8 @@ import (
 	"github.com/Robin831/Forge/internal/worktree"
 )
 
-// MaxIterations is the maximum number of Smith-Warden cycles.
+// MaxIterations is the default maximum number of Smith-Warden cycles when no
+// value is provided via Params.MaxIterations or the config.
 const MaxIterations = 5
 
 // Outcome represents the final result of the pipeline.
@@ -128,6 +129,12 @@ type Params struct {
 	// this ID so the pending row is overwritten by the running row on insert.
 	// If empty, the pipeline generates a fresh ID as usual.
 	WorkerID string
+
+	// MaxIterations is the maximum number of Smith-Warden cycles before the
+	// pipeline gives up. When zero or negative, MaxIterations (the package-level
+	// constant, default 5) is used. This value should be populated from
+	// config.Settings.MaxPipelineIterations.
+	MaxIterations int
 }
 
 // releaseBead resets a bead status to open via the bd CLI. It always uses a
@@ -385,12 +392,18 @@ func Run(ctx context.Context, p Params) *Outcome {
 		return outcome
 	}
 
+	// Resolve max iterations: prefer the param value (from config), fall back to the constant.
+	maxIter := p.MaxIterations
+	if maxIter <= 0 {
+		maxIter = MaxIterations
+	}
+
 	// Feedback loop
 	var currentPrompt = promptText
 
-	for iteration := 1; iteration <= MaxIterations; iteration++ {
+	for iteration := 1; iteration <= maxIter; iteration++ {
 		outcome.Iterations = iteration
-		log.Printf("[pipeline:%s] Iteration %d/%d", workerID, iteration, MaxIterations)
+		log.Printf("[pipeline:%s] Iteration %d/%d", workerID, iteration, maxIter)
 
 		// Run Smith (with provider fallback on rate limit)
 		log.Printf("[pipeline:%s] Running Smith (provider: %s)", workerID, providers[activeProviderIdx].Label())
@@ -553,7 +566,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		if !temperResult.Passed {
 			log.Printf("[pipeline:%s] Temper failed at step: %s", workerID, temperResult.FailedStep)
 
-			if iteration < MaxIterations {
+			if iteration < maxIter {
 				// Rebuild prompt with temper feedback for next iteration
 				beadCtx.Iteration = iteration + 1
 				beadCtx.PriorFeedbackSource = "build/test verification"
@@ -662,10 +675,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 		case warden.VerdictRequestChanges:
 			log.Printf("[pipeline:%s] Warden requests changes (iteration %d)", workerID, iteration)
 			_ = p.DB.LogEvent(state.EventWardenReject,
-				fmt.Sprintf("Request changes (iteration %d/%d): %s", iteration, MaxIterations, wardenEventSummary(reviewResult)),
+				fmt.Sprintf("Request changes (iteration %d/%d): %s", iteration, maxIter, wardenEventSummary(reviewResult)),
 				p.Bead.ID, p.AnvilName)
 
-			if iteration < MaxIterations {
+			if iteration < maxIter {
 				// Rebuild prompt with warden feedback for next iteration
 				beadCtx.Iteration = iteration + 1
 				beadCtx.PriorFeedbackSource = "Warden code review"

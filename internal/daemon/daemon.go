@@ -1172,6 +1172,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			GoRaceDetection:           d.resolveGoRaceDetection(anvilCfg),
 			SmithTimeout:              d.cfg.Load().Settings.SmithTimeout,
 			AutoMergeCrucibleChildren: d.cfg.Load().Settings.IsAutoMergeCrucibleChildren(),
+			MaxPipelineIterations:     d.cfg.Load().Settings.MaxPipelineIterations,
 			StatusCallback: func(s crucible.Status) {
 				d.crucibleStatuses.Store(bead.Anvil+"/"+bead.ID, s)
 			},
@@ -1271,6 +1272,7 @@ normalPipeline:
 		Notifier:        d.notifier,
 		BaseBranch:      bead.EpicBranch,
 		WorkerID:        claimWorkerID,
+		MaxIterations:   d.cfg.Load().Settings.MaxPipelineIterations,
 	}
 	if d.cfg.Load().Settings.SchematicEnabled {
 		wordThreshold := d.cfg.Load().Settings.SchematicWordThreshold
