@@ -394,5 +394,20 @@ func TestSelectTitle(t *testing.T) {
 		got := selectTitle(context.Background(), p)
 		assert.Equal(t, "Some provided title", got)
 	})
+
+	t.Run("crucible parent title with (parent) suffix is preserved when already anchored", func(t *testing.T) {
+		// Crucible sets Title = "<bead title> (parent) (<bead ID>)" alongside
+		// BeadTitle = "<bead title>". The (parent) disambiguator must survive.
+		p := CreateParams{
+			BeadID:       "Forge-test",
+			Title:        "Add widget support (parent) (Forge-test)",
+			BeadTitle:    "Add widget support",
+			WorktreePath: dir,
+			Branch:       "main",
+		}
+		got := selectTitle(context.Background(), p)
+		assert.Equal(t, "Add widget support (parent) (Forge-test)", got,
+			"title already anchored to bead ID must not be overwritten by BeadTitle")
+	})
 }
 

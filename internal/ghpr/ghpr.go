@@ -66,18 +66,27 @@ type CreateParams struct {
 // Priority order:
 //  1. Titles containing special CI markers (e.g. "[no-changelog]") are
 //     preserved verbatim — callers such as Bellows rely on these markers.
-//  2. When BeadTitle is set, the PR title is anchored to the bead's stated
-//     intent ("BeadTitle (BeadID)"). This prevents the Smith's last commit
+//  2. When Title already contains the BeadID it is already anchored to the
+//     bead (e.g. Crucible adds "(parent) (<BeadID>)"). Preserve it so
+//     disambiguating suffixes are not stripped.
+//  3. When BeadTitle is set and the title is not yet anchored, the PR title
+//     is set to "BeadTitle (BeadID)". This prevents the Smith's last commit
 //     message — which may describe an incidental fix discovered during
 //     implementation — from overriding the PR title.
-//  3. Fall back to the branch's commit subject when no BeadTitle is available
+//  4. Fall back to the branch's commit subject when no BeadTitle is available
 //     (e.g. callers that do not populate BeadTitle).
-//  4. Use the explicitly provided Title as-is if the commit subject is empty.
-//  5. Return "forge: BeadID" when no other information is available.
+//  5. Use the explicitly provided Title as-is if the commit subject is empty.
+//  6. Return "forge: BeadID" when no other information is available.
 func selectTitle(ctx context.Context, p CreateParams) string {
 	// Preserve explicitly provided titles that contain special markers used
 	// by callers like Bellows for CI (e.g. "[no-changelog]").
 	if strings.Contains(p.Title, "[no-changelog]") {
+		return p.Title
+	}
+	// If the title is already anchored to the bead (contains the bead ID),
+	// preserve it as-is. This handles callers like Crucible that build
+	// custom titles such as "<bead title> (parent) (<bead ID>)".
+	if p.BeadID != "" && strings.Contains(p.Title, p.BeadID) {
 		return p.Title
 	}
 	// Anchor to the bead title when available so the PR title reflects the
