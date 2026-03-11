@@ -44,4 +44,6 @@ release:
     name: Forge
   draft: false
   prerelease: auto
+  replace_existing_draft: true
+  replace_existing_artifacts: true
   name_template: "v{{.Version}}"
