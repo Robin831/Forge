@@ -774,7 +774,7 @@ func (m *Model) View() string {
 	m.headerH = headerH
 
 	// Footer with status message or default hints
-	footerText := "Tab: switch panel • j/k/wheel: scroll • click: focus panel • K: kill worker • Enter: actions/merge • l: label bead • f: follow • q: quit"
+	footerText := "Tab: switch panel • j/k/wheel: scroll • K: kill worker • Enter: actions/merge • l: label bead • f: follow • q: quit"
 	statusDuration := 5 * time.Second
 	if m.statusMsgIsError {
 		statusDuration = 10 * time.Second
