@@ -311,6 +311,59 @@ func gitCmd(ctx context.Context, dir string, args ...string) error {
 	return cmd.Run()
 }
 
+// CheckAndRestoreMainBranch verifies that the anvil root is checked out on its
+// default branch (main or master). If it is on a different branch — which can
+// happen when a Claude subprocess mistakenly runs git checkout in the parent
+// repository instead of its worktree — this function attempts to restore it.
+//
+// Returns nil if the anvil is already on the correct branch (or HEAD-detached),
+// or after a successful restore. Returns an error if the branch cannot be
+// determined or the restore fails.
+func CheckAndRestoreMainBranch(ctx context.Context, anvilPath string) error {
+	// Determine current branch name
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "-C", anvilPath, "rev-parse", "--abbrev-ref", "HEAD"))
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("determining current branch of anvil %q: %w", anvilPath, err)
+	}
+	currentBranch := strings.TrimSpace(string(out))
+
+	// HEAD-detached state is unusual but not our problem to fix here
+	if currentBranch == "HEAD" {
+		return nil
+	}
+
+	// Determine the default branch by probing origin
+	defaultBranch := "main"
+	probeCtx, probeCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer probeCancel()
+	if err := gitCmd(probeCtx, anvilPath, "rev-parse", "--verify", "origin/main"); err != nil {
+		if err2 := gitCmd(probeCtx, anvilPath, "rev-parse", "--verify", "origin/master"); err2 != nil {
+			return fmt.Errorf("anvil %q: neither origin/main nor origin/master found", anvilPath)
+		}
+		defaultBranch = "master"
+	}
+
+	if currentBranch == defaultBranch {
+		return nil // All good
+	}
+
+	// Anvil root is on wrong branch — attempt to restore
+	restoreCtx, restoreCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer restoreCancel()
+	restoreCmd := executil.HideWindow(exec.CommandContext(restoreCtx, "git", "-C", anvilPath, "checkout", defaultBranch))
+	restoreCmd.Stdout = os.Stderr
+	restoreCmd.Stderr = os.Stderr
+	if err := restoreCmd.Run(); err != nil {
+		return fmt.Errorf("anvil root %q is on branch %q instead of %q; auto-restore failed: %w",
+			anvilPath, currentBranch, defaultBranch, err)
+	}
+	return nil
+}
+
 // sanitizePath converts a bead ID to a safe directory/branch name.
 // E.g., "Forge-n1g.4.1" → "Forge-n1g.4.1" (dots are fine in git branches).
 // Slashes and other problematic chars are replaced.

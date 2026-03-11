@@ -1,0 +1,2 @@
+category: Fixed
+- **Prevent main repo branch hijack by worktree feature branches** - Added a pre-dispatch safety check in the daemon poll loop that verifies each anvil root is on its default branch (main/master) before spawning a worker. If the branch has been corrupted, it is automatically restored. Also added explicit git safety instructions to the smith prompt, telling Claude never to run branch-changing git commands outside its worktree directory. (Forge-gll5)

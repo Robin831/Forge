@@ -150,6 +150,12 @@ You are working in a git worktree at: {{.Bead.WorktreePath}}
 Branch: {{.Bead.Branch}}
 Main repository: {{.Bead.AnvilPath}}
 
+**Git safety rules — read carefully:**
+- ALL git operations must be performed inside your worktree ({{.Bead.WorktreePath}}) only
+- **NEVER** run `git checkout`, `git switch`, `git reset`, or any branch-changing command in the main repository ({{.Bead.AnvilPath}})
+- **NEVER** `cd` to the main repository path and run git commands there
+- The main repository must remain on its default branch at all times; touching it corrupts every other worker
+
 ## Instructions
 
 1. **Implement the task** described above fully and completely

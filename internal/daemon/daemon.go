@@ -1035,6 +1035,19 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			continue
 		}
 
+		// Safety guard: ensure the anvil root is on its default branch (main/master).
+		// A Claude subprocess may have accidentally run git checkout in the parent
+		// repository instead of its worktree, corrupting the working environment for
+		// all subsequent workers. Detect and auto-restore before dispatching.
+		if err := worktree.CheckAndRestoreMainBranch(ctx, anvilCfg.Path); err != nil {
+			d.logger.Warn("anvil root is not on main branch; skipping dispatch until restored",
+				"anvil", bead.Anvil, "error", err)
+			_ = d.db.LogEvent(state.EventPollError,
+				fmt.Sprintf("anvil branch check failed: %v", err), "", bead.Anvil)
+			d.activeBeads.Delete(bead.ID)
+			continue
+		}
+
 		// Apply auto-dispatch filtering
 		if !shouldDispatch(bead, anvilCfg) {
 			d.activeBeads.Delete(bead.ID)
