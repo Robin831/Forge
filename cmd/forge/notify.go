@@ -123,6 +123,10 @@ Example (from a release script):
 			fmt.Fprintln(os.Stderr, "No webhook URLs configured. Set notifications.teams_webhook_url or notifications.release_webhook_urls in forge.yaml, or use --webhook-url / --extra-url flags.")
 		}
 
+		if jsonOutput {
+			fmt.Printf(`{"sent":%d,"version":%q}`+"\n", sent, version)
+		}
+
 		return nil
 	},
 }

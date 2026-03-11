@@ -54,6 +54,13 @@ forge warden learn --anvil <name>     # Learn review rules from Copilot comments
 forge warden list --anvil <name>      # List learned review rules
 forge warden forget <id> --anvil <name>  # Remove a learned rule
 forge notify release --version v1.2.3  # Send release notification to configured webhooks
+forge notify release \
+  --version v1.2.3 \
+  --tag v1.2.3 \
+  --release-url https://github.com/org/forge/releases/tag/v1.2.3 \
+  --changelog "- Added X\n- Fixed Y" \
+  --webhook-url https://... \
+  --extra-url https://...    # All flags (--tag/--release-url/--changelog/--webhook-url/--extra-url optional)
 forge version                         # Print version information
 ```
 
