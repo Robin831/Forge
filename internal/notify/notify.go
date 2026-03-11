@@ -234,7 +234,7 @@ func (n *Notifier) ReleasePublished(ctx context.Context, version, tag, releaseUR
 	if changelogSummary != "" {
 		runes := []rune(changelogSummary)
 		if len(runes) > 500 {
-			changelogSummary = string(runes[:500]) + "..."
+			changelogSummary = string(runes[:497]) + "..."
 		}
 		facts = append(facts, cardFact{Title: "Changes", Value: changelogSummary})
 	}

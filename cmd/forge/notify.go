@@ -61,7 +61,7 @@ Example (from a release script):
 			Level: slog.LevelInfo,
 		}))
 
-		// Resolve Teams webhook URL: flag > config > env var
+		// Resolve Teams webhook URL: flag > env var > config
 		teamsURL := webhookURLFlag
 		if teamsURL == "" {
 			teamsURL = os.Getenv("FORGE_NOTIFICATIONS_TEAMS_WEBHOOK_URL")
