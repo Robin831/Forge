@@ -204,10 +204,30 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 // lintRulePattern matches ESLint-style rule IDs such as:
 //   - react-hooks/exhaustive-deps
 //   - @typescript-eslint/no-floating-promises
+//   - import/order
 //
-// The rule name portion must contain at least one hyphen to distinguish lint
-// rules from file paths (e.g. src/index would otherwise match).
-var lintRulePattern = regexp.MustCompile(`@?[a-z0-9][a-z0-9-]*/[a-z][a-z0-9-]*-[a-z0-9-]+`)
+// This pattern intentionally over-accepts and is paired with isLikelyLintRule
+// to filter out obvious file paths (e.g. src/index).
+var lintRulePattern = regexp.MustCompile(`@?[a-z0-9][a-z0-9-]*/[a-z][a-z0-9-]*`)
+
+// isLikelyLintRule applies a lightweight heuristic to distinguish ESLint rule
+// IDs from common file path prefixes in CI logs.
+func isLikelyLintRule(id string) bool {
+	parts := strings.SplitN(id, "/", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	ns := parts[0]
+	if strings.HasPrefix(ns, "@") {
+		ns = strings.TrimPrefix(ns, "@")
+	}
+	switch ns {
+	case "src", "dist", "build", "lib", "app", "apps", "cmd", "internal", "bin", "packages", "node_modules":
+		return false
+	default:
+		return true
+	}
+}
 
 // extractLintRuleNames scans CI log output for ESLint-style rule IDs and
 // returns the unique set, sorted for deterministic ordering.
@@ -215,6 +235,9 @@ func extractLintRuleNames(logs map[string]string) []string {
 	seen := make(map[string]bool)
 	for _, logContent := range logs {
 		for _, match := range lintRulePattern.FindAllString(logContent, -1) {
+			if !isLikelyLintRule(match) {
+				continue
+			}
 			seen[match] = true
 		}
 	}
@@ -240,6 +263,14 @@ func LearnFromCIFix(ctx context.Context, anvilPath, repoDir string, failingLogs 
 	ruleNames := extractLintRuleNames(failingLogs)
 	if len(ruleNames) == 0 {
 		return nil
+	}
+
+	// Cap learning to avoid spawning too many sequential Claude calls for
+	// CI logs that surface dozens of distinct rule IDs.
+	const maxRulesToLearn = 5
+	if len(ruleNames) > maxRulesToLearn {
+		log.Printf("[warden] LearnFromCIFix: capping rule learning at %d (found %d)", maxRulesToLearn, len(ruleNames))
+		ruleNames = ruleNames[:maxRulesToLearn]
 	}
 
 	rf, err := LoadRules(anvilPath)
@@ -348,6 +379,9 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) using this 
 		return nil, fmt.Errorf("distilled rule missing required fields (id or check)")
 	}
 
+	// Enforce the expected ID regardless of what Claude returned, so the
+	// existingIDs skip logic and deduplication remain consistent.
+	rule.ID = ruleID
 	rule.Source = source
 	rule.Added = time.Now().Format("2006-01-02")
 	return &rule, nil

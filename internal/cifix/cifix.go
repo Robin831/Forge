@@ -250,13 +250,26 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				p.BeadID, p.AnvilName)
 			result.Duration = time.Since(start)
 
-			// Learn from this CI fix: extract lint rule patterns and store as warden rules.
+			// Learn from this CI fix: compute diff synchronously, then learn asynchronously
+			// so the success path returns without waiting for Claude distillation.
 			if baseCommit != "" {
 				fixDiff, diffErr := gitDiff(ctx, p.WorktreePath, baseCommit, "HEAD")
 				if diffErr != nil {
 					log.Printf("[cifix] PR #%d: failed to compute fix diff for warden learning: %v", p.PRNumber, diffErr)
-				} else if err := warden.LearnFromCIFix(ctx, p.AnvilPath, p.WorktreePath, ciLogs, fixDiff, p.PRNumber); err != nil {
-					log.Printf("[cifix] PR #%d: warden learn from CI fix: %v", p.PRNumber, err)
+				} else {
+					prNum := p.PRNumber
+					anvilPath, worktreePath := p.AnvilPath, p.WorktreePath
+					logsCopy := make(map[string]string, len(ciLogs))
+					for k, v := range ciLogs {
+						logsCopy[k] = v
+					}
+					go func() {
+						learnCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+						defer cancel()
+						if err := warden.LearnFromCIFix(learnCtx, anvilPath, worktreePath, logsCopy, fixDiff, prNum); err != nil {
+							log.Printf("[cifix] PR #%d: warden learn from CI fix: %v", prNum, err)
+						}
+					}()
 				}
 			}
 
@@ -533,9 +546,9 @@ func gitRevParse(ctx context.Context, dir, ref string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", ref)
 	executil.HideWindow(cmd)
 	cmd.Dir = dir
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("git rev-parse %s: %s (%w)", ref, strings.TrimSpace(string(out)), err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -545,9 +558,9 @@ func gitDiff(ctx context.Context, dir, from, to string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "diff", from+".."+to)
 	executil.HideWindow(cmd)
 	cmd.Dir = dir
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("git diff %s..%s: %s (%w)", from, to, strings.TrimSpace(string(out)), err)
 	}
 	return string(out), nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +53,20 @@ func TestExtractLintRuleNames(t *testing.T) {
 			name: "no lint rules in logs",
 			logs: map[string]string{
 				"build": "Error: cannot find module './foo'\n  at Object.<anonymous> (src/index.ts:1:1)",
+			},
+			expected: nil,
+		},
+		{
+			name: "no-hyphen rule import/order is matched",
+			logs: map[string]string{
+				"eslint": "  1:1  error  Import order violation  import/order",
+			},
+			expected: []string{"import/order"},
+		},
+		{
+			name: "file path prefixes are excluded",
+			logs: map[string]string{
+				"build": "  at src/components/App\n  at internal/server/handler",
 			},
 			expected: nil,
 		},
@@ -154,6 +169,44 @@ func TestLearnFromCIFix_DistillsNewRule(t *testing.T) {
 	wantSource := fmt.Sprintf("cifix:PR#%d", 99)
 	if r.Source != wantSource {
 		t.Errorf("expected source %q, got %q", wantSource, r.Source)
+	}
+}
+
+// TestLearnFromCIFix_CapRules verifies that LearnFromCIFix stops calling Claude
+// after maxRulesToLearn distillation calls, even when more rules are present.
+func TestLearnFromCIFix_CapRules(t *testing.T) {
+	anvilPath := t.TempDir()
+
+	callCount := 0
+	old := claudeRunner
+	t.Cleanup(func() { claudeRunner = old })
+	claudeRunner = func(_ context.Context, _, prompt string) ([]byte, error) {
+		callCount++
+		// Return a valid rule JSON that matches the expected ruleID format.
+		return []byte(`{"id":"placeholder","category":"style","pattern":"x","check":"y"}`), nil
+	}
+
+	// Build logs with 7 distinct lint rules (exceeds the cap of 5).
+	logs := map[string]string{
+		"eslint": strings.Join([]string{
+			"error  react-hooks/exhaustive-deps",
+			"error  react-hooks/rules-of-hooks",
+			"error  import/no-cycle",
+			"error  import/order",
+			"error  jsx-a11y/alt-text",
+			"error  jsx-a11y/no-autofocus",
+			"error  unicorn/no-null",
+		}, "\n"),
+	}
+	fixDiff := "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-bad\n+good"
+
+	ctx := context.Background()
+	if err := LearnFromCIFix(ctx, anvilPath, anvilPath, logs, fixDiff, 7); err != nil {
+		t.Fatalf("LearnFromCIFix returned unexpected error: %v", err)
+	}
+
+	if callCount > 5 {
+		t.Errorf("expected at most 5 Claude calls (cap), got %d", callCount)
 	}
 }
 
