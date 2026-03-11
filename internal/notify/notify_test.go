@@ -178,6 +178,65 @@ func TestSendGenericRelease_PostsJSON(t *testing.T) {
 	}
 }
 
+// TestSendGenericRelease_TagFieldPreserved verifies that the Tag field in the
+// payload is round-tripped correctly through JSON serialisation. This is a
+// regression test for the silent breaking change where Tag was dropped from
+// WebhookPayload even though --tag is a supported CLI flag with distinct
+// semantics from --version (e.g. "2.0.0" vs "v2.0.0").
+func TestSendGenericRelease_TagFieldPreserved(t *testing.T) {
+	url, getBody := captureRequest(t)
+
+	payload := notify.WebhookPayload{
+		Source:  "forge",
+		Summary: "Release published: 2.0.0 (repo)",
+		Event:   "release_published",
+		URL:     "https://github.com/org/repo/releases/tag/v2.0.0",
+		Repo:    "repo",
+		Version: "2.0.0",
+		Tag:     "v2.0.0", // tag has "v" prefix, version does not
+	}
+	notify.SendGenericRelease(context.Background(), url, payload,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	raw := getBody()
+	if len(raw) == 0 {
+		t.Fatal("expected a request body, got none")
+	}
+
+	var got notify.WebhookPayload
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("body is not valid JSON: %v\n%s", err, raw)
+	}
+
+	if got.Tag != "v2.0.0" {
+		t.Errorf("tag = %q, want %q", got.Tag, "v2.0.0")
+	}
+	if got.Version != "2.0.0" {
+		t.Errorf("version = %q, want %q", got.Version, "2.0.0")
+	}
+}
+
+// TestSendGenericRelease_TagOmittedWhenEmpty verifies that the tag field is
+// omitted from JSON output when it is the zero value, keeping payloads compact.
+func TestSendGenericRelease_TagOmittedWhenEmpty(t *testing.T) {
+	url, getBody := captureRequest(t)
+
+	payload := notify.WebhookPayload{
+		Source:  "forge",
+		Summary: "Release published: v1.0.0",
+		Event:   "release_published",
+		Version: "v1.0.0",
+		// Tag intentionally omitted
+	}
+	notify.SendGenericRelease(context.Background(), url, payload,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	raw := getBody()
+	if strings.Contains(string(raw), `"tag"`) {
+		t.Error("expected 'tag' to be omitted from JSON when empty")
+	}
+}
+
 // TestSendGenericRelease_EmptyURLIsNoop verifies that an empty URL does nothing.
 func TestSendGenericRelease_EmptyURLIsNoop(t *testing.T) {
 	// No panic / no crash — just a silent no-op.

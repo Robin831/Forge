@@ -284,7 +284,8 @@ type WebhookPayload struct {
 	Detail  string `json:"detail,omitempty"`  // Secondary description (changelog, commit message, etc.)
 	URL     string `json:"url,omitempty"`     // Relevant link (PR, release, issue, etc.)
 	Repo    string `json:"repo,omitempty"`    // Repository / anvil name
-	Version string `json:"version,omitempty"` // Version tag if applicable
+	Version string `json:"version,omitempty"` // Version string (may differ from Tag, e.g. "2.0.0" vs "v2.0.0")
+	Tag     string `json:"tag,omitempty"`     // Git tag if applicable (may include "v" prefix)
 	Bead    string `json:"bead,omitempty"`    // Bead ID if the event relates to a bead
 	PR      int    `json:"pr,omitempty"`      // PR number if applicable
 }

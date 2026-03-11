@@ -134,6 +134,7 @@ Example (from a release script):
 			URL:     releaseURL,
 			Repo:    repoName,
 			Version: version,
+			Tag:     tag,
 		}
 		for _, u := range allExtraURLs {
 			u = strings.TrimSpace(u)
