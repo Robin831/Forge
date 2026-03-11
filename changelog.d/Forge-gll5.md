@@ -1,0 +1,2 @@
+category: Fixed
+- **Prevent anvil main branch hijack by worker subprocesses** - Added safety checks in the poll loop, dispatch, and worktree creation to detect and recover when the main repo is accidentally checked out to a feature branch. The daemon now verifies each anvil is on main/master before polling and before dispatching each bead, auto-recovering when possible. Worktree creation refuses to proceed if the main repo is on the wrong branch. Smith prompt now explicitly instructs agents never to run git checkout or cd outside their assigned worktree. (Forge-gll5)

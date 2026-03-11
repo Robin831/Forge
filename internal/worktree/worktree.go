@@ -97,6 +97,14 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		_ = os.RemoveAll(worktreePath)
 	}
 
+	// Safety check: ensure the main repo is on main/master before creating a
+	// worktree. If a previous smith ran git checkout in the parent directory
+	// (corrupting the working environment), refuse immediately rather than
+	// silently proceeding on a wrong base.
+	if err := assertOnMainBranch(ctx, anvilPath); err != nil {
+		return nil, fmt.Errorf("anvil branch safety check: %w", err)
+	}
+
 	// Fetch origin
 	if err := gitCmd(ctx, anvilPath, "fetch", "origin"); err != nil {
 		return nil, fmt.Errorf("git fetch: %w", err)
@@ -296,6 +304,32 @@ func resolveBaseRef(ctx context.Context, repoPath string) (string, error) {
 // git rev-parse --is-inside-work-tree inside it.
 func isValidWorktree(ctx context.Context, dir string) bool {
 	return gitCmd(ctx, dir, "rev-parse", "--is-inside-work-tree") == nil
+}
+
+// assertOnMainBranch returns an error if the repository at repoPath is not
+// checked out to main, master, or a detached HEAD. This is a pre-flight guard
+// before creating a worktree — if a previous smith accidentally checked out a
+// feature branch in the main repo, this prevents further corruption.
+func assertOnMainBranch(ctx context.Context, repoPath string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "rev-parse", "--abbrev-ref", "HEAD"))
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		// Cannot determine current branch — allow creation to proceed; the
+		// subsequent git fetch will fail more informatively if something is broken.
+		return nil
+	}
+
+	currentBranch := strings.TrimSpace(string(out))
+	if currentBranch == "main" || currentBranch == "master" || currentBranch == "HEAD" {
+		return nil
+	}
+
+	return fmt.Errorf("main repo is checked out to %q instead of main/master — "+
+		"refusing to create worktree to prevent environment corruption", currentBranch)
 }
 
 // gitCmd runs a git command in the given directory with a timeout.
