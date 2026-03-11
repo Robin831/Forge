@@ -198,3 +198,57 @@ func TestVerifyAndRecoverMain_RecoveryFails(t *testing.T) {
 		t.Errorf("expected original branch=feature-only, got %q", branch)
 	}
 }
+
+func TestCheckAndRestoreMainBranch_AlreadyOnMain(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "main")
+
+	if err := CheckAndRestoreMainBranch(context.Background(), dir); err != nil {
+		t.Errorf("CheckAndRestoreMainBranch on main: unexpected error: %v", err)
+	}
+}
+
+func TestCheckAndRestoreMainBranch_AlreadyOnMaster(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "master")
+
+	if err := CheckAndRestoreMainBranch(context.Background(), dir); err != nil {
+		t.Errorf("CheckAndRestoreMainBranch on master: unexpected error: %v", err)
+	}
+}
+
+func TestCheckAndRestoreMainBranch_RestoresFromFeatureBranch(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "main")
+
+	// Simulate environment corruption: checkout a feature branch.
+	cmd := exec.Command("git", "checkout", "-b", "forge/Forge-x1bs")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout -b: %v\n%s", err, out)
+	}
+
+	if err := CheckAndRestoreMainBranch(context.Background(), dir); err != nil {
+		t.Fatalf("CheckAndRestoreMainBranch: unexpected error: %v", err)
+	}
+
+	// Verify we are back on main.
+	current, _ := CurrentBranch(context.Background(), dir)
+	if current != "main" {
+		t.Errorf("expected to be recovered to main, got %q", current)
+	}
+}
+
+func TestCheckAndRestoreMainBranch_ErrorWhenNoMainOrMaster(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "feature-only")
+	// There is no main/master branch, so restore should fail with an error.
+
+	err := CheckAndRestoreMainBranch(context.Background(), dir)
+	if err == nil {
+		t.Fatal("expected error when no main/master branch exists, got nil")
+	}
+	if !strings.Contains(err.Error(), "feature-only") {
+		t.Errorf("error %q does not mention the offending branch", err.Error())
+	}
+}

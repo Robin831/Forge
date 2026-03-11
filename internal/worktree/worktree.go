@@ -404,46 +404,14 @@ func gitCmd(ctx context.Context, dir string, args ...string) error {
 // or after a successful restore. Returns an error if the branch cannot be
 // determined or the restore fails.
 func CheckAndRestoreMainBranch(ctx context.Context, anvilPath string) error {
-	// Determine current branch name
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "-C", anvilPath, "rev-parse", "--abbrev-ref", "HEAD"))
-	out, err := cmd.Output()
+	recovered, originalBranch, err := VerifyAndRecoverMain(ctx, anvilPath)
 	if err != nil {
-		return fmt.Errorf("determining current branch of anvil %q: %w", anvilPath, err)
+		return fmt.Errorf("anvil root %q is on branch %q; auto-restore failed: %w",
+			anvilPath, originalBranch, err)
 	}
-	currentBranch := strings.TrimSpace(string(out))
-
-	// HEAD-detached state is unusual but not our problem to fix here
-	if currentBranch == "HEAD" {
-		return nil
-	}
-
-	// Determine the default branch by probing origin
-	defaultBranch := "main"
-	probeCtx, probeCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer probeCancel()
-	if err := gitCmd(probeCtx, anvilPath, "rev-parse", "--verify", "origin/main"); err != nil {
-		if err2 := gitCmd(probeCtx, anvilPath, "rev-parse", "--verify", "origin/master"); err2 != nil {
-			return fmt.Errorf("anvil %q: neither origin/main nor origin/master found", anvilPath)
-		}
-		defaultBranch = "master"
-	}
-
-	if currentBranch == defaultBranch {
-		return nil // All good
-	}
-
-	// Anvil root is on wrong branch — attempt to restore
-	restoreCtx, restoreCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer restoreCancel()
-	restoreCmd := executil.HideWindow(exec.CommandContext(restoreCtx, "git", "-C", anvilPath, "checkout", defaultBranch))
-	restoreCmd.Stdout = os.Stderr
-	restoreCmd.Stderr = os.Stderr
-	if err := restoreCmd.Run(); err != nil {
-		return fmt.Errorf("anvil root %q is on branch %q instead of %q; auto-restore failed: %w",
-			anvilPath, currentBranch, defaultBranch, err)
+	if recovered {
+		fmt.Fprintf(os.Stderr, "Warning: anvil root %q was on branch %q, auto-restored to main/master\n",
+			anvilPath, originalBranch)
 	}
 	return nil
 }
