@@ -334,6 +334,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Log viewer overlay intercepts all keys
 		if m.showLogViewer {
 			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
 			case "q", "esc":
 				m.showLogViewer = false
 			default:
@@ -543,8 +545,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
-		// Forward mouse events to log viewer when it's open
+		// Dismiss log viewer on left or right click; forward wheel events to viewport
 		if m.showLogViewer {
+			if msg.Action == tea.MouseActionPress &&
+				(msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight) {
+				m.showLogViewer = false
+				return m, nil
+			}
 			var cmd tea.Cmd
 			m.logViewerVP, cmd = m.logViewerVP.Update(msg)
 			return m, cmd
@@ -552,8 +559,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Dismiss overlays on left or right mouse button press
 		if msg.Action == tea.MouseActionPress &&
 			(msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight) {
-			if m.showLogViewer || m.showActionMenu || m.showQueueActionMenu || m.showMergeMenu {
-				m.showLogViewer = false
+			if m.showActionMenu || m.showQueueActionMenu || m.showMergeMenu {
 				m.showActionMenu = false
 				m.showQueueActionMenu = false
 				m.showMergeMenu = false
