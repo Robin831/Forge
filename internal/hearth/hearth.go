@@ -835,7 +835,7 @@ func (m *Model) computeHeaderH() int {
 // It uses the default hint text (status messages are at most 1 line).
 // It is called by panelAtPos() to mirror the layout used by View().
 func (m *Model) computeFooterH() int {
-	footerText := "Tab: switch panel \u2022 j/k/wheel: scroll \u2022 K: kill worker \u2022 Enter: actions/merge \u2022 l: label bead \u2022 f: follow \u2022 q: quit"
+	footerText := "Tab: switch panel \u2022 j/k/wheel: scroll \u2022 K: kill worker \u2022 Enter: actions/merge \u2022 l: label bead \u2022 f: follow \u2022 Shift+drag: copy \u2022 q: quit"
 	return lipgloss.Height(footerStyle.Width(m.width).Render(footerText))
 }
 
@@ -859,7 +859,7 @@ func (m *Model) View() string {
 	headerH := lipgloss.Height(header)
 
 	// Footer with status message or default hints
-	footerText := "Tab: switch panel • j/k/wheel: scroll • K: kill worker • Enter: actions/merge • l: label bead • f: follow • q: quit"
+	footerText := "Tab: switch panel • j/k/wheel: scroll • K: kill worker • Enter: actions/merge • l: label bead • f: follow • Shift+drag: copy • q: quit"
 	statusDuration := 5 * time.Second
 	if m.statusMsgIsError {
 		statusDuration = 10 * time.Second
