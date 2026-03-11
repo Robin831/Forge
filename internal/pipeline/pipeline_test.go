@@ -836,3 +836,32 @@ func TestSchematic_Quota_PersistedToStateDB(t *testing.T) {
 	assert.Equal(t, 100, got.RequestsLimit)
 	assert.Equal(t, 42, got.RequestsRemaining)
 }
+
+// TestMaxIterations_StopsAfterConfiguredCap verifies that when Params.MaxIterations
+// is set to a small value, the pipeline stops after that many Smith-Warden cycles
+// even if Warden keeps requesting changes.
+func TestMaxIterations_StopsAfterConfiguredCap(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	smithCallCount := 0
+	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		smithCallCount++
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
+	}
+	params.WardenReviewer = func(_ context.Context, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{
+			Verdict: warden.VerdictRequestChanges,
+			Summary: "Still has issues",
+		}, nil
+	}
+
+	params.MaxIterations = 1
+
+	outcome := Run(context.Background(), params)
+
+	assert.Equal(t, 1, smithCallCount, "Smith should only run once when MaxIterations=1")
+	assert.False(t, outcome.Success)
+	assert.Equal(t, warden.VerdictRequestChanges, outcome.Verdict)
+	assert.NotNil(t, outcome.Error)
+}

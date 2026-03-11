@@ -131,8 +131,8 @@ type Params struct {
 	WorkerID string
 
 	// MaxIterations is the maximum number of Smith-Warden cycles before the
-	// pipeline gives up. When zero, MaxIterations (the package-level constant,
-	// default 5) is used. This value should be populated from
+	// pipeline gives up. When zero or negative, MaxIterations (the package-level
+	// constant, default 5) is used. This value should be populated from
 	// config.Settings.MaxPipelineIterations.
 	MaxIterations int
 }
