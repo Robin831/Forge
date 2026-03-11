@@ -1483,6 +1483,60 @@ func TestRenderMergeMenuContainsBeadIDAndActions(t *testing.T) {
 	}
 }
 
+func TestRenderMergeMenuShowsPRTitle(t *testing.T) {
+	item := ReadyToMergeItem{
+		PRID: 1, PRNumber: 55, BeadID: "bd-30", Anvil: "test",
+		Title: "fix: resolve flaky timeout in auth middleware",
+	}
+	m := Model{
+		mergeTarget:  &item,
+		mergeMenuIdx: 0,
+		width:        80,
+		height:       24,
+	}
+	rendered := m.renderMergeMenu()
+	if !strings.Contains(rendered, "fix: resolve flaky timeout in auth middleware") {
+		t.Errorf("expected PR title in renderMergeMenu output:\n%s", rendered)
+	}
+}
+
+func TestRenderMergeMenuLongTitleTruncated(t *testing.T) {
+	// A very long title should be truncated to 2 lines with ellipsis.
+	longTitle := "fix: this is a very long pull request title that definitely exceeds the popup width and should be word-wrapped and then truncated with an ellipsis on the second line"
+	item := ReadyToMergeItem{
+		PRID: 1, PRNumber: 55, BeadID: "bd-30", Anvil: "test",
+		Title: longTitle,
+	}
+	m := Model{
+		mergeTarget:  &item,
+		mergeMenuIdx: 0,
+		width:        80,
+		height:       24,
+	}
+	rendered := m.renderMergeMenu()
+	if !strings.Contains(rendered, "...") {
+		t.Errorf("expected ellipsis for long title in renderMergeMenu output:\n%s", rendered)
+	}
+}
+
+func TestRenderMergeMenuNarrowContentWidthNoSlicePanic(t *testing.T) {
+	// With an unusually large border/padding, contentWidth can be negative.
+	// renderMergeMenu must not panic in this case.
+	longTitle := "a b c d e f g h i j k l m n o p q r s t u v w x y z alpha beta gamma delta epsilon"
+	item := ReadyToMergeItem{
+		PRID: 1, PRNumber: 1, BeadID: "bd-1", Anvil: "test",
+		Title: longTitle,
+	}
+	m := Model{
+		mergeTarget:  &item,
+		mergeMenuIdx: 0,
+		width:        1,
+		height:       5,
+	}
+	// Should not panic regardless of contentWidth value.
+	_ = m.renderMergeMenu()
+}
+
 func TestReadyToMergeErrorMsgAppendsEvent(t *testing.T) {
 	m := Model{}
 	_, _ = m.Update(ReadyToMergeErrorMsg{Err: errors.New("db connection lost")})

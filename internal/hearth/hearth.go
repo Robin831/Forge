@@ -1736,8 +1736,12 @@ func (m *Model) renderMergeMenu() string {
 			// Show first line as-is, truncate second line and append ellipsis.
 			lines = append(lines, dimStyle.Render(wrapped[0]))
 			second := []rune(wrapped[1])
-			if len(second) > contentWidth-3 {
-				second = second[:contentWidth-3]
+			maxSecond := contentWidth - 3
+			if maxSecond < 0 {
+				maxSecond = 0
+			}
+			if len(second) > maxSecond {
+				second = second[:maxSecond]
 			}
 			lines = append(lines, dimStyle.Render(string(second)+"..."))
 		}
