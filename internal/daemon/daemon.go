@@ -153,6 +153,10 @@ type Daemon struct {
 	// Cost limit: tracks which date we last logged the cost_limit_hit event
 	// to avoid spamming the event log every poll cycle.
 	costLimitLoggedDate atomic.Value // stores string (YYYY-MM-DD)
+
+	// labelAdder adds a label to a bead via the bd CLI. Defaults to the real
+	// bd-update implementation; may be replaced in tests to avoid exec.Command.
+	labelAdder func(anvilPath, beadID, tag string) error
 }
 
 // New creates a new daemon instance.
@@ -233,6 +237,17 @@ func New(cfg *config.Config) (*Daemon, error) {
 	// makes the intent explicit and avoids any future ambiguity).
 	d.costLimitLoggedDate.Store("")
 	d.cfg.Store(cfg)
+	d.labelAdder = func(anvilPath, beadID, tag string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--add-label", tag))
+		cmd.Dir = anvilPath
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, out)
+		}
+		return nil
+	}
 	// Default runCtx to context.Background() so IPC handlers that access it
 	// before Run() wires up the real context (e.g. early tag_bead commands)
 	// never receive a nil context.
@@ -2356,12 +2371,9 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 			}
 			if parentHasTag {
 				for _, sub := range sr.SubBeads {
-					tagCtx, tagCancel := context.WithTimeout(d.runCtx, 30*time.Second)
-					tagCmd := executil.HideWindow(exec.CommandContext(tagCtx, "bd", "update", sub.ID, "--add-label", anvilCfg.AutoDispatchTag))
-					tagCmd.Dir = anvilCfg.Path
-					if out, err := tagCmd.CombinedOutput(); err != nil {
+					if err := d.labelAdder(anvilCfg.Path, sub.ID, anvilCfg.AutoDispatchTag); err != nil {
 						d.logger.Warn("failed to copy auto_dispatch tag to child bead",
-							"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag, "error", err, "output", string(out))
+							"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag, "error", err)
 					} else {
 						d.logger.Info("copied auto_dispatch tag to child bead",
 							"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag)
@@ -2369,7 +2381,6 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 							fmt.Sprintf("Label %q propagated to child bead %s from decomposed parent %s", anvilCfg.AutoDispatchTag, sub.ID, beadID),
 							sub.ID, anvil)
 					}
-					tagCancel()
 				}
 			}
 		}
