@@ -1275,9 +1275,9 @@ func (m *Model) renderLogViewer() string {
 
 // Precompute section header strings once to avoid per-render allocations.
 var (
-	sectionHeaderReady      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("82")).Render("── Ready ──")
-	sectionHeaderUnlabeled  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("226")).Render("── Unlabeled ──")
-	sectionHeaderInProgress = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75")).Render("── In Progress ──")
+	sectionHeaderReady      = lipgloss.NewStyle().Bold(true).Foreground(colorSuccess).Render("── Ready ──")
+	sectionHeaderUnlabeled  = lipgloss.NewStyle().Bold(true).Foreground(colorWarning).Render("── Unlabeled ──")
+	sectionHeaderInProgress = lipgloss.NewStyle().Bold(true).Foreground(colorInfo).Render("── In Progress ──")
 )
 
 // sectionHeaders maps section identifiers to their precomputed styled header strings.
@@ -1491,17 +1491,17 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 func cruciblePhaseStyle(phase, frame string) string {
 	switch phase {
 	case "dispatching":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render(frame + " DISPATCH")
+		return lipgloss.NewStyle().Foreground(colorBlue).Render(frame + " DISPATCH")
 	case "final_pr":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(frame + " FINAL PR")
+		return lipgloss.NewStyle().Foreground(colorBlueCyan).Render(frame + " FINAL PR")
 	case "complete":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("✓ COMPLETE")
+		return lipgloss.NewStyle().Foreground(colorGreen).Render("✓ COMPLETE")
 	case "paused":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("⏸ PAUSED")
+		return lipgloss.NewStyle().Foreground(colorDanger).Render("⏸ PAUSED")
 	case "started":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render(frame + " STARTED")
+		return lipgloss.NewStyle().Foreground(colorWarning).Render(frame + " STARTED")
 	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("? " + phase)
+		return lipgloss.NewStyle().Foreground(colorMuted).Render("? " + phase)
 	}
 }
 
@@ -1512,7 +1512,7 @@ func (m *Model) renderCrucibles(width, height int) string {
 		style = focusedPanelStyle.Width(width)
 	}
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("208"))
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	title := titleStyle.Render(fmt.Sprintf("Crucibles (%d)", len(m.crucibles)))
 
 	var lines []string
@@ -1608,19 +1608,19 @@ func (m *Model) renderStackedColumn(width, topHeight, bottomHeight int,
 func attentionReasonIcon(cat AttentionReason) string {
 	switch cat {
 	case AttentionDispatchExhausted:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("⊘ DISPATCH")
+		return lipgloss.NewStyle().Foreground(colorDanger).Render("⊘ DISPATCH")
 	case AttentionCIFixExhausted:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("🔧 CI FIX")
+		return lipgloss.NewStyle().Foreground(colorAccent).Render("🔧 CI FIX")
 	case AttentionReviewFixExhausted:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render("📝 REVIEW")
+		return lipgloss.NewStyle().Foreground(colorPink).Render("📝 REVIEW")
 	case AttentionRebaseExhausted:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render("↻ REBASE")
+		return lipgloss.NewStyle().Foreground(colorWarning).Render("↻ REBASE")
 	case AttentionClarification:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render("? CLARIFY")
+		return lipgloss.NewStyle().Foreground(colorInfo).Render("? CLARIFY")
 	case AttentionStalled:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("◼ STALLED")
+		return lipgloss.NewStyle().Foreground(colorDanger).Render("◼ STALLED")
 	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("⚠ UNKNOWN")
+		return lipgloss.NewStyle().Foreground(colorMuted).Render("⚠ UNKNOWN")
 	}
 }
 
@@ -2282,104 +2282,106 @@ type KillWorkerMsg struct {
 var (
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("208")).
+			Foreground(colorAccent).
 			Align(lipgloss.Center).
 			Padding(0, 1)
 
 	footerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240")).
+			Foreground(colorMuted).
 			Align(lipgloss.Center).
 			Padding(0, 1)
 
 	panelStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("240")).
+			BorderForeground(colorMuted).
 			Padding(0, 1)
 
 	focusedPanelStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("208")).
+				BorderForeground(colorAccent).
 				Padding(0, 1)
 
 	panelTitleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("255")).
+			Foreground(colorFg).
 			MarginBottom(1)
 
 	selectedStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("208"))
+			Foreground(colorAccent)
 
 	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
+			Foreground(colorMuted)
 
 	activityPanelTitleStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("245")).
+				Foreground(colorSubtle).
 				MarginBottom(1)
 
 	activityGroupHeaderStyle = lipgloss.NewStyle().
-					Foreground(lipgloss.Color("245")).
+					Foreground(colorSubtle).
 					Bold(true)
 
 	needsAttentionTitleStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("196")).
+				Foreground(colorDanger).
 				MarginBottom(1)
 
 	readyToMergeTitleStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("82")).
+				Foreground(colorSuccess).
 				MarginBottom(1)
 
 	actionMenuStyle = lipgloss.NewStyle().
 			Border(lipgloss.DoubleBorder()).
-			BorderForeground(lipgloss.Color("208")).
+			BorderForeground(colorAccent).
 			Padding(1, 2)
 
 	actionMenuTitleStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("208"))
+				Foreground(colorAccent)
 
 	actionMenuSelectedStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("255"))
+				Foreground(colorFg)
 
 	logViewerStyle = lipgloss.NewStyle().
 			Border(lipgloss.DoubleBorder()).
-			BorderForeground(lipgloss.Color("75")).
+			BorderForeground(colorInfo).
 			Padding(1, 2)
 
 	statusMsgStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("82")).
+			Foreground(colorSuccess).
 			Bold(true)
 
 	statusErrorStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("196")).
+				Foreground(colorDanger).
 				Bold(true)
 
 	daemonConnectedStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("82"))
+				Foreground(colorSuccess)
 
 	daemonDisconnectedStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("196")).
+				Foreground(colorDanger).
 				Bold(true)
 )
 
 // priorityStyle returns a colored priority indicator.
 func priorityStyle(p int) string {
-	colors := map[int]string{
-		0: "196", // red (critical)
-		1: "208", // orange (high)
-		2: "226", // yellow (medium)
-		3: "75",  // blue (low)
-		4: "240", // gray (backlog)
+	var c lipgloss.TerminalColor
+	switch p {
+	case 0:
+		c = colorDanger // red (critical)
+	case 1:
+		c = colorAccent // orange (high)
+	case 2:
+		c = colorWarning // yellow (medium)
+	case 3:
+		c = colorInfo // blue (low)
+	default:
+		c = colorMuted // gray (backlog)
 	}
-	color, ok := colors[p]
-	if !ok {
-		color = "240"
-	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(fmt.Sprintf("P%d", p))
+	return lipgloss.NewStyle().Foreground(c).Render(fmt.Sprintf("P%d", p))
 }
 
 // workerStatusStyle returns a colored status indicator.
@@ -2387,17 +2389,17 @@ func priorityStyle(p int) string {
 func workerStatusStyle(status, frame string) string {
 	switch status {
 	case "running":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Render(frame)
+		return lipgloss.NewStyle().Foreground(colorSuccess).Render(frame)
 	case "reviewing":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render(frame)
+		return lipgloss.NewStyle().Foreground(colorWarning).Render(frame)
 	case "monitoring":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("○")
+		return lipgloss.NewStyle().Foreground(colorBlue).Render("○")
 	case "done":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Render("✓")
+		return lipgloss.NewStyle().Foreground(colorSuccess).Render("✓")
 	case "failed":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("✗")
+		return lipgloss.NewStyle().Foreground(colorDanger).Render("✗")
 	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("○")
+		return lipgloss.NewStyle().Foreground(colorMuted).Render("○")
 	}
 }
 
@@ -2405,19 +2407,19 @@ func workerStatusStyle(status, frame string) string {
 func workerTypeIcon(t string) string {
 	switch t {
 	case "smith":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("⚒")
+		return lipgloss.NewStyle().Foreground(colorAccent).Render("⚒")
 	case "warden":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render("⛨")
+		return lipgloss.NewStyle().Foreground(colorInfo).Render("⛨")
 	case "temper":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render("🔥")
+		return lipgloss.NewStyle().Foreground(colorWarning).Render("🔥")
 	case "cifix":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("🔧")
+		return lipgloss.NewStyle().Foreground(colorDanger).Render("🔧")
 	case "reviewfix":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render("📝")
+		return lipgloss.NewStyle().Foreground(colorPink).Render("📝")
 	case "rebase":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("🔀")
+		return lipgloss.NewStyle().Foreground(colorAccent).Render("🔀")
 	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("?")
+		return lipgloss.NewStyle().Foreground(colorMuted).Render("?")
 	}
 }
 
@@ -2426,25 +2428,25 @@ func workerTypeIcon(t string) string {
 func phaseTag(phase string) string {
 	switch phase {
 	case "smith":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render("[smith]")
+		return lipgloss.NewStyle().Foreground(colorWarning).Render("[smith]")
 	case "temper":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Render("[temper]")
+		return lipgloss.NewStyle().Foreground(colorCyan).Render("[temper]")
 	case "warden":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("201")).Render("[warden]")
+		return lipgloss.NewStyle().Foreground(colorMagenta).Render("[warden]")
 	case "bellows":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("[bellows]")
+		return lipgloss.NewStyle().Foreground(colorBlue).Render("[bellows]")
 	case "cifix":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("[cifix]")
+		return lipgloss.NewStyle().Foreground(colorDanger).Render("[cifix]")
 	case "reviewfix":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render("[reviewfix]")
+		return lipgloss.NewStyle().Foreground(colorPink).Render("[reviewfix]")
 	case "rebase":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("[rebase]")
+		return lipgloss.NewStyle().Foreground(colorAccent).Render("[rebase]")
 	case "schematic":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("117")).Render("[schematic]")
+		return lipgloss.NewStyle().Foreground(colorSkyBlue).Render("[schematic]")
 	case "crucible":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("[crucible]")
+		return lipgloss.NewStyle().Foreground(colorOrangeAlt).Render("[crucible]")
 	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("[idle]")
+		return lipgloss.NewStyle().Foreground(colorMuted).Render("[idle]")
 	}
 }
 
@@ -2452,11 +2454,11 @@ func phaseTag(phase string) string {
 func eventTypeStyle(t string) string {
 	switch {
 	case strings.Contains(t, "pass") || strings.Contains(t, "done") || strings.Contains(t, "merged"):
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Render(t)
+		return lipgloss.NewStyle().Foreground(colorSuccess).Render(t)
 	case strings.Contains(t, "fail") || strings.Contains(t, "reject") || strings.Contains(t, "error"):
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(t)
+		return lipgloss.NewStyle().Foreground(colorDanger).Render(t)
 	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render(t)
+		return lipgloss.NewStyle().Foreground(colorInfo).Render(t)
 	}
 }
 
