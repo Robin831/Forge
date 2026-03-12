@@ -363,7 +363,7 @@ func Run(ctx context.Context, p Params) *Result {
 			}
 		}
 
-		// Build change summary from warden review if available.
+		// Build change summary preferring the changelog fragment, falling back to Warden review.
 		var childChangeSummary string
 		if childResult.ChangelogSummary != "" {
 			childChangeSummary = childResult.ChangelogSummary

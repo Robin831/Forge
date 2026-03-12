@@ -617,14 +617,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
 			_ = p.DB.LogEvent(state.EventWardenPass, "Warden failed, defaulting to approve", p.Bead.ID, p.AnvilName)
 
-			// Try to extract changelog summary from the fragment created by Smith.
-			if frag, err := changelog.ParseFragment(filepath.Join(wt.Path, "changelog.d", p.Bead.ID+".md")); err == nil {
-				outcome.ChangelogSummary = strings.Join(frag.Bullets, "\n")
-			} else {
-				if frag, err := changelog.ParseFragment(filepath.Join(wt.Path, "changelog.d", p.Bead.ID+".en.md")); err == nil {
-					outcome.ChangelogSummary = strings.Join(frag.Bullets, "\n")
-				}
-			}
+			outcome.ChangelogSummary = extractChangelogSummary(wt.Path, p.Bead.ID)
 
 			outcome.Duration = time.Since(start)
 			return outcome
@@ -651,16 +644,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerPhase(workerID, "bellows")
 			_ = p.DB.LogEvent(state.EventWardenPass, reviewResult.Summary, p.Bead.ID, p.AnvilName)
 
-			// Try to extract changelog summary from the fragment created by Smith.
-			// This provides a high-quality description of the changes for the PR.
-			if frag, err := changelog.ParseFragment(filepath.Join(wt.Path, "changelog.d", p.Bead.ID+".md")); err == nil {
-				outcome.ChangelogSummary = strings.Join(frag.Bullets, "\n")
-			} else {
-				// Fallback to legacy .en.md extension if enabled or present.
-				if frag, err := changelog.ParseFragment(filepath.Join(wt.Path, "changelog.d", p.Bead.ID+".en.md")); err == nil {
-					outcome.ChangelogSummary = strings.Join(frag.Bullets, "\n")
-				}
-			}
+			outcome.ChangelogSummary = extractChangelogSummary(wt.Path, p.Bead.ID)
 
 			// Ensure the branch is pushed to the remote before the worktree
 			// is cleaned up. Smith is instructed to push, but as a safety net
@@ -952,4 +936,18 @@ func copyFile(src, dst string) (err error) {
 		return err
 	}
 	return nil
+}
+
+// extractChangelogSummary attempts to parse a Smith changelog fragment from the worktree
+// and returns the bullet points as a single string. It falls back to .en.md if necessary.
+func extractChangelogSummary(wtPath, beadID string) string {
+	// Try the primary fragment.
+	if frag, err := changelog.ParseFragment(filepath.Join(wtPath, "changelog.d", beadID+".md")); err == nil {
+		return strings.Join(frag.Bullets, "\n")
+	}
+	// Fallback to the legacy .en.md extension if the primary fragment is missing or invalid.
+	if frag, err := changelog.ParseFragment(filepath.Join(wtPath, "changelog.d", beadID+".en.md")); err == nil {
+		return strings.Join(frag.Bullets, "\n")
+	}
+	return ""
 }
