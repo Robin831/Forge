@@ -1122,11 +1122,9 @@ func (m *Model) getTopPanelWidths() (queueWidth, workerWidth, activityWidth int)
 }
 
 func (m *Model) getVerticalSplit(headerH, footerH int) (topHeight, bottomHeight int) {
-	// contentHeight is the total vertical space available for the top panels and
-	// the events panel, including their borders. We subtract the global
-	// header and footer rows, AND the panel borders(4) here to ensure
-	// stacked panels (2 borders each) fit.
-	contentHeight := m.height - headerH - footerH - 4
+	// contentHeight is the total vertical space available for the panels.
+	// We subtract the global header and footer rows.
+	contentHeight := m.height - headerH - footerH
 	if contentHeight < 0 {
 		contentHeight = 0
 	}
@@ -1910,7 +1908,7 @@ func (m *Model) renderQueue(width, height int) string {
 			}
 		}
 
-		maxVisible := height - 3
+		maxVisible := height - 4
 		if maxVisible < 1 {
 			maxVisible = 1
 		}
@@ -1946,24 +1944,14 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 
 	// Count panels to render: Queue + ReadyToMerge + NeedsAttention + optionally Crucibles.
 	hasCrucibles := len(m.crucibles) > 0
-	panelN := 3
-	if hasCrucibles {
-		panelN = 4
-	}
-
-	// Each sub-panel adds 2 border lines. Deduct extra borders beyond one panel.
-	innerHeight := height - (panelN-1)*2
-	if innerHeight < 0 {
-		innerHeight = 0
-	}
 
 	if hasCrucibles {
 		// Queue 40%, Crucible 20%, ReadyToMerge 15%, NeedsAttention 25%.
-		queueHeight := innerHeight * 4 / 10
-		crucibleHeight := innerHeight * 2 / 10
-		mergeHeight := innerHeight * 15 / 100
-		if innerHeight < 12 {
-			queueHeight = innerHeight
+		queueHeight := height * 4 / 10
+		crucibleHeight := height * 2 / 10
+		mergeHeight := height * 15 / 100
+		if height < 12 {
+			queueHeight = height
 			crucibleHeight = 0
 			mergeHeight = 0
 		} else {
@@ -1971,7 +1959,7 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 			crucibleHeight = max(crucibleHeight, 4)
 			mergeHeight = max(mergeHeight, 3)
 		}
-		attentionHeight := innerHeight - queueHeight - crucibleHeight - mergeHeight
+		attentionHeight := height - queueHeight - crucibleHeight - mergeHeight
 
 		top := m.renderQueue(width, queueHeight)
 		cruc := m.renderCrucibles(width, crucibleHeight)
@@ -1981,20 +1969,16 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	}
 
 	// No active crucibles — original 3-panel layout.
-	innerHeight = height - 4
-	if innerHeight < 0 {
-		innerHeight = 0
-	}
-	queueHeight := innerHeight * 5 / 10
-	mergeHeight := innerHeight * 2 / 10
-	if innerHeight < 8 {
-		queueHeight = innerHeight
+	queueHeight := height * 5 / 10
+	mergeHeight := height * 2 / 10
+	if height < 8 {
+		queueHeight = height
 		mergeHeight = 0
 	} else {
 		queueHeight = max(queueHeight, 5)
 		mergeHeight = max(mergeHeight, 3)
 	}
-	attentionHeight := innerHeight - queueHeight - mergeHeight
+	attentionHeight := height - queueHeight - mergeHeight
 
 	top := m.renderQueue(width, queueHeight)
 	middle := m.renderReadyToMerge(width, mergeHeight)
@@ -2051,7 +2035,7 @@ func (m *Model) renderCrucibles(width, height int) string {
 		lines = append(lines, dimStyle.Render("None"))
 	} else {
 		// Each crucible uses 3 display lines: phase+parent, progress, current child.
-		maxLines := height - 3
+		maxLines := height - 4
 		linesPerItem := 3
 		maxItems := maxLines / linesPerItem
 		if maxItems < 1 {
@@ -2126,19 +2110,12 @@ func (m *Model) renderRightColumn(width, topHeight, bottomHeight int) string {
 }
 
 // renderStackedColumn renders two sub-panels stacked vertically.
-// Each lipgloss panel adds 2 border lines (top + bottom) to its height parameter.
-// Two stacked panels therefore produce 4 border lines total, whereas the single
-// center column produces only 2. The bottom panel's height is reduced by 2 so
-// that topHeight+bottomHeight+2 (single-panel rendered lines) equals
-// (topHeight+2)+(bottomHeight-2+2) = topHeight+bottomHeight+2 for the stacked column.
+// Each lipgloss panel includes its borders in its height parameter, so the
+// two panels together occupy exactly topHeight + bottomHeight lines.
 func (m *Model) renderStackedColumn(width, topHeight, bottomHeight int,
 	renderTop, renderBottom func(int, int) string) string {
-	innerBottom := bottomHeight - 2
-	if innerBottom < 0 {
-		innerBottom = 0
-	}
 	top := renderTop(width, topHeight)
-	bottom := renderBottom(width, innerBottom)
+	bottom := renderBottom(width, bottomHeight)
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
@@ -2180,7 +2157,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 		lines = append(lines, dimStyle.Render("None"))
 	} else {
 		// Each item uses 2 lines (bead + reason), so halve the visible slot count.
-		maxLines := height - 3
+		maxLines := height - 4
 		maxItems := maxLines / 2
 		if maxItems < 1 {
 			maxItems = 1
@@ -2240,8 +2217,8 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 
 	if len(m.readyToMerge) == 0 {
 		lines = append(lines, dimStyle.Render("None"))
-	} else if height > 3 {
-		maxItems := height - 3
+	} else if height > 4 {
+		maxItems := height - 4
 		if maxItems < 1 {
 			maxItems = 1
 		}
@@ -2431,7 +2408,7 @@ func (m *Model) renderCenterColumn(width, topHeight, bottomHeight int) string {
 	workerHeight := fullHeight - usagePanelHeight
 
 	top := m.renderWorkerList(width, workerHeight)
-	bottom := m.renderUsagePanel(width, usagePanelHeight-2) // -2 for inner content (border adds 2)
+	bottom := m.renderUsagePanel(width, usagePanelHeight)
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
@@ -2583,7 +2560,7 @@ func (m *Model) renderEvents(width, height int) string {
 	var lines []string
 	lines = append(lines, title)
 
-	contentHeight := height - 3 // title + border rows
+	contentHeight := height - 4 // title + border rows
 
 	if len(m.events) == 0 {
 		lines = append(lines, dimStyle.Render("No events"))
@@ -3033,8 +3010,8 @@ type visibleRange struct {
 }
 
 func visibleItems(scroll, total, viewHeight int) visibleRange {
-	if viewHeight <= 0 {
-		viewHeight = 10
+	if viewHeight < 1 {
+		viewHeight = 1
 	}
 	start := scroll
 	end := start + viewHeight
