@@ -234,23 +234,21 @@ func TestWardenApprove_Success(t *testing.T) {
 	db := newTestDB(t)
 	params, _, _ := baseParams(t, db)
 
-	var wtPath string
 	params.WorktreeCreator = func(_ context.Context, anvilPath, beadID string) (*worktree.Worktree, error) {
-		wtPath = t.TempDir()
 		return &worktree.Worktree{
 			BeadID:    beadID,
 			AnvilPath: anvilPath,
-			Path:      wtPath,
+			Path:      t.TempDir(),
 			Branch:    "forge/" + beadID,
 		}, nil
 	}
 
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, wtPath, beadID, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		// Create a fake changelog fragment in the worktree.
 		changelogDir := filepath.Join(wtPath, "changelog.d")
 		require.NoError(t, os.MkdirAll(changelogDir, 0o755))
 		content := "category: Added\n- **Feature X** - Detailed description of feature X.\n- **Feature Y** - Detailed description of feature Y.\n"
-		require.NoError(t, os.WriteFile(filepath.Join(changelogDir, "test-bead.md"), []byte(content), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(changelogDir, beadID+".md"), []byte(content), 0o644))
 
 		return &warden.ReviewResult{
 			Verdict: warden.VerdictApprove,
