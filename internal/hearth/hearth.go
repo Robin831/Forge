@@ -2340,8 +2340,10 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 		panelN = 4
 	}
 
-	// Each sub-panel adds 2 border lines. Deduct extra borders beyond one panel.
-	innerHeight := height - (panelN-1)*2
+	// Each sub-panel adds 2 border lines. Deduct borders to fit in the same
+	// contentHeight+4 space as the 2-panel columns.
+	// Sum(hi + 2) = height + 4  => Sum(hi) = height + 4 - panelN*2.
+	innerHeight := height + 4 - panelN*2
 	if innerHeight < 0 {
 		innerHeight = 0
 	}
@@ -2673,7 +2675,12 @@ func (m *Model) renderWorkerList(width, height int) string {
 	title := panelTitleStyle.Render(fmt.Sprintf("Workers (%d)", len(m.workers)))
 
 	m.workerTable.SetWidth(width - 2)
-	m.workerTable.SetHeight(height - 4)
+	// title(2) + table header(2) + buffer(2) = 6
+	tableHeight := height - 6
+	if tableHeight < 1 {
+		tableHeight = 1
+	}
+	m.workerTable.SetHeight(tableHeight)
 
 	// Dynamically adjust column widths to fit the panel
 	cols := m.workerTable.Columns()
@@ -2683,7 +2690,7 @@ func (m *Model) renderWorkerList(width, height int) string {
 		if avail < 10 {
 			avail = 10
 		}
-		
+
 		// Ratios: Status 5%, Type 10%, Bead 20%, Task 35%, Anvil 20%, Time 10%
 		cols[0].Width = max(1, avail*5/100)
 		cols[1].Width = max(4, avail*10/100)
@@ -2694,7 +2701,7 @@ func (m *Model) renderWorkerList(width, height int) string {
 		m.workerTable.SetColumns(cols)
 	}
 
-	content := title + "\n" + m.workerTable.View()
+	content := title + m.workerTable.View()
 	return style.Height(height).Render(content)
 }
 
@@ -2707,7 +2714,9 @@ func (m *Model) renderCenterColumn(width, topHeight, bottomHeight int) string {
 	usagePanelHeight := 10
 	if fullHeight < 20 {
 		// Terminal too small for a split — render workers only.
-		return m.renderWorkerList(width, fullHeight)
+		// One panel adds 2 borders; to match the 4 borders of other columns,
+		// we give it 2 extra lines of inner height.
+		return m.renderWorkerList(width, fullHeight+2)
 	}
 
 	workerHeight := fullHeight - usagePanelHeight
