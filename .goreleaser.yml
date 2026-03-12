@@ -38,6 +38,12 @@ archives:
       - goos: linux
         format: tar.gz
 
+sboms:
+  - id: archive
+    artifacts: archive
+  - id: docker
+    artifacts: docker
+
 checksum:
   name_template: "checksums.txt"
 
