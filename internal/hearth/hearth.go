@@ -1126,23 +1126,19 @@ func (m *Model) getVerticalSplit(headerH, footerH int) (topHeight, bottomHeight 
 	// We subtract the global header and footer rows.
 	contentHeight := m.height - headerH - footerH
 
-	// Subtract 4 lines for the borders of the two stacked panels (Right and Center columns).
-	// Each panel has a top and bottom border (lipgloss RoundedBorder = 2 rows total).
-	contentHeight -= 4
-
 	if contentHeight < 0 {
 		contentHeight = 0
 	}
 	// Give top panels 60%, bottom panels 40% (same split for left and right columns).
 	topHeight = contentHeight * 6 / 10
 	if contentHeight >= 6 {
-		topHeight = max(topHeight, 2)
+		topHeight = max(topHeight, 4) // minimum 4 lines: 2 for borders, 2 for title
 	}
 	bottomHeight = contentHeight - topHeight
-	// Enforce a minimum bottom panel height of 1 line so bordered panels
-	// remain renderable at small terminal sizes.
-	const minBottomHeight = 1
-	if bottomHeight < minBottomHeight && contentHeight >= 4 {
+	// Enforce a minimum bottom panel height of 4 lines so bordered panels
+	// remain renderable at small terminal sizes (2 for borders, 2 for title).
+	const minBottomHeight = 4
+	if bottomHeight < minBottomHeight && contentHeight >= 8 {
 		bottomHeight = minBottomHeight
 		topHeight = contentHeight - bottomHeight
 	}
@@ -1913,7 +1909,8 @@ func (m *Model) renderQueue(width, height int) string {
 			}
 		}
 
-		maxVisible := height - 2
+		// height is total height (including borders). border=2, title+margin=2 lines.
+		maxVisible := height - 4
 		if maxVisible < 1 {
 			maxVisible = 1
 		}
@@ -1942,8 +1939,7 @@ func (m *Model) renderQueue(width, height int) string {
 }
 
 // renderLeftColumn splits the left column into Queue (top), optionally Crucibles
-// (when active), Ready to Merge, and Needs Attention (bottom). When crucibles are
-// active, it renders 4 stacked panels; otherwise 3.
+// (when active), Ready to Merge, and Needs Attention (bottom).
 func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	height := topHeight + bottomHeight
 
@@ -1951,25 +1947,18 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	hasCrucibles := len(m.crucibles) > 0
 
 	if hasCrucibles {
-		// With 4 panels, we need 8 border rows. getVerticalSplit only subtracted 4.
-		// Subtract an additional 4 lines from the inner height pool.
-		height -= 4
-		if height < 0 {
-			height = 0
-		}
-
 		// Queue 40%, Crucible 20%, ReadyToMerge 15%, NeedsAttention 25%.
 		queueHeight := height * 4 / 10
 		crucibleHeight := height * 2 / 10
 		mergeHeight := height * 15 / 100
-		if height < 8 {
+		if height < 16 {
 			queueHeight = height
 			crucibleHeight = 0
 			mergeHeight = 0
 		} else {
-			queueHeight = max(queueHeight, 2)
-			crucibleHeight = max(crucibleHeight, 2)
-			mergeHeight = max(mergeHeight, 2)
+			queueHeight = max(queueHeight, 4)
+			crucibleHeight = max(crucibleHeight, 4)
+			mergeHeight = max(mergeHeight, 4)
 		}
 		attentionHeight := height - queueHeight - crucibleHeight - mergeHeight
 		if attentionHeight < 0 {
@@ -1984,21 +1973,14 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	}
 
 	// No active crucibles — original 3-panel layout.
-	// With 3 panels, we need 6 border rows. getVerticalSplit only subtracted 4.
-	// Subtract an additional 2 lines from the inner height pool.
-	height -= 2
-	if height < 0 {
-		height = 0
-	}
-
 	queueHeight := height * 5 / 10
 	mergeHeight := height * 2 / 10
-	if height < 4 {
+	if height < 12 {
 		queueHeight = height
 		mergeHeight = 0
 	} else {
-		queueHeight = max(queueHeight, 2)
-		mergeHeight = max(mergeHeight, 1)
+		queueHeight = max(queueHeight, 4)
+		mergeHeight = max(mergeHeight, 4)
 	}
 	attentionHeight := height - queueHeight - mergeHeight
 	if attentionHeight < 0 {
@@ -2050,8 +2032,8 @@ func (m *Model) renderCrucibles(width, height int) string {
 		style = focusedPanelStyle.Width(width)
 	}
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
-	title := titleStyle.Render(fmt.Sprintf("Crucibles (%d)", len(m.crucibles)))
+	// Crucible panel uses the same 2-line title pattern for consistency.
+	title := panelTitleStyle.Render(fmt.Sprintf("Crucibles (%d)", len(m.crucibles)))
 
 	var lines []string
 	lines = append(lines, title)
@@ -2060,8 +2042,8 @@ func (m *Model) renderCrucibles(width, height int) string {
 		lines = append(lines, dimStyle.Render("None"))
 	} else {
 		// Each crucible uses 3 display lines: phase+parent, progress, current child.
-		// title = 1 line.
-		maxLines := height - 1
+		// height is total height (including borders). border=2, title+margin=2 lines.
+		maxLines := height - 4
 		linesPerItem := 3
 		maxItems := maxLines / linesPerItem
 		if maxItems < 1 {
@@ -2182,9 +2164,9 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 	if len(m.needsAttention) == 0 {
 		lines = append(lines, dimStyle.Render("None"))
 	} else {
-		// Each item uses 2 lines (bead + reason), so halve the visible slot count.
-		// title = 2 lines.
-		maxLines := height - 2
+		// Each item uses 2 lines (bead + reason).
+		// height is total height (including borders). border=2, title+margin=2 lines.
+		maxLines := height - 4
 		maxItems := maxLines / 2
 		if maxItems < 1 {
 			maxItems = 1
@@ -2244,8 +2226,9 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 
 	if len(m.readyToMerge) == 0 {
 		lines = append(lines, dimStyle.Render("None"))
-	} else if height > 2 {
-		maxItems := height - 2
+	} else {
+		// height is total height (including borders). border=2, title+margin=2 lines.
+		maxItems := height - 4
 		if maxItems < 1 {
 			maxItems = 1
 		}
@@ -2375,8 +2358,8 @@ func (m *Model) renderWorkerList(width, height int) string {
 		lines = append(lines, dimStyle.Render("No active workers"))
 	} else {
 		// Each worker uses 2 lines (main + title), so halve the visible slot count.
-		// title = 2 lines.
-		maxLines := height - 2
+		// height is total height (including borders). border=2, title+margin=2 lines.
+		maxLines := height - 4
 		slotsPerWorker := 2
 		maxWorkers := maxLines / slotsPerWorker
 		if maxWorkers < 1 {
@@ -2456,8 +2439,15 @@ func (m *Model) renderUsagePanel(width, height int) string {
 	if len(m.usage.Providers) == 0 && m.usage.TotalCost == 0 && m.usage.CopilotUsed == 0 {
 		lines = append(lines, dimStyle.Render("No usage today"))
 	} else {
+		// height is total height (including borders). border=2, title+margin=2 lines.
+		maxVisible := height - 4
+		if maxVisible < 1 {
+			maxVisible = 1
+		}
+
 		// Per-provider lines
-		for _, p := range m.usage.Providers {
+		for pi := 0; pi < len(m.usage.Providers) && len(lines) < maxVisible+1; pi++ {
+			p := m.usage.Providers[pi]
 			name := p.Provider
 			if len(name) > 0 {
 				name = strings.ToUpper(name[:1]) + name[1:]
@@ -2476,7 +2466,7 @@ func (m *Model) renderUsagePanel(width, height int) string {
 		}
 
 		// Copilot premium requests (if any)
-		if m.usage.CopilotUsed > 0 || m.usage.CopilotLimit > 0 {
+		if (m.usage.CopilotUsed > 0 || m.usage.CopilotLimit > 0) && len(lines) < maxVisible+1 {
 			copilotLine := fmt.Sprintf("Copilot  %s", formatCopilotRequests(m.usage.CopilotUsed))
 			if m.usage.CopilotLimit > 0 {
 				copilotLine += fmt.Sprintf("/%d premium req", m.usage.CopilotLimit)
@@ -2487,11 +2477,13 @@ func (m *Model) renderUsagePanel(width, height int) string {
 		}
 
 		// Total line
-		totalLine := fmt.Sprintf("Total    %s", FormatCost(m.usage.TotalCost))
-		if m.usage.CostLimit > 0 {
-			totalLine += fmt.Sprintf(" / %s limit", FormatCost(m.usage.CostLimit))
+		if len(lines) < maxVisible+1 {
+			totalLine := fmt.Sprintf("Total    %s", FormatCost(m.usage.TotalCost))
+			if m.usage.CostLimit > 0 {
+				totalLine += fmt.Sprintf(" / %s limit", FormatCost(m.usage.CostLimit))
+			}
+			lines = append(lines, totalLine)
 		}
-		lines = append(lines, totalLine)
 	}
 
 	if height <= 0 {
@@ -2529,8 +2521,8 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 			lines = append(lines, dimStyle.Render("Waiting for output..."))
 		}
 	} else {
-		// height is inner height (no borders). title + margin = 2 lines.
-		maxVisible := height - 2
+		// height is total height (including borders). border=2, title+margin=2 lines.
+		maxVisible := height - 4
 		if maxVisible < 0 {
 			maxVisible = 0
 		}
@@ -2588,8 +2580,8 @@ func (m *Model) renderEvents(width, height int) string {
 	var lines []string
 	lines = append(lines, title)
 
-	// height is inner height. title + margin = 2 lines.
-	contentHeight := height - 2
+	// height is total height (including borders). border=2, title+margin=2 lines.
+	contentHeight := height - 4
 	if contentHeight < 0 {
 		contentHeight = 0
 	}
