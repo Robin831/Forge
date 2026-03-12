@@ -380,6 +380,7 @@ func NewModel(ds *DataSource) Model {
 		{Title: " ", Width: 1},
 		{Title: "Type", Width: 8},
 		{Title: "Bead", Width: 12},
+		{Title: "Task", Width: 20},
 		{Title: "Anvil", Width: 10},
 		{Title: "Time", Width: 6},
 	}
@@ -1007,10 +1008,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		frame := SpinnerFrames[m.spinnerFrame%len(SpinnerFrames)]
 		for i, w := range msg.Items {
 			status := workerStatusStyle(w.Status, frame)
+			beadCol := w.BeadID
+			if w.PRNumber > 0 {
+				beadCol = fmt.Sprintf("%s (PR#%d)", w.BeadID, w.PRNumber)
+			}
+			taskCol := w.Title
+			if taskCol == "" {
+				taskCol = "(no title)"
+			}
 			rows[i] = table.Row{
 				status,
 				w.Type,
-				w.BeadID,
+				beadCol,
+				taskCol,
 				w.Anvil,
 				w.Duration,
 			}
@@ -2657,22 +2667,20 @@ func (m *Model) renderWorkerList(width, height int) string {
 
 	// Dynamically adjust column widths to fit the panel
 	cols := m.workerTable.Columns()
-	if len(cols) == 5 {
-		// Status(1), Type(8), Bead(12), Anvil(10), Time(6)
-		// Total fixed = 1+8+12+10+6 = 37.
-		// If width is smaller, we scale.
-		// If width is larger, we give extra to Bead and Anvil.
+	if len(cols) == 6 {
+		// Status(1), Type(8), Bead(12), Task(20), Anvil(10), Time(6)
 		avail := width - 4 // interior width
 		if avail < 10 {
 			avail = 10
 		}
 		
-		// Ratios: Status 5%, Type 20%, Bead 35%, Anvil 25%, Time 15%
+		// Ratios: Status 5%, Type 10%, Bead 20%, Task 35%, Anvil 20%, Time 10%
 		cols[0].Width = max(1, avail*5/100)
-		cols[1].Width = max(4, avail*20/100)
-		cols[2].Width = max(6, avail*35/100)
-		cols[3].Width = max(6, avail*25/100)
-		cols[4].Width = max(4, avail*15/100)
+		cols[1].Width = max(4, avail*10/100)
+		cols[2].Width = max(6, avail*20/100)
+		cols[3].Width = max(10, avail*35/100)
+		cols[4].Width = max(6, avail*20/100)
+		cols[5].Width = max(4, avail*10/100)
 		m.workerTable.SetColumns(cols)
 	}
 
