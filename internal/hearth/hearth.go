@@ -1997,7 +1997,7 @@ func crucibleProgressColor(phase string) lipgloss.AdaptiveColor {
 	case "complete":
 		return colorSuccess // green / success
 	case "paused":
-		return colorDanger  // red / danger
+		return colorDanger // red / danger
 	default:
 		return colorWarning // yellow / warning
 	}

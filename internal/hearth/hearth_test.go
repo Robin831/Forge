@@ -2684,7 +2684,7 @@ func TestUpdateDescriptionViewer(t *testing.T) {
 	// Since viewport.Update returns a model and cmd, we check if the viewport state changed.
 	m5, _ := attnModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	scrolledModel := m5.(*Model)
-	
+
 	// If the description is short, it won't scroll, but we can verify it DIDN'T change the main panel focus or cursor.
 	if scrolledModel.focused != PanelNeedsAttention {
 		t.Error("focus changed while description viewer was open")
