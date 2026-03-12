@@ -3503,43 +3503,65 @@ func (m *Model) driveHuhSync(form **huh.Form, cmd tea.Cmd) tea.Cmd {
 		return cmd
 	}
 
-	nextMsg := cmd()
-	if nextMsg == nil {
-		return nil
-	}
+	var pendingCmds []tea.Cmd
+	pendingCmds = append(pendingCmds, cmd) // Start with the initial command
 
-	// Handle batches by recursively driving their component commands.
-	if batch, ok := nextMsg.(tea.BatchMsg); ok {
-		var nextCmds []tea.Cmd
-		for _, bc := range batch {
-			if bc != nil {
-				nc := m.driveHuhSync(form, bc)
-				if nc != nil {
-					nextCmds = append(nextCmds, nc)
+	var externalCmds []tea.Cmd // Commands that are not internal to huh/bubbletea
+
+	for len(pendingCmds) > 0 {
+		currentCmd := pendingCmds[0]
+		pendingCmds = pendingCmds[1:]
+
+		if currentCmd == nil {
+			continue
+		}
+
+		nextMsg := currentCmd()
+		if nextMsg == nil {
+			continue
+		}
+
+		// If the command produced a batch, add its components to the pending queue
+		if batch, ok := nextMsg.(tea.BatchMsg); ok {
+			for _, bc := range batch {
+				if bc != nil {
+					pendingCmds = append(pendingCmds, bc)
 				}
 			}
+			continue
 		}
-		if len(nextCmds) == 0 {
-			return nil
+
+		// If it's not a batch, it's a single message.
+		// Determine if it's an internal huh/bubbletea message or an external one.
+		typ := reflect.TypeOf(nextMsg)
+		pkg := typ.PkgPath()
+		if !strings.Contains(pkg, "charmbracelet/huh") && !strings.Contains(pkg, "charmbracelet/bubbletea") {
+			externalCmds = append(externalCmds, func() tea.Msg { return nextMsg })
+			continue
 		}
-		return tea.Batch(nextCmds...)
+
+		// It's an internal message, feed it back into the form.
+		f, newCmd := (*form).Update(nextMsg)
+		if f != nil {
+			if hf, ok := f.(*huh.Form); ok {
+				*form = hf
+			}
+		}
+		// If the update generated a new command, add it to the pending queue for synchronous processing.
+		if newCmd != nil {
+			pendingCmds = append(pendingCmds, newCmd)
+		}
+
+		// If the form transitioned out of StateNormal, stop synchronous processing.
+		if (*form).State != huh.StateNormal {
+			break
+		}
 	}
 
-	// Only drive synchronously if the message is internal to huh or bubbletea.
-	// This avoids synchronously executing user commands (like OnTagBead).
-	typ := reflect.TypeOf(nextMsg)
-	pkg := typ.PkgPath()
-	if !strings.Contains(pkg, "charmbracelet/huh") && !strings.Contains(pkg, "charmbracelet/bubbletea") {
-		return func() tea.Msg { return nextMsg }
+	if len(externalCmds) > 0 {
+		return tea.Batch(externalCmds...)
 	}
-
-	f, nextCmd := (*form).Update(nextMsg)
-	if f != nil {
-		if hf, ok := f.(*huh.Form); ok {
-			*form = hf
-		}
-	}
-	return m.driveHuhSync(form, nextCmd)
+	return nil
 }
 
 // isTerminalMsg returns true if the message is a user input event (key or mouse).
