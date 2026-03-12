@@ -11,6 +11,7 @@ package hearth
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 	"unicode"
@@ -406,8 +407,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if k.Type == tea.KeyEsc {
 				m.orphanDialogForm = nil
 				m.orphanTarget = nil
-				m.dequeueNextOrphan()
-				return m, nil
+				return m, m.dequeueNextOrphan()
 			}
 		}
 		cmd := m.driveHuhForm(&m.orphanDialogForm, msg)
@@ -420,8 +420,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if m.orphanDialogForm.State == huh.StateAborted {
 			m.orphanDialogForm = nil
 			m.orphanTarget = nil
-			m.dequeueNextOrphan()
-			return m, cmd
+			return m, tea.Batch(cmd, m.dequeueNextOrphan())
 		}
 		if isTerminalMsg(msg) {
 			return m, cmd
@@ -842,7 +841,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Show dialog if not already visible and we have queued orphans.
 		if m.orphanDialogForm == nil && len(m.orphanQueue) > 0 {
-			m.dequeueNextOrphan()
+			return m, m.dequeueNextOrphan()
 		}
 
 	case NeedsAttentionErrorMsg:
@@ -1502,12 +1501,12 @@ func (m *Model) removeNeedsAttentionItem(beadID, anvil string) {
 
 
 // dequeueNextOrphan shows the next orphan from the queue, or hides the dialog
-// if the queue is empty.
-func (m *Model) dequeueNextOrphan() {
+// if the queue is empty. It returns the Init() command of the new form.
+func (m *Model) dequeueNextOrphan() tea.Cmd {
 	if len(m.orphanQueue) == 0 {
 		m.orphanDialogForm = nil
 		m.orphanTarget = nil
-		return
+		return nil
 	}
 	item := m.orphanQueue[0]
 	m.orphanQueue = m.orphanQueue[1:]
@@ -1520,7 +1519,7 @@ func (m *Model) dequeueNextOrphan() {
 	m.orphanDialogChoice = OrphanActionRecover
 
 	m.orphanDialogForm = buildOrphanDialogForm(m.orphanTarget, &m.orphanDialogChoice)
-	m.orphanDialogForm.Init()
+	return m.orphanDialogForm.Init()
 }
 
 // buildOrphanDialogForm creates a huh form for the orphan resolution dialog.
@@ -1579,7 +1578,7 @@ func (m *Model) executeOrphanAction(choice OrphanDialogChoice) tea.Cmd {
 	target := *m.orphanTarget
 	m.orphanDialogForm = nil
 	m.orphanTarget = nil
-	m.dequeueNextOrphan()
+	nextCmd := m.dequeueNextOrphan()
 
 	var action string
 	switch choice {
@@ -1590,19 +1589,20 @@ func (m *Model) executeOrphanAction(choice OrphanDialogChoice) tea.Cmd {
 	case OrphanActionDiscard:
 		action = "discard"
 	default:
-		return nil
+		return nextCmd
 	}
 
 	if m.OnResolveOrphan == nil {
 		m.setStatus(fmt.Sprintf("Orphan resolution unavailable for %s", target.BeadID), true)
-		return nil
+		return nextCmd
 	}
 
 	beadID, anvil := target.BeadID, target.Anvil
 	cb := m.OnResolveOrphan
-	return func() tea.Msg {
+	actionCmd := func() tea.Msg {
 		return OrphanResolveResultMsg{BeadID: beadID, Action: action, Err: cb(beadID, anvil, action)}
 	}
+	return tea.Batch(nextCmd, actionCmd)
 }
 
 
@@ -3480,30 +3480,44 @@ func wordWrap(s string, maxWidth int) []string {
 }
 
 // driveHuhForm is a helper that processes a message against a huh form and
-// updates the form pointer with the result. It synchronously drives simple
-// transition commands to help the form reach its next state (like Completed)
-// in a single turn. It returns any command that cannot be processed
-// synchronously (e.g. a batch or one that doesn't return a simple message).
+// updates the form pointer with the result. It returns any command produced
+// by the form's Update so Bubble Tea can execute it asynchronously.
+// It synchronously drives simple internal transition commands (like nextFieldMsg)
+// to help the form reach its next state in a single turn where possible.
 func (m *Model) driveHuhForm(form **huh.Form, msg tea.Msg) tea.Cmd {
 	f, cmd := (*form).Update(msg)
-	*form = f.(*huh.Form)
-	for cmd != nil {
-		// Attempt to execute the command to see if it's a simple message.
+	if f != nil {
+		if hf, ok := f.(*huh.Form); ok {
+			*form = hf
+		}
+	}
+
+	// Drive internal transitions synchronously until we hit a non-huh command
+	// or the form completes. This helps overlays reach their next state
+	// (like StateCompleted) without requiring multiple UI turns.
+	for cmd != nil && (*form).State == huh.StateNormal {
 		nextMsg := cmd()
 		if nextMsg == nil {
 			return nil
 		}
-		// If it's a batch or an unhandled message type, return the command
-		// so Bubble Tea can handle it in the normal way.
-		if _, ok := nextMsg.(tea.BatchMsg); ok {
-			return cmd
+
+		// Only drive synchronously if the message is internal to huh or bubbletea.
+		// This avoids synchronously executing user commands (like OnTagBead).
+		typ := reflect.TypeOf(nextMsg)
+		pkg := typ.PkgPath()
+		if !strings.Contains(pkg, "charmbracelet/huh") && !strings.Contains(pkg, "charmbracelet/bubbletea") {
+			return func() tea.Msg { return nextMsg }
 		}
 
 		f, nextCmd := (*form).Update(nextMsg)
-		*form = f.(*huh.Form)
+		if f != nil {
+			if hf, ok := f.(*huh.Form); ok {
+				*form = hf
+			}
+		}
 		cmd = nextCmd
 	}
-	return nil
+	return cmd
 }
 
 // isTerminalMsg returns true if the message is a user input event (key or mouse).

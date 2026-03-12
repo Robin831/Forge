@@ -13,6 +13,45 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// drainHuh synchronously executes commands from a huh form until it reaches a
+// stable state (StateCompleted, StateAborted, or nil command).
+func drainHuh(m *Model, cmd tea.Cmd) tea.Cmd {
+	for cmd != nil {
+		msg := cmd()
+		if msg == nil {
+			return nil
+		}
+
+		// If it's a batch, handle its components.
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			var nextCmds []tea.Cmd
+			for _, bc := range batch {
+				nc := drainHuh(m, bc)
+				if nc != nil {
+					nextCmds = append(nextCmds, nc)
+				}
+			}
+			if len(nextCmds) == 0 {
+				return nil
+			}
+			return tea.Batch(nextCmds...)
+		}
+
+		// If the message is not from huh, it's likely an action result.
+		// Return a command that produces this message.
+		typ := reflect.TypeOf(msg)
+		pkg := typ.PkgPath()
+		if !strings.Contains(pkg, "charmbracelet/huh") && !strings.Contains(pkg, "charmbracelet/bubbletea") {
+			return func() tea.Msg { return msg }
+		}
+
+		var nextCmd tea.Cmd
+		_, nextCmd = m.Update(msg)
+		cmd = nextCmd
+	}
+	return nil
+}
+
 func TestRenderWorkerListShowsTitle(t *testing.T) {
 	m := Model{
 		workers: []WorkerItem{
@@ -917,6 +956,8 @@ func TestParseWorkerActivityMultiLineText(t *testing.T) {
 func TestEnterOnUnlabeledQueueItemOpensMenu(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-1", Anvil: "test", Section: "unlabeled"},
 		},
@@ -934,6 +975,8 @@ func TestEnterOnUnlabeledQueueItemOpensMenu(t *testing.T) {
 func TestEnterOnReadyQueueItemDoesNotOpenMenu(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-2", Anvil: "test", Section: "ready"},
 		},
@@ -949,6 +992,8 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 	var taggedBead, taggedAnvil string
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-3", Anvil: "forge", Section: "unlabeled"},
 		},
@@ -960,14 +1005,17 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 		},
 	}
 	// Open the menu
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = drainHuh(&m, cmd)
 	if m.queueActionForm == nil {
 		t.Fatal("expected menu open after Enter")
 	}
 	// Select the label action — menu closes, returns async cmd
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd = drainHuh(&m, cmd)
+	
 	if m.queueActionForm != nil {
-		t.Error("expected menu to close after label action")
+		t.Errorf("expected menu to close after label action")
 	}
 	// Execute the async command and deliver result
 	if cmd == nil {
@@ -986,6 +1034,8 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 func TestQueueActionMenuLabelOnTagBeadError(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-4", Anvil: "forge", Section: "unlabeled"},
 		},
@@ -996,6 +1046,7 @@ func TestQueueActionMenuLabelOnTagBeadError(t *testing.T) {
 	}
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd = drainHuh(&m, cmd)
 	if cmd == nil {
 		t.Fatal("expected a tea.Cmd for async tag operation")
 	}
@@ -1010,6 +1061,8 @@ func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
 	var closedBead, closedAnvil string
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-close-1", Anvil: "forge", Section: "unlabeled"},
 		},
@@ -1021,13 +1074,15 @@ func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
 		},
 	}
 	// Open the menu
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = drainHuh(&m, cmd)
 	if m.queueActionForm == nil {
 		t.Fatal("expected menu open after Enter")
 	}
 	// Navigate to "Close" (index 1) and select it
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd = drainHuh(&m, cmd)
 	if m.queueActionForm != nil {
 		t.Error("expected menu to close immediately after close action")
 	}
@@ -1047,6 +1102,8 @@ func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
 func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-close-2", Anvil: "forge", Section: "unlabeled"},
 		},
@@ -1058,6 +1115,7 @@ func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd = drainHuh(&m, cmd)
 	if cmd == nil {
 		t.Fatal("expected a tea.Cmd for async close operation")
 	}
@@ -1071,6 +1129,8 @@ func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
 func TestQueueActionMenuCloseNilOnCloseBead(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-close-3", Anvil: "forge", Section: "unlabeled"},
 		},
@@ -1772,6 +1832,8 @@ func TestRebuildQueueNav_NilExpandedAnvils_NoPanic(t *testing.T) {
 func TestEnterTogglesAnvilExpansion(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-1", Anvil: "alpha"},
 			{BeadID: "bd-2", Anvil: "beta"},
@@ -1801,6 +1863,8 @@ func TestEnterTogglesAnvilExpansion(t *testing.T) {
 func TestEscCollapsesToAnvilHeader(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-1", Anvil: "alpha"},
 			{BeadID: "bd-2", Anvil: "alpha"},
@@ -1955,6 +2019,8 @@ func TestCruciblePhaseStyleFrameChanges(t *testing.T) {
 func TestCursorClampedOnCollapse(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-1", Anvil: "alpha"},
 			{BeadID: "bd-2", Anvil: "alpha"},
@@ -2371,6 +2437,9 @@ func TestOrphanDialogEnterCallsOnResolveOrphan(t *testing.T) {
 	}
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	for m.orphanDialogForm != nil && cmd != nil {
+		_, cmd = m.Update(cmd())
+	}
 	if cmd == nil {
 		t.Fatal("expected a tea.Cmd after Enter on orphan dialog")
 	}
