@@ -428,6 +428,7 @@ func FetchNeedsAttention(ds *DataSource) tea.Cmd {
 			items = append(items, NeedsAttentionItem{
 				BeadID:         b.BeadID,
 				Title:          b.Title,
+				Description:    b.Description,
 				Anvil:          b.Anvil,
 				Reason:         b.Reason,
 				ReasonCategory: classifyAttentionReason(b),

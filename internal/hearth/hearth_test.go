@@ -2634,3 +2634,59 @@ func TestMouseToggleKeyDisablesMouseWhenEnabled(t *testing.T) {
 		t.Errorf("expected disableMouseMsg from cmd, got %T", msg)
 	}
 }
+
+func TestUpdateDescriptionViewer(t *testing.T) {
+	m := &Model{
+		queue: []QueueItem{
+			{BeadID: "bd-1", Title: "bead title", Description: "bead description", Section: "ready"},
+		},
+		needsAttention: []NeedsAttentionItem{
+			{BeadID: "bd-2", Title: "attn title", Description: "attn description"},
+		},
+		focused: PanelQueue,
+		width:   80,
+		height:  24,
+	}
+
+	// 1. Press 'd' on Queue selection
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	newModel := m2.(*Model)
+	if !newModel.showDescriptionViewer {
+		t.Error("expected showDescriptionViewer to be true after pressing 'd' in Queue")
+	}
+	if newModel.descriptionViewerTitle != "Description: bd-1 — bead title" {
+		t.Errorf("unexpected description title: %q", newModel.descriptionViewerTitle)
+	}
+	if newModel.descriptionViewerRaw != "bead description" {
+		t.Errorf("unexpected raw description: %q", newModel.descriptionViewerRaw)
+	}
+
+	// 2. Press 'esc' to close
+	m3, _ := newModel.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	closedModel := m3.(*Model)
+	if closedModel.showDescriptionViewer {
+		t.Error("expected showDescriptionViewer to be false after pressing 'esc'")
+	}
+
+	// 3. Press 'd' on Needs Attention selection
+	m.focused = PanelNeedsAttention
+	m4, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	attnModel := m4.(*Model)
+	if !attnModel.showDescriptionViewer {
+		t.Error("expected showDescriptionViewer to be true after pressing 'd' in Needs Attention")
+	}
+	if attnModel.descriptionViewerRaw != "attn description" {
+		t.Errorf("unexpected raw description: %q", attnModel.descriptionViewerRaw)
+	}
+
+	// 4. Verify input interception while open (pressing 'j' should scroll viewport, not move panel cursor)
+	// We need to check if the viewport's YOffset changes or if it handles the msg.
+	// Since viewport.Update returns a model and cmd, we check if the viewport state changed.
+	m5, _ := attnModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	scrolledModel := m5.(*Model)
+
+	// If the description is short, it won't scroll, but we can verify it DIDN'T change the main panel focus or cursor.
+	if scrolledModel.focused != PanelNeedsAttention {
+		t.Error("focus changed while description viewer was open")
+	}
+}

@@ -1426,3 +1426,99 @@ func TestDB_NeedsHumanBeadIDSet(t *testing.T) {
 		t.Errorf("expected 3 entries in set, got %d", len(set))
 	}
 }
+
+func TestDB_NeedsAttentionBeads_Description(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	beadID := "bd-descr"
+	anvil := "anvil-1"
+	description := "Test description content"
+
+	// 1. Populate queue_cache with description
+	err = db.ReplaceQueueCacheForAnvils([]string{anvil}, []QueueItem{
+		{
+			BeadID:      beadID,
+			Anvil:       anvil,
+			Title:       "Test Title",
+			Description: description,
+			Section:     QueueSectionReady,
+			Priority:    1,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Add retry record with needs_human=1
+	err = db.UpsertRetry(&RetryRecord{
+		BeadID:     beadID,
+		Anvil:      anvil,
+		NeedsHuman: true,
+		LastError:  "Too many retries",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Verify description flows through NeedsAttentionBeads
+	beads, err := db.NeedsAttentionBeads(5, 5, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, b := range beads {
+		if b.BeadID == beadID && b.Anvil == anvil {
+			found = true
+			if b.Description != description {
+				t.Errorf("expected description %q, got %q", description, b.Description)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("bead not found in NeedsAttentionBeads")
+	}
+
+	// 4. Verify duplicate-merge path (stalled worker + retry row)
+	// Add a stalled worker for the same bead
+	err = db.InsertWorker(&Worker{
+		ID:        "w-stalled",
+		BeadID:    beadID,
+		Anvil:     anvil,
+		Status:    WorkerStalled,
+		Phase:     "smith",
+		StartedAt: time.Now().Add(-2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	beads, err = db.NeedsAttentionBeads(5, 5, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should still have only 1 bead due to merge
+	count := 0
+	for _, b := range beads {
+		if b.BeadID == beadID && b.Anvil == anvil {
+			count++
+			if b.Description != description {
+				t.Errorf("merged bead: expected description %q, got %q", description, b.Description)
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected 1 merged bead, got %d", count)
+	}
+}
