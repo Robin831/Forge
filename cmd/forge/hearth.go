@@ -242,7 +242,7 @@ var hearthCmd = &cobra.Command{
 		}
 
 		model.OnAppendNotes = func(beadID, notes string) error {
-			cmd := exec.Command("bd", "update", beadID, "--append-notes", notes)
+			cmd := exec.Command("bd", "update", "--", beadID, "--append-notes", notes)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				return fmt.Errorf("bd update %s --append-notes: %w: %s", beadID, err, out)

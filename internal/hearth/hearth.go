@@ -834,7 +834,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UpdateQueueMsg:
 		m.queue = msg.Items
 		m.rebuildQueueNav()
-		// Close the queue action menu if the target bead is no longer in the unlabeled section.
+		// Close the queue action menu or notes overlay if the target bead is no longer in the queue.
 		if m.queueActionForm != nil {
 			found := false
 			for _, qi := range m.queue {
@@ -846,6 +846,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !found {
 				m.queueActionForm = nil
 				m.queueActionTarget = nil
+			}
+		}
+		if m.showNotesOverlay && m.notesTarget != nil {
+			found := false
+			for _, qi := range m.queue {
+				if qi.BeadID == m.notesTarget.BeadID && qi.Anvil == m.notesTarget.Anvil {
+					found = true
+					break
+				}
+			}
+			if !found {
+				// Also check needs attention panel
+				for _, ni := range m.needsAttention {
+					if ni.BeadID == m.notesTarget.BeadID && ni.Anvil == m.notesTarget.Anvil {
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				m.showNotesOverlay = false
+				m.notesTarget = nil
+				m.notesTA = textarea.Model{}
 			}
 		}
 
@@ -871,6 +894,30 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UpdateNeedsAttentionMsg:
 		m.needsAttention = msg.Items
 		m.needsAttnVP.ClampToTotal(len(msg.Items))
+		// Close the notes overlay if the target bead is no longer in the needs attention or queue panels.
+		if m.showNotesOverlay && m.notesTarget != nil {
+			found := false
+			for _, ni := range m.needsAttention {
+				if ni.BeadID == m.notesTarget.BeadID && ni.Anvil == m.notesTarget.Anvil {
+					found = true
+					break
+				}
+			}
+			if !found {
+				// Also check queue panel
+				for _, qi := range m.queue {
+					if qi.BeadID == m.notesTarget.BeadID && qi.Anvil == m.notesTarget.Anvil {
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				m.showNotesOverlay = false
+				m.notesTarget = nil
+				m.notesTA = textarea.Model{}
+			}
+		}
 
 	case UpdateReadyToMergeMsg:
 		m.readyToMerge = msg.Items
