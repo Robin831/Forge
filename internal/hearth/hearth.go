@@ -1673,6 +1673,7 @@ func (m *Model) rebuildQueueNav() {
 	for _, nav := range m.queueNavItems {
 		listItems = append(listItems, queueListItem{nav: nav, m: m})
 	}
+	m.queueList.Title = fmt.Sprintf("Queue (%d)", len(m.queue))
 	m.queueList.SetItems(listItems)
 }
 
