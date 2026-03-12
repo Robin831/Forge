@@ -1907,14 +1907,14 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 
 // crucibleProgressColor returns the terminal color code for the bubbles progress
 // bar based on crucible phase: green for complete, red for paused (failure), yellow otherwise.
-func crucibleProgressColor(phase string) string {
+func crucibleProgressColor(phase string) lipgloss.AdaptiveColor {
 	switch phase {
 	case "complete":
-		return "82"  // green
+		return colorSuccess // green / success
 	case "paused":
-		return "196" // red
+		return colorDanger  // red / danger
 	default:
-		return "226" // yellow
+		return colorWarning // yellow / warning
 	}
 }
 
@@ -1984,8 +1984,13 @@ func (m *Model) renderCrucibles(width, height int) string {
 					barWidth = 5
 				}
 				fraction := float64(c.CompletedChildren) / float64(c.TotalChildren)
+				pColor := crucibleProgressColor(c.Phase)
+				fillColor := pColor.Dark
+				if !lipgloss.HasDarkBackground() {
+					fillColor = pColor.Light
+				}
 				pb := progress.New(
-					progress.WithSolidFill(crucibleProgressColor(c.Phase)),
+					progress.WithSolidFill(fillColor),
 					progress.WithoutPercentage(),
 					progress.WithWidth(barWidth),
 				)

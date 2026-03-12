@@ -2435,23 +2435,23 @@ func TestUpdatePendingOrphansMsgOpensDialog(t *testing.T) {
 
 func TestCrucibleProgressColorComplete(t *testing.T) {
 	got := crucibleProgressColor("complete")
-	if got != "82" {
-		t.Errorf("crucibleProgressColor(complete) = %q, want %q (green)", got, "82")
+	if got != colorSuccess {
+		t.Errorf("crucibleProgressColor(complete) = %v, want %v (success color)", got, colorSuccess)
 	}
 }
 
 func TestCrucibleProgressColorPaused(t *testing.T) {
 	got := crucibleProgressColor("paused")
-	if got != "196" {
-		t.Errorf("crucibleProgressColor(paused) = %q, want %q (red)", got, "196")
+	if got != colorDanger {
+		t.Errorf("crucibleProgressColor(paused) = %v, want %v (danger color)", got, colorDanger)
 	}
 }
 
 func TestCrucibleProgressColorDefault(t *testing.T) {
 	for _, phase := range []string{"started", "dispatching", "final_pr", "waiting", ""} {
 		got := crucibleProgressColor(phase)
-		if got != "226" {
-			t.Errorf("crucibleProgressColor(%q) = %q, want %q (yellow)", phase, got, "226")
+		if got != colorWarning {
+			t.Errorf("crucibleProgressColor(%q) = %v, want %v (warning color)", phase, got, colorWarning)
 		}
 	}
 }
