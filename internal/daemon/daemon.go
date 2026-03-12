@@ -126,8 +126,11 @@ type Daemon struct {
 	// pipeline goroutines safely read via Load().
 	notifier atomic.Pointer[notify.Notifier]
 
-	// Generic webhook dispatcher (nil = no generic webhooks configured)
-	dispatcher *notify.WebhookDispatcher
+	// Generic webhook dispatcher (nil = no generic webhooks configured).
+	// Uses atomic.Pointer so the hot-reload callback can swap in a new dispatcher
+	// when webhook config changes without a mutex while concurrent goroutines
+	// safely read via Load(). WebhookDispatcher methods are nil-safe.
+	dispatcher atomic.Pointer[notify.WebhookDispatcher]
 
 	cancel context.CancelFunc // cancels the Run context for graceful shutdown
 	runCtx context.Context    // the live run context; set in Run() after signal/cancel wiring
@@ -243,9 +246,9 @@ func New(cfg *config.Config) (*Daemon, error) {
 		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
-		dispatcher:    dispatcher,
 	}
 	d.notifier.Store(notifier)
+	d.dispatcher.Store(dispatcher)
 	// Wire up the crucible-active check so orphan recovery skips parent beads
 	// that are currently being orchestrated by an in-process Crucible run.
 	// The key is "anvil/beadID" to avoid false positives when two anvils share
@@ -440,6 +443,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 					d.notifier.Store(n)
 				}
 			}
+			// Recreate the generic webhook dispatcher when the webhooks[] list or
+			// enabled flag changes so that new/removed targets and event filters
+			// take effect without a daemon restart.
+			oldWhJSON, _ := json.Marshal(old.Notifications.Webhooks)
+			newWhJSON, _ := json.Marshal(new.Notifications.Webhooks)
+			if old.Notifications.Enabled != new.Notifications.Enabled ||
+				string(oldWhJSON) != string(newWhJSON) {
+				d.dispatcher.Store(d.buildDispatcher(new))
+				d.logger.Info("webhook dispatcher reloaded")
+			}
 			// Update bellows and depcheck when anvils change
 			d.updateAnvilPaths(old, new)
 			d.db.LogEvent(state.EventConfigReload, "Configuration reloaded", "", "")
@@ -534,6 +547,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			killed := d.shutdownMgr.GracefulShutdown()
 			d.shutdownMgr.CleanupWorktrees()
 			d.wg.Wait() // wait for all dispatch goroutines
+			// Wait for any in-flight generic webhook deliveries so that a graceful
+			// shutdown does not drop pr_ready_to_merge or other notifications that
+			// were started by Bellows just before the shutdown signal arrived.
+			d.dispatcher.Load().Wait()
 			d.db.LogEvent(state.EventDaemonStopped,
 				fmt.Sprintf("Forge daemon stopped (killed %d workers)", killed), "", "")
 			return nil
@@ -730,7 +747,8 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 	}
 	cfg := d.cfg.Load()
 	hasLegacyURLs := cfg != nil && len(cfg.Notifications.PRReadyWebhookURLs) > 0
-	if d.notifier.Load() == nil && d.dispatcher == nil && !hasLegacyURLs {
+	disp := d.dispatcher.Load()
+	if d.notifier.Load() == nil && disp == nil && !hasLegacyURLs {
 		return
 	}
 	title := d.db.BeadTitle(event.BeadID, event.Anvil)
@@ -739,9 +757,9 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 			n.PRReadyToMerge(ctx, anvil, beadID, prNumber, prURL, title)
 		}
 		// Dispatch to generic webhook targets (new webhooks[] config).
-		if d.dispatcher != nil {
+		if disp != nil {
 			msg := fmt.Sprintf("PR #%d ready to merge: %s", prNumber, prURL)
-			d.dispatcher.Dispatch(ctx, notify.EventPRReadyToMerge, beadID, anvil, msg)
+			disp.Dispatch(ctx, notify.EventPRReadyToMerge, beadID, anvil, msg)
 		}
 		// Legacy pr_ready_webhook_urls support.
 		if cfg != nil && cfg.Notifications.Enabled {
@@ -1090,15 +1108,16 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 					// Proceed with zero counts rather than skipping the notification entirely
 					inTokens, outTokens = 0, 0
 				}
+				disp := d.dispatcher.Load()
 				go func(date string, cost, limit float64, inT, outT int) {
 					notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
 					if n := d.notifier.Load(); n != nil {
 						n.DailyCost(notifCtx, date, cost, limit, int64(inT), int64(outT))
 					}
-					if d.dispatcher != nil {
+					if disp != nil {
 						msg := fmt.Sprintf("Daily cost $%.2f reached limit $%.2f", cost, limit)
-						d.dispatcher.Dispatch(notifCtx, notify.EventDailyCost, "", "", msg)
+						disp.Dispatch(notifCtx, notify.EventDailyCost, "", "", msg)
 					}
 				}(today, todayCost, costLimit, inTokens, outTokens)
 			} else if prev != today {
@@ -1486,7 +1505,7 @@ normalPipeline:
 	if !outcome.Success {
 		if outcome.Decomposed {
 			// Dispatch bead_decomposed to generic webhook targets.
-			if d.dispatcher != nil {
+			if disp := d.dispatcher.Load(); disp != nil {
 				childCount := 0
 				if outcome.SchematicResult != nil {
 					childCount = len(outcome.SchematicResult.SubBeads)
@@ -1495,7 +1514,7 @@ normalPipeline:
 				go func(beadID, anvil, msg string) {
 					notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
-					d.dispatcher.Dispatch(notifCtx, notify.EventBeadDecomposed, beadID, anvil, msg)
+					disp.Dispatch(notifCtx, notify.EventBeadDecomposed, beadID, anvil, msg)
 				}(bead.ID, bead.Anvil, dispatchMsg)
 			}
 			d.applyDecomposedOutcome(bead, anvilCfg, outcome.SchematicResult)
@@ -1574,24 +1593,25 @@ normalPipeline:
 	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
 
 	// Send PR-created notifications.
+	disp := d.dispatcher.Load()
 	go func(anvil, beadID, prURL, prTitle string, prNumber int, dur time.Duration) {
 		notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if n := d.notifier.Load(); n != nil {
 			n.PRCreated(notifCtx, anvil, beadID, prNumber, prURL, prTitle)
 		}
-		if d.dispatcher != nil {
+		if disp != nil {
 			msg := fmt.Sprintf("PR #%d created: %s", prNumber, prURL)
-			d.dispatcher.Dispatch(notifCtx, notify.EventPRCreated, beadID, anvil, msg)
+			disp.Dispatch(notifCtx, notify.EventPRCreated, beadID, anvil, msg)
 		}
 		// Worker-done notification fires here alongside PR creation since
 		// the pipeline worker is complete at this point.
 		if n := d.notifier.Load(); n != nil {
 			n.WorkerDone(notifCtx, anvil, beadID, claimWorkerID, dur)
 		}
-		if d.dispatcher != nil {
+		if disp != nil {
 			msg := fmt.Sprintf("Worker completed in %s; PR #%d created", dur.Round(time.Second), prNumber)
-			d.dispatcher.Dispatch(notifCtx, notify.EventWorkerDone, beadID, anvil, msg)
+			disp.Dispatch(notifCtx, notify.EventWorkerDone, beadID, anvil, msg)
 		}
 	}(bead.Anvil, bead.ID, pr.URL, bead.Title, pr.Number, outcome.Duration)
 
@@ -2666,15 +2686,16 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 		_ = d.db.LogEvent(state.EventDispatchCircuitBreak, msg, beadID, anvil)
 
 		// Fire bead-failed notifications asynchronously.
+		disp := d.dispatcher.Load()
 		go func(beadID, anvil, reason string, count int) {
 			notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			if n := d.notifier.Load(); n != nil {
 				n.BeadFailed(notifCtx, anvil, beadID, count, reason)
 			}
-			if d.dispatcher != nil {
+			if disp != nil {
 				failMsg := fmt.Sprintf("Bead failed after %d dispatch attempts: %s", count, reason)
-				d.dispatcher.Dispatch(notifCtx, notify.EventBeadFailed, beadID, anvil, failMsg)
+				disp.Dispatch(notifCtx, notify.EventBeadFailed, beadID, anvil, failMsg)
 			}
 		}(beadID, anvil, reason, count)
 	}
@@ -2928,6 +2949,36 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 		d.depcheckScanner.UpdateAnvilPaths(depcheckPaths)
 		d.logger.Info("updated depcheck anvil paths", "count", len(depcheckPaths))
 	}
+}
+
+// buildDispatcher constructs a new *notify.WebhookDispatcher from the given
+// config. Returns nil when notifications are disabled or no webhook targets are
+// configured. Safe to call from the hot-reload goroutine; the result is stored
+// via d.dispatcher.Store() which is race-free.
+func (d *Daemon) buildDispatcher(cfg *config.Config) *notify.WebhookDispatcher {
+	if !cfg.Notifications.Enabled {
+		return nil
+	}
+	var webhookTargets []notify.WebhookTarget
+	for _, w := range cfg.Notifications.Webhooks {
+		trimmedURL := strings.TrimSpace(w.URL)
+		if trimmedURL == "" {
+			continue
+		}
+		var trimmedEvents []string
+		for _, ev := range w.Events {
+			tEv := strings.TrimSpace(ev)
+			if tEv != "" {
+				trimmedEvents = append(trimmedEvents, tEv)
+			}
+		}
+		webhookTargets = append(webhookTargets, notify.WebhookTarget{
+			Name:   w.Name,
+			URL:    trimmedURL,
+			Events: trimmedEvents,
+		})
+	}
+	return notify.NewWebhookDispatcher(webhookTargets, d.logger)
 }
 
 // buildNotifier constructs a new *notify.Notifier from the given config.
