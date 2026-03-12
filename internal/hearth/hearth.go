@@ -1009,16 +1009,33 @@ func (m *Model) computeHeaderH() int {
 // defaultFooterHints returns the help component's keybinding hint line for the
 // currently focused panel. The mouse toggle hint is appended as a suffix to
 // surface the 'm' key regardless of which panel is focused.
+//
+// Bindings are rendered as "key: description" pairs joined by " • ". This
+// format is stable and testable; the Bubbles help.Model is used for layout
+// width tracking (helpModel.Width) but not for the text output here.
 func (m *Model) defaultFooterHints() string {
 	mouseHint := "m: enable mouse"
 	if m.mouseEnabled {
-		mouseHint = "m: disable mouse"
+		mouseHint = "m: disable mouse (select text)"
 	}
-	helpText := m.helpModel.View(m.keyMapForPanel())
-	if helpText != "" {
-		return helpText + dimStyle.Render(" • "+mouseHint)
+	bindings := m.keyMapForPanel().ShortHelp()
+	parts := make([]string, 0, len(bindings)+1)
+	for _, b := range bindings {
+		if !b.Enabled() {
+			continue
+		}
+		k, desc := b.Help().Key, b.Help().Desc
+		if k == "" {
+			continue
+		}
+		if desc != "" {
+			parts = append(parts, k+": "+desc)
+		} else {
+			parts = append(parts, k)
+		}
 	}
-	return dimStyle.Render(mouseHint)
+	parts = append(parts, mouseHint)
+	return strings.Join(parts, " • ")
 }
 
 // computeFooterH returns the rendered height of the footer bar.

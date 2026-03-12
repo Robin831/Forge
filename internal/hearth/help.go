@@ -10,11 +10,11 @@ import (
 var (
 	keyTab = key.NewBinding(
 		key.WithKeys("tab"),
-		key.WithHelp("tab", "next panel"),
+		key.WithHelp("Tab", "next panel"),
 	)
 	keyShiftTab = key.NewBinding(
 		key.WithKeys("shift+tab"),
-		key.WithHelp("shift+tab", "prev panel"),
+		key.WithHelp("Shift+Tab", "prev panel"),
 	)
 	keyScroll = key.NewBinding(
 		key.WithKeys("j", "k", "down", "up"),
