@@ -557,10 +557,26 @@ func extractJSON(text string, requiredKey ...string) string {
 	// 3. Look for raw JSON objects containing the required key
 	for i := 0; i < len(text); i++ {
 		if text[i] == '{' {
-			// Find matching closing brace
+			// Find matching closing brace, respecting JSON strings.
 			depth := 0
+			inString := false
+			escaped := false
 			for j := i; j < len(text); j++ {
-				switch text[j] {
+				char := text[j]
+				if inString {
+					if escaped {
+						escaped = false
+					} else if char == '\\' {
+						escaped = true
+					} else if char == '"' {
+						inString = false
+					}
+					continue
+				}
+
+				switch char {
+				case '"':
+					inString = true
 				case '{':
 					depth++
 				case '}':

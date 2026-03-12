@@ -9,12 +9,15 @@ import (
 	"io"
 	"log"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/smith"
 )
 
 // PRComment represents a review comment fetched from GitHub.
@@ -120,19 +123,43 @@ func FetchRecentPRNumbers(ctx context.Context, repoDir string, limit int) ([]int
 	return nums, nil
 }
 
-// claudeRunner executes the claude CLI with the given prompt and returns its
-// stdout output. It is a package-level variable so tests can inject a stub
-// without spawning a real process.
+// claudeRunner executes an AI session with the given prompt and returns its
+// full text response. It uses smith.SpawnWithProvider to benefit from
+// stream-json parsing, provider fallback, and cost tracking. It is a
+// package-level variable so tests can inject a stub without spawning a real
+// process.
 var claudeRunner = func(ctx context.Context, dir, prompt string) ([]byte, error) {
-	var stdout, stderr bytes.Buffer
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "claude", "--print", "--max-turns", "1", "-p", prompt))
-	cmd.Dir = dir
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("claude: %s (%w)", strings.TrimSpace(stderr.String()), err)
+	logDir := filepath.Join(dir, ".forge-logs")
+	providers := provider.Defaults()
+	var lastErr error
+
+	for _, pv := range providers {
+		// Distillation should be quick, but give it 5 turns just in case Claude
+		// wants to look at some files to understand the context of the comments.
+		extraFlags := []string{"--max-turns", "5"}
+		process, err := smith.SpawnWithProvider(ctx, dir, prompt, logDir, pv, extraFlags)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		result := process.Wait()
+		if result.RateLimited {
+			lastErr = fmt.Errorf("provider %s rate limited", pv.Label())
+			continue
+		}
+		if result.IsError {
+			lastErr = fmt.Errorf("ai error (%s): %s", pv.Label(), result.ErrorOutput)
+			continue
+		}
+		// Return the full output text from the result event, which excludes
+		// the prompt and internal protocol junk.
+		output := result.FullOutput
+		if output == "" {
+			output = result.Output // Fallback for plain-text providers
+		}
+		return []byte(output), nil
 	}
-	return stdout.Bytes(), nil
+	return nil, fmt.Errorf("ai distillation failed across all providers: %w", lastErr)
 }
 
 // DistillRule uses a Claude session to convert a set of similar review
@@ -166,7 +193,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 
 	// Extract JSON from Claude's output
 	output := strings.TrimSpace(string(raw))
-	jsonStr := extractJSON(output)
+	jsonStr := extractJSON(output, "id")
 	if jsonStr == "" {
 		// Try the raw output directly
 		jsonStr = output
@@ -365,7 +392,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) using this 
 	}
 
 	output := strings.TrimSpace(string(raw))
-	jsonStr := extractJSON(output)
+	jsonStr := extractJSON(output, "id")
 	if jsonStr == "" {
 		jsonStr = output
 	}
