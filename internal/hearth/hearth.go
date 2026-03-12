@@ -397,8 +397,6 @@ func (m *Model) Init() tea.Cmd {
 
 // Update implements tea.Model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
 	// Action menu overlays intercept all keys/mouse when open.
 	if m.orphanDialogForm != nil {
 		if k, ok := msg.(tea.KeyMsg); ok {
@@ -412,63 +410,75 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		cmds = append(cmds, m.driveHuhForm(&m.orphanDialogForm, msg))
+		cmd := m.driveHuhForm(&m.orphanDialogForm, msg)
 		if m.orphanDialogForm.State == huh.StateCompleted {
-			cmds = append(cmds, m.executeOrphanAction(m.orphanDialogChoice))
-			return m, tea.Batch(cmds...)
+			actionCmd := m.executeOrphanAction(m.orphanDialogChoice)
+			if cmd == nil {
+				return m, actionCmd
+			}
+			return m, tea.Batch(cmd, actionCmd)
 		} else if m.orphanDialogForm.State == huh.StateAborted {
 			m.orphanDialogForm = nil
 			m.orphanTarget = nil
 			m.dequeueNextOrphan()
-			return m, tea.Batch(cmds...)
+			return m, cmd
 		}
 		if isTerminalMsg(msg) {
-			return m, tea.Batch(cmds...)
+			return m, cmd
 		}
 	}
 
 	if m.mergeForm != nil {
-		cmds = append(cmds, m.driveHuhForm(&m.mergeForm, msg))
+		cmd := m.driveHuhForm(&m.mergeForm, msg)
 		if m.mergeForm.State == huh.StateCompleted {
-			cmds = append(cmds, m.executeMergeAction(m.mergeChoice))
+			actionCmd := m.executeMergeAction(m.mergeChoice)
 			m.mergeForm = nil
-			return m, tea.Batch(cmds...)
+			if cmd == nil {
+				return m, actionCmd
+			}
+			return m, tea.Batch(cmd, actionCmd)
 		} else if m.mergeForm.State == huh.StateAborted {
 			m.mergeForm = nil
-			return m, tea.Batch(cmds...)
+			return m, cmd
 		}
 		if isTerminalMsg(msg) {
-			return m, tea.Batch(cmds...)
+			return m, cmd
 		}
 	}
 
 	if m.queueActionForm != nil {
-		cmds = append(cmds, m.driveHuhForm(&m.queueActionForm, msg))
+		cmd := m.driveHuhForm(&m.queueActionForm, msg)
 		if m.queueActionForm.State == huh.StateCompleted {
-			cmds = append(cmds, m.executeQueueAction(m.queueActionChoice))
+			actionCmd := m.executeQueueAction(m.queueActionChoice)
 			m.queueActionForm = nil
-			return m, tea.Batch(cmds...)
+			if cmd == nil {
+				return m, actionCmd
+			}
+			return m, tea.Batch(cmd, actionCmd)
 		} else if m.queueActionForm.State == huh.StateAborted {
 			m.queueActionForm = nil
-			return m, tea.Batch(cmds...)
+			return m, cmd
 		}
 		if isTerminalMsg(msg) {
-			return m, tea.Batch(cmds...)
+			return m, cmd
 		}
 	}
 
 	if m.actionForm != nil {
-		cmds = append(cmds, m.driveHuhForm(&m.actionForm, msg))
+		cmd := m.driveHuhForm(&m.actionForm, msg)
 		if m.actionForm.State == huh.StateCompleted {
-			cmds = append(cmds, m.executeAction(m.actionChoice))
+			actionCmd := m.executeAction(m.actionChoice)
 			m.actionForm = nil
-			return m, tea.Batch(cmds...)
+			if cmd == nil {
+				return m, actionCmd
+			}
+			return m, tea.Batch(cmd, actionCmd)
 		} else if m.actionForm.State == huh.StateAborted {
 			m.actionForm = nil
-			return m, tea.Batch(cmds...)
+			return m, cmd
 		}
 		if isTerminalMsg(msg) {
-			return m, tea.Batch(cmds...)
+			return m, cmd
 		}
 	}
 
@@ -578,7 +588,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							Value(&m.actionChoice),
 					),
 				).WithTheme(huh.ThemeCharm())
-				m.actionForm.Init()
+				return m, m.actionForm.Init()
 			}
 			// Queue panel: toggle anvil expand/collapse or open action menu for unlabeled beads
 			if m.focused == PanelQueue {
@@ -599,7 +609,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							// Reset choice to default so reopening doesn't reuse a stale selection.
 							m.queueActionChoice = QueueActionLabel
 							m.queueActionForm = buildQueueActionForm(item, &m.queueActionChoice)
-							m.queueActionForm.Init()
+							return m, m.queueActionForm.Init()
 						}
 					}
 				}
@@ -626,7 +636,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Reset choice to default so reopening doesn't reuse a stale selection.
 				m.mergeChoice = MergeActionMerge
 				m.mergeForm = buildMergeForm(item, &m.mergeChoice)
-				m.mergeForm.Init()
+				return m, m.mergeForm.Init()
 			}
 
 		case "l":
@@ -3470,17 +3480,25 @@ func wordWrap(s string, maxWidth int) []string {
 }
 
 // driveHuhForm is a helper that processes a message against a huh form and
-// updates the form pointer with the result. It returns the tea.Cmd from the update.
+// updates the form pointer with the result. It synchronously drives simple
+// transition commands to help the form reach its next state (like Completed)
+// in a single turn. It returns any command that cannot be processed
+// synchronously (e.g. a batch or one that doesn't return a simple message).
 func (m *Model) driveHuhForm(form **huh.Form, msg tea.Msg) tea.Cmd {
 	f, cmd := (*form).Update(msg)
 	*form = f.(*huh.Form)
 	for cmd != nil {
-		// Synchronously drive the command if it's a simple one (not a batch).
-		// This helps huh reach Completed/Aborted state in one turn for simple selects.
+		// Attempt to execute the command to see if it's a simple message.
 		nextMsg := cmd()
 		if nextMsg == nil {
-			break
+			return nil
 		}
+		// If it's a batch or an unhandled message type, return the command
+		// so Bubble Tea can handle it in the normal way.
+		if _, ok := nextMsg.(tea.BatchMsg); ok {
+			return cmd
+		}
+
 		f, nextCmd := (*form).Update(nextMsg)
 		*form = f.(*huh.Form)
 		cmd = nextCmd

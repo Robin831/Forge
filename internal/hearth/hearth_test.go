@@ -964,10 +964,10 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 	if m.queueActionForm == nil {
 		t.Fatal("expected menu open after Enter")
 	}
-	// Select the label action — menu closes immediately, returns async cmd
+	// Select the label action — menu closes, returns async cmd
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.queueActionForm != nil {
-		t.Error("expected menu to close immediately after label action")
+		t.Error("expected menu to close after label action")
 	}
 	// Execute the async command and deliver result
 	if cmd == nil {
@@ -1081,7 +1081,7 @@ func TestQueueActionMenuCloseNilOnCloseBead(t *testing.T) {
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if !strings.Contains(m.statusMsg, "unavailable") {
-		t.Errorf("expected 'unavailable' statusMsg, got %q", m.statusMsg)
+		t.Errorf("expected 'unavailable' statusMsg, got %q (form nil: %v)", m.statusMsg, m.queueActionForm == nil)
 	}
 }
 
@@ -2364,7 +2364,11 @@ func TestOrphanDialogEnterCallsOnResolveOrphan(t *testing.T) {
 		},
 	}
 	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
-	m.orphanDialogForm.Init()
+	initCmd := m.orphanDialogForm.Init()
+	if initCmd != nil {
+		msg := initCmd()
+		_, _ = m.Update(msg)
+	}
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
