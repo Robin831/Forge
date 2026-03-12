@@ -84,11 +84,14 @@ func (i queueListItem) FilterValue() string {
 	if i.nav.isAnvil {
 		return i.nav.anvilName
 	}
+	if i.nav.isSection {
+		return i.nav.sectionName
+	}
 	if i.nav.beadIdx < 0 || i.nav.beadIdx >= len(i.m.queue) {
 		return ""
 	}
 	bead := i.m.queue[i.nav.beadIdx]
-	return bead.BeadID + " " + bead.Title + " " + bead.Anvil
+	return bead.BeadID + " " + bead.Title + " " + bead.Anvil + " " + string(bead.Section)
 }
 
 // queueListDelegate handles rendering of queue items (anvil headers and beads).
@@ -100,7 +103,7 @@ func (d queueListDelegate) Update(msg tea.Msg, m *list.Model) tea.Cmd {
 	return nil
 }
 
-func (d queueListDelegate) Render(w io.Writer, li *list.Model, index int, listItem list.Item) {
+func (d queueListDelegate) Render(w io.Writer, li list.Model, index int, listItem list.Item) {
 	i, ok := listItem.(queueListItem)
 	if !ok || i.m == nil {
 		return
@@ -172,21 +175,15 @@ func (d queueListDelegate) Render(w io.Writer, li *list.Model, index int, listIt
 	if titleText == "" {
 		titleText = "(no title)"
 	}
+	if item.Section == "in_progress" && item.Assignee != "" {
+		titleText += " @" + item.Assignee
+	}
 	titleIndent := indent + "    "
 	titleLine := titleIndent + dimStyle.Render(truncate(titleText, width-8))
 	if selected {
 		titleLine = titleIndent + selectedStyle.Render(truncate(titleText, width-8))
 	}
 	lines = append(lines, titleLine)
-
-	// Assignee line for in-progress beads.
-	if item.Section == "in_progress" && item.Assignee != "" {
-		assigneeLine := titleIndent + dimStyle.Render("@ "+item.Assignee)
-		if selected {
-			assigneeLine = titleIndent + selectedStyle.Render("@ "+item.Assignee)
-		}
-		lines = append(lines, assigneeLine)
-	}
 
 	fmt.Fprint(w, strings.Join(lines, "\n"))
 }
