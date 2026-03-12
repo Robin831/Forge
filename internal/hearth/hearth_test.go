@@ -206,7 +206,7 @@ func TestRenderColumnsAlignedHeight(t *testing.T) {
 		height:           40,
 		activityExpanded: make(map[string]bool),
 	}
-	m.rebuildActivityNav()
+	m.rebuildActivityNav(40)
 
 	topHeight, bottomHeight := m.getVerticalSplit(1, 1)
 	width := 40
@@ -389,7 +389,7 @@ func TestRenderWorkerActivityNewestFirst(t *testing.T) {
 		workerVP:         scrollViewport{cursor: 0},
 		activityExpanded: map[string]bool{"think": true},
 	}
-	m.rebuildActivityNav()
+	m.rebuildActivityNav(40)
 
 	// Use a large height so all lines are visible
 	rendered := m.renderWorkerActivity(80, 20)
@@ -627,7 +627,7 @@ func TestActivityScrollChangesVisibleLine(t *testing.T) {
 		activityExpanded: map[string]bool{"think": true},
 		focused:          PanelLiveActivity,
 	}
-	m.rebuildActivityNav()
+	m.rebuildActivityNav(40)
 
 	// With cursor at 0, the newest entry (line-4) should be visible.
 	rendered0 := m.renderWorkerActivity(80, 10)
@@ -657,7 +657,7 @@ func TestActivityScrollClampPastEnd(t *testing.T) {
 		activityExpanded: map[string]bool{"think": true},
 		focused:          PanelLiveActivity,
 	}
-	m.rebuildActivityNav()
+	m.rebuildActivityNav(40)
 
 	rendered := m.renderWorkerActivity(80, 10)
 	// The panel must not be blank — at least some entry should show.

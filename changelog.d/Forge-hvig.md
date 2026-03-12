@@ -1,2 +1,2 @@
 category: Fixed
-- **Fix Live Activity panel overflow** - The Live Activity panel now correctly handles word wrapping and scroll viewport range, preventing content from overflowing the panel when categories with many entries are expanded. (Forge-hvig)
+- **Hearth Live Activity overflow fix** - Fixed a bug where expanded Live Activity entries could overflow the panel height, causing the dashboard layout to break. Panels now strictly respect their height constraints and support internal scrolling. (Forge-hvig)

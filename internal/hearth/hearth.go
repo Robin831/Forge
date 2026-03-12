@@ -1935,7 +1935,7 @@ func (m *Model) renderQueue(width, height int) string {
 		return style.Render("")
 	}
 	content := strings.Join(lines, "\n")
-	return style.Height(height).Render(content)
+	return style.Height(height).MaxHeight(height).Render(content)
 }
 
 // renderLeftColumn splits the left column into Queue (top), optionally Crucibles
@@ -2115,7 +2115,7 @@ func (m *Model) renderCrucibles(width, height int) string {
 	}
 
 	content := strings.Join(lines, "\n")
-	return style.Height(height).Render(content)
+	return style.Height(height).MaxHeight(height).Render(content)
 }
 
 // renderRightColumn renders Live Activity (top) + Events (bottom), mirroring
@@ -2218,7 +2218,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 		return style.Render("")
 	}
 	content := strings.Join(lines, "\n")
-	return style.Height(height).Render(content)
+	return style.Height(height).MaxHeight(height).Render(content)
 }
 
 // renderReadyToMerge renders the Ready to Merge sub-panel showing PRs that
@@ -2259,7 +2259,7 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 	}
 
 	content := strings.Join(lines, "\n")
-	return style.Height(height).Render(content)
+	return style.Height(height).MaxHeight(height).Render(content)
 }
 
 // renderMergeMenu renders the merge action menu overlay.
@@ -2413,7 +2413,7 @@ func (m *Model) renderWorkerList(width, height int) string {
 		return style.Render("")
 	}
 	content := strings.Join(lines, "\n")
-	return style.Height(height).Render(content)
+	return style.Height(height).MaxHeight(height).Render(content)
 }
 
 // renderCenterColumn renders Workers (top) + Usage (bottom), splitting the
@@ -2493,7 +2493,7 @@ func (m *Model) renderUsagePanel(width, height int) string {
 		return style.Render("")
 	}
 	content := strings.Join(lines, "\n")
-	return style.Height(height).Render(content)
+	return style.Height(height).MaxHeight(height).Render(content)
 }
 
 // renderWorkerActivity renders the activity panel: a live log view for the
@@ -2526,8 +2526,8 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 	} else {
 		// height-2 (borders) - 2 (title + margin) = height-4
 		maxVisible := height - 4
-		if maxVisible < 1 {
-			maxVisible = 1
+		if maxVisible < 0 {
+			maxVisible = 0
 		}
 		total := len(m.activityNavItems)
 		m.activityVP.ClampToTotal(total)
@@ -2564,7 +2564,7 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 		return style.Render("")
 	}
 	content := strings.Join(lines, "\n")
-	return style.Height(height).Render(content)
+	return style.Height(height).MaxHeight(height).Render(content)
 }
 
 // renderEvents renders the event log panel with word-wrapped messages.
@@ -2599,7 +2599,7 @@ func (m *Model) renderEvents(width, height int) string {
 		return style.Render("")
 	}
 	content := strings.Join(lines, "\n")
-	return style.Height(height).Render(content)
+	return style.Height(height).MaxHeight(height).Render(content)
 }
 
 // renderAllEventLines flattens all events into a single slice of rendered lines.
