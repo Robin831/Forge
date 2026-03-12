@@ -15,14 +15,14 @@ CHANGELOG="CHANGELOG.md"
 FRAGMENT_DIR="changelog.d"
 DATE=$(date -u +%Y-%m-%d)
 
-if [ ! -d "$FRAGMENT_DIR" ] || ! compgen -G "$FRAGMENT_DIR"/*.en.md > /dev/null; then
+if [ ! -d "$FRAGMENT_DIR" ] || ! compgen -G "$FRAGMENT_DIR"/*.md > /dev/null; then
   echo "No changelog fragments found in $FRAGMENT_DIR/" >&2
   exit 0
 fi
 
 # Collect fragments grouped by category
 declare -A CATEGORIES
-for f in "$FRAGMENT_DIR"/*.en.md; do
+for f in "$FRAGMENT_DIR"/*.md; do
   cat_line=$(head -1 "$f")
   category=$(echo "$cat_line" | sed 's/^category:[[:space:]]*//')
   # Everything after the first line is the content
@@ -79,6 +79,6 @@ else
 fi
 
 # Remove consumed fragments
-rm -f "$FRAGMENT_DIR"/*.en.md
+rm -f "$FRAGMENT_DIR"/*.md
 
 echo "Assembled $VERSION changelog from fragments into $CHANGELOG"

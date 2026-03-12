@@ -240,6 +240,33 @@ var hearthCmd = &cobra.Command{
 			return nil
 		}
 
+		model.OnAppendNotes = func(beadID, anvil, notes string) error {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return fmt.Errorf("connecting to daemon: %w", err)
+			}
+			defer client.Close()
+
+			payload, _ := json.Marshal(ipc.AppendNotesPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+				Notes:  notes,
+			})
+			resp, err := client.Send(ipc.Command{
+				Type:    "append_notes",
+				Payload: payload,
+			})
+			if err != nil {
+				return fmt.Errorf("sending append_notes command: %w", err)
+			}
+			if resp.Type == "error" {
+				var msg map[string]string
+				_ = json.Unmarshal(resp.Payload, &msg)
+				return fmt.Errorf("daemon error: %s", msg["message"])
+			}
+			return nil
+		}
+
 		noMouse, _ := cmd.Flags().GetBool("no-mouse")
 		mouseEnabled := !noMouse
 		model.SetMouseEnabled(mouseEnabled)

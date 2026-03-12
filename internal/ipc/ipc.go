@@ -129,6 +129,14 @@ type MergePRPayload struct {
 	Anvil    string `json:"anvil"`
 }
 
+// AppendNotesPayload is the payload for an "append_notes" command.
+// Adds human notes to a bead's history via bd update.
+type AppendNotesPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`
+	Notes  string `json:"notes"`
+}
+
 // TagBeadPayload is the payload for a "tag_bead" command that adds the
 // anvil's configured auto-dispatch label to a bead via bd update.
 // The daemon derives the tag from its own config; the client only needs

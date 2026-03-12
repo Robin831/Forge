@@ -1954,6 +1954,41 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": "clarification_needed set"})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "append_notes":
+		var np ipc.AppendNotesPayload
+		if err := json.Unmarshal(cmd.Payload, &np); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid append_notes payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if np.BeadID == "" || np.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		cfgSnapshot := d.cfg.Load()
+		anvilCfg, ok := cfgSnapshot.Anvils[np.Anvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", np.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		notesCtx, notesCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		defer notesCancel()
+
+		// bd update does not support reading notes from a file or stdin, so we must
+		// pass them as an argument. Routing through the daemon IPC still ensures
+		// the notes are not visible on the long-lived Hearth CLI process command line.
+		notesCmd := executil.HideWindow(exec.CommandContext(notesCtx, "bd", "update", np.BeadID, "--append-notes", np.Notes))
+		notesCmd.Dir = anvilCfg.Path
+		out, err := notesCmd.CombinedOutput()
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update %s --notes-file: %v: %s", np.BeadID, err, string(out))})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		data, _ := json.Marshal(map[string]string{"message": "notes appended"})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	case "tag_bead":
 		var tp ipc.TagBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &tp); err != nil {
