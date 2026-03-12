@@ -278,6 +278,7 @@ type Model struct {
 	prevEventCount   int  // track event count for auto-scroll
 	width            int
 	height           int
+	activityWidthCache int // track activity panel width for rebuildActivityNav
 	ready            bool
 
 	// Action menu overlay state (Needs Attention)
@@ -592,7 +593,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					cur := m.isActivityGroupExpanded(nav.groupType)
 					m.activityExpanded[nav.groupType] = !cur
-					m.rebuildActivityNav()
+					m.rebuildActivityNav(m.activityWidthCache)
 				}
 			}
 			// Open merge menu for selected Ready to Merge PR
@@ -646,7 +647,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.activityExpanded = make(map[string]bool)
 					}
 					m.activityExpanded[nav.groupType] = false
-					m.rebuildActivityNav()
+					m.rebuildActivityNav(m.activityWidthCache)
 				}
 			}
 			// Collapse the anvil containing the selected bead
@@ -853,7 +854,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if prevWorkerID != "" && newWorkerID != "" && prevWorkerID != newWorkerID {
 			m.resetActivityState()
 		} else {
-			m.rebuildActivityNav()
+			m.rebuildActivityNav(m.activityWidthCache)
 		}
 
 	case UpdateUsageMsg:
@@ -1059,6 +1060,11 @@ func (m *Model) View() string {
 
 	queueWidth, workerWidth, activityWidth := m.getTopPanelWidths()
 	topHeight, bottomHeight := m.getVerticalSplit(headerH, footerH)
+
+	// Trigger activity nav rebuild if width changed since last build
+	if m.activityWidthCache != activityWidth {
+		m.rebuildActivityNav(activityWidth)
+	}
 
 	// Left column: Queue (top) + Ready to Merge (middle) + Needs Attention (bottom)
 	leftColumn := m.renderLeftColumn(queueWidth, topHeight, bottomHeight)
@@ -2544,19 +2550,12 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 				}
 				lines = append(lines, line)
 			} else {
-				// Expanded child line — wrap to reduced width, then indent each line
-				childWidth := contentWidth - 2
-				if childWidth < 10 {
-					childWidth = 10
+				// Expanded child line — already wrapped in rebuildActivityNav
+				line := "  " + nav.text
+				if isCursor {
+					line = selectedStyle.Render(line)
 				}
-				wrapped := wordWrap(nav.text, childWidth)
-				for wi, wl := range wrapped {
-					indented := "  " + wl
-					if isCursor && wi == 0 {
-						indented = selectedStyle.Render(indented)
-					}
-					lines = append(lines, indented)
-				}
+				lines = append(lines, line)
 			}
 		}
 	}
@@ -3299,7 +3298,9 @@ func (m *Model) groupedWorkerActivity() []string {
 // from the currently selected worker's activity. One persistent group per event
 // type is shown, newest-first by last occurrence. Each group always has a header
 // line (▸ collapsed / ▾ expanded); expanded groups show indented child lines.
-func (m *Model) rebuildActivityNav() {
+// If width > 0, child lines are word-wrapped to fit the panel.
+func (m *Model) rebuildActivityNav(width int) {
+	m.activityWidthCache = width
 	rawLines := m.selectedWorkerActivity()
 	groups := buildActivityGroups(rawLines)
 
@@ -3322,10 +3323,32 @@ func (m *Model) rebuildActivityNav() {
 				text:          expandActivityGroup(g),
 			})
 			for li := len(g.lines) - 1; li >= 0; li-- {
-				m.activityNavItems = append(m.activityNavItems, activityNavItem{
-					groupType: g.eventType,
-					text:      g.lines[li],
-				})
+				if width > 0 {
+					// Wrap child lines to fit the panel width.
+					// height-2 (borders) - 2 (title + margin) = height-4.
+					// contentWidth is width - 4.
+					// childWidth is contentWidth - 2 (indent).
+					contentWidth := width - 4
+					if contentWidth < 10 {
+						contentWidth = 10
+					}
+					childWidth := contentWidth - 2
+					if childWidth < 10 {
+						childWidth = 10
+					}
+					wrapped := wordWrap(g.lines[li], childWidth)
+					for _, wl := range wrapped {
+						m.activityNavItems = append(m.activityNavItems, activityNavItem{
+							groupType: g.eventType,
+							text:      wl,
+						})
+					}
+				} else {
+					m.activityNavItems = append(m.activityNavItems, activityNavItem{
+						groupType: g.eventType,
+						text:      g.lines[li],
+					})
+				}
 			}
 		}
 	}
@@ -3347,7 +3370,7 @@ func (m *Model) isActivityGroupExpanded(eventType string) bool {
 func (m *Model) resetActivityState() {
 	m.activityVP = scrollViewport{}
 	m.activityExpanded = make(map[string]bool)
-	m.rebuildActivityNav()
+	m.rebuildActivityNav(m.activityWidthCache)
 }
 
 // buildActivityGroups merges all activity entries by event type into one
