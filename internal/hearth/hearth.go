@@ -397,6 +397,73 @@ func (m *Model) Init() tea.Cmd {
 
 // Update implements tea.Model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	// Action menu overlays intercept all keys/mouse when open.
+	if m.orphanDialogForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok && (k.Type == tea.KeyCtrlC || k.String() == "ctrl+c") {
+			return m, tea.Quit
+		}
+		cmds = append(cmds, m.driveHuhForm(&m.orphanDialogForm, msg))
+		if m.orphanDialogForm.State == huh.StateCompleted {
+			cmds = append(cmds, m.executeOrphanAction(m.orphanDialogChoice))
+			return m, tea.Batch(cmds...)
+		} else if m.orphanDialogForm.State == huh.StateAborted {
+			m.orphanDialogForm = nil
+			m.orphanTarget = nil
+			m.dequeueNextOrphan()
+			return m, tea.Batch(cmds...)
+		}
+		if isTerminalMsg(msg) {
+			return m, tea.Batch(cmds...)
+		}
+	}
+
+	if m.mergeForm != nil {
+		cmds = append(cmds, m.driveHuhForm(&m.mergeForm, msg))
+		if m.mergeForm.State == huh.StateCompleted {
+			cmds = append(cmds, m.executeMergeAction(m.mergeChoice))
+			m.mergeForm = nil
+			return m, tea.Batch(cmds...)
+		} else if m.mergeForm.State == huh.StateAborted {
+			m.mergeForm = nil
+			return m, tea.Batch(cmds...)
+		}
+		if isTerminalMsg(msg) {
+			return m, tea.Batch(cmds...)
+		}
+	}
+
+	if m.queueActionForm != nil {
+		cmds = append(cmds, m.driveHuhForm(&m.queueActionForm, msg))
+		if m.queueActionForm.State == huh.StateCompleted {
+			cmds = append(cmds, m.executeQueueAction(m.queueActionChoice))
+			m.queueActionForm = nil
+			return m, tea.Batch(cmds...)
+		} else if m.queueActionForm.State == huh.StateAborted {
+			m.queueActionForm = nil
+			return m, tea.Batch(cmds...)
+		}
+		if isTerminalMsg(msg) {
+			return m, tea.Batch(cmds...)
+		}
+	}
+
+	if m.actionForm != nil {
+		cmds = append(cmds, m.driveHuhForm(&m.actionForm, msg))
+		if m.actionForm.State == huh.StateCompleted {
+			cmds = append(cmds, m.executeAction(m.actionChoice))
+			m.actionForm = nil
+			return m, tea.Batch(cmds...)
+		} else if m.actionForm.State == huh.StateAborted {
+			m.actionForm = nil
+			return m, tea.Batch(cmds...)
+		}
+		if isTerminalMsg(msg) {
+			return m, tea.Batch(cmds...)
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// Log viewer overlay intercepts all keys
@@ -427,75 +494,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 			return m, nil
-		}
-
-		// Orphan dialog intercepts all keys when open
-		if m.orphanDialogForm != nil {
-			form, cmd := m.orphanDialogForm.Update(msg)
-			if f, ok := form.(*huh.Form); ok {
-				m.orphanDialogForm = f
-			}
-			if m.orphanDialogForm.State == huh.StateCompleted {
-				cmd2 := m.executeOrphanAction(m.orphanDialogChoice)
-				return m, tea.Batch(cmd, cmd2)
-			} else if m.orphanDialogForm.State == huh.StateAborted {
-				m.orphanDialogForm = nil
-				m.orphanTarget = nil
-				m.dequeueNextOrphan()
-				return m, cmd
-			}
-			return m, cmd
-		}
-
-		// Merge menu overlay intercepts keys when open
-		if m.mergeForm != nil {
-			form, cmd := m.mergeForm.Update(msg)
-			if f, ok := form.(*huh.Form); ok {
-				m.mergeForm = f
-			}
-			if m.mergeForm.State == huh.StateCompleted {
-				cmd2 := m.executeMergeAction(m.mergeChoice)
-				m.mergeForm = nil
-				return m, tea.Batch(cmd, cmd2)
-			} else if m.mergeForm.State == huh.StateAborted {
-				m.mergeForm = nil
-				return m, cmd
-			}
-			return m, cmd
-		}
-
-		// Queue action menu overlay intercepts keys when open
-		if m.queueActionForm != nil {
-			form, cmd := m.queueActionForm.Update(msg)
-			if f, ok := form.(*huh.Form); ok {
-				m.queueActionForm = f
-			}
-			if m.queueActionForm.State == huh.StateCompleted {
-				cmd2 := m.executeQueueAction(m.queueActionChoice)
-				m.queueActionForm = nil
-				return m, tea.Batch(cmd, cmd2)
-			} else if m.queueActionForm.State == huh.StateAborted {
-				m.queueActionForm = nil
-				return m, cmd
-			}
-			return m, cmd
-		}
-
-		// Action menu overlay intercepts keys when open
-		if m.actionForm != nil {
-			form, cmd := m.actionForm.Update(msg)
-			if f, ok := form.(*huh.Form); ok {
-				m.actionForm = f
-			}
-			if m.actionForm.State == huh.StateCompleted {
-				cmd2 := m.executeAction(m.actionChoice)
-				m.actionForm = nil
-				return m, tea.Batch(cmd, cmd2)
-			} else if m.actionForm.State == huh.StateAborted {
-				m.actionForm = nil
-				return m, cmd
-			}
-			return m, cmd
 		}
 
 		switch msg.String() {
@@ -554,13 +552,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Open action menu for selected Needs Attention bead
 			if m.focused == PanelNeedsAttention && len(m.needsAttention) > 0 &&
 				m.needsAttnVP.cursor < len(m.needsAttention) {
-				item := m.needsAttention[m.needsAttnVP.cursor]
-				m.actionTarget = &item
+				m.actionTarget = new(NeedsAttentionItem)
+				*m.actionTarget = m.needsAttention[m.needsAttnVP.cursor]
+				item := m.actionTarget
+				// Reset choice to default so reopening doesn't reuse a stale selection.
+				m.actionChoice = ActionRetry
 				m.actionForm = huh.NewForm(
 					huh.NewGroup(
 						huh.NewSelect[ActionMenuChoice]().
 							Title(fmt.Sprintf("Actions for %s", item.BeadID)).
-							Description(item.Title).
+							Description(sanitizeTitle(item.Title)).
 							Options(
 								huh.NewOption("Retry       — Clear flags, put back in queue", ActionRetry),
 								huh.NewOption("Dismiss     — Remove from Needs Attention", ActionDismiss),
@@ -583,10 +584,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.queueExpandedAnvils[nav.anvilName] = !m.queueExpandedAnvils[nav.anvilName]
 						m.rebuildQueueNav()
 					} else if nav.beadIdx >= 0 && nav.beadIdx < len(m.queue) {
-						item := m.queue[nav.beadIdx]
-						if item.Section == "unlabeled" {
-							m.queueActionTarget = &item
-							m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
+						if m.queue[nav.beadIdx].Section == "unlabeled" {
+							m.queueActionTarget = new(QueueItem)
+							*m.queueActionTarget = m.queue[nav.beadIdx]
+							item := m.queueActionTarget
+							// Reset choice to default so reopening doesn't reuse a stale selection.
+							m.queueActionChoice = QueueActionLabel
+							m.queueActionForm = buildQueueActionForm(item, &m.queueActionChoice)
 							m.queueActionForm.Init()
 						}
 					}
@@ -608,9 +612,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Open merge menu for selected Ready to Merge PR
 			if m.focused == PanelReadyToMerge && len(m.readyToMerge) > 0 &&
 				m.readyToMergeVP.cursor < len(m.readyToMerge) {
-				item := m.readyToMerge[m.readyToMergeVP.cursor]
-				m.mergeTarget = &item
-				m.mergeForm = buildMergeForm(&item, &m.mergeChoice)
+				m.mergeTarget = new(ReadyToMergeItem)
+				*m.mergeTarget = m.readyToMerge[m.readyToMergeVP.cursor]
+				item := m.mergeTarget
+				// Reset choice to default so reopening doesn't reuse a stale selection.
+				m.mergeChoice = MergeActionMerge
+				m.mergeForm = buildMergeForm(item, &m.mergeChoice)
 				m.mergeForm.Init()
 			}
 
@@ -618,7 +625,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Label (tag) selected bead in the queue for auto-dispatch
 			if m.focused == PanelQueue {
 				if bead := m.selectedQueueBead(); bead != nil && bead.Section == "unlabeled" {
-					m.queueActionTarget = bead
+					m.queueActionTarget = new(QueueItem)
+					*m.queueActionTarget = *bead
 					cmd := m.executeQueueAction(QueueActionLabel)
 					return m, cmd
 				}
@@ -759,7 +767,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.queue = msg.Items
 		m.rebuildQueueNav()
 		// Close the queue action menu if the target bead is no longer in the unlabeled section.
-		if m.queueActionForm != nil && m.queueActionTarget != nil {
+		if m.queueActionForm != nil {
 			found := false
 			for _, qi := range m.queue {
 				if qi.BeadID == m.queueActionTarget.BeadID && qi.Anvil == m.queueActionTarget.Anvil && qi.Section == "unlabeled" {
@@ -806,7 +814,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, o := range m.orphanQueue {
 			existing[o.Anvil+"/"+o.BeadID] = true
 		}
-		if m.orphanTarget != nil {
+		if m.orphanDialogForm != nil {
 			existing[m.orphanTarget.Anvil+"/"+m.orphanTarget.BeadID] = true
 		}
 		for _, item := range msg.Items {
@@ -1403,8 +1411,7 @@ func (m *Model) selectedQueueBead() *QueueItem {
 	if nav.isAnvil || nav.beadIdx < 0 || nav.beadIdx >= len(m.queue) {
 		return nil
 	}
-	item := m.queue[nav.beadIdx]
-	return &item
+	return &m.queue[nav.beadIdx]
 }
 
 // executeAction runs the selected action menu choice against the target bead.
@@ -1412,7 +1419,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 	if m.actionTarget == nil {
 		return nil
 	}
-	bead := m.actionTarget
+	bead := *m.actionTarget
 	switch choice {
 	case ActionRetry:
 		if m.OnRetryBead != nil {
@@ -1486,8 +1493,15 @@ func (m *Model) dequeueNextOrphan() {
 	}
 	item := m.orphanQueue[0]
 	m.orphanQueue = m.orphanQueue[1:]
-	m.orphanTarget = &item
-	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
+
+	// Store a stable heap-allocated copy of the item for the dialog target.
+	m.orphanTarget = new(PendingOrphanItem)
+	*m.orphanTarget = item
+
+	// Always start each orphan dialog with the default choice (Recover)
+	m.orphanDialogChoice = OrphanActionRecover
+
+	m.orphanDialogForm = buildOrphanDialogForm(m.orphanTarget, &m.orphanDialogChoice)
 	m.orphanDialogForm.Init()
 }
 
@@ -1519,7 +1533,7 @@ func (m *Model) renderOrphanDialog() string {
 	sb.WriteString(fmt.Sprintf("Orphan Worker Detected: %s", item.BeadID))
 
 	if item.Title != "" {
-		wrapped := wordWrap(item.Title, maxWidth)
+		wrapped := wordWrap(sanitizeTitle(item.Title), maxWidth)
 		for _, line := range wrapped {
 			sb.WriteByte('\n')
 			sb.WriteString(line)
@@ -1542,10 +1556,9 @@ func (m *Model) renderOrphanDialog() string {
 // executeOrphanAction sends the user's resolution choice to the daemon.
 func (m *Model) executeOrphanAction(choice OrphanDialogChoice) tea.Cmd {
 	if m.orphanTarget == nil {
-		m.orphanDialogForm = nil
 		return nil
 	}
-	target := m.orphanTarget
+	target := *m.orphanTarget
 	m.orphanDialogForm = nil
 	m.orphanTarget = nil
 	m.dequeueNextOrphan()
@@ -1604,7 +1617,7 @@ func (m *Model) tagSelectedQueueItem() tea.Cmd {
 	if m.queueActionTarget == nil {
 		return nil
 	}
-	item := m.queueActionTarget
+	item := *m.queueActionTarget
 	if m.OnTagBead == nil {
 		m.setStatus(fmt.Sprintf("Label action unavailable for %s", item.BeadID), false)
 		return nil
@@ -1622,7 +1635,7 @@ func (m *Model) closeSelectedQueueItem() tea.Cmd {
 	if m.queueActionTarget == nil {
 		return nil
 	}
-	item := m.queueActionTarget
+	item := *m.queueActionTarget
 	if m.OnCloseBead == nil {
 		m.setStatus(fmt.Sprintf("Close action unavailable for %s", item.BeadID), false)
 		return nil
@@ -1664,7 +1677,7 @@ func (m *Model) renderMergeMenu() string {
 	sb.WriteString(fmt.Sprintf("Actions for %s — PR #%d", item.BeadID, item.PRNumber))
 
 	if item.Title != "" {
-		wrapped := wordWrap(item.Title, maxWidth)
+		wrapped := wordWrap(sanitizeTitle(item.Title), maxWidth)
 		if len(wrapped) > maxTitleLines {
 			last := []rune(wrapped[maxTitleLines-1])
 			if len(last) > maxWidth-3 {
@@ -1714,7 +1727,7 @@ func (m *Model) renderQueueActionMenu() string {
 	sb.WriteString(fmt.Sprintf("Actions for %s", item.BeadID))
 
 	if item.Title != "" {
-		wrapped := wordWrap(item.Title, maxWidth)
+		wrapped := wordWrap(sanitizeTitle(item.Title), maxWidth)
 		if len(wrapped) > maxTitleLines {
 			last := []rune(wrapped[maxTitleLines-1])
 			if len(last) > maxWidth-3 {
@@ -1729,7 +1742,7 @@ func (m *Model) renderQueueActionMenu() string {
 	}
 
 	if item.Description != "" {
-		wrapped := wordWrap(item.Description, maxWidth)
+		wrapped := wordWrap(sanitizeTitle(item.Description), maxWidth)
 		if len(wrapped) > maxDescLines {
 			last := []rune(wrapped[maxDescLines-1])
 			if len(last) > maxWidth-3 {
@@ -1748,6 +1761,29 @@ func (m *Model) renderQueueActionMenu() string {
 	return actionMenuStyle.Render(sb.String())
 }
 
+
+// executeMergeAction returns a tea.Cmd that runs the merge IPC call asynchronously,
+// keeping the Bubbletea UI responsive during the (potentially 60s) operation.
+func (m *Model) executeMergeAction(choice MergeMenuChoice) tea.Cmd {
+	if m.mergeTarget == nil {
+		return nil
+	}
+	pr := m.mergeTarget
+	switch choice {
+	case MergeActionMerge:
+		if m.OnMergePR == nil {
+			m.setStatus(fmt.Sprintf("Merge action unavailable for PR #%d", pr.PRNumber), false)
+			return nil
+		}
+		m.setStatus(fmt.Sprintf("Merging PR #%d…", pr.PRNumber), false)
+		prID, prNumber, anvil := pr.PRID, pr.PRNumber, pr.Anvil
+		cb := m.OnMergePR
+		return func() tea.Msg {
+			return MergeResultMsg{PRNumber: prNumber, Err: cb(prID, prNumber, anvil)}
+		}
+	}
+	return nil
+}
 
 func (m *Model) logViewerDimensions() (int, int) {
 	viewerWidth := m.width - 8
@@ -2280,29 +2316,6 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 type MergeResultMsg struct {
 	PRNumber int
 	Err      error
-}
-
-// executeMergeAction returns a tea.Cmd that runs the merge IPC call asynchronously,
-// keeping the Bubbletea UI responsive during the (potentially 60s) operation.
-func (m *Model) executeMergeAction(choice MergeMenuChoice) tea.Cmd {
-	if m.mergeTarget == nil {
-		return nil
-	}
-	pr := m.mergeTarget
-	switch choice {
-	case MergeActionMerge:
-		if m.OnMergePR == nil {
-			m.setStatus(fmt.Sprintf("Merge action unavailable for PR #%d", pr.PRNumber), false)
-			return nil
-		}
-		m.setStatus(fmt.Sprintf("Merging PR #%d…", pr.PRNumber), false)
-		prID, prNumber, anvil := pr.PRID, pr.PRNumber, pr.Anvil
-		cb := m.OnMergePR
-		return func() tea.Msg {
-			return MergeResultMsg{PRNumber: prNumber, Err: cb(prID, prNumber, anvil)}
-		}
-	}
-	return nil
 }
 
 // renderWorkers delegates to renderWorkerList for the center column.
@@ -3446,4 +3459,26 @@ func wordWrap(s string, maxWidth int) []string {
 		return []string{""}
 	}
 	return result
+}
+
+// driveHuhForm is a helper that processes a message against a huh form and
+// updates the form pointer with the result. It returns the tea.Cmd from the update.
+func (m *Model) driveHuhForm(form **huh.Form, msg tea.Msg) tea.Cmd {
+	f, cmd := (*form).Update(msg)
+	*form = f.(*huh.Form)
+	if cmd != nil {
+		// Synchronously drive the command if it's a simple one (not a batch)
+		// This helps huh reach Completed state in one turn for simple selects.
+		return cmd
+	}
+	return nil
+}
+
+// isTerminalMsg returns true if the message is a user input event (key or mouse).
+func isTerminalMsg(msg tea.Msg) bool {
+	switch msg.(type) {
+	case tea.KeyMsg, tea.MouseMsg:
+		return true
+	}
+	return false
 }
