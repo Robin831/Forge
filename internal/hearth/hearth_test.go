@@ -953,6 +953,11 @@ func TestParseWorkerActivityMultiLineText(t *testing.T) {
 	}
 }
 
+func initTestQueue(m *Model) {
+	m.queueList = list.New([]list.Item{}, queueListDelegate{}, 0, 0)
+	m.rebuildQueueNav()
+}
+
 func TestEnterOnUnlabeledQueueItemOpensMenu(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
@@ -961,8 +966,8 @@ func TestEnterOnUnlabeledQueueItemOpensMenu(t *testing.T) {
 		queue: []QueueItem{
 			{BeadID: "bd-1", Anvil: "test", Section: "unlabeled"},
 		},
-		queueVP: scrollViewport{cursor: 0},
 	}
+	initTestQueue(&m)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.queueActionForm == nil {
 		t.Error("expected queueActionForm!=nil after Enter on unlabeled item")
@@ -980,8 +985,8 @@ func TestEnterOnReadyQueueItemDoesNotOpenMenu(t *testing.T) {
 		queue: []QueueItem{
 			{BeadID: "bd-2", Anvil: "test", Section: "ready"},
 		},
-		queueVP: scrollViewport{cursor: 0},
 	}
+	initTestQueue(&m)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.queueActionForm != nil {
 		t.Error("expected queueActionForm==nil for ready (non-unlabeled) item")
@@ -997,13 +1002,13 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 		queue: []QueueItem{
 			{BeadID: "bd-3", Anvil: "forge", Section: "unlabeled"},
 		},
-		queueVP: scrollViewport{cursor: 0},
 		OnTagBead: func(beadID, anvil string) error {
 			taggedBead = beadID
 			taggedAnvil = anvil
 			return nil
 		},
 	}
+	initTestQueue(&m)
 	// Open the menu
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_ = drainHuh(&m, cmd)
@@ -1039,11 +1044,11 @@ func TestQueueActionMenuLabelOnTagBeadError(t *testing.T) {
 		queue: []QueueItem{
 			{BeadID: "bd-4", Anvil: "forge", Section: "unlabeled"},
 		},
-		queueVP: scrollViewport{cursor: 0},
 		OnTagBead: func(beadID, anvil string) error {
 			return errors.New("network error")
 		},
 	}
+	initTestQueue(&m)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	cmd = drainHuh(&m, cmd)
@@ -1066,13 +1071,13 @@ func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
 		queue: []QueueItem{
 			{BeadID: "bd-close-1", Anvil: "forge", Section: "unlabeled"},
 		},
-		queueVP: scrollViewport{cursor: 0},
 		OnCloseBead: func(beadID, anvil string) error {
 			closedBead = beadID
 			closedAnvil = anvil
 			return nil
 		},
 	}
+	initTestQueue(&m)
 	// Open the menu
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_ = drainHuh(&m, cmd)
@@ -1107,11 +1112,11 @@ func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
 		queue: []QueueItem{
 			{BeadID: "bd-close-2", Anvil: "forge", Section: "unlabeled"},
 		},
-		queueVP: scrollViewport{cursor: 0},
 		OnCloseBead: func(beadID, anvil string) error {
 			return errors.New("bd close failed")
 		},
 	}
+	initTestQueue(&m)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1134,9 +1139,9 @@ func TestQueueActionMenuCloseNilOnCloseBead(t *testing.T) {
 		queue: []QueueItem{
 			{BeadID: "bd-close-3", Anvil: "forge", Section: "unlabeled"},
 		},
-		queueVP: scrollViewport{cursor: 0},
 		// OnCloseBead intentionally nil
 	}
+	initTestQueue(&m)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1838,8 +1843,8 @@ func TestEnterTogglesAnvilExpansion(t *testing.T) {
 			{BeadID: "bd-1", Anvil: "alpha"},
 			{BeadID: "bd-2", Anvil: "beta"},
 		},
-		queueVP: scrollViewport{cursor: 0},
 	}
+	initTestQueue(&m)
 	// First Enter: expand alpha
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if !m.queueExpandedAnvils["alpha"] {
@@ -1850,7 +1855,7 @@ func TestEnterTogglesAnvilExpansion(t *testing.T) {
 		t.Fatalf("expected 3 nav items after expand, got %d", len(m.queueNavItems))
 	}
 	// Second Enter on alpha header: collapse
-	m.queueVP.cursor = 0
+	m.queueList.Select(0)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.queueExpandedAnvils["alpha"] {
 		t.Error("expected alpha to be collapsed after second Enter")
@@ -1872,16 +1877,16 @@ func TestEscCollapsesToAnvilHeader(t *testing.T) {
 		},
 		queueExpandedAnvils: map[string]bool{"alpha": true},
 	}
-	m.rebuildQueueNav()
+	initTestQueue(&m)
 	// Cursor on a bead inside alpha (index 1 = first bead under alpha)
-	m.queueVP.cursor = 1
+	m.queueList.Select(1)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.queueExpandedAnvils["alpha"] {
 		t.Error("expected alpha to be collapsed after Esc")
 	}
 	// Cursor should jump to alpha header
-	if m.queueVP.cursor != 0 {
-		t.Errorf("expected cursor at 0 (alpha header), got %d", m.queueVP.cursor)
+	if m.queueList.Index() != 0 {
+		t.Errorf("expected cursor at 0 (alpha header), got %d", m.queueList.Index())
 	}
 }
 
@@ -1890,9 +1895,9 @@ func TestSelectedQueueBead_DirectQueueSet_NoExplicitNav(t *testing.T) {
 		queue: []QueueItem{
 			{BeadID: "bd-1", Anvil: "test", Section: "ready"},
 		},
-		queueVP: scrollViewport{cursor: 0},
 		// queueNavItems intentionally not built — selectedQueueBead should handle it
 	}
+	initTestQueue(&m)
 	bead := m.selectedQueueBead()
 	if bead == nil {
 		t.Fatal("expected selectedQueueBead to return a bead after lazy nav build")
@@ -2028,15 +2033,15 @@ func TestCursorClampedOnCollapse(t *testing.T) {
 		},
 		queueExpandedAnvils: map[string]bool{"alpha": true, "beta": true},
 	}
-	m.rebuildQueueNav()
+	initTestQueue(&m)
 	// alpha header, bd-1, bd-2, beta header, bd-3 = 5 items
-	m.queueVP.cursor = 4 // pointing at bd-3
+	m.queueList.Select(4) // pointing at bd-3
 	// Collapse beta via Esc
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	// After collapse: alpha header, bd-1, bd-2, beta header = 4 items
 	// Cursor should be at beta header (index 3)
-	if m.queueVP.cursor >= len(m.queueNavItems) {
-		t.Errorf("cursor %d out of range (nav has %d items)", m.queueVP.cursor, len(m.queueNavItems))
+	if m.queueList.Index() >= len(m.queueNavItems) {
+		t.Errorf("cursor %d out of range (nav has %d items)", m.queueList.Index(), len(m.queueNavItems))
 	}
 }
 

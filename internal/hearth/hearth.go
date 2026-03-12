@@ -1692,6 +1692,7 @@ func (m *Model) ensureQueueNav() {
 // selectedQueueBead returns the QueueItem under the cursor, or nil if the
 // cursor is on a header or out of range.
 func (m *Model) selectedQueueBead() *QueueItem {
+	m.ensureQueueNav()
 	if item, ok := m.queueList.SelectedItem().(queueListItem); ok {
 		nav := item.nav
 		if nav.isAnvil || nav.isSection || nav.beadIdx < 0 || nav.beadIdx >= len(m.queue) {

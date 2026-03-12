@@ -40,6 +40,10 @@ var (
 		key.WithKeys("l"),
 		key.WithHelp("l", "label for dispatch"),
 	)
+	keyFilter = key.NewBinding(
+		key.WithKeys("/"),
+		key.WithHelp("/", "filter"),
+	)
 	keyFollow = key.NewBinding(
 		key.WithKeys("f"),
 		key.WithHelp("f", "follow latest"),
@@ -75,11 +79,11 @@ var (
 type queueKeyMap struct{ m *Model }
 
 func (k queueKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyFilter, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k queueKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel},
+		{keyScroll, keyFilter, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }

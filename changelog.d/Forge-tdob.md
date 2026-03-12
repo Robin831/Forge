@@ -1,2 +1,2 @@
-category: Changed
-- **Hearth Queue panel now uses Bubbles list component** - Replaced manual queue rendering with the charmbracelet/bubbles list component, adding fuzzy filtering (press `/` to filter), pagination, and improved scrolling while maintaining anvil grouping and section headers. (Forge-tdob)
+category: Added
+- **Hearth: Use Bubbles list component for Queue panel** - Replaced the manual queue rendering with the charmbracelet/bubbles list component, providing built-in fuzzy filtering and improved navigation while maintaining anvil grouping. (Forge-tdob)
