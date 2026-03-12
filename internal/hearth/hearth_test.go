@@ -2818,22 +2818,23 @@ func TestOpenNotesOverlayFromNeedsAttention(t *testing.T) {
 }
 
 func TestSubmitNotes(t *testing.T) {
-	var capturedID, capturedNotes string
+	var capturedID, capturedAnvil, capturedNotes string
 	m := NewModel(nil)
-	m.OnAppendNotes = func(beadID, notes string) error {
+	m.OnAppendNotes = func(beadID, anvil, notes string) error {
 		capturedID = beadID
+		capturedAnvil = anvil
 		capturedNotes = notes
 		return nil
 	}
-	m.openNotesOverlay("Forge-1", "test", "Title")
+	m.openNotesOverlay("Forge-1", "test-anvil", "Title")
 	m.notesTA.SetValue("These are my notes")
 
-	// Press Ctrl+S to submit
-	m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	// Press Ctrl+D to submit
+	m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 	model := m2.(*Model)
 
-	if model.showNotesOverlay {
-		t.Error("expected showNotesOverlay to be false after submission")
+	if !model.showNotesOverlay {
+		t.Error("expected showNotesOverlay to remain true during async submission")
 	}
 	if cmd == nil {
 		t.Fatal("expected a command to be returned for async submission")
@@ -2848,8 +2849,15 @@ func TestSubmitNotes(t *testing.T) {
 	if res.BeadID != "Forge-1" {
 		t.Errorf("expected result for Forge-1, got %s", res.BeadID)
 	}
-	if capturedID != "Forge-1" || capturedNotes != "These are my notes" {
-		t.Errorf("callback captured wrong data: %s, %s", capturedID, capturedNotes)
+	if capturedID != "Forge-1" || capturedAnvil != "test-anvil" || capturedNotes != "These are my notes" {
+		t.Errorf("callback captured wrong data: %s, %s, %s", capturedID, capturedAnvil, capturedNotes)
+	}
+
+	// After the result message arrives, the model should clear state on success
+	m3, _ := model.Update(res)
+	finalModel := m3.(*Model)
+	if finalModel.showNotesOverlay {
+		t.Error("expected showNotesOverlay to be false after successful result")
 	}
 }
 
@@ -2904,7 +2912,7 @@ func TestNotesOverlayView(t *testing.T) {
 	if !strings.Contains(view, "My Bead Title") {
 		t.Errorf("view missing bead title:\n%s", view)
 	}
-	if !strings.Contains(view, "Ctrl+S: save") {
+	if !strings.Contains(view, "Ctrl+D: save") {
 		t.Errorf("view missing hint line:\n%s", view)
 	}
 }

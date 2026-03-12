@@ -241,8 +241,19 @@ var hearthCmd = &cobra.Command{
 			return nil
 		}
 
-		model.OnAppendNotes = func(beadID, notes string) error {
+		model.OnAppendNotes = func(beadID, anvil, notes string) error {
+			// Find anvil path.
+			var anvilPath string
+			if a, ok := cfg.Anvils[anvil]; ok {
+				anvilPath = a.Path
+			}
+			if anvilPath == "" {
+				// Fallback to current dir if anvil not found (unlikely).
+				anvilPath = "."
+			}
+
 			cmd := exec.Command("bd", "update", "--", beadID, "--append-notes", notes)
+			cmd.Dir = anvilPath
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				return fmt.Errorf("bd update %s --append-notes: %w: %s", beadID, err, out)

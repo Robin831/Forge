@@ -267,8 +267,8 @@ type Model struct {
 	OnResolveOrphan func(beadID, anvil, action string) error
 
 	// Callback for appending notes to a bead via bd update --append-notes (set by caller).
-	// Called with (beadID, notes).
-	OnAppendNotes func(beadID, notes string) error
+	// Called with (beadID, anvil, notes).
+	OnAppendNotes func(beadID, anvil, notes string) error
 
 	// State
 	focused          Panel
@@ -532,7 +532,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showNotesOverlay = false
 				m.notesTarget = nil
 				m.notesTA = textarea.Model{}
-			case "ctrl+s":
+			case "ctrl+d":
 				cmd := m.submitNotes()
 				return m, cmd
 			default:
@@ -1105,6 +1105,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus(fmt.Sprintf("Failed to save notes for %s: %v", msg.BeadID, msg.Err), true)
 		} else {
 			m.setStatus(fmt.Sprintf("Notes saved for %s", msg.BeadID), false)
+			// Success: hide and clear the notes overlay.
+			m.showNotesOverlay = false
+			m.notesTarget = nil
+			m.notesTA = textarea.Model{}
 		}
 
 	case TickMsg:
@@ -2012,7 +2016,8 @@ func (m *Model) openNotesOverlay(beadID, anvil, title string) {
 	m.showNotesOverlay = true
 }
 
-// submitNotes saves the textarea content via OnAppendNotes and closes the overlay.
+// submitNotes saves the textarea content via OnAppendNotes and returns a command.
+// The overlay is only cleared in the Update loop upon successful completion.
 func (m *Model) submitNotes() tea.Cmd {
 	if m.notesTarget == nil {
 		m.showNotesOverlay = false
@@ -2034,11 +2039,9 @@ func (m *Model) submitNotes() tea.Cmd {
 	}
 	target := m.notesTarget
 	cb := m.OnAppendNotes
-	m.showNotesOverlay = false
-	m.notesTarget = nil
-	m.notesTA = textarea.Model{}
+	// We do NOT clear showNotesOverlay/notesTA here; we wait for success in Update.
 	return func() tea.Msg {
-		return NotesResultMsg{BeadID: target.BeadID, Err: cb(target.BeadID, notes)}
+		return NotesResultMsg{BeadID: target.BeadID, Err: cb(target.BeadID, target.Anvil, notes)}
 	}
 }
 
@@ -2067,7 +2070,7 @@ func (m *Model) renderNotesOverlay() string {
 	lines = append(lines, actionMenuTitleStyle.Render(truncate(titleLine, contentWidth)))
 	lines = append(lines, m.notesTA.View())
 	lines = append(lines, "")
-	lines = append(lines, dimStyle.Render("Ctrl+S: save • Esc: cancel"))
+	lines = append(lines, dimStyle.Render("Ctrl+D: save • Esc: cancel"))
 
 	content := strings.Join(lines, "\n")
 	return logViewerStyle.Width(overlayWidth).Height(overlayHeight).Render(content)
