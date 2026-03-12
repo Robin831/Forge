@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
@@ -281,25 +282,25 @@ type Model struct {
 	ready            bool
 
 	// Action menu overlay state (Needs Attention)
-	showActionMenu bool
-	actionMenuIdx  int
-	actionTarget   *NeedsAttentionItem // bead the menu is open for
+	actionForm   *huh.Form
+	actionChoice ActionMenuChoice
+	actionTarget *NeedsAttentionItem // bead the menu is open for
 
 	// Queue action menu overlay state (Unlabeled beads)
-	showQueueActionMenu bool
-	queueActionMenuIdx  int
-	queueActionTarget   *QueueItem // bead the queue menu is open for
+	queueActionForm   *huh.Form
+	queueActionChoice QueueActionMenuChoice
+	queueActionTarget *QueueItem // bead the queue menu is open for
 
 	// Merge menu overlay state
-	showMergeMenu bool
-	mergeMenuIdx  int
-	mergeTarget   *ReadyToMergeItem
+	mergeForm   *huh.Form
+	mergeChoice MergeMenuChoice
+	mergeTarget *ReadyToMergeItem
 
 	// Orphan dialog overlay state — shown when orphaned beads need user decision.
-	orphanQueue      []PendingOrphanItem // beads awaiting user decision
-	showOrphanDialog bool
-	orphanDialogIdx  int
-	orphanTarget     *PendingOrphanItem // bead currently shown in dialog
+	orphanQueue        []PendingOrphanItem // beads awaiting user decision
+	orphanDialogForm   *huh.Form
+	orphanDialogChoice OrphanDialogChoice
+	orphanTarget       *PendingOrphanItem // bead currently shown in dialog
 
 	// Log viewer overlay state
 	showLogViewer  bool
@@ -428,76 +429,73 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Action menu overlay intercepts keys when open
-		if m.showActionMenu {
-			switch msg.String() {
-			case "esc", "q":
-				m.showActionMenu = false
-			case "j", "down":
-				m.actionMenuIdx = (m.actionMenuIdx + 1) % int(actionMenuCount)
-			case "k", "up":
-				m.actionMenuIdx = (m.actionMenuIdx + int(actionMenuCount) - 1) % int(actionMenuCount)
-			case "enter":
-				cmd := m.executeAction(ActionMenuChoice(m.actionMenuIdx))
-				m.showActionMenu = false
+		// Orphan dialog intercepts all keys when open
+		if m.orphanDialogForm != nil {
+			form, cmd := m.orphanDialogForm.Update(msg)
+			if f, ok := form.(*huh.Form); ok {
+				m.orphanDialogForm = f
+			}
+			if m.orphanDialogForm.State == huh.StateCompleted {
+				cmd2 := m.executeOrphanAction(m.orphanDialogChoice)
+				return m, tea.Batch(cmd, cmd2)
+			} else if m.orphanDialogForm.State == huh.StateAborted {
+				m.orphanDialogForm = nil
+				m.orphanTarget = nil
+				m.dequeueNextOrphan()
 				return m, cmd
 			}
-			return m, nil
-		}
-
-		// Queue action menu overlay intercepts keys when open
-		if m.showQueueActionMenu {
-			switch msg.String() {
-			case "esc", "q":
-				m.showQueueActionMenu = false
-			case "j", "down":
-				m.queueActionMenuIdx = (m.queueActionMenuIdx + 1) % int(queueActionMenuCount)
-			case "k", "up":
-				m.queueActionMenuIdx = (m.queueActionMenuIdx + int(queueActionMenuCount) - 1) % int(queueActionMenuCount)
-			case "enter":
-				cmd := m.executeQueueAction(QueueActionMenuChoice(m.queueActionMenuIdx))
-				m.showQueueActionMenu = false
-				return m, cmd
-			}
-			return m, nil
+			return m, cmd
 		}
 
 		// Merge menu overlay intercepts keys when open
-		if m.showMergeMenu {
-			switch msg.String() {
-			case "esc", "q":
-				m.showMergeMenu = false
-			case "j", "down":
-				m.mergeMenuIdx = (m.mergeMenuIdx + 1) % int(mergeMenuCount)
-			case "k", "up":
-				m.mergeMenuIdx = (m.mergeMenuIdx + int(mergeMenuCount) - 1) % int(mergeMenuCount)
-			case "enter":
-				cmd := m.executeMergeAction(MergeMenuChoice(m.mergeMenuIdx))
-				m.showMergeMenu = false
+		if m.mergeForm != nil {
+			form, cmd := m.mergeForm.Update(msg)
+			if f, ok := form.(*huh.Form); ok {
+				m.mergeForm = f
+			}
+			if m.mergeForm.State == huh.StateCompleted {
+				cmd2 := m.executeMergeAction(m.mergeChoice)
+				m.mergeForm = nil
+				return m, tea.Batch(cmd, cmd2)
+			} else if m.mergeForm.State == huh.StateAborted {
+				m.mergeForm = nil
 				return m, cmd
 			}
-			return m, nil
+			return m, cmd
 		}
 
-		// Orphan dialog intercepts all keys when open
-		if m.showOrphanDialog {
-			switch msg.String() {
-			case "ctrl+c":
-				return m, tea.Quit
-			case "j", "down":
-				m.orphanDialogIdx = (m.orphanDialogIdx + 1) % int(orphanDialogChoiceCount)
-			case "k", "up":
-				m.orphanDialogIdx = (m.orphanDialogIdx + int(orphanDialogChoiceCount) - 1) % int(orphanDialogChoiceCount)
-			case "enter":
-				cmd := m.executeOrphanAction(OrphanDialogChoice(m.orphanDialogIdx))
-				return m, cmd
-			case "esc", "q":
-				// Esc = skip this orphan for now; it will reappear on the next poll.
-				m.showOrphanDialog = false
-				m.orphanTarget = nil
-				m.dequeueNextOrphan()
+		// Queue action menu overlay intercepts keys when open
+		if m.queueActionForm != nil {
+			form, cmd := m.queueActionForm.Update(msg)
+			if f, ok := form.(*huh.Form); ok {
+				m.queueActionForm = f
 			}
-			return m, nil
+			if m.queueActionForm.State == huh.StateCompleted {
+				cmd2 := m.executeQueueAction(m.queueActionChoice)
+				m.queueActionForm = nil
+				return m, tea.Batch(cmd, cmd2)
+			} else if m.queueActionForm.State == huh.StateAborted {
+				m.queueActionForm = nil
+				return m, cmd
+			}
+			return m, cmd
+		}
+
+		// Action menu overlay intercepts keys when open
+		if m.actionForm != nil {
+			form, cmd := m.actionForm.Update(msg)
+			if f, ok := form.(*huh.Form); ok {
+				m.actionForm = f
+			}
+			if m.actionForm.State == huh.StateCompleted {
+				cmd2 := m.executeAction(m.actionChoice)
+				m.actionForm = nil
+				return m, tea.Batch(cmd, cmd2)
+			} else if m.actionForm.State == huh.StateAborted {
+				m.actionForm = nil
+				return m, cmd
+			}
+			return m, cmd
 		}
 
 		switch msg.String() {
@@ -558,8 +556,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.needsAttnVP.cursor < len(m.needsAttention) {
 				item := m.needsAttention[m.needsAttnVP.cursor]
 				m.actionTarget = &item
-				m.actionMenuIdx = 0
-				m.showActionMenu = true
+				m.actionForm = huh.NewForm(
+					huh.NewGroup(
+						huh.NewSelect[ActionMenuChoice]().
+							Title(fmt.Sprintf("Actions for %s", item.BeadID)).
+							Description(item.Title).
+							Options(
+								huh.NewOption("Retry       — Clear flags, put back in queue", ActionRetry),
+								huh.NewOption("Dismiss     — Remove from Needs Attention", ActionDismiss),
+								huh.NewOption("View Logs   — Show last worker log", ActionViewLogs),
+							).
+							Value(&m.actionChoice),
+					),
+				).WithTheme(huh.ThemeCharm())
+				m.actionForm.Init()
 			}
 			// Queue panel: toggle anvil expand/collapse or open action menu for unlabeled beads
 			if m.focused == PanelQueue {
@@ -576,8 +586,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						item := m.queue[nav.beadIdx]
 						if item.Section == "unlabeled" {
 							m.queueActionTarget = &item
-							m.queueActionMenuIdx = 0
-							m.showQueueActionMenu = true
+							desc := item.Title
+							if item.Description != "" {
+								desc += "\n\n" + item.Description
+							}
+							m.queueActionForm = huh.NewForm(
+								huh.NewGroup(
+									huh.NewSelect[QueueActionMenuChoice]().
+										Title(fmt.Sprintf("Actions for %s", item.BeadID)).
+										Description(desc).
+										Options(
+											huh.NewOption("Label for dispatch — Tag bead for auto-dispatch", QueueActionLabel),
+											huh.NewOption("Close             — Close this bead", QueueActionClose),
+										).
+										Value(&m.queueActionChoice),
+								),
+							).WithTheme(huh.ThemeCharm())
+							m.queueActionForm.Init()
 						}
 					}
 				}
@@ -600,8 +625,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.readyToMergeVP.cursor < len(m.readyToMerge) {
 				item := m.readyToMerge[m.readyToMergeVP.cursor]
 				m.mergeTarget = &item
-				m.mergeMenuIdx = 0
-				m.showMergeMenu = true
+				m.mergeForm = huh.NewForm(
+					huh.NewGroup(
+						huh.NewSelect[MergeMenuChoice]().
+							Title(fmt.Sprintf("Actions for PR #%d", item.PRNumber)).
+							Description(item.Title).
+							Options(
+								huh.NewOption("Merge — Merge this PR", MergeActionMerge),
+							).
+							Value(&m.mergeChoice),
+					),
+				).WithTheme(huh.ThemeCharm())
+				m.mergeForm.Init()
 			}
 
 		case "l":
@@ -693,16 +728,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		// Orphan dialog requires explicit keyboard action; consume all mouse events.
-		if m.showOrphanDialog {
+		if m.orphanDialogForm != nil {
 			return m, nil
 		}
 		// Dismiss overlays on left or right mouse button press
 		if msg.Action == tea.MouseActionPress &&
 			(msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight) {
-			if m.showActionMenu || m.showQueueActionMenu || m.showMergeMenu {
-				m.showActionMenu = false
-				m.showQueueActionMenu = false
-				m.showMergeMenu = false
+			if m.actionForm != nil || m.queueActionForm != nil || m.mergeForm != nil || m.orphanDialogForm != nil {
+				m.actionForm = nil
+				m.queueActionForm = nil
+				m.mergeForm = nil
+				m.orphanDialogForm = nil
 				return m, nil
 			}
 		}
@@ -748,7 +784,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.queue = msg.Items
 		m.rebuildQueueNav()
 		// Close the queue action menu if the target bead is no longer in the unlabeled section.
-		if m.showQueueActionMenu && m.queueActionTarget != nil {
+		if m.queueActionForm != nil && m.queueActionTarget != nil {
 			found := false
 			for _, qi := range m.queue {
 				if qi.BeadID == m.queueActionTarget.BeadID && qi.Anvil == m.queueActionTarget.Anvil && qi.Section == "unlabeled" {
@@ -757,7 +793,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if !found {
-				m.showQueueActionMenu = false
+				m.queueActionForm = nil
 				m.queueActionTarget = nil
 			}
 		}
@@ -804,7 +840,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		// Show dialog if not already visible and we have queued orphans.
-		if !m.showOrphanDialog && len(m.orphanQueue) > 0 {
+		if m.orphanDialogForm == nil && len(m.orphanQueue) > 0 {
 			m.dequeueNextOrphan()
 		}
 
@@ -1087,17 +1123,17 @@ func (m *Model) View() string {
 	} else if m.showDescriptionViewer {
 		overlay := m.renderDescriptionViewer()
 		view = placeOverlay(m.width, m.height, overlay, view)
-	} else if m.showOrphanDialog {
-		overlay := m.renderOrphanDialog()
+	} else if m.orphanDialogForm != nil {
+		overlay := actionMenuStyle.Render(m.orphanDialogForm.View())
 		view = placeOverlay(m.width, m.height, overlay, view)
-	} else if m.showActionMenu {
-		overlay := m.renderActionMenu()
+	} else if m.actionForm != nil {
+		overlay := actionMenuStyle.Render(m.actionForm.View())
 		view = placeOverlay(m.width, m.height, overlay, view)
-	} else if m.showQueueActionMenu {
-		overlay := m.renderQueueActionMenu()
+	} else if m.queueActionForm != nil {
+		overlay := actionMenuStyle.Render(m.queueActionForm.View())
 		view = placeOverlay(m.width, m.height, overlay, view)
-	} else if m.showMergeMenu {
-		overlay := m.renderMergeMenu()
+	} else if m.mergeForm != nil {
+		overlay := actionMenuStyle.Render(m.mergeForm.View())
 		view = placeOverlay(m.width, m.height, overlay, view)
 	}
 
@@ -1463,69 +1499,49 @@ func (m *Model) removeNeedsAttentionItem(beadID, anvil string) {
 	}
 }
 
-// renderActionMenu renders the action menu overlay centered on screen.
-func (m *Model) renderActionMenu() string {
-	if m.actionTarget == nil {
-		return ""
-	}
 
-	menuWidth := 52
-	contentWidth := menuWidth - actionMenuStyle.GetHorizontalFrameSize()
-	labels := actionMenuLabels()
-
-	var lines []string
-	title := fmt.Sprintf("Actions for %s", m.actionTarget.BeadID)
-	lines = append(lines, actionMenuTitleStyle.Render(title))
-
-	if m.actionTarget.Title != "" {
-		lines = append(lines, dimStyle.Render(truncate(m.actionTarget.Title, contentWidth)))
-	}
-
-	lines = append(lines, "")
-
-	for i, label := range labels {
-		cursor := "  "
-		if i == m.actionMenuIdx {
-			cursor = "> "
-			label = actionMenuSelectedStyle.Render(label)
-		} else {
-			label = dimStyle.Render(label)
-		}
-		lines = append(lines, cursor+label)
-	}
-
-	lines = append(lines, "")
-	lines = append(lines, dimStyle.Render("Enter: select • Esc: close"))
-
-	content := strings.Join(lines, "\n")
-	popup := actionMenuStyle.Width(menuWidth).Render(content)
-
-	return popup
-}
 
 // dequeueNextOrphan shows the next orphan from the queue, or hides the dialog
 // if the queue is empty.
 func (m *Model) dequeueNextOrphan() {
 	if len(m.orphanQueue) == 0 {
-		m.showOrphanDialog = false
+		m.orphanDialogForm = nil
 		m.orphanTarget = nil
 		return
 	}
 	item := m.orphanQueue[0]
 	m.orphanQueue = m.orphanQueue[1:]
 	m.orphanTarget = &item
-	m.orphanDialogIdx = 0
-	m.showOrphanDialog = true
+	
+	desc := "No active worker found. What should happen?"
+	if item.Title != "" {
+		desc = item.Title + "\n\n" + desc
+	}
+
+	m.orphanDialogForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[OrphanDialogChoice]().
+				Title(fmt.Sprintf("Orphan Worker Detected: %s", item.BeadID)).
+				Description(desc).
+				Options(
+					huh.NewOption("Recover — reopen and re-queue for work", OrphanActionRecover),
+					huh.NewOption("Close   — mark done (work already completed)", OrphanActionClose),
+					huh.NewOption("Discard — close without retry", OrphanActionDiscard),
+				).
+				Value(&m.orphanDialogChoice),
+		),
+	).WithTheme(huh.ThemeCharm())
+	m.orphanDialogForm.Init()
 }
 
 // executeOrphanAction sends the user's resolution choice to the daemon.
 func (m *Model) executeOrphanAction(choice OrphanDialogChoice) tea.Cmd {
 	if m.orphanTarget == nil {
-		m.showOrphanDialog = false
+		m.orphanDialogForm = nil
 		return nil
 	}
 	target := m.orphanTarget
-	m.showOrphanDialog = false
+	m.orphanDialogForm = nil
 	m.orphanTarget = nil
 	m.dequeueNextOrphan()
 
@@ -1553,48 +1569,7 @@ func (m *Model) executeOrphanAction(choice OrphanDialogChoice) tea.Cmd {
 	}
 }
 
-// renderOrphanDialog renders the orphan recovery dialog overlay.
-func (m *Model) renderOrphanDialog() string {
-	if m.orphanTarget == nil {
-		return ""
-	}
-	target := m.orphanTarget
-	menuWidth := 62
-	contentWidth := menuWidth - actionMenuStyle.GetHorizontalFrameSize()
-	labels := orphanDialogLabels()
 
-	var lines []string
-	lines = append(lines, actionMenuTitleStyle.Render("Orphan Worker Detected"))
-
-	titleLine := target.BeadID
-	if target.Title != "" {
-		titleLine += ": " + truncate(target.Title, contentWidth-len(target.BeadID)-2)
-	}
-	lines = append(lines, dimStyle.Render(titleLine))
-	lines = append(lines, dimStyle.Render("No active worker found. What should happen?"))
-	lines = append(lines, "")
-
-	for i, label := range labels {
-		cursor := "  "
-		if i == m.orphanDialogIdx {
-			cursor = "> "
-			label = actionMenuSelectedStyle.Render(label)
-		} else {
-			label = dimStyle.Render(label)
-		}
-		lines = append(lines, cursor+label)
-	}
-
-	lines = append(lines, "")
-	hint := "j/k: move  Enter: select  Esc: skip"
-	if pending := len(m.orphanQueue); pending > 0 {
-		hint += fmt.Sprintf("  (%d more pending)", pending)
-	}
-	lines = append(lines, dimStyle.Render(hint))
-
-	content := strings.Join(lines, "\n")
-	return actionMenuStyle.Width(menuWidth).Render(content)
-}
 
 // QueueActionResultMsg is delivered asynchronously when a queue action (tag/close) completes.
 type QueueActionResultMsg struct {
@@ -1655,80 +1630,7 @@ func (m *Model) closeSelectedQueueItem() tea.Cmd {
 	}
 }
 
-// renderQueueActionMenu renders the queue action menu overlay centered on screen.
-func (m *Model) renderQueueActionMenu() string {
-	if m.queueActionTarget == nil {
-		return ""
-	}
 
-	menuWidth := 68
-	contentWidth := menuWidth - actionMenuStyle.GetHorizontalFrameSize()
-	labels := queueActionMenuLabels()
-
-	var lines []string
-	title := fmt.Sprintf("Actions for %s", m.queueActionTarget.BeadID)
-	lines = append(lines, actionMenuTitleStyle.Render(title))
-
-	if m.queueActionTarget.Title != "" {
-		// Sanitize and word-wrap title to fit popup width, max 2 lines.
-		safeTitle := sanitizeTitle(m.queueActionTarget.Title)
-		wrapped := wordWrap(safeTitle, contentWidth)
-		if len(wrapped) <= 2 {
-			for _, line := range wrapped {
-				lines = append(lines, dimStyle.Render(line))
-			}
-		} else {
-			// Show first line as-is, truncate second line and append ellipsis.
-			lines = append(lines, dimStyle.Render(wrapped[0]))
-			second := []rune(wrapped[1])
-			if len(second) > contentWidth-3 {
-				second = second[:contentWidth-3]
-			}
-			lines = append(lines, dimStyle.Render(string(second)+"..."))
-		}
-	}
-	if m.queueActionTarget.Description != "" {
-		lines = append(lines, "")
-		// Word-wrap description to fit popup width, max 5 lines.
-		wrapped := wordWrap(m.queueActionTarget.Description, contentWidth)
-		if len(wrapped) <= 5 {
-			for _, line := range wrapped {
-				lines = append(lines, dimStyle.Render(line))
-			}
-		} else {
-			for i := 0; i < 4; i++ {
-				lines = append(lines, dimStyle.Render(wrapped[i]))
-			}
-			// Truncate 5th line and append ellipsis to indicate more text.
-			fifth := []rune(wrapped[4])
-			if len(fifth) > contentWidth-3 {
-				fifth = fifth[:contentWidth-3]
-			}
-			lines = append(lines, dimStyle.Render(string(fifth)+"..."))
-		}
-	}
-
-	lines = append(lines, "")
-
-	for i, label := range labels {
-		cursor := "  "
-		if i == m.queueActionMenuIdx {
-			cursor = "> "
-			label = actionMenuSelectedStyle.Render(label)
-		} else {
-			label = dimStyle.Render(label)
-		}
-		lines = append(lines, cursor+label)
-	}
-
-	lines = append(lines, "")
-	lines = append(lines, dimStyle.Render("Enter: select • Esc: close"))
-
-	content := strings.Join(lines, "\n")
-	popup := actionMenuStyle.Width(menuWidth).Render(content)
-
-	return popup
-}
 
 // logViewerDimensions returns the (viewportWidth, viewportHeight) for the log viewer.
 func (m *Model) logViewerDimensions() (int, int) {
@@ -2256,65 +2158,7 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderMergeMenu renders the merge action menu overlay.
-func (m *Model) renderMergeMenu() string {
-	if m.mergeTarget == nil {
-		return ""
-	}
 
-	menuWidth := 68
-	if m.width > 0 && m.width < menuWidth {
-		menuWidth = m.width
-	}
-	contentWidth := menuWidth - actionMenuStyle.GetHorizontalFrameSize()
-	labels := mergeMenuLabels()
-
-	var lines []string
-	title := fmt.Sprintf("PR #%d — %s", m.mergeTarget.PRNumber, m.mergeTarget.BeadID)
-	lines = append(lines, actionMenuTitleStyle.Render(title))
-
-	if m.mergeTarget.Title != "" {
-		// Sanitize and word-wrap PR title to fit popup width, max 2 lines.
-		safeTitle := sanitizeTitle(m.mergeTarget.Title)
-		wrapped := wordWrap(safeTitle, contentWidth)
-		if len(wrapped) <= 2 {
-			for _, line := range wrapped {
-				lines = append(lines, dimStyle.Render(line))
-			}
-		} else {
-			// Show first line as-is, truncate second line and append ellipsis.
-			lines = append(lines, dimStyle.Render(wrapped[0]))
-			second := []rune(wrapped[1])
-			maxSecond := contentWidth - 3
-			if maxSecond < 0 {
-				maxSecond = 0
-			}
-			if len(second) > maxSecond {
-				second = second[:maxSecond]
-			}
-			lines = append(lines, dimStyle.Render(string(second)+"..."))
-		}
-	}
-
-	lines = append(lines, "")
-
-	for i, label := range labels {
-		cursor := "  "
-		if i == m.mergeMenuIdx {
-			cursor = "> "
-			label = actionMenuSelectedStyle.Render(label)
-		} else {
-			label = dimStyle.Render(label)
-		}
-		lines = append(lines, cursor+label)
-	}
-
-	lines = append(lines, "")
-	lines = append(lines, dimStyle.Render("Enter: select • Esc: close"))
-
-	content := strings.Join(lines, "\n")
-	return actionMenuStyle.Width(menuWidth).Render(content)
-}
 
 // MergeResultMsg is delivered asynchronously when a merge IPC call completes.
 type MergeResultMsg struct {
