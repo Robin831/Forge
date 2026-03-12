@@ -61,7 +61,7 @@ func TestRenderWorkerListShowsTitle(t *testing.T) {
 	m.focused = PanelWorkers
 	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
 	m = *mTmp.(*Model)
-	rendered := m.renderWorkerList(60, 20)
+	rendered := m.renderWorkerList(120, 20)
 	if !strings.Contains(rendered, "add user auth endpoint") {
 		t.Errorf("expected title 'add user auth endpoint' in rendered output:\n%s", rendered)
 	}
@@ -91,7 +91,7 @@ func TestRenderWorkerListWithPRNumber(t *testing.T) {
 	m.focused = PanelWorkers
 	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
 	m = *mTmp.(*Model)
-	rendered := m.renderWorkerList(60, 20)
+	rendered := m.renderWorkerList(120, 20)
 	if !strings.Contains(rendered, "PR#42") {
 		t.Errorf("expected 'PR#42' when PRNumber > 0 in rendered output:\n%s", rendered)
 	}
@@ -146,7 +146,7 @@ func TestRenderWorkerListScrolls(t *testing.T) {
 }
 
 func TestRenderWorkerListViewportScrollsToShowSelected(t *testing.T) {
-	// height=10 → contentHeight=6. With header, about 5 data rows fit.
+	// height=10 → tableHeight = 10-6 = 4 visible data rows.
 	// With cursor=4 (last worker), the table should scroll so that
 	// workers 1-4 are visible and worker 0 is clipped.
 	workers := []WorkerItem{
@@ -158,9 +158,15 @@ func TestRenderWorkerListViewportScrollsToShowSelected(t *testing.T) {
 	}
 	m := NewModel(nil)
 	m.focused = PanelWorkers
-	m.workerTable.SetCursor(4)
+	// Load workers first so cursor tracking works properly.
 	mTmp, _ := m.Update(UpdateWorkersMsg{Items: workers})
 	m = *mTmp.(*Model)
+	// Pre-render to set table viewport height (tableHeight = 10-6 = 4),
+	// then navigate cursor to last worker.
+	m.renderWorkerList(60, 10)
+	for i := 0; i < 4; i++ {
+		m.workerTable.MoveDown(1)
+	}
 
 	rendered := m.renderWorkerList(60, 10)
 
@@ -1661,7 +1667,7 @@ func TestViewHeaderVisibleAtTightTerminalHeight(t *testing.T) {
 			t.Errorf("height=%d: first rendered line does not contain header text, got: %q", h, firstLine)
 		}
 		if len(lines) > h {
-			t.Errorf("height=%d: rendered output has %d lines, exceeds terminal height and will scroll header off-screen", h, len(lines))
+			t.Errorf("height=%d: rendered output has %d lines, exceeds terminal height and will scroll header off-screen\nACTUAL RENDERED:\n%s", h, len(lines), rendered)
 		}
 	}
 }

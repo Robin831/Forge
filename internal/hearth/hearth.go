@@ -390,7 +390,10 @@ func NewModel(ds *DataSource) Model {
 	)
 
 	s := table.DefaultStyles()
-	s.Header = s.Header.
+	// Start from a fresh style to avoid inheriting the default Padding(0,1).
+	// Padding would make each header cell wider than col.Width, causing the
+	// header row to exceed SetWidth and wrap across multiple lines.
+	s.Header = lipgloss.NewStyle().
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(colorMuted).
 		BorderBottom(true).
@@ -2369,19 +2372,18 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	}
 
 	// No active crucibles — original 3-panel layout.
-	// 3 panels means 6 border lines. getVerticalSplit only subtracted 4.
-	// So we have 2 extra border lines to account for.
-	totalInner := topHeight + bottomHeight - 2
-	if totalInner < 0 {
-		totalInner = 0
+	// Each sub-panel adds 2 border lines. Deduct extra borders beyond one panel.
+	innerHeight := topHeight + bottomHeight - 4
+	if innerHeight < 0 {
+		innerHeight = 0
 	}
-	queueHeight := totalInner * 6 / 10
-	if totalInner < 8 {
-		queueHeight = totalInner
+	queueHeight := innerHeight * 6 / 10
+	if innerHeight < 8 {
+		queueHeight = innerHeight
 	} else {
 		queueHeight = max(queueHeight, 5)
 	}
-	remaining := totalInner - queueHeight
+	remaining := innerHeight - queueHeight
 	mergeHeight := remaining / 3
 	if remaining < 6 {
 		mergeHeight = 0
@@ -2523,10 +2525,19 @@ func (m *Model) renderRightColumn(width, topHeight, bottomHeight int) string {
 }
 
 // renderStackedColumn renders two sub-panels stacked vertically.
+// Each lipgloss panel adds 2 border lines (top + bottom) to its height parameter.
+// Two stacked panels therefore produce 4 border lines total, whereas the single
+// center column produces only 2. The bottom panel's height is reduced by 2 so
+// that topHeight+bottomHeight+2 (single-panel rendered lines) equals
+// (topHeight+2)+(bottomHeight-2+2) = topHeight+bottomHeight+2 for the stacked column.
 func (m *Model) renderStackedColumn(width, topHeight, bottomHeight int,
 	renderTop, renderBottom func(int, int) string) string {
+	innerBottom := bottomHeight - 2
+	if innerBottom < 0 {
+		innerBottom = 0
+	}
 	top := renderTop(width, topHeight)
-	bottom := renderBottom(width, bottomHeight)
+	bottom := renderBottom(width, innerBottom)
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
@@ -2675,8 +2686,9 @@ func (m *Model) renderWorkerList(width, height int) string {
 	title := panelTitleStyle.Render(fmt.Sprintf("Workers (%d)", len(m.workers)))
 
 	m.workerTable.SetWidth(width - 4)
-	// title(1) + margin(1) + table header(2) = 4 lines.
-	// Remaining rows = height - 4.
+	// table.SetHeight(h) internally sets viewport.Height = h - headerHeight.
+	// With a 2-line header (text + bottom border), viewport shows h-2 rows.
+	// title(1) + table(h rows via SetHeight) = h+1 content lines; height-4 gives 4 slack lines.
 	tableHeight := height - 4
 	if tableHeight < 1 {
 		tableHeight = 1
@@ -2725,15 +2737,13 @@ func (m *Model) renderCenterColumn(width, topHeight, bottomHeight int) string {
 	usagePanelHeight := 10
 	if fullHeight < 20 {
 		// Terminal too small for a split — render workers only.
-		// In getVerticalSplit, we subtracted 4 for TWO panels. If we only render one,
-		// we gain 2 lines of inner height.
-		return m.renderWorkerList(width, fullHeight+2)
+		return m.renderWorkerList(width, fullHeight)
 	}
 
-	workerHeight := fullHeight - usagePanelHeight + 2
+	workerHeight := fullHeight - usagePanelHeight
 
 	top := m.renderWorkerList(width, workerHeight)
-	bottom := m.renderUsagePanel(width, usagePanelHeight-2)
+	bottom := m.renderUsagePanel(width, usagePanelHeight-2) // -2 for inner content (border adds 2)
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
@@ -2905,7 +2915,7 @@ func (m *Model) renderEvents(width, height int) string {
 	}
 
 	if height <= 0 {
-		return style.Render("")
+		return ""
 	}
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
