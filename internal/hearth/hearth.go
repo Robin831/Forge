@@ -1125,19 +1125,24 @@ func (m *Model) getVerticalSplit(headerH, footerH int) (topHeight, bottomHeight 
 	// contentHeight is the total vertical space available for the panels.
 	// We subtract the global header and footer rows.
 	contentHeight := m.height - headerH - footerH
+
+	// Subtract 4 lines for the borders of the two stacked panels (Right and Center columns).
+	// Each panel has a top and bottom border (lipgloss RoundedBorder = 2 rows total).
+	contentHeight -= 4
+
 	if contentHeight < 0 {
 		contentHeight = 0
 	}
 	// Give top panels 60%, bottom panels 40% (same split for left and right columns).
 	topHeight = contentHeight * 6 / 10
-	if contentHeight >= 10 {
-		topHeight = max(topHeight, 5)
+	if contentHeight >= 6 {
+		topHeight = max(topHeight, 2)
 	}
 	bottomHeight = contentHeight - topHeight
-	// Enforce a minimum bottom panel height of 4 lines so bordered panels
+	// Enforce a minimum bottom panel height of 1 line so bordered panels
 	// remain renderable at small terminal sizes.
-	const minBottomHeight = 4
-	if bottomHeight < minBottomHeight && contentHeight >= 10 {
+	const minBottomHeight = 1
+	if bottomHeight < minBottomHeight && contentHeight >= 4 {
 		bottomHeight = minBottomHeight
 		topHeight = contentHeight - bottomHeight
 	}
@@ -1908,7 +1913,7 @@ func (m *Model) renderQueue(width, height int) string {
 			}
 		}
 
-		maxVisible := height - 4
+		maxVisible := height - 2
 		if maxVisible < 1 {
 			maxVisible = 1
 		}
@@ -1946,20 +1951,30 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	hasCrucibles := len(m.crucibles) > 0
 
 	if hasCrucibles {
+		// With 4 panels, we need 8 border rows. getVerticalSplit only subtracted 4.
+		// Subtract an additional 4 lines from the inner height pool.
+		height -= 4
+		if height < 0 {
+			height = 0
+		}
+
 		// Queue 40%, Crucible 20%, ReadyToMerge 15%, NeedsAttention 25%.
 		queueHeight := height * 4 / 10
 		crucibleHeight := height * 2 / 10
 		mergeHeight := height * 15 / 100
-		if height < 12 {
+		if height < 8 {
 			queueHeight = height
 			crucibleHeight = 0
 			mergeHeight = 0
 		} else {
-			queueHeight = max(queueHeight, 5)
-			crucibleHeight = max(crucibleHeight, 4)
-			mergeHeight = max(mergeHeight, 3)
+			queueHeight = max(queueHeight, 2)
+			crucibleHeight = max(crucibleHeight, 2)
+			mergeHeight = max(mergeHeight, 2)
 		}
 		attentionHeight := height - queueHeight - crucibleHeight - mergeHeight
+		if attentionHeight < 0 {
+			attentionHeight = 0
+		}
 
 		top := m.renderQueue(width, queueHeight)
 		cruc := m.renderCrucibles(width, crucibleHeight)
@@ -1969,16 +1984,26 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	}
 
 	// No active crucibles — original 3-panel layout.
+	// With 3 panels, we need 6 border rows. getVerticalSplit only subtracted 4.
+	// Subtract an additional 2 lines from the inner height pool.
+	height -= 2
+	if height < 0 {
+		height = 0
+	}
+
 	queueHeight := height * 5 / 10
 	mergeHeight := height * 2 / 10
-	if height < 8 {
+	if height < 4 {
 		queueHeight = height
 		mergeHeight = 0
 	} else {
-		queueHeight = max(queueHeight, 5)
-		mergeHeight = max(mergeHeight, 3)
+		queueHeight = max(queueHeight, 2)
+		mergeHeight = max(mergeHeight, 1)
 	}
 	attentionHeight := height - queueHeight - mergeHeight
+	if attentionHeight < 0 {
+		attentionHeight = 0
+	}
 
 	top := m.renderQueue(width, queueHeight)
 	middle := m.renderReadyToMerge(width, mergeHeight)
@@ -2035,7 +2060,8 @@ func (m *Model) renderCrucibles(width, height int) string {
 		lines = append(lines, dimStyle.Render("None"))
 	} else {
 		// Each crucible uses 3 display lines: phase+parent, progress, current child.
-		maxLines := height - 4
+		// title = 1 line.
+		maxLines := height - 1
 		linesPerItem := 3
 		maxItems := maxLines / linesPerItem
 		if maxItems < 1 {
@@ -2157,7 +2183,8 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 		lines = append(lines, dimStyle.Render("None"))
 	} else {
 		// Each item uses 2 lines (bead + reason), so halve the visible slot count.
-		maxLines := height - 4
+		// title = 2 lines.
+		maxLines := height - 2
 		maxItems := maxLines / 2
 		if maxItems < 1 {
 			maxItems = 1
@@ -2217,8 +2244,8 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 
 	if len(m.readyToMerge) == 0 {
 		lines = append(lines, dimStyle.Render("None"))
-	} else if height > 4 {
-		maxItems := height - 4
+	} else if height > 2 {
+		maxItems := height - 2
 		if maxItems < 1 {
 			maxItems = 1
 		}
@@ -2348,7 +2375,8 @@ func (m *Model) renderWorkerList(width, height int) string {
 		lines = append(lines, dimStyle.Render("No active workers"))
 	} else {
 		// Each worker uses 2 lines (main + title), so halve the visible slot count.
-		maxLines := height - 4 // height-2 (borders) - 2 (title + margin)
+		// title = 2 lines.
+		maxLines := height - 2
 		slotsPerWorker := 2
 		maxWorkers := maxLines / slotsPerWorker
 		if maxWorkers < 1 {
@@ -2501,8 +2529,8 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 			lines = append(lines, dimStyle.Render("Waiting for output..."))
 		}
 	} else {
-		// height-2 (borders) - 2 (title + margin) = height-4
-		maxVisible := height - 4
+		// height is inner height (no borders). title + margin = 2 lines.
+		maxVisible := height - 2
 		if maxVisible < 0 {
 			maxVisible = 0
 		}
@@ -2560,7 +2588,11 @@ func (m *Model) renderEvents(width, height int) string {
 	var lines []string
 	lines = append(lines, title)
 
-	contentHeight := height - 4 // title + border rows
+	// height is inner height. title + margin = 2 lines.
+	contentHeight := height - 2
+	if contentHeight < 0 {
+		contentHeight = 0
+	}
 
 	if len(m.events) == 0 {
 		lines = append(lines, dimStyle.Render("No events"))
