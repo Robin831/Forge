@@ -1,2 +1,0 @@
-category: Added
-- **`pr_ready_to_merge` webhook notification** - Forge now sends a notification when a PR passes CI and warden approval and enters the Ready to Merge state. Sends a Teams Adaptive Card to the configured `teams_webhook_url` and exposes a `SendGenericPRReadyToMerge` helper for generic JSON webhooks. Add `pr_ready_to_merge` to the `notifications.events` filter to subscribe selectively. (Forge-2fzv)
