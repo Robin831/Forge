@@ -91,6 +91,7 @@ const (
 type NeedsAttentionItem struct {
 	BeadID         string
 	Title          string
+	Description    string
 	Anvil          string
 	Reason         string
 	ReasonCategory AttentionReason
@@ -305,6 +306,12 @@ type Model struct {
 	logViewerEmpty bool // true when the log has no lines; use viewport as content source of truth
 	logViewerVP    viewport.Model
 
+	// Description viewer overlay state — shows glamour-rendered markdown description.
+	showDescriptionViewer  bool
+	descriptionViewerTitle string
+	descriptionViewerEmpty bool
+	descriptionViewerVP    viewport.Model
+
 	// Daemon health indicator
 	daemonConnected bool   // true when last IPC status check succeeded
 	daemonLastPoll  string // e.g. "30s ago" or "n/a"
@@ -393,6 +400,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				var cmd tea.Cmd
 				m.logViewerVP, cmd = m.logViewerVP.Update(msg)
+				return m, cmd
+			}
+			return m, nil
+		}
+
+		// Description viewer overlay intercepts all keys
+		if m.showDescriptionViewer {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "q", "esc":
+				m.showDescriptionViewer = false
+			default:
+				var cmd tea.Cmd
+				m.descriptionViewerVP, cmd = m.descriptionViewerVP.Update(msg)
 				return m, cmd
 			}
 			return m, nil
@@ -584,6 +606,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+		case "d":
+			// Show glamour-rendered description for the selected bead in Queue or Needs Attention.
+			if m.focused == PanelQueue {
+				if bead := m.selectedQueueBead(); bead != nil {
+					m.openDescriptionViewer(bead.BeadID, bead.Title, bead.Description)
+				}
+			} else if m.focused == PanelNeedsAttention && len(m.needsAttention) > 0 &&
+				m.needsAttnVP.cursor < len(m.needsAttention) {
+				item := m.needsAttention[m.needsAttnVP.cursor]
+				m.openDescriptionViewer(item.BeadID, item.Title, item.Description)
+			}
+
 		case "m":
 			// Toggle mouse reporting on/off.
 			// When mouse is off, the terminal handles clicks natively — text is selectable.
@@ -639,6 +673,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logViewerVP, cmd = m.logViewerVP.Update(msg)
 			return m, cmd
 		}
+		// Dismiss description viewer on left or right click; forward wheel events to viewport
+		if m.showDescriptionViewer {
+			if msg.Action == tea.MouseActionPress &&
+				(msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonRight) {
+				m.showDescriptionViewer = false
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.descriptionViewerVP, cmd = m.descriptionViewerVP.Update(msg)
+			return m, cmd
+		}
 		// Orphan dialog requires explicit keyboard action; consume all mouse events.
 		if m.showOrphanDialog {
 			return m, nil
@@ -681,6 +726,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			vpWidth, vpHeight := m.logViewerDimensions()
 			m.logViewerVP.Width = vpWidth
 			m.logViewerVP.Height = vpHeight
+		}
+		if m.showDescriptionViewer {
+			vpWidth, vpHeight := m.descriptionViewerDimensions()
+			m.descriptionViewerVP.Width = vpWidth
+			m.descriptionViewerVP.Height = vpHeight
 		}
 
 	case UpdateQueueMsg:
@@ -953,7 +1003,7 @@ func (m *Model) defaultFooterHints() string {
 	if m.mouseEnabled {
 		mouseHint = "m: disable mouse (select text)"
 	}
-	return "Tab: switch panel \u2022 j/k: scroll \u2022 K: kill \u2022 Enter: actions/merge \u2022 l: label \u2022 f: follow \u2022 " + mouseHint + " \u2022 q: quit"
+	return "Tab: switch panel \u2022 j/k: scroll \u2022 K: kill \u2022 Enter: menu \u2022 d: desc \u2022 l: label \u2022 f: follow \u2022 " + mouseHint + " \u2022 q: quit"
 }
 
 // computeFooterH returns the rendered height of the footer bar.
@@ -1024,6 +1074,9 @@ func (m *Model) View() string {
 	// Render overlays on top
 	if m.showLogViewer {
 		overlay := m.renderLogViewer()
+		view = placeOverlay(m.width, m.height, overlay, view)
+	} else if m.showDescriptionViewer {
+		overlay := m.renderDescriptionViewer()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.showOrphanDialog {
 		overlay := m.renderOrphanDialog()
