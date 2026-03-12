@@ -399,16 +399,20 @@ type WebhookDispatcher struct {
 func NewWebhookDispatcher(targets []WebhookTarget, logger *slog.Logger) *WebhookDispatcher {
 	var dts []dispatchTarget
 	for _, t := range targets {
-		if t.URL == "" {
+		url := strings.TrimSpace(t.URL)
+		if url == "" {
 			continue
 		}
 		events := make(map[EventType]bool)
 		for _, e := range t.Events {
-			events[EventType(e)] = true
+			event := strings.TrimSpace(e)
+			if event != "" {
+				events[EventType(event)] = true
+			}
 		}
 		dts = append(dts, dispatchTarget{
 			name:   t.Name,
-			url:    t.URL,
+			url:    url,
 			events: events,
 		})
 	}

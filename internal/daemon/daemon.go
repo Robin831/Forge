@@ -434,8 +434,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 			// that webhook URL, enabled flag, or event filters take effect
 			// immediately without a daemon restart.
 			if old.Notifications.Enabled != new.Notifications.Enabled ||
-				old.Notifications.TeamsWebhookURL != new.Notifications.TeamsWebhookURL ||
-				!slices.Equal(old.Notifications.Events, new.Notifications.Events) {
+				old.Notifications.ResolvedTeamsURL() != new.Notifications.ResolvedTeamsURL() ||
+				!slices.Equal(old.Notifications.ResolvedTeamsEvents(), new.Notifications.ResolvedTeamsEvents()) {
 				if n := d.buildNotifier(new); n != nil {
 					d.notifier.Store(n)
 				}
@@ -1084,7 +1084,12 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 					"limit", fmt.Sprintf("$%.2f", costLimit))
 
 				// Fire daily_cost notifications — once per day when the limit is hit.
-				inTokens, outTokens, _, _, _, _, _ := d.db.GetDailyCost(today)
+				inTokens, outTokens, _, _, _, _, err := d.db.GetDailyCost(today)
+				if err != nil {
+					d.logger.Error("failed to get daily cost for notification", "error", err, "date", today)
+					// Proceed with zero counts rather than skipping the notification entirely
+					inTokens, outTokens = 0, 0
+				}
 				go func(date string, cost, limit float64, inT, outT int) {
 					notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
