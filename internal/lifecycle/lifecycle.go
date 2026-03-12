@@ -501,4 +501,3 @@ func (m *Manager) NotifyReviewFixCompleted(anvil string, prNumber int) {
 		}
 	}
 }
-

@@ -44,11 +44,11 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid settings",
 			cfg: Config{
 				Settings: SettingsConfig{
-					MaxTotalSmiths:  0,
+					MaxTotalSmiths:    0,
 					MaxReviewAttempts: 0,
-					PollInterval:    5 * time.Second,
-					SmithTimeout:    30 * time.Second,
-					BellowsInterval: 10 * time.Second,
+					PollInterval:      5 * time.Second,
+					SmithTimeout:      30 * time.Second,
+					BellowsInterval:   10 * time.Second,
 				},
 			},
 			expected: []string{

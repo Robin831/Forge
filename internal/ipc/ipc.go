@@ -50,20 +50,20 @@ type Event struct {
 
 // StatusPayload is the response for a "status" command.
 type StatusPayload struct {
-	Running          bool                      `json:"running"`
-	PID              int                       `json:"pid"`
-	Uptime           string                    `json:"uptime"`
-	Workers          int                       `json:"workers"`
-	QueueSize        int                       `json:"queue_size"`
-	OpenPRs          int                       `json:"open_prs"`
-	LastPoll         string                    `json:"last_poll"`
-	Quotas           map[string]provider.Quota `json:"quotas,omitempty"`
-	DailyCost        float64                   `json:"daily_cost"`
-	DailyCostLimit   float64                   `json:"daily_cost_limit,omitempty"`
+	Running        bool                      `json:"running"`
+	PID            int                       `json:"pid"`
+	Uptime         string                    `json:"uptime"`
+	Workers        int                       `json:"workers"`
+	QueueSize      int                       `json:"queue_size"`
+	OpenPRs        int                       `json:"open_prs"`
+	LastPoll       string                    `json:"last_poll"`
+	Quotas         map[string]provider.Quota `json:"quotas,omitempty"`
+	DailyCost      float64                   `json:"daily_cost"`
+	DailyCostLimit float64                   `json:"daily_cost_limit,omitempty"`
 	// CostLimitPaused reports that cost-based auto-dispatch via the Poller is
 	// currently paused due to hitting the daily cost limit. Manual run_bead
 	// dispatch remains allowed while this flag is true.
-	CostLimitPaused  bool                      `json:"cost_limit_paused,omitempty"`
+	CostLimitPaused bool `json:"cost_limit_paused,omitempty"`
 	// CopilotPremiumRequests is the weighted count of Copilot premium requests used today.
 	CopilotPremiumRequests float64 `json:"copilot_premium_requests,omitempty"`
 	// CopilotRequestLimit is the configured daily limit (0 = no limit).
@@ -87,8 +87,8 @@ type RunBeadPayload struct {
 // ClarificationPayload is the payload for "set_clarification" / "clear_clarification" commands.
 type ClarificationPayload struct {
 	BeadID string `json:"bead_id"`
-	Anvil  string `json:"anvil"`   // Required: which anvil the bead belongs to
-	Reason string `json:"reason"`  // Why clarification is needed (used when setting)
+	Anvil  string `json:"anvil"`  // Required: which anvil the bead belongs to
+	Reason string `json:"reason"` // Why clarification is needed (used when setting)
 }
 
 // RetryBeadPayload is the payload for a "retry_bead" command.

@@ -114,7 +114,7 @@ func TestGroupComments_ExactMatch(t *testing.T) {
 	comments := []PRComment{
 		{Body: "Check for data races", PRNumber: 1},
 		{Body: "Missing error check", PRNumber: 1},
-		{Body: "Check for data races", PRNumber: 2}, // duplicate body
+		{Body: "Check for data races", PRNumber: 2},    // duplicate body
 		{Body: "  missing error check  ", PRNumber: 3}, // whitespace variant
 	}
 

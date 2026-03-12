@@ -1072,14 +1072,14 @@ const (
 	EventWardenRuleLearned    EventType = "warden_rule_learned"
 
 	// Crucible events — parent bead orchestration with children on feature branches.
-	EventCrucibleStarted          EventType = "crucible_started"
-	EventCrucibleChildDispatched  EventType = "crucible_child_dispatched"
-	EventCrucibleChildPRCreated   EventType = "crucible_child_pr_created"
-	EventCrucibleChildMerged      EventType = "crucible_child_merged"
-	EventCrucibleChildFailed      EventType = "crucible_child_failed"
-	EventCrucibleFinalPR          EventType = "crucible_final_pr"
-	EventCrucibleComplete         EventType = "crucible_complete"
-	EventCruciblePaused           EventType = "crucible_paused"
+	EventCrucibleStarted         EventType = "crucible_started"
+	EventCrucibleChildDispatched EventType = "crucible_child_dispatched"
+	EventCrucibleChildPRCreated  EventType = "crucible_child_pr_created"
+	EventCrucibleChildMerged     EventType = "crucible_child_merged"
+	EventCrucibleChildFailed     EventType = "crucible_child_failed"
+	EventCrucibleFinalPR         EventType = "crucible_final_pr"
+	EventCrucibleComplete        EventType = "crucible_complete"
+	EventCruciblePaused          EventType = "crucible_paused"
 )
 
 // Event represents a logged event.
@@ -1100,6 +1100,25 @@ func (db *DB) LogEvent(typ EventType, message, beadID, anvil string) error {
 		time.Now().Format(dbTimeLayout), string(typ), message, beadID, anvil,
 	)
 	return err
+}
+
+// HasEventForDate reports whether any event of the given type was logged on
+// the specified date (YYYY-MM-DD). It is used to deduplicate notifications
+// that should fire at most once per calendar day (e.g. cost_limit_hit) even
+// across daemon restarts, which would otherwise reset in-memory guards.
+func (db *DB) HasEventForDate(eventType EventType, date string) (bool, error) {
+	var dummy int
+	err := db.conn.QueryRow(
+		`SELECT 1 FROM events WHERE type = ? AND timestamp LIKE ? LIMIT 1`,
+		string(eventType), date+"%",
+	).Scan(&dummy)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // RecentEvents returns the most recent n events.

@@ -126,8 +126,11 @@ type Daemon struct {
 	// pipeline goroutines safely read via Load().
 	notifier atomic.Pointer[notify.Notifier]
 
-	cancel     context.CancelFunc // cancels the Run context for graceful shutdown
-	runCtx     context.Context    // the live run context; set in Run() after signal/cancel wiring
+	// Generic webhook dispatcher (nil = no generic webhooks configured)
+	dispatcher *notify.WebhookDispatcher
+
+	cancel context.CancelFunc // cancels the Run context for graceful shutdown
+	runCtx context.Context    // the live run context; set in Run() after signal/cancel wiring
 
 	forgeDir   string // ~/.forge
 	pidFile    string
@@ -142,7 +145,7 @@ type Daemon struct {
 	// Per-anvil temper.yaml cache keyed by anvil path.
 	// Avoids repeated filesystem I/O on every dispatch and de-duplicates
 	// log spam when the file is invalid or unreadable.
-	temperCache   sync.Map // map[string]*temperCacheEntry
+	temperCache sync.Map // map[string]*temperCacheEntry
 
 	// Active Crucible statuses (parentBeadID -> crucible.Status)
 	crucibleStatuses sync.Map
@@ -201,6 +204,35 @@ func New(cfg *config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("invalid Teams webhook URL: %w", err)
 	}
 
+	// Build generic webhook dispatcher from the new webhooks config.
+	// Respects the global notifications.enabled flag — no targets are built
+	// when notifications are disabled, so the dispatcher returns nil (no-op).
+	var dispatcher *notify.WebhookDispatcher
+	if cfg.Notifications.Enabled {
+		var webhookTargets []notify.WebhookTarget
+		for _, w := range cfg.Notifications.Webhooks {
+			trimmedURL := strings.TrimSpace(w.URL)
+			if trimmedURL == "" {
+				continue
+			}
+
+			var trimmedEvents []string
+			for _, ev := range w.Events {
+				tEv := strings.TrimSpace(ev)
+				if tEv != "" {
+					trimmedEvents = append(trimmedEvents, tEv)
+				}
+			}
+
+			webhookTargets = append(webhookTargets, notify.WebhookTarget{
+				Name:   w.Name,
+				URL:    trimmedURL,
+				Events: trimmedEvents,
+			})
+		}
+		dispatcher = notify.NewWebhookDispatcher(webhookTargets, logger)
+	}
+
 	d := &Daemon{
 		db:            db,
 		logger:        logger,
@@ -211,6 +243,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
+		dispatcher:    dispatcher,
 	}
 	d.notifier.Store(notifier)
 	// Wire up the crucible-active check so orphan recovery skips parent beads
@@ -401,8 +434,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 			// that webhook URL, enabled flag, or event filters take effect
 			// immediately without a daemon restart.
 			if old.Notifications.Enabled != new.Notifications.Enabled ||
-				old.Notifications.TeamsWebhookURL != new.Notifications.TeamsWebhookURL ||
-				!slices.Equal(old.Notifications.Events, new.Notifications.Events) {
+				old.Notifications.ResolvedTeamsURL() != new.Notifications.ResolvedTeamsURL() ||
+				!slices.Equal(old.Notifications.ResolvedTeamsEvents(), new.Notifications.ResolvedTeamsEvents()) {
 				if n := d.buildNotifier(new); n != nil {
 					d.notifier.Store(n)
 				}
@@ -695,7 +728,9 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 	if event.EventType != bellows.EventPRReadyToMerge {
 		return
 	}
-	if d.notifier.Load() == nil && len(d.cfg.Load().Notifications.PRReadyWebhookURLs) == 0 {
+	cfg := d.cfg.Load()
+	hasLegacyURLs := cfg != nil && len(cfg.Notifications.PRReadyWebhookURLs) > 0
+	if d.notifier.Load() == nil && d.dispatcher == nil && !hasLegacyURLs {
 		return
 	}
 	title := d.db.BeadTitle(event.BeadID, event.Anvil)
@@ -703,7 +738,12 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 		if n := d.notifier.Load(); n != nil {
 			n.PRReadyToMerge(ctx, anvil, beadID, prNumber, prURL, title)
 		}
-		cfg := d.cfg.Load()
+		// Dispatch to generic webhook targets (new webhooks[] config).
+		if d.dispatcher != nil {
+			msg := fmt.Sprintf("PR #%d ready to merge: %s", prNumber, prURL)
+			d.dispatcher.Dispatch(ctx, notify.EventPRReadyToMerge, beadID, anvil, msg)
+		}
+		// Legacy pr_ready_webhook_urls support.
 		if cfg != nil && cfg.Notifications.Enabled {
 			summary := fmt.Sprintf("PR #%d ready to merge: %s (%s)", prNumber, title, anvil)
 			if title == "" {
@@ -1018,9 +1058,23 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			return
 		}
 		if todayCost >= costLimit {
-			// Log the event only once per day to avoid spamming.
+			// Notify once per calendar day — even across daemon restarts.
+			// Use a DB-backed check (persists across restarts) with an
+			// in-memory fast-path to avoid a DB query on every poll cycle.
 			prev, _ := d.costLimitLoggedDate.Load().(string)
-			if prev != today {
+			alreadyNotified := prev == today
+			if !alreadyNotified {
+				// Check DB in case the daemon restarted after notifying today.
+				notified, err := d.db.HasEventForDate(state.EventCostLimitHit, today)
+				if err != nil {
+					// Fail closed: avoid spamming notifications when the DB is unhealthy.
+					d.logger.Error("checking cost limit event deduplication", "error", err, "date", today)
+					alreadyNotified = true
+				} else {
+					alreadyNotified = notified
+				}
+			}
+			if !alreadyNotified {
 				d.costLimitLoggedDate.Store(today)
 				_ = d.db.LogEvent(state.EventCostLimitHit,
 					fmt.Sprintf("Daily cost $%.2f reached limit $%.2f — dispatch paused", todayCost, costLimit),
@@ -1028,6 +1082,28 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 				d.logger.Warn("daily cost limit reached, dispatch paused",
 					"cost", fmt.Sprintf("$%.2f", todayCost),
 					"limit", fmt.Sprintf("$%.2f", costLimit))
+
+				// Fire daily_cost notifications — once per day when the limit is hit.
+				inTokens, outTokens, _, _, _, _, err := d.db.GetDailyCost(today)
+				if err != nil {
+					d.logger.Error("failed to get daily cost for notification", "error", err, "date", today)
+					// Proceed with zero counts rather than skipping the notification entirely
+					inTokens, outTokens = 0, 0
+				}
+				go func(date string, cost, limit float64, inT, outT int) {
+					notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					if n := d.notifier.Load(); n != nil {
+						n.DailyCost(notifCtx, date, cost, limit, int64(inT), int64(outT))
+					}
+					if d.dispatcher != nil {
+						msg := fmt.Sprintf("Daily cost $%.2f reached limit $%.2f", cost, limit)
+						d.dispatcher.Dispatch(notifCtx, notify.EventDailyCost, "", "", msg)
+					}
+				}(today, todayCost, costLimit, inTokens, outTokens)
+			} else if prev != today {
+				// Update in-memory cache to skip the DB query on future poll cycles.
+				d.costLimitLoggedDate.Store(today)
 			}
 			return
 		}
@@ -1409,6 +1485,19 @@ normalPipeline:
 
 	if !outcome.Success {
 		if outcome.Decomposed {
+			// Dispatch bead_decomposed to generic webhook targets.
+			if d.dispatcher != nil {
+				childCount := 0
+				if outcome.SchematicResult != nil {
+					childCount = len(outcome.SchematicResult.SubBeads)
+				}
+				dispatchMsg := fmt.Sprintf("Bead decomposed into %d sub-beads", childCount)
+				go func(beadID, anvil, msg string) {
+					notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					d.dispatcher.Dispatch(notifCtx, notify.EventBeadDecomposed, beadID, anvil, msg)
+				}(bead.ID, bead.Anvil, dispatchMsg)
+			}
 			d.applyDecomposedOutcome(bead, anvilCfg, outcome.SchematicResult)
 			return
 		}
@@ -1478,6 +1567,28 @@ normalPipeline:
 	}
 
 	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
+
+	// Send PR-created notifications.
+	go func(anvil, beadID, prURL, prTitle string, prNumber int, dur time.Duration) {
+		notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if n := d.notifier.Load(); n != nil {
+			n.PRCreated(notifCtx, anvil, beadID, prNumber, prURL, prTitle)
+		}
+		if d.dispatcher != nil {
+			msg := fmt.Sprintf("PR #%d created: %s", prNumber, prURL)
+			d.dispatcher.Dispatch(notifCtx, notify.EventPRCreated, beadID, anvil, msg)
+		}
+		// Worker-done notification fires here alongside PR creation since
+		// the pipeline worker is complete at this point.
+		if n := d.notifier.Load(); n != nil {
+			n.WorkerDone(notifCtx, anvil, beadID, claimWorkerID, dur)
+		}
+		if d.dispatcher != nil {
+			msg := fmt.Sprintf("Worker completed in %s; PR #%d created", dur.Round(time.Second), prNumber)
+			d.dispatcher.Dispatch(notifCtx, notify.EventWorkerDone, beadID, anvil, msg)
+		}
+	}(bead.Anvil, bead.ID, pr.URL, bead.Title, pr.Number, outcome.Duration)
 
 	// Close the bead — unless other beads depend on it. When dependents exist,
 	// closing now would unblock them before this PR is merged, causing them to
@@ -1843,7 +1954,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": "clarification_needed set"})
 		return ipc.Response{Type: "ok", Payload: data}
 
-
 	case "tag_bead":
 		var tp ipc.TagBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &tp); err != nil {
@@ -1890,7 +2000,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}()
 		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q added", tag)})
 		return ipc.Response{Type: "ok", Payload: data}
-
 
 	case "close_bead":
 		var cp ipc.CloseBeadPayload
@@ -2503,7 +2612,8 @@ func (d *Daemon) isBeadClarificationNeeded(beadID, anvil string) (bool, error) {
 }
 
 // recordDispatchFailure increments the dispatch failure counter for a bead and
-// logs a circuit-break event if the threshold is reached.
+// logs a circuit-break event if the threshold is reached. When the circuit
+// breaker trips, a bead_failed notification is sent to configured webhooks.
 func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 	count, broken, err := d.db.IncrementDispatchFailures(beadID, anvil, MaxDispatchFailures, reason)
 	if err != nil {
@@ -2514,6 +2624,19 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 		msg := fmt.Sprintf("Bead %s circuit-broken after %d consecutive dispatch failures: %s", beadID, count, reason)
 		d.logger.Warn(msg, "bead", beadID, "anvil", anvil)
 		_ = d.db.LogEvent(state.EventDispatchCircuitBreak, msg, beadID, anvil)
+
+		// Fire bead-failed notifications asynchronously.
+		go func(beadID, anvil, reason string, count int) {
+			notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if n := d.notifier.Load(); n != nil {
+				n.BeadFailed(notifCtx, anvil, beadID, count, reason)
+			}
+			if d.dispatcher != nil {
+				failMsg := fmt.Sprintf("Bead failed after %d dispatch attempts: %s", count, reason)
+				d.dispatcher.Dispatch(notifCtx, notify.EventBeadFailed, beadID, anvil, failMsg)
+			}
+		}(beadID, anvil, reason, count)
 	}
 }
 
@@ -2779,9 +2902,9 @@ func (d *Daemon) buildNotifier(cfg *config.Config) *notify.Notifier {
 		// setup due to a transient config typo.
 		d.logger.Error("invalid Teams webhook URL in reloaded config; using raw URL", "error", err)
 		n = notify.NewNotifier(notify.Config{
-			WebhookURL: strings.TrimSpace(cfg.Notifications.TeamsWebhookURL),
+			WebhookURL: strings.TrimSpace(cfg.Notifications.ResolvedTeamsURL()),
 			Enabled:    cfg.Notifications.Enabled,
-			Events:     cfg.Notifications.Events,
+			Events:     trimStrings(cfg.Notifications.ResolvedTeamsEvents()),
 		}, d.logger)
 	}
 	if n != nil {
@@ -2797,7 +2920,7 @@ func (d *Daemon) buildNotifier(cfg *config.Config) *notify.Notifier {
 // both the startup path (New) and the hot-reload path (buildNotifier) so that
 // the two cannot drift in behaviour or logging over time.
 func newNotifierFromConfig(cfg *config.Config, logger *slog.Logger) (*notify.Notifier, error) {
-	webhookURL := cfg.Notifications.TeamsWebhookURL
+	webhookURL := cfg.Notifications.ResolvedTeamsURL()
 	trimmedURL := strings.TrimSpace(webhookURL)
 	if cfg.Notifications.Enabled && trimmedURL != "" {
 		formatted, err := notify.FormatWebhookURL(trimmedURL)
@@ -2811,9 +2934,20 @@ func newNotifierFromConfig(cfg *config.Config, logger *slog.Logger) (*notify.Not
 	n := notify.NewNotifier(notify.Config{
 		WebhookURL: webhookURL,
 		Enabled:    cfg.Notifications.Enabled,
-		Events:     cfg.Notifications.Events,
+		Events:     trimStrings(cfg.Notifications.ResolvedTeamsEvents()),
 	}, logger)
 	return n, nil
+}
+
+func trimStrings(ss []string) []string {
+	var res []string
+	for _, s := range ss {
+		t := strings.TrimSpace(s)
+		if t != "" {
+			res = append(res, t)
+		}
+	}
+	return res
 }
 
 // filterDepcheckAnvils returns the subset of anvils that should be scanned by

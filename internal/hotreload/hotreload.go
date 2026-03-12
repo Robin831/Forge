@@ -195,7 +195,7 @@ func applyChanges(old, new *config.Config) []string {
 		changes = append(changes, "smith_providers changed")
 	}
 
-	if old.Notifications.TeamsWebhookURL != new.Notifications.TeamsWebhookURL {
+	if old.Notifications.ResolvedTeamsURL() != new.Notifications.ResolvedTeamsURL() {
 		changes = append(changes, "teams_webhook_url changed")
 	}
 
@@ -204,8 +204,22 @@ func applyChanges(old, new *config.Config) []string {
 			old.Notifications.Enabled, new.Notifications.Enabled))
 	}
 
-	if !sliceEqual(old.Notifications.Events, new.Notifications.Events) {
+	if !sliceEqual(old.Notifications.ResolvedTeamsEvents(), new.Notifications.ResolvedTeamsEvents()) {
 		changes = append(changes, "notifications.events changed")
+	}
+
+	if len(old.Notifications.Webhooks) != len(new.Notifications.Webhooks) {
+		changes = append(changes, fmt.Sprintf("notifications.webhooks count: %d → %d",
+			len(old.Notifications.Webhooks), len(new.Notifications.Webhooks)))
+	} else {
+		for i := range old.Notifications.Webhooks {
+			if old.Notifications.Webhooks[i].URL != new.Notifications.Webhooks[i].URL ||
+				old.Notifications.Webhooks[i].Name != new.Notifications.Webhooks[i].Name ||
+				!sliceEqual(old.Notifications.Webhooks[i].Events, new.Notifications.Webhooks[i].Events) {
+				changes = append(changes, fmt.Sprintf("webhook %q changed", old.Notifications.Webhooks[i].Name))
+				break
+			}
+		}
 	}
 
 	if old.Settings.MaxCIFixAttempts != new.Settings.MaxCIFixAttempts {
@@ -232,7 +246,7 @@ func applyChanges(old, new *config.Config) []string {
 			}
 			if oldAnvil.Path != newAnvil.Path {
 				changes = append(changes, fmt.Sprintf("anvil %s path: %q → %q",
-				name, oldAnvil.Path, newAnvil.Path))
+					name, oldAnvil.Path, newAnvil.Path))
 			}
 		} else {
 			changes = append(changes, fmt.Sprintf("anvil %s added", name))

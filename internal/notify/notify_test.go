@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/notify"
 )
@@ -404,6 +405,193 @@ func TestShouldNotify_PRReadyToMerge(t *testing.T) {
 	}
 	if filtered.ShouldNotify(notify.EventPRReadyToMerge) {
 		t.Error("filtered notifier should NOT notify pr_ready_to_merge")
+	}
+}
+
+// TestWebhookDispatcher_NilIsNoop verifies that a nil *WebhookDispatcher is safe
+// to call — Dispatch on a nil pointer must not panic and must not deliver any
+// requests. This simulates the common daemon pattern where the dispatcher is nil
+// when notifications are disabled.
+func TestWebhookDispatcher_NilIsNoop(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	var d *notify.WebhookDispatcher // nil — daemon passes nil when disabled
+	d.Dispatch(context.Background(), notify.EventPRCreated, "bead-1", "my-anvil", "test")
+	if called {
+		t.Error("nil dispatcher should be a no-op, but the server was called")
+	}
+}
+
+// TestNewWebhookDispatcher_EmptyTargetsReturnsNil verifies that
+// NewWebhookDispatcher returns nil when given no targets or only targets with
+// empty URLs — this is what happens when notifications.enabled=false or the
+// webhooks list is empty in the config.
+func TestNewWebhookDispatcher_EmptyTargetsReturnsNil(t *testing.T) {
+	cases := []struct {
+		name    string
+		targets []notify.WebhookTarget
+	}{
+		{"no targets", nil},
+		{"empty slice", []notify.WebhookTarget{}},
+		{"all empty URLs", []notify.WebhookTarget{{Name: "a", URL: ""}, {Name: "b", URL: ""}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := notify.NewWebhookDispatcher(tc.targets, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if d != nil {
+				t.Errorf("expected nil dispatcher for %q, got non-nil", tc.name)
+			}
+		})
+	}
+}
+
+// TestWebhookDispatcher_EventDailyCost verifies that the dispatcher delivers
+// daily_cost events to subscribed webhook targets. Because Dispatch is
+// fire-and-forget (goroutine per target), delivery is awaited via a buffered
+// channel with a 5-second deadline so the test fails fast rather than hanging.
+func TestWebhookDispatcher_EventDailyCost(t *testing.T) {
+	ch := make(chan []byte, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		select {
+		case ch <- b:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	d := notify.NewWebhookDispatcher([]notify.WebhookTarget{
+		{Name: "test", URL: srv.URL, Events: []string{"daily_cost"}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	d.Dispatch(context.Background(), notify.EventDailyCost, "", "", "Daily cost $12.34 reached limit $50.00")
+
+	var raw []byte
+	select {
+	case raw = <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook was not delivered within 5 seconds")
+	}
+
+	var got notify.GenericPayload
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("body is not valid JSON: %v\n%s", err, raw)
+	}
+	if got.EventType != "daily_cost" {
+		t.Errorf("event_type = %q, want %q", got.EventType, "daily_cost")
+	}
+}
+
+// TestWebhookDispatcher_EventBeadDecomposed verifies that the dispatcher
+// delivers bead_decomposed events to subscribed webhook targets. Because
+// Dispatch is fire-and-forget, delivery is awaited via a buffered channel with
+// a 5-second deadline so the test fails fast rather than hanging.
+func TestWebhookDispatcher_EventBeadDecomposed(t *testing.T) {
+	ch := make(chan []byte, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		select {
+		case ch <- b:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	d := notify.NewWebhookDispatcher([]notify.WebhookTarget{
+		{Name: "test", URL: srv.URL, Events: []string{"bead_decomposed"}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	d.Dispatch(context.Background(), notify.EventBeadDecomposed, "Forge-99", "my-anvil", "Bead decomposed into 3 sub-beads")
+
+	var raw []byte
+	select {
+	case raw = <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook was not delivered within 5 seconds")
+	}
+
+	var got notify.GenericPayload
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("body is not valid JSON: %v\n%s", err, raw)
+	}
+	if got.EventType != "bead_decomposed" {
+		t.Errorf("event_type = %q, want %q", got.EventType, "bead_decomposed")
+	}
+	if got.BeadID != "Forge-99" {
+		t.Errorf("bead_id = %q, want %q", got.BeadID, "Forge-99")
+	}
+	if got.Anvil != "my-anvil" {
+		t.Errorf("anvil = %q, want %q", got.Anvil, "my-anvil")
+	}
+}
+
+// TestWebhookDispatcher_FilteredEventsNotDelivered verifies that when a target
+// subscribes to specific events, unsubscribed events are not delivered.
+func TestWebhookDispatcher_FilteredEventsNotDelivered(t *testing.T) {
+	// Use a buffered channel so the server doesn't block if it fires unexpectedly.
+	ch := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	d := notify.NewWebhookDispatcher([]notify.WebhookTarget{
+		{Name: "test", URL: srv.URL, Events: []string{"pr_created"}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	// Dispatch an event not in the filter — the dispatcher must skip it without
+	// spawning a goroutine, so the check below is synchronous-safe.
+	d.Dispatch(context.Background(), notify.EventBeadDecomposed, "Forge-1", "anvil", "msg")
+
+	select {
+	case <-ch:
+		t.Error("dispatcher should not deliver events not in the target's filter")
+	default:
+		// Correct: no request was made.
+	}
+}
+
+// TestWebhookDispatcher_DeliversAfterCallerContextCancelled verifies that
+// Dispatch still delivers webhooks even when the caller cancels its context
+// immediately after Dispatch returns (the common "defer cancel()" pattern in
+// the daemon). This is a regression test for the context cancellation race.
+func TestWebhookDispatcher_DeliversAfterCallerContextCancelled(t *testing.T) {
+	ch := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	d := notify.NewWebhookDispatcher([]notify.WebhookTarget{
+		{Name: "test", URL: srv.URL},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	// Simulate the daemon pattern: create a context, dispatch, then cancel
+	// immediately — as if the caller did "defer cancel()" and then returned.
+	ctx, cancel := context.WithCancel(context.Background())
+	d.Dispatch(ctx, notify.EventPRCreated, "Forge-1", "anvil", "test")
+	cancel() // cancel immediately, before the goroutine can complete the HTTP request
+
+	select {
+	case <-ch:
+		// Correct: webhook was delivered despite caller context cancellation.
+	case <-time.After(5 * time.Second):
+		t.Error("webhook was not delivered after caller context was cancelled — context cancellation race not fixed")
 	}
 }
 

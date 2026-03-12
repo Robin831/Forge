@@ -81,9 +81,9 @@ type FixResult struct {
 
 // checkResult represents a parsed GitHub check from `gh pr checks` output.
 type checkResult struct {
-	Name       string
-	Status     string // "pass", "fail", "pending", etc.
-	Link       string
+	Name   string
+	Status string // "pass", "fail", "pending", etc.
+	Link   string
 }
 
 // Fix attempts to resolve CI failures on a PR branch.

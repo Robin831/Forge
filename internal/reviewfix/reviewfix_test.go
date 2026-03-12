@@ -7,9 +7,9 @@ import (
 
 func TestFilterActionableComments(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    []ReviewComment
-		wantLen  int
+		name    string
+		input   []ReviewComment
+		wantLen int
 	}{
 		{
 			name:    "empty input",

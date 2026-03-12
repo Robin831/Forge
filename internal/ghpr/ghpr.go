@@ -250,9 +250,9 @@ func Merge(ctx context.Context, worktreePath string, prNumber int, strategy stri
 // extracted from a PRStatus. This struct exists so the conversion logic can be
 // unit-tested without invoking the gh CLI.
 type MergeabilityInputs struct {
-	HasConflicts          bool
-	HasUnresolvedThreads  bool
-	HasPendingReviews     bool
+	HasConflicts         bool
+	HasUnresolvedThreads bool
+	HasPendingReviews    bool
 }
 
 // MergeabilityFromStatus converts a PRStatus into the boolean inputs needed by
@@ -502,10 +502,10 @@ func FetchPendingReviewRequests(ctx context.Context, worktreePath string, prNumb
 
 // OpenPR is a lightweight view of a GitHub PR used for reconciliation.
 type OpenPR struct {
-	Number  int
-	Title   string
-	Branch  string
-	Body    string
+	Number int
+	Title  string
+	Branch string
+	Body   string
 }
 
 // ListOpen returns all open PRs in the repository for the given worktree path.
@@ -578,14 +578,14 @@ func ParseRepoURL(url string) (owner, repo string, err error) {
 
 // PRStatus represents the GitHub state of a PR.
 type PRStatus struct {
-	State             string           `json:"state"`
-	StatusCheckRollup []CheckRun       `json:"statusCheckRollup"`
-	Reviews           []Review         `json:"reviews"`
-	ReviewRequests    []ReviewRequest  `json:"reviewRequests"`
-	Mergeable         string           `json:"mergeable"`
-	UnresolvedThreads int              `json:"unresolvedThreads"`
-	HeadRefName       string           `json:"headRefName"`
-	URL               string           `json:"url"`
+	State             string          `json:"state"`
+	StatusCheckRollup []CheckRun      `json:"statusCheckRollup"`
+	Reviews           []Review        `json:"reviews"`
+	ReviewRequests    []ReviewRequest `json:"reviewRequests"`
+	Mergeable         string          `json:"mergeable"`
+	UnresolvedThreads int             `json:"unresolvedThreads"`
+	HeadRefName       string          `json:"headRefName"`
+	URL               string          `json:"url"`
 }
 
 // CheckRun represents a CI check on the PR.

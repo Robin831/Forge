@@ -59,15 +59,15 @@ type Params struct {
 	AutoMergeCrucibleChildren bool
 
 	// Test injection points — when non-nil these replace the real implementations.
-	PipelineRunner     func(ctx context.Context, p pipeline.Params) *pipeline.Outcome
-	PRCreator          func(ctx context.Context, p ghpr.CreateParams) (*ghpr.PR, error)
-	ChildFetcher       func(ctx context.Context, parentID, dir string) ([]poller.Bead, error)
-	PRMerger           func(ctx context.Context, prNumber int, dir string) error
-	BeadClaimer        func(ctx context.Context, beadID, dir string) error
-	BeadCloser         func(ctx context.Context, beadID, dir string) error
-	BeadResetter       func(ctx context.Context, beadID, dir string) error
-	EpicBranchCreator  func(ctx context.Context, dir, branch string) error
-	SchematicRunner    func(ctx context.Context, cfg schematic.Config, bead poller.Bead, anvilPath string, pv provider.Provider) *schematic.Result
+	PipelineRunner    func(ctx context.Context, p pipeline.Params) *pipeline.Outcome
+	PRCreator         func(ctx context.Context, p ghpr.CreateParams) (*ghpr.PR, error)
+	ChildFetcher      func(ctx context.Context, parentID, dir string) ([]poller.Bead, error)
+	PRMerger          func(ctx context.Context, prNumber int, dir string) error
+	BeadClaimer       func(ctx context.Context, beadID, dir string) error
+	BeadCloser        func(ctx context.Context, beadID, dir string) error
+	BeadResetter      func(ctx context.Context, beadID, dir string) error
+	EpicBranchCreator func(ctx context.Context, dir, branch string) error
+	SchematicRunner   func(ctx context.Context, cfg schematic.Config, bead poller.Bead, anvilPath string, pv provider.Provider) *schematic.Result
 }
 
 // Status tracks the current state of a Crucible for monitoring.

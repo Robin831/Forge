@@ -134,11 +134,16 @@ settings:
 
 notifications:
   enabled: false
-  teams_webhook_url: https://outlook.webhook.office.com/webhookb2/...
-  events:                      # Empty = all events
-    - pr_created
-    - bead_failed
-    - daily_cost
+  teams:
+    webhook_url: https://outlook.webhook.office.com/webhookb2/...
+    events:                    # Empty = all events
+      - pr_created
+      - bead_failed
+      - daily_cost
+  webhooks:                    # Generic JSON webhook targets (optional)
+    - name: my-dashboard
+      url: https://example.com/api/webhooks/forge
+      events: [pr_created, worker_done, release]
 ```
 
 See [docs/configuration.md](docs/configuration.md) for the full reference.
@@ -203,7 +208,11 @@ Token usage and USD cost estimates are tracked per-bead and per-day. Set `daily_
 
 ### Notifications
 
-MS Teams webhook notifications for key events (PR created, bead failed, daily cost summary, worker done, bead decomposed). Configure in the `notifications` section of `forge.yaml`.
+Forge supports two webhook notification styles:
+- **MS Teams** — Rich Adaptive Cards for key events (PR created, bead failed, daily cost, worker done, bead decomposed). Configure under `notifications.teams`.
+- **Generic webhooks** — Simple JSON payloads sent to any HTTP endpoint. Each target can filter events independently. Configure under `notifications.webhooks[]`.
+
+See the `notifications` section of `forge.yaml` and [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ## Requirements
 

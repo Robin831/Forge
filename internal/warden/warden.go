@@ -522,7 +522,6 @@ func containsAny(s string, substrs ...string) bool {
 	return false
 }
 
-
 // extractJSON finds the first JSON object in the text that contains the given
 // requiredKey. When requiredKey is empty or omitted, any JSON object is returned.
 // The requiredKey is matched as a quoted JSON key ("key") to avoid false

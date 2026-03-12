@@ -53,7 +53,7 @@ var hearthCmd = &cobra.Command{
 			MaxCIFixAttempts:         cfg.Settings.MaxCIFixAttempts,
 			MaxReviewFixAttempts:     cfg.Settings.MaxReviewFixAttempts,
 			MaxRebaseAttempts:        cfg.Settings.MaxRebaseAttempts,
-			AnvilNames:              anvilNames,
+			AnvilNames:               anvilNames,
 			DailyCostLimit:           cfg.Settings.DailyCostLimit,
 			CopilotDailyRequestLimit: cfg.Settings.CopilotDailyRequestLimit,
 		}

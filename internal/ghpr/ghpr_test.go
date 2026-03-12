@@ -32,10 +32,10 @@ func TestExtractPRNumber(t *testing.T) {
 
 func TestParseRepoURL(t *testing.T) {
 	tests := []struct {
-		url         string
-		wantOwner   string
-		wantRepo    string
-		wantErr     bool
+		url       string
+		wantOwner string
+		wantRepo  string
+		wantErr   bool
 	}{
 		{"https://github.com/Robin831/Forge", "Robin831", "Forge", false},
 		{"https://github.com/Robin831/Forge.git", "Robin831", "Forge", false},
@@ -410,4 +410,3 @@ func TestSelectTitle(t *testing.T) {
 			"title already anchored to bead ID must not be overwritten by BeadTitle")
 	})
 }
-

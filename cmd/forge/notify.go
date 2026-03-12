@@ -90,7 +90,7 @@ Example (from a release script):
 			teamsURL = os.Getenv("FORGE_NOTIFICATIONS_TEAMS_WEBHOOK_URL")
 		}
 		if teamsURL == "" && cfg != nil && cfg.Notifications.Enabled {
-			teamsURL = cfg.Notifications.TeamsWebhookURL
+			teamsURL = cfg.Notifications.ResolvedTeamsURL()
 		}
 
 		// Collect generic webhook URLs: flag + config (only if notifications are enabled)
@@ -150,8 +150,57 @@ Example (from a release script):
 			}
 		}
 
+		// Send GenericPayload to new webhooks[] targets that subscribe to the
+		// "release" event (new config style).
+		if cfg != nil && cfg.Notifications.Enabled && len(cfg.Notifications.Webhooks) > 0 {
+			var targets []notify.WebhookTarget
+			for _, w := range cfg.Notifications.Webhooks {
+				url := strings.TrimSpace(w.URL)
+				if url == "" {
+					continue
+				}
+				var events []string
+				for _, e := range w.Events {
+					event := strings.TrimSpace(e)
+					if event != "" {
+						events = append(events, event)
+					}
+				}
+				targets = append(targets, notify.WebhookTarget{
+					Name:   w.Name,
+					URL:    url,
+					Events: events,
+				})
+			}
+			dispatcher := notify.NewWebhookDispatcher(targets, logger)
+			if dispatcher != nil {
+				msg := fmt.Sprintf("Forge %s released", version)
+				if releaseURL != "" {
+					msg = fmt.Sprintf("Forge %s released: %s", version, releaseURL)
+				}
+				dispatcher.Dispatch(rootCtx, notify.EventRelease, "", "", msg)
+				// Count dispatched targets that subscribe to release
+				for _, w := range targets {
+					subscribes := len(w.Events) == 0
+					for _, e := range w.Events {
+						if e == string(notify.EventRelease) {
+							subscribes = true
+							break
+						}
+					}
+					if subscribes {
+						attempted++
+						if !jsonOutput {
+							fmt.Printf("Attempted webhook notification: %s [%s] (%s)\n", w.Name, w.URL, version)
+						}
+					}
+				}
+				dispatcher.Wait()
+			}
+		}
+
 		if attempted == 0 {
-			fmt.Fprintln(os.Stderr, "No webhook URLs configured. Set notifications.teams_webhook_url or notifications.release_webhook_urls in forge.yaml, or use --webhook-url / --extra-url flags.")
+			fmt.Fprintln(os.Stderr, "No webhook URLs configured. Set notifications.teams.webhook_url, notifications.webhooks, or notifications.release_webhook_urls in forge.yaml, or use --webhook-url / --extra-url flags.")
 		}
 
 		if jsonOutput {

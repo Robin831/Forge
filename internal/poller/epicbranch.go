@@ -219,4 +219,3 @@ func sanitizeBeadID(id string) string {
 	)
 	return r.Replace(id)
 }
-

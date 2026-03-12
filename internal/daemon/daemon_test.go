@@ -17,8 +17,8 @@ import (
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
 	"github.com/Robin831/Forge/internal/poller"
-	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/prompt"
+	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/worktree"
 	"github.com/stretchr/testify/assert"
@@ -66,7 +66,7 @@ func TestHandleIPC_RunBead_Errors(t *testing.T) {
 			Payload: []byte("invalid"),
 		})
 		assert.Equal(t, "error", resp.Type)
-		
+
 		var msg map[string]string
 		err := json.Unmarshal(resp.Payload, &msg)
 		assert.NoError(t, err)
@@ -82,7 +82,7 @@ func TestHandleIPC_RunBead_Errors(t *testing.T) {
 			Payload: payload,
 		})
 		assert.Equal(t, "error", resp.Type)
-		
+
 		var msg map[string]string
 		err := json.Unmarshal(resp.Payload, &msg)
 		assert.NoError(t, err)
@@ -174,7 +174,7 @@ exit 1
 			Payload: payload,
 		})
 		assert.Equal(t, "ok", resp.Type)
-		
+
 		var msg map[string]string
 		err := json.Unmarshal(resp.Payload, &msg)
 		assert.NoError(t, err)
@@ -392,7 +392,7 @@ exit 1
 			Payload: payload,
 		})
 		assert.Equal(t, "ok", resp.Type)
-		
+
 		var msg map[string]string
 		err := json.Unmarshal(resp.Payload, &msg)
 		assert.NoError(t, err)
@@ -494,6 +494,12 @@ exit 0
 	// Second poll: event must NOT be logged again (same calendar day).
 	d.pollAndDispatch(context.Background())
 	assert.Equal(t, 1, countCostLimitEvents(), "cost_limit_hit must not be logged again on same day")
+
+	// Simulate a daemon restart: reset the in-memory guard but keep the DB event.
+	// The DB-backed deduplication must prevent the notification from firing again.
+	d.costLimitLoggedDate.Store("")
+	d.pollAndDispatch(context.Background())
+	assert.Equal(t, 1, countCostLimitEvents(), "cost_limit_hit must not be logged after simulated restart when already notified today")
 }
 
 func TestHandleIPC_RetryBead(t *testing.T) {

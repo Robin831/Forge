@@ -257,8 +257,8 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			Role    string          `json:"role,omitempty"`
 			Status  string          `json:"status,omitempty"`
 			// Gemini top-level tool_use fields
-			ToolName   string          `json:"tool_name,omitempty"`
-			Parameters json.RawMessage `json:"parameters,omitempty"`
+			ToolName      string          `json:"tool_name,omitempty"`
+			Parameters    json.RawMessage `json:"parameters,omitempty"`
 			RateLimitInfo *struct {
 				Status string `json:"status"`
 			} `json:"rate_limit_info,omitempty"`
@@ -321,10 +321,10 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 				name = "unknown"
 			}
 			activity := fmt.Sprintf("[tool] %s", name)
-		if paramStr != "" {
-			activity = fmt.Sprintf("%s %s", activity, paramStr)
-		}
-		entries = append(entries, activity)
+			if paramStr != "" {
+				activity = fmt.Sprintf("%s %s", activity, paramStr)
+			}
+			entries = append(entries, activity)
 		case "tool_result":
 			// Gemini tool_result — flush any buffered text (assistant spoke before tool ran)
 			flushGeminiText()

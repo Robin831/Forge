@@ -91,11 +91,11 @@ func TestEventConstants(t *testing.T) {
 // document the expected behavior without requiring live gh/state dependencies.
 func TestSnapshotTransitionLogic(t *testing.T) {
 	tests := []struct {
-		name        string
-		old         prSnapshot
-		new         prSnapshot
-		wantEvents  []string
-		noEvents    []string
+		name       string
+		old        prSnapshot
+		new        prSnapshot
+		wantEvents []string
+		noEvents   []string
 	}{
 		{
 			name:       "CI transitions from failing to passing → ci_passed",
@@ -112,9 +112,9 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 			noEvents:   []string{EventCIPassed},
 		},
 		{
-			name:    "CI stays passing → no event",
-			old:     prSnapshot{CIPassing: true},
-			new:     prSnapshot{CIPassing: true},
+			name:     "CI stays passing → no event",
+			old:      prSnapshot{CIPassing: true},
+			new:      prSnapshot{CIPassing: true},
 			noEvents: []string{EventCIPassed, EventCIFailed},
 		},
 		{
@@ -124,9 +124,9 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 			wantEvents: []string{EventReviewApproved},
 		},
 		{
-			name:    "already approved → no event",
-			old:     prSnapshot{HasApproval: true},
-			new:     prSnapshot{HasApproval: true},
+			name:     "already approved → no event",
+			old:      prSnapshot{HasApproval: true},
+			new:      prSnapshot{HasApproval: true},
 			noEvents: []string{EventReviewApproved},
 		},
 		{
@@ -142,9 +142,9 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 			wantEvents: []string{EventReviewChanges},
 		},
 		{
-			name:    "changes persist → no new event",
-			old:     prSnapshot{NeedsChanges: true},
-			new:     prSnapshot{NeedsChanges: true},
+			name:     "changes persist → no new event",
+			old:      prSnapshot{NeedsChanges: true},
+			new:      prSnapshot{NeedsChanges: true},
 			noEvents: []string{EventReviewChanges},
 		},
 		{
@@ -154,9 +154,9 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 			wantEvents: []string{EventPRConflicting},
 		},
 		{
-			name:    "conflict persists → no new event",
-			old:     prSnapshot{IsConflicting: true},
-			new:     prSnapshot{IsConflicting: true},
+			name:     "conflict persists → no new event",
+			old:      prSnapshot{IsConflicting: true},
+			new:      prSnapshot{IsConflicting: true},
 			noEvents: []string{EventPRConflicting},
 		},
 		{

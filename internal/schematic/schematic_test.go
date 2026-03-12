@@ -30,7 +30,7 @@ func TestShouldRun_DecomposeTag(t *testing.T) {
 	cfg := Config{Enabled: true, WordThreshold: 1000} // high threshold
 	bead := poller.Bead{
 		Description: "Short",
-			Labels:      []string{"feature", "decompose", "urgent"},
+		Labels:      []string{"feature", "decompose", "urgent"},
 	}
 	assert.True(t, ShouldRun(cfg, bead), "decompose tag should override threshold")
 }
@@ -39,7 +39,7 @@ func TestShouldRun_DecomposeTagCaseInsensitive(t *testing.T) {
 	cfg := Config{Enabled: true, WordThreshold: 1000}
 	bead := poller.Bead{
 		Description: "Short",
-			Labels:      []string{"Decompose"},
+		Labels:      []string{"Decompose"},
 	}
 	assert.True(t, ShouldRun(cfg, bead))
 }

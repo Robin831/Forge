@@ -258,22 +258,22 @@ func TestFromConfig(t *testing.T) {
 			wantCmds:  []string{"gemini2"},
 		},
 		{
-			name:      "kind/model format",
-			specs:     []string{"gemini/gemini-2.5-pro"},
-			wantKinds: []Kind{Gemini},
+			name:       "kind/model format",
+			specs:      []string{"gemini/gemini-2.5-pro"},
+			wantKinds:  []Kind{Gemini},
 			wantModels: []string{"gemini-2.5-pro"},
 		},
 		{
-			name:      "kind:command/model format",
-			specs:     []string{"gemini:mybin/gemini-2.5-flash"},
-			wantKinds: []Kind{Gemini},
-			wantCmds:  []string{"mybin"},
+			name:       "kind:command/model format",
+			specs:      []string{"gemini:mybin/gemini-2.5-flash"},
+			wantKinds:  []Kind{Gemini},
+			wantCmds:   []string{"mybin"},
 			wantModels: []string{"gemini-2.5-flash"},
 		},
 		{
-			name:  "multiple gemini models as fallback chain",
-			specs: []string{"claude", "gemini/gemini-2.5-pro", "gemini/gemini-3-flash-preview", "gemini/gemini-2.5-flash-lite"},
-			wantKinds: []Kind{Claude, Gemini, Gemini, Gemini},
+			name:       "multiple gemini models as fallback chain",
+			specs:      []string{"claude", "gemini/gemini-2.5-pro", "gemini/gemini-3-flash-preview", "gemini/gemini-2.5-flash-lite"},
+			wantKinds:  []Kind{Claude, Gemini, Gemini, Gemini},
 			wantModels: []string{"", "gemini-2.5-pro", "gemini-3-flash-preview", "gemini-2.5-flash-lite"},
 		},
 		{
@@ -287,8 +287,8 @@ func TestFromConfig(t *testing.T) {
 			wantKinds: []Kind{Claude},
 		},
 		{
-			name:  "empty strings are skipped",
-			specs: []string{"claude", "", "gemini"},
+			name:      "empty strings are skipped",
+			specs:     []string{"claude", "", "gemini"},
 			wantKinds: []Kind{Claude, Gemini},
 		},
 	}
