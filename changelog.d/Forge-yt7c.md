@@ -1,0 +1,2 @@
+category: Fixed
+- **Hearth: press `m` to toggle mouse capture on/off** - Mouse reporting (click-to-focus, wheel scroll) can now be toggled at runtime with the `m` key. Disabling mouse restores normal terminal text selection so bead IDs, error messages, and PR URLs can be copied. The footer hint updates to reflect the current state. Start with mouse disabled by passing `--no-mouse` to `forge hearth`. (Forge-yt7c)

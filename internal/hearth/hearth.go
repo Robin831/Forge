@@ -337,6 +337,10 @@ type Model struct {
 	toasts           []toast // active toasts, newest first
 	nextToastID      int     // monotonically increasing ID for dismissal matching
 	lastSeenEventKey string  // fingerprint of most-recent event from last poll cycle
+
+	// Mouse mode — when true, click-to-focus is active but terminal text selection
+	// is disabled. Toggle with 'm'. Initial value set by the caller via SetMouseEnabled.
+	mouseEnabled bool
 }
 
 // NewModel creates a new Hearth TUI model.
@@ -349,6 +353,12 @@ func NewModel(ds *DataSource) Model {
 		queueExpandedAnvils: make(map[string]bool),
 		activityExpanded:    make(map[string]bool),
 	}
+}
+
+// SetMouseEnabled records whether mouse reporting was initially enabled so the
+// toggle keybind ('m') can flip the state at runtime.
+func (m *Model) SetMouseEnabled(enabled bool) {
+	m.mouseEnabled = enabled
 }
 
 // Init implements tea.Model.
@@ -572,6 +582,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, cmd
 				}
 			}
+
+		case "m":
+			// Toggle mouse reporting on/off.
+			// When mouse is off, the terminal handles clicks natively — text is selectable.
+			// When mouse is on, click-to-focus and wheel scrolling work in Hearth.
+			m.mouseEnabled = !m.mouseEnabled
+			if m.mouseEnabled {
+				return m, tea.EnableMouseCellMotion
+			}
+			return m, tea.DisableMouse
 
 		case "esc":
 			// Live Activity: collapse the group at the cursor
@@ -925,12 +945,22 @@ func (m *Model) computeHeaderH() int {
 	return lipgloss.Height(headerStyle.Width(m.width).Render(headerText))
 }
 
+// defaultFooterHints returns the key-binding hint line shown in the footer.
+// When mouse is enabled, the text notes that 'm' disables mouse (restoring text selection).
+// When mouse is disabled, the text notes that 'm' enables mouse navigation.
+func (m *Model) defaultFooterHints() string {
+	mouseHint := "m: enable mouse"
+	if m.mouseEnabled {
+		mouseHint = "m: disable mouse (select text)"
+	}
+	return "Tab: switch panel \u2022 j/k: scroll \u2022 K: kill \u2022 Enter: actions/merge \u2022 l: label \u2022 f: follow \u2022 " + mouseHint + " \u2022 q: quit"
+}
+
 // computeFooterH returns the rendered height of the footer bar.
 // It uses the default hint text (status messages are at most 1 line).
 // It is called by panelAtPos() to mirror the layout used by View().
 func (m *Model) computeFooterH() int {
-	footerText := "Tab: switch panel \u2022 j/k: scroll \u2022 K: kill \u2022 Enter: actions/merge \u2022 l: label \u2022 f: follow \u2022 Shift+drag: copy \u2022 q: quit"
-	return lipgloss.Height(footerStyle.Width(m.width).Render(footerText))
+	return lipgloss.Height(footerStyle.Width(m.width).Render(m.defaultFooterHints()))
 }
 
 func (m *Model) View() string {
@@ -953,7 +983,7 @@ func (m *Model) View() string {
 	headerH := lipgloss.Height(header)
 
 	// Footer with status message or default hints
-	footerText := "Tab: switch panel • j/k: scroll • K: kill • Enter: actions/merge • l: label • f: follow • Shift+drag: copy • q: quit"
+	footerText := m.defaultFooterHints()
 	statusDuration := 5 * time.Second
 	if m.statusMsgIsError {
 		statusDuration = 10 * time.Second
