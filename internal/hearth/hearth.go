@@ -11,6 +11,7 @@ package hearth
 
 import (
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"time"
@@ -610,6 +611,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w := m.workers[m.workerVP.cursor]
 				if m.OnKill != nil {
 					m.OnKill(w.ID, w.PID)
+				}
+			}
+
+		case "o":
+			// Open log viewer for the selected worker
+			if m.focused == PanelWorkers && len(m.workers) > 0 &&
+				m.workerVP.cursor < len(m.workers) {
+				w := m.workers[m.workerVP.cursor]
+				if w.LogPath == "" {
+					m.setStatus(fmt.Sprintf("No log file for %s", w.BeadID), false)
+				} else {
+					data, err := os.ReadFile(w.LogPath)
+					var content string
+					if err != nil {
+						content = fmt.Sprintf("(error reading log: %v)", err)
+					} else {
+						content = strings.TrimRight(string(data), "\n")
+					}
+					m.openLogViewer(fmt.Sprintf("Log: %s — %s", w.BeadID, w.LogPath), content)
 				}
 			}
 
@@ -1560,15 +1580,21 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				m.setStatus(fmt.Sprintf("No logs found for %s", bead.BeadID), false)
 				return nil
 			}
-			m.logViewerTitle = fmt.Sprintf("Logs: %s — %s", bead.BeadID, logPath)
-			m.logViewerEmpty = len(lines) == 0
-			vpWidth, vpHeight := m.logViewerDimensions()
-			m.logViewerVP = viewport.New(vpWidth, vpHeight)
-			m.logViewerVP.SetContent(strings.Join(lines, "\n"))
-			m.showLogViewer = true
+			m.openLogViewer(fmt.Sprintf("Log: %s — %s", bead.BeadID, logPath), strings.Join(lines, "\n"))
 		}
 	}
 	return nil
+}
+
+// openLogViewer initialises and displays the viewport log viewer overlay with
+// the given title and pre-joined content string.
+func (m *Model) openLogViewer(title, content string) {
+	m.logViewerTitle = title
+	m.logViewerEmpty = len(content) == 0
+	vpWidth, vpHeight := m.logViewerDimensions()
+	m.logViewerVP = viewport.New(vpWidth, vpHeight)
+	m.logViewerVP.SetContent(content)
+	m.showLogViewer = true
 }
 
 // removeNeedsAttentionItem removes the item with the given beadID and anvil from the
