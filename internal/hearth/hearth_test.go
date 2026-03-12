@@ -112,10 +112,10 @@ func TestRenderWorkerListWithoutPRNumber(t *testing.T) {
 	}
 }
 
-func TestRenderWorkerListScrollRespectsTwoLinesPerWorker(t *testing.T) {
+func TestRenderWorkerListScrolls(t *testing.T) {
 	// Build more workers than fit in the panel to verify scroll/clipping.
-	// height=10 → maxLines = 10-4 = 6, slotsPerWorker=2, maxWorkers=3.
-	// Only the first 3 workers should be visible at scroll=0.
+	// height=10 → contentHeight = 10-4 = 6. With header, about 5 data rows fit.
+	// Only the first 4 workers should be visible at cursor=0.
 	workers := []WorkerItem{
 		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-0"},
 		{ID: "w2", BeadID: "bd-2", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-1"},
@@ -146,9 +146,9 @@ func TestRenderWorkerListScrollRespectsTwoLinesPerWorker(t *testing.T) {
 }
 
 func TestRenderWorkerListViewportScrollsToShowSelected(t *testing.T) {
-	// height=10 → maxLines=6, slotsPerWorker=2, maxWorkers=3.
-	// With workerScroll=4 (last worker), the viewport should shift so that
-	// workers 2-4 are visible and workers 0-1 are clipped.
+	// height=10 → contentHeight=6. With header, about 5 data rows fit.
+	// With cursor=4 (last worker), the table should scroll so that
+	// workers 1-4 are visible and worker 0 is clipped.
 	workers := []WorkerItem{
 		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-0"},
 		{ID: "w2", BeadID: "bd-2", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-1"},

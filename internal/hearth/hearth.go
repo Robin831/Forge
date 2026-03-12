@@ -993,8 +993,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case UpdateWorkersMsg:
-		// Capture the currently selected worker ID before clamping, so we can
-		// detect when ClampToTotal shifts the cursor to a different worker.
+		// Capture the currently selected worker ID before updating, so we can
+		// try to stay on the same worker if it's still present in the list.
 		prevCursor := m.workerTable.Cursor()
 		var prevWorkerID string
 		if prevCursor >= 0 && prevCursor < len(m.workers) {
@@ -1027,7 +1027,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.workerTable.SetRows(rows)
 
-		// Clamp table cursor
+		// Stay on the same worker ID if it still exists.
+		if prevWorkerID != "" {
+			for i, w := range m.workers {
+				if w.ID == prevWorkerID {
+					m.workerTable.SetCursor(i)
+					break
+				}
+			}
+		}
+
+		// Clamp table cursor in case the ID vanished and the old index is out of bounds.
 		if m.workerTable.Cursor() >= len(m.workers) {
 			m.workerTable.SetCursor(max(0, len(m.workers)-1))
 		}
