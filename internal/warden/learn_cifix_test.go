@@ -134,14 +134,14 @@ func TestLearnFromCIFix_SkipExisting(t *testing.T) {
 }
 
 // TestLearnFromCIFix_DistillsNewRule verifies that LearnFromCIFix calls the
-// claude runner and stores a new rule when the rule ID does not yet exist.
+// AI runner and stores a new rule when the rule ID does not yet exist.
 func TestLearnFromCIFix_DistillsNewRule(t *testing.T) {
 	anvilPath := t.TempDir()
 
-	// Stub out claudeRunner so no real process is spawned.
-	old := claudeRunner
-	t.Cleanup(func() { claudeRunner = old })
-	claudeRunner = func(_ context.Context, _, _ string) ([]byte, error) {
+	// Stub out aiRunner so no real process is spawned.
+	old := aiRunner
+	t.Cleanup(func() { aiRunner = old })
+	aiRunner = func(_ context.Context, _, _ string) ([]byte, error) {
 		return []byte(`{"id":"react-hooks-exhaustive-deps","category":"ui","pattern":"missing dep in useEffect","check":"ensure all used values are in the deps array"}`), nil
 	}
 
@@ -172,15 +172,15 @@ func TestLearnFromCIFix_DistillsNewRule(t *testing.T) {
 	}
 }
 
-// TestLearnFromCIFix_CapRules verifies that LearnFromCIFix stops calling Claude
+// TestLearnFromCIFix_CapRules verifies that LearnFromCIFix stops calling AI
 // after maxRulesToLearn distillation calls, even when more rules are present.
 func TestLearnFromCIFix_CapRules(t *testing.T) {
 	anvilPath := t.TempDir()
 
 	callCount := 0
-	old := claudeRunner
-	t.Cleanup(func() { claudeRunner = old })
-	claudeRunner = func(_ context.Context, _, prompt string) ([]byte, error) {
+	old := aiRunner
+	t.Cleanup(func() { aiRunner = old })
+	aiRunner = func(_ context.Context, _, prompt string) ([]byte, error) {
 		callCount++
 		// Return a valid rule JSON that matches the expected ruleID format.
 		return []byte(`{"id":"placeholder","category":"style","pattern":"x","check":"y"}`), nil

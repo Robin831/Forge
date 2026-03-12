@@ -555,6 +555,7 @@ func extractJSON(text string, requiredKey ...string) string {
 	}
 
 	// 3. Look for raw JSON objects containing the required key
+Outer:
 	for i := 0; i < len(text); i++ {
 		if text[i] == '{' {
 			// Find matching closing brace, respecting JSON strings.
@@ -586,6 +587,7 @@ func extractJSON(text string, requiredKey ...string) string {
 						if containsKey(candidate) {
 							return candidate
 						}
+						continue Outer
 					}
 				}
 			}

@@ -123,18 +123,18 @@ func FetchRecentPRNumbers(ctx context.Context, repoDir string, limit int) ([]int
 	return nums, nil
 }
 
-// claudeRunner executes an AI session with the given prompt and returns its
+// aiRunner executes an AI session with the given prompt and returns its
 // full text response. It uses smith.SpawnWithProvider to benefit from
 // stream-json parsing, provider fallback, and cost tracking. It is a
 // package-level variable so tests can inject a stub without spawning a real
 // process.
-var claudeRunner = func(ctx context.Context, dir, prompt string) ([]byte, error) {
+var aiRunner = func(ctx context.Context, dir, prompt string) ([]byte, error) {
 	logDir := filepath.Join(dir, ".forge-logs")
 	providers := provider.Defaults()
 	var lastErr error
 
 	for _, pv := range providers {
-		// Distillation should be quick, but give it 5 turns just in case Claude
+		// Distillation should be quick, but give it 5 turns just in case AI
 		// wants to look at some files to understand the context of the comments.
 		extraFlags := []string{"--max-turns", "5"}
 		process, err := smith.SpawnWithProvider(ctx, dir, prompt, logDir, pv, extraFlags)
@@ -151,6 +151,18 @@ var claudeRunner = func(ctx context.Context, dir, prompt string) ([]byte, error)
 			lastErr = fmt.Errorf("ai error (%s): %s", pv.Label(), result.ErrorOutput)
 			continue
 		}
+		// Treat non-zero exit codes as errors, even if some output was produced.
+		if result.ExitCode != 0 {
+			lastErr = fmt.Errorf("ai process error (%s): exit code %d: %s", pv.Label(), result.ExitCode, strings.TrimSpace(result.ErrorOutput))
+			continue
+		}
+		// Treat non-success result subtypes (e.g., error_max_turns) as errors to
+		// ensure we don't proceed with partial/invalid output and allow fallback.
+		if result.ResultSubtype != "" && result.ResultSubtype != "success" {
+			lastErr = fmt.Errorf("ai error subtype (%s): %s: %s", pv.Label(), result.ResultSubtype, strings.TrimSpace(result.ErrorOutput))
+			continue
+		}
+
 		// Return the full output text from the result event, which excludes
 		// the prompt and internal protocol junk.
 		output := result.FullOutput
@@ -186,12 +198,12 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 
 	prompt := sb.String()
 
-	raw, err := claudeRunner(ctx, repoDir, prompt)
+	raw, err := aiRunner(ctx, repoDir, prompt)
 	if err != nil {
-		return nil, fmt.Errorf("claude distill: %w", err)
+		return nil, fmt.Errorf("ai distill: %w", err)
 	}
 
-	// Extract JSON from Claude's output
+	// Extract JSON from AI's output
 	output := strings.TrimSpace(string(raw))
 	jsonStr := extractJSON(output, "id")
 	if jsonStr == "" {
@@ -386,9 +398,9 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) using this 
 
 	prompt := sb.String()
 
-	raw, err := claudeRunner(ctx, repoDir, prompt)
+	raw, err := aiRunner(ctx, repoDir, prompt)
 	if err != nil {
-		return nil, fmt.Errorf("claude distill: %w", err)
+		return nil, fmt.Errorf("ai distill: %w", err)
 	}
 
 	output := strings.TrimSpace(string(raw))
