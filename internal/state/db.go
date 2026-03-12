@@ -1107,15 +1107,18 @@ func (db *DB) LogEvent(typ EventType, message, beadID, anvil string) error {
 // that should fire at most once per calendar day (e.g. cost_limit_hit) even
 // across daemon restarts, which would otherwise reset in-memory guards.
 func (db *DB) HasEventForDate(eventType EventType, date string) (bool, error) {
-	var count int
+	var dummy int
 	err := db.conn.QueryRow(
-		`SELECT COUNT(*) FROM events WHERE type = ? AND timestamp LIKE ?`,
+		`SELECT 1 FROM events WHERE type = ? AND timestamp LIKE ? LIMIT 1`,
 		string(eventType), date+"%",
-	).Scan(&count)
+	).Scan(&dummy)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	return true, nil
 }
 
 // RecentEvents returns the most recent n events.

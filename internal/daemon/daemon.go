@@ -211,10 +211,23 @@ func New(cfg *config.Config) (*Daemon, error) {
 	if cfg.Notifications.Enabled {
 		var webhookTargets []notify.WebhookTarget
 		for _, w := range cfg.Notifications.Webhooks {
+			trimmedURL := strings.TrimSpace(w.URL)
+			if trimmedURL == "" {
+				continue
+			}
+
+			var trimmedEvents []string
+			for _, ev := range w.Events {
+				tEv := strings.TrimSpace(ev)
+				if tEv != "" {
+					trimmedEvents = append(trimmedEvents, tEv)
+				}
+			}
+
 			webhookTargets = append(webhookTargets, notify.WebhookTarget{
 				Name:   w.Name,
-				URL:    w.URL,
-				Events: w.Events,
+				URL:    trimmedURL,
+				Events: trimmedEvents,
 			})
 		}
 		dispatcher = notify.NewWebhookDispatcher(webhookTargets, logger)
@@ -1052,7 +1065,12 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			alreadyNotified := prev == today
 			if !alreadyNotified {
 				// Check DB in case the daemon restarted after notifying today.
-				if notified, err := d.db.HasEventForDate(state.EventCostLimitHit, today); err == nil {
+				notified, err := d.db.HasEventForDate(state.EventCostLimitHit, today)
+				if err != nil {
+					// Fail closed: avoid spamming notifications when the DB is unhealthy.
+					d.logger.Error("checking cost limit event deduplication", "error", err, "date", today)
+					alreadyNotified = true
+				} else {
 					alreadyNotified = notified
 				}
 			}
@@ -1066,17 +1084,18 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 					"limit", fmt.Sprintf("$%.2f", costLimit))
 
 				// Fire daily_cost notifications — once per day when the limit is hit.
-				go func(date string, cost, limit float64) {
+				inTokens, outTokens, _, _, _, _, _ := d.db.GetDailyCost(today)
+				go func(date string, cost, limit float64, inT, outT int) {
 					notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
 					if n := d.notifier.Load(); n != nil {
-						n.DailyCost(notifCtx, date, cost, limit, 0, 0)
+						n.DailyCost(notifCtx, date, cost, limit, int64(inT), int64(outT))
 					}
 					if d.dispatcher != nil {
 						msg := fmt.Sprintf("Daily cost $%.2f reached limit $%.2f", cost, limit)
 						d.dispatcher.Dispatch(notifCtx, notify.EventDailyCost, "", "", msg)
 					}
-				}(today, todayCost, costLimit)
+				}(today, todayCost, costLimit, inTokens, outTokens)
 			} else if prev != today {
 				// Update in-memory cache to skip the DB query on future poll cycles.
 				d.costLimitLoggedDate.Store(today)
@@ -2878,9 +2897,9 @@ func (d *Daemon) buildNotifier(cfg *config.Config) *notify.Notifier {
 		// setup due to a transient config typo.
 		d.logger.Error("invalid Teams webhook URL in reloaded config; using raw URL", "error", err)
 		n = notify.NewNotifier(notify.Config{
-			WebhookURL: strings.TrimSpace(cfg.Notifications.TeamsWebhookURL),
+			WebhookURL: strings.TrimSpace(cfg.Notifications.ResolvedTeamsURL()),
 			Enabled:    cfg.Notifications.Enabled,
-			Events:     cfg.Notifications.Events,
+			Events:     trimStrings(cfg.Notifications.ResolvedTeamsEvents()),
 		}, d.logger)
 	}
 	if n != nil {
@@ -2896,7 +2915,7 @@ func (d *Daemon) buildNotifier(cfg *config.Config) *notify.Notifier {
 // both the startup path (New) and the hot-reload path (buildNotifier) so that
 // the two cannot drift in behaviour or logging over time.
 func newNotifierFromConfig(cfg *config.Config, logger *slog.Logger) (*notify.Notifier, error) {
-	webhookURL := cfg.Notifications.TeamsWebhookURL
+	webhookURL := cfg.Notifications.ResolvedTeamsURL()
 	trimmedURL := strings.TrimSpace(webhookURL)
 	if cfg.Notifications.Enabled && trimmedURL != "" {
 		formatted, err := notify.FormatWebhookURL(trimmedURL)
@@ -2910,9 +2929,20 @@ func newNotifierFromConfig(cfg *config.Config, logger *slog.Logger) (*notify.Not
 	n := notify.NewNotifier(notify.Config{
 		WebhookURL: webhookURL,
 		Enabled:    cfg.Notifications.Enabled,
-		Events:     cfg.Notifications.Events,
+		Events:     trimStrings(cfg.Notifications.ResolvedTeamsEvents()),
 	}, logger)
 	return n, nil
+}
+
+func trimStrings(ss []string) []string {
+	var res []string
+	for _, s := range ss {
+		t := strings.TrimSpace(s)
+		if t != "" {
+			res = append(res, t)
+		}
+	}
+	return res
 }
 
 // filterDepcheckAnvils returns the subset of anvils that should be scanned by
