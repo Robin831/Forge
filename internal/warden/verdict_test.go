@@ -184,6 +184,56 @@ func TestExtractKeyValueVerdict(t *testing.T) {
 	}
 }
 
+func TestExtractJSON(t *testing.T) {
+	tests := []struct {
+		name        string
+		text        string
+		requiredKey string
+		want        string
+	}{
+		{
+			name: "Fenced JSON",
+			text: "Some text\n```json\n{\"id\": \"test\"}\n```\nMore text",
+			want: "{\"id\": \"test\"}",
+		},
+		{
+			name: "Raw JSON with braces in string",
+			text: "Result: {\"id\": \"test\", \"pattern\": \"Use {braces} here\"} end",
+			want: "{\"id\": \"test\", \"pattern\": \"Use {braces} here\"}",
+		},
+		{
+			name: "Raw JSON with escaped quotes",
+			text: "Result: {\"id\": \"test\", \"pattern\": \"A \\\"quote\\\" inside\"} end",
+			want: "{\"id\": \"test\", \"pattern\": \"A \\\"quote\\\" inside\"}",
+		},
+		{
+			name:        "Required key filtering",
+			text:        "First: {\"a\": 1} Second: {\"id\": \"target\"}",
+			requiredKey: "id",
+			want:        "{\"id\": \"target\"}",
+		},
+		{
+			name: "Nested objects",
+			text: "Complex: {\"id\": \"outer\", \"inner\": {\"foo\": \"bar\"}}",
+			want: "{\"id\": \"outer\", \"inner\": {\"foo\": \"bar\"}}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			if tt.requiredKey != "" {
+				got = extractJSON(tt.text, tt.requiredKey)
+			} else {
+				got = extractJSON(tt.text)
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestContainsAny(t *testing.T) {
 	if !containsAny("hello world", "world", "mars") {
 		t.Error("expected true")
