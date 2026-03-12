@@ -2337,30 +2337,21 @@ func (m *Model) renderQueue(width, height int) string {
 // (when active), Ready to Merge, and Needs Attention (bottom). When crucibles are
 // active, it renders 4 stacked panels; otherwise 3.
 func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
-	height := topHeight + bottomHeight
-
 	// Count panels to render: Queue + ReadyToMerge + NeedsAttention + optionally Crucibles.
 	hasCrucibles := len(m.crucibles) > 0
-	panelN := 3
-	if hasCrucibles {
-		panelN = 4
-	}
-
-	// Each sub-panel adds 2 border lines. Deduct borders to fit in the same
-	// contentHeight+4 space as the 2-panel columns.
-	// Sum(hi + 2) = height + 4  => Sum(hi) = height + 4 - panelN*2.
-	innerHeight := height + 4 - panelN*2
-	if innerHeight < 0 {
-		innerHeight = 0
-	}
 
 	if hasCrucibles {
-		// Queue 40%, Crucible 20%, ReadyToMerge 15%, NeedsAttention 25%.
-		queueHeight := innerHeight * 4 / 10
-		crucibleHeight := innerHeight * 2 / 10
-		mergeHeight := innerHeight * 15 / 100
-		if innerHeight < 12 {
-			queueHeight = innerHeight
+		// Total inner height available for all 4 panels is topHeight + bottomHeight - 4
+		// (because we have 4 panels instead of 2, so 4 extra border lines).
+		totalInner := topHeight + bottomHeight - 4
+		if totalInner < 0 {
+			totalInner = 0
+		}
+		queueHeight := totalInner * 4 / 10
+		crucibleHeight := totalInner * 2 / 10
+		mergeHeight := totalInner * 15 / 100
+		if totalInner < 12 {
+			queueHeight = totalInner
 			crucibleHeight = 0
 			mergeHeight = 0
 		} else {
@@ -2368,7 +2359,7 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 			crucibleHeight = max(crucibleHeight, 4)
 			mergeHeight = max(mergeHeight, 3)
 		}
-		attentionHeight := innerHeight - queueHeight - crucibleHeight - mergeHeight
+		attentionHeight := totalInner - queueHeight - crucibleHeight - mergeHeight
 
 		top := m.renderQueue(width, queueHeight)
 		cruc := m.renderCrucibles(width, crucibleHeight)
@@ -2378,20 +2369,26 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	}
 
 	// No active crucibles — original 3-panel layout.
-	innerHeight = height - 4
-	if innerHeight < 0 {
-		innerHeight = 0
+	// 3 panels means 6 border lines. getVerticalSplit only subtracted 4.
+	// So we have 2 extra border lines to account for.
+	totalInner := topHeight + bottomHeight - 2
+	if totalInner < 0 {
+		totalInner = 0
 	}
-	queueHeight := innerHeight * 5 / 10
-	mergeHeight := innerHeight * 2 / 10
-	if innerHeight < 8 {
-		queueHeight = innerHeight
-		mergeHeight = 0
+	queueHeight := totalInner * 6 / 10
+	if totalInner < 8 {
+		queueHeight = totalInner
 	} else {
 		queueHeight = max(queueHeight, 5)
+	}
+	remaining := totalInner - queueHeight
+	mergeHeight := remaining / 3
+	if remaining < 6 {
+		mergeHeight = 0
+	} else {
 		mergeHeight = max(mergeHeight, 3)
 	}
-	attentionHeight := innerHeight - queueHeight - mergeHeight
+	attentionHeight := remaining - mergeHeight
 
 	top := m.renderQueue(width, queueHeight)
 	middle := m.renderReadyToMerge(width, mergeHeight)
@@ -2433,6 +2430,9 @@ func cruciblePhaseStyle(phase, frame string) string {
 
 // renderCrucibles renders the Crucibles sub-panel showing active epic orchestrations.
 func (m *Model) renderCrucibles(width, height int) string {
+	if height <= 0 {
+		return ""
+	}
 	style := panelStyle.Width(width)
 	if m.focused == PanelCrucibles {
 		style = focusedPanelStyle.Width(width)
@@ -2523,19 +2523,10 @@ func (m *Model) renderRightColumn(width, topHeight, bottomHeight int) string {
 }
 
 // renderStackedColumn renders two sub-panels stacked vertically.
-// Each lipgloss panel adds 2 border lines (top + bottom) to its height parameter.
-// Two stacked panels therefore produce 4 border lines total, whereas the single
-// center column produces only 2. The bottom panel's height is reduced by 2 so
-// that topHeight+bottomHeight+2 (single-panel rendered lines) equals
-// (topHeight+2)+(bottomHeight-2+2) = topHeight+bottomHeight+2 for the stacked column.
 func (m *Model) renderStackedColumn(width, topHeight, bottomHeight int,
 	renderTop, renderBottom func(int, int) string) string {
-	innerBottom := bottomHeight - 2
-	if innerBottom < 0 {
-		innerBottom = 0
-	}
 	top := renderTop(width, topHeight)
-	bottom := renderBottom(width, innerBottom)
+	bottom := renderBottom(width, bottomHeight)
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
@@ -2563,6 +2554,9 @@ func attentionReasonIcon(cat AttentionReason) string {
 // that require human intervention (e.g. exhausted dispatch/CI-fix/review-fix/rebase
 // attempts, clarification requests, or stalled workers).
 func (m *Model) renderNeedsAttention(width, height int) string {
+	if height <= 0 {
+		return ""
+	}
 	style := panelStyle.Width(width)
 	if m.focused == PanelNeedsAttention {
 		style = focusedPanelStyle.Width(width)
@@ -2611,9 +2605,6 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 		}
 	}
 
-	if height <= 0 {
-		return style.Render("")
-	}
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
 }
@@ -2673,6 +2664,9 @@ func (m *Model) renderWorkers(width, height int) string {
 }
 
 func (m *Model) renderWorkerList(width, height int) string {
+	if height <= 0 {
+		return ""
+	}
 	style := panelStyle.Width(width)
 	if m.focused == PanelWorkers {
 		style = focusedPanelStyle.Width(width)
@@ -2681,8 +2675,9 @@ func (m *Model) renderWorkerList(width, height int) string {
 	title := panelTitleStyle.Render(fmt.Sprintf("Workers (%d)", len(m.workers)))
 
 	m.workerTable.SetWidth(width - 4)
-	// title(2) + table header(2) + buffer(2) = 6
-	tableHeight := height - 6
+	// title(1) + margin(1) + table header(2) = 4 lines.
+	// Remaining rows = height - 4.
+	tableHeight := height - 4
 	if tableHeight < 1 {
 		tableHeight = 1
 	}
@@ -2730,15 +2725,15 @@ func (m *Model) renderCenterColumn(width, topHeight, bottomHeight int) string {
 	usagePanelHeight := 10
 	if fullHeight < 20 {
 		// Terminal too small for a split — render workers only.
-		// One panel adds 2 borders; to match the 4 borders of other columns,
-		// we give it 2 extra lines of inner height.
+		// In getVerticalSplit, we subtracted 4 for TWO panels. If we only render one,
+		// we gain 2 lines of inner height.
 		return m.renderWorkerList(width, fullHeight+2)
 	}
 
-	workerHeight := fullHeight - usagePanelHeight
+	workerHeight := fullHeight - usagePanelHeight + 2
 
 	top := m.renderWorkerList(width, workerHeight)
-	bottom := m.renderUsagePanel(width, usagePanelHeight-2) // -2 for inner content (border adds 2)
+	bottom := m.renderUsagePanel(width, usagePanelHeight-2)
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
