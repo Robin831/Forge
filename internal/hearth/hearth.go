@@ -401,8 +401,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Action menu overlays intercept all keys/mouse when open.
 	if m.orphanDialogForm != nil {
-		if k, ok := msg.(tea.KeyMsg); ok && (k.Type == tea.KeyCtrlC || k.String() == "ctrl+c") {
-			return m, tea.Quit
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if k.Type == tea.KeyCtrlC || k.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			if k.Type == tea.KeyEsc {
+				m.orphanDialogForm = nil
+				m.orphanTarget = nil
+				m.dequeueNextOrphan()
+				return m, nil
+			}
 		}
 		cmds = append(cmds, m.driveHuhForm(&m.orphanDialogForm, msg))
 		if m.orphanDialogForm.State == huh.StateCompleted {
@@ -3466,10 +3474,16 @@ func wordWrap(s string, maxWidth int) []string {
 func (m *Model) driveHuhForm(form **huh.Form, msg tea.Msg) tea.Cmd {
 	f, cmd := (*form).Update(msg)
 	*form = f.(*huh.Form)
-	if cmd != nil {
-		// Synchronously drive the command if it's a simple one (not a batch)
-		// This helps huh reach Completed state in one turn for simple selects.
-		return cmd
+	for cmd != nil {
+		// Synchronously drive the command if it's a simple one (not a batch).
+		// This helps huh reach Completed/Aborted state in one turn for simple selects.
+		nextMsg := cmd()
+		if nextMsg == nil {
+			break
+		}
+		f, nextCmd := (*form).Update(nextMsg)
+		*form = f.(*huh.Form)
+		cmd = nextCmd
 	}
 	return nil
 }
