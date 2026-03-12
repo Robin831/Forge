@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
-
 	"github.com/Robin831/Forge/internal/daemon"
 	"github.com/spf13/cobra"
 )
@@ -72,10 +70,8 @@ var upCmd = &cobra.Command{
 		bgCmd.Stderr = nil
 		bgCmd.Stdin = nil
 
-		// Detach on Windows
-		if runtime.GOOS == "windows" {
-			detachProcess(bgCmd)
-		}
+		// Detach the background process (platform-specific implementation in daemon_*.go)
+		detachProcess(bgCmd)
 
 		if err := bgCmd.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error starting daemon: %v\n", err)
