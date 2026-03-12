@@ -39,7 +39,10 @@ archives:
         format: tar.gz
 
 sboms:
-  - artifacts: archive
+  - id: archive
+    artifacts: archive
+  - id: docker
+    artifacts: docker
 
 checksum:
   name_template: "checksums.txt"

@@ -1,2 +1,2 @@
 category: Security
-- **Add SBOM generation for releases** - Enabled GoReleaser v2's sboms section to generate SPDX Software Bill of Materials for each archive, improving supply chain security. (Forge-ztgx)
+- **Enable SBOM generation for releases** - Added GoReleaser v2's `sboms` section and installed Syft in the release workflow to generate Software Bill of Materials for supply chain security. (Forge-ztgx)
