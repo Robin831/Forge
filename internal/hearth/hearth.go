@@ -309,6 +309,7 @@ type Model struct {
 	// Description viewer overlay state — shows glamour-rendered markdown description.
 	showDescriptionViewer  bool
 	descriptionViewerTitle string
+	descriptionViewerRaw   string
 	descriptionViewerEmpty bool
 	descriptionViewerVP    viewport.Model
 
@@ -731,6 +732,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			vpWidth, vpHeight := m.descriptionViewerDimensions()
 			m.descriptionViewerVP.Width = vpWidth
 			m.descriptionViewerVP.Height = vpHeight
+			// Re-render description content so glamour wraps to the new width.
+			m.descriptionViewerVP.SetContent(m.renderDescriptionViewerContent())
 		}
 
 	case UpdateQueueMsg:

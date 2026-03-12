@@ -1528,7 +1528,7 @@ func (db *DB) LastWorkerLogPath(beadID string) (string, error) {
 }
 
 // NeedsAttentionBead represents a bead requiring human attention, combining
-// retry metadata with a best-effort title lookup from queue_cache or workers.
+// retry metadata with a best-effort title and description lookup from queue_cache or workers.
 type NeedsAttentionBead struct {
 	BeadID              string
 	Anvil               string
@@ -1622,7 +1622,9 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 					existing.Title = b.Title
 				}
 			}
-			// Description follows the same merge strategy as title.
+			// Description merge strategy:
+			// - Only fill in from this row when the existing description is empty.
+			// - We do not overwrite an existing description, even for retry rows.
 			if b.Description != "" && existing.Description == "" {
 				existing.Description = b.Description
 			}

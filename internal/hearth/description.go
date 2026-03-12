@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/bubbles/viewport"
 )
 
 // renderMarkdownDescription renders markdown content using glamour.
@@ -70,16 +70,24 @@ func (m *Model) openDescriptionViewer(beadID, title, description string) {
 	if title != "" {
 		m.descriptionViewerTitle = fmt.Sprintf("Description: %s — %s", beadID, title)
 	}
+	m.descriptionViewerRaw = description
 	m.descriptionViewerVP = viewport.New(vpWidth, vpHeight)
 	if description == "" {
 		m.descriptionViewerEmpty = true
 		m.descriptionViewerVP.SetContent("")
 	} else {
 		m.descriptionViewerEmpty = false
-		rendered := renderMarkdownDescription(description, vpWidth)
+		rendered := m.renderDescriptionViewerContent()
 		m.descriptionViewerVP.SetContent(rendered)
 	}
 	m.showDescriptionViewer = true
+}
+
+// renderDescriptionViewerContent renders the raw markdown description for the
+// current viewport width.
+func (m *Model) renderDescriptionViewerContent() string {
+	vpWidth, _ := m.descriptionViewerDimensions()
+	return renderMarkdownDescription(m.descriptionViewerRaw, vpWidth)
 }
 
 // renderDescriptionViewer renders the description viewer overlay using the same
