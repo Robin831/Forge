@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/changelog"
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
@@ -75,6 +76,8 @@ type Outcome struct {
 	// Decomposed is true when the Schematic decomposed the bead into
 	// sub-beads. The pipeline exits early without running Smith.
 	Decomposed bool
+	// ChangelogSummary is the extracted changelog fragment bullets (if any).
+	ChangelogSummary string
 }
 
 // Params holds the dependencies for running a pipeline.
@@ -613,6 +616,16 @@ func Run(ctx context.Context, p Params) *Outcome {
 			outcome.Success = true
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
 			_ = p.DB.LogEvent(state.EventWardenPass, "Warden failed, defaulting to approve", p.Bead.ID, p.AnvilName)
+
+			// Try to extract changelog summary from the fragment created by Smith.
+			if frag, err := changelog.ParseFragment(filepath.Join(wt.Path, "changelog.d", p.Bead.ID+".md")); err == nil {
+				outcome.ChangelogSummary = strings.Join(frag.Bullets, "\n")
+			} else {
+				if frag, err := changelog.ParseFragment(filepath.Join(wt.Path, "changelog.d", p.Bead.ID+".en.md")); err == nil {
+					outcome.ChangelogSummary = strings.Join(frag.Bullets, "\n")
+				}
+			}
+
 			outcome.Duration = time.Since(start)
 			return outcome
 		}
@@ -637,6 +650,17 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerMonitoring)
 			_ = p.DB.UpdateWorkerPhase(workerID, "bellows")
 			_ = p.DB.LogEvent(state.EventWardenPass, reviewResult.Summary, p.Bead.ID, p.AnvilName)
+
+			// Try to extract changelog summary from the fragment created by Smith.
+			// This provides a high-quality description of the changes for the PR.
+			if frag, err := changelog.ParseFragment(filepath.Join(wt.Path, "changelog.d", p.Bead.ID+".md")); err == nil {
+				outcome.ChangelogSummary = strings.Join(frag.Bullets, "\n")
+			} else {
+				// Fallback to legacy .en.md extension if enabled or present.
+				if frag, err := changelog.ParseFragment(filepath.Join(wt.Path, "changelog.d", p.Bead.ID+".en.md")); err == nil {
+					outcome.ChangelogSummary = strings.Join(frag.Bullets, "\n")
+				}
+			}
 
 			// Ensure the branch is pushed to the remote before the worktree
 			// is cleaned up. Smith is instructed to push, but as a safety net

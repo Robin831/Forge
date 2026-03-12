@@ -1542,9 +1542,14 @@ normalPipeline:
 	// Create PR — run gh from the main repo dir since the branch is already pushed.
 	// Use pipelineCtx (background-derived) so PR creation succeeds even during
 	// graceful shutdown.
-	// Build a change summary from warden review if available.
+	// Build a change summary for the PR description.
+	// Priority:
+	// 1. ChangelogSummary (bullets from Smith's changelog fragment)
+	// 2. ReviewResult.Summary (Warden's one-line summary)
 	var changeSummary string
-	if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" {
+	if outcome.ChangelogSummary != "" {
+		changeSummary = outcome.ChangelogSummary
+	} else if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" {
 		changeSummary = outcome.ReviewResult.Summary
 	}
 
