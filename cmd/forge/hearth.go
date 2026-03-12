@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -242,21 +241,28 @@ var hearthCmd = &cobra.Command{
 		}
 
 		model.OnAppendNotes = func(beadID, anvil, notes string) error {
-			// Find anvil path.
-			var anvilPath string
-			if a, ok := cfg.Anvils[anvil]; ok {
-				anvilPath = a.Path
-			}
-			if anvilPath == "" {
-				// Fallback to current dir if anvil not found (unlikely).
-				anvilPath = "."
-			}
-
-			cmd := exec.Command("bd", "update", "--", beadID, "--append-notes", notes)
-			cmd.Dir = anvilPath
-			out, err := cmd.CombinedOutput()
+			client, err := ipc.NewClient()
 			if err != nil {
-				return fmt.Errorf("bd update %s --append-notes: %w: %s", beadID, err, out)
+				return fmt.Errorf("connecting to daemon: %w", err)
+			}
+			defer client.Close()
+
+			payload, _ := json.Marshal(ipc.AppendNotesPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+				Notes:  notes,
+			})
+			resp, err := client.Send(ipc.Command{
+				Type:    "append_notes",
+				Payload: payload,
+			})
+			if err != nil {
+				return fmt.Errorf("sending append_notes command: %w", err)
+			}
+			if resp.Type == "error" {
+				var msg map[string]string
+				_ = json.Unmarshal(resp.Payload, &msg)
+				return fmt.Errorf("daemon error: %s", msg["message"])
 			}
 			return nil
 		}

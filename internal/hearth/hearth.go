@@ -848,29 +848,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.queueActionTarget = nil
 			}
 		}
-		if m.showNotesOverlay && m.notesTarget != nil {
-			found := false
-			for _, qi := range m.queue {
-				if qi.BeadID == m.notesTarget.BeadID && qi.Anvil == m.notesTarget.Anvil {
-					found = true
-					break
-				}
-			}
-			if !found {
-				// Also check needs attention panel
-				for _, ni := range m.needsAttention {
-					if ni.BeadID == m.notesTarget.BeadID && ni.Anvil == m.notesTarget.Anvil {
-						found = true
-						break
-					}
-				}
-			}
-			if !found {
-				m.showNotesOverlay = false
-				m.notesTarget = nil
-				m.notesTA = textarea.Model{}
-			}
-		}
 
 	case QueueErrorMsg:
 		// Preserve previous queue; surface the error in the events panel
@@ -894,30 +871,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UpdateNeedsAttentionMsg:
 		m.needsAttention = msg.Items
 		m.needsAttnVP.ClampToTotal(len(msg.Items))
-		// Close the notes overlay if the target bead is no longer in the needs attention or queue panels.
-		if m.showNotesOverlay && m.notesTarget != nil {
-			found := false
-			for _, ni := range m.needsAttention {
-				if ni.BeadID == m.notesTarget.BeadID && ni.Anvil == m.notesTarget.Anvil {
-					found = true
-					break
-				}
-			}
-			if !found {
-				// Also check queue panel
-				for _, qi := range m.queue {
-					if qi.BeadID == m.notesTarget.BeadID && qi.Anvil == m.notesTarget.Anvil {
-						found = true
-						break
-					}
-				}
-			}
-			if !found {
-				m.showNotesOverlay = false
-				m.notesTarget = nil
-				m.notesTA = textarea.Model{}
-			}
-		}
 
 	case UpdateReadyToMergeMsg:
 		m.readyToMerge = msg.Items
@@ -1105,10 +1058,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus(fmt.Sprintf("Failed to save notes for %s: %v", msg.BeadID, msg.Err), true)
 		} else {
 			m.setStatus(fmt.Sprintf("Notes saved for %s", msg.BeadID), false)
-			// Success: hide and clear the notes overlay.
-			m.showNotesOverlay = false
-			m.notesTarget = nil
-			m.notesTA = textarea.Model{}
+			// Success: hide and clear the notes overlay ONLY if it matches the current target.
+			if m.notesTarget != nil && m.notesTarget.BeadID == msg.BeadID && m.notesTarget.Anvil == msg.Anvil {
+				m.showNotesOverlay = false
+				m.notesTarget = nil
+				m.notesTA = textarea.Model{}
+			}
 		}
 
 	case TickMsg:
@@ -1729,6 +1684,7 @@ type notesTarget struct {
 // NotesResultMsg is delivered asynchronously when an append-notes action completes.
 type NotesResultMsg struct {
 	BeadID string
+	Anvil  string
 	Err    error
 }
 
@@ -2041,7 +1997,7 @@ func (m *Model) submitNotes() tea.Cmd {
 	cb := m.OnAppendNotes
 	// We do NOT clear showNotesOverlay/notesTA here; we wait for success in Update.
 	return func() tea.Msg {
-		return NotesResultMsg{BeadID: target.BeadID, Err: cb(target.BeadID, target.Anvil, notes)}
+		return NotesResultMsg{BeadID: target.BeadID, Anvil: target.Anvil, Err: cb(target.BeadID, target.Anvil, notes)}
 	}
 }
 
