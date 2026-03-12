@@ -2916,3 +2916,147 @@ func TestNotesOverlayView(t *testing.T) {
 		t.Errorf("view missing hint line:\n%s", view)
 	}
 }
+
+// ── Workers panel log viewer ('o' key) tests ────────────────────────────────
+
+func TestOpenLogViewerKeyO_WorkersPanel(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "forge-log-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("worker output line\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	m := Model{
+		focused: PanelWorkers,
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-99", LogPath: f.Name()},
+		},
+	}
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	mm := m2.(*Model)
+	if !mm.showLogViewer {
+		t.Error("pressing 'o' with a valid worker log path should open the log viewer")
+	}
+	if !strings.Contains(mm.logViewerTitle, "bd-99") {
+		t.Errorf("log viewer title should contain bead ID, got %q", mm.logViewerTitle)
+	}
+	if !strings.Contains(mm.logViewerTitle, f.Name()) {
+		t.Errorf("log viewer title should contain log path, got %q", mm.logViewerTitle)
+	}
+	if mm.logViewerEmpty {
+		t.Error("log viewer should not be marked empty when file has content")
+	}
+}
+
+func TestOpenLogViewerKeyO_NoLogPath(t *testing.T) {
+	m := Model{
+		focused: PanelWorkers,
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-42", LogPath: ""},
+		},
+	}
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	mm := m2.(*Model)
+	if mm.showLogViewer {
+		t.Error("pressing 'o' with no log path should not open the log viewer")
+	}
+	if mm.statusMsg == "" {
+		t.Error("pressing 'o' with no log path should set a status message")
+	}
+}
+
+func TestOpenLogViewerKeyO_EmptyLogFile(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "forge-log-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close() // empty file
+
+	m := Model{
+		focused: PanelWorkers,
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-10", LogPath: f.Name()},
+		},
+	}
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	mm := m2.(*Model)
+	if !mm.showLogViewer {
+		t.Error("pressing 'o' on an empty log file should still open the log viewer")
+	}
+	if !mm.logViewerEmpty {
+		t.Error("logViewerEmpty should be true for an empty log file")
+	}
+}
+
+func TestOpenLogViewerKeyO_NotInWorkersPanel(t *testing.T) {
+	m := Model{
+		focused: PanelQueue,
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-5", LogPath: "/some/path.log"},
+		},
+	}
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	mm := m2.(*Model)
+	if mm.showLogViewer {
+		t.Error("pressing 'o' outside Workers panel should not open the log viewer")
+	}
+}
+
+func TestOpenLogViewerKeyO_LogViewerClosedByEsc(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "forge-log-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("some content\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	m := Model{
+		focused: PanelWorkers,
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-77", LogPath: f.Name()},
+		},
+	}
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	if !m2.(*Model).showLogViewer {
+		t.Fatal("log viewer should be open after 'o'")
+	}
+	m3, _ := m2.(*Model).Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m3.(*Model).showLogViewer {
+		t.Error("esc should close the log viewer")
+	}
+}
+
+func TestOpenLogViewerKeyO_ViewportHasContent(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "forge-log-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := "line one\nline two\nline three"
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	m := Model{
+		width:   80,
+		height:  24,
+		focused: PanelWorkers,
+		workers: []WorkerItem{
+			{ID: "w1", BeadID: "bd-55", LogPath: f.Name()},
+		},
+	}
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	mm := m2.(*Model)
+	if !mm.showLogViewer {
+		t.Fatal("log viewer should be open")
+	}
+	vpContent := mm.logViewerVP.View()
+	if !strings.Contains(vpContent, "line one") {
+		t.Errorf("log viewer viewport should contain file content, got: %q", vpContent)
+	}
+}
