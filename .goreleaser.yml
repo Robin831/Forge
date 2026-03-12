@@ -38,6 +38,9 @@ archives:
       - goos: linux
         format: tar.gz
 
+sboms:
+  - artifacts: archive
+
 checksum:
   name_template: "checksums.txt"
 
