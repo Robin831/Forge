@@ -3536,7 +3536,8 @@ func (m *Model) driveHuhSync(form **huh.Form, cmd tea.Cmd) tea.Cmd {
 		typ := reflect.TypeOf(nextMsg)
 		pkg := typ.PkgPath()
 		if !strings.Contains(pkg, "charmbracelet/huh") && !strings.Contains(pkg, "charmbracelet/bubbletea") {
-			externalCmds = append(externalCmds, func() tea.Msg { return nextMsg })
+			msg := nextMsg
+			externalCmds = append(externalCmds, func() tea.Msg { return msg })
 			continue
 		}
 

@@ -1013,7 +1013,7 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 	// Select the label action — menu closes, returns async cmd
 	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	cmd = drainHuh(&m, cmd)
-	
+
 	if m.queueActionForm != nil {
 		t.Errorf("expected menu to close after label action")
 	}
