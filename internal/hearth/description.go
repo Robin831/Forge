@@ -26,7 +26,7 @@ func renderMarkdownDescription(content string, width int) string {
 	}
 
 	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStylePath(style),
+		glamour.WithStandardStyle(style),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
