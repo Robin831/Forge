@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -236,6 +237,15 @@ var hearthCmd = &cobra.Command{
 			}
 			if resp.Type != "ok" {
 				return ipcError(resp)
+			}
+			return nil
+		}
+
+		model.OnAppendNotes = func(beadID, notes string) error {
+			cmd := exec.Command("bd", "update", beadID, "--append-notes", notes)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("bd update %s --append-notes: %w: %s", beadID, err, out)
 			}
 			return nil
 		}

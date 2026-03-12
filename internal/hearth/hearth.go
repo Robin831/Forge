@@ -18,6 +18,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -265,6 +266,10 @@ type Model struct {
 	// Called with (beadID, anvil, action) where action is "recover", "close", or "discard".
 	OnResolveOrphan func(beadID, anvil, action string) error
 
+	// Callback for appending notes to a bead via bd update --append-notes (set by caller).
+	// Called with (beadID, notes).
+	OnAppendNotes func(beadID, notes string) error
+
 	// State
 	focused          Panel
 	queueVP          scrollViewport
@@ -352,6 +357,11 @@ type Model struct {
 
 	// Help component — renders context-sensitive keybinding hints in the footer.
 	helpModel help.Model
+
+	// Notes overlay state — inline textarea for appending notes to a bead.
+	showNotesOverlay bool
+	notesTA          textarea.Model
+	notesTarget      *notesTarget
 
 	// Mouse mode — when true, click-to-focus is active but terminal text selection
 	// is disabled. Toggle with 'm'. Initial value set by the caller via SetMouseEnabled.
@@ -508,6 +518,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				var cmd tea.Cmd
 				m.descriptionViewerVP, cmd = m.descriptionViewerVP.Update(msg)
+				return m, cmd
+			}
+			return m, nil
+		}
+
+		// Notes overlay intercepts all keys when open
+		if m.showNotesOverlay {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.showNotesOverlay = false
+				m.notesTarget = nil
+				m.notesTA = textarea.Model{}
+			case "ctrl+s":
+				cmd := m.submitNotes()
+				return m, cmd
+			default:
+				var cmd tea.Cmd
+				m.notesTA, cmd = m.notesTA.Update(msg)
 				return m, cmd
 			}
 			return m, nil
@@ -702,6 +732,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+
+		case "n":
+			// Open inline notes overlay for selected Queue or NeedsAttention bead.
+			if m.focused == PanelQueue {
+				if bead := m.selectedQueueBead(); bead != nil {
+					m.openNotesOverlay(bead.BeadID, bead.Anvil, bead.Title)
+				}
+			} else if m.focused == PanelNeedsAttention && len(m.needsAttention) > 0 &&
+				m.needsAttnVP.cursor < len(m.needsAttention) {
+				item := m.needsAttention[m.needsAttnVP.cursor]
+				m.openNotesOverlay(item.BeadID, item.Anvil, item.Title)
+			}
 		}
 
 	case tea.MouseMsg:
@@ -778,6 +820,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.descriptionViewerVP.Height = vpHeight
 			// Re-render description content so glamour wraps to the new width.
 			m.descriptionViewerVP.SetContent(m.renderDescriptionViewerContent())
+		}
+		if m.showNotesOverlay {
+			taW, taH := m.notesOverlayTextareaDimensions()
+			m.notesTA.SetWidth(taW)
+			m.notesTA.SetHeight(taH)
+		}
 		}
 
 	case UpdateQueueMsg:
@@ -1002,6 +1050,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus(fmt.Sprintf("Merged PR #%d", msg.PRNumber), false)
 		}
 
+	case NotesResultMsg:
+		if msg.Err != nil {
+			m.setStatus(fmt.Sprintf("Failed to save notes for %s: %v", msg.BeadID, msg.Err), true)
+		} else {
+			m.setStatus(fmt.Sprintf("Notes saved for %s", msg.BeadID), false)
+		}
+
 	case TickMsg:
 		// On each tick, refresh all panels and schedule the next tick.
 		// Daemon health is checked every healthTickDivisor ticks to avoid
@@ -1122,6 +1177,9 @@ func (m *Model) View() string {
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.showDescriptionViewer {
 		overlay := m.renderDescriptionViewer()
+		view = placeOverlay(m.width, m.height, overlay, view)
+	} else if m.showNotesOverlay {
+		overlay := m.renderNotesOverlay()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.orphanDialogForm != nil {
 		overlay := m.renderOrphanDialog()
@@ -1607,6 +1665,19 @@ func (m *Model) executeOrphanAction(choice OrphanDialogChoice) tea.Cmd {
 
 
 
+// notesTarget holds the bead context for the inline notes overlay.
+type notesTarget struct {
+	BeadID string
+	Anvil  string
+	Title  string
+}
+
+// NotesResultMsg is delivered asynchronously when an append-notes action completes.
+type NotesResultMsg struct {
+	BeadID string
+	Err    error
+}
+
 // QueueActionResultMsg is delivered asynchronously when a queue action (tag/close) completes.
 type QueueActionResultMsg struct {
 	BeadID string
@@ -1855,7 +1926,104 @@ func (m *Model) renderLogViewer() string {
 	return logViewerStyle.Width(viewerWidth).Height(viewerHeight).Render(content)
 }
 
-// Precompute section header strings once to avoid per-render allocations.
+// notesOverlayTextareaDimensions returns the (width, height) for the notes textarea.
+func (m *Model) notesOverlayTextareaDimensions() (int, int) {
+	overlayWidth := m.width - 8
+	if overlayWidth < 40 {
+		overlayWidth = 40
+	}
+	overlayHeight := m.height / 2
+	if overlayHeight < 10 {
+		overlayHeight = 10
+	}
+	taW := overlayWidth - logViewerStyle.GetHorizontalFrameSize()
+	// Fixed lines: title + blank + hint = 3
+	taH := overlayHeight - logViewerStyle.GetVerticalFrameSize() - 3
+	if taW < 1 {
+		taW = 1
+	}
+	if taH < 3 {
+		taH = 3
+	}
+	return taW, taH
+}
+
+// openNotesOverlay initialises and displays the inline textarea for beadID.
+func (m *Model) openNotesOverlay(beadID, anvil, title string) {
+	m.notesTarget = &notesTarget{BeadID: beadID, Anvil: anvil, Title: title}
+	ta := textarea.New()
+	ta.Placeholder = "Type your notes here…"
+	ta.ShowLineNumbers = false
+	taW, taH := m.notesOverlayTextareaDimensions()
+	ta.SetWidth(taW)
+	ta.SetHeight(taH)
+	ta.Focus()
+	m.notesTA = ta
+	m.showNotesOverlay = true
+}
+
+// submitNotes saves the textarea content via OnAppendNotes and closes the overlay.
+func (m *Model) submitNotes() tea.Cmd {
+	if m.notesTarget == nil {
+		m.showNotesOverlay = false
+		return nil
+	}
+	notes := strings.TrimSpace(m.notesTA.Value())
+	if notes == "" {
+		m.showNotesOverlay = false
+		m.notesTarget = nil
+		m.notesTA = textarea.Model{}
+		return nil
+	}
+	if m.OnAppendNotes == nil {
+		m.setStatus(fmt.Sprintf("Notes unavailable for %s", m.notesTarget.BeadID), true)
+		m.showNotesOverlay = false
+		m.notesTarget = nil
+		m.notesTA = textarea.Model{}
+		return nil
+	}
+	target := m.notesTarget
+	cb := m.OnAppendNotes
+	m.showNotesOverlay = false
+	m.notesTarget = nil
+	m.notesTA = textarea.Model{}
+	return func() tea.Msg {
+		return NotesResultMsg{BeadID: target.BeadID, Err: cb(target.BeadID, notes)}
+	}
+}
+
+// renderNotesOverlay renders the inline notes textarea overlay.
+func (m *Model) renderNotesOverlay() string {
+	if m.notesTarget == nil {
+		return ""
+	}
+	overlayWidth := m.width - 8
+	if overlayWidth < 40 {
+		overlayWidth = 40
+	}
+	overlayHeight := m.height / 2
+	if overlayHeight < 10 {
+		overlayHeight = 10
+	}
+
+	contentWidth := overlayWidth - logViewerStyle.GetHorizontalFrameSize()
+
+	titleLine := fmt.Sprintf("Add Notes: %s", m.notesTarget.BeadID)
+	if m.notesTarget.Title != "" {
+		titleLine += " — " + truncate(m.notesTarget.Title, contentWidth-len(titleLine)-3)
+	}
+
+	var lines []string
+	lines = append(lines, actionMenuTitleStyle.Render(truncate(titleLine, contentWidth)))
+	lines = append(lines, m.notesTA.View())
+	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render("Ctrl+S: save • Esc: cancel"))
+
+	content := strings.Join(lines, "\n")
+	return logViewerStyle.Width(overlayWidth).Height(overlayHeight).Render(content)
+}
+
+
 var (
 	sectionHeaderReady      = lipgloss.NewStyle().Bold(true).Foreground(colorSuccess).Render("── Ready ──")
 	sectionHeaderUnlabeled  = lipgloss.NewStyle().Bold(true).Foreground(colorWarning).Render("── Unlabeled ──")
