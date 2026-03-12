@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -347,6 +348,9 @@ type Model struct {
 	nextToastID      int     // monotonically increasing ID for dismissal matching
 	lastSeenEventKey string  // fingerprint of most-recent event from last poll cycle
 
+	// Help component — renders context-sensitive keybinding hints in the footer.
+	helpModel help.Model
+
 	// Mouse mode — when true, click-to-focus is active but terminal text selection
 	// is disabled. Toggle with 'm'. Initial value set by the caller via SetMouseEnabled.
 	mouseEnabled bool
@@ -355,12 +359,15 @@ type Model struct {
 // NewModel creates a new Hearth TUI model.
 // Pass nil for DataSource to run in display-only mode (no polling).
 func NewModel(ds *DataSource) Model {
+	h := help.New()
+	h.ShowAll = false // use short (single-line) mode by default
 	return Model{
 		focused:             PanelQueue,
 		data:                ds,
 		eventAutoScroll:     true,
 		queueExpandedAnvils: make(map[string]bool),
 		activityExpanded:    make(map[string]bool),
+		helpModel:           h,
 	}
 }
 
@@ -723,6 +730,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
+		m.helpModel.Width = msg.Width
 		if m.showLogViewer {
 			vpWidth, vpHeight := m.logViewerDimensions()
 			m.logViewerVP.Width = vpWidth
@@ -998,15 +1006,13 @@ func (m *Model) computeHeaderH() int {
 	return lipgloss.Height(headerStyle.Width(m.width).Render(headerText))
 }
 
-// defaultFooterHints returns the key-binding hint line shown in the footer.
-// When mouse is enabled, the text notes that 'm' disables mouse (restoring text selection).
-// When mouse is disabled, the text notes that 'm' enables mouse navigation.
+// defaultFooterHints returns the help component's keybinding hint line for the
+// currently focused panel.
+//
+// The Bubbles help.Model is used for both layout width tracking (helpModel.Width)
+// and for rendering the actual text output based on the focused panel's key map.
 func (m *Model) defaultFooterHints() string {
-	mouseHint := "m: enable mouse"
-	if m.mouseEnabled {
-		mouseHint = "m: disable mouse (select text)"
-	}
-	return "Tab: switch panel \u2022 j/k: scroll \u2022 K: kill \u2022 Enter: menu \u2022 d: desc \u2022 l: label \u2022 f: follow \u2022 " + mouseHint + " \u2022 q: quit"
+	return m.helpModel.View(m.keyMapForPanel())
 }
 
 // computeFooterH returns the rendered height of the footer bar.
