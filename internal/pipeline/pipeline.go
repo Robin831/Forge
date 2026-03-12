@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/changelog"
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
@@ -75,6 +76,8 @@ type Outcome struct {
 	// Decomposed is true when the Schematic decomposed the bead into
 	// sub-beads. The pipeline exits early without running Smith.
 	Decomposed bool
+	// ChangelogSummary is the extracted changelog fragment bullets (if any).
+	ChangelogSummary string
 }
 
 // Params holds the dependencies for running a pipeline.
@@ -613,6 +616,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 			outcome.Success = true
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
 			_ = p.DB.LogEvent(state.EventWardenPass, "Warden failed, defaulting to approve", p.Bead.ID, p.AnvilName)
+
+			outcome.ChangelogSummary = extractChangelogSummary(wt.Path, p.Bead.ID)
+
 			outcome.Duration = time.Since(start)
 			return outcome
 		}
@@ -637,6 +643,8 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerMonitoring)
 			_ = p.DB.UpdateWorkerPhase(workerID, "bellows")
 			_ = p.DB.LogEvent(state.EventWardenPass, reviewResult.Summary, p.Bead.ID, p.AnvilName)
+
+			outcome.ChangelogSummary = extractChangelogSummary(wt.Path, p.Bead.ID)
 
 			// Ensure the branch is pushed to the remote before the worktree
 			// is cleaned up. Smith is instructed to push, but as a safety net
@@ -928,4 +936,18 @@ func copyFile(src, dst string) (err error) {
 		return err
 	}
 	return nil
+}
+
+// extractChangelogSummary attempts to parse a Smith changelog fragment from the worktree
+// and returns the bullet points as a single string. It falls back to .en.md if necessary.
+func extractChangelogSummary(wtPath, beadID string) string {
+	// Try the primary fragment.
+	if frag, err := changelog.ParseFragment(filepath.Join(wtPath, "changelog.d", beadID+".md")); err == nil {
+		return strings.Join(frag.Bullets, "\n")
+	}
+	// Fallback to the legacy .en.md extension if the primary fragment is missing or invalid.
+	if frag, err := changelog.ParseFragment(filepath.Join(wtPath, "changelog.d", beadID+".en.md")); err == nil {
+		return strings.Join(frag.Bullets, "\n")
+	}
+	return ""
 }

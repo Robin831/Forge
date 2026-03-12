@@ -165,7 +165,9 @@ func Run(ctx context.Context, p Params) *Result {
 			// If parent produced changes, create a PR and merge into the feature branch.
 			if parentHasWork && parentOutcome.Branch != "" {
 				var changeSummary string
-				if parentOutcome.ReviewResult != nil && parentOutcome.ReviewResult.Summary != "" {
+				if parentOutcome.ChangelogSummary != "" {
+					changeSummary = parentOutcome.ChangelogSummary
+				} else if parentOutcome.ReviewResult != nil && parentOutcome.ReviewResult.Summary != "" {
 					changeSummary = parentOutcome.ReviewResult.Summary
 				}
 
@@ -361,9 +363,11 @@ func Run(ctx context.Context, p Params) *Result {
 			}
 		}
 
-		// Build change summary from warden review if available.
+		// Build change summary preferring the changelog fragment, falling back to Warden review.
 		var childChangeSummary string
-		if childResult.ReviewResult != nil && childResult.ReviewResult.Summary != "" {
+		if childResult.ChangelogSummary != "" {
+			childChangeSummary = childResult.ChangelogSummary
+		} else if childResult.ReviewResult != nil && childResult.ReviewResult.Summary != "" {
 			childChangeSummary = childResult.ReviewResult.Summary
 		}
 
