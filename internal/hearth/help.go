@@ -48,6 +48,10 @@ var (
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "collapse"),
 	)
+	keyDesc = key.NewBinding(
+		key.WithKeys("d"),
+		key.WithHelp("d", "description"),
+	)
 	keyMouse = key.NewBinding(
 		key.WithKeys("m"),
 		key.WithHelp("m", "toggle mouse"),
@@ -63,11 +67,11 @@ var (
 type queueKeyMap struct{ m *Model }
 
 func (k queueKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyEnter, keyLabel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyEnter, keyCollapse, keyDesc, keyLabel, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k queueKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyEnter, keyLabel},
+		{keyScroll, keyEnter, keyCollapse, keyDesc, keyLabel},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -99,11 +103,11 @@ func (k readyToMergeKeyMap) FullHelp() [][]key.Binding {
 type needsAttentionKeyMap struct{ m *Model }
 
 func (k needsAttentionKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyEnter, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyEnter, keyDesc, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k needsAttentionKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyEnter},
+		{keyScroll, keyEnter, keyDesc},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
