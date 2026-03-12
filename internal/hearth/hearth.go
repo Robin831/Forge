@@ -3492,32 +3492,54 @@ func (m *Model) driveHuhForm(form **huh.Form, msg tea.Msg) tea.Cmd {
 		}
 	}
 
-	// Drive internal transitions synchronously until we hit a non-huh command
-	// or the form completes. This helps overlays reach their next state
-	// (like StateCompleted) without requiring multiple UI turns.
-	for cmd != nil && (*form).State == huh.StateNormal {
-		nextMsg := cmd()
-		if nextMsg == nil {
-			return nil
-		}
+	return m.driveHuhSync(form, cmd)
+}
 
-		// Only drive synchronously if the message is internal to huh or bubbletea.
-		// This avoids synchronously executing user commands (like OnTagBead).
-		typ := reflect.TypeOf(nextMsg)
-		pkg := typ.PkgPath()
-		if !strings.Contains(pkg, "charmbracelet/huh") && !strings.Contains(pkg, "charmbracelet/bubbletea") {
-			return func() tea.Msg { return nextMsg }
-		}
+// driveHuhSync recursively drives internal commands produced by a huh form.
+// It expands batches and stops synchronously driving once it hits a non-huh
+// or non-bubbletea command, or when the form is no longer in StateNormal.
+func (m *Model) driveHuhSync(form **huh.Form, cmd tea.Cmd) tea.Cmd {
+	if cmd == nil || (*form).State != huh.StateNormal {
+		return cmd
+	}
 
-		f, nextCmd := (*form).Update(nextMsg)
-		if f != nil {
-			if hf, ok := f.(*huh.Form); ok {
-				*form = hf
+	nextMsg := cmd()
+	if nextMsg == nil {
+		return nil
+	}
+
+	// Handle batches by recursively driving their component commands.
+	if batch, ok := nextMsg.(tea.BatchMsg); ok {
+		var nextCmds []tea.Cmd
+		for _, bc := range batch {
+			if bc != nil {
+				nc := m.driveHuhSync(form, bc)
+				if nc != nil {
+					nextCmds = append(nextCmds, nc)
+				}
 			}
 		}
-		cmd = nextCmd
+		if len(nextCmds) == 0 {
+			return nil
+		}
+		return tea.Batch(nextCmds...)
 	}
-	return cmd
+
+	// Only drive synchronously if the message is internal to huh or bubbletea.
+	// This avoids synchronously executing user commands (like OnTagBead).
+	typ := reflect.TypeOf(nextMsg)
+	pkg := typ.PkgPath()
+	if !strings.Contains(pkg, "charmbracelet/huh") && !strings.Contains(pkg, "charmbracelet/bubbletea") {
+		return func() tea.Msg { return nextMsg }
+	}
+
+	f, nextCmd := (*form).Update(nextMsg)
+	if f != nil {
+		if hf, ok := f.(*huh.Form); ok {
+			*form = hf
+		}
+	}
+	return m.driveHuhSync(form, nextCmd)
 }
 
 // isTerminalMsg returns true if the message is a user input event (key or mouse).
