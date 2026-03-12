@@ -108,13 +108,13 @@ type dotnetOutdatedResponse struct {
 }
 
 type dotnetProject struct {
-	Path       string              `json:"path"`
-	Frameworks []dotnetFramework   `json:"frameworks"`
+	Path       string            `json:"path"`
+	Frameworks []dotnetFramework `json:"frameworks"`
 }
 
 type dotnetFramework struct {
-	Framework    string           `json:"framework"`
-	TopLevel     []dotnetPackage  `json:"topLevelPackages"`
+	Framework string          `json:"framework"`
+	TopLevel  []dotnetPackage `json:"topLevelPackages"`
 }
 
 type dotnetPackage struct {

@@ -232,7 +232,7 @@ func applyChanges(old, new *config.Config) []string {
 			}
 			if oldAnvil.Path != newAnvil.Path {
 				changes = append(changes, fmt.Sprintf("anvil %s path: %q → %q",
-				name, oldAnvil.Path, newAnvil.Path))
+					name, oldAnvil.Path, newAnvil.Path))
 			}
 		} else {
 			changes = append(changes, fmt.Sprintf("anvil %s added", name))

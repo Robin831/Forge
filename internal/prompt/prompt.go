@@ -78,10 +78,10 @@ func (b *Builder) Build(ctx BeadContext) (string, error) {
 
 	// Gather repo context files
 	data := templateData{
-		Bead:      ctx,
-		AgentsMD:  readFileSafe(filepath.Join(ctx.AnvilPath, "AGENTS.md")),
-		ClaudeMD:  readFileSafe(filepath.Join(ctx.AnvilPath, "CLAUDE.md")),
-		ReadmeMD:  readFileSafe(filepath.Join(ctx.AnvilPath, "README.md")),
+		Bead:     ctx,
+		AgentsMD: readFileSafe(filepath.Join(ctx.AnvilPath, "AGENTS.md")),
+		ClaudeMD: readFileSafe(filepath.Join(ctx.AnvilPath, "CLAUDE.md")),
+		ReadmeMD: readFileSafe(filepath.Join(ctx.AnvilPath, "README.md")),
 	}
 
 	var buf bytes.Buffer

@@ -77,13 +77,13 @@ type activityNavItem struct {
 type AttentionReason int
 
 const (
-	AttentionUnknown          AttentionReason = iota
-	AttentionDispatchExhausted                // Circuit breaker tripped after repeated dispatch failures
-	AttentionCIFixExhausted                   // CI fix attempts exhausted
-	AttentionReviewFixExhausted               // Review fix attempts exhausted
-	AttentionRebaseExhausted                  // Rebase attempts exhausted
-	AttentionClarification                    // Bead flagged as needing clarification
-	AttentionStalled                          // Worker stalled (no log activity)
+	AttentionUnknown            AttentionReason = iota
+	AttentionDispatchExhausted                  // Circuit breaker tripped after repeated dispatch failures
+	AttentionCIFixExhausted                     // CI fix attempts exhausted
+	AttentionReviewFixExhausted                 // Review fix attempts exhausted
+	AttentionRebaseExhausted                    // Rebase attempts exhausted
+	AttentionClarification                      // Bead flagged as needing clarification
+	AttentionStalled                            // Worker stalled (no log activity)
 )
 
 // NeedsAttentionItem represents a bead requiring human attention.
@@ -261,21 +261,21 @@ type Model struct {
 	OnResolveOrphan func(beadID, anvil, action string) error
 
 	// State
-	focused        Panel
-	queueVP        scrollViewport
-	crucibleVP     scrollViewport
-	needsAttnVP    scrollViewport
-	readyToMergeVP scrollViewport
+	focused          Panel
+	queueVP          scrollViewport
+	crucibleVP       scrollViewport
+	needsAttnVP      scrollViewport
+	readyToMergeVP   scrollViewport
 	workerVP         scrollViewport
 	activityVP       scrollViewport
 	activityExpanded map[string]bool   // event type → expanded override (nil = default)
 	activityNavItems []activityNavItem // flat display items for Live Activity
 	eventScroll      int
-	eventAutoScroll      bool // true = follow new events
-	prevEventCount       int  // track event count for auto-scroll
-	width                int
-	height               int
-	ready                bool
+	eventAutoScroll  bool // true = follow new events
+	prevEventCount   int  // track event count for auto-scroll
+	width            int
+	height           int
+	ready            bool
 
 	// Action menu overlay state (Needs Attention)
 	showActionMenu bool
@@ -293,10 +293,10 @@ type Model struct {
 	mergeTarget   *ReadyToMergeItem
 
 	// Orphan dialog overlay state — shown when orphaned beads need user decision.
-	orphanQueue       []PendingOrphanItem // beads awaiting user decision
-	showOrphanDialog  bool
-	orphanDialogIdx   int
-	orphanTarget      *PendingOrphanItem // bead currently shown in dialog
+	orphanQueue      []PendingOrphanItem // beads awaiting user decision
+	showOrphanDialog bool
+	orphanDialogIdx  int
+	orphanTarget     *PendingOrphanItem // bead currently shown in dialog
 
 	// Log viewer overlay state
 	showLogViewer  bool
@@ -305,22 +305,22 @@ type Model struct {
 	logViewerVP    viewport.Model
 
 	// Daemon health indicator
-	daemonConnected bool      // true when last IPC status check succeeded
-	daemonLastPoll  string    // e.g. "30s ago" or "n/a"
-	daemonWorkers   int       // active worker count from daemon
-	daemonQueueSize int       // queue size from daemon
-	daemonUptime    string    // daemon uptime string
-	healthTickCount int       // counts ticks; health IPC fires every healthTickDivisor ticks
+	daemonConnected bool   // true when last IPC status check succeeded
+	daemonLastPoll  string // e.g. "30s ago" or "n/a"
+	daemonWorkers   int    // active worker count from daemon
+	daemonQueueSize int    // queue size from daemon
+	daemonUptime    string // daemon uptime string
+	healthTickCount int    // counts ticks; health IPC fires every healthTickDivisor ticks
 
 	// Status message (flashes briefly after an action)
-	statusMsg     string
+	statusMsg        string
 	statusMsgTime    time.Time
 	statusMsgIsError bool
 
 	// Queue anvil grouping state — groups beads by anvil when 2+ anvils present.
-	queueExpandedAnvils map[string]bool   // per-anvil expanded/collapsed state
-	queueNavItems       []queueNavItem    // navigable items (anvil headers + beads)
-	queueGrouped        bool              // true when 2+ anvils trigger grouping
+	queueExpandedAnvils map[string]bool // per-anvil expanded/collapsed state
+	queueNavItems       []queueNavItem  // navigable items (anvil headers + beads)
+	queueGrouped        bool            // true when 2+ anvils trigger grouping
 
 	// Spinner animation frame index (advances every SpinnerInterval).
 	spinnerFrame int
@@ -681,7 +681,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logViewerVP.Width = vpWidth
 			m.logViewerVP.Height = vpHeight
 		}
-
 
 	case UpdateQueueMsg:
 		m.queue = msg.Items
@@ -2771,9 +2770,9 @@ var (
 					Bold(true)
 
 	needsAttentionTitleStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(colorDanger).
-				MarginBottom(1)
+					Bold(true).
+					Foreground(colorDanger).
+					MarginBottom(1)
 
 	readyToMergeTitleStyle = lipgloss.NewStyle().
 				Bold(true).

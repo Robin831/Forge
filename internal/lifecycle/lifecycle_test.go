@@ -102,14 +102,14 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			wantDBEventType: state.EventLifecycleExhausted,
 		},
 		{
-			name:             "EventReviewChanges dispatch",
-			prNumber:         7,
+			name:               "EventReviewChanges dispatch",
+			prNumber:           7,
 			event:              makeEvent(7, bellows.EventReviewChanges),
 			wantAction:         ActionFixReview,
 			wantReviewNeedsFix: true,
 			wantCIPassing:      true, // InsertPR omits ci_passing so DB default (true) applies; review event does not change CI state
-			wantReviewFixCnt: 1,
-			wantDispatches:   1,
+			wantReviewFixCnt:   1,
+			wantDispatches:     1,
 		},
 		{
 			name:     "max review attempts exhaustion",
@@ -134,9 +134,9 @@ func TestHandleEvent_Transitions(t *testing.T) {
 			wantAction:         ActionNone,
 			wantReviewNeedsFix: true,
 			wantCIPassing:      true, // review events do not change CI state
-			wantReviewFixCnt: 5,    // counter must be at max to confirm setup worked
-			wantDispatches:   0,    // exhaustion path must not dispatch
-			wantDBEventType:  state.EventLifecycleExhausted,
+			wantReviewFixCnt:   5,    // counter must be at max to confirm setup worked
+			wantDispatches:     0,    // exhaustion path must not dispatch
+			wantDBEventType:    state.EventLifecycleExhausted,
 		},
 		{
 			name:           "EventPRMerged closes bead",

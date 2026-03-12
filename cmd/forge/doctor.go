@@ -22,9 +22,9 @@ func init() {
 
 // checkResult is a single health check result.
 type checkResult struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"`  // "ok", "warn", "fail"
-	Detail  string `json:"detail"`
+	Name   string `json:"name"`
+	Status string `json:"status"` // "ok", "warn", "fail"
+	Detail string `json:"detail"`
 }
 
 var doctorCmd = &cobra.Command{

@@ -58,21 +58,21 @@ type AnvilConfig struct {
 
 // SettingsConfig holds global operational settings.
 type SettingsConfig struct {
-	PollInterval  time.Duration `mapstructure:"poll_interval" yaml:"poll_interval"`
-	SmithTimeout  time.Duration `mapstructure:"smith_timeout" yaml:"smith_timeout"`
-	MaxTotalSmiths int          `mapstructure:"max_total_smiths" yaml:"max_total_smiths"`
-	MaxReviewAttempts int       `mapstructure:"max_review_attempts" yaml:"max_review_attempts"`
+	PollInterval      time.Duration `mapstructure:"poll_interval" yaml:"poll_interval"`
+	SmithTimeout      time.Duration `mapstructure:"smith_timeout" yaml:"smith_timeout"`
+	MaxTotalSmiths    int           `mapstructure:"max_total_smiths" yaml:"max_total_smiths"`
+	MaxReviewAttempts int           `mapstructure:"max_review_attempts" yaml:"max_review_attempts"`
 	// MaxPipelineIterations is the maximum number of Smith-Warden cycles
 	// in the initial pipeline loop before declaring failure. This controls
 	// how many times Smith can be asked to revise its implementation based
 	// on Temper or Warden feedback during a single bead run. Default: 5.
-	MaxPipelineIterations int   `mapstructure:"max_pipeline_iterations" yaml:"max_pipeline_iterations"`
-	ClaudeFlags   []string      `mapstructure:"claude_flags" yaml:"claude_flags"`
+	MaxPipelineIterations int      `mapstructure:"max_pipeline_iterations" yaml:"max_pipeline_iterations"`
+	ClaudeFlags           []string `mapstructure:"claude_flags" yaml:"claude_flags"`
 	// Providers is the ordered list of AI providers to try.
 	// Each entry is a Kind string ("claude", "gemini") or "kind:command" pair.
 	// When a provider signals a rate limit the next one in the list is tried.
 	// Defaults to ["claude", "gemini"] when empty.
-	Providers     []string      `mapstructure:"providers" yaml:"providers,omitempty"`
+	Providers []string `mapstructure:"providers" yaml:"providers,omitempty"`
 	// RateLimitBackoff is how long dispatchBead waits after releasing a bead
 	// back to open when all providers are rate limited. During this window the
 	// bead slot stays reserved (activeBeads) so the poller does not
@@ -168,34 +168,34 @@ func durationString(d time.Duration) string {
 func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	// Shadow struct with durations replaced by strings.
 	type shadow struct {
-		PollInterval             string   `yaml:"poll_interval"`
-		SmithTimeout             string   `yaml:"smith_timeout"`
-		MaxTotalSmiths           int      `yaml:"max_total_smiths"`
-		MaxReviewAttempts        int      `yaml:"max_review_attempts"`
-		MaxPipelineIterations    int      `yaml:"max_pipeline_iterations"`
-		ClaudeFlags              []string `yaml:"claude_flags"`
-		Providers                []string `yaml:"providers,omitempty"`
-		RateLimitBackoff         string   `yaml:"rate_limit_backoff"`
-		SmithProviders           []string `yaml:"smith_providers,omitempty"`
-		SchematicEnabled         bool     `yaml:"schematic_enabled"`
-		SchematicWordThreshold   int      `yaml:"schematic_word_threshold,omitempty"`
-		BellowsInterval          string   `yaml:"bellows_interval"`
-		DailyCostLimit           float64  `yaml:"daily_cost_limit,omitempty"`
-		MaxCIFixAttempts         int      `yaml:"max_ci_fix_attempts"`
-		MaxReviewFixAttempts     int      `yaml:"max_review_fix_attempts"`
-		MaxRebaseAttempts        int      `yaml:"max_rebase_attempts"`
-		MergeStrategy            string   `yaml:"merge_strategy,omitempty"`
-		StaleInterval            string   `yaml:"stale_interval"`
-		DepcheckInterval         string   `yaml:"depcheck_interval,omitempty"`
-		DepcheckTimeout          string   `yaml:"depcheck_timeout,omitempty"`
-		VulncheckInterval        string   `yaml:"vulncheck_interval,omitempty"`
-		VulncheckTimeout         string   `yaml:"vulncheck_timeout,omitempty"`
-		VulncheckEnabled         *bool    `yaml:"vulncheck_enabled,omitempty"`
-		GoRaceDetection          bool     `yaml:"go_race_detection"`
-		AutoLearnRules           bool     `yaml:"auto_learn_rules"`
-		CopilotDailyRequestLimit int      `yaml:"copilot_daily_request_limit,omitempty"`
-		CrucibleEnabled          bool     `yaml:"crucible_enabled"`
-		AutoMergeCrucibleChildren *bool   `yaml:"auto_merge_crucible_children,omitempty"`
+		PollInterval              string   `yaml:"poll_interval"`
+		SmithTimeout              string   `yaml:"smith_timeout"`
+		MaxTotalSmiths            int      `yaml:"max_total_smiths"`
+		MaxReviewAttempts         int      `yaml:"max_review_attempts"`
+		MaxPipelineIterations     int      `yaml:"max_pipeline_iterations"`
+		ClaudeFlags               []string `yaml:"claude_flags"`
+		Providers                 []string `yaml:"providers,omitempty"`
+		RateLimitBackoff          string   `yaml:"rate_limit_backoff"`
+		SmithProviders            []string `yaml:"smith_providers,omitempty"`
+		SchematicEnabled          bool     `yaml:"schematic_enabled"`
+		SchematicWordThreshold    int      `yaml:"schematic_word_threshold,omitempty"`
+		BellowsInterval           string   `yaml:"bellows_interval"`
+		DailyCostLimit            float64  `yaml:"daily_cost_limit,omitempty"`
+		MaxCIFixAttempts          int      `yaml:"max_ci_fix_attempts"`
+		MaxReviewFixAttempts      int      `yaml:"max_review_fix_attempts"`
+		MaxRebaseAttempts         int      `yaml:"max_rebase_attempts"`
+		MergeStrategy             string   `yaml:"merge_strategy,omitempty"`
+		StaleInterval             string   `yaml:"stale_interval"`
+		DepcheckInterval          string   `yaml:"depcheck_interval,omitempty"`
+		DepcheckTimeout           string   `yaml:"depcheck_timeout,omitempty"`
+		VulncheckInterval         string   `yaml:"vulncheck_interval,omitempty"`
+		VulncheckTimeout          string   `yaml:"vulncheck_timeout,omitempty"`
+		VulncheckEnabled          *bool    `yaml:"vulncheck_enabled,omitempty"`
+		GoRaceDetection           bool     `yaml:"go_race_detection"`
+		AutoLearnRules            bool     `yaml:"auto_learn_rules"`
+		CopilotDailyRequestLimit  int      `yaml:"copilot_daily_request_limit,omitempty"`
+		CrucibleEnabled           bool     `yaml:"crucible_enabled"`
+		AutoMergeCrucibleChildren *bool    `yaml:"auto_merge_crucible_children,omitempty"`
 	}
 
 	sh := shadow{
@@ -325,12 +325,12 @@ func Defaults() Config {
 	return Config{
 		Anvils: make(map[string]AnvilConfig),
 		Settings: SettingsConfig{
-			PollInterval:         5 * time.Minute,
-			SmithTimeout:         30 * time.Minute,
-			MaxTotalSmiths:         4,
-			MaxReviewAttempts:      2,
-			MaxPipelineIterations:  5,
-			ClaudeFlags:          []string{},
+			PollInterval:          5 * time.Minute,
+			SmithTimeout:          30 * time.Minute,
+			MaxTotalSmiths:        4,
+			MaxReviewAttempts:     2,
+			MaxPipelineIterations: 5,
+			ClaudeFlags:           []string{},
 			// No Providers default here — provider.FromConfig handles empty slice.
 			RateLimitBackoff:     5 * time.Minute,
 			BellowsInterval:      2 * time.Minute,
@@ -341,7 +341,7 @@ func Defaults() Config {
 			DepcheckInterval:     168 * time.Hour, // weekly
 			DepcheckTimeout:      5 * time.Minute,
 			VulncheckInterval:    24 * time.Hour,
-		VulncheckTimeout:     10 * time.Minute,
+			VulncheckTimeout:     10 * time.Minute,
 		},
 	}
 }

@@ -17,7 +17,7 @@ func listen() (net.Listener, error) {
 	// Remove stale pipe (no-op if not exists)
 	return winio.ListenPipe(pipeName, &winio.PipeConfig{
 		SecurityDescriptor: "D:P(A;;GA;;;WD)", // Allow everyone
-		MessageMode:        false,              // Byte mode for line-delim JSON
+		MessageMode:        false,             // Byte mode for line-delim JSON
 		InputBufferSize:    65536,
 		OutputBufferSize:   65536,
 	})

@@ -20,18 +20,18 @@ import (
 // Bead represents an issue returned by 'bd ready --json'.
 // Only the fields Forge needs are extracted.
 type Bead struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Status      string   `json:"status"`
-	Priority    int      `json:"priority"`
-	IssueType   string   `json:"issue_type"`
-	Assignee    string   `json:"assignee"`
-	Parent      string   `json:"parent"`
-	Labels      []string `json:"labels"`
-	Blocks       []string      `json:"blocks"`        // Bead IDs that this bead blocks (children)
-	DependsOn    []string      `json:"depends_on"`    // Bead IDs that this bead depends on
-	Dependencies []BeadDep     `json:"dependencies"`  // Detailed dependency info from bd
+	ID           string    `json:"id"`
+	Title        string    `json:"title"`
+	Description  string    `json:"description"`
+	Status       string    `json:"status"`
+	Priority     int       `json:"priority"`
+	IssueType    string    `json:"issue_type"`
+	Assignee     string    `json:"assignee"`
+	Parent       string    `json:"parent"`
+	Labels       []string  `json:"labels"`
+	Blocks       []string  `json:"blocks"`       // Bead IDs that this bead blocks (children)
+	DependsOn    []string  `json:"depends_on"`   // Bead IDs that this bead depends on
+	Dependencies []BeadDep `json:"dependencies"` // Detailed dependency info from bd
 
 	// Forge-injected: which anvil this bead belongs to
 	Anvil string `json:"-"`

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Robin831/Forge/internal/state"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/Robin831/Forge/internal/state"
 )
 
 func TestRenderWorkerListShowsTitle(t *testing.T) {
@@ -245,9 +245,9 @@ func TestRenderUsagePanelWithData(t *testing.T) {
 			Providers: []ProviderUsage{
 				{Provider: "claude", Cost: 0.05, InputTokens: 1500, OutputTokens: 300},
 			},
-			TotalCost:   0.05,
-			CostLimit:   1.0,
-			CopilotUsed: 5,
+			TotalCost:    0.05,
+			CostLimit:    1.0,
+			CopilotUsed:  5,
 			CopilotLimit: 50,
 		},
 	}
@@ -668,11 +668,11 @@ func TestActivityScrollClampPastEnd(t *testing.T) {
 
 func TestFormatMultiLineEntry(t *testing.T) {
 	tests := []struct {
-		name      string
-		raw       string
-		maxLines  int
-		wantLen   int
-		wantFirst string
+		name       string
+		raw        string
+		maxLines   int
+		wantLen    int
+		wantFirst  string
 		wantSecond string
 	}{
 		{
@@ -683,27 +683,27 @@ func TestFormatMultiLineEntry(t *testing.T) {
 			wantFirst: "[text] hello world",
 		},
 		{
-			name:      "multi-line uses continuation prefix",
-			raw:       "line one\nline two\nline three",
-			maxLines:  3,
-			wantLen:   3,
-			wantFirst: "[text] line one",
+			name:       "multi-line uses continuation prefix",
+			raw:        "line one\nline two\nline three",
+			maxLines:   3,
+			wantLen:    3,
+			wantFirst:  "[text] line one",
 			wantSecond: "       line two",
 		},
 		{
-			name:      "blank lines skipped",
-			raw:       "first\n\n\nsecond",
-			maxLines:  3,
-			wantLen:   2,
-			wantFirst: "[text] first",
+			name:       "blank lines skipped",
+			raw:        "first\n\n\nsecond",
+			maxLines:   3,
+			wantLen:    2,
+			wantFirst:  "[text] first",
 			wantSecond: "       second",
 		},
 		{
-			name:      "maxLines truncates output",
-			raw:       "a\nb\nc\nd",
-			maxLines:  2,
-			wantLen:   2,
-			wantFirst: "[text] a",
+			name:       "maxLines truncates output",
+			raw:        "a\nb\nc\nd",
+			maxLines:   2,
+			wantLen:    2,
+			wantFirst:  "[text] a",
 			wantSecond: "       b",
 		},
 		{
@@ -1404,7 +1404,7 @@ func TestRenderReadyToMergeSelectionHighlighting(t *testing.T) {
 			{PRID: 2, PRNumber: 11, BeadID: "bd-21", Anvil: "forge"},
 		},
 		readyToMergeVP: scrollViewport{cursor: 0},
-		focused:            PanelReadyToMerge,
+		focused:        PanelReadyToMerge,
 	}
 	// With scroll=0, first item (bd-20) should be selected/visible.
 	rendered0 := m.renderReadyToMerge(80, 20)
@@ -1437,9 +1437,9 @@ func TestRenderReadyToMergeViewportRegression(t *testing.T) {
 	// height=7 → maxItems = 7-3 = 4. Cursor at index 2 (middle).
 	// Viewport should show items 0-3 (cursor visible, multiple adjacents present).
 	m := Model{
-		readyToMerge:     items,
-		readyToMergeVP:   scrollViewport{cursor: 2},
-		focused:          PanelReadyToMerge,
+		readyToMerge:   items,
+		readyToMergeVP: scrollViewport{cursor: 2},
+		focused:        PanelReadyToMerge,
 	}
 	rendered := m.renderReadyToMerge(80, 7)
 

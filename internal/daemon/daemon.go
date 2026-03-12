@@ -129,8 +129,8 @@ type Daemon struct {
 	// Generic webhook dispatcher (nil = no generic webhooks configured)
 	dispatcher *notify.WebhookDispatcher
 
-	cancel     context.CancelFunc // cancels the Run context for graceful shutdown
-	runCtx     context.Context    // the live run context; set in Run() after signal/cancel wiring
+	cancel context.CancelFunc // cancels the Run context for graceful shutdown
+	runCtx context.Context    // the live run context; set in Run() after signal/cancel wiring
 
 	forgeDir   string // ~/.forge
 	pidFile    string
@@ -145,7 +145,7 @@ type Daemon struct {
 	// Per-anvil temper.yaml cache keyed by anvil path.
 	// Avoids repeated filesystem I/O on every dispatch and de-duplicates
 	// log spam when the file is invalid or unreadable.
-	temperCache   sync.Map // map[string]*temperCacheEntry
+	temperCache sync.Map // map[string]*temperCacheEntry
 
 	// Active Crucible statuses (parentBeadID -> crucible.Status)
 	crucibleStatuses sync.Map
@@ -1069,8 +1069,8 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 				go func(date string, cost, limit float64) {
 					notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
-					if d.notifier != nil {
-						d.notifier.DailyCost(notifCtx, date, cost, limit, 0, 0)
+					if n := d.notifier.Load(); n != nil {
+						n.DailyCost(notifCtx, date, cost, limit, 0, 0)
 					}
 					if d.dispatcher != nil {
 						msg := fmt.Sprintf("Daily cost $%.2f reached limit $%.2f", cost, limit)
@@ -1548,8 +1548,8 @@ normalPipeline:
 	go func(anvil, beadID, prURL, prTitle string, prNumber int, dur time.Duration) {
 		notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if d.notifier != nil {
-			d.notifier.PRCreated(notifCtx, anvil, beadID, prNumber, prURL, prTitle)
+		if n := d.notifier.Load(); n != nil {
+			n.PRCreated(notifCtx, anvil, beadID, prNumber, prURL, prTitle)
 		}
 		if d.dispatcher != nil {
 			msg := fmt.Sprintf("PR #%d created: %s", prNumber, prURL)
@@ -1557,8 +1557,8 @@ normalPipeline:
 		}
 		// Worker-done notification fires here alongside PR creation since
 		// the pipeline worker is complete at this point.
-		if d.notifier != nil {
-			d.notifier.WorkerDone(notifCtx, anvil, beadID, claimWorkerID, dur)
+		if n := d.notifier.Load(); n != nil {
+			n.WorkerDone(notifCtx, anvil, beadID, claimWorkerID, dur)
 		}
 		if d.dispatcher != nil {
 			msg := fmt.Sprintf("Worker completed in %s; PR #%d created", dur.Round(time.Second), prNumber)
@@ -1930,7 +1930,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": "clarification_needed set"})
 		return ipc.Response{Type: "ok", Payload: data}
 
-
 	case "tag_bead":
 		var tp ipc.TagBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &tp); err != nil {
@@ -1977,7 +1976,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}()
 		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q added", tag)})
 		return ipc.Response{Type: "ok", Payload: data}
-
 
 	case "close_bead":
 		var cp ipc.CloseBeadPayload
@@ -2607,8 +2605,8 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 		go func(beadID, anvil, reason string, count int) {
 			notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			if d.notifier != nil {
-				d.notifier.BeadFailed(notifCtx, anvil, beadID, count, reason)
+			if n := d.notifier.Load(); n != nil {
+				n.BeadFailed(notifCtx, anvil, beadID, count, reason)
 			}
 			if d.dispatcher != nil {
 				failMsg := fmt.Sprintf("Bead failed after %d dispatch attempts: %s", count, reason)

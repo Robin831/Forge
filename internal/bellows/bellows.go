@@ -24,14 +24,14 @@ import (
 
 // Event types emitted by the Bellows monitor.
 const (
-	EventCIPassed          = "ci_passed"
-	EventCIFailed          = "ci_failed"
-	EventReviewApproved    = "review_approved"
-	EventReviewChanges     = "review_changes_requested"
-	EventPRMerged          = "pr_merged"
-	EventPRClosed          = "pr_closed"
-	EventPRConflicting     = "pr_conflicting"
-	EventPRReadyToMerge    = "pr_ready_to_merge"
+	EventCIPassed       = "ci_passed"
+	EventCIFailed       = "ci_failed"
+	EventReviewApproved = "review_approved"
+	EventReviewChanges  = "review_changes_requested"
+	EventPRMerged       = "pr_merged"
+	EventPRClosed       = "pr_closed"
+	EventPRConflicting  = "pr_conflicting"
+	EventPRReadyToMerge = "pr_ready_to_merge"
 )
 
 // PREvent is emitted when a PR status changes.
@@ -56,16 +56,16 @@ type Monitor struct {
 	db               *state.DB
 	interval         time.Duration
 	anvilPaths       map[string]string // anvil name → path
-	pathsMu          sync.RWMutex     // protects anvilPaths
+	pathsMu          sync.RWMutex      // protects anvilPaths
 	handlers         []Handler
 	mu               sync.Mutex
 	lastStatuses     map[string]*prSnapshot // anvil/PR number → last known state
-	refresh          chan struct{}           // channel to trigger immediate poll
+	refresh          chan struct{}          // channel to trigger immediate poll
 	autoLearnRules   func() bool            // auto-learn warden rules from Copilot comments on PR merge
 	maxCIFixAttempts func() int             // returns current max CI fix attempts from config
 	learnMuGuard     sync.Mutex             // protects learnMu map
 	learnMu          map[string]*sync.Mutex // per-anvil mutex serializing auto-learn
-	learnSem         chan struct{}           // caps overall concurrent auto-learn goroutines
+	learnSem         chan struct{}          // caps overall concurrent auto-learn goroutines
 }
 
 // prSnapshot tracks the last seen state of a PR.

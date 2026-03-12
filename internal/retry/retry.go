@@ -80,12 +80,12 @@ func (p Policy) delayForAttempt(attempt int) time.Duration {
 
 // RetryEntry tracks retry state for a specific bead.
 type RetryEntry struct {
-	BeadID       string    // The bead being retried
-	Anvil        string    // Anvil the bead belongs to
-	RetryCount   int       // Number of retries so far
-	NextRetryAt  time.Time // When to retry next (zero = now or expired)
-	NeedsHuman   bool      // If true, retries exhausted
-	LastError    string    // The error from the last attempt
+	BeadID      string    // The bead being retried
+	Anvil       string    // Anvil the bead belongs to
+	RetryCount  int       // Number of retries so far
+	NextRetryAt time.Time // When to retry next (zero = now or expired)
+	NeedsHuman  bool      // If true, retries exhausted
+	LastError   string    // The error from the last attempt
 }
 
 // IsReady returns true if the retry entry is due for its next attempt.

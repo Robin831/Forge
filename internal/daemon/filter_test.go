@@ -106,7 +106,7 @@ func TestShouldDispatch(t *testing.T) {
 				Priority: 1,
 			},
 			anvilCfg: config.AnvilConfig{
-				AutoDispatch:               "priority",
+				AutoDispatch:            "priority",
 				AutoDispatchMinPriority: 2,
 			},
 			expected: true,
@@ -118,7 +118,7 @@ func TestShouldDispatch(t *testing.T) {
 				Priority: 1,
 			},
 			anvilCfg: config.AnvilConfig{
-				AutoDispatch:               "priority",
+				AutoDispatch:            "priority",
 				AutoDispatchMinPriority: 1,
 			},
 			expected: true,
@@ -130,7 +130,7 @@ func TestShouldDispatch(t *testing.T) {
 				Priority: 3,
 			},
 			anvilCfg: config.AnvilConfig{
-				AutoDispatch:               "priority",
+				AutoDispatch:            "priority",
 				AutoDispatchMinPriority: 1,
 			},
 			expected: false,

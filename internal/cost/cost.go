@@ -97,8 +97,8 @@ type DailyCost struct {
 
 // claudeStreamEvent is a partial parse of Claude's stream-json output.
 type claudeStreamEvent struct {
-	Type  string               `json:"type"`
-	Usage *claudeStreamUsage   `json:"usage,omitempty"`
+	Type  string             `json:"type"`
+	Usage *claudeStreamUsage `json:"usage,omitempty"`
 }
 
 type claudeStreamUsage struct {

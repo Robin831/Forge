@@ -257,8 +257,8 @@ func TestRun_NoDiffChild_ClosesAndContinues(t *testing.T) {
 			ID:    "parent-1",
 			Title: "Parent bead",
 		},
-		AnvilName:                "test-anvil",
-		AnvilConfig:              config.AnvilConfig{Path: t.TempDir()},
+		AnvilName:                 "test-anvil",
+		AnvilConfig:               config.AnvilConfig{Path: t.TempDir()},
 		AutoMergeCrucibleChildren: true,
 
 		EpicBranchCreator: func(ctx context.Context, dir, branch string) error {
@@ -349,9 +349,9 @@ func TestIsCrucibleCandidate(t *testing.T) {
 
 func TestIsOrchestrationTask(t *testing.T) {
 	tests := []struct {
-		name  string
-		bead  poller.Bead
-		want  bool
+		name string
+		bead poller.Bead
+		want bool
 	}{
 		{"branch creation", poller.Bead{Title: "Create feature branch", Description: "git checkout -b feature/foo"}, true},
 		{"commit and push", poller.Bead{Title: "Commit and push changes", Description: "git add && git commit"}, true},

@@ -1072,14 +1072,14 @@ const (
 	EventWardenRuleLearned    EventType = "warden_rule_learned"
 
 	// Crucible events — parent bead orchestration with children on feature branches.
-	EventCrucibleStarted          EventType = "crucible_started"
-	EventCrucibleChildDispatched  EventType = "crucible_child_dispatched"
-	EventCrucibleChildPRCreated   EventType = "crucible_child_pr_created"
-	EventCrucibleChildMerged      EventType = "crucible_child_merged"
-	EventCrucibleChildFailed      EventType = "crucible_child_failed"
-	EventCrucibleFinalPR          EventType = "crucible_final_pr"
-	EventCrucibleComplete         EventType = "crucible_complete"
-	EventCruciblePaused           EventType = "crucible_paused"
+	EventCrucibleStarted         EventType = "crucible_started"
+	EventCrucibleChildDispatched EventType = "crucible_child_dispatched"
+	EventCrucibleChildPRCreated  EventType = "crucible_child_pr_created"
+	EventCrucibleChildMerged     EventType = "crucible_child_merged"
+	EventCrucibleChildFailed     EventType = "crucible_child_failed"
+	EventCrucibleFinalPR         EventType = "crucible_final_pr"
+	EventCrucibleComplete        EventType = "crucible_complete"
+	EventCruciblePaused          EventType = "crucible_paused"
 )
 
 // Event represents a logged event.
