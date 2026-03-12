@@ -60,122 +60,131 @@ var (
 
 // --- Per-panel KeyMap types ---
 
-type queueKeyMap struct{}
+type queueKeyMap struct{ m *Model }
 
-func (queueKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyEnter, keyLabel, keyTab, keyQuit}
+func (k queueKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{keyScroll, keyEnter, keyLabel, keyTab, k.m.keyMouse(), keyQuit}
 }
-func (queueKeyMap) FullHelp() [][]key.Binding {
+func (k queueKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{keyScroll, keyEnter, keyLabel},
-		{keyTab, keyShiftTab, keyMouse, keyQuit},
+		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
 
-type cruciblesKeyMap struct{}
+type cruciblesKeyMap struct{ m *Model }
 
-func (cruciblesKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyTab, keyQuit}
+func (k cruciblesKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{keyScroll, keyTab, k.m.keyMouse(), keyQuit}
 }
-func (cruciblesKeyMap) FullHelp() [][]key.Binding {
+func (k cruciblesKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{keyScroll},
-		{keyTab, keyShiftTab, keyMouse, keyQuit},
+		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
 
-type readyToMergeKeyMap struct{}
+type readyToMergeKeyMap struct{ m *Model }
 
-func (readyToMergeKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyMerge, keyTab, keyQuit}
+func (k readyToMergeKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{keyScroll, keyMerge, keyTab, k.m.keyMouse(), keyQuit}
 }
-func (readyToMergeKeyMap) FullHelp() [][]key.Binding {
+func (k readyToMergeKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{keyScroll, keyMerge},
-		{keyTab, keyShiftTab, keyMouse, keyQuit},
+		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
 
-type needsAttentionKeyMap struct{}
+type needsAttentionKeyMap struct{ m *Model }
 
-func (needsAttentionKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyEnter, keyTab, keyQuit}
+func (k needsAttentionKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{keyScroll, keyEnter, keyTab, k.m.keyMouse(), keyQuit}
 }
-func (needsAttentionKeyMap) FullHelp() [][]key.Binding {
+func (k needsAttentionKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{keyScroll, keyEnter},
-		{keyTab, keyShiftTab, keyMouse, keyQuit},
+		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
 
-type workersKeyMap struct{}
+type workersKeyMap struct{ m *Model }
 
-func (workersKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyKill, keyTab, keyQuit}
+func (k workersKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{keyScroll, keyKill, keyTab, k.m.keyMouse(), keyQuit}
 }
-func (workersKeyMap) FullHelp() [][]key.Binding {
+func (k workersKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{keyScroll, keyKill},
-		{keyTab, keyShiftTab, keyMouse, keyQuit},
+		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
 
-type usageKeyMap struct{}
+type usageKeyMap struct{ m *Model }
 
-func (usageKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyTab, keyQuit}
+func (k usageKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{keyScroll, keyTab, k.m.keyMouse(), keyQuit}
 }
-func (usageKeyMap) FullHelp() [][]key.Binding {
+func (k usageKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{keyScroll},
-		{keyTab, keyShiftTab, keyMouse, keyQuit},
+		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
 
-type liveActivityKeyMap struct{}
+type liveActivityKeyMap struct{ m *Model }
 
-func (liveActivityKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyExpand, keyCollapse, keyFollow, keyTab, keyQuit}
+func (k liveActivityKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{keyScroll, keyExpand, keyCollapse, keyFollow, keyTab, k.m.keyMouse(), keyQuit}
 }
-func (liveActivityKeyMap) FullHelp() [][]key.Binding {
+func (k liveActivityKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{keyScroll, keyExpand, keyCollapse, keyFollow},
-		{keyTab, keyShiftTab, keyMouse, keyQuit},
+		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
 
-type eventsKeyMap struct{}
+type eventsKeyMap struct{ m *Model }
 
-func (eventsKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyFollow, keyTab, keyQuit}
+func (k eventsKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{keyScroll, keyFollow, keyTab, k.m.keyMouse(), keyQuit}
 }
-func (eventsKeyMap) FullHelp() [][]key.Binding {
+func (k eventsKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{keyScroll, keyFollow},
-		{keyTab, keyShiftTab, keyMouse, keyQuit},
+		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
+}
+
+// keyMouse returns the mouse toggle key binding with help text updated based
+// on the current mouse state.
+func (m *Model) keyMouse() key.Binding {
+	if m.mouseEnabled {
+		return key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "disable mouse (select text)"))
+	}
+	return key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "enable mouse"))
 }
 
 // keyMapForPanel returns the help.KeyMap appropriate for the currently focused panel.
 func (m *Model) keyMapForPanel() help.KeyMap {
 	switch m.focused {
 	case PanelQueue:
-		return queueKeyMap{}
+		return queueKeyMap{m: m}
 	case PanelCrucibles:
-		return cruciblesKeyMap{}
+		return cruciblesKeyMap{m: m}
 	case PanelReadyToMerge:
-		return readyToMergeKeyMap{}
+		return readyToMergeKeyMap{m: m}
 	case PanelNeedsAttention:
-		return needsAttentionKeyMap{}
+		return needsAttentionKeyMap{m: m}
 	case PanelWorkers:
-		return workersKeyMap{}
+		return workersKeyMap{m: m}
 	case PanelUsage:
-		return usageKeyMap{}
+		return usageKeyMap{m: m}
 	case PanelLiveActivity:
-		return liveActivityKeyMap{}
+		return liveActivityKeyMap{m: m}
 	case PanelEvents:
-		return eventsKeyMap{}
+		return eventsKeyMap{m: m}
 	default:
-		return eventsKeyMap{}
+		return eventsKeyMap{m: m}
 	}
 }
