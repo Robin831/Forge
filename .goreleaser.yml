@@ -32,6 +32,9 @@ upx:
     enabled: true
     compress: best
     brute: true
+    goos:
+      - linux
+      - windows
 
 archives:
   - id: default
