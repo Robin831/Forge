@@ -586,22 +586,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						item := m.queue[nav.beadIdx]
 						if item.Section == "unlabeled" {
 							m.queueActionTarget = &item
-							desc := item.Title
-							if item.Description != "" {
-								desc += "\n\n" + item.Description
-							}
-							m.queueActionForm = huh.NewForm(
-								huh.NewGroup(
-									huh.NewSelect[QueueActionMenuChoice]().
-										Title(fmt.Sprintf("Actions for %s", item.BeadID)).
-										Description(desc).
-										Options(
-											huh.NewOption("Label for dispatch — Tag bead for auto-dispatch", QueueActionLabel),
-											huh.NewOption("Close             — Close this bead", QueueActionClose),
-										).
-										Value(&m.queueActionChoice),
-								),
-							).WithTheme(huh.ThemeCharm())
+							m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
 							m.queueActionForm.Init()
 						}
 					}
@@ -625,17 +610,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.readyToMergeVP.cursor < len(m.readyToMerge) {
 				item := m.readyToMerge[m.readyToMergeVP.cursor]
 				m.mergeTarget = &item
-				m.mergeForm = huh.NewForm(
-					huh.NewGroup(
-						huh.NewSelect[MergeMenuChoice]().
-							Title(fmt.Sprintf("Actions for PR #%d", item.PRNumber)).
-							Description(item.Title).
-							Options(
-								huh.NewOption("Merge — Merge this PR", MergeActionMerge),
-							).
-							Value(&m.mergeChoice),
-					),
-				).WithTheme(huh.ThemeCharm())
+				m.mergeForm = buildMergeForm(&item, &m.mergeChoice)
 				m.mergeForm.Init()
 			}
 
@@ -1124,16 +1099,16 @@ func (m *Model) View() string {
 		overlay := m.renderDescriptionViewer()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.orphanDialogForm != nil {
-		overlay := actionMenuStyle.Render(m.orphanDialogForm.View())
+		overlay := m.renderOrphanDialog()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.actionForm != nil {
 		overlay := actionMenuStyle.Render(m.actionForm.View())
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.queueActionForm != nil {
-		overlay := actionMenuStyle.Render(m.queueActionForm.View())
+		overlay := m.renderQueueActionMenu()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.mergeForm != nil {
-		overlay := actionMenuStyle.Render(m.mergeForm.View())
+		overlay := m.renderMergeMenu()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	}
 
@@ -1512,27 +1487,57 @@ func (m *Model) dequeueNextOrphan() {
 	item := m.orphanQueue[0]
 	m.orphanQueue = m.orphanQueue[1:]
 	m.orphanTarget = &item
-	
-	desc := "No active worker found. What should happen?"
-	if item.Title != "" {
-		desc = item.Title + "\n\n" + desc
-	}
+	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
+	m.orphanDialogForm.Init()
+}
 
-	m.orphanDialogForm = huh.NewForm(
+// buildOrphanDialogForm creates a huh form for the orphan resolution dialog.
+func buildOrphanDialogForm(item *PendingOrphanItem, choice *OrphanDialogChoice) *huh.Form {
+	return huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[OrphanDialogChoice]().
 				Title(fmt.Sprintf("Orphan Worker Detected: %s", item.BeadID)).
-				Description(desc).
 				Options(
 					huh.NewOption("Recover — reopen and re-queue for work", OrphanActionRecover),
 					huh.NewOption("Close   — mark done (work already completed)", OrphanActionClose),
 					huh.NewOption("Discard — close without retry", OrphanActionDiscard),
 				).
-				Value(&m.orphanDialogChoice),
+				Value(choice),
 		),
 	).WithTheme(huh.ThemeCharm())
-	m.orphanDialogForm.Init()
 }
+
+// renderOrphanDialog renders the orphan dialog overlay with bead info and pending count hint.
+func (m *Model) renderOrphanDialog() string {
+	if m.orphanDialogForm == nil || m.orphanTarget == nil {
+		return ""
+	}
+	item := m.orphanTarget
+	const maxWidth = 60
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Orphan Worker Detected: %s", item.BeadID))
+
+	if item.Title != "" {
+		wrapped := wordWrap(item.Title, maxWidth)
+		for _, line := range wrapped {
+			sb.WriteByte('\n')
+			sb.WriteString(line)
+		}
+	}
+
+	sb.WriteByte('\n')
+	sb.WriteString("No active worker found. What should happen?")
+	sb.WriteByte('\n')
+	sb.WriteString(m.orphanDialogForm.View())
+
+	if n := len(m.orphanQueue); n > 0 {
+		sb.WriteString(fmt.Sprintf("\n(%d more pending)", n))
+	}
+
+	return actionMenuStyle.Render(sb.String())
+}
+
 
 // executeOrphanAction sends the user's resolution choice to the daemon.
 func (m *Model) executeOrphanAction(choice OrphanDialogChoice) tea.Cmd {
@@ -1632,7 +1637,118 @@ func (m *Model) closeSelectedQueueItem() tea.Cmd {
 
 
 
-// logViewerDimensions returns the (viewportWidth, viewportHeight) for the log viewer.
+// buildMergeForm creates a huh form for the merge menu.
+func buildMergeForm(item *ReadyToMergeItem, choice *MergeMenuChoice) *huh.Form {
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[MergeMenuChoice]().
+				Title(fmt.Sprintf("Actions for PR #%d", item.PRNumber)).
+				Options(
+					huh.NewOption("Merge — Merge this PR", MergeActionMerge),
+				).
+				Value(choice),
+		),
+	).WithTheme(huh.ThemeCharm())
+}
+
+// renderMergeMenu renders the merge action overlay with PR info header followed by the huh form.
+func (m *Model) renderMergeMenu() string {
+	if m.mergeForm == nil || m.mergeTarget == nil {
+		return ""
+	}
+	item := m.mergeTarget
+	const maxWidth = 60
+	const maxTitleLines = 2
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Actions for %s — PR #%d", item.BeadID, item.PRNumber))
+
+	if item.Title != "" {
+		wrapped := wordWrap(item.Title, maxWidth)
+		if len(wrapped) > maxTitleLines {
+			last := []rune(wrapped[maxTitleLines-1])
+			if len(last) > maxWidth-3 {
+				last = last[:maxWidth-3]
+			}
+			wrapped = append(wrapped[:maxTitleLines-1], string(last)+"...")
+		}
+		for _, line := range wrapped {
+			sb.WriteByte('\n')
+			sb.WriteString(line)
+		}
+	}
+
+	sb.WriteByte('\n')
+	sb.WriteString(m.mergeForm.View())
+	return actionMenuStyle.Render(sb.String())
+}
+
+
+// The choice pointer is bound to the form's value so huh updates it on selection.
+func buildQueueActionForm(item *QueueItem, choice *QueueActionMenuChoice) *huh.Form {
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[QueueActionMenuChoice]().
+				Title(fmt.Sprintf("Actions for %s", item.BeadID)).
+				Options(
+					huh.NewOption("Label for dispatch — Tag bead for auto-dispatch", QueueActionLabel),
+					huh.NewOption("Close             — Close this bead", QueueActionClose),
+				).
+				Value(choice),
+		),
+	).WithTheme(huh.ThemeCharm())
+}
+
+// renderQueueActionMenu renders the queue action overlay with a bead info header
+// (truncated title and description) followed by the huh form's action select.
+func (m *Model) renderQueueActionMenu() string {
+	if m.queueActionForm == nil || m.queueActionTarget == nil {
+		return ""
+	}
+	item := m.queueActionTarget
+	const maxWidth = 60
+	const maxTitleLines = 2
+	const maxDescLines = 5
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Actions for %s", item.BeadID))
+
+	if item.Title != "" {
+		wrapped := wordWrap(item.Title, maxWidth)
+		if len(wrapped) > maxTitleLines {
+			last := []rune(wrapped[maxTitleLines-1])
+			if len(last) > maxWidth-3 {
+				last = last[:maxWidth-3]
+			}
+			wrapped = append(wrapped[:maxTitleLines-1], string(last)+"...")
+		}
+		for _, line := range wrapped {
+			sb.WriteByte('\n')
+			sb.WriteString(line)
+		}
+	}
+
+	if item.Description != "" {
+		wrapped := wordWrap(item.Description, maxWidth)
+		if len(wrapped) > maxDescLines {
+			last := []rune(wrapped[maxDescLines-1])
+			if len(last) > maxWidth-3 {
+				last = last[:maxWidth-3]
+			}
+			wrapped = append(wrapped[:maxDescLines-1], string(last)+"...")
+		}
+		for _, line := range wrapped {
+			sb.WriteByte('\n')
+			sb.WriteString(line)
+		}
+	}
+
+	sb.WriteByte('\n')
+	sb.WriteString(m.queueActionForm.View())
+	return actionMenuStyle.Render(sb.String())
+}
+
+
 func (m *Model) logViewerDimensions() (int, int) {
 	viewerWidth := m.width - 8
 	if viewerWidth < 40 {
