@@ -13,6 +13,45 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// drainHuh synchronously executes commands from a huh form until it reaches a
+// stable state (StateCompleted, StateAborted, or nil command).
+func drainHuh(m *Model, cmd tea.Cmd) tea.Cmd {
+	for cmd != nil {
+		msg := cmd()
+		if msg == nil {
+			return nil
+		}
+
+		// If it's a batch, handle its components.
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			var nextCmds []tea.Cmd
+			for _, bc := range batch {
+				nc := drainHuh(m, bc)
+				if nc != nil {
+					nextCmds = append(nextCmds, nc)
+				}
+			}
+			if len(nextCmds) == 0 {
+				return nil
+			}
+			return tea.Batch(nextCmds...)
+		}
+
+		// If the message is not from huh, it's likely an action result.
+		// Return a command that produces this message.
+		typ := reflect.TypeOf(msg)
+		pkg := typ.PkgPath()
+		if !strings.Contains(pkg, "charmbracelet/huh") && !strings.Contains(pkg, "charmbracelet/bubbletea") {
+			return func() tea.Msg { return msg }
+		}
+
+		var nextCmd tea.Cmd
+		_, nextCmd = m.Update(msg)
+		cmd = nextCmd
+	}
+	return nil
+}
+
 func TestRenderWorkerListShowsTitle(t *testing.T) {
 	m := Model{
 		workers: []WorkerItem{
@@ -917,14 +956,16 @@ func TestParseWorkerActivityMultiLineText(t *testing.T) {
 func TestEnterOnUnlabeledQueueItemOpensMenu(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-1", Anvil: "test", Section: "unlabeled"},
 		},
 		queueVP: scrollViewport{cursor: 0},
 	}
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if !m.showQueueActionMenu {
-		t.Error("expected showQueueActionMenu=true after Enter on unlabeled item")
+	if m.queueActionForm == nil {
+		t.Error("expected queueActionForm!=nil after Enter on unlabeled item")
 	}
 	if m.queueActionTarget == nil || m.queueActionTarget.BeadID != "bd-1" {
 		t.Errorf("expected queueActionTarget.BeadID=bd-1, got %v", m.queueActionTarget)
@@ -934,14 +975,16 @@ func TestEnterOnUnlabeledQueueItemOpensMenu(t *testing.T) {
 func TestEnterOnReadyQueueItemDoesNotOpenMenu(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-2", Anvil: "test", Section: "ready"},
 		},
 		queueVP: scrollViewport{cursor: 0},
 	}
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if m.showQueueActionMenu {
-		t.Error("expected showQueueActionMenu=false for ready (non-unlabeled) item")
+	if m.queueActionForm != nil {
+		t.Error("expected queueActionForm==nil for ready (non-unlabeled) item")
 	}
 }
 
@@ -949,6 +992,8 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 	var taggedBead, taggedAnvil string
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-3", Anvil: "forge", Section: "unlabeled"},
 		},
@@ -960,14 +1005,17 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 		},
 	}
 	// Open the menu
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if !m.showQueueActionMenu {
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = drainHuh(&m, cmd)
+	if m.queueActionForm == nil {
 		t.Fatal("expected menu open after Enter")
 	}
-	// Select the label action — menu closes immediately, returns async cmd
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if m.showQueueActionMenu {
-		t.Error("expected menu to close immediately after label action")
+	// Select the label action — menu closes, returns async cmd
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd = drainHuh(&m, cmd)
+
+	if m.queueActionForm != nil {
+		t.Errorf("expected menu to close after label action")
 	}
 	// Execute the async command and deliver result
 	if cmd == nil {
@@ -986,6 +1034,8 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 func TestQueueActionMenuLabelOnTagBeadError(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-4", Anvil: "forge", Section: "unlabeled"},
 		},
@@ -996,6 +1046,7 @@ func TestQueueActionMenuLabelOnTagBeadError(t *testing.T) {
 	}
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd = drainHuh(&m, cmd)
 	if cmd == nil {
 		t.Fatal("expected a tea.Cmd for async tag operation")
 	}
@@ -1010,6 +1061,8 @@ func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
 	var closedBead, closedAnvil string
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-close-1", Anvil: "forge", Section: "unlabeled"},
 		},
@@ -1021,14 +1074,16 @@ func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
 		},
 	}
 	// Open the menu
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if !m.showQueueActionMenu {
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = drainHuh(&m, cmd)
+	if m.queueActionForm == nil {
 		t.Fatal("expected menu open after Enter")
 	}
 	// Navigate to "Close" (index 1) and select it
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if m.showQueueActionMenu {
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd = drainHuh(&m, cmd)
+	if m.queueActionForm != nil {
 		t.Error("expected menu to close immediately after close action")
 	}
 	if cmd == nil {
@@ -1047,6 +1102,8 @@ func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
 func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-close-2", Anvil: "forge", Section: "unlabeled"},
 		},
@@ -1058,6 +1115,7 @@ func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd = drainHuh(&m, cmd)
 	if cmd == nil {
 		t.Fatal("expected a tea.Cmd for async close operation")
 	}
@@ -1071,6 +1129,8 @@ func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
 func TestQueueActionMenuCloseNilOnCloseBead(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-close-3", Anvil: "forge", Section: "unlabeled"},
 		},
@@ -1081,19 +1141,19 @@ func TestQueueActionMenuCloseNilOnCloseBead(t *testing.T) {
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if !strings.Contains(m.statusMsg, "unavailable") {
-		t.Errorf("expected 'unavailable' statusMsg, got %q", m.statusMsg)
+		t.Errorf("expected 'unavailable' statusMsg, got %q (form nil: %v)", m.statusMsg, m.queueActionForm == nil)
 	}
 }
 
 func TestRenderQueueActionMenuContainsBeadID(t *testing.T) {
 	item := QueueItem{BeadID: "bd-5", Anvil: "test", Section: "unlabeled"}
 	m := Model{
-		showQueueActionMenu: true,
-		queueActionTarget:   &item,
-		queueActionMenuIdx:  0,
-		width:               80,
-		height:              24,
+		queueActionTarget: &item,
+		width:             80,
+		height:            24,
 	}
+	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
+	m.queueActionForm.Init()
 	rendered := m.renderQueueActionMenu()
 	if !strings.Contains(rendered, "bd-5") {
 		t.Errorf("expected bead ID bd-5 in renderQueueActionMenu output:\n%s", rendered)
@@ -1106,12 +1166,12 @@ func TestRenderQueueActionMenuContainsBeadID(t *testing.T) {
 func TestRenderQueueActionMenuShowsTitle(t *testing.T) {
 	item := QueueItem{BeadID: "bd-t1", Anvil: "test", Title: "Implement feature X", Section: "unlabeled"}
 	m := Model{
-		showQueueActionMenu: true,
-		queueActionTarget:   &item,
-		queueActionMenuIdx:  0,
-		width:               80,
-		height:              24,
+		queueActionTarget: &item,
+		width:             80,
+		height:            24,
 	}
+	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
+	m.queueActionForm.Init()
 	rendered := m.renderQueueActionMenu()
 	if !strings.Contains(rendered, "Implement feature X") {
 		t.Errorf("expected title in renderQueueActionMenu output:\n%s", rendered)
@@ -1128,12 +1188,12 @@ func TestRenderQueueActionMenuTruncatesLongTitle(t *testing.T) {
 		Section: "unlabeled",
 	}
 	m := Model{
-		showQueueActionMenu: true,
-		queueActionTarget:   &item,
-		queueActionMenuIdx:  0,
-		width:               80,
-		height:              24,
+		queueActionTarget: &item,
+		width:             80,
+		height:            24,
 	}
+	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
+	m.queueActionForm.Init()
 	rendered := m.renderQueueActionMenu()
 	// Should contain ellipsis indicating title was truncated.
 	if !strings.Contains(rendered, "...") {
@@ -1155,12 +1215,12 @@ func TestRenderQueueActionMenuWrapsDescription(t *testing.T) {
 		Section:     "unlabeled",
 	}
 	m := Model{
-		showQueueActionMenu: true,
-		queueActionTarget:   &item,
-		queueActionMenuIdx:  0,
-		width:               80,
-		height:              24,
+		queueActionTarget: &item,
+		width:             80,
+		height:            24,
 	}
+	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
+	m.queueActionForm.Init()
 	rendered := m.renderQueueActionMenu()
 	if !strings.Contains(rendered, "Test bead") {
 		t.Errorf("expected title in output:\n%s", rendered)
@@ -1182,12 +1242,12 @@ func TestRenderQueueActionMenuTruncatesLongDescription(t *testing.T) {
 		Section:     "unlabeled",
 	}
 	m := Model{
-		showQueueActionMenu: true,
-		queueActionTarget:   &item,
-		queueActionMenuIdx:  0,
-		width:               80,
-		height:              24,
+		queueActionTarget: &item,
+		width:             80,
+		height:            24,
 	}
+	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
+	m.queueActionForm.Init()
 	rendered := m.renderQueueActionMenu()
 	// Should contain ellipsis for truncated description.
 	if !strings.Contains(rendered, "...") {
@@ -1198,15 +1258,16 @@ func TestRenderQueueActionMenuTruncatesLongDescription(t *testing.T) {
 func TestUpdateQueueMsgClosesMenuWhenTargetRemoved(t *testing.T) {
 	item := QueueItem{BeadID: "bd-6", Anvil: "test", Section: "unlabeled"}
 	m := Model{
-		showQueueActionMenu: true,
-		queueActionTarget:   &item,
-		queue:               []QueueItem{item},
+		queueActionTarget: &item,
+		queue:             []QueueItem{item},
 	}
+	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
+	m.queueActionForm.Init()
 	// Simulate queue refresh that removes the target bead
 	_, _ = m.Update(UpdateQueueMsg{Items: []QueueItem{
 		{BeadID: "bd-99", Anvil: "test", Section: "unlabeled"},
 	}})
-	if m.showQueueActionMenu {
+	if m.queueActionForm != nil {
 		t.Error("expected menu to close when target bead no longer in unlabeled section")
 	}
 	if m.queueActionTarget != nil {
@@ -1217,13 +1278,14 @@ func TestUpdateQueueMsgClosesMenuWhenTargetRemoved(t *testing.T) {
 func TestUpdateQueueMsgKeepsMenuWhenTargetStillPresent(t *testing.T) {
 	item := QueueItem{BeadID: "bd-7", Anvil: "test", Section: "unlabeled"}
 	m := Model{
-		showQueueActionMenu: true,
-		queueActionTarget:   &item,
-		queue:               []QueueItem{item},
+		queueActionTarget: &item,
+		queue:             []QueueItem{item},
 	}
+	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
+	m.queueActionForm.Init()
 	// Simulate queue refresh that keeps the target bead
 	_, _ = m.Update(UpdateQueueMsg{Items: []QueueItem{item}})
-	if !m.showQueueActionMenu {
+	if m.queueActionForm == nil {
 		t.Error("expected menu to remain open when target bead still in unlabeled section")
 	}
 }
@@ -1470,11 +1532,12 @@ func TestRenderReadyToMergeViewportRegression(t *testing.T) {
 func TestRenderMergeMenuContainsBeadIDAndActions(t *testing.T) {
 	item := ReadyToMergeItem{PRID: 1, PRNumber: 55, BeadID: "bd-30", Anvil: "test"}
 	m := Model{
-		mergeTarget:  &item,
-		mergeMenuIdx: 0,
-		width:        80,
-		height:       24,
+		mergeTarget: &item,
+		width:       80,
+		height:      24,
 	}
+	m.mergeForm = buildMergeForm(&item, &m.mergeChoice)
+	m.mergeForm.Init()
 	rendered := m.renderMergeMenu()
 	if !strings.Contains(rendered, "bd-30") {
 		t.Errorf("expected bead ID bd-30 in renderMergeMenu output:\n%s", rendered)
@@ -1490,11 +1553,12 @@ func TestRenderMergeMenuShowsPRTitle(t *testing.T) {
 		Title: "fix: resolve flaky timeout in auth middleware",
 	}
 	m := Model{
-		mergeTarget:  &item,
-		mergeMenuIdx: 0,
-		width:        80,
-		height:       24,
+		mergeTarget: &item,
+		width:       80,
+		height:      24,
 	}
+	m.mergeForm = buildMergeForm(&item, &m.mergeChoice)
+	m.mergeForm.Init()
 	rendered := m.renderMergeMenu()
 	if !strings.Contains(rendered, "fix: resolve flaky timeout in auth middleware") {
 		t.Errorf("expected PR title in renderMergeMenu output:\n%s", rendered)
@@ -1509,11 +1573,12 @@ func TestRenderMergeMenuLongTitleTruncated(t *testing.T) {
 		Title: longTitle,
 	}
 	m := Model{
-		mergeTarget:  &item,
-		mergeMenuIdx: 0,
-		width:        80,
-		height:       24,
+		mergeTarget: &item,
+		width:       80,
+		height:      24,
 	}
+	m.mergeForm = buildMergeForm(&item, &m.mergeChoice)
+	m.mergeForm.Init()
 	rendered := m.renderMergeMenu()
 	if !strings.Contains(rendered, "...") {
 		t.Errorf("expected ellipsis for long title in renderMergeMenu output:\n%s", rendered)
@@ -1529,11 +1594,12 @@ func TestRenderMergeMenuNarrowContentWidthNoSlicePanic(t *testing.T) {
 		Title: longTitle,
 	}
 	m := Model{
-		mergeTarget:  &item,
-		mergeMenuIdx: 0,
-		width:        1,
-		height:       5,
+		mergeTarget: &item,
+		width:       1,
+		height:      5,
 	}
+	m.mergeForm = buildMergeForm(&item, &m.mergeChoice)
+	m.mergeForm.Init()
 	// Should not panic regardless of contentWidth value.
 	_ = m.renderMergeMenu()
 }
@@ -1766,6 +1832,8 @@ func TestRebuildQueueNav_NilExpandedAnvils_NoPanic(t *testing.T) {
 func TestEnterTogglesAnvilExpansion(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-1", Anvil: "alpha"},
 			{BeadID: "bd-2", Anvil: "beta"},
@@ -1795,6 +1863,8 @@ func TestEnterTogglesAnvilExpansion(t *testing.T) {
 func TestEscCollapsesToAnvilHeader(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-1", Anvil: "alpha"},
 			{BeadID: "bd-2", Anvil: "alpha"},
@@ -1949,6 +2019,8 @@ func TestCruciblePhaseStyleFrameChanges(t *testing.T) {
 func TestCursorClampedOnCollapse(t *testing.T) {
 	m := Model{
 		focused: PanelQueue,
+		width:   80,
+		height:  24,
 		queue: []QueueItem{
 			{BeadID: "bd-1", Anvil: "alpha"},
 			{BeadID: "bd-2", Anvil: "alpha"},
@@ -2248,10 +2320,10 @@ func TestLogViewerDimensionsMinClamped(t *testing.T) {
 func TestRenderOrphanDialogShowsBeadIDAndTitle(t *testing.T) {
 	item := PendingOrphanItem{BeadID: "Forge-abc1", Anvil: "heimdall", Title: "Fix login timeout bug"}
 	m := Model{
-		showOrphanDialog: true,
-		orphanTarget:     &item,
-		orphanDialogIdx:  0,
+		orphanTarget: &item,
 	}
+	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
+	m.orphanDialogForm.Init()
 	rendered := m.renderOrphanDialog()
 	if !strings.Contains(rendered, "Forge-abc1") {
 		t.Errorf("expected bead ID 'Forge-abc1' in orphan dialog:\n%s", rendered)
@@ -2264,10 +2336,10 @@ func TestRenderOrphanDialogShowsBeadIDAndTitle(t *testing.T) {
 func TestRenderOrphanDialogShowsAllChoices(t *testing.T) {
 	item := PendingOrphanItem{BeadID: "Forge-xyz", Anvil: "test", Title: "Some work"}
 	m := Model{
-		showOrphanDialog: true,
-		orphanTarget:     &item,
-		orphanDialogIdx:  0,
+		orphanTarget: &item,
 	}
+	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
+	m.orphanDialogForm.Init()
 	rendered := m.renderOrphanDialog()
 	if !strings.Contains(rendered, "Recover") {
 		t.Errorf("expected 'Recover' option in orphan dialog:\n%s", rendered)
@@ -2284,11 +2356,11 @@ func TestRenderOrphanDialogShowsPendingCount(t *testing.T) {
 	item := PendingOrphanItem{BeadID: "Forge-1", Anvil: "test", Title: "first"}
 	extra := PendingOrphanItem{BeadID: "Forge-2", Anvil: "test", Title: "second"}
 	m := Model{
-		showOrphanDialog: true,
-		orphanTarget:     &item,
-		orphanDialogIdx:  0,
-		orphanQueue:      []PendingOrphanItem{extra},
+		orphanTarget: &item,
+		orphanQueue:  []PendingOrphanItem{extra},
 	}
+	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
+	m.orphanDialogForm.Init()
 	rendered := m.renderOrphanDialog()
 	if !strings.Contains(rendered, "1 more pending") {
 		t.Errorf("expected pending count hint in orphan dialog:\n%s", rendered)
@@ -2296,7 +2368,7 @@ func TestRenderOrphanDialogShowsPendingCount(t *testing.T) {
 }
 
 func TestRenderOrphanDialogNilTargetReturnsEmpty(t *testing.T) {
-	m := Model{showOrphanDialog: false, orphanTarget: nil}
+	m := Model{orphanTarget: nil}
 	rendered := m.renderOrphanDialog()
 	if rendered != "" {
 		t.Errorf("expected empty string when orphanTarget is nil, got: %q", rendered)
@@ -2306,41 +2378,39 @@ func TestRenderOrphanDialogNilTargetReturnsEmpty(t *testing.T) {
 func TestOrphanDialogKeyboardNavigation(t *testing.T) {
 	item := PendingOrphanItem{BeadID: "Forge-nav", Anvil: "test", Title: "nav test"}
 	m := Model{
-		showOrphanDialog: true,
-		orphanTarget:     &item,
-		orphanDialogIdx:  0,
+		orphanTarget: &item,
 	}
+	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
+	m.orphanDialogForm.Init()
 
-	// j moves selection down
+	// j and k navigate within the form without closing it
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if m.orphanDialogIdx != 1 {
-		t.Errorf("expected orphanDialogIdx=1 after 'j', got %d", m.orphanDialogIdx)
+	if m.orphanDialogForm == nil {
+		t.Error("expected dialog to remain open after 'j'")
 	}
 
-	// k moves selection up
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	if m.orphanDialogIdx != 0 {
-		t.Errorf("expected orphanDialogIdx=0 after 'k', got %d", m.orphanDialogIdx)
+	if m.orphanDialogForm == nil {
+		t.Error("expected dialog to remain open after 'k'")
 	}
 
-	// k wraps around (0 -> last)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	if m.orphanDialogIdx != int(orphanDialogChoiceCount)-1 {
-		t.Errorf("expected orphanDialogIdx=%d after wrap, got %d", int(orphanDialogChoiceCount)-1, m.orphanDialogIdx)
+	if m.orphanDialogForm == nil {
+		t.Error("expected dialog to remain open after second 'k'")
 	}
 }
 
 func TestOrphanDialogEscSkipsOrphan(t *testing.T) {
 	item := PendingOrphanItem{BeadID: "Forge-esc", Anvil: "test", Title: "esc test"}
 	m := Model{
-		showOrphanDialog: true,
-		orphanTarget:     &item,
-		orphanDialogIdx:  0,
+		orphanTarget: &item,
 	}
+	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
+	m.orphanDialogForm.Init()
 
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if m.showOrphanDialog {
-		t.Error("expected showOrphanDialog=false after Esc")
+	if m.orphanDialogForm != nil {
+		t.Error("expected orphanDialogForm=nil after Esc")
 	}
 	if m.orphanTarget != nil {
 		t.Error("expected orphanTarget=nil after Esc")
@@ -2351,9 +2421,7 @@ func TestOrphanDialogEnterCallsOnResolveOrphan(t *testing.T) {
 	var resolvedBead, resolvedAnvil, resolvedAction string
 	item := PendingOrphanItem{BeadID: "Forge-res", Anvil: "heimdall", Title: "resolve me"}
 	m := Model{
-		showOrphanDialog: true,
-		orphanTarget:     &item,
-		orphanDialogIdx:  0, // Recover
+		orphanTarget: &item,
 		OnResolveOrphan: func(beadID, anvil, action string) error {
 			resolvedBead = beadID
 			resolvedAnvil = anvil
@@ -2361,8 +2429,17 @@ func TestOrphanDialogEnterCallsOnResolveOrphan(t *testing.T) {
 			return nil
 		},
 	}
+	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
+	initCmd := m.orphanDialogForm.Init()
+	if initCmd != nil {
+		msg := initCmd()
+		_, _ = m.Update(msg)
+	}
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	for m.orphanDialogForm != nil && cmd != nil {
+		_, cmd = m.Update(cmd())
+	}
 	if cmd == nil {
 		t.Fatal("expected a tea.Cmd after Enter on orphan dialog")
 	}
@@ -2384,12 +2461,13 @@ func TestOrphanDialogEnterCallsOnResolveOrphan(t *testing.T) {
 func TestOrphanDialogMouseWheelBlocked(t *testing.T) {
 	item := PendingOrphanItem{BeadID: "Forge-wheel", Anvil: "test", Title: "wheel test"}
 	m := Model{
-		showOrphanDialog: true,
-		orphanTarget:     &item,
-		focused:          PanelQueue,
-		width:            120,
-		height:           40,
+		orphanTarget: &item,
+		focused:      PanelQueue,
+		width:        120,
+		height:       40,
 	}
+	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
+	m.orphanDialogForm.Init()
 	initialFocused := m.focused
 
 	// Wheel up should not change focus or scroll
@@ -2417,14 +2495,13 @@ func TestOrphanDialogMouseWheelBlocked(t *testing.T) {
 
 func TestUpdatePendingOrphansMsgOpensDialog(t *testing.T) {
 	m := Model{
-		showOrphanDialog: false,
-		orphanTarget:     nil,
+		orphanTarget: nil,
 	}
 	item := PendingOrphanItem{BeadID: "Forge-poll", Anvil: "test", Title: "polled orphan"}
 	_, _ = m.Update(UpdatePendingOrphansMsg{Items: []PendingOrphanItem{item}})
 
-	if !m.showOrphanDialog {
-		t.Error("expected showOrphanDialog=true after UpdatePendingOrphansMsg with items")
+	if m.orphanDialogForm == nil {
+		t.Error("expected orphanDialogForm!=nil after UpdatePendingOrphansMsg with items")
 	}
 	if m.orphanTarget == nil || m.orphanTarget.BeadID != "Forge-poll" {
 		t.Errorf("expected orphanTarget.BeadID=Forge-poll, got %v", m.orphanTarget)
@@ -2554,10 +2631,11 @@ func TestRenderCruciblesProgressBarPresentWhenChildrenNonZero(t *testing.T) {
 func TestUpdatePendingOrphansMsgDeduplicates(t *testing.T) {
 	existing := PendingOrphanItem{BeadID: "Forge-dup", Anvil: "test", Title: "dup"}
 	m := Model{
-		showOrphanDialog: true,
-		orphanTarget:     &existing,
-		orphanQueue:      []PendingOrphanItem{},
+		orphanTarget: &existing,
+		orphanQueue:  []PendingOrphanItem{},
 	}
+	m.orphanDialogForm = buildOrphanDialogForm(&existing, &m.orphanDialogChoice)
+	m.orphanDialogForm.Init()
 	// Sending the same bead again should not add it to the queue
 	_, _ = m.Update(UpdatePendingOrphansMsg{Items: []PendingOrphanItem{existing}})
 	if len(m.orphanQueue) != 0 {
