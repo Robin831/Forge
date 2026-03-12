@@ -428,6 +428,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.mergeForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if k.Type == tea.KeyEsc {
+				m.mergeForm = nil
+				return m, nil
+			}
+		}
 		cmd := m.driveHuhForm(&m.mergeForm, msg)
 		if m.mergeForm.State == huh.StateCompleted {
 			actionCmd := m.executeMergeAction(m.mergeChoice)
@@ -446,6 +452,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.queueActionForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if k.Type == tea.KeyEsc {
+				m.queueActionForm = nil
+				return m, nil
+			}
+		}
 		cmd := m.driveHuhForm(&m.queueActionForm, msg)
 		if m.queueActionForm.State == huh.StateCompleted {
 			actionCmd := m.executeQueueAction(m.queueActionChoice)
@@ -464,6 +476,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.actionForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if k.Type == tea.KeyEsc {
+				m.actionForm = nil
+				return m, nil
+			}
+		}
 		cmd := m.driveHuhForm(&m.actionForm, msg)
 		if m.actionForm.State == huh.StateCompleted {
 			actionCmd := m.executeAction(m.actionChoice)
@@ -586,7 +604,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							).
 							Value(&m.actionChoice),
 					),
-				).WithTheme(huh.ThemeCharm())
+				).WithTheme(huh.ThemeCharm()).WithWidth(60)
 				return m, m.actionForm.Init()
 			}
 			// Queue panel: toggle anvil expand/collapse or open action menu for unlabeled beads
@@ -1127,7 +1145,7 @@ func (m *Model) View() string {
 		overlay := m.renderOrphanDialog()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.actionForm != nil {
-		overlay := actionMenuStyle.Render(m.actionForm.View())
+		overlay := m.renderActionMenu()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.queueActionForm != nil {
 		overlay := m.renderQueueActionMenu()
@@ -1679,7 +1697,7 @@ func buildMergeForm(item *ReadyToMergeItem, choice *MergeMenuChoice) *huh.Form {
 				).
 				Value(choice),
 		),
-	).WithTheme(huh.ThemeCharm())
+	).WithTheme(huh.ThemeCharm()).WithWidth(60)
 }
 
 // renderMergeMenu renders the merge action overlay with PR info header followed by the huh form.
@@ -1711,6 +1729,7 @@ func (m *Model) renderMergeMenu() string {
 
 	sb.WriteByte('\n')
 	sb.WriteString(m.mergeForm.View())
+	sb.WriteString("\n" + dimStyle.Render("esc: dismiss"))
 	return actionMenuStyle.Render(sb.String())
 }
 
@@ -1727,7 +1746,7 @@ func buildQueueActionForm(item *QueueItem, choice *QueueActionMenuChoice) *huh.F
 				).
 				Value(choice),
 		),
-	).WithTheme(huh.ThemeCharm())
+	).WithTheme(huh.ThemeCharm()).WithWidth(60)
 }
 
 // renderQueueActionMenu renders the queue action overlay with a bead info header
@@ -1776,6 +1795,18 @@ func (m *Model) renderQueueActionMenu() string {
 
 	sb.WriteByte('\n')
 	sb.WriteString(m.queueActionForm.View())
+	sb.WriteString("\n" + dimStyle.Render("esc: dismiss"))
+	return actionMenuStyle.Render(sb.String())
+}
+
+// renderActionMenu renders the Needs Attention action overlay.
+func (m *Model) renderActionMenu() string {
+	if m.actionForm == nil {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(m.actionForm.View())
+	sb.WriteString("\n" + dimStyle.Render("esc: dismiss"))
 	return actionMenuStyle.Render(sb.String())
 }
 
