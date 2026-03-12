@@ -184,6 +184,7 @@ Example (from a release script):
 						}
 					}
 				}
+				dispatcher.Wait()
 			}
 		}
 

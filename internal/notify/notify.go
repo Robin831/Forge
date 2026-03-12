@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -390,6 +391,7 @@ type WebhookDispatcher struct {
 	targets []dispatchTarget
 	logger  *slog.Logger
 	client  *http.Client
+	wg      sync.WaitGroup
 }
 
 // NewWebhookDispatcher creates a dispatcher from a list of webhook targets.
@@ -448,8 +450,20 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event EventType, beadI
 			continue
 		}
 		t := t // capture loop variable for goroutine
-		go d.sendToTarget(sendCtx, t, payload)
+		d.wg.Add(1)
+		go func(target dispatchTarget) {
+			defer d.wg.Done()
+			d.sendToTarget(sendCtx, target, payload)
+		}(t)
 	}
+}
+
+// Wait blocks until all dispatched webhooks have completed their HTTP requests.
+func (d *WebhookDispatcher) Wait() {
+	if d == nil {
+		return
+	}
+	d.wg.Wait()
 }
 
 func (d *WebhookDispatcher) sendToTarget(ctx context.Context, t dispatchTarget, payload GenericPayload) {
