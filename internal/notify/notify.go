@@ -271,85 +271,50 @@ func (n *Notifier) PRReadyToMerge(ctx context.Context, anvil, beadID string, prN
 	n.send(ctx, card)
 }
 
-// PRReadyToMergePayload is the generic JSON payload sent to non-Teams webhook URLs
-// when a PR enters the ready-to-merge state.
-type PRReadyToMergePayload struct {
-	Event    string `json:"event"`
-	Anvil    string `json:"anvil"`
-	BeadID   string `json:"bead_id"`
-	PRNumber int    `json:"pr_number"`
-	PRURL    string `json:"pr_url,omitempty"`
-	PRTitle  string `json:"pr_title,omitempty"`
+// WebhookPayload is the canonical generic JSON structure sent to non-Teams webhook URLs.
+// It provides a pre-formatted summary and structured metadata so receivers can
+// display rich notifications without parsing event-specific fields.
+//
+// All generic/non-Teams Forge webhook POSTs use this schema. Teams webhooks instead
+// receive Adaptive Card JSON. The source field is always "forge" so receivers can
+// identify the origin and apply the appropriate badge or routing.
+type WebhookPayload struct {
+	Source  string `json:"source"`            // Always "forge"
+	Summary string `json:"summary"`           // Pre-formatted human-readable one-liner for list view
+	Event   string `json:"event"`             // Machine-readable event type (snake_case)
+	Detail  string `json:"detail,omitempty"`  // Secondary description (changelog, commit message, etc.)
+	URL     string `json:"url,omitempty"`     // Relevant link (PR, release, issue, etc.)
+	Repo    string `json:"repo,omitempty"`    // Repository / anvil name
+	Version string `json:"version,omitempty"` // Version string (may differ from Tag, e.g. "2.0.0" vs "v2.0.0")
+	Tag     string `json:"tag,omitempty"`     // Git tag if applicable (may include "v" prefix)
+	Bead    string `json:"bead,omitempty"`    // Bead ID if the event relates to a bead
+	PR      int    `json:"pr,omitempty"`      // PR number if applicable
 }
 
 // SendGenericPRReadyToMerge posts a generic JSON pr_ready_to_merge payload to any webhook URL.
 // This is used for non-Teams endpoints such as dashboards or custom receivers.
 // Errors are logged but do not cause a fatal failure.
-func SendGenericPRReadyToMerge(ctx context.Context, webhookURL string, payload PRReadyToMergePayload, logger *slog.Logger) {
-	if webhookURL == "" {
-		return
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		if logger != nil {
-			logger.Error("failed to marshal pr_ready_to_merge payload", "error", err)
-		}
-		return
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
-	if err != nil {
-		if logger != nil {
-			logger.Error("failed to create pr_ready_to_merge webhook request", "url", webhookURL, "error", err)
-		}
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: webhookTimeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		if logger != nil {
-			logger.Warn("pr_ready_to_merge webhook failed", "url", webhookURL, "error", err)
-		}
-		return
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-
-	if resp.StatusCode >= 400 {
-		if logger != nil {
-			logger.Warn("pr_ready_to_merge webhook returned error", "url", webhookURL, "status", resp.StatusCode)
-		}
-		return
-	}
-
-	if logger != nil {
-		logger.Debug("pr_ready_to_merge notification sent", "url", webhookURL, "status", resp.StatusCode)
-	}
-}
-
-// ReleasePayload is the generic JSON payload sent to non-Teams webhook URLs
-// on release. Compatible with any webhook receiver (Slack, custom dashboards).
-type ReleasePayload struct {
-	Event            string `json:"event"`
-	Version          string `json:"version"`
-	Tag              string `json:"tag"`
-	ReleaseURL       string `json:"release_url,omitempty"`
-	ChangelogSummary string `json:"changelog_summary,omitempty"`
+func SendGenericPRReadyToMerge(ctx context.Context, webhookURL string, payload WebhookPayload, logger *slog.Logger) {
+	sendGenericWebhook(ctx, webhookURL, payload, "pr_ready_to_merge", logger)
 }
 
 // SendGenericRelease posts a generic JSON release payload to any webhook URL.
 // This is used for non-Teams endpoints such as dashboards or custom receivers.
 // Errors are logged but do not cause a fatal failure.
-func SendGenericRelease(ctx context.Context, webhookURL string, payload ReleasePayload, logger *slog.Logger) {
+func SendGenericRelease(ctx context.Context, webhookURL string, payload WebhookPayload, logger *slog.Logger) {
+	sendGenericWebhook(ctx, webhookURL, payload, payload.Event, logger)
+}
+
+// sendGenericWebhook marshals payload and POSTs it to webhookURL.
+// eventLabel is used only in log messages to identify which event type failed.
+func sendGenericWebhook(ctx context.Context, webhookURL string, payload WebhookPayload, eventLabel string, logger *slog.Logger) {
 	if webhookURL == "" {
 		return
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		if logger != nil {
-			logger.Error("failed to marshal release payload", "error", err)
+			logger.Error("failed to marshal webhook payload", "event", eventLabel, "error", err)
 		}
 		return
 	}
@@ -357,7 +322,7 @@ func SendGenericRelease(ctx context.Context, webhookURL string, payload ReleaseP
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {
 		if logger != nil {
-			logger.Error("failed to create release webhook request", "url", webhookURL, "error", err)
+			logger.Error("failed to create webhook request", "event", eventLabel, "url", webhookURL, "error", err)
 		}
 		return
 	}
@@ -367,7 +332,7 @@ func SendGenericRelease(ctx context.Context, webhookURL string, payload ReleaseP
 	resp, err := client.Do(req)
 	if err != nil {
 		if logger != nil {
-			logger.Warn("release webhook failed", "url", webhookURL, "error", err)
+			logger.Warn("webhook POST failed", "event", eventLabel, "url", webhookURL, "error", err)
 		}
 		return
 	}
@@ -376,13 +341,13 @@ func SendGenericRelease(ctx context.Context, webhookURL string, payload ReleaseP
 
 	if resp.StatusCode >= 400 {
 		if logger != nil {
-			logger.Warn("release webhook returned error", "url", webhookURL, "status", resp.StatusCode)
+			logger.Warn("webhook returned error status", "event", eventLabel, "url", webhookURL, "status", resp.StatusCode)
 		}
 		return
 	}
 
 	if logger != nil {
-		logger.Debug("release notification sent", "url", webhookURL, "status", resp.StatusCode)
+		logger.Debug("webhook notification sent", "event", eventLabel, "url", webhookURL, "status", resp.StatusCode)
 	}
 }
 

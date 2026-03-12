@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/notify"
@@ -22,6 +24,27 @@ func init() {
 
 	notifyCmd.AddCommand(notifyReleaseCmd)
 	rootCmd.AddCommand(notifyCmd)
+}
+
+// repoNameFromURL extracts the repository name from a GitHub URL.
+// repoNameFromURL extracts the repository name from the second path segment of any URL.
+// e.g. "https://github.com/Robin831/Forge/releases/tag/v1.0.0" → "Forge"
+// The host is not validated; any URL with path /<owner>/<repo>/... is accepted.
+// Returns an empty string if the URL cannot be parsed or has fewer than two path segments.
+func repoNameFromURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	// Path looks like /<owner>/<repo>/...
+	parts := strings.SplitN(strings.TrimPrefix(path.Clean(u.Path), "/"), "/", 3)
+	if len(parts) >= 2 && parts[1] != "" {
+		return parts[1]
+	}
+	return ""
 }
 
 var notifyCmd = &cobra.Command{
@@ -100,12 +123,20 @@ Example (from a release script):
 		}
 
 		// Send generic JSON to extra URLs
-		payload := notify.ReleasePayload{
-			Event:            "release_published",
-			Version:          version,
-			Tag:              tag,
-			ReleaseURL:       releaseURL,
-			ChangelogSummary: changelogSummary,
+		repoName := repoNameFromURL(releaseURL)
+		summary := fmt.Sprintf("Release published: %s", version)
+		if repoName != "" {
+			summary = fmt.Sprintf("Release published: %s (%s)", version, repoName)
+		}
+		payload := notify.WebhookPayload{
+			Source:  "forge",
+			Summary: summary,
+			Event:   "release_published",
+			Detail:  changelogSummary,
+			URL:     releaseURL,
+			Repo:    repoName,
+			Version: version,
+			Tag:     tag,
 		}
 		for _, u := range allExtraURLs {
 			u = strings.TrimSpace(u)

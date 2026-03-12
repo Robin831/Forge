@@ -135,16 +135,18 @@ func TestReleasePublished_SkippedWhenEventFiltered(t *testing.T) {
 }
 
 // TestSendGenericRelease_PostsJSON verifies that SendGenericRelease sends the
-// correct JSON structure to the target URL.
+// correct JSON structure to the target URL, including the rich payload fields.
 func TestSendGenericRelease_PostsJSON(t *testing.T) {
 	url, getBody := captureRequest(t)
 
-	payload := notify.ReleasePayload{
-		Event:            "release_published",
-		Version:          "v2.0.0",
-		Tag:              "v2.0.0",
-		ReleaseURL:       "https://github.com/org/repo/releases/tag/v2.0.0",
-		ChangelogSummary: "- Added something new",
+	payload := notify.WebhookPayload{
+		Source:  "forge",
+		Summary: "Release published: v2.0.0 (repo)",
+		Event:   "release_published",
+		Detail:  "- Added something new",
+		URL:     "https://github.com/org/repo/releases/tag/v2.0.0",
+		Repo:    "repo",
+		Version: "v2.0.0",
 	}
 	notify.SendGenericRelease(context.Background(), url, payload,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -154,29 +156,97 @@ func TestSendGenericRelease_PostsJSON(t *testing.T) {
 		t.Fatal("expected a request body, got none")
 	}
 
-	var got notify.ReleasePayload
+	var got notify.WebhookPayload
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("body is not valid JSON: %v\n%s", err, raw)
 	}
 
+	if got.Source != "forge" {
+		t.Errorf("source = %q, want %q", got.Source, "forge")
+	}
 	if got.Event != "release_published" {
 		t.Errorf("event = %q, want %q", got.Event, "release_published")
 	}
 	if got.Version != "v2.0.0" {
 		t.Errorf("version = %q, want %q", got.Version, "v2.0.0")
 	}
+	if got.Summary != payload.Summary {
+		t.Errorf("summary = %q, want %q", got.Summary, payload.Summary)
+	}
+	if got.URL != payload.URL {
+		t.Errorf("url = %q, want %q", got.URL, payload.URL)
+	}
+}
+
+// TestSendGenericRelease_TagFieldPreserved verifies that the Tag field in the
+// payload is round-tripped correctly through JSON serialisation. This is a
+// regression test for the silent breaking change where Tag was dropped from
+// WebhookPayload even though --tag is a supported CLI flag with distinct
+// semantics from --version (e.g. "2.0.0" vs "v2.0.0").
+func TestSendGenericRelease_TagFieldPreserved(t *testing.T) {
+	url, getBody := captureRequest(t)
+
+	payload := notify.WebhookPayload{
+		Source:  "forge",
+		Summary: "Release published: 2.0.0 (repo)",
+		Event:   "release_published",
+		URL:     "https://github.com/org/repo/releases/tag/v2.0.0",
+		Repo:    "repo",
+		Version: "2.0.0",
+		Tag:     "v2.0.0", // tag has "v" prefix, version does not
+	}
+	notify.SendGenericRelease(context.Background(), url, payload,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	raw := getBody()
+	if len(raw) == 0 {
+		t.Fatal("expected a request body, got none")
+	}
+
+	var got notify.WebhookPayload
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("body is not valid JSON: %v\n%s", err, raw)
+	}
+
 	if got.Tag != "v2.0.0" {
 		t.Errorf("tag = %q, want %q", got.Tag, "v2.0.0")
 	}
-	if got.ReleaseURL != payload.ReleaseURL {
-		t.Errorf("release_url = %q, want %q", got.ReleaseURL, payload.ReleaseURL)
+	if got.Version != "2.0.0" {
+		t.Errorf("version = %q, want %q", got.Version, "2.0.0")
+	}
+}
+
+// TestSendGenericRelease_TagOmittedWhenEmpty verifies that the tag field is
+// omitted from JSON output when it is the zero value, keeping payloads compact.
+func TestSendGenericRelease_TagOmittedWhenEmpty(t *testing.T) {
+	url, getBody := captureRequest(t)
+
+	payload := notify.WebhookPayload{
+		Source:  "forge",
+		Summary: "Release published: v1.0.0",
+		Event:   "release_published",
+		Version: "v1.0.0",
+		// Tag intentionally omitted
+	}
+	notify.SendGenericRelease(context.Background(), url, payload,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	raw := getBody()
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal response body: %v", err)
+	}
+	if _, ok := parsed["tag"]; ok {
+		t.Error("expected 'tag' to be omitted from JSON when empty")
 	}
 }
 
 // TestSendGenericRelease_EmptyURLIsNoop verifies that an empty URL does nothing.
 func TestSendGenericRelease_EmptyURLIsNoop(t *testing.T) {
 	// No panic / no crash — just a silent no-op.
-	notify.SendGenericRelease(context.Background(), "", notify.ReleasePayload{
+	notify.SendGenericRelease(context.Background(), "", notify.WebhookPayload{
+		Source:  "forge",
+		Summary: "Release published: v1.0.0",
 		Event:   "release_published",
 		Version: "v1.0.0",
 	}, nil)
@@ -256,17 +326,18 @@ func TestPRReadyToMerge_SkippedWhenEventFiltered(t *testing.T) {
 }
 
 // TestSendGenericPRReadyToMerge_PostsJSON verifies that SendGenericPRReadyToMerge
-// sends the correct JSON structure to the target URL.
+// sends the correct JSON structure to the target URL, including the rich payload fields.
 func TestSendGenericPRReadyToMerge_PostsJSON(t *testing.T) {
 	url, getBody := captureRequest(t)
 
-	payload := notify.PRReadyToMergePayload{
-		Event:    "pr_ready_to_merge",
-		Anvil:    "my-anvil",
-		BeadID:   "Forge-99",
-		PRNumber: 42,
-		PRURL:    "https://github.com/org/repo/pull/42",
-		PRTitle:  "Fix all the things",
+	payload := notify.WebhookPayload{
+		Source:  "forge",
+		Summary: "PR #42 ready to merge: Fix all the things (my-anvil)",
+		Event:   "pr_ready_to_merge",
+		URL:     "https://github.com/org/repo/pull/42",
+		Repo:    "my-anvil",
+		Bead:    "Forge-99",
+		PR:      42,
 	}
 	notify.SendGenericPRReadyToMerge(context.Background(), url, payload,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -276,37 +347,42 @@ func TestSendGenericPRReadyToMerge_PostsJSON(t *testing.T) {
 		t.Fatal("expected a request body, got none")
 	}
 
-	var got notify.PRReadyToMergePayload
+	var got notify.WebhookPayload
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("body is not valid JSON: %v\n%s", err, raw)
 	}
 
+	if got.Source != "forge" {
+		t.Errorf("source = %q, want %q", got.Source, "forge")
+	}
 	if got.Event != "pr_ready_to_merge" {
 		t.Errorf("event = %q, want %q", got.Event, "pr_ready_to_merge")
 	}
-	if got.Anvil != "my-anvil" {
-		t.Errorf("anvil = %q, want %q", got.Anvil, "my-anvil")
+	if got.Repo != "my-anvil" {
+		t.Errorf("repo = %q, want %q", got.Repo, "my-anvil")
 	}
-	if got.BeadID != "Forge-99" {
-		t.Errorf("bead_id = %q, want %q", got.BeadID, "Forge-99")
+	if got.Bead != "Forge-99" {
+		t.Errorf("bead = %q, want %q", got.Bead, "Forge-99")
 	}
-	if got.PRNumber != 42 {
-		t.Errorf("pr_number = %d, want %d", got.PRNumber, 42)
+	if got.PR != 42 {
+		t.Errorf("pr = %d, want %d", got.PR, 42)
 	}
-	if got.PRURL != payload.PRURL {
-		t.Errorf("pr_url = %q, want %q", got.PRURL, payload.PRURL)
+	if got.URL != payload.URL {
+		t.Errorf("url = %q, want %q", got.URL, payload.URL)
 	}
-	if got.PRTitle != payload.PRTitle {
-		t.Errorf("pr_title = %q, want %q", got.PRTitle, payload.PRTitle)
+	if got.Summary != payload.Summary {
+		t.Errorf("summary = %q, want %q", got.Summary, payload.Summary)
 	}
 }
 
 // TestSendGenericPRReadyToMerge_EmptyURLIsNoop verifies that an empty URL does nothing.
 func TestSendGenericPRReadyToMerge_EmptyURLIsNoop(t *testing.T) {
 	// No panic / no crash — just a silent no-op.
-	notify.SendGenericPRReadyToMerge(context.Background(), "", notify.PRReadyToMergePayload{
-		Event:    "pr_ready_to_merge",
-		PRNumber: 1,
+	notify.SendGenericPRReadyToMerge(context.Background(), "", notify.WebhookPayload{
+		Source:  "forge",
+		Summary: "PR #1 ready to merge",
+		Event:   "pr_ready_to_merge",
+		PR:      1,
 	}, nil)
 }
 
