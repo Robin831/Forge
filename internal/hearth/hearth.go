@@ -1031,7 +1031,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if prevWorkerID != "" {
 			for i, w := range m.workers {
 				if w.ID == prevWorkerID {
-					m.workerTable.SetCursor(i)
+					// Using SetCursor doesn't always update the table's internal
+					// viewport. We move the cursor step-by-step to ensure it
+					// scrolls into view.
+					m.workerTable.SetCursor(0)
+					for m.workerTable.Cursor() < i {
+						m.workerTable.MoveDown(1)
+					}
 					break
 				}
 			}
@@ -2674,7 +2680,7 @@ func (m *Model) renderWorkerList(width, height int) string {
 
 	title := panelTitleStyle.Render(fmt.Sprintf("Workers (%d)", len(m.workers)))
 
-	m.workerTable.SetWidth(width - 2)
+	m.workerTable.SetWidth(width - 4)
 	// title(2) + table header(2) + buffer(2) = 6
 	tableHeight := height - 6
 	if tableHeight < 1 {
@@ -2682,11 +2688,11 @@ func (m *Model) renderWorkerList(width, height int) string {
 	}
 	m.workerTable.SetHeight(tableHeight)
 
-	// Dynamically adjust column widths to fit the panel
+	// Dynamically adjust column widths to fit the panel.
+	// Total avail is width - 4 (borders and padding).
 	cols := m.workerTable.Columns()
 	if len(cols) == 6 {
-		// Status(1), Type(8), Bead(12), Task(20), Anvil(10), Time(6)
-		avail := width - 4 // interior width
+		avail := width - 4
 		if avail < 10 {
 			avail = 10
 		}
@@ -2698,6 +2704,16 @@ func (m *Model) renderWorkerList(width, height int) string {
 		cols[3].Width = max(10, avail*35/100)
 		cols[4].Width = max(6, avail*20/100)
 		cols[5].Width = max(4, avail*10/100)
+
+		// Ensure total width does not exceed avail due to rounding
+		total := 0
+		for _, c := range cols {
+			total += c.Width
+		}
+		if total > avail {
+			cols[3].Width -= (total - avail) // Adjust largest column
+		}
+
 		m.workerTable.SetColumns(cols)
 	}
 
