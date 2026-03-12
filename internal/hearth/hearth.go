@@ -769,6 +769,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.descriptionViewerVP, cmd = m.descriptionViewerVP.Update(msg)
 			return m, cmd
 		}
+		// Notes overlay intercepts all mouse events when open
+		if m.showNotesOverlay {
+			return m, nil
+		}
 		// Orphan dialog requires explicit keyboard action; consume all mouse events.
 		if m.orphanDialogForm != nil {
 			return m, nil
@@ -825,7 +829,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			taW, taH := m.notesOverlayTextareaDimensions()
 			m.notesTA.SetWidth(taW)
 			m.notesTA.SetHeight(taH)
-		}
 		}
 
 	case UpdateQueueMsg:

@@ -2774,3 +2774,137 @@ func TestUpdateDescriptionViewer(t *testing.T) {
 		t.Error("focus changed while description viewer was open")
 	}
 }
+
+func TestOpenNotesOverlayFromQueue(t *testing.T) {
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.queue = []QueueItem{
+		{BeadID: "Forge-1", Title: "Test Bead", Anvil: "test"},
+	}
+	m.rebuildQueueNav()
+
+	// Press 'n' to open notes overlay
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	model := m2.(*Model)
+
+	if !model.showNotesOverlay {
+		t.Error("expected showNotesOverlay to be true")
+	}
+	if model.notesTarget == nil || model.notesTarget.BeadID != "Forge-1" {
+		t.Errorf("expected notesTarget.BeadID to be Forge-1, got %v", model.notesTarget)
+	}
+	if model.notesTA.Placeholder == "" {
+		t.Error("expected textarea to be initialized")
+	}
+}
+
+func TestOpenNotesOverlayFromNeedsAttention(t *testing.T) {
+	m := NewModel(nil)
+	m.focused = PanelNeedsAttention
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "Forge-attn", Title: "Needs Fix", Anvil: "test"},
+	}
+
+	// Press 'n' to open notes overlay
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	model := m2.(*Model)
+
+	if !model.showNotesOverlay {
+		t.Error("expected showNotesOverlay to be true")
+	}
+	if model.notesTarget == nil || model.notesTarget.BeadID != "Forge-attn" {
+		t.Errorf("expected notesTarget.BeadID to be Forge-attn, got %v", model.notesTarget)
+	}
+}
+
+func TestSubmitNotes(t *testing.T) {
+	var capturedID, capturedNotes string
+	m := NewModel(nil)
+	m.OnAppendNotes = func(beadID, notes string) error {
+		capturedID = beadID
+		capturedNotes = notes
+		return nil
+	}
+	m.openNotesOverlay("Forge-1", "test", "Title")
+	m.notesTA.SetValue("These are my notes")
+
+	// Press Ctrl+S to submit
+	m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	model := m2.(*Model)
+
+	if model.showNotesOverlay {
+		t.Error("expected showNotesOverlay to be false after submission")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command to be returned for async submission")
+	}
+
+	// Run the command to trigger the callback and get the result message
+	msg := cmd()
+	res, ok := msg.(NotesResultMsg)
+	if !ok {
+		t.Fatalf("expected NotesResultMsg, got %T", msg)
+	}
+	if res.BeadID != "Forge-1" {
+		t.Errorf("expected result for Forge-1, got %s", res.BeadID)
+	}
+	if capturedID != "Forge-1" || capturedNotes != "These are my notes" {
+		t.Errorf("callback captured wrong data: %s, %s", capturedID, capturedNotes)
+	}
+}
+
+func TestCancelNotes(t *testing.T) {
+	m := NewModel(nil)
+	m.openNotesOverlay("Forge-1", "test", "Title")
+
+	// Press Esc to cancel
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model := m2.(*Model)
+
+	if model.showNotesOverlay {
+		t.Error("expected showNotesOverlay to be false after cancel")
+	}
+	if model.notesTarget != nil {
+		t.Error("expected notesTarget to be nil after cancel")
+	}
+}
+
+func TestNotesOverlayInterceptsMouse(t *testing.T) {
+	m := NewModel(nil)
+	m.openNotesOverlay("Forge-1", "test", "Title")
+	initialFocused := m.focused
+
+	// Left click should be ignored (not change focus)
+	m2, cmd := m.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+		X:      10,
+		Y:      10,
+	})
+	model := m2.(*Model)
+
+	if model.focused != initialFocused {
+		t.Errorf("focus changed from %v to %v during notes overlay", initialFocused, model.focused)
+	}
+	if cmd != nil {
+		t.Error("expected nil cmd for ignored mouse event")
+	}
+}
+
+func TestNotesOverlayView(t *testing.T) {
+	m := NewModel(nil)
+	m.width = 80
+	m.height = 24
+	m.openNotesOverlay("Forge-1", "test", "My Bead Title")
+	
+	view := m.renderNotesOverlay()
+	if !strings.Contains(view, "Add Notes: Forge-1") {
+		t.Errorf("view missing title line:\n%s", view)
+	}
+	if !strings.Contains(view, "My Bead Title") {
+		t.Errorf("view missing bead title:\n%s", view)
+	}
+	if !strings.Contains(view, "Ctrl+S: save") {
+		t.Errorf("view missing hint line:\n%s", view)
+	}
+}
