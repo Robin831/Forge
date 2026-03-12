@@ -113,6 +113,7 @@ func (db *DB) migrate() error {
 		{"queue_cache", "assignee", `ALTER TABLE queue_cache ADD COLUMN assignee TEXT NOT NULL DEFAULT ''`},
 		{"prs", "base_branch", `ALTER TABLE prs ADD COLUMN base_branch TEXT NOT NULL DEFAULT ''`},
 		{"prs", "has_pending_reviews", `ALTER TABLE prs ADD COLUMN has_pending_reviews INTEGER NOT NULL DEFAULT 0`},
+		{"prs", "has_approval", `ALTER TABLE prs ADD COLUMN has_approval INTEGER NOT NULL DEFAULT 0`},
 		{"queue_cache", "description", `ALTER TABLE queue_cache ADD COLUMN description TEXT NOT NULL DEFAULT ''`},
 		{"workers", "pr_number", `ALTER TABLE workers ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0`},
 	}
@@ -678,6 +679,7 @@ type PR struct {
 	IsConflicting        bool
 	HasUnresolvedThreads bool
 	HasPendingReviews    bool
+	HasApproval          bool
 }
 
 // InsertPR adds a new PR record.
@@ -703,7 +705,7 @@ func (db *DB) InsertPR(pr *PR) error {
 
 // PRByNumber returns the PR record for a given GitHub PR number, or nil if not found.
 func (db *DB) PRByNumber(number int) (*PR, error) {
-	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews
+	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval
 		FROM prs WHERE number = ? ORDER BY id DESC LIMIT 1`, number)
 	if err != nil {
 		return nil, err
@@ -749,19 +751,19 @@ func (db *DB) UpdatePRLifecycle(id int, ciFixCount, reviewFixCount, rebaseCount 
 
 // GetPRByID returns a PR by its primary key id, or nil if not found.
 func (db *DB) GetPRByID(id int) (*PR, error) {
-	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews
+	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval
 		FROM prs WHERE id = ?`, id)
 }
 
 // GetPRByNumber returns a PR by its anvil and number.
 func (db *DB) GetPRByNumber(anvil string, number int) (*PR, error) {
-	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews
+	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval
 		FROM prs WHERE anvil = ? AND number = ? ORDER BY id DESC LIMIT 1`, anvil, number)
 }
 
 // OpenPRs returns all PRs with non-terminal status.
 func (db *DB) OpenPRs() ([]PR, error) {
-	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews
+	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval
 		FROM prs WHERE status IN ` + nonTerminalPRStatusSQL() + `
 		ORDER BY created_at`)
 }
@@ -790,9 +792,9 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 		var status string
 		var createdAt string
 		var lastChecked sql.NullString
-		var ciPassing, isConflicting, hasThreads, hasPendingReviews int
+		var ciPassing, isConflicting, hasThreads, hasPendingReviews, hasApproval int
 		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch, &p.BaseBranch,
-			&status, &createdAt, &lastChecked, &p.CIFixCount, &p.ReviewFixCount, &p.RebaseCount, &ciPassing, &isConflicting, &hasThreads, &hasPendingReviews); err != nil {
+			&status, &createdAt, &lastChecked, &p.CIFixCount, &p.ReviewFixCount, &p.RebaseCount, &ciPassing, &isConflicting, &hasThreads, &hasPendingReviews, &hasApproval); err != nil {
 			return nil, err
 		}
 		p.Status = PRStatus(status)
@@ -800,6 +802,7 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 		p.IsConflicting = isConflicting != 0
 		p.HasUnresolvedThreads = hasThreads != 0
 		p.HasPendingReviews = hasPendingReviews != 0
+		p.HasApproval = hasApproval != 0
 		p.CreatedAt = parseTime(createdAt)
 
 		if lastChecked.Valid {
@@ -900,12 +903,15 @@ func (db *DB) ResetPRFixCounts(id int) error {
 	return err
 }
 
-// UpdatePRMergeability persists the conflict, unresolved thread, and pending review state for a PR.
+// UpdatePRMergeability persists the mergeability state for a PR.
 // Called by Bellows on each poll to keep the ready-to-merge view current.
-func (db *DB) UpdatePRMergeability(id int, ciPassing, isConflicting, hasUnresolvedThreads, hasPendingReviews bool) error {
+// hasApproval is stored so the last known approval state survives daemon restarts,
+// allowing Bellows to correctly seed lastSnap from DB and detect the ready-to-merge
+// transition even for PRs that were already ready when the daemon restarted.
+func (db *DB) UpdatePRMergeability(id int, ciPassing, isConflicting, hasUnresolvedThreads, hasPendingReviews, hasApproval bool) error {
 	_, err := db.conn.Exec(
-		`UPDATE prs SET ci_passing = ?, is_conflicting = ?, has_unresolved_threads = ?, has_pending_reviews = ?, last_checked = ? WHERE id = ?`,
-		boolToInt(ciPassing), boolToInt(isConflicting), boolToInt(hasUnresolvedThreads), boolToInt(hasPendingReviews),
+		`UPDATE prs SET ci_passing = ?, is_conflicting = ?, has_unresolved_threads = ?, has_pending_reviews = ?, has_approval = ?, last_checked = ? WHERE id = ?`,
+		boolToInt(ciPassing), boolToInt(isConflicting), boolToInt(hasUnresolvedThreads), boolToInt(hasPendingReviews), boolToInt(hasApproval),
 		time.Now().Format(dbTimeLayout), id,
 	)
 	return err

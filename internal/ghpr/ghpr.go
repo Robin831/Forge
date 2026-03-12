@@ -197,6 +197,7 @@ func Create(ctx context.Context, p CreateParams) (*PR, error) {
 					status.Mergeable == "CONFLICTING", // only conflict state is reliable from CheckStatusLight
 					false,                             // unresolved threads not fetched; Bellows is authoritative
 					true,                              // keep pending reviews safe default until Bellows confirms
+					false,                             // approval not checked here; Bellows is authoritative
 				); err != nil {
 					log.Printf("[ghpr] warning: failed to UpdatePRMergeability for PR record %d (PR #%d): %v", dbPR.ID, prNumber, err)
 				}

@@ -225,15 +225,19 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
 	lastSnap := m.lastStatuses[key]
 	if lastSnap == nil {
-		// Reset occurred during poll: treat as first check to ensure transitions are detected.
-		// Seed with "good" states so that if the PR is already in a "bad" state (failing,
-		// conflicting, etc.), the transition will be detected on this first poll.
-		// For readiness fields, seed from newSnap to avoid spurious pr_ready_to_merge
-		// notifications on daemon restart for PRs that were already ready.
+		// Seed from the DB's last persisted state so that daemon restarts correctly
+		// detect the ready-to-merge transition for PRs that became ready while the
+		// daemon was down. Using the DB state means lastReady = newReady only if the PR
+		// was ALREADY ready at the previous poll — preventing both spurious re-fires on
+		// restart AND missed notifications when the state changed between restarts.
+		// For brand-new PRs (has_approval=0, has_pending_reviews=1 from InsertPR defaults)
+		// lastReady will be false, so the transition fires correctly on first readiness.
 		lastSnap = &prSnapshot{
-			CIPassing:         true,
-			HasApproval:       newSnap.HasApproval,
-			HasPendingReviews: newSnap.HasPendingReviews,
+			CIPassing:            pr.CIPassing,
+			HasApproval:          pr.HasApproval,
+			HasPendingReviews:    pr.HasPendingReviews,
+			IsConflicting:        pr.IsConflicting,
+			HasUnresolvedThreads: pr.HasUnresolvedThreads,
 		}
 	}
 	// Update snapshot while holding the lock
@@ -415,7 +419,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	// Persist mergeability state so the ready-to-merge panel stays current.
 	// Include ci_passing so the Ready to Merge panel reflects the latest CI
 	// status every poll cycle, not just on CI transition events.
-	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews)
+	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval)
 
 }
 

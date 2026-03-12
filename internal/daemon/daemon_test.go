@@ -611,7 +611,7 @@ func TestHandleIPC_RetryBead_ExhaustedPR(t *testing.T) {
 	require.NotZero(t, pr.ID, "InsertPR should set the ID")
 	// InsertPR doesn't set rebase_count/ci_passing/is_conflicting, so update them.
 	require.NoError(t, db.UpdatePRLifecycle(pr.ID, 0, 0, 3, true))
-	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
 
 	// Verify the PR shows up as exhausted.
 	exhausted, err := db.ExhaustedPRs(
