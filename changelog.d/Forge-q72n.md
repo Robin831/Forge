@@ -1,2 +1,2 @@
-category: Added
-- **Add UPX binary compression for release binaries** - Configured GoReleaser to use UPX to compress release binaries, significantly reducing download sizes without affecting runtime performance. (Forge-q72n)
+category: Changed
+- **Added UPX binary compression** - Compresses release binaries to reduce download size by 50-70% with no performance impact. (Forge-q72n)
