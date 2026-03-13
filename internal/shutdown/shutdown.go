@@ -477,11 +477,15 @@ func (m *Manager) resetBead(beadID, anvilPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open", "--assignee=", "--json"))
+	// Clear labels so the poller does not auto-dispatch the recovered bead
+	// before a human reviews it. Without this, orphaned beads with the
+	// auto_dispatch_tag would immediately be re-claimed on the next poll,
+	// creating a zombie loop.
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open", "--assignee=", "--remove-label=forgeReady", "--json"))
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("bd update %s --status=open --assignee= --json: %w\n%s", beadID, err, out)
+		return fmt.Errorf("bd update %s --status=open --assignee= --remove-label=forgeReady --json: %w\n%s", beadID, err, out)
 	}
 	return nil
 }
