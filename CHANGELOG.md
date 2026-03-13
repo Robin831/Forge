@@ -75,6 +75,33 @@ release time by `scripts/assemble-changelog.sh`.
 - **Track provider quota from all claude sessions** - Warden, cifix, reviewfix, and schematic now persist rate-limit quota data to state.db via UpsertProviderQuota, matching the existing smith behavior. Previously only smith sessions reported quota, causing the dashboard to undercount actual provider usage. (Forge-g5m)
 - **depcheck_dedup events now include anvil name** - Event messages for skipped duplicate dependency updates now include the anvil name in the message text, making them unambiguous in the Events panel when multiple anvils are monitored. (Forge-3s8)
 
+## [0.6.0] - 2026-03-13
+
+### Added
+
+- **Crucible action menu in Hearth TUI** - Paused Crucibles now have an action menu (press Enter) with Resume and Stop options. Resume retries the parent bead to re-enter the crucible loop; Stop closes the parent bead. (Forge-83ie)
+- **Force-run bead independently** - Added `--force` flag to `forge queue run` and "Run independently" action to the Hearth queue menu. Force-run fetches the bead via `bd show` (bypassing `bd ready`), skips crucible detection and parent/blocker checks, and dispatches it straight through the pipeline as a standalone bead. Requires `--anvil` flag. (Forge-qxec)
+- **Native Linux packages (deb, rpm, apk) via GoReleaser nfpms** - Releases now produce deb, rpm, and apk packages enabling installation via `apt install forge` or `yum install forge`. Includes a systemd unit file (`forge.service`) that is enabled on install, starting the daemon automatically after installation. (Forge-x0rf)
+
+### Changed
+
+- **Hearth action menus now have better visual spacing** - Added blank lines between header, options, and footer sections. Titles use bold accent styling and subtitles are dimmed for clearer visual hierarchy. (Forge-nteu)
+- Rename display labels for CI fix and review fix workers to "quench" and "burnish" respectively, aligning with the forge/blacksmith naming theme throughout the TUI, logs, and IPC actions (Forge-quench-burnish)
+
+### Fixed
+
+- Change Workers panel selected row background from bright orange to subtle gray for readability (Forge-naby)
+- Defer bead close when downstream beads depend on it (depends_on) — previously only blocks-type children triggered deferred close, so depends_on dependents could start before the PR was merged (Forge-crucible-blocks)
+- Fix CI failure never detected on daemon restart — when CI was already failing with no fix attempted, bellows seeded the snapshot with ci_passing=false from the DB, matching the polled state and producing no transition. Now seeds ci_passing=true in this case to force detection (Forge-pr-ready-notify)
+- Fix CI failure not detected after review fix — bellows snapshot cache was not reset after review fix completion, so CI failing (false→false) was never a transition and no quench worker spawned (Forge-pr-ready-notify)
+- Fix PR ready-to-merge webhook notifications never firing — the event condition required `HasApproval` but Copilot only submits COMMENTED reviews (never APPROVED), so the condition was never satisfied. Removed `HasApproval` from the ready-to-merge check to match the Ready to Merge panel query (Forge-pr-ready-notify)
+- Fix Workers panel header wrapping — MarginBottom padding from the title joined with the header's first line, creating an oversized line that pushed "Time" column to a new row (Forge-naby)
+- Fix Workers panel table corruption caused by ANSI escape sequences in cell values — Bubbles table internally calls runewidth.Truncate which does not handle ANSI, breaking row alignment (Forge-naby)
+- Fix notification context cancellation race in handleBellowsNotifications — the goroutine used the bellows polling context which could be cancelled before webhook HTTP calls completed, now uses a detached context with 30s timeout (Forge-pr-ready-notify)
+- Fix poller Blocks reconstruction treating depends_on relationships as parent-child edges — only blocks and parent-child dependency types should be used, preventing the crucible from incorrectly adopting downstream beads as children (Forge-crucible-blocks)
+- Strip forgeReady label during orphan recovery — prevents recovered beads from being immediately re-dispatched by the poller before human review (Forge-crucible-blocks)
+
+
 ## [1.5.0] - 2026-03-13
 
 ### Added
