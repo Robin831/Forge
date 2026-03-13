@@ -1322,8 +1322,12 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			schemCfg.ExtraFlags = d.cfg.Load().Settings.ClaudeFlags
 			workerIDForSpawn := claimWorkerID
 			schemCfg.OnSpawn = func(pid int, logPath string) {
-				_ = d.db.UpdateWorkerPID(workerIDForSpawn, pid)
-				_ = d.db.UpdateWorkerLogPath(workerIDForSpawn, logPath)
+				if err := d.db.UpdateWorkerPID(workerIDForSpawn, pid); err != nil {
+					slog.Warn("failed to record schematic PID", "worker", workerIDForSpawn, "err", err)
+				}
+				if err := d.db.UpdateWorkerLogPath(workerIDForSpawn, logPath); err != nil {
+					slog.Warn("failed to record schematic log path", "worker", workerIDForSpawn, "err", err)
+				}
 			}
 
 			smithProviders := d.cfg.Load().Settings.SmithProviders
