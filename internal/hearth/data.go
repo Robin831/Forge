@@ -703,6 +703,42 @@ func FetchPendingOrphans(db *state.DB) tea.Cmd {
 	}
 }
 
+// UpdateOpenPRsMsg carries refreshed open PR data to the TUI.
+type UpdateOpenPRsMsg struct {
+	Items []PRItem
+}
+
+// FetchOpenPRs reads all non-terminal PRs with status detail from the state DB.
+func FetchOpenPRs(db *state.DB) tea.Cmd {
+	return func() tea.Msg {
+		prs, err := db.OpenPRsWithDetail()
+		if err != nil {
+			return UpdateOpenPRsMsg{Items: nil}
+		}
+		var items []PRItem
+		for _, p := range prs {
+			items = append(items, PRItem{
+				PRID:                 p.ID,
+				PRNumber:             p.Number,
+				Anvil:                p.Anvil,
+				BeadID:               p.BeadID,
+				Branch:               p.Branch,
+				Status:               string(p.Status),
+				Title:                p.Title,
+				CIPassing:            p.CIPassing,
+				IsConflicting:        p.IsConflicting,
+				HasUnresolvedThreads: p.HasUnresolvedThreads,
+				HasPendingReviews:    p.HasPendingReviews,
+				HasApproval:          p.HasApproval,
+				CIFixCount:           p.CIFixCount,
+				ReviewFixCount:       p.ReviewFixCount,
+				RebaseCount:          p.RebaseCount,
+			})
+		}
+		return UpdateOpenPRsMsg{Items: items}
+	}
+}
+
 // FetchAll returns a batch command that refreshes all panels.
 // Daemon health is NOT included here; it is fetched on a slower cadence
 // controlled by healthTickDivisor in the TickMsg handler.
@@ -717,5 +753,6 @@ func FetchAll(ds *DataSource) tea.Cmd {
 		FetchUsage(ds),
 		FetchPendingOrphans(ds.DB),
 		FetchAnvilHealth(ds),
+		FetchOpenPRs(ds.DB),
 	)
 }

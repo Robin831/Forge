@@ -165,6 +165,32 @@ var hearthCmd = &cobra.Command{
 			}
 			return nil
 		}
+		model.OnPRAction = func(prID, prNumber int, anvil, beadID, branch, action string) error {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+			payload, _ := json.Marshal(ipc.PRActionPayload{
+				PRID:     prID,
+				PRNumber: prNumber,
+				Anvil:    anvil,
+				BeadID:   beadID,
+				Branch:   branch,
+				Action:   action,
+			})
+			resp, err := client.Send(ipc.Command{
+				Type:    "pr_action",
+				Payload: json.RawMessage(payload),
+			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return ipcError(resp)
+			}
+			return nil
+		}
 		model.OnTagBead = func(beadID, anvil string) error {
 			client, err := ipc.NewClient()
 			if err != nil {

@@ -68,6 +68,10 @@ var (
 		key.WithKeys("m"),
 		key.WithHelp("m", "toggle mouse"),
 	)
+	keyPRPanel = key.NewBinding(
+		key.WithKeys("p"),
+		key.WithHelp("p", "PR panel"),
+	)
 	keyQuit = key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
 		key.WithHelp("q", "quit"),
@@ -79,11 +83,11 @@ var (
 type queueKeyMap struct{ m *Model }
 
 func (k queueKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k queueKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel},
+		{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyPRPanel},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
