@@ -22,10 +22,14 @@ func init() {
 	_ = queueUnclarifyCmd.MarkFlagRequired("anvil")
 	queueRetryCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
 	_ = queueRetryCmd.MarkFlagRequired("anvil")
+	queueStopCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
+	_ = queueStopCmd.MarkFlagRequired("anvil")
+	queueStopCmd.Flags().StringP("reason", "r", "", "Why the bead is being stopped (optional)")
 	queueCmd.AddCommand(queueRunCmd)
 	queueCmd.AddCommand(queueClarifyCmd)
 	queueCmd.AddCommand(queueUnclarifyCmd)
 	queueCmd.AddCommand(queueRetryCmd)
+	queueCmd.AddCommand(queueStopCmd)
 	rootCmd.AddCommand(queueCmd)
 }
 
@@ -261,6 +265,60 @@ var queueUnclarifyCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Clarification cleared for bead %s\n", beadID)
+		return nil
+	},
+}
+
+var queueStopCmd = &cobra.Command{
+	Use:   "stop <id>",
+	Short: "Fully stop a bead: kill worker, prevent re-dispatch, release to open",
+	Long: `Stop all processing of a bead. This will:
+  1. Kill any running worker for the bead
+  2. Mark the bead as needing clarification (prevents auto and manual dispatch)
+  3. Release the bead back to open status
+
+The bead will not be dispatched again until you run 'forge queue unclarify'.`,
+	Args:    cobra.ExactArgs(1),
+	Example: "  forge queue stop BD-42 --anvil heimdall\n  forge queue stop BD-42 --anvil heimdall --reason 'wrong approach'",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		beadID := args[0]
+		anvil, _ := cmd.Flags().GetString("anvil")
+		reason, _ := cmd.Flags().GetString("reason")
+
+		client, err := ipc.NewClient()
+		if err != nil {
+			return fmt.Errorf("connecting to daemon: %w (is 'forge up' running?)", err)
+		}
+		defer client.Close()
+
+		payload, _ := json.Marshal(ipc.StopBeadPayload{
+			BeadID: beadID,
+			Anvil:  anvil,
+			Reason: reason,
+		})
+
+		resp, err := client.Send(ipc.Command{
+			Type:    "stop_bead",
+			Payload: payload,
+		})
+		if err != nil {
+			return fmt.Errorf("sending command: %w", err)
+		}
+
+		if resp.Type == "error" {
+			var msg map[string]string
+			var errMsg string
+			if err := json.Unmarshal(resp.Payload, &msg); err == nil && msg["message"] != "" {
+				errMsg = msg["message"]
+			} else if len(resp.Payload) > 0 {
+				errMsg = string(resp.Payload)
+			} else {
+				errMsg = "unknown error from daemon"
+			}
+			return fmt.Errorf("daemon error: %s", errMsg)
+		}
+
+		fmt.Printf("Bead %s stopped — use 'forge queue unclarify --anvil %s %s' to resume\n", beadID, anvil, beadID)
 		return nil
 	},
 }

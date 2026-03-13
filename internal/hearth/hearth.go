@@ -179,8 +179,9 @@ type QueueActionMenuChoice int
 const (
 	QueueActionLabel QueueActionMenuChoice = iota
 	QueueActionClose
+	QueueActionStop
 
-	queueActionMenuCount = QueueActionClose + 1
+	queueActionMenuCount = QueueActionStop + 1
 )
 
 // queueActionMenuLabels returns the display labels for the queue action menu.
@@ -188,6 +189,7 @@ func queueActionMenuLabels() [queueActionMenuCount]string {
 	return [queueActionMenuCount]string{
 		"Label for dispatch — Tag bead for auto-dispatch",
 		"Close             — Close this bead",
+		"Stop              — Prevent all processing",
 	}
 }
 
@@ -248,6 +250,10 @@ type Model struct {
 
 	// Callback for killing a worker (set by the caller)
 	OnKill func(workerID string, pid int)
+
+	// Callback for stopping a bead entirely: kills worker, sets clarification,
+	// releases to open (set by the caller).
+	OnStopBead func(beadID, anvil string) error
 
 	// Callbacks for Needs Attention actions (set by the caller)
 	OnRetryBead   func(beadID, anvil string, prID int) error
@@ -642,6 +648,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w := m.workers[m.workerTable.Cursor()]
 				if m.OnKill != nil {
 					m.OnKill(w.ID, w.PID)
+				}
+			}
+
+		case "S":
+			// Stop bead: kill worker, prevent re-dispatch, release to open
+			if m.focused == PanelWorkers && len(m.workers) > 0 &&
+				m.workerTable.Cursor() < len(m.workers) {
+				w := m.workers[m.workerTable.Cursor()]
+				if m.OnStopBead != nil {
+					if err := m.OnStopBead(w.BeadID, w.Anvil); err != nil {
+						m.setStatus(fmt.Sprintf("Stop failed: %v", err), true)
+					} else {
+						m.setStatus(fmt.Sprintf("Stopped bead %s", w.BeadID), false)
+					}
 				}
 			}
 
@@ -1864,6 +1884,8 @@ func (m *Model) executeQueueAction(choice QueueActionMenuChoice) tea.Cmd {
 		return m.tagSelectedQueueItem()
 	case QueueActionClose:
 		return m.closeSelectedQueueItem()
+	case QueueActionStop:
+		return m.stopSelectedQueueItem()
 	}
 	return nil
 }
@@ -1905,6 +1927,23 @@ func (m *Model) closeSelectedQueueItem() tea.Cmd {
 }
 
 
+// stopSelectedQueueItem stops all processing of the bead stored in queueActionTarget.
+func (m *Model) stopSelectedQueueItem() tea.Cmd {
+	if m.queueActionTarget == nil {
+		return nil
+	}
+	item := *m.queueActionTarget
+	if m.OnStopBead == nil {
+		m.setStatus(fmt.Sprintf("Stop action unavailable for %s", item.BeadID), false)
+		return nil
+	}
+	m.setStatus(fmt.Sprintf("Stopping %s…", item.BeadID), false)
+	beadID, anvil := item.BeadID, item.Anvil
+	cb := m.OnStopBead
+	return func() tea.Msg {
+		return QueueActionResultMsg{BeadID: beadID, Action: "stop", Err: cb(beadID, anvil)}
+	}
+}
 
 // buildMergeForm creates a huh form for the merge menu.
 func buildMergeForm(item *ReadyToMergeItem, choice *MergeMenuChoice) *huh.Form {

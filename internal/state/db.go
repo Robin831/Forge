@@ -1062,6 +1062,7 @@ const (
 	EventPRMergeFailed        EventType = "pr_merge_failed"
 	EventError                EventType = "error"
 	EventBeadRecovered        EventType = "bead_recovered"
+	EventBeadStopped          EventType = "bead_stopped"
 	EventDepcheckStarted      EventType = "depcheck_started"
 	EventDepcheckPassed       EventType = "depcheck_passed"
 	EventDepcheckFound        EventType = "depcheck_found"
