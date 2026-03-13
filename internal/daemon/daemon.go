@@ -2645,6 +2645,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			}
 
 		case "reviewfix":
+			if pa.BeadID == "" || pa.Branch == "" {
+				msg, _ := json.Marshal(map[string]string{"message": "reviewfix action requires bead_id and branch"})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
 			req := lifecycle.ActionRequest{
 				Action:   lifecycle.ActionFixReview,
 				PRNumber: pa.PRNumber,
@@ -2657,6 +2661,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Info("review fix triggered by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
 		case "rebase":
+			if pa.BeadID == "" || pa.Branch == "" {
+				msg, _ := json.Marshal(map[string]string{"message": "rebase action requires bead_id and branch"})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
 			pr, _ := d.db.GetPRByID(pa.PRID)
 			baseBranch := ""
 			if pr != nil {

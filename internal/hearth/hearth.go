@@ -671,7 +671,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+c":
 				return m, tea.Quit
-			case "q", "esc":
+			case "p", "q", "esc":
 				m.showPRPanel = false
 			case "j", "down":
 				if len(m.prItems) > 0 {
@@ -2193,8 +2193,8 @@ func (m *Model) renderPRPanel() string {
 			if pr.Title != "" {
 				titleDisplay := sanitizeTitle(pr.Title)
 				maxTitleLen := innerW - 10
-				if maxTitleLen > 0 && len(titleDisplay) > maxTitleLen {
-					titleDisplay = titleDisplay[:maxTitleLen-3] + "..."
+				if maxTitleLen > 0 {
+					titleDisplay = truncate(titleDisplay, maxTitleLen)
 				}
 				line += "\n    " + dimStyle.Render(titleDisplay)
 			}
@@ -2222,10 +2222,7 @@ func (m *Model) renderPRActionMenu() string {
 	sb.WriteString(fmt.Sprintf("Actions for PR #%d — %s", item.PRNumber, item.BeadID))
 	if item.Title != "" {
 		sb.WriteByte('\n')
-		title := sanitizeTitle(item.Title)
-		if len(title) > 55 {
-			title = title[:52] + "..."
-		}
+		title := truncate(sanitizeTitle(item.Title), 55)
 		sb.WriteString(dimStyle.Render(title))
 	}
 	sb.WriteByte('\n')
