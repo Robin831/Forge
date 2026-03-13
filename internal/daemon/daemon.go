@@ -693,6 +693,14 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			// clearing a state that still needs attention.
 			if res.Error == nil {
 				d.lifecycleMgr.NotifyReviewFixCompleted(req.Anvil, req.PRNumber)
+				// Reset the bellows snapshot cache so the next poll detects
+				// fresh CI state. The review fix pushed new commits which
+				// trigger a new CI run — without resetting, bellows sees
+				// CIPassing false→false (no transition) and never emits
+				// EventCIFailed, preventing a cifix worker from spawning.
+				if d.bellowsMonitor != nil {
+					d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
+				}
 			}
 
 		case lifecycle.ActionCloseBead:
