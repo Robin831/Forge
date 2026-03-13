@@ -226,6 +226,16 @@ func queueActionMenuLabels() [queueActionMenuCount]string {
 	}
 }
 
+// CrucibleActionMenuChoice represents an action the user can take on a paused Crucible.
+type CrucibleActionMenuChoice int
+
+const (
+	CrucibleActionResume CrucibleActionMenuChoice = iota // Resume — retry parent to re-enter crucible loop
+	CrucibleActionStop                                    // Stop — close the parent bead
+
+	crucibleActionMenuCount = CrucibleActionStop + 1
+)
+
 // MergeMenuChoice represents an action on a ready-to-merge PR.
 type MergeMenuChoice int
 
@@ -315,6 +325,10 @@ type Model struct {
 	// Called with (beadID, anvil, action) where action is "recover", "close", or "discard".
 	OnResolveOrphan func(beadID, anvil, action string) error
 
+	// Callback for crucible actions (resume/stop) on a paused crucible (set by caller).
+	// Called with (parentID, anvil, action) where action is "resume" or "stop".
+	OnCrucibleAction func(parentID, anvil, action string) error
+
 	// Callback for appending notes to a bead via bd update --append-notes (set by caller).
 	// Called with (beadID, anvil, notes).
 	OnAppendNotes func(beadID, anvil, notes string) error
@@ -350,6 +364,11 @@ type Model struct {
 	mergeForm   *huh.Form
 	mergeChoice MergeMenuChoice
 	mergeTarget *ReadyToMergeItem
+
+	// Crucible action menu overlay state (paused Crucibles)
+	crucibleActionForm   *huh.Form
+	crucibleActionChoice CrucibleActionMenuChoice
+	crucibleActionTarget *CrucibleItem // crucible the menu is open for
 
 	// PR panel overlay state — full-screen PR management panel toggled with 'p'.
 	showPRPanel    bool
@@ -570,6 +589,30 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmd, actionCmd)
 		} else if m.queueActionForm.State == huh.StateAborted {
 			m.queueActionForm = nil
+			return m, cmd
+		}
+		if isTerminalMsg(msg) {
+			return m, cmd
+		}
+	}
+
+	if m.crucibleActionForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if k.Type == tea.KeyEsc {
+				m.crucibleActionForm = nil
+				return m, nil
+			}
+		}
+		cmd := m.driveHuhForm(&m.crucibleActionForm, msg)
+		if m.crucibleActionForm.State == huh.StateCompleted {
+			actionCmd := m.executeCrucibleAction(m.crucibleActionChoice)
+			m.crucibleActionForm = nil
+			if cmd == nil {
+				return m, actionCmd
+			}
+			return m, tea.Batch(cmd, actionCmd)
+		} else if m.crucibleActionForm.State == huh.StateAborted {
+			m.crucibleActionForm = nil
 			return m, cmd
 		}
 		if isTerminalMsg(msg) {
@@ -839,6 +882,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			// Open action menu for selected Crucible
+			if m.focused == PanelCrucibles && len(m.crucibles) > 0 &&
+				m.crucibleVP.cursor < len(m.crucibles) {
+				m.crucibleActionTarget = new(CrucibleItem)
+				*m.crucibleActionTarget = m.crucibles[m.crucibleVP.cursor]
+				m.crucibleActionChoice = CrucibleActionResume
+				m.crucibleActionForm = buildCrucibleActionForm(m.crucibleActionTarget, &m.crucibleActionChoice)
+				return m, m.crucibleActionForm.Init()
+			}
 			// Live Activity: toggle group expand/collapse
 			if m.focused == PanelLiveActivity && len(m.activityNavItems) > 0 &&
 				m.activityVP.cursor < len(m.activityNavItems) {
@@ -1077,6 +1129,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UpdateCruciblesMsg:
 		m.crucibles = msg.Items
 		m.crucibleVP.ClampToTotal(len(msg.Items))
+		// Close the crucible action menu if the target crucible is no longer present.
+		if m.crucibleActionForm != nil && m.crucibleActionTarget != nil {
+			found := false
+			for _, c := range m.crucibles {
+				if c.ParentID == m.crucibleActionTarget.ParentID && c.Anvil == m.crucibleActionTarget.Anvil {
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.crucibleActionForm = nil
+				m.crucibleActionTarget = nil
+			}
+		}
 
 	case UpdateNeedsAttentionMsg:
 		m.needsAttention = msg.Items
@@ -1291,6 +1357,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		for _, h := range msg.Items {
 			m.anvilHealth[h.Anvil] = h
+		}
+
+	case CrucibleActionResultMsg:
+		if msg.Err != nil {
+			m.setStatus(fmt.Sprintf("Crucible %s %s failed: %v", msg.ParentID, msg.Action, msg.Err), true)
+		} else {
+			switch msg.Action {
+			case "resume":
+				m.setStatus(fmt.Sprintf("Crucible %s resumed", msg.ParentID), false)
+			case "stop":
+				m.setStatus(fmt.Sprintf("Crucible %s stopped", msg.ParentID), false)
+			}
 		}
 
 	case QueueActionResultMsg:
@@ -1527,6 +1605,9 @@ func (m *Model) View() string {
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.orphanDialogForm != nil {
 		overlay := m.renderOrphanDialog()
+		view = placeOverlay(m.width, m.height, overlay, view)
+	} else if m.crucibleActionForm != nil {
+		overlay := m.renderCrucibleActionMenu()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.actionForm != nil {
 		overlay := m.renderActionMenu()
@@ -2030,6 +2111,87 @@ type NotesResultMsg struct {
 	BeadID string
 	Anvil  string
 	Err    error
+}
+
+// CrucibleActionResultMsg is delivered asynchronously when a crucible action completes.
+type CrucibleActionResultMsg struct {
+	ParentID string
+	Action   string // "resume" or "stop"
+	Err      error
+}
+
+// buildCrucibleActionForm creates a huh form for the crucible action menu.
+func buildCrucibleActionForm(item *CrucibleItem, choice *CrucibleActionMenuChoice) *huh.Form {
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[CrucibleActionMenuChoice]().
+				Title(fmt.Sprintf("Actions for Crucible %s", item.ParentID)).
+				Options(
+					huh.NewOption("Resume — Retry parent to re-enter crucible loop", CrucibleActionResume),
+					huh.NewOption("Stop   — Close the parent bead", CrucibleActionStop),
+				).
+				Value(choice),
+		),
+	).WithTheme(huh.ThemeCharm()).WithWidth(60)
+}
+
+// renderCrucibleActionMenu renders the crucible action overlay with crucible info
+// header followed by the huh form's action select.
+func (m *Model) renderCrucibleActionMenu() string {
+	if m.crucibleActionForm == nil || m.crucibleActionTarget == nil {
+		return ""
+	}
+	item := m.crucibleActionTarget
+	const maxWidth = 60
+
+	var sb strings.Builder
+	sb.WriteString(actionMenuTitleStyle.Render(fmt.Sprintf("Actions for Crucible %s", item.ParentID)))
+
+	if item.ParentTitle != "" {
+		sb.WriteByte('\n')
+		title := truncate(sanitizeTitle(item.ParentTitle), maxWidth-4)
+		sb.WriteString(dimStyle.Render(title))
+	}
+
+	// Show phase and progress info
+	sb.WriteByte('\n')
+	sb.WriteString(dimStyle.Render(fmt.Sprintf("Phase: %s  Children: %d/%d  Anvil: %s",
+		item.Phase, item.CompletedChildren, item.TotalChildren, item.Anvil)))
+
+	sb.WriteString("\n\n")
+	sb.WriteString(m.crucibleActionForm.View())
+	sb.WriteString("\n\n" + dimStyle.Render("esc: dismiss"))
+	return actionMenuStyle.Render(sb.String())
+}
+
+// executeCrucibleAction dispatches the selected crucible action asynchronously.
+func (m *Model) executeCrucibleAction(choice CrucibleActionMenuChoice) tea.Cmd {
+	if m.crucibleActionTarget == nil {
+		return nil
+	}
+	item := *m.crucibleActionTarget
+
+	var action string
+	switch choice {
+	case CrucibleActionResume:
+		action = "resume"
+	case CrucibleActionStop:
+		action = "stop"
+	default:
+		return nil
+	}
+
+	if m.OnCrucibleAction == nil {
+		m.setStatus("Crucible action unavailable (daemon not connected)", true)
+		return nil
+	}
+
+	m.setStatus(fmt.Sprintf("Crucible %s: %s...", item.ParentID, action), false)
+	parentID, anvil := item.ParentID, item.Anvil
+	cb := m.OnCrucibleAction
+	return func() tea.Msg {
+		return CrucibleActionResultMsg{ParentID: parentID, Action: action, Err: cb(parentID, anvil, action)}
+	}
 }
 
 // QueueActionResultMsg is delivered asynchronously when a queue action completes.

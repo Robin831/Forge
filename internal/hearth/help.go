@@ -95,11 +95,11 @@ func (k queueKeyMap) FullHelp() [][]key.Binding {
 type cruciblesKeyMap struct{ m *Model }
 
 func (k cruciblesKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyEnter, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k cruciblesKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyPRPanel},
+		{keyScroll, keyEnter, keyPRPanel},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
