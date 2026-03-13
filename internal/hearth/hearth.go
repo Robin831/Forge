@@ -1080,6 +1080,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.prItems = msg.Items
 		m.prVP.ClampToTotal(len(msg.Items))
 
+	case OpenPRsErrorMsg:
+		// Preserve previous PR list; surface the error in the events panel.
+		errEvent := EventItem{
+			Timestamp: time.Now().Format("15:04:05"),
+			Type:      "error",
+			Message:   fmt.Sprintf("open PRs read failed: %v", msg.Err),
+		}
+		m.events = append([]EventItem{errEvent}, m.events...)
+		m.eventRevision++
+		if m.eventAutoScroll {
+			m.eventScroll = 0
+		}
+
 	case UpdatePendingOrphansMsg:
 		// Merge newly discovered orphans into the queue, avoiding duplicates.
 		existing := make(map[string]bool, len(m.orphanQueue))
@@ -2148,7 +2161,7 @@ func (m *Model) renderPRPanel() string {
 	if len(m.prItems) == 0 {
 		lines = append(lines, dimStyle.Render("No open PRs"))
 	} else {
-		maxItems := viewerHeight - 6 // title + blank + header + footer + hint
+		maxItems := (viewerHeight - 6) / 2 // each item renders up to 2 lines (main + title)
 		if maxItems < 1 {
 			maxItems = 1
 		}

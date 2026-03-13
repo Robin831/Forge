@@ -95,11 +95,11 @@ func (k queueKeyMap) FullHelp() [][]key.Binding {
 type cruciblesKeyMap struct{ m *Model }
 
 func (k cruciblesKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k cruciblesKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll},
+		{keyScroll, keyPRPanel},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -107,11 +107,11 @@ func (k cruciblesKeyMap) FullHelp() [][]key.Binding {
 type readyToMergeKeyMap struct{ m *Model }
 
 func (k readyToMergeKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyMerge, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyMerge, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k readyToMergeKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyMerge},
+		{keyScroll, keyMerge, keyPRPanel},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -143,11 +143,11 @@ func (k workersKeyMap) FullHelp() [][]key.Binding {
 type usageKeyMap struct{ m *Model }
 
 func (k usageKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k usageKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll},
+		{keyScroll, keyPRPanel},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -155,11 +155,11 @@ func (k usageKeyMap) FullHelp() [][]key.Binding {
 type liveActivityKeyMap struct{ m *Model }
 
 func (k liveActivityKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyExpand, keyCollapse, keyFollow, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyExpand, keyCollapse, keyFollow, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k liveActivityKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyExpand, keyCollapse, keyFollow},
+		{keyScroll, keyExpand, keyCollapse, keyFollow, keyPRPanel},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }

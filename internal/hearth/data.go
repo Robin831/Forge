@@ -708,12 +708,15 @@ type UpdateOpenPRsMsg struct {
 	Items []PRItem
 }
 
+// OpenPRsErrorMsg signals that reading open PRs failed.
+type OpenPRsErrorMsg struct{ Err error }
+
 // FetchOpenPRs reads all non-terminal PRs with status detail from the state DB.
 func FetchOpenPRs(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
 		prs, err := db.OpenPRsWithDetail()
 		if err != nil {
-			return UpdateOpenPRsMsg{Items: nil}
+			return OpenPRsErrorMsg{Err: err}
 		}
 		var items []PRItem
 		for _, p := range prs {

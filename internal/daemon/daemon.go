@@ -2624,10 +2624,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 		switch pa.Action {
 		case "close":
-			closeCmd := exec.CommandContext(d.runCtx, "gh", "pr", "close", strconv.Itoa(pa.PRNumber))
+			closeCtx, closeCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+			defer closeCancel()
+			closeCmd := exec.CommandContext(closeCtx, "gh", "pr", "close", strconv.Itoa(pa.PRNumber))
 			closeCmd.Dir = anvilCfg.Path
 			if out, err := closeCmd.CombinedOutput(); err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr close failed: %v: %s", err, string(out))})
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr close failed: %v: %s", err, strings.TrimSpace(string(out)))})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
 			if pa.PRID > 0 {
@@ -2637,10 +2639,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Info("PR closed by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
 		case "open_browser":
-			openCmd := exec.CommandContext(d.runCtx, "gh", "pr", "view", strconv.Itoa(pa.PRNumber), "--web")
+			openCtx, openCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+			defer openCancel()
+			openCmd := exec.CommandContext(openCtx, "gh", "pr", "view", strconv.Itoa(pa.PRNumber), "--web")
 			openCmd.Dir = anvilCfg.Path
 			if out, err := openCmd.CombinedOutput(); err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr view --web failed: %v: %s", err, string(out))})
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr view --web failed: %v: %s", err, strings.TrimSpace(string(out)))})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
 
@@ -2665,7 +2669,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				msg, _ := json.Marshal(map[string]string{"message": "rebase action requires bead_id and branch"})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
-			pr, _ := d.db.GetPRByID(pa.PRID)
+			pr, err := d.db.GetPRByID(pa.PRID)
+			if err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to look up PR: %v", err)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
 			baseBranch := ""
 			if pr != nil {
 				baseBranch = pr.BaseBranch
