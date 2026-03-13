@@ -2157,9 +2157,10 @@ func (m *Model) renderMergeMenu() string {
 	const maxTitleLines = 2
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Actions for %s — PR #%d", item.BeadID, item.PRNumber))
+	sb.WriteString(actionMenuTitleStyle.Render(fmt.Sprintf("Actions for %s — PR #%d", item.BeadID, item.PRNumber)))
 
 	if item.Title != "" {
+		sb.WriteByte('\n')
 		wrapped := wordWrap(sanitizeTitle(item.Title), maxWidth)
 		if len(wrapped) > maxTitleLines {
 			last := []rune(wrapped[maxTitleLines-1])
@@ -2170,13 +2171,13 @@ func (m *Model) renderMergeMenu() string {
 		}
 		for _, line := range wrapped {
 			sb.WriteByte('\n')
-			sb.WriteString(line)
+			sb.WriteString(dimStyle.Render(line))
 		}
 	}
 
-	sb.WriteByte('\n')
+	sb.WriteString("\n\n")
 	sb.WriteString(m.mergeForm.View())
-	sb.WriteString("\n" + dimStyle.Render("esc: dismiss"))
+	sb.WriteString("\n\n" + dimStyle.Render("esc: dismiss"))
 	return actionMenuStyle.Render(sb.String())
 }
 
@@ -2264,15 +2265,15 @@ func (m *Model) renderPRActionMenu() string {
 	}
 	item := m.prActionTarget
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Actions for PR #%d — %s", item.PRNumber, item.BeadID))
+	sb.WriteString(actionMenuTitleStyle.Render(fmt.Sprintf("Actions for PR #%d — %s", item.PRNumber, item.BeadID)))
 	if item.Title != "" {
 		sb.WriteByte('\n')
 		title := truncate(sanitizeTitle(item.Title), 55)
 		sb.WriteString(dimStyle.Render(title))
 	}
-	sb.WriteByte('\n')
+	sb.WriteString("\n\n")
 	sb.WriteString(m.prActionForm.View())
-	sb.WriteString("\n" + dimStyle.Render("esc: dismiss"))
+	sb.WriteString("\n\n" + dimStyle.Render("esc: dismiss"))
 	return actionMenuStyle.Render(sb.String())
 }
 
@@ -2380,9 +2381,10 @@ func (m *Model) renderQueueActionMenu() string {
 	const maxDescLines = 5
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Actions for %s", item.BeadID))
+	sb.WriteString(actionMenuTitleStyle.Render(fmt.Sprintf("Actions for %s", item.BeadID)))
 
 	if item.Title != "" {
+		sb.WriteByte('\n')
 		wrapped := wordWrap(sanitizeTitle(item.Title), maxWidth)
 		if len(wrapped) > maxTitleLines {
 			last := []rune(wrapped[maxTitleLines-1])
@@ -2393,11 +2395,12 @@ func (m *Model) renderQueueActionMenu() string {
 		}
 		for _, line := range wrapped {
 			sb.WriteByte('\n')
-			sb.WriteString(line)
+			sb.WriteString(dimStyle.Render(line))
 		}
 	}
 
 	if item.Description != "" {
+		sb.WriteByte('\n')
 		wrapped := wordWrap(sanitizeTitle(item.Description), maxWidth)
 		if len(wrapped) > maxDescLines {
 			last := []rune(wrapped[maxDescLines-1])
@@ -2408,13 +2411,13 @@ func (m *Model) renderQueueActionMenu() string {
 		}
 		for _, line := range wrapped {
 			sb.WriteByte('\n')
-			sb.WriteString(line)
+			sb.WriteString(dimStyle.Render(line))
 		}
 	}
 
-	sb.WriteByte('\n')
+	sb.WriteString("\n\n")
 	sb.WriteString(m.queueActionForm.View())
-	sb.WriteString("\n" + dimStyle.Render("esc: dismiss"))
+	sb.WriteString("\n\n" + dimStyle.Render("esc: dismiss"))
 	return actionMenuStyle.Render(sb.String())
 }
 
@@ -2425,7 +2428,7 @@ func (m *Model) renderActionMenu() string {
 	}
 	var sb strings.Builder
 	sb.WriteString(m.actionForm.View())
-	sb.WriteString("\n" + dimStyle.Render("esc: dismiss"))
+	sb.WriteString("\n\n" + dimStyle.Render("esc: dismiss"))
 	return actionMenuStyle.Render(sb.String())
 }
 
