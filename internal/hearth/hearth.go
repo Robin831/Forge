@@ -1015,7 +1015,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if w.PRNumber > 0 {
 				beadCol = fmt.Sprintf("%s (PR#%d)", w.BeadID, w.PRNumber)
 			}
-			taskCol := w.Title
+			taskCol := sanitizeTitle(w.Title)
 			if taskCol == "" {
 				taskCol = "(no title)"
 			}
@@ -2685,7 +2685,11 @@ func (m *Model) renderWorkerList(width, height int) string {
 
 	title := panelTitleStyle.Render(fmt.Sprintf("Workers (%d)", len(m.workers)))
 
-	m.workerTable.SetWidth(width - 4)
+	innerWidth := width - 4
+	if innerWidth < 0 {
+		innerWidth = 0
+	}
+	m.workerTable.SetWidth(innerWidth)
 	// table.SetHeight(h) internally sets viewport.Height = h - headerHeight.
 	// With a 2-line header (text + bottom border), viewport shows h-2 rows.
 	// title(1) + table(h rows via SetHeight) = h+1 content lines; height-4 gives 4 slack lines.
@@ -2699,9 +2703,9 @@ func (m *Model) renderWorkerList(width, height int) string {
 	// Total avail is width - 4 (borders and padding).
 	cols := m.workerTable.Columns()
 	if len(cols) == 6 {
-		avail := width - 4
-		if avail < 10 {
-			avail = 10
+		avail := innerWidth
+		if avail < 1 {
+			avail = 1
 		}
 
 		// Ratios: Status 5%, Type 10%, Bead 20%, Task 35%, Anvil 20%, Time 10%
@@ -2718,7 +2722,7 @@ func (m *Model) renderWorkerList(width, height int) string {
 			total += c.Width
 		}
 		if total > avail {
-			cols[3].Width -= (total - avail) // Adjust largest column
+			cols[3].Width = max(1, cols[3].Width-(total-avail)) // Adjust largest column, never go negative
 		}
 
 		m.workerTable.SetColumns(cols)
