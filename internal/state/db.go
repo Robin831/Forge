@@ -1151,6 +1151,41 @@ func (db *DB) RecentEvents(n int) ([]Event, error) {
 	return events, rows.Err()
 }
 
+// RecentEventsExcluding returns the n most recent events, excluding the given types.
+func (db *DB) RecentEventsExcluding(n int, excludeTypes []EventType) ([]Event, error) {
+	if len(excludeTypes) == 0 {
+		return db.RecentEvents(n)
+	}
+	placeholders := make([]string, len(excludeTypes))
+	args := make([]any, len(excludeTypes)+1)
+	for i, t := range excludeTypes {
+		placeholders[i] = "?"
+		args[i] = string(t)
+	}
+	args[len(excludeTypes)] = n
+	query := `SELECT id, timestamp, type, message, bead_id, anvil
+		 FROM events WHERE type NOT IN (` + strings.Join(placeholders, ",") + `)
+		 ORDER BY timestamp DESC, id DESC LIMIT ?`
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var typ, ts string
+		if err := rows.Scan(&e.ID, &ts, &typ, &e.Message, &e.BeadID, &e.Anvil); err != nil {
+			return nil, err
+		}
+		e.Type = EventType(typ)
+		e.Timestamp = parseTime(ts)
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
 // AnvilPollStatus holds the last poll outcome for an anvil.
 type AnvilPollStatus struct {
 	Anvil     string

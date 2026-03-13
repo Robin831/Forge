@@ -386,23 +386,20 @@ func formatMultiLineEntry(prefix, contPrefix, raw string, maxLines int) []string
 
 // FetchEvents reads recent events from the state DB.
 // Poll events (poll, poll_error) are excluded because anvil health is now
-// displayed inline in the Queue panel headers.
+// displayed inline in the Queue panel headers. The filter is applied at the
+// SQL level via RecentEventsExcluding so the LIMIT returns the expected count.
 func FetchEvents(db *state.DB, limit int) tea.Cmd {
 	return func() tea.Msg {
 		if limit <= 0 {
 			limit = 50
 		}
-		events, err := db.RecentEvents(limit)
+		events, err := db.RecentEventsExcluding(limit, []state.EventType{state.EventPoll, state.EventPollError})
 		if err != nil {
 			return UpdateEventsMsg{Items: nil}
 		}
 
 		var items []EventItem
 		for _, e := range events {
-			// Skip poll events — they are surfaced via anvil health badges.
-			if e.Type == state.EventPoll || e.Type == state.EventPollError {
-				continue
-			}
 			items = append(items, EventItem{
 				Timestamp: e.Timestamp.Format("15:04:05"),
 				Type:      string(e.Type),
