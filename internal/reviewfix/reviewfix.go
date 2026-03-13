@@ -82,7 +82,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 	// Validate MaxAttempts to avoid silently skipping all attempts when unset or invalid.
 	if p.MaxAttempts <= 0 {
-		log.Printf("[reviewfix] PR #%d: MaxAttempts=%d is not positive; defaulting to 1 attempt", p.PRNumber, p.MaxAttempts)
+		log.Printf("[burnish] PR #%d: MaxAttempts=%d is not positive; defaulting to 1 attempt", p.PRNumber, p.MaxAttempts)
 		p.MaxAttempts = 1
 	}
 
@@ -96,7 +96,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 	result.CommentsFound = len(comments)
 	if len(comments) == 0 {
-		log.Printf("[reviewfix] PR #%d: No review comments found", p.PRNumber)
+		log.Printf("[burnish] PR #%d: No review comments found", p.PRNumber)
 		result.Addressed = true
 		result.Duration = time.Since(start)
 		return result
@@ -105,13 +105,13 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	// Filter to unresolved/actionable comments
 	actionable := filterActionableComments(comments)
 	if len(actionable) == 0 {
-		log.Printf("[reviewfix] PR #%d: No actionable comments", p.PRNumber)
+		log.Printf("[burnish] PR #%d: No actionable comments", p.PRNumber)
 		result.Addressed = true
 		result.Duration = time.Since(start)
 		return result
 	}
 
-	log.Printf("[reviewfix] PR #%d: %d actionable review comments", p.PRNumber, len(actionable))
+	log.Printf("[burnish] PR #%d: %d actionable review comments", p.PRNumber, len(actionable))
 
 	// Resolve providers — default to Claude → Gemini if not specified.
 	providers := p.Providers
@@ -136,7 +136,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		for pi := activeProviderIdx; pi < len(providers); pi++ {
 			pv := providers[pi]
 			if pi > activeProviderIdx {
-				log.Printf("[reviewfix] PR #%d: Provider %s rate limited, retrying with %s",
+				log.Printf("[burnish] PR #%d: Provider %s rate limited, retrying with %s",
 					p.PRNumber, providers[pi-1].Label(), pv.Label())
 				_ = p.DB.LogEvent(state.EventReviewFixSmithError,
 					fmt.Sprintf("PR #%d attempt %d: %s rate limited, falling back to %s",
@@ -152,7 +152,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			}
 			if p.WorkerID != "" && p.DB != nil {
 				if err := p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath); err != nil {
-					log.Printf("[reviewfix] PR #%d: failed to update worker log path for worker %s to %q: %v",
+					log.Printf("[burnish] PR #%d: failed to update worker log path for worker %s to %q: %v",
 						p.PRNumber, p.WorkerID, process.LogPath, err)
 				}
 			}
@@ -168,7 +168,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			// dashboard does not undercount in the all-providers-rate-limited case.
 			if smithResult.Quota != nil && p.DB != nil {
 				if err := p.DB.UpsertProviderQuota(string(pv.Kind), smithResult.Quota); err != nil {
-					log.Printf("[reviewfix] PR #%d: Failed to update provider %s quota in DB: %v", p.PRNumber, pv.Label(), err)
+					log.Printf("[burnish] PR #%d: Failed to update provider %s quota in DB: %v", p.PRNumber, pv.Label(), err)
 				}
 			}
 			if pv.Kind == provider.Copilot && !smithResult.RateLimited {
@@ -184,7 +184,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 		// If all providers are rate-limited, abort rather than burning more attempts.
 		if smithResult.RateLimited {
-			log.Printf("[reviewfix] PR #%d: All providers rate limited on attempt %d", p.PRNumber, attempt)
+			log.Printf("[burnish] PR #%d: All providers rate limited on attempt %d", p.PRNumber, attempt)
 			_ = p.DB.LogEvent(state.EventReviewFixFailed,
 				fmt.Sprintf("PR #%d attempt %d: all providers rate limited", p.PRNumber, attempt),
 				p.BeadID, p.AnvilName)
@@ -197,7 +197,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		}
 
 		if smithResult.ExitCode != 0 {
-			log.Printf("[reviewfix] PR #%d: Smith fix attempt %d failed (exit %d, subtype=%s)",
+			log.Printf("[burnish] PR #%d: Smith fix attempt %d failed (exit %d, subtype=%s)",
 				p.PRNumber, attempt, smithResult.ExitCode, smithResult.ResultSubtype)
 			_ = p.DB.LogEvent(state.EventReviewFixFailed,
 				fmt.Sprintf("PR #%d: Smith exit %d on attempt %d", p.PRNumber, smithResult.ExitCode, attempt),
@@ -219,7 +219,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		}
 
 		// Smith succeeded — assume fixes were committed and pushed
-		log.Printf("[reviewfix] PR #%d: Review fixes applied on attempt %d", p.PRNumber, attempt)
+		log.Printf("[burnish] PR #%d: Review fixes applied on attempt %d", p.PRNumber, attempt)
 		result.Addressed = true
 
 		// Resolve threads after successful fix.
@@ -231,13 +231,13 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				continue
 			}
 			if err := resolveThread(ctx, p.WorktreePath, comment.ThreadID); err != nil {
-				log.Printf("[reviewfix] PR #%d: Warning: failed to resolve thread %s: %v", p.PRNumber, comment.ThreadID, err)
+				log.Printf("[burnish] PR #%d: Warning: failed to resolve thread %s: %v", p.PRNumber, comment.ThreadID, err)
 				_ = p.DB.LogEvent(state.EventReviewFixFailed,
 					fmt.Sprintf("PR #%d: resolve thread %s failed: %v", p.PRNumber, comment.ThreadID, err),
 					p.BeadID, p.AnvilName)
 			} else {
 				resolvedCount++
-				log.Printf("[reviewfix] PR #%d: Resolved thread %s (by @%s)", p.PRNumber, comment.ThreadID, comment.Author)
+				log.Printf("[burnish] PR #%d: Resolved thread %s (by @%s)", p.PRNumber, comment.ThreadID, comment.Author)
 				// Log resolved thread to DB so it's visible in forge history.
 				body := comment.Body
 				if len(body) > 120 {
@@ -249,7 +249,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			}
 		}
 		if resolvedCount > 0 {
-			log.Printf("[reviewfix] PR #%d: Resolved %d/%d threads on GitHub", p.PRNumber, resolvedCount, len(actionable))
+			log.Printf("[burnish] PR #%d: Resolved %d/%d threads on GitHub", p.PRNumber, resolvedCount, len(actionable))
 		}
 
 		_ = p.DB.LogEvent(state.EventReviewFixSuccess,

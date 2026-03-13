@@ -613,7 +613,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Anvil:     req.Anvil,
 				Branch:    req.Branch,
 				Status:    state.WorkerRunning,
-				Phase:     "cifix",
+				Phase:     "quench",
 				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
 				PRNumber:  req.PRNumber,
 				StartedAt: time.Now(),
@@ -664,7 +664,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				Anvil:     req.Anvil,
 				Branch:    req.Branch,
 				Status:    state.WorkerRunning,
-				Phase:     "reviewfix",
+				Phase:     "burnish",
 				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
 				PRNumber:  req.PRNumber,
 				StartedAt: time.Now(),
@@ -2785,9 +2785,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged by user", pa.PRNumber), pa.BeadID, pa.Anvil)
 			d.logger.Info("PR merged by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
-		case "cifix":
+		case "quench", "cifix":
 			if pa.Branch == "" {
-				msg, _ := json.Marshal(map[string]string{"message": "cifix action requires branch"})
+				msg, _ := json.Marshal(map[string]string{"message": "quench action requires branch"})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
 			req := lifecycle.ActionRequest{
@@ -2801,9 +2801,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.LogEvent(state.EventCIFixStarted, fmt.Sprintf("PR #%d CI fix triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
 			d.logger.Info("CI fix triggered by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
-		case "reviewfix":
+		case "burnish", "reviewfix":
 			if pa.Branch == "" {
-				msg, _ := json.Marshal(map[string]string{"message": "reviewfix action requires branch"})
+				msg, _ := json.Marshal(map[string]string{"message": "burnish action requires branch"})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
 			req := lifecycle.ActionRequest{

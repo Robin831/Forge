@@ -85,7 +85,7 @@ func TestRenderWorkerListNoTitle(t *testing.T) {
 func TestRenderWorkerListWithPRNumber(t *testing.T) {
 	m := NewModel(nil)
 	m.workers = []WorkerItem{
-		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "cifix",
+		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "quench",
 			Title: "fix CI", PRNumber: 42},
 	}
 	m.focused = PanelWorkers

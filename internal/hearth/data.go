@@ -179,9 +179,9 @@ func inferWorkerType(id string, status state.WorkerStatus) string {
 	case len(id) > 7 && id[:7] == "temper-":
 		return "temper"
 	case len(id) > 6 && id[:6] == "cifix-":
-		return "cifix"
+		return "quench"
 	case len(id) > 10 && id[:10] == "reviewfix-":
-		return "reviewfix"
+		return "burnish"
 	case len(id) > 7 && id[:7] == "rebase-":
 		return "rebase"
 	}

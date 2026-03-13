@@ -100,13 +100,13 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
 		result.Attempts = attempt
-		log.Printf("[cifix] PR #%d attempt %d/%d", p.PRNumber, attempt, MaxAttempts)
+		log.Printf("[quench] PR #%d attempt %d/%d", p.PRNumber, attempt, MaxAttempts)
 
 		// Step 1: Fetch GitHub check status to identify what's actually failing.
 		ghChecksOutput, fetchErr := fetchPRChecks(ctx, p.WorktreePath, p.PRNumber)
 		ghChecksFetched := fetchErr == nil
 		if fetchErr != nil {
-			log.Printf("[cifix] Warning: failed to fetch GitHub PR checks: %v", fetchErr)
+			log.Printf("[quench] Warning: failed to fetch GitHub PR checks: %v", fetchErr)
 		}
 		failingChecks := parseFailingChecks(ghChecksOutput)
 		if len(failingChecks) > 0 {
@@ -114,7 +114,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			for i, c := range failingChecks {
 				names[i] = c.Name
 			}
-			log.Printf("[cifix] PR #%d: failing GitHub checks: %s", p.PRNumber, strings.Join(names, ", "))
+			log.Printf("[quench] PR #%d: failing GitHub checks: %s", p.PRNumber, strings.Join(names, ", "))
 		}
 
 		// Step 2: Run Temper to reproduce failures locally.
@@ -130,18 +130,18 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		if temperResult.Passed {
 			if !ghChecksFetched {
 				// GitHub check status is unknown — do not treat as fixed; spawn Smith to be safe.
-				log.Printf("[cifix] PR #%d: Temper passes but GitHub check status unknown (fetch failed) — spawning Smith to verify",
+				log.Printf("[quench] PR #%d: Temper passes but GitHub check status unknown (fetch failed) — spawning Smith to verify",
 					p.PRNumber)
 			} else if len(failingChecks) == 0 {
 				// Temper passes AND GitHub confirms no checks are failing — truly fixed.
-				log.Printf("[cifix] PR #%d: Temper passes and no GitHub checks failing — CI is fixed", p.PRNumber)
+				log.Printf("[quench] PR #%d: Temper passes and no GitHub checks failing — CI is fixed", p.PRNumber)
 				result.Fixed = true
 				result.Duration = time.Since(start)
 				return result
 			} else {
 				// Temper passes but GitHub has failing checks that Temper doesn't cover.
 				// Don't return early — spawn Smith to fix the GitHub-only failures.
-				log.Printf("[cifix] PR #%d: Temper passes locally but %d GitHub check(s) still failing — spawning Smith for GitHub-only fixes",
+				log.Printf("[quench] PR #%d: Temper passes locally but %d GitHub check(s) still failing — spawning Smith for GitHub-only fixes",
 					p.PRNumber, len(failingChecks))
 			}
 		}
@@ -170,7 +170,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		// Snapshot HEAD so we can compute the fix diff after Smith completes.
 		baseCommit, revParseErr := gitRevParse(ctx, p.WorktreePath, "HEAD")
 		if revParseErr != nil {
-			log.Printf("[cifix] PR #%d: failed to snapshot HEAD for warden learning: %v", p.PRNumber, revParseErr)
+			log.Printf("[quench] PR #%d: failed to snapshot HEAD for warden learning: %v", p.PRNumber, revParseErr)
 		}
 
 		// Step 5: Spawn Smith.
@@ -179,7 +179,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		for pi := activeProviderIdx; pi < len(providers); pi++ {
 			pv := providers[pi]
 			if pi > activeProviderIdx {
-				log.Printf("[cifix] PR #%d: Provider %s rate limited, retrying with %s",
+				log.Printf("[quench] PR #%d: Provider %s rate limited, retrying with %s",
 					p.PRNumber, providers[pi-1].Kind, pv.Kind)
 			}
 			process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
@@ -190,7 +190,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			}
 			if p.WorkerID != "" && p.DB != nil {
 				if err := p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath); err != nil {
-					log.Printf("[cifix] PR #%d: failed to update worker log path for worker %s (log path: %s): %v",
+					log.Printf("[quench] PR #%d: failed to update worker log path for worker %s (log path: %s): %v",
 						p.PRNumber, p.WorkerID, process.LogPath, err)
 				}
 			}
@@ -206,7 +206,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			// dashboard does not undercount in the all-providers-rate-limited case.
 			if smithResult.Quota != nil && p.DB != nil {
 				if err := p.DB.UpsertProviderQuota(string(pv.Kind), smithResult.Quota); err != nil {
-					log.Printf("[cifix] PR #%d: Failed to update provider %s quota in DB: %v", p.PRNumber, pv.Label(), err)
+					log.Printf("[quench] PR #%d: Failed to update provider %s quota in DB: %v", p.PRNumber, pv.Label(), err)
 				}
 			}
 			if pv.Kind == provider.Copilot && !smithResult.RateLimited {
@@ -221,7 +221,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		}
 
 		if smithResult.RateLimited {
-			log.Printf("[cifix] PR #%d: All providers rate limited on attempt %d", p.PRNumber, attempt)
+			log.Printf("[quench] PR #%d: All providers rate limited on attempt %d", p.PRNumber, attempt)
 			_ = p.DB.LogEvent(state.EventCIFixFailed,
 				fmt.Sprintf("PR #%d attempt %d: all providers rate limited", p.PRNumber, attempt),
 				p.BeadID, p.AnvilName)
@@ -231,7 +231,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		}
 
 		if smithResult.ExitCode != 0 {
-			log.Printf("[cifix] PR #%d: Smith fix attempt %d failed (exit %d)", p.PRNumber, attempt, smithResult.ExitCode)
+			log.Printf("[quench] PR #%d: Smith fix attempt %d failed (exit %d)", p.PRNumber, attempt, smithResult.ExitCode)
 			_ = p.DB.LogEvent(state.EventCIFixFailed,
 				fmt.Sprintf("PR #%d: Smith exit %d on attempt %d", p.PRNumber, smithResult.ExitCode, attempt),
 				p.BeadID, p.AnvilName)
@@ -243,7 +243,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		result.LastTemperResult = verifyResult
 
 		if verifyResult.Passed {
-			log.Printf("[cifix] PR #%d: Fixed on attempt %d (local verification passed)", p.PRNumber, attempt)
+			log.Printf("[quench] PR #%d: Fixed on attempt %d (local verification passed)", p.PRNumber, attempt)
 			result.Fixed = true
 			_ = p.DB.LogEvent(state.EventCIFixSuccess,
 				fmt.Sprintf("PR #%d: Fixed on attempt %d", p.PRNumber, attempt),
@@ -255,7 +255,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			if baseCommit != "" {
 				fixDiff, diffErr := gitDiff(ctx, p.WorktreePath, baseCommit, "HEAD")
 				if diffErr != nil {
-					log.Printf("[cifix] PR #%d: failed to compute fix diff for warden learning: %v", p.PRNumber, diffErr)
+					log.Printf("[quench] PR #%d: failed to compute fix diff for warden learning: %v", p.PRNumber, diffErr)
 				} else {
 					prNum := p.PRNumber
 					anvilPath, worktreePath := p.AnvilPath, p.WorktreePath
@@ -267,7 +267,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 						learnCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 						defer cancel()
 						if err := warden.LearnFromCIFix(learnCtx, anvilPath, worktreePath, logsCopy, fixDiff, prNum); err != nil {
-							log.Printf("[cifix] PR #%d: warden learn from CI fix: %v", prNum, err)
+							log.Printf("[quench] PR #%d: warden learn from CI fix: %v", prNum, err)
 						}
 					}()
 				}
@@ -276,7 +276,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			return result
 		}
 
-		log.Printf("[cifix] PR #%d: Temper still failing after attempt %d", p.PRNumber, attempt)
+		log.Printf("[quench] PR #%d: Temper still failing after attempt %d", p.PRNumber, attempt)
 	}
 
 	result.Error = fmt.Errorf("could not fix CI after %d attempts", MaxAttempts)
@@ -486,7 +486,7 @@ func fetchFailingCheckLogs(ctx context.Context, worktreePath string, checks []ch
 
 		logs, err := fetchRunFailedLogs(ctx, worktreePath, runID)
 		if err != nil {
-			log.Printf("[cifix] Warning: failed to fetch logs for run %s: %v", runID, err)
+			log.Printf("[quench] Warning: failed to fetch logs for run %s: %v", runID, err)
 			continue
 		}
 		runLogs[runID] = logs

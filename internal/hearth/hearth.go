@@ -155,7 +155,7 @@ type WorkerItem struct {
 	Status        string
 	Duration      string
 	CostUSD       float64
-	Type          string   // "smith", "warden", "temper", "cifix", "reviewfix", "rebase"
+	Type          string   // "smith", "warden", "temper", "quench", "burnish", "rebase"
 	PRNumber      int      // PR number for bellows-triggered workers
 	LastLog       string   // Last line from the worker log
 	PID           int      // Process ID for kill
@@ -2492,9 +2492,9 @@ func (m *Model) executePRAction(choice PRActionMenuChoice) tea.Cmd {
 	case PRActionMerge:
 		action = "merge"
 	case PRActionFixCI:
-		action = "cifix"
+		action = "quench"
 	case PRActionFixComments:
-		action = "reviewfix"
+		action = "burnish"
 	case PRActionResolveConflicts:
 		action = "rebase"
 	case PRActionClosePR:
@@ -3908,9 +3908,9 @@ func workerTypeIcon(t string) string {
 		return lipgloss.NewStyle().Foreground(colorInfo).Render("⛨")
 	case "temper":
 		return lipgloss.NewStyle().Foreground(colorWarning).Render("🔥")
-	case "cifix":
+	case "quench":
 		return lipgloss.NewStyle().Foreground(colorDanger).Render("🔧")
-	case "reviewfix":
+	case "burnish":
 		return lipgloss.NewStyle().Foreground(colorPink).Render("📝")
 	case "rebase":
 		return lipgloss.NewStyle().Foreground(colorAccent).Render("🔀")
@@ -3931,10 +3931,10 @@ func phaseTag(phase string) string {
 		return lipgloss.NewStyle().Foreground(colorMagenta).Render("[warden]")
 	case "bellows":
 		return lipgloss.NewStyle().Foreground(colorBlue).Render("[bellows]")
-	case "cifix":
-		return lipgloss.NewStyle().Foreground(colorDanger).Render("[cifix]")
-	case "reviewfix":
-		return lipgloss.NewStyle().Foreground(colorPink).Render("[reviewfix]")
+	case "quench":
+		return lipgloss.NewStyle().Foreground(colorDanger).Render("[quench]")
+	case "burnish":
+		return lipgloss.NewStyle().Foreground(colorPink).Render("[burnish]")
 	case "rebase":
 		return lipgloss.NewStyle().Foreground(colorAccent).Render("[rebase]")
 	case "schematic":
