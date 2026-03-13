@@ -38,6 +38,8 @@ type Bead struct {
 	// Forge-injected: epic branch name resolved from parent epic's labels.
 	// When set, this bead should branch from and PR to this branch instead of main.
 	EpicBranch string `json:"-"`
+	// Forge-injected: when true, dispatch as standalone — skip epic and crucible detection.
+	ForceIndependent bool `json:"-"`
 }
 
 // BeadDep represents a dependency entry in the bd JSON output.

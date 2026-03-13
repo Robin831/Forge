@@ -14,6 +14,7 @@ import (
 
 func init() {
 	queueRunCmd.Flags().StringP("anvil", "a", "", "Anvil name (to disambiguate if multiple anvils have the same bead ID)")
+	queueRunCmd.Flags().BoolP("force", "f", false, "Force-run independently: fetch via bd show, skip crucible/parent checks")
 	queueClarifyCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
 	queueClarifyCmd.Flags().StringP("reason", "r", "", "Why clarification is needed")
 	_ = queueClarifyCmd.MarkFlagRequired("anvil")
@@ -88,10 +89,11 @@ var queueRunCmd = &cobra.Command{
 	Use:     "run <id>",
 	Short:   "Manually dispatch a bead for execution",
 	Args:    cobra.ExactArgs(1),
-	Example: "  forge queue run BD-42\n  forge queue run BD-42 --anvil metadata",
+	Example: "  forge queue run BD-42\n  forge queue run BD-42 --anvil metadata\n  forge queue run BD-42 --anvil metadata --force  # bypass bd ready, skip crucible",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		beadID := args[0]
 		anvil, _ := cmd.Flags().GetString("anvil")
+		forceRun, _ := cmd.Flags().GetBool("force")
 
 		client, err := ipc.NewClient()
 		if err != nil {
@@ -100,8 +102,9 @@ var queueRunCmd = &cobra.Command{
 		defer client.Close()
 
 		payload, _ := json.Marshal(ipc.RunBeadPayload{
-			BeadID: beadID,
-			Anvil:  anvil,
+			BeadID:   beadID,
+			Anvil:    anvil,
+			ForceRun: forceRun,
 		})
 
 		resp, err := client.Send(ipc.Command{
