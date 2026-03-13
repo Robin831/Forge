@@ -75,6 +75,38 @@ release time by `scripts/assemble-changelog.sh`.
 - **Track provider quota from all claude sessions** - Warden, cifix, reviewfix, and schematic now persist rate-limit quota data to state.db via UpsertProviderQuota, matching the existing smith behavior. Previously only smith sessions reported quota, causing the dashboard to undercount actual provider usage. (Forge-g5m)
 - **depcheck_dedup events now include anvil name** - Event messages for skipped duplicate dependency updates now include the anvil name in the message text, making them unambiguous in the Events panel when multiple anvils are monitored. (Forge-3s8)
 
+## [1.5.0] - 2026-03-13
+
+### Added
+
+- **Added UPX binary compression** - Compresses release binaries to reduce download size by 50-70% with no performance impact. (Forge-q72n)
+- **View Smith log from the Workers panel** - Press `o` on a selected worker in the Workers panel to open that worker's log file in the full-screen viewport overlay. Previously log viewing was only accessible via the Needs Attention action menu. (Forge-x1bs)
+- Documentation for remote Hearth access via VS Code Remote Tunnels (docs/remote-access.md). Covers setup, authentication, running alongside the Forge daemon, Claude Code remote sessions, and troubleshooting.
+- Hearth TUI: "Stop" action in the Queue panel action menu (Enter on a queue item).
+- Hearth TUI: press `S` on a worker in the Workers panel to stop its bead entirely.
+- Hearth: dedicated PR panel overlay (press `p`) listing all open PRs with status indicators (CI, conflicts, reviews, approval) and action menu (Open in browser, Fix comments, Resolve conflicts, Close PR)
+- New `OpenPRsWithDetail()` database query for PR panel data with title resolution
+- New `pr_action` IPC command for triggering reviewfix, rebase, close, and open-in-browser on any open PR
+- `forge queue stop <id> --anvil <name>` command to fully stop a bead: kills the running worker, sets clarification_needed (preventing re-dispatch), and releases the bead back to open. Use `forge queue unclarify` to resume.
+
+### Changed
+
+- **Hearth: use Bubbles table component for Workers panel** - Replaced the hand-rolled worker list rendering with the charmbracelet/bubbles table component, providing column resizing, better styling, and robust scrolling. (Forge-e50w)
+- Added `state.LastPollPerAnvil()` query for efficient per-anvil health status lookup.
+- Hearth Events panel: poll/poll_error events are no longer shown in the event log since anvil health is now visible in the Queue panel.
+- Hearth Queue panel: anvil headers now show health badges (● green = last poll OK, ⊘ red = poll error) with time since last poll. For single-anvil setups, the badge appears in the panel title.
+
+### Fixed
+
+- **Fix auto-learn distillation errors** - Improved warden rule learning by increasing AI turns, adding provider fallback, and making JSON extraction more robust against code snippets and braces in strings. (Forge-k0nj)
+- **Improve PR descriptions with detailed change summaries** - The Forge now extracts change bullets from Smith's changelog fragment and includes them in the PR description, providing much better context than the Warden's fallback verdict summary. (Forge-jhif)
+- Pipeline retry now resets the worktree branch to the base ref (origin/main) instead of reusing commits from a failed run, preventing cascading junk commits and wasted API spend on hopeless retries.
+
+### Security
+
+- **Enable SBOM generation for releases** - Added GoReleaser v2's `sboms` section and installed Syft in the release workflow to generate Software Bill of Materials for supply chain security. (Forge-ztgx)
+
+
 
 ## [0.4.0] - 2026-03-12
 
