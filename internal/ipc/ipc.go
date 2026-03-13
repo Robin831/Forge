@@ -184,6 +184,14 @@ type PRActionPayload struct {
 	Action   string `json:"action"` // "open_browser" | "merge" | "cifix" | "reviewfix" | "rebase" | "close"
 }
 
+// CrucibleActionPayload is the payload for a "crucible_action" command.
+// Triggers a resume or stop action on a paused Crucible.
+type CrucibleActionPayload struct {
+	ParentID string `json:"parent_id"` // Parent bead ID of the Crucible
+	Anvil    string `json:"anvil"`
+	Action   string `json:"action"` // "resume" | "stop"
+}
+
 // CrucibleStatusItem represents an active Crucible's current state.
 type CrucibleStatusItem struct {
 	ParentID          string `json:"parent_id"`

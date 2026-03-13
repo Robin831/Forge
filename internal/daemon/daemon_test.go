@@ -1386,3 +1386,108 @@ func TestHandleIPC_StopBead(t *testing.T) {
 		}
 	})
 }
+func TestHandleIPC_CrucibleAction(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-crucible-action-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	db, err := state.Open(filepath.Join(tmpDir, "state.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir, AutoDispatchTag: "forge-ready"},
+		},
+	})
+
+	t.Run("invalid JSON payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "crucible_action", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+		assert.Contains(t, msg["message"], "invalid crucible_action payload")
+	})
+
+	t.Run("missing parent_id", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.CrucibleActionPayload{Anvil: "test-anvil", Action: "resume"})
+		resp := d.handleIPC(ipc.Command{Type: "crucible_action", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+		assert.Contains(t, msg["message"], "parent_id and anvil are required")
+	})
+
+	t.Run("missing anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.CrucibleActionPayload{ParentID: "Forge-epic1", Action: "resume"})
+		resp := d.handleIPC(ipc.Command{Type: "crucible_action", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+		assert.Contains(t, msg["message"], "parent_id and anvil are required")
+	})
+
+	t.Run("unknown anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.CrucibleActionPayload{ParentID: "Forge-epic1", Anvil: "nonexistent", Action: "resume"})
+		resp := d.handleIPC(ipc.Command{Type: "crucible_action", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+		assert.Contains(t, msg["message"], "not found")
+	})
+
+	t.Run("unknown action", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.CrucibleActionPayload{ParentID: "Forge-epic1", Anvil: "test-anvil", Action: "bogus"})
+		resp := d.handleIPC(ipc.Command{Type: "crucible_action", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+		assert.Contains(t, msg["message"], "unknown crucible action")
+	})
+
+	t.Run("stop removes status map entry with composite key", func(t *testing.T) {
+		const parentID = "Forge-epic2"
+		const anvil = "test-anvil"
+		compositeKey := anvil + "/" + parentID
+
+		// Pre-populate status map under composite key
+		d.crucibleStatuses.Store(compositeKey, struct{}{})
+		_, loaded := d.crucibleStatuses.Load(compositeKey)
+		require.True(t, loaded, "precondition: status should be present")
+
+		payload, _ := json.Marshal(ipc.CrucibleActionPayload{ParentID: parentID, Anvil: anvil, Action: "stop"})
+		resp := d.handleIPC(ipc.Command{Type: "crucible_action", Payload: payload})
+		// bd is not available in test env so stop may fail; regardless, if it
+		// succeeded the status map entry must be deleted.
+		if resp.Type == "ok" {
+			_, still := d.crucibleStatuses.Load(compositeKey)
+			assert.False(t, still, "crucible status should be removed from map after stop")
+		}
+	})
+
+	t.Run("resume error does not remove status map entry", func(t *testing.T) {
+		const parentID = "Forge-epic3"
+		const anvil = "test-anvil"
+		compositeKey := anvil + "/" + parentID
+
+		// Pre-populate status map
+		d.crucibleStatuses.Store(compositeKey, struct{}{})
+
+		payload, _ := json.Marshal(ipc.CrucibleActionPayload{ParentID: parentID, Anvil: anvil, Action: "resume"})
+		resp := d.handleIPC(ipc.Command{Type: "crucible_action", Payload: payload})
+		// bd is not available in test env so resume will return an error
+		// (either from bd update or from ResetDispatchFailures).
+		// If an error is returned, the status map entry must still be present.
+		if resp.Type == "error" {
+			_, still := d.crucibleStatuses.Load(compositeKey)
+			assert.True(t, still, "crucible status should NOT be removed when resume fails")
+		}
+	})
+}

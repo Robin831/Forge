@@ -3072,3 +3072,127 @@ func TestOpenLogViewerKeyO_ViewportHasContent(t *testing.T) {
 		t.Errorf("log viewer viewport should contain file content, got: %q", vpContent)
 	}
 }
+
+// --- Crucible action menu tests ---
+
+func TestEnterOnPausedCrucibleOpensMenu(t *testing.T) {
+	m := NewModel(nil)
+	m.focused = PanelCrucibles
+	m.width = 80
+	m.height = 24
+	m.crucibles = []CrucibleItem{
+		{ParentID: "Forge-epic1", Anvil: "heimdall", Phase: "paused"},
+	}
+	m.crucibleVP = scrollViewport{cursor: 0}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.crucibleActionForm == nil {
+		t.Error("expected crucibleActionForm!=nil after Enter on paused crucible")
+	}
+	if m.crucibleActionTarget == nil || m.crucibleActionTarget.ParentID != "Forge-epic1" {
+		t.Errorf("expected crucibleActionTarget.ParentID=Forge-epic1, got %v", m.crucibleActionTarget)
+	}
+	// Default choice should be Resume
+	if m.crucibleActionChoice != CrucibleActionResume {
+		t.Errorf("expected default choice CrucibleActionResume, got %v", m.crucibleActionChoice)
+	}
+}
+
+func TestEnterOnNonPausedCrucibleDoesNotOpenMenu(t *testing.T) {
+	for _, phase := range []string{"started", "dispatching", "waiting", "final_pr", "complete"} {
+		m := NewModel(nil)
+		m.focused = PanelCrucibles
+		m.width = 80
+		m.height = 24
+		m.crucibles = []CrucibleItem{
+			{ParentID: "Forge-epic1", Anvil: "heimdall", Phase: phase},
+		}
+		m.crucibleVP = scrollViewport{cursor: 0}
+		_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if m.crucibleActionForm != nil {
+			t.Errorf("phase=%q: expected no crucibleActionForm for non-paused crucible", phase)
+		}
+	}
+}
+
+func TestCrucibleActionMenuEscDismisses(t *testing.T) {
+	m := NewModel(nil)
+	m.focused = PanelCrucibles
+	m.width = 80
+	m.height = 24
+	item := CrucibleItem{ParentID: "Forge-epic2", Anvil: "heimdall", Phase: "paused"}
+	m.crucibles = []CrucibleItem{item}
+	m.crucibleVP = scrollViewport{cursor: 0}
+	// Open menu
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = drainHuh(&m, cmd)
+	if m.crucibleActionForm == nil {
+		t.Fatal("expected menu to open")
+	}
+	// Press Esc
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.crucibleActionForm != nil {
+		t.Error("expected crucibleActionForm==nil after Esc")
+	}
+}
+
+func TestCrucibleActionMenuCallsOnCrucibleAction(t *testing.T) {
+	var calledParent, calledAnvil, calledAction string
+	m := NewModel(nil)
+	m.focused = PanelCrucibles
+	m.width = 80
+	m.height = 24
+	item := CrucibleItem{ParentID: "Forge-epic3", Anvil: "heimdall", Phase: "paused"}
+	m.crucibles = []CrucibleItem{item}
+	m.crucibleVP = scrollViewport{cursor: 0}
+	m.OnCrucibleAction = func(parentID, anvil, action string) error {
+		calledParent = parentID
+		calledAnvil = anvil
+		calledAction = action
+		return nil
+	}
+	// Open menu
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd = drainHuh(&m, cmd)
+	if m.crucibleActionForm == nil {
+		t.Fatal("expected menu to open")
+	}
+	// Confirm selection (Resume is default)
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd = drainHuh(&m, cmd)
+	if m.crucibleActionForm != nil {
+		t.Error("expected menu to close after confirmation")
+	}
+	if cmd == nil {
+		t.Fatal("expected async cmd after crucible action")
+	}
+	msg := cmd()
+	_, _ = m.Update(msg)
+	if calledParent != "Forge-epic3" || calledAnvil != "heimdall" || calledAction != "resume" {
+		t.Errorf("OnCrucibleAction called with (%q, %q, %q), want (Forge-epic3, heimdall, resume)",
+			calledParent, calledAnvil, calledAction)
+	}
+}
+
+func TestCrucibleActionMenuNilOnCrucibleAction(t *testing.T) {
+	m := NewModel(nil)
+	m.focused = PanelCrucibles
+	m.width = 80
+	m.height = 24
+	item := CrucibleItem{ParentID: "Forge-epic4", Anvil: "heimdall", Phase: "paused"}
+	m.crucibles = []CrucibleItem{item}
+	m.crucibleVP = scrollViewport{cursor: 0}
+	// No OnCrucibleAction set
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd = drainHuh(&m, cmd)
+	if m.crucibleActionForm == nil {
+		t.Fatal("expected menu to open")
+	}
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = drainHuh(&m, cmd)
+	if m.crucibleActionForm != nil {
+		t.Error("expected menu to close")
+	}
+	if !strings.Contains(m.statusMsg, "unavailable") {
+		t.Errorf("expected statusMsg to mention 'unavailable', got %q", m.statusMsg)
+	}
+}

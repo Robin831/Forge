@@ -1765,6 +1765,89 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(resp)
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "crucible_action":
+		var ca ipc.CrucibleActionPayload
+		if err := json.Unmarshal(cmd.Payload, &ca); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid crucible_action payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if ca.ParentID == "" || ca.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "parent_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		switch ca.Action {
+		case "resume":
+			// Resume: retry the parent bead to re-enter the crucible loop.
+			// First, reset any failed child's circuit breaker by retrying
+			// any retry entry for the parent, then trigger a poll to
+			// re-discover it as a crucible candidate.
+			anvilCfg, ok := d.cfg.Load().Anvils[ca.Anvil]
+			if !ok || anvilCfg.Path == "" {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", ca.Anvil)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+
+			// Clear circuit breaker / needs_human for the parent bead
+			if err := d.db.ResetDispatchFailures(ca.ParentID, ca.Anvil); err != nil {
+				d.logger.Warn("failed to reset dispatch failures for crucible parent", "bead", ca.ParentID, "error", err)
+			}
+
+			// Reset bead status to open and clear assignee so the poller
+			// can rediscover it as a crucible candidate.
+			resetCtx, resetCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+			defer resetCancel()
+			statusCmd := executil.HideWindow(exec.CommandContext(resetCtx, "bd", "update", ca.ParentID, "--status=open", "--assignee=", "--json"))
+			statusCmd.Dir = anvilCfg.Path
+			if output, err := statusCmd.CombinedOutput(); err != nil {
+				d.logger.Warn("failed to reset crucible parent status", "bead", ca.ParentID, "error", err, "output", string(output))
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset crucible parent status: %v (%s)", err, string(output))})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+
+			// Clear the paused crucible status so it doesn't linger in the UI.
+			d.crucibleStatuses.Delete(ca.Anvil + "/" + ca.ParentID)
+
+			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Crucible %s resumed (manual)", ca.ParentID), ca.ParentID, ca.Anvil)
+			d.logger.Info("crucible resumed", "parent", ca.ParentID, "anvil", ca.Anvil)
+
+			// Trigger poll to rediscover the parent and re-enter crucible loop.
+			go d.pollAndDispatch(d.runCtx)
+
+			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("crucible %s resumed", ca.ParentID)})
+			return ipc.Response{Type: "ok", Payload: data}
+
+		case "stop":
+			// Stop: close the parent bead.
+			anvilCfg, ok := d.cfg.Load().Anvils[ca.Anvil]
+			if !ok || anvilCfg.Path == "" {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", ca.Anvil)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+
+			closeCtx, closeCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+			defer closeCancel()
+			closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", ca.ParentID, "--reason=stopped from Hearth", "--json"))
+			closeCmd.Dir = anvilCfg.Path
+			if output, err := closeCmd.CombinedOutput(); err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to close crucible parent: %v (%s)", err, string(output))})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+
+			// Clear the crucible status from the UI.
+			d.crucibleStatuses.Delete(ca.Anvil + "/" + ca.ParentID)
+
+			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Crucible %s stopped (manual)", ca.ParentID), ca.ParentID, ca.Anvil)
+			d.logger.Info("crucible stopped", "parent", ca.ParentID, "anvil", ca.Anvil)
+
+			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("crucible %s stopped", ca.ParentID)})
+			return ipc.Response{Type: "ok", Payload: data}
+
+		default:
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("unknown crucible action %q", ca.Action)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
 	case "kill_worker":
 		var kp ipc.KillWorkerPayload
 		if err := json.Unmarshal(cmd.Payload, &kp); err != nil {
