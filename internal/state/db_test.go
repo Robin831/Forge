@@ -1664,7 +1664,7 @@ func TestDB_OpenPRsWithDetail(t *testing.T) {
 	_, err = db.conn.Exec(
 		`UPDATE prs SET ci_passing = 0, is_conflicting = 1, has_unresolved_threads = 1,
 		 has_pending_reviews = 0, has_approval = 1, ci_fix_count = 3, review_fix_count = 2, rebase_count = 1
-		 WHERE number = 1`)
+		 WHERE number = 1 AND anvil = 'anvil-a'`)
 	if err != nil {
 		t.Fatalf("update PR flags: %v", err)
 	}
