@@ -1200,27 +1200,37 @@ func (db *DB) LastPollPerAnvil(anvilNames []string) ([]AnvilPollStatus, error) {
 	if len(anvilNames) == 0 {
 		return nil, nil
 	}
-	// Scan recent poll/poll_error rows ordered newest-first and stop once we
-	// have one result per requested anvil.  Filtering by anvil != '' is cheap
-	// and avoids returning daemon-level events with no anvil set.
-	rows, err := db.conn.Query(
-		`SELECT anvil, timestamp, type, message
-		 FROM events
-		 WHERE type IN ('poll', 'poll_error')
-		   AND anvil != ''
-		 ORDER BY timestamp DESC, id DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 
-	// Build a deduplicated set of requested anvils for quick lookup.
+	// Build a deduplicated set of requested anvils (dropping empty strings).
 	wanted := make(map[string]bool, len(anvilNames))
 	for _, n := range anvilNames {
 		if n != "" {
 			wanted[n] = true
 		}
 	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+
+	// Push the anvil filter into SQL for efficiency; the DB only scans
+	// rows matching the requested anvils instead of the full events table.
+	placeholders := make([]string, 0, len(wanted))
+	args := make([]any, 0, len(wanted))
+	for n := range wanted {
+		placeholders = append(placeholders, "?")
+		args = append(args, n)
+	}
+
+	query := `SELECT anvil, timestamp, type, message
+		 FROM events
+		 WHERE type IN ('poll', 'poll_error')
+		   AND anvil IN (` + strings.Join(placeholders, ",") + `)
+		 ORDER BY timestamp DESC, id DESC`
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 
 	seen := make(map[string]bool)
 	var results []AnvilPollStatus
@@ -1229,7 +1239,7 @@ func (db *DB) LastPollPerAnvil(anvilNames []string) ([]AnvilPollStatus, error) {
 		if err := rows.Scan(&anvil, &ts, &typ, &msg); err != nil {
 			return nil, err
 		}
-		if !wanted[anvil] || seen[anvil] {
+		if seen[anvil] {
 			continue
 		}
 		seen[anvil] = true

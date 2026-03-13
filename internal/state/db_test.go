@@ -1619,4 +1619,14 @@ func TestDB_LastPollPerAnvil(t *testing.T) {
 			t.Errorf("expected 1 result for duplicate anvil name, got %d", len(results))
 		}
 	})
+
+	t.Run("all-empty-strings input returns nil without querying", func(t *testing.T) {
+		results, err := db.LastPollPerAnvil([]string{"", ""})
+		if err != nil {
+			t.Fatalf("LastPollPerAnvil: %v", err)
+		}
+		if results != nil {
+			t.Errorf("expected nil for all-empty-string input, got %v", results)
+		}
+	})
 }
