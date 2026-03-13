@@ -125,8 +125,12 @@ func Run(ctx context.Context, p Params) *Result {
 		if p.DB != nil && p.WorkerID != "" {
 			wID := p.WorkerID
 			schemCfg.OnSpawn = func(pid int, logPath string) {
-				_ = p.DB.UpdateWorkerPID(wID, pid)
-				_ = p.DB.UpdateWorkerLogPath(wID, logPath)
+				if err := p.DB.UpdateWorkerPID(wID, pid); err != nil {
+					slog.Warn("failed to record crucible schematic PID", "worker", wID, "err", err)
+				}
+				if err := p.DB.UpdateWorkerLogPath(wID, logPath); err != nil {
+					slog.Warn("failed to record crucible schematic log path", "worker", wID, "err", err)
+				}
 			}
 		}
 		schemResult := p.runSchematic(ctx, schemCfg, p.ParentBead, anvilPath, p.Providers[0])

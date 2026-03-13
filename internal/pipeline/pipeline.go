@@ -291,8 +291,12 @@ func Run(ctx context.Context, p Params) *Outcome {
 		if p.DB != nil {
 			wID := workerID
 			schemCfg.OnSpawn = func(pid int, logPath string) {
-				_ = p.DB.UpdateWorkerPID(wID, pid)
-				_ = p.DB.UpdateWorkerLogPath(wID, logPath)
+				if err := p.DB.UpdateWorkerPID(wID, pid); err != nil {
+					log.Printf("[pipeline:%s] failed to record schematic PID: %v", wID, err)
+				}
+				if err := p.DB.UpdateWorkerLogPath(wID, logPath); err != nil {
+					log.Printf("[pipeline:%s] failed to record schematic log path: %v", wID, err)
+				}
 			}
 		}
 
