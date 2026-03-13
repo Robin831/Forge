@@ -347,6 +347,9 @@ type Model struct {
 	queueNavItems       []queueNavItem  // navigable items (anvil headers + beads)
 	queueGrouped        bool            // true when 2+ anvils trigger grouping
 
+	// Per-anvil poll health status, keyed by anvil name.
+	anvilHealth map[string]AnvilHealth
+
 	// Spinner animation frame index (advances every SpinnerInterval).
 	spinnerFrame int
 
@@ -1152,6 +1155,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if len(toastCmds) > 0 {
 			return m, tea.Batch(toastCmds...)
+		}
+
+	case UpdateAnvilHealthMsg:
+		if m.anvilHealth == nil {
+			m.anvilHealth = make(map[string]AnvilHealth)
+		}
+		for _, h := range msg.Items {
+			m.anvilHealth[h.Anvil] = h
 		}
 
 	case QueueActionResultMsg:
@@ -2275,6 +2286,17 @@ func (m *Model) renderQueue(width, height int) string {
 
 	title := panelTitleStyle.Render(fmt.Sprintf("Queue (%d)", len(m.queue)))
 
+	// For single-anvil setups, append health badge to the panel title.
+	if !m.queueGrouped && m.data != nil && len(m.data.AnvilNames) == 1 {
+		if h, ok := m.anvilHealth[m.data.AnvilNames[0]]; ok {
+			if h.OK {
+				title += " " + lipgloss.NewStyle().Foreground(colorSuccess).Render("● "+h.Age)
+			} else {
+				title += " " + lipgloss.NewStyle().Foreground(colorDanger).Render("⊘ "+h.Age)
+			}
+		}
+	}
+
 	var lines []string
 	lines = append(lines, title)
 
@@ -2298,12 +2320,20 @@ func (m *Model) renderQueue(width, height int) string {
 
 		for ni, nav := range m.queueNavItems {
 			if nav.isAnvil {
-				// Collapsible anvil header.
+				// Collapsible anvil header with health badge.
 				arrow := "▸"
 				if m.queueExpandedAnvils[nav.anvilName] {
 					arrow = "▾"
 				}
 				headerText := fmt.Sprintf("%s %s (%d)", arrow, nav.anvilName, anvilCounts[nav.anvilName])
+				// Append health badge if available.
+				if h, ok := m.anvilHealth[nav.anvilName]; ok {
+					if h.OK {
+						headerText += " " + lipgloss.NewStyle().Foreground(colorSuccess).Render("● "+h.Age)
+					} else {
+						headerText += " " + lipgloss.NewStyle().Foreground(colorDanger).Render("⊘ "+h.Age)
+					}
+				}
 				if ni == m.queueVP.cursor {
 					headerText = selectedStyle.Render(headerText)
 				}
@@ -3195,6 +3225,18 @@ type UpdateWorkersMsg struct{ Items []WorkerItem }
 
 // UpdateEventsMsg updates the event log panel.
 type UpdateEventsMsg struct{ Items []EventItem }
+
+// AnvilHealth holds per-anvil poll health status for the Queue panel.
+type AnvilHealth struct {
+	Anvil     string
+	OK        bool   // true = last poll succeeded
+	Message   string // e.g. "5 ready" or error text
+	Timestamp string // "15:04:05" format
+	Age       string // e.g. "2m", "1h"
+}
+
+// UpdateAnvilHealthMsg delivers per-anvil health data.
+type UpdateAnvilHealthMsg struct{ Items []AnvilHealth }
 
 // KillWorkerMsg requests killing the selected worker by PID.
 type KillWorkerMsg struct {

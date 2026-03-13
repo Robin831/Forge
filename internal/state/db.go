@@ -1152,6 +1152,111 @@ func (db *DB) RecentEvents(n int) ([]Event, error) {
 	return events, rows.Err()
 }
 
+// RecentEventsExcluding returns the n most recent events, excluding the given types.
+func (db *DB) RecentEventsExcluding(n int, excludeTypes []EventType) ([]Event, error) {
+	if len(excludeTypes) == 0 {
+		return db.RecentEvents(n)
+	}
+	placeholders := make([]string, len(excludeTypes))
+	args := make([]any, len(excludeTypes)+1)
+	for i, t := range excludeTypes {
+		placeholders[i] = "?"
+		args[i] = string(t)
+	}
+	args[len(excludeTypes)] = n
+	query := `SELECT id, timestamp, type, message, bead_id, anvil
+		 FROM events WHERE type NOT IN (` + strings.Join(placeholders, ",") + `)
+		 ORDER BY timestamp DESC, id DESC LIMIT ?`
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var typ, ts string
+		if err := rows.Scan(&e.ID, &ts, &typ, &e.Message, &e.BeadID, &e.Anvil); err != nil {
+			return nil, err
+		}
+		e.Type = EventType(typ)
+		e.Timestamp = parseTime(ts)
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// AnvilPollStatus holds the last poll outcome for an anvil.
+type AnvilPollStatus struct {
+	Anvil     string
+	Timestamp time.Time
+	OK        bool   // true if last poll succeeded, false on error
+	Message   string // e.g. "5 ready" or error message
+}
+
+// LastPollPerAnvil returns the most recent poll or poll_error event for each
+// of the given anvil names. Anvils with no poll history are omitted.
+func (db *DB) LastPollPerAnvil(anvilNames []string) ([]AnvilPollStatus, error) {
+	if len(anvilNames) == 0 {
+		return nil, nil
+	}
+
+	// Build a deduplicated set of requested anvils (dropping empty strings).
+	wanted := make(map[string]bool, len(anvilNames))
+	for _, n := range anvilNames {
+		if n != "" {
+			wanted[n] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+
+	// Push the anvil filter into SQL for efficiency; the DB only scans
+	// rows matching the requested anvils instead of the full events table.
+	placeholders := make([]string, 0, len(wanted))
+	args := make([]any, 0, len(wanted))
+	for n := range wanted {
+		placeholders = append(placeholders, "?")
+		args = append(args, n)
+	}
+
+	query := `SELECT anvil, timestamp, type, message
+		 FROM events
+		 WHERE type IN ('poll', 'poll_error')
+		   AND anvil IN (` + strings.Join(placeholders, ",") + `)
+		 ORDER BY timestamp DESC, id DESC`
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	seen := make(map[string]bool)
+	var results []AnvilPollStatus
+	for rows.Next() {
+		var anvil, ts, typ, msg string
+		if err := rows.Scan(&anvil, &ts, &typ, &msg); err != nil {
+			return nil, err
+		}
+		if seen[anvil] {
+			continue
+		}
+		seen[anvil] = true
+		results = append(results, AnvilPollStatus{
+			Anvil:     anvil,
+			Timestamp: parseTime(ts),
+			OK:        typ == string(EventPoll),
+			Message:   msg,
+		})
+		if len(seen) == len(wanted) {
+			break
+		}
+	}
+	return results, rows.Err()
+}
+
 // --- Retry tracking ---
 
 // RetryRecord tracks retry state for a bead.
