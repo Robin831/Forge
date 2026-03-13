@@ -479,3 +479,33 @@ rules:
       check: Verify that all parallel arrays or switch cases indexed by iota constants are updated in sync — inserting a new iota value shifts all subsequent values, so every array, slice literal, or map keyed by those constants must add the new entry at the correct position
       source: copilot:PR#230
       added: "2026-03-13"
+    - id: changelog-accuracy
+      category: other
+      pattern: Changelog entries that describe new features or behavior changes
+      check: Verify that changelog descriptions accurately reflect the actual implemented behavior — don't claim functionality (e.g., 'enables autostart') if the code only partially implements it (e.g., only runs daemon-reload without enabling the service)
+      source: copilot:PR#235
+      added: "2026-03-13"
+    - id: alpine-user-management-compat
+      category: other
+      pattern: Shell scripts using useradd, getent, or /usr/sbin/nologin for user management in packages targeting multiple Linux distributions including Alpine
+      check: Verify that user creation and existence checks are portable across distros. Alpine (apk) lacks useradd by default — use `id -u <user>` for existence checks and fall back to `adduser` when `useradd` is unavailable, or declare the required package dependency for apk builds.
+      source: copilot:PR#235
+      added: "2026-03-13"
+    - id: systemd-service-enable
+      category: other
+      pattern: Package post-install scripts that run systemctl daemon-reload for a service unit
+      check: Verify that if documentation or changelog claims the service auto-starts after install, the post-install script actually calls systemctl enable (and optionally start) for the service. If the script only reloads the daemon, update either the script or the documentation so they match.
+      source: copilot:PR#235
+      added: "2026-03-13"
+    - id: systemd-protecthome-breaks-homedir-access
+      category: security
+      pattern: systemd service unit files with ProtectHome=read-only or ProtectHome=true for services that need write access to user home directories
+      check: Verify that systemd hardening directives (ProtectHome, ProtectSystem, etc.) do not prevent the service from accessing paths it needs at runtime — especially home directories containing repos or worktrees. If hardening is desired, prefer making it configurable via a drop-in override rather than baking in restrictive defaults.
+      source: copilot:PR#235
+      added: "2026-03-13"
+    - id: service-config-path-mismatch
+      category: other
+      pattern: Systemd service files that declare ConfigurationDirectory or create config directories but do not pass an explicit --config flag or set WorkingDirectory in ExecStart
+      check: Verify that the service ExecStart command references the configuration path established by ConfigurationDirectory (e.g. --config /etc/<name>/config.yaml) or sets WorkingDirectory appropriately, so the process actually reads config from the expected location rather than falling back to CWD or home directory defaults
+      source: copilot:PR#235
+      added: "2026-03-13"
