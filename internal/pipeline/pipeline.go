@@ -103,6 +103,11 @@ type Params struct {
 	// repo default branch (origin/main or origin/master).
 	BaseBranch string
 
+	// ResetBranch, when true, instructs worktree creation to hard-reset an
+	// existing branch back to the base ref. Set on retries to discard bad
+	// commits from a previous failed pipeline run.
+	ResetBranch bool
+
 	// SchematicConfig controls the Schematic pre-worker. When nil, Schematic
 	// is disabled (the default).
 	SchematicConfig *schematic.Config
@@ -181,7 +186,8 @@ func Run(ctx context.Context, p Params) *Outcome {
 	if createWorktree == nil {
 		createWorktree = func(ctx context.Context, anvilPath, beadID string) (*worktree.Worktree, error) {
 			return p.WorktreeManager.CreateWithOptions(ctx, anvilPath, beadID, worktree.CreateOptions{
-				BaseBranch: p.BaseBranch,
+				BaseBranch:  p.BaseBranch,
+				ResetBranch: p.ResetBranch,
 			})
 		}
 	}

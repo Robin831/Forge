@@ -1466,6 +1466,14 @@ normalPipeline:
 		WorkerID:        claimWorkerID,
 		MaxIterations:   d.cfg.Load().Settings.MaxPipelineIterations,
 	}
+
+	// If this bead has had previous dispatch failures, reset the worktree
+	// branch to the base ref so the retry starts from a clean state. This
+	// prevents inheriting junk commits from a failed pipeline run.
+	if retry, err := d.db.GetRetry(bead.ID, bead.Anvil); err == nil && retry != nil && retry.DispatchFailures > 0 {
+		pipelineParams.ResetBranch = true
+		d.logger.Info("resetting worktree branch for retry", "bead", bead.ID, "failures", retry.DispatchFailures)
+	}
 	if d.cfg.Load().Settings.SchematicEnabled {
 		wordThreshold := d.cfg.Load().Settings.SchematicWordThreshold
 		if wordThreshold <= 0 {
