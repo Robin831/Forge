@@ -1871,10 +1871,10 @@ type NotesResultMsg struct {
 	Err    error
 }
 
-// QueueActionResultMsg is delivered asynchronously when a queue action (tag/close) completes.
+// QueueActionResultMsg is delivered asynchronously when a queue action (tag/close/stop) completes.
 type QueueActionResultMsg struct {
 	BeadID string
-	Action string // "tag" or "close"
+	Action string // "tag", "close", or "stop"
 	Err    error
 }
 
@@ -2007,6 +2007,7 @@ func buildQueueActionForm(item *QueueItem, choice *QueueActionMenuChoice) *huh.F
 				Title(fmt.Sprintf("Actions for %s", item.BeadID)).
 				Options(
 					huh.NewOption("Label for dispatch — Tag bead for auto-dispatch", QueueActionLabel),
+					huh.NewOption("Stop              — Prevent all processing", QueueActionStop),
 					huh.NewOption("Close             — Close this bead", QueueActionClose),
 				).
 				Value(choice),

@@ -2121,6 +2121,17 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return r
 		}, reason)
 
+		// Validate the anvil exists and has a path, matching tag_bead/close_bead.
+		anvilCfg, ok := d.cfg.Load().Anvils[sp.Anvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", sp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if anvilCfg.Path == "" {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", sp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
 		// Kill any running worker for this bead.
 		if w, err := d.db.ActiveWorkerByBeadAndAnvil(sp.BeadID, sp.Anvil); err == nil && w != nil {
 			if w.PID > 0 {
@@ -2148,15 +2159,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		d.activeBeads.Delete(sp.BeadID)
 
 		// Release bead back to open so it's visible but not dispatched.
-		anvilCfg, ok := d.cfg.Load().Anvils[sp.Anvil]
-		if ok && anvilCfg.Path != "" {
-			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer releaseCancel()
-			releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", sp.BeadID, "--status=open", "--assignee=", "--json"))
-			releaseCmd.Dir = anvilCfg.Path
-			if out, err := releaseCmd.CombinedOutput(); err != nil {
-				d.logger.Warn("bd update failed when releasing stopped bead", "bead", sp.BeadID, "error", err, "output", strings.TrimSpace(string(out)))
-			}
+		releaseCtx, releaseCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		defer releaseCancel()
+		releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", sp.BeadID, "--status=open", "--assignee=", "--json"))
+		releaseCmd.Dir = anvilCfg.Path
+		if out, err := releaseCmd.CombinedOutput(); err != nil {
+			d.logger.Warn("bd update failed when releasing stopped bead", "bead", sp.BeadID, "error", err, "output", strings.TrimSpace(string(out)))
+			errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead stopped but bd release failed: %v", err)})
+			return ipc.Response{Type: "error", Payload: errMsg}
 		}
 
 		_ = d.db.LogEvent(state.EventBeadStopped, fmt.Sprintf("Bead %s stopped: %s", sp.BeadID, reason), sp.BeadID, sp.Anvil)
