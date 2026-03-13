@@ -3085,7 +3085,12 @@ func (m *Model) renderWorkerList(width, height int) string {
 		style = focusedPanelStyle.Width(width)
 	}
 
-	title := panelTitleStyle.Render(fmt.Sprintf("Workers (%d)", len(m.workers)))
+	// Render the title WITHOUT MarginBottom. The default panelTitleStyle uses
+	// MarginBottom(1), which pads the margin line to the title width. When
+	// concatenated with the table, that padding joins with the header's first
+	// line, creating an oversized line (title_width + header_width) that wraps.
+	workerTitleStyle := panelTitleStyle.MarginBottom(0)
+	title := workerTitleStyle.Render(fmt.Sprintf("Workers (%d)", len(m.workers)))
 
 	// panelStyle.Width(w) includes padding but not border.
 	// Inner content width = w - border(2). Padding is already inside w.
@@ -3146,7 +3151,11 @@ func (m *Model) renderWorkerList(width, height int) string {
 		m.workerTable.SetColumns(cols)
 	}
 
-	content := title + m.workerTable.View()
+	// Use explicit "\n" instead of relying on panelTitleStyle.MarginBottom.
+	// MarginBottom pads the margin line to the title width, and string
+	// concatenation joins that padding with the table header's first line,
+	// creating an oversized line that wraps inside the panel.
+	content := title + "\n" + m.workerTable.View()
 	return style.Height(height).Render(content)
 }
 
