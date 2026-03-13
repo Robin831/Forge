@@ -105,6 +105,12 @@ type Config struct {
 	// ExtraFlags are additional CLI flags forwarded to the Claude session
 	// (e.g. model selection, auth tokens). Mirrors pipeline.Params.ExtraFlags.
 	ExtraFlags []string
+	// OnSpawn is an optional callback invoked immediately after the AI
+	// subprocess is started, before waiting for it to finish. It receives the
+	// process PID and the path to the session log file. Use this to update
+	// monitoring records (e.g. the worker DB row) so that live-tail and
+	// progress tracking work during the schematic phase.
+	OnSpawn func(pid int, logPath string)
 }
 
 // DefaultConfig returns sensible defaults for Schematic.
@@ -184,6 +190,9 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 			Duration: time.Since(start),
 			Error:    fmt.Errorf("spawning schematic: %w", err),
 		}
+	}
+	if cfg.OnSpawn != nil {
+		cfg.OnSpawn(process.PID, process.LogPath)
 	}
 
 	smithResult := process.Wait()
@@ -508,6 +517,9 @@ func RunCrucibleCheck(ctx context.Context, cfg Config, parent poller.Bead, child
 			Reason:        fmt.Sprintf("Failed to spawn session: %v — defaulting to standalone", err),
 			Duration:      time.Since(start),
 		}
+	}
+	if cfg.OnSpawn != nil {
+		cfg.OnSpawn(process.PID, process.LogPath)
 	}
 
 	smithResult := process.Wait()

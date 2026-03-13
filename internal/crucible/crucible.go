@@ -49,6 +49,11 @@ type Params struct {
 	SmithTimeout          time.Duration
 	MaxPipelineIterations int
 
+	// WorkerID is the state DB worker record ID for this crucible run.
+	// When set, the worker's PID and log_path are updated when the schematic
+	// subprocess starts so that hearth can tail logs in real time.
+	WorkerID string
+
 	// StatusCallback is called when crucible state changes (for TUI tracking).
 	StatusCallback func(Status)
 
@@ -116,7 +121,15 @@ func Run(ctx context.Context, p Params) *Result {
 	// 1b. Run schematic on the parent bead to detect parent-has-work mode.
 	parentHasWork := false
 	if p.SchematicConfig != nil && len(p.Providers) > 0 {
-		schemResult := p.runSchematic(ctx, *p.SchematicConfig, p.ParentBead, anvilPath, p.Providers[0])
+		schemCfg := *p.SchematicConfig
+		if p.DB != nil && p.WorkerID != "" {
+			wID := p.WorkerID
+			schemCfg.OnSpawn = func(pid int, logPath string) {
+				_ = p.DB.UpdateWorkerPID(wID, pid)
+				_ = p.DB.UpdateWorkerLogPath(wID, logPath)
+			}
+		}
+		schemResult := p.runSchematic(ctx, schemCfg, p.ParentBead, anvilPath, p.Providers[0])
 		if schemResult != nil && schemResult.Action == schematic.ActionPlan {
 			parentHasWork = true
 			log.Info("parent bead has own work, running parent-first mode", "plan_len", len(schemResult.Plan))

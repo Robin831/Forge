@@ -288,6 +288,13 @@ func Run(ctx context.Context, p Params) *Outcome {
 		if p.AnvilConfig.SchematicEnabled != nil {
 			schemCfg.Enabled = *p.AnvilConfig.SchematicEnabled
 		}
+		if p.DB != nil {
+			wID := workerID
+			schemCfg.OnSpawn = func(pid int, logPath string) {
+				_ = p.DB.UpdateWorkerPID(wID, pid)
+				_ = p.DB.UpdateWorkerLogPath(wID, logPath)
+			}
+		}
 
 		if schematic.ShouldRun(schemCfg, p.Bead) {
 			log.Printf("[pipeline:%s] Running Schematic pre-analysis", workerID)
