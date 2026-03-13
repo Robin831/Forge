@@ -40,6 +40,11 @@ type CreateOptions struct {
 	// or origin/master (auto-detected). When set, the worktree branches from
 	// origin/<BaseBranch> instead.
 	BaseBranch string
+	// ResetBranch, when true, resets an existing worktree branch back to the
+	// base ref (origin/main or origin/<BaseBranch>) instead of reusing the
+	// branch as-is. This discards all previous commits on the branch,
+	// preventing cascading junk from failed pipeline runs.
+	ResetBranch bool
 }
 
 // Manager handles creating and tearing down worktrees.
@@ -88,7 +93,21 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 	// leftover directory from a failed run), remove it so we can create fresh.
 	if _, err := os.Stat(worktreePath); err == nil {
 		if isValidWorktree(ctx, worktreePath) {
-			// Reset the working tree to HEAD so it's clean for the next action.
+			if opts.ResetBranch {
+				// Hard-reset the branch back to the base ref, discarding all
+				// previous commits. This prevents inheriting junk from a
+				// failed pipeline run.
+				_ = gitCmd(ctx, worktreePath, "fetch", "origin")
+				var baseRef string
+				if opts.BaseBranch != "" {
+					baseRef = "origin/" + opts.BaseBranch
+				} else {
+					baseRef, _ = resolveBaseRef(ctx, worktreePath)
+				}
+				if baseRef != "" {
+					_ = gitCmd(ctx, worktreePath, "reset", "--hard", baseRef)
+				}
+			}
 			_ = gitCmd(ctx, worktreePath, "checkout", "--force", "HEAD")
 			_ = gitCmd(ctx, worktreePath, "clean", "-fd")
 			return &Worktree{Path: worktreePath, Branch: targetBranch}, nil

@@ -198,3 +198,98 @@ func TestVerifyAndRecoverMain_RecoveryFails(t *testing.T) {
 		t.Errorf("expected original branch=feature-only, got %q", branch)
 	}
 }
+
+// TestCreateWithOptions_ResetBranch verifies that ResetBranch=true discards
+// commits made by a previous pipeline run and resets the branch back to the
+// base ref (origin/main).
+func TestCreateWithOptions_ResetBranch(t *testing.T) {
+	// Set up a "remote" bare repo with one commit on main.
+	remoteDir := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+		}
+	}
+	run(remoteDir, "init", "--bare", "--initial-branch=main")
+
+	// Clone the bare repo to serve as our "anvil".
+	anvilDir := t.TempDir()
+	run(anvilDir, "clone", remoteDir, ".")
+	run(anvilDir, "config", "user.email", "test@example.com")
+	run(anvilDir, "config", "user.name", "Test")
+	readme := filepath.Join(anvilDir, "README")
+	if err := os.WriteFile(readme, []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(anvilDir, "add", "README")
+	run(anvilDir, "commit", "-m", "init")
+	run(anvilDir, "push", "origin", "main")
+
+	// Record the base commit hash (this is origin/main).
+	baseHash := gitOutput(t, anvilDir, "rev-parse", "origin/main")
+
+	// First call: create worktree normally.
+	mgr := NewManager()
+	ctx := context.Background()
+	wt, err := mgr.CreateWithOptions(ctx, anvilDir, "test-bead", CreateOptions{})
+	if err != nil {
+		t.Fatalf("first CreateWithOptions: %v", err)
+	}
+
+	// Simulate a bad Smith run: write a file, commit, and push.
+	badFile := filepath.Join(wt.Path, "bad-change.txt")
+	if err := os.WriteFile(badFile, []byte("junk\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(wt.Path, "add", "bad-change.txt")
+	run(wt.Path, "commit", "-m", "bad commit from failed smith")
+	run(wt.Path, "push", "origin", wt.Branch)
+
+	badHash := gitOutput(t, wt.Path, "rev-parse", "HEAD")
+	if badHash == baseHash {
+		t.Fatal("bad commit should differ from base")
+	}
+
+	// Second call WITHOUT ResetBranch: should reuse with bad commit intact.
+	wt2, err := mgr.CreateWithOptions(ctx, anvilDir, "test-bead", CreateOptions{})
+	if err != nil {
+		t.Fatalf("second CreateWithOptions (no reset): %v", err)
+	}
+	hashAfterReuse := gitOutput(t, wt2.Path, "rev-parse", "HEAD")
+	if hashAfterReuse != badHash {
+		t.Errorf("without ResetBranch: expected HEAD=%s (bad), got %s", badHash, hashAfterReuse)
+	}
+
+	// Third call WITH ResetBranch: should reset back to origin/main.
+	wt3, err := mgr.CreateWithOptions(ctx, anvilDir, "test-bead", CreateOptions{
+		ResetBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("third CreateWithOptions (with reset): %v", err)
+	}
+	hashAfterReset := gitOutput(t, wt3.Path, "rev-parse", "HEAD")
+	if hashAfterReset != baseHash {
+		t.Errorf("with ResetBranch: expected HEAD=%s (base), got %s", baseHash, hashAfterReset)
+	}
+
+	// Verify the bad file is gone.
+	if _, err := os.Stat(filepath.Join(wt3.Path, "bad-change.txt")); !os.IsNotExist(err) {
+		t.Error("with ResetBranch: bad-change.txt should not exist after reset")
+	}
+}
+
+// gitOutput runs a git command and returns trimmed stdout.
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
