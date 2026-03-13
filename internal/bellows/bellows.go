@@ -406,14 +406,18 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 
 	// If all merge-readiness conditions are met and the PR was in needs_fix,
 	// restore it to approved so the Ready-to-Merge panel picks it up again.
-	if newSnap.HasApproval && newSnap.CIPassing && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews {
+	// Note: HasApproval is intentionally excluded — Copilot only submits
+	// COMMENTED reviews, never APPROVED, so requiring it would prevent PRs
+	// from ever reaching the Ready-to-Merge state.
+	if newSnap.CIPassing && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews {
 		_ = m.db.UpdatePRStatusIfNeedsFix(pr.ID, state.PRApproved)
 	}
 
-	// Detect transition to fully ready-to-merge state (approved + CI passing +
+	// Detect transition to fully ready-to-merge state (CI passing +
 	// no conflicts, unresolved threads, or pending reviews).
-	newReady := newSnap.HasApproval && newSnap.CIPassing && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews
-	lastReady := lastSnap.HasApproval && lastSnap.CIPassing && !lastSnap.IsConflicting && !lastSnap.HasUnresolvedThreads && !lastSnap.HasPendingReviews
+	// This matches the ReadyToMergePRs query in state/db.go.
+	newReady := newSnap.CIPassing && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews
+	lastReady := lastSnap.CIPassing && !lastSnap.IsConflicting && !lastSnap.HasUnresolvedThreads && !lastSnap.HasPendingReviews
 	if newReady && !lastReady {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
@@ -421,7 +425,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Anvil:     pr.Anvil,
 			Branch:    status.HeadRefName,
 			EventType: EventPRReadyToMerge,
-			Details:   fmt.Sprintf("PR #%d is ready to merge (CI passing, approved, no blocking reviews)", pr.Number),
+			Details:   fmt.Sprintf("PR #%d is ready to merge (CI passing, no blocking reviews)", pr.Number),
 			Timestamp: time.Now(),
 			PRURL:     status.URL,
 		})

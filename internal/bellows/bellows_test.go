@@ -171,6 +171,36 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 			new:        prSnapshot{IsClosed: true},
 			wantEvents: []string{EventPRClosed},
 		},
+		{
+			name: "CI passes with no blockers → pr_ready_to_merge (no approval needed)",
+			old:  prSnapshot{CIPassing: false},
+			new:  prSnapshot{CIPassing: true},
+			wantEvents: []string{EventPRReadyToMerge},
+		},
+		{
+			name: "already ready → no pr_ready_to_merge event",
+			old:  prSnapshot{CIPassing: true},
+			new:  prSnapshot{CIPassing: true},
+			noEvents: []string{EventPRReadyToMerge},
+		},
+		{
+			name: "CI passes but has unresolved threads → not ready",
+			old:  prSnapshot{CIPassing: false},
+			new:  prSnapshot{CIPassing: true, HasUnresolvedThreads: true},
+			noEvents: []string{EventPRReadyToMerge},
+		},
+		{
+			name: "CI passes but conflicting → not ready",
+			old:  prSnapshot{CIPassing: false},
+			new:  prSnapshot{CIPassing: true, IsConflicting: true},
+			noEvents: []string{EventPRReadyToMerge},
+		},
+		{
+			name: "threads resolved while CI passing → pr_ready_to_merge",
+			old:  prSnapshot{CIPassing: true, HasUnresolvedThreads: true},
+			new:  prSnapshot{CIPassing: true, HasUnresolvedThreads: false},
+			wantEvents: []string{EventPRReadyToMerge},
+		},
 	}
 
 	for _, tt := range tests {
@@ -226,6 +256,15 @@ func computeTransitionEventsWithPR(old, new *prSnapshot, prStatus string, ciFixC
 
 	if new.IsConflicting && !old.IsConflicting {
 		events = append(events, EventPRConflicting)
+	}
+
+	// Ready-to-merge transition: CI passing + no conflicts, unresolved
+	// threads, or pending reviews. HasApproval is intentionally excluded
+	// because Copilot only submits COMMENTED reviews, never APPROVED.
+	newReady := new.CIPassing && !new.IsConflicting && !new.HasUnresolvedThreads && !new.HasPendingReviews
+	lastReady := old.CIPassing && !old.IsConflicting && !old.HasUnresolvedThreads && !old.HasPendingReviews
+	if newReady && !lastReady {
+		events = append(events, EventPRReadyToMerge)
 	}
 
 	return events

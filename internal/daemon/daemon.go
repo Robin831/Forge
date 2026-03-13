@@ -754,14 +754,18 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 		return
 	}
 	title := d.db.BeadTitle(event.BeadID, event.Anvil)
+	// Use a detached context with timeout — the bellows polling ctx may be
+	// cancelled before the notification HTTP calls complete.
+	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	go func(anvil, beadID string, prNumber int, prURL, title string) {
+		defer notifyCancel()
 		if n := d.notifier.Load(); n != nil {
-			n.PRReadyToMerge(ctx, anvil, beadID, prNumber, prURL, title)
+			n.PRReadyToMerge(notifyCtx, anvil, beadID, prNumber, prURL, title)
 		}
 		// Dispatch to generic webhook targets (new webhooks[] config).
 		if disp != nil {
 			msg := fmt.Sprintf("PR #%d ready to merge: %s", prNumber, prURL)
-			disp.Dispatch(ctx, notify.EventPRReadyToMerge, beadID, anvil, msg)
+			disp.Dispatch(notifyCtx, notify.EventPRReadyToMerge, beadID, anvil, msg)
 		}
 		// Legacy pr_ready_webhook_urls support.
 		if cfg != nil && cfg.Notifications.Enabled {
@@ -779,7 +783,7 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 				PR:      prNumber,
 			}
 			for _, u := range cfg.Notifications.PRReadyWebhookURLs {
-				notify.SendGenericPRReadyToMerge(ctx, u, payload, d.logger)
+				notify.SendGenericPRReadyToMerge(notifyCtx, u, payload, d.logger)
 			}
 		}
 	}(event.Anvil, event.BeadID, event.PRNumber, event.PRURL, title)
