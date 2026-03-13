@@ -1211,16 +1211,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Advance spinner frame and schedule the next spinner tick.
 		m.spinnerFrame = (m.spinnerFrame + 1) % len(SpinnerFrames)
 
-		// Update table rows to animate spinners
+		// Only animate status cells for workers that use a spinner frame
+		// (running/reviewing). Skip SetRows entirely when no spinner is active.
 		if len(m.workers) > 0 {
-			rows := m.workerTable.Rows()
 			frame := SpinnerFrames[m.spinnerFrame%len(SpinnerFrames)]
-			for i, w := range m.workers {
-				if i < len(rows) {
-					rows[i][0] = workerStatusStyle(w.Status, frame)
+			var hasSpinner bool
+			for _, w := range m.workers {
+				if w.Status == "running" || w.Status == "reviewing" {
+					hasSpinner = true
+					break
 				}
 			}
-			m.workerTable.SetRows(rows)
+			if hasSpinner {
+				rows := m.workerTable.Rows()
+				for i, w := range m.workers {
+					if i < len(rows) && (w.Status == "running" || w.Status == "reviewing") {
+						rows[i][0] = workerStatusStyle(w.Status, frame)
+					}
+				}
+				m.workerTable.SetRows(rows)
+			}
 		}
 
 		return m, SpinnerTick()
@@ -2722,13 +2732,22 @@ func (m *Model) renderWorkerList(width, height int) string {
 		cols[4].Width = max(6, avail*20/100)
 		cols[5].Width = max(4, avail*10/100)
 
-		// Ensure total width does not exceed avail due to rounding
+		// Trim columns in reverse-priority order (least important first) until
+		// total <= avail. Each column is only reduced to a floor of 1.
+		// This guarantees sum(widths) <= avail for any avail >= 1.
+		trimOrder := [6]int{0, 5, 1, 4, 2, 3} // Status, Time, Type, Anvil, Bead, Task
 		total := 0
 		for _, c := range cols {
 			total += c.Width
 		}
-		if total > avail {
-			cols[3].Width = max(1, cols[3].Width-(total-avail)) // Adjust largest column, never go negative
+		for _, idx := range trimOrder {
+			if total <= avail {
+				break
+			}
+			excess := total - avail
+			reduction := min(excess, cols[idx].Width-1)
+			cols[idx].Width -= reduction
+			total -= reduction
 		}
 
 		m.workerTable.SetColumns(cols)
