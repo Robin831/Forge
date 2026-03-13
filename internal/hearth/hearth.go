@@ -430,11 +430,11 @@ func NewModel(ds *DataSource) Model {
 
 	columns := []table.Column{
 		{Title: " ", Width: 1},
-		{Title: "Type", Width: 8},
-		{Title: "Bead", Width: 12},
-		{Title: "Task", Width: 20},
-		{Title: "Anvil", Width: 10},
-		{Title: "Time", Width: 6},
+		{Title: " Type", Width: 8},
+		{Title: " Bead", Width: 12},
+		{Title: " Task", Width: 20},
+		{Title: " Anvil", Width: 10},
+		{Title: " Time", Width: 6},
 	}
 	t := table.New(
 		table.WithColumns(columns),
@@ -442,15 +442,17 @@ func NewModel(ds *DataSource) Model {
 	)
 
 	s := table.DefaultStyles()
-	// Start from a fresh style to avoid inheriting the default Padding(0,1).
-	// Padding would make each header cell wider than col.Width, causing the
-	// header row to exceed SetWidth and wrap across multiple lines.
+	// Use fresh styles without Padding(0,1) for Header, Cell, and Selected.
+	// The default Cell/Header padding adds 2 chars per column outside of Width,
+	// which causes rows to overflow the panel border. All three styles must
+	// agree on padding so every row renders at the same width.
 	s.Header = lipgloss.NewStyle().
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(colorMuted).
 		BorderBottom(true).
 		Bold(false)
-	s.Selected = s.Selected.
+	s.Cell = lipgloss.NewStyle()
+	s.Selected = lipgloss.NewStyle().
 		Foreground(colorFg).
 		Background(colorAccent).
 		Bold(true)
@@ -1164,11 +1166,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			rows[i] = table.Row{
 				status,
-				w.Type,
-				beadCol,
-				taskCol,
-				w.Anvil,
-				w.Duration,
+				" " + w.Type,
+				" " + beadCol,
+				" " + taskCol,
+				" " + w.Anvil,
+				" " + w.Duration,
 			}
 		}
 		m.workerTable.SetRows(rows)
@@ -1536,7 +1538,7 @@ func (m *Model) getTopPanelWidths() (queueWidth, workerWidth, activityWidth int)
 		remainingWidth = 0
 	}
 	queueWidth = remainingWidth / 5
-	workerWidth = remainingWidth / 4
+	workerWidth = remainingWidth * 2 / 5
 	activityWidth = remainingWidth - queueWidth - workerWidth
 	return
 }
@@ -3105,13 +3107,14 @@ func (m *Model) renderWorkerList(width, height int) string {
 			avail = 1
 		}
 
-		// Ratios: Status 5%, Type 10%, Bead 20%, Task 35%, Anvil 20%, Time 10%
-		cols[0].Width = max(1, avail*5/100)
-		cols[1].Width = max(4, avail*10/100)
-		cols[2].Width = max(6, avail*20/100)
-		cols[3].Width = max(10, avail*35/100)
-		cols[4].Width = max(6, avail*20/100)
-		cols[5].Width = max(4, avail*10/100)
+		// Ratios: Status 3%, Type 10%, Bead 20%, Task 37%, Anvil 20%, Time 10%
+		// Cell style has no padding, so column widths include visual spacing.
+		cols[0].Width = max(2, avail*3/100)
+		cols[1].Width = max(5, avail*10/100)
+		cols[2].Width = max(8, avail*20/100)
+		cols[3].Width = max(12, avail*37/100)
+		cols[4].Width = max(8, avail*20/100)
+		cols[5].Width = max(5, avail*10/100)
 
 		// Trim columns in reverse-priority order (least important first) until
 		// total <= avail. Each column is only reduced to a floor of 1.
