@@ -454,7 +454,7 @@ func NewModel(ds *DataSource) Model {
 	s.Cell = lipgloss.NewStyle()
 	s.Selected = lipgloss.NewStyle().
 		Foreground(colorFg).
-		Background(colorAccent).
+		Background(lipgloss.AdaptiveColor{Dark: "236", Light: "254"}).
 		Bold(true)
 	t.SetStyles(s)
 
@@ -1155,7 +1155,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		rows := make([]table.Row, len(msg.Items))
 		frame := SpinnerFrames[m.spinnerFrame%len(SpinnerFrames)]
 		for i, w := range msg.Items {
-			status := workerStatusStyle(w.Status, frame)
+			status := workerStatusIndicator(w.Status, frame)
 			beadCol := w.BeadID
 			if w.PRNumber > 0 {
 				beadCol = fmt.Sprintf("%s (PR#%d)", w.BeadID, w.PRNumber)
@@ -1393,7 +1393,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				rows := m.workerTable.Rows()
 				for i, w := range m.workers {
 					if i < len(rows) && (w.Status == "running" || w.Status == "reviewing") {
-						rows[i][0] = workerStatusStyle(w.Status, frame)
+						rows[i][0] = workerStatusIndicator(w.Status, frame)
 					}
 				}
 				m.workerTable.SetRows(rows)
@@ -3668,22 +3668,25 @@ func priorityStyle(p int) string {
 	return lipgloss.NewStyle().Foreground(c).Render(fmt.Sprintf("P%d", p))
 }
 
-// workerStatusStyle returns a colored status indicator.
-// frame is the current spinner animation frame, used for active (running/reviewing) states.
-func workerStatusStyle(status, frame string) string {
+// workerStatusIndicator returns a plain-text status indicator.
+// The Bubbles table internally calls runewidth.Truncate on cell values which
+// does not handle ANSI escape sequences — it counts escape bytes as visible
+// characters, corrupting styled strings and breaking row alignment.
+// Return plain characters only; color is not possible per-cell in this table.
+func workerStatusIndicator(status, frame string) string {
 	switch status {
 	case "running":
-		return lipgloss.NewStyle().Foreground(colorSuccess).Render(frame)
+		return frame
 	case "reviewing":
-		return lipgloss.NewStyle().Foreground(colorWarning).Render(frame)
+		return frame
 	case "monitoring":
-		return lipgloss.NewStyle().Foreground(colorBlue).Render("○")
+		return "○"
 	case "done":
-		return lipgloss.NewStyle().Foreground(colorSuccess).Render("✓")
+		return "✓"
 	case "failed":
-		return lipgloss.NewStyle().Foreground(colorDanger).Render("✗")
+		return "✗"
 	default:
-		return lipgloss.NewStyle().Foreground(colorMuted).Render("○")
+		return "○"
 	}
 }
 

@@ -1922,9 +1922,9 @@ func TestWorkerStatusStyleAnimated(t *testing.T) {
 		{"reviewing", frame},
 	}
 	for _, tt := range tests {
-		got := workerStatusStyle(tt.status, frame)
+		got := workerStatusIndicator(tt.status, frame)
 		if !strings.Contains(got, tt.wantText) {
-			t.Errorf("workerStatusStyle(%q, %q): expected spinner frame in output, got %q", tt.status, frame, got)
+			t.Errorf("workerStatusIndicator(%q, %q): expected spinner frame in output, got %q", tt.status, frame, got)
 		}
 	}
 }
@@ -1941,23 +1941,23 @@ func TestWorkerStatusStyleStatic(t *testing.T) {
 		{"unknown", "○"},
 	}
 	for _, tt := range tests {
-		got := workerStatusStyle(tt.status, frame)
+		got := workerStatusIndicator(tt.status, frame)
 		if !strings.Contains(got, tt.wantText) {
-			t.Errorf("workerStatusStyle(%q, %q): expected %q in output, got %q", tt.status, frame, tt.wantText, got)
+			t.Errorf("workerStatusIndicator(%q, %q): expected %q in output, got %q", tt.status, frame, tt.wantText, got)
 		}
 		// Static statuses must not embed the spinner frame
 		if tt.status != "running" && tt.status != "reviewing" && strings.Contains(got, frame) {
-			t.Errorf("workerStatusStyle(%q, %q): static status must not contain spinner frame, got %q", tt.status, frame, got)
+			t.Errorf("workerStatusIndicator(%q, %q): static status must not contain spinner frame, got %q", tt.status, frame, got)
 		}
 	}
 }
 
 func TestWorkerStatusStyleFrameChanges(t *testing.T) {
 	// Different frames should produce different output for animated statuses.
-	out1 := workerStatusStyle("running", "⣾")
-	out2 := workerStatusStyle("running", "⣽")
+	out1 := workerStatusIndicator("running", "⣾")
+	out2 := workerStatusIndicator("running", "⣽")
 	if out1 == out2 {
-		t.Errorf("workerStatusStyle(running): different frames should produce different output")
+		t.Errorf("workerStatusIndicator(running): different frames should produce different output")
 	}
 }
 
