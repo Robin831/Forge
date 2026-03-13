@@ -1258,6 +1258,13 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		return
 	}
 
+	// Force-independent beads skip all epic/crucible logic and go straight
+	// to the normal pipeline (e.g. running a child bead standalone).
+	if bead.ForceIndependent {
+		d.logger.Info("force-independent dispatch, skipping epic/crucible", "bead", bead.ID)
+		goto normalPipeline
+	}
+
 	// Handle epic beads: when the Crucible is enabled and the bead has children,
 	// fall through to the Crucible path which handles branch creation, child
 	// orchestration, and final PR. The legacy path only applies to epics that
@@ -1813,57 +1820,80 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
-		// Search for the bead in cache first
 		var targetBead *poller.Bead
-		d.lastBeadsMu.RLock()
-		for _, b := range d.lastBeads {
-			if b.ID == rp.BeadID && (rp.Anvil == "" || b.Anvil == rp.Anvil) {
-				tb := b // copy
-				targetBead = &tb
-				break
+
+		if rp.ForceRun {
+			// Force-run: fetch bead directly via bd show, bypassing bd ready.
+			// This allows running children, blocked beads, etc. independently.
+			if rp.Anvil == "" {
+				msg, _ := json.Marshal(map[string]string{"message": "force-run requires --anvil flag"})
+				return ipc.Response{Type: "error", Payload: msg}
 			}
-		}
-		d.lastBeadsMu.RUnlock()
-
-		// If not in cache, poll as fallback
-		if targetBead == nil {
-			d.logger.Info("bead not in cache, polling anvils", "bead", rp.BeadID)
-			p := poller.New(d.cfg.Load().Anvils)
-			var beads []poller.Bead
-			var pollErrors []string
-
-			if rp.Anvil != "" {
-				var err error
-				beads, err = p.PollSingle(context.Background(), rp.Anvil)
-				if err != nil {
-					msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found or poll failed: %v", rp.Anvil, err)})
-					return ipc.Response{Type: "error", Payload: msg}
-				}
-			} else {
-				var results []poller.AnvilResult
-				beads, results = p.Poll(context.Background())
-				for _, r := range results {
-					if r.Err != nil {
-						pollErrors = append(pollErrors, fmt.Sprintf("%s: %v", r.Name, r.Err))
-					}
-				}
+			anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]
+			if !ok {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", rp.Anvil)})
+				return ipc.Response{Type: "error", Payload: msg}
 			}
-
-			for _, b := range beads {
-				if b.ID == rp.BeadID {
-					tb := b
+			bead, err := crucible.FetchBead(context.Background(), rp.BeadID, anvilCfg.Path)
+			if err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd show %s: %v", rp.BeadID, err)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			bead.Anvil = rp.Anvil
+			bead.ForceIndependent = true
+			targetBead = &bead
+		} else {
+			// Normal path: search cache first, then poll via bd ready.
+			d.lastBeadsMu.RLock()
+			for _, b := range d.lastBeads {
+				if b.ID == rp.BeadID && (rp.Anvil == "" || b.Anvil == rp.Anvil) {
+					tb := b // copy
 					targetBead = &tb
 					break
 				}
 			}
+			d.lastBeadsMu.RUnlock()
 
+			// If not in cache, poll as fallback
 			if targetBead == nil {
-				errorMsg := fmt.Sprintf("bead %q not found or not ready", rp.BeadID)
-				if len(pollErrors) > 0 {
-					errorMsg += fmt.Sprintf(" (also %d anvils failed to poll: %v)", len(pollErrors), pollErrors)
+				d.logger.Info("bead not in cache, polling anvils", "bead", rp.BeadID)
+				p := poller.New(d.cfg.Load().Anvils)
+				var beads []poller.Bead
+				var pollErrors []string
+
+				if rp.Anvil != "" {
+					var err error
+					beads, err = p.PollSingle(context.Background(), rp.Anvil)
+					if err != nil {
+						msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found or poll failed: %v", rp.Anvil, err)})
+						return ipc.Response{Type: "error", Payload: msg}
+					}
+				} else {
+					var results []poller.AnvilResult
+					beads, results = p.Poll(context.Background())
+					for _, r := range results {
+						if r.Err != nil {
+							pollErrors = append(pollErrors, fmt.Sprintf("%s: %v", r.Name, r.Err))
+						}
+					}
 				}
-				msg, _ := json.Marshal(map[string]string{"message": errorMsg})
-				return ipc.Response{Type: "error", Payload: msg}
+
+				for _, b := range beads {
+					if b.ID == rp.BeadID {
+						tb := b
+						targetBead = &tb
+						break
+					}
+				}
+
+				if targetBead == nil {
+					errorMsg := fmt.Sprintf("bead %q not found or not ready", rp.BeadID)
+					if len(pollErrors) > 0 {
+						errorMsg += fmt.Sprintf(" (also %d anvils failed to poll: %v)", len(pollErrors), pollErrors)
+					}
+					msg, _ := json.Marshal(map[string]string{"message": errorMsg})
+					return ipc.Response{Type: "error", Payload: msg}
+				}
 			}
 		}
 
@@ -1893,11 +1923,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 
 		// Resolve epic branch if not already populated from the poll cache.
-		// Detection works via parent field (legacy) or blocks (preferred).
-		// When Crucible is enabled we first resolve blocks so that epic
-		// relationships can be derived even when the original ready JSON
-		// omitted the blocks field.
-		if targetBead.EpicBranch == "" {
+		// Skip entirely for force-run beads — they dispatch as standalone.
+		if !targetBead.ForceIndependent && targetBead.EpicBranch == "" {
 			anvilPath := d.cfg.Load().Anvils[targetBead.Anvil].Path
 			if anvilPath != "" {
 				paths := map[string]string{targetBead.Anvil: anvilPath}

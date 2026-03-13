@@ -208,7 +208,8 @@ func actionMenuLabels() [actionMenuCount]string {
 type QueueActionMenuChoice int
 
 const (
-	QueueActionLabel QueueActionMenuChoice = iota
+	QueueActionLabel    QueueActionMenuChoice = iota
+	QueueActionForceRun                       // Run independently — bypass bd ready, skip crucible
 	QueueActionClose
 	QueueActionStop
 
@@ -219,6 +220,7 @@ const (
 func queueActionMenuLabels() [queueActionMenuCount]string {
 	return [queueActionMenuCount]string{
 		"Label for dispatch — Tag bead for auto-dispatch",
+		"Run independently  — Bypass bd ready, skip crucible",
 		"Close             — Close this bead",
 		"Stop              — Prevent all processing",
 	}
@@ -297,6 +299,10 @@ type Model struct {
 
 	// Callback for closing a bead (set by the caller).
 	OnCloseBead func(beadID, anvil string) error
+
+	// Callback for force-running a bead independently (set by the caller).
+	// Dispatches via bd show, bypassing bd ready and crucible/parent checks.
+	OnForceRunBead func(beadID, anvil string) error
 
 	// Callback for merging a PR (set by the caller).
 	OnMergePR func(prID, prNumber int, anvil string) error
@@ -1292,6 +1298,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.Action {
 			case "tag":
 				m.setStatus(fmt.Sprintf("Failed to tag %s: %v", msg.BeadID, msg.Err), true)
+			case "force_run":
+				m.setStatus(fmt.Sprintf("Failed to force-run %s: %v", msg.BeadID, msg.Err), true)
 			case "stop":
 				m.setStatus(fmt.Sprintf("Failed to stop %s: %v", msg.BeadID, msg.Err), true)
 			default:
@@ -1301,6 +1309,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.Action {
 			case "tag":
 				m.setStatus(fmt.Sprintf("Tagged %s for dispatch", msg.BeadID), false)
+			case "force_run":
+				m.setStatus(fmt.Sprintf("Dispatched %s independently", msg.BeadID), false)
 			case "stop":
 				m.setStatus(fmt.Sprintf("Stopped %s", msg.BeadID), false)
 			default:
@@ -2022,10 +2032,10 @@ type NotesResultMsg struct {
 	Err    error
 }
 
-// QueueActionResultMsg is delivered asynchronously when a queue action (tag/close/stop) completes.
+// QueueActionResultMsg is delivered asynchronously when a queue action completes.
 type QueueActionResultMsg struct {
 	BeadID string
-	Action string // "tag", "close", or "stop"
+	Action string // "tag", "force_run", "close", or "stop"
 	Err    error
 }
 
@@ -2039,6 +2049,8 @@ func (m *Model) executeQueueAction(choice QueueActionMenuChoice) tea.Cmd {
 	switch choice {
 	case QueueActionLabel:
 		return m.tagSelectedQueueItem()
+	case QueueActionForceRun:
+		return m.forceRunSelectedQueueItem()
 	case QueueActionClose:
 		return m.closeSelectedQueueItem()
 	case QueueActionStop:
@@ -2099,6 +2111,25 @@ func (m *Model) stopSelectedQueueItem() tea.Cmd {
 	cb := m.OnStopBead
 	return func() tea.Msg {
 		return QueueActionResultMsg{BeadID: beadID, Action: "stop", Err: cb(beadID, anvil)}
+	}
+}
+
+// forceRunSelectedQueueItem dispatches the bead independently, bypassing
+// bd ready and skipping crucible/parent checks.
+func (m *Model) forceRunSelectedQueueItem() tea.Cmd {
+	if m.queueActionTarget == nil {
+		return nil
+	}
+	item := *m.queueActionTarget
+	if m.OnForceRunBead == nil {
+		m.setStatus(fmt.Sprintf("Force-run action unavailable for %s", item.BeadID), false)
+		return nil
+	}
+	m.setStatus(fmt.Sprintf("Force-running %s…", item.BeadID), false)
+	beadID, anvil := item.BeadID, item.Anvil
+	cb := m.OnForceRunBead
+	return func() tea.Msg {
+		return QueueActionResultMsg{BeadID: beadID, Action: "force_run", Err: cb(beadID, anvil)}
 	}
 }
 
@@ -2327,9 +2358,10 @@ func buildQueueActionForm(item *QueueItem, choice *QueueActionMenuChoice) *huh.F
 			huh.NewSelect[QueueActionMenuChoice]().
 				Title(fmt.Sprintf("Actions for %s", item.BeadID)).
 				Options(
-					huh.NewOption("Label for dispatch — Tag bead for auto-dispatch", QueueActionLabel),
-					huh.NewOption("Stop              — Prevent all processing", QueueActionStop),
-					huh.NewOption("Close             — Close this bead", QueueActionClose),
+					huh.NewOption("Label for dispatch  — Tag bead for auto-dispatch", QueueActionLabel),
+					huh.NewOption("Run independently   — Bypass ready check, skip crucible", QueueActionForceRun),
+					huh.NewOption("Stop                — Prevent all processing", QueueActionStop),
+					huh.NewOption("Close               — Close this bead", QueueActionClose),
 				).
 				Value(choice),
 		),

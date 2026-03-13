@@ -80,8 +80,9 @@ type KillWorkerPayload struct {
 
 // RunBeadPayload is the payload for a "run_bead" command.
 type RunBeadPayload struct {
-	BeadID string `json:"bead_id"`
-	Anvil  string `json:"anvil"` // Optional: narrows search if multiple anvils have same bead ID
+	BeadID   string `json:"bead_id"`
+	Anvil    string `json:"anvil"`     // Optional: narrows search if multiple anvils have same bead ID
+	ForceRun bool   `json:"force_run"` // When true, fetch via bd show (bypass bd ready), skip crucible/parent checks
 }
 
 // ClarificationPayload is the payload for "set_clarification" / "clear_clarification" commands.

@@ -1103,7 +1103,8 @@ func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
 	if m.queueActionForm == nil {
 		t.Fatal("expected menu open after Enter")
 	}
-	// Navigate to "Close" (index 2: Label=0, Stop=1, Close=2) and select it
+	// Navigate to "Close" (index 3: Label=0, ForceRun=1, Stop=2, Close=3) and select it
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1140,6 +1141,7 @@ func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	cmd = drainHuh(&m, cmd)
 	if cmd == nil {
@@ -1164,6 +1166,7 @@ func TestQueueActionMenuCloseNilOnCloseBead(t *testing.T) {
 	// OnCloseBead intentionally nil
 	m.rebuildQueueNav()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
