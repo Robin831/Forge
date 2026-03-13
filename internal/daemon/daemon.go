@@ -2263,17 +2263,16 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Circuit breaker reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
 			d.logger.Info("circuit breaker reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
 
-			// Clear the bead assignee so the poller can re-dispatch it.
-			// The poller filters out beads with a non-empty assignee, so if the
-			// previous pipeline failure left the assignee set the bead would
-			// remain permanently invisible after the circuit breaker reset.
+			// Reset bead status to open and clear assignee so the poller can
+			// re-dispatch it. The pipeline sets status=in_progress on claim,
+			// and bd ready only returns open beads.
 			if anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]; ok && anvilCfg.Path != "" {
-				clearCtx, clearCancel := context.WithTimeout(d.runCtx, 15*time.Second)
-				defer clearCancel()
-				clearCmd := executil.HideWindow(exec.CommandContext(clearCtx, "bd", "update", rp.BeadID, "--assignee=", "--json"))
-				clearCmd.Dir = anvilCfg.Path
-				if output, clearErr := clearCmd.CombinedOutput(); clearErr != nil {
-					d.logger.Warn("failed to clear bead assignee after circuit breaker reset", "bead", rp.BeadID, "error", clearErr, "output", string(output))
+				resetCtx, resetCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+				defer resetCancel()
+				statusCmd := executil.HideWindow(exec.CommandContext(resetCtx, "bd", "update", rp.BeadID, "--status=open", "--assignee=", "--json"))
+				statusCmd.Dir = anvilCfg.Path
+				if output, err := statusCmd.CombinedOutput(); err != nil {
+					d.logger.Warn("failed to reset bead status after circuit breaker reset", "bead", rp.BeadID, "error", err, "output", string(output))
 				}
 			}
 
@@ -2293,17 +2292,16 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Retry reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
 		d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
 
-		// Clear the bead assignee so the poller can re-dispatch it.
-		// The poller filters out beads with a non-empty assignee, so if the
-		// previous pipeline failure left the assignee set the bead would
-		// remain permanently invisible after the retry reset.
+		// Reset bead status to open and clear assignee so the poller can
+		// re-dispatch it. The pipeline sets status=in_progress on claim,
+		// and bd ready only returns open beads.
 		if anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]; ok && anvilCfg.Path != "" {
-			clearCtx, clearCancel := context.WithTimeout(d.runCtx, 15*time.Second)
-			defer clearCancel()
-			clearCmd := executil.HideWindow(exec.CommandContext(clearCtx, "bd", "update", rp.BeadID, "--assignee=", "--json"))
-			clearCmd.Dir = anvilCfg.Path
-			if output, clearErr := clearCmd.CombinedOutput(); clearErr != nil {
-				d.logger.Warn("failed to clear bead assignee after retry reset", "bead", rp.BeadID, "error", clearErr, "output", string(output))
+			resetCtx, resetCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+			defer resetCancel()
+			statusCmd := executil.HideWindow(exec.CommandContext(resetCtx, "bd", "update", rp.BeadID, "--status=open", "--assignee=", "--json"))
+			statusCmd.Dir = anvilCfg.Path
+			if output, resetErr := statusCmd.CombinedOutput(); resetErr != nil {
+				d.logger.Warn("failed to reset bead status after retry reset", "bead", rp.BeadID, "error", resetErr, "output", string(output))
 			}
 		}
 
