@@ -1156,15 +1156,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case QueueActionResultMsg:
 		if msg.Err != nil {
-			if msg.Action == "tag" {
+			switch msg.Action {
+			case "tag":
 				m.setStatus(fmt.Sprintf("Failed to tag %s: %v", msg.BeadID, msg.Err), true)
-			} else {
+			case "stop":
+				m.setStatus(fmt.Sprintf("Failed to stop %s: %v", msg.BeadID, msg.Err), true)
+			default:
 				m.setStatus(fmt.Sprintf("Failed to close %s: %v", msg.BeadID, msg.Err), true)
 			}
 		} else {
-			if msg.Action == "tag" {
+			switch msg.Action {
+			case "tag":
 				m.setStatus(fmt.Sprintf("Tagged %s for dispatch", msg.BeadID), false)
-			} else {
+			case "stop":
+				m.setStatus(fmt.Sprintf("Stopped %s", msg.BeadID), false)
+			default:
 				m.setStatus(fmt.Sprintf("Closed %s", msg.BeadID), false)
 			}
 		}

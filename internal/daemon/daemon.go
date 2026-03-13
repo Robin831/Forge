@@ -2113,6 +2113,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if reason == "" {
 			reason = "manually stopped"
 		}
+		// Sanitize reason to prevent terminal escape injection in event log.
+		reason = strings.Map(func(r rune) rune {
+			if r < 32 && r != '\n' {
+				return -1
+			}
+			return r
+		}, reason)
 
 		// Kill any running worker for this bead.
 		if w, err := d.db.ActiveWorkerByBeadAndAnvil(sp.BeadID, sp.Anvil); err == nil && w != nil {
