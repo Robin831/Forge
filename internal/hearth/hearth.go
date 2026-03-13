@@ -882,14 +882,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-			// Open action menu for selected Crucible
+			// Open action menu for selected Crucible (only when paused)
 			if m.focused == PanelCrucibles && len(m.crucibles) > 0 &&
 				m.crucibleVP.cursor < len(m.crucibles) {
-				m.crucibleActionTarget = new(CrucibleItem)
-				*m.crucibleActionTarget = m.crucibles[m.crucibleVP.cursor]
-				m.crucibleActionChoice = CrucibleActionResume
-				m.crucibleActionForm = buildCrucibleActionForm(m.crucibleActionTarget, &m.crucibleActionChoice)
-				return m, m.crucibleActionForm.Init()
+				item := m.crucibles[m.crucibleVP.cursor]
+				if item.Phase == "paused" {
+					m.crucibleActionTarget = new(CrucibleItem)
+					*m.crucibleActionTarget = item
+					m.crucibleActionChoice = CrucibleActionResume
+					m.crucibleActionForm = buildCrucibleActionForm(m.crucibleActionTarget, &m.crucibleActionChoice)
+					return m, m.crucibleActionForm.Init()
+				}
 			}
 			// Live Activity: toggle group expand/collapse
 			if m.focused == PanelLiveActivity && len(m.activityNavItems) > 0 &&

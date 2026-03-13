@@ -1801,10 +1801,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			statusCmd.Dir = anvilCfg.Path
 			if output, err := statusCmd.CombinedOutput(); err != nil {
 				d.logger.Warn("failed to reset crucible parent status", "bead", ca.ParentID, "error", err, "output", string(output))
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset crucible parent status: %v (%s)", err, string(output))})
+				return ipc.Response{Type: "error", Payload: msg}
 			}
 
 			// Clear the paused crucible status so it doesn't linger in the UI.
-			d.crucibleStatuses.Delete(ca.ParentID)
+			d.crucibleStatuses.Delete(ca.Anvil + "/" + ca.ParentID)
 
 			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Crucible %s resumed (manual)", ca.ParentID), ca.ParentID, ca.Anvil)
 			d.logger.Info("crucible resumed", "parent", ca.ParentID, "anvil", ca.Anvil)
@@ -1833,7 +1835,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			}
 
 			// Clear the crucible status from the UI.
-			d.crucibleStatuses.Delete(ca.ParentID)
+			d.crucibleStatuses.Delete(ca.Anvil + "/" + ca.ParentID)
 
 			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Crucible %s stopped (manual)", ca.ParentID), ca.ParentID, ca.Anvil)
 			d.logger.Info("crucible stopped", "parent", ca.ParentID, "anvil", ca.Anvil)
