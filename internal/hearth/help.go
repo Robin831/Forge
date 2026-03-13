@@ -32,6 +32,10 @@ var (
 		key.WithKeys("K"),
 		key.WithHelp("K", "kill worker"),
 	)
+	keyStop = key.NewBinding(
+		key.WithKeys("S"),
+		key.WithHelp("S", "stop bead"),
+	)
 	keyViewLog = key.NewBinding(
 		key.WithKeys("o"),
 		key.WithHelp("o", "view log"),
@@ -123,11 +127,11 @@ func (k needsAttentionKeyMap) FullHelp() [][]key.Binding {
 type workersKeyMap struct{ m *Model }
 
 func (k workersKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyKill, keyViewLog, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyKill, keyStop, keyViewLog, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k workersKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyKill, keyViewLog},
+		{keyScroll, keyKill, keyStop, keyViewLog},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }

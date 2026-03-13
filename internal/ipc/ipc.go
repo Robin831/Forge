@@ -153,6 +153,16 @@ type CloseBeadPayload struct {
 	Anvil  string `json:"anvil"`
 }
 
+// StopBeadPayload is the payload for a "stop_bead" command.
+// Stops all processing of a bead: kills any running worker, marks the bead
+// as needing clarification (so the poller skips it), and releases it back to
+// open. The bead will not be dispatched again until unclarified.
+type StopBeadPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`
+	Reason string `json:"reason"` // Optional; defaults to "manually stopped"
+}
+
 // ResolveOrphanPayload is the payload for a "resolve_orphan" command.
 // Sent by Hearth to the daemon when the user picks an action for an orphaned bead.
 // Action is one of "recover", "close", or "discard".

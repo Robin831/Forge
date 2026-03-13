@@ -2107,6 +2107,81 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s closed", cp.BeadID)})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "stop_bead":
+		var sp ipc.StopBeadPayload
+		if err := json.Unmarshal(cmd.Payload, &sp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid stop_bead payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if sp.BeadID == "" || sp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		reason := strings.TrimSpace(sp.Reason)
+		if reason == "" {
+			reason = "manually stopped"
+		}
+		// Sanitize reason to prevent terminal escape injection in event log.
+		reason = strings.Map(func(r rune) rune {
+			if r < 32 && r != '\n' {
+				return -1
+			}
+			return r
+		}, reason)
+
+		// Validate the anvil exists and has a path, matching tag_bead/close_bead.
+		anvilCfg, ok := d.cfg.Load().Anvils[sp.Anvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", sp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if anvilCfg.Path == "" {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", sp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		// Kill any running worker for this bead.
+		if w, err := d.db.ActiveWorkerByBeadAndAnvil(sp.BeadID, sp.Anvil); err == nil && w != nil {
+			if w.PID > 0 {
+				if proc, err := os.FindProcess(w.PID); err == nil {
+					if runtime.GOOS == "windows" {
+						_ = proc.Kill()
+					} else {
+						_ = proc.Signal(syscall.SIGINT)
+					}
+				}
+			}
+			_ = d.db.UpdateWorkerStatus(w.ID, state.WorkerFailed)
+			d.logger.Info("killed worker for stopped bead", "worker", w.ID, "bead", sp.BeadID)
+		}
+
+		// Mark clarification_needed first so the poller will skip this bead
+		// before we free the active slot; prevents a run_bead race between
+		// the Delete and the DB write.
+		if err := d.db.SetClarificationNeeded(sp.BeadID, sp.Anvil, true, reason); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to set clarification: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		// Remove from active beads so the slot is freed.
+		d.activeBeads.Delete(sp.BeadID)
+
+		// Release bead back to open so it's visible but not dispatched.
+		releaseCtx, releaseCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		defer releaseCancel()
+		releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", sp.BeadID, "--status=open", "--assignee=", "--json"))
+		releaseCmd.Dir = anvilCfg.Path
+		if out, err := releaseCmd.CombinedOutput(); err != nil {
+			d.logger.Warn("bd update failed when releasing stopped bead", "bead", sp.BeadID, "error", err, "output", strings.TrimSpace(string(out)))
+			errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead stopped but bd release failed: %v", err)})
+			return ipc.Response{Type: "error", Payload: errMsg}
+		}
+
+		_ = d.db.LogEvent(state.EventBeadStopped, fmt.Sprintf("Bead %s stopped: %s", sp.BeadID, reason), sp.BeadID, sp.Anvil)
+		d.logger.Info("bead stopped", "bead", sp.BeadID, "anvil", sp.Anvil, "reason", reason)
+		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s stopped", sp.BeadID)})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	case "clear_clarification":
 		var cp ipc.ClarificationPayload
 		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {

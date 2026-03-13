@@ -215,6 +215,30 @@ var hearthCmd = &cobra.Command{
 			return nil
 		}
 
+		model.OnStopBead = func(beadID, anvil string) error {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			payload, _ := json.Marshal(ipc.StopBeadPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+			})
+			resp, err := client.Send(ipc.Command{
+				Type:    "stop_bead",
+				Payload: json.RawMessage(payload),
+			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return ipcError(resp)
+			}
+			return nil
+		}
+
 		model.OnResolveOrphan = func(beadID, anvil, action string) error {
 			client, err := ipc.NewClient()
 			if err != nil {
