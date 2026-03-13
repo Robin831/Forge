@@ -1119,6 +1119,7 @@ const (
 	EventSchematicDone        EventType = "schematic_done"
 	EventSchematicSkipped     EventType = "schematic_skipped"
 	EventDispatchCircuitBreak EventType = "dispatch_circuit_break"
+	EventRateLimited          EventType = "rate_limited"
 	EventCostLimitHit         EventType = "cost_limit_hit"
 	EventSchematicSubBead     EventType = "schematic_sub_bead"
 	EventWorkerStalled        EventType = "worker_stalled"
