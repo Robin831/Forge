@@ -139,6 +139,8 @@ type PRActionMenuChoice int
 
 const (
 	PRActionOpenBrowser      PRActionMenuChoice = iota // Open in GitHub
+	PRActionMerge                                      // Merge the PR
+	PRActionFixCI                                      // Trigger cifix worker
 	PRActionFixComments                                // Trigger reviewfix worker
 	PRActionResolveConflicts                           // Trigger rebase worker
 	PRActionClosePR                                    // Close the PR
@@ -2173,33 +2175,27 @@ func (m *Model) renderPRPanel() string {
 		if innerW < 30 {
 			innerW = 30
 		}
-		header := dimStyle.Render(fmt.Sprintf("  %-6s %-12s %-10s %-6s %s", "PR", "Bead", "Anvil", "Status", "Flags"))
+		header := dimStyle.Render(fmt.Sprintf("  %-6s %-12s %-10s %-6s %s", "PR", "Bead", "Anvil", "Status", "CI  Comments  Conflicts"))
 		lines = append(lines, header)
 
 		for i := start; i < end; i++ {
 			pr := m.prItems[i]
 			selected := i == m.prVP.cursor
 
-			// Status flags
-			var flags []string
-			if pr.CIPassing {
-				flags = append(flags, lipgloss.NewStyle().Foreground(colorGreen).Render("CI✓"))
-			} else {
-				flags = append(flags, lipgloss.NewStyle().Foreground(colorDanger).Render("CI✗"))
+			// Three fixed status flags: CI, Comments (unresolved), Conflicts
+			ciFlag := lipgloss.NewStyle().Foreground(colorGreen).Render("CI✓")
+			if !pr.CIPassing {
+				ciFlag = lipgloss.NewStyle().Foreground(colorDanger).Render("CI✗")
 			}
-			if pr.IsConflicting {
-				flags = append(flags, lipgloss.NewStyle().Foreground(colorDanger).Render("⚡conflict"))
-			}
+			commentsFlag := lipgloss.NewStyle().Foreground(colorGreen).Render("comments✓")
 			if pr.HasUnresolvedThreads {
-				flags = append(flags, lipgloss.NewStyle().Foreground(colorWarning).Render("💬reviews"))
+				commentsFlag = lipgloss.NewStyle().Foreground(colorDanger).Render("comments✗")
 			}
-			if pr.HasApproval {
-				flags = append(flags, lipgloss.NewStyle().Foreground(colorGreen).Render("✓approved"))
+			conflictsFlag := lipgloss.NewStyle().Foreground(colorGreen).Render("conflicts✓")
+			if pr.IsConflicting {
+				conflictsFlag = lipgloss.NewStyle().Foreground(colorDanger).Render("conflicts✗")
 			}
-			if pr.HasPendingReviews {
-				flags = append(flags, lipgloss.NewStyle().Foreground(colorMuted).Render("⏳pending"))
-			}
-			flagStr := strings.Join(flags, " ")
+			flagStr := ciFlag + "  " + commentsFlag + "  " + conflictsFlag
 
 			prNum := fmt.Sprintf("#%-5d", pr.PRNumber)
 			line := fmt.Sprintf("  %s %-12s %-10s %-10s %s", prNum, pr.BeadID, pr.Anvil, pr.Status, flagStr)
@@ -2249,11 +2245,17 @@ func (m *Model) buildPRActionForm(item *PRItem, choice *PRActionMenuChoice) *huh
 	opts := []huh.Option[PRActionMenuChoice]{
 		huh.NewOption("Open in browser  — View on GitHub", PRActionOpenBrowser),
 	}
+	if !item.IsConflicting {
+		opts = append(opts, huh.NewOption("Merge            — Merge this pull request", PRActionMerge))
+	}
+	if !item.CIPassing {
+		opts = append(opts, huh.NewOption("Fix CI           — Run cifix worker", PRActionFixCI))
+	}
 	if item.HasUnresolvedThreads {
 		opts = append(opts, huh.NewOption("Fix comments     — Run reviewfix worker", PRActionFixComments))
 	}
 	if item.IsConflicting {
-		opts = append(opts, huh.NewOption("Resolve conflicts — Run rebase worker", PRActionResolveConflicts))
+		opts = append(opts, huh.NewOption("Fix conflict     — Run rebase worker", PRActionResolveConflicts))
 	}
 	opts = append(opts, huh.NewOption("Close PR         — Close this pull request", PRActionClosePR))
 
@@ -2285,6 +2287,10 @@ func (m *Model) executePRAction(choice PRActionMenuChoice) tea.Cmd {
 	switch choice {
 	case PRActionOpenBrowser:
 		action = "open_browser"
+	case PRActionMerge:
+		action = "merge"
+	case PRActionFixCI:
+		action = "cifix"
 	case PRActionFixComments:
 		action = "reviewfix"
 	case PRActionResolveConflicts:

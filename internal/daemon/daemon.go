@@ -340,7 +340,9 @@ func (d *Daemon) reconcileGitHubPRs(ctx context.Context) {
 			}
 			beadID := extractBeadID(pr.Body)
 			if beadID == "" {
-				continue // not a Forge PR
+				// External PR (not created by Forge) — track it with a synthetic bead ID
+				// so Bellows can monitor its status and the user can act on it from Hearth.
+				beadID = "ext-" + strconv.Itoa(pr.Number)
 			}
 			dbPR := &state.PR{
 				Number:    pr.Number,
@@ -2648,9 +2650,39 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				return ipc.Response{Type: "error", Payload: msg}
 			}
 
+		case "merge":
+			mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
+			defer mergeCancel()
+			strategy := d.cfg.Load().Settings.MergeStrategy
+			if err := ghpr.Merge(mergeCtx, anvilCfg.Path, pa.PRNumber, strategy); err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("merge failed: %v", err)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			if pa.PRID > 0 {
+				_ = d.db.UpdatePRStatus(pa.PRID, state.PRMerged)
+			}
+			_ = d.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged by user", pa.PRNumber), pa.BeadID, pa.Anvil)
+			d.logger.Info("PR merged by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+
+		case "cifix":
+			if pa.Branch == "" {
+				msg, _ := json.Marshal(map[string]string{"message": "cifix action requires branch"})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			req := lifecycle.ActionRequest{
+				Action:   lifecycle.ActionFixCI,
+				PRNumber: pa.PRNumber,
+				BeadID:   pa.BeadID,
+				Anvil:    pa.Anvil,
+				Branch:   pa.Branch,
+			}
+			go d.handleLifecycleAction(d.runCtx, req)
+			_ = d.db.LogEvent(state.EventCIFixStarted, fmt.Sprintf("PR #%d CI fix triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
+			d.logger.Info("CI fix triggered by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+
 		case "reviewfix":
-			if pa.BeadID == "" || pa.Branch == "" {
-				msg, _ := json.Marshal(map[string]string{"message": "reviewfix action requires bead_id and branch"})
+			if pa.Branch == "" {
+				msg, _ := json.Marshal(map[string]string{"message": "reviewfix action requires branch"})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
 			req := lifecycle.ActionRequest{
@@ -2665,8 +2697,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Info("review fix triggered by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
 		case "rebase":
-			if pa.BeadID == "" || pa.Branch == "" {
-				msg, _ := json.Marshal(map[string]string{"message": "rebase action requires bead_id and branch"})
+			if pa.Branch == "" {
+				msg, _ := json.Marshal(map[string]string{"message": "rebase action requires branch"})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
 			pr, err := d.db.GetPRByID(pa.PRID)

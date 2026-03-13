@@ -173,14 +173,14 @@ type ResolveOrphanPayload struct {
 }
 
 // PRActionPayload is the payload for a "pr_action" command.
-// Triggers an action on an open PR: reviewfix, rebase, close, or open_browser.
+// Triggers an action on an open PR.
 type PRActionPayload struct {
 	PRID     int    `json:"pr_id"`
 	PRNumber int    `json:"pr_number"`
 	Anvil    string `json:"anvil"`
 	BeadID   string `json:"bead_id"`
 	Branch   string `json:"branch"`
-	Action   string `json:"action"` // "reviewfix" | "rebase" | "close" | "open_browser"
+	Action   string `json:"action"` // "open_browser" | "merge" | "cifix" | "reviewfix" | "rebase" | "close"
 }
 
 // CrucibleStatusItem represents an active Crucible's current state.
