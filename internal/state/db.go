@@ -992,6 +992,73 @@ func (db *DB) ReadyToMergePRs() ([]ReadyToMergePR, error) {
 	return result, rows.Err()
 }
 
+// OpenPRDetail represents an open PR with full status detail for the TUI PR panel.
+type OpenPRDetail struct {
+	ID                   int
+	Number               int
+	Anvil                string
+	BeadID               string
+	Branch               string
+	Status               PRStatus
+	Title                string
+	CIPassing            bool
+	IsConflicting        bool
+	HasUnresolvedThreads bool
+	HasPendingReviews    bool
+	HasApproval          bool
+	CIFixCount           int
+	ReviewFixCount       int
+	RebaseCount          int
+}
+
+// OpenPRsWithDetail returns all non-terminal PRs with title resolution and full status fields.
+func (db *DB) OpenPRsWithDetail() ([]OpenPRDetail, error) {
+	rows, err := db.conn.Query(
+		`SELECT p.id, p.number, p.anvil, p.bead_id, p.branch, p.status,
+		        COALESCE(NULLIF(q.title, ''), NULLIF(w.title, ''), '') AS title,
+		        p.ci_passing, p.is_conflicting, p.has_unresolved_threads,
+		        p.has_pending_reviews, p.has_approval,
+		        p.ci_fix_count, p.review_fix_count, p.rebase_count
+		 FROM prs p
+		 LEFT JOIN queue_cache q ON p.bead_id = q.bead_id AND p.anvil = q.anvil
+		 LEFT JOIN (
+		     SELECT bead_id, anvil, title
+		     FROM (
+		         SELECT bead_id, anvil, title,
+		                ROW_NUMBER() OVER (PARTITION BY bead_id, anvil ORDER BY started_at DESC) AS rn
+		         FROM workers
+		     )
+		     WHERE rn = 1
+		 ) w ON p.bead_id = w.bead_id AND p.anvil = w.anvil
+		 WHERE p.status IN ` + nonTerminalPRStatusSQL() + `
+		 ORDER BY p.created_at`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []OpenPRDetail
+	for rows.Next() {
+		var p OpenPRDetail
+		var status string
+		var ciPassing, isConflicting, hasThreads, hasPending, hasApproval int
+		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch, &status,
+			&p.Title, &ciPassing, &isConflicting, &hasThreads, &hasPending, &hasApproval,
+			&p.CIFixCount, &p.ReviewFixCount, &p.RebaseCount); err != nil {
+			return nil, err
+		}
+		p.Status = PRStatus(status)
+		p.CIPassing = ciPassing != 0
+		p.IsConflicting = isConflicting != 0
+		p.HasUnresolvedThreads = hasThreads != 0
+		p.HasPendingReviews = hasPending != 0
+		p.HasApproval = hasApproval != 0
+		result = append(result, p)
+	}
+	return result, rows.Err()
+}
+
 // DismissExhaustedPR marks an exhausted PR as closed so it no longer appears
 // in the Needs Attention panel.
 func (db *DB) DismissExhaustedPR(id int) error {

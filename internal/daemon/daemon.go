@@ -2606,6 +2606,98 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("orphan %s handled: %s", rp.BeadID, rp.Action)})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "pr_action":
+		var pa ipc.PRActionPayload
+		if err := json.Unmarshal(cmd.Payload, &pa); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid pr_action payload: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if pa.PRNumber == 0 || pa.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "pr_action requires pr_number and anvil"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		anvilCfg, ok := d.cfg.Load().Anvils[pa.Anvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": "unknown anvil: " + pa.Anvil})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		switch pa.Action {
+		case "close":
+			closeCtx, closeCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+			defer closeCancel()
+			closeCmd := exec.CommandContext(closeCtx, "gh", "pr", "close", strconv.Itoa(pa.PRNumber))
+			closeCmd.Dir = anvilCfg.Path
+			if out, err := closeCmd.CombinedOutput(); err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr close failed: %v: %s", err, strings.TrimSpace(string(out)))})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			if pa.PRID > 0 {
+				_ = d.db.UpdatePRStatus(pa.PRID, state.PRClosed)
+			}
+			_ = d.db.LogEvent(state.EventPRClosed, fmt.Sprintf("PR #%d closed by user", pa.PRNumber), pa.BeadID, pa.Anvil)
+			d.logger.Info("PR closed by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+
+		case "open_browser":
+			openCtx, openCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+			defer openCancel()
+			openCmd := exec.CommandContext(openCtx, "gh", "pr", "view", strconv.Itoa(pa.PRNumber), "--web")
+			openCmd.Dir = anvilCfg.Path
+			if out, err := openCmd.CombinedOutput(); err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr view --web failed: %v: %s", err, strings.TrimSpace(string(out)))})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+
+		case "reviewfix":
+			if pa.BeadID == "" || pa.Branch == "" {
+				msg, _ := json.Marshal(map[string]string{"message": "reviewfix action requires bead_id and branch"})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			req := lifecycle.ActionRequest{
+				Action:   lifecycle.ActionFixReview,
+				PRNumber: pa.PRNumber,
+				BeadID:   pa.BeadID,
+				Anvil:    pa.Anvil,
+				Branch:   pa.Branch,
+			}
+			go d.handleLifecycleAction(d.runCtx, req)
+			_ = d.db.LogEvent(state.EventReviewFixStarted, fmt.Sprintf("PR #%d review fix triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
+			d.logger.Info("review fix triggered by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+
+		case "rebase":
+			if pa.BeadID == "" || pa.Branch == "" {
+				msg, _ := json.Marshal(map[string]string{"message": "rebase action requires bead_id and branch"})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			pr, err := d.db.GetPRByID(pa.PRID)
+			if err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to look up PR: %v", err)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			baseBranch := ""
+			if pr != nil {
+				baseBranch = pr.BaseBranch
+			}
+			req := lifecycle.ActionRequest{
+				Action:     lifecycle.ActionRebase,
+				PRNumber:   pa.PRNumber,
+				BeadID:     pa.BeadID,
+				Anvil:      pa.Anvil,
+				Branch:     pa.Branch,
+				BaseBranch: baseBranch,
+			}
+			go d.handleLifecycleAction(d.runCtx, req)
+			_ = d.db.LogEvent(state.EventRebaseStarted, fmt.Sprintf("PR #%d rebase triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
+			d.logger.Info("rebase triggered by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+
+		default:
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("unknown pr_action: %q", pa.Action)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		respData, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d: %s", pa.PRNumber, pa.Action)})
+		return ipc.Response{Type: "ok", Payload: respData}
+
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}

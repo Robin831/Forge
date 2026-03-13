@@ -115,6 +115,35 @@ type ReadyToMergeItem struct {
 	Title    string
 }
 
+// PRItem represents an open PR in the PR panel overlay.
+type PRItem struct {
+	PRID                 int
+	PRNumber             int
+	Anvil                string
+	BeadID               string
+	Branch               string
+	Status               string // "open", "approved", "needs_fix"
+	Title                string
+	CIPassing            bool
+	IsConflicting        bool
+	HasUnresolvedThreads bool
+	HasPendingReviews    bool
+	HasApproval          bool
+	CIFixCount           int
+	ReviewFixCount       int
+	RebaseCount          int
+}
+
+// PRActionMenuChoice represents an action the user can take on an open PR.
+type PRActionMenuChoice int
+
+const (
+	PRActionOpenBrowser      PRActionMenuChoice = iota // Open in GitHub
+	PRActionFixComments                                // Trigger reviewfix worker
+	PRActionResolveConflicts                           // Trigger rebase worker
+	PRActionClosePR                                    // Close the PR
+)
+
 // WorkerItem represents a worker in the workers panel.
 type WorkerItem struct {
 	ID            string
@@ -270,6 +299,10 @@ type Model struct {
 	// Callback for merging a PR (set by the caller).
 	OnMergePR func(prID, prNumber int, anvil string) error
 
+	// Callback for PR panel actions (set by the caller).
+	// Called with (prID, prNumber, anvil, beadID, branch, action).
+	OnPRAction func(prID, prNumber int, anvil, beadID, branch, action string) error
+
 	// Callback for resolving an orphaned bead (set by the caller).
 	// Called with (beadID, anvil, action) where action is "recover", "close", or "discard".
 	OnResolveOrphan func(beadID, anvil, action string) error
@@ -309,6 +342,14 @@ type Model struct {
 	mergeForm   *huh.Form
 	mergeChoice MergeMenuChoice
 	mergeTarget *ReadyToMergeItem
+
+	// PR panel overlay state — full-screen PR management panel toggled with 'p'.
+	showPRPanel    bool
+	prItems        []PRItem
+	prVP           scrollViewport
+	prActionForm   *huh.Form
+	prActionChoice PRActionMenuChoice
+	prActionTarget *PRItem
 
 	// Orphan dialog overlay state — shown when orphaned beads need user decision.
 	orphanQueue        []PendingOrphanItem // beads awaiting user decision
@@ -602,6 +643,59 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// PR panel overlay intercepts all keys when open
+		if m.showPRPanel {
+			// PR action form intercepts keys when active
+			if m.prActionForm != nil {
+				if k := msg.String(); k == "esc" {
+					m.prActionForm = nil
+					return m, nil
+				}
+				cmd := m.driveHuhForm(&m.prActionForm, msg)
+				if m.prActionForm.State == huh.StateCompleted {
+					actionCmd := m.executePRAction(m.prActionChoice)
+					m.prActionForm = nil
+					if cmd == nil {
+						return m, actionCmd
+					}
+					return m, tea.Batch(cmd, actionCmd)
+				} else if m.prActionForm.State == huh.StateAborted {
+					m.prActionForm = nil
+					return m, cmd
+				}
+				if isTerminalMsg(msg) {
+					return m, cmd
+				}
+			}
+
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "p", "q", "esc":
+				m.showPRPanel = false
+			case "j", "down":
+				if len(m.prItems) > 0 {
+					m.prVP.cursor++
+					if m.prVP.cursor >= len(m.prItems) {
+						m.prVP.cursor = len(m.prItems) - 1
+					}
+				}
+			case "k", "up":
+				if m.prVP.cursor > 0 {
+					m.prVP.cursor--
+				}
+			case "enter":
+				if len(m.prItems) > 0 && m.prVP.cursor < len(m.prItems) {
+					m.prActionTarget = new(PRItem)
+					*m.prActionTarget = m.prItems[m.prVP.cursor]
+					m.prActionChoice = PRActionOpenBrowser
+					m.prActionForm = m.buildPRActionForm(m.prActionTarget, &m.prActionChoice)
+					return m, m.prActionForm.Init()
+				}
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -793,6 +887,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.DisableMouse
 
+		case "p":
+			// Toggle PR panel overlay
+			m.showPRPanel = !m.showPRPanel
+			m.prVP.cursor = 0
+			m.prVP.viewStart = 0
+			return m, nil
+
 		case "esc":
 			// Live Activity: collapse the group at the cursor
 			if m.focused == PanelLiveActivity && len(m.activityNavItems) > 0 &&
@@ -974,6 +1075,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UpdateReadyToMergeMsg:
 		m.readyToMerge = msg.Items
 		m.readyToMergeVP.ClampToTotal(len(msg.Items))
+
+	case UpdateOpenPRsMsg:
+		m.prItems = msg.Items
+		m.prVP.ClampToTotal(len(msg.Items))
+
+	case OpenPRsErrorMsg:
+		// Preserve previous PR list; surface the error in the events panel.
+		errEvent := EventItem{
+			Timestamp: time.Now().Format("15:04:05"),
+			Type:      "error",
+			Message:   fmt.Sprintf("open PRs read failed: %v", msg.Err),
+		}
+		m.events = append([]EventItem{errEvent}, m.events...)
+		m.eventRevision++
+		if m.eventAutoScroll {
+			m.eventScroll = 0
+		}
 
 	case UpdatePendingOrphansMsg:
 		// Merge newly discovered orphans into the queue, avoiding duplicates.
@@ -1218,6 +1336,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus(fmt.Sprintf("Merged PR #%d", msg.PRNumber), false)
 		}
 
+	case PRActionResultMsg:
+		if msg.Err != nil {
+			errSummary := strings.SplitN(msg.Err.Error(), "\n", 2)[0]
+			m.setStatus(fmt.Sprintf("PR #%d %s failed: %s", msg.PRNumber, msg.Action, errSummary), true)
+		} else {
+			m.setStatus(fmt.Sprintf("PR #%d: %s dispatched", msg.PRNumber, msg.Action), false)
+		}
+
 	case NotesResultMsg:
 		if msg.Err != nil {
 			m.setStatus(fmt.Sprintf("Failed to save notes for %s: %v", msg.BeadID, msg.Err), true)
@@ -1369,7 +1495,14 @@ func (m *Model) View() string {
 	}
 
 	// Render overlays on top
-	if m.showLogViewer {
+	if m.showPRPanel {
+		overlay := m.renderPRPanel()
+		view = placeOverlay(m.width, m.height, overlay, view)
+		if m.prActionForm != nil {
+			formOverlay := m.renderPRActionMenu()
+			view = placeOverlay(m.width, m.height, formOverlay, view)
+		}
+	} else if m.showLogViewer {
 		overlay := m.renderLogViewer()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.showDescriptionViewer {
@@ -2007,6 +2140,172 @@ func (m *Model) renderMergeMenu() string {
 	sb.WriteString(m.mergeForm.View())
 	sb.WriteString("\n" + dimStyle.Render("esc: dismiss"))
 	return actionMenuStyle.Render(sb.String())
+}
+
+// renderPRPanel renders the full-screen PR panel overlay.
+func (m *Model) renderPRPanel() string {
+	viewerWidth := m.width - 8
+	if viewerWidth < 50 {
+		viewerWidth = 50
+	}
+	viewerHeight := m.height - 6
+	if viewerHeight < 12 {
+		viewerHeight = 12
+	}
+
+	title := actionMenuTitleStyle.Render(fmt.Sprintf("Open Pull Requests (%d)", len(m.prItems)))
+	var lines []string
+	lines = append(lines, title)
+	lines = append(lines, "")
+
+	if len(m.prItems) == 0 {
+		lines = append(lines, dimStyle.Render("No open PRs"))
+	} else {
+		maxItems := (viewerHeight - 6) / 2 // each item renders up to 2 lines (main + title)
+		if maxItems < 1 {
+			maxItems = 1
+		}
+		m.prVP.AdjustViewport(maxItems, len(m.prItems))
+		start, end := m.prVP.VisibleRange(maxItems, len(m.prItems))
+
+		// Header
+		innerW := viewerWidth - logViewerStyle.GetHorizontalFrameSize()
+		if innerW < 30 {
+			innerW = 30
+		}
+		header := dimStyle.Render(fmt.Sprintf("  %-6s %-12s %-10s %-6s %s", "PR", "Bead", "Anvil", "Status", "Flags"))
+		lines = append(lines, header)
+
+		for i := start; i < end; i++ {
+			pr := m.prItems[i]
+			selected := i == m.prVP.cursor
+
+			// Status flags
+			var flags []string
+			if pr.CIPassing {
+				flags = append(flags, lipgloss.NewStyle().Foreground(colorGreen).Render("CI✓"))
+			} else {
+				flags = append(flags, lipgloss.NewStyle().Foreground(colorDanger).Render("CI✗"))
+			}
+			if pr.IsConflicting {
+				flags = append(flags, lipgloss.NewStyle().Foreground(colorDanger).Render("⚡conflict"))
+			}
+			if pr.HasUnresolvedThreads {
+				flags = append(flags, lipgloss.NewStyle().Foreground(colorWarning).Render("💬reviews"))
+			}
+			if pr.HasApproval {
+				flags = append(flags, lipgloss.NewStyle().Foreground(colorGreen).Render("✓approved"))
+			}
+			if pr.HasPendingReviews {
+				flags = append(flags, lipgloss.NewStyle().Foreground(colorMuted).Render("⏳pending"))
+			}
+			flagStr := strings.Join(flags, " ")
+
+			prNum := fmt.Sprintf("#%-5d", pr.PRNumber)
+			line := fmt.Sprintf("  %s %-12s %-10s %-10s %s", prNum, pr.BeadID, pr.Anvil, pr.Status, flagStr)
+			if pr.Title != "" {
+				titleDisplay := sanitizeTitle(pr.Title)
+				maxTitleLen := innerW - 10
+				if maxTitleLen > 0 {
+					titleDisplay = truncate(titleDisplay, maxTitleLen)
+				}
+				line += "\n    " + dimStyle.Render(titleDisplay)
+			}
+			if selected {
+				line = selectedStyle.Render("▸" + line[1:])
+			}
+			lines = append(lines, line)
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render("j/k: scroll • enter: actions • p/esc: close"))
+
+	content := strings.Join(lines, "\n")
+	return logViewerStyle.Width(viewerWidth).Height(viewerHeight).Render(content)
+}
+
+// renderPRActionMenu renders the action menu overlay for a selected PR.
+func (m *Model) renderPRActionMenu() string {
+	if m.prActionForm == nil || m.prActionTarget == nil {
+		return ""
+	}
+	item := m.prActionTarget
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Actions for PR #%d — %s", item.PRNumber, item.BeadID))
+	if item.Title != "" {
+		sb.WriteByte('\n')
+		title := truncate(sanitizeTitle(item.Title), 55)
+		sb.WriteString(dimStyle.Render(title))
+	}
+	sb.WriteByte('\n')
+	sb.WriteString(m.prActionForm.View())
+	sb.WriteString("\n" + dimStyle.Render("esc: dismiss"))
+	return actionMenuStyle.Render(sb.String())
+}
+
+// buildPRActionForm creates the huh form for PR actions.
+func (m *Model) buildPRActionForm(item *PRItem, choice *PRActionMenuChoice) *huh.Form {
+	opts := []huh.Option[PRActionMenuChoice]{
+		huh.NewOption("Open in browser  — View on GitHub", PRActionOpenBrowser),
+	}
+	if item.HasUnresolvedThreads {
+		opts = append(opts, huh.NewOption("Fix comments     — Run reviewfix worker", PRActionFixComments))
+	}
+	if item.IsConflicting {
+		opts = append(opts, huh.NewOption("Resolve conflicts — Run rebase worker", PRActionResolveConflicts))
+	}
+	opts = append(opts, huh.NewOption("Close PR         — Close this pull request", PRActionClosePR))
+
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[PRActionMenuChoice]().
+				Title(fmt.Sprintf("PR #%d", item.PRNumber)).
+				Options(opts...).
+				Value(choice),
+		),
+	).WithTheme(huh.ThemeCharm()).WithWidth(60)
+}
+
+// PRActionResultMsg is delivered asynchronously when a PR action IPC call completes.
+type PRActionResultMsg struct {
+	PRNumber int
+	Action   string
+	Err      error
+}
+
+// executePRAction dispatches the selected PR action.
+func (m *Model) executePRAction(choice PRActionMenuChoice) tea.Cmd {
+	if m.prActionTarget == nil {
+		return nil
+	}
+	item := *m.prActionTarget
+
+	var action string
+	switch choice {
+	case PRActionOpenBrowser:
+		action = "open_browser"
+	case PRActionFixComments:
+		action = "reviewfix"
+	case PRActionResolveConflicts:
+		action = "rebase"
+	case PRActionClosePR:
+		action = "close"
+	default:
+		return nil
+	}
+
+	if m.OnPRAction == nil {
+		m.setStatus("PR action unavailable (daemon not connected)", true)
+		return nil
+	}
+
+	m.setStatus(fmt.Sprintf("PR #%d: %s...", item.PRNumber, action), false)
+
+	return func() tea.Msg {
+		err := m.OnPRAction(item.PRID, item.PRNumber, item.Anvil, item.BeadID, item.Branch, action)
+		return PRActionResultMsg{PRNumber: item.PRNumber, Action: action, Err: err}
+	}
 }
 
 
