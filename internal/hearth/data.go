@@ -385,6 +385,8 @@ func formatMultiLineEntry(prefix, contPrefix, raw string, maxLines int) []string
 }
 
 // FetchEvents reads recent events from the state DB.
+// Poll events (poll, poll_error) are excluded because anvil health is now
+// displayed inline in the Queue panel headers.
 func FetchEvents(db *state.DB, limit int) tea.Cmd {
 	return func() tea.Msg {
 		if limit <= 0 {
@@ -397,6 +399,10 @@ func FetchEvents(db *state.DB, limit int) tea.Cmd {
 
 		var items []EventItem
 		for _, e := range events {
+			// Skip poll events — they are surfaced via anvil health badges.
+			if e.Type == state.EventPoll || e.Type == state.EventPollError {
+				continue
+			}
 			items = append(items, EventItem{
 				Timestamp: e.Timestamp.Format("15:04:05"),
 				Type:      string(e.Type),
@@ -406,6 +412,41 @@ func FetchEvents(db *state.DB, limit int) tea.Cmd {
 		}
 
 		return UpdateEventsMsg{Items: items}
+	}
+}
+
+// FetchAnvilHealth queries the last poll result per anvil and returns
+// health status items for the Queue panel headers.
+func FetchAnvilHealth(ds *DataSource) tea.Cmd {
+	return func() tea.Msg {
+		statuses, err := ds.DB.LastPollPerAnvil(ds.AnvilNames)
+		if err != nil {
+			return UpdateAnvilHealthMsg{Items: nil}
+		}
+		now := time.Now()
+		var items []AnvilHealth
+		for _, s := range statuses {
+			items = append(items, AnvilHealth{
+				Anvil:     s.Anvil,
+				OK:        s.OK,
+				Message:   s.Message,
+				Timestamp: s.Timestamp.Format("15:04:05"),
+				Age:       shortDuration(now.Sub(s.Timestamp)),
+			})
+		}
+		return UpdateAnvilHealthMsg{Items: items}
+	}
+}
+
+// shortDuration formats a duration as a compact human-readable string.
+func shortDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh", int(d.Hours()))
 	}
 }
 
@@ -678,5 +719,6 @@ func FetchAll(ds *DataSource) tea.Cmd {
 		FetchCrucibles(),
 		FetchUsage(ds),
 		FetchPendingOrphans(ds.DB),
+		FetchAnvilHealth(ds),
 	)
 }

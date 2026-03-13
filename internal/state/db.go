@@ -1151,6 +1151,62 @@ func (db *DB) RecentEvents(n int) ([]Event, error) {
 	return events, rows.Err()
 }
 
+// AnvilPollStatus holds the last poll outcome for an anvil.
+type AnvilPollStatus struct {
+	Anvil     string
+	Timestamp time.Time
+	OK        bool   // true if last poll succeeded, false on error
+	Message   string // e.g. "5 ready" or error message
+}
+
+// LastPollPerAnvil returns the most recent poll or poll_error event for each
+// of the given anvil names. Anvils with no poll history are omitted.
+func (db *DB) LastPollPerAnvil(anvilNames []string) ([]AnvilPollStatus, error) {
+	if len(anvilNames) == 0 {
+		return nil, nil
+	}
+	// Use a single query with GROUP BY for efficiency.
+	rows, err := db.conn.Query(
+		`SELECT anvil, timestamp, type, message
+		 FROM events
+		 WHERE type IN ('poll', 'poll_error')
+		   AND anvil != ''
+		 ORDER BY timestamp DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Build a set of requested anvils for quick lookup.
+	wanted := make(map[string]bool, len(anvilNames))
+	for _, n := range anvilNames {
+		wanted[n] = true
+	}
+
+	seen := make(map[string]bool)
+	var results []AnvilPollStatus
+	for rows.Next() {
+		var anvil, ts, typ, msg string
+		if err := rows.Scan(&anvil, &ts, &typ, &msg); err != nil {
+			return nil, err
+		}
+		if !wanted[anvil] || seen[anvil] {
+			continue
+		}
+		seen[anvil] = true
+		results = append(results, AnvilPollStatus{
+			Anvil:     anvil,
+			Timestamp: parseTime(ts),
+			OK:        typ == string(EventPoll),
+			Message:   msg,
+		})
+		if len(seen) == len(anvilNames) {
+			break
+		}
+	}
+	return results, rows.Err()
+}
+
 // --- Retry tracking ---
 
 // RetryRecord tracks retry state for a bead.
