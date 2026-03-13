@@ -1533,7 +1533,10 @@ func (m *Model) View() string {
 }
 
 func (m *Model) getTopPanelWidths() (queueWidth, workerWidth, activityWidth int) {
-	remainingWidth := m.width - 4 // borders/gaps
+	// panelStyle.Width(w) includes padding but NOT border.
+	// Each panel adds 2 border chars (left + right) to its rendered width.
+	// Three columns → subtract 3×2 = 6 so the total fits exactly in m.width.
+	remainingWidth := m.width - 6
 	if remainingWidth < 0 {
 		remainingWidth = 0
 	}
@@ -3084,7 +3087,9 @@ func (m *Model) renderWorkerList(width, height int) string {
 
 	title := panelTitleStyle.Render(fmt.Sprintf("Workers (%d)", len(m.workers)))
 
-	innerWidth := width - 4
+	// panelStyle.Width(w) includes padding but not border.
+	// Inner content width = w - border(2). Padding is already inside w.
+	innerWidth := width - 2
 	if innerWidth < 0 {
 		innerWidth = 0
 	}
@@ -3099,7 +3104,6 @@ func (m *Model) renderWorkerList(width, height int) string {
 	m.workerTable.SetHeight(tableHeight)
 
 	// Dynamically adjust column widths to fit the panel.
-	// Total avail is width - 4 (borders and padding).
 	cols := m.workerTable.Columns()
 	if len(cols) == 6 {
 		avail := innerWidth
@@ -3132,6 +3136,11 @@ func (m *Model) renderWorkerList(width, height int) string {
 			reduction := min(excess, cols[idx].Width-1)
 			cols[idx].Width -= reduction
 			total -= reduction
+		}
+		// Distribute any remaining slack to the Task column so the
+		// table fills the panel exactly — no gap before the right border.
+		if slack := avail - total; slack > 0 {
+			cols[3].Width += slack
 		}
 
 		m.workerTable.SetColumns(cols)
@@ -3258,7 +3267,7 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 		m.activityVP.ClampToTotal(total)
 		m.activityVP.AdjustViewport(maxVisible, total)
 		start, end := m.activityVP.VisibleRange(maxVisible, total)
-		contentWidth := width - 4
+		contentWidth := width - 2 // Width includes padding, subtract border only
 		if contentWidth < 10 {
 			contentWidth = 10
 		}
