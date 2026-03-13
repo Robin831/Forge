@@ -1522,3 +1522,101 @@ func TestDB_NeedsAttentionBeads_Description(t *testing.T) {
 		t.Errorf("expected 1 merged bead, got %d", count)
 	}
 }
+
+func TestDB_LastPollPerAnvil(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-poll-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert poll events for two anvils, oldest first.
+	logEvent := func(typ EventType, anvil, msg string) {
+		t.Helper()
+		if err := db.LogEvent(typ, msg, "", anvil); err != nil {
+			t.Fatalf("LogEvent(%s/%s): %v", typ, anvil, err)
+		}
+	}
+
+	logEvent(EventPollError, "anvil-a", "connect timeout")
+	logEvent(EventPoll, "anvil-a", "fetched 3 beads")   // newest for anvil-a
+	logEvent(EventPoll, "anvil-b", "fetched 0 beads")   // only event for anvil-b
+	logEvent(EventPoll, "anvil-c", "fetched 1 bead")    // not requested
+
+	t.Run("returns latest row per requested anvil", func(t *testing.T) {
+		results, err := db.LastPollPerAnvil([]string{"anvil-a", "anvil-b"})
+		if err != nil {
+			t.Fatalf("LastPollPerAnvil: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("expected 2 results, got %d", len(results))
+		}
+		byAnvil := make(map[string]AnvilPollStatus)
+		for _, r := range results {
+			byAnvil[r.Anvil] = r
+		}
+		if !byAnvil["anvil-a"].OK {
+			t.Error("anvil-a: expected OK=true (latest event is poll, not poll_error)")
+		}
+		if byAnvil["anvil-a"].Message != "fetched 3 beads" {
+			t.Errorf("anvil-a: unexpected message %q", byAnvil["anvil-a"].Message)
+		}
+		if !byAnvil["anvil-b"].OK {
+			t.Error("anvil-b: expected OK=true")
+		}
+		// anvil-c was not requested and should not appear.
+		if _, ok := byAnvil["anvil-c"]; ok {
+			t.Error("anvil-c should not be returned when not requested")
+		}
+	})
+
+	t.Run("poll_error sets OK=false", func(t *testing.T) {
+		logEvent(EventPollError, "anvil-b", "network error") // make anvil-b newest = error
+		results, err := db.LastPollPerAnvil([]string{"anvil-b"})
+		if err != nil {
+			t.Fatalf("LastPollPerAnvil: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].OK {
+			t.Error("expected OK=false when latest event is poll_error")
+		}
+	})
+
+	t.Run("anvil with no history is omitted", func(t *testing.T) {
+		results, err := db.LastPollPerAnvil([]string{"anvil-unknown"})
+		if err != nil {
+			t.Fatalf("LastPollPerAnvil: %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("expected no results for unknown anvil, got %d", len(results))
+		}
+	})
+
+	t.Run("empty input returns nil", func(t *testing.T) {
+		results, err := db.LastPollPerAnvil(nil)
+		if err != nil {
+			t.Fatalf("LastPollPerAnvil: %v", err)
+		}
+		if results != nil {
+			t.Errorf("expected nil for empty input, got %v", results)
+		}
+	})
+
+	t.Run("duplicate anvil names handled correctly", func(t *testing.T) {
+		// Passing the same anvil name twice should not cause an extra result.
+		results, err := db.LastPollPerAnvil([]string{"anvil-a", "anvil-a"})
+		if err != nil {
+			t.Fatalf("LastPollPerAnvil: %v", err)
+		}
+		if len(results) != 1 {
+			t.Errorf("expected 1 result for duplicate anvil name, got %d", len(results))
+		}
+	})
+}

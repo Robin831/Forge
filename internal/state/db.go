@@ -1200,7 +1200,9 @@ func (db *DB) LastPollPerAnvil(anvilNames []string) ([]AnvilPollStatus, error) {
 	if len(anvilNames) == 0 {
 		return nil, nil
 	}
-	// Use a single query with GROUP BY for efficiency.
+	// Scan recent poll/poll_error rows ordered newest-first and stop once we
+	// have one result per requested anvil.  Filtering by anvil != '' is cheap
+	// and avoids returning daemon-level events with no anvil set.
 	rows, err := db.conn.Query(
 		`SELECT anvil, timestamp, type, message
 		 FROM events
@@ -1212,10 +1214,12 @@ func (db *DB) LastPollPerAnvil(anvilNames []string) ([]AnvilPollStatus, error) {
 	}
 	defer rows.Close()
 
-	// Build a set of requested anvils for quick lookup.
+	// Build a deduplicated set of requested anvils for quick lookup.
 	wanted := make(map[string]bool, len(anvilNames))
 	for _, n := range anvilNames {
-		wanted[n] = true
+		if n != "" {
+			wanted[n] = true
+		}
 	}
 
 	seen := make(map[string]bool)
@@ -1235,7 +1239,7 @@ func (db *DB) LastPollPerAnvil(anvilNames []string) ([]AnvilPollStatus, error) {
 			OK:        typ == string(EventPoll),
 			Message:   msg,
 		})
-		if len(seen) == len(anvilNames) {
+		if len(seen) == len(wanted) {
 			break
 		}
 	}
