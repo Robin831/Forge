@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/forge up --foreground
+ExecStart=/usr/bin/forge up --foreground --config /etc/forge/forge.yaml
 ExecStop=/usr/bin/forge down
 Restart=on-failure
 RestartSec=10
@@ -18,7 +18,6 @@ ConfigurationDirectory=forge
 # Security hardening
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=read-only
 ReadWritePaths=/var/lib/forge
 PrivateTmp=yes
 
