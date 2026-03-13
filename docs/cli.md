@@ -337,3 +337,36 @@ forge warden forget <rule-id> --anvil heimdall
 | Flag | Description |
 |------|-------------|
 | `-a, --anvil` | Anvil name (required) |
+
+## Notifications
+
+### `forge notify release`
+
+Send a release notification to configured webhook endpoints (MS Teams Adaptive Card and/or generic JSON webhooks).
+
+```bash
+forge notify release --version v1.2.3
+forge notify release \
+  --version v1.2.3 \
+  --tag v1.2.3 \
+  --release-url https://github.com/org/forge/releases/tag/v1.2.3 \
+  --changelog "- Added X\n- Fixed Y" \
+  --webhook-url https://outlook.webhook.office.com/webhookb2/... \
+  --extra-url https://example.com/api/webhooks/forge
+```
+
+| Flag | Description |
+|------|-------------|
+| `--version` | Release version string, e.g. `v1.2.3` (required) |
+| `--tag` | Git tag (defaults to `--version` if omitted) |
+| `--release-url` | URL to the GitHub release page |
+| `--changelog` | Short changelog summary to include in the notification |
+| `--webhook-url` | Teams webhook URL — overrides `notifications.teams.webhook_url` in config |
+| `--extra-url` | Additional generic-JSON webhook URL(s) to notify (repeatable) |
+
+Webhook URL resolution order for Teams notifications:
+1. `--webhook-url` flag
+2. `FORGE_NOTIFICATIONS_TEAMS_WEBHOOK_URL` environment variable
+3. `notifications.teams.webhook_url` (or legacy `notifications.teams_webhook_url`) in `forge.yaml`
+
+Generic-JSON webhooks additionally receive payloads from `notifications.webhooks[]` entries (filtered by the `release` event) and from `notifications.release_webhook_urls` in config. The `FORGE_RELEASE_WEBHOOK_URL` environment variable adds one more generic target.

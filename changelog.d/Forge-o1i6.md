@@ -1,0 +1,2 @@
+category: Changed
+- **Documentation updated to reflect all current features** - Added `forge notify release` CLI reference, corrected `bellows_interval` default from 5m to 2m in reviewfix docs, and expanded the full forge.yaml example to include all available options (`go_race_detection`, per-anvil `golangci_lint`/`go_race_detection`/`depcheck_enabled`, and updated notifications to use the current nested `teams:`/`webhooks:` format). (Forge-o1i6)
