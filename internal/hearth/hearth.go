@@ -220,6 +220,7 @@ const (
 func queueActionMenuLabels() [queueActionMenuCount]string {
 	return [queueActionMenuCount]string{
 		"Label for dispatch — Tag bead for auto-dispatch",
+		"Run independently  — Bypass bd ready, skip crucible",
 		"Close             — Close this bead",
 		"Stop              — Prevent all processing",
 	}
