@@ -473,3 +473,9 @@ rules:
       check: Verify that test function names and their doc comments accurately describe the behavior being tested, not internal implementation details or leftover naming from earlier drafts
       source: copilot:PR#195
       added: "2026-03-11"
+    - id: iota-label-array-sync
+      category: ui
+      pattern: Adding or reordering iota constants that have a corresponding label/string array
+      check: Verify that all parallel arrays or switch cases indexed by iota constants are updated in sync — inserting a new iota value shifts all subsequent values, so every array, slice literal, or map keyed by those constants must add the new entry at the correct position
+      source: copilot:PR#230
+      added: "2026-03-13"
