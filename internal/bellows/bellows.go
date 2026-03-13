@@ -233,8 +233,17 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		// restart AND missed notifications when the state changed between restarts.
 		// For brand-new PRs (has_approval=0, has_pending_reviews=1 from InsertPR defaults)
 		// lastReady will be false, so the transition fires correctly on first readiness.
+		// If CI is failing but no fix cycle is in progress and no fix has
+		// been attempted, seed CIPassing as true so the first poll detects
+		// a true→false transition and emits EventCIFailed. Without this,
+		// PRs whose CI failed before the daemon started (or between restarts)
+		// would never trigger a quench worker.
+		ciSeed := pr.CIPassing
+		if !ciSeed && pr.Status != state.PRNeedsFix && pr.CIFixCount == 0 {
+			ciSeed = true
+		}
 		lastSnap = &prSnapshot{
-			CIPassing:            pr.CIPassing,
+			CIPassing:            ciSeed,
 			HasApproval:          pr.HasApproval,
 			HasPendingReviews:    pr.HasPendingReviews,
 			IsConflicting:        pr.IsConflicting,
