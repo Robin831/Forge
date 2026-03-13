@@ -97,7 +97,9 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 				// Hard-reset the branch back to the base ref, discarding all
 				// previous commits. This prevents inheriting junk from a
 				// failed pipeline run.
-				_ = gitCmd(ctx, worktreePath, "fetch", "origin")
+				if err := gitCmd(ctx, worktreePath, "fetch", "origin"); err != nil {
+					return nil, fmt.Errorf("fetching origin for branch reset: %w", err)
+				}
 				var baseRef string
 				if opts.BaseBranch != "" {
 					baseRef = "origin/" + opts.BaseBranch
@@ -105,7 +107,9 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 					baseRef, _ = resolveBaseRef(ctx, worktreePath)
 				}
 				if baseRef != "" {
-					_ = gitCmd(ctx, worktreePath, "reset", "--hard", baseRef)
+					if err := gitCmd(ctx, worktreePath, "reset", "--hard", baseRef); err != nil {
+						return nil, fmt.Errorf("resetting branch to %s: %w", baseRef, err)
+					}
 				}
 			}
 			_ = gitCmd(ctx, worktreePath, "checkout", "--force", "HEAD")
