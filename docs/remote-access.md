@@ -18,7 +18,7 @@ Access the Forge Hearth TUI and Claude Code CLI from any browser using [VS Code 
 │  Any Browser / VS Code Client       │
 │                                     │
 │  vscode.dev → terminal → forge hearth│
-│  claude --cli  (headless mode)      │
+│  claude (non-interactive)            │
 │                                     │
 └─────────────────────────────────────┘
 ```
@@ -65,7 +65,7 @@ The `--name` flag gives your machine a friendly identifier visible in vscode.dev
 1. Open [vscode.dev](https://vscode.dev)
 2. Press `F1` → **Remote Tunnels: Connect to Tunnel...**
 3. Select your machine name (`forge-host`)
-4. Open a terminal (`Ctrl+``)
+4. Open a terminal (Ctrl+backtick)
 5. Run `forge hearth`
 
 ## Running Alongside Forge
