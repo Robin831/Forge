@@ -6,11 +6,14 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
+	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/warden"
 )
@@ -440,5 +443,81 @@ func TestSanitizeID(t *testing.T) {
 				t.Errorf("sanitizeID(%q) = %q, want %q", tt.input, got, tt.expect)
 			}
 		})
+	}
+}
+
+// TestRun_SchematicOnSpawn_UpdatesWorkerPIDAndLogPath verifies that when
+// Crucible's SchematicRunner invokes cfg.OnSpawn, the worker record in
+// state.db is updated with the subprocess PID and log_path. This is the
+// contract that lets Hearth tail logs during the crucible schematic phase.
+func TestRun_SchematicOnSpawn_UpdatesWorkerPIDAndLogPath(t *testing.T) {
+	db := testDB(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	const workerID = "crucible-spawn-worker"
+
+	// Seed a worker row so UpdateWorkerPID/LogPath have a target row to update.
+	if err := db.InsertWorker(&state.Worker{
+		ID:        workerID,
+		BeadID:    "parent-1",
+		Anvil:     "test-anvil",
+		Status:    state.WorkerRunning,
+		Phase:     "crucible",
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seeding worker row: %v", err)
+	}
+
+	p := Params{
+		DB:       db,
+		Logger:   logger,
+		WorkerID: workerID,
+		ParentBead: poller.Bead{
+			ID:    "parent-1",
+			Title: "Parent bead",
+		},
+		AnvilName:       "test-anvil",
+		AnvilConfig:     config.AnvilConfig{Path: t.TempDir()},
+		Providers:       []provider.Provider{{Kind: provider.Claude}},
+		SchematicConfig: &schematic.Config{Enabled: true},
+		SchematicRunner: func(_ context.Context, cfg schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
+			if cfg.OnSpawn != nil {
+				cfg.OnSpawn(54321, "/fake/crucible.log")
+			}
+			return &schematic.Result{Action: schematic.ActionSkip, Reason: "skip"}
+		},
+		EpicBranchCreator: func(_ context.Context, _, _ string) error {
+			return nil
+		},
+		ChildFetcher: func(_ context.Context, _, _ string) ([]poller.Bead, error) {
+			return nil, nil // no children — crucible exits cleanly after schematic
+		},
+	}
+
+	result := Run(context.Background(), p)
+	if result.Error != nil {
+		t.Fatalf("unexpected crucible error: %v", result.Error)
+	}
+
+	workers, err := db.AllWorkers(0)
+	if err != nil {
+		t.Fatalf("querying workers: %v", err)
+	}
+
+	var found *state.Worker
+	for i := range workers {
+		if workers[i].ID == workerID {
+			found = &workers[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("worker row not found in state.db after crucible run")
+	}
+	if found.PID != 54321 {
+		t.Errorf("expected worker PID 54321, got %d", found.PID)
+	}
+	if found.LogPath != "/fake/crucible.log" {
+		t.Errorf("expected worker LogPath /fake/crucible.log, got %q", found.LogPath)
 	}
 }
