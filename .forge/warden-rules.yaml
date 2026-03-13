@@ -67,8 +67,8 @@ rules:
       added: "2026-03-09"
     - id: changelog-matches-implementation
       category: other
-      pattern: Changelog or release note entries that describe UI changes or new features
-      check: Verify that changelog descriptions accurately reflect the actual code changes — if the changelog claims a feature applies to multiple views or components, confirm each one was actually modified to support it
+      pattern: Changelog or release note entries that describe UI changes, new features, or behavior changes
+      check: Verify that changelog descriptions accurately reflect the actual code changes — if the changelog claims a feature applies to multiple views or components, confirm each one was actually modified to support it; also ensure the changelog does not claim full functionality (e.g., 'enables autostart') when the code only partially implements it (e.g., only runs daemon-reload without enabling the service)
       source: copilot:PR#128
       added: "2026-03-09"
     - id: use-style-frame-size
@@ -478,12 +478,6 @@ rules:
       pattern: Adding or reordering iota constants that have a corresponding label/string array
       check: Verify that all parallel arrays or switch cases indexed by iota constants are updated in sync — inserting a new iota value shifts all subsequent values, so every array, slice literal, or map keyed by those constants must add the new entry at the correct position
       source: copilot:PR#230
-      added: "2026-03-13"
-    - id: changelog-accuracy
-      category: other
-      pattern: Changelog entries that describe new features or behavior changes
-      check: Verify that changelog descriptions accurately reflect the actual implemented behavior — don't claim functionality (e.g., 'enables autostart') if the code only partially implements it (e.g., only runs daemon-reload without enabling the service)
-      source: copilot:PR#235
       added: "2026-03-13"
     - id: alpine-user-management-compat
       category: other
