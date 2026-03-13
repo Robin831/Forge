@@ -2136,14 +2136,16 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Info("killed worker for stopped bead", "worker", w.ID, "bead", sp.BeadID)
 		}
 
-		// Remove from active beads so the slot is freed.
-		d.activeBeads.Delete(sp.BeadID)
-
-		// Mark clarification_needed so the poller will skip this bead.
+		// Mark clarification_needed first so the poller will skip this bead
+		// before we free the active slot; prevents a run_bead race between
+		// the Delete and the DB write.
 		if err := d.db.SetClarificationNeeded(sp.BeadID, sp.Anvil, true, reason); err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to set clarification: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
+
+		// Remove from active beads so the slot is freed.
+		d.activeBeads.Delete(sp.BeadID)
 
 		// Release bead back to open so it's visible but not dispatched.
 		anvilCfg, ok := d.cfg.Load().Anvils[sp.Anvil]
@@ -2152,7 +2154,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			defer releaseCancel()
 			releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", sp.BeadID, "--status=open", "--assignee=", "--json"))
 			releaseCmd.Dir = anvilCfg.Path
-			_, _ = releaseCmd.CombinedOutput()
+			if out, err := releaseCmd.CombinedOutput(); err != nil {
+				d.logger.Warn("bd update failed when releasing stopped bead", "bead", sp.BeadID, "error", err, "output", strings.TrimSpace(string(out)))
+			}
 		}
 
 		_ = d.db.LogEvent(state.EventBeadStopped, fmt.Sprintf("Bead %s stopped: %s", sp.BeadID, reason), sp.BeadID, sp.Anvil)

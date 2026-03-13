@@ -1269,3 +1269,101 @@ func TestApplyDecomposedOutcome(t *testing.T) {
 		assert.False(t, called, "labelAdder should not be called for non-tagged auto_dispatch mode")
 	})
 }
+func TestHandleIPC_StopBead(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-stop-bead-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	db, err := state.Open(filepath.Join(tmpDir, "state.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir, AutoDispatchTag: "forge-ready"},
+		},
+	})
+
+	t.Run("invalid JSON payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "stop_bead", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+		assert.Contains(t, msg["message"], "invalid stop_bead payload")
+	})
+
+	t.Run("missing bead_id", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.StopBeadPayload{Anvil: "test-anvil", Reason: "test"})
+		resp := d.handleIPC(ipc.Command{Type: "stop_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("missing anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.StopBeadPayload{BeadID: "BEAD-1", Reason: "test"})
+		resp := d.handleIPC(ipc.Command{Type: "stop_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("success sets clarification_needed before freeing active slot", func(t *testing.T) {
+		const beadID = "BEAD-STOP-1"
+		const anvil = "test-anvil"
+
+		// Pre-populate activeBeads so we can verify ordering via DB read.
+		d.activeBeads.Store(beadID, struct{}{})
+
+		payload, _ := json.Marshal(ipc.StopBeadPayload{
+			BeadID: beadID,
+			Anvil:  anvil,
+			Reason: "manually stopped by user",
+		})
+		resp := d.handleIPC(ipc.Command{Type: "stop_bead", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+
+		// Verify clarification_needed was persisted in DB.
+		retry, err := db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		require.NotNil(t, retry, "retry record should exist after stop")
+		assert.True(t, retry.ClarificationNeeded, "clarification_needed should be set")
+
+		// Verify active slot was freed.
+		_, stillActive := d.activeBeads.Load(beadID)
+		assert.False(t, stillActive, "bead should be removed from activeBeads")
+	})
+
+	t.Run("reason sanitization strips control characters", func(t *testing.T) {
+		const beadID = "BEAD-STOP-2"
+		const anvil = "test-anvil"
+
+		maliciousReason := "stop\x1b[31mRED\x1b[0m\x00\x07"
+		payload, _ := json.Marshal(ipc.StopBeadPayload{
+			BeadID: beadID,
+			Anvil:  anvil,
+			Reason: maliciousReason,
+		})
+		resp := d.handleIPC(ipc.Command{Type: "stop_bead", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+
+		// Confirm the stored reason does not contain control chars.
+		retry, err := db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		require.NotNil(t, retry)
+		for _, r := range retry.LastError {
+			if r < 32 && r != '\n' {
+				t.Errorf("stored reason contains control character %q in: %q", r, retry.LastError)
+			}
+		}
+	})
+}
