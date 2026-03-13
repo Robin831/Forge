@@ -19,6 +19,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -277,7 +278,7 @@ type Model struct {
 	crucibleVP       scrollViewport
 	needsAttnVP      scrollViewport
 	readyToMergeVP   scrollViewport
-	workerVP         scrollViewport
+	workerTable      table.Model
 	activityVP       scrollViewport
 	activityExpanded map[string]bool   // event type → expanded override (nil = default)
 	activityNavItems []activityNavItem // flat display items for Live Activity
@@ -374,6 +375,35 @@ type Model struct {
 func NewModel(ds *DataSource) Model {
 	h := help.New()
 	h.ShowAll = false // use short (single-line) mode by default
+
+	columns := []table.Column{
+		{Title: " ", Width: 1},
+		{Title: "Type", Width: 8},
+		{Title: "Bead", Width: 12},
+		{Title: "Task", Width: 20},
+		{Title: "Anvil", Width: 10},
+		{Title: "Time", Width: 6},
+	}
+	t := table.New(
+		table.WithColumns(columns),
+		table.WithFocused(true),
+	)
+
+	s := table.DefaultStyles()
+	// Start from a fresh style to avoid inheriting the default Padding(0,1).
+	// Padding would make each header cell wider than col.Width, causing the
+	// header row to exceed SetWidth and wrap across multiple lines.
+	s.Header = lipgloss.NewStyle().
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(colorMuted).
+		BorderBottom(true).
+		Bold(false)
+	s.Selected = s.Selected.
+		Foreground(colorFg).
+		Background(colorAccent).
+		Bold(true)
+	t.SetStyles(s)
+
 	return Model{
 		focused:             PanelQueue,
 		data:                ds,
@@ -381,6 +411,7 @@ func NewModel(ds *DataSource) Model {
 		queueExpandedAnvils: make(map[string]bool),
 		activityExpanded:    make(map[string]bool),
 		helpModel:           h,
+		workerTable:         t,
 	}
 }
 
@@ -607,8 +638,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "K":
 			// Kill selected worker
 			if m.focused == PanelWorkers && len(m.workers) > 0 &&
-				m.workerVP.cursor < len(m.workers) {
-				w := m.workers[m.workerVP.cursor]
+				m.workerTable.Cursor() < len(m.workers) {
+				w := m.workers[m.workerTable.Cursor()]
 				if m.OnKill != nil {
 					m.OnKill(w.ID, w.PID)
 				}
@@ -617,8 +648,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "o":
 			// Open log viewer for the selected worker
 			if m.focused == PanelWorkers && len(m.workers) > 0 &&
-				m.workerVP.cursor < len(m.workers) {
-				w := m.workers[m.workerVP.cursor]
+				m.workerTable.Cursor() < len(m.workers) {
+				w := m.workers[m.workerTable.Cursor()]
 				if w.LogPath == "" {
 					m.setStatus(fmt.Sprintf("No log file for %s", w.BeadID), false)
 				} else {
@@ -781,6 +812,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.needsAttnVP.cursor < len(m.needsAttention) {
 				item := m.needsAttention[m.needsAttnVP.cursor]
 				m.openNotesOverlay(item.BeadID, item.Anvil, item.Title)
+			}
+
+		default:
+			if m.focused == PanelWorkers {
+				var cmd tea.Cmd
+				m.workerTable, cmd = m.workerTable.Update(msg)
+				return m, cmd
 			}
 		}
 
@@ -958,19 +996,71 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case UpdateWorkersMsg:
-		// Capture the currently selected worker ID before clamping, so we can
-		// detect when ClampToTotal shifts the cursor to a different worker.
-		prevCursor := m.workerVP.cursor
+		// Capture the currently selected worker ID before updating, so we can
+		// try to stay on the same worker if it's still present in the list.
+		prevCursor := m.workerTable.Cursor()
 		var prevWorkerID string
 		if prevCursor >= 0 && prevCursor < len(m.workers) {
 			prevWorkerID = m.workers[prevCursor].ID
 		}
 
 		m.workers = msg.Items
-		m.workerVP.ClampToTotal(len(msg.Items))
+
+		// Update table rows
+		rows := make([]table.Row, len(msg.Items))
+		frame := SpinnerFrames[m.spinnerFrame%len(SpinnerFrames)]
+		for i, w := range msg.Items {
+			status := workerStatusStyle(w.Status, frame)
+			beadCol := w.BeadID
+			if w.PRNumber > 0 {
+				beadCol = fmt.Sprintf("%s (PR#%d)", w.BeadID, w.PRNumber)
+			}
+			taskCol := sanitizeTitle(w.Title)
+			if taskCol == "" {
+				taskCol = "(no title)"
+			}
+			rows[i] = table.Row{
+				status,
+				w.Type,
+				beadCol,
+				taskCol,
+				w.Anvil,
+				w.Duration,
+			}
+		}
+		m.workerTable.SetRows(rows)
+
+		// Stay on the same worker ID if it still exists.
+		if prevWorkerID != "" {
+			for i, w := range m.workers {
+				if w.ID == prevWorkerID {
+					// Move relative to the current cursor so the viewport scrolls
+					// into view without iterating from 0 every refresh (O(delta) not O(n)).
+					cur := m.workerTable.Cursor()
+					if i > cur {
+						for range i - cur {
+							m.workerTable.MoveDown(1)
+						}
+					} else if i < cur {
+						for range cur - i {
+							m.workerTable.MoveUp(1)
+						}
+					}
+					break
+				}
+			}
+		}
+
+		// Clamp table cursor in case the ID vanished and the old index is out of bounds.
+		if m.workerTable.Cursor() >= len(m.workers) {
+			m.workerTable.SetCursor(max(0, len(m.workers)-1))
+		}
+		if m.workerTable.Cursor() < 0 && len(m.workers) > 0 {
+			m.workerTable.SetCursor(0)
+		}
 
 		// Reset live activity state if the selected worker implicitly changed.
-		newCursor := m.workerVP.cursor
+		newCursor := m.workerTable.Cursor()
 		var newWorkerID string
 		if newCursor >= 0 && newCursor < len(m.workers) {
 			newWorkerID = m.workers[newCursor].ID
@@ -1120,6 +1210,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SpinnerTickMsg:
 		// Advance spinner frame and schedule the next spinner tick.
 		m.spinnerFrame = (m.spinnerFrame + 1) % len(SpinnerFrames)
+
+		// Only animate status cells for workers that use a spinner frame
+		// (running/reviewing). Skip SetRows entirely when no spinner is active.
+		if len(m.workers) > 0 {
+			frame := SpinnerFrames[m.spinnerFrame%len(SpinnerFrames)]
+			var hasSpinner bool
+			for _, w := range m.workers {
+				if w.Status == "running" || w.Status == "reviewing" {
+					hasSpinner = true
+					break
+				}
+			}
+			if hasSpinner {
+				rows := m.workerTable.Rows()
+				for i, w := range m.workers {
+					if i < len(rows) && (w.Status == "running" || w.Status == "reviewing") {
+						rows[i][0] = workerStatusStyle(w.Status, frame)
+					}
+				}
+				m.workerTable.SetRows(rows)
+			}
+		}
+
 		return m, SpinnerTick()
 	}
 
@@ -1392,9 +1505,9 @@ func (m *Model) scrollDown() {
 	case PanelReadyToMerge:
 		m.readyToMergeVP.ScrollDown(len(m.readyToMerge))
 	case PanelWorkers:
-		prev := m.workerVP.cursor
-		m.workerVP.ScrollDown(len(m.workers))
-		if m.workerVP.cursor != prev {
+		prev := m.workerTable.Cursor()
+		m.workerTable.MoveDown(1)
+		if m.workerTable.Cursor() != prev {
 			m.resetActivityState()
 		}
 	case PanelLiveActivity:
@@ -1421,9 +1534,9 @@ func (m *Model) scrollUp() {
 	case PanelReadyToMerge:
 		m.readyToMergeVP.ScrollUp()
 	case PanelWorkers:
-		prev := m.workerVP.cursor
-		m.workerVP.ScrollUp()
-		if m.workerVP.cursor != prev {
+		prev := m.workerTable.Cursor()
+		m.workerTable.MoveUp(1)
+		if m.workerTable.Cursor() != prev {
 			m.resetActivityState()
 		}
 	case PanelLiveActivity:
@@ -1437,8 +1550,8 @@ func (m *Model) scrollUp() {
 
 // selectedWorkerActivity returns the activity lines for the currently selected worker.
 func (m *Model) selectedWorkerActivity() []string {
-	if len(m.workers) > 0 && m.workerVP.cursor < len(m.workers) {
-		return m.workers[m.workerVP.cursor].ActivityLines
+	if len(m.workers) > 0 && m.workerTable.Cursor() < len(m.workers) {
+		return m.workers[m.workerTable.Cursor()].ActivityLines
 	}
 	return nil
 }
@@ -2242,28 +2355,22 @@ func (m *Model) renderQueue(width, height int) string {
 // (when active), Ready to Merge, and Needs Attention (bottom). When crucibles are
 // active, it renders 4 stacked panels; otherwise 3.
 func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
-	height := topHeight + bottomHeight
-
 	// Count panels to render: Queue + ReadyToMerge + NeedsAttention + optionally Crucibles.
 	hasCrucibles := len(m.crucibles) > 0
-	panelN := 3
-	if hasCrucibles {
-		panelN = 4
-	}
-
-	// Each sub-panel adds 2 border lines. Deduct extra borders beyond one panel.
-	innerHeight := height - (panelN-1)*2
-	if innerHeight < 0 {
-		innerHeight = 0
-	}
 
 	if hasCrucibles {
-		// Queue 40%, Crucible 20%, ReadyToMerge 15%, NeedsAttention 25%.
-		queueHeight := innerHeight * 4 / 10
-		crucibleHeight := innerHeight * 2 / 10
-		mergeHeight := innerHeight * 15 / 100
-		if innerHeight < 12 {
-			queueHeight = innerHeight
+		// Total inner height available for all 4 panels is topHeight + bottomHeight - 6.
+		// The center column has 1 panel (2 border lines). Each additional panel adds 2 more
+		// border lines; 4 panels = 8 border lines total, so subtract 6 extra vs the baseline.
+		totalInner := topHeight + bottomHeight - 6
+		if totalInner < 0 {
+			totalInner = 0
+		}
+		queueHeight := totalInner * 4 / 10
+		crucibleHeight := totalInner * 2 / 10
+		mergeHeight := totalInner * 15 / 100
+		if totalInner < 12 {
+			queueHeight = totalInner
 			crucibleHeight = 0
 			mergeHeight = 0
 		} else {
@@ -2271,7 +2378,7 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 			crucibleHeight = max(crucibleHeight, 4)
 			mergeHeight = max(mergeHeight, 3)
 		}
-		attentionHeight := innerHeight - queueHeight - crucibleHeight - mergeHeight
+		attentionHeight := totalInner - queueHeight - crucibleHeight - mergeHeight
 
 		top := m.renderQueue(width, queueHeight)
 		cruc := m.renderCrucibles(width, crucibleHeight)
@@ -2281,20 +2388,25 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	}
 
 	// No active crucibles — original 3-panel layout.
-	innerHeight = height - 4
+	// Each sub-panel adds 2 border lines. Deduct extra borders beyond one panel.
+	innerHeight := topHeight + bottomHeight - 4
 	if innerHeight < 0 {
 		innerHeight = 0
 	}
-	queueHeight := innerHeight * 5 / 10
-	mergeHeight := innerHeight * 2 / 10
+	queueHeight := innerHeight * 6 / 10
 	if innerHeight < 8 {
 		queueHeight = innerHeight
-		mergeHeight = 0
 	} else {
 		queueHeight = max(queueHeight, 5)
+	}
+	remaining := innerHeight - queueHeight
+	mergeHeight := remaining / 3
+	if remaining < 6 {
+		mergeHeight = 0
+	} else {
 		mergeHeight = max(mergeHeight, 3)
 	}
-	attentionHeight := innerHeight - queueHeight - mergeHeight
+	attentionHeight := remaining - mergeHeight
 
 	top := m.renderQueue(width, queueHeight)
 	middle := m.renderReadyToMerge(width, mergeHeight)
@@ -2336,6 +2448,9 @@ func cruciblePhaseStyle(phase, frame string) string {
 
 // renderCrucibles renders the Crucibles sub-panel showing active epic orchestrations.
 func (m *Model) renderCrucibles(width, height int) string {
+	if height <= 0 {
+		return ""
+	}
 	style := panelStyle.Width(width)
 	if m.focused == PanelCrucibles {
 		style = focusedPanelStyle.Width(width)
@@ -2466,6 +2581,9 @@ func attentionReasonIcon(cat AttentionReason) string {
 // that require human intervention (e.g. exhausted dispatch/CI-fix/review-fix/rebase
 // attempts, clarification requests, or stalled workers).
 func (m *Model) renderNeedsAttention(width, height int) string {
+	if height <= 0 {
+		return ""
+	}
 	style := panelStyle.Width(width)
 	if m.focused == PanelNeedsAttention {
 		style = focusedPanelStyle.Width(width)
@@ -2514,9 +2632,6 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 		}
 	}
 
-	if height <= 0 {
-		return style.Render("")
-	}
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
 }
@@ -2576,6 +2691,9 @@ func (m *Model) renderWorkers(width, height int) string {
 }
 
 func (m *Model) renderWorkerList(width, height int) string {
+	if height <= 0 {
+		return ""
+	}
 	style := panelStyle.Width(width)
 	if m.focused == PanelWorkers {
 		style = focusedPanelStyle.Width(width)
@@ -2583,55 +2701,59 @@ func (m *Model) renderWorkerList(width, height int) string {
 
 	title := panelTitleStyle.Render(fmt.Sprintf("Workers (%d)", len(m.workers)))
 
-	var lines []string
-	lines = append(lines, title)
+	innerWidth := width - 4
+	if innerWidth < 0 {
+		innerWidth = 0
+	}
+	m.workerTable.SetWidth(innerWidth)
+	// table.SetHeight(h) internally sets viewport.Height = h - headerHeight.
+	// With a 2-line header (text + bottom border), viewport shows h-2 rows.
+	// title(1) + table(h rows via SetHeight) = h+1 content lines; height-4 gives 4 slack lines.
+	tableHeight := height - 4
+	if tableHeight < 1 {
+		tableHeight = 1
+	}
+	m.workerTable.SetHeight(tableHeight)
 
-	if len(m.workers) == 0 {
-		lines = append(lines, dimStyle.Render("No active workers"))
-	} else {
-		// Each worker uses 2 lines (main + title), so halve the visible slot count.
-		maxLines := height - 4 // height-2 (borders) - 2 (title + margin)
-		slotsPerWorker := 2
-		maxWorkers := maxLines / slotsPerWorker
-		if maxWorkers < 1 {
-			maxWorkers = 1
+	// Dynamically adjust column widths to fit the panel.
+	// Total avail is width - 4 (borders and padding).
+	cols := m.workerTable.Columns()
+	if len(cols) == 6 {
+		avail := innerWidth
+		if avail < 1 {
+			avail = 1
 		}
-		m.workerVP.AdjustViewport(maxWorkers, len(m.workers))
-		start, end := m.workerVP.VisibleRange(maxWorkers, len(m.workers))
-		frame := SpinnerFrames[m.spinnerFrame%len(SpinnerFrames)]
-		for i := start; i < end; i++ {
-			item := m.workers[i]
-			status := workerStatusStyle(item.Status, frame)
-			phase := phaseTag(item.Type)
-			beadAndPR := item.BeadID
-			if item.PRNumber > 0 {
-				beadAndPR = fmt.Sprintf("%s PR#%d", item.BeadID, item.PRNumber)
-			}
-			mainLine := fmt.Sprintf("%s %s %s %s %s",
-				status, phase, beadAndPR,
-				dimStyle.Render(item.Anvil), item.Duration)
-			if i == m.workerVP.cursor {
-				mainLine = selectedStyle.Render(mainLine)
-			}
-			lines = append(lines, mainLine)
 
-			// Second line: indented bead title (sanitized to strip control chars)
-			titleText := sanitizeTitle(item.Title)
-			if titleText == "" {
-				titleText = "(no title)"
-			}
-			titleLine := "    " + dimStyle.Render(truncate(titleText, width-8))
-			if i == m.workerVP.cursor {
-				titleLine = "    " + selectedStyle.Render(truncate(titleText, width-8))
-			}
-			lines = append(lines, titleLine)
+		// Ratios: Status 5%, Type 10%, Bead 20%, Task 35%, Anvil 20%, Time 10%
+		cols[0].Width = max(1, avail*5/100)
+		cols[1].Width = max(4, avail*10/100)
+		cols[2].Width = max(6, avail*20/100)
+		cols[3].Width = max(10, avail*35/100)
+		cols[4].Width = max(6, avail*20/100)
+		cols[5].Width = max(4, avail*10/100)
+
+		// Trim columns in reverse-priority order (least important first) until
+		// total <= avail. Each column is only reduced to a floor of 1.
+		// This guarantees sum(widths) <= avail for any avail >= 1.
+		trimOrder := [6]int{0, 5, 1, 4, 2, 3} // Status, Time, Type, Anvil, Bead, Task
+		total := 0
+		for _, c := range cols {
+			total += c.Width
 		}
+		for _, idx := range trimOrder {
+			if total <= avail {
+				break
+			}
+			excess := total - avail
+			reduction := min(excess, cols[idx].Width-1)
+			cols[idx].Width -= reduction
+			total -= reduction
+		}
+
+		m.workerTable.SetColumns(cols)
 	}
 
-	if height <= 0 {
-		return style.Render("")
-	}
-	content := strings.Join(lines, "\n")
+	content := title + m.workerTable.View()
 	return style.Height(height).Render(content)
 }
 
@@ -2727,8 +2849,8 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 
 	// Build title with selected worker info
 	titleText := "Live Activity"
-	if len(m.workers) > 0 && m.workerVP.cursor < len(m.workers) {
-		w := m.workers[m.workerVP.cursor]
+	if len(m.workers) > 0 && m.workerTable.Cursor() < len(m.workers) {
+		w := m.workers[m.workerTable.Cursor()]
 		titleText = fmt.Sprintf("Live Activity — %s %s", w.BeadID, dimStyle.Render(w.Anvil))
 	}
 	title := activityPanelTitleStyle.Render(titleText)
@@ -2822,7 +2944,7 @@ func (m *Model) renderEvents(width, height int) string {
 	}
 
 	if height <= 0 {
-		return style.Render("")
+		return ""
 	}
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)

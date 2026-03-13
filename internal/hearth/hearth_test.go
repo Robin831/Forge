@@ -53,27 +53,29 @@ func drainHuh(m *Model, cmd tea.Cmd) tea.Cmd {
 }
 
 func TestRenderWorkerListShowsTitle(t *testing.T) {
-	m := Model{
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
-				Title: "add user auth endpoint"},
-		},
-		focused: PanelWorkers,
+	m := NewModel(nil)
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+			Title: "add user auth endpoint"},
 	}
-	rendered := m.renderWorkerList(60, 20)
+	m.focused = PanelWorkers
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	m = *mTmp.(*Model)
+	rendered := m.renderWorkerList(120, 20)
 	if !strings.Contains(rendered, "add user auth endpoint") {
 		t.Errorf("expected title 'add user auth endpoint' in rendered output:\n%s", rendered)
 	}
 }
 
 func TestRenderWorkerListNoTitle(t *testing.T) {
-	m := Model{
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
-				Title: ""},
-		},
-		focused: PanelWorkers,
+	m := NewModel(nil)
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+			Title: ""},
 	}
+	m.focused = PanelWorkers
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	m = *mTmp.(*Model)
 	rendered := m.renderWorkerList(60, 20)
 	if !strings.Contains(rendered, "(no title)") {
 		t.Errorf("expected '(no title)' when Title is empty:\n%s", rendered)
@@ -81,37 +83,39 @@ func TestRenderWorkerListNoTitle(t *testing.T) {
 }
 
 func TestRenderWorkerListWithPRNumber(t *testing.T) {
-	m := Model{
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "cifix",
-				Title: "fix CI", PRNumber: 42},
-		},
-		focused: PanelWorkers,
+	m := NewModel(nil)
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "cifix",
+			Title: "fix CI", PRNumber: 42},
 	}
-	rendered := m.renderWorkerList(60, 20)
+	m.focused = PanelWorkers
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	m = *mTmp.(*Model)
+	rendered := m.renderWorkerList(120, 20)
 	if !strings.Contains(rendered, "PR#42") {
 		t.Errorf("expected 'PR#42' when PRNumber > 0 in rendered output:\n%s", rendered)
 	}
 }
 
 func TestRenderWorkerListWithoutPRNumber(t *testing.T) {
-	m := Model{
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
-				Title: "some task", PRNumber: 0},
-		},
-		focused: PanelWorkers,
+	m := NewModel(nil)
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+			Title: "some task", PRNumber: 0},
 	}
+	m.focused = PanelWorkers
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	m = *mTmp.(*Model)
 	rendered := m.renderWorkerList(60, 20)
 	if strings.Contains(rendered, "PR#") {
 		t.Errorf("expected no 'PR#' when PRNumber is 0 in rendered output:\n%s", rendered)
 	}
 }
 
-func TestRenderWorkerListScrollRespectsTwoLinesPerWorker(t *testing.T) {
+func TestRenderWorkerListScrolls(t *testing.T) {
 	// Build more workers than fit in the panel to verify scroll/clipping.
-	// height=10 → maxLines = 10-4 = 6, slotsPerWorker=2, maxWorkers=3.
-	// Only the first 3 workers should be visible at scroll=0.
+	// height=10 → contentHeight = 10-4 = 6. With header, about 5 data rows fit.
+	// Only the first 4 workers should be visible at cursor=0.
 	workers := []WorkerItem{
 		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-0"},
 		{ID: "w2", BeadID: "bd-2", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-1"},
@@ -119,17 +123,22 @@ func TestRenderWorkerListScrollRespectsTwoLinesPerWorker(t *testing.T) {
 		{ID: "w4", BeadID: "bd-4", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-3"},
 		{ID: "w5", BeadID: "bd-5", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-4"},
 	}
-	m := Model{workers: workers, focused: PanelWorkers, workerVP: scrollViewport{cursor: 0}}
+	m := NewModel(nil)
+	m.focused = PanelWorkers
+	m.workerTable.SetCursor(0)
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: workers})
+	m = *mTmp.(*Model)
 
 	rendered := m.renderWorkerList(60, 10)
 
-	// Workers 0-2 should be visible; worker 3 and 4 must be clipped.
-	for _, visible := range []string{"title-0", "title-1", "title-2"} {
+	// In a table with height 10 (content height 6), with 1 line per worker,
+	// and accounting for header and border, about 4 workers should be visible.
+	for _, visible := range []string{"title-0", "title-1", "title-2", "title-3"} {
 		if !strings.Contains(rendered, visible) {
 			t.Errorf("expected %q to be visible in rendered output:\n%s", visible, rendered)
 		}
 	}
-	for _, hidden := range []string{"title-3", "title-4"} {
+	for _, hidden := range []string{"title-4"} {
 		if strings.Contains(rendered, hidden) {
 			t.Errorf("expected %q to be clipped (not visible) in rendered output:\n%s", hidden, rendered)
 		}
@@ -137,9 +146,9 @@ func TestRenderWorkerListScrollRespectsTwoLinesPerWorker(t *testing.T) {
 }
 
 func TestRenderWorkerListViewportScrollsToShowSelected(t *testing.T) {
-	// height=10 → maxLines=6, slotsPerWorker=2, maxWorkers=3.
-	// With workerScroll=4 (last worker), the viewport should shift so that
-	// workers 2-4 are visible and workers 0-1 are clipped.
+	// height=10 → tableHeight = 10-6 = 4 visible data rows.
+	// With cursor=4 (last worker), the table should scroll so that
+	// workers 1-4 are visible and worker 0 is clipped.
 	workers := []WorkerItem{
 		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-0"},
 		{ID: "w2", BeadID: "bd-2", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-1"},
@@ -147,18 +156,28 @@ func TestRenderWorkerListViewportScrollsToShowSelected(t *testing.T) {
 		{ID: "w4", BeadID: "bd-4", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-3"},
 		{ID: "w5", BeadID: "bd-5", Anvil: "test", Status: "running", Duration: "1m", Type: "smith", Title: "title-4"},
 	}
-	m := Model{workers: workers, focused: PanelWorkers, workerVP: scrollViewport{cursor: 4}}
+	m := NewModel(nil)
+	m.focused = PanelWorkers
+	// Load workers first so cursor tracking works properly.
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: workers})
+	m = *mTmp.(*Model)
+	// Pre-render to set table viewport height (tableHeight = 10-6 = 4),
+	// then navigate cursor to last worker.
+	m.renderWorkerList(60, 10)
+	for i := 0; i < 4; i++ {
+		m.workerTable.MoveDown(1)
+	}
 
 	rendered := m.renderWorkerList(60, 10)
 
 	// The selected worker (index 4) and its neighbours must be visible.
-	for _, visible := range []string{"title-2", "title-3", "title-4"} {
+	for _, visible := range []string{"title-1", "title-2", "title-3", "title-4"} {
 		if !strings.Contains(rendered, visible) {
 			t.Errorf("expected %q to be visible when workerScroll=4:\n%s", visible, rendered)
 		}
 	}
 	// Workers scrolled out of view must not appear.
-	for _, hidden := range []string{"title-0", "title-1"} {
+	for _, hidden := range []string{"title-0"} {
 		if strings.Contains(rendered, hidden) {
 			t.Errorf("expected %q to be clipped (not visible) when workerScroll=4:\n%s", hidden, rendered)
 		}
@@ -215,7 +234,8 @@ func TestWordWrapCount(t *testing.T) {
 }
 
 func TestEventLineCountMatchesRender(t *testing.T) {
-	m := Model{eventScroll: 0}
+	m := NewModel(nil)
+	m.eventScroll = 0
 	events := []EventItem{
 		{Timestamp: "12:00:00", Type: "bead_claimed", Message: "short message", BeadID: "bd-1"},
 		{Timestamp: "12:00:01", Type: "smith_done", Message: "a longer message that might wrap depending on the panel width", BeadID: ""},
@@ -235,16 +255,17 @@ func TestEventLineCountMatchesRender(t *testing.T) {
 }
 
 func TestRenderColumnsAlignedHeight(t *testing.T) {
-	m := Model{
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
-				ActivityLines: []string{"line1", "line2", "line3", "line4", "line5", "line6", "line7", "line8"}},
-		},
-		focused:          PanelWorkers,
-		width:            120,
-		height:           40,
-		activityExpanded: make(map[string]bool),
+	m := NewModel(nil)
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+			ActivityLines: []string{"line1", "line2", "line3", "line4", "line5", "line6", "line7", "line8"}},
 	}
+	m.focused = PanelWorkers
+	m.width = 120
+	m.height = 40
+	m.activityExpanded = make(map[string]bool)
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	m = *mTmp.(*Model)
 	m.rebuildActivityNav()
 
 	topHeight, bottomHeight := m.getVerticalSplit(1, 1)
@@ -267,7 +288,8 @@ func TestRenderColumnsAlignedHeight(t *testing.T) {
 }
 
 func TestRenderUsagePanelNoData(t *testing.T) {
-	m := Model{focused: PanelWorkers}
+	m := NewModel(nil)
+	m.focused = PanelWorkers
 	rendered := m.renderUsagePanel(60, 8)
 	if !strings.Contains(rendered, "Usage") {
 		t.Errorf("expected 'Usage' title in rendered output:\n%s", rendered)
@@ -278,17 +300,16 @@ func TestRenderUsagePanelNoData(t *testing.T) {
 }
 
 func TestRenderUsagePanelWithData(t *testing.T) {
-	m := Model{
-		focused: PanelWorkers,
-		usage: UsageData{
-			Providers: []ProviderUsage{
-				{Provider: "claude", Cost: 0.05, InputTokens: 1500, OutputTokens: 300},
-			},
-			TotalCost:    0.05,
-			CostLimit:    1.0,
-			CopilotUsed:  5,
-			CopilotLimit: 50,
+	m := NewModel(nil)
+	m.focused = PanelWorkers
+	m.usage = UsageData{
+		Providers: []ProviderUsage{
+			{Provider: "claude", Cost: 0.05, InputTokens: 1500, OutputTokens: 300},
 		},
+		TotalCost:    0.05,
+		CostLimit:    1.0,
+		CopilotUsed:  5,
+		CopilotLimit: 50,
 	}
 	rendered := m.renderUsagePanel(60, 8)
 	if !strings.Contains(rendered, "Claude") {
@@ -303,7 +324,8 @@ func TestRenderUsagePanelWithData(t *testing.T) {
 }
 
 func TestRenderUsagePanelZeroHeight(t *testing.T) {
-	m := Model{focused: PanelWorkers}
+	m := NewModel(nil)
+	m.focused = PanelWorkers
 	// Should not panic at boundary height
 	rendered := m.renderUsagePanel(60, 0)
 	if rendered == "" {
@@ -312,14 +334,15 @@ func TestRenderUsagePanelZeroHeight(t *testing.T) {
 }
 
 func TestRenderCenterColumnSmallTerminal(t *testing.T) {
-	m := Model{
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
-				Title: "some task"},
-		},
-		focused: PanelWorkers,
-		height:  18,
+	m := NewModel(nil)
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+			Title: "some task"},
 	}
+	m.focused = PanelWorkers
+	m.height = 18
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	m = *mTmp.(*Model)
 	// fullHeight < 20 should fall back to workers-only
 	rendered := m.renderCenterColumn(60, 9, 9)
 	if !strings.Contains(rendered, "Workers") {
@@ -331,14 +354,15 @@ func TestRenderCenterColumnSmallTerminal(t *testing.T) {
 }
 
 func TestRenderCenterColumnLargeTerminal(t *testing.T) {
-	m := Model{
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
-				Title: "some task"},
-		},
-		focused: PanelWorkers,
-		height:  50,
+	m := NewModel(nil)
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+			Title: "some task"},
 	}
+	m.focused = PanelWorkers
+	m.height = 50
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	m = *mTmp.(*Model)
 	// fullHeight >= 20 should show both Workers and Usage panels
 	rendered := m.renderCenterColumn(60, 25, 25)
 	if !strings.Contains(rendered, "Workers") {
@@ -350,13 +374,12 @@ func TestRenderCenterColumnLargeTerminal(t *testing.T) {
 }
 
 func TestRenderNeedsAttentionShowsItems(t *testing.T) {
-	m := Model{
-		needsAttention: []NeedsAttentionItem{
-			{BeadID: "bd-42", Anvil: "heimdall", Reason: "exhausted retries", ReasonCategory: AttentionDispatchExhausted},
-			{BeadID: "bd-99", Anvil: "metadata", Reason: "clarification needed", ReasonCategory: AttentionClarification},
-		},
-		focused: PanelNeedsAttention,
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "bd-42", Anvil: "heimdall", Reason: "exhausted retries", ReasonCategory: AttentionDispatchExhausted},
+		{BeadID: "bd-99", Anvil: "metadata", Reason: "clarification needed", ReasonCategory: AttentionClarification},
 	}
+	m.focused = PanelNeedsAttention
 	rendered := m.renderNeedsAttention(60, 20)
 	if !strings.Contains(rendered, "bd-42") {
 		t.Errorf("expected bd-42 in rendered output:\n%s", rendered)
@@ -392,12 +415,11 @@ func TestRenderNeedsAttentionReasonCategories(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := Model{
-				needsAttention: []NeedsAttentionItem{
-					{BeadID: "bd-1", Anvil: "test", Reason: "test reason", ReasonCategory: tt.category},
-				},
-				focused: PanelNeedsAttention,
+			m := NewModel(nil)
+			m.needsAttention = []NeedsAttentionItem{
+				{BeadID: "bd-1", Anvil: "test", Reason: "test reason", ReasonCategory: tt.category},
 			}
+			m.focused = PanelNeedsAttention
 			rendered := m.renderNeedsAttention(80, 20)
 			if !strings.Contains(rendered, tt.wantText) {
 				t.Errorf("expected %q label in rendered output for category %d:\n%s", tt.wantText, tt.category, rendered)
@@ -407,10 +429,9 @@ func TestRenderNeedsAttentionReasonCategories(t *testing.T) {
 }
 
 func TestRenderNeedsAttentionEmpty(t *testing.T) {
-	m := Model{
-		needsAttention: nil,
-		focused:        PanelNeedsAttention,
-	}
+	m := NewModel(nil)
+	m.needsAttention = nil
+	m.focused = PanelNeedsAttention
 	rendered := m.renderNeedsAttention(60, 20)
 	if !strings.Contains(rendered, "None") {
 		t.Errorf("expected 'None' when no items:\n%s", rendered)
@@ -418,16 +439,17 @@ func TestRenderNeedsAttentionEmpty(t *testing.T) {
 }
 
 func TestRenderWorkerActivityNewestFirst(t *testing.T) {
-	m := Model{
-		workers: []WorkerItem{
-			{
-				ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
-				ActivityLines: []string{"[think] oldest entry", "[think] middle entry", "[think] newest entry"},
-			},
+	workers := []WorkerItem{
+		{
+			ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+			ActivityLines: []string{"[think] oldest entry", "[think] middle entry", "[think] newest entry"},
 		},
-		workerVP:         scrollViewport{cursor: 0},
-		activityExpanded: map[string]bool{"think": true},
 	}
+	m := NewModel(nil)
+	m.workerTable.SetCursor(0)
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: workers})
+	m = *mTmp.(*Model)
+	m.activityExpanded = map[string]bool{"think": true}
 	m.rebuildActivityNav()
 
 	// Use a large height so all lines are visible
@@ -657,15 +679,16 @@ func TestWordWrap(t *testing.T) {
 
 func TestActivityScrollChangesVisibleLine(t *testing.T) {
 	lines := []string{"[think] line-0", "[think] line-1", "[think] line-2", "[think] line-3", "[think] line-4"}
-	m := Model{
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
-				ActivityLines: lines},
-		},
-		workerVP:         scrollViewport{cursor: 0},
-		activityExpanded: map[string]bool{"think": true},
-		focused:          PanelLiveActivity,
+	workers := []WorkerItem{
+		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+			ActivityLines: lines},
 	}
+	m := NewModel(nil)
+	m.workerTable.SetCursor(0)
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: workers})
+	m = *mTmp.(*Model)
+	m.activityExpanded = map[string]bool{"think": true}
+	m.focused = PanelLiveActivity
 	m.rebuildActivityNav()
 
 	// With cursor at 0, the newest entry (line-4) should be visible.
@@ -686,16 +709,17 @@ func TestActivityScrollClampPastEnd(t *testing.T) {
 	lines := []string{"[think] alpha", "[think] beta", "[think] gamma"}
 	// activityVP.cursor larger than total simulates a stale scroll after
 	// the worker's activity list shrinks on refresh.
-	m := Model{
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
-				ActivityLines: lines},
-		},
-		workerVP:         scrollViewport{cursor: 0},
-		activityVP:       scrollViewport{cursor: 100}, // way past the end
-		activityExpanded: map[string]bool{"think": true},
-		focused:          PanelLiveActivity,
+	workers := []WorkerItem{
+		{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+			ActivityLines: lines},
 	}
+	m := NewModel(nil)
+	m.workerTable.SetCursor(0)
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: workers})
+	m = *mTmp.(*Model)
+	m.activityVP = scrollViewport{cursor: 100} // way past the end
+	m.activityExpanded = map[string]bool{"think": true}
+	m.focused = PanelLiveActivity
 	m.rebuildActivityNav()
 
 	rendered := m.renderWorkerActivity(80, 10)
@@ -954,15 +978,15 @@ func TestParseWorkerActivityMultiLineText(t *testing.T) {
 }
 
 func TestEnterOnUnlabeledQueueItemOpensMenu(t *testing.T) {
-	m := Model{
-		focused: PanelQueue,
-		width:   80,
-		height:  24,
-		queue: []QueueItem{
-			{BeadID: "bd-1", Anvil: "test", Section: "unlabeled"},
-		},
-		queueVP: scrollViewport{cursor: 0},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.width = 80
+	m.height = 24
+	m.queue = []QueueItem{
+		{BeadID: "bd-1", Anvil: "test", Section: "unlabeled"},
 	}
+	m.queueVP = scrollViewport{cursor: 0}
+	m.rebuildQueueNav()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.queueActionForm == nil {
 		t.Error("expected queueActionForm!=nil after Enter on unlabeled item")
@@ -973,15 +997,15 @@ func TestEnterOnUnlabeledQueueItemOpensMenu(t *testing.T) {
 }
 
 func TestEnterOnReadyQueueItemDoesNotOpenMenu(t *testing.T) {
-	m := Model{
-		focused: PanelQueue,
-		width:   80,
-		height:  24,
-		queue: []QueueItem{
-			{BeadID: "bd-2", Anvil: "test", Section: "ready"},
-		},
-		queueVP: scrollViewport{cursor: 0},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.width = 80
+	m.height = 24
+	m.queue = []QueueItem{
+		{BeadID: "bd-2", Anvil: "test", Section: "ready"},
 	}
+	m.queueVP = scrollViewport{cursor: 0}
+	m.rebuildQueueNav()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.queueActionForm != nil {
 		t.Error("expected queueActionForm==nil for ready (non-unlabeled) item")
@@ -990,20 +1014,20 @@ func TestEnterOnReadyQueueItemDoesNotOpenMenu(t *testing.T) {
 
 func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 	var taggedBead, taggedAnvil string
-	m := Model{
-		focused: PanelQueue,
-		width:   80,
-		height:  24,
-		queue: []QueueItem{
-			{BeadID: "bd-3", Anvil: "forge", Section: "unlabeled"},
-		},
-		queueVP: scrollViewport{cursor: 0},
-		OnTagBead: func(beadID, anvil string) error {
-			taggedBead = beadID
-			taggedAnvil = anvil
-			return nil
-		},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.width = 80
+	m.height = 24
+	m.queue = []QueueItem{
+		{BeadID: "bd-3", Anvil: "forge", Section: "unlabeled"},
 	}
+	m.queueVP = scrollViewport{cursor: 0}
+	m.OnTagBead = func(beadID, anvil string) error {
+		taggedBead = beadID
+		taggedAnvil = anvil
+		return nil
+	}
+	m.rebuildQueueNav()
 	// Open the menu
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_ = drainHuh(&m, cmd)
@@ -1032,18 +1056,18 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 }
 
 func TestQueueActionMenuLabelOnTagBeadError(t *testing.T) {
-	m := Model{
-		focused: PanelQueue,
-		width:   80,
-		height:  24,
-		queue: []QueueItem{
-			{BeadID: "bd-4", Anvil: "forge", Section: "unlabeled"},
-		},
-		queueVP: scrollViewport{cursor: 0},
-		OnTagBead: func(beadID, anvil string) error {
-			return errors.New("network error")
-		},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.width = 80
+	m.height = 24
+	m.queue = []QueueItem{
+		{BeadID: "bd-4", Anvil: "forge", Section: "unlabeled"},
 	}
+	m.queueVP = scrollViewport{cursor: 0}
+	m.OnTagBead = func(beadID, anvil string) error {
+		return errors.New("network error")
+	}
+	m.rebuildQueueNav()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	cmd = drainHuh(&m, cmd)
@@ -1059,20 +1083,20 @@ func TestQueueActionMenuLabelOnTagBeadError(t *testing.T) {
 
 func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
 	var closedBead, closedAnvil string
-	m := Model{
-		focused: PanelQueue,
-		width:   80,
-		height:  24,
-		queue: []QueueItem{
-			{BeadID: "bd-close-1", Anvil: "forge", Section: "unlabeled"},
-		},
-		queueVP: scrollViewport{cursor: 0},
-		OnCloseBead: func(beadID, anvil string) error {
-			closedBead = beadID
-			closedAnvil = anvil
-			return nil
-		},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.width = 80
+	m.height = 24
+	m.queue = []QueueItem{
+		{BeadID: "bd-close-1", Anvil: "forge", Section: "unlabeled"},
 	}
+	m.queueVP = scrollViewport{cursor: 0}
+	m.OnCloseBead = func(beadID, anvil string) error {
+		closedBead = beadID
+		closedAnvil = anvil
+		return nil
+	}
+	m.rebuildQueueNav()
 	// Open the menu
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_ = drainHuh(&m, cmd)
@@ -1100,18 +1124,18 @@ func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
 }
 
 func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
-	m := Model{
-		focused: PanelQueue,
-		width:   80,
-		height:  24,
-		queue: []QueueItem{
-			{BeadID: "bd-close-2", Anvil: "forge", Section: "unlabeled"},
-		},
-		queueVP: scrollViewport{cursor: 0},
-		OnCloseBead: func(beadID, anvil string) error {
-			return errors.New("bd close failed")
-		},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.width = 80
+	m.height = 24
+	m.queue = []QueueItem{
+		{BeadID: "bd-close-2", Anvil: "forge", Section: "unlabeled"},
 	}
+	m.queueVP = scrollViewport{cursor: 0}
+	m.OnCloseBead = func(beadID, anvil string) error {
+		return errors.New("bd close failed")
+	}
+	m.rebuildQueueNav()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1127,16 +1151,16 @@ func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
 }
 
 func TestQueueActionMenuCloseNilOnCloseBead(t *testing.T) {
-	m := Model{
-		focused: PanelQueue,
-		width:   80,
-		height:  24,
-		queue: []QueueItem{
-			{BeadID: "bd-close-3", Anvil: "forge", Section: "unlabeled"},
-		},
-		queueVP: scrollViewport{cursor: 0},
-		// OnCloseBead intentionally nil
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.width = 80
+	m.height = 24
+	m.queue = []QueueItem{
+		{BeadID: "bd-close-3", Anvil: "forge", Section: "unlabeled"},
 	}
+	m.queueVP = scrollViewport{cursor: 0}
+	// OnCloseBead intentionally nil
+	m.rebuildQueueNav()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1147,11 +1171,10 @@ func TestQueueActionMenuCloseNilOnCloseBead(t *testing.T) {
 
 func TestRenderQueueActionMenuContainsBeadID(t *testing.T) {
 	item := QueueItem{BeadID: "bd-5", Anvil: "test", Section: "unlabeled"}
-	m := Model{
-		queueActionTarget: &item,
-		width:             80,
-		height:            24,
-	}
+	m := NewModel(nil)
+	m.queueActionTarget = &item
+	m.width = 80
+	m.height = 24
 	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
 	m.queueActionForm.Init()
 	rendered := m.renderQueueActionMenu()
@@ -1165,11 +1188,10 @@ func TestRenderQueueActionMenuContainsBeadID(t *testing.T) {
 
 func TestRenderQueueActionMenuShowsTitle(t *testing.T) {
 	item := QueueItem{BeadID: "bd-t1", Anvil: "test", Title: "Implement feature X", Section: "unlabeled"}
-	m := Model{
-		queueActionTarget: &item,
-		width:             80,
-		height:            24,
-	}
+	m := NewModel(nil)
+	m.queueActionTarget = &item
+	m.width = 80
+	m.height = 24
 	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
 	m.queueActionForm.Init()
 	rendered := m.renderQueueActionMenu()
@@ -1187,11 +1209,10 @@ func TestRenderQueueActionMenuTruncatesLongTitle(t *testing.T) {
 		Title:   longTitle,
 		Section: "unlabeled",
 	}
-	m := Model{
-		queueActionTarget: &item,
-		width:             80,
-		height:            24,
-	}
+	m := NewModel(nil)
+	m.queueActionTarget = &item
+	m.width = 80
+	m.height = 24
 	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
 	m.queueActionForm.Init()
 	rendered := m.renderQueueActionMenu()
@@ -1214,11 +1235,10 @@ func TestRenderQueueActionMenuWrapsDescription(t *testing.T) {
 		Description: "This is a fairly long description that should be wrapped across multiple lines in the popup",
 		Section:     "unlabeled",
 	}
-	m := Model{
-		queueActionTarget: &item,
-		width:             80,
-		height:            24,
-	}
+	m := NewModel(nil)
+	m.queueActionTarget = &item
+	m.width = 80
+	m.height = 24
 	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
 	m.queueActionForm.Init()
 	rendered := m.renderQueueActionMenu()
@@ -1241,11 +1261,10 @@ func TestRenderQueueActionMenuTruncatesLongDescription(t *testing.T) {
 		Description: longDesc,
 		Section:     "unlabeled",
 	}
-	m := Model{
-		queueActionTarget: &item,
-		width:             80,
-		height:            24,
-	}
+	m := NewModel(nil)
+	m.queueActionTarget = &item
+	m.width = 80
+	m.height = 24
 	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
 	m.queueActionForm.Init()
 	rendered := m.renderQueueActionMenu()
@@ -1257,10 +1276,9 @@ func TestRenderQueueActionMenuTruncatesLongDescription(t *testing.T) {
 
 func TestUpdateQueueMsgClosesMenuWhenTargetRemoved(t *testing.T) {
 	item := QueueItem{BeadID: "bd-6", Anvil: "test", Section: "unlabeled"}
-	m := Model{
-		queueActionTarget: &item,
-		queue:             []QueueItem{item},
-	}
+	m := NewModel(nil)
+	m.queueActionTarget = &item
+	m.queue = []QueueItem{item}
 	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
 	m.queueActionForm.Init()
 	// Simulate queue refresh that removes the target bead
@@ -1277,10 +1295,9 @@ func TestUpdateQueueMsgClosesMenuWhenTargetRemoved(t *testing.T) {
 
 func TestUpdateQueueMsgKeepsMenuWhenTargetStillPresent(t *testing.T) {
 	item := QueueItem{BeadID: "bd-7", Anvil: "test", Section: "unlabeled"}
-	m := Model{
-		queueActionTarget: &item,
-		queue:             []QueueItem{item},
-	}
+	m := NewModel(nil)
+	m.queueActionTarget = &item
+	m.queue = []QueueItem{item}
 	m.queueActionForm = buildQueueActionForm(&item, &m.queueActionChoice)
 	m.queueActionForm.Init()
 	// Simulate queue refresh that keeps the target bead
@@ -1426,10 +1443,9 @@ func TestExecuteAction_DismissError_ItemNotRemoved(t *testing.T) {
 }
 
 func TestRenderReadyToMergeEmpty(t *testing.T) {
-	m := Model{
-		readyToMerge: nil,
-		focused:      PanelReadyToMerge,
-	}
+	m := NewModel(nil)
+	m.readyToMerge = nil
+	m.focused = PanelReadyToMerge
 	rendered := m.renderReadyToMerge(60, 20)
 	if !strings.Contains(rendered, "None") {
 		t.Errorf("expected 'None' when no items:\n%s", rendered)
@@ -1440,13 +1456,12 @@ func TestRenderReadyToMergeEmpty(t *testing.T) {
 }
 
 func TestRenderReadyToMergeShowsItems(t *testing.T) {
-	m := Model{
-		readyToMerge: []ReadyToMergeItem{
-			{PRID: 1, PRNumber: 42, BeadID: "bd-10", Anvil: "heimdall", Branch: "forge/bd-10"},
-			{PRID: 2, PRNumber: 99, BeadID: "bd-11", Anvil: "metadata", Branch: "forge/bd-11"},
-		},
-		focused: PanelReadyToMerge,
+	m := NewModel(nil)
+	m.readyToMerge = []ReadyToMergeItem{
+		{PRID: 1, PRNumber: 42, BeadID: "bd-10", Anvil: "heimdall", Branch: "forge/bd-10"},
+		{PRID: 2, PRNumber: 99, BeadID: "bd-11", Anvil: "metadata", Branch: "forge/bd-11"},
 	}
+	m.focused = PanelReadyToMerge
 	rendered := m.renderReadyToMerge(80, 20)
 	if !strings.Contains(rendered, "PR #42") {
 		t.Errorf("expected 'PR #42' in rendered output:\n%s", rendered)
@@ -1460,14 +1475,13 @@ func TestRenderReadyToMergeShowsItems(t *testing.T) {
 }
 
 func TestRenderReadyToMergeSelectionHighlighting(t *testing.T) {
-	m := Model{
-		readyToMerge: []ReadyToMergeItem{
-			{PRID: 1, PRNumber: 10, BeadID: "bd-20", Anvil: "forge"},
-			{PRID: 2, PRNumber: 11, BeadID: "bd-21", Anvil: "forge"},
-		},
-		readyToMergeVP: scrollViewport{cursor: 0},
-		focused:        PanelReadyToMerge,
+	m := NewModel(nil)
+	m.readyToMerge = []ReadyToMergeItem{
+		{PRID: 1, PRNumber: 10, BeadID: "bd-20", Anvil: "forge"},
+		{PRID: 2, PRNumber: 11, BeadID: "bd-21", Anvil: "forge"},
 	}
+	m.readyToMergeVP = scrollViewport{cursor: 0}
+	m.focused = PanelReadyToMerge
 	// With scroll=0, first item (bd-20) should be selected/visible.
 	rendered0 := m.renderReadyToMerge(80, 20)
 	if !strings.Contains(rendered0, "bd-20") {
@@ -1498,11 +1512,10 @@ func TestRenderReadyToMergeViewportRegression(t *testing.T) {
 
 	// height=7 → maxItems = 7-3 = 4. Cursor at index 2 (middle).
 	// Viewport should show items 0-3 (cursor visible, multiple adjacents present).
-	m := Model{
-		readyToMerge:   items,
-		readyToMergeVP: scrollViewport{cursor: 2},
-		focused:        PanelReadyToMerge,
-	}
+	m := NewModel(nil)
+	m.readyToMerge = items
+	m.readyToMergeVP = scrollViewport{cursor: 2}
+	m.focused = PanelReadyToMerge
 	rendered := m.renderReadyToMerge(80, 7)
 
 	// Selected item must be visible.
@@ -1531,11 +1544,10 @@ func TestRenderReadyToMergeViewportRegression(t *testing.T) {
 
 func TestRenderMergeMenuContainsBeadIDAndActions(t *testing.T) {
 	item := ReadyToMergeItem{PRID: 1, PRNumber: 55, BeadID: "bd-30", Anvil: "test"}
-	m := Model{
-		mergeTarget: &item,
-		width:       80,
-		height:      24,
-	}
+	m := NewModel(nil)
+	m.mergeTarget = &item
+	m.width = 80
+	m.height = 24
 	m.mergeForm = buildMergeForm(&item, &m.mergeChoice)
 	m.mergeForm.Init()
 	rendered := m.renderMergeMenu()
@@ -1552,11 +1564,10 @@ func TestRenderMergeMenuShowsPRTitle(t *testing.T) {
 		PRID: 1, PRNumber: 55, BeadID: "bd-30", Anvil: "test",
 		Title: "fix: resolve flaky timeout in auth middleware",
 	}
-	m := Model{
-		mergeTarget: &item,
-		width:       80,
-		height:      24,
-	}
+	m := NewModel(nil)
+	m.mergeTarget = &item
+	m.width = 80
+	m.height = 24
 	m.mergeForm = buildMergeForm(&item, &m.mergeChoice)
 	m.mergeForm.Init()
 	rendered := m.renderMergeMenu()
@@ -1572,11 +1583,10 @@ func TestRenderMergeMenuLongTitleTruncated(t *testing.T) {
 		PRID: 1, PRNumber: 55, BeadID: "bd-30", Anvil: "test",
 		Title: longTitle,
 	}
-	m := Model{
-		mergeTarget: &item,
-		width:       80,
-		height:      24,
-	}
+	m := NewModel(nil)
+	m.mergeTarget = &item
+	m.width = 80
+	m.height = 24
 	m.mergeForm = buildMergeForm(&item, &m.mergeChoice)
 	m.mergeForm.Init()
 	rendered := m.renderMergeMenu()
@@ -1593,11 +1603,10 @@ func TestRenderMergeMenuNarrowContentWidthNoSlicePanic(t *testing.T) {
 		PRID: 1, PRNumber: 1, BeadID: "bd-1", Anvil: "test",
 		Title: longTitle,
 	}
-	m := Model{
-		mergeTarget: &item,
-		width:       1,
-		height:      5,
-	}
+	m := NewModel(nil)
+	m.mergeTarget = &item
+	m.width = 1
+	m.height = 5
 	m.mergeForm = buildMergeForm(&item, &m.mergeChoice)
 	m.mergeForm.Init()
 	// Should not panic regardless of contentWidth value.
@@ -1605,7 +1614,7 @@ func TestRenderMergeMenuNarrowContentWidthNoSlicePanic(t *testing.T) {
 }
 
 func TestReadyToMergeErrorMsgAppendsEvent(t *testing.T) {
-	m := Model{}
+	m := NewModel(nil)
 	_, _ = m.Update(ReadyToMergeErrorMsg{Err: errors.New("db connection lost")})
 	if len(m.events) == 0 {
 		t.Fatal("expected an event to be appended on ReadyToMergeErrorMsg")
@@ -1620,7 +1629,9 @@ func TestReadyToMergeErrorMsgAppendsEvent(t *testing.T) {
 
 func TestGetVerticalSplitSumsToContentHeight(t *testing.T) {
 	for _, h := range []int{10, 24, 40, 80} {
-		m := Model{width: 120, height: h}
+		m := NewModel(nil)
+		m.width = 120
+		m.height = h
 		topHeight, bottomHeight := m.getVerticalSplit(1, 1)
 		contentHeight := h - 1 - 1 - 4 // header(1) + footer(1) + panel borders(4)
 		if contentHeight < 0 {
@@ -1645,11 +1656,10 @@ func TestViewHeaderVisibleAtTightTerminalHeight(t *testing.T) {
 	// Also verifies the rendered output does not exceed the terminal height,
 	// which would cause the terminal to scroll the header off-screen.
 	for _, h := range []int{10, 24, 40} {
-		m := Model{
-			width:  120,
-			height: h,
-			ready:  true,
-		}
+		m := NewModel(nil)
+		m.width = 120
+		m.height = h
+		m.ready = true
 		rendered := m.View()
 		lines := strings.Split(rendered, "\n")
 		firstLine := lines[0]
@@ -1657,13 +1667,13 @@ func TestViewHeaderVisibleAtTightTerminalHeight(t *testing.T) {
 			t.Errorf("height=%d: first rendered line does not contain header text, got: %q", h, firstLine)
 		}
 		if len(lines) > h {
-			t.Errorf("height=%d: rendered output has %d lines, exceeds terminal height and will scroll header off-screen", h, len(lines))
+			t.Errorf("height=%d: rendered output has %d lines, exceeds terminal height and will scroll header off-screen\nACTUAL RENDERED:\n%s", h, len(lines), rendered)
 		}
 	}
 }
 
 func TestMergeResultMsgError(t *testing.T) {
-	m := Model{}
+	m := NewModel(nil)
 	msg := MergeResultMsg{PRNumber: 42, Err: errors.New("exit status 1\nsome stderr detail")}
 	_, _ = m.Update(msg)
 
@@ -1688,7 +1698,8 @@ func TestMergeResultMsgError(t *testing.T) {
 
 func TestMergeResultMsgSuccess(t *testing.T) {
 	// Prime the model with an error state to verify it gets cleared on success.
-	m := Model{statusMsgIsError: true}
+	m := NewModel(nil)
+	m.statusMsgIsError = true
 	msg := MergeResultMsg{PRNumber: 7, Err: nil}
 	_, _ = m.Update(msg)
 
@@ -1705,10 +1716,10 @@ func TestMergeResultMsgSuccess(t *testing.T) {
 
 func TestMergeResultMsgErrorDurationLonger(t *testing.T) {
 	// Verify that error status messages use a longer display duration than non-error ones.
-	mErr := Model{}
+	mErr := NewModel(nil)
 	_, _ = mErr.Update(MergeResultMsg{PRNumber: 1, Err: errors.New("failed")})
 
-	mOK := Model{}
+	mOK := NewModel(nil)
 	_, _ = mOK.Update(MergeResultMsg{PRNumber: 2, Err: nil})
 
 	// Both should have a non-zero statusMsg and statusMsgTime set.
@@ -1727,7 +1738,8 @@ func TestMergeResultMsgErrorDurationLonger(t *testing.T) {
 func TestSetStatusResetsErrorFlag(t *testing.T) {
 	// After a merge failure sets isError=true, a subsequent non-error setStatus call
 	// must reset the flag so the message no longer renders as an error.
-	m := Model{statusMsgIsError: true}
+	m := NewModel(nil)
+	m.statusMsgIsError = true
 	m.setStatus("all good", false)
 
 	if m.statusMsgIsError {
@@ -1744,11 +1756,10 @@ func TestSetStatusResetsErrorFlag(t *testing.T) {
 // --- Queue grouping / navigation tests ---
 
 func TestRebuildQueueNav_SingleAnvil_NoHeaders(t *testing.T) {
-	m := Model{
-		queue: []QueueItem{
-			{BeadID: "bd-1", Anvil: "repo"},
-			{BeadID: "bd-2", Anvil: "repo"},
-		},
+	m := NewModel(nil)
+	m.queue = []QueueItem{
+		{BeadID: "bd-1", Anvil: "repo"},
+		{BeadID: "bd-2", Anvil: "repo"},
 	}
 	m.rebuildQueueNav()
 	if m.queueGrouped {
@@ -1768,11 +1779,10 @@ func TestRebuildQueueNav_SingleAnvil_NoHeaders(t *testing.T) {
 }
 
 func TestRebuildQueueNav_MultiAnvil_CollapsedByDefault(t *testing.T) {
-	m := Model{
-		queue: []QueueItem{
-			{BeadID: "bd-1", Anvil: "alpha"},
-			{BeadID: "bd-2", Anvil: "beta"},
-		},
+	m := NewModel(nil)
+	m.queue = []QueueItem{
+		{BeadID: "bd-1", Anvil: "alpha"},
+		{BeadID: "bd-2", Anvil: "beta"},
 	}
 	m.rebuildQueueNav()
 	if !m.queueGrouped {
@@ -1790,14 +1800,13 @@ func TestRebuildQueueNav_MultiAnvil_CollapsedByDefault(t *testing.T) {
 }
 
 func TestRebuildQueueNav_MultiAnvil_ExpandedShowsBeads(t *testing.T) {
-	m := Model{
-		queue: []QueueItem{
-			{BeadID: "bd-1", Anvil: "alpha"},
-			{BeadID: "bd-2", Anvil: "alpha"},
-			{BeadID: "bd-3", Anvil: "beta"},
-		},
-		queueExpandedAnvils: map[string]bool{"alpha": true},
+	m := NewModel(nil)
+	m.queue = []QueueItem{
+		{BeadID: "bd-1", Anvil: "alpha"},
+		{BeadID: "bd-2", Anvil: "alpha"},
+		{BeadID: "bd-3", Anvil: "beta"},
 	}
+	m.queueExpandedAnvils = map[string]bool{"alpha": true}
 	m.rebuildQueueNav()
 	// alpha header + 2 beads + beta header = 4
 	if len(m.queueNavItems) != 4 {
@@ -1815,13 +1824,13 @@ func TestRebuildQueueNav_MultiAnvil_ExpandedShowsBeads(t *testing.T) {
 }
 
 func TestRebuildQueueNav_NilExpandedAnvils_NoPanic(t *testing.T) {
-	m := Model{
-		queue: []QueueItem{
-			{BeadID: "bd-1", Anvil: "alpha"},
-			{BeadID: "bd-2", Anvil: "beta"},
-		},
-		// queueExpandedAnvils intentionally nil
+	m := NewModel(nil)
+	m.queue = []QueueItem{
+		{BeadID: "bd-1", Anvil: "alpha"},
+		{BeadID: "bd-2", Anvil: "beta"},
 	}
+	// queueExpandedAnvils intentionally nil
+	m.queueExpandedAnvils = nil
 	// Should not panic
 	m.rebuildQueueNav()
 	if m.queueExpandedAnvils == nil {
@@ -1830,16 +1839,16 @@ func TestRebuildQueueNav_NilExpandedAnvils_NoPanic(t *testing.T) {
 }
 
 func TestEnterTogglesAnvilExpansion(t *testing.T) {
-	m := Model{
-		focused: PanelQueue,
-		width:   80,
-		height:  24,
-		queue: []QueueItem{
-			{BeadID: "bd-1", Anvil: "alpha"},
-			{BeadID: "bd-2", Anvil: "beta"},
-		},
-		queueVP: scrollViewport{cursor: 0},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.width = 80
+	m.height = 24
+	m.queue = []QueueItem{
+		{BeadID: "bd-1", Anvil: "alpha"},
+		{BeadID: "bd-2", Anvil: "beta"},
 	}
+	m.queueVP = scrollViewport{cursor: 0}
+	m.rebuildQueueNav()
 	// First Enter: expand alpha
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if !m.queueExpandedAnvils["alpha"] {
@@ -1861,17 +1870,16 @@ func TestEnterTogglesAnvilExpansion(t *testing.T) {
 }
 
 func TestEscCollapsesToAnvilHeader(t *testing.T) {
-	m := Model{
-		focused: PanelQueue,
-		width:   80,
-		height:  24,
-		queue: []QueueItem{
-			{BeadID: "bd-1", Anvil: "alpha"},
-			{BeadID: "bd-2", Anvil: "alpha"},
-			{BeadID: "bd-3", Anvil: "beta"},
-		},
-		queueExpandedAnvils: map[string]bool{"alpha": true},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.width = 80
+	m.height = 24
+	m.queue = []QueueItem{
+		{BeadID: "bd-1", Anvil: "alpha"},
+		{BeadID: "bd-2", Anvil: "alpha"},
+		{BeadID: "bd-3", Anvil: "beta"},
 	}
+	m.queueExpandedAnvils = map[string]bool{"alpha": true}
 	m.rebuildQueueNav()
 	// Cursor on a bead inside alpha (index 1 = first bead under alpha)
 	m.queueVP.cursor = 1
@@ -1886,13 +1894,12 @@ func TestEscCollapsesToAnvilHeader(t *testing.T) {
 }
 
 func TestSelectedQueueBead_DirectQueueSet_NoExplicitNav(t *testing.T) {
-	m := Model{
-		queue: []QueueItem{
-			{BeadID: "bd-1", Anvil: "test", Section: "ready"},
-		},
-		queueVP: scrollViewport{cursor: 0},
-		// queueNavItems intentionally not built — selectedQueueBead should handle it
+	m := NewModel(nil)
+	m.queue = []QueueItem{
+		{BeadID: "bd-1", Anvil: "test", Section: "ready"},
 	}
+	m.queueVP = scrollViewport{cursor: 0}
+	// queueNavItems intentionally not built — selectedQueueBead should handle it
 	bead := m.selectedQueueBead()
 	if bead == nil {
 		t.Fatal("expected selectedQueueBead to return a bead after lazy nav build")
@@ -2017,17 +2024,16 @@ func TestCruciblePhaseStyleFrameChanges(t *testing.T) {
 }
 
 func TestCursorClampedOnCollapse(t *testing.T) {
-	m := Model{
-		focused: PanelQueue,
-		width:   80,
-		height:  24,
-		queue: []QueueItem{
-			{BeadID: "bd-1", Anvil: "alpha"},
-			{BeadID: "bd-2", Anvil: "alpha"},
-			{BeadID: "bd-3", Anvil: "beta"},
-		},
-		queueExpandedAnvils: map[string]bool{"alpha": true, "beta": true},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.width = 80
+	m.height = 24
+	m.queue = []QueueItem{
+		{BeadID: "bd-1", Anvil: "alpha"},
+		{BeadID: "bd-2", Anvil: "alpha"},
+		{BeadID: "bd-3", Anvil: "beta"},
 	}
+	m.queueExpandedAnvils = map[string]bool{"alpha": true, "beta": true}
 	m.rebuildQueueNav()
 	// alpha header, bd-1, bd-2, beta header, bd-3 = 5 items
 	m.queueVP.cursor = 4 // pointing at bd-3
@@ -2045,11 +2051,11 @@ func TestCursorClampedOnCollapse(t *testing.T) {
 // newTestModelForPanelAtPos returns a Model configured for deterministic panelAtPos tests.
 // width=120, height=40; computeHeaderH() renders a 1-line header at this width.
 func newTestModelForPanelAtPos() Model {
-	return Model{
-		width:   120,
-		height:  40,
-		focused: PanelWorkers, // default focused panel returned for out-of-range hits
-	}
+	m := NewModel(nil)
+	m.width = 120
+	m.height = 40
+	m.focused = PanelWorkers // default focused panel returned for out-of-range hits
+	return m
 }
 
 // panelBoundaries returns the x/y split points for a 120x40 model using the
@@ -2250,14 +2256,14 @@ func TestRenderLogViewerShowsTitleAndContent(t *testing.T) {
 	vpWidth, vpHeight := 80, 10
 	vp := viewport.New(vpWidth, vpHeight)
 	vp.SetContent("line one\nline two\nline three")
-	m := Model{
-		width:          120,
-		height:         40,
-		showLogViewer:  true,
-		logViewerTitle: "bd-42 worker.log",
-		logViewerEmpty: false,
-		logViewerVP:    vp,
-	}
+	m := NewModel(nil)
+	m.width = 120
+	m.height = 40
+	m.showLogViewer = true
+	m.logViewerTitle = "bd-42 worker.log"
+	m.logViewerEmpty = false
+	m.logViewerVP = vp
+
 	rendered := m.renderLogViewer()
 	if !strings.Contains(rendered, "bd-42 worker.log") {
 		t.Errorf("expected log viewer title in output:\n%s", rendered)
@@ -2268,13 +2274,13 @@ func TestRenderLogViewerShowsTitleAndContent(t *testing.T) {
 }
 
 func TestRenderLogViewerEmptyLines(t *testing.T) {
-	m := Model{
-		width:          120,
-		height:         40,
-		showLogViewer:  true,
-		logViewerTitle: "empty.log",
-		logViewerEmpty: true,
-	}
+	m := NewModel(nil)
+	m.width = 120
+	m.height = 40
+	m.showLogViewer = true
+	m.logViewerTitle = "empty.log"
+	m.logViewerEmpty = true
+
 	rendered := m.renderLogViewer()
 	if !strings.Contains(rendered, "empty log") {
 		t.Errorf("expected '(empty log)' message when logViewerEmpty is true:\n%s", rendered)
@@ -2282,7 +2288,9 @@ func TestRenderLogViewerEmptyLines(t *testing.T) {
 }
 
 func TestLogViewerDimensionsRespectStyleFrameSize(t *testing.T) {
-	m := Model{width: 120, height: 40}
+	m := NewModel(nil)
+	m.width = 120
+	m.height = 40
 	vpWidth, vpHeight := m.logViewerDimensions()
 
 	frameH := logViewerStyle.GetHorizontalFrameSize()
@@ -2305,7 +2313,9 @@ func TestLogViewerDimensionsRespectStyleFrameSize(t *testing.T) {
 
 func TestLogViewerDimensionsMinClamped(t *testing.T) {
 	// Very small terminal should clamp to minimums
-	m := Model{width: 10, height: 8}
+	m := NewModel(nil)
+	m.width = 10
+	m.height = 8
 	vpWidth, vpHeight := m.logViewerDimensions()
 	if vpWidth < 1 {
 		t.Errorf("vpWidth = %d, want >= 1", vpWidth)
@@ -2319,9 +2329,8 @@ func TestLogViewerDimensionsMinClamped(t *testing.T) {
 
 func TestRenderOrphanDialogShowsBeadIDAndTitle(t *testing.T) {
 	item := PendingOrphanItem{BeadID: "Forge-abc1", Anvil: "heimdall", Title: "Fix login timeout bug"}
-	m := Model{
-		orphanTarget: &item,
-	}
+	m := NewModel(nil)
+	m.orphanTarget = &item
 	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
 	m.orphanDialogForm.Init()
 	rendered := m.renderOrphanDialog()
@@ -2335,9 +2344,8 @@ func TestRenderOrphanDialogShowsBeadIDAndTitle(t *testing.T) {
 
 func TestRenderOrphanDialogShowsAllChoices(t *testing.T) {
 	item := PendingOrphanItem{BeadID: "Forge-xyz", Anvil: "test", Title: "Some work"}
-	m := Model{
-		orphanTarget: &item,
-	}
+	m := NewModel(nil)
+	m.orphanTarget = &item
 	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
 	m.orphanDialogForm.Init()
 	rendered := m.renderOrphanDialog()
@@ -2355,10 +2363,9 @@ func TestRenderOrphanDialogShowsAllChoices(t *testing.T) {
 func TestRenderOrphanDialogShowsPendingCount(t *testing.T) {
 	item := PendingOrphanItem{BeadID: "Forge-1", Anvil: "test", Title: "first"}
 	extra := PendingOrphanItem{BeadID: "Forge-2", Anvil: "test", Title: "second"}
-	m := Model{
-		orphanTarget: &item,
-		orphanQueue:  []PendingOrphanItem{extra},
-	}
+	m := NewModel(nil)
+	m.orphanTarget = &item
+	m.orphanQueue = []PendingOrphanItem{extra}
 	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
 	m.orphanDialogForm.Init()
 	rendered := m.renderOrphanDialog()
@@ -2368,7 +2375,8 @@ func TestRenderOrphanDialogShowsPendingCount(t *testing.T) {
 }
 
 func TestRenderOrphanDialogNilTargetReturnsEmpty(t *testing.T) {
-	m := Model{orphanTarget: nil}
+	m := NewModel(nil)
+	m.orphanTarget = nil
 	rendered := m.renderOrphanDialog()
 	if rendered != "" {
 		t.Errorf("expected empty string when orphanTarget is nil, got: %q", rendered)
@@ -2377,9 +2385,8 @@ func TestRenderOrphanDialogNilTargetReturnsEmpty(t *testing.T) {
 
 func TestOrphanDialogKeyboardNavigation(t *testing.T) {
 	item := PendingOrphanItem{BeadID: "Forge-nav", Anvil: "test", Title: "nav test"}
-	m := Model{
-		orphanTarget: &item,
-	}
+	m := NewModel(nil)
+	m.orphanTarget = &item
 	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
 	m.orphanDialogForm.Init()
 
@@ -2402,9 +2409,8 @@ func TestOrphanDialogKeyboardNavigation(t *testing.T) {
 
 func TestOrphanDialogEscSkipsOrphan(t *testing.T) {
 	item := PendingOrphanItem{BeadID: "Forge-esc", Anvil: "test", Title: "esc test"}
-	m := Model{
-		orphanTarget: &item,
-	}
+	m := NewModel(nil)
+	m.orphanTarget = &item
 	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
 	m.orphanDialogForm.Init()
 
@@ -2420,14 +2426,13 @@ func TestOrphanDialogEscSkipsOrphan(t *testing.T) {
 func TestOrphanDialogEnterCallsOnResolveOrphan(t *testing.T) {
 	var resolvedBead, resolvedAnvil, resolvedAction string
 	item := PendingOrphanItem{BeadID: "Forge-res", Anvil: "heimdall", Title: "resolve me"}
-	m := Model{
-		orphanTarget: &item,
-		OnResolveOrphan: func(beadID, anvil, action string) error {
-			resolvedBead = beadID
-			resolvedAnvil = anvil
-			resolvedAction = action
-			return nil
-		},
+	m := NewModel(nil)
+	m.orphanTarget = &item
+	m.OnResolveOrphan = func(beadID, anvil, action string) error {
+		resolvedBead = beadID
+		resolvedAnvil = anvil
+		resolvedAction = action
+		return nil
 	}
 	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
 	initCmd := m.orphanDialogForm.Init()
@@ -2460,12 +2465,11 @@ func TestOrphanDialogEnterCallsOnResolveOrphan(t *testing.T) {
 
 func TestOrphanDialogMouseWheelBlocked(t *testing.T) {
 	item := PendingOrphanItem{BeadID: "Forge-wheel", Anvil: "test", Title: "wheel test"}
-	m := Model{
-		orphanTarget: &item,
-		focused:      PanelQueue,
-		width:        120,
-		height:       40,
-	}
+	m := NewModel(nil)
+	m.orphanTarget = &item
+	m.focused = PanelQueue
+	m.width = 120
+	m.height = 40
 	m.orphanDialogForm = buildOrphanDialogForm(&item, &m.orphanDialogChoice)
 	m.orphanDialogForm.Init()
 	initialFocused := m.focused
@@ -2494,9 +2498,8 @@ func TestOrphanDialogMouseWheelBlocked(t *testing.T) {
 }
 
 func TestUpdatePendingOrphansMsgOpensDialog(t *testing.T) {
-	m := Model{
-		orphanTarget: nil,
-	}
+	m := NewModel(nil)
+	m.orphanTarget = nil
 	item := PendingOrphanItem{BeadID: "Forge-poll", Anvil: "test", Title: "polled orphan"}
 	_, _ = m.Update(UpdatePendingOrphansMsg{Items: []PendingOrphanItem{item}})
 
@@ -2536,7 +2539,8 @@ func TestCrucibleProgressColorDefault(t *testing.T) {
 // --- renderCrucibles ---
 
 func TestRenderCruciblesEmpty(t *testing.T) {
-	m := Model{focused: PanelQueue}
+	m := NewModel(nil)
+	m.focused = PanelQueue
 	rendered := m.renderCrucibles(60, 10)
 	if !strings.Contains(rendered, "None") {
 		t.Errorf("expected 'None' when no crucibles, got:\n%s", rendered)
@@ -2544,18 +2548,17 @@ func TestRenderCruciblesEmpty(t *testing.T) {
 }
 
 func TestRenderCruciblesShowsParentIDAndCount(t *testing.T) {
-	m := Model{
-		focused: PanelCrucibles,
-		crucibles: []CrucibleItem{
-			{
-				ParentID:          "Forge-epic1",
-				ParentTitle:       "Big epic feature",
-				Anvil:             "heimdall",
-				Phase:             "dispatching",
-				TotalChildren:     5,
-				CompletedChildren: 2,
-				CurrentChild:      "Forge-child3",
-			},
+	m := NewModel(nil)
+	m.focused = PanelCrucibles
+	m.crucibles = []CrucibleItem{
+		{
+			ParentID:          "Forge-epic1",
+			ParentTitle:       "Big epic feature",
+			Anvil:             "heimdall",
+			Phase:             "dispatching",
+			TotalChildren:     5,
+			CompletedChildren: 2,
+			CurrentChild:      "Forge-child3",
 		},
 	}
 	rendered := m.renderCrucibles(80, 20)
@@ -2568,17 +2571,16 @@ func TestRenderCruciblesShowsParentIDAndCount(t *testing.T) {
 }
 
 func TestRenderCruciblesShowsCurrentChild(t *testing.T) {
-	m := Model{
-		focused: PanelQueue,
-		crucibles: []CrucibleItem{
-			{
-				ParentID:          "Forge-ep2",
-				Anvil:             "test",
-				Phase:             "started",
-				TotalChildren:     3,
-				CompletedChildren: 1,
-				CurrentChild:      "Forge-child2",
-			},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.crucibles = []CrucibleItem{
+		{
+			ParentID:          "Forge-ep2",
+			Anvil:             "test",
+			Phase:             "started",
+			TotalChildren:     3,
+			CompletedChildren: 1,
+			CurrentChild:      "Forge-child2",
 		},
 	}
 	rendered := m.renderCrucibles(80, 20)
@@ -2588,18 +2590,17 @@ func TestRenderCruciblesShowsCurrentChild(t *testing.T) {
 }
 
 func TestRenderCruciblesTitleFallbackWhenNoCurrentChild(t *testing.T) {
-	m := Model{
-		focused: PanelQueue,
-		crucibles: []CrucibleItem{
-			{
-				ParentID:          "Forge-ep3",
-				ParentTitle:       "No child yet",
-				Anvil:             "test",
-				Phase:             "started",
-				TotalChildren:     3,
-				CompletedChildren: 0,
-				CurrentChild:      "",
-			},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.crucibles = []CrucibleItem{
+		{
+			ParentID:          "Forge-ep3",
+			ParentTitle:       "No child yet",
+			Anvil:             "test",
+			Phase:             "started",
+			TotalChildren:     3,
+			CompletedChildren: 0,
+			CurrentChild:      "",
 		},
 	}
 	rendered := m.renderCrucibles(80, 20)
@@ -2609,16 +2610,15 @@ func TestRenderCruciblesTitleFallbackWhenNoCurrentChild(t *testing.T) {
 }
 
 func TestRenderCruciblesProgressBarPresentWhenChildrenNonZero(t *testing.T) {
-	m := Model{
-		focused: PanelQueue,
-		crucibles: []CrucibleItem{
-			{
-				ParentID:          "Forge-bar",
-				Anvil:             "test",
-				Phase:             "dispatching",
-				TotalChildren:     4,
-				CompletedChildren: 2,
-			},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.crucibles = []CrucibleItem{
+		{
+			ParentID:          "Forge-bar",
+			Anvil:             "test",
+			Phase:             "dispatching",
+			TotalChildren:     4,
+			CompletedChildren: 2,
 		},
 	}
 	rendered := m.renderCrucibles(80, 20)
@@ -2630,10 +2630,9 @@ func TestRenderCruciblesProgressBarPresentWhenChildrenNonZero(t *testing.T) {
 
 func TestUpdatePendingOrphansMsgDeduplicates(t *testing.T) {
 	existing := PendingOrphanItem{BeadID: "Forge-dup", Anvil: "test", Title: "dup"}
-	m := Model{
-		orphanTarget: &existing,
-		orphanQueue:  []PendingOrphanItem{},
-	}
+	m := NewModel(nil)
+	m.orphanTarget = &existing
+	m.orphanQueue = []PendingOrphanItem{}
 	m.orphanDialogForm = buildOrphanDialogForm(&existing, &m.orphanDialogChoice)
 	m.orphanDialogForm.Init()
 	// Sending the same bead again should not add it to the queue
@@ -2684,7 +2683,8 @@ func TestDefaultFooterHintsContainsCommonKeys(t *testing.T) {
 }
 
 func TestMouseToggleKeyEnablesMouseWhenDisabled(t *testing.T) {
-	m := &Model{mouseEnabled: false}
+	m := NewModel(nil)
+	m.mouseEnabled = false
 	newModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
 	updated := newModel.(*Model)
 	if !updated.mouseEnabled {
@@ -2702,7 +2702,8 @@ func TestMouseToggleKeyEnablesMouseWhenDisabled(t *testing.T) {
 }
 
 func TestMouseToggleKeyDisablesMouseWhenEnabled(t *testing.T) {
-	m := &Model{mouseEnabled: true}
+	m := NewModel(nil)
+	m.mouseEnabled = true
 	newModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
 	updated := newModel.(*Model)
 	if updated.mouseEnabled {
@@ -2720,17 +2721,16 @@ func TestMouseToggleKeyDisablesMouseWhenEnabled(t *testing.T) {
 }
 
 func TestUpdateDescriptionViewer(t *testing.T) {
-	m := &Model{
-		queue: []QueueItem{
-			{BeadID: "bd-1", Title: "bead title", Description: "bead description", Section: "ready"},
-		},
-		needsAttention: []NeedsAttentionItem{
-			{BeadID: "bd-2", Title: "attn title", Description: "attn description"},
-		},
-		focused: PanelQueue,
-		width:   80,
-		height:  24,
+	m := NewModel(nil)
+	m.queue = []QueueItem{
+		{BeadID: "bd-1", Title: "bead title", Description: "bead description", Section: "ready"},
 	}
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "bd-2", Title: "attn title", Description: "attn description"},
+	}
+	m.focused = PanelQueue
+	m.width = 80
+	m.height = 24
 
 	// 1. Press 'd' on Queue selection
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
@@ -2929,13 +2929,14 @@ func TestOpenLogViewerKeyO_WorkersPanel(t *testing.T) {
 	}
 	f.Close()
 
-	m := Model{
-		focused: PanelWorkers,
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-99", LogPath: f.Name()},
-		},
+	m := NewModel(nil)
+	m.focused = PanelWorkers
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-99", LogPath: f.Name()},
 	}
-	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	mPtr := mTmp.(*Model)
+	m2, _ := mPtr.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	mm := m2.(*Model)
 	if !mm.showLogViewer {
 		t.Error("pressing 'o' with a valid worker log path should open the log viewer")
@@ -2952,13 +2953,14 @@ func TestOpenLogViewerKeyO_WorkersPanel(t *testing.T) {
 }
 
 func TestOpenLogViewerKeyO_NoLogPath(t *testing.T) {
-	m := Model{
-		focused: PanelWorkers,
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-42", LogPath: ""},
-		},
+	m := NewModel(nil)
+	m.focused = PanelWorkers
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-42", LogPath: ""},
 	}
-	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	mPtr := mTmp.(*Model)
+	m2, _ := mPtr.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	mm := m2.(*Model)
 	if mm.showLogViewer {
 		t.Error("pressing 'o' with no log path should not open the log viewer")
@@ -2975,13 +2977,14 @@ func TestOpenLogViewerKeyO_EmptyLogFile(t *testing.T) {
 	}
 	f.Close() // empty file
 
-	m := Model{
-		focused: PanelWorkers,
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-10", LogPath: f.Name()},
-		},
+	m := NewModel(nil)
+	m.focused = PanelWorkers
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-10", LogPath: f.Name()},
 	}
-	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	mPtr := mTmp.(*Model)
+	m2, _ := mPtr.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	mm := m2.(*Model)
 	if !mm.showLogViewer {
 		t.Error("pressing 'o' on an empty log file should still open the log viewer")
@@ -2992,13 +2995,14 @@ func TestOpenLogViewerKeyO_EmptyLogFile(t *testing.T) {
 }
 
 func TestOpenLogViewerKeyO_NotInWorkersPanel(t *testing.T) {
-	m := Model{
-		focused: PanelQueue,
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-5", LogPath: "/some/path.log"},
-		},
+	m := NewModel(nil)
+	m.focused = PanelQueue
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-5", LogPath: "/some/path.log"},
 	}
-	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	mPtr := mTmp.(*Model)
+	m2, _ := mPtr.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	mm := m2.(*Model)
 	if mm.showLogViewer {
 		t.Error("pressing 'o' outside Workers panel should not open the log viewer")
@@ -3015,13 +3019,14 @@ func TestOpenLogViewerKeyO_LogViewerClosedByEsc(t *testing.T) {
 	}
 	f.Close()
 
-	m := Model{
-		focused: PanelWorkers,
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-77", LogPath: f.Name()},
-		},
+	m := NewModel(nil)
+	m.focused = PanelWorkers
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-77", LogPath: f.Name()},
 	}
-	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	mPtr := mTmp.(*Model)
+	m2, _ := mPtr.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	if !m2.(*Model).showLogViewer {
 		t.Fatal("log viewer should be open after 'o'")
 	}
@@ -3042,15 +3047,16 @@ func TestOpenLogViewerKeyO_ViewportHasContent(t *testing.T) {
 	}
 	f.Close()
 
-	m := Model{
-		width:   80,
-		height:  24,
-		focused: PanelWorkers,
-		workers: []WorkerItem{
-			{ID: "w1", BeadID: "bd-55", LogPath: f.Name()},
-		},
+	m := NewModel(nil)
+	m.width = 80
+	m.height = 24
+	m.focused = PanelWorkers
+	m.workers = []WorkerItem{
+		{ID: "w1", BeadID: "bd-55", LogPath: f.Name()},
 	}
-	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
+	mPtr := mTmp.(*Model)
+	m2, _ := mPtr.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	mm := m2.(*Model)
 	if !mm.showLogViewer {
 		t.Fatal("log viewer should be open")
