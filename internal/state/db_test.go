@@ -1630,3 +1630,177 @@ func TestDB_LastPollPerAnvil(t *testing.T) {
 		}
 	})
 }
+
+func TestDB_OpenPRsWithDetail(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+
+	// Insert PRs in various statuses.
+	prs := []PR{
+		{Number: 1, Anvil: "anvil-a", BeadID: "bd-10", Branch: "fix-10", Status: PROpen, CreatedAt: now},
+		{Number: 2, Anvil: "anvil-a", BeadID: "bd-20", Branch: "fix-20", Status: PRApproved, CreatedAt: now.Add(time.Second)},
+		{Number: 3, Anvil: "anvil-a", BeadID: "bd-30", Branch: "fix-30", Status: PRNeedsFix, CreatedAt: now.Add(2 * time.Second)},
+		{Number: 4, Anvil: "anvil-a", BeadID: "bd-40", Branch: "fix-40", Status: PRMerged, CreatedAt: now.Add(3 * time.Second)},
+		{Number: 5, Anvil: "anvil-a", BeadID: "bd-50", Branch: "fix-50", Status: PRClosed, CreatedAt: now.Add(4 * time.Second)},
+	}
+	for i := range prs {
+		if err := db.InsertPR(&prs[i]); err != nil {
+			t.Fatalf("InsertPR #%d: %v", prs[i].Number, err)
+		}
+	}
+
+	// Set boolean flags on PR #1 for flag mapping verification.
+	_, err = db.conn.Exec(
+		`UPDATE prs SET ci_passing = 0, is_conflicting = 1, has_unresolved_threads = 1,
+		 has_pending_reviews = 0, has_approval = 1, ci_fix_count = 3, review_fix_count = 2, rebase_count = 1
+		 WHERE number = 1 AND anvil = 'anvil-a'`)
+	if err != nil {
+		t.Fatalf("update PR flags: %v", err)
+	}
+
+	// Insert queue_cache title for bd-10 (highest-priority title source).
+	_, err = db.conn.Exec(
+		`INSERT INTO queue_cache (bead_id, anvil, title, priority, status, updated_at)
+		 VALUES ('bd-10', 'anvil-a', 'Title from queue_cache', 2, 'open', ?)`,
+		now.Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("insert queue_cache: %v", err)
+	}
+
+	// Insert a worker for bd-10 too — queue_cache should take precedence.
+	if err := db.InsertWorker(&Worker{
+		ID:        "w-10",
+		BeadID:    "bd-10",
+		Anvil:     "anvil-a",
+		Branch:    "fix-10",
+		Status:    WorkerDone,
+		Title:     "Title from worker",
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertWorker w-10: %v", err)
+	}
+
+	// Insert a worker for bd-20 (no queue_cache) — title should fall back to worker.
+	if err := db.InsertWorker(&Worker{
+		ID:        "w-20",
+		BeadID:    "bd-20",
+		Anvil:     "anvil-a",
+		Branch:    "fix-20",
+		Status:    WorkerDone,
+		Title:     "Title from worker fallback",
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertWorker w-20: %v", err)
+	}
+
+	// bd-30 has neither queue_cache nor worker — title should be empty.
+
+	results, err := db.OpenPRsWithDetail()
+	if err != nil {
+		t.Fatalf("OpenPRsWithDetail: %v", err)
+	}
+
+	// Should exclude merged (#4) and closed (#5).
+	if len(results) != 3 {
+		t.Fatalf("expected 3 open PRs, got %d", len(results))
+	}
+
+	// Results are ordered by created_at, so #1, #2, #3.
+	t.Run("title resolved from queue_cache first", func(t *testing.T) {
+		if results[0].BeadID != "bd-10" {
+			t.Fatalf("expected bd-10, got %s", results[0].BeadID)
+		}
+		if results[0].Title != "Title from queue_cache" {
+			t.Errorf("expected queue_cache title, got %q", results[0].Title)
+		}
+	})
+
+	t.Run("title falls back to worker", func(t *testing.T) {
+		if results[1].BeadID != "bd-20" {
+			t.Fatalf("expected bd-20, got %s", results[1].BeadID)
+		}
+		if results[1].Title != "Title from worker fallback" {
+			t.Errorf("expected worker fallback title, got %q", results[1].Title)
+		}
+	})
+
+	t.Run("title empty when no source", func(t *testing.T) {
+		if results[2].BeadID != "bd-30" {
+			t.Fatalf("expected bd-30, got %s", results[2].BeadID)
+		}
+		if results[2].Title != "" {
+			t.Errorf("expected empty title, got %q", results[2].Title)
+		}
+	})
+
+	t.Run("boolean flag mapping", func(t *testing.T) {
+		pr := results[0] // PR #1 with custom flags
+		if pr.CIPassing {
+			t.Error("expected CIPassing=false")
+		}
+		if !pr.IsConflicting {
+			t.Error("expected IsConflicting=true")
+		}
+		if !pr.HasUnresolvedThreads {
+			t.Error("expected HasUnresolvedThreads=true")
+		}
+		if pr.HasPendingReviews {
+			t.Error("expected HasPendingReviews=false")
+		}
+		if !pr.HasApproval {
+			t.Error("expected HasApproval=true")
+		}
+	})
+
+	t.Run("integer counts", func(t *testing.T) {
+		pr := results[0]
+		if pr.CIFixCount != 3 {
+			t.Errorf("CIFixCount: got %d, want 3", pr.CIFixCount)
+		}
+		if pr.ReviewFixCount != 2 {
+			t.Errorf("ReviewFixCount: got %d, want 2", pr.ReviewFixCount)
+		}
+		if pr.RebaseCount != 1 {
+			t.Errorf("RebaseCount: got %d, want 1", pr.RebaseCount)
+		}
+	})
+
+	t.Run("status values preserved", func(t *testing.T) {
+		if results[0].Status != PROpen {
+			t.Errorf("expected PROpen, got %s", results[0].Status)
+		}
+		if results[1].Status != PRApproved {
+			t.Errorf("expected PRApproved, got %s", results[1].Status)
+		}
+		if results[2].Status != PRNeedsFix {
+			t.Errorf("expected PRNeedsFix, got %s", results[2].Status)
+		}
+	})
+
+	t.Run("basic fields populated", func(t *testing.T) {
+		pr := results[0]
+		if pr.ID == 0 {
+			t.Error("expected non-zero ID")
+		}
+		if pr.Number != 1 {
+			t.Errorf("Number: got %d, want 1", pr.Number)
+		}
+		if pr.Anvil != "anvil-a" {
+			t.Errorf("Anvil: got %q, want anvil-a", pr.Anvil)
+		}
+		if pr.Branch != "fix-10" {
+			t.Errorf("Branch: got %q, want fix-10", pr.Branch)
+		}
+	})
+}
