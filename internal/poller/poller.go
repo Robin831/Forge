@@ -29,9 +29,10 @@ type Bead struct {
 	Assignee     string    `json:"assignee"`
 	Parent       string    `json:"parent"`
 	Labels       []string  `json:"labels"`
-	Blocks       []string  `json:"blocks"`       // Bead IDs that this bead blocks (children)
-	DependsOn    []string  `json:"depends_on"`   // Bead IDs that this bead depends on
-	Dependencies []BeadDep `json:"dependencies"` // Detailed dependency info from bd
+	Blocks         []string  `json:"blocks"`          // Bead IDs that this bead blocks (children)
+	DependsOn      []string  `json:"depends_on"`     // Bead IDs that this bead depends on
+	Dependencies   []BeadDep `json:"dependencies"`   // Detailed dependency info from bd
+	DependentCount int       `json:"dependent_count"` // Number of beads that depend on this bead
 
 	// Forge-injected: which anvil this bead belongs to
 	Anvil string `json:"-"`
@@ -158,9 +159,13 @@ func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Be
 		if b.Parent != "" {
 			addBlock(b.Parent, b.ID)
 		}
-		// Dependencies array may contain parent-child or blocks relationships
+		// Dependencies array: only "blocks" and "parent-child" types indicate
+		// a parent-child relationship. "depends_on" is a sequencing constraint
+		// and must NOT be treated as a Blocks edge — doing so would cause the
+		// crucible to incorrectly adopt downstream beads as children.
 		for _, dep := range b.Dependencies {
-			if dep.DependsOnID != "" && dep.DependsOnID != b.ID {
+			if dep.DependsOnID != "" && dep.DependsOnID != b.ID &&
+				(dep.Type == "blocks" || dep.Type == "parent-child") {
 				addBlock(dep.DependsOnID, b.ID)
 			}
 		}

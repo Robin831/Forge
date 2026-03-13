@@ -145,6 +145,79 @@ func TestHasClarificationTag(t *testing.T) {
 	}
 }
 
+// TestBlocksReconstruction_OnlyBlocksType verifies that the Blocks reconstruction
+// in pollAnvil only considers "blocks" and "parent-child" dependency types,
+// not "depends_on". A depends_on relationship is a sequencing constraint, not a
+// parent-child edge. Treating it as Blocks would cause the crucible to adopt
+// downstream beads as children.
+func TestBlocksReconstruction_OnlyBlocksType(t *testing.T) {
+	beads := []Bead{
+		{
+			ID: "parent-1",
+			Dependencies: []BeadDep{
+				{DependsOnID: "child-a", Type: "blocks"},
+			},
+		},
+		{
+			ID:     "child-a",
+			Parent: "parent-1",
+		},
+		{
+			ID: "child-b",
+			Dependencies: []BeadDep{
+				{DependsOnID: "parent-1", Type: "blocks"},
+			},
+		},
+		{
+			ID: "downstream",
+			Dependencies: []BeadDep{
+				{DependsOnID: "parent-1", Type: "depends_on"},
+			},
+		},
+	}
+
+	// Simulate the Blocks reconstruction logic from pollAnvil.
+	beadIdx := make(map[string]int, len(beads))
+	for i := range beads {
+		beadIdx[beads[i].ID] = i
+	}
+	blocksSet := make(map[string]map[string]bool)
+	addBlock := func(parentID, childID string) {
+		if _, ok := beadIdx[parentID]; !ok {
+			return
+		}
+		if blocksSet[parentID] == nil {
+			blocksSet[parentID] = make(map[string]bool)
+		}
+		blocksSet[parentID][childID] = true
+	}
+	for _, b := range beads {
+		if b.Parent != "" {
+			addBlock(b.Parent, b.ID)
+		}
+		for _, dep := range b.Dependencies {
+			if dep.DependsOnID != "" && dep.DependsOnID != b.ID &&
+				(dep.Type == "blocks" || dep.Type == "parent-child") {
+				addBlock(dep.DependsOnID, b.ID)
+			}
+		}
+	}
+	for parentID, children := range blocksSet {
+		idx := beadIdx[parentID]
+		for childID := range children {
+			beads[idx].Blocks = append(beads[idx].Blocks, childID)
+		}
+	}
+
+	// parent-1 should have child-a and child-b as Blocks, but NOT downstream
+	sort.Strings(beads[0].Blocks)
+	assert.Equal(t, []string{"child-a", "child-b"}, beads[0].Blocks,
+		"parent-1 Blocks should include blocks/parent-child deps only, not depends_on")
+
+	// downstream should not appear in any Blocks list
+	assert.Empty(t, beads[3].Blocks, "downstream should have no Blocks")
+}
+
 // TestPoll_MultipleAnvils verifies that Poll collects results from all anvils
 // concurrently. Anvil paths point to temp directories where 'bd ready' will
 // fail, but all anvils must still be represented in the returned results.

@@ -1632,11 +1632,12 @@ normalPipeline:
 		}
 	}(bead.Anvil, bead.ID, pr.URL, bead.Title, pr.Number, outcome.Duration)
 
-	// Close the bead — unless other beads depend on it. When dependents exist,
+	// Close the bead — unless other beads depend on it. When dependents exist
+	// (either blocks-type children or depends_on sequencing constraints),
 	// closing now would unblock them before this PR is merged, causing them to
 	// build on stale main. Bellows will close the bead after the PR merges.
-	if len(bead.Blocks) > 0 {
-		d.logger.Info("bead has dependents, deferring close until PR merges", "bead", bead.ID, "dependents", len(bead.Blocks))
+	if len(bead.Blocks) > 0 || bead.DependentCount > 0 {
+		d.logger.Info("bead has dependents, deferring close until PR merges", "bead", bead.ID, "blocks", len(bead.Blocks), "dependent_count", bead.DependentCount)
 	} else if err := d.closeBead(pipelineCtx, bead.ID, anvilCfg.Path); err != nil {
 		d.logger.Warn("failed to close bead", "bead", bead.ID, "error", err)
 	}
