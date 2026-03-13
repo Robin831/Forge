@@ -82,6 +82,33 @@ brews:
     test: |
       system "#{bin}/forge", "version"
 
+nfpms:
+  - id: forge
+    package_name: forge
+    vendor: Robin831
+    homepage: https://github.com/Robin831/Forge
+    maintainer: Robin831 <robin831@users.noreply.github.com>
+    description: Autonomous AI orchestrator that coordinates Claude Code agents across git repositories
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+    section: devel
+    priority: optional
+    contents:
+      - src: packaging/forge.service
+        dst: /usr/lib/systemd/system/forge.service
+        type: config
+      - dst: /var/lib/forge
+        type: dir
+      - dst: /etc/forge
+        type: dir
+    scripts:
+      postinstall: packaging/postinstall.sh
+      preremove: packaging/preremove.sh
+
 dockers:
   - id: forge-amd64
     goos: linux

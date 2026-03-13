@@ -1,0 +1,26 @@
+[Unit]
+Description=Forge - Autonomous AI orchestrator for multi-repo development
+Documentation=https://github.com/Robin831/Forge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/forge up --foreground
+ExecStop=/usr/bin/forge down
+Restart=on-failure
+RestartSec=10
+User=forge
+Group=forge
+StateDirectory=forge
+ConfigurationDirectory=forge
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/forge
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
