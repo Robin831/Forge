@@ -1034,12 +1034,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if prevWorkerID != "" {
 			for i, w := range m.workers {
 				if w.ID == prevWorkerID {
-					// Using SetCursor doesn't always update the table's internal
-					// viewport. We move the cursor step-by-step to ensure it
-					// scrolls into view.
-					m.workerTable.SetCursor(0)
-					for m.workerTable.Cursor() < i {
-						m.workerTable.MoveDown(1)
+					// Move relative to the current cursor so the viewport scrolls
+					// into view without iterating from 0 every refresh (O(delta) not O(n)).
+					cur := m.workerTable.Cursor()
+					if i > cur {
+						for range i - cur {
+							m.workerTable.MoveDown(1)
+						}
+					} else if i < cur {
+						for range cur - i {
+							m.workerTable.MoveUp(1)
+						}
 					}
 					break
 				}
@@ -2344,9 +2349,10 @@ func (m *Model) renderLeftColumn(width, topHeight, bottomHeight int) string {
 	hasCrucibles := len(m.crucibles) > 0
 
 	if hasCrucibles {
-		// Total inner height available for all 4 panels is topHeight + bottomHeight - 4
-		// (because we have 4 panels instead of 2, so 4 extra border lines).
-		totalInner := topHeight + bottomHeight - 4
+		// Total inner height available for all 4 panels is topHeight + bottomHeight - 6.
+		// The center column has 1 panel (2 border lines). Each additional panel adds 2 more
+		// border lines; 4 panels = 8 border lines total, so subtract 6 extra vs the baseline.
+		totalInner := topHeight + bottomHeight - 6
 		if totalInner < 0 {
 			totalInner = 0
 		}
