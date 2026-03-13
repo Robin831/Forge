@@ -17,7 +17,7 @@ anvils:
     max_smiths: 2
     auto_dispatch: all
     schematic_enabled: false       # Override global schematic setting for this anvil
-    golangci_lint: true            # null = auto-detect; false = disable
+    golangci_lint: null            # null/omit = auto-detect (runs only if binary found on PATH); false = disable
     go_race_detection: false       # Per-anvil race detector override
     depcheck_enabled: true         # Set to false to skip depcheck for this anvil
 

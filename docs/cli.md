@@ -369,4 +369,18 @@ Webhook URL resolution order for Teams notifications:
 2. `FORGE_NOTIFICATIONS_TEAMS_WEBHOOK_URL` environment variable
 3. `notifications.teams.webhook_url` (or legacy `notifications.teams_webhook_url`) in `forge.yaml`
 
-Generic-JSON webhooks additionally receive payloads from `notifications.webhooks[]` entries (filtered by the `release` event) and from `notifications.release_webhook_urls` in config. The `FORGE_RELEASE_WEBHOOK_URL` environment variable adds one more generic target.
+> **Note:** Config-based resolution (steps 2–3 above, plus the generic-webhook config paths below) only applies when `notifications.enabled: true` is set in `forge.yaml`. CLI flags and environment variables work regardless of `notifications.enabled`.
+
+`forge notify release` sends to two categories of generic-JSON webhook targets, each with a **different payload schema**:
+
+- **`notifications.webhooks[]`** entries with `events: [release]` and any `--extra-url` flags receive the uniform event payload:
+  ```json
+  { "event_type": "release", "bead_id": "", "anvil": "", "message": "...", "timestamp": "..." }
+  ```
+
+- **`notifications.release_webhook_urls`** (config), `FORGE_RELEASE_WEBHOOK_URL` (env var), and `--extra-url` flags receive the richer release-published payload:
+  ```json
+  { "source": "forge", "summary": "...", "event": "release_published", "detail": "...", "url": "...", "repo": "...", "version": "...", "tag": "..." }
+  ```
+
+Integrators should use `notifications.webhooks[]` for systems expecting the standard event schema, and `notifications.release_webhook_urls` / `--extra-url` for systems expecting the richer release payload.
