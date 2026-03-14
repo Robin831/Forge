@@ -61,7 +61,7 @@ func (p *Provider) CreatePR(ctx context.Context, params vcs.CreateParams) (*vcs.
 		args = append(args, "--draft")
 	}
 
-	log.Printf("[ghpr] Creating PR for %s on branch %s", params.BeadID, params.Branch)
+	log.Printf("[vcs/github] Creating PR for %s on branch %s", params.BeadID, params.Branch)
 
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
 	cmd.Dir = params.WorktreePath
@@ -75,7 +75,7 @@ func (p *Provider) CreatePR(ctx context.Context, params vcs.CreateParams) (*vcs.
 	}
 
 	prURL := strings.TrimSpace(stdout.String())
-	log.Printf("[ghpr] Created PR: %s", prURL)
+	log.Printf("[vcs/github] Created PR: %s", prURL)
 
 	prNumber := extractPRNumber(prURL)
 
@@ -102,7 +102,7 @@ func (p *Provider) CreatePR(ctx context.Context, params vcs.CreateParams) (*vcs.
 			CreatedAt:  pr.Created,
 		}
 		if err := p.db.InsertPR(dbPR); err != nil {
-			log.Printf("[ghpr] failed to insert PR in DB (bead=%s, anvil=%s, number=%d): %v", params.BeadID, params.AnvilName, prNumber, err)
+			log.Printf("[vcs/github] failed to insert PR in DB (bead=%s, anvil=%s, number=%d): %v", params.BeadID, params.AnvilName, prNumber, err)
 		} else {
 			_ = p.db.LogEvent(
 				state.EventPRCreated,
@@ -114,7 +114,7 @@ func (p *Provider) CreatePR(ctx context.Context, params vcs.CreateParams) (*vcs.
 			// Run a light mergeability check immediately so the DB reflects
 			// current merge conflict state before the first Bellows poll.
 			if status, err := p.CheckStatusLight(ctx, params.WorktreePath, prNumber); err != nil {
-				log.Printf("[ghpr] warning: failed to CheckStatusLight for PR #%d (worktree %q): %v", prNumber, params.WorktreePath, err)
+				log.Printf("[vcs/github] warning: failed to CheckStatusLight for PR #%d (worktree %q): %v", prNumber, params.WorktreePath, err)
 			} else if dbPR.ID != 0 {
 				if err := p.db.UpdatePRMergeability(
 					dbPR.ID,
@@ -124,7 +124,7 @@ func (p *Provider) CreatePR(ctx context.Context, params vcs.CreateParams) (*vcs.
 					true,                              // keep pending reviews safe default until Bellows confirms
 					false,                             // approval not checked here; Bellows is authoritative
 				); err != nil {
-					log.Printf("[ghpr] warning: failed to UpdatePRMergeability for PR record %d (PR #%d): %v", dbPR.ID, prNumber, err)
+					log.Printf("[vcs/github] warning: failed to UpdatePRMergeability for PR record %d (PR #%d): %v", dbPR.ID, prNumber, err)
 				}
 			}
 		}
@@ -146,7 +146,7 @@ func (p *Provider) MergePR(ctx context.Context, worktreePath string, prNumber in
 		"rebase": true,
 	}
 	if !allowedStrategies[strategy] {
-		log.Printf("[ghpr] Invalid merge strategy %q, defaulting to squash", strategy)
+		log.Printf("[vcs/github] Invalid merge strategy %q, defaulting to squash", strategy)
 		strategy = "squash"
 	}
 
@@ -156,7 +156,7 @@ func (p *Provider) MergePR(ctx context.Context, worktreePath string, prNumber in
 		"--delete-branch",
 	}
 
-	log.Printf("[ghpr] Merging PR #%d with strategy %s", prNumber, strategy)
+	log.Printf("[vcs/github] Merging PR #%d with strategy %s", prNumber, strategy)
 
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
 	cmd.Dir = worktreePath
@@ -168,7 +168,7 @@ func (p *Provider) MergePR(ctx context.Context, worktreePath string, prNumber in
 		return fmt.Errorf("gh pr merge failed: %w\nstderr: %s", err, stderr.String())
 	}
 
-	log.Printf("[ghpr] Merged PR #%d", prNumber)
+	log.Printf("[vcs/github] Merged PR #%d", prNumber)
 	return nil
 }
 
@@ -200,7 +200,7 @@ func (p *Provider) CheckStatus(ctx context.Context, worktreePath string, prNumbe
 	if err == nil {
 		status.UnresolvedThreads = count
 	} else {
-		log.Printf("[ghpr] Warning: could not fetch unresolved thread count for PR #%d: %v", prNumber, err)
+		log.Printf("[vcs/github] Warning: could not fetch unresolved thread count for PR #%d: %v", prNumber, err)
 	}
 
 	// Fetch pending review requests via GraphQL. The gh CLI's --json
@@ -210,7 +210,7 @@ func (p *Provider) CheckStatus(ctx context.Context, worktreePath string, prNumbe
 	if err == nil {
 		status.ReviewRequests = gqlRequests
 	} else {
-		log.Printf("[ghpr] Warning: could not fetch pending review requests for PR #%d: %v (falling back to gh pr view data)", prNumber, err)
+		log.Printf("[vcs/github] Warning: could not fetch pending review requests for PR #%d: %v (falling back to gh pr view data)", prNumber, err)
 	}
 
 	return &status, nil
