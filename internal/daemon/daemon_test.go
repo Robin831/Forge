@@ -581,7 +581,7 @@ func TestHandleIPC_RetryBead_ExhaustedPR(t *testing.T) {
 	lm := lifecycle.New(db, logger, func(_ context.Context, _ lifecycle.ActionRequest) {})
 
 	// Create bellows monitor (won't actually run, just needs to exist for reset).
-	bm := bellows.New(db, time.Minute, map[string]string{"test-anvil": tmpDir}, nil, nil)
+	bm := bellows.New(db, time.Minute, map[string]string{"test-anvil": tmpDir}, nil, nil, nil)
 
 	d := &Daemon{
 		db:             db,

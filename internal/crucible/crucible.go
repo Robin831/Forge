@@ -13,6 +13,7 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ghpr"
+	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
@@ -62,6 +63,10 @@ type Params struct {
 	// When false, child PRs are created but not merged (human review required).
 	// Default: true (zero value auto-merges).
 	AutoMergeCrucibleChildren bool
+
+	// VCSProvider routes PR operations through the appropriate VCS platform.
+	// When nil, falls back to direct ghpr calls (GitHub).
+	VCSProvider vcs.Provider
 
 	// Test injection points — when non-nil these replace the real implementations.
 	PipelineRunner    func(ctx context.Context, p pipeline.Params) *pipeline.Outcome
@@ -669,6 +674,9 @@ func (p *Params) runSchematic(ctx context.Context, cfg schematic.Config, bead po
 func (p *Params) createPR(ctx context.Context, params ghpr.CreateParams) (*ghpr.PR, error) {
 	if p.PRCreator != nil {
 		return p.PRCreator(ctx, params)
+	}
+	if p.VCSProvider != nil {
+		return p.VCSProvider.CreatePR(ctx, params)
 	}
 	return ghpr.Create(ctx, params)
 }

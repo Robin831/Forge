@@ -11,22 +11,22 @@ import (
 
 func TestNew_MinimumInterval(t *testing.T) {
 	// Intervals below 30s should be clamped to 30s
-	m := New(nil, 5*time.Second, nil, nil, nil)
+	m := New(nil, 5*time.Second, nil, nil, nil, nil)
 	assert.Equal(t, 30*time.Second, m.interval)
 }
 
 func TestNew_IntervalAboveMin(t *testing.T) {
-	m := New(nil, 2*time.Minute, nil, nil, nil)
+	m := New(nil, 2*time.Minute, nil, nil, nil, nil)
 	assert.Equal(t, 2*time.Minute, m.interval)
 }
 
 func TestNew_ExactMinimum(t *testing.T) {
-	m := New(nil, 30*time.Second, nil, nil, nil)
+	m := New(nil, 30*time.Second, nil, nil, nil, nil)
 	assert.Equal(t, 30*time.Second, m.interval)
 }
 
 func TestOnEvent_RegistersHandler(t *testing.T) {
-	m := New(nil, time.Minute, nil, nil, nil)
+	m := New(nil, time.Minute, nil, nil, nil, nil)
 	m.mu.Lock()
 	initial := len(m.handlers)
 	m.mu.Unlock()
@@ -41,7 +41,7 @@ func TestOnEvent_RegistersHandler(t *testing.T) {
 }
 
 func TestEmit_DispatchesToAllHandlers(t *testing.T) {
-	m := New(nil, time.Minute, nil, nil, nil)
+	m := New(nil, time.Minute, nil, nil, nil, nil)
 
 	var mu sync.Mutex
 	var received []string

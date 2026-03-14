@@ -34,6 +34,10 @@ type Config struct {
 // AnvilConfig defines a registered repository (anvil).
 type AnvilConfig struct {
 	Path                    string `mapstructure:"path" yaml:"path"`
+	// Platform specifies the VCS hosting platform for this anvil.
+	// Valid values: "github" (default), "gitlab", "gitea", "bitbucket", "azuredevops".
+	// When empty, defaults to "github".
+	Platform                string `mapstructure:"platform" yaml:"platform,omitempty"`
 	MaxSmiths               int    `mapstructure:"max_smiths" yaml:"max_smiths"`
 	AutoDispatch            string `mapstructure:"auto_dispatch" yaml:"auto_dispatch"`
 	AutoDispatchTag         string `mapstructure:"auto_dispatch_tag" yaml:"auto_dispatch_tag,omitempty"`
@@ -564,6 +568,13 @@ func (c *Config) Validate() []string {
 		}
 		if anvil.MaxSmiths < 0 {
 			errs = append(errs, fmt.Sprintf("anvil %q: max_smiths must be >= 0", name))
+		}
+
+		switch anvil.Platform {
+		case "", "github", "gitlab", "gitea", "bitbucket", "azuredevops":
+			// valid
+		default:
+			errs = append(errs, fmt.Sprintf("anvil %q: invalid platform %q (must be github|gitlab|gitea|bitbucket|azuredevops)", name, anvil.Platform))
 		}
 
 		switch anvil.AutoDispatch {

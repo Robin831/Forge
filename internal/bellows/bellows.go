@@ -19,6 +19,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ghpr"
+	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/warden"
 )
@@ -56,7 +57,8 @@ type Handler func(ctx context.Context, event PREvent)
 type Monitor struct {
 	db               *state.DB
 	interval         time.Duration
-	anvilPaths       map[string]string // anvil name → path
+	anvilPaths       map[string]string       // anvil name → path
+	anvilProviders   map[string]vcs.Provider // anvil name → VCS provider
 	pathsMu          sync.RWMutex      // protects anvilPaths
 	handlers         []Handler
 	mu               sync.Mutex
@@ -87,7 +89,7 @@ type prSnapshot struct {
 // config changes take effect without restarting the daemon. The maxCIFixAttempts
 // function returns the current max CI fix attempts from config (may be nil, in
 // which case the state.DefaultMaxCIFixAttempts is used).
-func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, autoLearnRules func() bool, maxCIFixAttempts func() int) *Monitor {
+func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, anvilProviders map[string]vcs.Provider, autoLearnRules func() bool, maxCIFixAttempts func() int) *Monitor {
 	if interval < 30*time.Second {
 		interval = 30 * time.Second
 	}
@@ -98,6 +100,7 @@ func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, aut
 		db:               db,
 		interval:         interval,
 		anvilPaths:       anvilPaths,
+		anvilProviders:   anvilProviders,
 		lastStatuses:     make(map[string]*prSnapshot),
 		refresh:          make(chan struct{}, 1),
 		autoLearnRules:   autoLearnRules,
@@ -117,7 +120,7 @@ func (m *Monitor) OnEvent(h Handler) {
 
 // UpdateAnvilPaths replaces the set of monitored anvil paths. This is safe to
 // call while Run is active and takes effect on the next poll cycle.
-func (m *Monitor) UpdateAnvilPaths(paths map[string]string) {
+func (m *Monitor) UpdateAnvilPaths(paths map[string]string, providers map[string]vcs.Provider) {
 	copied := make(map[string]string, len(paths))
 	for k, v := range paths {
 		copied[k] = v
@@ -136,6 +139,9 @@ func (m *Monitor) UpdateAnvilPaths(paths map[string]string) {
 		}
 	}
 	m.anvilPaths = copied
+	if providers != nil {
+		m.anvilProviders = providers
+	}
 	m.pathsMu.Unlock()
 }
 
@@ -205,7 +211,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		return
 	}
 
-	status, err := ghpr.CheckStatus(ctx, anvilPath, pr.Number)
+	status, err := m.checkPRStatus(ctx, pr.Anvil, anvilPath, pr.Number)
 	if err != nil {
 		log.Printf("[bellows] Error checking PR #%d: %v", pr.Number, err)
 		return
@@ -642,7 +648,7 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, be
 		added, prNumber, warden.RulesFileName,
 	)
 
-	pr, err := ghpr.Create(ctx, ghpr.CreateParams{
+	pr, err := m.createPR(ctx, anvilName, ghpr.CreateParams{
 		WorktreePath: wtPath,
 		Title:        fmt.Sprintf("forge: learn %d warden rule(s) from PR #%d [no-changelog]", added, prNumber),
 		Body:         prBody,
@@ -699,4 +705,28 @@ func (m *Monitor) emit(ctx context.Context, event PREvent) {
 	for _, h := range handlers {
 		h(ctx, event)
 	}
+}
+
+// checkPRStatus routes PR status checks through the VCS provider for the anvil,
+// falling back to ghpr.CheckStatus when no provider is configured.
+func (m *Monitor) checkPRStatus(ctx context.Context, anvil, anvilPath string, prNumber int) (*ghpr.PRStatus, error) {
+	m.pathsMu.RLock()
+	prov := m.anvilProviders[anvil]
+	m.pathsMu.RUnlock()
+	if prov != nil {
+		return prov.CheckStatus(ctx, anvilPath, prNumber)
+	}
+	return ghpr.CheckStatus(ctx, anvilPath, prNumber)
+}
+
+// createPR routes PR creation through the VCS provider for the anvil,
+// falling back to ghpr.Create when no provider is configured.
+func (m *Monitor) createPR(ctx context.Context, anvil string, params ghpr.CreateParams) (*ghpr.PR, error) {
+	m.pathsMu.RLock()
+	prov := m.anvilProviders[anvil]
+	m.pathsMu.RUnlock()
+	if prov != nil {
+		return prov.CreatePR(ctx, params)
+	}
+	return ghpr.Create(ctx, params)
 }

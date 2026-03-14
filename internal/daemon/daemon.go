@@ -35,6 +35,8 @@ import (
 	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ghpr"
+	"github.com/Robin831/Forge/internal/vcs"
+	vcsgithub "github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/hotreload"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
@@ -80,7 +82,7 @@ const (
 // allowing a test double to be injected in unit tests.
 type bellowsMonitorIface interface {
 	OnEvent(h bellows.Handler)
-	UpdateAnvilPaths(paths map[string]string)
+	UpdateAnvilPaths(paths map[string]string, providers map[string]vcs.Provider)
 	Refresh()
 	Run(ctx context.Context) error
 	ResetPRState(anvil string, prNumber int)
@@ -328,7 +330,8 @@ func (d *Daemon) reconcileGitHubPRs(ctx context.Context) {
 		if anvilCfg.Path == "" {
 			continue
 		}
-		prs, err := ghpr.ListOpen(ctx, anvilCfg.Path)
+		vcsProv := vcsProviderForAnvil(anvilCfg)
+		prs, err := vcsProv.ListOpen(ctx, anvilCfg.Path)
 		if err != nil {
 			d.logger.Warn("reconcile: could not list GitHub PRs", "anvil", anvilName, "err", err)
 			continue
@@ -487,12 +490,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Start PR Monitor (Bellows)
 	monitorAnvils := make(map[string]string)
+	monitorProviders := make(map[string]vcs.Provider)
 	for name, a := range d.cfg.Load().Anvils {
 		if a.Path != "" {
 			monitorAnvils[name] = a.Path
+			monitorProviders[name] = vcsProviderForAnvil(a)
 		}
 	}
-	d.bellowsMonitor = bellows.New(d.db, d.cfg.Load().Settings.BellowsInterval, monitorAnvils, func() bool {
+	d.bellowsMonitor = bellows.New(d.db, d.cfg.Load().Settings.BellowsInterval, monitorAnvils, monitorProviders, func() bool {
 		return d.cfg.Load().Settings.AutoLearnRules
 	}, func() int {
 		return d.cfg.Load().Settings.MaxCIFixAttempts
@@ -1402,6 +1407,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			ParentBead:                bead,
 			AnvilName:                 bead.Anvil,
 			AnvilConfig:               anvilCfg,
+			VCSProvider:               vcsProviderForAnvil(anvilCfg),
 			ExtraFlags:                d.cfg.Load().Settings.ClaudeFlags,
 			Providers:                 d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
 			GoRaceDetection:           d.resolveGoRaceDetection(anvilCfg),
@@ -1632,7 +1638,8 @@ normalPipeline:
 		changeSummary = outcome.ReviewResult.Summary
 	}
 
-	pr, err := ghpr.Create(pipelineCtx, ghpr.CreateParams{
+	vcsProv := vcsProviderForAnvil(anvilCfg)
+	pr, err := vcsProv.CreatePR(pipelineCtx, ghpr.CreateParams{
 		WorktreePath:    anvilCfg.Path,
 		BeadID:          bead.ID,
 		Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
@@ -2648,7 +2655,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// Comment 6: re-check live GitHub status immediately before merging to avoid
 		// acting on stale cached state from between Bellows polls.
 		liveCtx, liveCancel := context.WithTimeout(d.runCtx, 30*time.Second)
-		liveStatus, liveErr := ghpr.CheckStatus(liveCtx, anvilCfg.Path, mergeNumber)
+		mergeVCS := vcsProviderForAnvil(anvilCfg)
+		liveStatus, liveErr := mergeVCS.CheckStatus(liveCtx, anvilCfg.Path, mergeNumber)
 		liveCancel()
 		if liveErr != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("could not verify live PR status: %v", liveErr)})
@@ -2670,7 +2678,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		d.logger.Info("PR merge requested", "pr_number", mergeNumber, "anvil", mergeAnvil, "strategy", strategy)
 		mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
 		defer mergeCancel()
-		if err := ghpr.Merge(mergeCtx, anvilCfg.Path, mergeNumber, strategy); err != nil {
+		if err := mergeVCS.MergePR(mergeCtx, anvilCfg.Path, mergeNumber, strategy); err != nil {
 			_ = d.db.LogEvent(state.EventPRMergeFailed,
 				fmt.Sprintf("PR #%d merge failed: %v", mergeNumber, err),
 				beadID, mergeAnvil)
@@ -2809,7 +2817,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
 			defer mergeCancel()
 			strategy := d.cfg.Load().Settings.MergeStrategy
-			if err := ghpr.Merge(mergeCtx, anvilCfg.Path, pa.PRNumber, strategy); err != nil {
+			actionVCS := vcsProviderForAnvil(anvilCfg)
+			if err := actionVCS.MergePR(mergeCtx, anvilCfg.Path, pa.PRNumber, strategy); err != nil {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("merge failed: %v", err)})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
@@ -3311,7 +3320,13 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 
 	// Update bellows monitor
 	if d.bellowsMonitor != nil {
-		d.bellowsMonitor.UpdateAnvilPaths(paths)
+		reloadProviders := make(map[string]vcs.Provider, len(new.Anvils))
+		for name, a := range new.Anvils {
+			if a.Path != "" {
+				reloadProviders[name] = vcsProviderForAnvil(a)
+			}
+		}
+		d.bellowsMonitor.UpdateAnvilPaths(paths, reloadProviders)
 		d.logger.Info("updated bellows anvil paths", "count", len(paths))
 	}
 
@@ -3456,4 +3471,18 @@ func verifyAnvilOnMain(ctx context.Context, logger *slog.Logger, anvilPath strin
 	}
 
 	return nil
+}
+
+// vcsProviderForAnvil returns the VCS provider for the given anvil config.
+// Currently only GitHub is implemented; other platforms will be added as
+// sub-packages of internal/vcs.
+func vcsProviderForAnvil(a config.AnvilConfig) vcs.Provider {
+	switch a.Platform {
+	case "", "github":
+		return vcsgithub.New()
+	default:
+		// Unreachable when config validation is in place, but fall back
+		// to GitHub to avoid nil panics during development.
+		return vcsgithub.New()
+	}
 }
