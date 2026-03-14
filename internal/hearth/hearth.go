@@ -3222,6 +3222,13 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 
 	title := needsAttentionTitleStyle.Render(fmt.Sprintf("Needs Attention (%d)", len(m.needsAttention)))
 
+	// Compute the content width available for text inside the panel.
+	// style.Width(w) includes padding but not border, so content = w - padding.
+	contentWidth := width - style.GetHorizontalPadding()
+	if contentWidth < 0 {
+		contentWidth = 0
+	}
+
 	var lines []string
 	lines = append(lines, title)
 
@@ -3247,7 +3254,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 			beadLine := fmt.Sprintf("%s %s %s", icon, label, anvil)
 			// Append truncated title when available
 			if item.Title != "" {
-				titleMaxLen := width - 6 - lipgloss.Width(beadLine)
+				titleMaxLen := contentWidth - lipgloss.Width(beadLine) - 2 // 2 for "  " separator
 				if titleMaxLen > 10 {
 					beadLine += "  " + truncate(sanitizeTitle(item.Title), titleMaxLen)
 				}
@@ -3266,7 +3273,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 			if item.ReasonCategory == AttentionClarification {
 				reasonPrefix = "  ⚠ "
 			}
-			reasonMaxLen := width - 4 - runewidth.StringWidth(reasonPrefix)
+			reasonMaxLen := contentWidth - runewidth.StringWidth(reasonPrefix)
 			if reasonMaxLen < 10 {
 				reasonMaxLen = 10
 			}

@@ -438,6 +438,79 @@ func TestRenderNeedsAttentionEmpty(t *testing.T) {
 	}
 }
 
+func TestRenderNeedsAttentionReasonLine(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "bd-1", Anvil: "test", Reason: "circuit breaker: exhausted retries", ReasonCategory: AttentionDispatchExhausted},
+	}
+	m.focused = PanelNeedsAttention
+	rendered := m.renderNeedsAttention(80, 20)
+	if !strings.Contains(rendered, "circuit breaker: exhausted retries") {
+		t.Errorf("expected reason text in rendered output:\n%s", rendered)
+	}
+}
+
+func TestRenderNeedsAttentionClarificationWarningPrefix(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "bd-2", Anvil: "test", Reason: "decomposition failed: bad output", ReasonCategory: AttentionClarification},
+	}
+	m.focused = PanelNeedsAttention
+	rendered := m.renderNeedsAttention(80, 20)
+	// Clarification items get the ⚠ prefix on the reason line
+	if !strings.Contains(rendered, "⚠") {
+		t.Errorf("expected ⚠ prefix for clarification reason:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "decomposition failed: bad output") {
+		t.Errorf("expected clarification reason text:\n%s", rendered)
+	}
+}
+
+func TestRenderNeedsAttentionEmptyReasonShowsFallback(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "bd-3", Anvil: "test", Reason: "", ReasonCategory: AttentionUnknown},
+	}
+	m.focused = PanelNeedsAttention
+	rendered := m.renderNeedsAttention(80, 20)
+	if !strings.Contains(rendered, "(no reason)") {
+		t.Errorf("expected '(no reason)' fallback when reason is empty:\n%s", rendered)
+	}
+}
+
+func TestRenderNeedsAttentionReasonTruncation(t *testing.T) {
+	longReason := strings.Repeat("x", 200)
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "bd-4", Anvil: "test", Reason: longReason, ReasonCategory: AttentionDispatchExhausted},
+	}
+	m.focused = PanelNeedsAttention
+	// Use a narrow width to force truncation
+	rendered := m.renderNeedsAttention(40, 20)
+	if !strings.Contains(rendered, "...") {
+		t.Errorf("expected truncated reason with '...' in narrow panel:\n%s", rendered)
+	}
+	// The full 200-char reason should NOT appear
+	if strings.Contains(rendered, longReason) {
+		t.Errorf("expected reason to be truncated, but found full text:\n%s", rendered)
+	}
+}
+
+func TestRenderNeedsAttentionNonClarificationNoWarningPrefix(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "bd-5", Anvil: "test", Reason: "ci fix exhausted", ReasonCategory: AttentionCIFixExhausted},
+	}
+	m.focused = PanelNeedsAttention
+	rendered := m.renderNeedsAttention(80, 20)
+	// Non-clarification items should NOT have ⚠ on the reason line.
+	// The reason line starts with "  " (not "  ⚠ ").
+	// Check that the reason text appears without the ⚠ prefix nearby.
+	if !strings.Contains(rendered, "ci fix exhausted") {
+		t.Errorf("expected reason text:\n%s", rendered)
+	}
+}
+
 func TestRenderWorkerActivityNewestFirst(t *testing.T) {
 	workers := []WorkerItem{
 		{
