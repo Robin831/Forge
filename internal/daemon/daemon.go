@@ -334,7 +334,7 @@ func (d *Daemon) reconcileGitHubPRs(ctx context.Context) {
 			continue
 		}
 		for _, pr := range prs {
-			existing, _ := d.db.PRByNumber(pr.Number)
+			existing, _ := d.db.GetPRByNumber(anvilName, pr.Number)
 			if existing != nil {
 				continue // already tracked
 			}
