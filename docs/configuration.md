@@ -16,7 +16,10 @@ anvils:
     path: C:\source\fhigit\Heimdall
     max_smiths: 2
     auto_dispatch: all
-    schematic_enabled: false
+    schematic_enabled: false       # Override global schematic setting for this anvil
+    golangci_lint: null            # null/omit = auto-detect (runs only if binary found on PATH); false = disable
+    go_race_detection: false       # Per-anvil race detector override
+    depcheck_enabled: true         # Set to false to skip depcheck for this anvil
 
   metadata:
     path: C:\source\fhigit\Fhi.Metadata
@@ -44,6 +47,7 @@ settings:
   copilot_daily_request_limit: 300  # 300 for Pro, 1500 for Pro+
   bellows_interval: 2m
   stale_interval: 5m
+  go_race_detection: false         # Enable Go race detector globally (-race flag in Temper)
   claude_flags:
     - --dangerously-skip-permissions
     - --max-turns
@@ -68,11 +72,20 @@ settings:
 
 notifications:
   enabled: true
-  teams_webhook_url: https://outlook.webhook.office.com/webhookb2/...
-  events:
-    - pr_created
-    - bead_failed
-    - daily_cost
+
+  # MS Teams (Adaptive Card format)
+  teams:
+    webhook_url: https://outlook.webhook.office.com/webhookb2/...
+    events: [pr_created, bead_failed, daily_cost]  # empty = all events
+
+  # Generic JSON webhook targets (optional)
+  webhooks:
+    - name: my-dashboard
+      url: https://example.com/api/webhooks/forge
+      events: [pr_created, worker_done, release]  # empty = all events
+    - name: slack
+      url: https://hooks.slack.com/services/...
+      events: [bead_failed]
 ```
 
 ## Anvils

@@ -28,7 +28,7 @@ Copilot re-reviews the updated PR
 ## Triggering
 
 Bellows (`internal/bellows`) polls all open PRs on a configurable interval
-(default 5m; minimum 30 s). It fires an `EventReviewChanges` event when:
+(default 2m; minimum 30 s). It fires an `EventReviewChanges` event when:
 
 - A review transitions to `CHANGES_REQUESTED`, or
 - The count of unresolved review threads increases from zero.
