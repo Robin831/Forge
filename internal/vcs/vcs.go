@@ -22,6 +22,8 @@ func ForPlatform(platform string) (Provider, error) {
 		return nil, err
 	}
 	switch p {
+	case GitHub:
+		return NewGitHubProvider(), nil
 	case GitLab:
 		return NewGitLabProvider(), nil
 	default:

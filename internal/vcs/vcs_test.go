@@ -99,10 +99,16 @@ func TestForPlatform(t *testing.T) {
 		assert.Equal(t, GitLab, p.Platform())
 	})
 
-	t.Run("empty string returns not-implemented for github", func(t *testing.T) {
-		_, err := ForPlatform("")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not yet implemented")
+	t.Run("empty string defaults to github", func(t *testing.T) {
+		p, err := ForPlatform("")
+		require.NoError(t, err)
+		assert.Equal(t, GitHub, p.Platform())
+	})
+
+	t.Run("explicit github", func(t *testing.T) {
+		p, err := ForPlatform("github")
+		require.NoError(t, err)
+		assert.Equal(t, GitHub, p.Platform())
 	})
 
 	t.Run("invalid platform returns error", func(t *testing.T) {
