@@ -140,9 +140,17 @@ func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Be
 	// array, but the parent bead itself may not include a "blocks" array.
 	// We reconstruct it here so that IsCrucibleCandidate can detect parents
 	// with children.
+	//
+	// IMPORTANT: Clear all raw Blocks first. The JSON "blocks" field from bd
+	// means "beads I block" (child→parent direction), but IsCrucibleCandidate
+	// needs parent→children. Keeping the raw values causes children to be
+	// misidentified as crucible parents when both child and parent are in the
+	// poll batch. The reconstruction below builds the correct direction from
+	// Parent and Dependencies fields.
 	beadIdx := make(map[string]int, len(beads))
 	for i := range beads {
 		beadIdx[beads[i].ID] = i
+		beads[i].Blocks = nil // clear raw child→parent blocks
 	}
 	blocksSet := make(map[string]map[string]bool) // parent ID -> set of child IDs
 	addBlock := func(parentID, childID string) {
@@ -184,12 +192,9 @@ func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Be
 		}
 	}
 
-	// Filter Blocks to only include IDs present in this poll batch.
-	// The JSON "blocks" field means "beads I block" (child→parent), but
-	// IsCrucibleCandidate needs parent→children. When a child has
-	// blocks=[parentID] and the parent is NOT in the ready results (it's
-	// blocked), the child would be misidentified as a crucible parent.
-	// Only keep Blocks entries that point to beads in the current results.
+	// Filter reconstructed Blocks to only include IDs present in this poll
+	// batch. A parent may reference children that are not ready (e.g. already
+	// in progress or closed).
 	for i := range beads {
 		if len(beads[i].Blocks) == 0 {
 			continue
