@@ -179,10 +179,23 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 	cmd.Stdin = strings.NewReader(promptText)
 
 	// Strip CLAUDECODE so claude doesn't refuse to run inside another session.
+	// Also strip any keys that will be overridden by per-provider env vars so
+	// we don't end up with duplicate entries (behavior for duplicates is not
+	// guaranteed across platforms, notably Windows).
 	env := os.Environ()
 	filtered := env[:0:0]
 	for _, e := range env {
-		if !strings.HasPrefix(e, "CLAUDECODE=") {
+		if strings.HasPrefix(e, "CLAUDECODE=") {
+			continue
+		}
+		skip := false
+		for k := range pv.Env {
+			if strings.HasPrefix(e, k+"=") {
+				skip = true
+				break
+			}
+		}
+		if !skip {
 			filtered = append(filtered, e)
 		}
 	}
