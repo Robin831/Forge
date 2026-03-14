@@ -96,7 +96,7 @@ curl -fsSL -o "${TMP_DIR}/checksums.txt" "$CHECKSUM_URL"
 
 # ── Verify SHA256 ──────────────────────────────────────────────────────────────
 echo "Verifying checksum..."
-EXPECTED_HASH="$(grep "${ASSET_NAME}" "${TMP_DIR}/checksums.txt" | awk '{print $1}')"
+EXPECTED_HASH="$(awk -v asset="${ASSET_NAME}" '$2 == asset {print $1}' "${TMP_DIR}/checksums.txt")"
 if [ -z "$EXPECTED_HASH" ]; then
   echo "ERROR: No checksum entry found for ${ASSET_NAME} in checksums.txt" >&2
   exit 1
