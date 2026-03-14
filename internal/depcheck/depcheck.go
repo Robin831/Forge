@@ -122,6 +122,18 @@ func (s *Scanner) ScanAll(ctx context.Context) {
 // scanAnvil runs all applicable ecosystem scanners for a single anvil and
 // creates beads for any outdated dependencies found.
 func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
+	// Pull latest main so the scanner sees current dependency versions.
+	// Without this, merged dependency updates that haven't been pulled
+	// locally would be re-detected as outdated, creating duplicate beads.
+	pullCtx, pullCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer pullCancel()
+	pullCmd := executil.HideWindow(exec.CommandContext(pullCtx, "git", "pull", "--ff-only"))
+	pullCmd.Dir = path
+	if out, err := pullCmd.CombinedOutput(); err != nil {
+		log.Printf("[depcheck] %s: git pull --ff-only failed (scanning stale tree): %v: %s",
+			name, err, strings.TrimSpace(string(out)))
+	}
+
 	// Run each ecosystem scanner. Each returns nil if the ecosystem is not
 	// present (e.g. no go.mod → scanGo returns nil).
 	scanners := []struct {
