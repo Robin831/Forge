@@ -106,8 +106,8 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		log.Printf("[quench] PR #%d attempt %d/%d", p.PRNumber, attempt, MaxAttempts)
 
 		// Step 1: Fetch check status to identify what's actually failing.
-		ghChecksOutput, failingChecks, fetchErr := p.VCS.FetchPRChecks(ctx, p.WorktreePath, p.PRNumber)
-		ghChecksFetched := fetchErr == nil
+		prChecksOutput, failingChecks, fetchErr := p.VCS.FetchPRChecks(ctx, p.WorktreePath, p.PRNumber)
+		checksFetched := fetchErr == nil
 		if fetchErr != nil {
 			log.Printf("[quench] Warning: failed to fetch PR checks: %v", fetchErr)
 		}
@@ -130,20 +130,20 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		result.LastTemperResult = temperResult
 
 		if temperResult.Passed {
-			if !ghChecksFetched {
-				// GitHub check status is unknown — do not treat as fixed; spawn Smith to be safe.
-				log.Printf("[quench] PR #%d: Temper passes but GitHub check status unknown (fetch failed) — spawning Smith to verify",
+			if !checksFetched {
+				// PR check status is unknown — do not treat as fixed; spawn Smith to be safe.
+				log.Printf("[quench] PR #%d: Temper passes but PR check status unknown (fetch failed) — spawning Smith to verify",
 					p.PRNumber)
 			} else if len(failingChecks) == 0 {
-				// Temper passes AND GitHub confirms no checks are failing — truly fixed.
-				log.Printf("[quench] PR #%d: Temper passes and no GitHub checks failing — CI is fixed", p.PRNumber)
+				// Temper passes AND provider confirms no checks are failing — truly fixed.
+				log.Printf("[quench] PR #%d: Temper passes and no PR checks failing — CI is fixed", p.PRNumber)
 				result.Fixed = true
 				result.Duration = time.Since(start)
 				return result
 			} else {
-				// Temper passes but GitHub has failing checks that Temper doesn't cover.
-				// Don't return early — spawn Smith to fix the GitHub-only failures.
-				log.Printf("[quench] PR #%d: Temper passes locally but %d GitHub check(s) still failing — spawning Smith for GitHub-only fixes",
+				// Temper passes but provider has failing checks that Temper doesn't cover.
+				// Don't return early — spawn Smith to fix the remote-only failures.
+				log.Printf("[quench] PR #%d: Temper passes locally but %d PR check(s) still failing — spawning Smith for remote-only fixes",
 					p.PRNumber, len(failingChecks))
 			}
 		}
@@ -154,11 +154,11 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		// Step 4: Build fix prompt.
 		var prompt string
 		if temperResult.Passed {
-			// GitHub-only failures — build a targeted prompt without temper output.
-			prompt = buildGitHubOnlyFixPrompt(p, failingChecks, ghChecksOutput, ciLogs)
+			// Remote-only failures — build a targeted prompt without temper output.
+			prompt = buildRemoteOnlyFixPrompt(p, failingChecks, prChecksOutput, ciLogs)
 		} else {
-			// Local failures (possibly combined with GitHub-only failures).
-			prompt = buildCIFixPrompt(p, temperResult, ghChecksOutput, failingChecks, ciLogs)
+			// Local failures (possibly combined with remote-only failures).
+			prompt = buildCIFixPrompt(p, temperResult, prChecksOutput, failingChecks, ciLogs)
 		}
 
 		failedStep := temperResult.FailedStep
@@ -290,13 +290,13 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 }
 
 // buildCIFixPrompt creates a targeted prompt for Smith to fix CI failures
-// that include both local temper failures and (optionally) GitHub-only failures.
-func buildCIFixPrompt(p FixParams, tr *temper.Result, ghChecks string, failingChecks []vcs.CICheck, ciLogs map[string]string) string {
+// that include both local temper failures and (optionally) remote-only failures.
+func buildCIFixPrompt(p FixParams, tr *temper.Result, prChecksRaw string, failingChecks []vcs.CICheck, ciLogs map[string]string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, `You are fixing CI failures on PR #%d (branch: %s) for bead %s.
 
-## GitHub PR Checks Output
+## PR Checks Output
 
 %s
 
@@ -306,7 +306,7 @@ func buildCIFixPrompt(p FixParams, tr *temper.Result, ghChecks string, failingCh
 
 ## Failed Local Steps
 
-`, p.PRNumber, p.Branch, p.BeadID, ghChecks, tr.Summary)
+`, p.PRNumber, p.Branch, p.BeadID, prChecksRaw, tr.Summary)
 
 	for _, step := range tr.Steps {
 		if !step.Passed {
@@ -319,18 +319,18 @@ func buildCIFixPrompt(p FixParams, tr *temper.Result, ghChecks string, failingCh
 		}
 	}
 
-	// List failing GitHub checks (may overlap with local failures or be GitHub-only).
+	// List failing PR checks (may overlap with local failures or be remote-only).
 	if len(failingChecks) > 0 {
-		fmt.Fprintf(&b, "## Failing GitHub Checks\n\n")
+		fmt.Fprintf(&b, "## Failing PR Checks\n\n")
 		for _, check := range failingChecks {
 			fmt.Fprintf(&b, "- **%s** (status: %s)\n", check.Name, check.Status)
 		}
 		b.WriteString("\n")
 	}
 
-	// Include GitHub CI logs for failing checks that temper doesn't cover.
+	// Include CI logs for failing checks that temper doesn't cover.
 	if len(ciLogs) > 0 {
-		fmt.Fprintf(&b, "## GitHub CI Logs for Failing Checks\n\n")
+		fmt.Fprintf(&b, "## CI Logs for Failing Checks\n\n")
 		checkNames := make([]string, 0, len(ciLogs))
 		for name := range ciLogs {
 			checkNames = append(checkNames, name)
@@ -344,7 +344,7 @@ func buildCIFixPrompt(p FixParams, tr *temper.Result, ghChecks string, failingCh
 
 	fmt.Fprintf(&b, `## Instructions
 
-1. Analyze the CI failure output above (both GitHub and local)
+1. Analyze the CI failure output above (both remote and local)
 2. Fix the root cause — do NOT just suppress warnings or skip tests
 3. Ensure all build, lint, and test steps pass
 4. Commit fixes with message: "fix: resolve CI failures for %s"
@@ -358,23 +358,23 @@ func buildCIFixPrompt(p FixParams, tr *temper.Result, ghChecks string, failingCh
 	return b.String()
 }
 
-// buildGitHubOnlyFixPrompt creates a prompt for failures that only exist on
-// GitHub CI and cannot be reproduced by Temper locally (e.g. changelog-check).
-func buildGitHubOnlyFixPrompt(p FixParams, failingChecks []vcs.CICheck, ghChecks string, ciLogs map[string]string) string {
+// buildRemoteOnlyFixPrompt creates a prompt for failures that only exist on
+// the remote CI platform and cannot be reproduced by Temper locally (e.g. changelog-check).
+func buildRemoteOnlyFixPrompt(p FixParams, failingChecks []vcs.CICheck, prChecksRaw string, ciLogs map[string]string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, `You are fixing CI failures on PR #%d (branch: %s) for bead %s.
 
-**IMPORTANT**: These failures are GitHub-only CI checks that cannot be reproduced locally.
-Local build, lint, and test all pass. The failing checks are only enforced by GitHub CI.
+**IMPORTANT**: These failures are remote-only CI checks that cannot be reproduced locally.
+Local build, lint, and test all pass. The failing checks are only enforced by the remote CI platform.
 
-## GitHub PR Checks Output
+## PR Checks Output
 
 %s
 
-## Failing GitHub Checks
+## Failing PR Checks
 
-`, p.PRNumber, p.Branch, p.BeadID, ghChecks)
+`, p.PRNumber, p.Branch, p.BeadID, prChecksRaw)
 
 	for _, check := range failingChecks {
 		fmt.Fprintf(&b, "- **%s** (status: %s)\n", check.Name, check.Status)
@@ -383,7 +383,7 @@ Local build, lint, and test all pass. The failing checks are only enforced by Gi
 
 	// Include CI logs for each failing check (sorted for stable output).
 	if len(ciLogs) > 0 {
-		fmt.Fprintf(&b, "## GitHub CI Logs\n\n")
+		fmt.Fprintf(&b, "## CI Logs\n\n")
 		checkNames := make([]string, 0, len(ciLogs))
 		for name := range ciLogs {
 			checkNames = append(checkNames, name)
@@ -418,7 +418,7 @@ Look at existing files in changelog.d/ for examples of the expected format.
 
 	fmt.Fprintf(&b, `## Instructions
 
-1. Analyze the failing GitHub CI checks listed above
+1. Analyze the failing remote CI checks listed above
 2. Fix the root cause for each failing check
 3. Do NOT modify build, lint, or test code — those all pass locally
 4. Commit fixes with message: "fix: resolve CI failures for %s"

@@ -695,15 +695,17 @@ func (p *Params) mergePR(ctx context.Context, prNumber int, dir string) error {
 // MergePRWithProvider merges a PR by number using the VCS provider. It retries
 // with polling if the initial merge attempt fails (e.g. checks still running).
 func MergePRWithProvider(ctx context.Context, prov vcs.Provider, prNumber int, dir string) error {
+	// Establish timeout for all merge attempts upfront so the initial attempt
+	// and retry loop both respect the same deadline.
+	mergeCtx, cancel := context.WithTimeout(ctx, defaultMergeTimeout)
+	defer cancel()
+
 	// Try immediate merge first.
-	if err := prov.MergePR(ctx, dir, prNumber, "squash"); err == nil {
+	if err := prov.MergePR(mergeCtx, dir, prNumber, "squash"); err == nil {
 		return nil
 	}
 
 	// Poll until merge succeeds or timeout.
-	mergeCtx, cancel := context.WithTimeout(ctx, defaultMergeTimeout)
-	defer cancel()
-
 	ticker := time.NewTicker(defaultMergePollInterval)
 	defer ticker.Stop()
 
@@ -712,11 +714,11 @@ func MergePRWithProvider(ctx context.Context, prov vcs.Provider, prNumber int, d
 		case <-mergeCtx.Done():
 			return fmt.Errorf("timed out waiting to merge PR #%d", prNumber)
 		case <-ticker.C:
-			if err := prov.MergePR(ctx, dir, prNumber, "squash"); err == nil {
+			if err := prov.MergePR(mergeCtx, dir, prNumber, "squash"); err == nil {
 				return nil
 			}
 			// Check if PR was already merged.
-			if status, err := prov.CheckStatusLight(ctx, dir, prNumber); err == nil && status.IsMerged() {
+			if status, err := prov.CheckStatusLight(mergeCtx, dir, prNumber); err == nil && status.IsMerged() {
 				return nil
 			}
 		}

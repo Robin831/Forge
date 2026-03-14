@@ -949,5 +949,5 @@ func (g *GiteaProvider) FetchPRChecks(ctx context.Context, worktreePath string, 
 // Gitea does not expose a public API for retrieving raw job logs, so this
 // method returns an empty map without error (graceful no-op).
 func (g *GiteaProvider) FetchCILogs(_ context.Context, _ string, _ []CICheck) (map[string]string, error) {
-	return nil, nil
+	return map[string]string{}, nil
 }

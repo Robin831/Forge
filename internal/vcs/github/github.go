@@ -457,7 +457,7 @@ func (p *Provider) FetchPRChecks(ctx context.Context, worktreePath string, prNum
 	cmd.Dir = worktreePath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 
 	raw := string(out)
