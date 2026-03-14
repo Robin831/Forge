@@ -714,6 +714,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				MaxAttempts:  d.cfg.Load().Settings.MaxReviewAttempts,
 				ExtraFlags:   d.cfg.Load().Settings.ClaudeFlags,
 				Providers:    d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers)),
+				VCS:          d.vcsProvider,
 			})
 			status := state.WorkerDone
 			if res.Error != nil {

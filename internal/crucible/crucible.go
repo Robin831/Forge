@@ -200,7 +200,6 @@ func Run(ctx context.Context, p Params) *Result {
 					Branch:          parentOutcome.Branch,
 					Base:            branch,
 					AnvilName:       p.AnvilName,
-	
 					BeadTitle:       p.ParentBead.Title,
 					BeadDescription: p.ParentBead.Description,
 					BeadType:        p.ParentBead.IssueType,
