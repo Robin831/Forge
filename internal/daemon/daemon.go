@@ -701,6 +701,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				DetectOptions:   cifixDetectOpts,
 				GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 				Providers:       d.filterCopilotIfLimited(provider.FromConfig(d.config().Settings.Providers)),
+				VCS:             d.vcsProvider,
 			})
 			status := state.WorkerDone
 			if res.Error != nil {

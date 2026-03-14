@@ -13,7 +13,6 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/vcs"
-	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
@@ -675,31 +674,38 @@ func (p *Params) createPR(ctx context.Context, params vcs.CreateParams) (*vcs.PR
 	if p.VCS != nil {
 		return p.VCS.CreatePR(ctx, params)
 	}
-	// Fallback: create a default GitHub provider using p.DB.
-	return github.New(p.DB).CreatePR(ctx, params)
+	return nil, fmt.Errorf("no VCS provider set on crucible Params")
 }
 
-// mergePR merges a PR using gh pr merge --squash, polling until the merge succeeds
+// mergePR merges a PR via the VCS provider, polling until the merge succeeds
 // or the context is cancelled.
 func (p *Params) mergePR(ctx context.Context, prNumber int, dir string) error {
 	if p.PRMerger != nil {
 		return p.PRMerger(ctx, prNumber, dir)
 	}
-	return MergePR(ctx, prNumber, dir)
+
+	prov := p.VCS
+	if prov == nil {
+		return fmt.Errorf("no VCS provider available for merge")
+	}
+
+	return MergePRWithProvider(ctx, prov, prNumber, dir)
 }
 
-// MergePR merges a PR by number using gh pr merge --squash. It retries with
-// polling if the initial merge attempt fails (e.g. checks still running).
-func MergePR(ctx context.Context, prNumber int, dir string) error {
+// MergePRWithProvider merges a PR by number using the VCS provider. It retries
+// with polling if the initial merge attempt fails (e.g. checks still running).
+func MergePRWithProvider(ctx context.Context, prov vcs.Provider, prNumber int, dir string) error {
+	// Establish timeout for all merge attempts upfront so the initial attempt
+	// and retry loop both respect the same deadline.
+	mergeCtx, cancel := context.WithTimeout(ctx, defaultMergeTimeout)
+	defer cancel()
+
 	// Try immediate merge first.
-	if err := attemptMerge(ctx, prNumber, dir); err == nil {
+	if err := prov.MergePR(mergeCtx, dir, prNumber, "squash"); err == nil {
 		return nil
 	}
 
 	// Poll until merge succeeds or timeout.
-	mergeCtx, cancel := context.WithTimeout(ctx, defaultMergeTimeout)
-	defer cancel()
-
 	ticker := time.NewTicker(defaultMergePollInterval)
 	defer ticker.Stop()
 
@@ -708,47 +714,15 @@ func MergePR(ctx context.Context, prNumber int, dir string) error {
 		case <-mergeCtx.Done():
 			return fmt.Errorf("timed out waiting to merge PR #%d", prNumber)
 		case <-ticker.C:
-			if err := attemptMerge(ctx, prNumber, dir); err == nil {
+			if err := prov.MergePR(mergeCtx, dir, prNumber, "squash"); err == nil {
 				return nil
 			}
 			// Check if PR was already merged.
-			if merged, _ := isPRMerged(ctx, prNumber, dir); merged {
+			if status, err := prov.CheckStatusLight(mergeCtx, dir, prNumber); err == nil && status.IsMerged() {
 				return nil
 			}
 		}
 	}
-}
-
-// attemptMerge tries to merge a PR once.
-func attemptMerge(ctx context.Context, prNumber int, dir string) error {
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "gh", "pr", "merge",
-		fmt.Sprintf("%d", prNumber), "--squash", "--delete-branch"))
-	cmd.Dir = dir
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("gh pr merge %d: %w: %s", prNumber, err, out)
-	}
-	return nil
-}
-
-// isPRMerged checks if a PR has been merged.
-func isPRMerged(ctx context.Context, prNumber int, dir string) (bool, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "gh", "pr", "view",
-		fmt.Sprintf("%d", prNumber), "--json", "state", "--jq", ".state"))
-	cmd.Dir = dir
-
-	out, err := cmd.Output()
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(string(out)) == "MERGED", nil
 }
 
 // claimBead marks a bead as in_progress.

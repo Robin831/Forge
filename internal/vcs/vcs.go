@@ -16,8 +16,8 @@ import (
 
 // buildPRBody creates a structured PR/MR description from bead metadata.
 // This is the canonical body builder for all vcs providers; it mirrors the
-// logic in ghpr.buildDefaultBody so that GitHub and GitLab PR bodies stay
-// consistent.
+// logic previously in the old ghpr package, so that GitHub and GitLab PR
+// bodies stay consistent.
 func buildPRBody(p CreateParams) string {
 	var b strings.Builder
 
@@ -270,6 +270,23 @@ type OpenPR struct {
 	Body   string
 }
 
+// CICheck represents a CI check result from the platform.
+type CICheck struct {
+	Name   string // check name
+	Status string // platform-normalized: "pass", "fail", "pending"
+	Link   string // platform-specific URL to the check run details
+}
+
+// ReviewComment represents a review comment on a PR/MR.
+type ReviewComment struct {
+	Author   string // reviewer login
+	Body     string // comment text
+	Path     string // file path (empty for PR-level comments)
+	Line     int    // line number (0 for PR-level comments)
+	State    string // "CHANGES_REQUESTED", etc. (empty for thread comments)
+	ThreadID string // platform-specific thread identifier
+}
+
 // MergeabilityInputs holds the computed boolean inputs for UpdatePRMergeability,
 // extracted from a PRStatus.
 type MergeabilityInputs struct {
@@ -289,7 +306,7 @@ func MergeabilityFromStatus(s *PRStatus) MergeabilityInputs {
 
 // Provider is the interface that VCS platform implementations must satisfy.
 // Each method corresponds to an operation Forge performs against the hosting
-// platform (currently all done via the gh CLI in the ghpr package).
+// platform (GitHub via gh CLI, GitLab via glab CLI, etc.).
 type Provider interface {
 	// CreatePR creates a pull/merge request and returns its metadata.
 	CreatePR(ctx context.Context, params CreateParams) (*PR, error)
@@ -323,6 +340,24 @@ type Provider interface {
 	// bot reviewers. Platforms that don't distinguish reviewer types may
 	// return the standard review request list.
 	FetchPendingReviewRequests(ctx context.Context, worktreePath string, prNumber int) ([]ReviewRequest, error)
+
+	// FetchPRChecks returns the CI check results for a PR. The raw string
+	// is a human-readable summary suitable for inclusion in prompts; the
+	// CICheck slice contains only the failing checks parsed from the output.
+	FetchPRChecks(ctx context.Context, worktreePath string, prNumber int) (raw string, failing []CICheck, err error)
+
+	// FetchCILogs retrieves CI log output for the given failing checks.
+	// Returns a map of check name → log text. Checks without available
+	// logs are omitted from the result.
+	FetchCILogs(ctx context.Context, worktreePath string, checks []CICheck) (map[string]string, error)
+
+	// FetchReviewComments returns review comments and unresolved threads
+	// on a PR, including PR-level review comments and inline thread comments.
+	FetchReviewComments(ctx context.Context, worktreePath string, prNumber int) ([]ReviewComment, error)
+
+	// ResolveThread marks a review thread as resolved. Platforms without
+	// thread resolution support should return nil.
+	ResolveThread(ctx context.Context, worktreePath string, threadID string) error
 
 	// Platform returns which platform this provider implements.
 	Platform() Platform

@@ -562,8 +562,14 @@ type giteaRequestedReviewers struct {
 }
 
 type giteaReviewComment struct {
-	ID       int   `json:"id"`
-	Resolved *bool `json:"resolved"`
+	ID       int    `json:"id"`
+	Body     string `json:"body"`
+	Path     string `json:"path"`
+	Line     int    `json:"line"`
+	Resolved *bool  `json:"resolved"`
+	User     struct {
+		Login string `json:"login"`
+	} `json:"user"`
 }
 
 type giteaCombinedStatus struct {
@@ -828,4 +834,120 @@ func mapGiteaStatusConclusion(status string) string {
 	default:
 		return strings.ToUpper(status)
 	}
+}
+
+// FetchReviewComments returns review comments (changes-requested feedback) on a
+// Gitea/Forgejo pull request. It iterates all reviews and collects inline
+// comments from reviews with a CHANGES_REQUESTED state.
+func (g *GiteaProvider) FetchReviewComments(ctx context.Context, worktreePath string, prNumber int) ([]ReviewComment, error) {
+	baseURL, owner, repo, err := g.resolveRepo(ctx, worktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving Gitea repo: %w", err)
+	}
+	ri := giteaRepoInfo{baseURL: baseURL, owner: owner, repo: repo}
+
+	// List all reviews to get IDs and top-level state/body.
+	page := 1
+	var allReviews []giteaReview
+	for {
+		endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/reviews?limit=%d&page=%d",
+			ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber, giteaPageLimit, page)
+		var batch []giteaReview
+		if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &batch); err != nil {
+			return nil, fmt.Errorf("gitea fetch reviews failed: %w", err)
+		}
+		allReviews = append(allReviews, batch...)
+		if len(batch) < giteaPageLimit {
+			break
+		}
+		page++
+	}
+
+	var out []ReviewComment
+	for _, r := range allReviews {
+		state := mapGiteaReviewState(r.State)
+		if state != "CHANGES_REQUESTED" {
+			continue
+		}
+		// Include the top-level review body as a PR-level comment.
+		if r.Body != "" {
+			out = append(out, ReviewComment{
+				Author:   r.User.Login,
+				Body:     r.Body,
+				State:    state,
+				ThreadID: fmt.Sprintf("%d", r.ID),
+			})
+		}
+		// Fetch inline comments for this review.
+		cPage := 1
+		for {
+			endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/reviews/%d/comments?limit=%d&page=%d",
+				ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber, r.ID, giteaPageLimit, cPage)
+			var comments []giteaReviewComment
+			if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &comments); err != nil {
+				log.Printf("[gitea] Warning: could not fetch inline comments for review %d: %v", r.ID, err)
+				break
+			}
+			for _, c := range comments {
+				out = append(out, ReviewComment{
+					Author:   c.User.Login,
+					Body:     c.Body,
+					Path:     c.Path,
+					Line:     c.Line,
+					ThreadID: fmt.Sprintf("%d", c.ID),
+				})
+			}
+			if len(comments) < giteaPageLimit {
+				break
+			}
+			cPage++
+		}
+	}
+	return out, nil
+}
+
+// ResolveThread marks a review thread as resolved. Gitea does not expose a
+// public API for resolving individual review threads, so this is a no-op.
+func (g *GiteaProvider) ResolveThread(_ context.Context, _ string, _ string) error {
+	return nil
+}
+
+// FetchPRChecks returns CI check results for a Gitea/Forgejo pull request by
+// inspecting the commit status of the PR head SHA.
+func (g *GiteaProvider) FetchPRChecks(ctx context.Context, worktreePath string, prNumber int) (string, []CICheck, error) {
+	baseURL, owner, repo, err := g.resolveRepo(ctx, worktreePath)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolving Gitea repo: %w", err)
+	}
+
+	ri := giteaRepoInfo{baseURL: baseURL, owner: owner, repo: repo}
+	_, headSHA, err := g.fetchPRView(ctx, ri, prNumber)
+	if err != nil {
+		return "", nil, err
+	}
+
+	checks, err := g.fetchCIStatus(ctx, ri, headSHA)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var b strings.Builder
+	var failing []CICheck
+	for _, c := range checks {
+		fmt.Fprintf(&b, "%s\t%s\n", c.Name, c.Conclusion)
+		if c.Conclusion == "FAILURE" {
+			failing = append(failing, CICheck{
+				Name:   c.Name,
+				Status: "fail",
+			})
+		}
+	}
+	return b.String(), failing, nil
+}
+
+// FetchCILogs fetches CI job logs for failing checks from Gitea/Forgejo.
+// Gitea does not expose a public API for retrieving raw job logs, so this
+// method returns an empty map without error (graceful no-op).
+func (g *GiteaProvider) FetchCILogs(_ context.Context, _ string, _ []CICheck) (map[string]string, error) {
+	return map[string]string{}, nil
 }

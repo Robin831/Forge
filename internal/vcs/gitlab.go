@@ -389,6 +389,179 @@ func (g *GitLabProvider) FetchPendingReviewRequests(ctx context.Context, worktre
 	return requests, nil
 }
 
+// FetchPRChecks returns CI check results for a merge request by inspecting
+// the head pipeline jobs.
+func (g *GitLabProvider) FetchPRChecks(ctx context.Context, worktreePath string, prNumber int) (string, []CICheck, error) {
+	status, err := g.fetchMRView(ctx, worktreePath, prNumber)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var b strings.Builder
+	var failing []CICheck
+	for _, check := range status.StatusCheckRollup {
+		fmt.Fprintf(&b, "%s\t%s\n", check.Name, check.Conclusion)
+		if check.Conclusion == "FAILURE" {
+			failing = append(failing, CICheck{
+				Name:   check.Name,
+				Status: "fail",
+			})
+		}
+	}
+	return b.String(), failing, nil
+}
+
+// FetchCILogs fetches CI job logs from GitLab pipelines for failing checks.
+func (g *GitLabProvider) FetchCILogs(ctx context.Context, worktreePath string, checks []CICheck) (map[string]string, error) {
+	if len(checks) == 0 {
+		return nil, nil
+	}
+
+	owner, repo, err := g.GetRepoOwnerAndName(ctx, worktreePath)
+	if err != nil {
+		return nil, err
+	}
+
+	projectPath := owner + "/" + repo
+	result := make(map[string]string)
+
+	// Fetch the failed jobs list once — the list doesn't depend on any individual check.
+	endpoint := fmt.Sprintf("projects/%s/jobs?scope[]=failed&per_page=20", urlEncode(projectPath))
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "glab", "api", endpoint))
+	cmd.Dir = worktreePath
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		log.Printf("[gitlab] Warning: failed to list failed jobs: %v", err)
+		return result, nil
+	}
+
+	var jobs []struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &jobs); err != nil {
+		log.Printf("[gitlab] Warning: failed to parse jobs response: %v", err)
+		return result, nil
+	}
+
+	// Index jobs by name for O(1) lookup per check.
+	jobsByName := make(map[string]int, len(jobs))
+	for _, job := range jobs {
+		jobsByName[job.Name] = job.ID
+	}
+
+	for _, check := range checks {
+		jobID, ok := jobsByName[check.Name]
+		if !ok {
+			continue
+		}
+
+		traceEndpoint := fmt.Sprintf("projects/%s/jobs/%d/trace", urlEncode(projectPath), jobID)
+		traceCmd := executil.HideWindow(exec.CommandContext(ctx, "glab", "api", traceEndpoint))
+		traceCmd.Dir = worktreePath
+
+		var traceOut, traceErr bytes.Buffer
+		traceCmd.Stdout = &traceOut
+		traceCmd.Stderr = &traceErr
+
+		if err := traceCmd.Run(); err != nil {
+			log.Printf("[gitlab] Warning: failed to fetch job %d trace: %v", jobID, err)
+			continue
+		}
+		result[check.Name] = traceOut.String()
+	}
+
+	return result, nil
+}
+
+// FetchReviewComments returns unresolved discussion threads and MR-level notes.
+func (g *GitLabProvider) FetchReviewComments(ctx context.Context, worktreePath string, prNumber int) ([]ReviewComment, error) {
+	owner, repo, err := g.GetRepoOwnerAndName(ctx, worktreePath)
+	if err != nil {
+		return nil, err
+	}
+
+	projectPath := owner + "/" + repo
+	endpoint := fmt.Sprintf("projects/%s/merge_requests/%d/discussions", urlEncode(projectPath), prNumber)
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "glab", "api", endpoint, "--per-page", "100"))
+	cmd.Dir = worktreePath
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("glab api discussions failed: %w\nstderr: %s", err, stderr.String())
+	}
+
+	var discussions []struct {
+		ID    string     `json:"id"`
+		Notes []glabNote `json:"notes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &discussions); err != nil {
+		return nil, fmt.Errorf("parsing discussions: %w", err)
+	}
+
+	var comments []ReviewComment
+	for _, d := range discussions {
+		for _, note := range d.Notes {
+			if note.System {
+				continue
+			}
+			if note.Resolvable && note.Resolved {
+				continue
+			}
+			if note.Body == "" {
+				continue
+			}
+			comments = append(comments, ReviewComment{
+				Author:   note.Author.Username,
+				Body:     note.Body,
+				ThreadID: fmt.Sprintf("%d:%s", prNumber, d.ID),
+			})
+			break // one comment per discussion
+		}
+	}
+	return comments, nil
+}
+
+// ResolveThread resolves a discussion thread on a GitLab MR.
+// The threadID is expected in the format "mrIID:discussionID" as produced by
+// FetchReviewComments.
+func (g *GitLabProvider) ResolveThread(ctx context.Context, worktreePath string, threadID string) error {
+	mrIID, discussionID, ok := strings.Cut(threadID, ":")
+	if !ok {
+		return fmt.Errorf("invalid GitLab thread ID format %q (expected mrIID:discussionID)", threadID)
+	}
+
+	owner, repo, err := g.GetRepoOwnerAndName(ctx, worktreePath)
+	if err != nil {
+		return fmt.Errorf("resolving thread: %w", err)
+	}
+
+	projectPath := owner + "/" + repo
+	endpoint := fmt.Sprintf("projects/%s/merge_requests/%s/discussions/%s",
+		urlEncode(projectPath), mrIID, discussionID)
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "glab", "api", endpoint,
+		"--method", "PUT", "--field", "resolved=true"))
+	cmd.Dir = worktreePath
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("glab api resolve discussion failed: %w\nstderr: %s", err, stderr.String())
+	}
+
+	return nil
+}
+
 // fetchMRView retrieves merge request details via glab mr view.
 func (g *GitLabProvider) fetchMRView(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "glab", "mr", "view",
