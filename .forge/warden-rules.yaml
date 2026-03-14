@@ -503,3 +503,21 @@ rules:
       check: Verify that the service ExecStart command references the configuration path established by ConfigurationDirectory (e.g. --config /etc/<name>/config.yaml) or sets WorkingDirectory appropriately, so the process actually reads config from the expected location rather than falling back to CWD or home directory defaults
       source: copilot:PR#235
       added: "2026-03-13"
+    - id: bool-config-null-semantics
+      category: other
+      pattern: Configuration examples or docs showing a boolean field set to true when the code only checks for explicit false/disable
+      check: Verify that config examples and documentation accurately reflect the actual semantics of boolean fields — if true behaves the same as unset/null (e.g., feature auto-detects rather than being forced on), use null or omit the field instead of true, and update comments to describe the real behavior
+      source: copilot:PR#238
+      added: "2026-03-14"
+    - id: doc-config-gating-accuracy
+      category: other
+      pattern: Documentation describing config-driven feature behavior without mentioning required enable flags or gating conditions
+      check: 'Verify that docs for config-based features accurately describe any prerequisite flags (e.g. `enabled: true`) that gate whether those config values are actually read and used by the implementation'
+      source: copilot:PR#238
+      added: "2026-03-14"
+    - id: docs-webhook-schema-distinction
+      category: other
+      pattern: Documentation describing webhook or notification endpoints that send different payload schemas depending on configuration path or target
+      check: Verify that documentation clearly distinguishes between different payload schemas sent to different webhook targets, specifying which config path or flag produces which JSON schema so integrators know exactly what to expect
+      source: copilot:PR#238
+      added: "2026-03-14"
