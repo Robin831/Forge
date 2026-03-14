@@ -278,6 +278,12 @@ Follow it as a guide, but use your judgement if you discover the plan needs adju
 {{.ClaudeMD}}
 {{- end}}
 
+## Orchestrator Overrides (non-negotiable)
+
+These override any conflicting instructions above:
+- **Do NOT close the bead** — the orchestrator closes it after the PR merges
+- **Do NOT create a PR** — the orchestrator handles PR creation
+
 {{- if .ReadmeMD}}
 
 ## Project Overview (README.md)
