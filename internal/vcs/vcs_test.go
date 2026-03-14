@@ -92,6 +92,53 @@ func TestPRStatus_HasPendingReviewRequests(t *testing.T) {
 	}).HasPendingReviewRequests())
 }
 
+func TestForPlatform(t *testing.T) {
+	t.Run("gitlab returns GitLabProvider", func(t *testing.T) {
+		p, err := ForPlatform("gitlab")
+		require.NoError(t, err)
+		assert.Equal(t, GitLab, p.Platform())
+	})
+
+	// GitHub happy-path ("" and "github") is tested in forplatform_test.go
+	// (package vcs_test) which can import internal/vcs/github without a cycle.
+
+	t.Run("invalid platform returns error", func(t *testing.T) {
+		_, err := ForPlatform("svn")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown VCS platform")
+	})
+
+	t.Run("case insensitive", func(t *testing.T) {
+		p, err := ForPlatform("GitLab")
+		require.NoError(t, err)
+		assert.Equal(t, GitLab, p.Platform())
+	})
+
+	t.Run("gitea returns GiteaProvider", func(t *testing.T) {
+		p, err := ForPlatform("gitea")
+		require.NoError(t, err)
+		assert.Equal(t, Gitea, p.Platform())
+	})
+}
+
+func TestRedactURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"HTTPS no creds", "https://gitea.example.com/owner/repo", "https://gitea.example.com/owner/repo"},
+		{"HTTPS with creds", "https://user:pass@gitea.example.com/owner/repo", "https://gitea.example.com/owner/repo"},
+		{"HTTP with creds", "http://token:x@localhost:3000/owner/repo", "http://localhost:3000/owner/repo"},
+		{"SSH unchanged", "git@gitea.example.com:owner/repo.git", "git@gitea.example.com:owner/repo.git"},
+		{"plain path unchanged", "/some/local/path", "/some/local/path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, redactURL(tt.input))
+		})
+	}
+}
 
 func TestMergeabilityFromStatus(t *testing.T) {
 	s := &PRStatus{

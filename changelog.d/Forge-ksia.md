@@ -1,0 +1,2 @@
+category: Added
+- **Gitea/Forgejo VCS provider** - Added VCS provider implementation for Gitea and Forgejo instances using the REST API v1. Configure with `platform: gitea` in anvil config. Authentication via `GITEA_TOKEN` or `FORGEJO_TOKEN` environment variable. Set `GITEA_URL` or `FORGEJO_URL` to override the API base URL (useful when git remotes use SSH but the API is served over HTTP). (Forge-ksia)

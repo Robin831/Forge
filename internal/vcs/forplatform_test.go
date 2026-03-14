@@ -52,9 +52,15 @@ func TestForPlatform(t *testing.T) {
 		assert.Contains(t, err.Error(), "GitHub VCS provider not available")
 	})
 
+	t.Run("gitea returns GiteaProvider", func(t *testing.T) {
+		p, err := vcs.ForPlatform("gitea")
+		require.NoError(t, err)
+		assert.Equal(t, vcs.Gitea, p.Platform())
+	})
+
 	// These platforms are recognised but not yet implemented; the default
 	// branch in ForPlatform should return a stable "not yet implemented" error.
-	for _, platform := range []string{"gitea", "bitbucket", "azuredevops"} {
+	for _, platform := range []string{"bitbucket", "azuredevops"} {
 		t.Run("not yet implemented: "+platform, func(t *testing.T) {
 			_, err := vcs.ForPlatform(platform)
 			require.Error(t, err)
