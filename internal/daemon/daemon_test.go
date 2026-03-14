@@ -2046,7 +2046,7 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 
 		// Ensure bd is NOT on the PATH for this subtest (use isolated PATH).
 		oldPath := os.Getenv("PATH")
-		os.Setenv("PATH", failDir+string(os.PathListSeparator)+oldPath)
+		os.Setenv("PATH", failDir) // isolated: original PATH excluded so bd cannot be found
 		defer os.Setenv("PATH", oldPath)
 
 		d := &Daemon{

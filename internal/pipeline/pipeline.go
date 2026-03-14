@@ -563,6 +563,15 @@ func Run(ctx context.Context, p Params) *Outcome {
 			log.Printf("[pipeline:%s] Smith says no changes needed: %s", workerID, reason)
 			outcome.NoChangesNeeded = true
 			outcome.NoChangesReason = reason
+			_ = p.DB.LogEvent(state.EventSmithDone,
+				fmt.Sprintf("Completed in %.1fs ($%.4f) \u2014 NO_CHANGES_NEEDED: %s", smithResult.Duration.Seconds(), smithResult.CostUSD, reason),
+				p.Bead.ID, p.AnvilName)
+			if s := smithResult.GeminiStats; s != nil {
+				_ = p.DB.LogEvent(state.EventSmithStats,
+					fmt.Sprintf("tokens_in=%d tokens_out=%d total=%d cached=%d input=%d tool_calls=%d duration_ms=%d",
+						s.InputTokens, s.OutputTokens, s.TotalTokens, s.Cached, s.Input, s.ToolCalls, s.DurationMs),
+					p.Bead.ID, p.AnvilName)
+			}
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
 			outcome.Duration = time.Since(start)
 			return outcome

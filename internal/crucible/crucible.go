@@ -343,6 +343,20 @@ func Run(ctx context.Context, p Params) *Result {
 			continue
 		}
 
+		// NoChangesNeeded is a successful terminal outcome: the child determined
+		// no code changes were required.  Close it and continue rather than
+		// misclassifying the run as a failure.
+		if childResult.NoChangesNeeded {
+			log.Info("crucible child needs no changes, closing and continuing", "child", child.ID)
+			p.emitEvent(state.EventCrucibleChildMerged,
+				fmt.Sprintf("Crucible %s: child %s needs no changes -- %s", p.ParentBead.ID, child.ID, childResult.NoChangesReason),
+				child.ID)
+			if err := p.closeBead(ctx, child.ID, anvilPath); err != nil {
+				log.Warn("failed to close no-changes-needed child bead", "child", child.ID, "error", err)
+			}
+			continue
+		}
+
 		if childResult.Error != nil || !childResult.Success {
 			reason := "pipeline failed"
 			if childResult.Error != nil {
