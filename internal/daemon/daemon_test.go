@@ -3,12 +3,14 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/worktree"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1825,4 +1828,143 @@ func TestHandleLifecycleAction_CloseBead_Error(t *testing.T) {
 	st := lm.GetState("test-anvil", 99)
 	require.NotNil(t, st)
 	assert.True(t, st.Merged, "lifecycle state should show PR as merged even when bd close fails")
+}
+
+// mockVCSProvider implements vcs.Provider for testing.
+type mockVCSProvider struct {
+	mergeCalls atomic.Int32
+	mergeErr   error
+}
+
+func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error {
+	m.mergeCalls.Add(1)
+	return m.mergeErr
+}
+func (m *mockVCSProvider) CreatePR(_ context.Context, _ vcs.CreateParams) (*vcs.PR, error) {
+	return nil, nil
+}
+func (m *mockVCSProvider) CheckStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
+	return nil, nil
+}
+func (m *mockVCSProvider) CheckStatusLight(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
+	return nil, nil
+}
+func (m *mockVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.OpenPR, error) {
+	return nil, nil
+}
+func (m *mockVCSProvider) GetRepoOwnerAndName(_ context.Context, _ string) (string, string, error) {
+	return "", "", nil
+}
+func (m *mockVCSProvider) FetchUnresolvedThreadCount(_ context.Context, _ string, _ int) (int, error) {
+	return 0, nil
+}
+func (m *mockVCSProvider) FetchPendingReviewRequests(_ context.Context, _ string, _ int) ([]vcs.ReviewRequest, error) {
+	return nil, nil
+}
+func (m *mockVCSProvider) FetchPRChecks(_ context.Context, _ string, _ int) (string, []vcs.CICheck, error) {
+	return "", nil, nil
+}
+func (m *mockVCSProvider) FetchCILogs(_ context.Context, _ string, _ []vcs.CICheck) (map[string]string, error) {
+	return nil, nil
+}
+func (m *mockVCSProvider) FetchReviewComments(_ context.Context, _ string, _ int) ([]vcs.ReviewComment, error) {
+	return nil, nil
+}
+func (m *mockVCSProvider) ResolveThread(_ context.Context, _ string, _ string) error {
+	return nil
+}
+func (m *mockVCSProvider) Platform() vcs.Platform { return vcs.GitHub }
+
+func TestHandleAutoMerge(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-auto-merge-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	mockVCS := &mockVCSProvider{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	d := &Daemon{
+		db:          db,
+		logger:      logger,
+		vcsProvider: mockVCS,
+	}
+
+	t.Run("skips external PRs", func(t *testing.T) {
+		mockVCS.mergeCalls.Store(0)
+		d.cfg.Store(&config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"test-anvil": {Path: tmpDir, AutoMerge: true},
+			},
+		})
+		pr := state.PR{Number: 1, BeadID: "ext-123", Anvil: "test-anvil"}
+		d.handleAutoMerge(context.Background(), "test-anvil", pr)
+		// handleAutoMerge returns synchronously for external PRs.
+		assert.Equal(t, int32(0), mockVCS.mergeCalls.Load(), "should not merge external PRs")
+	})
+
+	t.Run("skips when auto_merge disabled", func(t *testing.T) {
+		mockVCS.mergeCalls.Store(0)
+		d.cfg.Store(&config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"test-anvil": {Path: tmpDir, AutoMerge: false},
+			},
+		})
+		pr := state.PR{Number: 2, BeadID: "BEAD-1", Anvil: "test-anvil"}
+		d.handleAutoMerge(context.Background(), "test-anvil", pr)
+		// handleAutoMerge returns synchronously when auto_merge is off.
+		assert.Equal(t, int32(0), mockVCS.mergeCalls.Load(), "should not merge when auto_merge is false")
+	})
+
+	t.Run("merges when auto_merge enabled", func(t *testing.T) {
+		mockVCS.mergeCalls.Store(0)
+		d.cfg.Store(&config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"test-anvil": {Path: tmpDir, AutoMerge: true},
+			},
+			Settings: config.SettingsConfig{MergeStrategy: "squash"},
+		})
+		pr := state.PR{Number: 3, BeadID: "BEAD-2", Anvil: "test-anvil"}
+		d.handleAutoMerge(context.Background(), "test-anvil", pr)
+		// doAutoMerge runs in a goroutine — wait briefly for it.
+		assert.Eventually(t, func() bool {
+			return mockVCS.mergeCalls.Load() == 1
+		}, 5*time.Second, 10*time.Millisecond, "should call MergePR once")
+	})
+
+	t.Run("handles merge failure gracefully", func(t *testing.T) {
+		mockVCS.mergeCalls.Store(0)
+		mockVCS.mergeErr = fmt.Errorf("merge conflict")
+		defer func() { mockVCS.mergeErr = nil }()
+
+		d.cfg.Store(&config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"test-anvil": {Path: tmpDir, AutoMerge: true},
+			},
+			Settings: config.SettingsConfig{MergeStrategy: "rebase"},
+		})
+		pr := state.PR{Number: 4, BeadID: "BEAD-3", Anvil: "test-anvil"}
+		d.handleAutoMerge(context.Background(), "test-anvil", pr)
+		// Should still call MergePR and handle the error without panicking.
+		assert.Eventually(t, func() bool {
+			return mockVCS.mergeCalls.Load() == 1
+		}, 5*time.Second, 10*time.Millisecond, "should attempt merge even if it fails")
+	})
+
+	t.Run("defaults strategy to squash", func(t *testing.T) {
+		mockVCS.mergeCalls.Store(0)
+		d.cfg.Store(&config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"test-anvil": {Path: tmpDir, AutoMerge: true},
+			},
+			Settings: config.SettingsConfig{MergeStrategy: ""}, // empty
+		})
+		pr := state.PR{Number: 5, BeadID: "BEAD-4", Anvil: "test-anvil"}
+		d.doAutoMerge(context.Background(), "test-anvil", tmpDir, pr)
+		assert.Equal(t, int32(1), mockVCS.mergeCalls.Load(), "should call MergePR")
+	})
 }

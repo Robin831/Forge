@@ -886,9 +886,10 @@ func (d *Daemon) handleBeadCloseOnMerge(ctx context.Context, event bellows.PREve
 	}
 }
 
-// handleAutoMerge is called by bellows when a PR transitions to the
-// ready-to-merge state. If the anvil has auto_merge enabled and the PR is not
-// external, it merges the PR using the configured merge strategy.
+// handleAutoMerge is the bellows callback for the ready-to-merge transition.
+// It launches the actual merge in a goroutine so bellows' poll loop is not
+// blocked by the VCS call. This avoids a race where bellows event handlers
+// would stall waiting for the merge RPC to complete.
 func (d *Daemon) handleAutoMerge(ctx context.Context, anvil string, pr state.PR) {
 	// Never auto-merge external PRs.
 	if pr.IsExternal() {
@@ -900,30 +901,43 @@ func (d *Daemon) handleAutoMerge(ctx context.Context, anvil string, pr state.PR)
 		return
 	}
 
+	// Run asynchronously so the bellows poll loop is not blocked.
+	go d.doAutoMerge(ctx, anvil, anvilCfg.Path, pr)
+}
+
+// doAutoMerge performs the actual VCS merge for a PR that has reached the
+// ready-to-merge state on an anvil with auto_merge enabled.
+func (d *Daemon) doAutoMerge(ctx context.Context, anvil, anvilPath string, pr state.PR) {
 	strategy := d.cfg.Load().Settings.MergeStrategy
 	if strategy == "" {
 		strategy = "squash"
 	}
 
 	d.logger.Info("auto-merging PR", "pr_number", pr.Number, "anvil", anvil, "bead", pr.BeadID, "strategy", strategy)
-	_ = d.db.LogEvent(state.EventPRAutoMerged,
+	if err := d.db.LogEvent(state.EventPRAutoMerged,
 		fmt.Sprintf("PR #%d auto-merge started (strategy: %s)", pr.Number, strategy),
-		pr.BeadID, anvil)
+		pr.BeadID, anvil); err != nil {
+		d.logger.Warn("failed to log auto-merge start event", "error", err)
+	}
 
 	mergeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	if err := d.vcsProvider.MergePR(mergeCtx, anvilCfg.Path, pr.Number, strategy); err != nil {
-		_ = d.db.LogEvent(state.EventPRMergeFailed,
+	if err := d.vcsProvider.MergePR(mergeCtx, anvilPath, pr.Number, strategy); err != nil {
+		if logErr := d.db.LogEvent(state.EventPRMergeFailed,
 			fmt.Sprintf("PR #%d auto-merge failed: %v", pr.Number, err),
-			pr.BeadID, anvil)
+			pr.BeadID, anvil); logErr != nil {
+			d.logger.Warn("failed to log auto-merge failure event", "error", logErr)
+		}
 		d.logger.Error("auto-merge failed", "pr_number", pr.Number, "anvil", anvil, "error", err)
 		return
 	}
 
-	_ = d.db.LogEvent(state.EventPRAutoMerged,
+	if err := d.db.LogEvent(state.EventPRAutoMerged,
 		fmt.Sprintf("PR #%d auto-merged successfully (strategy: %s)", pr.Number, strategy),
-		pr.BeadID, anvil)
+		pr.BeadID, anvil); err != nil {
+		d.logger.Warn("failed to log auto-merge success event", "error", err)
+	}
 	d.logger.Info("PR auto-merged successfully", "pr_number", pr.Number, "anvil", anvil, "bead", pr.BeadID)
 }
 
