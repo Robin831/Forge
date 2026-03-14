@@ -521,3 +521,9 @@ rules:
       check: Verify that documentation clearly distinguishes between different payload schemas sent to different webhook targets, specifying which config path or flag produces which JSON schema so integrators know exactly what to expect
       source: copilot:PR#238
       added: "2026-03-14"
+    - id: grep-pipeline-under-strict-mode
+      category: error-handling
+      pattern: grep piped to awk/cut/sed in a script using set -e or set -euo pipefail
+      check: Verify that grep failures (no match or regex errors) won't cause silent script exit. Prefer a single awk with exact field matching (e.g., $2 == value) that returns zero exit status on no match, and add an explicit error message when the expected value is empty.
+      source: copilot:PR#242
+      added: "2026-03-14"
