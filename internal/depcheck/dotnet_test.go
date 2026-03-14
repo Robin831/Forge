@@ -56,3 +56,20 @@ func TestFindDotnetProjects_Empty(t *testing.T) {
 	files := findDotnetProjects(dir)
 	assert.Empty(t, files)
 }
+
+func TestFindDotnetProjects_SkipsWorktrees(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a .sln inside .worktrees (should be skipped)
+	wt := filepath.Join(dir, ".worktrees", "feature-branch")
+	require.NoError(t, os.MkdirAll(wt, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wt, "App.sln"), []byte(""), 0o644))
+
+	// Create a .csproj inside .worktrees (should be skipped)
+	wtSub := filepath.Join(wt, "src", "App")
+	require.NoError(t, os.MkdirAll(wtSub, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wtSub, "App.csproj"), []byte(""), 0o644))
+
+	files := findDotnetProjects(dir)
+	assert.Empty(t, files, ".worktrees contents should not be returned")
+}

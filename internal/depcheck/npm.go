@@ -21,8 +21,10 @@ import (
 var runNpmOutdatedFn = runNpmOutdated
 
 // scanNpm runs 'npm outdated --json' in directories containing package.json.
-// Skips node_modules, .workers, .worktrees, bin, and obj directories.
-// Deduplicates packages across projects. Returns nil if no package.json found.
+// Skips node_modules, .workers, .worktrees, bin, obj, and .git directories
+// (via findNpmProjects). Deduplicates packages across projects, keeping the
+// most severe update (major > minor > patch) when the same package appears
+// in multiple package.json files. Returns nil if no package.json found.
 func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult {
 	pkgDirs := findNpmProjects(path)
 	if len(pkgDirs) == 0 {
@@ -36,9 +38,12 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 		Checked:   time.Now(),
 	}
 
-	// Track seen packages across all package.json files to avoid duplicates
-	// when the same package appears in multiple projects (e.g. worktree copies).
-	seen := map[string]bool{}
+	// kindRank maps update kind to a numeric severity so we can keep the most
+	// severe update when the same package appears in multiple package.json files.
+	kindRank := map[string]int{"patch": 0, "minor": 1, "major": 2}
+
+	// Track the best (most severe) update seen per package across all projects.
+	best := map[string]ModuleUpdate{}
 
 	for _, dir := range pkgDirs {
 		updates, err := runNpmOutdatedFn(ctx, s.timeout, dir)
@@ -48,20 +53,26 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 		}
 
 		for _, u := range updates {
-			if seen[u.Path] {
-				continue
-			}
-			seen[u.Path] = true
-			switch u.Kind {
-			case "patch":
-				result.Patch = append(result.Patch, u)
-			case "minor":
-				result.Minor = append(result.Minor, u)
-			case "major":
-				result.Major = append(result.Major, u)
+			existing, ok := best[u.Path]
+			if !ok || kindRank[u.Kind] > kindRank[existing.Kind] {
+				best[u.Path] = u
 			}
 		}
 	}
+
+	for _, u := range best {
+		switch u.Kind {
+		case "patch":
+			result.Patch = append(result.Patch, u)
+		case "minor":
+			result.Minor = append(result.Minor, u)
+		case "major":
+			result.Major = append(result.Major, u)
+		}
+	}
+	sortUpdates(result.Patch)
+	sortUpdates(result.Minor)
+	sortUpdates(result.Major)
 
 	return result
 }

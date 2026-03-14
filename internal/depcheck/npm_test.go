@@ -96,3 +96,45 @@ func TestScanNpmCrossProjectDedup(t *testing.T) {
 	assert.Len(t, result.Major, 1)
 	assert.Equal(t, "axios", result.Major[0].Path)
 }
+
+// TestScanNpmCrossProjectDedup_MostSevereWins verifies that when the same
+// package appears across multiple package.json files with different update
+// severities, the most severe kind (major > minor > patch) wins rather than
+// whichever project was scanned first.
+func TestScanNpmCrossProjectDedup_MostSevereWins(t *testing.T) {
+	dir := t.TempDir()
+
+	for _, sub := range []string{"app", "lib"} {
+		subDir := filepath.Join(dir, sub)
+		require.NoError(t, os.MkdirAll(subDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(subDir, "package.json"), []byte("{}"), 0o644))
+	}
+
+	// "app" reports lodash as a patch; "lib" reports lodash as a major.
+	// WalkDir returns dirs in lexicographic order so "app" is scanned first —
+	// with first-wins dedup the patch would win. The fix must pick major.
+	stubUpdates := map[string][]ModuleUpdate{
+		filepath.Join(dir, "app"): {
+			{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"},
+		},
+		filepath.Join(dir, "lib"): {
+			{Path: "lodash", Current: "4.17.20", Latest: "5.0.0", Kind: "major"},
+		},
+	}
+
+	orig := runNpmOutdatedFn
+	t.Cleanup(func() { runNpmOutdatedFn = orig })
+	runNpmOutdatedFn = func(_ context.Context, _ time.Duration, d string) ([]ModuleUpdate, error) {
+		return stubUpdates[d], nil
+	}
+
+	s := &Scanner{timeout: 30 * time.Second}
+	result := s.scanNpm(context.Background(), "test-anvil", dir)
+	require.NotNil(t, result)
+
+	assert.Empty(t, result.Patch, "patch entry should be superseded by the major bump")
+	assert.Empty(t, result.Minor)
+	assert.Len(t, result.Major, 1, "major bump should win over patch for the same package")
+	assert.Equal(t, "lodash", result.Major[0].Path)
+	assert.Equal(t, "5.0.0", result.Major[0].Latest)
+}
