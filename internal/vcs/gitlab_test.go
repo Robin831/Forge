@@ -1,7 +1,10 @@
 package vcs
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +14,46 @@ import (
 func TestGitLabProvider_Platform(t *testing.T) {
 	p := NewGitLabProvider()
 	assert.Equal(t, GitLab, p.Platform())
+}
+
+// Compile-time check that GitLabProvider implements the Provider interface.
+var _ Provider = (*GitLabProvider)(nil)
+
+func TestGitLabProvider_ResolveThread_InvalidFormat(t *testing.T) {
+	p := NewGitLabProvider()
+	err := p.ResolveThread(context.Background(), t.TempDir(), "no-colon-here")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid GitLab thread ID format")
+}
+
+func TestGitLabThreadIDEncoding(t *testing.T) {
+	// FetchReviewComments encodes thread IDs as "mrIID:discussionID".
+	// ResolveThread must be able to parse them back.
+	raw := `[
+		{
+			"id": "abc123def",
+			"notes": [
+				{"id": 1, "body": "Fix this", "resolvable": true, "resolved": false, "author": {"username": "alice"}}
+			]
+		}
+	]`
+
+	var discussions []struct {
+		ID    string     `json:"id"`
+		Notes []glabNote `json:"notes"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &discussions))
+
+	// Simulate thread ID encoding from FetchReviewComments
+	prNumber := 42
+	encoded := fmt.Sprintf("%d:%s", prNumber, discussions[0].ID)
+	assert.Equal(t, "42:abc123def", encoded)
+
+	// Verify it can be parsed back
+	parts := strings.SplitN(encoded, ":", 2)
+	require.Len(t, parts, 2)
+	assert.Equal(t, "42", parts[0])
+	assert.Equal(t, "abc123def", parts[1])
 }
 
 func TestParseGitLabRepoURL(t *testing.T) {

@@ -674,12 +674,7 @@ func (p *Params) createPR(ctx context.Context, params vcs.CreateParams) (*vcs.PR
 	if p.VCS != nil {
 		return p.VCS.CreatePR(ctx, params)
 	}
-	// Fallback: create a default GitHub provider via the registered factory.
-	prov := vcs.NewGitHubProvider()
-	if prov == nil {
-		return nil, fmt.Errorf("no VCS provider set and GitHub provider not registered")
-	}
-	return prov.CreatePR(ctx, params)
+	return nil, fmt.Errorf("no VCS provider set on crucible Params")
 }
 
 // mergePR merges a PR via the VCS provider, polling until the merge succeeds
@@ -690,9 +685,6 @@ func (p *Params) mergePR(ctx context.Context, prNumber int, dir string) error {
 	}
 
 	prov := p.VCS
-	if prov == nil {
-		prov = vcs.NewGitHubProvider()
-	}
 	if prov == nil {
 		return fmt.Errorf("no VCS provider available for merge")
 	}

@@ -519,7 +519,7 @@ func (g *GitLabProvider) FetchReviewComments(ctx context.Context, worktreePath s
 			comments = append(comments, ReviewComment{
 				Author:   note.Author.Username,
 				Body:     note.Body,
-				ThreadID: d.ID,
+				ThreadID: fmt.Sprintf("%d:%s", prNumber, d.ID),
 			})
 			break // one comment per discussion
 		}
@@ -528,12 +528,34 @@ func (g *GitLabProvider) FetchReviewComments(ctx context.Context, worktreePath s
 }
 
 // ResolveThread resolves a discussion thread on a GitLab MR.
+// The threadID is expected in the format "mrIID:discussionID" as produced by
+// FetchReviewComments.
 func (g *GitLabProvider) ResolveThread(ctx context.Context, worktreePath string, threadID string) error {
-	// GitLab resolves threads via the discussions API. We need the project
-	// path and MR IID, but the threadID alone doesn't carry them. For now
-	// this is a best-effort no-op; callers that need resolution should use
-	// the platform-specific API directly until we thread MR context through.
-	log.Printf("[gitlab] ResolveThread not yet fully implemented for thread %s", threadID)
+	mrIID, discussionID, ok := strings.Cut(threadID, ":")
+	if !ok {
+		return fmt.Errorf("invalid GitLab thread ID format %q (expected mrIID:discussionID)", threadID)
+	}
+
+	owner, repo, err := g.GetRepoOwnerAndName(ctx, worktreePath)
+	if err != nil {
+		return fmt.Errorf("resolving thread: %w", err)
+	}
+
+	projectPath := owner + "/" + repo
+	endpoint := fmt.Sprintf("projects/%s/merge_requests/%s/discussions/%s",
+		urlEncode(projectPath), mrIID, discussionID)
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "glab", "api", endpoint,
+		"--method", "PUT", "--field", "resolved=true"))
+	cmd.Dir = worktreePath
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("glab api resolve discussion failed: %w\nstderr: %s", err, stderr.String())
+	}
+
 	return nil
 }
 

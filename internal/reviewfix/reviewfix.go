@@ -77,7 +77,9 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 	// Ensure a VCS provider is available.
 	if p.VCS == nil {
-		p.VCS = vcs.NewGitHubProvider()
+		result.Error = fmt.Errorf("VCS provider is required but was not set")
+		result.Duration = time.Since(start)
+		return result
 	}
 
 	// Step 1: Fetch review comments via VCS provider
