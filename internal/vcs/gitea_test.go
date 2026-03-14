@@ -267,6 +267,34 @@ func TestGiteaPRParsing(t *testing.T) {
 		assert.Equal(t, "feature/test", status.HeadRefName)
 	})
 
+	t.Run("merged PR", func(t *testing.T) {
+		raw := `{
+			"number": 15,
+			"title": "Merged feature",
+			"body": "Done",
+			"state": "closed",
+			"html_url": "https://gitea.example.com/org/repo/pulls/15",
+			"mergeable": false,
+			"merged": true,
+			"head": {"ref": "feature/done", "sha": "fff999"},
+			"base": {"ref": "main", "sha": "000aaa"}
+		}`
+
+		var pr giteaPullRequest
+		require.NoError(t, json.Unmarshal([]byte(raw), &pr))
+
+		assert.True(t, pr.Merged)
+		assert.Equal(t, "closed", pr.State)
+
+		// fetchPRView logic: mapGiteaState then override if merged
+		state := mapGiteaState(pr.State)
+		if pr.Merged {
+			state = "MERGED"
+		}
+		assert.Equal(t, "MERGED", state)
+		assert.Equal(t, "UNKNOWN", mapGiteaMergeable(pr.Mergeable, pr.State))
+	})
+
 	t.Run("closed PR not mergeable", func(t *testing.T) {
 		raw := `{
 			"number": 7,

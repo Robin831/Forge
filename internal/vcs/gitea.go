@@ -33,6 +33,14 @@ func (g *GiteaProvider) Platform() Platform {
 	return Gitea
 }
 
+// giteaRepoInfo holds pre-resolved repository coordinates to avoid redundant
+// git remote lookups within a single provider call.
+type giteaRepoInfo struct {
+	baseURL string
+	owner   string
+	repo    string
+}
+
 // giteaHTTPClient is a shared HTTP client with a reasonable timeout,
 // used for all Gitea API requests instead of http.DefaultClient.
 var giteaHTTPClient = &http.Client{
@@ -134,13 +142,20 @@ func (g *GiteaProvider) MergePR(ctx context.Context, worktreePath string, prNumb
 
 // CheckStatus returns the full status of a pull request.
 func (g *GiteaProvider) CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, error) {
-	status, headSHA, err := g.fetchPRView(ctx, worktreePath, prNumber)
+	baseURL, owner, repo, err := g.resolveRepo(ctx, worktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving Gitea repo: %w", err)
+	}
+
+	ri := giteaRepoInfo{baseURL: baseURL, owner: owner, repo: repo}
+
+	status, headSHA, err := g.fetchPRView(ctx, ri, prNumber)
 	if err != nil {
 		return nil, err
 	}
 
 	// Fetch CI status from commit status API using the head SHA from fetchPRView
-	ciChecks, err := g.fetchCIStatus(ctx, worktreePath, headSHA)
+	ciChecks, err := g.fetchCIStatus(ctx, ri, headSHA)
 	if err != nil {
 		log.Printf("[gitea] Warning: could not fetch CI status for PR #%d: %v", prNumber, err)
 	} else {
@@ -148,7 +163,7 @@ func (g *GiteaProvider) CheckStatus(ctx context.Context, worktreePath string, pr
 	}
 
 	// Fetch reviews
-	reviews, err := g.fetchReviews(ctx, worktreePath, prNumber)
+	reviews, err := g.fetchReviews(ctx, ri, prNumber)
 	if err != nil {
 		log.Printf("[gitea] Warning: could not fetch reviews for PR #%d: %v", prNumber, err)
 	} else {
@@ -156,7 +171,7 @@ func (g *GiteaProvider) CheckStatus(ctx context.Context, worktreePath string, pr
 	}
 
 	// Fetch unresolved review comments (Gitea uses review comments, not threads)
-	threadCount, err := g.FetchUnresolvedThreadCount(ctx, worktreePath, prNumber)
+	threadCount, err := g.fetchUnresolvedThreads(ctx, ri, prNumber)
 	if err != nil {
 		log.Printf("[gitea] Warning: could not fetch unresolved comments for PR #%d: %v", prNumber, err)
 	} else {
@@ -164,7 +179,7 @@ func (g *GiteaProvider) CheckStatus(ctx context.Context, worktreePath string, pr
 	}
 
 	// Fetch pending review requests
-	reviewRequests, err := g.FetchPendingReviewRequests(ctx, worktreePath, prNumber)
+	reviewRequests, err := g.fetchPendingReviews(ctx, ri, prNumber)
 	if err != nil {
 		log.Printf("[gitea] Warning: could not fetch review requests for PR #%d: %v", prNumber, err)
 	} else {
@@ -176,12 +191,19 @@ func (g *GiteaProvider) CheckStatus(ctx context.Context, worktreePath string, pr
 
 // CheckStatusLight returns a lightweight status focused on mergeability and review requests.
 func (g *GiteaProvider) CheckStatusLight(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, error) {
-	status, _, err := g.fetchPRView(ctx, worktreePath, prNumber)
+	baseURL, owner, repo, err := g.resolveRepo(ctx, worktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving Gitea repo: %w", err)
+	}
+
+	ri := giteaRepoInfo{baseURL: baseURL, owner: owner, repo: repo}
+
+	status, _, err := g.fetchPRView(ctx, ri, prNumber)
 	if err != nil {
 		return nil, err
 	}
 
-	reviewRequests, err := g.FetchPendingReviewRequests(ctx, worktreePath, prNumber)
+	reviewRequests, err := g.fetchPendingReviews(ctx, ri, prNumber)
 	if err != nil {
 		log.Printf("[gitea] Warning: could not fetch review requests for PR #%d: %v", prNumber, err)
 	} else {
@@ -244,9 +266,13 @@ func (g *GiteaProvider) FetchUnresolvedThreadCount(ctx context.Context, worktree
 	if err != nil {
 		return 0, err
 	}
+	return g.fetchUnresolvedThreads(ctx, giteaRepoInfo{baseURL: baseURL, owner: owner, repo: repo}, prNumber)
+}
 
+// fetchUnresolvedThreads is the internal implementation that accepts pre-resolved repo info.
+func (g *GiteaProvider) fetchUnresolvedThreads(ctx context.Context, ri giteaRepoInfo, prNumber int) (int, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/reviews",
-		baseURL, url.PathEscape(owner), url.PathEscape(repo), prNumber)
+		ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber)
 
 	var reviews []giteaReview
 	if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &reviews); err != nil {
@@ -268,9 +294,13 @@ func (g *GiteaProvider) FetchPendingReviewRequests(ctx context.Context, worktree
 	if err != nil {
 		return nil, err
 	}
+	return g.fetchPendingReviews(ctx, giteaRepoInfo{baseURL: baseURL, owner: owner, repo: repo}, prNumber)
+}
 
+// fetchPendingReviews is the internal implementation that accepts pre-resolved repo info.
+func (g *GiteaProvider) fetchPendingReviews(ctx context.Context, ri giteaRepoInfo, prNumber int) ([]ReviewRequest, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/requested_reviewers",
-		baseURL, url.PathEscape(owner), url.PathEscape(repo), prNumber)
+		ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber)
 
 	var result giteaRequestedReviewers
 	if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
@@ -314,14 +344,9 @@ func (g *GiteaProvider) resolveRepo(ctx context.Context, worktreePath string) (b
 
 // fetchPRView retrieves pull request details via the Gitea API.
 // It returns both the PRStatus and the head commit SHA (needed by fetchCIStatus).
-func (g *GiteaProvider) fetchPRView(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, string, error) {
-	baseURL, owner, repo, err := g.resolveRepo(ctx, worktreePath)
-	if err != nil {
-		return nil, "", err
-	}
-
+func (g *GiteaProvider) fetchPRView(ctx context.Context, ri giteaRepoInfo, prNumber int) (*PRStatus, string, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d",
-		baseURL, url.PathEscape(owner), url.PathEscape(repo), prNumber)
+		ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber)
 
 	var pr giteaPullRequest
 	if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
@@ -343,19 +368,14 @@ func (g *GiteaProvider) fetchPRView(ctx context.Context, worktreePath string, pr
 
 // fetchCIStatus retrieves CI commit status for the given head commit SHA.
 // The headSHA is obtained from fetchPRView to avoid a duplicate PR fetch.
-func (g *GiteaProvider) fetchCIStatus(ctx context.Context, worktreePath string, headSHA string) ([]CheckRun, error) {
+func (g *GiteaProvider) fetchCIStatus(ctx context.Context, ri giteaRepoInfo, headSHA string) ([]CheckRun, error) {
 	if headSHA == "" {
 		return nil, nil
 	}
 
-	baseURL, owner, repo, err := g.resolveRepo(ctx, worktreePath)
-	if err != nil {
-		return nil, err
-	}
-
 	// Fetch combined commit status
 	statusEndpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/commits/%s/status",
-		baseURL, url.PathEscape(owner), url.PathEscape(repo), headSHA)
+		ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), headSHA)
 
 	var combined giteaCombinedStatus
 	if err := giteaAPIRequest(ctx, http.MethodGet, statusEndpoint, nil, &combined); err != nil {
@@ -374,14 +394,9 @@ func (g *GiteaProvider) fetchCIStatus(ctx context.Context, worktreePath string, 
 }
 
 // fetchReviews retrieves review information for a pull request.
-func (g *GiteaProvider) fetchReviews(ctx context.Context, worktreePath string, prNumber int) ([]Review, error) {
-	baseURL, owner, repo, err := g.resolveRepo(ctx, worktreePath)
-	if err != nil {
-		return nil, err
-	}
-
+func (g *GiteaProvider) fetchReviews(ctx context.Context, ri giteaRepoInfo, prNumber int) ([]Review, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/reviews",
-		baseURL, url.PathEscape(owner), url.PathEscape(repo), prNumber)
+		ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber)
 
 	var giteaReviews []giteaReview
 	if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &giteaReviews); err != nil {
@@ -610,9 +625,8 @@ func mapGiteaState(state string) string {
 		return "OPEN"
 	case "closed":
 		// Gitea uses "closed" for both merged and closed PRs; the merged field
-		// disambiguates, but at the state level we treat it as CLOSED. Callers
-		// should check the merged flag separately when needed — fetchPRView
-		// doesn't currently surface it, but the canonical flow handles this.
+		// disambiguates. fetchPRView checks pr.Merged and overrides to "MERGED"
+		// when appropriate.
 		return "CLOSED"
 	default:
 		return strings.ToUpper(state)
