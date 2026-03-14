@@ -131,6 +131,12 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("adding column %s.%s: %w", m.table, m.column, err)
 		}
 	}
+	// Data fixup: ext- PRs that existed before the bellows_managed migration
+	// got bellows_managed=1 from the column default. Correct them to 0.
+	if _, err := db.conn.Exec(`UPDATE prs SET bellows_managed = 0 WHERE bead_id LIKE 'ext-%' AND bellows_managed = 1`); err != nil {
+		return fmt.Errorf("fixing ext- bellows_managed: %w", err)
+	}
+
 	// Ensure index exists for clarification_needed queries (idempotent).
 	if _, err := db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_retries_clarification ON retries(clarification_needed)`); err != nil {
 		return fmt.Errorf("creating clarification index: %w", err)
