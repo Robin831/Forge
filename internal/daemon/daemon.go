@@ -901,6 +901,11 @@ func (d *Daemon) handleAutoMerge(ctx context.Context, anvil string, pr state.PR)
 		return
 	}
 
+	if anvilCfg.Path == "" {
+		d.logger.Warn("auto-merge skipped: anvil path is empty", "anvil", anvil, "pr_number", pr.Number)
+		return
+	}
+
 	// Do not launch new auto-merge goroutines once shutdown has been signalled.
 	if ctx.Err() != nil {
 		return
@@ -911,9 +916,11 @@ func (d *Daemon) handleAutoMerge(ctx context.Context, anvil string, pr state.PR)
 	// IMPORTANT: derive mergeCtx from context.Background(), NOT from the
 	// bellows ctx. This ensures that an in-flight merge completes even during
 	// graceful shutdown (SIGINT/SIGTERM), avoiding a half-merged state.
-	d.wg.Go(func() {
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
 		d.doAutoMerge(context.Background(), anvil, anvilCfg.Path, pr)
-	})
+	}()
 }
 
 // doAutoMerge performs the actual VCS merge for a PR that has reached the
