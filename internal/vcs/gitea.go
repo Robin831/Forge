@@ -269,19 +269,24 @@ func (g *GiteaProvider) FetchUnresolvedThreadCount(ctx context.Context, worktree
 	return g.fetchUnresolvedThreads(ctx, giteaRepoInfo{baseURL: baseURL, owner: owner, repo: repo}, prNumber)
 }
 
-// fetchUnresolvedThreads is the internal implementation that accepts pre-resolved repo info.
+// fetchUnresolvedThreads counts unresolved review comments on a PR.
+// It uses the pull review comments endpoint and counts comments where
+// the resolved field is explicitly false (i.e. the comment is resolvable
+// but has not been resolved).
 func (g *GiteaProvider) fetchUnresolvedThreads(ctx context.Context, ri giteaRepoInfo, prNumber int) (int, error) {
-	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/reviews",
+	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/comments?limit=50",
 		ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber)
 
-	var reviews []giteaReview
-	if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &reviews); err != nil {
-		return 0, fmt.Errorf("gitea fetch reviews failed: %w", err)
+	var comments []giteaReviewComment
+	if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &comments); err != nil {
+		return 0, fmt.Errorf("gitea fetch review comments failed: %w", err)
 	}
 
 	count := 0
-	for _, r := range reviews {
-		if r.State == "REQUEST_CHANGES" {
+	for _, c := range comments {
+		// A nil Resolved pointer means the comment is not resolvable (e.g. a
+		// general comment). Only count comments that are explicitly unresolved.
+		if c.Resolved != nil && !*c.Resolved {
 			count++
 		}
 	}
@@ -469,6 +474,11 @@ type giteaRequestedReviewers struct {
 	} `json:"teams"`
 }
 
+type giteaReviewComment struct {
+	ID       int   `json:"id"`
+	Resolved *bool `json:"resolved"`
+}
+
 type giteaCombinedStatus struct {
 	State    string         `json:"state"`
 	Statuses []giteaStatus `json:"statuses"`
@@ -510,7 +520,8 @@ func giteaAPIRequest(ctx context.Context, method, endpoint string, body any, res
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	const maxResponseSize = 10 * 1024 * 1024 // 10 MB
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return fmt.Errorf("reading response: %w", err)
 	}

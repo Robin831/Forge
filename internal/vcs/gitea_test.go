@@ -454,6 +454,92 @@ func TestGiteaPRListParsing(t *testing.T) {
 	assert.Equal(t, "", out[1].Body)
 }
 
+// TestGiteaReviewCommentParsing tests JSON deserialization of review comments
+// and the unresolved counting logic.
+func TestGiteaReviewCommentParsing(t *testing.T) {
+	resolved := true
+	unresolved := false
+
+	tests := []struct {
+		name     string
+		comments []giteaReviewComment
+		want     int
+	}{
+		{
+			name: "mixed resolved and unresolved",
+			comments: []giteaReviewComment{
+				{ID: 1, Resolved: &unresolved},
+				{ID: 2, Resolved: &resolved},
+				{ID: 3, Resolved: &unresolved},
+			},
+			want: 2,
+		},
+		{
+			name: "all resolved",
+			comments: []giteaReviewComment{
+				{ID: 1, Resolved: &resolved},
+				{ID: 2, Resolved: &resolved},
+			},
+			want: 0,
+		},
+		{
+			name: "nil resolved means not resolvable",
+			comments: []giteaReviewComment{
+				{ID: 1, Resolved: nil},
+				{ID: 2, Resolved: &unresolved},
+			},
+			want: 1,
+		},
+		{
+			name:     "empty list",
+			comments: nil,
+			want:     0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			count := 0
+			for _, c := range tt.comments {
+				if c.Resolved != nil && !*c.Resolved {
+					count++
+				}
+			}
+			assert.Equal(t, tt.want, count)
+		})
+	}
+
+	// Also verify JSON deserialization with the resolved field.
+	t.Run("JSON deserialization", func(t *testing.T) {
+		raw := `[
+			{"id": 1, "resolved": false},
+			{"id": 2, "resolved": true},
+			{"id": 3},
+			{"id": 4, "resolved": false}
+		]`
+		var comments []giteaReviewComment
+		require.NoError(t, json.Unmarshal([]byte(raw), &comments))
+
+		assert.Len(t, comments, 4)
+		require.NotNil(t, comments[0].Resolved)
+		assert.False(t, *comments[0].Resolved)
+		require.NotNil(t, comments[1].Resolved)
+		assert.True(t, *comments[1].Resolved)
+		assert.Nil(t, comments[2].Resolved)
+		require.NotNil(t, comments[3].Resolved)
+		assert.False(t, *comments[3].Resolved)
+
+		// Count unresolved
+		count := 0
+		for _, c := range comments {
+			if c.Resolved != nil && !*c.Resolved {
+				count++
+			}
+		}
+		assert.Equal(t, 2, count)
+	})
+}
+
 func TestForPlatform_Gitea(t *testing.T) {
 	tests := []struct {
 		platform string
