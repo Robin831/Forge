@@ -1,6 +1,7 @@
 package hearth
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -933,6 +934,106 @@ func TestCollapseActivityGroup(t *testing.T) {
 			t.Errorf("collapseActivityGroup returned ANSI-styled string; want plain text: %q", got)
 		}
 	})
+}
+
+func TestFormatToolCall(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		input    string
+		want     string
+	}{
+		{
+			name:     "Read with file_path",
+			toolName: "Read",
+			input:    `{"file_path":"/home/user/project/src/main.go"}`,
+			want:     "[tool] Read main.go",
+		},
+		{
+			name:     "Read with offset and limit",
+			toolName: "Read",
+			input:    `{"file_path":"/tmp/data.go","offset":10,"limit":50}`,
+			want:     "[tool] Read data.go:10-50",
+		},
+		{
+			name:     "Edit with old_string",
+			toolName: "Edit",
+			input:    `{"file_path":"/tmp/foo.go","old_string":"func main() {\n\treturn\n}","new_string":"func main() {}"}`,
+			want:     `[tool] Edit foo.go «func main() {»`,
+		},
+		{
+			name:     "Write with file_path",
+			toolName: "Write",
+			input:    `{"file_path":"/tmp/new_file.go","content":"package main"}`,
+			want:     "[tool] Write new_file.go",
+		},
+		{
+			name:     "Bash with command",
+			toolName: "Bash",
+			input:    `{"command":"git status"}`,
+			want:     "[tool] Bash $ git status",
+		},
+		{
+			name:     "Bash with long command truncated",
+			toolName: "Bash",
+			input:    `{"command":"some very long command that exceeds the fifty character limit for display"}`,
+			want:     "[tool] Bash $ some very long command that exceeds the fifty ...",
+		},
+		{
+			name:     "Grep with pattern and glob",
+			toolName: "Grep",
+			input:    `{"pattern":"TODO","glob":"*.go"}`,
+			want:     "[tool] Grep /TODO/ *.go",
+		},
+		{
+			name:     "Grep with pattern and type",
+			toolName: "Grep",
+			input:    `{"pattern":"func main","type":"go"}`,
+			want:     "[tool] Grep /func main/ **/*.go",
+		},
+		{
+			name:     "Glob with pattern",
+			toolName: "Glob",
+			input:    `{"pattern":"**/*.test.ts"}`,
+			want:     "[tool] Glob **/*.test.ts",
+		},
+		{
+			name:     "Agent with description",
+			toolName: "Agent",
+			input:    `{"description":"explore codebase","prompt":"find all handlers"}`,
+			want:     "[tool] Agent explore codebase",
+		},
+		{
+			name:     "unknown tool fallback",
+			toolName: "CustomTool",
+			input:    `{"key":"value"}`,
+			want:     `[tool] CustomTool {"key":"value"}`,
+		},
+		{
+			name:     "Read with empty input falls back",
+			toolName: "Read",
+			input:    `{}`,
+			want:     "[tool] Read ",
+		},
+		{
+			name:     "nil input",
+			toolName: "SomeTool",
+			input:    "",
+			want:     "[tool] SomeTool ",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw json.RawMessage
+			if tt.input != "" {
+				raw = json.RawMessage(tt.input)
+			}
+			got := formatToolCall(tt.toolName, raw)
+			if got != tt.want {
+				t.Errorf("formatToolCall(%q, %s)\n  got  %q\n  want %q", tt.toolName, tt.input, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestParseWorkerActivityMultiLineText(t *testing.T) {
