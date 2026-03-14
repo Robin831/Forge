@@ -772,6 +772,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// focused, route keys to it instead of the normal key handling.
 		if m.eventFilterActive {
 			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
 			case "esc":
 				m.eventFilterActive = false
 				m.eventFilter.Blur()
@@ -1041,6 +1043,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activityExpanded[nav.groupType] = false
 					m.rebuildActivityNav()
 				}
+			}
+			// Clear event filter when Events panel is focused and filter is applied
+			if m.focused == PanelEvents && m.eventFilterText != "" {
+				m.eventFilter.SetValue("")
+				m.eventFilterText = ""
+				m.applyEventFilter()
+				m.eventScroll = 0
+				m.eventRevision++
 			}
 			// Collapse the anvil containing the selected bead
 			if m.focused == PanelQueue && m.queueGrouped {
