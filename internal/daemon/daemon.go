@@ -1576,8 +1576,9 @@ normalPipeline:
 			return
 		}
 		if outcome.NeedsHuman {
-			// Bead was released back to open. Record as dispatch failure so the
-			// circuit breaker can trip after repeated attempts.
+			// Bead needs human attention — mark it immediately so it appears
+			// in Hearth's Needs Attention panel without waiting for the
+			// circuit breaker to trip after multiple failures.
 			reason := "Smith produced no diff, needs human attention"
 			if outcome.SchematicResult != nil && outcome.SchematicResult.Reason != "" {
 				reason = outcome.SchematicResult.Reason
@@ -1589,6 +1590,9 @@ normalPipeline:
 				}
 			}
 
+			if err := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); err != nil {
+				d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", err)
+			}
 			d.recordDispatchFailure(bead.ID, bead.Anvil, reason)
 			// Hold the activeBeads slot for a full poll interval so the bead is not
 			// immediately re-dispatched before a human can investigate.

@@ -1631,6 +1631,24 @@ func (db *DB) ResetDispatchFailures(beadID, anvil string) error {
 	return err
 }
 
+// MarkNeedsHuman immediately sets needs_human=1 for a bead, creating the
+// retries row if it doesn't exist. Use this when a pipeline outcome
+// definitively requires human attention (e.g. no-diff hard reject) without
+// waiting for the circuit breaker to trip after multiple failures.
+func (db *DB) MarkNeedsHuman(beadID, anvil, reason string) error {
+	now := time.Now().Format(dbTimeLayout)
+	_, err := db.conn.Exec(
+		`INSERT INTO retries (bead_id, anvil, retry_count, needs_human, clarification_needed, dispatch_failures, last_error, updated_at)
+		 VALUES (?, ?, 0, 1, 0, 0, ?, ?)
+		 ON CONFLICT(bead_id, anvil) DO UPDATE SET
+			needs_human = 1,
+			last_error = excluded.last_error,
+			updated_at = excluded.updated_at`,
+		beadID, anvil, reason, now,
+	)
+	return err
+}
+
 // NeedsHumanBeadIDSet returns a set of "beadID\x00anvil" keys for
 // all beads currently marked needs_human=1 in the retries table. This
 // intentionally includes any reason that set needs_human (dispatch circuit
