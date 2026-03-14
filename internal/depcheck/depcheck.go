@@ -239,6 +239,12 @@ func parseSemver(v string) (major, minor, patch string) {
 // scanAnvil) to avoid spawning one external command per module.
 func (s *Scanner) createBeads(ctx context.Context, result *CheckResult) {
 	cache := BuildDedupCache(ctx, s.db, result.Path, result.Anvil)
+	if !cache.valid {
+		log.Printf("[depcheck] %s: dedup cache invalid (bd unreachable?) — skipping bead creation to avoid duplicates", result.Anvil)
+		_ = s.db.LogEvent(state.EventDepcheckFailed,
+			fmt.Sprintf("Skipped bead creation for %s — could not query existing beads for dedup", result.Anvil), "", result.Anvil)
+		return
+	}
 
 	for _, u := range append(result.Patch, result.Minor...) {
 		if DedupCheckWithCache(cache, u.Path) {

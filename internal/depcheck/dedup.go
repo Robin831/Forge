@@ -82,6 +82,7 @@ type DedupCache struct {
 	closedBeads   []bdBead // parsed closed beads for time-based filtering
 	closedRaw     []byte   // raw closed output for fallback string search
 	prBeadOutputs [][]byte // raw JSON from bd show for each open PR's bead
+	valid         bool     // true when the critical bd list commands succeeded
 }
 
 // BuildDedupCache fetches bead state once for an anvil, avoiding per-module
@@ -89,10 +90,14 @@ type DedupCache struct {
 func BuildDedupCache(ctx context.Context, db *state.DB, anvilPath, anvilName string) *DedupCache {
 	cache := &DedupCache{}
 
-	cache.openRaw = fetchBeadList(ctx, anvilPath, "open")
-	cache.inProgressRaw = fetchBeadList(ctx, anvilPath, "in_progress")
+	var openErr, ipErr error
+	cache.openRaw, openErr = fetchBeadList(ctx, anvilPath, "open")
+	cache.inProgressRaw, ipErr = fetchBeadList(ctx, anvilPath, "in_progress")
+	// The cache is only valid when the critical open/in_progress queries succeed.
+	// If bd is unreachable, we must not create beads (would produce duplicates).
+	cache.valid = openErr == nil && ipErr == nil
 
-	closedRaw := fetchBeadList(ctx, anvilPath, "closed")
+	closedRaw, _ := fetchBeadList(ctx, anvilPath, "closed")
 	cache.closedRaw = closedRaw
 	_ = json.Unmarshal(closedRaw, &cache.closedBeads) // best-effort; fallback handled in DedupCheckWithCache
 
@@ -113,14 +118,18 @@ func BuildDedupCache(ctx context.Context, db *state.DB, anvilPath, anvilName str
 }
 
 // fetchBeadList runs bd list for the given status and returns raw output.
-func fetchBeadList(ctx context.Context, anvilPath, status string) []byte {
+func fetchBeadList(ctx context.Context, anvilPath, status string) ([]byte, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
 		"bd", "list", fmt.Sprintf("--status=%s", status), "--json"))
 	cmd.Dir = anvilPath
-	out, _ := cmd.Output()
-	return out
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("[depcheck] bd list --status=%s failed in %s: %v", status, anvilPath, err)
+		return nil, err
+	}
+	return out, nil
 }
 
 // fetchBeadShow runs bd show for a single bead ID and returns raw output.
