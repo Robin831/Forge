@@ -16,7 +16,8 @@ import (
 )
 
 // scanNpm runs 'npm outdated --json' in directories containing package.json.
-// Skips node_modules and .workers directories. Returns nil if no package.json found.
+// Skips node_modules, .workers, .worktrees, bin, and obj directories.
+// Deduplicates packages across projects. Returns nil if no package.json found.
 func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult {
 	pkgDirs := findNpmProjects(path)
 	if len(pkgDirs) == 0 {
@@ -30,6 +31,10 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 		Checked:   time.Now(),
 	}
 
+	// Track seen packages across all package.json files to avoid duplicates
+	// when the same package appears in multiple projects (e.g. worktree copies).
+	seen := map[string]bool{}
+
 	for _, dir := range pkgDirs {
 		updates, err := runNpmOutdated(ctx, s.timeout, dir)
 		if err != nil {
@@ -38,6 +43,10 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 		}
 
 		for _, u := range updates {
+			if seen[u.Path] {
+				continue
+			}
+			seen[u.Path] = true
 			switch u.Kind {
 			case "patch":
 				result.Patch = append(result.Patch, u)
@@ -53,7 +62,7 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 }
 
 // findNpmProjects walks the anvil directory for package.json files,
-// skipping node_modules and .workers directories.
+// skipping node_modules, .workers, .worktrees, bin, obj, and .git directories.
 func findNpmProjects(root string) []string {
 	var dirs []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -62,7 +71,7 @@ func findNpmProjects(root string) []string {
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if name == "node_modules" || name == ".workers" || name == ".git" {
+			if name == "node_modules" || name == ".workers" || name == ".worktrees" || name == "bin" || name == "obj" || name == ".git" {
 				return filepath.SkipDir
 			}
 			return nil

@@ -1,0 +1,2 @@
+category: Fixed
+- **Depcheck scanners no longer inflate counts from .worktrees copies** - Added `.worktrees` to the skip list in `findNpmProjects`, `findDotnetProjects`, and Go's file discovery so that worktree copies of a repo are not scanned as separate projects. Also added `bin` and `obj` to the npm skip list for consistency, and added cross-project deduplication to `scanNpm` (matching the NuGet fix from c995ee4) to prevent the same package from appearing multiple times when scanned across several package.json files. (Forge-tikw)
