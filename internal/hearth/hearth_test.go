@@ -1480,6 +1480,24 @@ func TestRenderReadyToMergeShowsItems(t *testing.T) {
 	}
 }
 
+func TestRenderReadyToMergeAutoTag(t *testing.T) {
+	m := NewModel(nil)
+	m.readyToMerge = []ReadyToMergeItem{
+		{PRID: 1, PRNumber: 42, BeadID: "bd-10", Anvil: "heimdall", AutoMerge: true},
+		{PRID: 2, PRNumber: 99, BeadID: "bd-11", Anvil: "metadata", AutoMerge: false},
+	}
+	m.focused = PanelReadyToMerge
+	rendered := m.renderReadyToMerge(80, 20)
+	if !strings.Contains(rendered, "[auto]") {
+		t.Errorf("expected '[auto]' tag for auto-merge PR in rendered output:\n%s", rendered)
+	}
+	// The non-auto-merge PR should not show the tag. Count occurrences.
+	count := strings.Count(rendered, "[auto]")
+	if count != 1 {
+		t.Errorf("expected exactly 1 '[auto]' tag, got %d in rendered output:\n%s", count, rendered)
+	}
+}
+
 func TestRenderReadyToMergeSelectionHighlighting(t *testing.T) {
 	m := NewModel(nil)
 	m.readyToMerge = []ReadyToMergeItem{

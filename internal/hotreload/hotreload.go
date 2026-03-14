@@ -248,6 +248,10 @@ func applyChanges(old, new *config.Config) []string {
 				changes = append(changes, fmt.Sprintf("anvil %s path: %q → %q",
 					name, oldAnvil.Path, newAnvil.Path))
 			}
+			if oldAnvil.AutoMerge != newAnvil.AutoMerge {
+				changes = append(changes, fmt.Sprintf("anvil %s auto_merge: %v → %v",
+					name, oldAnvil.AutoMerge, newAnvil.AutoMerge))
+			}
 		} else {
 			changes = append(changes, fmt.Sprintf("anvil %s added", name))
 		}

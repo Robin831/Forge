@@ -901,8 +901,10 @@ func (d *Daemon) handleAutoMerge(ctx context.Context, anvil string, pr state.PR)
 		return
 	}
 
-	// Run asynchronously so the bellows poll loop is not blocked.
-	go d.doAutoMerge(ctx, anvil, anvilCfg.Path, pr)
+	// IMPORTANT: derive mergeCtx from context.Background(), NOT from the
+	// bellows ctx. This ensures that an in-flight merge completes even during
+	// graceful shutdown (SIGINT/SIGTERM), avoiding a half-merged state.
+	go d.doAutoMerge(context.Background(), anvil, anvilCfg.Path, pr)
 }
 
 // doAutoMerge performs the actual VCS merge for a PR that has reached the
