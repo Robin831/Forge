@@ -1180,6 +1180,7 @@ const (
 	EventAutoLearnSkipped     EventType = "auto_learn_skipped"
 	EventAutoLearnRules       EventType = "auto_learn_rules"
 	EventWardenRuleLearned    EventType = "warden_rule_learned"
+	EventBeadAutoClosed       EventType = "bead_auto_closed"
 
 	// Crucible events — parent bead orchestration with children on feature branches.
 	EventCrucibleStarted         EventType = "crucible_started"
