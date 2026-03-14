@@ -901,6 +901,11 @@ func (d *Daemon) handleAutoMerge(ctx context.Context, anvil string, pr state.PR)
 		return
 	}
 
+	// Do not launch new auto-merge goroutines once shutdown has been signalled.
+	if ctx.Err() != nil {
+		return
+	}
+
 	// Track the goroutine so d.wg.Wait() during shutdown waits for in-flight
 	// auto-merges to complete (avoids orphaned goroutines).
 	d.wg.Add(1)
@@ -923,7 +928,7 @@ func (d *Daemon) doAutoMerge(ctx context.Context, anvil, anvilPath string, pr st
 	}
 
 	d.logger.Info("auto-merging PR", "pr_number", pr.Number, "anvil", anvil, "bead", pr.BeadID, "strategy", strategy)
-	if err := d.db.LogEvent(state.EventPRAutoMerged,
+	if err := d.db.LogEvent(state.EventPRMergeRequested,
 		fmt.Sprintf("PR #%d auto-merge started (strategy: %s)", pr.Number, strategy),
 		pr.BeadID, anvil); err != nil {
 		d.logger.Warn("failed to log auto-merge start event", "error", err)

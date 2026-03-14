@@ -1885,17 +1885,22 @@ func TestHandleAutoMerge(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	mockVCS := &mockVCSProvider{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	d := &Daemon{
-		db:          db,
-		logger:      logger,
-		vcsProvider: mockVCS,
+	// newDaemon creates a fresh Daemon with its own mockVCSProvider so that
+	// subtests do not share mutable state (avoids data races on mergeErr).
+	newDaemon := func(mergeErr error) (*Daemon, *mockVCSProvider) {
+		mock := &mockVCSProvider{mergeErr: mergeErr}
+		d := &Daemon{
+			db:          db,
+			logger:      logger,
+			vcsProvider: mock,
+		}
+		return d, mock
 	}
 
 	t.Run("skips external PRs", func(t *testing.T) {
-		mockVCS.mergeCalls.Store(0)
+		d, mock := newDaemon(nil)
 		d.cfg.Store(&config.Config{
 			Anvils: map[string]config.AnvilConfig{
 				"test-anvil": {Path: tmpDir, AutoMerge: true},
@@ -1904,11 +1909,11 @@ func TestHandleAutoMerge(t *testing.T) {
 		pr := state.PR{Number: 1, BeadID: "ext-123", Anvil: "test-anvil"}
 		d.handleAutoMerge(context.Background(), "test-anvil", pr)
 		// handleAutoMerge returns synchronously for external PRs.
-		assert.Equal(t, int32(0), mockVCS.mergeCalls.Load(), "should not merge external PRs")
+		assert.Equal(t, int32(0), mock.mergeCalls.Load(), "should not merge external PRs")
 	})
 
 	t.Run("skips when auto_merge disabled", func(t *testing.T) {
-		mockVCS.mergeCalls.Store(0)
+		d, mock := newDaemon(nil)
 		d.cfg.Store(&config.Config{
 			Anvils: map[string]config.AnvilConfig{
 				"test-anvil": {Path: tmpDir, AutoMerge: false},
@@ -1917,11 +1922,11 @@ func TestHandleAutoMerge(t *testing.T) {
 		pr := state.PR{Number: 2, BeadID: "BEAD-1", Anvil: "test-anvil"}
 		d.handleAutoMerge(context.Background(), "test-anvil", pr)
 		// handleAutoMerge returns synchronously when auto_merge is off.
-		assert.Equal(t, int32(0), mockVCS.mergeCalls.Load(), "should not merge when auto_merge is false")
+		assert.Equal(t, int32(0), mock.mergeCalls.Load(), "should not merge when auto_merge is false")
 	})
 
 	t.Run("merges when auto_merge enabled", func(t *testing.T) {
-		mockVCS.mergeCalls.Store(0)
+		d, mock := newDaemon(nil)
 		d.cfg.Store(&config.Config{
 			Anvils: map[string]config.AnvilConfig{
 				"test-anvil": {Path: tmpDir, AutoMerge: true},
@@ -1932,15 +1937,13 @@ func TestHandleAutoMerge(t *testing.T) {
 		d.handleAutoMerge(context.Background(), "test-anvil", pr)
 		// doAutoMerge runs in a goroutine — wait briefly for it.
 		assert.Eventually(t, func() bool {
-			return mockVCS.mergeCalls.Load() == 1
+			return mock.mergeCalls.Load() == 1
 		}, 5*time.Second, 10*time.Millisecond, "should call MergePR once")
 	})
 
 	t.Run("handles merge failure gracefully", func(t *testing.T) {
-		mockVCS.mergeCalls.Store(0)
-		mockVCS.mergeErr = fmt.Errorf("merge conflict")
-		defer func() { mockVCS.mergeErr = nil }()
-
+		// mergeErr is set at construction time so MergePR reads it without racing.
+		d, mock := newDaemon(fmt.Errorf("merge conflict"))
 		d.cfg.Store(&config.Config{
 			Anvils: map[string]config.AnvilConfig{
 				"test-anvil": {Path: tmpDir, AutoMerge: true},
@@ -1951,12 +1954,12 @@ func TestHandleAutoMerge(t *testing.T) {
 		d.handleAutoMerge(context.Background(), "test-anvil", pr)
 		// Should still call MergePR and handle the error without panicking.
 		assert.Eventually(t, func() bool {
-			return mockVCS.mergeCalls.Load() == 1
+			return mock.mergeCalls.Load() == 1
 		}, 5*time.Second, 10*time.Millisecond, "should attempt merge even if it fails")
 	})
 
 	t.Run("defaults strategy to squash", func(t *testing.T) {
-		mockVCS.mergeCalls.Store(0)
+		d, mock := newDaemon(nil)
 		d.cfg.Store(&config.Config{
 			Anvils: map[string]config.AnvilConfig{
 				"test-anvil": {Path: tmpDir, AutoMerge: true},
@@ -1965,6 +1968,6 @@ func TestHandleAutoMerge(t *testing.T) {
 		})
 		pr := state.PR{Number: 5, BeadID: "BEAD-4", Anvil: "test-anvil"}
 		d.doAutoMerge(context.Background(), "test-anvil", tmpDir, pr)
-		assert.Equal(t, int32(1), mockVCS.mergeCalls.Load(), "should call MergePR")
+		assert.Equal(t, int32(1), mock.mergeCalls.Load(), "should call MergePR")
 	})
 }

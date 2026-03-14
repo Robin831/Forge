@@ -85,8 +85,8 @@ type DataSource struct {
 	DailyCostLimit           float64
 	CopilotDailyRequestLimit int
 	// AutoMergeAnvils returns the set of anvil names that have auto_merge
-	// enabled. Using a function (rather than a static map) allows the Hearth
-	// TUI to pick up config changes made via hot-reload without restarting.
+	// enabled. The map is built once at Hearth startup from the loaded config;
+	// reflecting config changes requires restarting Hearth.
 	// When nil, no PRs are tagged [auto].
 	AutoMergeAnvils func() map[string]bool
 }
