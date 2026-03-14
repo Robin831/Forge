@@ -59,6 +59,11 @@ type AnvilConfig struct {
 	// anvil for outdated dependencies. When nil (default), depcheck runs
 	// as normal (opt-out). Set to false to skip this anvil entirely.
 	DepcheckEnabled *bool `mapstructure:"depcheck_enabled" yaml:"depcheck_enabled,omitempty"`
+	// AutoMerge enables automatic merging of PRs when they reach the
+	// ready-to-merge state (CI passing, no conflicts, no unresolved
+	// threads, no pending reviews). External PRs (ext-*) are never
+	// auto-merged. Default: false.
+	AutoMerge bool `mapstructure:"auto_merge" yaml:"auto_merge,omitempty"`
 }
 
 // SettingsConfig holds global operational settings.

@@ -16,6 +16,7 @@ anvils:
     path: /path/to/repos/my-api
     max_smiths: 2
     auto_dispatch: all
+    auto_merge: true               # Automatically merge PRs when ready (default: false)
     schematic_enabled: false       # Override global schematic setting for this anvil
     golangci_lint: null            # null/omit = auto-detect (runs only if binary found on PATH); false = disable
     go_race_detection: false       # Per-anvil race detector override
@@ -103,6 +104,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `golangci_lint` | bool\|null | null (auto-detect) | Per-anvil override for golangci-lint in Temper. When null, golangci-lint runs if the binary is found on PATH. Set to `false` to disable. |
 | `go_race_detection` | bool\|null | null (use global) | Per-anvil override for Go race detection in Temper. When set, takes precedence over the global setting. |
 | `depcheck_enabled` | bool\|null | null (enabled) | Per-anvil toggle for depcheck scanning. When null, depcheck runs as normal. Set to `false` to skip this anvil entirely. |
+| `auto_merge` | bool | `false` | When enabled, PRs that reach the ready-to-merge state (CI passing, no conflicts, no unresolved threads, no pending reviews) are automatically merged using the configured `merge_strategy`. External PRs (`ext-*`) are never auto-merged. |
 
 ### Auto-Dispatch Modes
 

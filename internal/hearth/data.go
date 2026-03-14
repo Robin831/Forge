@@ -84,6 +84,11 @@ type DataSource struct {
 	// Cost limits from config for the Usage panel display.
 	DailyCostLimit           float64
 	CopilotDailyRequestLimit int
+	// AutoMergeAnvils returns the set of anvil names that have auto_merge
+	// enabled. The map is built once at Hearth startup from the loaded config;
+	// reflecting config changes requires restarting Hearth.
+	// When nil, no PRs are tagged [auto].
+	AutoMergeAnvils func() map[string]bool
 }
 
 // Tick returns a Bubbletea command that sends a TickMsg after the interval.
@@ -357,7 +362,7 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 // to 70 characters. Returns nil if the text is empty.
 func formatMultiLineEntry(prefix, contPrefix, raw string, maxLines int) []string {
 	var kept []string
-	for _, tl := range strings.Split(raw, "\n") {
+	for tl := range strings.SplitSeq(raw, "\n") {
 		tl = strings.TrimSpace(tl)
 		if tl == "" {
 			continue
@@ -480,21 +485,26 @@ func FetchNeedsAttention(ds *DataSource) tea.Cmd {
 }
 
 // FetchReadyToMerge reads PRs that are ready to merge from the state DB.
-func FetchReadyToMerge(db *state.DB) tea.Cmd {
+func FetchReadyToMerge(ds DataSource) tea.Cmd {
 	return func() tea.Msg {
-		prs, err := db.ReadyToMergePRs()
+		prs, err := ds.DB.ReadyToMergePRs()
 		if err != nil {
 			return ReadyToMergeErrorMsg{Err: fmt.Errorf("failed to fetch ready-to-merge PRs: %w", err)}
+		}
+		var autoMerge map[string]bool
+		if ds.AutoMergeAnvils != nil {
+			autoMerge = ds.AutoMergeAnvils()
 		}
 		var items []ReadyToMergeItem
 		for _, p := range prs {
 			items = append(items, ReadyToMergeItem{
-				PRID:     p.ID,
-				PRNumber: p.Number,
-				BeadID:   p.BeadID,
-				Anvil:    p.Anvil,
-				Branch:   p.Branch,
-				Title:    p.Title,
+				PRID:      p.ID,
+				PRNumber:  p.Number,
+				BeadID:    p.BeadID,
+				Anvil:     p.Anvil,
+				Branch:    p.Branch,
+				Title:     p.Title,
+				AutoMerge: autoMerge[p.Anvil],
 			})
 		}
 		return UpdateReadyToMergeMsg{Items: items}
@@ -754,7 +764,7 @@ func FetchAll(ds *DataSource) tea.Cmd {
 	return tea.Batch(
 		FetchQueue(ds.DB),
 		FetchNeedsAttention(ds),
-		FetchReadyToMerge(ds.DB),
+		FetchReadyToMerge(*ds),
 		FetchWorkers(ds.DB),
 		FetchEvents(ds.DB, EventFetchLimit),
 		FetchCrucibles(),

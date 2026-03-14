@@ -69,6 +69,7 @@ type Monitor struct {
 	learnMu          map[string]*sync.Mutex // per-anvil mutex serializing auto-learn
 	learnSem         chan struct{}          // caps overall concurrent auto-learn goroutines
 	wasUnmanaged     map[string]bool       // keys of ext- PRs seen as unmanaged (for managed transition detection)
+	autoMergeHandler func(ctx context.Context, anvil string, pr state.PR) // called when a PR becomes ready-to-merge
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -108,6 +109,13 @@ func New(db *state.DB, vcsProvider vcs.Provider, interval time.Duration, anvilPa
 		learnSem:         make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
 		wasUnmanaged:     make(map[string]bool),
 	}
+}
+
+// SetAutoMergeHandler registers a callback invoked when a PR transitions to
+// the ready-to-merge state. The daemon uses this to trigger automatic merging
+// for anvils that have auto_merge enabled.
+func (m *Monitor) SetAutoMergeHandler(h func(ctx context.Context, anvil string, pr state.PR)) {
+	m.autoMergeHandler = h
 }
 
 // OnEvent registers a handler for PR events.
@@ -478,6 +486,11 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.LogEvent(state.EventPRReadyToMerge,
 			fmt.Sprintf("PR #%d ready to merge", pr.Number),
 			pr.BeadID, pr.Anvil)
+
+		// Trigger auto-merge if configured for this anvil.
+		if m.autoMergeHandler != nil {
+			m.autoMergeHandler(ctx, pr.Anvil, *pr)
+		}
 	}
 
 	// Persist mergeability state so the ready-to-merge panel stays current.

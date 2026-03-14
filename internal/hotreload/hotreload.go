@@ -12,6 +12,7 @@
 //   - settings.max_review_fix_attempts (applied immediately to lifecycle manager)
 //   - settings.max_rebase_attempts (applied immediately to lifecycle manager)
 //   - notifications.* (all notification settings)
+//   - anvils.<name>.auto_merge (takes effect on next ready-to-merge transition)
 //   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
 //   - anvils.<name>.path (changes to existing anvils' path; updates bellows and depcheck)
 //   - anvils.* adding or removing anvil entries (updates bellows and depcheck)
@@ -247,6 +248,10 @@ func applyChanges(old, new *config.Config) []string {
 			if oldAnvil.Path != newAnvil.Path {
 				changes = append(changes, fmt.Sprintf("anvil %s path: %q → %q",
 					name, oldAnvil.Path, newAnvil.Path))
+			}
+			if oldAnvil.AutoMerge != newAnvil.AutoMerge {
+				changes = append(changes, fmt.Sprintf("anvil %s auto_merge: %v → %v",
+					name, oldAnvil.AutoMerge, newAnvil.AutoMerge))
 			}
 		} else {
 			changes = append(changes, fmt.Sprintf("anvil %s added", name))
