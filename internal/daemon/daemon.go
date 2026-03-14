@@ -171,6 +171,14 @@ type Daemon struct {
 	// labelAdder adds a label to a bead via the bd CLI. Defaults to the real
 	// bd-update implementation; may be replaced in tests to avoid exec.Command.
 	labelAdder func(anvilPath, beadID, tag string) error
+
+	// beadShower returns the raw JSON output of `bd show <id> --json`.
+	// Defaults to exec.Command; may be replaced in tests.
+	beadShower func(anvilPath, beadID string) (stdout []byte, stderr string, err error)
+
+	// parentCloser closes a bead with --force. Defaults to exec.Command;
+	// may be replaced in tests.
+	parentCloser func(anvilPath, beadID, reason string) error
 }
 
 // New creates a new daemon instance.
@@ -298,6 +306,28 @@ func New(cfg *config.Config) (*Daemon, error) {
 		ctx, cancel := context.WithTimeout(d.runCtx, 30*time.Second)
 		defer cancel()
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--add-label", tag))
+		cmd.Dir = anvilPath
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, out)
+		}
+		return nil
+	}
+	d.beadShower = func(anvilPath, beadID string) ([]byte, string, error) {
+		ctx, cancel := context.WithTimeout(d.runCtx, 15*time.Second)
+		defer cancel()
+		cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "show", beadID, "--json"))
+		cmd.Dir = anvilPath
+		var stderrBuf bytes.Buffer
+		cmd.Stderr = &stderrBuf
+		out, err := cmd.Output()
+		return out, stderrBuf.String(), err
+	}
+	d.parentCloser = func(anvilPath, beadID, reason string) error {
+		ctx, cancel := context.WithTimeout(d.runCtx, 15*time.Second)
+		defer cancel()
+		cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "close", beadID,
+			"--force", "--reason="+reason, "--json"))
 		cmd.Dir = anvilPath
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -3194,18 +3224,10 @@ func (d *Daemon) maybeCloseDecomposedParent(bead poller.Bead, anvilCfg config.An
 	anvil := bead.Anvil
 
 	// Query the parent's dependents via bd show --json.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "show", beadID, "--json"))
-	cmd.Dir = anvilCfg.Path
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	output, err := cmd.Output()
+	output, stderrStr, err := d.beadShower(anvilCfg.Path, beadID)
 	if err != nil {
 		d.logger.Warn("failed to query parent bead dependents; leaving open",
-			"bead", beadID, "error", err, "stderr", stderr.String())
+			"bead", beadID, "error", err, "stderr", stderrStr)
 		return
 	}
 
@@ -3227,7 +3249,7 @@ func (d *Daemon) maybeCloseDecomposedParent(bead poller.Bead, anvilCfg config.An
 	}
 	if err := json.Unmarshal(output, &resp); err != nil {
 		d.logger.Warn("failed to parse parent bead dependents; leaving open",
-			"bead", beadID, "error", err)
+			"bead", beadID, "error", err, "output", string(output), "stderr", stderrStr)
 		return
 	}
 
@@ -3239,16 +3261,9 @@ func (d *Daemon) maybeCloseDecomposedParent(bead poller.Bead, anvilCfg config.An
 
 	// No dependents — safe to auto-close.
 	reason := fmt.Sprintf("Decomposed into %d children", childCount)
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer closeCancel()
-
-	closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", beadID,
-		"--force", "--reason="+reason, "--json"))
-	closeCmd.Dir = anvilCfg.Path
-	closeOut, closeErr := closeCmd.CombinedOutput()
-	if closeErr != nil {
+	if err := d.parentCloser(anvilCfg.Path, beadID, reason); err != nil {
 		d.logger.Warn("failed to auto-close decomposed parent",
-			"bead", beadID, "error", closeErr, "output", string(closeOut))
+			"bead", beadID, "error", err)
 		return
 	}
 

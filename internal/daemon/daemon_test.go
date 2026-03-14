@@ -1101,6 +1101,14 @@ func TestApplyDecomposedOutcome(t *testing.T) {
 		db:     db,
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
+	// Default beadShower/parentCloser to no-ops so maybeCloseDecomposedParent
+	// doesn't panic when called indirectly by applyDecomposedOutcome.
+	d.beadShower = func(anvilPath, beadID string) ([]byte, string, error) {
+		return []byte(`{"dependents":[]}`), "", nil
+	}
+	d.parentCloser = func(anvilPath, beadID, reason string) error {
+		return nil
+	}
 	d.cfg.Store(&config.Config{})
 
 	const anvil = "test-anvil"
@@ -1269,6 +1277,176 @@ func TestApplyDecomposedOutcome(t *testing.T) {
 		assert.False(t, called, "labelAdder should not be called for non-tagged auto_dispatch mode")
 	})
 }
+func TestMaybeCloseDecomposedParent(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-maybe-close-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	const anvil = "test-anvil"
+	anvilCfg := config.AnvilConfig{Path: tmpDir}
+
+	t.Run("no dependents: auto-closes parent", func(t *testing.T) {
+		const beadID = "PARENT-NO-DEPS"
+
+		closeCalled := false
+		closeBeadID := ""
+		closeReason := ""
+
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.beadShower = func(anvilPath, id string) ([]byte, string, error) {
+			return []byte(`{"id":"` + id + `","dependents":[]}`), "", nil
+		}
+		d.parentCloser = func(anvilPath, id, reason string) error {
+			closeCalled = true
+			closeBeadID = id
+			closeReason = reason
+			return nil
+		}
+
+		d.maybeCloseDecomposedParent(poller.Bead{ID: beadID, Anvil: anvil}, anvilCfg, 3)
+
+		assert.True(t, closeCalled, "parentCloser should be called when no dependents")
+		assert.Equal(t, beadID, closeBeadID)
+		assert.Contains(t, closeReason, "3 children")
+
+		// Verify event was logged.
+		events, _ := db.RecentEvents(10)
+		found := false
+		for _, ev := range events {
+			if ev.Type == state.EventBeadAutoClosed && ev.BeadID == beadID {
+				found = true
+				assert.Contains(t, ev.Message, "3 children")
+				break
+			}
+		}
+		assert.True(t, found, "EventBeadAutoClosed event should be logged")
+	})
+
+	t.Run("has dependents: keeps parent open", func(t *testing.T) {
+		const beadID = "PARENT-HAS-DEPS"
+
+		closeCalled := false
+
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.beadShower = func(anvilPath, id string) ([]byte, string, error) {
+			resp := `{"id":"` + id + `","dependents":[{"id":"OTHER-BEAD","dependency_type":"depends_on"}]}`
+			return []byte(resp), "", nil
+		}
+		d.parentCloser = func(anvilPath, id, reason string) error {
+			closeCalled = true
+			return nil
+		}
+
+		d.maybeCloseDecomposedParent(poller.Bead{ID: beadID, Anvil: anvil}, anvilCfg, 2)
+
+		assert.False(t, closeCalled, "parentCloser should NOT be called when parent has dependents")
+	})
+
+	t.Run("bd show fails: leaves parent open", func(t *testing.T) {
+		const beadID = "PARENT-SHOW-FAIL"
+
+		closeCalled := false
+
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.beadShower = func(anvilPath, id string) ([]byte, string, error) {
+			return nil, "connection refused", assert.AnError
+		}
+		d.parentCloser = func(anvilPath, id, reason string) error {
+			closeCalled = true
+			return nil
+		}
+
+		d.maybeCloseDecomposedParent(poller.Bead{ID: beadID, Anvil: anvil}, anvilCfg, 1)
+
+		assert.False(t, closeCalled, "parentCloser should NOT be called when bd show fails")
+	})
+
+	t.Run("invalid JSON: leaves parent open", func(t *testing.T) {
+		const beadID = "PARENT-BAD-JSON"
+
+		closeCalled := false
+
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.beadShower = func(anvilPath, id string) ([]byte, string, error) {
+			return []byte(`not valid json`), "", nil
+		}
+		d.parentCloser = func(anvilPath, id, reason string) error {
+			closeCalled = true
+			return nil
+		}
+
+		d.maybeCloseDecomposedParent(poller.Bead{ID: beadID, Anvil: anvil}, anvilCfg, 1)
+
+		assert.False(t, closeCalled, "parentCloser should NOT be called when JSON parsing fails")
+	})
+
+	t.Run("bd close fails: logs warning but does not panic", func(t *testing.T) {
+		const beadID = "PARENT-CLOSE-FAIL"
+
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.beadShower = func(anvilPath, id string) ([]byte, string, error) {
+			return []byte(`{"id":"` + id + `","dependents":[]}`), "", nil
+		}
+		d.parentCloser = func(anvilPath, id, reason string) error {
+			return assert.AnError
+		}
+
+		// Should not panic.
+		d.maybeCloseDecomposedParent(poller.Bead{ID: beadID, Anvil: anvil}, anvilCfg, 2)
+
+		// No EventBeadAutoClosed event should be logged for this bead.
+		events, _ := db.RecentEvents(50)
+		for _, ev := range events {
+			if ev.Type == state.EventBeadAutoClosed && ev.BeadID == beadID {
+				t.Fatal("EventBeadAutoClosed should NOT be logged when bd close fails")
+			}
+		}
+	})
+
+	t.Run("wrapped array response: unwraps and parses correctly", func(t *testing.T) {
+		const beadID = "PARENT-WRAPPED"
+
+		closeCalled := false
+
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.beadShower = func(anvilPath, id string) ([]byte, string, error) {
+			// bd show --json sometimes returns [{...}]
+			return []byte(`[{"id":"` + id + `","dependents":[]}]`), "", nil
+		}
+		d.parentCloser = func(anvilPath, id, reason string) error {
+			closeCalled = true
+			return nil
+		}
+
+		d.maybeCloseDecomposedParent(poller.Bead{ID: beadID, Anvil: anvil}, anvilCfg, 1)
+
+		assert.True(t, closeCalled, "parentCloser should be called after unwrapping array response")
+	})
+}
+
 func TestHandleIPC_StopBead(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-stop-bead-*")
 	require.NoError(t, err)
