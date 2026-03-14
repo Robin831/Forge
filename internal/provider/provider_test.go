@@ -368,6 +368,13 @@ func TestFromConfig(t *testing.T) {
 			wantKinds: []Kind{Claude, Gemini, OpenAI},
 		},
 		{
+			name:       "openai kind:command/model format",
+			specs:      []string{"openai:codex/o3"},
+			wantKinds:  []Kind{OpenAI},
+			wantCmds:   []string{"codex"},
+			wantModels: []string{"o3"},
+		},
+		{
 			name:      "uppercase is normalized",
 			specs:     []string{"CLAUDE"},
 			wantKinds: []Kind{Claude},

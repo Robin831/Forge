@@ -323,6 +323,9 @@ func Defaults() []Provider {
 //	"gemini/gemini-2.5-pro"           – Gemini, specific model
 //	"gemini:mybin"                     – Gemini, custom binary, default model
 //	"gemini:mybin/gemini-2.5-pro"      – Gemini, custom binary, specific model
+//	"openai"                           – OpenAI Codex CLI with default command and model
+//	"openai/o3"                        – OpenAI Codex CLI, specific model
+//	"openai:codex/o3"                  – OpenAI, custom binary (codex), specific model
 //
 // The optional "/model" suffix selects a specific model to pass via --model.
 // The optional ":command" infix overrides the binary to execute.

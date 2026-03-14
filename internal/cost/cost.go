@@ -54,7 +54,11 @@ func GeminiPricing() Pricing {
 	}
 }
 
-// OpenAIPricing returns approximate OpenAI GPT pricing (GPT-5.x class models).
+// OpenAIPricing returns a generic placeholder pricing estimate used for all
+// OpenAI models (based on GPT-5.x class rates). Because the OpenAI provider
+// supports multiple model IDs (e.g. o3, gpt-5.1-codex) with varying prices,
+// this function produces approximate estimates only and may be inaccurate for
+// non-GPT-5.x models. Cost figures are shown as estimates, not billing values.
 func OpenAIPricing() Pricing {
 	return Pricing{
 		InputPerM:      2.50,

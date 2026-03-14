@@ -125,9 +125,34 @@ type RateLimitInfo struct {
 }
 
 // StreamUsage holds token counts from the result event.
+// It supports both Anthropic-style fields (input_tokens/output_tokens) and
+// OpenAI API-style fields (prompt_tokens/completion_tokens) so that Codex CLI
+// output is handled correctly regardless of which naming convention it uses.
 type StreamUsage struct {
+	// Anthropic-style (Claude, Gemini-compat, newer OpenAI SDKs)
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
+	// OpenAI API-style (Codex CLI may emit these)
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+}
+
+// effectiveInputTokens returns the input token count, preferring
+// the Anthropic-style field but falling back to the OpenAI-style field.
+func (u *StreamUsage) effectiveInputTokens() int {
+	if u.InputTokens > 0 {
+		return u.InputTokens
+	}
+	return u.PromptTokens
+}
+
+// effectiveOutputTokens returns the output token count, preferring
+// the Anthropic-style field but falling back to the OpenAI-style field.
+func (u *StreamUsage) effectiveOutputTokens() int {
+	if u.OutputTokens > 0 {
+		return u.OutputTokens
+	}
+	return u.CompletionTokens
 }
 
 // Spawn starts a Claude Code process in the given worktree directory.
@@ -399,8 +424,8 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 				result.IsError = event.IsError
 				result.CostUSD = event.TotalCostUSD
 				if event.Usage != nil {
-					result.TokensIn = event.Usage.InputTokens
-					result.TokensOut = event.Usage.OutputTokens
+					result.TokensIn = event.Usage.effectiveInputTokens()
+					result.TokensOut = event.Usage.effectiveOutputTokens()
 				}
 				if event.Result != "" {
 					result.FullOutput = event.Result
