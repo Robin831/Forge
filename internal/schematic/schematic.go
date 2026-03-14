@@ -242,7 +242,7 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 		result.Action = ActionDecompose
 		result.Reason = verdict.Reason
 		// Create sub-beads via bd
-		subs, err := createSubBeads(ctx, bead, verdict.SubTasks, anvilPath)
+		subs, err := createSubBeads(ctx, bead, verdict.SubTasks, anvilPath, defaultRunCmd)
 		if err != nil {
 			// Failed to create sub-beads — escalate to ActionClarify (not ActionSkip) so the
 			// pipeline releases the bead for human attention rather than silently continuing.
@@ -333,10 +333,25 @@ func parseVerdict(output string) (*schematicVerdict, error) {
 	return nil, fmt.Errorf("no valid schematic verdict JSON found in output")
 }
 
+// bdRunner executes a bd command with a timeout and returns combined output.
+// It is a function type so tests can inject a fake without spawning real processes.
+type bdRunner func(ctx context.Context, dir string, args ...string) ([]byte, error)
+
+// defaultRunCmd is the production bdRunner that delegates to the real bd CLI.
+func defaultRunCmd(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", args...))
+	cmd.Dir = dir
+	return cmd.CombinedOutput()
+}
+
 // createSubBeads creates sub-beads via bd CLI with blocking dependency links.
 // Each sub-bead blocks the parent so that bd ready excludes the parent until
-// all sub-beads are closed.
-func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anvilPath string) ([]SubBead, error) {
+// all sub-beads are closed. Children are chained sequentially (child N+1
+// depends on child N) so the poller dispatches them in the order the AI
+// specified. If adding a sequential dependency fails the function returns an
+// error immediately (with the partial list of already-created sub-beads) so
+// the caller can escalate to ActionClarify and prevent out-of-order dispatch.
+func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anvilPath string, run bdRunner) ([]SubBead, error) {
 	if len(tasks) == 0 {
 		return nil, fmt.Errorf("no sub-tasks to create")
 	}
@@ -344,11 +359,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 	resetParent := func() {
 		rCtx, rCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer rCancel()
-		rCmd := executil.HideWindow(exec.CommandContext(rCtx,
-			"bd", "update", parent.ID, "--status=open", "--json",
-		))
-		rCmd.Dir = anvilPath
-		if out, err := rCmd.CombinedOutput(); err != nil {
+		if out, err := run(rCtx, anvilPath, "update", parent.ID, "--status=open", "--json"); err != nil {
 			log.Printf("[schematic:%s] Warning: failed to reset parent to open: %v: %s", parent.ID, err, out)
 		}
 	}
@@ -358,17 +369,15 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 		// Create sub-bead with blocks dependency so the parent is blocked
 		// until all sub-beads are closed.
 		createCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		cmd := executil.HideWindow(exec.CommandContext(createCtx,
-			"bd", "create",
+		out, err := run(createCtx, anvilPath,
+			"create",
 			"--title="+task,
 			"--description=Sub-task decomposed from "+parent.ID+": "+parent.Title,
 			"--type=task",
 			fmt.Sprintf("--priority=%d", parent.Priority),
 			"--deps", "blocks:"+parent.ID,
 			"--json",
-		))
-		cmd.Dir = anvilPath
-		out, err := cmd.CombinedOutput()
+		)
 		cancel()
 		if err != nil {
 			log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: %v", parent.ID, len(subBeads), err)
@@ -396,6 +405,27 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 		}
 
 		subBeads = append(subBeads, SubBead{ID: created.ID, Title: task})
+
+		// Chain sequential dependency: child N+1 depends on child N.
+		// The schematic prompt asks the AI to order sub-tasks logically,
+		// so we enforce that ordering via bd dep add.
+		// A failure here is fatal: without the sequencing link a later child
+		// could be dispatched before an earlier one completes, reintroducing
+		// the original ordering problem. Return the partial list so the caller
+		// can surface the issue to operators via ActionClarify.
+		if len(subBeads) >= 2 {
+			prev := subBeads[len(subBeads)-2]
+			depCtx, depCancel := context.WithTimeout(ctx, 15*time.Second)
+			depOut, depErr := run(depCtx, anvilPath, "dep", "add", created.ID, prev.ID)
+			depCancel()
+			if depErr != nil {
+				log.Printf("[schematic:%s] Failed to add sequential dep %s -> %s: %v: %s",
+					parent.ID, created.ID, prev.ID, depErr, depOut)
+				resetParent()
+				return subBeads, fmt.Errorf("adding sequential dependency %s -> %s: %w: %s",
+					created.ID, prev.ID, depErr, depOut)
+			}
+		}
 	}
 
 	// Keep the parent open-but-blocked: its work is represented by its sub-beads.
