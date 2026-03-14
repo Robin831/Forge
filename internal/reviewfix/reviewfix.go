@@ -21,6 +21,7 @@ import (
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/vcs"
+	ghvcs "github.com/Robin831/Forge/internal/vcs/github"
 )
 
 // ReviewComment represents a PR review comment from GitHub.
@@ -87,6 +88,11 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	if p.MaxAttempts <= 0 {
 		log.Printf("[burnish] PR #%d: MaxAttempts=%d is not positive; defaulting to 1 attempt", p.PRNumber, p.MaxAttempts)
 		p.MaxAttempts = 1
+	}
+
+	// Ensure a VCS provider is available for GetRepoOwnerAndName calls.
+	if p.VCS == nil {
+		p.VCS = ghvcs.New(nil)
 	}
 
 	// Step 1: Fetch review comments

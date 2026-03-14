@@ -3,8 +3,7 @@
 // checks, etc.) so Forge can work with GitHub, GitLab, Forgejo, Bitbucket,
 // and Azure DevOps.
 //
-// The interface mirrors the operations currently performed by the ghpr package,
-// which becomes the GitHub implementation of this interface.
+// The GitHub implementation lives in the vcs/github sub-package.
 package vcs
 
 import (

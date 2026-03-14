@@ -240,7 +240,7 @@ Forge/
 │   ├── daemon/           # Main background process, poll loop, IPC server
 │   ├── depcheck/         # Multi-language dependency update scanner
 │   ├── executil/         # Platform-specific process execution
-│   ├── ghpr/             # GitHub PR creation & management
+│   ├── vcs/              # VCS provider interface & GitHub implementation
 │   ├── hearth/           # Bubbletea TUI dashboard
 │   ├── hotreload/        # fsnotify config watcher
 │   ├── ipc/              # Named pipe / Unix socket protocol

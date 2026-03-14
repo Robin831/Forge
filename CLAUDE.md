@@ -94,7 +94,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/config` | Viper config loading — `forge.yaml` in cwd or `~/.forge/config.yaml` |
 | `internal/prompt` | Builds the Smith prompt from bead metadata + AGENTS.md/CLAUDE.md/README.md |
 | `internal/provider` | AI provider fallback chain (Claude, Gemini, Copilot) with rate limit handling |
-| `internal/ghpr` | GitHub PR creation and management via `gh` CLI |
+| `internal/vcs` | VCS provider interface and GitHub implementation (`vcs/github`) |
 | `internal/changelog` | Changelog fragment parsing and assembly |
 | `internal/lifecycle` | Worker lifecycle management |
 | `internal/retry` | Exponential backoff and retry logic |
@@ -115,7 +115,7 @@ bd ready (poller) → pipeline.Run()
   → temper.Run (go build/vet/test or dotnet or npm)
   → warden.Review (second claude session, reviews diff)
   → if request_changes: loop back to Smith (max max_review_attempts iterations)
-  → if approved: ghpr.Create (gh pr create)
+  → if approved: vcs.Provider.CreatePR (gh pr create)
   → bellows monitors open PRs (CI fix, review fix, rebase)
   → worktree.Remove
 
@@ -124,8 +124,8 @@ Crucible path (parent beads with children):
     → crucible.Run()
       → worktree.CreateEpicBranch (feature/<parent-id>)
       → fetch children via bd show, topological sort
-      → for each child: pipeline.Run() → ghpr.Create(base=feature branch) → gh pr merge
-      → ghpr.Create(feature branch → main) — final PR
+      → for each child: pipeline.Run() → vcs.CreatePR(base=feature branch) → vcs.MergePR
+      → vcs.CreatePR(feature branch → main) — final PR
       → bellows monitors final PR (CI fix, review, merge → close parent)
 
 depcheck.Monitor (background, weekly by default)
