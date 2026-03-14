@@ -335,7 +335,9 @@ func parseVerdict(output string) (*schematicVerdict, error) {
 
 // createSubBeads creates sub-beads via bd CLI with blocking dependency links.
 // Each sub-bead blocks the parent so that bd ready excludes the parent until
-// all sub-beads are closed.
+// all sub-beads are closed. Children are chained sequentially (child N+1
+// depends on child N) so the poller dispatches them in the order the AI
+// specified.
 func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anvilPath string) ([]SubBead, error) {
 	if len(tasks) == 0 {
 		return nil, fmt.Errorf("no sub-tasks to create")
@@ -396,6 +398,26 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 		}
 
 		subBeads = append(subBeads, SubBead{ID: created.ID, Title: task})
+
+		// Chain sequential dependency: child N+1 depends on child N.
+		// The schematic prompt asks the AI to order sub-tasks logically,
+		// so we enforce that ordering via bd dep add.
+		if len(subBeads) >= 2 {
+			prev := subBeads[len(subBeads)-2]
+			depCtx, depCancel := context.WithTimeout(ctx, 15*time.Second)
+			depCmd := executil.HideWindow(exec.CommandContext(depCtx,
+				"bd", "dep", "add", created.ID, prev.ID,
+			))
+			depCmd.Dir = anvilPath
+			depOut, depErr := depCmd.CombinedOutput()
+			depCancel()
+			if depErr != nil {
+				log.Printf("[schematic:%s] Warning: failed to add sequential dep %s -> %s: %v: %s",
+					parent.ID, created.ID, prev.ID, depErr, depOut)
+				// Non-fatal: children still exist and block the parent,
+				// they just won't be sequenced. Continue creating remaining children.
+			}
+		}
 	}
 
 	// Keep the parent open-but-blocked: its work is represented by its sub-beads.
