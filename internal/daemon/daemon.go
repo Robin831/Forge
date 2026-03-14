@@ -952,10 +952,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	// so we can detect parent beads that should be dispatched through the
 	// Crucible instead of the normal pipeline. This must run before
 	// ResolveEpicBranches because epic branch detection now also checks
-	// whether a bead blocks an epic-type bead.
-	if cfg.Settings.CrucibleEnabled {
-		poller.ResolveBlocks(ctx, beads, anvilPaths)
-	}
+	// Crucible parent detection now relies entirely on the poller's
+	// reconstruction from Parent/Dependencies fields (in pollAnvil).
+	// ResolveBlocks was removed because bd show's "dependents" array
+	// lists beads that depend on me (i.e. parents I block), NOT children —
+	// causing children to be misidentified as crucible parents.
 
 	// Resolve epic branches for beads that belong to an epic. This enriches
 	// each bead's EpicBranch field so dispatchBead can branch from and PR to
@@ -2061,10 +2062,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				paths := map[string]string{targetBead.Anvil: anvilPath}
 				single := []poller.Bead{*targetBead}
 				// First resolve blocks for this bead so epic relationships can be
-				// derived even when the original ready JSON omitted `blocks`.
-				if d.cfg.Load().Settings.CrucibleEnabled {
-					poller.ResolveBlocks(context.Background(), single, paths)
-				}
+				// Crucible detection relies on the poller's reconstruction
+				// from Parent/Dependencies (ResolveBlocks was removed).
 				poller.ResolveEpicBranches(context.Background(), single, paths)
 				targetBead.EpicBranch = single[0].EpicBranch
 			}
