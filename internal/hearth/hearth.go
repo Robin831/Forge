@@ -3255,7 +3255,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 			// Append truncated title when available
 			if item.Title != "" {
 				titleMaxLen := contentWidth - lipgloss.Width(beadLine) - 2 // 2 for "  " separator
-				if titleMaxLen > 10 {
+				if titleMaxLen >= 4 {
 					beadLine += "  " + truncate(sanitizeTitle(item.Title), titleMaxLen)
 				}
 			}
@@ -4225,7 +4225,22 @@ func truncate(s string, maxLen int) string {
 	if runewidth.StringWidth(s) <= maxLen {
 		return s
 	}
-	return runewidth.Truncate(s, maxLen, "...")
+	// Iterate runes explicitly so the slice point is always on a valid
+	// UTF-8 boundary, avoiding mid-character splits with wide characters.
+	const ellipsis = "..."
+	budget := maxLen - runewidth.StringWidth(ellipsis)
+	if budget <= 0 {
+		return ellipsis
+	}
+	w := 0
+	for i, r := range s {
+		rw := runewidth.RuneWidth(r)
+		if w+rw > budget {
+			return s[:i] + ellipsis
+		}
+		w += rw
+	}
+	return s
 }
 
 // activityLineType extracts the event type tag from an activity line.
