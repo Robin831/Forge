@@ -9,6 +9,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -3168,6 +3169,11 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 				}
 			}
 		}
+
+		// Auto-close the parent if nothing else depends on it, since the
+		// children ARE the work now. If it has dependents, keep it open so
+		// those dependents stay blocked until the children complete.
+		d.maybeCloseDecomposedParent(bead, anvilCfg, childCount)
 		return
 	}
 	// Decomposition produced no children — preserve the retry record so the bead
@@ -3178,6 +3184,79 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 	}
 	d.logger.Warn("bead decomposition produced no children; recording as dispatch failure", "bead", beadID, "reason", reason)
 	d.recordDispatchFailure(beadID, anvil, reason)
+}
+
+// maybeCloseDecomposedParent auto-closes a decomposed parent bead when it has
+// no dependents (nothing has depends_on pointing to it). If the parent has
+// dependents those beads stay blocked until someone closes the parent manually.
+func (d *Daemon) maybeCloseDecomposedParent(bead poller.Bead, anvilCfg config.AnvilConfig, childCount int) {
+	beadID := bead.ID
+	anvil := bead.Anvil
+
+	// Query the parent's dependents via bd show --json.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "show", beadID, "--json"))
+	cmd.Dir = anvilCfg.Path
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		d.logger.Warn("failed to query parent bead dependents; leaving open",
+			"bead", beadID, "error", err, "stderr", stderr.String())
+		return
+	}
+
+	// bd show --json may return [{...}]; unwrap.
+	output = bytes.TrimSpace(output)
+	if len(output) > 1 && output[0] == '[' {
+		start := bytes.IndexByte(output, '{')
+		end := bytes.LastIndexByte(output, '}')
+		if start >= 0 && end > start {
+			output = output[start : end+1]
+		}
+	}
+
+	var resp struct {
+		Dependents []struct {
+			ID             string `json:"id"`
+			DependencyType string `json:"dependency_type"`
+		} `json:"dependents"`
+	}
+	if err := json.Unmarshal(output, &resp); err != nil {
+		d.logger.Warn("failed to parse parent bead dependents; leaving open",
+			"bead", beadID, "error", err)
+		return
+	}
+
+	if len(resp.Dependents) > 0 {
+		d.logger.Info("keeping decomposed parent open (has dependents)",
+			"bead", beadID, "dependents", len(resp.Dependents))
+		return
+	}
+
+	// No dependents — safe to auto-close.
+	reason := fmt.Sprintf("Decomposed into %d children", childCount)
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer closeCancel()
+
+	closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", beadID,
+		"--force", "--reason="+reason, "--json"))
+	closeCmd.Dir = anvilCfg.Path
+	closeOut, closeErr := closeCmd.CombinedOutput()
+	if closeErr != nil {
+		d.logger.Warn("failed to auto-close decomposed parent",
+			"bead", beadID, "error", closeErr, "output", string(closeOut))
+		return
+	}
+
+	d.logger.Info("auto-closed decomposed parent (no dependents)",
+		"bead", beadID, "children", childCount)
+	_ = d.db.LogEvent(state.EventBeadAutoClosed,
+		fmt.Sprintf("Parent auto-closed after decomposition into %d children (no dependents)", childCount),
+		beadID, anvil)
 }
 
 // classifyBeadSection determines which queue section a bead belongs to based
