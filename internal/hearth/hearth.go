@@ -132,6 +132,8 @@ type PRItem struct {
 	CIFixCount           int
 	ReviewFixCount       int
 	RebaseCount          int
+	IsExternal           bool // true for PRs discovered via GitHub reconciliation
+	BellowsManaged       bool // true when bellows runs lifecycle workers for this PR
 }
 
 // PRActionMenuChoice represents an action the user can take on an open PR.
@@ -144,6 +146,7 @@ const (
 	PRActionFixComments                                // Trigger reviewfix worker
 	PRActionResolveConflicts                           // Trigger rebase worker
 	PRActionClosePR                                    // Close the PR
+	PRActionAssignBellows                              // Assign bellows to monitor & autofix
 )
 
 // WorkerItem represents a worker in the workers panel.
@@ -320,6 +323,9 @@ type Model struct {
 	// Callback for PR panel actions (set by the caller).
 	// Called with (prID, prNumber, anvil, beadID, branch, action).
 	OnPRAction func(prID, prNumber int, anvil, beadID, branch, action string) error
+
+	// Callback for triggering PR reconciliation with GitHub (set by the caller).
+	OnReconcilePRs func() error
 
 	// Callback for resolving an orphaned bead (set by the caller).
 	// Called with (beadID, anvil, action) where action is "recover", "close", or "discard".
@@ -957,6 +963,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showPRPanel = !m.showPRPanel
 			m.prVP.cursor = 0
 			m.prVP.viewStart = 0
+			if m.showPRPanel && m.OnReconcilePRs != nil {
+				// Trigger GitHub PR reconciliation and refresh the panel
+				return m, func() tea.Msg {
+					_ = m.OnReconcilePRs()
+					return reconcilePRsDoneMsg{}
+				}
+			}
 			return m, nil
 
 		case "esc":
@@ -1158,6 +1171,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UpdateOpenPRsMsg:
 		m.prItems = msg.Items
 		m.prVP.ClampToTotal(len(msg.Items))
+
+	case reconcilePRsDoneMsg:
+		// After reconciliation, refresh the PR list from the DB
+		if m.data != nil {
+			return m, FetchOpenPRs(m.data.DB)
+		}
 
 	case OpenPRsErrorMsg:
 		// Preserve previous PR list; surface the error in the events panel.
@@ -2400,7 +2419,13 @@ func (m *Model) renderPRPanel() string {
 			flagStr := ciFlag + "  " + commentsFlag + "  " + conflictsFlag
 
 			prNum := fmt.Sprintf("#%-5d", pr.PRNumber)
-			line := fmt.Sprintf("  %s %-12s %-10s %-10s %s", prNum, pr.BeadID, pr.Anvil, pr.Status, flagStr)
+			extTag := ""
+			if pr.IsExternal && !pr.BellowsManaged {
+				extTag = dimStyle.Render(" [ext]")
+			} else if pr.IsExternal && pr.BellowsManaged {
+				extTag = lipgloss.NewStyle().Foreground(colorBlue).Render(" [ext+bellows]")
+			}
+			line := fmt.Sprintf("  %s %-12s %-10s %-10s %s", prNum, pr.BeadID, pr.Anvil, pr.Status, flagStr) + extTag
 			if pr.Title != "" {
 				titleDisplay := sanitizeTitle(pr.Title)
 				maxTitleLen := innerW - 10
@@ -2450,14 +2475,21 @@ func (m *Model) buildPRActionForm(item *PRItem, choice *PRActionMenuChoice) *huh
 	if !item.IsConflicting {
 		opts = append(opts, huh.NewOption("Merge            — Merge this pull request", PRActionMerge))
 	}
-	if !item.CIPassing {
-		opts = append(opts, huh.NewOption("Fix CI           — Run cifix worker", PRActionFixCI))
+	// Lifecycle actions (cifix, reviewfix, rebase) only for forge-managed or bellows-assigned PRs
+	if item.BellowsManaged {
+		if !item.CIPassing {
+			opts = append(opts, huh.NewOption("Fix CI           — Run cifix worker", PRActionFixCI))
+		}
+		if item.HasUnresolvedThreads {
+			opts = append(opts, huh.NewOption("Fix comments     — Run reviewfix worker", PRActionFixComments))
+		}
+		if item.IsConflicting {
+			opts = append(opts, huh.NewOption("Fix conflict     — Run rebase worker", PRActionResolveConflicts))
+		}
 	}
-	if item.HasUnresolvedThreads {
-		opts = append(opts, huh.NewOption("Fix comments     — Run reviewfix worker", PRActionFixComments))
-	}
-	if item.IsConflicting {
-		opts = append(opts, huh.NewOption("Fix conflict     — Run rebase worker", PRActionResolveConflicts))
+	// External PRs that aren't bellows-managed can be assigned
+	if item.IsExternal && !item.BellowsManaged {
+		opts = append(opts, huh.NewOption("Assign bellows   — Auto-monitor & fix CI/reviews", PRActionAssignBellows))
 	}
 	opts = append(opts, huh.NewOption("Close PR         — Close this pull request", PRActionClosePR))
 
@@ -2499,6 +2531,8 @@ func (m *Model) executePRAction(choice PRActionMenuChoice) tea.Cmd {
 		action = "rebase"
 	case PRActionClosePR:
 		action = "close"
+	case PRActionAssignBellows:
+		action = "assign_bellows"
 	default:
 		return nil
 	}

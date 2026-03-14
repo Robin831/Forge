@@ -355,6 +355,14 @@ func (d *Daemon) reconcileGitHubPRs(ctx context.Context) {
 			if err := d.db.InsertPR(dbPR); err == nil {
 				d.logger.Info("reconcile: registered untracked GitHub PR",
 					"pr", pr.Number, "bead", beadID, "anvil", anvilName)
+				// Persist title from GitHub
+				if pr.Title != "" {
+					_ = d.db.UpdatePRTitle(dbPR.ID, pr.Title)
+				}
+				// External PRs are not bellows-managed by default
+				if strings.HasPrefix(beadID, "ext-") {
+					_ = d.db.UpdatePRBellowsManaged(dbPR.ID, false)
+				}
 			}
 		}
 	}
@@ -904,10 +912,13 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	// worker that crashed between claiming a bead in bd and inserting its row
 	// into state.db. A minimum-age guard inside RecoverOrphanedBeads prevents
 	// it from reopening legitimately in-flight beads on each periodic check.
-	if d.pollCount.Add(1)%10 == 0 {
+	count := d.pollCount.Add(1)
+	if count%10 == 0 {
 		if recovered := d.shutdownMgr.RecoverOrphanedBeads(); recovered > 0 {
 			d.logger.Info("periodic bead recovery", "recovered", recovered)
 		}
+		// Periodically reconcile GitHub PRs so external PRs appear in Hearth
+		d.reconcileGitHubPRs(ctx)
 	}
 
 	maxTotal := cfg.Settings.MaxTotalSmiths
@@ -1916,6 +1927,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": "poll triggered"})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "reconcile_prs":
+		go d.reconcileGitHubPRs(d.runCtx)
+		data, _ := json.Marshal(map[string]string{"message": "PR reconciliation triggered"})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	case "subscribe":
 		data, _ := json.Marshal(map[string]string{"message": "subscribed"})
 		return ipc.Response{Type: "ok", Payload: data}
@@ -2857,6 +2873,16 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			go d.handleLifecycleAction(d.runCtx, req)
 			_ = d.db.LogEvent(state.EventRebaseStarted, fmt.Sprintf("PR #%d rebase triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
 			d.logger.Info("rebase triggered by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+
+		case "assign_bellows":
+			if pa.PRID > 0 {
+				if err := d.db.UpdatePRBellowsManaged(pa.PRID, true); err != nil {
+					msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to assign bellows: %v", err)})
+					return ipc.Response{Type: "error", Payload: msg}
+				}
+			}
+			_ = d.db.LogEvent("bellows_assigned", fmt.Sprintf("PR #%d assigned to bellows for lifecycle management", pa.PRNumber), pa.BeadID, pa.Anvil)
+			d.logger.Info("bellows assigned to external PR via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
 		default:
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("unknown pr_action: %q", pa.Action)})

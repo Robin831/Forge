@@ -255,9 +255,10 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	m.mu.Unlock()
 
 	// External PRs (not created by Forge) are tracked for display in the
-	// Hearth PR panel, but must not trigger lifecycle workers (cifix,
-	// reviewfix, rebase). Persist their mergeability state and return early.
-	if strings.HasPrefix(pr.BeadID, "ext-") {
+	// Hearth PR panel. Unless explicitly assigned to bellows, they must not
+	// trigger lifecycle workers (cifix, reviewfix, rebase). Persist their
+	// mergeability state and return early.
+	if strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged {
 		_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval)
 		if newSnap.IsMerged {
 			_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)

@@ -711,6 +711,9 @@ type UpdateOpenPRsMsg struct {
 // OpenPRsErrorMsg signals that reading open PRs failed.
 type OpenPRsErrorMsg struct{ Err error }
 
+// reconcilePRsDoneMsg is sent after GitHub PR reconciliation completes.
+type reconcilePRsDoneMsg struct{}
+
 // FetchOpenPRs reads all non-terminal PRs with status detail from the state DB.
 func FetchOpenPRs(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
@@ -736,6 +739,8 @@ func FetchOpenPRs(db *state.DB) tea.Cmd {
 				CIFixCount:           p.CIFixCount,
 				ReviewFixCount:       p.ReviewFixCount,
 				RebaseCount:          p.RebaseCount,
+				IsExternal:           p.IsExternal,
+				BellowsManaged:       p.BellowsManaged,
 			})
 		}
 		return UpdateOpenPRsMsg{Items: items}
