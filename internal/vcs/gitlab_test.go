@@ -197,8 +197,22 @@ func TestExtractGlabURL(t *testing.T) {
 }
 
 func TestURLEncode(t *testing.T) {
-	assert.Equal(t, "group%2Fsubgroup%2Fproject", urlEncode("group/subgroup/project"))
-	assert.Equal(t, "simple", urlEncode("simple"))
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"nested groups", "group/subgroup/project", "group%2Fsubgroup%2Fproject"},
+		{"no slashes", "simple", "simple"},
+		{"single group", "group/project", "group%2Fproject"},
+		{"space in name", "my group/my project", "my%20group%2Fmy%20project"},
+		{"dots in name", "my.group/my.project", "my.group%2Fmy.project"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, urlEncode(tt.input))
+		})
+	}
 }
 
 func TestBuildGitLabBody(t *testing.T) {

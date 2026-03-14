@@ -92,6 +92,32 @@ func TestPRStatus_HasPendingReviewRequests(t *testing.T) {
 	}).HasPendingReviewRequests())
 }
 
+func TestForPlatform(t *testing.T) {
+	t.Run("gitlab returns GitLabProvider", func(t *testing.T) {
+		p, err := ForPlatform("gitlab")
+		require.NoError(t, err)
+		assert.Equal(t, GitLab, p.Platform())
+	})
+
+	t.Run("empty string returns not-implemented for github", func(t *testing.T) {
+		_, err := ForPlatform("")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not yet implemented")
+	})
+
+	t.Run("invalid platform returns error", func(t *testing.T) {
+		_, err := ForPlatform("svn")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown VCS platform")
+	})
+
+	t.Run("case insensitive", func(t *testing.T) {
+		p, err := ForPlatform("GitLab")
+		require.NoError(t, err)
+		assert.Equal(t, GitLab, p.Platform())
+	})
+}
+
 func TestMergeabilityFromStatus(t *testing.T) {
 	s := &PRStatus{
 		Mergeable:         "CONFLICTING",

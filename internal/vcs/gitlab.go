@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -599,9 +600,18 @@ func extractMRNumber(url string) int {
 }
 
 // urlEncode encodes a project path for use in GitLab API endpoints.
-// GitLab API requires project paths to be URL-encoded (slashes → %2F).
+// GitLab API requires the full namespace/project path to be URL-encoded
+// (slashes → %2F, special characters percent-encoded).
+// Each path segment is individually escaped via url.PathEscape, then
+// joined with %2F so that characters like dots, spaces, and non-ASCII
+// names in group/project paths are handled correctly.
 func urlEncode(path string) string {
-	return strings.ReplaceAll(path, "/", "%2F")
+	segments := strings.Split(path, "/")
+	encoded := make([]string, len(segments))
+	for i, seg := range segments {
+		encoded[i] = url.PathEscape(seg)
+	}
+	return strings.Join(encoded, "%2F")
 }
 
 // buildGitLabBody creates a structured MR description from bead metadata.

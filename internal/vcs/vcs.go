@@ -14,6 +14,21 @@ import (
 	"time"
 )
 
+// ForPlatform returns a Provider for the given platform.
+// An empty string defaults to GitHub. Unsupported platforms return an error.
+func ForPlatform(platform string) (Provider, error) {
+	p, err := ParsePlatform(platform)
+	if err != nil {
+		return nil, err
+	}
+	switch p {
+	case GitLab:
+		return NewGitLabProvider(), nil
+	default:
+		return nil, fmt.Errorf("VCS provider not yet implemented for platform %q", p)
+	}
+}
+
 // Platform identifies a VCS hosting platform.
 type Platform string
 
