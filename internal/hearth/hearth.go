@@ -4222,11 +4222,10 @@ func truncate(s string, maxLen int) string {
 	if maxLen < 4 {
 		maxLen = 4
 	}
-	runes := []rune(s)
-	if len(runes) <= maxLen {
+	if runewidth.StringWidth(s) <= maxLen {
 		return s
 	}
-	return string(runes[:maxLen-3]) + "..."
+	return runewidth.Truncate(s, maxLen, "...")
 }
 
 // activityLineType extracts the event type tag from an activity line.

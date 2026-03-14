@@ -1521,6 +1521,75 @@ func TestExecuteAction_DismissError_ItemNotRemoved(t *testing.T) {
 	}
 }
 
+func TestActionMenuDescriptionShowsReason(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{
+			BeadID:         "bd-10",
+			Anvil:          "test",
+			Title:          "Webhook notification UI",
+			Reason:         "Automatic decomposition failed: parsing sub-bead ID",
+			ReasonCategory: AttentionClarification,
+		},
+	}
+	m.focused = PanelNeedsAttention
+	m.width = 80
+	m.height = 24
+
+	// Simulate pressing Enter to open the action menu
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model := m2.(*Model)
+
+	if model.actionForm == nil {
+		t.Fatal("expected actionForm to be created after pressing Enter")
+	}
+	if model.actionTarget == nil {
+		t.Fatal("expected actionTarget to be set")
+	}
+
+	// Render the action menu and verify the reason text is included
+	rendered := model.renderActionMenu()
+	if !strings.Contains(rendered, "Automatic decomposition failed") {
+		t.Errorf("expected action menu to contain reason text, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "⚠") {
+		t.Errorf("expected action menu to contain ⚠ prefix for reason, got:\n%s", rendered)
+	}
+}
+
+func TestActionMenuDescriptionWithoutReason(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{
+			BeadID:         "bd-11",
+			Anvil:          "test",
+			Title:          "Some bead title",
+			Reason:         "",
+			ReasonCategory: AttentionUnknown,
+		},
+	}
+	m.focused = PanelNeedsAttention
+	m.width = 80
+	m.height = 24
+
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model := m2.(*Model)
+
+	if model.actionForm == nil {
+		t.Fatal("expected actionForm to be created after pressing Enter")
+	}
+
+	// Render the action menu — should still work without reason text
+	rendered := model.renderActionMenu()
+	if rendered == "" {
+		t.Error("expected non-empty action menu render")
+	}
+	// Should NOT contain ⚠ when there's no reason
+	if strings.Contains(rendered, "⚠") {
+		t.Errorf("expected no ⚠ prefix when reason is empty, got:\n%s", rendered)
+	}
+}
+
 func TestRenderReadyToMergeEmpty(t *testing.T) {
 	m := NewModel(nil)
 	m.readyToMerge = nil
