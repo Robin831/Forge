@@ -17,8 +17,8 @@ import (
 
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
-	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -270,7 +270,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 // fetchReviewComments gets PR review comments via GraphQL and gh CLI.
 func fetchReviewComments(ctx context.Context, worktreePath string, prNumber int) ([]ReviewComment, error) {
-	owner, repo, err := ghpr.GetRepoOwnerAndName(ctx, worktreePath)
+	owner, repo, err := github.New(nil).GetRepoOwnerAndName(ctx, worktreePath)
 	if err != nil {
 		return nil, fmt.Errorf("getting repo owner and name: %w", err)
 	}
