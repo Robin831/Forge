@@ -28,6 +28,10 @@ func New(db *state.DB) *Provider {
 	return &Provider{db: db}
 }
 
+func init() {
+	vcs.RegisterGitHubProvider(func() vcs.Provider { return New(nil) })
+}
+
 // Platform returns vcs.GitHub.
 func (p *Provider) Platform() vcs.Platform {
 	return vcs.GitHub
