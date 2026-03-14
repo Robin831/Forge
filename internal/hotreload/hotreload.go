@@ -12,6 +12,7 @@
 //   - settings.max_review_fix_attempts (applied immediately to lifecycle manager)
 //   - settings.max_rebase_attempts (applied immediately to lifecycle manager)
 //   - notifications.* (all notification settings)
+//   - anvils.<name>.auto_merge (takes effect on next ready-to-merge transition)
 //   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
 //   - anvils.<name>.path (changes to existing anvils' path; updates bellows and depcheck)
 //   - anvils.* adding or removing anvil entries (updates bellows and depcheck)

@@ -43,8 +43,12 @@ var hearthCmd = &cobra.Command{
 		}
 
 		anvilNames := make([]string, 0, len(cfg.Anvils))
-		for name := range cfg.Anvils {
+		autoMergeAnvils := make(map[string]bool)
+		for name, a := range cfg.Anvils {
 			anvilNames = append(anvilNames, name)
+			if a.AutoMerge {
+				autoMergeAnvils[name] = true
+			}
 		}
 		sort.Strings(anvilNames)
 
@@ -56,21 +60,10 @@ var hearthCmd = &cobra.Command{
 			AnvilNames:               anvilNames,
 			DailyCostLimit:           cfg.Settings.DailyCostLimit,
 			CopilotDailyRequestLimit: cfg.Settings.CopilotDailyRequestLimit,
-			AutoMergeAnvils: func() map[string]bool {
-				// Re-read config on each call so the Hearth TUI picks up
-				// auto_merge changes made via hot-reload without restarting.
-				c, err := config.Load("")
-				if err != nil || c == nil {
-					return nil
-				}
-				m := make(map[string]bool)
-				for name, a := range c.Anvils {
-					if a.AutoMerge {
-						m[name] = true
-					}
-				}
-				return m
-			},
+			// autoMergeAnvils is built once at startup from the loaded config.
+			// The daemon picks up auto_merge changes via hot-reload immediately;
+			// Hearth reflects changes after restart.
+			AutoMergeAnvils: func() map[string]bool { return autoMergeAnvils },
 		}
 
 		model := hearth.NewModel(ds)
