@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
@@ -570,11 +571,8 @@ func (c *Config) Validate() []string {
 			errs = append(errs, fmt.Sprintf("anvil %q: max_smiths must be >= 0", name))
 		}
 
-		switch anvil.Platform {
-		case "", "github", "gitlab", "gitea", "bitbucket", "azuredevops":
-			// valid
-		default:
-			errs = append(errs, fmt.Sprintf("anvil %q: invalid platform %q (must be github|gitlab|gitea|bitbucket|azuredevops)", name, anvil.Platform))
+		if _, err := vcs.ParsePlatform(anvil.Platform); err != nil {
+			errs = append(errs, fmt.Sprintf("anvil %q: %s", name, err))
 		}
 
 		switch anvil.AutoDispatch {

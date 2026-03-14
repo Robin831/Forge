@@ -19,8 +19,9 @@ func TestParsePlatform(t *testing.T) {
 		{"gitea", Gitea, false},
 		{"bitbucket", Bitbucket, false},
 		{"azuredevops", AzureDevOps, false},
-		{"GitHub", "", true},
-		{"GITLAB", "", true},
+		{"GitHub", GitHub, false},
+		{"GITLAB", GitLab, false},
+		{"  github  ", GitHub, false},
 		{"svn", "", true},
 	}
 

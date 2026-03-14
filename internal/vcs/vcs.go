@@ -10,6 +10,7 @@ package vcs
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -34,12 +35,14 @@ var ValidPlatforms = map[Platform]bool{
 }
 
 // ParsePlatform normalises and validates a platform string.
+// It trims surrounding whitespace and folds the input to lowercase before
+// matching, so "GitHub", " GITLAB ", etc. are accepted.
 // An empty string defaults to GitHub.
 func ParsePlatform(s string) (Platform, error) {
 	if s == "" {
 		return GitHub, nil
 	}
-	p := Platform(s)
+	p := Platform(strings.ToLower(strings.TrimSpace(s)))
 	if !ValidPlatforms[p] {
 		return "", fmt.Errorf("unknown VCS platform %q (valid: github, gitlab, gitea, bitbucket, azuredevops)", s)
 	}
