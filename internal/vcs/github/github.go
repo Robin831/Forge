@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -447,6 +448,297 @@ func (p *Provider) FetchPendingReviewRequests(ctx context.Context, worktreePath 
 		})
 	}
 	return requests, nil
+}
+
+// FetchPRChecks returns the raw output of `gh pr checks` and the parsed
+// failing checks for a PR.
+func (p *Provider) FetchPRChecks(ctx context.Context, worktreePath string, prNumber int) (string, []vcs.CICheck, error) {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", "pr", "checks", fmt.Sprintf("%d", prNumber)))
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", nil, err
+	}
+
+	raw := string(out)
+	var failing []vcs.CICheck
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 2 {
+			continue
+		}
+		name := strings.TrimSpace(fields[0])
+		status := strings.TrimSpace(fields[1])
+		var link string
+		if len(fields) >= 4 {
+			link = strings.TrimSpace(fields[3])
+		}
+		if status == "fail" {
+			failing = append(failing, vcs.CICheck{Name: name, Status: status, Link: link})
+		}
+	}
+	return raw, failing, nil
+}
+
+// runIDRegexp extracts a GitHub Actions run ID from a check run URL.
+// URLs look like: https://github.com/owner/repo/actions/runs/12345/jobs/67890
+var runIDRegexp = regexp.MustCompile(`/actions/runs/(\d+)`)
+
+// FetchCILogs fetches CI logs for failing checks from GitHub Actions.
+// Returns a map of check name → log output.
+func (p *Provider) FetchCILogs(ctx context.Context, worktreePath string, checks []vcs.CICheck) (map[string]string, error) {
+	if len(checks) == 0 {
+		return nil, nil
+	}
+
+	// Collect unique run IDs from check URLs.
+	seenRuns := make(map[string]bool)
+	runLogs := make(map[string]string) // runID → log output
+	for _, check := range checks {
+		matches := runIDRegexp.FindStringSubmatch(check.Link)
+		if len(matches) < 2 {
+			continue
+		}
+		runID := matches[1]
+		if seenRuns[runID] {
+			continue
+		}
+		seenRuns[runID] = true
+
+		logs, err := p.fetchRunFailedLogs(ctx, worktreePath, runID)
+		if err != nil {
+			log.Printf("[vcs/github] Warning: failed to fetch logs for run %s: %v", runID, err)
+			continue
+		}
+		runLogs[runID] = logs
+	}
+
+	// Map check names to their run's logs.
+	result := make(map[string]string)
+	for _, check := range checks {
+		matches := runIDRegexp.FindStringSubmatch(check.Link)
+		if len(matches) < 2 {
+			continue
+		}
+		if logs, ok := runLogs[matches[1]]; ok && logs != "" {
+			result[check.Name] = logs
+		}
+	}
+	return result, nil
+}
+
+// fetchRunFailedLogs fetches the failed job logs for a GitHub Actions run.
+func (p *Provider) fetchRunFailedLogs(ctx context.Context, worktreePath, runID string) (string, error) {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", "run", "view", runID, "--log-failed"))
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+			return "", fmt.Errorf("gh run view --log-failed: %w: %s", err, trimmed)
+		}
+		return "", fmt.Errorf("gh run view --log-failed: %w", err)
+	}
+	return string(out), nil
+}
+
+// FetchReviewComments returns review comments and unresolved threads on a PR
+// via GraphQL and the gh CLI.
+func (p *Provider) FetchReviewComments(ctx context.Context, worktreePath string, prNumber int) ([]vcs.ReviewComment, error) {
+	owner, repo, err := p.GetRepoOwnerAndName(ctx, worktreePath)
+	if err != nil {
+		return nil, fmt.Errorf("getting repo owner and name: %w", err)
+	}
+
+	// 1. Fetch unresolved threads via GraphQL (paginated)
+	query := `
+	query($owner:String!, $repo:String!, $pr:Int!, $cursor:String) {
+		repository(owner:$owner, name:$repo) {
+			pullRequest(number:$pr) {
+				reviewThreads(first:100, after:$cursor) {
+					pageInfo { hasNextPage endCursor }
+					nodes {
+						id
+						isResolved
+						comments(first:1) {
+							nodes { path line body author { login } }
+						}
+					}
+				}
+			}
+		}
+	}`
+
+	type gqlPage struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
+						Nodes []struct {
+							ID         string `json:"id"`
+							IsResolved bool   `json:"isResolved"`
+							Comments   struct {
+								Nodes []struct {
+									Path   string `json:"path"`
+									Line   int    `json:"line"`
+									Body   string `json:"body"`
+									Author struct {
+										Login string `json:"login"`
+									} `json:"author"`
+								} `json:"nodes"`
+							} `json:"comments"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+
+	var comments []vcs.ReviewComment
+	cursor := ""
+	for {
+		args := []string{
+			"api", "graphql",
+			"-f", "query=" + query,
+			"-f", "owner=" + owner,
+			"-f", "repo=" + repo,
+			"-F", fmt.Sprintf("pr=%d", prNumber),
+		}
+		if cursor != "" {
+			args = append(args, "-f", "cursor="+cursor)
+		} else {
+			args = append(args, "-F", "cursor=null")
+		}
+
+		cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
+		cmd.Dir = worktreePath
+
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr.String())
+		}
+
+		var page gqlPage
+		if err := json.Unmarshal(stdout.Bytes(), &page); err != nil {
+			return nil, fmt.Errorf("parsing graphql response: %w", err)
+		}
+
+		for _, thread := range page.Data.Repository.PullRequest.ReviewThreads.Nodes {
+			if thread.IsResolved {
+				continue
+			}
+			if len(thread.Comments.Nodes) > 0 {
+				c := thread.Comments.Nodes[0]
+				comments = append(comments, vcs.ReviewComment{
+					Author:   c.Author.Login,
+					Body:     c.Body,
+					Path:     c.Path,
+					Line:     c.Line,
+					ThreadID: thread.ID,
+				})
+			}
+		}
+
+		if !page.Data.Repository.PullRequest.ReviewThreads.PageInfo.HasNextPage {
+			break
+		}
+		cursor = page.Data.Repository.PullRequest.ReviewThreads.PageInfo.EndCursor
+	}
+
+	// 2. Fetch PR-level reviews via gh pr view
+	args2 := []string{
+		"pr", "view", fmt.Sprintf("%d", prNumber),
+		"--json", "reviews,comments",
+	}
+
+	cmd2 := executil.HideWindow(exec.CommandContext(ctx, "gh", args2...))
+	cmd2.Dir = worktreePath
+
+	var stdout2, stderr2 bytes.Buffer
+	cmd2.Stdout = &stdout2
+	cmd2.Stderr = &stderr2
+
+	if err := cmd2.Run(); err != nil {
+		return comments, nil // Return what we have from threads if this fails
+	}
+
+	var prData struct {
+		Reviews []struct {
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			Body  string `json:"body"`
+			State string `json:"state"`
+		} `json:"reviews"`
+		Comments []struct {
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			Body string `json:"body"`
+		} `json:"comments"`
+	}
+
+	if err := json.Unmarshal(stdout2.Bytes(), &prData); err == nil {
+		// Review-level comments
+		for _, r := range prData.Reviews {
+			if r.State != "APPROVED" && r.State != "DISMISSED" && len(r.Body) > 20 {
+				comments = append(comments, vcs.ReviewComment{
+					Author: r.Author.Login,
+					Body:   r.Body,
+					State:  r.State,
+				})
+			}
+		}
+		// PR-level general comments
+		for _, c := range prData.Comments {
+			if len(c.Body) > 20 {
+				comments = append(comments, vcs.ReviewComment{
+					Author: c.Author.Login,
+					Body:   c.Body,
+				})
+			}
+		}
+	}
+
+	return comments, nil
+}
+
+// ResolveThread resolves a review thread on a GitHub PR via GraphQL.
+func (p *Provider) ResolveThread(ctx context.Context, worktreePath string, threadID string) error {
+	query := `
+	mutation($threadId:ID!) {
+		resolveReviewThread(input:{threadId:$threadId}) {
+			thread { isResolved }
+		}
+	}`
+
+	args := []string{
+		"api", "graphql",
+		"-f", "query=" + query,
+		"-f", "threadId=" + threadID,
+	}
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
+	cmd.Dir = worktreePath
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh api graphql (resolve): %w\nstderr: %s", err, stderr.String())
+	}
+
+	return nil
 }
 
 // ParseRepoURL parses a git remote URL into owner and repository name.

@@ -3,12 +3,14 @@ package reviewfix
 import (
 	"strings"
 	"testing"
+
+	"github.com/Robin831/Forge/internal/vcs"
 )
 
 func TestFilterActionableComments(t *testing.T) {
 	tests := []struct {
 		name    string
-		input   []ReviewComment
+		input   []vcs.ReviewComment
 		wantLen int
 	}{
 		{
@@ -18,42 +20,42 @@ func TestFilterActionableComments(t *testing.T) {
 		},
 		{
 			name: "skip approved",
-			input: []ReviewComment{
+			input: []vcs.ReviewComment{
 				{Author: "alice", Body: "looks good", State: "APPROVED"},
 			},
 			wantLen: 0,
 		},
 		{
 			name: "skip dismissed",
-			input: []ReviewComment{
+			input: []vcs.ReviewComment{
 				{Author: "alice", Body: "fix this", State: "DISMISSED"},
 			},
 			wantLen: 0,
 		},
 		{
 			name: "skip empty body",
-			input: []ReviewComment{
+			input: []vcs.ReviewComment{
 				{Author: "alice", Body: "", State: "CHANGES_REQUESTED"},
 			},
 			wantLen: 0,
 		},
 		{
 			name: "keep changes requested",
-			input: []ReviewComment{
+			input: []vcs.ReviewComment{
 				{Author: "copilot", Body: "please fix the typo", State: "CHANGES_REQUESTED"},
 			},
 			wantLen: 1,
 		},
 		{
 			name: "keep thread comment with no state",
-			input: []ReviewComment{
+			input: []vcs.ReviewComment{
 				{Author: "copilot", Body: "this method is too long", ThreadID: "T_kwDO123"},
 			},
 			wantLen: 1,
 		},
 		{
 			name: "mixed comments",
-			input: []ReviewComment{
+			input: []vcs.ReviewComment{
 				{Author: "alice", Body: "LGTM", State: "APPROVED"},
 				{Author: "copilot", Body: "fix the null check", State: "CHANGES_REQUESTED"},
 				{Author: "bob", Body: "", State: "CHANGES_REQUESTED"},
@@ -80,7 +82,7 @@ func TestBuildReviewFixPrompt(t *testing.T) {
 		BeadID:       "Forge-xyz",
 		WorktreePath: "/tmp/worktree",
 	}
-	comments := []ReviewComment{
+	comments := []vcs.ReviewComment{
 		{Author: "copilot", Body: "Fix the nil pointer", Path: "main.go", Line: 10, State: "CHANGES_REQUESTED"},
 		{Author: "alice", Body: "Rename this variable", Path: "util.go", Line: 25},
 	}
@@ -112,7 +114,7 @@ func TestBuildReviewFixPrompt(t *testing.T) {
 
 func TestBuildReviewFixPrompt_NoAuthorOrPath(t *testing.T) {
 	p := FixParams{PRNumber: 1, Branch: "main", BeadID: "Forge-abc"}
-	comments := []ReviewComment{
+	comments := []vcs.ReviewComment{
 		{Body: "fix something"},
 	}
 	prompt := buildReviewFixPrompt(p, comments)

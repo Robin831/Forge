@@ -1,38 +1,23 @@
 // Package reviewfix spawns a Smith worker to address PR review comments.
 //
 // When Bellows detects "changes requested" on a PR, reviewfix fetches the
-// review comments via gh, constructs a targeted fix prompt, and spawns
-// Smith to address them. It then pushes the fixes to the PR branch.
+// review comments via the VCS provider, constructs a targeted fix prompt,
+// and spawns Smith to address them. It then pushes the fixes to the PR branch.
 package reviewfix
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/cost"
-	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/vcs"
-	ghvcs "github.com/Robin831/Forge/internal/vcs/github"
 )
-
-// ReviewComment represents a PR review comment from GitHub.
-type ReviewComment struct {
-	Author   string `json:"author"`
-	Body     string `json:"body"`
-	Path     string `json:"path"`
-	Line     int    `json:"line"`
-	State    string `json:"state"`
-	ThreadID string `json:"id"`
-}
 
 // FixParams holds the inputs for a review fix attempt.
 type FixParams struct {
@@ -90,13 +75,13 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		p.MaxAttempts = 1
 	}
 
-	// Ensure a VCS provider is available for GetRepoOwnerAndName calls.
+	// Ensure a VCS provider is available.
 	if p.VCS == nil {
-		p.VCS = ghvcs.New(nil)
+		p.VCS = vcs.NewGitHubProvider()
 	}
 
-	// Step 1: Fetch review comments
-	comments, err := fetchReviewComments(ctx, p.VCS, p.WorktreePath, p.PRNumber)
+	// Step 1: Fetch review comments via VCS provider
+	comments, err := p.VCS.FetchReviewComments(ctx, p.WorktreePath, p.PRNumber)
 	if err != nil {
 		result.Error = fmt.Errorf("fetching review comments: %w", err)
 		result.Duration = time.Since(start)
@@ -239,7 +224,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			if comment.ThreadID == "" {
 				continue
 			}
-			if err := resolveThread(ctx, p.WorktreePath, comment.ThreadID); err != nil {
+			if err := p.VCS.ResolveThread(ctx, p.WorktreePath, comment.ThreadID); err != nil {
 				log.Printf("[burnish] PR #%d: Warning: failed to resolve thread %s: %v", p.PRNumber, comment.ThreadID, err)
 				_ = p.DB.LogEvent(state.EventReviewFixFailed,
 					fmt.Sprintf("PR #%d: resolve thread %s failed: %v", p.PRNumber, comment.ThreadID, err),
@@ -277,203 +262,9 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	return result
 }
 
-// fetchReviewComments gets PR review comments via GraphQL and gh CLI.
-func fetchReviewComments(ctx context.Context, vcsProvider vcs.Provider, worktreePath string, prNumber int) ([]ReviewComment, error) {
-	owner, repo, err := vcsProvider.GetRepoOwnerAndName(ctx, worktreePath)
-	if err != nil {
-		return nil, fmt.Errorf("getting repo owner and name: %w", err)
-	}
-
-	// 1. Fetch unresolved threads via GraphQL (paginated — avoids missing threads on large PRs)
-	query := `
-	query($owner:String!, $repo:String!, $pr:Int!, $cursor:String) {
-		repository(owner:$owner, name:$repo) {
-			pullRequest(number:$pr) {
-				reviewThreads(first:100, after:$cursor) {
-					pageInfo { hasNextPage endCursor }
-					nodes {
-						id
-						isResolved
-						comments(first:1) {
-							nodes { path line body author { login } }
-						}
-					}
-				}
-			}
-		}
-	}`
-
-	type gqlPage struct {
-		Data struct {
-			Repository struct {
-				PullRequest struct {
-					ReviewThreads struct {
-						PageInfo struct {
-							HasNextPage bool   `json:"hasNextPage"`
-							EndCursor   string `json:"endCursor"`
-						} `json:"pageInfo"`
-						Nodes []struct {
-							ID         string `json:"id"`
-							IsResolved bool   `json:"isResolved"`
-							Comments   struct {
-								Nodes []struct {
-									Path   string `json:"path"`
-									Line   int    `json:"line"`
-									Body   string `json:"body"`
-									Author struct {
-										Login string `json:"login"`
-									} `json:"author"`
-								} `json:"nodes"`
-							} `json:"comments"`
-						} `json:"nodes"`
-					} `json:"reviewThreads"`
-				} `json:"pullRequest"`
-			} `json:"repository"`
-		} `json:"data"`
-	}
-
-	var comments []ReviewComment
-	cursor := ""
-	for {
-		args := []string{
-			"api", "graphql",
-			"-f", "query=" + query,
-			"-f", "owner=" + owner,
-			"-f", "repo=" + repo,
-			"-F", fmt.Sprintf("pr=%d", prNumber),
-		}
-		if cursor != "" {
-			args = append(args, "-f", "cursor="+cursor)
-		} else {
-			args = append(args, "-F", "cursor=null")
-		}
-
-		cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
-		cmd.Dir = worktreePath
-
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			return nil, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr.String())
-		}
-
-		var page gqlPage
-		if err := json.Unmarshal(stdout.Bytes(), &page); err != nil {
-			return nil, fmt.Errorf("parsing graphql response: %w", err)
-		}
-
-		for _, thread := range page.Data.Repository.PullRequest.ReviewThreads.Nodes {
-			if thread.IsResolved {
-				continue
-			}
-			if len(thread.Comments.Nodes) > 0 {
-				c := thread.Comments.Nodes[0]
-				comments = append(comments, ReviewComment{
-					Author:   c.Author.Login,
-					Body:     c.Body,
-					Path:     c.Path,
-					Line:     c.Line,
-					ThreadID: thread.ID,
-				})
-			}
-		}
-
-		if !page.Data.Repository.PullRequest.ReviewThreads.PageInfo.HasNextPage {
-			break
-		}
-		cursor = page.Data.Repository.PullRequest.ReviewThreads.PageInfo.EndCursor
-	}
-
-	// 2. Fetch PR-level reviews via gh pr view
-	args2 := []string{
-		"pr", "view", fmt.Sprintf("%d", prNumber),
-		"--json", "reviews,comments",
-	}
-
-	cmd2 := executil.HideWindow(exec.CommandContext(ctx, "gh", args2...))
-	cmd2.Dir = worktreePath
-
-	var stdout2, stderr2 bytes.Buffer
-	cmd2.Stdout = &stdout2
-	cmd2.Stderr = &stderr2
-
-	if err := cmd2.Run(); err != nil {
-		return comments, nil // Return what we have from threads if this fails
-	}
-
-	var prData struct {
-		Reviews []struct {
-			Author struct {
-				Login string `json:"login"`
-			} `json:"author"`
-			Body  string `json:"body"`
-			State string `json:"state"`
-		} `json:"reviews"`
-		Comments []struct {
-			Author struct {
-				Login string `json:"login"`
-			} `json:"author"`
-			Body string `json:"body"`
-		} `json:"comments"`
-	}
-
-	if err := json.Unmarshal(stdout2.Bytes(), &prData); err == nil {
-		// Review-level comments
-		for _, r := range prData.Reviews {
-			if r.State != "APPROVED" && r.State != "DISMISSED" && len(r.Body) > 20 {
-				comments = append(comments, ReviewComment{
-					Author: r.Author.Login,
-					Body:   r.Body,
-					State:  r.State,
-				})
-			}
-		}
-		// PR-level general comments
-		for _, c := range prData.Comments {
-			if len(c.Body) > 20 {
-				comments = append(comments, ReviewComment{
-					Author: c.Author.Login,
-					Body:   c.Body,
-				})
-			}
-		}
-	}
-
-	return comments, nil
-}
-
-func resolveThread(ctx context.Context, worktreePath string, threadID string) error {
-	query := `
-	mutation($threadId:ID!) {
-		resolveReviewThread(input:{threadId:$threadId}) {
-			thread { isResolved }
-		}
-	}`
-
-	args := []string{
-		"api", "graphql",
-		"-f", "query=" + query,
-		"-f", "threadId=" + threadID,
-	}
-
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
-	cmd.Dir = worktreePath
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("gh api graphql (resolve): %w\nstderr: %s", err, stderr.String())
-	}
-
-	return nil
-}
-
 // filterActionableComments keeps only comments that need action.
-func filterActionableComments(comments []ReviewComment) []ReviewComment {
-	var actionable []ReviewComment
+func filterActionableComments(comments []vcs.ReviewComment) []vcs.ReviewComment {
+	var actionable []vcs.ReviewComment
 	for _, c := range comments {
 		// Skip bot comments and approvals
 		if c.State == "APPROVED" || c.State == "DISMISSED" {
@@ -488,7 +279,7 @@ func filterActionableComments(comments []ReviewComment) []ReviewComment {
 }
 
 // buildReviewFixPrompt creates a targeted prompt for Smith to address review comments.
-func buildReviewFixPrompt(p FixParams, comments []ReviewComment) string {
+func buildReviewFixPrompt(p FixParams, comments []vcs.ReviewComment) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, `You are addressing review comments on PR #%d (branch: %s) for bead %s.

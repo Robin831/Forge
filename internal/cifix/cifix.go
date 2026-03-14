@@ -1,10 +1,10 @@
 // Package cifix spawns a Smith worker to fix CI failures on a PR branch.
 //
 // When Bellows detects CI failures, cifix checks out the existing PR branch,
-// fetches failing check details from GitHub, runs Temper to reproduce local
-// failures, then spawns Smith with a targeted fix prompt. For GitHub-only
-// checks that Temper cannot reproduce (e.g. changelog-check), Smith receives
-// the failing check names and CI logs directly.
+// fetches failing check details via the VCS provider, runs Temper to reproduce
+// local failures, then spawns Smith with a targeted fix prompt. For CI checks
+// that Temper cannot reproduce (e.g. changelog-check), Smith receives the
+// failing check names and CI logs directly.
 package cifix
 
 import (
@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -23,6 +22,7 @@ import (
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
+	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/warden"
 )
 
@@ -63,6 +63,9 @@ type FixParams struct {
 	// Providers is the ordered list of AI providers to try.
 	// If empty, provider.Defaults() is used (Claude → Gemini).
 	Providers []provider.Provider
+	// VCS is the VCS provider for fetching CI check status and logs.
+	// Required — callers must set this before calling Fix.
+	VCS vcs.Provider
 }
 
 // FixResult captures the outcome of a CI fix attempt.
@@ -79,12 +82,6 @@ type FixResult struct {
 	Error error
 }
 
-// checkResult represents a parsed GitHub check from `gh pr checks` output.
-type checkResult struct {
-	Name   string
-	Status string // "pass", "fail", "pending", etc.
-	Link   string
-}
 
 // Fix attempts to resolve CI failures on a PR branch.
 func Fix(ctx context.Context, p FixParams) *FixResult {
@@ -102,19 +99,18 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		result.Attempts = attempt
 		log.Printf("[quench] PR #%d attempt %d/%d", p.PRNumber, attempt, MaxAttempts)
 
-		// Step 1: Fetch GitHub check status to identify what's actually failing.
-		ghChecksOutput, fetchErr := fetchPRChecks(ctx, p.WorktreePath, p.PRNumber)
+		// Step 1: Fetch check status to identify what's actually failing.
+		ghChecksOutput, failingChecks, fetchErr := p.VCS.FetchPRChecks(ctx, p.WorktreePath, p.PRNumber)
 		ghChecksFetched := fetchErr == nil
 		if fetchErr != nil {
-			log.Printf("[quench] Warning: failed to fetch GitHub PR checks: %v", fetchErr)
+			log.Printf("[quench] Warning: failed to fetch PR checks: %v", fetchErr)
 		}
-		failingChecks := parseFailingChecks(ghChecksOutput)
 		if len(failingChecks) > 0 {
 			names := make([]string, len(failingChecks))
 			for i, c := range failingChecks {
 				names[i] = c.Name
 			}
-			log.Printf("[quench] PR #%d: failing GitHub checks: %s", p.PRNumber, strings.Join(names, ", "))
+			log.Printf("[quench] PR #%d: failing checks: %s", p.PRNumber, strings.Join(names, ", "))
 		}
 
 		// Step 2: Run Temper to reproduce failures locally.
@@ -147,7 +143,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		}
 
 		// Step 3: Fetch CI logs for failing checks to give Smith better context.
-		ciLogs := fetchFailingCheckLogs(ctx, p.WorktreePath, failingChecks)
+		ciLogs, _ := p.VCS.FetchCILogs(ctx, p.WorktreePath, failingChecks)
 
 		// Step 4: Build fix prompt.
 		var prompt string
@@ -289,7 +285,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 // buildCIFixPrompt creates a targeted prompt for Smith to fix CI failures
 // that include both local temper failures and (optionally) GitHub-only failures.
-func buildCIFixPrompt(p FixParams, tr *temper.Result, ghChecks string, failingChecks []checkResult, ciLogs map[string]string) string {
+func buildCIFixPrompt(p FixParams, tr *temper.Result, ghChecks string, failingChecks []vcs.CICheck, ciLogs map[string]string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, `You are fixing CI failures on PR #%d (branch: %s) for bead %s.
@@ -358,7 +354,7 @@ func buildCIFixPrompt(p FixParams, tr *temper.Result, ghChecks string, failingCh
 
 // buildGitHubOnlyFixPrompt creates a prompt for failures that only exist on
 // GitHub CI and cannot be reproduced by Temper locally (e.g. changelog-check).
-func buildGitHubOnlyFixPrompt(p FixParams, failingChecks []checkResult, ghChecks string, ciLogs map[string]string) string {
+func buildGitHubOnlyFixPrompt(p FixParams, failingChecks []vcs.CICheck, ghChecks string, ciLogs map[string]string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, `You are fixing CI failures on PR #%d (branch: %s) for bead %s.
@@ -430,107 +426,6 @@ Look at existing files in changelog.d/ for examples of the expected format.
 	return b.String()
 }
 
-// parseFailingChecks parses the output of `gh pr checks` to identify failing checks.
-// The output format is tab-separated: NAME\tSTATUS\tDURATION\tLINK
-func parseFailingChecks(ghChecksOutput string) []checkResult {
-	if ghChecksOutput == "" {
-		return nil
-	}
-	var failing []checkResult
-	for _, line := range strings.Split(ghChecksOutput, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		fields := strings.Split(line, "\t")
-		if len(fields) < 2 {
-			continue
-		}
-		name := strings.TrimSpace(fields[0])
-		status := strings.TrimSpace(fields[1])
-		var link string
-		if len(fields) >= 4 {
-			link = strings.TrimSpace(fields[3])
-		}
-		if status == "fail" {
-			failing = append(failing, checkResult{Name: name, Status: status, Link: link})
-		}
-	}
-	return failing
-}
-
-// runIDRegexp extracts a GitHub Actions run ID from a check run URL.
-// URLs look like: https://github.com/owner/repo/actions/runs/12345/jobs/67890
-var runIDRegexp = regexp.MustCompile(`/actions/runs/(\d+)`)
-
-// fetchFailingCheckLogs fetches CI logs for failing checks from GitHub Actions.
-// Returns a map of check name → log output.
-func fetchFailingCheckLogs(ctx context.Context, worktreePath string, checks []checkResult) map[string]string {
-	if len(checks) == 0 {
-		return nil
-	}
-
-	// Collect unique run IDs from check URLs.
-	seenRuns := make(map[string]bool)
-	runLogs := make(map[string]string) // runID → log output
-	for _, check := range checks {
-		matches := runIDRegexp.FindStringSubmatch(check.Link)
-		if len(matches) < 2 {
-			continue
-		}
-		runID := matches[1]
-		if seenRuns[runID] {
-			continue
-		}
-		seenRuns[runID] = true
-
-		logs, err := fetchRunFailedLogs(ctx, worktreePath, runID)
-		if err != nil {
-			log.Printf("[quench] Warning: failed to fetch logs for run %s: %v", runID, err)
-			continue
-		}
-		runLogs[runID] = logs
-	}
-
-	// Map check names to their run's logs.
-	result := make(map[string]string)
-	for _, check := range checks {
-		matches := runIDRegexp.FindStringSubmatch(check.Link)
-		if len(matches) < 2 {
-			continue
-		}
-		if logs, ok := runLogs[matches[1]]; ok && logs != "" {
-			result[check.Name] = logs
-		}
-	}
-	return result
-}
-
-// fetchRunFailedLogs fetches the failed job logs for a GitHub Actions run.
-func fetchRunFailedLogs(ctx context.Context, worktreePath, runID string) (string, error) {
-	cmd := exec.CommandContext(ctx, "gh", "run", "view", runID, "--log-failed")
-	executil.HideWindow(cmd)
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
-			return "", fmt.Errorf("gh run view --log-failed: %w: %s", err, trimmed)
-		}
-		return "", fmt.Errorf("gh run view --log-failed: %w", err)
-	}
-	return string(out), nil
-}
-
-func fetchPRChecks(ctx context.Context, worktreePath string, prNumber int) (string, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "checks", fmt.Sprintf("%d", prNumber))
-	executil.HideWindow(cmd)
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
-}
 
 // truncateOutput returns the last maxLen characters of output, prepending
 // a truncation marker if it was shortened.
