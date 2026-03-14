@@ -561,9 +561,6 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// Check if Smith determined no changes are needed.
 		if reason := ExtractNoChangesNeeded(smithResult.FullOutput); reason != "" {
 			log.Printf("[pipeline:%s] Smith says no changes needed: %s", workerID, reason)
-			_ = p.DB.LogEvent(state.EventNoChangesNeeded,
-				fmt.Sprintf("No changes needed: %s", reason),
-				p.Bead.ID, p.AnvilName)
 			outcome.NoChangesNeeded = true
 			outcome.NoChangesReason = reason
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
