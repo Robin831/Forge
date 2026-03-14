@@ -76,6 +76,11 @@ type Outcome struct {
 	// Decomposed is true when the Schematic decomposed the bead into
 	// sub-beads. The pipeline exits early without running Smith.
 	Decomposed bool
+	// NoChangesNeeded is true when Smith determined that no code changes are
+	// required (e.g. the fix is already implemented or resolved upstream).
+	NoChangesNeeded bool
+	// NoChangesReason is the reason Smith gave for why no changes are needed.
+	NoChangesReason string
 	// ChangelogSummary is the extracted changelog fragment bullets (if any).
 	ChangelogSummary string
 }
@@ -553,6 +558,19 @@ func Run(ctx context.Context, p Params) *Outcome {
 			return outcome
 		}
 
+		// Check if Smith determined no changes are needed.
+		if reason := ExtractNoChangesNeeded(smithResult.FullOutput); reason != "" {
+			log.Printf("[pipeline:%s] Smith says no changes needed: %s", workerID, reason)
+			_ = p.DB.LogEvent(state.EventNoChangesNeeded,
+				fmt.Sprintf("No changes needed: %s", reason),
+				p.Bead.ID, p.AnvilName)
+			outcome.NoChangesNeeded = true
+			outcome.NoChangesReason = reason
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+			outcome.Duration = time.Since(start)
+			return outcome
+		}
+
 		// Check if Smith explicitly escalated for human help.
 		if reason := ExtractNeedsHuman(smithResult.FullOutput); reason != "" {
 			log.Printf("[pipeline:%s] Smith escalated: NEEDS_HUMAN: %s", workerID, reason)
@@ -741,6 +759,22 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 	outcome.Duration = time.Since(start)
 	return outcome
+}
+
+// ExtractNoChangesNeeded scans Smith output for the NO_CHANGES_NEEDED: marker
+// and returns the reason string. Returns empty string if not found.
+func ExtractNoChangesNeeded(output string) string {
+	const marker = "NO_CHANGES_NEEDED:"
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, marker) {
+			reason := strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
+			if reason != "" {
+				return reason
+			}
+		}
+	}
+	return ""
 }
 
 // ExtractNeedsHuman scans Smith output for the NEEDS_HUMAN: marker and returns

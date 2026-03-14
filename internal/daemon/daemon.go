@@ -1733,6 +1733,23 @@ normalPipeline:
 	}
 
 	if !outcome.Success {
+		if outcome.NoChangesNeeded {
+			// Smith determined no changes are needed — close the bead with the
+			// reason instead of marking it as failed or needs_human.
+			d.logger.Info("no changes needed — closing bead", "bead", bead.ID, "reason", outcome.NoChangesReason)
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer closeCancel()
+			if err := d.closeBead(closeCtx, bead.ID, anvilCfg.Path, outcome.NoChangesReason); err != nil {
+				d.logger.Error("failed to close bead after no-changes-needed", "bead", bead.ID, "error", err)
+				d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("no changes needed but close failed: %v", err))
+			} else {
+				_ = d.db.ClearRetry(bead.ID, bead.Anvil)
+				_ = d.db.LogEvent(state.EventNoChangesNeeded,
+					fmt.Sprintf("Bead closed — no changes needed: %s", outcome.NoChangesReason),
+					bead.ID, bead.Anvil)
+			}
+			return
+		}
 		if outcome.Decomposed {
 			// Dispatch bead_decomposed to generic webhook targets.
 			if disp := d.dispatcher.Load(); disp != nil {

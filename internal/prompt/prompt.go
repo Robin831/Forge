@@ -194,6 +194,18 @@ Do NOT escalate for:
 - Minor ambiguity you can resolve with a reasonable default
 - Missing documentation you can infer from code
 
+## No Changes Needed
+
+If after investigation you determine the fix is already implemented, the issue was
+resolved upstream, or no code changes are required, signal this by including the
+exact marker **NO_CHANGES_NEEDED:** followed by a short reason on its own line.
+Do not commit or push — just output the marker and stop.
+
+Example:
+` + "`" + `` + "`" + `` + "`" + `
+NO_CHANGES_NEEDED: The bug was already fixed in commit abc123.
+` + "`" + `` + "`" + `` + "`" + `
+
 ## Changelog Fragment
 
 If your changes are user-visible (new features, bug fixes, behavior changes, config changes),
