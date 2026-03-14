@@ -84,8 +84,11 @@ type DataSource struct {
 	// Cost limits from config for the Usage panel display.
 	DailyCostLimit           float64
 	CopilotDailyRequestLimit int
-	// AutoMergeAnvils is the set of anvil names that have auto_merge enabled.
-	AutoMergeAnvils map[string]bool
+	// AutoMergeAnvils returns the set of anvil names that have auto_merge
+	// enabled. Using a function (rather than a static map) allows the Hearth
+	// TUI to pick up config changes made via hot-reload without restarting.
+	// When nil, no PRs are tagged [auto].
+	AutoMergeAnvils func() map[string]bool
 }
 
 // Tick returns a Bubbletea command that sends a TickMsg after the interval.
@@ -488,6 +491,10 @@ func FetchReadyToMerge(ds DataSource) tea.Cmd {
 		if err != nil {
 			return ReadyToMergeErrorMsg{Err: fmt.Errorf("failed to fetch ready-to-merge PRs: %w", err)}
 		}
+		var autoMerge map[string]bool
+		if ds.AutoMergeAnvils != nil {
+			autoMerge = ds.AutoMergeAnvils()
+		}
 		var items []ReadyToMergeItem
 		for _, p := range prs {
 			items = append(items, ReadyToMergeItem{
@@ -497,7 +504,7 @@ func FetchReadyToMerge(ds DataSource) tea.Cmd {
 				Anvil:     p.Anvil,
 				Branch:    p.Branch,
 				Title:     p.Title,
-				AutoMerge: ds.AutoMergeAnvils[p.Anvil],
+				AutoMerge: autoMerge[p.Anvil],
 			})
 		}
 		return UpdateReadyToMergeMsg{Items: items}

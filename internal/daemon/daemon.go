@@ -901,10 +901,17 @@ func (d *Daemon) handleAutoMerge(ctx context.Context, anvil string, pr state.PR)
 		return
 	}
 
+	// Track the goroutine so d.wg.Wait() during shutdown waits for in-flight
+	// auto-merges to complete (avoids orphaned goroutines).
+	d.wg.Add(1)
+
 	// IMPORTANT: derive mergeCtx from context.Background(), NOT from the
 	// bellows ctx. This ensures that an in-flight merge completes even during
 	// graceful shutdown (SIGINT/SIGTERM), avoiding a half-merged state.
-	go d.doAutoMerge(context.Background(), anvil, anvilCfg.Path, pr)
+	go func() {
+		defer d.wg.Done()
+		d.doAutoMerge(context.Background(), anvil, anvilCfg.Path, pr)
+	}()
 }
 
 // doAutoMerge performs the actual VCS merge for a PR that has reached the
