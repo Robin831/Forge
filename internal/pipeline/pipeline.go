@@ -727,8 +727,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 				continue
 			}
 
-			// Max iterations reached with request_changes
+			// Max iterations reached with request_changes — mark NeedsHuman
+			// so the daemon skips the circuit breaker and surfaces this
+			// immediately in Hearth's Needs Attention panel.
 			outcome.Verdict = warden.VerdictRequestChanges
+			outcome.NeedsHuman = true
 			outcome.Error = fmt.Errorf("warden still requesting changes after %d iterations", iteration)
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
 			outcome.Duration = time.Since(start)

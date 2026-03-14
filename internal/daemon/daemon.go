@@ -1633,6 +1633,25 @@ normalPipeline:
 			}
 			return
 		}
+		if outcome.NeedsHuman {
+			// Warden hit max iterations — surface immediately in Needs Attention
+			// rather than cycling through the circuit breaker.
+			reason := fmt.Sprintf("Warden rejected after max iterations: %v", outcome.Error)
+			if err := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); err != nil {
+				d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", err)
+			}
+			d.recordDispatchFailure(bead.ID, bead.Anvil, reason)
+			holdOff := d.cfg.Load().Settings.PollInterval
+			if holdOff <= 0 {
+				holdOff = DefaultPollInterval
+			}
+			d.logger.Warn("warden exhausted max iterations — bead needs human attention", "bead", bead.ID)
+			select {
+			case <-time.After(holdOff):
+			case <-ctx.Done():
+			}
+			return
+		}
 		d.logger.Error("pipeline error", "bead", bead.ID, "error", outcome.Error)
 		d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("pipeline error: %v", outcome.Error))
 		return
