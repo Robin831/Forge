@@ -362,7 +362,7 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 // to 70 characters. Returns nil if the text is empty.
 func formatMultiLineEntry(prefix, contPrefix, raw string, maxLines int) []string {
 	var kept []string
-	for _, tl := range strings.Split(raw, "\n") {
+	for tl := range strings.SplitSeq(raw, "\n") {
 		tl = strings.TrimSpace(tl)
 		if tl == "" {
 			continue
