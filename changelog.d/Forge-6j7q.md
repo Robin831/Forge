@@ -1,2 +1,0 @@
-category: Fixed
-- **Schematic and crucible workers now record PID and log path** - When the schematic or crucible spawns a claude subprocess, the worker DB record is updated with the process PID and log file path immediately after the process starts. This allows hearth's Live Activity panel to tail logs and show progress during the schematic phase. Previously the worker showed PID=0 and an empty log path for the duration of schematic analysis. (Forge-6j7q)

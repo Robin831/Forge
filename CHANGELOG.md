@@ -75,6 +75,27 @@ release time by `scripts/assemble-changelog.sh`.
 - **Track provider quota from all claude sessions** - Warden, cifix, reviewfix, and schematic now persist rate-limit quota data to state.db via UpsertProviderQuota, matching the existing smith behavior. Previously only smith sessions reported quota, causing the dashboard to undercount actual provider usage. (Forge-g5m)
 - **depcheck_dedup events now include anvil name** - Event messages for skipped duplicate dependency updates now include the anvil name in the message text, making them unambiguous in the Events panel when multiple anvils are monitored. (Forge-3s8)
 
+## [0.7.0] - 2026-03-14
+
+### Added
+
+- External PRs (created outside Forge) now appear in the Hearth PR panel with `[ext]` tag
+- New "Assign bellows" action on external PRs enables auto-monitoring for CI failures, review comments, and merge conflicts
+- PR reconciliation with GitHub runs periodically and on PR panel open (`p` key)
+- PRs table stores title and bellows_managed flag for external PR lifecycle control
+
+### Changed
+
+- **Documentation updated to reflect all current features** - Added `forge notify release` CLI reference, corrected `bellows_interval` default from 5m to 2m in reviewfix docs, and expanded the full forge.yaml example to include all available options (`go_race_detection`, per-anvil `golangci_lint`/`go_race_detection`/`depcheck_enabled`, and updated notifications to use the current nested `teams:`/`webhooks:` format). (Forge-o1i6)
+
+### Fixed
+
+- **Rate-limit backoff now visible in event log** - When all providers are rate limited, a `rate_limited` event is logged to the event store with the expected retry time (e.g. "Hytte-toa rate limited, will retry at 22:47"), making the backoff visible in `forge history events` and the hearth TUI. (Forge-sgzu)
+- **Schematic and crucible workers now record PID and log path** - When the schematic or crucible spawns a claude subprocess, the worker DB record is updated with the process PID and log file path immediately after the process starts. This allows hearth's Live Activity panel to tail logs and show progress during the schematic phase. Previously the worker showed PID=0 and an empty log path for the duration of schematic analysis. (Forge-6j7q)
+- Beads with warden hard-reject (no diff) now appear in Needs Attention immediately instead of requiring multiple failures to trip the circuit breaker
+- Crucible: children with `blocks=[parentID]` no longer misidentified as crucible parents — the poller now filters `Blocks` to only include bead IDs present in the current poll batch
+
+
 ## [0.6.0] - 2026-03-13
 
 ### Added
