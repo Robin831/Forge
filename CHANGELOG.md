@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.7.1] - 2026-03-14
+
+### Fixed
+
+- **Depcheck scanners no longer inflate counts from .worktrees copies** - Added `.worktrees` to the skip list in `findNpmProjects` and `findDotnetProjects` so that worktree copies of a repo are not scanned as separate projects. (The Go scanner already avoids this — it checks only the root `go.mod` without walking subdirectories.) Also added `bin` and `obj` to the npm skip list for consistency, and added cross-project deduplication to `scanNpm` (matching the NuGet fix from c995ee4) to prevent the same package from appearing multiple times when scanned across several package.json files; the most severe update kind (major > minor > patch) is kept when conflicts arise. (Forge-tikw)
+- **Fix install.sh checksum grep matching `.sbom.json` sidecar files** - Anchored the grep pattern to `" ${ASSET_NAME}$"` so it matches only the exact archive filename at end of line, preventing multi-line `EXPECTED_HASH` and false SHA256 mismatch errors. (Forge-dras)
+- Assigning bellows to an external PR no longer requires a daemon restart — the snapshot cache is cleared on managed transition so seeding runs immediately
+- Bellows now detects pre-existing issues (unresolved threads, merge conflicts) on newly assigned external PRs by seeding snapshot state to force transition detection on first poll
+- Changelog assembler now inserts new versions before the first existing section instead of after the preamble, fixing out-of-order sections since v0.4.0
+- Depcheck dedup cache now fetches all beads (`--limit 0`) instead of defaulting to 50, preventing duplicates when more than 50 open beads exist
+- Depcheck no longer creates duplicate beads when the beads database is unreachable — the dedup cache now tracks validity and skips bead creation when `bd list` fails, instead of silently treating failures as "no beads exist"
+- Depcheck now runs `git pull --ff-only` before scanning each anvil, preventing duplicate beads for dependencies that were already updated on main but not yet pulled locally
+- Fixed v0.5.0 version heading typo (was incorrectly labeled as v1.5.0)
+- NuGet depcheck deduplicates packages across multiple .sln/.csproj files in the same anvil, reducing false "outdated" counts
+- PR reconciliation now correctly scopes lookups by anvil — previously a PR number from one repo could shadow the same number in another, preventing external PRs from appearing in Hearth
+- Pre-existing external PRs (`ext-*`) no longer incorrectly receive bellows lifecycle management (cifix, reviewfix, rebase) after upgrade — a data fixup now resets `bellows_managed=0` for all `ext-*` PRs on startup
+- Reconstructed missing v0.5.1 changelog section
+
 ## [0.7.0] - 2026-03-14
 
 ### Added
