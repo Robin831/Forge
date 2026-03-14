@@ -99,17 +99,8 @@ func TestForPlatform(t *testing.T) {
 		assert.Equal(t, GitLab, p.Platform())
 	})
 
-	t.Run("empty string defaults to github", func(t *testing.T) {
-		p, err := ForPlatform("")
-		require.NoError(t, err)
-		assert.Equal(t, GitHub, p.Platform())
-	})
-
-	t.Run("explicit github", func(t *testing.T) {
-		p, err := ForPlatform("github")
-		require.NoError(t, err)
-		assert.Equal(t, GitHub, p.Platform())
-	})
+	// GitHub happy-path ("" and "github") is tested in forplatform_test.go
+	// (package vcs_test) which can import internal/vcs/github without a cycle.
 
 	t.Run("invalid platform returns error", func(t *testing.T) {
 		_, err := ForPlatform("svn")

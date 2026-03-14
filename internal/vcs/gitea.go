@@ -626,7 +626,7 @@ func giteaAPIRequest(ctx context.Context, method, endpoint string, body any, res
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("Gitea API %s %s: status %d: %s", method, safeEndpoint, resp.StatusCode, string(respBody))
 	}
 
 	if result != nil && len(respBody) > 0 {
