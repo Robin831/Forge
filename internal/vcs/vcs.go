@@ -88,6 +88,8 @@ func ForPlatform(platform string) (Provider, error) {
 		return prov, nil
 	case GitLab:
 		return NewGitLabProvider(), nil
+	case Gitea:
+		return NewGiteaProvider(), nil
 	default:
 		return nil, fmt.Errorf("VCS provider not yet implemented for platform %q", p)
 	}
