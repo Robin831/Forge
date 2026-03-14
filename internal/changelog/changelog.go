@@ -181,14 +181,14 @@ func UpdateChangelog(changelogPath string, fragments []Fragment, version string)
 	// Find and replace the [Unreleased] section
 	unreleasedStart := strings.Index(content, "## [Unreleased]")
 	if unreleasedStart == -1 {
-		// No [Unreleased] section — insert after the header
-		headerEnd := strings.Index(content, "\n\n")
-		if headerEnd == -1 {
-			return content + "\n\n" + unreleased, nil
+		// No [Unreleased] section — insert before the first version section.
+		firstSection := strings.Index(content, "\n## [")
+		if firstSection == -1 {
+			// No existing sections at all — append after preamble.
+			return strings.TrimRight(content, "\n") + "\n\n" + unreleased, nil
 		}
-		// Find end of preamble (after blank line following first heading)
-		rest := content[headerEnd:]
-		return content[:headerEnd] + "\n\n" + unreleased + rest, nil
+		// Insert new version section just before the first existing one.
+		return content[:firstSection+1] + unreleased + "\n" + content[firstSection+1:], nil
 	}
 
 	// Find the end of the [Unreleased] section (next ## heading or EOF)
