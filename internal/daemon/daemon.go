@@ -314,7 +314,9 @@ func New(cfg *config.Config) (*Daemon, error) {
 		return nil
 	}
 	d.beadShower = func(anvilPath, beadID string) ([]byte, string, error) {
-		ctx, cancel := context.WithTimeout(d.runCtx, 15*time.Second)
+		// Use context.Background() so the bd show call succeeds even during
+		// graceful shutdown (d.runCtx may already be cancelled at that point).
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "show", beadID, "--json"))
 		cmd.Dir = anvilPath
@@ -324,7 +326,9 @@ func New(cfg *config.Config) (*Daemon, error) {
 		return out, stderrBuf.String(), err
 	}
 	d.parentCloser = func(anvilPath, beadID, reason string) error {
-		ctx, cancel := context.WithTimeout(d.runCtx, 15*time.Second)
+		// Use context.Background() so the bd close call succeeds even during
+		// graceful shutdown (d.runCtx may already be cancelled at that point).
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "close", beadID,
 			"--force", "--reason="+reason, "--json"))

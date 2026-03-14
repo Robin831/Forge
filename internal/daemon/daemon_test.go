@@ -1318,7 +1318,8 @@ func TestMaybeCloseDecomposedParent(t *testing.T) {
 		assert.Contains(t, closeReason, "3 children")
 
 		// Verify event was logged.
-		events, _ := db.RecentEvents(10)
+		events, err := db.RecentEvents(10)
+		require.NoError(t, err, "RecentEvents should succeed")
 		found := false
 		for _, ev := range events {
 			if ev.Type == state.EventBeadAutoClosed && ev.BeadID == beadID {
@@ -1415,7 +1416,8 @@ func TestMaybeCloseDecomposedParent(t *testing.T) {
 		d.maybeCloseDecomposedParent(poller.Bead{ID: beadID, Anvil: anvil}, anvilCfg, 2)
 
 		// No EventBeadAutoClosed event should be logged for this bead.
-		events, _ := db.RecentEvents(50)
+		events, err := db.RecentEvents(50)
+		require.NoError(t, err, "RecentEvents should succeed")
 		for _, ev := range events {
 			if ev.Type == state.EventBeadAutoClosed && ev.BeadID == beadID {
 				t.Fatal("EventBeadAutoClosed should NOT be logged when bd close fails")
