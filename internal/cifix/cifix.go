@@ -88,6 +88,12 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	start := time.Now()
 	result := &FixResult{}
 
+	if p.VCS == nil {
+		result.Error = fmt.Errorf("cifix: VCS provider is required but was not set")
+		result.Duration = time.Since(start)
+		return result
+	}
+
 	// Resolve providers — default to Claude → Gemini if not specified.
 	providers := p.Providers
 	if len(providers) == 0 {

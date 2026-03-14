@@ -425,51 +425,54 @@ func (g *GitLabProvider) FetchCILogs(ctx context.Context, worktreePath string, c
 	projectPath := owner + "/" + repo
 	result := make(map[string]string)
 
+	// Fetch the failed jobs list once — the list doesn't depend on any individual check.
+	endpoint := fmt.Sprintf("projects/%s/jobs?scope[]=failed&per_page=20", urlEncode(projectPath))
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "glab", "api", endpoint))
+	cmd.Dir = worktreePath
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		log.Printf("[gitlab] Warning: failed to list failed jobs: %v", err)
+		return result, nil
+	}
+
+	var jobs []struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &jobs); err != nil {
+		log.Printf("[gitlab] Warning: failed to parse jobs response: %v", err)
+		return result, nil
+	}
+
+	// Index jobs by name for O(1) lookup per check.
+	jobsByName := make(map[string]int, len(jobs))
+	for _, job := range jobs {
+		jobsByName[job.Name] = job.ID
+	}
+
 	for _, check := range checks {
-		// GitLab job logs are fetched by job name from the pipeline.
-		// Try to find the job ID via the jobs API, then fetch its trace.
-		endpoint := fmt.Sprintf("projects/%s/jobs?scope[]=failed&per_page=20", urlEncode(projectPath))
-
-		cmd := executil.HideWindow(exec.CommandContext(ctx, "glab", "api", endpoint))
-		cmd.Dir = worktreePath
-
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			log.Printf("[gitlab] Warning: failed to list failed jobs: %v", err)
+		jobID, ok := jobsByName[check.Name]
+		if !ok {
 			continue
 		}
 
-		var jobs []struct {
-			ID   int    `json:"id"`
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal(stdout.Bytes(), &jobs); err != nil {
-			log.Printf("[gitlab] Warning: failed to parse jobs response: %v", err)
+		traceEndpoint := fmt.Sprintf("projects/%s/jobs/%d/trace", urlEncode(projectPath), jobID)
+		traceCmd := executil.HideWindow(exec.CommandContext(ctx, "glab", "api", traceEndpoint))
+		traceCmd.Dir = worktreePath
+
+		var traceOut, traceErr bytes.Buffer
+		traceCmd.Stdout = &traceOut
+		traceCmd.Stderr = &traceErr
+
+		if err := traceCmd.Run(); err != nil {
+			log.Printf("[gitlab] Warning: failed to fetch job %d trace: %v", jobID, err)
 			continue
 		}
-
-		for _, job := range jobs {
-			if job.Name != check.Name {
-				continue
-			}
-			traceEndpoint := fmt.Sprintf("projects/%s/jobs/%d/trace", urlEncode(projectPath), job.ID)
-			traceCmd := executil.HideWindow(exec.CommandContext(ctx, "glab", "api", traceEndpoint))
-			traceCmd.Dir = worktreePath
-
-			var traceOut, traceErr bytes.Buffer
-			traceCmd.Stdout = &traceOut
-			traceCmd.Stderr = &traceErr
-
-			if err := traceCmd.Run(); err != nil {
-				log.Printf("[gitlab] Warning: failed to fetch job %d trace: %v", job.ID, err)
-				continue
-			}
-			result[check.Name] = traceOut.String()
-			break
-		}
+		result[check.Name] = traceOut.String()
 	}
 
 	return result, nil
