@@ -1,0 +1,4 @@
+category: Added
+- **VCS provider interface** - Introduces `internal/vcs` with a platform-agnostic `Provider` interface, `Platform` parsing, and a `ForPlatform()` factory. This is the foundation layer; existing operations (daemon/bellows/crucible) still call `internal/ghpr` directly and will be migrated in follow-up work. (Forge-1363)
+- **GitLab VCS provider** - Implements the VCS provider interface for GitLab using the `glab` CLI. Supports merge request creation, merging (with strategy validation), status checks, approval fetching, pending review request detection, unresolved thread counting, and open MR listing. (Forge-1363)
+- **GitHub VCS provider** - Wraps the existing `ghpr` package as a `vcs.Provider` implementation, so `vcs.ForPlatform("")` and `vcs.ForPlatform("github")` return a working provider. (Forge-1363)
