@@ -54,6 +54,16 @@ func GeminiPricing() Pricing {
 	}
 }
 
+// OpenAIPricing returns approximate OpenAI GPT pricing (GPT-5.x class models).
+func OpenAIPricing() Pricing {
+	return Pricing{
+		InputPerM:      2.50,
+		OutputPerM:     10.00,
+		CacheReadPerM:  0.00,
+		CacheWritePerM: 0.00,
+	}
+}
+
 // Usage tracks token usage for a single Claude invocation.
 type Usage struct {
 	InputTokens      int     `json:"input_tokens"`

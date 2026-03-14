@@ -258,6 +258,16 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 			result.CostUSD = u.EstimatedCostUSD
 		}
 
+		// Estimate cost for OpenAI when total_cost_usd is absent.
+		if pv.Kind == provider.OpenAI && result.CostUSD == 0 && (result.TokensIn > 0 || result.TokensOut > 0) {
+			u := cost.Usage{
+				InputTokens:  result.TokensIn,
+				OutputTokens: result.TokensOut,
+			}
+			u.Calculate(cost.OpenAIPricing())
+			result.CostUSD = u.EstimatedCostUSD
+		}
+
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				result.ExitCode = exitErr.ExitCode()

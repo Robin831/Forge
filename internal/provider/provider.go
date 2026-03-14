@@ -1,7 +1,7 @@
 // Package provider defines the AI provider abstraction for Forge.
 //
-// Forge supports multiple AI coding agents (Claude, Gemini, GitHub Copilot CLI)
-// and selects among them in priority order.  When the active provider signals
+// Forge supports multiple AI coding agents (Claude, Gemini, GitHub Copilot CLI,
+// OpenAI Codex CLI) and selects among them in priority order.  When the active provider signals
 // a rate limit the pipeline automatically retries with the next provider.
 package provider
 
@@ -18,6 +18,7 @@ const (
 	Claude  Kind = "claude"
 	Gemini  Kind = "gemini"
 	Copilot Kind = "copilot" // gh copilot
+	OpenAI  Kind = "openai"  // OpenAI Codex CLI
 )
 
 // Quota holds remaining request/token counts and reset times.
@@ -64,6 +65,8 @@ func (p Provider) Cmd() string {
 		return "gemini"
 	case Copilot:
 		return "copilot"
+	case OpenAI:
+		return "codex"
 	default:
 		return "claude"
 	}
@@ -101,6 +104,8 @@ func (p Provider) BuildArgs(claudeFlags []string) []string {
 		return p.geminiArgs(claudeFlags)
 	case Copilot:
 		return p.copilotArgs(claudeFlags)
+	case OpenAI:
+		return p.openaiArgs(claudeFlags)
 	default:
 		return p.claudeArgs(claudeFlags)
 	}
@@ -231,6 +236,55 @@ func copilotModelName(model string) string {
 		}
 	}
 	return model
+}
+
+func (p Provider) openaiArgs(claudeFlags []string) []string {
+	// OpenAI Codex CLI:
+	//   codex --full-auto --output-format stream-json [--model <model>]
+	//
+	// --full-auto     = autonomous mode (equivalent to --dangerously-skip-permissions)
+	// --output-format stream-json = emit JSONL events for machine-readable output
+	// --model         = select a specific model (e.g. gpt-5.1-codex, o3)
+	//
+	// Without a positional prompt argument the Codex CLI reads the prompt from
+	// stdin, avoiding the Windows command-line length limit.
+	// Unrecognised claude flags (--verbose, --tools, etc.) are dropped.
+	base := []string{
+		"--full-auto",
+		"--output-format", "stream-json",
+	}
+
+	model := p.Model
+	i := 0
+	for i < len(claudeFlags) {
+		flag := claudeFlags[i]
+		switch flag {
+		case "--max-turns":
+			// Codex supports --max-turns natively.
+			if i+1 < len(claudeFlags) {
+				base = append(base, "--max-turns", claudeFlags[i+1])
+				i += 2
+			} else {
+				i++
+			}
+		case "--tools":
+			i += 2 // skip value — no direct Codex equivalent
+		case "--model":
+			if i+1 < len(claudeFlags) {
+				model = claudeFlags[i+1]
+				i += 2
+			} else {
+				i++
+			}
+		default:
+			i++
+		}
+	}
+
+	if model != "" {
+		base = append(base, "--model", model)
+	}
+	return base
 }
 
 // Defaults returns the default ordered list of providers.
