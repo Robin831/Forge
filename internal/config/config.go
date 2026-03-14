@@ -38,6 +38,10 @@ type AnvilConfig struct {
 	AutoDispatch            string `mapstructure:"auto_dispatch" yaml:"auto_dispatch"`
 	AutoDispatchTag         string `mapstructure:"auto_dispatch_tag" yaml:"auto_dispatch_tag,omitempty"`
 	AutoDispatchMinPriority int    `mapstructure:"auto_dispatch_min_priority" yaml:"auto_dispatch_min_priority"`
+	// Platform specifies the VCS hosting platform for this anvil.
+	// Valid values: "github" (default), "gitlab", "gitea", "bitbucket", "azuredevops".
+	// Determines which VCS provider is used for PR operations.
+	Platform string `mapstructure:"platform" yaml:"platform,omitempty"`
 	// SchematicEnabled controls whether the Schematic pre-worker runs for
 	// beads in this anvil. When nil, the global setting is used. Set to
 	// a pointer to false to disable per-anvil.
@@ -564,6 +568,13 @@ func (c *Config) Validate() []string {
 		}
 		if anvil.MaxSmiths < 0 {
 			errs = append(errs, fmt.Sprintf("anvil %q: max_smiths must be >= 0", name))
+		}
+
+		switch anvil.Platform {
+		case "", "github", "gitlab", "gitea", "bitbucket", "azuredevops":
+			// valid
+		default:
+			errs = append(errs, fmt.Sprintf("anvil %q: invalid platform %q (must be github|gitlab|gitea|bitbucket|azuredevops)", name, anvil.Platform))
 		}
 
 		switch anvil.AutoDispatch {
