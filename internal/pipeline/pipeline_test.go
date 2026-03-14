@@ -968,3 +968,50 @@ func TestMaxIterations_StopsAfterConfiguredCap(t *testing.T) {
 	assert.Equal(t, warden.VerdictRequestChanges, outcome.Verdict)
 	assert.NotNil(t, outcome.Error)
 }
+
+// TestSchematic_OnSpawn_UpdatesWorkerPIDAndLogPath verifies that when the
+// schematic runner invokes cfg.OnSpawn, the pipeline persists the PID and
+// log_path into the worker row in state.db. This is the key contract that
+// allows Hearth to tail logs during the schematic phase.
+//
+// Note: the Smith runner (which runs after schematic) also calls
+// UpdateWorkerPID/LogPath with its own values. To isolate the schematic
+// OnSpawn behaviour, we snapshot the DB immediately after the callback fires
+// — before the Smith phase overwrites them.
+func TestSchematic_OnSpawn_UpdatesWorkerPIDAndLogPath(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	const workerID = "spawn-test-worker"
+	params.WorkerID = workerID
+
+	var snapshotPID int
+	var snapshotLogPath string
+
+	schemCfg := schematic.Config{Enabled: true, WordThreshold: 1}
+	params.SchematicConfig = &schemCfg
+	params.Bead.Description = "A task with enough words to trigger schematic analysis"
+	params.SchematicRunner = func(_ context.Context, cfg schematic.Config, _ poller.Bead, _ string, _ provider.Provider) *schematic.Result {
+		require.NotNil(t, cfg.OnSpawn, "pipeline must wire OnSpawn before calling SchematicRunner")
+		cfg.OnSpawn(12345, "/fake/smith.log")
+		// Snapshot immediately — Smith will overwrite these with its own PID/path.
+		workers, err := db.AllWorkers(0)
+		require.NoError(t, err)
+		for _, w := range workers {
+			if w.ID == workerID {
+				snapshotPID = w.PID
+				snapshotLogPath = w.LogPath
+				break
+			}
+		}
+		return &schematic.Result{Action: schematic.ActionSkip, Reason: "simple enough"}
+	}
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove}, nil
+	}
+
+	Run(context.Background(), params)
+
+	assert.Equal(t, 12345, snapshotPID, "worker PID should be updated via OnSpawn callback")
+	assert.Equal(t, "/fake/smith.log", snapshotLogPath, "worker log_path should be updated via OnSpawn callback")
+}

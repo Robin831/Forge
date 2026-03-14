@@ -1320,6 +1320,15 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			schemCfg := schematic.DefaultConfig()
 			schemCfg.Enabled = true
 			schemCfg.ExtraFlags = d.cfg.Load().Settings.ClaudeFlags
+			workerIDForSpawn := claimWorkerID
+			schemCfg.OnSpawn = func(pid int, logPath string) {
+				if err := d.db.UpdateWorkerPID(workerIDForSpawn, pid); err != nil {
+					slog.Warn("failed to record schematic PID", "worker", workerIDForSpawn, "err", err)
+				}
+				if err := d.db.UpdateWorkerLogPath(workerIDForSpawn, logPath); err != nil {
+					slog.Warn("failed to record schematic log path", "worker", workerIDForSpawn, "err", err)
+				}
+			}
 
 			smithProviders := d.cfg.Load().Settings.SmithProviders
 			if len(smithProviders) == 0 {
@@ -1386,6 +1395,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			SmithTimeout:              d.cfg.Load().Settings.SmithTimeout,
 			AutoMergeCrucibleChildren: d.cfg.Load().Settings.IsAutoMergeCrucibleChildren(),
 			MaxPipelineIterations:     d.cfg.Load().Settings.MaxPipelineIterations,
+			WorkerID:                  claimWorkerID,
 			StatusCallback: func(s crucible.Status) {
 				d.crucibleStatuses.Store(bead.Anvil+"/"+bead.ID, s)
 			},

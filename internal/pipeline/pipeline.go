@@ -288,6 +288,17 @@ func Run(ctx context.Context, p Params) *Outcome {
 		if p.AnvilConfig.SchematicEnabled != nil {
 			schemCfg.Enabled = *p.AnvilConfig.SchematicEnabled
 		}
+		if p.DB != nil {
+			wID := workerID
+			schemCfg.OnSpawn = func(pid int, logPath string) {
+				if err := p.DB.UpdateWorkerPID(wID, pid); err != nil {
+					log.Printf("[pipeline:%s] failed to record schematic PID: %v", wID, err)
+				}
+				if err := p.DB.UpdateWorkerLogPath(wID, logPath); err != nil {
+					log.Printf("[pipeline:%s] failed to record schematic log path: %v", wID, err)
+				}
+			}
+		}
 
 		if schematic.ShouldRun(schemCfg, p.Bead) {
 			log.Printf("[pipeline:%s] Running Schematic pre-analysis", workerID)
