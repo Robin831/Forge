@@ -681,20 +681,34 @@ func (p *Params) createPR(ctx context.Context, params ghpr.CreateParams) (*ghpr.
 	return ghpr.Create(ctx, params)
 }
 
-// mergePR merges a PR using gh pr merge --squash, polling until the merge succeeds
-// or the context is cancelled.
+// mergePR merges a PR using the VCS provider (squash strategy), polling until
+// the merge succeeds or the context is cancelled.
 func (p *Params) mergePR(ctx context.Context, prNumber int, dir string) error {
 	if p.PRMerger != nil {
 		return p.PRMerger(ctx, prNumber, dir)
 	}
-	return MergePR(ctx, prNumber, dir)
+	return MergePR(ctx, prNumber, dir, p.VCSProvider)
 }
 
-// MergePR merges a PR by number using gh pr merge --squash. It retries with
-// polling if the initial merge attempt fails (e.g. checks still running).
-func MergePR(ctx context.Context, prNumber int, dir string) error {
+// MergePR merges a PR by number using the VCS provider (squash strategy).
+// It retries with polling if the initial merge attempt fails (e.g. checks
+// still running). When vcsProv is nil, falls back to direct gh CLI calls.
+func MergePR(ctx context.Context, prNumber int, dir string, vcsProv vcs.Provider) error {
+	mergeFunc := func(ctx context.Context) error {
+		if vcsProv != nil {
+			return vcsProv.MergePR(ctx, dir, prNumber, "squash")
+		}
+		return ghpr.Merge(ctx, dir, prNumber, "squash")
+	}
+	isMergedFunc := func(ctx context.Context) (bool, error) {
+		if vcsProv != nil {
+			return vcsProv.IsPRMerged(ctx, dir, prNumber)
+		}
+		return isPRMergedDirect(ctx, prNumber, dir)
+	}
+
 	// Try immediate merge first.
-	if err := attemptMerge(ctx, prNumber, dir); err == nil {
+	if err := mergeFunc(ctx); err == nil {
 		return nil
 	}
 
@@ -710,35 +724,19 @@ func MergePR(ctx context.Context, prNumber int, dir string) error {
 		case <-mergeCtx.Done():
 			return fmt.Errorf("timed out waiting to merge PR #%d", prNumber)
 		case <-ticker.C:
-			if err := attemptMerge(ctx, prNumber, dir); err == nil {
+			if err := mergeFunc(ctx); err == nil {
 				return nil
 			}
-			// Check if PR was already merged.
-			if merged, _ := isPRMerged(ctx, prNumber, dir); merged {
+			if merged, _ := isMergedFunc(ctx); merged {
 				return nil
 			}
 		}
 	}
 }
 
-// attemptMerge tries to merge a PR once.
-func attemptMerge(ctx context.Context, prNumber int, dir string) error {
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "gh", "pr", "merge",
-		fmt.Sprintf("%d", prNumber), "--squash", "--delete-branch"))
-	cmd.Dir = dir
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("gh pr merge %d: %w: %s", prNumber, err, out)
-	}
-	return nil
-}
-
-// isPRMerged checks if a PR has been merged.
-func isPRMerged(ctx context.Context, prNumber int, dir string) (bool, error) {
+// isPRMergedDirect checks if a PR has been merged via direct gh CLI call.
+// Used as fallback when no VCS provider is configured.
+func isPRMergedDirect(ctx context.Context, prNumber int, dir string) (bool, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 

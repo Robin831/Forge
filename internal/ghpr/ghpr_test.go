@@ -37,11 +37,25 @@ func TestParseRepoURL(t *testing.T) {
 		wantRepo  string
 		wantErr   bool
 	}{
+		// GitHub
 		{"https://github.com/Robin831/Forge", "Robin831", "Forge", false},
 		{"https://github.com/Robin831/Forge.git", "Robin831", "Forge", false},
 		{"git@github.com:Robin831/Forge.git", "Robin831", "Forge", false},
 		{"git@github.com:Robin831/Forge", "Robin831", "Forge", false},
 		{"https://github.com/owner/repo/extra", "owner", "repo", false},
+		// GitLab
+		{"https://gitlab.com/org/project", "org", "project", false},
+		{"https://gitlab.com/org/project.git", "org", "project", false},
+		{"git@gitlab.com:org/project.git", "org", "project", false},
+		// Gitea / Forgejo
+		{"https://gitea.example.com/user/repo", "user", "repo", false},
+		{"git@gitea.example.com:user/repo.git", "user", "repo", false},
+		// Bitbucket
+		{"https://bitbucket.org/team/repo", "team", "repo", false},
+		{"git@bitbucket.org:team/repo.git", "team", "repo", false},
+		// SSH scheme
+		{"ssh://git@github.com/owner/repo", "owner", "repo", false},
+		// Errors
 		{"invalid", "", "", true},
 		{"", "", "", true},
 	}

@@ -645,6 +645,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				DetectOptions:   cifixDetectOpts,
 				GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 				Providers:       d.filterCopilotIfLimited(provider.FromConfig(d.config().Settings.Providers)),
+				VCSProvider:     vcsProviderForAnvil(anvilCfg),
 			})
 			status := state.WorkerDone
 			if res.Error != nil {
@@ -694,6 +695,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				MaxAttempts:  d.cfg.Load().Settings.MaxReviewAttempts,
 				ExtraFlags:   d.cfg.Load().Settings.ClaudeFlags,
 				Providers:    d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers)),
+				VCSProvider:  vcsProviderForAnvil(anvilCfg),
 			})
 			status := state.WorkerDone
 			if res.Error != nil {

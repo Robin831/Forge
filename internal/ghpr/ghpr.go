@@ -554,22 +554,44 @@ func GetRepoOwnerAndName(ctx context.Context, worktreePath string) (owner, repo 
 }
 
 // ParseRepoURL parses a git remote URL into owner and repository name.
+// Supports HTTPS and SSH URLs for any hosting platform (GitHub, GitLab,
+// Gitea/Forgejo, Bitbucket, Azure DevOps, self-hosted instances).
 func ParseRepoURL(url string) (owner, repo string, err error) {
 	url = strings.TrimSuffix(url, ".git")
 
-	if strings.Contains(url, "github.com") {
-		if strings.HasPrefix(url, "https://") {
-			parts := strings.Split(strings.TrimPrefix(url, "https://"), "/")
-			if len(parts) >= 3 {
-				return parts[1], parts[2], nil
-			}
-		} else if strings.HasPrefix(url, "git@") {
-			parts := strings.Split(strings.TrimPrefix(url, "git@"), ":")
-			if len(parts) == 2 {
-				subParts := strings.Split(parts[1], "/")
-				if len(subParts) == 2 {
-					return subParts[0], subParts[1], nil
-				}
+	// HTTPS: https://host/owner/repo or https://host/owner/repo.git
+	if strings.HasPrefix(url, "https://") || strings.HasPrefix(url, "http://") {
+		// Strip scheme
+		idx := strings.Index(url, "://")
+		path := url[idx+3:]
+		parts := strings.Split(path, "/")
+		// Expect at least host/owner/repo (3 parts)
+		if len(parts) >= 3 {
+			return parts[1], parts[2], nil
+		}
+	}
+
+	// SSH: git@host:owner/repo or ssh://git@host/owner/repo
+	if strings.HasPrefix(url, "ssh://") {
+		// ssh://git@host/owner/repo → strip scheme and user@host
+		idx := strings.Index(url, "://")
+		rest := url[idx+3:]
+		if atIdx := strings.Index(rest, "@"); atIdx >= 0 {
+			rest = rest[atIdx+1:]
+		}
+		parts := strings.Split(rest, "/")
+		if len(parts) >= 3 {
+			return parts[1], parts[2], nil
+		}
+	}
+
+	if strings.HasPrefix(url, "git@") {
+		// git@host:owner/repo
+		colonParts := strings.SplitN(strings.TrimPrefix(url, "git@"), ":", 2)
+		if len(colonParts) == 2 {
+			subParts := strings.Split(colonParts[1], "/")
+			if len(subParts) >= 2 {
+				return subParts[0], subParts[1], nil
 			}
 		}
 	}

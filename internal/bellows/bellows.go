@@ -518,7 +518,29 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, be
 		return
 	}
 
-	comments, err := warden.FetchCopilotComments(ctx, anvilPath, prNumber)
+	// Route bot comment fetching through VCS provider when available.
+	var comments []warden.PRComment
+	var err error
+	m.pathsMu.RLock()
+	learnProv := m.anvilProviders[anvilName]
+	m.pathsMu.RUnlock()
+	if learnProv != nil {
+		vcsComments, fetchErr := learnProv.FetchBotReviewComments(ctx, anvilPath, prNumber)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			for _, vc := range vcsComments {
+				comments = append(comments, warden.PRComment{
+					Body:     vc.Body,
+					User:     vc.User,
+					Path:     vc.Path,
+					PRNumber: vc.PRNumber,
+				})
+			}
+		}
+	} else {
+		comments, err = warden.FetchCopilotComments(ctx, anvilPath, prNumber)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return

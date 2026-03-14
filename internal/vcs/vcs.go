@@ -22,6 +22,26 @@ const (
 	PlatformAzureDevOps Platform = "azuredevops"
 )
 
+// ReviewComment represents a review comment on a pull request.
+// This is the platform-agnostic type used by the VCS interface.
+type ReviewComment struct {
+	Author   string // login or display name of the commenter
+	Body     string
+	Path     string // file path (empty for PR-level comments)
+	Line     int    // line number (0 if not applicable)
+	State    string // review state (e.g. "CHANGES_REQUESTED")
+	ThreadID string // platform-specific thread identifier for resolving
+}
+
+// PRComment represents a review comment fetched from the platform's API,
+// used for automated rule learning (e.g. from Copilot on GitHub).
+type PRComment struct {
+	Body     string
+	User     string // login of the comment author
+	Path     string // file path the comment is on
+	PRNumber int
+}
+
 // Provider abstracts pull request operations for a VCS hosting platform.
 //
 // All methods that interact with a repository accept a worktreePath parameter
@@ -37,6 +57,9 @@ type Provider interface {
 	// MergePR merges an open pull request using the given strategy.
 	// Valid strategies: "squash", "merge", "rebase". Empty defaults to "squash".
 	MergePR(ctx context.Context, worktreePath string, prNumber int, strategy string) error
+
+	// IsPRMerged checks whether a pull request has been merged.
+	IsPRMerged(ctx context.Context, worktreePath string, prNumber int) (bool, error)
 
 	// CheckStatus gets the full status of a PR including CI checks, reviews,
 	// unresolved threads, and mergeability.
@@ -60,6 +83,29 @@ type Provider interface {
 	// FetchPendingReviewRequests returns pending review requests on a PR,
 	// including bot reviewers.
 	FetchPendingReviewRequests(ctx context.Context, worktreePath string, prNumber int) ([]ghpr.ReviewRequest, error)
+
+	// FetchReviewComments returns review comments on a PR, including both
+	// inline thread comments and PR-level review comments.
+	FetchReviewComments(ctx context.Context, worktreePath string, prNumber int) ([]ReviewComment, error)
+
+	// ResolveReviewThread marks a review thread as resolved.
+	// The threadID format is platform-specific.
+	ResolveReviewThread(ctx context.Context, worktreePath string, threadID string) error
+
+	// FetchPRChecks returns the raw CI check status output for a PR.
+	// The output format is platform-specific; callers parse it accordingly.
+	FetchPRChecks(ctx context.Context, worktreePath string, prNumber int) (string, error)
+
+	// FetchCIFailureLogs returns the failure logs for a CI run.
+	// The runID format is platform-specific (e.g. GitHub Actions run ID).
+	FetchCIFailureLogs(ctx context.Context, worktreePath string, runID string) (string, error)
+
+	// FetchBotReviewComments returns review comments authored by the platform's
+	// automated code review bot (e.g. Copilot on GitHub, Code Suggestions on GitLab).
+	FetchBotReviewComments(ctx context.Context, worktreePath string, prNumber int) ([]PRComment, error)
+
+	// ListMergedPRs returns the most recently merged PR numbers, up to limit.
+	ListMergedPRs(ctx context.Context, worktreePath string, limit int) ([]int, error)
 }
 
 // ValidPlatform returns true if the platform string is a known VCS platform.

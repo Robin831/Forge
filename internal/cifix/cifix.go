@@ -23,6 +23,7 @@ import (
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
+	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/warden"
 )
 
@@ -63,6 +64,9 @@ type FixParams struct {
 	// Providers is the ordered list of AI providers to try.
 	// If empty, provider.Defaults() is used (Claude → Gemini).
 	Providers []provider.Provider
+	// VCSProvider routes VCS operations through the appropriate platform.
+	// When nil, falls back to direct gh CLI calls (GitHub).
+	VCSProvider vcs.Provider
 }
 
 // FixResult captures the outcome of a CI fix attempt.
@@ -102,8 +106,8 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		result.Attempts = attempt
 		log.Printf("[quench] PR #%d attempt %d/%d", p.PRNumber, attempt, MaxAttempts)
 
-		// Step 1: Fetch GitHub check status to identify what's actually failing.
-		ghChecksOutput, fetchErr := fetchPRChecks(ctx, p.WorktreePath, p.PRNumber)
+		// Step 1: Fetch CI check status to identify what's actually failing.
+		ghChecksOutput, fetchErr := cifixFetchPRChecks(ctx, p.VCSProvider, p.WorktreePath, p.PRNumber)
 		ghChecksFetched := fetchErr == nil
 		if fetchErr != nil {
 			log.Printf("[quench] Warning: failed to fetch GitHub PR checks: %v", fetchErr)
@@ -147,7 +151,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		}
 
 		// Step 3: Fetch CI logs for failing checks to give Smith better context.
-		ciLogs := fetchFailingCheckLogs(ctx, p.WorktreePath, failingChecks)
+		ciLogs := cifixFetchFailingCheckLogs(ctx, p.VCSProvider, p.WorktreePath, failingChecks)
 
 		// Step 4: Build fix prompt.
 		var prompt string
@@ -463,9 +467,9 @@ func parseFailingChecks(ghChecksOutput string) []checkResult {
 // URLs look like: https://github.com/owner/repo/actions/runs/12345/jobs/67890
 var runIDRegexp = regexp.MustCompile(`/actions/runs/(\d+)`)
 
-// fetchFailingCheckLogs fetches CI logs for failing checks from GitHub Actions.
-// Returns a map of check name → log output.
-func fetchFailingCheckLogs(ctx context.Context, worktreePath string, checks []checkResult) map[string]string {
+// cifixFetchFailingCheckLogs fetches CI logs for failing checks.
+// Routes through VCS provider when available, falls back to direct gh CLI.
+func cifixFetchFailingCheckLogs(ctx context.Context, prov vcs.Provider, worktreePath string, checks []checkResult) map[string]string {
 	if len(checks) == 0 {
 		return nil
 	}
@@ -484,7 +488,13 @@ func fetchFailingCheckLogs(ctx context.Context, worktreePath string, checks []ch
 		}
 		seenRuns[runID] = true
 
-		logs, err := fetchRunFailedLogs(ctx, worktreePath, runID)
+		var logs string
+		var err error
+		if prov != nil {
+			logs, err = prov.FetchCIFailureLogs(ctx, worktreePath, runID)
+		} else {
+			logs, err = fetchRunFailedLogsDirect(ctx, worktreePath, runID)
+		}
 		if err != nil {
 			log.Printf("[quench] Warning: failed to fetch logs for run %s: %v", runID, err)
 			continue
@@ -506,8 +516,17 @@ func fetchFailingCheckLogs(ctx context.Context, worktreePath string, checks []ch
 	return result
 }
 
-// fetchRunFailedLogs fetches the failed job logs for a GitHub Actions run.
-func fetchRunFailedLogs(ctx context.Context, worktreePath, runID string) (string, error) {
+// cifixFetchPRChecks fetches CI check status, routing through VCS provider
+// when available or falling back to direct gh CLI.
+func cifixFetchPRChecks(ctx context.Context, prov vcs.Provider, worktreePath string, prNumber int) (string, error) {
+	if prov != nil {
+		return prov.FetchPRChecks(ctx, worktreePath, prNumber)
+	}
+	return fetchPRChecksDirect(ctx, worktreePath, prNumber)
+}
+
+// fetchRunFailedLogsDirect fetches failed job logs via direct gh CLI call.
+func fetchRunFailedLogsDirect(ctx context.Context, worktreePath, runID string) (string, error) {
 	cmd := exec.CommandContext(ctx, "gh", "run", "view", runID, "--log-failed")
 	executil.HideWindow(cmd)
 	cmd.Dir = worktreePath
@@ -521,7 +540,8 @@ func fetchRunFailedLogs(ctx context.Context, worktreePath, runID string) (string
 	return string(out), nil
 }
 
-func fetchPRChecks(ctx context.Context, worktreePath string, prNumber int) (string, error) {
+// fetchPRChecksDirect fetches PR checks via direct gh CLI call.
+func fetchPRChecksDirect(ctx context.Context, worktreePath string, prNumber int) (string, error) {
 	cmd := exec.CommandContext(ctx, "gh", "pr", "checks", fmt.Sprintf("%d", prNumber))
 	executil.HideWindow(cmd)
 	cmd.Dir = worktreePath
