@@ -850,11 +850,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				item := m.actionTarget
 				// Reset choice to default so reopening doesn't reuse a stale selection.
 				m.actionChoice = ActionRetry
+				// Build description: title + full reason for context
+				actionDesc := sanitizeTitle(item.Title)
+				if item.Reason != "" {
+					reasonText := sanitizeTitle(item.Reason)
+					if actionDesc != "" {
+						actionDesc += "\n⚠ " + reasonText
+					} else {
+						actionDesc = "⚠ " + reasonText
+					}
+				}
 				m.actionForm = huh.NewForm(
 					huh.NewGroup(
 						huh.NewSelect[ActionMenuChoice]().
 							Title(fmt.Sprintf("Actions for %s", item.BeadID)).
-							Description(sanitizeTitle(item.Title)).
+							Description(actionDesc).
 							Options(
 								huh.NewOption("Retry       — Clear flags, put back in queue", ActionRetry),
 								huh.NewOption("Dismiss     — Remove from Needs Attention", ActionDismiss),
@@ -3235,19 +3245,31 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 			}
 			icon := attentionReasonIcon(item.ReasonCategory)
 			beadLine := fmt.Sprintf("%s %s %s", icon, label, anvil)
+			// Append truncated title when available
+			if item.Title != "" {
+				titleMaxLen := width - 6 - len([]rune(beadLine))
+				if titleMaxLen > 10 {
+					beadLine += "  " + truncate(sanitizeTitle(item.Title), titleMaxLen)
+				}
+			}
 			if i == m.needsAttnVP.cursor {
 				beadLine = selectedStyle.Render(beadLine)
 			}
 			lines = append(lines, beadLine)
 
-			// Second line: reason detail (truncated)
+			// Second line: reason detail (truncated), with ⚠ prefix for clarification items
 			reason := item.Reason
 			if reason == "" {
 				reason = "(no reason)"
 			}
-			reasonLine := "  " + dimStyle.Render(truncate(reason, width-6))
+			reasonPrefix := "  "
+			if item.ReasonCategory == AttentionClarification {
+				reasonPrefix = "  ⚠ "
+			}
+			reasonText := truncate(sanitizeTitle(reason), width-6)
+			reasonLine := reasonPrefix + dimStyle.Render(reasonText)
 			if i == m.needsAttnVP.cursor {
-				reasonLine = "  " + selectedStyle.Render(truncate(reason, width-6))
+				reasonLine = reasonPrefix + selectedStyle.Render(reasonText)
 			}
 			lines = append(lines, reasonLine)
 		}
