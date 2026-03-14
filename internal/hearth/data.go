@@ -258,7 +258,7 @@ func formatToolCall(name string, rawInput json.RawMessage) string {
 	case "Read":
 		fp := getString("file_path")
 		if fp == "" {
-			break
+			return "[tool] Read "
 		}
 		detail := shortenPath(fp)
 		if offset := getString("offset"); offset != "" {
@@ -307,8 +307,8 @@ func formatToolCall(name string, rawInput json.RawMessage) string {
 			cmd = cmd[:idx]
 		}
 		cmd = strings.TrimSpace(cmd)
-		if len([]rune(cmd)) > 50 {
-			cmd = string([]rune(cmd)[:47]) + "..."
+		if len([]rune(cmd)) > 46 {
+			cmd = string([]rune(cmd)[:46]) + "..."
 		}
 		return fmt.Sprintf("[tool] Bash $ %s", cmd)
 
