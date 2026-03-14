@@ -595,6 +595,99 @@ func TestWebhookDispatcher_DeliversAfterCallerContextCancelled(t *testing.T) {
 	}
 }
 
+// TestSendGenericRelease_SetsForgeEventHeader verifies that SendGenericRelease
+// sets the X-Forge-Event HTTP header to the event type string.
+func TestSendGenericRelease_SetsForgeEventHeader(t *testing.T) {
+	ch := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case ch <- r.Header.Get("X-Forge-Event"):
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	payload := notify.WebhookPayload{
+		Source:  "forge",
+		Summary: "Release published: v1.0.0",
+		Event:   "release_published",
+		Version: "v1.0.0",
+	}
+	notify.SendGenericRelease(context.Background(), srv.URL, payload,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	select {
+	case got := <-ch:
+		if got != "release_published" {
+			t.Errorf("X-Forge-Event = %q, want %q", got, "release_published")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook was not delivered within 5 seconds")
+	}
+}
+
+// TestSendGenericPRReadyToMerge_SetsForgeEventHeader verifies that
+// SendGenericPRReadyToMerge sets the X-Forge-Event HTTP header.
+func TestSendGenericPRReadyToMerge_SetsForgeEventHeader(t *testing.T) {
+	ch := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case ch <- r.Header.Get("X-Forge-Event"):
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	payload := notify.WebhookPayload{
+		Source:  "forge",
+		Summary: "PR #1 ready to merge",
+		Event:   "pr_ready_to_merge",
+		PR:      1,
+	}
+	notify.SendGenericPRReadyToMerge(context.Background(), srv.URL, payload,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	select {
+	case got := <-ch:
+		if got != "pr_ready_to_merge" {
+			t.Errorf("X-Forge-Event = %q, want %q", got, "pr_ready_to_merge")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook was not delivered within 5 seconds")
+	}
+}
+
+// TestWebhookDispatcher_SetsForgeEventHeader verifies that the WebhookDispatcher
+// sets the X-Forge-Event HTTP header on dispatched webhook requests.
+func TestWebhookDispatcher_SetsForgeEventHeader(t *testing.T) {
+	ch := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case ch <- r.Header.Get("X-Forge-Event"):
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	d := notify.NewWebhookDispatcher([]notify.WebhookTarget{
+		{Name: "test", URL: srv.URL},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	d.Dispatch(context.Background(), notify.EventBeadFailed, "Forge-1", "anvil", "bead failed")
+
+	select {
+	case got := <-ch:
+		if got != "bead_failed" {
+			t.Errorf("X-Forge-Event = %q, want %q", got, "bead_failed")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook was not delivered within 5 seconds")
+	}
+}
+
 // TestShouldNotify_ReleasePublished verifies event filtering for the new event type.
 func TestShouldNotify_ReleasePublished(t *testing.T) {
 	all := notify.NewNotifier(notify.Config{

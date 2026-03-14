@@ -333,6 +333,7 @@ func sendGenericWebhook(ctx context.Context, webhookURL string, payload WebhookP
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forge-Event", eventLabel)
 
 	client := &http.Client{Timeout: webhookTimeout}
 	resp, err := client.Do(req)
@@ -487,6 +488,7 @@ func (d *WebhookDispatcher) sendToTarget(ctx context.Context, t dispatchTarget, 
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forge-Event", payload.EventType)
 
 	resp, err := d.client.Do(req)
 	if err != nil {
