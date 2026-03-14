@@ -1013,13 +1013,13 @@ func TestFormatToolCall(t *testing.T) {
 			name:     "Read with empty input falls back",
 			toolName: "Read",
 			input:    `{}`,
-			want:     "[tool] Read ",
+			want:     "[tool] Read",
 		},
 		{
 			name:     "nil input",
 			toolName: "SomeTool",
 			input:    "",
-			want:     "[tool] SomeTool ",
+			want:     "[tool] SomeTool",
 		},
 	}
 	for _, tt := range tests {

@@ -258,7 +258,7 @@ func formatToolCall(name string, rawInput json.RawMessage) string {
 	case "Read":
 		fp := getString("file_path")
 		if fp == "" {
-			return "[tool] Read "
+			return "[tool] Read"
 		}
 		detail := shortenPath(fp)
 		if offset := getString("offset"); offset != "" {
@@ -351,14 +351,14 @@ func formatToolCall(name string, rawInput json.RawMessage) string {
 	}
 
 	// Fallback: name + truncated raw params
-	fallback := ""
 	if len(rawInput) > 0 {
-		fallback = string(rawInput)
-		if len(fallback) > 50 {
-			fallback = fallback[:47] + "..."
+		fallback := string(rawInput)
+		if len([]rune(fallback)) > 50 {
+			fallback = string([]rune(fallback)[:47]) + "..."
 		}
+		return fmt.Sprintf("[tool] %s %s", name, fallback)
 	}
-	return fmt.Sprintf("[tool] %s %s", name, fallback)
+	return fmt.Sprintf("[tool] %s", name)
 }
 
 // parseWorkerActivity reads the last maxEntries activity events from a
