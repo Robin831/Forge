@@ -207,6 +207,10 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		return
 	}
 
+	if m.vcs == nil {
+		log.Printf("[bellows] No VCS provider configured; skipping status check for PR #%d", pr.Number)
+		return
+	}
 	status, err := m.vcs.CheckStatus(ctx, anvilPath, pr.Number)
 	if err != nil {
 		log.Printf("[bellows] Error checking PR #%d: %v", pr.Number, err)
@@ -511,6 +515,10 @@ func (m *Monitor) getLearnMu(anvil string) *sync.Mutex {
 // the per-anvil learn mutex so that concurrent learns don't race.
 func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, beadID string, prNumber int) {
 	if ctx.Err() != nil {
+		return
+	}
+	if m.vcs == nil {
+		log.Printf("[bellows] No VCS provider configured; skipping auto-learn for PR #%d", prNumber)
 		return
 	}
 
