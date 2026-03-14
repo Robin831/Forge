@@ -23,6 +23,9 @@ import (
 // supplied through the GITEA_TOKEN or FORGEJO_TOKEN environment variable.
 type GiteaProvider struct{}
 
+// Compile-time interface check.
+var _ Provider = (*GiteaProvider)(nil)
+
 // NewGiteaProvider returns a new Gitea/Forgejo VCS provider.
 func NewGiteaProvider() *GiteaProvider {
 	return &GiteaProvider{}
@@ -57,6 +60,15 @@ func giteaToken() string {
 		return t
 	}
 	return os.Getenv("FORGEJO_TOKEN")
+}
+
+// giteaBaseURL returns the user-configured base URL from GITEA_URL or FORGEJO_URL.
+// Returns empty string if not set, in which case the URL is derived from the git remote.
+func giteaBaseURL() string {
+	if u := os.Getenv("GITEA_URL"); u != "" {
+		return strings.TrimSuffix(u, "/")
+	}
+	return strings.TrimSuffix(os.Getenv("FORGEJO_URL"), "/")
 }
 
 // CreatePR creates a pull request using the Gitea API.
@@ -352,6 +364,8 @@ func (g *GiteaProvider) fetchPendingReviews(ctx context.Context, ri giteaRepoInf
 }
 
 // resolveRepo gets the base URL, owner, and repo from the git remote.
+// If GITEA_URL or FORGEJO_URL is set, it overrides the base URL derived from
+// the remote — useful when the git remote is SSH but the API runs on HTTP.
 func (g *GiteaProvider) resolveRepo(ctx context.Context, worktreePath string) (baseURL, owner, repo string, err error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "remote", "get-url", "origin"))
 	cmd.Dir = worktreePath
@@ -365,7 +379,18 @@ func (g *GiteaProvider) resolveRepo(ctx context.Context, worktreePath string) (b
 	}
 
 	rawURL := strings.TrimSpace(stdout.String())
-	return ParseGiteaRepoURL(rawURL)
+	parsedBase, owner, repo, parseErr := ParseGiteaRepoURL(rawURL)
+	if parseErr != nil {
+		return "", "", "", parseErr
+	}
+
+	// Allow GITEA_URL / FORGEJO_URL to override the base URL derived from the
+	// remote. This is important when the git remote uses SSH but the Gitea
+	// instance serves its API over plain HTTP (common for local dev).
+	if override := giteaBaseURL(); override != "" {
+		return override, owner, repo, nil
+	}
+	return parsedBase, owner, repo, nil
 }
 
 // fetchPRView retrieves pull request details via the Gitea API.
@@ -463,7 +488,7 @@ type giteaCreatePRRequest struct {
 }
 
 type giteaMergePRRequest struct {
-	Do                     string `json:"Do"`
+	Do                     string `json:"do"`
 	DeleteBranchAfterMerge bool   `json:"delete_branch_after_merge"`
 }
 
@@ -572,15 +597,38 @@ func giteaAPIRequest(ctx context.Context, method, endpoint string, body any, res
 // --- URL parsing ---
 
 // ParseGiteaRepoURL parses a git remote URL into base URL, owner, and repo name.
-// Supports both HTTPS and SSH URLs for Gitea/Forgejo instances.
+// Supports HTTPS, HTTP, SSH (git@host:path), and ssh:// scheme URLs.
 //
-// HTTPS: https://gitea.example.com/owner/repo.git → ("https://gitea.example.com", "owner", "repo")
-// SSH:   git@gitea.example.com:owner/repo.git     → ("https://gitea.example.com", "owner", "repo")
+// HTTPS:  https://gitea.example.com/owner/repo.git  → ("https://gitea.example.com", "owner", "repo")
+// SSH:    git@gitea.example.com:owner/repo.git       → ("https://gitea.example.com", "owner", "repo")
+// SSH:    ssh://git@gitea.example.com:2222/owner/repo → ("https://gitea.example.com", "owner", "repo")
+//
+// Note: SSH URLs cannot convey whether the API is served over HTTP or HTTPS.
+// The base URL defaults to HTTPS. Set GITEA_URL or FORGEJO_URL to override.
 func ParseGiteaRepoURL(rawURL string) (baseURL, owner, repo string, err error) {
 	rawURL = strings.TrimSuffix(rawURL, ".git")
 	safeURL := redactURL(rawURL)
 
-	// SSH: git@host:owner/repo or git@host:port/owner/repo
+	// ssh:// scheme: ssh://git@host:port/owner/repo or ssh://git@host/owner/repo
+	if strings.HasPrefix(rawURL, "ssh://") {
+		u, parseErr := url.Parse(rawURL)
+		if parseErr != nil {
+			return "", "", "", fmt.Errorf("could not parse Gitea SSH URL: %s", safeURL)
+		}
+		// u.Host includes the port for ssh:// URLs; we only want the hostname
+		// for the HTTPS base URL since the port is SSH-specific.
+		host := u.Hostname()
+		path := strings.TrimPrefix(u.Path, "/")
+		path = strings.TrimSuffix(path, "/")
+
+		owner, repo, err = splitGiteaPath(path, safeURL)
+		if err != nil {
+			return "", "", "", err
+		}
+		return "https://" + host, owner, repo, nil
+	}
+
+	// SCP-style SSH: git@host:owner/repo or git@host:port/owner/repo
 	if strings.HasPrefix(rawURL, "git@") {
 		parts := strings.SplitN(rawURL, ":", 2)
 		if len(parts) != 2 {
@@ -599,7 +647,7 @@ func ParseGiteaRepoURL(rawURL string) (baseURL, owner, repo string, err error) {
 		return "https://" + host, owner, repo, nil
 	}
 
-	// HTTPS: https://host/owner/repo
+	// HTTPS/HTTP: https://host/owner/repo
 	if strings.HasPrefix(rawURL, "https://") || strings.HasPrefix(rawURL, "http://") {
 		u, parseErr := url.Parse(rawURL)
 		if parseErr != nil {

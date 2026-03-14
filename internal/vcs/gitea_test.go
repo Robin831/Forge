@@ -91,6 +91,20 @@ func TestParseGiteaRepoURL(t *testing.T) {
 			wantRepo:    "myrepo",
 		},
 		{
+			name:        "ssh:// scheme without port",
+			url:         "ssh://git@gitea.example.com/myorg/myrepo.git",
+			wantBaseURL: "https://gitea.example.com",
+			wantOwner:   "myorg",
+			wantRepo:    "myrepo",
+		},
+		{
+			name:        "ssh:// scheme with port",
+			url:         "ssh://git@gitea.example.com:2222/myorg/myrepo.git",
+			wantBaseURL: "https://gitea.example.com",
+			wantOwner:   "myorg",
+			wantRepo:    "myrepo",
+		},
+		{
 			name:    "SSH no repo",
 			url:     "git@gitea.example.com:onlyone",
 			wantErr: true,
@@ -538,6 +552,32 @@ func TestGiteaReviewCommentParsing(t *testing.T) {
 		}
 		assert.Equal(t, 2, count)
 	})
+}
+
+// TestGiteaMergePRRequestJSON verifies the merge request payload uses the correct
+// field casing expected by the Gitea API (lowercase "do", not "Do").
+func TestGiteaMergePRRequestJSON(t *testing.T) {
+	req := giteaMergePRRequest{
+		Do:                     "squash",
+		DeleteBranchAfterMerge: true,
+	}
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	// "do" must be lowercase — the Gitea API rejects uppercase "Do".
+	assert.Contains(t, raw, "do")
+	assert.NotContains(t, raw, "Do")
+	assert.Equal(t, "squash", raw["do"])
+	assert.Equal(t, true, raw["delete_branch_after_merge"])
+}
+
+// TestGiteaProviderInterfaceCompliance verifies GiteaProvider satisfies the Provider interface.
+func TestGiteaProviderInterfaceCompliance(t *testing.T) {
+	var _ Provider = (*GiteaProvider)(nil)
+	var _ Provider = NewGiteaProvider()
 }
 
 func TestForPlatform_Gitea(t *testing.T) {
