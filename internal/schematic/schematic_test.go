@@ -1,6 +1,10 @@
 package schematic
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/poller"
@@ -152,4 +156,129 @@ func TestBuildCruciblePrompt(t *testing.T) {
 	assert.Contains(t, p, "Login page")
 	assert.Contains(t, p, "child-2")
 	assert.Contains(t, p, "needs_crucible")
+}
+
+// fakeRunner records bd invocations and returns pre-configured responses.
+// It is safe to use from parallel tests.
+type fakeRunner struct {
+	mu       sync.Mutex
+	calls    [][]string // each entry is the args slice for one call
+	response func(args []string) ([]byte, error)
+}
+
+func (f *fakeRunner) run(_ context.Context, _ string, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, args)
+	f.mu.Unlock()
+	return f.response(args)
+}
+
+// newFakeRunner builds a runner whose "bd create" calls return sequential IDs
+// and all other calls succeed.
+func newFakeRunner() *fakeRunner {
+	var idCounter int
+	var mu sync.Mutex
+	return &fakeRunner{
+		response: func(args []string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "create" {
+				mu.Lock()
+				idCounter++
+				id := fmt.Sprintf("test-%d", idCounter)
+				mu.Unlock()
+				return []byte(fmt.Sprintf(`{"id":%q}`, id)), nil
+			}
+			// dep add, update, etc. succeed silently.
+			return []byte("ok"), nil
+		},
+	}
+}
+
+func TestCreateSubBeads_SequentialDepsAdded(t *testing.T) {
+	fake := newFakeRunner()
+	parent := poller.Bead{ID: "parent-1", Title: "Big feature", Priority: 2}
+	tasks := []string{"Task A", "Task B", "Task C"}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err)
+	require.Len(t, subs, 3)
+
+	// Verify the IDs are set.
+	assert.NotEmpty(t, subs[0].ID)
+	assert.NotEmpty(t, subs[1].ID)
+	assert.NotEmpty(t, subs[2].ID)
+
+	// Count dep add calls: expect N-1 = 2 for 3 tasks.
+	depCalls := 0
+	for _, call := range fake.calls {
+		if len(call) >= 1 && call[0] == "dep" {
+			depCalls++
+		}
+	}
+	assert.Equal(t, 2, depCalls, "expected one bd dep add per consecutive pair")
+
+	// Verify ordering: dep add <child2> <child1>, dep add <child3> <child2>.
+	depArgs := [][]string{}
+	for _, call := range fake.calls {
+		if len(call) >= 1 && call[0] == "dep" {
+			depArgs = append(depArgs, call)
+		}
+	}
+	require.Len(t, depArgs, 2)
+	// depArgs[0] = ["dep", "add", <child2-id>, <child1-id>]
+	assert.Equal(t, subs[1].ID, depArgs[0][2], "second child should depend on first")
+	assert.Equal(t, subs[0].ID, depArgs[0][3])
+	assert.Equal(t, subs[2].ID, depArgs[1][2], "third child should depend on second")
+	assert.Equal(t, subs[1].ID, depArgs[1][3])
+}
+
+func TestCreateSubBeads_DepAddFailureIsFatal(t *testing.T) {
+	var idCounter int
+	var mu sync.Mutex
+	fake := &fakeRunner{
+		response: func(args []string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "create" {
+				mu.Lock()
+				idCounter++
+				id := fmt.Sprintf("test-%d", idCounter)
+				mu.Unlock()
+				return []byte(fmt.Sprintf(`{"id":%q}`, id)), nil
+			}
+			if len(args) > 0 && args[0] == "dep" {
+				return nil, errors.New("bd dep add: connection refused")
+			}
+			return []byte("ok"), nil
+		},
+	}
+
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2}
+	tasks := []string{"Task A", "Task B"}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	// Must return an error so the caller can escalate to ActionClarify.
+	require.Error(t, err, "dep add failure must be fatal")
+	assert.Contains(t, err.Error(), "adding sequential dependency")
+	// Partial sub-beads should be returned for operator visibility.
+	assert.NotEmpty(t, subs, "partial sub-beads should be returned even on dep add failure")
+}
+
+func TestCreateSubBeads_SingleTaskNoDep(t *testing.T) {
+	fake := newFakeRunner()
+	parent := poller.Bead{ID: "parent-1", Title: "Simple task", Priority: 1}
+
+	subs, err := createSubBeads(context.Background(), parent, []string{"Only task"}, "/tmp", fake.run)
+	require.NoError(t, err)
+	require.Len(t, subs, 1)
+
+	// No dep add should be issued for a single task.
+	for _, call := range fake.calls {
+		if len(call) > 0 && call[0] == "dep" {
+			t.Errorf("unexpected dep add call for single-task decomposition: %v", call)
+		}
+	}
+}
+
+func TestCreateSubBeads_NoTasks(t *testing.T) {
+	fake := newFakeRunner()
+	_, err := createSubBeads(context.Background(), poller.Bead{ID: "p"}, nil, "/tmp", fake.run)
+	require.Error(t, err)
 }
