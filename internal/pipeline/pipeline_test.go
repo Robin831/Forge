@@ -624,6 +624,58 @@ func TestExtractNeedsHuman(t *testing.T) {
 	}
 }
 
+// TestExtractNoChangesNeeded verifies the NO_CHANGES_NEEDED marker extraction logic.
+func TestExtractNoChangesNeeded(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"marker with reason", "NO_CHANGES_NEEDED: Already fixed in commit abc123", "Already fixed in commit abc123"},
+		{"marker mid-output", "Some text\nNO_CHANGES_NEEDED: Issue resolved upstream\nMore text", "Issue resolved upstream"},
+		{"marker with leading spaces", "  NO_CHANGES_NEEDED: Indented reason", "Indented reason"},
+		{"no marker", "Normal output without the marker", ""},
+		{"marker without reason", "NO_CHANGES_NEEDED:", ""},
+		{"partial marker", "NO_CHANGES_NEEDED_MAYBE: not a real marker", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractNoChangesNeeded(tt.input)
+			assert.Equal(t, tt.expect, got)
+		})
+	}
+}
+
+// TestSmith_NoChangesNeeded_SkipsWardenAndTemper verifies that when Smith outputs
+// the NO_CHANGES_NEEDED: marker, Warden and Temper are skipped and the outcome
+// has NoChangesNeeded=true.
+func TestSmith_NoChangesNeeded_SkipsWardenAndTemper(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	params.SmithRunner = immediateSmith(&smith.Result{
+		ExitCode:   0,
+		FullOutput: "I investigated and found the bug was already fixed.\nNO_CHANGES_NEEDED: The fix was already applied in the previous release.\nDone.",
+	})
+	params.TemperRunner = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		t.Fatal("Temper should not be called when Smith signals no changes needed")
+		return nil
+	}
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		t.Fatal("Warden should not be called when Smith signals no changes needed")
+		return nil, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.True(t, outcome.NoChangesNeeded)
+	assert.Equal(t, "The fix was already applied in the previous release.", outcome.NoChangesReason)
+	assert.False(t, outcome.Success)
+	assert.False(t, outcome.NeedsHuman)
+	assert.Nil(t, outcome.Error)
+}
+
 // TestWardenFeedback_PassedToSmithOnRetry verifies that when Warden requests
 // changes, the feedback is included in the Smith prompt for the next iteration.
 func TestWardenFeedback_PassedToSmithOnRetry(t *testing.T) {

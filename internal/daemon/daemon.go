@@ -1733,6 +1733,15 @@ normalPipeline:
 	}
 
 	if !outcome.Success {
+		if outcome.NoChangesNeeded {
+			// Smith determined no changes are needed — close the bead with the
+			// reason instead of marking it as failed or needs_human.
+			d.logger.Info("no changes needed — closing bead", "bead", bead.ID, "reason", outcome.NoChangesReason)
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer closeCancel()
+			d.applyNoChangesNeededOutcome(closeCtx, bead, anvilCfg.Path, outcome.NoChangesReason)
+			return
+		}
 		if outcome.Decomposed {
 			// Dispatch bead_decomposed to generic webhook targets.
 			if disp := d.dispatcher.Load(); disp != nil {
@@ -1907,6 +1916,27 @@ func (d *Daemon) crucibleParentTitle(parentID string) string {
 		}
 	}
 	return parentID
+}
+
+// applyNoChangesNeededOutcome handles the terminal case where Smith determined
+// no changes are needed. It calls closeBead and, on success, clears the retry
+// record and logs EventNoChangesNeeded. On failure it immediately marks the
+// bead as needs_human so it surfaces in Hearth without waiting for the circuit
+// breaker to trip.
+func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Bead, anvilPath, reason string) {
+	if err := d.closeBead(ctx, bead.ID, anvilPath, reason); err != nil {
+		d.logger.Error("failed to close bead after no-changes-needed", "bead", bead.ID, "error", err)
+		closeErr := fmt.Sprintf("no changes needed but close failed: %v", err)
+		if markErr := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, closeErr); markErr != nil {
+			d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", markErr)
+		}
+		d.recordDispatchFailure(bead.ID, bead.Anvil, closeErr)
+	} else {
+		_ = d.db.ClearRetry(bead.ID, bead.Anvil)
+		_ = d.db.LogEvent(state.EventNoChangesNeeded,
+			fmt.Sprintf("Bead closed — no changes needed: %s", reason),
+			bead.ID, bead.Anvil)
+	}
 }
 
 // closeBead marks a bead as closed via bd close.

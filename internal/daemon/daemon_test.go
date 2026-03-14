@@ -1971,3 +1971,107 @@ func TestHandleAutoMerge(t *testing.T) {
 		assert.Equal(t, int32(1), mock.mergeCalls.Load(), "should call MergePR")
 	})
 }
+
+// TestApplyNoChangesNeededOutcome verifies the terminal no-changes-needed path:
+// - on success: retries are cleared and EventNoChangesNeeded is logged
+// - on close failure: bead is immediately marked needs_human (not circuit-broken)
+func TestApplyNoChangesNeededOutcome(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-no-changes-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	const anvil = "test-anvil"
+
+	t.Run("success: clears retry and logs event", func(t *testing.T) {
+		const beadID = "NCN-SUCCESS"
+
+		// Seed a prior dispatch failure to confirm ClearRetry runs.
+		_, _, err := db.IncrementDispatchFailures(beadID, anvil, 10, "prior failure")
+		require.NoError(t, err)
+
+		// Build a fake bd script that handles 'bd close'.
+		var bdScript, bdContent string
+		if runtime.GOOS == "windows" {
+			bdScript = filepath.Join(tmpDir, "bd.bat")
+			bdContent = "@echo off\r\nif \"%1\"==\"close\" ( exit /b 0 )\r\nexit /b 1\r\n"
+		} else {
+			bdScript = filepath.Join(tmpDir, "bd")
+			bdContent = "#!/bin/sh\nif [ \"$1\" = \"close\" ]; then exit 0; fi\nexit 1\n"
+		}
+		require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+		oldPath := os.Getenv("PATH")
+		os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+		defer os.Setenv("PATH", oldPath)
+
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.cfg.Store(&config.Config{})
+
+		bead := poller.Bead{ID: beadID, Anvil: anvil}
+		d.applyNoChangesNeededOutcome(context.Background(), bead, tmpDir, "already fixed upstream")
+
+		// Retry record should be cleared.
+		r, err := db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		assert.Nil(t, r, "retry record should be cleared on successful close")
+
+		// EventNoChangesNeeded should be logged.
+		events, err := db.RecentEvents(20)
+		require.NoError(t, err)
+		found := false
+		for _, ev := range events {
+			if ev.Type == state.EventNoChangesNeeded && ev.BeadID == beadID {
+				found = true
+				assert.Contains(t, ev.Message, "already fixed upstream")
+				break
+			}
+		}
+		assert.True(t, found, "EventNoChangesNeeded should be logged after successful close")
+	})
+
+	t.Run("close failure: marks needs_human immediately", func(t *testing.T) {
+		const beadID = "NCN-CLOSE-FAIL"
+
+		// Use a tmpDir with NO bd script so closeBead will fail.
+		failDir, err := os.MkdirTemp("", "forge-no-bd-*")
+		require.NoError(t, err)
+		defer os.RemoveAll(failDir)
+
+		// Ensure bd is NOT on the PATH for this subtest (use isolated PATH).
+		oldPath := os.Getenv("PATH")
+		os.Setenv("PATH", failDir) // isolated: original PATH excluded so bd cannot be found
+		defer os.Setenv("PATH", oldPath)
+
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.cfg.Store(&config.Config{})
+
+		bead := poller.Bead{ID: beadID, Anvil: anvil}
+		d.applyNoChangesNeededOutcome(context.Background(), bead, failDir, "no work needed")
+
+		// Bead should be immediately marked needs_human (not waiting for circuit breaker).
+		r, err := db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		require.NotNil(t, r, "retry record should exist after failed close")
+		assert.True(t, r.NeedsHuman, "bead should be marked needs_human when close fails")
+		assert.Contains(t, r.LastError, "no changes needed but close failed")
+
+		// EventNoChangesNeeded must NOT be logged (close failed).
+		events, err := db.RecentEvents(20)
+		require.NoError(t, err)
+		for _, ev := range events {
+			if ev.Type == state.EventNoChangesNeeded && ev.BeadID == beadID {
+				t.Fatal("EventNoChangesNeeded should NOT be logged when close fails")
+			}
+		}
+	})
+}
