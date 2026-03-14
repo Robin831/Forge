@@ -30,6 +30,10 @@ func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string) *CheckResu
 		Checked:   time.Now(),
 	}
 
+	// Track seen packages across all project files to avoid duplicates
+	// when the same package appears in multiple .sln/.csproj files.
+	seen := map[string]bool{}
+
 	for _, projFile := range projectFiles {
 		updates, err := runDotnetOutdated(ctx, s.timeout, filepath.Dir(projFile), projFile)
 		if err != nil {
@@ -38,6 +42,10 @@ func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string) *CheckResu
 		}
 
 		for _, u := range updates {
+			if seen[u.Path] {
+				continue
+			}
+			seen[u.Path] = true
 			switch u.Kind {
 			case "patch":
 				result.Patch = append(result.Patch, u)

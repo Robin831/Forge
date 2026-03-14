@@ -122,7 +122,7 @@ func fetchBeadList(ctx context.Context, anvilPath, status string) ([]byte, error
 	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "list", fmt.Sprintf("--status=%s", status), "--json"))
+		"bd", "list", fmt.Sprintf("--status=%s", status), "--limit", "0", "--json"))
 	cmd.Dir = anvilPath
 	out, err := cmd.Output()
 	if err != nil {
