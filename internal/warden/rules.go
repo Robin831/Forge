@@ -23,6 +23,33 @@ type Rule struct {
 	Added    string `yaml:"added"    json:"added"`
 }
 
+// needsQuoting returns true if a YAML scalar value needs explicit quoting
+// to avoid parse errors (e.g. values containing ": " or "#").
+func needsQuoting(s string) bool {
+	return strings.Contains(s, ": ") || strings.Contains(s, "#") || strings.Contains(s, "\"")
+}
+
+// MarshalYAML implements yaml.Marshaler for Rule, ensuring string values
+// containing special YAML characters (like ": ") are double-quoted.
+func (r Rule) MarshalYAML() (any, error) {
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	addField := func(key, val string) {
+		kn := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
+		vn := &yaml.Node{Kind: yaml.ScalarNode, Value: val}
+		if needsQuoting(val) {
+			vn.Style = yaml.DoubleQuotedStyle
+		}
+		node.Content = append(node.Content, kn, vn)
+	}
+	addField("id", r.ID)
+	addField("category", r.Category)
+	addField("pattern", r.Pattern)
+	addField("check", r.Check)
+	addField("source", r.Source)
+	addField("added", r.Added)
+	return node, nil
+}
+
 // RulesFile is the top-level structure of warden-rules.yaml.
 type RulesFile struct {
 	Rules []Rule `yaml:"rules"`
