@@ -602,6 +602,20 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		}()
 		defer d.activeBeads.Delete(req.BeadID)
 
+		// Actions that don't need a worktree — handle before worktree creation
+		// so they succeed even when the branch/worktree is already cleaned up.
+		switch req.Action {
+		case lifecycle.ActionCloseBead:
+			d.logger.Info("closing bead after PR merge", "bead", req.BeadID)
+			_ = d.closeBead(ctx, req.BeadID, anvilCfg.Path, "PR merged")
+			return
+
+		case lifecycle.ActionCleanup:
+			d.logger.Info("cleaning up PR after close", "pr", req.PRNumber)
+			// Optional: delete remote branch etc.
+			return
+		}
+
 		// Create/get worktree for the PR branch
 		wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, req.BeadID, req.Branch)
 		if err != nil {
@@ -710,14 +724,6 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
 				}
 			}
-
-		case lifecycle.ActionCloseBead:
-			d.logger.Info("closing bead after merge", "bead", req.BeadID)
-			_ = d.closeBead(ctx, req.BeadID, anvilCfg.Path)
-
-		case lifecycle.ActionCleanup:
-			d.logger.Info("cleaning up PR after close", "pr", req.PRNumber)
-			// Optional: delete remote branch etc.
 
 		case lifecycle.ActionRebase:
 			d.logger.Info("rebasing conflicting PR", "pr", req.PRNumber, "bead", req.BeadID)
@@ -1681,7 +1687,7 @@ normalPipeline:
 	// build on stale main. Bellows will close the bead after the PR merges.
 	if len(bead.Blocks) > 0 || bead.DependentCount > 0 {
 		d.logger.Info("bead has dependents, deferring close until PR merges", "bead", bead.ID, "blocks", len(bead.Blocks), "dependent_count", bead.DependentCount)
-	} else if err := d.closeBead(pipelineCtx, bead.ID, anvilCfg.Path); err != nil {
+	} else if err := d.closeBead(pipelineCtx, bead.ID, anvilCfg.Path, "Implemented by Forge"); err != nil {
 		d.logger.Warn("failed to close bead", "bead", bead.ID, "error", err)
 	}
 }
@@ -1737,8 +1743,8 @@ func (d *Daemon) crucibleParentTitle(parentID string) string {
 }
 
 // closeBead marks a bead as closed via bd close.
-func (d *Daemon) closeBead(ctx context.Context, beadID, anvilPath string) error {
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "close", beadID, "--reason=Implemented by Forge", "--json"))
+func (d *Daemon) closeBead(ctx context.Context, beadID, anvilPath, reason string) error {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "close", beadID, "--reason="+reason, "--json"))
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
