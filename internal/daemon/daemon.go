@@ -518,6 +518,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
 	d.bellowsMonitor.OnEvent(d.handleBellowsNotifications)
+	d.bellowsMonitor.OnEvent(d.handleBeadCloseOnMerge)
 
 	// Reconcile: register any GitHub PRs not yet tracked in the state DB.
 	// This handles PRs created before the current DB or after a DB reset.
@@ -821,6 +822,30 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 			}
 		}
 	}(event.Anvil, event.BeadID, event.PRNumber, event.PRURL, title)
+}
+
+// handleBeadCloseOnMerge closes the bead when its PR is merged.
+// The pipeline defers bead close when DependentCount > 0, expecting
+// bellows to close it after merge. This handler fulfils that contract.
+// External PRs (ext-*) are skipped — they don't have real beads to close.
+func (d *Daemon) handleBeadCloseOnMerge(ctx context.Context, event bellows.PREvent) {
+	if event.EventType != bellows.EventPRMerged {
+		return
+	}
+	if strings.HasPrefix(event.BeadID, "ext-") {
+		return
+	}
+	anvilCfg, ok := d.cfg.Load().Anvils[event.Anvil]
+	if !ok || anvilCfg.Path == "" {
+		return
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := d.closeBead(closeCtx, event.BeadID, anvilCfg.Path, fmt.Sprintf("PR #%d merged", event.PRNumber)); err != nil {
+		d.logger.Warn("failed to close bead after PR merge", "bead", event.BeadID, "pr", event.PRNumber, "error", err)
+	} else {
+		d.logger.Info("bead closed after PR merge", "bead", event.BeadID, "pr", event.PRNumber)
+	}
 }
 
 // drainPendingAction checks whether a lifecycle action was parked for beadID
