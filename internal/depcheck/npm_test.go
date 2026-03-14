@@ -1,9 +1,11 @@
 package depcheck
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,41 +54,40 @@ func TestFindNpmProjects_NoPackageJson(t *testing.T) {
 	assert.Empty(t, dirs)
 }
 
-// TestNpmCrossProjectDedup verifies that the seen-map dedup in scanNpm prevents
-// the same package from being counted multiple times when it appears in more
-// than one package.json (e.g. worktree copies of the same repo).
-func TestNpmCrossProjectDedup(t *testing.T) {
-	// Simulate updates from two separate package.json directories where both
-	// report the same outdated packages. The accumulator should emit each
-	// package only once.
-	project1 := []ModuleUpdate{
-		{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"},
-		{Path: "react", Current: "18.0.0", Latest: "18.2.0", Kind: "minor"},
-	}
-	project2 := []ModuleUpdate{
-		{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"}, // duplicate
-		{Path: "axios", Current: "1.0.0", Latest: "2.0.0", Kind: "major"},
+// TestScanNpmCrossProjectDedup verifies that scanNpm deduplicates packages that
+// appear in more than one package.json (e.g. worktree copies of the same repo).
+// runNpmOutdatedFn is replaced with a stub so npm does not need to be installed.
+func TestScanNpmCrossProjectDedup(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create two package.json files in separate sub-directories.
+	for _, sub := range []string{"app", "lib"} {
+		subDir := filepath.Join(dir, sub)
+		require.NoError(t, os.MkdirAll(subDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(subDir, "package.json"), []byte("{}"), 0o644))
 	}
 
-	result := &CheckResult{}
-	seen := map[string]bool{}
-
-	for _, updates := range [][]ModuleUpdate{project1, project2} {
-		for _, u := range updates {
-			if seen[u.Path] {
-				continue
-			}
-			seen[u.Path] = true
-			switch u.Kind {
-			case "patch":
-				result.Patch = append(result.Patch, u)
-			case "minor":
-				result.Minor = append(result.Minor, u)
-			case "major":
-				result.Major = append(result.Major, u)
-			}
-		}
+	// Map each directory to the updates its stub will return.
+	stubUpdates := map[string][]ModuleUpdate{
+		filepath.Join(dir, "app"): {
+			{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"},
+			{Path: "react", Current: "18.0.0", Latest: "18.2.0", Kind: "minor"},
+		},
+		filepath.Join(dir, "lib"): {
+			{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"}, // duplicate
+			{Path: "axios", Current: "1.0.0", Latest: "2.0.0", Kind: "major"},
+		},
 	}
+
+	orig := runNpmOutdatedFn
+	t.Cleanup(func() { runNpmOutdatedFn = orig })
+	runNpmOutdatedFn = func(_ context.Context, _ time.Duration, d string) ([]ModuleUpdate, error) {
+		return stubUpdates[d], nil
+	}
+
+	s := &Scanner{timeout: 30 * time.Second}
+	result := s.scanNpm(context.Background(), "test-anvil", dir)
+	require.NotNil(t, result)
 
 	assert.Len(t, result.Patch, 1, "lodash should appear once despite two projects reporting it")
 	assert.Equal(t, "lodash", result.Patch[0].Path)

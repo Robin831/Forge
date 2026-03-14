@@ -15,6 +15,11 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 )
 
+// runNpmOutdatedFn is the function used to invoke npm outdated. It is a
+// package-level variable so tests can replace it without requiring npm to be
+// installed on the test machine.
+var runNpmOutdatedFn = runNpmOutdated
+
 // scanNpm runs 'npm outdated --json' in directories containing package.json.
 // Skips node_modules, .workers, .worktrees, bin, and obj directories.
 // Deduplicates packages across projects. Returns nil if no package.json found.
@@ -36,7 +41,7 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 	seen := map[string]bool{}
 
 	for _, dir := range pkgDirs {
-		updates, err := runNpmOutdated(ctx, s.timeout, dir)
+		updates, err := runNpmOutdatedFn(ctx, s.timeout, dir)
 		if err != nil {
 			result.Error = fmt.Errorf("npm outdated in %s: %w", dir, err)
 			return result
