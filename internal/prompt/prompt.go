@@ -168,6 +168,7 @@ environment for other workers.
    - Include "Bead: {{.Bead.BeadID}}" in the commit body
 6. **Push your branch** to the remote: git push -u origin {{.Bead.Branch}}
 7. **Do not create a PR** — that will be handled by the orchestrator
+8. **Do not close the bead** — the orchestrator closes it automatically after the PR merges
 
 ## Escalation — When to Ask for Human Help
 
