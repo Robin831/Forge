@@ -607,7 +607,9 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		switch req.Action {
 		case lifecycle.ActionCloseBead:
 			d.logger.Info("closing bead after PR merge", "bead", req.BeadID)
-			_ = d.closeBead(ctx, req.BeadID, anvilCfg.Path, "PR merged")
+			if err := d.closeBead(ctx, req.BeadID, anvilCfg.Path, "PR merged"); err != nil {
+				d.logger.Warn("failed to close bead after PR merge", "bead", req.BeadID, "error", err)
+			}
 			return
 
 		case lifecycle.ActionCleanup:
