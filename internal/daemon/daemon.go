@@ -1528,8 +1528,12 @@ normalPipeline:
 			if backoff <= 0 {
 				backoff = 5 * time.Minute
 			}
+			retryAt := time.Now().Add(backoff)
 			d.logger.Warn("all providers rate limited; bead released to open, backing off",
 				"bead", bead.ID, "backoff", backoff)
+			_ = d.db.LogEvent(state.EventRateLimited,
+				fmt.Sprintf("%s rate limited, will retry at %s (in %s)", bead.ID, retryAt.Format("2006-01-02 15:04:05 MST"), backoff.Round(time.Second)),
+				bead.ID, bead.Anvil)
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
