@@ -295,33 +295,62 @@ func (g *GiteaProvider) FetchUnresolvedThreadCount(ctx context.Context, worktree
 }
 
 // fetchUnresolvedThreads counts unresolved review comments on a PR.
-// It paginates through all review comments and counts those where
-// the resolved field is explicitly false (i.e. the comment is resolvable
-// but has not been resolved).
+// Gitea doesn't have a single endpoint for all PR review comments.
+// Instead we iterate through each review and fetch its comments via
+// GET /repos/{owner}/{repo}/pulls/{index}/reviews/{id}/comments,
+// counting those where resolved is explicitly false.
 func (g *GiteaProvider) fetchUnresolvedThreads(ctx context.Context, ri giteaRepoInfo, prNumber int) (int, error) {
-	count := 0
+	// First, list all reviews to get their IDs.
+	var reviewIDs []int
 	page := 1
 	for {
-		endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/comments?limit=%d&page=%d",
+		endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/reviews?limit=%d&page=%d",
 			ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber, giteaPageLimit, page)
 
-		var comments []giteaReviewComment
-		if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &comments); err != nil {
-			return 0, fmt.Errorf("gitea fetch review comments failed: %w", err)
+		var batch []giteaReview
+		if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &batch); err != nil {
+			return 0, fmt.Errorf("gitea fetch reviews for thread count failed: %w", err)
 		}
 
-		for _, c := range comments {
-			// A nil Resolved pointer means the comment is not resolvable (e.g. a
-			// general comment). Only count comments that are explicitly unresolved.
-			if c.Resolved != nil && !*c.Resolved {
-				count++
-			}
+		for _, r := range batch {
+			reviewIDs = append(reviewIDs, r.ID)
 		}
 
-		if len(comments) < giteaPageLimit {
+		if len(batch) < giteaPageLimit {
 			break
 		}
 		page++
+	}
+
+	// For each review, fetch its comments and count unresolved ones.
+	count := 0
+	for _, rid := range reviewIDs {
+		commentPage := 1
+		for {
+			endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/reviews/%d/comments?limit=%d&page=%d",
+				ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber, rid, giteaPageLimit, commentPage)
+
+			var comments []giteaReviewComment
+			if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &comments); err != nil {
+				// Some Gitea versions may not support per-review comments;
+				// skip this review rather than failing entirely.
+				log.Printf("[gitea] Warning: could not fetch comments for review %d on PR #%d: %v", rid, prNumber, err)
+				break
+			}
+
+			for _, c := range comments {
+				// A nil Resolved pointer means the comment is not resolvable (e.g. a
+				// general comment). Only count comments that are explicitly unresolved.
+				if c.Resolved != nil && !*c.Resolved {
+					count++
+				}
+			}
+
+			if len(comments) < giteaPageLimit {
+				break
+			}
+			commentPage++
+		}
 	}
 	return count, nil
 }
@@ -597,14 +626,17 @@ func giteaAPIRequest(ctx context.Context, method, endpoint string, body any, res
 // --- URL parsing ---
 
 // ParseGiteaRepoURL parses a git remote URL into base URL, owner, and repo name.
-// Supports HTTPS, HTTP, SSH (git@host:path), and ssh:// scheme URLs.
+// Supports HTTPS, HTTP, SCP-style SSH (git@host:path), and ssh:// scheme URLs.
 //
-// HTTPS:  https://gitea.example.com/owner/repo.git  → ("https://gitea.example.com", "owner", "repo")
-// SSH:    git@gitea.example.com:owner/repo.git       → ("https://gitea.example.com", "owner", "repo")
+// HTTPS:  https://gitea.example.com/owner/repo.git   → ("https://gitea.example.com", "owner", "repo")
+// SSH:    git@gitea.example.com:owner/repo.git        → ("https://gitea.example.com", "owner", "repo")
 // SSH:    ssh://git@gitea.example.com:2222/owner/repo → ("https://gitea.example.com", "owner", "repo")
 //
-// Note: SSH URLs cannot convey whether the API is served over HTTP or HTTPS.
-// The base URL defaults to HTTPS. Set GITEA_URL or FORGEJO_URL to override.
+// Note: SCP-style URLs (git@host:path) do NOT support port numbers; the part
+// after ":" is always interpreted as a path. For custom SSH ports, use the
+// ssh:// scheme instead. SSH URLs cannot convey whether the API is served over
+// HTTP or HTTPS — the base URL defaults to HTTPS. Set GITEA_URL or FORGEJO_URL
+// to override.
 func ParseGiteaRepoURL(rawURL string) (baseURL, owner, repo string, err error) {
 	rawURL = strings.TrimSuffix(rawURL, ".git")
 	safeURL := redactURL(rawURL)
@@ -628,23 +660,24 @@ func ParseGiteaRepoURL(rawURL string) (baseURL, owner, repo string, err error) {
 		return "https://" + host, owner, repo, nil
 	}
 
-	// SCP-style SSH: git@host:owner/repo or git@host:port/owner/repo
+	// SCP-style SSH: git@host:owner/repo
+	// Note: SCP-style URLs do NOT support port numbers. The part after ":"
+	// is always a path, never a port. For custom SSH ports, use the ssh://
+	// scheme instead: ssh://git@host:2222/owner/repo
 	if strings.HasPrefix(rawURL, "git@") {
 		parts := strings.SplitN(rawURL, ":", 2)
 		if len(parts) != 2 {
 			return "", "", "", fmt.Errorf("could not parse Gitea SSH URL: %s", safeURL)
 		}
 		host := strings.TrimPrefix(parts[0], "git@")
-		path := parts[1]
+		path := strings.TrimPrefix(parts[1], "/")
+		path = strings.TrimSuffix(path, "/")
 
-		// Handle ssh port in path (e.g., "2222/owner/repo")
-		path = strings.TrimPrefix(path, "/")
-
-		owner, repo, err = splitGiteaPath(path, safeURL)
-		if err != nil {
-			return "", "", "", err
+		segments := strings.SplitN(path, "/", 3)
+		if len(segments) < 2 || segments[0] == "" || segments[1] == "" {
+			return "", "", "", fmt.Errorf("could not parse Gitea remote URL (expected owner/repo): %s", safeURL)
 		}
-		return "https://" + host, owner, repo, nil
+		return "https://" + host, segments[0], segments[1], nil
 	}
 
 	// HTTPS/HTTP: https://host/owner/repo
@@ -670,39 +703,18 @@ func ParseGiteaRepoURL(rawURL string) (baseURL, owner, repo string, err error) {
 
 // splitGiteaPath splits "owner/repo" from a URL path.
 // Unlike GitLab, Gitea uses flat owner/repo (no nested groups).
-// Handles port-prefixed paths from SSH URLs (e.g. "2222/owner/repo").
+// This is used for HTTPS and ssh:// scheme URLs where the port has already
+// been stripped by url.Parse. SCP-style URLs handle their own path splitting.
 func splitGiteaPath(path, safeURL string) (string, string, error) {
 	path = strings.TrimPrefix(path, "/")
 	path = strings.TrimSuffix(path, "/")
 
-	parts := strings.SplitN(path, "/", 4)
+	parts := strings.SplitN(path, "/", 3)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", fmt.Errorf("could not parse Gitea remote URL (expected owner/repo): %s", safeURL)
 	}
 
-	// If the first segment is purely numeric it's an SSH port prefix (e.g. "2222/owner/repo");
-	// skip it and use the next two segments as owner/repo.
-	if isNumeric(parts[0]) {
-		if len(parts) < 3 || parts[2] == "" {
-			return "", "", fmt.Errorf("could not parse Gitea remote URL (expected owner/repo after port): %s", safeURL)
-		}
-		return parts[1], parts[2], nil
-	}
-
 	return parts[0], parts[1], nil
-}
-
-// isNumeric returns true if s is a non-empty string of ASCII digits.
-func isNumeric(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // --- State mapping ---

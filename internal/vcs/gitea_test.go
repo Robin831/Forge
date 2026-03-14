@@ -84,11 +84,11 @@ func TestParseGiteaRepoURL(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:        "SSH with port prefix",
+			name:        "SCP-style path is literal not port",
 			url:         "git@gitea.example.com:2222/myorg/myrepo.git",
 			wantBaseURL: "https://gitea.example.com",
-			wantOwner:   "myorg",
-			wantRepo:    "myrepo",
+			wantOwner:   "2222",
+			wantRepo:    "myorg",
 		},
 		{
 			name:        "ssh:// scheme without port",
@@ -223,9 +223,8 @@ func TestSplitGiteaPath(t *testing.T) {
 	}{
 		{"owner/repo", "owner", "repo", false},
 		{"myorg/myproject", "myorg", "myproject", false},
-		{"2222/owner/repo", "owner", "repo", false},
-		{"22/org/project", "org", "project", false},
-		{"2222/onlyone", "", "", true},
+		{"2222/owner/repo", "2222", "owner", false},
+		{"22/org/project", "22", "org", false},
 		{"onlyone", "", "", true},
 		{"", "", "", true},
 		{"/", "", "", true},
@@ -594,7 +593,10 @@ func TestForPlatform_Gitea(t *testing.T) {
 			p, err := ForPlatform(tt.platform)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.want, p.Platform())
-			var _ Provider = p
+
+			// Verify the concrete type is GiteaProvider.
+			_, ok := p.(*GiteaProvider)
+			assert.True(t, ok, "ForPlatform(%q) should return *GiteaProvider", tt.platform)
 		})
 	}
 }
