@@ -84,6 +84,13 @@ func TestParseGiteaRepoURL(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:        "SSH with port prefix",
+			url:         "git@gitea.example.com:2222/myorg/myrepo.git",
+			wantBaseURL: "https://gitea.example.com",
+			wantOwner:   "myorg",
+			wantRepo:    "myrepo",
+		},
+		{
 			name:    "SSH no repo",
 			url:     "git@gitea.example.com:onlyone",
 			wantErr: true,
@@ -202,6 +209,9 @@ func TestSplitGiteaPath(t *testing.T) {
 	}{
 		{"owner/repo", "owner", "repo", false},
 		{"myorg/myproject", "myorg", "myproject", false},
+		{"2222/owner/repo", "owner", "repo", false},
+		{"22/org/project", "org", "project", false},
+		{"2222/onlyone", "", "", true},
 		{"onlyone", "", "", true},
 		{"", "", "", true},
 		{"/", "", "", true},

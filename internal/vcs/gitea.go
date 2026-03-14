@@ -33,6 +33,12 @@ func (g *GiteaProvider) Platform() Platform {
 	return Gitea
 }
 
+// giteaHTTPClient is a shared HTTP client with a reasonable timeout,
+// used for all Gitea API requests instead of http.DefaultClient.
+var giteaHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
+
 // giteaToken returns the API token from GITEA_TOKEN or FORGEJO_TOKEN.
 func giteaToken() string {
 	if t := os.Getenv("GITEA_TOKEN"); t != "" {
@@ -128,13 +134,13 @@ func (g *GiteaProvider) MergePR(ctx context.Context, worktreePath string, prNumb
 
 // CheckStatus returns the full status of a pull request.
 func (g *GiteaProvider) CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, error) {
-	status, err := g.fetchPRView(ctx, worktreePath, prNumber)
+	status, headSHA, err := g.fetchPRView(ctx, worktreePath, prNumber)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fetch CI status from commit status API
-	ciChecks, err := g.fetchCIStatus(ctx, worktreePath, prNumber)
+	// Fetch CI status from commit status API using the head SHA from fetchPRView
+	ciChecks, err := g.fetchCIStatus(ctx, worktreePath, headSHA)
 	if err != nil {
 		log.Printf("[gitea] Warning: could not fetch CI status for PR #%d: %v", prNumber, err)
 	} else {
@@ -170,7 +176,7 @@ func (g *GiteaProvider) CheckStatus(ctx context.Context, worktreePath string, pr
 
 // CheckStatusLight returns a lightweight status focused on mergeability and review requests.
 func (g *GiteaProvider) CheckStatusLight(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, error) {
-	status, err := g.fetchPRView(ctx, worktreePath, prNumber)
+	status, _, err := g.fetchPRView(ctx, worktreePath, prNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -307,10 +313,11 @@ func (g *GiteaProvider) resolveRepo(ctx context.Context, worktreePath string) (b
 }
 
 // fetchPRView retrieves pull request details via the Gitea API.
-func (g *GiteaProvider) fetchPRView(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, error) {
+// It returns both the PRStatus and the head commit SHA (needed by fetchCIStatus).
+func (g *GiteaProvider) fetchPRView(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, string, error) {
 	baseURL, owner, repo, err := g.resolveRepo(ctx, worktreePath)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d",
@@ -318,7 +325,7 @@ func (g *GiteaProvider) fetchPRView(ctx context.Context, worktreePath string, pr
 
 	var pr giteaPullRequest
 	if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
-		return nil, fmt.Errorf("gitea get PR failed: %w", err)
+		return nil, "", fmt.Errorf("gitea get PR failed: %w", err)
 	}
 
 	state := mapGiteaState(pr.State)
@@ -331,32 +338,24 @@ func (g *GiteaProvider) fetchPRView(ctx context.Context, worktreePath string, pr
 		Mergeable:   mapGiteaMergeable(pr.Mergeable, pr.State),
 		HeadRefName: pr.Head.Ref,
 		URL:         pr.HTMLURL,
-	}, nil
+	}, pr.Head.SHA, nil
 }
 
-// fetchCIStatus retrieves CI commit status for the PR's head commit.
-func (g *GiteaProvider) fetchCIStatus(ctx context.Context, worktreePath string, prNumber int) ([]CheckRun, error) {
+// fetchCIStatus retrieves CI commit status for the given head commit SHA.
+// The headSHA is obtained from fetchPRView to avoid a duplicate PR fetch.
+func (g *GiteaProvider) fetchCIStatus(ctx context.Context, worktreePath string, headSHA string) ([]CheckRun, error) {
+	if headSHA == "" {
+		return nil, nil
+	}
+
 	baseURL, owner, repo, err := g.resolveRepo(ctx, worktreePath)
 	if err != nil {
 		return nil, err
 	}
 
-	// First get the PR to find the head SHA
-	prEndpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d",
-		baseURL, url.PathEscape(owner), url.PathEscape(repo), prNumber)
-
-	var pr giteaPullRequest
-	if err := giteaAPIRequest(ctx, http.MethodGet, prEndpoint, nil, &pr); err != nil {
-		return nil, err
-	}
-
-	if pr.Head.SHA == "" {
-		return nil, nil
-	}
-
 	// Fetch combined commit status
 	statusEndpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/commits/%s/status",
-		baseURL, url.PathEscape(owner), url.PathEscape(repo), pr.Head.SHA)
+		baseURL, url.PathEscape(owner), url.PathEscape(repo), headSHA)
 
 	var combined giteaCombinedStatus
 	if err := giteaAPIRequest(ctx, http.MethodGet, statusEndpoint, nil, &combined); err != nil {
@@ -490,7 +489,7 @@ func giteaAPIRequest(ctx context.Context, method, endpoint string, body any, res
 		req.Header.Set("Authorization", "token "+token)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := giteaHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("HTTP request failed: %w", err)
 	}
@@ -567,17 +566,39 @@ func ParseGiteaRepoURL(rawURL string) (baseURL, owner, repo string, err error) {
 
 // splitGiteaPath splits "owner/repo" from a URL path.
 // Unlike GitLab, Gitea uses flat owner/repo (no nested groups).
+// Handles port-prefixed paths from SSH URLs (e.g. "2222/owner/repo").
 func splitGiteaPath(path, safeURL string) (string, string, error) {
 	path = strings.TrimPrefix(path, "/")
 	path = strings.TrimSuffix(path, "/")
 
-	parts := strings.SplitN(path, "/", 3)
+	parts := strings.SplitN(path, "/", 4)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", fmt.Errorf("could not parse Gitea remote URL (expected owner/repo): %s", safeURL)
 	}
-	// Gitea uses owner/repo; if there's a third segment it's likely a port prefix — use last two.
-	// Standard case: owner/repo
+
+	// If the first segment is purely numeric it's an SSH port prefix (e.g. "2222/owner/repo");
+	// skip it and use the next two segments as owner/repo.
+	if isNumeric(parts[0]) {
+		if len(parts) < 3 || parts[2] == "" {
+			return "", "", fmt.Errorf("could not parse Gitea remote URL (expected owner/repo after port): %s", safeURL)
+		}
+		return parts[1], parts[2], nil
+	}
+
 	return parts[0], parts[1], nil
+}
+
+// isNumeric returns true if s is a non-empty string of ASCII digits.
+func isNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // --- State mapping ---
