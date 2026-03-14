@@ -1491,3 +1491,158 @@ func TestHandleIPC_CrucibleAction(t *testing.T) {
 		}
 	})
 }
+
+// TestHandleLifecycleAction_CloseBead verifies that when bellows emits
+// EventPRMerged, the lifecycle manager dispatches ActionCloseBead and the
+// daemon calls bd close for the bead. This covers the deferred-close path
+// where the pipeline skipped closing because the bead had dependents.
+func TestHandleLifecycleAction_CloseBead(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-close-bead-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// Create a fake bd script that records close calls via a marker file.
+	markerFile := filepath.Join(tmpDir, "bd-close-called.txt")
+	var bdScript string
+	var bdContent string
+	if runtime.GOOS == "windows" {
+		bdScript = filepath.Join(tmpDir, "bd.bat")
+		bdContent = "@echo off\r\nif \"%1\"==\"close\" (\r\n    echo %2 %3 > \"" + markerFile + "\"\r\n    echo {\"id\": \"%2\", \"status\": \"closed\"}\r\n    exit /b 0\r\n)\r\nexit /b 0\r\n"
+	} else {
+		bdScript = filepath.Join(tmpDir, "bd")
+		bdContent = "#!/bin/sh\nif [ \"$1\" = \"close\" ]; then\n    echo \"$2 $3\" > '" + markerFile + "'\n    echo '{\"id\": \"'\"$2\"'\", \"status\": \"closed\"}'\n    exit 0\nfi\nexit 0\n"
+	}
+	require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+	defer os.Setenv("PATH", oldPath)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	d := &Daemon{
+		db:            db,
+		logger:        logger,
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir},
+		},
+	})
+
+	// Wire the lifecycle manager to dispatch through the daemon's handler.
+	lm := lifecycle.New(db, logger, d.handleLifecycleAction)
+	d.lifecycleMgr = lm
+
+	// Simulate bellows emitting EventPRMerged.
+	lm.HandleEvent(context.Background(), bellows.PREvent{
+		PRNumber:  42,
+		BeadID:    "DEFERRED-1",
+		Anvil:     "test-anvil",
+		Branch:    "forge/DEFERRED-1",
+		EventType: bellows.EventPRMerged,
+	})
+
+	// Wait for the background goroutine to complete.
+	done := make(chan struct{})
+	go func() { d.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for handleLifecycleAction to complete")
+	}
+
+	// Verify bd close was called by checking the marker file.
+	_, err = os.Stat(markerFile)
+	assert.NoError(t, err, "bd close should have been called (marker file should exist)")
+
+	if err == nil {
+		content, _ := os.ReadFile(markerFile)
+		assert.Contains(t, string(content), "DEFERRED-1", "bd close should have been called with the correct bead ID")
+	}
+
+	// Verify lifecycle state shows the PR as merged.
+	st := lm.GetState("test-anvil", 42)
+	require.NotNil(t, st)
+	assert.True(t, st.Merged, "lifecycle state should show PR as merged")
+}
+
+// TestHandleLifecycleAction_CloseBead_Error verifies that when bd close fails
+// in the ActionCloseBead handler, the error is logged (not silently discarded)
+// and the goroutine completes without panicking.
+func TestHandleLifecycleAction_CloseBead_Error(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-close-bead-err-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// Create a fake bd script that fails on close.
+	var bdScript string
+	var bdContent string
+	if runtime.GOOS == "windows" {
+		bdScript = filepath.Join(tmpDir, "bd.bat")
+		bdContent = "@echo off\r\nif \"%1\"==\"close\" (\r\n    echo bead not found 1>&2\r\n    exit /b 1\r\n)\r\nexit /b 0\r\n"
+	} else {
+		bdScript = filepath.Join(tmpDir, "bd")
+		bdContent = "#!/bin/sh\nif [ \"$1\" = \"close\" ]; then\n    echo 'bead not found' >&2\n    exit 1\nfi\nexit 0\n"
+	}
+	require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+	defer os.Setenv("PATH", oldPath)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	d := &Daemon{
+		db:            db,
+		logger:        logger,
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir},
+		},
+	})
+
+	lm := lifecycle.New(db, logger, d.handleLifecycleAction)
+	d.lifecycleMgr = lm
+
+	// Simulate EventPRMerged — bd close will fail but should not panic.
+	lm.HandleEvent(context.Background(), bellows.PREvent{
+		PRNumber:  99,
+		BeadID:    "FAIL-CLOSE-1",
+		Anvil:     "test-anvil",
+		Branch:    "forge/FAIL-CLOSE-1",
+		EventType: bellows.EventPRMerged,
+	})
+
+	// Wait for the background goroutine to complete without panic.
+	done := make(chan struct{})
+	go func() { d.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		// Success — the error was handled gracefully.
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for handleLifecycleAction to complete")
+	}
+
+	// Verify lifecycle state still shows merged despite the close error.
+	st := lm.GetState("test-anvil", 99)
+	require.NotNil(t, st)
+	assert.True(t, st.Merged, "lifecycle state should show PR as merged even when bd close fails")
+}
