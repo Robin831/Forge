@@ -242,12 +242,24 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		if !ciSeed && pr.Status != state.PRNeedsFix && pr.CIFixCount == 0 {
 			ciSeed = true
 		}
+		// Seed unresolved threads/conflicts as false when no fix has been
+		// attempted yet, so the first poll detects a false→true transition
+		// and triggers a reviewfix/rebase worker. Without this, PRs that
+		// already had issues when assigned to bellows would never fire.
+		threadsSeed := pr.HasUnresolvedThreads
+		if threadsSeed && pr.Status != state.PRNeedsFix && pr.ReviewFixCount == 0 {
+			threadsSeed = false
+		}
+		conflictSeed := pr.IsConflicting
+		if conflictSeed && pr.Status != state.PRNeedsFix && pr.RebaseCount == 0 {
+			conflictSeed = false
+		}
 		lastSnap = &prSnapshot{
 			CIPassing:            ciSeed,
 			HasApproval:          pr.HasApproval,
 			HasPendingReviews:    pr.HasPendingReviews,
-			IsConflicting:        pr.IsConflicting,
-			HasUnresolvedThreads: pr.HasUnresolvedThreads,
+			IsConflicting:        conflictSeed,
+			HasUnresolvedThreads: threadsSeed,
 		}
 	}
 	// Update snapshot while holding the lock
