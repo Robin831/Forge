@@ -226,6 +226,81 @@ func TestProvider_BuildArgs_Copilot_ClaudeFlagModelOverridesProviderModel(t *tes
 	assert.Equal(t, "claude-sonnet-4.6", args[modelIdx])
 }
 
+func TestProvider_Cmd_OpenAI(t *testing.T) {
+	p := Provider{Kind: OpenAI}
+	assert.Equal(t, "codex", p.Cmd())
+}
+
+func TestProvider_Cmd_OpenAI_CustomCommand(t *testing.T) {
+	p := Provider{Kind: OpenAI, Command: "my-codex"}
+	assert.Equal(t, "my-codex", p.Cmd())
+}
+
+func TestProvider_Format_OpenAI(t *testing.T) {
+	p := Provider{Kind: OpenAI}
+	assert.Equal(t, StreamJSON, p.Format())
+}
+
+func TestProvider_BuildArgs_OpenAI(t *testing.T) {
+	p := Provider{Kind: OpenAI}
+	args := p.BuildArgs(nil)
+	assert.Contains(t, args, "--full-auto")
+	assert.Contains(t, args, "--output-format")
+	assert.Contains(t, args, "stream-json")
+	// Should not contain claude-specific flags
+	assert.NotContains(t, args, "--dangerously-skip-permissions")
+	assert.NotContains(t, args, "-p")
+}
+
+func TestProvider_BuildArgs_OpenAI_WithModel(t *testing.T) {
+	p := Provider{Kind: OpenAI, Model: "gpt-5.1-codex"}
+	args := p.BuildArgs(nil)
+	assert.Contains(t, args, "--model")
+	modelIdx := -1
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) {
+			modelIdx = i + 1
+			break
+		}
+	}
+	assert.NotEqual(t, -1, modelIdx, "expected --model flag")
+	assert.Equal(t, "gpt-5.1-codex", args[modelIdx])
+}
+
+func TestProvider_BuildArgs_OpenAI_NoModelByDefault(t *testing.T) {
+	p := Provider{Kind: OpenAI}
+	args := p.BuildArgs(nil)
+	assert.NotContains(t, args, "--model")
+}
+
+func TestProvider_BuildArgs_OpenAI_ClaudeFlagModelOverrides(t *testing.T) {
+	p := Provider{Kind: OpenAI, Model: "gpt-5.1-codex"}
+	args := p.BuildArgs([]string{"--model", "o3"})
+	modelIdx := -1
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) {
+			modelIdx = i + 1
+			break
+		}
+	}
+	assert.NotEqual(t, -1, modelIdx)
+	assert.Equal(t, "o3", args[modelIdx])
+}
+
+func TestProvider_BuildArgs_OpenAI_MaxTurnsPassedThrough(t *testing.T) {
+	p := Provider{Kind: OpenAI}
+	args := p.BuildArgs([]string{"--max-turns", "10"})
+	assert.Contains(t, args, "--max-turns")
+	assert.Contains(t, args, "10")
+}
+
+func TestProvider_BuildArgs_OpenAI_DropsToolsFlag(t *testing.T) {
+	p := Provider{Kind: OpenAI}
+	args := p.BuildArgs([]string{"--tools", "bash"})
+	assert.NotContains(t, args, "--tools")
+	assert.NotContains(t, args, "bash")
+}
+
 func TestDefaults(t *testing.T) {
 	providers := Defaults()
 	assert.Len(t, providers, 2)
@@ -280,6 +355,24 @@ func TestFromConfig(t *testing.T) {
 			name:      "multiple providers",
 			specs:     []string{"claude", "gemini"},
 			wantKinds: []Kind{Claude, Gemini},
+		},
+		{
+			name:       "openai with model",
+			specs:      []string{"openai/gpt-5.1-codex"},
+			wantKinds:  []Kind{OpenAI},
+			wantModels: []string{"gpt-5.1-codex"},
+		},
+		{
+			name:      "full chain with openai",
+			specs:     []string{"claude", "gemini", "openai/o3"},
+			wantKinds: []Kind{Claude, Gemini, OpenAI},
+		},
+		{
+			name:       "openai kind:command/model format",
+			specs:      []string{"openai:codex/o3"},
+			wantKinds:  []Kind{OpenAI},
+			wantCmds:   []string{"codex"},
+			wantModels: []string{"o3"},
 		},
 		{
 			name:      "uppercase is normalized",
