@@ -158,22 +158,9 @@ Config resolution order: `--config` flag → `./forge.yaml` → `~/.forge/config
 
 Place a template file at `<anvil-path>/.forge/prompt.tmpl` or `.forge/smith-prompt.tmpl` to override the default Smith prompt for that repo. The template receives `{{.Bead}}`, `{{.AgentsMD}}`, `{{.ClaudeMD}}`, `{{.ReadmeMD}}`.
 
-## Beads Database — kubectl port-forward ONLY
+## Beads Database
 
-Forge's beads DB connects via kubectl port-forward to the AKS pod `tn-heimdall/dolt-beads` on **port 3306**.
-
-- ❌ Never run `dolt sql-server` locally on port 3306
-- ❌ Never run `start-dolt-server.ps1` (offline fallback only, uses port 3307)
-- ❌ A local dolt on port 3306 will conflict with the port-forward and break `bd` with "Access denied"
-
-**Auto-start is permanently disabled** via `.beads/config.yaml` (`dolt.auto-start: false`).
-Without this, beads auto-starts a local dolt when the port-forward drops and spawns an
-idle-monitor watchdog that restarts it even after manual kills. Do not remove that setting.
-
-- ✅ If `bd` returns "Access denied", restart the port-forward:
-  ```powershell
-  kubectl port-forward -n tn-heimdall svc/dolt-beads 3306:3306
-  ```
+Forge uses `bd` (beads) backed by a Dolt database for issue tracking. The database connection is configured in `.beads/config.yaml`. If `bd` returns connection errors, check your Dolt server or port-forward configuration.
 
 ## Issue Tracking
 

@@ -93,8 +93,8 @@ forge version
 Register a repository as an anvil. The path must contain a `.beads/` directory.
 
 ```bash
-forge anvil add heimdall C:\source\fhigit\Heimdall
-forge anvil add metadata C:\source\fhigit\Fhi.Metadata
+forge anvil add my-api /path/to/repos/my-api
+forge anvil add my-frontend /path/to/repos/my-frontend
 ```
 
 Creates the anvil entry with defaults: `max_smiths=1`, `auto_dispatch=all`.
@@ -149,7 +149,7 @@ forge queue run BD-42 --anvil metadata  # Disambiguate across anvils
 Mark a bead as needing human clarification before work can start.
 
 ```bash
-forge queue clarify BD-42 --anvil heimdall --reason "Which auth library should be used?"
+forge queue clarify BD-42 --anvil my-api --reason "Which auth library should be used?"
 ```
 
 | Flag | Description |
@@ -162,7 +162,7 @@ forge queue clarify BD-42 --anvil heimdall --reason "Which auth library should b
 Clear the clarification flag so a bead can proceed.
 
 ```bash
-forge queue unclarify BD-42 --anvil heimdall
+forge queue unclarify BD-42 --anvil my-api
 ```
 
 | Flag | Description |
@@ -174,7 +174,7 @@ forge queue unclarify BD-42 --anvil heimdall
 Reset the dispatch circuit breaker for a bead so it can be retried.
 
 ```bash
-forge queue retry BD-42 --anvil heimdall
+forge queue retry BD-42 --anvil my-api
 ```
 
 | Flag | Description |
@@ -189,7 +189,7 @@ Run `govulncheck` on registered Go anvils to check for known vulnerabilities.
 
 ```bash
 forge scan                    # Scan all anvils
-forge scan --anvil heimdall   # Scan a specific anvil
+forge scan --anvil my-api   # Scan a specific anvil
 ```
 
 | Flag | Description |
@@ -307,7 +307,7 @@ Exits non-zero if any bead is missing a fragment.
 Learn review rules from GitHub Copilot comments on recently merged PRs for an anvil. Rules are saved to `<anvil-path>/.forge/warden-rules.yaml`.
 
 ```bash
-forge warden learn --anvil heimdall
+forge warden learn --anvil my-api
 ```
 
 | Flag | Description |
@@ -319,7 +319,7 @@ forge warden learn --anvil heimdall
 List all learned review rules for an anvil.
 
 ```bash
-forge warden list --anvil heimdall
+forge warden list --anvil my-api
 ```
 
 | Flag | Description |
@@ -331,7 +331,7 @@ forge warden list --anvil heimdall
 Remove a learned rule by ID.
 
 ```bash
-forge warden forget <rule-id> --anvil heimdall
+forge warden forget <rule-id> --anvil my-api
 ```
 
 | Flag | Description |

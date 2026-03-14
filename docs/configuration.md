@@ -12,8 +12,8 @@ If no file is found, built-in defaults are used. The daemon hot-reloads the conf
 
 ```yaml
 anvils:
-  heimdall:
-    path: C:\source\fhigit\Heimdall
+  my-api:
+    path: /path/to/repos/my-api
     max_smiths: 2
     auto_dispatch: all
     schematic_enabled: false       # Override global schematic setting for this anvil
@@ -21,14 +21,14 @@ anvils:
     go_race_detection: false       # Per-anvil race detector override
     depcheck_enabled: true         # Set to false to skip depcheck for this anvil
 
-  metadata:
-    path: C:\source\fhigit\Fhi.Metadata
+  my-frontend:
+    path: /path/to/repos/my-frontend
     max_smiths: 3
     auto_dispatch: tagged
     auto_dispatch_tag: forge-auto
 
   legacy-repo:
-    path: C:\source\fhigit\Legacy
+    path: /path/to/repos/legacy
     max_smiths: 1
     auto_dispatch: priority
     auto_dispatch_min_priority: 0
@@ -168,8 +168,8 @@ notifications:
 
   # Generic JSON webhooks (one or more targets)
   webhooks:
-    - name: hytte-dashboard
-      url: 'https://hytte.app/api/webhooks/forge'
+    - name: dashboard
+      url: 'https://example.com/api/webhooks/forge'
       events: [pr_created, worker_done, release]  # empty = all
     - name: slack
       url: 'https://hooks.slack.com/services/...'
@@ -222,7 +222,7 @@ Teams webhooks receive rich Adaptive Cards. Generic webhook targets receive a un
 {
   "event_type": "pr_created",
   "bead_id": "Forge-42",
-  "anvil": "heimdall",
+  "anvil": "my-api",
   "message": "PR #7 created: https://github.com/org/repo/pull/7",
   "timestamp": "2026-03-11T10:00:00Z"
 }
