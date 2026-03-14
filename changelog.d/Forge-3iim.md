@@ -1,2 +1,2 @@
 category: Changed
-- **Rich tool call formatting in Live Activity panel** - Tool calls now show contextual details instead of raw JSON: Read shows filename+lines, Edit shows filename+changed text, Bash shows the command, Grep shows the search pattern, Write shows the filename, and Agent shows its description. (Forge-3iim)
+- **Rich tool call formatting in Live Activity panel** - Tool invocations now show contextual input details instead of raw JSON: Read shows filename+line range, Edit shows filename+changed text snippet, Bash shows the command, Grep shows the search pattern+glob, Write shows the filename, Glob shows the pattern, and Agent shows its description. Unknown tools fall back to a truncated JSON dump of their parameters. (Forge-3iim)

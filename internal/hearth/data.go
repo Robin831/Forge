@@ -454,7 +454,11 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			}
 			entries = append(entries, formatToolCall(name, event.Parameters))
 		case "tool_result":
-			// Gemini tool_result — flush any buffered text (assistant spoke before tool ran)
+			// Gemini tool_result — flush any buffered text (assistant spoke before tool ran).
+			// We intentionally do not parse result payloads here: associating a
+			// tool_result back to its tool_use call (by tool_id) would require
+			// additional correlation state. The Live Activity panel shows what tools
+			// are *invoked with* (inputs), not the results they return.
 			flushGeminiText()
 		case "rate_limit_event":
 			// Claude-style informational event — status is inside rate_limit_info
