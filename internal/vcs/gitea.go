@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -93,6 +94,7 @@ func (g *GiteaProvider) CreatePR(ctx context.Context, params CreateParams) (*PR,
 		Body:  params.Body,
 		Head:  params.Branch,
 		Base:  params.Base,
+		Draft: params.Draft,
 	}
 
 	log.Printf("[gitea] Creating PR for %s on branch %s", params.BeadID, params.Branch)
@@ -514,6 +516,7 @@ type giteaCreatePRRequest struct {
 	Body  string `json:"body"`
 	Head  string `json:"head"`
 	Base  string `json:"base"`
+	Draft bool   `json:"draft,omitempty"`
 }
 
 type giteaMergePRRequest struct {
@@ -576,7 +579,13 @@ type giteaStatus struct {
 // --- Gitea API helpers ---
 
 // giteaAPIRequest performs an HTTP request to the Gitea API.
+// Endpoint URLs are sanitized (credentials stripped) before appearing in errors
+// so that GITEA_URL/FORGEJO_URL values with embedded userinfo are never logged.
 func giteaAPIRequest(ctx context.Context, method, endpoint string, body any, result any) error {
+	// Compute a safe version of the endpoint for use in error messages.
+	// This prevents credentials embedded in GITEA_URL/FORGEJO_URL from leaking.
+	safeEndpoint := redactURL(endpoint)
+
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -588,7 +597,7 @@ func giteaAPIRequest(ctx context.Context, method, endpoint string, body any, res
 
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, bodyReader)
 	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
+		return fmt.Errorf("creating Gitea API request for %s: %w", safeEndpoint, err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -600,7 +609,13 @@ func giteaAPIRequest(ctx context.Context, method, endpoint string, body any, res
 
 	resp, err := giteaHTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("HTTP request failed: %w", err)
+		// Unwrap *url.Error to avoid exposing the raw endpoint URL (which may contain
+		// credentials) in the error chain. We use safeEndpoint for context instead.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return fmt.Errorf("Gitea API %s %s: %w", method, safeEndpoint, urlErr.Err)
+		}
+		return fmt.Errorf("Gitea API %s %s: %w", method, safeEndpoint, err)
 	}
 	defer resp.Body.Close()
 
@@ -653,11 +668,16 @@ func ParseGiteaRepoURL(rawURL string) (baseURL, owner, repo string, err error) {
 		path := strings.TrimPrefix(u.Path, "/")
 		path = strings.TrimSuffix(path, "/")
 
-		owner, repo, err = splitGiteaPath(path, safeURL)
+		var subpath string
+		subpath, owner, repo, err = splitGiteaPath(path, safeURL)
 		if err != nil {
 			return "", "", "", err
 		}
-		return "https://" + host, owner, repo, nil
+		base := "https://" + host
+		if subpath != "" {
+			base += "/" + subpath
+		}
+		return base, owner, repo, nil
 	}
 
 	// SCP-style SSH: git@host:owner/repo
@@ -691,30 +711,51 @@ func ParseGiteaRepoURL(rawURL string) (baseURL, owner, repo string, err error) {
 		path := strings.TrimPrefix(u.Path, "/")
 		path = strings.TrimSuffix(path, "/")
 
-		owner, repo, err = splitGiteaPath(path, safeURL)
+		var subpath string
+		subpath, owner, repo, err = splitGiteaPath(path, safeURL)
 		if err != nil {
 			return "", "", "", err
 		}
-		return scheme + "://" + host, owner, repo, nil
+		base := scheme + "://" + host
+		if subpath != "" {
+			base += "/" + subpath
+		}
+		return base, owner, repo, nil
 	}
 
 	return "", "", "", fmt.Errorf("could not parse Gitea remote URL: %s", safeURL)
 }
 
-// splitGiteaPath splits "owner/repo" from a URL path.
-// Unlike GitLab, Gitea uses flat owner/repo (no nested groups).
+// splitGiteaPath splits "owner/repo" (and optional leading subpath) from a URL path.
+// Unlike GitLab, Gitea uses flat owner/repo (no nested groups), but instances may
+// be hosted under a URL subpath (e.g. /gitea/owner/repo). The last two non-empty
+// path segments are treated as owner and repo; any leading segments form the subpath
+// that is included in the returned baseURL by callers.
+//
 // This is used for HTTPS and ssh:// scheme URLs where the port has already
 // been stripped by url.Parse. SCP-style URLs handle their own path splitting.
-func splitGiteaPath(path, safeURL string) (string, string, error) {
+func splitGiteaPath(path, safeURL string) (subpath, owner, repo string, err error) {
 	path = strings.TrimPrefix(path, "/")
 	path = strings.TrimSuffix(path, "/")
 
-	parts := strings.SplitN(path, "/", 3)
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("could not parse Gitea remote URL (expected owner/repo): %s", safeURL)
+	// Collect non-empty segments to handle any stray slashes.
+	var segments []string
+	for _, s := range strings.Split(path, "/") {
+		if s != "" {
+			segments = append(segments, s)
+		}
 	}
 
-	return parts[0], parts[1], nil
+	if len(segments) < 2 {
+		return "", "", "", fmt.Errorf("could not parse Gitea remote URL (expected owner/repo): %s", safeURL)
+	}
+
+	owner = segments[len(segments)-2]
+	repo = segments[len(segments)-1]
+	if len(segments) > 2 {
+		subpath = strings.Join(segments[:len(segments)-2], "/")
+	}
+	return subpath, owner, repo, nil
 }
 
 // --- State mapping ---

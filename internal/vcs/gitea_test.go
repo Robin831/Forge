@@ -109,6 +109,20 @@ func TestParseGiteaRepoURL(t *testing.T) {
 			url:     "git@gitea.example.com:onlyone",
 			wantErr: true,
 		},
+		{
+			name:        "HTTPS subpath deployment",
+			url:         "https://host.example.com/gitea/owner/repo.git",
+			wantBaseURL: "https://host.example.com/gitea",
+			wantOwner:   "owner",
+			wantRepo:    "repo",
+		},
+		{
+			name:        "ssh:// subpath deployment",
+			url:         "ssh://git@host.example.com/gitea/owner/repo.git",
+			wantBaseURL: "https://host.example.com/gitea",
+			wantOwner:   "owner",
+			wantRepo:    "repo",
+		},
 	}
 
 	for _, tt := range tests {
@@ -216,27 +230,33 @@ func TestMapGiteaStatusConclusion(t *testing.T) {
 
 func TestSplitGiteaPath(t *testing.T) {
 	tests := []struct {
-		path      string
-		wantOwner string
-		wantRepo  string
-		wantErr   bool
+		path        string
+		wantSubpath string
+		wantOwner   string
+		wantRepo    string
+		wantErr     bool
 	}{
-		{"owner/repo", "owner", "repo", false},
-		{"myorg/myproject", "myorg", "myproject", false},
-		{"2222/owner/repo", "2222", "owner", false},
-		{"22/org/project", "22", "org", false},
-		{"onlyone", "", "", true},
-		{"", "", "", true},
-		{"/", "", "", true},
+		// Simple owner/repo — no subpath.
+		{"owner/repo", "", "owner", "repo", false},
+		{"myorg/myproject", "", "myorg", "myproject", false},
+		// Three-segment paths: leading segment becomes subpath, last two are owner/repo.
+		// This supports Gitea instances hosted at a URL subpath (e.g. /gitea/owner/repo).
+		{"gitea/owner/repo", "gitea", "owner", "repo", false},
+		{"sub/org/project", "sub", "org", "project", false},
+		// Error cases.
+		{"onlyone", "", "", "", true},
+		{"", "", "", "", true},
+		{"/", "", "", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			owner, repo, err := splitGiteaPath(tt.path, "test-url")
+			subpath, owner, repo, err := splitGiteaPath(tt.path, "test-url")
 			if tt.wantErr {
 				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
+			assert.Equal(t, tt.wantSubpath, subpath)
 			assert.Equal(t, tt.wantOwner, owner)
 			assert.Equal(t, tt.wantRepo, repo)
 		})
