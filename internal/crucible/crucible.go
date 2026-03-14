@@ -12,7 +12,8 @@ import (
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
-	"github.com/Robin831/Forge/internal/ghpr"
+	"github.com/Robin831/Forge/internal/vcs"
+	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
@@ -63,9 +64,13 @@ type Params struct {
 	// Default: true (zero value auto-merges).
 	AutoMergeCrucibleChildren bool
 
+	// VCS is the VCS provider for PR operations. When nil, the default
+	// GitHub provider is created lazily using DB.
+	VCS vcs.Provider
+
 	// Test injection points — when non-nil these replace the real implementations.
 	PipelineRunner    func(ctx context.Context, p pipeline.Params) *pipeline.Outcome
-	PRCreator         func(ctx context.Context, p ghpr.CreateParams) (*ghpr.PR, error)
+	PRCreator         func(ctx context.Context, p vcs.CreateParams) (*vcs.PR, error)
 	ChildFetcher      func(ctx context.Context, parentID, dir string) ([]poller.Bead, error)
 	PRMerger          func(ctx context.Context, prNumber int, dir string) error
 	BeadClaimer       func(ctx context.Context, beadID, dir string) error
@@ -90,7 +95,7 @@ type Status struct {
 // Result is returned when the Crucible finishes or pauses.
 type Result struct {
 	Success       bool
-	FinalPR       *ghpr.PR // Non-nil when final PR was created successfully.
+	FinalPR       *vcs.PR // Non-nil when final PR was created successfully.
 	ChildrenDone  int
 	ChildrenTotal int
 	Error         error
@@ -188,14 +193,13 @@ func Run(ctx context.Context, p Params) *Result {
 					changeSummary = parentOutcome.ReviewResult.Summary
 				}
 
-				pr, err := p.createPR(ctx, ghpr.CreateParams{
+				pr, err := p.createPR(ctx, vcs.CreateParams{
 					WorktreePath:    anvilPath,
 					BeadID:          p.ParentBead.ID,
 					Title:           fmt.Sprintf("%s (parent) (%s)", p.ParentBead.Title, p.ParentBead.ID),
 					Branch:          parentOutcome.Branch,
 					Base:            branch,
 					AnvilName:       p.AnvilName,
-					DB:              p.DB,
 					BeadTitle:       p.ParentBead.Title,
 					BeadDescription: p.ParentBead.Description,
 					BeadType:        p.ParentBead.IssueType,
@@ -389,14 +393,13 @@ func Run(ctx context.Context, p Params) *Result {
 		}
 
 		// Create PR from child branch → feature branch.
-		pr, err := p.createPR(ctx, ghpr.CreateParams{
+		pr, err := p.createPR(ctx, vcs.CreateParams{
 			WorktreePath:    anvilPath,
 			BeadID:          child.ID,
 			Title:           fmt.Sprintf("%s (%s)", child.Title, child.ID),
 			Branch:          childResult.Branch,
 			Base:            branch,
 			AnvilName:       p.AnvilName,
-			DB:              p.DB,
 			BeadTitle:       child.Title,
 			BeadDescription: child.Description,
 			BeadType:        child.IssueType,
@@ -461,14 +464,13 @@ func Run(ctx context.Context, p Params) *Result {
 		CompletedChildren: len(sorted),
 	})
 
-	finalPR, err := p.createPR(ctx, ghpr.CreateParams{
+	finalPR, err := p.createPR(ctx, vcs.CreateParams{
 		WorktreePath:    anvilPath,
 		BeadID:          p.ParentBead.ID,
 		Title:           fmt.Sprintf("%s (%s)", p.ParentBead.Title, p.ParentBead.ID),
 		Branch:          branch,
-		Base:            "", // empty = default branch (main); ghpr.Create normalizes "" → "main"
+		Base:            "", // empty = default branch (main); provider normalizes "" → "main"
 		AnvilName:       p.AnvilName,
-		DB:              p.DB,
 		BeadTitle:       p.ParentBead.Title,
 		BeadDescription: p.ParentBead.Description,
 		BeadType:        p.ParentBead.IssueType,
@@ -666,11 +668,15 @@ func (p *Params) runSchematic(ctx context.Context, cfg schematic.Config, bead po
 }
 
 // createPR creates a pull request (or uses the injected PRCreator for testing).
-func (p *Params) createPR(ctx context.Context, params ghpr.CreateParams) (*ghpr.PR, error) {
+func (p *Params) createPR(ctx context.Context, params vcs.CreateParams) (*vcs.PR, error) {
 	if p.PRCreator != nil {
 		return p.PRCreator(ctx, params)
 	}
-	return ghpr.Create(ctx, params)
+	if p.VCS != nil {
+		return p.VCS.CreatePR(ctx, params)
+	}
+	// Fallback: create a default GitHub provider using p.DB.
+	return github.New(p.DB).CreatePR(ctx, params)
 }
 
 // mergePR merges a PR using gh pr merge --squash, polling until the merge succeeds

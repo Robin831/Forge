@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
-	"github.com/Robin831/Forge/internal/ghpr"
+	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/provider"
@@ -69,7 +69,7 @@ func TestRun_WithChildren_MockPipeline(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	var dispatchedChildren []string
-	var createdPRs []ghpr.CreateParams
+	var createdPRs []vcs.CreateParams
 	var mergedPRs []int
 	var closedBeads []string
 	prCounter := 0
@@ -104,10 +104,10 @@ func TestRun_WithChildren_MockPipeline(t *testing.T) {
 			}
 		},
 
-		PRCreator: func(ctx context.Context, pp ghpr.CreateParams) (*ghpr.PR, error) {
+		PRCreator: func(ctx context.Context, pp vcs.CreateParams) (*vcs.PR, error) {
 			prCounter++
 			createdPRs = append(createdPRs, pp)
-			return &ghpr.PR{Number: prCounter, URL: fmt.Sprintf("https://github.com/test/pr/%d", prCounter)}, nil
+			return &vcs.PR{Number: prCounter, URL: fmt.Sprintf("https://github.com/test/pr/%d", prCounter)}, nil
 		},
 
 		PRMerger: func(ctx context.Context, prNumber int, dir string) error {
@@ -251,7 +251,7 @@ func TestRun_NoDiffChild_ClosesAndContinues(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	var closedBeads []string
-	var createdPRs []ghpr.CreateParams
+	var createdPRs []vcs.CreateParams
 
 	p := Params{
 		DB:     db,
@@ -303,9 +303,9 @@ func TestRun_NoDiffChild_ClosesAndContinues(t *testing.T) {
 			return nil
 		},
 
-		PRCreator: func(ctx context.Context, params ghpr.CreateParams) (*ghpr.PR, error) {
+		PRCreator: func(ctx context.Context, params vcs.CreateParams) (*vcs.PR, error) {
 			createdPRs = append(createdPRs, params)
-			return &ghpr.PR{Number: len(createdPRs)}, nil
+			return &vcs.PR{Number: len(createdPRs)}, nil
 		},
 
 		PRMerger: func(ctx context.Context, prNumber int, dir string) error {

@@ -17,10 +17,11 @@ import (
 
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
-	"github.com/Robin831/Forge/internal/ghpr"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/vcs"
+	ghvcs "github.com/Robin831/Forge/internal/vcs/github"
 )
 
 // ReviewComment represents a PR review comment from GitHub.
@@ -59,6 +60,9 @@ type FixParams struct {
 	// Providers is the ordered list of AI providers to try.
 	// If empty, provider.Defaults() is used (Claude → Gemini).
 	Providers []provider.Provider
+	// VCS is the VCS provider for repository operations. When set,
+	// it is used for GetRepoOwnerAndName instead of creating a throwaway instance.
+	VCS vcs.Provider
 }
 
 // FixResult captures the outcome of addressing review comments.
@@ -86,8 +90,13 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		p.MaxAttempts = 1
 	}
 
+	// Ensure a VCS provider is available for GetRepoOwnerAndName calls.
+	if p.VCS == nil {
+		p.VCS = ghvcs.New(nil)
+	}
+
 	// Step 1: Fetch review comments
-	comments, err := fetchReviewComments(ctx, p.WorktreePath, p.PRNumber)
+	comments, err := fetchReviewComments(ctx, p.VCS, p.WorktreePath, p.PRNumber)
 	if err != nil {
 		result.Error = fmt.Errorf("fetching review comments: %w", err)
 		result.Duration = time.Since(start)
@@ -269,8 +278,8 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 }
 
 // fetchReviewComments gets PR review comments via GraphQL and gh CLI.
-func fetchReviewComments(ctx context.Context, worktreePath string, prNumber int) ([]ReviewComment, error) {
-	owner, repo, err := ghpr.GetRepoOwnerAndName(ctx, worktreePath)
+func fetchReviewComments(ctx context.Context, vcsProvider vcs.Provider, worktreePath string, prNumber int) ([]ReviewComment, error) {
+	owner, repo, err := vcsProvider.GetRepoOwnerAndName(ctx, worktreePath)
 	if err != nil {
 		return nil, fmt.Errorf("getting repo owner and name: %w", err)
 	}

@@ -3,8 +3,7 @@
 // checks, etc.) so Forge can work with GitHub, GitLab, Forgejo, Bitbucket,
 // and Azure DevOps.
 //
-// The interface mirrors the operations currently performed by the ghpr package,
-// which becomes the GitHub implementation of this interface.
+// The GitHub implementation lives in the vcs/github sub-package.
 package vcs
 
 import (
@@ -51,8 +50,30 @@ func buildPRBody(p CreateParams) string {
 	return b.String()
 }
 
+// gitHubFactory is populated by internal/vcs/github via RegisterGitHubProvider.
+// This avoids a circular import (vcs/github imports vcs for the Provider interface).
+var gitHubFactory func() Provider
+
+// RegisterGitHubProvider registers the GitHub provider factory.
+// Called from init() in internal/vcs/github.
+func RegisterGitHubProvider(f func() Provider) {
+	gitHubFactory = f
+}
+
+// NewGitHubProvider returns a new GitHub VCS provider.
+// Requires internal/vcs/github to have been imported (directly or via a
+// blank import) so that its init() registers the factory.
+func NewGitHubProvider() Provider {
+	if gitHubFactory != nil {
+		return gitHubFactory()
+	}
+	return nil
+}
+
 // ForPlatform returns a Provider for the given platform.
 // An empty string defaults to GitHub. Unsupported platforms return an error.
+// For GitHub, internal/vcs/github must be imported (e.g. via blank import) to
+// register the provider factory before calling this function.
 func ForPlatform(platform string) (Provider, error) {
 	p, err := ParsePlatform(platform)
 	if err != nil {
@@ -60,7 +81,11 @@ func ForPlatform(platform string) (Provider, error) {
 	}
 	switch p {
 	case GitHub:
-		return NewGitHubProvider(), nil
+		prov := NewGitHubProvider()
+		if prov == nil {
+			return nil, fmt.Errorf("GitHub VCS provider not available: import github.com/Robin831/Forge/internal/vcs/github")
+		}
+		return prov, nil
 	case GitLab:
 		return NewGitLabProvider(), nil
 	default:

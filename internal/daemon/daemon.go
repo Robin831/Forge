@@ -34,7 +34,8 @@ import (
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/executil"
-	"github.com/Robin831/Forge/internal/ghpr"
+	"github.com/Robin831/Forge/internal/vcs"
+	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/hotreload"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
@@ -163,6 +164,9 @@ type Daemon struct {
 	// to avoid spamming the event log every poll cycle.
 	costLimitLoggedDate atomic.Value // stores string (YYYY-MM-DD)
 
+	// VCS provider for PR operations (GitHub, GitLab, etc.).
+	vcsProvider vcs.Provider
+
 	// labelAdder adds a label to a bead via the bd CLI. Defaults to the real
 	// bd-update implementation; may be replaced in tests to avoid exec.Command.
 	labelAdder func(anvilPath, beadID, tag string) error
@@ -236,6 +240,10 @@ func New(cfg *config.Config) (*Daemon, error) {
 		dispatcher = notify.NewWebhookDispatcher(webhookTargets, logger)
 	}
 
+	// Create VCS provider. Currently all anvils use GitHub; future multi-platform
+	// support will create per-anvil providers based on anvil config.
+	vcsProvider := github.New(db)
+
 	d := &Daemon{
 		db:            db,
 		logger:        logger,
@@ -246,6 +254,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
+		vcsProvider:   vcsProvider,
 	}
 	d.notifier.Store(notifier)
 	d.dispatcher.Store(dispatcher)
@@ -328,7 +337,7 @@ func (d *Daemon) reconcileGitHubPRs(ctx context.Context) {
 		if anvilCfg.Path == "" {
 			continue
 		}
-		prs, err := ghpr.ListOpen(ctx, anvilCfg.Path)
+		prs, err := d.vcsProvider.ListOpenPRs(ctx, anvilCfg.Path)
 		if err != nil {
 			d.logger.Warn("reconcile: could not list GitHub PRs", "anvil", anvilName, "err", err)
 			continue
@@ -492,7 +501,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			monitorAnvils[name] = a.Path
 		}
 	}
-	d.bellowsMonitor = bellows.New(d.db, d.cfg.Load().Settings.BellowsInterval, monitorAnvils, func() bool {
+	d.bellowsMonitor = bellows.New(d.db, d.vcsProvider, d.cfg.Load().Settings.BellowsInterval, monitorAnvils, func() bool {
 		return d.cfg.Load().Settings.AutoLearnRules
 	}, func() int {
 		return d.cfg.Load().Settings.MaxCIFixAttempts
@@ -705,6 +714,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				MaxAttempts:  d.cfg.Load().Settings.MaxReviewAttempts,
 				ExtraFlags:   d.cfg.Load().Settings.ClaudeFlags,
 				Providers:    d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers)),
+				VCS:          d.vcsProvider,
 			})
 			status := state.WorkerDone
 			if res.Error != nil {
@@ -1404,6 +1414,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		}
 		crucibleParams := crucible.Params{
 			DB:                        d.db,
+			VCS:                       d.vcsProvider,
 			Logger:                    d.logger,
 			WorktreeManager:           d.worktreeMgr,
 			PromptBuilder:             d.promptBuilder,
@@ -1640,14 +1651,13 @@ normalPipeline:
 		changeSummary = outcome.ReviewResult.Summary
 	}
 
-	pr, err := ghpr.Create(pipelineCtx, ghpr.CreateParams{
+	pr, err := d.vcsProvider.CreatePR(pipelineCtx, vcs.CreateParams{
 		WorktreePath:    anvilCfg.Path,
 		BeadID:          bead.ID,
 		Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
 		Branch:          outcome.Branch,
-		Base:            bead.EpicBranch, // empty = use ghpr.Create default base (currently "main", still passes --base)
+		Base:            bead.EpicBranch, // empty = use provider default base (currently "main")
 		AnvilName:       bead.Anvil,
-		DB:              d.db,
 		BeadTitle:       bead.Title,
 		BeadDescription: bead.Description,
 		BeadType:        bead.IssueType,
@@ -2656,7 +2666,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// Comment 6: re-check live GitHub status immediately before merging to avoid
 		// acting on stale cached state from between Bellows polls.
 		liveCtx, liveCancel := context.WithTimeout(d.runCtx, 30*time.Second)
-		liveStatus, liveErr := ghpr.CheckStatus(liveCtx, anvilCfg.Path, mergeNumber)
+		liveStatus, liveErr := d.vcsProvider.CheckStatus(liveCtx, anvilCfg.Path, mergeNumber)
 		liveCancel()
 		if liveErr != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("could not verify live PR status: %v", liveErr)})
@@ -2678,7 +2688,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		d.logger.Info("PR merge requested", "pr_number", mergeNumber, "anvil", mergeAnvil, "strategy", strategy)
 		mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
 		defer mergeCancel()
-		if err := ghpr.Merge(mergeCtx, anvilCfg.Path, mergeNumber, strategy); err != nil {
+		if err := d.vcsProvider.MergePR(mergeCtx, anvilCfg.Path, mergeNumber, strategy); err != nil {
 			_ = d.db.LogEvent(state.EventPRMergeFailed,
 				fmt.Sprintf("PR #%d merge failed: %v", mergeNumber, err),
 				beadID, mergeAnvil)
@@ -2817,7 +2827,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
 			defer mergeCancel()
 			strategy := d.cfg.Load().Settings.MergeStrategy
-			if err := ghpr.Merge(mergeCtx, anvilCfg.Path, pa.PRNumber, strategy); err != nil {
+			if err := d.vcsProvider.MergePR(mergeCtx, anvilCfg.Path, pa.PRNumber, strategy); err != nil {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("merge failed: %v", err)})
 				return ipc.Response{Type: "error", Payload: msg}
 			}

@@ -1,0 +1,2 @@
+category: Changed
+- **Refactored GitHub PR operations behind VCS provider interface** - The `ghpr` package has been removed and its functionality replaced by the `vcs.Provider` interface with a GitHub implementation in `internal/vcs/github`. All callers (daemon, bellows, crucible, reviewfix) now use the `vcs.Provider` abstraction, enabling future support for GitLab, Forgejo, Bitbucket, and Azure DevOps. ReviewFix now safely handles nil VCS providers by falling back to the default GitHub provider. (Forge-co9n)
