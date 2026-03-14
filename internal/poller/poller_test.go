@@ -209,6 +209,20 @@ func TestBlocksReconstruction_OnlyBlocksType(t *testing.T) {
 		}
 	}
 
+	// Filter Blocks to only include IDs in the poll batch
+	for i := range beads {
+		if len(beads[i].Blocks) == 0 {
+			continue
+		}
+		var valid []string
+		for _, id := range beads[i].Blocks {
+			if _, ok := beadIdx[id]; ok {
+				valid = append(valid, id)
+			}
+		}
+		beads[i].Blocks = valid
+	}
+
 	// parent-1 should have child-a and child-b as Blocks, but NOT downstream
 	sort.Strings(beads[0].Blocks)
 	assert.Equal(t, []string{"child-a", "child-b"}, beads[0].Blocks,
@@ -216,6 +230,45 @@ func TestBlocksReconstruction_OnlyBlocksType(t *testing.T) {
 
 	// downstream should not appear in any Blocks list
 	assert.Empty(t, beads[3].Blocks, "downstream should have no Blocks")
+}
+
+// TestBlocksFilter_ChildDoesNotBecomeCrucible verifies that when children
+// have blocks=[parentID] from JSON but the parent is NOT in the poll results
+// (e.g. parent is blocked), the children's Blocks are cleared — preventing
+// them from being misidentified as crucible parents.
+func TestBlocksFilter_ChildDoesNotBecomeCrucible(t *testing.T) {
+	// Simulate: parent "epic-1" is NOT in bd ready (it's blocked).
+	// Children "child-x" and "child-y" are ready, each with blocks=["epic-1"].
+	beads := []Bead{
+		{ID: "child-x", Blocks: []string{"epic-1"}},
+		{ID: "child-y", Blocks: []string{"epic-1"}},
+	}
+
+	beadIdx := make(map[string]int, len(beads))
+	for i := range beads {
+		beadIdx[beads[i].ID] = i
+	}
+
+	// Reconstruction: no Parent or Dependencies, nothing to add
+	// (skipped for brevity — the addBlock calls would skip epic-1 since it's not in beadIdx)
+
+	// Filter: only keep Blocks entries present in poll results
+	for i := range beads {
+		if len(beads[i].Blocks) == 0 {
+			continue
+		}
+		var valid []string
+		for _, id := range beads[i].Blocks {
+			if _, ok := beadIdx[id]; ok {
+				valid = append(valid, id)
+			}
+		}
+		beads[i].Blocks = valid
+	}
+
+	// Neither child should have Blocks (epic-1 is not in the batch)
+	assert.Empty(t, beads[0].Blocks, "child-x should not be a crucible candidate")
+	assert.Empty(t, beads[1].Blocks, "child-y should not be a crucible candidate")
 }
 
 // TestPoll_MultipleAnvils verifies that Poll collects results from all anvils

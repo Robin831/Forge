@@ -1375,6 +1375,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		}
 
 		_ = d.db.UpdateWorkerPhase(claimWorkerID, "crucible")
+		_ = d.db.UpdateWorkerStatus(claimWorkerID, state.WorkerRunning)
 		d.logger.Info("dispatching crucible", "bead", bead.ID, "children", len(bead.Blocks))
 
 		smithProviderSpecs := d.cfg.Load().Settings.SmithProviders

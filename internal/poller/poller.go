@@ -184,6 +184,25 @@ func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Be
 		}
 	}
 
+	// Filter Blocks to only include IDs present in this poll batch.
+	// The JSON "blocks" field means "beads I block" (child→parent), but
+	// IsCrucibleCandidate needs parent→children. When a child has
+	// blocks=[parentID] and the parent is NOT in the ready results (it's
+	// blocked), the child would be misidentified as a crucible parent.
+	// Only keep Blocks entries that point to beads in the current results.
+	for i := range beads {
+		if len(beads[i].Blocks) == 0 {
+			continue
+		}
+		var valid []string
+		for _, id := range beads[i].Blocks {
+			if _, ok := beadIdx[id]; ok {
+				valid = append(valid, id)
+			}
+		}
+		beads[i].Blocks = valid
+	}
+
 	// Filter out beads that are already assigned (claimed by another agent)
 	// or tagged as needing clarification.
 	var eligible []Bead
