@@ -67,6 +67,7 @@ type Monitor struct {
 	learnMuGuard     sync.Mutex             // protects learnMu map
 	learnMu          map[string]*sync.Mutex // per-anvil mutex serializing auto-learn
 	learnSem         chan struct{}          // caps overall concurrent auto-learn goroutines
+	wasUnmanaged     map[string]bool       // keys of ext- PRs seen as unmanaged (for managed transition detection)
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -103,6 +104,7 @@ func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, aut
 		maxCIFixAttempts: maxCIFixAttempts,
 		learnMu:          make(map[string]*sync.Mutex),
 		learnSem:         make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
+		wasUnmanaged:     make(map[string]bool),
 	}
 }
 
@@ -266,11 +268,27 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	m.lastStatuses[key] = newSnap
 	m.mu.Unlock()
 
+	// When an external PR is newly assigned to bellows, clear the cached
+	// snapshot so the seeding logic runs fresh and detects pre-existing
+	// issues (unresolved threads, CI failures, conflicts) as transitions.
+	if strings.HasPrefix(pr.BeadID, "ext-") && pr.BellowsManaged {
+		if _, wasUnmanaged := m.wasUnmanaged[key]; wasUnmanaged {
+			delete(m.wasUnmanaged, key)
+			m.mu.Lock()
+			delete(m.lastStatuses, key)
+			m.mu.Unlock()
+			// Re-enter checkPR so the nil-snapshot seeding path runs.
+			m.checkPR(ctx, pr)
+			return
+		}
+	}
+
 	// External PRs (not created by Forge) are tracked for display in the
 	// Hearth PR panel. Unless explicitly assigned to bellows, they must not
 	// trigger lifecycle workers (cifix, reviewfix, rebase). Persist their
 	// mergeability state and return early.
 	if strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged {
+		m.wasUnmanaged[key] = true
 		_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval)
 		if newSnap.IsMerged {
 			_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
