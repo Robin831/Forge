@@ -62,7 +62,7 @@ func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string) *CheckResu
 
 // findDotnetProjects walks the anvil directory for *.sln files first, then
 // *.csproj files. If a .sln is found, its directory's csproj files are skipped
-// (the sln covers them). Skips bin, obj, and .workers directories.
+// (the sln covers them). Skips bin, obj, .workers, .worktrees, and .git directories.
 func findDotnetProjects(root string) []string {
 	slnDirs := map[string]bool{}
 	var slnFiles []string
@@ -74,7 +74,7 @@ func findDotnetProjects(root string) []string {
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if name == "bin" || name == "obj" || name == ".workers" || name == ".git" || name == "node_modules" {
+			if name == "bin" || name == "obj" || name == ".workers" || name == ".worktrees" || name == ".git" || name == "node_modules" {
 				return filepath.SkipDir
 			}
 			return nil

@@ -15,8 +15,16 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 )
 
+// runNpmOutdatedFn is the function used to invoke npm outdated. It is a
+// package-level variable so tests can replace it without requiring npm to be
+// installed on the test machine.
+var runNpmOutdatedFn = runNpmOutdated
+
 // scanNpm runs 'npm outdated --json' in directories containing package.json.
-// Skips node_modules and .workers directories. Returns nil if no package.json found.
+// Skips node_modules, .workers, .worktrees, bin, obj, and .git directories
+// (via findNpmProjects). Deduplicates packages across projects, keeping the
+// most severe update (major > minor > patch) when the same package appears
+// in multiple package.json files. Returns nil if no package.json found.
 func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult {
 	pkgDirs := findNpmProjects(path)
 	if len(pkgDirs) == 0 {
@@ -30,30 +38,47 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 		Checked:   time.Now(),
 	}
 
+	// kindRank maps update kind to a numeric severity so we can keep the most
+	// severe update when the same package appears in multiple package.json files.
+	kindRank := map[string]int{"patch": 0, "minor": 1, "major": 2}
+
+	// Track the best (most severe) update seen per package across all projects.
+	best := map[string]ModuleUpdate{}
+
 	for _, dir := range pkgDirs {
-		updates, err := runNpmOutdated(ctx, s.timeout, dir)
+		updates, err := runNpmOutdatedFn(ctx, s.timeout, dir)
 		if err != nil {
 			result.Error = fmt.Errorf("npm outdated in %s: %w", dir, err)
 			return result
 		}
 
 		for _, u := range updates {
-			switch u.Kind {
-			case "patch":
-				result.Patch = append(result.Patch, u)
-			case "minor":
-				result.Minor = append(result.Minor, u)
-			case "major":
-				result.Major = append(result.Major, u)
+			existing, ok := best[u.Path]
+			if !ok || kindRank[u.Kind] > kindRank[existing.Kind] {
+				best[u.Path] = u
 			}
 		}
 	}
+
+	for _, u := range best {
+		switch u.Kind {
+		case "patch":
+			result.Patch = append(result.Patch, u)
+		case "minor":
+			result.Minor = append(result.Minor, u)
+		case "major":
+			result.Major = append(result.Major, u)
+		}
+	}
+	sortUpdates(result.Patch)
+	sortUpdates(result.Minor)
+	sortUpdates(result.Major)
 
 	return result
 }
 
 // findNpmProjects walks the anvil directory for package.json files,
-// skipping node_modules and .workers directories.
+// skipping node_modules, .workers, .worktrees, bin, obj, and .git directories.
 func findNpmProjects(root string) []string {
 	var dirs []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -62,7 +87,7 @@ func findNpmProjects(root string) []string {
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if name == "node_modules" || name == ".workers" || name == ".git" {
+			if name == "node_modules" || name == ".workers" || name == ".worktrees" || name == "bin" || name == "obj" || name == ".git" {
 				return filepath.SkipDir
 			}
 			return nil

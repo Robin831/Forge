@@ -17,6 +17,10 @@ import (
 // Only direct dependencies are included — indirect (transitive) deps cannot be
 // independently upgraded and would cause Smith to produce no-diff results.
 // Returns nil if the anvil is not a Go project.
+//
+// Note: scanGo checks only the root go.mod of the given path and does not walk
+// subdirectories, so .worktrees copies of go.mod are never scanned. No skip-list
+// is required here (compare findNpmProjects / findDotnetProjects which do walk).
 func (s *Scanner) scanGo(ctx context.Context, anvil, path string) *CheckResult {
 	// Only check Go projects
 	modPath := filepath.Join(path, "go.mod")
