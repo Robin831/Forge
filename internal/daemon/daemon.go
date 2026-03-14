@@ -82,6 +82,7 @@ const (
 // allowing a test double to be injected in unit tests.
 type bellowsMonitorIface interface {
 	OnEvent(h bellows.Handler)
+	SetAutoMergeHandler(h func(ctx context.Context, anvil string, pr state.PR))
 	UpdateAnvilPaths(paths map[string]string)
 	Refresh()
 	Run(ctx context.Context) error
@@ -551,6 +552,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.logger.Error("failed to load lifecycle states", "error", err)
 		return fmt.Errorf("daemon initialization failed: %w", err)
 	}
+	d.bellowsMonitor.SetAutoMergeHandler(d.handleAutoMerge)
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
 	d.bellowsMonitor.OnEvent(d.handleBellowsNotifications)
 	d.bellowsMonitor.OnEvent(d.handleBeadCloseOnMerge)
@@ -882,6 +884,47 @@ func (d *Daemon) handleBeadCloseOnMerge(ctx context.Context, event bellows.PREve
 	} else {
 		d.logger.Info("bead closed after PR merge", "bead", event.BeadID, "pr", event.PRNumber)
 	}
+}
+
+// handleAutoMerge is called by bellows when a PR transitions to the
+// ready-to-merge state. If the anvil has auto_merge enabled and the PR is not
+// external, it merges the PR using the configured merge strategy.
+func (d *Daemon) handleAutoMerge(ctx context.Context, anvil string, pr state.PR) {
+	// Never auto-merge external PRs.
+	if pr.IsExternal() {
+		return
+	}
+
+	anvilCfg, ok := d.cfg.Load().Anvils[anvil]
+	if !ok || !anvilCfg.AutoMerge {
+		return
+	}
+
+	strategy := d.cfg.Load().Settings.MergeStrategy
+	if strategy == "" {
+		strategy = "squash"
+	}
+
+	d.logger.Info("auto-merging PR", "pr_number", pr.Number, "anvil", anvil, "bead", pr.BeadID, "strategy", strategy)
+	_ = d.db.LogEvent(state.EventPRAutoMerged,
+		fmt.Sprintf("PR #%d auto-merge started (strategy: %s)", pr.Number, strategy),
+		pr.BeadID, anvil)
+
+	mergeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	if err := d.vcsProvider.MergePR(mergeCtx, anvilCfg.Path, pr.Number, strategy); err != nil {
+		_ = d.db.LogEvent(state.EventPRMergeFailed,
+			fmt.Sprintf("PR #%d auto-merge failed: %v", pr.Number, err),
+			pr.BeadID, anvil)
+		d.logger.Error("auto-merge failed", "pr_number", pr.Number, "anvil", anvil, "error", err)
+		return
+	}
+
+	_ = d.db.LogEvent(state.EventPRAutoMerged,
+		fmt.Sprintf("PR #%d auto-merged successfully (strategy: %s)", pr.Number, strategy),
+		pr.BeadID, anvil)
+	d.logger.Info("PR auto-merged successfully", "pr_number", pr.Number, "anvil", anvil, "bead", pr.BeadID)
 }
 
 // drainPendingAction checks whether a lifecycle action was parked for beadID

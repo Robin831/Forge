@@ -48,6 +48,13 @@ var hearthCmd = &cobra.Command{
 		}
 		sort.Strings(anvilNames)
 
+		autoMergeAnvils := make(map[string]bool)
+		for name, a := range cfg.Anvils {
+			if a.AutoMerge {
+				autoMergeAnvils[name] = true
+			}
+		}
+
 		ds := &hearth.DataSource{
 			DB:                       db,
 			MaxCIFixAttempts:         cfg.Settings.MaxCIFixAttempts,
@@ -56,6 +63,7 @@ var hearthCmd = &cobra.Command{
 			AnvilNames:               anvilNames,
 			DailyCostLimit:           cfg.Settings.DailyCostLimit,
 			CopilotDailyRequestLimit: cfg.Settings.CopilotDailyRequestLimit,
+			AutoMergeAnvils:          autoMergeAnvils,
 		}
 
 		model := hearth.NewModel(ds)

@@ -1163,6 +1163,7 @@ const (
 	EventPRReadyToMerge       EventType = "pr_ready_to_merge"
 	EventPRMergeRequested     EventType = "pr_merge_requested"
 	EventPRMergeFailed        EventType = "pr_merge_failed"
+	EventPRAutoMerged         EventType = "pr_auto_merged"
 	EventError                EventType = "error"
 	EventBeadRecovered        EventType = "bead_recovered"
 	EventBeadStopped          EventType = "bead_stopped"

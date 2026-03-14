@@ -107,12 +107,13 @@ type NeedsAttentionItem struct {
 
 // ReadyToMergeItem represents a PR ready to merge.
 type ReadyToMergeItem struct {
-	PRID     int
-	PRNumber int
-	BeadID   string
-	Anvil    string
-	Branch   string
-	Title    string
+	PRID      int
+	PRNumber  int
+	BeadID    string
+	Anvil     string
+	Branch    string
+	Title     string
+	AutoMerge bool // true when the anvil has auto_merge enabled
 }
 
 // PRItem represents an open PR in the PR panel overlay.
@@ -3285,7 +3286,11 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 		for i := start; i < end; i++ {
 			item := m.readyToMerge[i]
 			anvil := dimStyle.Render(item.Anvil)
-			line := fmt.Sprintf("PR #%d %s %s", item.PRNumber, item.BeadID, anvil)
+			autoTag := ""
+			if item.AutoMerge {
+				autoTag = " [auto]"
+			}
+			line := fmt.Sprintf("PR #%d %s %s%s", item.PRNumber, item.BeadID, anvil, autoTag)
 			if i == m.readyToMergeVP.cursor {
 				line = selectedStyle.Render(line)
 			}

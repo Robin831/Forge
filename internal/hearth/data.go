@@ -84,6 +84,8 @@ type DataSource struct {
 	// Cost limits from config for the Usage panel display.
 	DailyCostLimit           float64
 	CopilotDailyRequestLimit int
+	// AutoMergeAnvils is the set of anvil names that have auto_merge enabled.
+	AutoMergeAnvils map[string]bool
 }
 
 // Tick returns a Bubbletea command that sends a TickMsg after the interval.
@@ -480,21 +482,22 @@ func FetchNeedsAttention(ds *DataSource) tea.Cmd {
 }
 
 // FetchReadyToMerge reads PRs that are ready to merge from the state DB.
-func FetchReadyToMerge(db *state.DB) tea.Cmd {
+func FetchReadyToMerge(ds DataSource) tea.Cmd {
 	return func() tea.Msg {
-		prs, err := db.ReadyToMergePRs()
+		prs, err := ds.DB.ReadyToMergePRs()
 		if err != nil {
 			return ReadyToMergeErrorMsg{Err: fmt.Errorf("failed to fetch ready-to-merge PRs: %w", err)}
 		}
 		var items []ReadyToMergeItem
 		for _, p := range prs {
 			items = append(items, ReadyToMergeItem{
-				PRID:     p.ID,
-				PRNumber: p.Number,
-				BeadID:   p.BeadID,
-				Anvil:    p.Anvil,
-				Branch:   p.Branch,
-				Title:    p.Title,
+				PRID:      p.ID,
+				PRNumber:  p.Number,
+				BeadID:    p.BeadID,
+				Anvil:     p.Anvil,
+				Branch:    p.Branch,
+				Title:     p.Title,
+				AutoMerge: ds.AutoMergeAnvils[p.Anvil],
 			})
 		}
 		return UpdateReadyToMergeMsg{Items: items}
@@ -754,7 +757,7 @@ func FetchAll(ds *DataSource) tea.Cmd {
 	return tea.Batch(
 		FetchQueue(ds.DB),
 		FetchNeedsAttention(ds),
-		FetchReadyToMerge(ds.DB),
+		FetchReadyToMerge(*ds),
 		FetchWorkers(ds.DB),
 		FetchEvents(ds.DB, EventFetchLimit),
 		FetchCrucibles(),
