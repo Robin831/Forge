@@ -3247,7 +3247,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 			beadLine := fmt.Sprintf("%s %s %s", icon, label, anvil)
 			// Append truncated title when available
 			if item.Title != "" {
-				titleMaxLen := width - 6 - len([]rune(beadLine))
+				titleMaxLen := width - 6 - lipgloss.Width(beadLine)
 				if titleMaxLen > 10 {
 					beadLine += "  " + truncate(sanitizeTitle(item.Title), titleMaxLen)
 				}
@@ -3266,7 +3266,11 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 			if item.ReasonCategory == AttentionClarification {
 				reasonPrefix = "  ⚠ "
 			}
-			reasonText := truncate(sanitizeTitle(reason), width-6)
+			reasonMaxLen := width - 4 - runewidth.StringWidth(reasonPrefix)
+			if reasonMaxLen < 10 {
+				reasonMaxLen = 10
+			}
+			reasonText := truncate(sanitizeTitle(reason), reasonMaxLen)
 			reasonLine := reasonPrefix + dimStyle.Render(reasonText)
 			if i == m.needsAttnVP.cursor {
 				reasonLine = reasonPrefix + selectedStyle.Render(reasonText)
