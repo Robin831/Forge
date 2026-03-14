@@ -70,6 +70,7 @@ func ResolveBlocks(ctx context.Context, beads []Bead, anvilPaths map[string]stri
 type bdShowDependent struct {
 	ID             string `json:"id"`
 	DependencyType string `json:"dependency_type"`
+	Status         string `json:"status"`
 }
 
 // bdShowResponse is the subset of `bd show --json` output we need to extract
@@ -106,7 +107,7 @@ func lookupBlocks(ctx context.Context, beadID, anvilPath string) []string {
 
 	var blocks []string
 	for _, dep := range resp.Dependents {
-		if dep.DependencyType == "blocks" {
+		if dep.DependencyType == "blocks" && dep.Status != "closed" {
 			blocks = append(blocks, dep.ID)
 		}
 	}
