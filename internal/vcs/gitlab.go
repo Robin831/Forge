@@ -577,21 +577,6 @@ func ParseGitLabRepoURL(rawURL string) (owner, repo string, err error) {
 	return "", "", fmt.Errorf("could not parse GitLab remote URL: %s", safeURL)
 }
 
-// redactURL removes userinfo (embedded credentials) from HTTP/HTTPS URLs so they
-// are safe to include in log messages and errors. SSH-style URLs (git@...) do not
-// embed credentials and are returned unchanged.
-func redactURL(rawURL string) string {
-	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-		return rawURL
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "[redacted URL]"
-	}
-	u.User = nil
-	return u.String()
-}
-
 // splitNamespacePath splits "group/subgroup/project" into ("group/subgroup", "project").
 func splitNamespacePath(path, rawURL string) (string, string, error) {
 	path = strings.TrimPrefix(path, "/")

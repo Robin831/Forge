@@ -9,6 +9,7 @@ package vcs
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -325,4 +326,19 @@ type Provider interface {
 
 	// Platform returns which platform this provider implements.
 	Platform() Platform
+}
+
+// redactURL removes userinfo (embedded credentials) from HTTP/HTTPS URLs so they
+// are safe to include in log messages and errors. SSH-style URLs (git@...) do not
+// embed credentials and are returned unchanged.
+func redactURL(rawURL string) string {
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "[redacted URL]"
+	}
+	u.User = nil
+	return u.String()
 }

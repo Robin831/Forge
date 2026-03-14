@@ -41,6 +41,10 @@ type giteaRepoInfo struct {
 	repo    string
 }
 
+// giteaPageLimit is the number of items requested per page in paginated
+// Gitea API calls. Gitea's default maximum is 50.
+const giteaPageLimit = 50
+
 // giteaHTTPClient is a shared HTTP client with a reasonable timeout,
 // used for all Gitea API requests instead of http.DefaultClient.
 var giteaHTTPClient = &http.Client{
@@ -214,28 +218,37 @@ func (g *GiteaProvider) CheckStatusLight(ctx context.Context, worktreePath strin
 }
 
 // ListOpenPRs returns all open pull requests in the repository.
+// It paginates through the Gitea API to collect all results.
 func (g *GiteaProvider) ListOpenPRs(ctx context.Context, worktreePath string) ([]OpenPR, error) {
 	baseURL, owner, repo, err := g.resolveRepo(ctx, worktreePath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving Gitea repo: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls?state=open&limit=50",
-		baseURL, url.PathEscape(owner), url.PathEscape(repo))
+	var out []OpenPR
+	page := 1
+	for {
+		endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls?state=open&limit=%d&page=%d",
+			baseURL, url.PathEscape(owner), url.PathEscape(repo), giteaPageLimit, page)
 
-	var prs []giteaPullRequest
-	if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &prs); err != nil {
-		return nil, fmt.Errorf("gitea list PRs failed: %w", err)
-	}
-
-	out := make([]OpenPR, len(prs))
-	for i, pr := range prs {
-		out[i] = OpenPR{
-			Number: pr.Number,
-			Title:  pr.Title,
-			Branch: pr.Head.Ref,
-			Body:   pr.Body,
+		var prs []giteaPullRequest
+		if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &prs); err != nil {
+			return nil, fmt.Errorf("gitea list PRs failed: %w", err)
 		}
+
+		for _, pr := range prs {
+			out = append(out, OpenPR{
+				Number: pr.Number,
+				Title:  pr.Title,
+				Branch: pr.Head.Ref,
+				Body:   pr.Body,
+			})
+		}
+
+		if len(prs) < giteaPageLimit {
+			break
+		}
+		page++
 	}
 	return out, nil
 }
@@ -270,25 +283,33 @@ func (g *GiteaProvider) FetchUnresolvedThreadCount(ctx context.Context, worktree
 }
 
 // fetchUnresolvedThreads counts unresolved review comments on a PR.
-// It uses the pull review comments endpoint and counts comments where
+// It paginates through all review comments and counts those where
 // the resolved field is explicitly false (i.e. the comment is resolvable
 // but has not been resolved).
 func (g *GiteaProvider) fetchUnresolvedThreads(ctx context.Context, ri giteaRepoInfo, prNumber int) (int, error) {
-	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/comments?limit=50",
-		ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber)
-
-	var comments []giteaReviewComment
-	if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &comments); err != nil {
-		return 0, fmt.Errorf("gitea fetch review comments failed: %w", err)
-	}
-
 	count := 0
-	for _, c := range comments {
-		// A nil Resolved pointer means the comment is not resolvable (e.g. a
-		// general comment). Only count comments that are explicitly unresolved.
-		if c.Resolved != nil && !*c.Resolved {
-			count++
+	page := 1
+	for {
+		endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/comments?limit=%d&page=%d",
+			ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber, giteaPageLimit, page)
+
+		var comments []giteaReviewComment
+		if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &comments); err != nil {
+			return 0, fmt.Errorf("gitea fetch review comments failed: %w", err)
 		}
+
+		for _, c := range comments {
+			// A nil Resolved pointer means the comment is not resolvable (e.g. a
+			// general comment). Only count comments that are explicitly unresolved.
+			if c.Resolved != nil && !*c.Resolved {
+				count++
+			}
+		}
+
+		if len(comments) < giteaPageLimit {
+			break
+		}
+		page++
 	}
 	return count, nil
 }
@@ -399,26 +420,35 @@ func (g *GiteaProvider) fetchCIStatus(ctx context.Context, ri giteaRepoInfo, hea
 }
 
 // fetchReviews retrieves review information for a pull request.
+// It paginates through all reviews to collect the complete list.
 func (g *GiteaProvider) fetchReviews(ctx context.Context, ri giteaRepoInfo, prNumber int) ([]Review, error) {
-	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/reviews",
-		ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber)
-
-	var giteaReviews []giteaReview
-	if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &giteaReviews); err != nil {
-		return nil, err
-	}
-
 	var reviews []Review
-	for _, r := range giteaReviews {
-		state := mapGiteaReviewState(r.State)
-		if state == "" {
-			continue // skip comment-only reviews
+	page := 1
+	for {
+		endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls/%d/reviews?limit=%d&page=%d",
+			ri.baseURL, url.PathEscape(ri.owner), url.PathEscape(ri.repo), prNumber, giteaPageLimit, page)
+
+		var batch []giteaReview
+		if err := giteaAPIRequest(ctx, http.MethodGet, endpoint, nil, &batch); err != nil {
+			return nil, err
 		}
-		reviews = append(reviews, Review{
-			Author: ReviewAuthor{Login: r.User.Login},
-			State:  state,
-			Body:   r.Body,
-		})
+
+		for _, r := range batch {
+			state := mapGiteaReviewState(r.State)
+			if state == "" {
+				continue // skip comment-only reviews
+			}
+			reviews = append(reviews, Review{
+				Author: ReviewAuthor{Login: r.User.Login},
+				State:  state,
+				Body:   r.Body,
+			})
+		}
+
+		if len(batch) < giteaPageLimit {
+			break
+		}
+		page++
 	}
 	return reviews, nil
 }
