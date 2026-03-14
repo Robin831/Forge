@@ -39,7 +39,7 @@ func (g *GitLabProvider) CreatePR(ctx context.Context, params CreateParams) (*PR
 	}
 
 	if params.Body == "" {
-		params.Body = buildGitLabBody(params)
+		params.Body = buildPRBody(params)
 	}
 
 	args := []string{
@@ -87,19 +87,34 @@ func (g *GitLabProvider) CreatePR(ctx context.Context, params CreateParams) (*PR
 }
 
 // MergePR merges a merge request using the glab CLI.
+// Valid strategies: "squash", "merge", "rebase". Defaults to "squash" if empty.
 func (g *GitLabProvider) MergePR(ctx context.Context, worktreePath string, prNumber int, strategy string) error {
+	if strategy == "" {
+		strategy = "squash"
+	}
+
+	allowedStrategies := map[string]bool{
+		"squash": true,
+		"merge":  true,
+		"rebase": true,
+	}
+	if !allowedStrategies[strategy] {
+		log.Printf("[gitlab] Invalid merge strategy %q, defaulting to squash", strategy)
+		strategy = "squash"
+	}
+
 	args := []string{
 		"mr", "merge", strconv.Itoa(prNumber),
 		"--yes",
 		"--remove-source-branch",
 	}
 
-	// GitLab supports squash via --squash flag
-	if strategy == "squash" || strategy == "" {
+	// GitLab supports squash via --squash flag; rebase via --rebase.
+	// "merge" is the default for glab and requires no extra flag.
+	switch strategy {
+	case "squash":
 		args = append(args, "--squash")
-	}
-	// "merge" is the default for glab, "rebase" is handled via --rebase
-	if strategy == "rebase" {
+	case "rebase":
 		args = append(args, "--rebase")
 	}
 
@@ -192,12 +207,34 @@ func (g *GitLabProvider) CheckStatus(ctx context.Context, worktreePath string, p
 		status.Reviews = reviews
 	}
 
+	// Fetch pending review requests (unapproved approval rules)
+	reviewRequests, err := g.FetchPendingReviewRequests(ctx, worktreePath, prNumber)
+	if err != nil {
+		log.Printf("[gitlab] Warning: could not fetch pending review requests for MR !%d: %v", prNumber, err)
+	} else {
+		status.ReviewRequests = reviewRequests
+	}
+
 	return status, nil
 }
 
-// CheckStatusLight returns a lightweight status without thread or approval details.
+// CheckStatusLight returns a lightweight status focused on reviewRequests and mergeability.
+// It fetches pending review requests in addition to the basic MR view, since callers
+// (e.g. immediately after PR creation) rely on ReviewRequests being populated.
 func (g *GitLabProvider) CheckStatusLight(ctx context.Context, worktreePath string, prNumber int) (*PRStatus, error) {
-	return g.fetchMRView(ctx, worktreePath, prNumber)
+	status, err := g.fetchMRView(ctx, worktreePath, prNumber)
+	if err != nil {
+		return nil, err
+	}
+
+	reviewRequests, err := g.FetchPendingReviewRequests(ctx, worktreePath, prNumber)
+	if err != nil {
+		log.Printf("[gitlab] Warning: could not fetch pending review requests for MR !%d: %v", prNumber, err)
+	} else {
+		status.ReviewRequests = reviewRequests
+	}
+
+	return status, nil
 }
 
 // ListOpenPRs returns all open merge requests in the repository.
@@ -509,31 +546,50 @@ func mapGitLabJobConclusion(status string) string {
 func ParseGitLabRepoURL(rawURL string) (owner, repo string, err error) {
 	rawURL = strings.TrimSuffix(rawURL, ".git")
 
+	// Compute a credential-safe version of the URL for error messages.
+	// HTTPS URLs can embed credentials (https://user:token@host/...) that must not be logged.
+	safeURL := redactURL(rawURL)
+
 	// SSH: git@gitlab.com:group/subgroup/project
 	if strings.HasPrefix(rawURL, "git@") {
 		parts := strings.SplitN(rawURL, ":", 2)
 		if len(parts) != 2 {
-			return "", "", fmt.Errorf("could not parse GitLab SSH URL: %s", rawURL)
+			return "", "", fmt.Errorf("could not parse GitLab SSH URL: %s", safeURL)
 		}
 		path := parts[1]
-		return splitNamespacePath(path, rawURL)
+		return splitNamespacePath(path, safeURL)
 	}
 
 	// HTTPS: https://gitlab.com/group/subgroup/project
 	if strings.HasPrefix(rawURL, "https://") || strings.HasPrefix(rawURL, "http://") {
-		// Strip scheme and host
+		// Strip scheme and host (including any embedded userinfo).
 		_, rest, ok := strings.Cut(rawURL, "://")
 		if !ok {
-			return "", "", fmt.Errorf("could not parse GitLab URL: %s", rawURL)
+			return "", "", fmt.Errorf("could not parse GitLab URL: %s", safeURL)
 		}
 		_, path, ok := strings.Cut(rest, "/")
 		if !ok {
-			return "", "", fmt.Errorf("could not parse GitLab URL: %s", rawURL)
+			return "", "", fmt.Errorf("could not parse GitLab URL: %s", safeURL)
 		}
-		return splitNamespacePath(path, rawURL)
+		return splitNamespacePath(path, safeURL)
 	}
 
-	return "", "", fmt.Errorf("could not parse GitLab remote URL: %s", rawURL)
+	return "", "", fmt.Errorf("could not parse GitLab remote URL: %s", safeURL)
+}
+
+// redactURL removes userinfo (embedded credentials) from HTTP/HTTPS URLs so they
+// are safe to include in log messages and errors. SSH-style URLs (git@...) do not
+// embed credentials and are returned unchanged.
+func redactURL(rawURL string) string {
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "[redacted URL]"
+	}
+	u.User = nil
+	return u.String()
 }
 
 // splitNamespacePath splits "group/subgroup/project" into ("group/subgroup", "project").
@@ -614,33 +670,3 @@ func urlEncode(path string) string {
 	return strings.Join(encoded, "%2F")
 }
 
-// buildGitLabBody creates a structured MR description from bead metadata.
-func buildGitLabBody(p CreateParams) string {
-	var b strings.Builder
-
-	if p.ChangeSummary != "" {
-		b.WriteString("## Changes\n\n")
-		b.WriteString(p.ChangeSummary)
-		b.WriteString("\n\n")
-	}
-
-	if p.BeadDescription != "" {
-		header := "## Original Issue"
-		if p.BeadType != "" {
-			header = fmt.Sprintf("## Original Issue (%s)", p.BeadType)
-		}
-		if p.BeadTitle != "" {
-			fmt.Fprintf(&b, "%s: %s\n\n", header, p.BeadTitle)
-		} else {
-			fmt.Fprintf(&b, "%s\n\n", header)
-		}
-		b.WriteString(p.BeadDescription)
-		b.WriteString("\n\n")
-	}
-
-	b.WriteString("---\n")
-	fmt.Fprintf(&b, "Bead: %s | Branch: %s\n", p.BeadID, p.Branch)
-	b.WriteString("Generated by [The Forge](https://github.com/Robin831/Forge) (Smith → Temper → Warden)")
-
-	return b.String()
-}

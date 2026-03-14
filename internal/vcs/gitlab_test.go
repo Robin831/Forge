@@ -216,8 +216,8 @@ func TestURLEncode(t *testing.T) {
 	}
 }
 
-func TestBuildGitLabBody(t *testing.T) {
-	body := buildGitLabBody(CreateParams{
+func TestBuildPRBody(t *testing.T) {
+	body := buildPRBody(CreateParams{
 		BeadID:          "Forge-42",
 		Branch:          "forge/Forge-42",
 		BeadTitle:       "Fix the thing",
@@ -561,9 +561,9 @@ func TestMapGitLabJobStatus(t *testing.T) {
 	}
 }
 
-func TestBuildGitLabBody_Variants(t *testing.T) {
+func TestBuildPRBody_Variants(t *testing.T) {
 	t.Run("no change summary", func(t *testing.T) {
-		body := buildGitLabBody(CreateParams{
+		body := buildPRBody(CreateParams{
 			BeadID:          "Forge-1",
 			Branch:          "forge/Forge-1",
 			BeadDescription: "Some issue",
@@ -574,7 +574,7 @@ func TestBuildGitLabBody_Variants(t *testing.T) {
 	})
 
 	t.Run("no description", func(t *testing.T) {
-		body := buildGitLabBody(CreateParams{
+		body := buildPRBody(CreateParams{
 			BeadID:        "Forge-2",
 			Branch:        "forge/Forge-2",
 			ChangeSummary: "Made improvements",
@@ -584,7 +584,7 @@ func TestBuildGitLabBody_Variants(t *testing.T) {
 	})
 
 	t.Run("minimal params", func(t *testing.T) {
-		body := buildGitLabBody(CreateParams{
+		body := buildPRBody(CreateParams{
 			BeadID: "Forge-3",
 			Branch: "forge/Forge-3",
 		})
