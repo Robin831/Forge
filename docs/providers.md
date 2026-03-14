@@ -39,14 +39,21 @@ settings:
 Each entry in the `providers` list uses this format:
 
 ```
-kind[:command][/model]
+kind[:command_or_backend][/model]
 ```
 
 | Component | Description | Example |
 |-----------|-------------|---------|
-| `kind` | Provider type: `claude`, `gemini`, or `copilot` | `gemini` |
+| `kind` | Provider type: `claude`, `gemini`, `copilot`, or `openai` | `gemini` |
 | `:command` | Optional custom binary path | `gemini:mybin` |
+| `:backend` | Known backend name (e.g. `ollama`) — sets env vars instead of binary | `claude:ollama` |
 | `/model` | Optional model override | `gemini/gemini-2.5-pro` |
+
+When the `:` value matches a known backend name, environment variables are injected into the subprocess instead of overriding the binary. Currently supported backends:
+
+| Backend | Provider | Environment Variables |
+|---------|----------|----------------------|
+| `ollama` | `claude` | `ANTHROPIC_BASE_URL=http://localhost:11434`, `ANTHROPIC_AUTH_TOKEN=ollama`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` |
 
 ### Examples
 
@@ -67,6 +74,12 @@ settings:
 
     # GitHub Copilot CLI
     - copilot
+
+    # Claude CLI targeting local Ollama instance
+    - claude:ollama
+
+    # Claude CLI targeting Ollama with specific model
+    - claude:ollama/qwen2.5-coder:32b
 ```
 
 ## Provider Details
@@ -92,6 +105,25 @@ settings:
 - **Model**: Defaults to `claude-sonnet-4.6`; overridable via a `--model <name>` entry in `claude_flags`. The `/model` suffix in the provider string is **not** honored for Copilot.
 - **Flag translation**: Unrecognized Claude flags are silently dropped
 - **Note**: Not included in defaults — must be explicitly added to the providers list
+
+### Ollama (Local Models)
+
+Claude Code supports Ollama natively via the Anthropic Messages API compatibility layer. Instead of a separate provider kind, use the `claude:ollama` backend syntax to redirect the `claude` CLI to a local Ollama instance.
+
+- **Binary**: `claude` (same CLI, different API endpoint)
+- **Output format**: Stream JSON (same as standard Claude)
+- **Model**: Set via `/model` suffix (e.g., `claude:ollama/qwen2.5-coder:32b`)
+- **Prerequisites**: Ollama installed and running locally with a capable coding model
+- **Hardware**: GPU with 16GB+ VRAM or Apple M-series with 32GB+ RAM recommended
+
+```yaml
+settings:
+  providers:
+    - claude                              # Try Anthropic API first
+    - claude:ollama/qwen2.5-coder:32b     # Fall back to local Ollama
+```
+
+Since Ollama has no API rate limits (only hardware constraints), it works well as a fallback when the Anthropic API is rate-limited. However, local inference is typically slower, so placing it after cloud providers in the chain is recommended.
 
 ## Fallback Chain
 

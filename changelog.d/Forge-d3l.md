@@ -1,0 +1,2 @@
+category: Added
+- **Local model support via Ollama backend** - Added `claude:ollama` provider syntax that redirects the Claude CLI to a local Ollama instance by setting `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` environment variables on the Smith subprocess. Use `claude:ollama/qwen2.5-coder:32b` to specify a model. Works as a fallback in the provider chain when cloud APIs are rate-limited. (Forge-d3l)

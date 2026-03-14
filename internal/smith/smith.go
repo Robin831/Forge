@@ -186,6 +186,10 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 			filtered = append(filtered, e)
 		}
 	}
+	// Apply per-provider environment variable overrides (e.g. for Ollama backend).
+	for k, v := range pv.Env {
+		filtered = append(filtered, k+"="+v)
+	}
 	cmd.Env = filtered
 	executil.HideWindow(cmd)
 
