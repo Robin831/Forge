@@ -557,3 +557,27 @@ rules:
       check: Verify that all errors from state DB queries (e.g., GetRetry, GetWorker) inside recovery/poll loops are handled explicitly — log a warning and continue rather than silently proceeding with stale or zero-value data that could incorrectly reset beads parked for human attention
       source: copilot:PR#271
       added: "2026-03-15"
+    - id: docstring-matches-conditional-behavior
+      category: style
+      pattern: Boolean flags or parameters that alter control flow only on specific iterations or conditions
+      check: Verify that the docstring accurately describes the actual conditional behavior, not an oversimplified summary — e.g., 'skips initial run but allows on later iterations' rather than 'skips entirely'
+      source: copilot:PR#274
+      added: "2026-03-15"
+    - id: test-new-control-flow-paths
+      category: testing
+      pattern: A new boolean flag or branch introduces an alternative execution path through an existing pipeline or workflow (e.g., SkipSmith, SkipX) that bypasses one or more stages
+      check: "Verify a focused test case exists covering the skip path: confirm the skipped stage is not invoked on iteration 1, that phase/status transitions are correct, and that downstream logic (e.g., request_changes triggering a re-run of the skipped stage) still works on subsequent iterations"
+      source: copilot:PR#274
+      added: "2026-03-15"
+    - id: epic-branch-resolution-before-pipeline
+      category: other
+      pattern: Code that fetches bead metadata and passes it into pipeline.Params or PR creation without calling ResolveEpicBranches first
+      check: Verify that epic branches are resolved (as done in warden_rerun/approve_as_is) before constructing pipeline.Params.BaseBranch and bead.EpicBranch, so Crucible children create PRs against the epic branch rather than the provider default base
+      source: copilot:PR#274
+      added: "2026-03-15"
+    - id: pipeline-ctx-from-background
+      category: concurrency
+      pattern: Pipeline or post-smith execution context derived from a cancellable parent context (e.g. runCtx) rather than context.Background()
+      check: Verify that pipeline contexts (Temper, Warden, PR creation) are derived from context.Background() with a timeout, not from a shutdown-cancellable context, so in-flight work is not interrupted mid-flight during graceful shutdown
+      source: copilot:PR#274
+      added: "2026-03-15"
