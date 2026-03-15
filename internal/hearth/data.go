@@ -361,6 +361,83 @@ func formatToolCall(name string, rawInput json.RawMessage) string {
 	return fmt.Sprintf("[tool] %s", name)
 }
 
+// toolResultEnrichment extracts a short status suffix from a tool_result's
+// content string and is_error flag. The suffix is appended to the original
+// [tool] entry so users can see the outcome at a glance.
+func toolResultEnrichment(toolName string, content string, isError bool) string {
+	if isError {
+		// Show a concise error message
+		msg := strings.TrimSpace(content)
+		if msg == "" {
+			return " → ✗ error"
+		}
+		// Take first line, truncated
+		if idx := strings.IndexByte(msg, '\n'); idx > 0 {
+			msg = msg[:idx]
+		}
+		if len([]rune(msg)) > 30 {
+			msg = string([]rune(msg)[:27]) + "..."
+		}
+		return " → ✗ " + msg
+	}
+
+	content = strings.TrimSpace(content)
+
+	switch toolName {
+	case "Bash":
+		if content == "" {
+			return " → ✓"
+		}
+		// Show line count of output as a proxy for verbosity
+		lines := strings.Count(content, "\n") + 1
+		if lines == 1 && len(content) < 40 {
+			return " → ✓ " + content
+		}
+		if lines == 1 {
+			return " → ✓ 1 line"
+		}
+		return fmt.Sprintf(" → ✓ %d lines", lines)
+	case "Grep":
+		// Count result lines (files or matches)
+		lines := strings.Count(content, "\n") + 1
+		if lines == 1 && strings.TrimSpace(content) == "" {
+			return " → 0 matches"
+		}
+		if strings.HasPrefix(content, "No files found") || strings.HasPrefix(content, "No matches found") {
+			return " → 0 matches"
+		}
+		if strings.HasPrefix(content, "Found ") {
+			// e.g. "Found 5 files"
+			if idx := strings.IndexByte(content, '\n'); idx > 0 {
+				return " → " + content[:idx]
+			}
+			return " → " + content
+		}
+		if lines == 1 {
+			return " → 1 match"
+		}
+		return fmt.Sprintf(" → %d matches", lines)
+	case "Glob":
+		if strings.TrimSpace(content) == "" {
+			return " → 0 files"
+		}
+		lines := strings.Count(content, "\n") + 1
+		if lines == 1 {
+			return " → 1 file"
+		}
+		return fmt.Sprintf(" → %d files", lines)
+	case "Edit":
+		return " → ✓"
+	case "Write":
+		return " → ✓"
+	case "Read":
+		return "" // Success is implicit for Read
+	case "Agent":
+		return " → done"
+	}
+	return " → ✓"
+}
+
 // parseWorkerActivity reads the last maxEntries activity events from a
 // stream-json log file (as written by the smith package) and returns
 // human-readable lines suitable for the Live Activity sub-panel.
@@ -380,6 +457,11 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 	// rather than creating one [text] entry per tiny delta.
 	var geminiTextBuf strings.Builder
 
+	// toolIndex maps tool_use_id → index in entries slice for result correlation.
+	toolIndex := make(map[string]int)
+	// toolNames maps tool_use_id → tool name for enrichment formatting.
+	toolNames := make(map[string]string)
+
 	flushGeminiText := func() {
 		if geminiTextBuf.Len() == 0 {
 			return
@@ -387,6 +469,22 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 		raw := geminiTextBuf.String()
 		geminiTextBuf.Reset()
 		entries = append(entries, formatMultiLineEntry("[text] ", "       ", raw, 3)...)
+	}
+
+	// enrichToolEntry correlates a tool_result back to its tool_use entry
+	// and appends a status suffix.
+	enrichToolEntry := func(toolUseID, content string, isError bool) {
+		idx, ok := toolIndex[toolUseID]
+		if !ok {
+			return
+		}
+		name := toolNames[toolUseID]
+		suffix := toolResultEnrichment(name, content, isError)
+		if suffix != "" {
+			entries[idx] += suffix
+		}
+		delete(toolIndex, toolUseID)
+		delete(toolNames, toolUseID)
 	}
 
 	for _, line := range rawLines {
@@ -402,9 +500,11 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			Content string          `json:"content,omitempty"`
 			Role    string          `json:"role,omitempty"`
 			Status  string          `json:"status,omitempty"`
-			// Gemini top-level tool_use fields
+			// Gemini top-level tool_use/tool_result fields
 			ToolName      string          `json:"tool_name,omitempty"`
+			ToolID        string          `json:"tool_id,omitempty"`
 			Parameters    json.RawMessage `json:"parameters,omitempty"`
+			Output        string          `json:"output,omitempty"`
 			RateLimitInfo *struct {
 				Status string `json:"status"`
 			} `json:"rate_limit_info,omitempty"`
@@ -421,6 +521,7 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			var msg struct {
 				Content []struct {
 					Type     string          `json:"type"`
+					ID       string          `json:"id,omitempty"`
 					Text     string          `json:"text,omitempty"`
 					Name     string          `json:"name,omitempty"`
 					Input    json.RawMessage `json:"input,omitempty"`
@@ -433,11 +534,37 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			for _, block := range msg.Content {
 				switch block.Type {
 				case "tool_use":
+					idx := len(entries)
 					entries = append(entries, formatToolCall(block.Name, block.Input))
+					if block.ID != "" {
+						toolIndex[block.ID] = idx
+						toolNames[block.ID] = block.Name
+					}
 				case "text":
 					entries = append(entries, formatMultiLineEntry("[text] ", "       ", block.Text, 3)...)
 				case "thinking":
 					entries = append(entries, formatMultiLineEntry("[think] ", "        ", block.Thinking, 3)...)
+				}
+			}
+		case "user":
+			// Claude-style user message containing tool_result blocks.
+			if len(event.Message) == 0 {
+				continue
+			}
+			var msg struct {
+				Content []struct {
+					Type      string `json:"type"`
+					ToolUseID string `json:"tool_use_id,omitempty"`
+					Content   string `json:"content,omitempty"`
+					IsError   bool   `json:"is_error,omitempty"`
+				} `json:"content"`
+			}
+			if err := json.Unmarshal(event.Message, &msg); err != nil {
+				continue
+			}
+			for _, block := range msg.Content {
+				if block.Type == "tool_result" && block.ToolUseID != "" {
+					enrichToolEntry(block.ToolUseID, block.Content, block.IsError)
 				}
 			}
 		case "message":
@@ -452,14 +579,18 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			if name == "" {
 				name = "unknown"
 			}
+			idx := len(entries)
 			entries = append(entries, formatToolCall(name, event.Parameters))
+			if event.ToolID != "" {
+				toolIndex[event.ToolID] = idx
+				toolNames[event.ToolID] = name
+			}
 		case "tool_result":
-			// Gemini tool_result — flush any buffered text (assistant spoke before tool ran).
-			// We intentionally do not parse result payloads here: associating a
-			// tool_result back to its tool_use call (by tool_id) would require
-			// additional correlation state. The Live Activity panel shows what tools
-			// are *invoked with* (inputs), not the results they return.
+			// Gemini tool_result — flush any buffered text, then enrich the tool entry.
 			flushGeminiText()
+			if event.ToolID != "" {
+				enrichToolEntry(event.ToolID, event.Output, false)
+			}
 		case "rate_limit_event":
 			// Claude-style informational event — status is inside rate_limit_info
 			if event.RateLimitInfo != nil && event.RateLimitInfo.Status != "" {

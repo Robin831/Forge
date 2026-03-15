@@ -518,7 +518,7 @@ func TestParseWorkerActivityGemini(t *testing.T) {
 		t.Fatal("expected entries from Gemini log, got none")
 	}
 
-	// Should have: [text] (accumulated deltas), [tool] read_file, [text], [tool] write_file
+	// Should have: [text] (accumulated deltas), [tool] read_file (enriched), [text], [tool] write_file (enriched)
 	wantPrefixes := []string{"[text]", "[tool] read_file", "[text]", "[tool] write_file"}
 	if len(entries) != len(wantPrefixes) {
 		t.Fatalf("got %d entries, want %d: %v", len(entries), len(wantPrefixes), entries)
@@ -532,6 +532,14 @@ func TestParseWorkerActivityGemini(t *testing.T) {
 	// Verify accumulated text: "I will read the file."
 	if !strings.Contains(entries[0], "I will read the file.") {
 		t.Errorf("expected accumulated text in entry[0], got %q", entries[0])
+	}
+
+	// Verify tool result enrichment was applied
+	if !strings.Contains(entries[1], "→") {
+		t.Errorf("expected enrichment suffix on entry[1], got %q", entries[1])
+	}
+	if !strings.Contains(entries[3], "→") {
+		t.Errorf("expected enrichment suffix on entry[3], got %q", entries[3])
 	}
 }
 
@@ -587,6 +595,95 @@ func TestClassifyAttentionReason(t *testing.T) {
 			got := classifyAttentionReason(tt.bead)
 			if got != tt.want {
 				t.Errorf("classifyAttentionReason() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseWorkerActivityClaudeToolResultCorrelation(t *testing.T) {
+	// Claude format with tool_use IDs and tool_result events in user messages
+	logContent := `{"type":"system","subtype":"init","session_id":"abc"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_001","name":"Bash","input":{"command":"git status"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_001","content":"On branch main\nnothing to commit","is_error":false}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_002","name":"Grep","input":{"pattern":"TODO","glob":"*.go"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_002","content":"file1.go:10:// TODO fix\nfile2.go:20:// TODO refactor\nfile3.go:5:// TODO test","is_error":false}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_003","name":"Edit","input":{"file_path":"/tmp/test.go","old_string":"old","new_string":"new"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_003","content":"The file /tmp/test.go has been updated successfully.","is_error":false}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_004","name":"Bash","input":{"command":"bad-command"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_004","content":"command not found: bad-command","is_error":true}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_005","name":"Glob","input":{"pattern":"**/*.go"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_005","content":"main.go\nutil.go","is_error":false}]}}
+{"type":"result","subtype":"success"}
+`
+	logPath := filepath.Join(t.TempDir(), "smith.log")
+	if err := os.WriteFile(logPath, []byte(logContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := parseWorkerActivity(logPath, 100)
+
+	// Expected entries: [tool] Bash (enriched), [tool] Grep (enriched),
+	// [tool] Edit (enriched), [tool] Bash error (enriched),
+	// [tool] Glob (enriched), [result]
+	if len(entries) != 6 {
+		t.Fatalf("got %d entries, want 6: %v", len(entries), entries)
+	}
+
+	// Bash success: should show line count
+	if !strings.Contains(entries[0], "→ ✓") {
+		t.Errorf("Bash success: expected '→ ✓' in %q", entries[0])
+	}
+
+	// Grep: should show match count
+	if !strings.Contains(entries[1], "→ 3 matches") {
+		t.Errorf("Grep: expected '→ 3 matches' in %q", entries[1])
+	}
+
+	// Edit: should show ✓
+	if !strings.Contains(entries[2], "→ ✓") {
+		t.Errorf("Edit: expected '→ ✓' in %q", entries[2])
+	}
+
+	// Bash error: should show ✗
+	if !strings.Contains(entries[3], "→ ✗") {
+		t.Errorf("Bash error: expected '→ ✗' in %q", entries[3])
+	}
+
+	// Glob: should show file count
+	if !strings.Contains(entries[4], "→ 2 files") {
+		t.Errorf("Glob: expected '→ 2 files' in %q", entries[4])
+	}
+}
+
+func TestToolResultEnrichment(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		content  string
+		isError  bool
+		want     string
+	}{
+		{"bash success short", "Bash", "ok", false, " → ✓ ok"},
+		{"bash success multiline", "Bash", "line1\nline2\nline3", false, " → ✓ 3 lines"},
+		{"bash error", "Bash", "exit code 1", true, " → ✗ exit code 1"},
+		{"grep matches", "Grep", "a.go:1:match\nb.go:2:match", false, " → 2 matches"},
+		{"grep no matches", "Grep", "No files found", false, " → 0 matches"},
+		{"grep found prefix", "Grep", "Found 5 files\na\nb\nc\nd\ne", false, " → Found 5 files"},
+		{"glob files", "Glob", "a.go\nb.go\nc.go", false, " → 3 files"},
+		{"glob empty", "Glob", "", false, " → 0 files"},
+		{"edit success", "Edit", "updated", false, " → ✓"},
+		{"write success", "Write", "created", false, " → ✓"},
+		{"read success", "Read", "file contents", false, ""},
+		{"agent done", "Agent", "completed", false, " → done"},
+		{"error with message", "Read", "File not found", true, " → ✗ File not found"},
+		{"error empty", "Read", "", true, " → ✗ error"},
+		{"error long message", "Read", "This is a very long error message that should be truncated to fit", true, " → ✗ This is a very long error m..."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toolResultEnrichment(tt.toolName, tt.content, tt.isError)
+			if got != tt.want {
+				t.Errorf("toolResultEnrichment(%q, ..., %v) = %q, want %q", tt.toolName, tt.isError, got, tt.want)
 			}
 		})
 	}
