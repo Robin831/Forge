@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -220,6 +221,146 @@ func readLastLogLine(logPath string) string {
 	return ""
 }
 
+// formatToolCall produces a rich one-line summary for a tool invocation.
+// Known tools get purpose-specific formatting; unknown tools fall back to
+// a truncated JSON dump of their parameters.
+func formatToolCall(name string, rawInput json.RawMessage) string {
+	var params map[string]json.RawMessage
+	if len(rawInput) > 0 {
+		_ = json.Unmarshal(rawInput, &params)
+	}
+
+	getString := func(key string) string {
+		v, ok := params[key]
+		if !ok || len(v) == 0 {
+			return ""
+		}
+		var s string
+		if json.Unmarshal(v, &s) == nil {
+			return s
+		}
+		// Handle numbers and other JSON primitives by stripping quotes.
+		raw := strings.TrimSpace(string(v))
+		if raw != "null" {
+			return raw
+		}
+		return ""
+	}
+
+	shortenPath := func(p string) string {
+		if p == "" {
+			return ""
+		}
+		return filepath.Base(p)
+	}
+
+	switch name {
+	case "Read":
+		fp := getString("file_path")
+		if fp == "" {
+			return "[tool] Read"
+		}
+		detail := shortenPath(fp)
+		if offset := getString("offset"); offset != "" {
+			if limit := getString("limit"); limit != "" {
+				detail += ":" + offset + "-" + limit
+			} else {
+				detail += ":" + offset
+			}
+		}
+		return fmt.Sprintf("[tool] Read %s", detail)
+
+	case "Edit":
+		fp := getString("file_path")
+		if fp == "" {
+			break
+		}
+		detail := shortenPath(fp)
+		old := getString("old_string")
+		if old != "" {
+			// Show first line of the old string as context
+			if idx := strings.IndexByte(old, '\n'); idx > 0 {
+				old = old[:idx]
+			}
+			old = strings.TrimSpace(old)
+			if len([]rune(old)) > 40 {
+				old = string([]rune(old)[:37]) + "..."
+			}
+			detail += " «" + old + "»"
+		}
+		return fmt.Sprintf("[tool] Edit %s", detail)
+
+	case "Write":
+		fp := getString("file_path")
+		if fp == "" {
+			break
+		}
+		return fmt.Sprintf("[tool] Write %s", shortenPath(fp))
+
+	case "Bash":
+		cmd := getString("command")
+		if cmd == "" {
+			break
+		}
+		// Show first line of command, truncated
+		if idx := strings.IndexByte(cmd, '\n'); idx > 0 {
+			cmd = cmd[:idx]
+		}
+		cmd = strings.TrimSpace(cmd)
+		if len([]rune(cmd)) > 46 {
+			cmd = string([]rune(cmd)[:46]) + "..."
+		}
+		return fmt.Sprintf("[tool] Bash $ %s", cmd)
+
+	case "Grep":
+		pattern := getString("pattern")
+		if pattern == "" {
+			break
+		}
+		detail := fmt.Sprintf("/%s/", pattern)
+		if glob := getString("glob"); glob != "" {
+			detail += " " + glob
+		} else if tp := getString("type"); tp != "" {
+			detail += " **/*." + tp
+		}
+		if len([]rune(detail)) > 50 {
+			detail = string([]rune(detail)[:47]) + "..."
+		}
+		return fmt.Sprintf("[tool] Grep %s", detail)
+
+	case "Glob":
+		pattern := getString("pattern")
+		if pattern == "" {
+			break
+		}
+		detail := pattern
+		if len([]rune(detail)) > 50 {
+			detail = string([]rune(detail)[:47]) + "..."
+		}
+		return fmt.Sprintf("[tool] Glob %s", detail)
+
+	case "Agent":
+		desc := getString("description")
+		if desc == "" {
+			break
+		}
+		if len([]rune(desc)) > 50 {
+			desc = string([]rune(desc)[:47]) + "..."
+		}
+		return fmt.Sprintf("[tool] Agent %s", desc)
+	}
+
+	// Fallback: name + truncated raw params
+	if len(rawInput) > 0 {
+		fallback := string(rawInput)
+		if len([]rune(fallback)) > 50 {
+			fallback = string([]rune(fallback)[:47]) + "..."
+		}
+		return fmt.Sprintf("[tool] %s %s", name, fallback)
+	}
+	return fmt.Sprintf("[tool] %s", name)
+}
+
 // parseWorkerActivity reads the last maxEntries activity events from a
 // stream-json log file (as written by the smith package) and returns
 // human-readable lines suitable for the Live Activity sub-panel.
@@ -292,14 +433,7 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			for _, block := range msg.Content {
 				switch block.Type {
 				case "tool_use":
-					inputStr := ""
-					if len(block.Input) > 0 {
-						inputStr = string(block.Input)
-						if len(inputStr) > 50 {
-							inputStr = inputStr[:47] + "..."
-						}
-					}
-					entries = append(entries, fmt.Sprintf("[tool] %s %s", block.Name, inputStr))
+					entries = append(entries, formatToolCall(block.Name, block.Input))
 				case "text":
 					entries = append(entries, formatMultiLineEntry("[text] ", "       ", block.Text, 3)...)
 				case "thinking":
@@ -314,24 +448,17 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 		case "tool_use":
 			// Gemini top-level tool_use event — flush any buffered text first
 			flushGeminiText()
-			paramStr := ""
-			if len(event.Parameters) > 0 {
-				paramStr = string(event.Parameters)
-				if len(paramStr) > 50 {
-					paramStr = paramStr[:47] + "..."
-				}
-			}
 			name := event.ToolName
 			if name == "" {
 				name = "unknown"
 			}
-			activity := fmt.Sprintf("[tool] %s", name)
-			if paramStr != "" {
-				activity = fmt.Sprintf("%s %s", activity, paramStr)
-			}
-			entries = append(entries, activity)
+			entries = append(entries, formatToolCall(name, event.Parameters))
 		case "tool_result":
-			// Gemini tool_result — flush any buffered text (assistant spoke before tool ran)
+			// Gemini tool_result — flush any buffered text (assistant spoke before tool ran).
+			// We intentionally do not parse result payloads here: associating a
+			// tool_result back to its tool_use call (by tool_id) would require
+			// additional correlation state. The Live Activity panel shows what tools
+			// are *invoked with* (inputs), not the results they return.
 			flushGeminiText()
 		case "rate_limit_event":
 			// Claude-style informational event — status is inside rate_limit_info
