@@ -676,7 +676,7 @@ func TestToolResultEnrichment(t *testing.T) {
 		{"read success", "Read", "file contents", false, ""},
 		{"agent done", "Agent", "completed", false, " → done"},
 		{"error with message", "Read", "File not found", true, " → ✗ File not found"},
-		{"error empty", "Read", "", true, " → error"},
+		{"error empty", "Read", "", true, " → ✗ error"},
 		{"error long message", "Read", "This is a very long error message that should be truncated to fit", true, " → ✗ This is a very long error m..."},
 	}
 	for _, tt := range tests {

@@ -369,7 +369,7 @@ func toolResultEnrichment(toolName string, content string, isError bool) string 
 		// Show a concise error message
 		msg := strings.TrimSpace(content)
 		if msg == "" {
-			return " → error"
+			return " → ✗ error"
 		}
 		// Take first line, truncated
 		if idx := strings.IndexByte(msg, '\n'); idx > 0 {
@@ -393,6 +393,9 @@ func toolResultEnrichment(toolName string, content string, isError bool) string 
 		if lines == 1 && len(content) < 40 {
 			return " → ✓ " + content
 		}
+		if lines == 1 {
+			return " → ✓ 1 line"
+		}
 		return fmt.Sprintf(" → ✓ %d lines", lines)
 	case "Grep":
 		// Count result lines (files or matches)
@@ -410,12 +413,18 @@ func toolResultEnrichment(toolName string, content string, isError bool) string 
 			}
 			return " → " + content
 		}
+		if lines == 1 {
+			return " → 1 match"
+		}
 		return fmt.Sprintf(" → %d matches", lines)
 	case "Glob":
 		if strings.TrimSpace(content) == "" {
 			return " → 0 files"
 		}
 		lines := strings.Count(content, "\n") + 1
+		if lines == 1 {
+			return " → 1 file"
+		}
 		return fmt.Sprintf(" → %d files", lines)
 	case "Edit":
 		return " → ✓"
