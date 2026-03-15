@@ -793,7 +793,9 @@ func TestActivityScrollChangesVisibleLine(t *testing.T) {
 	}
 
 	// Scroll to the bottom (oldest entries) so that line-0 is visible.
-	m.activityVP.cursor = len(m.activityNavItems) - 1
+	// Use a large cursor value that gets clamped to the last rendered line
+	// (viewport now operates on rendered line indices, not nav item indices).
+	m.activityVP.cursor = 9999
 	renderedScrolled := m.renderWorkerActivity(80, 10)
 	if !strings.Contains(renderedScrolled, "line-0") {
 		t.Errorf("expected oldest entry 'line-0' visible when scrolled to end:\n%s", renderedScrolled)

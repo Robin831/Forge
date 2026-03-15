@@ -355,8 +355,9 @@ type Model struct {
 	needsAttnVP      scrollViewport
 	readyToMergeVP   scrollViewport
 	workerTable      table.Model
-	activityVP       scrollViewport
-	activityNavItems []activityNavItem // flat display items for Live Activity
+	activityVP        scrollViewport
+	activityNavItems  []activityNavItem // flat display items for Live Activity
+	activityLineCount int               // total rendered lines (line-based scrolling)
 	eventScroll      int
 	eventAutoScroll  bool // true = follow new events
 	prevEventCount   int  // track event count for auto-scroll
@@ -1915,7 +1916,7 @@ func (m *Model) scrollDown() {
 			m.resetActivityState()
 		}
 	case PanelLiveActivity:
-		m.activityVP.ScrollDown(len(m.activityNavItems))
+		m.activityVP.ScrollDown(m.activityLineCount)
 	case PanelEvents:
 		_, _, aw := m.getTopPanelWidths()
 		totalLines := m.eventTotalLineCount(aw)
@@ -3674,57 +3675,33 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 			contentWidth = 10
 		}
 
-		// Pre-compute the number of rendered lines per nav item (after word-wrap)
-		// so the viewport operates on rendered lines, preventing overflow.
-		wrappedCounts := make([]int, len(m.activityNavItems))
-		for i, nav := range m.activityNavItems {
+		// Flatten all nav items into rendered lines so the viewport operates on
+		// rendered line indices rather than item indices. This ensures wrapped
+		// entries are fully scrollable without truncation.
+		var flatLines []string
+		for _, nav := range m.activityNavItems {
 			if nav.text == "" {
-				wrappedCounts[i] = 1 // blank separator
-			} else {
-				wrappedCounts[i] = wordWrapCount(nav.text, contentWidth)
+				flatLines = append(flatLines, "")
+				continue
+			}
+			isThinking := nav.lineType == "think"
+			for _, wl := range wordWrap(nav.text, contentWidth) {
+				flatLines = append(flatLines, applyMarkdownLite(wl, isThinking))
 			}
 		}
 
-		total := len(m.activityNavItems)
+		total := len(flatLines)
+		m.activityLineCount = total
 		m.activityVP.ClampToTotal(total)
 		m.activityVP.AdjustViewport(maxVisible, total)
 		start, end := m.activityVP.VisibleRange(maxVisible, total)
 
-		// Render visible items, counting rendered lines to avoid overflow.
-		renderedCount := 0
 		for i := start; i < end; i++ {
-			nav := m.activityNavItems[i]
-			isCursor := m.focused == PanelLiveActivity && i == m.activityVP.cursor
-
-			if nav.text == "" {
-				// Blank separator line
-				if renderedCount >= maxVisible {
-					break
-				}
-				lines = append(lines, "")
-				renderedCount++
-				continue
+			styled := flatLines[i]
+			if m.focused == PanelLiveActivity && i == m.activityVP.cursor {
+				styled = selectedStyle.Render(styled)
 			}
-
-			wrapped := wordWrap(nav.text, contentWidth)
-			if renderedCount+len(wrapped) > maxVisible {
-				// Only emit lines that fit within the panel height.
-				remaining := maxVisible - renderedCount
-				if remaining <= 0 {
-					break
-				}
-				wrapped = wrapped[:remaining]
-			}
-
-			isThinking := nav.lineType == "think"
-			for wi, wl := range wrapped {
-				styled := applyMarkdownLite(wl, isThinking)
-				if isCursor && wi == 0 {
-					styled = selectedStyle.Render(styled)
-				}
-				lines = append(lines, styled)
-			}
-			renderedCount += len(wrapped)
+			lines = append(lines, styled)
 		}
 	}
 
@@ -4490,7 +4467,13 @@ func (m *Model) rebuildActivityNav() {
 			text:     stripActivityPrefix(line),
 		})
 	}
-	m.activityVP.ClampToTotal(len(m.activityNavItems))
+	// Clamp using the rendered line count if available (line-based scrolling);
+	// fall back to nav item count as a conservative lower bound before first render.
+	lineCount := m.activityLineCount
+	if lineCount < len(m.activityNavItems) {
+		lineCount = len(m.activityNavItems)
+	}
+	m.activityVP.ClampToTotal(lineCount)
 }
 
 // resetActivityState clears the activity viewport, used when the selected
