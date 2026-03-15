@@ -2171,7 +2171,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 						Value(&m.forceSmithNote),
 				),
 			).WithTheme(huh.ThemeBase())
-			return nil
+			return m.forceSmithNoteForm.Init()
 		} else {
 			m.setStatus(fmt.Sprintf("Force smith action unavailable for %s", bead.BeadID), false)
 		}
