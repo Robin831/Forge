@@ -212,6 +212,10 @@ func (m *Monitor) checkAll(ctx context.Context) {
 		if title == "" {
 			title = fmt.Sprintf("PR #%d", pr.Number)
 		}
+		// Remove any stale pipeline worker row repurposed as bellows
+		// (phase='bellows' but lacking a "bellows-" prefix in its ID).
+		// Without this, Hearth shows two workers for the same PR.
+		_ = m.db.DeletePipelineBellowsWorker(pr.BeadID, pr.Anvil)
 		if err := m.db.InsertWorkerIfMissing(&state.Worker{
 			ID:        workerID,
 			BeadID:    pr.BeadID,

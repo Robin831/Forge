@@ -403,6 +403,17 @@ func (db *DB) InsertWorkerIfMissing(w *Worker) error {
 	return err
 }
 
+// DeletePipelineBellowsWorker removes any worker row for bead+anvil that was
+// repurposed from the pipeline (no "bellows-" prefix in ID). Called by the
+// bellows poll loop before inserting the canonical bellows-{anvil}-{prNum} row
+// so Hearth never shows two workers for the same PR.
+func (db *DB) DeletePipelineBellowsWorker(beadID, anvil string) error {
+	_, err := db.conn.Exec(
+		`DELETE FROM workers WHERE bead_id = ? AND anvil = ? AND phase = 'bellows' AND id NOT LIKE 'bellows-%'`,
+		beadID, anvil)
+	return err
+}
+
 // UpdateWorkerPhase updates the active pipeline phase for a worker.
 func (db *DB) UpdateWorkerPhase(id string, phase string) error {
 	_, err := db.conn.Exec(`UPDATE workers SET phase = ? WHERE id = ?`, phase, id)
