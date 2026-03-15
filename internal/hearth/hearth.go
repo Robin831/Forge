@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -3716,14 +3717,16 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 				}
 				lines = append(lines, line)
 			} else {
-				// Expanded child line — wrap to reduced width, then indent each line
+				// Expanded child line — wrap to reduced width, then indent each line.
 				childWidth := contentWidth - 2
 				if childWidth < 10 {
 					childWidth = 10
 				}
 				wrapped := wordWrap(nav.text, childWidth)
+				isThinking := nav.groupType == "think"
 				for wi, wl := range wrapped {
-					indented := "  " + wl
+					styled := applyMarkdownLite(wl, isThinking)
+					indented := "  " + styled
 					if isCursor && wi == 0 {
 						indented = selectedStyle.Render(indented)
 					}
@@ -4727,6 +4730,38 @@ func wordWrap(s string, maxWidth int) []string {
 		return []string{""}
 	}
 	return result
+}
+
+// Precompiled patterns for markdown-lite inline styling.
+var (
+	reBold = regexp.MustCompile(`(?U)\*\*(.+)\*\*`)
+	reCode = regexp.MustCompile("`([^`]+)`")
+)
+
+// applyMarkdownLite applies lightweight inline styling to a plain text line:
+//   - **bold** → lipgloss bold
+//   - `code`  → dimmed code style
+//
+// Thinking lines (prefixed with [think] or continuation indent) are rendered
+// in dimStyle to visually distinguish them from normal text output.
+func applyMarkdownLite(line string, isThinking bool) string {
+	// Replace **bold** spans with lipgloss bold rendering.
+	line = reBold.ReplaceAllStringFunc(line, func(m string) string {
+		inner := m[2 : len(m)-2]
+		return lipgloss.NewStyle().Bold(true).Render(inner)
+	})
+	// Replace `code` spans with a muted/dim style.
+	line = reCode.ReplaceAllStringFunc(line, func(m string) string {
+		inner := m[1 : len(m)-1]
+		return lipgloss.NewStyle().Foreground(colorMuted).Render(inner)
+	})
+	if isThinking {
+		// Wrap the entire line in dim styling. Because the bold/code spans
+		// already injected ANSI sequences the dim applies to the surrounding
+		// text while nested sequences override it where appropriate.
+		line = dimStyle.Render(line)
+	}
+	return line
 }
 
 // driveHuhForm is a helper that processes a message against a huh form and

@@ -468,7 +468,7 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 		}
 		raw := geminiTextBuf.String()
 		geminiTextBuf.Reset()
-		entries = append(entries, formatMultiLineEntry("[text] ", "       ", raw, 3)...)
+		entries = append(entries, formatMultiLineEntry("[text] ", "       ", raw, 20)...)
 	}
 
 	// enrichToolEntry correlates a tool_result back to its tool_use entry
@@ -541,9 +541,9 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 						toolNames[block.ID] = block.Name
 					}
 				case "text":
-					entries = append(entries, formatMultiLineEntry("[text] ", "       ", block.Text, 3)...)
+					entries = append(entries, formatMultiLineEntry("[text] ", "       ", block.Text, 20)...)
 				case "thinking":
-					entries = append(entries, formatMultiLineEntry("[think] ", "        ", block.Thinking, 3)...)
+					entries = append(entries, formatMultiLineEntry("[think] ", "        ", block.Thinking, 20)...)
 				}
 			}
 		case "user":
@@ -616,8 +616,9 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 
 // formatMultiLineEntry splits raw text into up to maxLines non-empty lines.
 // The first line gets the given prefix (e.g. "[text] "), continuation lines
-// get contPrefix (spaces matching the prefix width). Each line is truncated
-// to 70 characters. Returns nil if the text is empty.
+// get contPrefix (spaces matching the prefix width). Line length is not
+// truncated here — the rendering layer applies word-wrap to fit the panel.
+// Returns nil if the text is empty.
 func formatMultiLineEntry(prefix, contPrefix, raw string, maxLines int) []string {
 	var kept []string
 	for tl := range strings.SplitSeq(raw, "\n") {
@@ -635,9 +636,6 @@ func formatMultiLineEntry(prefix, contPrefix, raw string, maxLines int) []string
 	}
 	var result []string
 	for i, line := range kept {
-		if len([]rune(line)) > 70 {
-			line = string([]rune(line)[:67]) + "..."
-		}
 		if i == 0 {
 			result = append(result, prefix+line)
 		} else {
