@@ -184,6 +184,31 @@ type PRActionPayload struct {
 	Action   string `json:"action"` // "open_browser" | "merge" | "quench" | "burnish" | "rebase" | "close"
 }
 
+// WardenRerunPayload is the payload for a "warden_rerun" command.
+// Re-runs warden on the existing worktree branch. If warden approves,
+// proceeds to PR creation normally.
+type WardenRerunPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`
+}
+
+// ApproveAsIsPayload is the payload for an "approve_as_is" command.
+// Bypasses warden entirely and creates a PR from the current branch state.
+type ApproveAsIsPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`
+}
+
+// ForceSmithPayload is the payload for a "force_smith" command.
+// Pushes smith into another iteration on the same branch, keeping
+// existing warden feedback attached. UserNote is optionally prepended
+// to the prompt.
+type ForceSmithPayload struct {
+	BeadID   string `json:"bead_id"`
+	Anvil    string `json:"anvil"`
+	UserNote string `json:"user_note,omitempty"`
+}
+
 // CrucibleActionPayload is the payload for a "crucible_action" command.
 // Triggers a resume or stop action on a paused Crucible.
 type CrucibleActionPayload struct {

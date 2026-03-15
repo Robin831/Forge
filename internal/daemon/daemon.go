@@ -47,11 +47,13 @@ import (
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/rebase"
 	"github.com/Robin831/Forge/internal/reviewfix"
+	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
 	"github.com/Robin831/Forge/internal/vulncheck"
+	"github.com/Robin831/Forge/internal/warden"
 	"github.com/Robin831/Forge/internal/worker"
 	"github.com/Robin831/Forge/internal/worktree"
 )
@@ -2712,6 +2714,102 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": "dismissed"})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "warden_rerun":
+		var wp ipc.WardenRerunPayload
+		if err := json.Unmarshal(cmd.Payload, &wp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid warden_rerun payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if wp.BeadID == "" || wp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		anvilCfg, ok := d.cfg.Load().Anvils[wp.Anvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", wp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		branch, err := d.db.LastWorkerBranchForBead(wp.BeadID, wp.Anvil)
+		if err != nil || branch == "" {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("no branch found for bead %s", wp.BeadID)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		_ = d.db.LogEvent(state.EventWardenRerun, fmt.Sprintf("Warden re-review requested for %s (manual)", wp.BeadID), wp.BeadID, wp.Anvil)
+		d.logger.Info("warden re-review requested", "bead", wp.BeadID, "anvil", wp.Anvil, "branch", branch)
+
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			d.handleWardenRerun(wp.BeadID, wp.Anvil, branch, anvilCfg)
+		}()
+
+		data, _ := json.Marshal(map[string]string{"message": "warden re-review started"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "approve_as_is":
+		var ap ipc.ApproveAsIsPayload
+		if err := json.Unmarshal(cmd.Payload, &ap); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid approve_as_is payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if ap.BeadID == "" || ap.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		anvilCfg, ok := d.cfg.Load().Anvils[ap.Anvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", ap.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		branch, err := d.db.LastWorkerBranchForBead(ap.BeadID, ap.Anvil)
+		if err != nil || branch == "" {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("no branch found for bead %s", ap.BeadID)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		_ = d.db.LogEvent(state.EventApproveAsIs, fmt.Sprintf("Approve as-is requested for %s (manual)", ap.BeadID), ap.BeadID, ap.Anvil)
+		d.logger.Info("approve as-is requested", "bead", ap.BeadID, "anvil", ap.Anvil, "branch", branch)
+
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			d.handleApproveAsIs(ap.BeadID, ap.Anvil, branch, anvilCfg)
+		}()
+
+		data, _ := json.Marshal(map[string]string{"message": "approve as-is started"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "force_smith":
+		var fp ipc.ForceSmithPayload
+		if err := json.Unmarshal(cmd.Payload, &fp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid force_smith payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if fp.BeadID == "" || fp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		anvilCfg, ok := d.cfg.Load().Anvils[fp.Anvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", fp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		branch, err := d.db.LastWorkerBranchForBead(fp.BeadID, fp.Anvil)
+		if err != nil || branch == "" {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("no branch found for bead %s", fp.BeadID)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		_ = d.db.LogEvent(state.EventForceSmith, fmt.Sprintf("Force smith requested for %s (manual)", fp.BeadID), fp.BeadID, fp.Anvil)
+		d.logger.Info("force smith requested", "bead", fp.BeadID, "anvil", fp.Anvil, "branch", branch, "user_note", fp.UserNote)
+
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			d.handleForceSmith(fp.BeadID, fp.Anvil, branch, fp.UserNote, anvilCfg)
+		}()
+
+		data, _ := json.Marshal(map[string]string{"message": "force smith started"})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	case "view_logs":
 		var vp ipc.ViewLogsPayload
 		if err := json.Unmarshal(cmd.Payload, &vp); err != nil {
@@ -3734,4 +3832,256 @@ func verifyAnvilOnMain(ctx context.Context, logger *slog.Logger, anvilPath strin
 	}
 
 	return nil
+}
+
+// handleWardenRerun re-runs warden on the existing worktree branch.
+// If warden approves, creates a PR. Otherwise returns the bead to needs attention.
+func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config.AnvilConfig) {
+	ctx, cancel := context.WithTimeout(d.runCtx, 30*time.Minute)
+	defer cancel()
+
+	wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, beadID, branch)
+	if err != nil {
+		d.logger.Error("warden_rerun: failed to create worktree", "bead", beadID, "error", err)
+		return
+	}
+	defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
+
+	workerID := fmt.Sprintf("%s-%s-%d", anvil, beadID, time.Now().UnixNano())
+	_ = d.db.InsertWorker(&state.Worker{
+		ID:        workerID,
+		BeadID:    beadID,
+		Anvil:     anvil,
+		Branch:    branch,
+		Status:    state.WorkerRunning,
+		Phase:     "warden",
+		Title:     d.db.BeadTitle(beadID, anvil),
+		StartedAt: time.Now(),
+	})
+
+	providers := d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers))
+	if smithProviders := d.cfg.Load().Settings.SmithProviders; len(smithProviders) > 0 {
+		providers = d.filterCopilotIfLimited(provider.FromConfig(smithProviders))
+	}
+
+	title := d.db.BeadTitle(beadID, anvil)
+	var description string
+	if bead, err := crucible.FetchBead(ctx, beadID, anvilCfg.Path); err == nil {
+		description = bead.Description
+	}
+
+	result, err := warden.Review(ctx, wt.Path, beadID, title, description, anvilCfg.Path, d.db, providers...)
+	if err != nil {
+		d.logger.Error("warden_rerun: review failed", "bead", beadID, "error", err)
+		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+		return
+	}
+
+	if result.Verdict == warden.VerdictApprove {
+		d.logger.Info("warden_rerun: approved", "bead", beadID)
+		_ = d.db.LogEvent(state.EventWardenPass, result.Summary, beadID, anvil)
+
+		// Clear needs_human so the bead leaves Needs Attention.
+		_ = d.db.ResetRetry(beadID, anvil)
+
+		// Ensure branch is pushed before creating PR.
+		pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", branch))
+		pushCmd.Dir = wt.Path
+		if pushErr := pushCmd.Run(); pushErr != nil {
+			d.logger.Warn("warden_rerun: push failed (may already be up-to-date)", "error", pushErr)
+		}
+
+		var changeSummary string
+		if result.Summary != "" {
+			changeSummary = result.Summary
+		}
+
+		pr, err := d.vcsProvider.CreatePR(ctx, vcs.CreateParams{
+			WorktreePath:    anvilCfg.Path,
+			BeadID:          beadID,
+			Title:           fmt.Sprintf("%s (%s)", title, beadID),
+			Branch:          branch,
+			AnvilName:       anvil,
+			BeadTitle:       title,
+			BeadDescription: description,
+			ChangeSummary:   changeSummary,
+		})
+		if err != nil {
+			d.logger.Error("warden_rerun: PR creation failed", "bead", beadID, "error", err)
+			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			return
+		}
+		d.logger.Info("warden_rerun: PR created", "bead", beadID, "pr", pr.URL)
+		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
+		_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created: %s", pr.Number, pr.URL), beadID, anvil)
+	} else {
+		d.logger.Info("warden_rerun: not approved", "bead", beadID, "verdict", result.Verdict, "summary", result.Summary)
+		_ = d.db.LogEvent(state.EventWardenReject, fmt.Sprintf("Warden re-review: %s — %s", result.Verdict, result.Summary), beadID, anvil)
+		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+		// Bead stays in needs attention — record the updated feedback.
+		d.recordDispatchFailure(beadID, anvil, fmt.Sprintf("warden re-review: %s", result.Summary))
+	}
+}
+
+// handleApproveAsIs bypasses warden and creates a PR from the current branch state.
+func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config.AnvilConfig) {
+	ctx, cancel := context.WithTimeout(d.runCtx, 5*time.Minute)
+	defer cancel()
+
+	// Clear needs_human so the bead leaves Needs Attention.
+	_ = d.db.ResetRetry(beadID, anvil)
+
+	workerID := fmt.Sprintf("%s-%s-%d", anvil, beadID, time.Now().UnixNano())
+	_ = d.db.InsertWorker(&state.Worker{
+		ID:        workerID,
+		BeadID:    beadID,
+		Anvil:     anvil,
+		Branch:    branch,
+		Status:    state.WorkerRunning,
+		Phase:     "approve",
+		Title:     d.db.BeadTitle(beadID, anvil),
+		StartedAt: time.Now(),
+	})
+
+	// Ensure branch is pushed.
+	wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, beadID, branch)
+	if err != nil {
+		d.logger.Error("approve_as_is: failed to create worktree", "bead", beadID, "error", err)
+		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+		return
+	}
+	defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
+
+	pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", branch))
+	pushCmd.Dir = wt.Path
+	if pushErr := pushCmd.Run(); pushErr != nil {
+		d.logger.Warn("approve_as_is: push failed (may already be up-to-date)", "error", pushErr)
+	}
+
+	title := d.db.BeadTitle(beadID, anvil)
+	var description string
+	if bead, err := crucible.FetchBead(ctx, beadID, anvilCfg.Path); err == nil {
+		description = bead.Description
+	}
+
+	pr, err := d.vcsProvider.CreatePR(ctx, vcs.CreateParams{
+		WorktreePath:    anvilCfg.Path,
+		BeadID:          beadID,
+		Title:           fmt.Sprintf("%s (%s)", title, beadID),
+		Branch:          branch,
+		AnvilName:       anvil,
+		BeadTitle:       title,
+		BeadDescription: description,
+		ChangeSummary:   "Approved as-is (manual bypass)",
+	})
+	if err != nil {
+		d.logger.Error("approve_as_is: PR creation failed", "bead", beadID, "error", err)
+		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+		return
+	}
+
+	d.logger.Info("approve_as_is: PR created", "bead", beadID, "pr", pr.URL)
+	_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
+	_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created (approved as-is): %s", pr.Number, pr.URL), beadID, anvil)
+}
+
+// handleForceSmith re-invokes smith on the same branch with existing warden
+// feedback attached. If userNote is non-empty, it is prepended to the prompt.
+func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilCfg config.AnvilConfig) {
+	ctx, cancel := context.WithTimeout(d.runCtx, 30*time.Minute)
+	defer cancel()
+
+	wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, beadID, branch)
+	if err != nil {
+		d.logger.Error("force_smith: failed to create worktree", "bead", beadID, "error", err)
+		return
+	}
+	defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
+
+	workerID := fmt.Sprintf("%s-%s-%d", anvil, beadID, time.Now().UnixNano())
+	_ = d.db.InsertWorker(&state.Worker{
+		ID:        workerID,
+		BeadID:    beadID,
+		Anvil:     anvil,
+		Branch:    branch,
+		Status:    state.WorkerRunning,
+		Phase:     "smith",
+		Title:     d.db.BeadTitle(beadID, anvil),
+		StartedAt: time.Now(),
+	})
+
+	// Build the smith prompt with warden feedback context.
+	title := d.db.BeadTitle(beadID, anvil)
+	var description string
+	if bead, err := crucible.FetchBead(ctx, beadID, anvilCfg.Path); err == nil {
+		description = bead.Description
+	}
+
+	// Build prior feedback from the retry reason (which contains warden feedback).
+	var priorFeedback string
+	if retry, err := d.db.GetRetry(beadID, anvil); err == nil && retry != nil && retry.LastError != "" {
+		priorFeedback = retry.LastError
+	}
+
+	feedbackContext := priorFeedback
+	if userNote != "" {
+		feedbackContext = fmt.Sprintf("Human note: %s\n\n%s", userNote, feedbackContext)
+	}
+
+	promptText, err := d.promptBuilder.Build(prompt.BeadContext{
+		BeadID:              beadID,
+		Title:               title,
+		Description:         description,
+		AnvilName:           anvil,
+		AnvilPath:           anvilCfg.Path,
+		WorktreePath:        wt.Path,
+		Branch:              branch,
+		Iteration:           2, // Signal this is a retry iteration
+		PriorFeedback:       feedbackContext,
+		PriorFeedbackSource: "Warden review (force retry)",
+	})
+	if err != nil {
+		d.logger.Error("force_smith: prompt build failed", "bead", beadID, "error", err)
+		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+		return
+	}
+
+	logDir := wt.Path + "/.forge-logs"
+	providers := d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers))
+	if smithProviders := d.cfg.Load().Settings.SmithProviders; len(smithProviders) > 0 {
+		providers = d.filterCopilotIfLimited(provider.FromConfig(smithProviders))
+	}
+
+	var lastExitCode int
+	for _, pv := range providers {
+		process, err := smith.SpawnWithProvider(ctx, wt.Path, promptText, logDir, pv, d.cfg.Load().Settings.ClaudeFlags)
+		if err != nil {
+			d.logger.Warn("force_smith: spawn failed, trying next provider", "provider", pv.Label(), "error", err)
+			continue
+		}
+		smithResult := process.Wait()
+		if smithResult != nil && smithResult.ExitCode == 0 {
+			d.logger.Info("force_smith: smith completed", "bead", beadID, "provider", pv.Label())
+			// Push changes.
+			pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", branch))
+			pushCmd.Dir = wt.Path
+			_ = pushCmd.Run()
+
+			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
+			_ = d.db.LogEvent(state.EventSmithDone, "Force smith completed", beadID, anvil)
+
+			// Clear retry state and trigger a poll so the bead re-enters the queue
+			// for normal warden review in the next pipeline run.
+			_ = d.db.ResetRetry(beadID, anvil)
+			go d.pollAndDispatch(d.runCtx)
+			return
+		}
+		if smithResult != nil {
+			lastExitCode = smithResult.ExitCode
+		}
+	}
+
+	d.logger.Error("force_smith: all providers failed", "bead", beadID, "exit_code", lastExitCode)
+	_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+	_ = d.db.LogEvent(state.EventSmithFailed, fmt.Sprintf("Force smith failed: exit code %d", lastExitCode), beadID, anvil)
 }

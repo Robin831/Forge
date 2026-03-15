@@ -338,6 +338,76 @@ var hearthCmd = &cobra.Command{
 			return nil
 		}
 
+		model.OnWardenRerun = func(beadID, anvil string) error {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+			payload, _ := json.Marshal(ipc.WardenRerunPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+			})
+			resp, err := client.Send(ipc.Command{
+				Type:    "warden_rerun",
+				Payload: json.RawMessage(payload),
+			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return ipcError(resp)
+			}
+			return nil
+		}
+
+		model.OnApproveAsIs = func(beadID, anvil string) error {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+			payload, _ := json.Marshal(ipc.ApproveAsIsPayload{
+				BeadID: beadID,
+				Anvil:  anvil,
+			})
+			resp, err := client.Send(ipc.Command{
+				Type:    "approve_as_is",
+				Payload: json.RawMessage(payload),
+			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return ipcError(resp)
+			}
+			return nil
+		}
+
+		model.OnForceSmith = func(beadID, anvil, userNote string) error {
+			client, err := ipc.NewClient()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+			payload, _ := json.Marshal(ipc.ForceSmithPayload{
+				BeadID:   beadID,
+				Anvil:    anvil,
+				UserNote: userNote,
+			})
+			resp, err := client.Send(ipc.Command{
+				Type:    "force_smith",
+				Payload: json.RawMessage(payload),
+			})
+			if err != nil {
+				return err
+			}
+			if resp.Type != "ok" {
+				return ipcError(resp)
+			}
+			return nil
+		}
+
 		model.OnResolveOrphan = func(beadID, anvil, action string) error {
 			client, err := ipc.NewClient()
 			if err != nil {

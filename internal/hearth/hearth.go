@@ -193,19 +193,25 @@ type CrucibleItem struct {
 type ActionMenuChoice int
 
 const (
-	ActionRetry ActionMenuChoice = iota
+	ActionRetry       ActionMenuChoice = iota
 	ActionDismiss
 	ActionViewLogs
+	ActionWardenRerun
+	ActionApproveAsIs
+	ActionForceSmith
 
-	actionMenuCount = ActionViewLogs + 1
+	actionMenuCount = ActionForceSmith + 1
 )
 
 // actionMenuLabels returns the display labels for the action menu.
 func actionMenuLabels() [actionMenuCount]string {
 	return [actionMenuCount]string{
-		"Retry       — Clear flags, put back in queue",
-		"Dismiss     — Remove from Needs Attention",
-		"View Logs   — Show last worker log",
+		"Retry          — Clear flags, put back in queue",
+		"Dismiss        — Remove from Needs Attention",
+		"View Logs      — Show last worker log",
+		"Re-run Warden  — Re-review with current rules",
+		"Approve as-is  — Skip warden, create PR now",
+		"Force Smith    — Push smith into another iteration",
 	}
 }
 
@@ -304,9 +310,12 @@ type Model struct {
 	OnStopBead func(beadID, anvil string) error
 
 	// Callbacks for Needs Attention actions (set by the caller)
-	OnRetryBead   func(beadID, anvil string, prID int) error
-	OnDismissBead func(beadID, anvil string, prID int) error
-	OnViewLogs    func(beadID string) (logPath string, lines []string)
+	OnRetryBead     func(beadID, anvil string, prID int) error
+	OnDismissBead   func(beadID, anvil string, prID int) error
+	OnViewLogs      func(beadID string) (logPath string, lines []string)
+	OnWardenRerun   func(beadID, anvil string) error
+	OnApproveAsIs   func(beadID, anvil string) error
+	OnForceSmith    func(beadID, anvil, userNote string) error
 
 	// Callback for tagging a bead (set by the caller).
 	// Called with (beadID, anvil) when user presses 'l' on an unlabeled bead.
@@ -914,9 +923,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							Title(fmt.Sprintf("Actions for %s", item.BeadID)).
 							Description(sanitizeTitle(item.Title)).
 							Options(
-								huh.NewOption("Retry       — Clear flags, put back in queue", ActionRetry),
-								huh.NewOption("Dismiss     — Remove from Needs Attention", ActionDismiss),
-								huh.NewOption("View Logs   — Show last worker log", ActionViewLogs),
+								huh.NewOption("Retry          — Clear flags, put back in queue", ActionRetry),
+								huh.NewOption("Dismiss        — Remove from Needs Attention", ActionDismiss),
+								huh.NewOption("View Logs      — Show last worker log", ActionViewLogs),
+								huh.NewOption("Re-run Warden  — Re-review with current rules", ActionWardenRerun),
+								huh.NewOption("Approve as-is  — Skip warden, create PR now", ActionApproveAsIs),
+								huh.NewOption("Force Smith    — Push smith into another iteration", ActionForceSmith),
 							).
 							Value(&m.actionChoice),
 					),
@@ -2063,6 +2075,53 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				return nil
 			}
 			m.openLogViewer(fmt.Sprintf("Log: %s — %s", bead.BeadID, logPath), strings.Join(lines, "\n"))
+		}
+	case ActionWardenRerun:
+		if m.OnWardenRerun != nil {
+			if err := m.OnWardenRerun(bead.BeadID, bead.Anvil); err != nil {
+				m.setStatus(fmt.Sprintf("Failed to re-run warden for %s: %v", bead.BeadID, err), true)
+			} else {
+				m.setStatus(fmt.Sprintf("Warden re-review started for %s", bead.BeadID), false)
+				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
+				if m.data != nil {
+					return FetchNeedsAttention(m.data)
+				}
+				return nil
+			}
+		} else {
+			m.setStatus(fmt.Sprintf("Warden re-run action unavailable for %s", bead.BeadID), false)
+		}
+	case ActionApproveAsIs:
+		if m.OnApproveAsIs != nil {
+			if err := m.OnApproveAsIs(bead.BeadID, bead.Anvil); err != nil {
+				m.setStatus(fmt.Sprintf("Failed to approve %s: %v", bead.BeadID, err), true)
+			} else {
+				m.setStatus(fmt.Sprintf("Approve as-is started for %s", bead.BeadID), false)
+				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
+				if m.data != nil {
+					return FetchNeedsAttention(m.data)
+				}
+				return nil
+			}
+		} else {
+			m.setStatus(fmt.Sprintf("Approve as-is action unavailable for %s", bead.BeadID), false)
+		}
+	case ActionForceSmith:
+		if m.OnForceSmith != nil {
+			// For now, no user note prompt — pass empty string.
+			// A future enhancement could add a text input dialog.
+			if err := m.OnForceSmith(bead.BeadID, bead.Anvil, ""); err != nil {
+				m.setStatus(fmt.Sprintf("Failed to force smith for %s: %v", bead.BeadID, err), true)
+			} else {
+				m.setStatus(fmt.Sprintf("Force smith started for %s", bead.BeadID), false)
+				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
+				if m.data != nil {
+					return FetchNeedsAttention(m.data)
+				}
+				return nil
+			}
+		} else {
+			m.setStatus(fmt.Sprintf("Force smith action unavailable for %s", bead.BeadID), false)
 		}
 	}
 	return nil
