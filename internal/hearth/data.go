@@ -737,14 +737,15 @@ func FetchNeedsAttention(ds *DataSource) tea.Cmd {
 		var items []NeedsAttentionItem
 		for _, b := range beads {
 			items = append(items, NeedsAttentionItem{
-				BeadID:         b.BeadID,
-				Title:          b.Title,
-				Description:    b.Description,
-				Anvil:          b.Anvil,
-				Reason:         b.Reason,
-				ReasonCategory: classifyAttentionReason(b),
-				PRID:           b.PRID,
-				PRNumber:       b.PRNumber,
+				BeadID:           b.BeadID,
+				Title:            b.Title,
+				Description:      b.Description,
+				Anvil:            b.Anvil,
+				Reason:           b.Reason,
+				ReasonCategory:   classifyAttentionReason(b),
+				PRID:             b.PRID,
+				PRNumber:         b.PRNumber,
+				LastWardenReject: ds.DB.LatestWardenRejectMessage(b.BeadID),
 			})
 		}
 

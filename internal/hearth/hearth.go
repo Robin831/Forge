@@ -94,14 +94,15 @@ const (
 
 // NeedsAttentionItem represents a bead requiring human attention.
 type NeedsAttentionItem struct {
-	BeadID         string
-	Title          string
-	Description    string
-	Anvil          string
-	Reason         string
-	ReasonCategory AttentionReason
-	PRID           int // Non-zero when item originates from an exhausted PR
-	PRNumber       int
+	BeadID           string
+	Title            string
+	Description      string
+	Anvil            string
+	Reason           string
+	ReasonCategory   AttentionReason
+	PRID             int // Non-zero when item originates from an exhausted PR
+	PRNumber         int
+	LastWardenReject string // Most recent warden_reject message, if any
 }
 
 // ReadyToMergeItem represents a PR ready to merge.
@@ -2133,16 +2134,19 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 		}
 	case ActionForceSmith:
 		if m.OnForceSmith != nil {
-			// Show a text input form so the user can supply a note explaining
-			// why smith should try again (e.g. "these issues are real, fix them").
-			// The note is optional — pressing Enter on an empty field skips it.
-			m.forceSmithNote = ""
+			// Pre-fill the note with the last warden rejection so the user can
+			// edit/augment it before re-dispatching Smith.
+			m.forceSmithNote = bead.LastWardenReject
 			m.forceSmithNoteTarget = &bead
+			desc := "Edit the warden feedback or add your own note (Enter to confirm):"
+			if m.forceSmithNote == "" {
+				desc = "Optional note to prepend to warden feedback (Enter to skip):"
+			}
 			m.forceSmithNoteForm = huh.NewForm(
 				huh.NewGroup(
 					huh.NewInput().
 						Title(fmt.Sprintf("Force smith for %s", bead.BeadID)).
-						Description("Optional note to prepend to warden feedback (Enter to skip):").
+						Description(desc).
 						Value(&m.forceSmithNote),
 				),
 			).WithTheme(huh.ThemeBase())

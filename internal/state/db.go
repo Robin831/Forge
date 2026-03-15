@@ -1345,6 +1345,18 @@ func (db *DB) RecentEventsExcluding(n int, excludeTypes []EventType) ([]Event, e
 	return events, rows.Err()
 }
 
+// LatestWardenRejectMessage returns the message from the most recent
+// warden_reject event for the given bead, or "" if none exists.
+func (db *DB) LatestWardenRejectMessage(beadID string) string {
+	var msg string
+	_ = db.conn.QueryRow(
+		`SELECT message FROM events WHERE bead_id = ? AND type = 'warden_reject'
+		 ORDER BY timestamp DESC, id DESC LIMIT 1`,
+		beadID,
+	).Scan(&msg)
+	return msg
+}
+
 // AnvilPollStatus holds the last poll outcome for an anvil.
 type AnvilPollStatus struct {
 	Anvil     string
