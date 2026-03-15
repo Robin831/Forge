@@ -197,6 +197,36 @@ func (m *Monitor) checkAll(ctx context.Context) {
 
 	log.Printf("[bellows] Checking %d open PRs", len(prs))
 
+	// Ensure a bellows worker entry exists for each managed PR so they appear
+	// in the Hearth Workers panel. Uses INSERT OR IGNORE so we only write when
+	// the row is genuinely new, avoiding unnecessary WAL churn on every poll.
+	// Unmanaged external PRs (ext-* with bellows_managed=0) are display-only
+	// in the PR panel and intentionally excluded from the Workers panel.
+	for i := range prs {
+		pr := &prs[i]
+		if strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged {
+			continue
+		}
+		workerID := fmt.Sprintf("bellows-%s-%d", pr.Anvil, pr.Number)
+		title := pr.Title
+		if title == "" {
+			title = fmt.Sprintf("PR #%d", pr.Number)
+		}
+		if err := m.db.InsertWorkerIfMissing(&state.Worker{
+			ID:        workerID,
+			BeadID:    pr.BeadID,
+			Anvil:     pr.Anvil,
+			Branch:    pr.Branch,
+			Status:    state.WorkerMonitoring,
+			Phase:     "bellows",
+			Title:     title,
+			PRNumber:  pr.Number,
+			StartedAt: time.Now(),
+		}); err != nil {
+			log.Printf("[bellows] Failed to upsert worker row for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
+		}
+	}
+
 	for i := range prs {
 		if ctx.Err() != nil {
 			return
