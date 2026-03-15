@@ -180,7 +180,7 @@ func FetchWorkers(db *state.DB, logCache *LogTailerCache) tea.Cmd {
 		}
 
 		// Clean up tailers for workers that are no longer active.
-		if logCache != nil && len(activePaths) > 0 {
+		if logCache != nil {
 			logCache.Prune(activePaths)
 		}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -351,14 +352,24 @@ func (t *logTailer) compact() {
 	}
 }
 
-// pruneOldestTools removes the oldest half of pending tool entries by index.
+// pruneOldestTools removes the oldest pending tool entries until len(toolIndex) <= maxPendingTools.
 func (t *logTailer) pruneOldestTools() {
-	// Find the median index — entries below it are evicted.
-	threshold := len(t.entries) / 2
+	if len(t.toolIndex) <= maxPendingTools {
+		return
+	}
+	// Collect and sort tool IDs by their entry index (ascending = oldest first).
+	type toolEntry struct {
+		id  string
+		idx int
+	}
+	pending := make([]toolEntry, 0, len(t.toolIndex))
 	for id, idx := range t.toolIndex {
-		if idx < threshold {
-			delete(t.toolIndex, id)
-			delete(t.toolNames, id)
-		}
+		pending = append(pending, toolEntry{id, idx})
+	}
+	sort.Slice(pending, func(i, j int) bool { return pending[i].idx < pending[j].idx })
+	// Evict oldest entries until we are within the cap.
+	for i := 0; i < len(pending) && len(t.toolIndex) > maxPendingTools; i++ {
+		delete(t.toolIndex, pending[i].id)
+		delete(t.toolNames, pending[i].id)
 	}
 }

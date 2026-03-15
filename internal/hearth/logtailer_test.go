@@ -73,7 +73,7 @@ func TestLogTailerCache_BasicIncremental(t *testing.T) {
 		assistantTextLine("hello world"),
 		assistantTextLine("second line"),
 	}
-	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -91,7 +91,7 @@ func TestLogTailerCache_BasicIncremental(t *testing.T) {
 	}
 
 	// Append more data.
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestLogTailerCache_PartialLine(t *testing.T) {
 
 	// Write a line without trailing newline (partial).
 	content := assistantTextLine("partial")
-	if err := os.WriteFile(logPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -125,7 +125,7 @@ func TestLogTailerCache_PartialLine(t *testing.T) {
 	}
 
 	// Complete the line.
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestLogTailerCache_TruncatedFile(t *testing.T) {
 		assistantTextLine("line 2"),
 		assistantTextLine("line 3"),
 	}
-	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -159,7 +159,7 @@ func TestLogTailerCache_TruncatedFile(t *testing.T) {
 	}
 
 	// Truncate file (simulates log rotation).
-	if err := os.WriteFile(logPath, []byte(assistantTextLine("fresh")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(assistantTextLine("fresh")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -180,7 +180,7 @@ func TestLogTailerCache_ToolCorrelation(t *testing.T) {
 		assistantToolUseLine("tu-1", "Bash", map[string]any{"command": "ls"}),
 		userToolResultLine("tu-1", "file1\nfile2\nfile3", false),
 	}
-	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -203,7 +203,7 @@ func TestLogTailerCache_ToolCorrelationAcrossReads(t *testing.T) {
 	logPath := filepath.Join(dir, "test.log")
 
 	// First write: tool_use only.
-	if err := os.WriteFile(logPath, []byte(assistantToolUseLine("tu-2", "Read", map[string]any{"file_path": "/tmp/foo.go"})+"\n"), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(assistantToolUseLine("tu-2", "Read", map[string]any{"file_path": "/tmp/foo.go"})+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -214,7 +214,7 @@ func TestLogTailerCache_ToolCorrelationAcrossReads(t *testing.T) {
 	}
 
 	// Second write: tool_result arrives.
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestLogTailerCache_MaxEntriesTail(t *testing.T) {
 	for i := range 20 {
 		lines = append(lines, assistantTextLine(fmt.Sprintf("line %d", i)))
 	}
-	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -380,7 +380,7 @@ func TestLogTailerCache_ResultLine(t *testing.T) {
 		assistantTextLine("working..."),
 		resultLine("success"),
 	}
-	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -398,7 +398,7 @@ func TestLogTailerCache_NoNewData(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log")
 
-	if err := os.WriteFile(logPath, []byte(assistantTextLine("hello")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(assistantTextLine("hello")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -421,7 +421,7 @@ func TestLogTailerCache_GeminiDelta(t *testing.T) {
 		`{"type":"message","role":"assistant","content":"world!"}`,
 		`{"type":"tool_use","tool_name":"Bash","tool_id":"g1","parameters":{"command":"echo hi"}}`,
 	}
-	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -444,7 +444,7 @@ func TestLogTailerCache_ToolError(t *testing.T) {
 		assistantToolUseLine("err-1", "Bash", map[string]any{"command": "false"}),
 		userToolResultLine("err-1", "command failed", true),
 	}
-	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
