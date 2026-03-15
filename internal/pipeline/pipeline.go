@@ -151,6 +151,15 @@ type Params struct {
 	// constant, default 5) is used. This value should be populated from
 	// config.Settings.MaxPipelineIterations.
 	MaxIterations int
+
+	// SkipSmith, when true, skips the Schematic pre-worker and the initial
+	// Smith run on the first iteration. The pipeline creates a worktree on
+	// the existing branch (ResetBranch should be false) and proceeds directly
+	// to Temper → Warden → PR. If Temper or Warden request changes on a later
+	// iteration, Smith will still run normally on that iteration. Used by
+	// force smith to continue the pipeline after smith has already completed
+	// separately.
+	SkipSmith bool
 }
 
 // releaseBead resets a bead status to open via the bd CLI. It always uses a
@@ -243,8 +252,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 	// Record worker in state DB. Default phase to "smith"; if the Schematic
 	// pre-worker is enabled it will be overwritten to "schematic" below.
+	// When SkipSmith is set, we jump straight to temper.
 	initialPhase := "smith"
-	if p.SchematicConfig != nil {
+	if p.SkipSmith {
+		initialPhase = "temper"
+	} else if p.SchematicConfig != nil {
 		initialPhase = "schematic"
 	}
 	dbWorker := &state.Worker{
@@ -281,8 +293,8 @@ func Run(ctx context.Context, p Params) *Outcome {
 		WorktreePath: wt.Path,
 	}
 
-	// Run Schematic pre-worker (optional)
-	if p.SchematicConfig != nil {
+	// Run Schematic pre-worker (optional — skipped when SkipSmith is set)
+	if !p.SkipSmith && p.SchematicConfig != nil {
 		runSchematic := p.SchematicRunner
 		if runSchematic == nil {
 			runSchematic = schematic.Run
@@ -420,19 +432,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 		}
 	}
 
-	// Build Smith prompt (with optional Schematic plan injected)
+	// Load per-anvil custom prompt template (needed for prompt rebuilds on
+	// temper/warden feedback even when SkipSmith is set).
 	customTmpl := prompt.LoadCustomTemplate(p.AnvilConfig.Path)
 	if customTmpl != "" {
 		p.PromptBuilder.CustomTemplate = customTmpl
-	}
-
-	beadCtx.Iteration = 1
-	promptText, err := p.PromptBuilder.Build(beadCtx)
-	if err != nil {
-		outcome.Error = fmt.Errorf("building prompt: %w", err)
-		outcome.Duration = time.Since(start)
-		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
-		return outcome
 	}
 
 	// Resolve max iterations: prefer the param value (from config), fall back to the constant.
@@ -441,12 +445,36 @@ func Run(ctx context.Context, p Params) *Outcome {
 		maxIter = MaxIterations
 	}
 
-	// Feedback loop
-	var currentPrompt = promptText
+	// Build Smith prompt (with optional Schematic plan injected).
+	// When SkipSmith is set, smith already ran externally — skip prompt
+	// building and jump straight to temper on the first iteration.
+	var currentPrompt string
+	if p.SkipSmith {
+		log.Printf("[pipeline:%s] SkipSmith=true — proceeding directly to temper/warden", workerID)
+		_ = p.DB.LogEvent(state.EventSmithDone, "Pipeline resumed (skip smith) for temper/warden/PR", p.Bead.ID, p.AnvilName)
+	} else {
+		beadCtx.Iteration = 1
+		promptText, err := p.PromptBuilder.Build(beadCtx)
+		if err != nil {
+			outcome.Error = fmt.Errorf("building prompt: %w", err)
+			outcome.Duration = time.Since(start)
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			return outcome
+		}
+		currentPrompt = promptText
+	}
 
+	// Feedback loop
 	for iteration := 1; iteration <= maxIter; iteration++ {
 		outcome.Iterations = iteration
 		log.Printf("[pipeline:%s] Iteration %d/%d", workerID, iteration, maxIter)
+
+		// When SkipSmith is set on the first iteration, smith already
+		// completed externally — skip directly to temper verification.
+		if p.SkipSmith && iteration == 1 {
+			log.Printf("[pipeline:%s] Skipping smith (already completed externally)", workerID)
+			_ = p.DB.UpdateWorkerPhase(workerID, "temper")
+		} else {
 
 		// Run Smith (with provider fallback on rate limit)
 		log.Printf("[pipeline:%s] Running Smith (provider: %s)", workerID, providers[activeProviderIdx].Label())
@@ -648,6 +676,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			outcome.Duration = time.Since(start)
 			return outcome
 		}
+		} // end else (smith phase)
 
 		// Step 3: Run Temper (build/test)
 		log.Printf("[pipeline:%s] Running Temper verification", workerID)

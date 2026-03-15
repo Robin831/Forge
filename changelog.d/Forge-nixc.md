@@ -1,0 +1,2 @@
+category: Fixed
+- **Force smith now continues with temper/warden/PR instead of re-dispatching** - After force smith completes, the pipeline proceeds directly to temper verification, warden review, and PR creation on the same branch. The force smith worktree is properly cleaned up before the pipeline creates its own, and PR creation uses the shared finalize path to avoid duplication. The bead stays in_progress throughout. (Forge-nixc)
