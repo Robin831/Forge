@@ -264,7 +264,6 @@ func TestRenderColumnsAlignedHeight(t *testing.T) {
 	m.focused = PanelWorkers
 	m.width = 120
 	m.height = 40
-	m.activityExpanded = make(map[string]bool)
 	mTmp, _ := m.Update(UpdateWorkersMsg{Items: m.workers})
 	m = *mTmp.(*Model)
 	m.rebuildActivityNav()
@@ -450,7 +449,6 @@ func TestRenderWorkerActivityNewestFirst(t *testing.T) {
 	m.workerTable.SetCursor(0)
 	mTmp, _ := m.Update(UpdateWorkersMsg{Items: workers})
 	m = *mTmp.(*Model)
-	m.activityExpanded = map[string]bool{"think": true}
 	m.rebuildActivityNav()
 
 	// Use a large height so all lines are visible
@@ -785,7 +783,6 @@ func TestActivityScrollChangesVisibleLine(t *testing.T) {
 	m.workerTable.SetCursor(0)
 	mTmp, _ := m.Update(UpdateWorkersMsg{Items: workers})
 	m = *mTmp.(*Model)
-	m.activityExpanded = map[string]bool{"think": true}
 	m.focused = PanelLiveActivity
 	m.rebuildActivityNav()
 
@@ -796,7 +793,9 @@ func TestActivityScrollChangesVisibleLine(t *testing.T) {
 	}
 
 	// Scroll to the bottom (oldest entries) so that line-0 is visible.
-	m.activityVP.cursor = len(m.activityNavItems) - 1
+	// Use a large cursor value that gets clamped to the last rendered line
+	// (viewport now operates on rendered line indices, not nav item indices).
+	m.activityVP.cursor = 9999
 	renderedScrolled := m.renderWorkerActivity(80, 10)
 	if !strings.Contains(renderedScrolled, "line-0") {
 		t.Errorf("expected oldest entry 'line-0' visible when scrolled to end:\n%s", renderedScrolled)
@@ -816,7 +815,6 @@ func TestActivityScrollClampPastEnd(t *testing.T) {
 	mTmp, _ := m.Update(UpdateWorkersMsg{Items: workers})
 	m = *mTmp.(*Model)
 	m.activityVP = scrollViewport{cursor: 100} // way past the end
-	m.activityExpanded = map[string]bool{"think": true}
 	m.focused = PanelLiveActivity
 	m.rebuildActivityNav()
 
@@ -904,131 +902,90 @@ func TestFormatMultiLineEntry(t *testing.T) {
 	}
 }
 
-func TestGroupActivityLines(t *testing.T) {
-	t.Run("empty input returns nil", func(t *testing.T) {
-		got := groupActivityLines(nil)
-		if got != nil {
-			t.Errorf("expected nil, got %v", got)
+func TestStripActivityPrefix(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"[text] hello world", "hello world"},
+		{"[think] pondering", "pondering"},
+		{"[tool] Read foo.go", "[tool] Read foo.go"},
+		{"       continuation", "       continuation"},
+		{"plain line", "plain line"},
+	}
+	for _, tt := range tests {
+		got := stripActivityPrefix(tt.input)
+		if got != tt.want {
+			t.Errorf("stripActivityPrefix(%q) = %q, want %q", tt.input, got, tt.want)
 		}
-	})
-
-	t.Run("single group is returned unchanged", func(t *testing.T) {
-		lines := []string{"[tool] Read x", "[tool] Edit y"}
-		got := groupActivityLines(lines)
-		if !reflect.DeepEqual(got, lines) {
-			t.Errorf("got %v, want %v", got, lines)
-		}
-	})
-
-	t.Run("last group is expanded, older groups collapsed", func(t *testing.T) {
-		lines := []string{
-			"[tool] Read x",
-			"[tool] Edit y",
-			"[text] some text",
-			"[text] more text",
-		}
-		got := groupActivityLines(lines)
-		// Expect: 1 collapsed tool summary + 2 expanded text lines
-		if len(got) != 3 {
-			t.Fatalf("got %d lines, want 3: %v", len(got), got)
-		}
-		if !strings.HasPrefix(got[0], "▸ [tool] x2") {
-			t.Errorf("collapsed summary = %q, want prefix '▸ [tool] x2'", got[0])
-		}
-		if got[1] != "[text] some text" {
-			t.Errorf("got[1] = %q, want '[text] some text'", got[1])
-		}
-		if got[2] != "[text] more text" {
-			t.Errorf("got[2] = %q, want '[text] more text'", got[2])
-		}
-	})
-
-	t.Run("continuation lines stay with their group", func(t *testing.T) {
-		lines := []string{
-			"[text] first line",
-			"       continuation",
-			"[tool] Read x",
-		}
-		got := groupActivityLines(lines)
-		// text group (with continuation) is collapsed; tool group expanded.
-		if len(got) != 2 {
-			t.Fatalf("got %d lines, want 2: %v", len(got), got)
-		}
-		if !strings.HasPrefix(got[0], "▸ [text] x1") {
-			t.Errorf("collapsed summary = %q, want prefix '▸ [text] x1'", got[0])
-		}
-		if got[1] != "[tool] Read x" {
-			t.Errorf("got[1] = %q, want '[tool] Read x'", got[1])
-		}
-	})
+	}
 }
 
-func TestCollapseActivityGroup(t *testing.T) {
-	t.Run("tool group extracts names", func(t *testing.T) {
-		g := activityGroup{
-			eventType: "tool",
-			lines: []string{
-				"[tool] Read /tmp/foo",
-				"[tool] Edit /tmp/bar",
-				"[tool] Grep pattern",
-			},
+func TestRebuildActivityNavFlatList(t *testing.T) {
+	t.Run("text and think prefixes stripped, tool kept", func(t *testing.T) {
+		workers := []WorkerItem{
+			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+				ActivityLines: []string{
+					"[text] hello",
+					"[think] pondering",
+					"[tool] Read foo.go",
+				}},
 		}
-		got := collapseActivityGroup(g)
-		want := "▸ [tool] x3 — Read, Edit, Grep"
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
+		m := NewModel(nil)
+		m.workerTable.SetCursor(0)
+		mTmp, _ := m.Update(UpdateWorkersMsg{Items: workers})
+		m = *mTmp.(*Model)
+		m.rebuildActivityNav()
+
+		// Newest first: tool, separator, think, separator, text
+		// Find the nav items (excluding blank separators)
+		var texts []string
+		for _, nav := range m.activityNavItems {
+			if nav.text != "" {
+				texts = append(texts, nav.text)
+			}
+		}
+		if len(texts) != 3 {
+			t.Fatalf("expected 3 content items, got %d: %v", len(texts), texts)
+		}
+		// Tool prefix is kept
+		if texts[0] != "[tool] Read foo.go" {
+			t.Errorf("tool entry = %q, want %q", texts[0], "[tool] Read foo.go")
+		}
+		// Think prefix stripped
+		if texts[1] != "pondering" {
+			t.Errorf("think entry = %q, want %q", texts[1], "pondering")
+		}
+		// Text prefix stripped
+		if texts[2] != "hello" {
+			t.Errorf("text entry = %q, want %q", texts[2], "hello")
 		}
 	})
 
-	t.Run("tool group deduplicates consecutive names", func(t *testing.T) {
-		g := activityGroup{
-			eventType: "tool",
-			lines: []string{
-				"[tool] Read /a",
-				"[tool] Read /b",
-				"[tool] Edit /c",
-			},
+	t.Run("blank separators between type transitions", func(t *testing.T) {
+		workers := []WorkerItem{
+			{ID: "w1", BeadID: "bd-1", Anvil: "test", Status: "running", Duration: "1m", Type: "smith",
+				ActivityLines: []string{
+					"[text] a",
+					"[tool] Read x",
+					"[text] b",
+				}},
 		}
-		got := collapseActivityGroup(g)
-		want := "▸ [tool] x3 — Read, Edit"
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
+		m := NewModel(nil)
+		m.workerTable.SetCursor(0)
+		mTmp, _ := m.Update(UpdateWorkersMsg{Items: workers})
+		m = *mTmp.(*Model)
+		m.rebuildActivityNav()
 
-	t.Run("non-tool group no names", func(t *testing.T) {
-		g := activityGroup{
-			eventType: "text",
-			lines:     []string{"[text] hello", "[text] world"},
+		// Newest first: text "b", separator, tool, separator, text "a"
+		var blanks int
+		for _, nav := range m.activityNavItems {
+			if nav.text == "" {
+				blanks++
+			}
 		}
-		got := collapseActivityGroup(g)
-		want := "▸ [text] x2"
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
-
-	t.Run("continuation lines not counted as entries", func(t *testing.T) {
-		g := activityGroup{
-			eventType: "text",
-			lines:     []string{"[text] hello", "       more text"},
-		}
-		got := collapseActivityGroup(g)
-		want := "▸ [text] x1"
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
-
-	t.Run("result is plain text without ANSI escapes", func(t *testing.T) {
-		g := activityGroup{
-			eventType: "tool",
-			lines:     []string{"[tool] Read /x"},
-		}
-		got := collapseActivityGroup(g)
-		// Plain text should contain no ESC bytes (no ANSI escapes).
-		if strings.ContainsRune(got, '\x1b') {
-			t.Errorf("collapseActivityGroup returned ANSI-styled string; want plain text: %q", got)
+		if blanks != 2 {
+			t.Errorf("expected 2 blank separators, got %d", blanks)
 		}
 	})
 }

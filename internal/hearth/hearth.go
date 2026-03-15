@@ -74,12 +74,9 @@ type queueNavItem struct {
 }
 
 // activityNavItem represents a single display row in the Live Activity panel.
-// It is either a collapsed group header (togglable) or an individual line from
-// an expanded group.
 type activityNavItem struct {
-	isGroupHeader bool   // true for collapsed/collapsible summary lines
-	groupType     string // event type key for expansion toggling (e.g. "tool", "think")
-	text          string // raw display text (unstyled)
+	lineType string // "tool", "think", "text", or "" for blank separators
+	text     string // raw display text (unstyled)
 }
 
 // AttentionReason categorizes why a bead needs human attention.
@@ -358,9 +355,9 @@ type Model struct {
 	needsAttnVP      scrollViewport
 	readyToMergeVP   scrollViewport
 	workerTable      table.Model
-	activityVP       scrollViewport
-	activityExpanded map[string]bool   // event type → expanded override (nil = default)
-	activityNavItems []activityNavItem // flat display items for Live Activity
+	activityVP        scrollViewport
+	activityNavItems  []activityNavItem // flat display items for Live Activity
+	activityLineCount int               // total rendered lines (line-based scrolling)
 	eventScroll      int
 	eventAutoScroll  bool // true = follow new events
 	prevEventCount   int  // track event count for auto-scroll
@@ -525,7 +522,6 @@ func NewModel(ds *DataSource) Model {
 		data:                ds,
 		eventAutoScroll:     true,
 		queueExpandedAnvils: make(map[string]bool),
-		activityExpanded:    make(map[string]bool),
 		helpModel:           h,
 		workerTable:         t,
 		eventFilter:         ti,
@@ -1021,19 +1017,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.crucibleActionForm.Init()
 				}
 			}
-			// Live Activity: toggle group expand/collapse
-			if m.focused == PanelLiveActivity && len(m.activityNavItems) > 0 &&
-				m.activityVP.cursor < len(m.activityNavItems) {
-				nav := m.activityNavItems[m.activityVP.cursor]
-				if nav.groupType != "" {
-					if m.activityExpanded == nil {
-						m.activityExpanded = make(map[string]bool)
-					}
-					cur := m.isActivityGroupExpanded(nav.groupType)
-					m.activityExpanded[nav.groupType] = !cur
-					m.rebuildActivityNav()
-				}
-			}
 			// Open merge menu for selected Ready to Merge PR
 			if m.focused == PanelReadyToMerge && len(m.readyToMerge) > 0 &&
 				m.readyToMergeVP.cursor < len(m.readyToMerge) {
@@ -1094,18 +1077,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "esc":
-			// Live Activity: collapse the group at the cursor
-			if m.focused == PanelLiveActivity && len(m.activityNavItems) > 0 &&
-				m.activityVP.cursor < len(m.activityNavItems) {
-				nav := m.activityNavItems[m.activityVP.cursor]
-				if !nav.isGroupHeader {
-					if m.activityExpanded == nil {
-						m.activityExpanded = make(map[string]bool)
-					}
-					m.activityExpanded[nav.groupType] = false
-					m.rebuildActivityNav()
-				}
-			}
 			// Clear event filter when Events panel is focused and filter is applied
 			if m.focused == PanelEvents && m.eventFilterText != "" {
 				m.eventFilter.SetValue("")
@@ -1945,7 +1916,7 @@ func (m *Model) scrollDown() {
 			m.resetActivityState()
 		}
 	case PanelLiveActivity:
-		m.activityVP.ScrollDown(len(m.activityNavItems))
+		m.activityVP.ScrollDown(m.activityLineCount)
 	case PanelEvents:
 		_, _, aw := m.getTopPanelWidths()
 		totalLines := m.eventTotalLineCount(aw)
@@ -2205,8 +2176,6 @@ func (m *Model) removeNeedsAttentionItem(beadID, anvil string) {
 	}
 }
 
-
-
 // dequeueNextOrphan shows the next orphan from the queue, or hides the dialog
 // if the queue is empty. It returns the Init() command of the new form.
 func (m *Model) dequeueNextOrphan() tea.Cmd {
@@ -2275,8 +2244,6 @@ func (m *Model) renderOrphanDialog() string {
 
 	return actionMenuStyle.Render(sb.String())
 }
-
-
 // executeOrphanAction sends the user's resolution choice to the daemon.
 func (m *Model) executeOrphanAction(choice OrphanDialogChoice) tea.Cmd {
 	if m.orphanTarget == nil {
@@ -2311,8 +2278,6 @@ func (m *Model) executeOrphanAction(choice OrphanDialogChoice) tea.Cmd {
 	}
 	return tea.Batch(nextCmd, actionCmd)
 }
-
-
 
 // notesTarget holds the bead context for the inline notes overlay.
 type notesTarget struct {
@@ -2471,8 +2436,6 @@ func (m *Model) closeSelectedQueueItem() tea.Cmd {
 		return QueueActionResultMsg{BeadID: beadID, Action: "close", Err: cb(beadID, anvil)}
 	}
 }
-
-
 // stopSelectedQueueItem stops all processing of the bead stored in queueActionTarget.
 func (m *Model) stopSelectedQueueItem() tea.Cmd {
 	if m.queueActionTarget == nil {
@@ -2742,8 +2705,6 @@ func (m *Model) executePRAction(choice PRActionMenuChoice) tea.Cmd {
 		return PRActionResultMsg{PRNumber: item.PRNumber, Action: action, Err: err}
 	}
 }
-
-
 // The choice pointer is bound to the form's value so huh updates it on selection.
 func buildQueueActionForm(item *QueueItem, choice *QueueActionMenuChoice) *huh.Form {
 	return huh.NewForm(
@@ -2834,8 +2795,6 @@ func (m *Model) renderForceSmithNoteForm() string {
 	sb.WriteString("\n\n" + dimStyle.Render("enter: submit  esc: cancel"))
 	return actionMenuStyle.Render(sb.String())
 }
-
-
 // executeMergeAction returns a tea.Cmd that runs the merge IPC call asynchronously,
 // keeping the Bubbletea UI responsive during the (potentially 60s) operation.
 func (m *Model) executeMergeAction(choice MergeMenuChoice) tea.Cmd {
@@ -3006,8 +2965,6 @@ func (m *Model) renderNotesOverlay() string {
 	content := strings.Join(lines, "\n")
 	return logViewerStyle.Width(overlayWidth).Height(overlayHeight).Render(content)
 }
-
-
 var (
 	sectionHeaderReady      = lipgloss.NewStyle().Bold(true).Foreground(colorSuccess).Render("── Ready ──")
 	sectionHeaderUnlabeled  = lipgloss.NewStyle().Bold(true).Foreground(colorWarning).Render("── Unlabeled ──")
@@ -3505,8 +3462,6 @@ func (m *Model) renderReadyToMerge(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-
-
 // MergeResultMsg is delivered asynchronously when a merge IPC call completes.
 type MergeResultMsg struct {
 	PRNumber int
@@ -3683,8 +3638,9 @@ func (m *Model) renderUsagePanel(width, height int) string {
 
 // renderWorkerActivity renders the activity panel: a live log view for the
 // currently selected worker, parsed from its stream-json log file.
-// Groups of consecutive same-type events are collapsible; press Enter to expand
-// and Esc to collapse. The newest activity appears at the top.
+// Activity flows as continuous lines with blank-line separators between
+// logical blocks, similar to Claude CLI terminal output. The newest
+// activity appears at the top.
 func (m *Model) renderWorkerActivity(width, height int) string {
 	style := panelStyle.Width(width)
 	if m.focused == PanelLiveActivity {
@@ -3714,43 +3670,38 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 		if maxVisible < 1 {
 			maxVisible = 1
 		}
-		total := len(m.activityNavItems)
-		m.activityVP.ClampToTotal(total)
-		m.activityVP.AdjustViewport(maxVisible, total)
-		start, end := m.activityVP.VisibleRange(maxVisible, total)
-		contentWidth := width - 2 // Width includes padding, subtract border only
+		contentWidth := width - 2
 		if contentWidth < 10 {
 			contentWidth = 10
 		}
-		for i := start; i < end; i++ {
-			nav := m.activityNavItems[i]
-			isCursor := m.focused == PanelLiveActivity && i == m.activityVP.cursor
-			if nav.isGroupHeader {
-				// Group header (▸ collapsed / ▾ expanded)
-				line := truncate(nav.text, contentWidth)
-				if isCursor {
-					line = selectedStyle.Render(line)
-				} else {
-					line = activityGroupHeaderStyle.Render(line)
-				}
-				lines = append(lines, line)
-			} else {
-				// Expanded child line — wrap to reduced width, then indent each line.
-				childWidth := contentWidth - 2
-				if childWidth < 10 {
-					childWidth = 10
-				}
-				wrapped := wordWrap(nav.text, childWidth)
-				isThinking := nav.groupType == "think"
-				for wi, wl := range wrapped {
-					styled := applyMarkdownLite(wl, isThinking)
-					indented := "  " + styled
-					if isCursor && wi == 0 {
-						indented = selectedStyle.Render(indented)
-					}
-					lines = append(lines, indented)
-				}
+
+		// Flatten all nav items into rendered lines so the viewport operates on
+		// rendered line indices rather than item indices. This ensures wrapped
+		// entries are fully scrollable without truncation.
+		var flatLines []string
+		for _, nav := range m.activityNavItems {
+			if nav.text == "" {
+				flatLines = append(flatLines, "")
+				continue
 			}
+			isThinking := nav.lineType == "think"
+			for _, wl := range wordWrap(nav.text, contentWidth) {
+				flatLines = append(flatLines, applyMarkdownLite(wl, isThinking))
+			}
+		}
+
+		total := len(flatLines)
+		m.activityLineCount = total
+		m.activityVP.ClampToTotal(total)
+		m.activityVP.AdjustViewport(maxVisible, total)
+		start, end := m.activityVP.VisibleRange(maxVisible, total)
+
+		for i := start; i < end; i++ {
+			styled := flatLines[i]
+			if m.focused == PanelLiveActivity && i == m.activityVP.cursor {
+				styled = selectedStyle.Render(styled)
+			}
+			lines = append(lines, styled)
 		}
 	}
 
@@ -4109,10 +4060,6 @@ var (
 				Foreground(colorSubtle).
 				MarginBottom(1)
 
-	activityGroupHeaderStyle = lipgloss.NewStyle().
-					Foreground(colorSubtle).
-					Bold(true)
-
 	needsAttentionTitleStyle = lipgloss.NewStyle().
 					Bold(true).
 					Foreground(colorDanger).
@@ -4469,184 +4416,71 @@ func activityLineType(line string) string {
 	return line[1:end]
 }
 
-// activityGroup represents a run of consecutive events sharing the same type.
-type activityGroup struct {
-	eventType string
-	lines     []string
-}
-
-// groupActivityLines merges all same-type activity entries into persistent
-// groups. The last group (by first-appearance order) is expanded; others
-// are collapsed into a single summary line like "▸ [tool] x5 — Read, Edit".
-func groupActivityLines(lines []string) []string {
-	if len(lines) == 0 {
-		return nil
+// stripActivityPrefix removes the [text] or [think] prefix from an activity
+// line, returning the bare content. [tool] and other prefixes are kept as-is
+// since they carry useful context.
+func stripActivityPrefix(line string) string {
+	if strings.HasPrefix(line, "[text] ") {
+		return line[len("[text] "):]
 	}
-
-	groups := buildActivityGroups(lines)
-
-	// Single group or fewer — no collapsing needed.
-	if len(groups) <= 1 {
-		return lines
+	if strings.HasPrefix(line, "[think] ") {
+		return line[len("[think] "):]
 	}
-
-	var result []string
-	for i, g := range groups {
-		if i == len(groups)-1 {
-			// Last group: fully expanded.
-			result = append(result, g.lines...)
-		} else {
-			result = append(result, collapseActivityGroup(g))
-		}
-	}
-	return result
-}
-
-// collapseActivityGroup produces a single unstyled summary line for a group.
-// For tool groups it extracts tool names: "▸ [tool] x5 — Read, Edit, Grep"
-// For other types: "▸ [text] x3"
-// The caller is responsible for applying any visual styling after truncation.
-func collapseActivityGroup(g activityGroup) string {
-	// Count primary entries (not continuation lines).
-	count := 0
-	var names []string
-	for _, line := range g.lines {
-		typ := activityLineType(line)
-		if typ == "" {
-			continue // continuation line
-		}
-		count++
-		if g.eventType == "tool" {
-			// Extract tool name: "[tool] ToolName ..."
-			rest := line[len("[tool] "):]
-			if sp := strings.IndexByte(rest, ' '); sp > 0 {
-				rest = rest[:sp]
-			}
-			// Deduplicate consecutive names for readability.
-			if len(names) == 0 || names[len(names)-1] != rest {
-				names = append(names, rest)
-			}
-		}
-	}
-	if len(names) > 0 {
-		summary := strings.Join(names, ", ")
-		if len([]rune(summary)) > 40 {
-			summary = string([]rune(summary)[:37]) + "..."
-		}
-		return fmt.Sprintf("▸ [%s] x%d — %s", g.eventType, count, summary)
-	}
-	return fmt.Sprintf("▸ [%s] x%d", g.eventType, count)
-}
-
-// expandActivityGroup produces the header line for an expanded group.
-// Uses ▾ to indicate the group is open and can be collapsed.
-func expandActivityGroup(g activityGroup) string {
-	count := 0
-	for _, line := range g.lines {
-		if activityLineType(line) != "" {
-			count++
-		}
-	}
-	return fmt.Sprintf("▾ [%s] x%d", g.eventType, count)
-}
-
-// groupedWorkerActivity returns the grouped activity lines for the currently
-// selected worker. The last group of consecutive same-type events is expanded
-// while older groups are collapsed into summary headers.
-func (m *Model) groupedWorkerActivity() []string {
-	return groupActivityLines(m.selectedWorkerActivity())
+	return line
 }
 
 // rebuildActivityNav rebuilds the flat display items for the Live Activity panel
-// from the currently selected worker's activity. One persistent group per event
-// type is shown, newest-first by last occurrence. Each group always has a header
-// line (▸ collapsed / ▾ expanded); expanded groups show indented child lines.
+// from the currently selected worker's activity. Lines flow continuously with
+// blank-line separators between logical blocks (type transitions). The newest
+// activity appears at the top.
 func (m *Model) rebuildActivityNav() {
 	rawLines := m.selectedWorkerActivity()
-	groups := buildActivityGroups(rawLines)
 
 	m.activityNavItems = nil
-	// Iterate newest-first so the group with the most recent activity is on top.
-	for ri := len(groups) - 1; ri >= 0; ri-- {
-		g := groups[ri]
-		expanded := m.isActivityGroupExpanded(g.eventType)
-		if !expanded {
-			m.activityNavItems = append(m.activityNavItems, activityNavItem{
-				isGroupHeader: true,
-				groupType:     g.eventType,
-				text:          collapseActivityGroup(g),
-			})
-		} else {
-			// Expanded: header with ▾, then indented child lines newest-first.
-			m.activityNavItems = append(m.activityNavItems, activityNavItem{
-				isGroupHeader: true,
-				groupType:     g.eventType,
-				text:          expandActivityGroup(g),
-			})
-			for li := len(g.lines) - 1; li >= 0; li-- {
-				m.activityNavItems = append(m.activityNavItems, activityNavItem{
-					groupType: g.eventType,
-					text:      g.lines[li],
-				})
-			}
-		}
-	}
-	m.activityVP.ClampToTotal(len(m.activityNavItems))
-}
-
-// isActivityGroupExpanded returns whether a group should be expanded.
-// If the user has toggled the group, their choice is respected. Otherwise
-// all groups default to collapsed.
-func (m *Model) isActivityGroupExpanded(eventType string) bool {
-	if expanded, set := m.activityExpanded[eventType]; set {
-		return expanded
-	}
-	return false
-}
-
-// resetActivityState clears the activity viewport and expansion state,
-// used when the selected worker changes.
-func (m *Model) resetActivityState() {
-	m.activityVP = scrollViewport{}
-	m.activityExpanded = make(map[string]bool)
-	m.rebuildActivityNav()
-}
-
-// buildActivityGroups merges all activity entries by event type into one
-// persistent group per type. Groups are returned in the order their type
-// first appeared, with a counter that grows as new events arrive.
-// Lines without a [type] prefix are treated as continuation lines and
-// appended to the most recent typed group; if no typed group exists yet
-// they form a "text" group.
-func buildActivityGroups(lines []string) []activityGroup {
-	if len(lines) == 0 {
-		return nil
-	}
-	idx := map[string]int{} // event type → index in groups
-	var groups []activityGroup
-	var lastType string
-	for _, line := range lines {
+	// Walk lines newest-first.
+	var prevType string
+	for i := len(rawLines) - 1; i >= 0; i-- {
+		line := rawLines[i]
 		typ := activityLineType(line)
 		if typ == "" {
-			// Continuation line — append to last known type's group.
-			if lastType == "" {
-				// No typed group yet; create a "text" bucket.
-				lastType = "text"
-				idx[lastType] = len(groups)
-				groups = append(groups, activityGroup{eventType: lastType})
+			// Continuation line inherits the type of its parent.
+			// Look ahead (backward in original order) to find it.
+			for j := i - 1; j >= 0; j-- {
+				if t := activityLineType(rawLines[j]); t != "" {
+					typ = t
+					break
+				}
 			}
-			groups[idx[lastType]].lines = append(groups[idx[lastType]].lines, line)
-			continue
+			if typ == "" {
+				typ = "text"
+			}
 		}
-		lastType = typ
-		if i, ok := idx[typ]; ok {
-			groups[i].lines = append(groups[i].lines, line)
-		} else {
-			idx[typ] = len(groups)
-			groups = append(groups, activityGroup{eventType: typ, lines: []string{line}})
+
+		// Insert a blank separator when the logical block type changes.
+		if prevType != "" && typ != prevType {
+			m.activityNavItems = append(m.activityNavItems, activityNavItem{text: ""})
 		}
+		prevType = typ
+
+		m.activityNavItems = append(m.activityNavItems, activityNavItem{
+			lineType: typ,
+			text:     stripActivityPrefix(line),
+		})
 	}
-	return groups
+	// Clamp using the rendered line count if available (line-based scrolling);
+	// fall back to nav item count as a conservative lower bound before first render.
+	lineCount := m.activityLineCount
+	if lineCount < len(m.activityNavItems) {
+		lineCount = len(m.activityNavItems)
+	}
+	m.activityVP.ClampToTotal(lineCount)
+}
+
+// resetActivityState clears the activity viewport, used when the selected
+// worker changes.
+func (m *Model) resetActivityState() {
+	m.activityVP = scrollViewport{}
+	m.rebuildActivityNav()
 }
 
 // wordWrapCount returns the number of lines wordWrap would produce without
