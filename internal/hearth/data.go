@@ -128,13 +128,17 @@ func FetchQueue(db *state.DB) tea.Cmd {
 }
 
 // FetchWorkers reads active workers from the state DB and enriches with
-// last log line from the worker log file.
-func FetchWorkers(db *state.DB) tea.Cmd {
+// log activity via incremental log tailing. When logCache is nil, falls
+// back to full-file reading (for tests or one-shot use).
+func FetchWorkers(db *state.DB, logCache *LogTailerCache) tea.Cmd {
 	return func() tea.Msg {
 		workers, err := db.ActiveWorkers()
 		if err != nil {
 			return UpdateWorkersMsg{Items: nil}
 		}
+
+		// Track active log paths so we can prune stale tailers.
+		activePaths := make(map[string]bool, len(workers))
 
 		var items []WorkerItem
 		for _, w := range workers {
@@ -149,10 +153,15 @@ func FetchWorkers(db *state.DB) tea.Cmd {
 				wType = inferWorkerType(w.ID, w.Status)
 			}
 
-			// Read last log line
-			lastLog := readLastLogLine(w.LogPath)
-
-			activityLines := parseWorkerActivity(w.LogPath, 100)
+			var lastLog string
+			var activityLines []string
+			if logCache != nil && w.LogPath != "" {
+				activePaths[w.LogPath] = true
+				activityLines, lastLog = logCache.ReadIncremental(w.LogPath, 100)
+			} else {
+				lastLog = readLastLogLine(w.LogPath)
+				activityLines = parseWorkerActivity(w.LogPath, 100)
+			}
 
 			items = append(items, WorkerItem{
 				ID:            w.ID,
@@ -168,6 +177,11 @@ func FetchWorkers(db *state.DB) tea.Cmd {
 				LogPath:       w.LogPath,
 				ActivityLines: activityLines,
 			})
+		}
+
+		// Clean up tailers for workers that are no longer active.
+		if logCache != nil {
+			logCache.Prune(activePaths)
 		}
 
 		return UpdateWorkersMsg{Items: items}
@@ -1016,12 +1030,12 @@ func FetchOpenPRs(db *state.DB) tea.Cmd {
 // FetchAll returns a batch command that refreshes all panels.
 // Daemon health is NOT included here; it is fetched on a slower cadence
 // controlled by healthTickDivisor in the TickMsg handler.
-func FetchAll(ds *DataSource) tea.Cmd {
+func FetchAll(ds *DataSource, logCache *LogTailerCache) tea.Cmd {
 	return tea.Batch(
 		FetchQueue(ds.DB),
 		FetchNeedsAttention(ds),
 		FetchReadyToMerge(*ds),
-		FetchWorkers(ds.DB),
+		FetchWorkers(ds.DB, logCache),
 		FetchEvents(ds.DB, EventFetchLimit),
 		FetchCrucibles(),
 		FetchUsage(ds),
