@@ -112,6 +112,9 @@ type Config struct {
 	WordThreshold int
 	// MaxTurns limits the AI session length. Default: 5. Kept low because
 	// the schematic should emit its JSON verdict immediately without tool use.
+	// Note: --max-turns is best-effort and only honored by providers that
+	// support the flag (e.g. Claude CLI). Gemini and GitHub Copilot CLI
+	// adapters drop this flag, so enforcement is provider-dependent.
 	MaxTurns int
 	// ExtraFlags are additional CLI flags forwarded to the Claude session
 	// (e.g. model selection, auth tokens). Mirrors pipeline.Params.ExtraFlags.
@@ -566,7 +569,7 @@ func RunCrucibleCheck(ctx context.Context, cfg Config, parent poller.Bead, child
 	defer os.RemoveAll(workDir)
 
 	logDir := filepath.Join(workDir, "logs")
-	extraFlags := append([]string{"--max-turns", "5"}, cfg.ExtraFlags...)
+	extraFlags := append([]string{"--max-turns", fmt.Sprintf("%d", cfg.MaxTurns)}, cfg.ExtraFlags...)
 	process, err := smith.SpawnWithProvider(ctx, workDir, promptText, logDir, pv, extraFlags)
 	if err != nil {
 		return &CrucibleCheckResult{
