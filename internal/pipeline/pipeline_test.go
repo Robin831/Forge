@@ -711,10 +711,10 @@ func TestWardenFeedback_PassedToSmithOnRetry(t *testing.T) {
 	require.Len(t, capturedPrompts, 2, "Smith should be called twice (initial + retry)")
 
 	// First prompt should NOT contain feedback
-	assert.NotContains(t, capturedPrompts[0], "Previous Iteration Feedback")
+	assert.NotContains(t, capturedPrompts[0], "ITERATION 2 FIX")
 
 	// Second prompt should contain warden feedback
-	assert.Contains(t, capturedPrompts[1], "Previous Iteration Feedback")
+	assert.Contains(t, capturedPrompts[1], "ITERATION 2 FIX")
 	assert.Contains(t, capturedPrompts[1], "Warden code review")
 	assert.Contains(t, capturedPrompts[1], "Missing error handling in foo.go")
 	assert.Contains(t, capturedPrompts[1], "Unchecked error return from bar()")
@@ -754,8 +754,8 @@ func TestTemperFeedback_PassedToSmithOnRetry(t *testing.T) {
 	require.True(t, outcome.Success)
 	require.Len(t, capturedPrompts, 2)
 
-	assert.NotContains(t, capturedPrompts[0], "Previous Iteration Feedback")
-	assert.Contains(t, capturedPrompts[1], "Previous Iteration Feedback")
+	assert.NotContains(t, capturedPrompts[0], "ITERATION 2 FIX")
+	assert.Contains(t, capturedPrompts[1], "ITERATION 2 FIX")
 	assert.Contains(t, capturedPrompts[1], "build/test verification")
 	assert.Contains(t, capturedPrompts[1], "TestFoo failed")
 }
