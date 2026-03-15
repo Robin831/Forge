@@ -4819,7 +4819,18 @@ func (m *Model) driveHuhSync(form **huh.Form, cmd tea.Cmd) tea.Cmd {
 			continue
 		}
 
-		nextMsg := currentCmd()
+		// Execute the command with a short timeout. Commands like cursor-blink
+		// ticks block for hundreds of milliseconds — if a command doesn't return
+		// immediately, treat it as external so Bubbletea handles it async.
+		var nextMsg tea.Msg
+		done := make(chan tea.Msg, 1)
+		go func(c tea.Cmd) { done <- c() }(currentCmd)
+		select {
+		case nextMsg = <-done:
+		case <-time.After(2 * time.Millisecond):
+			externalCmds = append(externalCmds, currentCmd)
+			continue
+		}
 		if nextMsg == nil {
 			continue
 		}

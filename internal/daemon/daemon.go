@@ -4003,6 +4003,10 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 	ctx, cancel := context.WithTimeout(d.runCtx, 30*time.Minute)
 	defer cancel()
 
+	// Clear needs_human immediately so the bead leaves the Needs Attention panel
+	// as soon as force smith begins, not only after it completes.
+	_ = d.db.ResetRetry(beadID, anvil)
+
 	wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, beadID, branch)
 	if err != nil {
 		d.logger.Error("force_smith: failed to create worktree", "bead", beadID, "error", err)
