@@ -152,11 +152,13 @@ type Params struct {
 	// config.Settings.MaxPipelineIterations.
 	MaxIterations int
 
-	// SkipSmith, when true, skips the Schematic pre-worker and the Smith
-	// implementation loop entirely. The pipeline creates a worktree on the
-	// existing branch (ResetBranch should be false) and proceeds directly
-	// to Temper → Warden → PR. Used by force smith to continue the pipeline
-	// after smith has already completed separately.
+	// SkipSmith, when true, skips the Schematic pre-worker and the initial
+	// Smith run on the first iteration. The pipeline creates a worktree on
+	// the existing branch (ResetBranch should be false) and proceeds directly
+	// to Temper → Warden → PR. If Temper or Warden request changes on a later
+	// iteration, Smith will still run normally on that iteration. Used by
+	// force smith to continue the pipeline after smith has already completed
+	// separately.
 	SkipSmith bool
 }
 

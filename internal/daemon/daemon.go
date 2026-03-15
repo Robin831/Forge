@@ -4130,12 +4130,23 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 	// FetchBead parses JSON; Anvil is json:"-" so we must set it manually.
 	bead.Anvil = anvil
 
+	// Resolve epic branch so that Crucible children target the correct base
+	// branch for PR creation. FetchBead does not populate EpicBranch (it is
+	// json:"-" and normally filled by poller.ResolveEpicBranches), so we
+	// resolve it explicitly here — mirroring the warden_rerun/approve_as_is flows.
+	beads := []poller.Bead{bead}
+	poller.ResolveEpicBranches(ctx, beads, map[string]string{anvil: anvilCfg.Path})
+	bead.EpicBranch = beads[0].EpicBranch
+
 	smithProviderSpecs := d.cfg.Load().Settings.SmithProviders
 	if len(smithProviderSpecs) == 0 {
 		smithProviderSpecs = d.cfg.Load().Settings.Providers
 	}
 
-	pipelineCtx, cancel := context.WithTimeout(d.runCtx, d.cfg.Load().Settings.SmithTimeout)
+	// Derive from context.Background() (not d.runCtx) so that a graceful
+	// shutdown does not cancel Temper/Warden/PR creation mid-flight — matching
+	// the same pattern used for normal dispatch pipelines.
+	pipelineCtx, cancel := context.WithTimeout(context.Background(), d.cfg.Load().Settings.SmithTimeout)
 	defer cancel()
 
 	outcome := pipeline.Run(pipelineCtx, pipeline.Params{
@@ -4145,6 +4156,7 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 		AnvilName:       anvil,
 		AnvilConfig:     anvilCfg,
 		Bead:            bead,
+		BaseBranch:      bead.EpicBranch, // empty for non-Crucible beads; set for children
 		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
