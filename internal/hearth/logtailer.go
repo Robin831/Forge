@@ -24,12 +24,21 @@ func NewLogTailerCache() *LogTailerCache {
 	}
 }
 
+// retentionCap is the maximum number of entries kept in a logTailer.
+// When exceeded, the oldest entries are discarded and toolIndex is adjusted.
+// This prevents unbounded memory growth for long-running workers.
+const retentionCap = 500
+
+// maxPendingTools is the maximum number of unenriched tool_use entries
+// tracked in toolIndex/toolNames. Older entries are evicted when exceeded.
+const maxPendingTools = 100
+
 // logTailer tracks incremental reading state for a single worker's log file.
 type logTailer struct {
 	offset  int64  // bytes read so far
 	partial string // leftover bytes from an incomplete line at the end of the last read
 
-	// Accumulated parsed activity entries (grows monotonically).
+	// Accumulated parsed activity entries, capped at retentionCap.
 	entries []string
 
 	// Tool result correlation state — persists across reads so results
@@ -121,6 +130,7 @@ func (c *LogTailerCache) ReadIncremental(logPath string, maxEntries int) (entrie
 
 	// Parse each new complete line.
 	t.parseLines(lines)
+	t.compact()
 
 	return t.tail(maxEntries), t.lastRawLine
 }
@@ -303,4 +313,52 @@ func (t *logTailer) enrichToolEntry(toolUseID, content string, isError bool) {
 	}
 	delete(t.toolIndex, toolUseID)
 	delete(t.toolNames, toolUseID)
+}
+
+// compact trims the entries slice to retentionCap and adjusts toolIndex
+// so that correlation still works after discarding old entries. Stale
+// toolIndex entries (pointing to discarded indices) are evicted.
+func (t *logTailer) compact() {
+	if len(t.entries) <= retentionCap {
+		// Even within cap, prune toolIndex if it grew too large.
+		if len(t.toolIndex) > maxPendingTools {
+			t.pruneOldestTools()
+		}
+		return
+	}
+
+	discard := len(t.entries) - retentionCap
+
+	// Keep only the most recent entries.
+	kept := make([]string, retentionCap)
+	copy(kept, t.entries[discard:])
+	t.entries = kept
+
+	// Adjust or remove toolIndex entries.
+	for id, idx := range t.toolIndex {
+		if idx < discard {
+			// This tool_use was discarded — remove correlation.
+			delete(t.toolIndex, id)
+			delete(t.toolNames, id)
+		} else {
+			t.toolIndex[id] = idx - discard
+		}
+	}
+
+	// Final safety: prune if still too many pending tools.
+	if len(t.toolIndex) > maxPendingTools {
+		t.pruneOldestTools()
+	}
+}
+
+// pruneOldestTools removes the oldest half of pending tool entries by index.
+func (t *logTailer) pruneOldestTools() {
+	// Find the median index — entries below it are evicted.
+	threshold := len(t.entries) / 2
+	for id, idx := range t.toolIndex {
+		if idx < threshold {
+			delete(t.toolIndex, id)
+			delete(t.toolNames, id)
+		}
+	}
 }
