@@ -639,6 +639,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.ActionRequest) {
 	d.logger.Info("lifecycle action requested", "action", req.Action, "pr", req.PRNumber, "bead", req.BeadID)
 
+	// Skip lifecycle actions for PRs with no associated bead (e.g. warden-learn
+	// PRs created by Bellows). These are not Smith-managed branches and have no
+	// bead worktree to operate in — running them would corrupt the .workers dir.
+	if req.BeadID == "" {
+		d.logger.Info("skipping lifecycle action for non-bead PR", "action", req.Action, "pr", req.PRNumber, "branch", req.Branch)
+		return
+	}
+
 	anvilCfg, ok := d.cfg.Load().Anvils[req.Anvil]
 	if !ok {
 		d.logger.Error("unknown anvil in lifecycle action", "anvil", req.Anvil)
