@@ -475,6 +475,9 @@ type Model struct {
 	// Mouse mode — when true, click-to-focus is active but terminal text selection
 	// is disabled. Toggle with 'm'. Initial value set by the caller via SetMouseEnabled.
 	mouseEnabled bool
+
+	// Incremental log file reader — avoids re-reading entire log files on each tick.
+	logCache *LogTailerCache
 }
 
 // NewModel creates a new Hearth TUI model.
@@ -526,6 +529,7 @@ func NewModel(ds *DataSource) Model {
 		helpModel:           h,
 		workerTable:         t,
 		eventFilter:         ti,
+		logCache:            NewLogTailerCache(),
 	}
 }
 
@@ -545,7 +549,7 @@ func (m *Model) Init() tea.Cmd {
 	if m.data != nil {
 		cmds = append(cmds, SpinnerTick())
 		cmds = append(cmds, Tick())
-		cmds = append(cmds, FetchAll(m.data))
+		cmds = append(cmds, FetchAll(m.data, m.logCache))
 		cmds = append(cmds, FetchDaemonHealth())
 	}
 
@@ -1603,7 +1607,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// issuing a full IPC status round-trip on every 2s cycle.
 		if m.data != nil {
 			m.healthTickCount++
-			cmds := []tea.Cmd{Tick(), FetchAll(m.data)}
+			cmds := []tea.Cmd{Tick(), FetchAll(m.data, m.logCache)}
 			if m.healthTickCount%healthTickDivisor == 0 {
 				cmds = append(cmds, FetchDaemonHealth())
 			}
