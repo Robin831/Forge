@@ -48,10 +48,6 @@ var (
 		key.WithKeys("f"),
 		key.WithHelp("f", "follow latest"),
 	)
-	keyExpand = key.NewBinding(
-		key.WithKeys("enter"),
-		key.WithHelp("enter", "expand/collapse"),
-	)
 	keyCollapse = key.NewBinding(
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "collapse"),
@@ -159,11 +155,11 @@ func (k usageKeyMap) FullHelp() [][]key.Binding {
 type liveActivityKeyMap struct{ m *Model }
 
 func (k liveActivityKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyExpand, keyCollapse, keyFollow, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyFollow, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k liveActivityKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyExpand, keyCollapse, keyFollow, keyPRPanel},
+		{keyScroll, keyFollow, keyPRPanel},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
