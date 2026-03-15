@@ -1775,6 +1775,9 @@ func (m *Model) View() string {
 	} else if m.actionForm != nil {
 		overlay := m.renderActionMenu()
 		view = placeOverlay(m.width, m.height, overlay, view)
+	} else if m.forceSmithNoteForm != nil {
+		overlay := m.renderForceSmithNoteForm()
+		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.queueActionForm != nil {
 		overlay := m.renderQueueActionMenu()
 		view = placeOverlay(m.width, m.height, overlay, view)
@@ -2818,6 +2821,17 @@ func (m *Model) renderActionMenu() string {
 	var sb strings.Builder
 	sb.WriteString(m.actionForm.View())
 	sb.WriteString("\n\n" + dimStyle.Render("esc: dismiss"))
+	return actionMenuStyle.Render(sb.String())
+}
+
+// renderForceSmithNoteForm renders the note input overlay for Force Smith.
+func (m *Model) renderForceSmithNoteForm() string {
+	if m.forceSmithNoteForm == nil {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(m.forceSmithNoteForm.View())
+	sb.WriteString("\n\n" + dimStyle.Render("enter: submit  esc: cancel"))
 	return actionMenuStyle.Render(sb.String())
 }
 
