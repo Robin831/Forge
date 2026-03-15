@@ -3385,6 +3385,18 @@ func (d *Daemon) maybeCloseDecomposedParent(bead poller.Bead, anvilCfg config.An
 	if len(resp.Dependents) > 0 {
 		d.logger.Info("keeping decomposed parent open (has dependents)",
 			"bead", beadID, "dependents", len(resp.Dependents))
+		// Tag the parent so that when it is re-dispatched after its dependents
+		// complete, schematic recognises it and returns ActionAlreadyDecomposed
+		// instead of spawning smith or re-decomposing.
+		if d.labelAdder != nil {
+			if err := d.labelAdder(anvilCfg.Path, beadID, schematic.LabelDecomposed); err != nil {
+				d.logger.Warn("failed to tag decomposed parent; it may be re-decomposed on next dispatch",
+					"bead", beadID, "error", err)
+			} else {
+				d.logger.Info("tagged decomposed parent to prevent re-dispatch",
+					"bead", beadID, "label", schematic.LabelDecomposed)
+			}
+		}
 		return
 	}
 

@@ -401,6 +401,15 @@ func Run(ctx context.Context, p Params) *Outcome {
 					p.Bead.ID, p.AnvilName)
 				beadCtx.SchematicPlan = sResult.Plan
 
+			case schematic.ActionAlreadyDecomposed:
+				log.Printf("[pipeline:%s] Bead already decomposed — no work remaining", workerID)
+				_ = p.DB.LogEvent(state.EventSchematicSkipped, sResult.Reason, p.Bead.ID, p.AnvilName)
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+				outcome.NoChangesNeeded = true
+				outcome.NoChangesReason = sResult.Reason
+				outcome.Duration = time.Since(start)
+				return outcome
+
 			default:
 				// ActionSkip or unknown — continue without plan
 				log.Printf("[pipeline:%s] Schematic skipped: %s", workerID, sResult.Reason)

@@ -47,7 +47,17 @@ const (
 	// ActionCrucible means the bead has children that need to be orchestrated
 	// together on a feature branch (crucible mode).
 	ActionCrucible Action = "crucible"
+
+	// ActionAlreadyDecomposed means the bead was previously decomposed into
+	// children and kept open for dependents. Now that it is re-dispatched there
+	// is no work left — the children were the work.
+	ActionAlreadyDecomposed Action = "already_decomposed"
 )
+
+// LabelDecomposed is the label the daemon attaches to a decomposed parent bead
+// when it must stay open (has dependents). Schematic detects this on
+// re-dispatch and returns ActionAlreadyDecomposed so no smith is spawned.
+const LabelDecomposed = "forge-decomposed"
 
 // SubBead holds the ID and title of a created sub-bead.
 type SubBead struct {
@@ -154,6 +164,18 @@ type schematicVerdict struct {
 // skipped.
 func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv provider.Provider) *Result {
 	start := time.Now()
+
+	// If the bead was previously decomposed and kept open for dependents,
+	// skip immediately — the children were the work, nothing left to do.
+	for _, lbl := range bead.Labels {
+		if strings.EqualFold(lbl, LabelDecomposed) {
+			return &Result{
+				Action:   ActionAlreadyDecomposed,
+				Reason:   "Previously decomposed into children; no remaining work",
+				Duration: time.Since(start),
+			}
+		}
+	}
 
 	if !ShouldRun(cfg, bead) {
 		return &Result{
