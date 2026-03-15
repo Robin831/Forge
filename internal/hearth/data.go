@@ -382,12 +382,12 @@ func toolResultEnrichment(toolName string, content string, isError bool) string 
 	}
 
 	content = strings.TrimSpace(content)
-	if content == "" {
-		return " → ✓"
-	}
 
 	switch toolName {
 	case "Bash":
+		if content == "" {
+			return " → ✓"
+		}
 		// Show line count of output as a proxy for verbosity
 		lines := strings.Count(content, "\n") + 1
 		if lines == 1 && len(content) < 40 {
