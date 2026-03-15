@@ -898,9 +898,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.eventScroll = 0
 				}
 			} else if m.focused == PanelLiveActivity {
-				// Reset activity scroll to top (follow latest — newest items first)
-				m.activityVP.cursor = 0
-				m.activityVP.viewStart = 0
+				// Reset activity scroll to bottom (follow latest — newest items last)
+				if m.activityLineCount > 0 {
+					m.activityVP.cursor = m.activityLineCount - 1
+				}
 			}
 
 		case "/":
@@ -3685,8 +3686,9 @@ func (m *Model) renderWorkerActivity(width, height int) string {
 				continue
 			}
 			isThinking := nav.lineType == "think"
+			isTool := nav.lineType == "tool" || nav.lineType == "rate"
 			for _, wl := range wordWrap(nav.text, contentWidth) {
-				flatLines = append(flatLines, applyMarkdownLite(wl, isThinking))
+				flatLines = append(flatLines, applyMarkdownLite(wl, isThinking, isTool))
 			}
 		}
 
@@ -4416,48 +4418,49 @@ func activityLineType(line string) string {
 	return line[1:end]
 }
 
-// stripActivityPrefix removes the [text] or [think] prefix from an activity
-// line, returning the bare content. [tool] and other prefixes are kept as-is
-// since they carry useful context.
+// stripActivityPrefix removes type-tag prefixes from an activity line,
+// returning the bare content. Tags like [tool], [text], [think], [rate] are
+// stripped; visual distinction is provided by colour in the render layer.
 func stripActivityPrefix(line string) string {
-	if strings.HasPrefix(line, "[text] ") {
-		return line[len("[text] "):]
-	}
-	if strings.HasPrefix(line, "[think] ") {
-		return line[len("[think] "):]
+	for _, pfx := range []string{"[text] ", "[think] ", "[tool] ", "[rate] "} {
+		if strings.HasPrefix(line, pfx) {
+			return line[len(pfx):]
+		}
 	}
 	return line
 }
 
 // rebuildActivityNav rebuilds the flat display items for the Live Activity panel
-// from the currently selected worker's activity. Lines flow continuously with
-// blank-line separators between logical blocks (type transitions). The newest
-// activity appears at the top.
+// from the currently selected worker's activity. Lines flow oldest-first so
+// the newest output is always at the bottom, matching terminal behaviour.
 func (m *Model) rebuildActivityNav() {
 	rawLines := m.selectedWorkerActivity()
 
+	// Remember whether we were following the bottom before the rebuild so we
+	// can re-pin the cursor after new lines are appended.
+	prevNavCount := len(m.activityNavItems)
+	atBottom := prevNavCount == 0 || m.activityVP.cursor >= prevNavCount-3
+
 	m.activityNavItems = nil
-	// Walk lines newest-first.
+	// Walk lines oldest-first (index 0 → end). Continuation lines (no type
+	// tag) inherit the type of the most-recent typed line above them.
 	var prevType string
-	for i := len(rawLines) - 1; i >= 0; i-- {
-		line := rawLines[i]
+	var lastTypedType string
+	for _, line := range rawLines {
 		typ := activityLineType(line)
 		if typ == "" {
-			// Continuation line inherits the type of its parent.
-			// Look ahead (backward in original order) to find it.
-			for j := i - 1; j >= 0; j-- {
-				if t := activityLineType(rawLines[j]); t != "" {
-					typ = t
-					break
-				}
-			}
+			// Continuation — inherit from the last explicitly-typed line.
+			typ = lastTypedType
 			if typ == "" {
 				typ = "text"
 			}
+		} else {
+			lastTypedType = typ
 		}
 
-		// Insert a blank separator when the logical block type changes.
-		if prevType != "" && typ != prevType {
+		// Blank separator: on type transitions AND between every tool call so
+		// consecutive tool lines are not visually bundled.
+		if prevType != "" && (typ != prevType || typ == "tool") {
 			m.activityNavItems = append(m.activityNavItems, activityNavItem{text: ""})
 		}
 		prevType = typ
@@ -4467,13 +4470,20 @@ func (m *Model) rebuildActivityNav() {
 			text:     stripActivityPrefix(line),
 		})
 	}
-	// Clamp using the rendered line count if available (line-based scrolling);
-	// fall back to nav item count as a conservative lower bound before first render.
+
+	// Clamp using rendered line count (line-based scrolling); fall back to nav
+	// item count as a conservative lower bound before the first render.
 	lineCount := m.activityLineCount
 	if lineCount < len(m.activityNavItems) {
 		lineCount = len(m.activityNavItems)
 	}
 	m.activityVP.ClampToTotal(lineCount)
+
+	// Auto-follow: if cursor was at or near the bottom (or this is the first
+	// load), pin it to the new end so the latest output stays visible.
+	if atBottom && lineCount > 0 {
+		m.activityVP.cursor = lineCount - 1
+	}
 }
 
 // resetActivityState clears the activity viewport, used when the selected
@@ -4594,9 +4604,9 @@ var (
 //   - **bold** → lipgloss bold
 //   - `code`  → dimmed code style
 //
-// Thinking lines (prefixed with [think] or continuation indent) are rendered
-// in dimStyle to visually distinguish them from normal text output.
-func applyMarkdownLite(line string, isThinking bool) string {
+// Thinking lines are rendered in dimStyle; tool/rate lines in a muted blue
+// so they stand out from prose without needing a "[tool]" label.
+func applyMarkdownLite(line string, isThinking, isTool bool) string {
 	// Replace **bold** spans with lipgloss bold rendering.
 	line = reBold.ReplaceAllStringFunc(line, func(m string) string {
 		inner := m[2 : len(m)-2]
@@ -4607,11 +4617,16 @@ func applyMarkdownLite(line string, isThinking bool) string {
 		inner := m[1 : len(m)-1]
 		return lipgloss.NewStyle().Foreground(colorMuted).Render(inner)
 	})
-	if isThinking {
+	switch {
+	case isThinking:
 		// Wrap the entire line in dim styling. Because the bold/code spans
 		// already injected ANSI sequences the dim applies to the surrounding
 		// text while nested sequences override it where appropriate.
 		line = dimStyle.Render(line)
+	case isTool:
+		// Render tool calls in a muted blue — visually distinct from prose
+		// without needing a "[tool]" label prefix.
+		line = lipgloss.NewStyle().Foreground(colorInfo).Render(line)
 	}
 	return line
 }

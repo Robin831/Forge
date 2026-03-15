@@ -612,11 +612,9 @@ func parseWorkerActivity(logPath string, maxEntries int) []string {
 			}
 		case "result":
 			flushGeminiText()
-			subtype := event.Subtype
-			if subtype == "" {
-				subtype = "done"
-			}
-			entries = append(entries, fmt.Sprintf("[result] %s", subtype))
+			// Session-end marker — dropped from Live Activity. The event log
+			// already surfaces completion; showing it here caused a persistent
+			// "[result] success" line at startup that stayed the whole session.
 		}
 	}
 

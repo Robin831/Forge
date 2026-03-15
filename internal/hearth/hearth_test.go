@@ -459,8 +459,8 @@ func TestRenderWorkerActivityNewestFirst(t *testing.T) {
 	if oldestIdx == -1 || newestIdx == -1 {
 		t.Fatal("expected both oldest and newest entries in rendered output")
 	}
-	if newestIdx >= oldestIdx {
-		t.Errorf("newest entry (pos %d) should appear before oldest entry (pos %d) in rendered output", newestIdx, oldestIdx)
+	if newestIdx <= oldestIdx {
+		t.Errorf("newest entry (pos %d) should appear after oldest entry (pos %d) in rendered output (terminal order)", newestIdx, oldestIdx)
 	}
 }
 
@@ -482,8 +482,8 @@ func TestParseWorkerActivityClaude(t *testing.T) {
 		t.Fatal("expected entries from Claude log, got none")
 	}
 
-	// Should have: [think], [tool], [text], [result]
-	wantPrefixes := []string{"[think]", "[tool]", "[text]", "[result]"}
+	// Should have: [think], [tool], [text] ([result] is dropped — session-end marker)
+	wantPrefixes := []string{"[think]", "[tool]", "[text]"}
 	if len(entries) != len(wantPrefixes) {
 		t.Fatalf("got %d entries, want %d: %v", len(entries), len(wantPrefixes), entries)
 	}
@@ -621,10 +621,10 @@ func TestParseWorkerActivityClaudeToolResultCorrelation(t *testing.T) {
 	entries := parseWorkerActivity(logPath, 100)
 
 	// Expected entries: [tool] Bash (enriched), [tool] Grep (enriched),
-	// [tool] Edit (enriched), [tool] Bash error (enriched),
-	// [tool] Glob (enriched), [result]
-	if len(entries) != 6 {
-		t.Fatalf("got %d entries, want 6: %v", len(entries), entries)
+	// [tool] Edit (enriched), [tool] Bash error (enriched), [tool] Glob (enriched).
+	// [result] is dropped — session-end marker not shown in Live Activity.
+	if len(entries) != 5 {
+		t.Fatalf("got %d entries, want 5: %v", len(entries), entries)
 	}
 
 	// Bash success: should show line count
@@ -909,7 +909,7 @@ func TestStripActivityPrefix(t *testing.T) {
 	}{
 		{"[text] hello world", "hello world"},
 		{"[think] pondering", "pondering"},
-		{"[tool] Read foo.go", "[tool] Read foo.go"},
+		{"[tool] Read foo.go", "Read foo.go"},
 		{"       continuation", "       continuation"},
 		{"plain line", "plain line"},
 	}
@@ -937,8 +937,8 @@ func TestRebuildActivityNavFlatList(t *testing.T) {
 		m = *mTmp.(*Model)
 		m.rebuildActivityNav()
 
-		// Newest first: tool, separator, think, separator, text
-		// Find the nav items (excluding blank separators)
+		// Oldest-first: text(hello), think(pondering), tool(Read foo.go)
+		// All type prefixes are stripped; tool lines are colored in the render layer.
 		var texts []string
 		for _, nav := range m.activityNavItems {
 			if nav.text != "" {
@@ -948,17 +948,17 @@ func TestRebuildActivityNavFlatList(t *testing.T) {
 		if len(texts) != 3 {
 			t.Fatalf("expected 3 content items, got %d: %v", len(texts), texts)
 		}
-		// Tool prefix is kept
-		if texts[0] != "[tool] Read foo.go" {
-			t.Errorf("tool entry = %q, want %q", texts[0], "[tool] Read foo.go")
+		// Text prefix stripped (oldest — first in output)
+		if texts[0] != "hello" {
+			t.Errorf("text entry = %q, want %q", texts[0], "hello")
 		}
 		// Think prefix stripped
 		if texts[1] != "pondering" {
 			t.Errorf("think entry = %q, want %q", texts[1], "pondering")
 		}
-		// Text prefix stripped
-		if texts[2] != "hello" {
-			t.Errorf("text entry = %q, want %q", texts[2], "hello")
+		// Tool prefix stripped (newest — last in output)
+		if texts[2] != "Read foo.go" {
+			t.Errorf("tool entry = %q, want %q", texts[2], "Read foo.go")
 		}
 	})
 
@@ -977,7 +977,7 @@ func TestRebuildActivityNavFlatList(t *testing.T) {
 		m = *mTmp.(*Model)
 		m.rebuildActivityNav()
 
-		// Newest first: text "b", separator, tool, separator, text "a"
+		// Oldest first: text "a", separator, tool, separator, text "b"
 		var blanks int
 		for _, nav := range m.activityNavItems {
 			if nav.text == "" {
@@ -1105,10 +1105,10 @@ func TestParseWorkerActivityMultiLineText(t *testing.T) {
 
 	entries := parseWorkerActivity(logPath, 100)
 
-	// Expect: 4 text lines + 2 think lines + 1 result line = 7
-	// (maxLines=20 keeps all lines including the fourth)
-	if len(entries) != 7 {
-		t.Fatalf("got %d entries, want 7: %v", len(entries), entries)
+	// Expect: 4 text lines + 2 think lines = 6
+	// ([result] dropped — session-end marker; maxLines=20 keeps all lines)
+	if len(entries) != 6 {
+		t.Fatalf("got %d entries, want 6: %v", len(entries), entries)
 	}
 	if !strings.HasPrefix(entries[0], "[text] ") {
 		t.Errorf("entries[0] = %q, want '[text] ' prefix", entries[0])
