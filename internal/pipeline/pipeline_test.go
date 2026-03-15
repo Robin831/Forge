@@ -1263,6 +1263,14 @@ func TestTruncateDiff(t *testing.T) {
 			maxLen: 100,
 			want:   "",
 		},
+		{
+			// "é" is 2 bytes (0xC3 0xA9); maxLen=4 cuts into its second byte.
+			// The fix should back up to a valid UTF-8 boundary ("abc").
+			name:   "non-ASCII no newline returns valid UTF-8",
+			diff:   "abc\xc3\xa9xyz", // "abcéxyz"
+			maxLen: 4,
+			want:   "abc\n... (diff truncated)",
+		},
 	}
 
 	for _, tt := range tests {

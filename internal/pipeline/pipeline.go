@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Robin831/Forge/internal/changelog"
 	"github.com/Robin831/Forge/internal/config"
@@ -895,7 +896,7 @@ func hasEmptyDiff(worktreePath, preSmithSHA string) bool {
 	return len(strings.TrimSpace(string(diffOut))) == 0
 }
 
-// maxDiffLen is the maximum number of characters to include from a prior
+// maxDiffLen is the maximum number of bytes to include from a prior
 // iteration's diff. Longer diffs are truncated at the last newline before
 // this limit so the prompt stays within a reasonable size.
 const maxDiffLen = 8000
@@ -906,7 +907,9 @@ func gitDiffSince(worktreePath, fromSHA string) string {
 	if fromSHA == "" {
 		return ""
 	}
-	cmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "diff", fromSHA+"..HEAD"))
+	// Use "git diff <fromSHA>" (without ..HEAD) so that staged/unstaged
+	// changes in the worktree are included alongside committed changes.
+	cmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "diff", fromSHA))
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -933,8 +936,12 @@ func truncateDiff(diff string, maxLen int) string {
 	if idx := strings.LastIndex(candidate, "\n"); idx > 0 {
 		return diff[:idx] + "\n... (diff truncated)"
 	}
-	// No newline found — the entire first chunk is one long line. Return it
-	// whole to avoid splitting a multi-byte rune in the middle.
+	// No newline found — the entire first chunk is one long line. Trim bytes
+	// from the end until we land on a valid UTF-8 boundary to avoid returning
+	// a string with a split multi-byte rune.
+	for len(candidate) > 0 && !utf8.ValidString(candidate) {
+		candidate = candidate[:len(candidate)-1]
+	}
 	return candidate + "\n... (diff truncated)"
 }
 
