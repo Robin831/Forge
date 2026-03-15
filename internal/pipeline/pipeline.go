@@ -844,7 +844,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 // gitRevParseHEAD returns the current HEAD commit SHA for the given worktree.
 // Returns an empty string on error.
 func gitRevParseHEAD(worktreePath string) string {
-	cmd := exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD")
+	cmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD"))
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -858,7 +858,7 @@ func gitRevParseHEAD(worktreePath string) string {
 // an empty diff.
 func hasEmptyDiff(worktreePath, preSmithSHA string) bool {
 	// Check for uncommitted changes (staged or unstaged).
-	statusCmd := exec.Command("git", "-C", worktreePath, "status", "--porcelain")
+	statusCmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "status", "--porcelain"))
 	statusOut, err := statusCmd.Output()
 	if err != nil {
 		return false // assume changes on error
@@ -869,14 +869,17 @@ func hasEmptyDiff(worktreePath, preSmithSHA string) bool {
 	// If we have a pre-smith SHA, compare directly against it.
 	if preSmithSHA != "" {
 		currentSHA := gitRevParseHEAD(worktreePath)
-		if currentSHA != "" && currentSHA != preSmithSHA {
+		if currentSHA == "" {
+			return false // unknown — assume changes on git error
+		}
+		if currentSHA != preSmithSHA {
 			return false // new commits exist — smith did real work
 		}
 		// Same SHA means no new commits were added.
 		return true
 	}
 	// Fallback: diff against parent commit.
-	diffCmd := exec.Command("git", "-C", worktreePath, "diff", "HEAD~1")
+	diffCmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "diff", "HEAD~1"))
 	diffOut, err := diffCmd.Output()
 	if err != nil {
 		return false
