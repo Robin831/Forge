@@ -572,10 +572,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Catch-up pass: close beads whose PRs merged while the daemon was down.
 	// Delayed 30s to let bellows complete its first poll cycle.
 	go func() {
+		t := time.NewTimer(30 * time.Second)
+		defer t.Stop()
 		select {
-		case <-time.After(30 * time.Second):
+		case <-t.C:
 			d.reconcileMergedBeads(ctx)
 		case <-ctx.Done():
+			if !t.Stop() {
+				<-t.C
+			}
 		}
 	}()
 
@@ -900,8 +905,9 @@ func (d *Daemon) handleBeadCloseOnMerge(ctx context.Context, event bellows.PREve
 
 // reconcileMergedBeads is a startup catch-up pass that closes beads whose PRs
 // merged while the daemon was down (or whose close failed before restart).
-// It queries state.db for all merged PRs and attempts to close any corresponding
-// beads that are still open. Safe to call multiple times — bd close is idempotent.
+// It queries state.db for merged PRs (excluding external and empty bead IDs)
+// and attempts to close any corresponding beads that are still open.
+// Safe to call multiple times — bd close is idempotent.
 func (d *Daemon) reconcileMergedBeads(ctx context.Context) {
 	mergedPRs, err := d.db.MergedPRs()
 	if err != nil {
@@ -915,11 +921,10 @@ func (d *Daemon) reconcileMergedBeads(ctx context.Context) {
 
 	var closed int
 	for _, pr := range mergedPRs {
-		if pr.BeadID == "" || strings.HasPrefix(pr.BeadID, "ext-") {
-			continue
-		}
 		anvilCfg, ok := d.cfg.Load().Anvils[pr.Anvil]
 		if !ok || anvilCfg.Path == "" {
+			d.logger.Debug("reconcileMergedBeads: skipping PR with unknown/unconfigured anvil",
+				"bead", pr.BeadID, "pr", pr.Number, "anvil", pr.Anvil)
 			continue
 		}
 
@@ -928,10 +933,16 @@ func (d *Daemon) reconcileMergedBeads(ctx context.Context) {
 			fmt.Sprintf("PR #%d merged (startup reconciliation)", pr.Number))
 		cancel()
 		if err != nil {
-			// bd close fails if the bead is already closed — that's fine,
-			// just means we don't need to do anything.
-			d.logger.Debug("reconcileMergedBeads: bead already closed or close failed",
-				"bead", pr.BeadID, "pr", pr.Number, "error", err)
+			errStr := err.Error()
+			if strings.Contains(errStr, "already closed") || strings.Contains(errStr, "already_closed") {
+				// Bead was closed by another path — nothing to do.
+				d.logger.Debug("reconcileMergedBeads: bead already closed",
+					"bead", pr.BeadID, "pr", pr.Number)
+			} else {
+				// Genuine failure (bd missing, network issue, etc.) — surface it.
+				d.logger.Warn("reconcileMergedBeads: failed to close bead, will retry on next startup",
+					"bead", pr.BeadID, "pr", pr.Number, "error", err)
+			}
 		} else {
 			closed++
 			d.logger.Info("reconcileMergedBeads: closed bead for merged PR",

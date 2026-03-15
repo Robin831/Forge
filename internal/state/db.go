@@ -844,11 +844,12 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 	return prs, rows.Err()
 }
 
-// MergedPRs returns all PRs with status=merged.
+// MergedPRs returns all PRs with status=merged that have a non-empty,
+// non-external bead_id (i.e. beads that Forge can attempt to close).
 func (db *DB) MergedPRs() ([]PR, error) {
 	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed
-		FROM prs WHERE status = 'merged'
-		ORDER BY created_at`)
+		FROM prs WHERE status = 'merged' AND bead_id != '' AND bead_id NOT LIKE 'ext-%'
+		ORDER BY created_at, id`)
 }
 
 // mergedPRGracePeriod is the window after a PR is merged during which

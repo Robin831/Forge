@@ -727,7 +727,12 @@ func TestDB_MergedPRs(t *testing.T) {
 	if len(merged) != 2 {
 		t.Fatalf("expected 2 merged PRs, got %d", len(merged))
 	}
-	if merged[0].Number != 2 || merged[1].Number != 3 {
+	// Use a set to avoid dependence on undefined ordering for same-timestamp rows.
+	mergedNums := map[int]bool{}
+	for _, pr := range merged {
+		mergedNums[pr.Number] = true
+	}
+	if !mergedNums[2] || !mergedNums[3] {
 		t.Errorf("unexpected merged PRs: %v", merged)
 	}
 
