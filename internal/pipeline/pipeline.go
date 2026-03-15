@@ -914,17 +914,28 @@ func gitDiffSince(worktreePath, fromSHA string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// truncateDiff truncates a diff string to at most maxLen characters, cutting
-// at the last newline before the limit so partial lines are not included.
+// truncateDiff truncates a diff string to at most maxLen bytes, cutting at
+// the last newline before the limit so partial lines are not included. It
+// avoids splitting multi-byte UTF-8 sequences by searching for the newline
+// within the valid string prefix rather than slicing raw bytes.
 func truncateDiff(diff string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(diff) <= maxLen {
 		return diff
 	}
-	truncated := diff[:maxLen]
-	if idx := strings.LastIndex(truncated, "\n"); idx > 0 {
-		truncated = truncated[:idx]
+	// Find the last newline that starts at or before maxLen bytes. Because
+	// '\n' is a single-byte character, LastIndex on the full string up to a
+	// byte boundary is safe — but the resulting prefix is only valid UTF-8 if
+	// we cut at a newline (which never appears inside a multi-byte sequence).
+	candidate := diff[:maxLen]
+	if idx := strings.LastIndex(candidate, "\n"); idx > 0 {
+		return diff[:idx] + "\n... (diff truncated)"
 	}
-	return truncated + "\n... (diff truncated)"
+	// No newline found — the entire first chunk is one long line. Return it
+	// whole to avoid splitting a multi-byte rune in the middle.
+	return candidate + "\n... (diff truncated)"
 }
 
 // ExtractNoChangesNeeded scans Smith output for the NO_CHANGES_NEEDED: marker

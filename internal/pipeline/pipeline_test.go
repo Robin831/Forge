@@ -723,6 +723,9 @@ func TestWardenFeedback_PassedToSmithOnRetry(t *testing.T) {
 	assert.Contains(t, capturedPrompts[1], "Missing nil check")
 	// Verify repo context is still included (AGENTS.md etc. come from the builder)
 	assert.Contains(t, capturedPrompts[1], "autonomous AI developer")
+	// Without real git changes, PriorDiff is empty so the skip-re-exploration
+	// directive should NOT appear in the prompt.
+	assert.NotContains(t, capturedPrompts[1], "Do NOT re-explore the codebase")
 }
 
 // TestTemperFeedback_PassedToSmithOnRetry verifies that when Temper fails,
@@ -1209,4 +1212,63 @@ func TestHasEmptyDiff_EmptyPreSmithSHA(t *testing.T) {
 	// With empty preSHA, falls back to diffing HEAD~1. Since the repo has
 	// only one commit, HEAD~1 will fail and hasEmptyDiff returns false.
 	assert.False(t, hasEmptyDiff(dir, ""), "hasEmptyDiff with empty preSHA and single commit should return false")
+}
+
+func TestTruncateDiff(t *testing.T) {
+	tests := []struct {
+		name   string
+		diff   string
+		maxLen int
+		want   string
+	}{
+		{
+			name:   "short diff unchanged",
+			diff:   "line1\nline2\n",
+			maxLen: 100,
+			want:   "line1\nline2\n",
+		},
+		{
+			name:   "exact length unchanged",
+			diff:   "abc\ndef\n",
+			maxLen: 8,
+			want:   "abc\ndef\n",
+		},
+		{
+			name:   "truncates at last newline",
+			diff:   "line1\nline2\nline3\n",
+			maxLen: 12,
+			want:   "line1\nline2\n... (diff truncated)",
+		},
+		{
+			name:   "no newline in range",
+			diff:   "abcdefghijklmnop",
+			maxLen: 10,
+			want:   "abcdefghij\n... (diff truncated)",
+		},
+		{
+			name:   "zero maxLen returns empty",
+			diff:   "some diff",
+			maxLen: 0,
+			want:   "",
+		},
+		{
+			name:   "negative maxLen returns empty",
+			diff:   "some diff",
+			maxLen: -1,
+			want:   "",
+		},
+		{
+			name:   "empty diff unchanged",
+			diff:   "",
+			maxLen: 100,
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateDiff(tt.diff, tt.maxLen)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

@@ -149,12 +149,12 @@ Fix ALL of the following problems while preserving the parts that were correct:
 ` + "```" + `diff
 {{.Bead.PriorDiff}}
 ` + "```" + `
-{{- end}}
 
 **IMPORTANT: Do NOT re-explore the codebase.** The diff above shows exactly what you
 changed in your previous iteration. Go directly to the files listed in the feedback.
 Do NOT re-read unrelated files, do NOT re-explore the codebase — the rest of the
 implementation is correct. Focus only on fixing the specific issues above.
+{{- end}}
 
 {{- end}}
 
