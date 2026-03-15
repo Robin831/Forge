@@ -2872,9 +2872,16 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		_ = d.db.LogEvent(state.EventForceSmith, fmt.Sprintf("Force smith requested for %s (manual)", fp.BeadID), fp.BeadID, fp.Anvil)
 		d.logger.Info("force smith requested", "bead", fp.BeadID, "anvil", fp.Anvil, "branch", branch, "user_note", fp.UserNote)
 
+		// Claim the activeBeads slot so the poller doesn't dispatch a normal
+		// pipeline run concurrently while force_smith is in flight.
+		if _, alreadyInFlight := d.activeBeads.LoadOrStore(fp.BeadID, true); alreadyInFlight {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s is already in flight", fp.BeadID)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
 		d.wg.Add(1)
 		go func() {
 			defer d.wg.Done()
+			defer d.activeBeads.Delete(fp.BeadID)
 			d.handleForceSmith(fp.BeadID, fp.Anvil, branch, fp.UserNote, anvilCfg)
 		}()
 
