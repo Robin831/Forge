@@ -539,3 +539,15 @@ rules:
       check: Verify that before appending new env key=value pairs, any existing entries with the same key are stripped from the slice to avoid duplicate keys with undefined precedence across platforms
       source: copilot:PR#257
       added: "2026-03-15"
+    - id: tui-filter-quit-fallthrough
+      category: ui
+      pattern: Text input or filter field intercepts all keypresses before global key handler
+      check: Verify that quit keys (ctrl+c, q) are explicitly handled or allowed to fall through when a filter/input component is active, so the app remains consistently quittable
+      source: copilot:PR#258
+      added: "2026-03-15"
+    - id: ui-hint-matches-behavior
+      category: ui
+      pattern: UI components that display keyboard shortcut hints or help text (e.g., '(/ edit, Esc clear)')
+      check: Verify that every keyboard shortcut listed in hint/help text is actually implemented for all relevant states. If a hint says 'Esc clears', ensure Esc clears the filter in all states where a filter may be active, not just when the input is focused.
+      source: copilot:PR#258
+      added: "2026-03-15"
