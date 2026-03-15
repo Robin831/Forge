@@ -390,6 +390,19 @@ func (db *DB) InsertWorker(w *Worker) error {
 	return err
 }
 
+// InsertWorkerIfMissing adds a worker record only when no row with the same id
+// already exists. This avoids unnecessary WAL churn on repeated poll cycles
+// (e.g. bellows upserts) where the row is stable between polls.
+func (db *DB) InsertWorkerIfMissing(w *Worker) error {
+	_, err := db.conn.Exec(
+		`INSERT OR IGNORE INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, w.BeadID, w.Anvil, w.Branch, w.PID, string(w.Status), w.Phase, w.Title,
+		w.PRNumber, w.StartedAt.Format(dbTimeLayout), w.LogPath,
+	)
+	return err
+}
+
 // UpdateWorkerPhase updates the active pipeline phase for a worker.
 func (db *DB) UpdateWorkerPhase(id string, phase string) error {
 	_, err := db.conn.Exec(`UPDATE workers SET phase = ? WHERE id = ?`, phase, id)

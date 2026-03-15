@@ -2,11 +2,15 @@ package bellows
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Robin831/Forge/internal/state"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNew_MinimumInterval(t *testing.T) {
@@ -268,6 +272,112 @@ func computeTransitionEventsWithPR(old, new *prSnapshot, prStatus string, ciFixC
 	}
 
 	return events
+}
+
+// openTempDB creates a temporary state.DB for testing and returns a cleanup func.
+func openTempDB(t *testing.T) (*state.DB, func()) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "bellows-test-*")
+	require.NoError(t, err)
+	db, err := state.Open(filepath.Join(dir, "state.db"))
+	require.NoError(t, err)
+	return db, func() {
+		db.Close()
+		os.RemoveAll(dir)
+	}
+}
+
+// TestCheckAll_BellowsManagedPRsGetWorkerRow is a regression test for the
+// Workers-panel visibility fix: bellows-managed PRs must appear in state.DB
+// as workers after checkAll runs.
+func TestCheckAll_BellowsManagedPRsGetWorkerRow(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	// Insert a regular forge-created PR (non-ext bead ID).
+	pr := &state.PR{
+		Number:    101,
+		Anvil:     "my-anvil",
+		BeadID:    "forge-abc",
+		Branch:    "forge/forge-abc",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	// Insert an external PR that has been explicitly assigned to bellows.
+	extManaged := &state.PR{
+		Number:         202,
+		Anvil:          "my-anvil",
+		BeadID:         "ext-xyz",
+		Branch:         "feature/ext",
+		Status:         state.PROpen,
+		BellowsManaged: true,
+		CreatedAt:      time.Now(),
+	}
+	require.NoError(t, db.InsertPR(extManaged))
+
+	// Insert an unmanaged external PR (display-only, must NOT get a worker row).
+	// bellows_managed column defaults to 1 in the schema, so we must explicitly
+	// clear it with UpdatePRBellowsManaged after insertion.
+	extUnmanaged := &state.PR{
+		Number:    303,
+		Anvil:     "my-anvil",
+		BeadID:    "ext-unmanaged",
+		Branch:    "feature/unmanaged",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(extUnmanaged))
+	require.NoError(t, db.UpdatePRBellowsManaged(extUnmanaged.ID, false))
+
+	m := New(db, nil, time.Minute, map[string]string{"my-anvil": "/fake"}, nil, nil)
+	m.checkAll(context.Background())
+
+	workers, err := db.ActiveWorkers()
+	require.NoError(t, err)
+
+	workerIDs := make(map[string]bool, len(workers))
+	for _, w := range workers {
+		workerIDs[w.ID] = true
+	}
+
+	assert.True(t, workerIDs["bellows-my-anvil-101"], "forge-created PR should have a bellows worker row")
+	assert.True(t, workerIDs["bellows-my-anvil-202"], "bellows-managed ext PR should have a bellows worker row")
+	assert.False(t, workerIDs["bellows-my-anvil-303"], "unmanaged ext PR must NOT have a bellows worker row")
+}
+
+// TestCheckAll_WorkerRowNotDuplicatedOnRepeatPolls verifies that repeated
+// checkAll calls (simulating poll cycles) do not create duplicate worker rows.
+func TestCheckAll_WorkerRowNotDuplicatedOnRepeatPolls(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    101,
+		Anvil:     "my-anvil",
+		BeadID:    "forge-abc",
+		Branch:    "forge/forge-abc",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	m := New(db, nil, time.Minute, map[string]string{"my-anvil": "/fake"}, nil, nil)
+	m.checkAll(context.Background())
+	m.checkAll(context.Background())
+	m.checkAll(context.Background())
+
+	workers, err := db.ActiveWorkers()
+	require.NoError(t, err)
+
+	count := 0
+	for _, w := range workers {
+		if w.ID == "bellows-my-anvil-101" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "worker row should exist exactly once after multiple poll cycles")
 }
 
 // TestCIFixRetryLogic verifies the secondary CI failure detection that
