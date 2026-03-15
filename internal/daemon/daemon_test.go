@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2382,4 +2383,71 @@ func TestHandleIPC_ForceSmith(t *testing.T) {
 		}
 		assert.True(t, found, "force_smith event should be logged")
 	})
+}
+
+// TestReconcileMergedBeads verifies the startup catch-up behaviour:
+//   - ext-* PRs are skipped (filtered in SQL, so they never arrive)
+//   - PRs whose anvil is not in the config are skipped without error
+//   - A valid merged PR causes a bd close call
+func TestReconcileMergedBeads(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-reconcile-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// Create a fake bd script that records close calls via a marker file.
+	markerFile := filepath.Join(tmpDir, "bd-reconcile-close.txt")
+	var bdScript string
+	var bdContent string
+	if runtime.GOOS == "windows" {
+		bdScript = filepath.Join(tmpDir, "bd.bat")
+		bdContent = "@echo off\r\nif \"%1\"==\"close\" (\r\n    echo %2 >> \"" + markerFile + "\"\r\n    echo {\"id\": \"%2\", \"status\": \"closed\"}\r\n    exit /b 0\r\n)\r\nexit /b 0\r\n"
+	} else {
+		bdScript = filepath.Join(tmpDir, "bd")
+		bdContent = "#!/bin/sh\nif [ \"$1\" = \"close\" ]; then\n    echo \"$2\" >> '" + markerFile + "'\n    echo '{\"id\": \"'\"$2\"'\", \"status\": \"closed\"}'\n    exit 0\nfi\nexit 0\n"
+	}
+	require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+	defer os.Setenv("PATH", oldPath)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Insert a variety of PRs:
+	//   PR 1: merged with a valid bead in the configured anvil — should be closed.
+	//   PR 2: merged but anvil not in config — should be skipped.
+	//   PR 3: ext-* bead — filtered out at the SQL level, won't reach reconcile.
+	//   PR 4: merged with empty bead_id — filtered out at the SQL level.
+	now := time.Now()
+	prs := []state.PR{
+		{Number: 1, Anvil: "known-anvil", BeadID: "REC-1", Branch: "forge/REC-1", Status: state.PRMerged, CreatedAt: now},
+		{Number: 2, Anvil: "unknown-anvil", BeadID: "REC-2", Branch: "forge/REC-2", Status: state.PRMerged, CreatedAt: now},
+		{Number: 3, Anvil: "known-anvil", BeadID: "ext-abc", Branch: "some-branch", Status: state.PRMerged, CreatedAt: now},
+		{Number: 4, Anvil: "known-anvil", BeadID: "", Branch: "other-branch", Status: state.PRMerged, CreatedAt: now},
+	}
+	for i := range prs {
+		require.NoError(t, db.InsertPR(&prs[i]))
+	}
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"known-anvil": {Path: tmpDir},
+		},
+	})
+
+	d.reconcileMergedBeads(context.Background())
+
+	// Only REC-1 should have been passed to bd close.
+	content, err := os.ReadFile(markerFile)
+	require.NoError(t, err, "bd close should have been called (marker file should exist)")
+	lines := strings.Fields(strings.TrimSpace(string(content)))
+	require.Len(t, lines, 1, "expected exactly one bd close call")
+	assert.Equal(t, "REC-1", lines[0], "bd close should have been called with REC-1")
 }
