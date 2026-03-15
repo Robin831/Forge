@@ -358,7 +358,7 @@ const (
 // external state changes (e.g. PR events) and can be legitimately silent for
 // long stretches, so they are excluded from stale detection and dispatch
 // capacity queries. Update this constant when new background phases are added.
-const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'crucible', 'schematic'"
+const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'crucible', 'schematic', 'warden_rerun', 'approve_as_is', 'force_smith'"
 
 // Worker represents a Smith worker entry.
 type Worker struct {
@@ -1177,6 +1177,9 @@ const (
 	EventVulnScanDone         EventType = "vuln_scan_done"
 	EventVulnScanFailed       EventType = "vuln_scan_failed"
 	EventVulnBeadCreated      EventType = "vuln_bead_created"
+	EventWardenRerun          EventType = "warden_rerun"
+	EventApproveAsIs          EventType = "approve_as_is"
+	EventForceSmith           EventType = "force_smith"
 	EventAutoLearnError       EventType = "auto_learn_error"
 	EventAutoLearnSkipped     EventType = "auto_learn_skipped"
 	EventAutoLearnRules       EventType = "auto_learn_rules"

@@ -1,0 +1,2 @@
+category: Added
+- **Warden re-review, Approve as-is, and Force Smith actions for Needs Attention beads** - Three new resolution actions in the Hearth TUI action menu: re-run warden on the existing branch (useful when rules changed or warden was too strict), approve as-is to bypass warden and create a PR directly, and force smith to push another implementation iteration with existing warden feedback attached. Each action is backed by a new IPC command and daemon handler. (Forge-wnlx)
