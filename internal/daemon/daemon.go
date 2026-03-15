@@ -3854,7 +3854,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		Anvil:     anvil,
 		Branch:    branch,
 		Status:    state.WorkerRunning,
-		Phase:     "warden",
+		Phase:     "warden_rerun",
 		Title:     d.db.BeadTitle(beadID, anvil),
 		StartedAt: time.Now(),
 	})
@@ -3944,7 +3944,7 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 		Anvil:     anvil,
 		Branch:    branch,
 		Status:    state.WorkerRunning,
-		Phase:     "approve",
+		Phase:     "approve_as_is",
 		Title:     d.db.BeadTitle(beadID, anvil),
 		StartedAt: time.Now(),
 	})
@@ -4017,7 +4017,7 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 		Anvil:     anvil,
 		Branch:    branch,
 		Status:    state.WorkerRunning,
-		Phase:     "smith",
+		Phase:     "force_smith",
 		Title:     d.db.BeadTitle(beadID, anvil),
 		StartedAt: time.Now(),
 	})

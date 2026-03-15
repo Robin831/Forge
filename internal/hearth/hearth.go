@@ -395,6 +395,12 @@ type Model struct {
 	prActionChoice PRActionMenuChoice
 	prActionTarget *PRItem
 
+	// Force Smith note form overlay state — collects an optional user note
+	// before dispatching a force_smith action.
+	forceSmithNoteForm   *huh.Form
+	forceSmithNote       string
+	forceSmithNoteTarget *NeedsAttentionItem
+
 	// Orphan dialog overlay state — shown when orphaned beads need user decision.
 	orphanQueue        []PendingOrphanItem // beads awaiting user decision
 	orphanDialogForm   *huh.Form
@@ -641,6 +647,45 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmd, actionCmd)
 		} else if m.crucibleActionForm.State == huh.StateAborted {
 			m.crucibleActionForm = nil
+			return m, cmd
+		}
+		if isTerminalMsg(msg) {
+			return m, cmd
+		}
+	}
+
+	if m.forceSmithNoteForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if k.Type == tea.KeyEsc {
+				m.forceSmithNoteForm = nil
+				m.forceSmithNoteTarget = nil
+				m.forceSmithNote = ""
+				return m, nil
+			}
+		}
+		cmd := m.driveHuhForm(&m.forceSmithNoteForm, msg)
+		if m.forceSmithNoteForm.State == huh.StateCompleted {
+			target := m.forceSmithNoteTarget
+			note := m.forceSmithNote
+			m.forceSmithNoteForm = nil
+			m.forceSmithNoteTarget = nil
+			m.forceSmithNote = ""
+			if target != nil && m.OnForceSmith != nil {
+				if err := m.OnForceSmith(target.BeadID, target.Anvil, note); err != nil {
+					m.setStatus(fmt.Sprintf("Failed to force smith for %s: %v", target.BeadID, err), true)
+				} else {
+					m.setStatus(fmt.Sprintf("Force smith started for %s", target.BeadID), false)
+					m.removeNeedsAttentionItem(target.BeadID, target.Anvil)
+					if m.data != nil {
+						return m, tea.Batch(cmd, FetchNeedsAttention(m.data))
+					}
+				}
+			}
+			return m, cmd
+		} else if m.forceSmithNoteForm.State == huh.StateAborted {
+			m.forceSmithNoteForm = nil
+			m.forceSmithNoteTarget = nil
+			m.forceSmithNote = ""
 			return m, cmd
 		}
 		if isTerminalMsg(msg) {
@@ -2108,18 +2153,20 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 		}
 	case ActionForceSmith:
 		if m.OnForceSmith != nil {
-			// For now, no user note prompt — pass empty string.
-			// A future enhancement could add a text input dialog.
-			if err := m.OnForceSmith(bead.BeadID, bead.Anvil, ""); err != nil {
-				m.setStatus(fmt.Sprintf("Failed to force smith for %s: %v", bead.BeadID, err), true)
-			} else {
-				m.setStatus(fmt.Sprintf("Force smith started for %s", bead.BeadID), false)
-				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
-				if m.data != nil {
-					return FetchNeedsAttention(m.data)
-				}
-				return nil
-			}
+			// Show a text input form so the user can supply a note explaining
+			// why smith should try again (e.g. "these issues are real, fix them").
+			// The note is optional — pressing Enter on an empty field skips it.
+			m.forceSmithNote = ""
+			m.forceSmithNoteTarget = &bead
+			m.forceSmithNoteForm = huh.NewForm(
+				huh.NewGroup(
+					huh.NewInput().
+						Title(fmt.Sprintf("Force smith for %s", bead.BeadID)).
+						Description("Optional note to prepend to warden feedback (Enter to skip):").
+						Value(&m.forceSmithNote),
+				),
+			).WithTheme(huh.ThemeBase())
+			return nil
 		} else {
 			m.setStatus(fmt.Sprintf("Force smith action unavailable for %s", bead.BeadID), false)
 		}

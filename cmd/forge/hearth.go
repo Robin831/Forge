@@ -344,10 +344,13 @@ var hearthCmd = &cobra.Command{
 				return err
 			}
 			defer client.Close()
-			payload, _ := json.Marshal(ipc.WardenRerunPayload{
+			payload, err := json.Marshal(ipc.WardenRerunPayload{
 				BeadID: beadID,
 				Anvil:  anvil,
 			})
+			if err != nil {
+				return fmt.Errorf("marshal warden_rerun payload: %w", err)
+			}
 			resp, err := client.Send(ipc.Command{
 				Type:    "warden_rerun",
 				Payload: json.RawMessage(payload),
@@ -367,10 +370,13 @@ var hearthCmd = &cobra.Command{
 				return err
 			}
 			defer client.Close()
-			payload, _ := json.Marshal(ipc.ApproveAsIsPayload{
+			payload, err := json.Marshal(ipc.ApproveAsIsPayload{
 				BeadID: beadID,
 				Anvil:  anvil,
 			})
+			if err != nil {
+				return fmt.Errorf("marshal approve_as_is payload: %w", err)
+			}
 			resp, err := client.Send(ipc.Command{
 				Type:    "approve_as_is",
 				Payload: json.RawMessage(payload),
@@ -390,11 +396,14 @@ var hearthCmd = &cobra.Command{
 				return err
 			}
 			defer client.Close()
-			payload, _ := json.Marshal(ipc.ForceSmithPayload{
+			payload, err := json.Marshal(ipc.ForceSmithPayload{
 				BeadID:   beadID,
 				Anvil:    anvil,
 				UserNote: userNote,
 			})
+			if err != nil {
+				return fmt.Errorf("marshal force_smith payload: %w", err)
+			}
 			resp, err := client.Send(ipc.Command{
 				Type:    "force_smith",
 				Payload: json.RawMessage(payload),
