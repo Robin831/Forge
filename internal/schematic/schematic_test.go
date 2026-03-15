@@ -99,7 +99,7 @@ func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	assert.False(t, cfg.Enabled)
 	assert.Equal(t, 100, cfg.WordThreshold)
-	assert.Equal(t, 10, cfg.MaxTurns)
+	assert.Equal(t, 5, cfg.MaxTurns)
 }
 
 func TestBuildPrompt_ContainsBeadInfo(t *testing.T) {
@@ -116,6 +116,8 @@ func TestBuildPrompt_ContainsBeadInfo(t *testing.T) {
 	assert.Contains(t, p, "Add login feature")
 	assert.Contains(t, p, "Implement OAuth login flow")
 	assert.Contains(t, p, "plan|decompose|clarify")
+	assert.Contains(t, p, "Do NOT use any tools", "prompt must instruct AI not to use tools")
+	assert.Contains(t, p, "FIRST response", "prompt must require JSON in first response")
 }
 
 func TestParseCrucibleVerdict_JSONFence(t *testing.T) {

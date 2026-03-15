@@ -110,7 +110,8 @@ type Config struct {
 	// trigger automatic schematic analysis. Beads below this are skipped
 	// unless they have the decompose tag. Default: 100.
 	WordThreshold int
-	// MaxTurns limits the AI session length. Default: 10.
+	// MaxTurns limits the AI session length. Default: 5. Kept low because
+	// the schematic should emit its JSON verdict immediately without tool use.
 	MaxTurns int
 	// ExtraFlags are additional CLI flags forwarded to the Claude session
 	// (e.g. model selection, auth tokens). Mirrors pipeline.Params.ExtraFlags.
@@ -128,7 +129,7 @@ func DefaultConfig() Config {
 	return Config{
 		Enabled:       false,
 		WordThreshold: 100,
-		MaxTurns:      10,
+		MaxTurns:      5,
 	}
 }
 
@@ -464,6 +465,8 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 func buildPrompt(bead poller.Bead) string {
 	prompt := `You are a software architect analysing a work item (bead) to determine the best approach.
 
+IMPORTANT: You have a very limited turn budget. You MUST output your JSON verdict IMMEDIATELY in your FIRST response. Do NOT use any tools — do NOT read files, do NOT run commands, do NOT explore the codebase. Your job is to analyse the bead description below and make a decision based solely on what is written. Output the JSON verdict and nothing else.
+
 ## Bead to Analyse
 
 `
@@ -504,7 +507,7 @@ Analyse this bead and decide ONE of the following actions:
 
 ## Output Format
 
-Output your verdict as a JSON block FIRST, before any explanation:
+You MUST output your verdict as a JSON block in your VERY FIRST response. Do NOT make tool calls first. Do NOT investigate the codebase. Emit the JSON immediately:
 
 ` + "```json" + `
 {
@@ -517,6 +520,8 @@ Output your verdict as a JSON block FIRST, before any explanation:
 
 Keep sub_tasks to 2-5 items. Each should be a clear, self-contained task title.
 For "plan", provide concrete steps: which files to modify, what to add, what to test.
+
+REMINDER: Output the JSON verdict NOW. Do not use tools. Your turn budget is very limited.
 `)
 
 	return b.String()
