@@ -194,6 +194,7 @@ Do NOT escalate for:
 - Minor ambiguity you can resolve with a reasonable default
 - Missing documentation you can infer from code
 
+{{- if not .Bead.PriorFeedback}}
 ## No Changes Needed
 
 If after investigation you determine the fix is already implemented, the issue was
@@ -205,6 +206,7 @@ Example:
 ` + "`" + `` + "`" + `` + "`" + `
 NO_CHANGES_NEEDED: The bug was already fixed in commit abc123.
 ` + "`" + `` + "`" + `` + "`" + `
+{{- end}}
 
 ## Changelog Fragment
 

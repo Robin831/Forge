@@ -567,6 +567,23 @@ func Run(ctx context.Context, p Params) *Outcome {
 			return outcome
 		}
 
+		// In review iterations (iteration > 1), NO_CHANGES_NEEDED is not a valid
+		// signal — the warden just raised specific issues that need to be fixed.
+		// Treat it as needs_human so the user can decide how to proceed.
+		if iteration > 1 {
+			if reason := ExtractNoChangesNeeded(smithResult.FullOutput); reason != "" {
+				log.Printf("[pipeline:%s] Smith emitted NO_CHANGES_NEEDED in review iteration %d — escalating to needs_human", workerID, iteration)
+				_ = p.DB.LogEvent(state.EventSmithFailed,
+					fmt.Sprintf("NO_CHANGES_NEEDED in review iteration %d (invalid): %s", iteration, reason),
+					p.Bead.ID, p.AnvilName)
+				outcome.NeedsHuman = true
+				outcome.Error = fmt.Errorf("smith emitted NO_CHANGES_NEEDED in review iteration %d — warden feedback was not addressed", iteration)
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
+		}
+
 		// Check if Smith determined no changes are needed.
 		if reason := ExtractNoChangesNeeded(smithResult.FullOutput); reason != "" {
 			log.Printf("[pipeline:%s] Smith says no changes needed: %s", workerID, reason)
@@ -611,6 +628,21 @@ func Run(ctx context.Context, p Params) *Outcome {
 				fmt.Sprintf("tokens_in=%d tokens_out=%d total=%d cached=%d input=%d tool_calls=%d duration_ms=%d",
 					s.InputTokens, s.OutputTokens, s.TotalTokens, s.Cached, s.Input, s.ToolCalls, s.DurationMs),
 				p.Bead.ID, p.AnvilName)
+		}
+
+		// In review iterations, check whether smith actually made any changes.
+		// If the diff is empty, warden would just reject again with the same
+		// feedback — escalate to needs_human instead of looping pointlessly.
+		if iteration > 1 && hasEmptyDiff(wt.Path) {
+			log.Printf("[pipeline:%s] Smith made no changes in review iteration %d — escalating to needs_human", workerID, iteration)
+			_ = p.DB.LogEvent(state.EventSmithFailed,
+				fmt.Sprintf("Smith made no changes in review iteration %d — warden feedback was not addressed", iteration),
+				p.Bead.ID, p.AnvilName)
+			outcome.NeedsHuman = true
+			outcome.Error = fmt.Errorf("smith made no changes in response to warden feedback (iteration %d)", iteration)
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+			outcome.Duration = time.Since(start)
+			return outcome
 		}
 
 		// Step 3: Run Temper (build/test)
@@ -778,6 +810,34 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 // ExtractNoChangesNeeded scans Smith output for the NO_CHANGES_NEEDED: marker
 // and returns the reason string. Returns empty string if not found.
+// hasEmptyDiff reports whether the worktree has no uncommitted changes and no
+// new commits since the last warden pass. Used to detect review iterations
+// where smith ran but made no actual code changes.
+func hasEmptyDiff(worktreePath string) bool {
+	// Check for uncommitted changes (staged or unstaged).
+	statusCmd := exec.Command("git", "-C", worktreePath, "status", "--porcelain")
+	statusOut, err := statusCmd.Output()
+	if err != nil {
+		return false // assume changes on error
+	}
+	if len(strings.TrimSpace(string(statusOut))) > 0 {
+		return false // uncommitted changes present
+	}
+	// Check for new commits: diff against the merge-base with the remote
+	// tracking branch, falling back to HEAD~1 if that is not available.
+	diffCmd := exec.Command("git", "-C", worktreePath, "diff", "@{upstream}...HEAD")
+	diffOut, err := diffCmd.Output()
+	if err != nil {
+		// No upstream — diff against parent commit.
+		diffCmd2 := exec.Command("git", "-C", worktreePath, "diff", "HEAD~1")
+		diffOut, err = diffCmd2.Output()
+		if err != nil {
+			return false
+		}
+	}
+	return len(strings.TrimSpace(string(diffOut))) == 0
+}
+
 func ExtractNoChangesNeeded(output string) string {
 	const marker = "NO_CHANGES_NEEDED:"
 	for _, line := range strings.Split(output, "\n") {
