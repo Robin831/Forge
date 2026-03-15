@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Robin831/Forge/internal/changelog"
 	"github.com/Robin831/Forge/internal/config"
@@ -469,6 +470,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 		outcome.Iterations = iteration
 		log.Printf("[pipeline:%s] Iteration %d/%d", workerID, iteration, maxIter)
 
+		// Capture HEAD before smith runs so we can detect new commits afterward
+		// and compute the diff for the next iteration's prompt context.
+		preSmithSHA := gitRevParseHEAD(wt.Path)
+
 		// When SkipSmith is set on the first iteration, smith already
 		// completed externally — skip directly to temper verification.
 		if p.SkipSmith && iteration == 1 {
@@ -482,10 +487,6 @@ func Run(ctx context.Context, p Params) *Outcome {
 		_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d (provider: %s)", iteration, providers[activeProviderIdx].Label()), p.Bead.ID, p.AnvilName)
 
 		logDir := wt.Path + "/.forge-logs"
-
-		// Capture HEAD before smith runs so we can detect new commits afterward.
-		// Smith commits and pushes, so @{upstream}...HEAD would be empty post-push.
-		preSmithSHA := gitRevParseHEAD(wt.Path)
 
 		var smithResult *smith.Result
 		for pi := activeProviderIdx; pi < len(providers); pi++ {
@@ -694,6 +695,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 			log.Printf("[pipeline:%s] Temper failed at step: %s", workerID, temperResult.FailedStep)
 
 			if iteration < maxIter {
+				// Capture the diff from this iteration so the next smith
+				// session can see what was already implemented.
+				beadCtx.PriorDiff = truncateDiff(gitDiffSince(wt.Path, preSmithSHA), maxDiffLen)
+
 				// Rebuild prompt with temper feedback for next iteration
 				beadCtx.Iteration = iteration + 1
 				beadCtx.PriorFeedbackSource = "build/test verification"
@@ -811,6 +816,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 				p.Bead.ID, p.AnvilName)
 
 			if iteration < maxIter {
+				// Capture the diff from this iteration so the next smith
+				// session can see what was already implemented.
+				beadCtx.PriorDiff = truncateDiff(gitDiffSince(wt.Path, preSmithSHA), maxDiffLen)
+
 				// Rebuild prompt with warden feedback for next iteration
 				beadCtx.Iteration = iteration + 1
 				beadCtx.PriorFeedbackSource = "Warden code review"
@@ -885,6 +894,55 @@ func hasEmptyDiff(worktreePath, preSmithSHA string) bool {
 		return false
 	}
 	return len(strings.TrimSpace(string(diffOut))) == 0
+}
+
+// maxDiffLen is the maximum number of bytes to include from a prior
+// iteration's diff. Longer diffs are truncated at the last newline before
+// this limit so the prompt stays within a reasonable size.
+const maxDiffLen = 8000
+
+// gitDiffSince returns the diff between fromSHA and HEAD in the given worktree.
+// Returns an empty string on error or if fromSHA is empty.
+func gitDiffSince(worktreePath, fromSHA string) string {
+	if fromSHA == "" {
+		return ""
+	}
+	// Use "git diff <fromSHA>" (without ..HEAD) so that staged/unstaged
+	// changes in the worktree are included alongside committed changes.
+	cmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "diff", fromSHA))
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// truncateDiff truncates a diff string to at most maxLen bytes, cutting at
+// the last newline before the limit so partial lines are not included. It
+// avoids splitting multi-byte UTF-8 sequences by searching for the newline
+// within the valid string prefix rather than slicing raw bytes.
+func truncateDiff(diff string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if len(diff) <= maxLen {
+		return diff
+	}
+	// Find the last newline that starts at or before maxLen bytes. Because
+	// '\n' is a single-byte character, LastIndex on the full string up to a
+	// byte boundary is safe — but the resulting prefix is only valid UTF-8 if
+	// we cut at a newline (which never appears inside a multi-byte sequence).
+	candidate := diff[:maxLen]
+	if idx := strings.LastIndex(candidate, "\n"); idx > 0 {
+		return diff[:idx] + "\n... (diff truncated)"
+	}
+	// No newline found — the entire first chunk is one long line. Trim bytes
+	// from the end until we land on a valid UTF-8 boundary to avoid returning
+	// a string with a split multi-byte rune.
+	for len(candidate) > 0 && !utf8.ValidString(candidate) {
+		candidate = candidate[:len(candidate)-1]
+	}
+	return candidate + "\n... (diff truncated)"
 }
 
 // ExtractNoChangesNeeded scans Smith output for the NO_CHANGES_NEEDED: marker
@@ -992,6 +1050,11 @@ Your previous implementation had issues identified by the %s:
 %s
 
 `, beadCtx.BeadID, beadCtx.AnvilName, source, summary)
+
+	if beadCtx.PriorDiff != "" {
+		fmt.Fprintf(&b, "## What Was Already Implemented\n\n```diff\n%s\n```\n\n", beadCtx.PriorDiff)
+		b.WriteString("**IMPORTANT: Do NOT re-explore the codebase.** The diff above shows exactly what you\nchanged in your previous iteration. Go directly to the files listed in the feedback.\nDo NOT re-read unrelated files or re-explore the codebase.\n\n")
+	}
 
 	if len(issues) > 0 {
 		b.WriteString("## Specific Issues to Fix\n\n")

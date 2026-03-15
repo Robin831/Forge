@@ -47,6 +47,10 @@ type BeadContext struct {
 	// PriorFeedbackSource describes where the feedback came from
 	// (e.g. "Warden review" or "build/test verification").
 	PriorFeedbackSource string
+	// PriorDiff is the git diff from the previous iteration's changes.
+	// Included in the prompt on iteration 2+ so Smith can see what it
+	// already implemented without re-exploring the codebase.
+	PriorDiff string
 }
 
 // Builder constructs prompts from templates and context.
@@ -130,6 +134,29 @@ func readFileSafe(path string) string {
 // defaultTemplate is the standard Smith prompt template.
 // It provides repo context, task description, and clear instructions.
 var defaultTemplate = `You are an autonomous AI developer working on the {{.Bead.AnvilName}} repository.
+{{- if .Bead.PriorFeedback}}
+
+## ITERATION {{.Bead.Iteration}} FIX — Address These Specific Issues
+
+Your previous implementation had issues identified by {{.Bead.PriorFeedbackSource}}.
+Fix ALL of the following problems while preserving the parts that were correct:
+
+{{.Bead.PriorFeedback}}
+{{- if .Bead.PriorDiff}}
+
+### What Was Already Implemented
+
+` + "```" + `diff
+{{.Bead.PriorDiff}}
+` + "```" + `
+
+**IMPORTANT: Do NOT re-explore the codebase.** The diff above shows exactly what you
+changed in your previous iteration. Go directly to the files listed in the feedback.
+Do NOT re-read unrelated files, do NOT re-explore the codebase — the rest of the
+implementation is correct. Focus only on fixing the specific issues above.
+{{- end}}
+
+{{- end}}
 
 ## Task
 
@@ -259,15 +286,6 @@ Guidelines for discovered issues:
 - Stay focused on this bead only — do not fix unrelated issues (create beads for them instead)
 - If the task is unclear, implement the most reasonable interpretation
 - Do not run tests, builds, or linters — Temper handles verification
-{{- if .Bead.PriorFeedback}}
-
-## Previous Iteration Feedback (from {{.Bead.PriorFeedbackSource}})
-
-This is iteration {{.Bead.Iteration}} — your previous attempt had issues. Fix ALL of the
-following problems while preserving the parts that were correct:
-
-{{.Bead.PriorFeedback}}
-{{- end}}
 {{- if .Bead.SchematicPlan}}
 
 ## Implementation Plan (from Schematic analysis)
