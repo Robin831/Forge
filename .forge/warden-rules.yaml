@@ -533,3 +533,9 @@ rules:
       check: Verify that doc comments for parameters accurately reflect all their usages — if a parameter drives behavior (e.g. sets a header value) in addition to logging, the comment must say so or the parameter should be renamed to reflect its full role
       source: copilot:PR#259
       added: "2026-03-15"
+    - id: env-override-dedup
+      category: other
+      pattern: Appending environment variable overrides to a slice without removing pre-existing keys first
+      check: Verify that before appending new env key=value pairs, any existing entries with the same key are stripped from the slice to avoid duplicate keys with undefined precedence across platforms
+      source: copilot:PR#257
+      added: "2026-03-15"
