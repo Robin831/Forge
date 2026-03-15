@@ -455,6 +455,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		logDir := wt.Path + "/.forge-logs"
 
+		// Capture HEAD before smith runs so we can detect new commits afterward.
+		// Smith commits and pushes, so @{upstream}...HEAD would be empty post-push.
+		preSmithSHA := gitRevParseHEAD(wt.Path)
+
 		var smithResult *smith.Result
 		for pi := activeProviderIdx; pi < len(providers); pi++ {
 			pv := providers[pi]
@@ -633,7 +637,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// In review iterations, check whether smith actually made any changes.
 		// If the diff is empty, warden would just reject again with the same
 		// feedback — escalate to needs_human instead of looping pointlessly.
-		if iteration > 1 && hasEmptyDiff(wt.Path) {
+		if iteration > 1 && hasEmptyDiff(wt.Path, preSmithSHA) {
 			log.Printf("[pipeline:%s] Smith made no changes in review iteration %d — escalating to needs_human", workerID, iteration)
 			_ = p.DB.LogEvent(state.EventSmithFailed,
 				fmt.Sprintf("Smith made no changes in review iteration %d — warden feedback was not addressed", iteration),
@@ -810,10 +814,22 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 // ExtractNoChangesNeeded scans Smith output for the NO_CHANGES_NEEDED: marker
 // and returns the reason string. Returns empty string if not found.
+// gitRevParseHEAD returns the current HEAD commit SHA for the given worktree.
+// Returns an empty string on error.
+func gitRevParseHEAD(worktreePath string) string {
+	cmd := exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // hasEmptyDiff reports whether the worktree has no uncommitted changes and no
-// new commits since the last warden pass. Used to detect review iterations
-// where smith ran but made no actual code changes.
-func hasEmptyDiff(worktreePath string) bool {
+// new commits since preSmithSHA. The preSmithSHA is captured before smith runs
+// so that post-push state (where @{upstream} == HEAD) doesn't falsely indicate
+// an empty diff.
+func hasEmptyDiff(worktreePath, preSmithSHA string) bool {
 	// Check for uncommitted changes (staged or unstaged).
 	statusCmd := exec.Command("git", "-C", worktreePath, "status", "--porcelain")
 	statusOut, err := statusCmd.Output()
@@ -823,17 +839,20 @@ func hasEmptyDiff(worktreePath string) bool {
 	if len(strings.TrimSpace(string(statusOut))) > 0 {
 		return false // uncommitted changes present
 	}
-	// Check for new commits: diff against the merge-base with the remote
-	// tracking branch, falling back to HEAD~1 if that is not available.
-	diffCmd := exec.Command("git", "-C", worktreePath, "diff", "@{upstream}...HEAD")
+	// If we have a pre-smith SHA, compare directly against it.
+	if preSmithSHA != "" {
+		currentSHA := gitRevParseHEAD(worktreePath)
+		if currentSHA != "" && currentSHA != preSmithSHA {
+			return false // new commits exist — smith did real work
+		}
+		// Same SHA means no new commits were added.
+		return true
+	}
+	// Fallback: diff against parent commit.
+	diffCmd := exec.Command("git", "-C", worktreePath, "diff", "HEAD~1")
 	diffOut, err := diffCmd.Output()
 	if err != nil {
-		// No upstream — diff against parent commit.
-		diffCmd2 := exec.Command("git", "-C", worktreePath, "diff", "HEAD~1")
-		diffOut, err = diffCmd2.Output()
-		if err != nil {
-			return false
-		}
+		return false
 	}
 	return len(strings.TrimSpace(string(diffOut))) == 0
 }
