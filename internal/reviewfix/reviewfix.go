@@ -312,7 +312,7 @@ func buildReviewFixPrompt(p FixParams, comments []vcs.ReviewComment) string {
 
 1. Address ALL review comments above
 2. Make the requested changes — follow the reviewer's guidance
-3. Ensure the project still builds and tests pass after changes
+3. **Run the test suite** (e.g. "go test ./..." for Go, "dotnet test" for .NET, "npm test" or "npx vitest run" for Node/frontend) and fix any failures before continuing — do NOT commit or push if tests are failing
 4. Commit with message: "fix: address review comments for %s"
 5. Push to branch: %s
 

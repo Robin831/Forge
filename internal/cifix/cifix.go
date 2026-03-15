@@ -346,7 +346,7 @@ func buildCIFixPrompt(p FixParams, tr *temper.Result, prChecksRaw string, failin
 
 1. Analyze the CI failure output above (both remote and local)
 2. Fix the root cause — do NOT just suppress warnings or skip tests
-3. Ensure all build, lint, and test steps pass
+3. **Run the test suite locally** (e.g. "go test ./..." for Go, "dotnet test" for .NET, "npm test" or "npx vitest run" for Node/frontend) and verify it passes — do NOT commit or push if tests are still failing
 4. Commit fixes with message: "fix: resolve CI failures for %s"
 5. Push to branch: %s
 
