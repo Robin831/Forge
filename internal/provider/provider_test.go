@@ -406,6 +406,80 @@ func TestFromConfig(t *testing.T) {
 	}
 }
 
+func TestFromConfig_OllamaBackend(t *testing.T) {
+	got := FromConfig([]string{"claude:ollama"})
+	assert.Len(t, got, 1)
+	assert.Equal(t, Claude, got[0].Kind)
+	assert.Empty(t, got[0].Command, "ollama is a backend, not a command override")
+	assert.Equal(t, "ollama", got[0].Backend)
+	assert.Equal(t, "http://localhost:11434", got[0].Env["ANTHROPIC_BASE_URL"])
+	assert.Equal(t, "ollama", got[0].Env["ANTHROPIC_AUTH_TOKEN"])
+	assert.Equal(t, "1", got[0].Env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"])
+}
+
+func TestFromConfig_OllamaBackendWithModel(t *testing.T) {
+	got := FromConfig([]string{"claude:ollama/qwen2.5-coder:32b"})
+	assert.Len(t, got, 1)
+	assert.Equal(t, Claude, got[0].Kind)
+	assert.Equal(t, "ollama", got[0].Backend)
+	assert.Equal(t, "qwen2.5-coder:32b", got[0].Model)
+	assert.Equal(t, "http://localhost:11434", got[0].Env["ANTHROPIC_BASE_URL"])
+}
+
+func TestFromConfig_OllamaBackendCaseInsensitive(t *testing.T) {
+	got := FromConfig([]string{"claude:OLLAMA/mymodel"})
+	assert.Len(t, got, 1)
+	assert.Equal(t, "ollama", got[0].Backend)
+	assert.NotNil(t, got[0].Env)
+}
+
+func TestFromConfig_OllamaInFallbackChain(t *testing.T) {
+	got := FromConfig([]string{"claude", "claude:ollama/qwen2.5-coder:32b", "gemini"})
+	assert.Len(t, got, 3)
+	// First: regular claude
+	assert.Equal(t, Claude, got[0].Kind)
+	assert.Empty(t, got[0].Backend)
+	assert.Nil(t, got[0].Env)
+	// Second: ollama-backed claude
+	assert.Equal(t, Claude, got[1].Kind)
+	assert.Equal(t, "ollama", got[1].Backend)
+	assert.Equal(t, "qwen2.5-coder:32b", got[1].Model)
+	// Third: gemini
+	assert.Equal(t, Gemini, got[2].Kind)
+}
+
+func TestProvider_Label_WithBackend(t *testing.T) {
+	p := Provider{Kind: Claude, Backend: "ollama", Model: "qwen2.5-coder:32b"}
+	assert.Equal(t, "claude:ollama/qwen2.5-coder:32b", p.Label())
+}
+
+func TestProvider_Label_BackendNoModel(t *testing.T) {
+	p := Provider{Kind: Claude, Backend: "ollama"}
+	assert.Equal(t, "claude:ollama", p.Label())
+}
+
+func TestProvider_OllamaUsesClaudeCmd(t *testing.T) {
+	p := Provider{Kind: Claude, Backend: "ollama"}
+	assert.Equal(t, "claude", p.Cmd())
+}
+
+func TestProvider_OllamaBuildsClaudeArgs(t *testing.T) {
+	p := Provider{Kind: Claude, Backend: "ollama", Model: "qwen2.5-coder:32b"}
+	args := p.BuildArgs(nil)
+	assert.Contains(t, args, "--dangerously-skip-permissions")
+	assert.Contains(t, args, "--model")
+	assert.Contains(t, args, "qwen2.5-coder:32b")
+}
+
+func TestFromConfig_UnknownCommandNotBackend(t *testing.T) {
+	// A non-backend name in the command position should still work as a command override
+	got := FromConfig([]string{"gemini:mybin"})
+	assert.Len(t, got, 1)
+	assert.Equal(t, "mybin", got[0].Command)
+	assert.Empty(t, got[0].Backend)
+	assert.Nil(t, got[0].Env)
+}
+
 func TestIsRateLimitError(t *testing.T) {
 	tests := []struct {
 		name          string

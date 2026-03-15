@@ -7,6 +7,7 @@ package provider
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"time"
 )
@@ -53,6 +54,14 @@ type Provider struct {
 	// Supported for all provider kinds via the --model flag.
 	// When empty the provider's own default model is used.
 	Model string
+	// Backend is a named backend configuration (e.g. "ollama") that sets
+	// environment variables to redirect the provider CLI to an alternative
+	// API endpoint. Empty means the provider's default backend.
+	Backend string
+	// Env holds additional environment variables to set on the subprocess.
+	// These are merged on top of the inherited environment. Populated
+	// automatically for known backends (e.g. ollama) or can be set manually.
+	Env map[string]string
 }
 
 // Cmd returns the effective binary name.
@@ -73,13 +82,18 @@ func (p Provider) Cmd() string {
 }
 
 // Label returns a human-readable identifier for this provider suitable for
-// log messages. When a model is set it returns "kind/model" (e.g.
-// "gemini/gemini-2.5-pro"); otherwise it returns just the kind string.
+// log messages. When a backend is set it includes it (e.g. "claude:ollama/qwen2.5-coder:32b").
+// When a model is set it returns "kind/model" (e.g. "gemini/gemini-2.5-pro");
+// otherwise it returns just the kind string.
 func (p Provider) Label() string {
-	if p.Model != "" {
-		return string(p.Kind) + "/" + p.Model
+	base := string(p.Kind)
+	if p.Backend != "" {
+		base += ":" + p.Backend
 	}
-	return string(p.Kind)
+	if p.Model != "" {
+		return base + "/" + p.Model
+	}
+	return base
 }
 
 // Format returns the output format this provider writes to stdout.
@@ -314,6 +328,18 @@ func Defaults() []Provider {
 	}
 }
 
+// knownBackends maps backend names to the environment variables they inject.
+// When a backend name appears in the ":backend" position of a config string,
+// the Command field is left empty (using the Kind default) and the Env map
+// is populated with these variables instead.
+var knownBackends = map[string]map[string]string{
+	"ollama": {
+		"ANTHROPIC_BASE_URL":                      "http://localhost:11434",
+		"ANTHROPIC_AUTH_TOKEN":                     "ollama",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+	},
+}
+
 // FromConfig builds a Provider slice from configuration strings.
 //
 // Accepted formats:
@@ -326,9 +352,13 @@ func Defaults() []Provider {
 //	"openai"                           – OpenAI Codex CLI with default command and model
 //	"openai/o3"                        – OpenAI Codex CLI, specific model
 //	"openai:codex/o3"                  – OpenAI, custom binary (codex), specific model
+//	"claude:ollama"                    – Claude CLI targeting local Ollama instance
+//	"claude:ollama/qwen2.5-coder:32b"  – Claude CLI targeting Ollama with specific model
 //
 // The optional "/model" suffix selects a specific model to pass via --model.
-// The optional ":command" infix overrides the binary to execute.
+// The optional ":command" infix overrides the binary to execute, unless it
+// matches a known backend name (e.g. "ollama"), in which case environment
+// variables are set instead.
 func FromConfig(specs []string) []Provider {
 	if len(specs) == 0 {
 		return Defaults()
@@ -345,11 +375,20 @@ func FromConfig(specs []string) []Provider {
 			model = s[idx+1:]
 			s = s[:idx]
 		}
-		// Remaining: "kind" or "kind:command".
+		// Remaining: "kind" or "kind:command" or "kind:backend".
 		parts := strings.SplitN(s, ":", 2)
 		pv := Provider{Kind: Kind(strings.ToLower(parts[0])), Model: model}
 		if len(parts) == 2 {
-			pv.Command = parts[1]
+			name := parts[1]
+			if envVars, ok := knownBackends[strings.ToLower(name)]; ok {
+				// Known backend — set env vars, keep default command.
+				pv.Backend = strings.ToLower(name)
+				pv.Env = make(map[string]string, len(envVars))
+				maps.Copy(pv.Env, envVars)
+			} else {
+				// Custom binary override.
+				pv.Command = name
+			}
 		}
 		out = append(out, pv)
 	}
