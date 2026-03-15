@@ -4734,7 +4734,7 @@ func wordWrap(s string, maxWidth int) []string {
 
 // Precompiled patterns for markdown-lite inline styling.
 var (
-	reBold = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reBold = regexp.MustCompile(`(?U)\*\*(.+)\*\*`)
 	reCode = regexp.MustCompile("`([^`]+)`")
 )
 
