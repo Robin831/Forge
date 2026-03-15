@@ -652,7 +652,8 @@ func TestDB_HasOpenPRForBead(t *testing.T) {
 		t.Error("expected no match for different anvil")
 	}
 
-	// Merged PR should not count
+	// Recently-merged PR should still count (grace period protects against
+	// orphan recovery racing with async bead close).
 	pr2 := &PR{
 		Number: 43, Anvil: "anvil-2", BeadID: "bd-2",
 		Branch: "fix-2", Status: PRMerged, CreatedAt: time.Now(),
@@ -660,12 +661,33 @@ func TestDB_HasOpenPRForBead(t *testing.T) {
 	if err := db.InsertPR(pr2); err != nil {
 		t.Fatal(err)
 	}
+	// Set last_checked to now (simulates just-merged).
+	if err := db.UpdatePRStatus(pr2.ID, PRMerged); err != nil {
+		t.Fatal(err)
+	}
+	has, err = db.HasOpenPRForBead("bd-2", "anvil-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Error("recently-merged PR should still count within grace period")
+	}
+
+	// Merged PR with last_checked well outside grace period should NOT count.
+	_, err = db.conn.Exec(
+		`UPDATE prs SET last_checked = ? WHERE id = ?`,
+		time.Now().Add(-mergedPRGracePeriod-time.Hour).Format(dbTimeLayout),
+		pr2.ID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	has, err = db.HasOpenPRForBead("bd-2", "anvil-2")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if has {
-		t.Error("merged PR should not count as open")
+		t.Error("old merged PR should not count as open")
 	}
 }
 

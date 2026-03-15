@@ -831,12 +831,29 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 	return prs, rows.Err()
 }
 
-// HasOpenPRForBead returns true if there is a non-terminal PR for the given bead in the given anvil.
+// mergedPRGracePeriod is the window after a PR is merged during which
+// HasOpenPRForBead still returns true. This prevents orphan recovery from
+// racing with handleBeadCloseOnMerge — the bead close via `bd close` is
+// async and may not complete before the next orphan recovery sweep.
+const mergedPRGracePeriod = 10 * time.Minute
+
+// HasOpenPRForBead returns true if there is a non-terminal PR for the given
+// bead in the given anvil, OR if there is a recently-merged PR still within
+// the grace period (mergedPRGracePeriod). The grace window prevents orphan
+// recovery from falsely reclaiming beads whose PR just merged but whose
+// bd close has not yet completed.
 func (db *DB) HasOpenPRForBead(beadID, anvil string) (bool, error) {
 	var exists bool
 	err := db.conn.QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM prs WHERE bead_id = ? AND anvil = ? AND status IN `+nonTerminalPRStatusSQL()+` LIMIT 1)`,
-		beadID, anvil,
+		`SELECT EXISTS(
+			SELECT 1 FROM prs
+			WHERE bead_id = ? AND anvil = ? AND (
+				status IN `+nonTerminalPRStatusSQL()+`
+				OR (status = 'merged' AND last_checked > ?)
+			)
+			LIMIT 1
+		)`,
+		beadID, anvil, time.Now().Add(-mergedPRGracePeriod).Format(dbTimeLayout),
 	).Scan(&exists)
 	if err != nil {
 		return false, err
