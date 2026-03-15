@@ -2075,3 +2075,311 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 		}
 	})
 }
+
+// TestHandleIPC_WardenRerun verifies the warden_rerun IPC handler validates
+// payloads, checks anvil config, and looks up the branch from the DB.
+func TestHandleIPC_WardenRerun(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir},
+		},
+	})
+
+	t.Run("invalid payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "warden_rerun", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid warden_rerun payload")
+	})
+
+	t.Run("missing fields", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.WardenRerunPayload{BeadID: "X"})
+		resp := d.handleIPC(ipc.Command{Type: "warden_rerun", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("unknown anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.WardenRerunPayload{BeadID: "X", Anvil: "nope"})
+		resp := d.handleIPC(ipc.Command{Type: "warden_rerun", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "not found")
+	})
+
+	t.Run("no branch found", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.WardenRerunPayload{BeadID: "NO-BRANCH", Anvil: "test-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "warden_rerun", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "no branch found")
+	})
+
+	t.Run("success starts background goroutine", func(t *testing.T) {
+		// Insert a worker record so LastWorkerBranchForBead returns a branch.
+		require.NoError(t, db.InsertWorker(&state.Worker{
+			ID:        "w-rerun-1",
+			BeadID:    "BD-RERUN",
+			Anvil:     "test-anvil",
+			Branch:    "forge/BD-RERUN",
+			Status:    state.WorkerFailed,
+			StartedAt: time.Now(),
+		}))
+
+		payload, _ := json.Marshal(ipc.WardenRerunPayload{BeadID: "BD-RERUN", Anvil: "test-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "warden_rerun", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Equal(t, "warden re-review started", msg["message"])
+
+		// Wait for background goroutine to finish (it will fail because no git repo, but that's OK).
+		done := make(chan struct{})
+		go func() { d.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for background goroutine")
+		}
+
+		// Verify event was logged.
+		events, err := db.RecentEvents(20)
+		require.NoError(t, err)
+		found := false
+		for _, ev := range events {
+			if ev.Type == state.EventWardenRerun && ev.BeadID == "BD-RERUN" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "warden_rerun event should be logged")
+	})
+}
+
+// TestHandleIPC_ApproveAsIs verifies the approve_as_is IPC handler validates
+// payloads, checks anvil config, and dispatches a background goroutine.
+func TestHandleIPC_ApproveAsIs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir},
+		},
+	})
+
+	t.Run("invalid payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "approve_as_is", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid approve_as_is payload")
+	})
+
+	t.Run("missing fields", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ApproveAsIsPayload{BeadID: "X"})
+		resp := d.handleIPC(ipc.Command{Type: "approve_as_is", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("unknown anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ApproveAsIsPayload{BeadID: "X", Anvil: "nope"})
+		resp := d.handleIPC(ipc.Command{Type: "approve_as_is", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "not found")
+	})
+
+	t.Run("no branch found", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ApproveAsIsPayload{BeadID: "NO-BRANCH", Anvil: "test-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "approve_as_is", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "no branch found")
+	})
+
+	t.Run("success starts background goroutine", func(t *testing.T) {
+		require.NoError(t, db.InsertWorker(&state.Worker{
+			ID:        "w-approve-1",
+			BeadID:    "BD-APPROVE",
+			Anvil:     "test-anvil",
+			Branch:    "forge/BD-APPROVE",
+			Status:    state.WorkerFailed,
+			StartedAt: time.Now(),
+		}))
+
+		payload, _ := json.Marshal(ipc.ApproveAsIsPayload{BeadID: "BD-APPROVE", Anvil: "test-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "approve_as_is", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Equal(t, "approve as-is started", msg["message"])
+
+		// Wait for background goroutine.
+		done := make(chan struct{})
+		go func() { d.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for background goroutine")
+		}
+
+		// Verify event was logged.
+		events, err := db.RecentEvents(20)
+		require.NoError(t, err)
+		found := false
+		for _, ev := range events {
+			if ev.Type == state.EventApproveAsIs && ev.BeadID == "BD-APPROVE" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "approve_as_is event should be logged")
+	})
+}
+
+// TestHandleIPC_ForceSmith verifies the force_smith IPC handler validates
+// payloads, checks anvil config, and dispatches a background goroutine.
+func TestHandleIPC_ForceSmith(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir},
+		},
+	})
+
+	t.Run("invalid payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "force_smith", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid force_smith payload")
+	})
+
+	t.Run("missing fields", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ForceSmithPayload{BeadID: "X"})
+		resp := d.handleIPC(ipc.Command{Type: "force_smith", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("unknown anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ForceSmithPayload{BeadID: "X", Anvil: "nope"})
+		resp := d.handleIPC(ipc.Command{Type: "force_smith", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "not found")
+	})
+
+	t.Run("no branch found", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ForceSmithPayload{BeadID: "NO-BRANCH", Anvil: "test-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "force_smith", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "no branch found")
+	})
+
+	t.Run("success with user note starts background goroutine", func(t *testing.T) {
+		require.NoError(t, db.InsertWorker(&state.Worker{
+			ID:        "w-force-1",
+			BeadID:    "BD-FORCE",
+			Anvil:     "test-anvil",
+			Branch:    "forge/BD-FORCE",
+			Status:    state.WorkerFailed,
+			StartedAt: time.Now(),
+		}))
+
+		payload, _ := json.Marshal(ipc.ForceSmithPayload{
+			BeadID:   "BD-FORCE",
+			Anvil:    "test-anvil",
+			UserNote: "these issues are real, please actually fix them",
+		})
+		resp := d.handleIPC(ipc.Command{Type: "force_smith", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Equal(t, "force smith started", msg["message"])
+
+		// Wait for background goroutine.
+		done := make(chan struct{})
+		go func() { d.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for background goroutine")
+		}
+
+		// Verify event was logged.
+		events, err := db.RecentEvents(20)
+		require.NoError(t, err)
+		found := false
+		for _, ev := range events {
+			if ev.Type == state.EventForceSmith && ev.BeadID == "BD-FORCE" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "force_smith event should be logged")
+	})
+}

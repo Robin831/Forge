@@ -3845,7 +3845,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		d.logger.Error("warden_rerun: failed to create worktree", "bead", beadID, "error", err)
 		return
 	}
-	defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
+	defer d.worktreeMgr.Remove(context.Background(), anvilCfg.Path, wt)
 
 	workerID := fmt.Sprintf("%s-%s-%d", anvil, beadID, time.Now().UnixNano())
 	_ = d.db.InsertWorker(&state.Worker{
@@ -3866,8 +3866,13 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 
 	title := d.db.BeadTitle(beadID, anvil)
 	var description string
+	var baseBranch string
 	if bead, err := crucible.FetchBead(ctx, beadID, anvilCfg.Path); err == nil {
 		description = bead.Description
+		// Resolve epic branch so PRs target the correct base for crucible children.
+		beads := []poller.Bead{bead}
+		poller.ResolveEpicBranches(ctx, beads, map[string]string{anvil: anvilCfg.Path})
+		baseBranch = beads[0].EpicBranch
 	}
 
 	result, err := warden.Review(ctx, wt.Path, beadID, title, description, anvilCfg.Path, d.db, providers...)
@@ -3901,6 +3906,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 			BeadID:          beadID,
 			Title:           fmt.Sprintf("%s (%s)", title, beadID),
 			Branch:          branch,
+			Base:            baseBranch,
 			AnvilName:       anvil,
 			BeadTitle:       title,
 			BeadDescription: description,
@@ -3950,7 +3956,7 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
 		return
 	}
-	defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
+	defer d.worktreeMgr.Remove(context.Background(), anvilCfg.Path, wt)
 
 	pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", branch))
 	pushCmd.Dir = wt.Path
@@ -3960,8 +3966,13 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 
 	title := d.db.BeadTitle(beadID, anvil)
 	var description string
+	var baseBranch string
 	if bead, err := crucible.FetchBead(ctx, beadID, anvilCfg.Path); err == nil {
 		description = bead.Description
+		// Resolve epic branch so PRs target the correct base for crucible children.
+		beads := []poller.Bead{bead}
+		poller.ResolveEpicBranches(ctx, beads, map[string]string{anvil: anvilCfg.Path})
+		baseBranch = beads[0].EpicBranch
 	}
 
 	pr, err := d.vcsProvider.CreatePR(ctx, vcs.CreateParams{
@@ -3969,6 +3980,7 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 		BeadID:          beadID,
 		Title:           fmt.Sprintf("%s (%s)", title, beadID),
 		Branch:          branch,
+		Base:            baseBranch,
 		AnvilName:       anvil,
 		BeadTitle:       title,
 		BeadDescription: description,
@@ -3996,7 +4008,7 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 		d.logger.Error("force_smith: failed to create worktree", "bead", beadID, "error", err)
 		return
 	}
-	defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
+	defer d.worktreeMgr.Remove(context.Background(), anvilCfg.Path, wt)
 
 	workerID := fmt.Sprintf("%s-%s-%d", anvil, beadID, time.Now().UnixNano())
 	_ = d.db.InsertWorker(&state.Worker{
