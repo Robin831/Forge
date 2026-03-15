@@ -89,6 +89,76 @@ func TestFormatChecklist(t *testing.T) {
 	assert.Contains(t, checklist, "2. [ ] Check: ensure consistent formula (pattern: width calc)")
 }
 
+func TestSaveAndLoadRulesWithColonSpace(t *testing.T) {
+	dir := t.TempDir()
+	rf := &RulesFile{
+		Rules: []Rule{
+			{
+				ID:       "colon-rule",
+				Category: "convention: naming",
+				Pattern:  "pattern: either use X or Y",
+				Check:    "convention: either use camelCase or snake_case",
+				Source:   "copilot:PR#130", // '#' not preceded by whitespace — must NOT be quoted
+				Added:    "2026-03-14",
+			},
+			{
+				ID:       "hash-rule",
+				Category: "comments",
+				Pattern:  "inline comment",
+				Check:    "avoid # style comments in YAML values", // ' #' preceded by whitespace — must be quoted
+				Source:   "manual",
+				Added:    "2026-03-14",
+			},
+		},
+	}
+
+	err := SaveRules(dir, rf)
+	require.NoError(t, err)
+
+	// Round-trip: reload should succeed without parse errors
+	loaded, err := LoadRules(dir)
+	require.NoError(t, err)
+	require.Len(t, loaded.Rules, 2)
+
+	assert.Equal(t, "convention: either use camelCase or snake_case", loaded.Rules[0].Check)
+	assert.Equal(t, "convention: naming", loaded.Rules[0].Category)
+	assert.Equal(t, "pattern: either use X or Y", loaded.Rules[0].Pattern)
+	assert.Equal(t, "copilot:PR#130", loaded.Rules[0].Source)
+	assert.Equal(t, "avoid # style comments in YAML values", loaded.Rules[1].Check)
+
+	// Verify raw YAML: copilot:PR#130 source should NOT be quoted (no spurious churn)
+	data, err := os.ReadFile(filepath.Join(dir, RulesFileName))
+	require.NoError(t, err)
+	raw := string(data)
+	assert.Contains(t, raw, "source: copilot:PR#130",
+		"source with '#' not preceded by whitespace must not be unnecessarily quoted")
+	assert.Contains(t, raw, `"avoid # style comments in YAML values"`,
+		"check with ' #' preceded by whitespace must be double-quoted")
+}
+
+func TestSaveRulesQuotesSpecialValues(t *testing.T) {
+	dir := t.TempDir()
+	rf := &RulesFile{
+		Rules: []Rule{
+			{
+				ID:    "q1",
+				Check: "convention: use consistent naming",
+			},
+		},
+	}
+
+	err := SaveRules(dir, rf)
+	require.NoError(t, err)
+
+	// Read raw YAML and verify the check value is quoted
+	data, err := os.ReadFile(filepath.Join(dir, RulesFileName))
+	require.NoError(t, err)
+
+	raw := string(data)
+	assert.Contains(t, raw, `"convention: use consistent naming"`,
+		"check value containing ': ' should be double-quoted in YAML output")
+}
+
 func TestParsePaginatedComments_SinglePage(t *testing.T) {
 	input := `[{"body":"comment one","path":"foo.go","user":{"login":"copilot[bot]"}},{"body":"comment two","path":"bar.go","user":{"login":"copilot[bot]"}}]`
 	got, err := parsePaginatedComments([]byte(input))
