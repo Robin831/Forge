@@ -4127,6 +4127,8 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 		d.logger.Error("force_smith: failed to fetch bead for pipeline", "bead", beadID, "error", err)
 		return
 	}
+	// FetchBead parses JSON; Anvil is json:"-" so we must set it manually.
+	bead.Anvil = anvil
 
 	smithProviderSpecs := d.cfg.Load().Settings.SmithProviders
 	if len(smithProviderSpecs) == 0 {
@@ -4152,23 +4154,19 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 	})
 
 	if outcome.Error != nil {
+		reason := fmt.Sprintf("Force smith post-pipeline failed: %v", outcome.Error)
 		d.logger.Error("force_smith: post-smith pipeline failed", "bead", beadID, "error", outcome.Error)
-		if outcome.NeedsHuman {
-			reason := fmt.Sprintf("Force smith post-pipeline failed: %v", outcome.Error)
-			_ = d.db.MarkNeedsHuman(beadID, anvil, reason)
-		}
+		_ = d.db.MarkNeedsHuman(beadID, anvil, reason)
 		return
 	}
 
 	if !outcome.Success {
-		if outcome.NeedsHuman {
-			reason := "Force smith: warden rejected, needs human attention"
-			if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" {
-				reason = "Force smith warden: " + outcome.ReviewResult.Summary
-			}
-			_ = d.db.MarkNeedsHuman(beadID, anvil, reason)
+		reason := "Force smith: warden rejected, needs human attention"
+		if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" {
+			reason = "Force smith warden: " + outcome.ReviewResult.Summary
 		}
 		d.logger.Warn("force_smith: post-smith pipeline did not succeed", "bead", beadID, "verdict", outcome.Verdict)
+		_ = d.db.MarkNeedsHuman(beadID, anvil, reason)
 		return
 	}
 
