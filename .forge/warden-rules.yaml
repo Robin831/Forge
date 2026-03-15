@@ -527,3 +527,9 @@ rules:
       check: Verify that grep failures (no match or regex errors) won't cause silent script exit. Prefer a single awk with exact field matching (e.g., $2 == value) that returns zero exit status on no match, and add an explicit error message when the expected value is empty.
       source: copilot:PR#242
       added: "2026-03-14"
+    - id: doc-comment-matches-param-usage
+      category: style
+      pattern: Function parameter used for more purposes than its doc comment describes
+      check: Verify that doc comments for parameters accurately reflect all their usages — if a parameter drives behavior (e.g. sets a header value) in addition to logging, the comment must say so or the parameter should be renamed to reflect its full role
+      source: copilot:PR#259
+      added: "2026-03-15"
