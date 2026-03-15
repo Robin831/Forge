@@ -1799,17 +1799,19 @@ normalPipeline:
 		return
 	}
 
-	// Pipeline succeeded — clear any prior dispatch failures.
+	// Pipeline succeeded — finalize (create PR, notify, close bead).
+	d.finalizePipeline(pipelineCtx, outcome, bead, anvilCfg.Path, claimWorkerID)
+}
+
+// finalizePipeline handles the post-success pipeline flow: clear retries,
+// create PR, send notifications, and close the bead. Both the normal dispatch
+// path and the force smith path call this to avoid duplicating PR creation logic.
+func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome, bead poller.Bead, anvilPath, workerID string) {
 	_ = d.db.ClearRetry(bead.ID, bead.Anvil)
 	d.logger.Info("pipeline succeeded", "bead", bead.ID, "branch", outcome.Branch, "iterations", outcome.Iterations)
 
-	// Create PR — run gh from the main repo dir since the branch is already pushed.
-	// Use pipelineCtx (background-derived) so PR creation succeeds even during
-	// graceful shutdown.
 	// Build a change summary for the PR description.
-	// Priority:
-	// 1. ChangelogSummary (bullets from Smith's changelog fragment)
-	// 2. ReviewResult.Summary (Warden's one-line summary)
+	// Priority: ChangelogSummary > ReviewResult.Summary.
 	var changeSummary string
 	if outcome.ChangelogSummary != "" {
 		changeSummary = outcome.ChangelogSummary
@@ -1817,12 +1819,12 @@ normalPipeline:
 		changeSummary = outcome.ReviewResult.Summary
 	}
 
-	pr, err := d.vcsProvider.CreatePR(pipelineCtx, vcs.CreateParams{
-		WorktreePath:    anvilCfg.Path,
+	pr, err := d.vcsProvider.CreatePR(ctx, vcs.CreateParams{
+		WorktreePath:    anvilPath,
 		BeadID:          bead.ID,
 		Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
 		Branch:          outcome.Branch,
-		Base:            bead.EpicBranch, // empty = use provider default base (currently "main")
+		Base:            bead.EpicBranch, // empty = use provider default base
 		AnvilName:       bead.Anvil,
 		BeadTitle:       bead.Title,
 		BeadDescription: bead.Description,
@@ -1836,7 +1838,6 @@ normalPipeline:
 
 	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
 
-	// Send PR-created notifications.
 	disp := d.dispatcher.Load()
 	go func(anvil, beadID, prURL, prTitle string, prNumber int, dur time.Duration) {
 		notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1848,10 +1849,8 @@ normalPipeline:
 			msg := fmt.Sprintf("PR #%d created: %s", prNumber, prURL)
 			disp.Dispatch(notifCtx, notify.EventPRCreated, beadID, anvil, msg)
 		}
-		// Worker-done notification fires here alongside PR creation since
-		// the pipeline worker is complete at this point.
 		if n := d.notifier.Load(); n != nil {
-			n.WorkerDone(notifCtx, anvil, beadID, claimWorkerID, dur)
+			n.WorkerDone(notifCtx, anvil, beadID, workerID, dur)
 		}
 		if disp != nil {
 			msg := fmt.Sprintf("Worker completed in %s; PR #%d created", dur.Round(time.Second), prNumber)
@@ -1859,13 +1858,9 @@ normalPipeline:
 		}
 	}(bead.Anvil, bead.ID, pr.URL, bead.Title, pr.Number, outcome.Duration)
 
-	// Close the bead — unless other beads depend on it. When dependents exist
-	// (either blocks-type children or depends_on sequencing constraints),
-	// closing now would unblock them before this PR is merged, causing them to
-	// build on stale main. Bellows will close the bead after the PR merges.
 	if len(bead.Blocks) > 0 || bead.DependentCount > 0 {
 		d.logger.Info("bead has dependents, deferring close until PR merges", "bead", bead.ID, "blocks", len(bead.Blocks), "dependent_count", bead.DependentCount)
-	} else if err := d.closeBead(pipelineCtx, bead.ID, anvilCfg.Path, "Implemented by Forge"); err != nil {
+	} else if err := d.closeBead(ctx, bead.ID, anvilPath, "Implemented by Forge"); err != nil {
 		d.logger.Warn("failed to close bead", "bead", bead.ID, "error", err)
 	}
 }
@@ -4102,10 +4097,10 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 			_ = d.db.LogEvent(state.EventSmithDone, "Force smith completed", beadID, anvil)
 			_ = d.db.ResetRetry(beadID, anvil)
 
-			// Mark worktree as removed so the defer doesn't delete the branch.
-			// pipeline.Run will create its own worktree on the same branch
-			// and clean it up when done.
-			wtRemoved = true
+			// Remove the force_smith worktree before pipeline.Run creates
+			// its own — git does not allow two worktrees on the same branch.
+			d.worktreeMgr.Remove(context.Background(), anvilCfg.Path, wt)
+			wtRemoved = true // prevent defer from double-removing
 
 			// Continue with temper → warden → PR via the normal pipeline,
 			// skipping the smith phase (already completed above). The bead
@@ -4177,52 +4172,6 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 		return
 	}
 
-	// Pipeline succeeded — clear any prior dispatch failures and create PR.
-	_ = d.db.ClearRetry(beadID, anvil)
-	d.logger.Info("force_smith: pipeline succeeded, creating PR", "bead", beadID, "branch", outcome.Branch)
-
-	var changeSummary string
-	if outcome.ChangelogSummary != "" {
-		changeSummary = outcome.ChangelogSummary
-	} else if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" {
-		changeSummary = outcome.ReviewResult.Summary
-	}
-
-	pr, err := d.vcsProvider.CreatePR(pipelineCtx, vcs.CreateParams{
-		WorktreePath:    anvilCfg.Path,
-		BeadID:          beadID,
-		Title:           fmt.Sprintf("%s (%s)", bead.Title, beadID),
-		Branch:          outcome.Branch,
-		AnvilName:       anvil,
-		BeadTitle:       bead.Title,
-		BeadDescription: bead.Description,
-		BeadType:        bead.IssueType,
-		ChangeSummary:   changeSummary,
-	})
-	if err != nil {
-		d.logger.Error("force_smith: PR creation failed", "bead", beadID, "error", err)
-		return
-	}
-
-	d.logger.Info("force_smith: PR created", "bead", beadID, "pr", pr.URL)
-
-	// Send notifications.
-	go func(anvilName, bid, prURL, prTitle string, prNumber int, dur time.Duration) {
-		notifCtx, nCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer nCancel()
-		if n := d.notifier.Load(); n != nil {
-			n.PRCreated(notifCtx, anvilName, bid, prNumber, prURL, prTitle)
-		}
-		if disp := d.dispatcher.Load(); disp != nil {
-			msg := fmt.Sprintf("PR #%d created: %s", prNumber, prURL)
-			disp.Dispatch(notifCtx, notify.EventPRCreated, bid, anvilName, msg)
-		}
-	}(anvil, beadID, pr.URL, bead.Title, pr.Number, outcome.Duration)
-
-	// Close the bead unless it has dependents (Bellows will close after merge).
-	if len(bead.Blocks) > 0 || bead.DependentCount > 0 {
-		d.logger.Info("force_smith: bead has dependents, deferring close until PR merges", "bead", beadID)
-	} else if err := d.closeBead(pipelineCtx, beadID, anvilCfg.Path, "Implemented by Forge (force smith)"); err != nil {
-		d.logger.Warn("force_smith: failed to close bead", "bead", beadID, "error", err)
-	}
+	// Pipeline succeeded — use shared finalize path (PR + notify + close).
+	d.finalizePipeline(pipelineCtx, outcome, bead, anvilCfg.Path, outcome.WorkerID)
 }
