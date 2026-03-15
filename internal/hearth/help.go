@@ -72,6 +72,10 @@ var (
 		key.WithKeys("p"),
 		key.WithHelp("p", "PR panel"),
 	)
+	keyFilter = key.NewBinding(
+		key.WithKeys("/"),
+		key.WithHelp("/", "filter events"),
+	)
 	keyQuit = key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
 		key.WithHelp("q", "quit"),
@@ -167,11 +171,11 @@ func (k liveActivityKeyMap) FullHelp() [][]key.Binding {
 type eventsKeyMap struct{ m *Model }
 
 func (k eventsKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyFollow, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyFollow, keyFilter, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k eventsKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyFollow, keyPRPanel},
+		{keyScroll, keyFollow, keyFilter, keyPRPanel},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }

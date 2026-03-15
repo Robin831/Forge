@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -436,6 +437,12 @@ type Model struct {
 	eventRevision         int // incremented on every UpdateEventsMsg to detect content changes
 	eventRevisionCache    int
 
+	// Event filter — text search toggled with '/'
+	eventFilter       textinput.Model
+	eventFilterActive bool   // true when the filter input is focused
+	eventFilterText   string // last applied filter text (for cache invalidation)
+	filteredEvents    []EventItem
+
 	// Toast notifications
 	toasts           []toast // active toasts, newest first
 	nextToastID      int     // monotonically increasing ID for dismissal matching
@@ -490,6 +497,10 @@ func NewModel(ds *DataSource) Model {
 		Bold(true)
 	t.SetStyles(s)
 
+	ti := textinput.New()
+	ti.Placeholder = "Filter events..."
+	ti.CharLimit = 100
+
 	return Model{
 		focused:             PanelQueue,
 		data:                ds,
@@ -498,6 +509,7 @@ func NewModel(ds *DataSource) Model {
 		activityExpanded:    make(map[string]bool),
 		helpModel:           h,
 		workerTable:         t,
+		eventFilter:         ti,
 	}
 }
 
@@ -756,6 +768,44 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Event filter input interception — when the filter textinput is
+		// focused, route keys to it instead of the normal key handling.
+		if m.eventFilterActive {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.eventFilterActive = false
+				m.eventFilter.Blur()
+				m.eventFilter.SetValue("")
+				m.eventFilterText = ""
+				m.applyEventFilter()
+				m.eventScroll = 0
+				m.eventRevision++
+				return m, nil
+			case "enter":
+				m.eventFilterActive = false
+				m.eventFilter.Blur()
+				m.eventFilterText = m.eventFilter.Value()
+				m.applyEventFilter()
+				m.eventScroll = 0
+				m.eventRevision++
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.eventFilter, cmd = m.eventFilter.Update(msg)
+				// Live-filter as user types
+				newText := m.eventFilter.Value()
+				if newText != m.eventFilterText {
+					m.eventFilterText = newText
+					m.applyEventFilter()
+					m.eventScroll = 0
+					m.eventRevision++
+				}
+				return m, cmd
+			}
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -796,6 +846,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Reset activity scroll to top (follow latest — newest items first)
 				m.activityVP.cursor = 0
 				m.activityVP.viewStart = 0
+			}
+
+		case "/":
+			// Activate event filter when events panel is focused
+			if m.focused == PanelEvents {
+				m.eventFilterActive = true
+				cmd := m.eventFilter.Focus()
+				return m, cmd
 			}
 
 		case "K":
@@ -985,6 +1043,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activityExpanded[nav.groupType] = false
 					m.rebuildActivityNav()
 				}
+			}
+			// Clear event filter when Events panel is focused and filter is applied
+			if m.focused == PanelEvents && m.eventFilterText != "" {
+				m.eventFilter.SetValue("")
+				m.eventFilterText = ""
+				m.applyEventFilter()
+				m.eventScroll = 0
+				m.eventRevision++
 			}
 			// Collapse the anvil containing the selected bead
 			if m.focused == PanelQueue && m.queueGrouped {
@@ -1336,6 +1402,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prevKey := m.lastSeenEventKey
 
 		m.events = msg.Items
+		m.applyEventFilter()
 		m.eventRevision++
 		// Auto-scroll to bottom if enabled and new events arrived
 		if m.eventAutoScroll && len(msg.Items) > m.prevEventCount {
@@ -1512,6 +1579,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, SpinnerTick()
+
+	default:
+		// Forward unhandled messages (e.g. cursor blink) to the event filter
+		// textinput when it is active.
+		if m.eventFilterActive {
+			var cmd tea.Cmd
+			m.eventFilter, cmd = m.eventFilter.Update(msg)
+			if cmd != nil {
+				return m, cmd
+			}
+		}
 	}
 
 	return m, nil
@@ -3563,19 +3641,43 @@ func (m *Model) renderEvents(width, height int) string {
 		style = focusedPanelStyle.Width(width)
 	}
 
+	display := m.displayEvents()
+
 	scrollIndicator := ""
 	if !m.eventAutoScroll {
 		scrollIndicator = dimStyle.Render(" ⏸")
 	}
-	title := panelTitleStyle.Render(fmt.Sprintf("Events (%d)%s", len(m.events), scrollIndicator))
+
+	// Show "filtered/total" when a filter is active, otherwise just total
+	var countLabel string
+	if m.eventFilterText != "" {
+		countLabel = fmt.Sprintf("%d/%d", len(display), len(m.events))
+	} else {
+		countLabel = fmt.Sprintf("%d", len(m.events))
+	}
+	title := panelTitleStyle.Render(fmt.Sprintf("Events (%s)%s", countLabel, scrollIndicator))
 
 	var lines []string
 	lines = append(lines, title)
 
-	contentHeight := height - 3 // title + border rows
+	// Show filter input or active filter indicator
+	if m.eventFilterActive {
+		lines = append(lines, m.eventFilter.View())
+	} else if m.eventFilterText != "" {
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("🔍 %s  (/ edit, Esc clear)", m.eventFilterText)))
+	}
 
-	if len(m.events) == 0 {
-		lines = append(lines, dimStyle.Render("No events"))
+	contentHeight := height - 3 // title + border rows
+	if m.eventFilterActive || m.eventFilterText != "" {
+		contentHeight-- // account for the filter line
+	}
+
+	if len(display) == 0 {
+		if m.eventFilterText != "" {
+			lines = append(lines, dimStyle.Render("No matching events"))
+		} else {
+			lines = append(lines, dimStyle.Render("No events"))
+		}
 	} else {
 		allLines := m.renderAllEventLines(width)
 		visible := visibleItems(m.eventScroll, len(allLines), contentHeight)
@@ -3595,10 +3697,12 @@ func (m *Model) renderEvents(width, height int) string {
 // It uses eventLineCount for the selection-mapping pass to avoid a double full render.
 // Caches the results to avoid redundant work.
 func (m *Model) renderAllEventLines(width int) []string {
+	display := m.displayEvents()
+
 	// Calculate what the selected event index WOULD be.
 	selectedEventIdx := -1
 	cumulative := 0
-	for i, event := range m.events {
+	for i, event := range display {
 		count := m.eventLineCount(event, width)
 		if selectedEventIdx == -1 && cumulative+count > m.eventScroll {
 			selectedEventIdx = i
@@ -3608,7 +3712,7 @@ func (m *Model) renderAllEventLines(width int) []string {
 
 	// Check if cache is valid.
 	if m.eventWidthCache == width &&
-		m.eventCountCache == len(m.events) &&
+		m.eventCountCache == len(display) &&
 		m.eventSelectedIdxCache == selectedEventIdx &&
 		m.eventRevisionCache == m.eventRevision &&
 		m.eventLinesCache != nil {
@@ -3617,14 +3721,14 @@ func (m *Model) renderAllEventLines(width int) []string {
 
 	// Cache invalid, perform full render.
 	var allLines []string
-	for i, event := range m.events {
+	for i, event := range display {
 		allLines = append(allLines, m.renderEventLines(event, i == selectedEventIdx, width)...)
 	}
 
 	// Update cache
 	m.eventLinesCache = allLines
 	m.eventWidthCache = width
-	m.eventCountCache = len(m.events)
+	m.eventCountCache = len(display)
 	m.eventSelectedIdxCache = selectedEventIdx
 	m.eventRevisionCache = m.eventRevision
 
@@ -3665,12 +3769,13 @@ func (m *Model) getEventLayout(item EventItem, panelWidth int) eventLayout {
 // eventTotalLineCount returns the total number of rendered lines across all events
 // without allocating styled strings. Used by scrollDown for cheap bounds checking.
 func (m *Model) eventTotalLineCount(width int) int {
-	if m.eventWidthCache == width && m.eventCountCache == len(m.events) && m.eventRevisionCache == m.eventRevision && m.eventLinesCache != nil {
+	display := m.displayEvents()
+	if m.eventWidthCache == width && m.eventCountCache == len(display) && m.eventRevisionCache == m.eventRevision && m.eventLinesCache != nil {
 		return len(m.eventLinesCache)
 	}
 
 	total := 0
-	for _, event := range m.events {
+	for _, event := range display {
 		total += m.eventLineCount(event, width)
 	}
 	return total
@@ -3758,6 +3863,33 @@ func (m *Model) renderEventLines(item EventItem, selected bool, panelWidth int) 
 		}
 	}
 	return lines
+}
+
+// applyEventFilter filters m.events into m.filteredEvents based on
+// m.eventFilterText. Called whenever events or the filter text change.
+func (m *Model) applyEventFilter() {
+	query := strings.ToLower(m.eventFilterText)
+	if query == "" {
+		m.filteredEvents = m.events
+		return
+	}
+	filtered := make([]EventItem, 0, len(m.events))
+	for _, ev := range m.events {
+		line := strings.ToLower(ev.Timestamp + " " + ev.Type + " " + ev.BeadID + " " + ev.Message)
+		if strings.Contains(line, query) {
+			filtered = append(filtered, ev)
+		}
+	}
+	m.filteredEvents = filtered
+}
+
+// displayEvents returns the events to render — filtered if a filter is active,
+// otherwise all events.
+func (m *Model) displayEvents() []EventItem {
+	if m.eventFilterText != "" {
+		return m.filteredEvents
+	}
+	return m.events
 }
 
 // --- Messages for updating panel data ---
