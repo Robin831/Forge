@@ -691,6 +691,61 @@ func TestDB_HasOpenPRForBead(t *testing.T) {
 	}
 }
 
+func TestDB_MergedPRs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	db, err := Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+
+	// Insert a mix of open, merged, and closed PRs.
+	prs := []PR{
+		{Number: 1, Anvil: "anvil-a", BeadID: "bd-1", Branch: "fix-1", Status: PROpen, CreatedAt: now},
+		{Number: 2, Anvil: "anvil-a", BeadID: "bd-2", Branch: "fix-2", Status: PRMerged, CreatedAt: now},
+		{Number: 3, Anvil: "anvil-b", BeadID: "bd-3", Branch: "fix-3", Status: PRMerged, CreatedAt: now},
+		{Number: 4, Anvil: "anvil-a", BeadID: "bd-4", Branch: "fix-4", Status: PRClosed, CreatedAt: now},
+	}
+	for i := range prs {
+		if err := db.InsertPR(&prs[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	merged, err := db.MergedPRs()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 merged PRs, got %d", len(merged))
+	}
+	if merged[0].Number != 2 || merged[1].Number != 3 {
+		t.Errorf("unexpected merged PRs: %v", merged)
+	}
+
+	// No merged PRs after removing them.
+	for _, pr := range merged {
+		if err := db.UpdatePRStatus(pr.ID, PRClosed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	merged, err = db.MergedPRs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged) != 0 {
+		t.Errorf("expected 0 merged PRs after status change, got %d", len(merged))
+	}
+}
+
 func TestDB_StalledWorkers(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

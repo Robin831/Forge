@@ -569,6 +569,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}()
 
+	// Catch-up pass: close beads whose PRs merged while the daemon was down.
+	// Delayed 30s to let bellows complete its first poll cycle.
+	go func() {
+		select {
+		case <-time.After(30 * time.Second):
+			d.reconcileMergedBeads(ctx)
+		case <-ctx.Done():
+		}
+	}()
+
 	// Start stale worker detection loop (always running; respects current config)
 	go d.runStaleDetection(ctx)
 
@@ -885,6 +895,53 @@ func (d *Daemon) handleBeadCloseOnMerge(ctx context.Context, event bellows.PREve
 		d.logger.Warn("failed to close bead after PR merge", "bead", event.BeadID, "pr", event.PRNumber, "error", err)
 	} else {
 		d.logger.Info("bead closed after PR merge", "bead", event.BeadID, "pr", event.PRNumber)
+	}
+}
+
+// reconcileMergedBeads is a startup catch-up pass that closes beads whose PRs
+// merged while the daemon was down (or whose close failed before restart).
+// It queries state.db for all merged PRs and attempts to close any corresponding
+// beads that are still open. Safe to call multiple times — bd close is idempotent.
+func (d *Daemon) reconcileMergedBeads(ctx context.Context) {
+	mergedPRs, err := d.db.MergedPRs()
+	if err != nil {
+		d.logger.Error("reconcileMergedBeads: failed to query merged PRs", "error", err)
+		return
+	}
+
+	if len(mergedPRs) == 0 {
+		return
+	}
+
+	var closed int
+	for _, pr := range mergedPRs {
+		if pr.BeadID == "" || strings.HasPrefix(pr.BeadID, "ext-") {
+			continue
+		}
+		anvilCfg, ok := d.cfg.Load().Anvils[pr.Anvil]
+		if !ok || anvilCfg.Path == "" {
+			continue
+		}
+
+		closeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		err := d.closeBead(closeCtx, pr.BeadID, anvilCfg.Path,
+			fmt.Sprintf("PR #%d merged (startup reconciliation)", pr.Number))
+		cancel()
+		if err != nil {
+			// bd close fails if the bead is already closed — that's fine,
+			// just means we don't need to do anything.
+			d.logger.Debug("reconcileMergedBeads: bead already closed or close failed",
+				"bead", pr.BeadID, "pr", pr.Number, "error", err)
+		} else {
+			closed++
+			d.logger.Info("reconcileMergedBeads: closed bead for merged PR",
+				"bead", pr.BeadID, "pr", pr.Number, "anvil", pr.Anvil)
+		}
+	}
+
+	if closed > 0 {
+		d.logger.Info("reconcileMergedBeads: startup catch-up complete",
+			"closed", closed, "total_merged_prs", len(mergedPRs))
 	}
 }
 
