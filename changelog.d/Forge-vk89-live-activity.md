@@ -1,0 +1,2 @@
+category: Fixed
+- **Live Activity panel flows like a terminal** - New output now arrives at the bottom (oldest at top, newest at bottom) with auto-follow, matching Claude Code's terminal behaviour. The `[tool]` label prefix is removed — tool lines are rendered in a distinct muted blue colour instead. Blank lines now separate every tool call individually, not just on type transitions. Persistent `[result] success` line at startup is suppressed (session-end marker removed from the stream). (Forge-vk89)
