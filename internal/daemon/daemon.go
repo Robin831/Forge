@@ -3886,11 +3886,8 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		d.logger.Info("warden_rerun: approved", "bead", beadID)
 		_ = d.db.LogEvent(state.EventWardenPass, result.Summary, beadID, anvil)
 
-		// Clear needs_human so the bead leaves Needs Attention.
-		_ = d.db.ResetRetry(beadID, anvil)
-
 		// Ensure branch is pushed before creating PR.
-		pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", branch))
+		pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", "--", branch))
 		pushCmd.Dir = wt.Path
 		if pushErr := pushCmd.Run(); pushErr != nil {
 			d.logger.Warn("warden_rerun: push failed (may already be up-to-date)", "error", pushErr)
@@ -3915,8 +3912,11 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		if err != nil {
 			d.logger.Error("warden_rerun: PR creation failed", "bead", beadID, "error", err)
 			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			_ = d.db.MarkNeedsHuman(beadID, anvil, fmt.Sprintf("warden_rerun: PR creation failed: %v", err))
 			return
 		}
+		// Clear needs_human only after PR is successfully created.
+		_ = d.db.ResetRetry(beadID, anvil)
 		d.logger.Info("warden_rerun: PR created", "bead", beadID, "pr", pr.URL)
 		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 		_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created: %s", pr.Number, pr.URL), beadID, anvil)
@@ -3933,9 +3933,6 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config.AnvilConfig) {
 	ctx, cancel := context.WithTimeout(d.runCtx, 5*time.Minute)
 	defer cancel()
-
-	// Clear needs_human so the bead leaves Needs Attention.
-	_ = d.db.ResetRetry(beadID, anvil)
 
 	workerID := fmt.Sprintf("%s-%s-%d", anvil, beadID, time.Now().UnixNano())
 	_ = d.db.InsertWorker(&state.Worker{
@@ -3958,7 +3955,7 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 	}
 	defer d.worktreeMgr.Remove(context.Background(), anvilCfg.Path, wt)
 
-	pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", branch))
+	pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", "--", branch))
 	pushCmd.Dir = wt.Path
 	if pushErr := pushCmd.Run(); pushErr != nil {
 		d.logger.Warn("approve_as_is: push failed (may already be up-to-date)", "error", pushErr)
@@ -3989,9 +3986,12 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 	if err != nil {
 		d.logger.Error("approve_as_is: PR creation failed", "bead", beadID, "error", err)
 		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+		_ = d.db.MarkNeedsHuman(beadID, anvil, fmt.Sprintf("approve_as_is: PR creation failed: %v", err))
 		return
 	}
 
+	// Clear needs_human only after PR is successfully created.
+	_ = d.db.ResetRetry(beadID, anvil)
 	d.logger.Info("approve_as_is: PR created", "bead", beadID, "pr", pr.URL)
 	_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 	_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created (approved as-is): %s", pr.Number, pr.URL), beadID, anvil)
@@ -4031,8 +4031,14 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 
 	// Build prior feedback from the retry reason (which contains warden feedback).
 	var priorFeedback string
-	if retry, err := d.db.GetRetry(beadID, anvil); err == nil && retry != nil && retry.LastError != "" {
-		priorFeedback = retry.LastError
+	iteration := 2 // minimum iteration for a forced re-smith
+	if retry, err := d.db.GetRetry(beadID, anvil); err == nil && retry != nil {
+		if retry.LastError != "" {
+			priorFeedback = retry.LastError
+		}
+		if retry.RetryCount+1 > iteration {
+			iteration = retry.RetryCount + 1
+		}
 	}
 
 	feedbackContext := priorFeedback
@@ -4048,7 +4054,7 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 		AnvilPath:           anvilCfg.Path,
 		WorktreePath:        wt.Path,
 		Branch:              branch,
-		Iteration:           2, // Signal this is a retry iteration
+		Iteration:           iteration,
 		PriorFeedback:       feedbackContext,
 		PriorFeedbackSource: "Warden review (force retry)",
 	})
@@ -4071,20 +4077,28 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 			d.logger.Warn("force_smith: spawn failed, trying next provider", "provider", pv.Label(), "error", err)
 			continue
 		}
+		// Record the spawned process details in the worker row.
+		_ = d.db.UpdateWorkerPID(workerID, process.PID)
+		_ = d.db.UpdateWorkerLogPath(workerID, process.LogPath)
+
 		smithResult := process.Wait()
 		if smithResult != nil && smithResult.ExitCode == 0 {
 			d.logger.Info("force_smith: smith completed", "bead", beadID, "provider", pv.Label())
 			// Push changes.
-			pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", branch))
+			pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", "--", branch))
 			pushCmd.Dir = wt.Path
 			_ = pushCmd.Run()
 
 			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 			_ = d.db.LogEvent(state.EventSmithDone, "Force smith completed", beadID, anvil)
 
-			// Clear retry state and trigger a poll so the bead re-enters the queue
-			// for normal warden review in the next pipeline run.
+			// Clear retry state, reset bead to open, and trigger a poll so the
+			// bead re-enters the queue for normal warden review in the next pipeline run.
 			_ = d.db.ResetRetry(beadID, anvil)
+			statusCmd := executil.HideWindow(exec.CommandContext(d.runCtx, "bd", "update", beadID, "--status=open", "--assignee=", "--json"))
+			if out, statusErr := statusCmd.Output(); statusErr != nil {
+				d.logger.Warn("force_smith: bd update --status=open failed", "bead", beadID, "error", statusErr, "output", strings.TrimSpace(string(out)))
+			}
 			go d.pollAndDispatch(d.runCtx)
 			return
 		}
