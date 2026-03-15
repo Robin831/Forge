@@ -324,6 +324,18 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 				continue
 			}
 
+			// Skip beads that are parked for human attention. Beads with
+			// needs_human=1 or clarification_needed=1 are intentionally
+			// waiting — they don't have an open PR by design and should only
+			// be re-dispatched via explicit user action (Retry, Force Smith,
+			// etc.).
+			if retryRec, err := m.db.GetRetry(beadID, anvilName); err == nil && retryRec != nil {
+				if retryRec.NeedsHuman || retryRec.ClarificationNeeded {
+					m.logger.Debug("skipping bead parked for human attention", "bead", beadID, "anvil", anvilName, "needs_human", retryRec.NeedsHuman, "clarification_needed", retryRec.ClarificationNeeded)
+					continue
+				}
+			}
+
 			// Skip beads that were recently claimed: the pending worker row is
 			// inserted at claim time, but a brand-new claim may not yet have
 			// aged enough to be considered orphaned. Only recover beads that
