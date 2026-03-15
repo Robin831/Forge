@@ -374,7 +374,7 @@ rules:
     - id: docker-ghcr-workflow-permissions
       category: other
       pattern: GoReleaser or workflow config that builds/pushes container images to GHCR
-      check: 'Verify the GitHub Actions workflow grants `packages: write` permission to GITHUB_TOKEN for GHCR pushes. If the workflow builds and publishes multi-architecture images, also ensure it sets up QEMU and Docker buildx before the GoReleaser or docker build step. Missing permissions or required setup will typically surface as explicit 403 or build errors rather than a successful run with missing images.'
+      check: "Verify the GitHub Actions workflow grants `packages: write` permission to GITHUB_TOKEN for GHCR pushes. If the workflow builds and publishes multi-architecture images, also ensure it sets up QEMU and Docker buildx before the GoReleaser or docker build step. Missing permissions or required setup will typically surface as explicit 403 or build errors rather than a successful run with missing images."
       source: copilot:PR#191
       added: "2026-03-11"
     - id: dockerfile-non-root-user
@@ -512,7 +512,7 @@ rules:
     - id: doc-config-gating-accuracy
       category: other
       pattern: Documentation describing config-driven feature behavior without mentioning required enable flags or gating conditions
-      check: 'Verify that docs for config-based features accurately describe any prerequisite flags (e.g. `enabled: true`) that gate whether those config values are actually read and used by the implementation'
+      check: "Verify that docs for config-based features accurately describe any prerequisite flags (e.g. `enabled: true`) that gate whether those config values are actually read and used by the implementation"
       source: copilot:PR#238
       added: "2026-03-14"
     - id: docs-webhook-schema-distinction
@@ -550,4 +550,10 @@ rules:
       pattern: UI components that display keyboard shortcut hints or help text (e.g., '(/ edit, Esc clear)')
       check: Verify that every keyboard shortcut listed in hint/help text is actually implemented for all relevant states. If a hint says 'Esc clears', ensure Esc clears the filter in all states where a filter may be active, not just when the input is focused.
       source: copilot:PR#258
+      added: "2026-03-15"
+    - id: silent-db-error-in-loop
+      category: error-handling
+      pattern: DB/state query errors ignored inside a loop that proceeds to mutate state
+      check: Verify that all errors from state DB queries (e.g., GetRetry, GetWorker) inside recovery/poll loops are handled explicitly — log a warning and continue rather than silently proceeding with stale or zero-value data that could incorrectly reset beads parked for human attention
+      source: copilot:PR#271
       added: "2026-03-15"
