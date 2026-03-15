@@ -1021,6 +1021,76 @@ func TestMaxIterations_StopsAfterConfiguredCap(t *testing.T) {
 	assert.NotNil(t, outcome.Error)
 }
 
+// TestSkipSmith_SkipsSmithOnFirstIteration verifies the SkipSmith=true control-
+// flow path introduced for force-smith resumption:
+//   - SmithRunner is NOT invoked on iteration 1 (smith already ran externally)
+//   - Phases and statuses are updated as expected (initial phase = "temper")
+//   - A request_changes verdict from Warden on iteration 1 triggers a Smith
+//     rerun on iteration 2 (subsequent iterations are NOT skipped)
+func TestSkipSmith_SkipsSmithOnFirstIteration(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	var smithCallCount int
+	params.SmithRunner = func(_ context.Context, _, _ string, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		smithCallCount++
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
+	}
+
+	wardenCallCount := 0
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		wardenCallCount++
+		if wardenCallCount == 1 {
+			// First Warden call: request changes to trigger Smith on iteration 2.
+			return &warden.ReviewResult{
+				Verdict: warden.VerdictRequestChanges,
+				Summary: "Add missing error handling",
+				Issues: []warden.ReviewIssue{
+					{Severity: "error", Message: "unchecked error", File: "main.go", Line: 10},
+				},
+			}, nil
+		}
+		// Second Warden call: approve.
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	params.SkipSmith = true
+	params.MaxIterations = 3
+
+	outcome := Run(context.Background(), params)
+
+	// Pipeline should succeed after iteration 2 (Warden approves on second call).
+	require.True(t, outcome.Success, "pipeline should succeed")
+	assert.Equal(t, warden.VerdictApprove, outcome.Verdict)
+
+	// Smith must NOT have been invoked on iteration 1 (SkipSmith=true),
+	// but MUST have been invoked exactly once on iteration 2.
+	assert.Equal(t, 1, smithCallCount, "Smith should be called exactly once (on iteration 2, not iteration 1)")
+
+	// Warden should have been called twice: once returning request_changes,
+	// once returning approve.
+	assert.Equal(t, 2, wardenCallCount, "Warden should be called twice")
+
+	// Verify a worker row exists in state DB for the bead. The pipeline sets
+	// the initial phase to "temper" (not "smith") when SkipSmith=true. The
+	// final status is either WorkerDone or WorkerMonitoring depending on
+	// whether a VCS provider created a PR.
+	workers, err := db.AllWorkers(0)
+	require.NoError(t, err)
+	require.NotEmpty(t, workers)
+	var found bool
+	for _, w := range workers {
+		if w.BeadID == "test-bead" {
+			found = true
+			assert.True(t,
+				w.Status == state.WorkerDone || w.Status == state.WorkerMonitoring,
+				"worker status should be done or monitoring, got: %s", w.Status)
+			break
+		}
+	}
+	assert.True(t, found, "worker row should exist in state DB")
+}
+
 // TestSchematic_OnSpawn_UpdatesWorkerPIDAndLogPath verifies that when the
 // schematic runner invokes cfg.OnSpawn, the pipeline persists the PID and
 // log_path into the worker row in state.db. This is the key contract that

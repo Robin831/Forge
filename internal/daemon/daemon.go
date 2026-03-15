@@ -1867,17 +1867,19 @@ normalPipeline:
 		return
 	}
 
-	// Pipeline succeeded — clear any prior dispatch failures.
+	// Pipeline succeeded — finalize (create PR, notify, close bead).
+	d.finalizePipeline(pipelineCtx, outcome, bead, anvilCfg.Path, claimWorkerID)
+}
+
+// finalizePipeline handles the post-success pipeline flow: clear retries,
+// create PR, send notifications, and close the bead. Both the normal dispatch
+// path and the force smith path call this to avoid duplicating PR creation logic.
+func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome, bead poller.Bead, anvilPath, workerID string) {
 	_ = d.db.ClearRetry(bead.ID, bead.Anvil)
 	d.logger.Info("pipeline succeeded", "bead", bead.ID, "branch", outcome.Branch, "iterations", outcome.Iterations)
 
-	// Create PR — run gh from the main repo dir since the branch is already pushed.
-	// Use pipelineCtx (background-derived) so PR creation succeeds even during
-	// graceful shutdown.
 	// Build a change summary for the PR description.
-	// Priority:
-	// 1. ChangelogSummary (bullets from Smith's changelog fragment)
-	// 2. ReviewResult.Summary (Warden's one-line summary)
+	// Priority: ChangelogSummary > ReviewResult.Summary.
 	var changeSummary string
 	if outcome.ChangelogSummary != "" {
 		changeSummary = outcome.ChangelogSummary
@@ -1885,12 +1887,12 @@ normalPipeline:
 		changeSummary = outcome.ReviewResult.Summary
 	}
 
-	pr, err := d.vcsProvider.CreatePR(pipelineCtx, vcs.CreateParams{
-		WorktreePath:    anvilCfg.Path,
+	pr, err := d.vcsProvider.CreatePR(ctx, vcs.CreateParams{
+		WorktreePath:    anvilPath,
 		BeadID:          bead.ID,
 		Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
 		Branch:          outcome.Branch,
-		Base:            bead.EpicBranch, // empty = use provider default base (currently "main")
+		Base:            bead.EpicBranch, // empty = use provider default base
 		AnvilName:       bead.Anvil,
 		BeadTitle:       bead.Title,
 		BeadDescription: bead.Description,
@@ -1904,7 +1906,6 @@ normalPipeline:
 
 	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
 
-	// Send PR-created notifications.
 	disp := d.dispatcher.Load()
 	go func(anvil, beadID, prURL, prTitle string, prNumber int, dur time.Duration) {
 		notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1916,10 +1917,8 @@ normalPipeline:
 			msg := fmt.Sprintf("PR #%d created: %s", prNumber, prURL)
 			disp.Dispatch(notifCtx, notify.EventPRCreated, beadID, anvil, msg)
 		}
-		// Worker-done notification fires here alongside PR creation since
-		// the pipeline worker is complete at this point.
 		if n := d.notifier.Load(); n != nil {
-			n.WorkerDone(notifCtx, anvil, beadID, claimWorkerID, dur)
+			n.WorkerDone(notifCtx, anvil, beadID, workerID, dur)
 		}
 		if disp != nil {
 			msg := fmt.Sprintf("Worker completed in %s; PR #%d created", dur.Round(time.Second), prNumber)
@@ -1927,13 +1926,9 @@ normalPipeline:
 		}
 	}(bead.Anvil, bead.ID, pr.URL, bead.Title, pr.Number, outcome.Duration)
 
-	// Close the bead — unless other beads depend on it. When dependents exist
-	// (either blocks-type children or depends_on sequencing constraints),
-	// closing now would unblock them before this PR is merged, causing them to
-	// build on stale main. Bellows will close the bead after the PR merges.
 	if len(bead.Blocks) > 0 || bead.DependentCount > 0 {
 		d.logger.Info("bead has dependents, deferring close until PR merges", "bead", bead.ID, "blocks", len(bead.Blocks), "dependent_count", bead.DependentCount)
-	} else if err := d.closeBead(pipelineCtx, bead.ID, anvilCfg.Path, "Implemented by Forge"); err != nil {
+	} else if err := d.closeBead(ctx, bead.ID, anvilPath, "Implemented by Forge"); err != nil {
 		d.logger.Warn("failed to close bead", "bead", bead.ID, "error", err)
 	}
 }
@@ -4080,7 +4075,12 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 		d.logger.Error("force_smith: failed to create worktree", "bead", beadID, "error", err)
 		return
 	}
-	defer d.worktreeMgr.Remove(context.Background(), anvilCfg.Path, wt)
+	wtRemoved := false
+	defer func() {
+		if !wtRemoved {
+			d.worktreeMgr.Remove(context.Background(), anvilCfg.Path, wt)
+		}
+	}()
 
 	workerID := fmt.Sprintf("%s-%s-%d", anvil, beadID, time.Now().UnixNano())
 	_ = d.db.InsertWorker(&state.Worker{
@@ -4156,22 +4156,24 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 		smithResult := process.Wait()
 		if smithResult != nil && smithResult.ExitCode == 0 {
 			d.logger.Info("force_smith: smith completed", "bead", beadID, "provider", pv.Label())
-			// Push changes.
+			// Push changes before removing the force_smith worktree.
 			pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", "--", branch))
 			pushCmd.Dir = wt.Path
 			_ = pushCmd.Run()
 
 			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 			_ = d.db.LogEvent(state.EventSmithDone, "Force smith completed", beadID, anvil)
-
-			// Clear retry state, reset bead to open, and trigger a poll so the
-			// bead re-enters the queue for normal warden review in the next pipeline run.
 			_ = d.db.ResetRetry(beadID, anvil)
-			statusCmd := executil.HideWindow(exec.CommandContext(d.runCtx, "bd", "update", beadID, "--status=open", "--assignee=", "--json"))
-			if out, statusErr := statusCmd.Output(); statusErr != nil {
-				d.logger.Warn("force_smith: bd update --status=open failed", "bead", beadID, "error", statusErr, "output", strings.TrimSpace(string(out)))
-			}
-			go d.pollAndDispatch(d.runCtx)
+
+			// Remove the force_smith worktree before pipeline.Run creates
+			// its own — git does not allow two worktrees on the same branch.
+			d.worktreeMgr.Remove(context.Background(), anvilCfg.Path, wt)
+			wtRemoved = true // prevent defer from double-removing
+
+			// Continue with temper → warden → PR via the normal pipeline,
+			// skipping the smith phase (already completed above). The bead
+			// stays in_progress throughout — no reset to open needed.
+			d.runPostForceSmithPipeline(ctx, beadID, anvil, anvilCfg)
 			return
 		}
 		if smithResult != nil {
@@ -4182,4 +4184,72 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 	d.logger.Error("force_smith: all providers failed", "bead", beadID, "exit_code", lastExitCode)
 	_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
 	_ = d.db.LogEvent(state.EventSmithFailed, fmt.Sprintf("Force smith failed: exit code %d", lastExitCode), beadID, anvil)
+}
+
+// runPostForceSmithPipeline runs the temper → warden → PR phases via
+// pipeline.Run with SkipSmith=true after force smith has completed.
+func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil string, anvilCfg config.AnvilConfig) {
+	// Fetch full bead metadata so the pipeline has title/description.
+	bead, err := crucible.FetchBead(ctx, beadID, anvilCfg.Path)
+	if err != nil {
+		d.logger.Error("force_smith: failed to fetch bead for pipeline", "bead", beadID, "error", err)
+		return
+	}
+	// FetchBead parses JSON; Anvil is json:"-" so we must set it manually.
+	bead.Anvil = anvil
+
+	// Resolve epic branch so that Crucible children target the correct base
+	// branch for PR creation. FetchBead does not populate EpicBranch (it is
+	// json:"-" and normally filled by poller.ResolveEpicBranches), so we
+	// resolve it explicitly here — mirroring the warden_rerun/approve_as_is flows.
+	beads := []poller.Bead{bead}
+	poller.ResolveEpicBranches(ctx, beads, map[string]string{anvil: anvilCfg.Path})
+	bead.EpicBranch = beads[0].EpicBranch
+
+	smithProviderSpecs := d.cfg.Load().Settings.SmithProviders
+	if len(smithProviderSpecs) == 0 {
+		smithProviderSpecs = d.cfg.Load().Settings.Providers
+	}
+
+	// Derive from context.Background() (not d.runCtx) so that a graceful
+	// shutdown does not cancel Temper/Warden/PR creation mid-flight — matching
+	// the same pattern used for normal dispatch pipelines.
+	pipelineCtx, cancel := context.WithTimeout(context.Background(), d.cfg.Load().Settings.SmithTimeout)
+	defer cancel()
+
+	outcome := pipeline.Run(pipelineCtx, pipeline.Params{
+		DB:              d.db,
+		WorktreeManager: d.worktreeMgr,
+		PromptBuilder:   d.promptBuilder,
+		AnvilName:       anvil,
+		AnvilConfig:     anvilCfg,
+		Bead:            bead,
+		BaseBranch:      bead.EpicBranch, // empty for non-Crucible beads; set for children
+		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
+		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
+		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
+		Notifier:        d.notifier.Load(),
+		MaxIterations:   d.cfg.Load().Settings.MaxPipelineIterations,
+		SkipSmith:       true,
+	})
+
+	if outcome.Error != nil {
+		reason := fmt.Sprintf("Force smith post-pipeline failed: %v", outcome.Error)
+		d.logger.Error("force_smith: post-smith pipeline failed", "bead", beadID, "error", outcome.Error)
+		_ = d.db.MarkNeedsHuman(beadID, anvil, reason)
+		return
+	}
+
+	if !outcome.Success {
+		reason := "Force smith: warden rejected, needs human attention"
+		if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" {
+			reason = "Force smith warden: " + outcome.ReviewResult.Summary
+		}
+		d.logger.Warn("force_smith: post-smith pipeline did not succeed", "bead", beadID, "verdict", outcome.Verdict)
+		_ = d.db.MarkNeedsHuman(beadID, anvil, reason)
+		return
+	}
+
+	// Pipeline succeeded — use shared finalize path (PR + notify + close).
+	d.finalizePipeline(pipelineCtx, outcome, bead, anvilCfg.Path, outcome.WorkerID)
 }
