@@ -469,6 +469,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 		outcome.Iterations = iteration
 		log.Printf("[pipeline:%s] Iteration %d/%d", workerID, iteration, maxIter)
 
+		// Capture HEAD before smith runs so we can detect new commits afterward
+		// and compute the diff for the next iteration's prompt context.
+		preSmithSHA := gitRevParseHEAD(wt.Path)
+
 		// When SkipSmith is set on the first iteration, smith already
 		// completed externally — skip directly to temper verification.
 		if p.SkipSmith && iteration == 1 {
@@ -482,10 +486,6 @@ func Run(ctx context.Context, p Params) *Outcome {
 		_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d (provider: %s)", iteration, providers[activeProviderIdx].Label()), p.Bead.ID, p.AnvilName)
 
 		logDir := wt.Path + "/.forge-logs"
-
-		// Capture HEAD before smith runs so we can detect new commits afterward.
-		// Smith commits and pushes, so @{upstream}...HEAD would be empty post-push.
-		preSmithSHA := gitRevParseHEAD(wt.Path)
 
 		var smithResult *smith.Result
 		for pi := activeProviderIdx; pi < len(providers); pi++ {
@@ -694,6 +694,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 			log.Printf("[pipeline:%s] Temper failed at step: %s", workerID, temperResult.FailedStep)
 
 			if iteration < maxIter {
+				// Capture the diff from this iteration so the next smith
+				// session can see what was already implemented.
+				beadCtx.PriorDiff = truncateDiff(gitDiffSince(wt.Path, preSmithSHA), maxDiffLen)
+
 				// Rebuild prompt with temper feedback for next iteration
 				beadCtx.Iteration = iteration + 1
 				beadCtx.PriorFeedbackSource = "build/test verification"
@@ -811,6 +815,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 				p.Bead.ID, p.AnvilName)
 
 			if iteration < maxIter {
+				// Capture the diff from this iteration so the next smith
+				// session can see what was already implemented.
+				beadCtx.PriorDiff = truncateDiff(gitDiffSince(wt.Path, preSmithSHA), maxDiffLen)
+
 				// Rebuild prompt with warden feedback for next iteration
 				beadCtx.Iteration = iteration + 1
 				beadCtx.PriorFeedbackSource = "Warden code review"
@@ -885,6 +893,38 @@ func hasEmptyDiff(worktreePath, preSmithSHA string) bool {
 		return false
 	}
 	return len(strings.TrimSpace(string(diffOut))) == 0
+}
+
+// maxDiffLen is the maximum number of characters to include from a prior
+// iteration's diff. Longer diffs are truncated at the last newline before
+// this limit so the prompt stays within a reasonable size.
+const maxDiffLen = 8000
+
+// gitDiffSince returns the diff between fromSHA and HEAD in the given worktree.
+// Returns an empty string on error or if fromSHA is empty.
+func gitDiffSince(worktreePath, fromSHA string) string {
+	if fromSHA == "" {
+		return ""
+	}
+	cmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "diff", fromSHA+"..HEAD"))
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// truncateDiff truncates a diff string to at most maxLen characters, cutting
+// at the last newline before the limit so partial lines are not included.
+func truncateDiff(diff string, maxLen int) string {
+	if len(diff) <= maxLen {
+		return diff
+	}
+	truncated := diff[:maxLen]
+	if idx := strings.LastIndex(truncated, "\n"); idx > 0 {
+		truncated = truncated[:idx]
+	}
+	return truncated + "\n... (diff truncated)"
 }
 
 // ExtractNoChangesNeeded scans Smith output for the NO_CHANGES_NEEDED: marker
@@ -992,6 +1032,11 @@ Your previous implementation had issues identified by the %s:
 %s
 
 `, beadCtx.BeadID, beadCtx.AnvilName, source, summary)
+
+	if beadCtx.PriorDiff != "" {
+		fmt.Fprintf(&b, "## What Was Already Implemented\n\n```diff\n%s\n```\n\n", beadCtx.PriorDiff)
+		b.WriteString("**IMPORTANT: Do NOT re-explore the codebase.** The diff above shows exactly what you\nchanged in your previous iteration. Go directly to the files listed in the feedback.\nDo NOT re-read unrelated files or re-explore the codebase.\n\n")
+	}
 
 	if len(issues) > 0 {
 		b.WriteString("## Specific Issues to Fix\n\n")
