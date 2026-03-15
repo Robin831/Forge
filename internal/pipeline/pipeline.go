@@ -812,8 +812,6 @@ func Run(ctx context.Context, p Params) *Outcome {
 	return outcome
 }
 
-// ExtractNoChangesNeeded scans Smith output for the NO_CHANGES_NEEDED: marker
-// and returns the reason string. Returns empty string if not found.
 // gitRevParseHEAD returns the current HEAD commit SHA for the given worktree.
 // Returns an empty string on error.
 func gitRevParseHEAD(worktreePath string) string {
@@ -857,6 +855,8 @@ func hasEmptyDiff(worktreePath, preSmithSHA string) bool {
 	return len(strings.TrimSpace(string(diffOut))) == 0
 }
 
+// ExtractNoChangesNeeded scans Smith output for the NO_CHANGES_NEEDED: marker
+// and returns the reason string. Returns empty string if not found.
 func ExtractNoChangesNeeded(output string) string {
 	const marker = "NO_CHANGES_NEEDED:"
 	for _, line := range strings.Split(output, "\n") {

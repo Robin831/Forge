@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -1066,4 +1067,76 @@ func TestSchematic_OnSpawn_UpdatesWorkerPIDAndLogPath(t *testing.T) {
 
 	assert.Equal(t, 12345, snapshotPID, "worker PID should be updated via OnSpawn callback")
 	assert.Equal(t, "/fake/smith.log", snapshotLogPath, "worker log_path should be updated via OnSpawn callback")
+}
+
+// initGitRepo creates a temporary git repo with an initial commit and returns
+// the repo path and the HEAD SHA after that commit.
+func initGitRepo(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		require.NoError(t, cmd.Run(), "git %v", args)
+	}
+
+	// Create an initial commit so HEAD exists.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644))
+	cmd := exec.Command("git", "-C", dir, "add", ".")
+	require.NoError(t, cmd.Run())
+	cmd = exec.Command("git", "-C", dir, "commit", "-m", "initial")
+	require.NoError(t, cmd.Run())
+
+	sha := gitRevParseHEAD(dir)
+	require.NotEmpty(t, sha)
+	return dir, sha
+}
+
+// TestHasEmptyDiff_NewCommits verifies that hasEmptyDiff returns false when
+// smith adds commits after the saved pre-smith SHA (the core fix for Forge-z9h6).
+func TestHasEmptyDiff_NewCommits(t *testing.T) {
+	dir, preSHA := initGitRepo(t)
+
+	// Simulate smith adding a commit.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main"), 0o644))
+	cmd := exec.Command("git", "-C", dir, "add", ".")
+	require.NoError(t, cmd.Run())
+	cmd = exec.Command("git", "-C", dir, "commit", "-m", "fix: smith did work")
+	require.NoError(t, cmd.Run())
+
+	assert.False(t, hasEmptyDiff(dir, preSHA), "hasEmptyDiff should be false when smith added commits")
+}
+
+// TestHasEmptyDiff_NoCommits verifies that hasEmptyDiff returns true when
+// HEAD hasn't moved from the pre-smith SHA (smith made no changes).
+func TestHasEmptyDiff_NoCommits(t *testing.T) {
+	dir, preSHA := initGitRepo(t)
+
+	// Smith ran but made no commits — HEAD is still at preSHA.
+	assert.True(t, hasEmptyDiff(dir, preSHA), "hasEmptyDiff should be true when no commits were added")
+}
+
+// TestHasEmptyDiff_UncommittedChanges verifies that hasEmptyDiff returns false
+// when there are uncommitted changes in the worktree, even with the same HEAD SHA.
+func TestHasEmptyDiff_UncommittedChanges(t *testing.T) {
+	dir, preSHA := initGitRepo(t)
+
+	// Smith left unstaged changes without committing.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "wip.go"), []byte("package main"), 0o644))
+
+	assert.False(t, hasEmptyDiff(dir, preSHA), "hasEmptyDiff should be false when uncommitted changes exist")
+}
+
+// TestHasEmptyDiff_EmptyPreSmithSHA verifies the fallback path when no
+// pre-smith SHA was captured (e.g. gitRevParseHEAD failed).
+func TestHasEmptyDiff_EmptyPreSmithSHA(t *testing.T) {
+	dir, _ := initGitRepo(t)
+
+	// With empty preSHA, falls back to diffing HEAD~1. Since the repo has
+	// only one commit, HEAD~1 will fail and hasEmptyDiff returns false.
+	assert.False(t, hasEmptyDiff(dir, ""), "hasEmptyDiff with empty preSHA and single commit should return false")
 }
