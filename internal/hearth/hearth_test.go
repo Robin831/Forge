@@ -880,11 +880,11 @@ func TestFormatMultiLineEntry(t *testing.T) {
 			wantLen:  0,
 		},
 		{
-			name:      "long line truncated by runes not bytes",
-			raw:       string([]rune("日本語テキスト abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890 end")),
+			name:      "long line is not truncated (rendering layer handles wrap)",
+			raw:       "日本語テキスト abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890 end",
 			maxLines:  1,
 			wantLen:   1,
-			wantFirst: "[text] " + string([]rune("日本語テキスト abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890 end")[:67]) + "...",
+			wantFirst: "[text] 日本語テキスト abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890 end",
 		},
 	}
 	for _, tt := range tests {
@@ -1135,7 +1135,7 @@ func TestFormatToolCall(t *testing.T) {
 
 func TestParseWorkerActivityMultiLineText(t *testing.T) {
 	// Text and thinking blocks with embedded newlines should produce
-	// continuation-indented entries (up to 3 lines each).
+	// continuation-indented entries (up to 20 lines each).
 	logContent := `{"type":"system","subtype":"init","session_id":"ml"}
 {"type":"assistant","message":{"content":[{"type":"text","text":"First line\nSecond line\nThird line\nFourth line (should be dropped)"}]}}
 {"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Think line 1\nThink line 2"}]}}
@@ -1148,9 +1148,10 @@ func TestParseWorkerActivityMultiLineText(t *testing.T) {
 
 	entries := parseWorkerActivity(logPath, 100)
 
-	// Expect: 3 text lines + 2 think lines + 1 result line = 6
-	if len(entries) != 6 {
-		t.Fatalf("got %d entries, want 6: %v", len(entries), entries)
+	// Expect: 4 text lines + 2 think lines + 1 result line = 7
+	// (maxLines=20 keeps all lines including the fourth)
+	if len(entries) != 7 {
+		t.Fatalf("got %d entries, want 7: %v", len(entries), entries)
 	}
 	if !strings.HasPrefix(entries[0], "[text] ") {
 		t.Errorf("entries[0] = %q, want '[text] ' prefix", entries[0])
@@ -1161,17 +1162,14 @@ func TestParseWorkerActivityMultiLineText(t *testing.T) {
 	if !strings.HasPrefix(entries[2], "       ") {
 		t.Errorf("entries[2] = %q, want continuation indent", entries[2])
 	}
-	// Fourth line should have been dropped (maxLines=3).
-	for _, e := range entries {
-		if strings.Contains(e, "Fourth") {
-			t.Errorf("fourth line should have been dropped, but found in entries: %v", entries)
-		}
+	if !strings.HasPrefix(entries[3], "       ") {
+		t.Errorf("entries[3] = %q, want continuation indent for fourth line", entries[3])
 	}
-	if !strings.HasPrefix(entries[3], "[think] ") {
-		t.Errorf("entries[3] = %q, want '[think] ' prefix", entries[3])
+	if !strings.HasPrefix(entries[4], "[think] ") {
+		t.Errorf("entries[4] = %q, want '[think] ' prefix", entries[4])
 	}
-	if !strings.HasPrefix(entries[4], "        ") {
-		t.Errorf("entries[4] = %q, want think continuation indent", entries[4])
+	if !strings.HasPrefix(entries[5], "        ") {
+		t.Errorf("entries[5] = %q, want think continuation indent", entries[5])
 	}
 }
 
