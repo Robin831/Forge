@@ -1,0 +1,2 @@
+category: Changed
+- **Live Activity panel now flows like Claude CLI terminal output** - Removed collapsible group headers (▸/▾) and [text]/[think] prefixes. Activity lines now flow continuously with blank-line separators between logical blocks. Tool entries keep their [tool] prefix. Thinking lines remain visually dimmed. Fixed an overflow bug where expanded groups could grow past the panel boundary. (Forge-hy0b)
