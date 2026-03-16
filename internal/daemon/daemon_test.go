@@ -1893,9 +1893,11 @@ func TestHandleAutoMerge(t *testing.T) {
 	newDaemon := func(mergeErr error) (*Daemon, *mockVCSProvider) {
 		mock := &mockVCSProvider{mergeErr: mergeErr}
 		d := &Daemon{
-			db:          db,
-			logger:      logger,
-			vcsProvider: mock,
+			db:     db,
+			logger: logger,
+			vcsProviders: map[string]vcs.Provider{
+				"test-anvil": mock,
+			},
 		}
 		return d, mock
 	}

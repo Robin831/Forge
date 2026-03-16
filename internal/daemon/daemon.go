@@ -168,8 +168,9 @@ type Daemon struct {
 	// to avoid spamming the event log every poll cycle.
 	costLimitLoggedDate atomic.Value // stores string (YYYY-MM-DD)
 
-	// VCS provider for PR operations (GitHub, GitLab, etc.).
-	vcsProvider vcs.Provider
+	// Per-anvil VCS providers for PR operations (GitHub, GitLab, etc.).
+	vcsProviders   map[string]vcs.Provider
+	vcsProvidersMu sync.RWMutex
 
 	// labelAdder adds a label to a bead via the bd CLI. Defaults to the real
 	// bd-update implementation; may be replaced in tests to avoid exec.Command.
@@ -252,9 +253,8 @@ func New(cfg *config.Config) (*Daemon, error) {
 		dispatcher = notify.NewWebhookDispatcher(webhookTargets, logger)
 	}
 
-	// Create VCS provider. Currently all anvils use GitHub; future multi-platform
-	// support will create per-anvil providers based on anvil config.
-	vcsProvider := github.New(db)
+	// Create per-anvil VCS providers from each anvil's platform config.
+	vcsProviders := buildVCSProviders(cfg, db, logger)
 
 	d := &Daemon{
 		db:            db,
@@ -266,7 +266,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
-		vcsProvider:   vcsProvider,
+		vcsProviders:  vcsProviders,
 	}
 	d.notifier.Store(notifier)
 	d.dispatcher.Store(dispatcher)
@@ -356,6 +356,42 @@ func (d *Daemon) config() *config.Config {
 	return d.cfg.Load()
 }
 
+// vcsForAnvil returns the VCS provider for the given anvil name.
+// Falls back to a GitHub provider if no per-anvil provider is found.
+func (d *Daemon) vcsForAnvil(anvil string) vcs.Provider {
+	d.vcsProvidersMu.RLock()
+	p, ok := d.vcsProviders[anvil]
+	d.vcsProvidersMu.RUnlock()
+	if ok && p != nil {
+		return p
+	}
+	// Fallback to GitHub with DB access for PR state tracking.
+	return github.New(d.db)
+}
+
+// buildVCSProviders creates a VCS provider for each configured anvil based on
+// its platform setting. Anvils without a platform default to GitHub.
+// The state DB is passed to the GitHub provider so it can record PR metadata.
+func buildVCSProviders(cfg *config.Config, db *state.DB, logger *slog.Logger) map[string]vcs.Provider {
+	providers := make(map[string]vcs.Provider, len(cfg.Anvils))
+	for name, anvil := range cfg.Anvils {
+		platform, _ := vcs.ParsePlatform(anvil.Platform)
+		switch platform {
+		case vcs.GitHub:
+			providers[name] = github.New(db)
+		default:
+			p, err := vcs.ForPlatform(anvil.Platform)
+			if err != nil {
+				logger.Warn("failed to create VCS provider for anvil, falling back to GitHub",
+					"anvil", name, "platform", anvil.Platform, "error", err)
+				p = github.New(db)
+			}
+			providers[name] = p
+		}
+	}
+	return providers
+}
+
 // anvilPathMap extracts directory paths from all configured anvils.
 func anvilPathMap(cfg *config.Config) map[string]string {
 	m := make(map[string]string)
@@ -367,17 +403,18 @@ func anvilPathMap(cfg *config.Config) map[string]string {
 	return m
 }
 
-// reconcileGitHubPRs fetches open PRs from GitHub and registers any that are
-// missing from the state DB. This ensures Bellows monitors PRs even after a
-// DB reset or if the PR was created outside a recorded Forge pipeline session.
-func (d *Daemon) reconcileGitHubPRs(ctx context.Context) {
+// reconcileOpenPRs fetches open PRs from each anvil's VCS platform and
+// registers any that are missing from the state DB. This ensures Bellows
+// monitors PRs even after a DB reset or if the PR was created outside a
+// recorded Forge pipeline session.
+func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 	for anvilName, anvilCfg := range d.cfg.Load().Anvils {
 		if anvilCfg.Path == "" {
 			continue
 		}
-		prs, err := d.vcsProvider.ListOpenPRs(ctx, anvilCfg.Path)
+		prs, err := d.vcsForAnvil(anvilName).ListOpenPRs(ctx, anvilCfg.Path)
 		if err != nil {
-			d.logger.Warn("reconcile: could not list GitHub PRs", "anvil", anvilName, "err", err)
+			d.logger.Warn("reconcile: could not list open PRs", "anvil", anvilName, "err", err)
 			continue
 		}
 		for _, pr := range prs {
@@ -539,7 +576,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			monitorAnvils[name] = a.Path
 		}
 	}
-	d.bellowsMonitor = bellows.New(d.db, d.vcsProvider, d.cfg.Load().Settings.BellowsInterval, monitorAnvils, func() bool {
+	d.bellowsMonitor = bellows.New(d.db, d.vcsForAnvil, d.cfg.Load().Settings.BellowsInterval, monitorAnvils, func() bool {
 		return d.cfg.Load().Settings.AutoLearnRules
 	}, func() int {
 		return d.cfg.Load().Settings.MaxCIFixAttempts
@@ -559,9 +596,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.bellowsMonitor.OnEvent(d.handleBellowsNotifications)
 	d.bellowsMonitor.OnEvent(d.handleBeadCloseOnMerge)
 
-	// Reconcile: register any GitHub PRs not yet tracked in the state DB.
+	// Reconcile: register any open PRs not yet tracked in the state DB.
 	// This handles PRs created before the current DB or after a DB reset.
-	d.reconcileGitHubPRs(ctx)
+	d.reconcileOpenPRs(ctx)
 
 	go func() {
 		if err := d.bellowsMonitor.Run(ctx); err != nil && err != context.Canceled {
@@ -728,7 +765,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				DetectOptions:   cifixDetectOpts,
 				GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 				Providers:       d.filterCopilotIfLimited(provider.FromConfig(d.config().Settings.Providers)),
-				VCS:             d.vcsProvider,
+				VCS:             d.vcsForAnvil(req.Anvil),
 			})
 			status := state.WorkerDone
 			if res.Error != nil {
@@ -778,7 +815,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				MaxAttempts:  d.cfg.Load().Settings.MaxReviewAttempts,
 				ExtraFlags:   d.cfg.Load().Settings.ClaudeFlags,
 				Providers:    d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers)),
-				VCS:          d.vcsProvider,
+				VCS:          d.vcsForAnvil(req.Anvil),
 			})
 			status := state.WorkerDone
 			if res.Error != nil {
@@ -1019,7 +1056,7 @@ func (d *Daemon) doAutoMerge(ctx context.Context, anvil, anvilPath string, pr st
 	mergeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	if err := d.vcsProvider.MergePR(mergeCtx, anvilPath, pr.Number, strategy); err != nil {
+	if err := d.vcsForAnvil(anvil).MergePR(mergeCtx, anvilPath, pr.Number, strategy); err != nil {
 		if logErr := d.db.LogEvent(state.EventPRMergeFailed,
 			fmt.Sprintf("PR #%d auto-merge failed: %v", pr.Number, err),
 			pr.BeadID, anvil); logErr != nil {
@@ -1150,7 +1187,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 			d.logger.Info("periodic bead recovery", "recovered", recovered)
 		}
 		// Periodically reconcile GitHub PRs so external PRs appear in Hearth
-		d.reconcileGitHubPRs(ctx)
+		d.reconcileOpenPRs(ctx)
 	}
 
 	maxTotal := cfg.Settings.MaxTotalSmiths
@@ -1628,7 +1665,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		}
 		crucibleParams := crucible.Params{
 			DB:                        d.db,
-			VCS:                       d.vcsProvider,
+			VCS:                       d.vcsForAnvil(bead.Anvil),
 			Logger:                    d.logger,
 			WorktreeManager:           d.worktreeMgr,
 			PromptBuilder:             d.promptBuilder,
@@ -1895,7 +1932,7 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		changeSummary = outcome.ReviewResult.Summary
 	}
 
-	pr, err := d.vcsProvider.CreatePR(ctx, vcs.CreateParams{
+	pr, err := d.vcsForAnvil(bead.Anvil).CreatePR(ctx, vcs.CreateParams{
 		WorktreePath:    anvilPath,
 		BeadID:          bead.ID,
 		Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
@@ -2209,7 +2246,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		return ipc.Response{Type: "ok", Payload: data}
 
 	case "reconcile_prs":
-		go d.reconcileGitHubPRs(d.runCtx)
+		go d.reconcileOpenPRs(d.runCtx)
 		data, _ := json.Marshal(map[string]string{"message": "PR reconciliation triggered"})
 		return ipc.Response{Type: "ok", Payload: data}
 
@@ -3027,7 +3064,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// Comment 6: re-check live GitHub status immediately before merging to avoid
 		// acting on stale cached state from between Bellows polls.
 		liveCtx, liveCancel := context.WithTimeout(d.runCtx, 30*time.Second)
-		liveStatus, liveErr := d.vcsProvider.CheckStatus(liveCtx, anvilCfg.Path, mergeNumber)
+		liveStatus, liveErr := d.vcsForAnvil(mergeAnvil).CheckStatus(liveCtx, anvilCfg.Path, mergeNumber)
 		liveCancel()
 		if liveErr != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("could not verify live PR status: %v", liveErr)})
@@ -3049,7 +3086,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		d.logger.Info("PR merge requested", "pr_number", mergeNumber, "anvil", mergeAnvil, "strategy", strategy)
 		mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
 		defer mergeCancel()
-		if err := d.vcsProvider.MergePR(mergeCtx, anvilCfg.Path, mergeNumber, strategy); err != nil {
+		if err := d.vcsForAnvil(mergeAnvil).MergePR(mergeCtx, anvilCfg.Path, mergeNumber, strategy); err != nil {
 			_ = d.db.LogEvent(state.EventPRMergeFailed,
 				fmt.Sprintf("PR #%d merge failed: %v", mergeNumber, err),
 				beadID, mergeAnvil)
@@ -3188,7 +3225,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
 			defer mergeCancel()
 			strategy := d.cfg.Load().Settings.MergeStrategy
-			if err := d.vcsProvider.MergePR(mergeCtx, anvilCfg.Path, pa.PRNumber, strategy); err != nil {
+			if err := d.vcsForAnvil(pa.Anvil).MergePR(mergeCtx, anvilCfg.Path, pa.PRNumber, strategy); err != nil {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("merge failed: %v", err)})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
@@ -3738,7 +3775,7 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 	if !changed {
 		for name, newAnvil := range new.Anvils {
 			oldAnvil, ok := old.Anvils[name]
-			if !ok || oldAnvil.Path != newAnvil.Path {
+			if !ok || oldAnvil.Path != newAnvil.Path || oldAnvil.Platform != newAnvil.Platform {
 				changed = true
 				break
 			}
@@ -3762,6 +3799,13 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 			paths[name] = a.Path
 		}
 	}
+
+	// Rebuild per-anvil VCS providers
+	newProviders := buildVCSProviders(new, d.db, d.logger)
+	d.vcsProvidersMu.Lock()
+	d.vcsProviders = newProviders
+	d.vcsProvidersMu.Unlock()
+	d.logger.Info("rebuilt per-anvil VCS providers", "count", len(newProviders))
 
 	// Update bellows monitor
 	if d.bellowsMonitor != nil {
@@ -3976,7 +4020,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 			changeSummary = result.Summary
 		}
 
-		pr, err := d.vcsProvider.CreatePR(ctx, vcs.CreateParams{
+		pr, err := d.vcsForAnvil(anvil).CreatePR(ctx, vcs.CreateParams{
 			WorktreePath:    anvilCfg.Path,
 			BeadID:          beadID,
 			Title:           fmt.Sprintf("%s (%s)", title, beadID),
@@ -4050,7 +4094,7 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 		baseBranch = beads[0].EpicBranch
 	}
 
-	pr, err := d.vcsProvider.CreatePR(ctx, vcs.CreateParams{
+	pr, err := d.vcsForAnvil(anvil).CreatePR(ctx, vcs.CreateParams{
 		WorktreePath:    anvilCfg.Path,
 		BeadID:          beadID,
 		Title:           fmt.Sprintf("%s (%s)", title, beadID),
