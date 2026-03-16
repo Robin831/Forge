@@ -3530,6 +3530,9 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 		d.logger.Error("failed to record dispatch failure", "bead", beadID, "error", err)
 		return
 	}
+	_ = d.db.LogEvent(state.EventDispatchFailed,
+		fmt.Sprintf("Dispatch attempt %d failed for %s: %s", count, beadID, reason),
+		beadID, anvil)
 	if broken {
 		msg := fmt.Sprintf("Bead %s circuit-broken after %d consecutive dispatch failures: %s", beadID, count, reason)
 		d.logger.Warn(msg, "bead", beadID, "anvil", anvil)
