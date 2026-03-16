@@ -215,6 +215,44 @@ func canonicalCategory(cat string) (string, bool) {
 	return "", false
 }
 
+// FragmentError describes a validation failure for a single fragment file.
+type FragmentError struct {
+	File string
+	Err  error
+}
+
+func (e *FragmentError) Error() string {
+	return fmt.Sprintf("%s: %s", e.File, e.Err)
+}
+
+// ValidateAllFragments checks every .md file in dir for correct format and
+// returns a list of all validation errors. Unlike CollectFragments, it does not
+// stop at the first error — it reports every malformed fragment so the user can
+// fix them all in one pass.
+func ValidateAllFragments(dir string) (valid int, errs []FragmentError) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		errs = append(errs, FragmentError{File: dir, Err: fmt.Errorf("reading directory: %w", err)})
+		return 0, errs
+	}
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if _, err := ParseFragment(path); err != nil {
+			errs = append(errs, FragmentError{File: e.Name(), Err: err})
+		} else {
+			valid++
+		}
+	}
+	return valid, errs
+}
+
 // ValidateFragmentExists checks if a changelog fragment exists for the given bead ID.
 func ValidateFragmentExists(dir, beadID string) bool {
 	patterns := []string{
