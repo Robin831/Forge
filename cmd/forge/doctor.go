@@ -791,33 +791,23 @@ const diskSpaceWarnThreshold = 1 << 30 // 1 GiB
 // exists and is readable. On Unix, it warns if the file is world-readable
 // since it may contain webhook URLs or other sensitive data.
 func checkConfigPermissions() checkResult {
-	var path string
-	if configFile != "" {
-		// --config was provided: stat/open it directly without going through
-		// Viper so that an unreadable file is caught rather than silently
-		// reported as "no config file found".
-		path = configFile
-	} else {
-		path = config.ConfigFilePath("")
-		if path == "" {
-			home, _ := os.UserHomeDir()
-			return checkResult{
-				Name:   "Config file",
-				Status: "warn",
-				Detail: fmt.Sprintf("no config file found (checked ./forge.yaml, %s/forge.yaml)", filepath.Join(home, ".forge")),
-			}
+	// Use the same config resolution path that PersistentPreRun uses so
+	// the check reflects the file that was (or would be) loaded.
+	// When --config is provided and valid, PersistentPreRun already loaded
+	// it successfully before doctor runs; ConfigFilePath returns the path.
+	// When no config is found, ConfigFilePath returns "" and we emit a warn.
+	path := config.ConfigFilePath(configFile)
+	if path == "" {
+		home, _ := os.UserHomeDir()
+		return checkResult{
+			Name:   "Config file",
+			Status: "warn",
+			Detail: fmt.Sprintf("no config file found (checked ./forge.yaml, %s/forge.yaml)", filepath.Join(home, ".forge")),
 		}
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return checkResult{
-				Name:   "Config file",
-				Status: "warn",
-				Detail: fmt.Sprintf("config file not found: %s", path),
-			}
-		}
 		return checkResult{
 			Name:   "Config file",
 			Status: "warn",
@@ -889,12 +879,6 @@ func checkDiskSpace() []checkResult {
 	var results []checkResult
 
 	for _, e := range entries {
-		key := filesystemKey(e.dir)
-		if checked[key] {
-			continue
-		}
-		checked[key] = true
-
 		// Fall back to a parent directory if the target path doesn't exist
 		// (e.g. ~/.forge hasn't been created yet) so we still report real
 		// volume free space rather than a noisy "cannot check" warning.
@@ -904,6 +888,14 @@ func checkDiskSpace() []checkResult {
 				checkDir = parent
 			}
 		}
+
+		// Compute the dedup key from the resolved checkDir so that multiple
+		// missing paths on the same filesystem deduplicate correctly.
+		key := filesystemKey(checkDir)
+		if checked[key] {
+			continue
+		}
+		checked[key] = true
 		free, err := diskFreeBytes(checkDir)
 		root := volumeRoot(checkDir)
 		if err != nil {

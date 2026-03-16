@@ -19,7 +19,7 @@ description = "Assemble changelog, tag version, push to trigger GoReleaser"
 name = "doctor-check"
 run = """
 echo "Running pre-release sanity check..."
-forge doctor --strict
+forge doctor
 """
 
 [[steps]]

@@ -4,7 +4,6 @@ package main
 
 import (
 	"path/filepath"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -17,7 +16,7 @@ func diskFreeBytes(path string) (uint64, error) {
 		return 0, err
 	}
 	var free uint64
-	err = windows.GetDiskFreeSpaceEx(p, (*uint64)(unsafe.Pointer(&free)), nil, nil)
+	err = windows.GetDiskFreeSpaceEx(p, &free, nil, nil)
 	if err != nil {
 		return 0, err
 	}
