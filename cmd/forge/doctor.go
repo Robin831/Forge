@@ -7,12 +7,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/Robin831/Forge/internal/autostart"
 	"github.com/Robin831/Forge/internal/daemon"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/spf13/cobra"
 )
 
@@ -37,8 +40,8 @@ var doctorCmd = &cobra.Command{
 		// 1. Check bd (beads) installed
 		checks = append(checks, checkBinary("bd", "beads issue tracker"))
 
-		// 2. Check gh (GitHub CLI) installed and authenticated
-		checks = append(checks, checkGitHub())
+		// 2. Check VCS CLI tools — platform-aware based on configured anvils
+		checks = append(checks, checkVCSTools()...)
 
 		// 3. Check claude installed
 		checks = append(checks, checkBinary("claude", "Claude CLI"))
@@ -115,6 +118,98 @@ func checkBinary(name, description string) checkResult {
 		Status: "ok",
 		Detail: path,
 	}
+}
+
+// anyAnvilUsesPlatform reports whether any configured anvil uses the given
+// VCS platform. An empty platform string on an anvil defaults to GitHub.
+func anyAnvilUsesPlatform(p vcs.Platform) bool {
+	if cfg == nil {
+		// No config loaded — assume GitHub (the default).
+		return p == vcs.GitHub
+	}
+	for _, anvil := range cfg.Anvils {
+		resolved, err := vcs.ParsePlatform(anvil.Platform)
+		if err != nil {
+			continue
+		}
+		if resolved == p {
+			return true
+		}
+	}
+	return false
+}
+
+// invalidPlatformAnvils returns a map of anvil name → raw platform string
+// for any anvils whose platform value cannot be parsed.
+func invalidPlatformAnvils() map[string]string {
+	invalid := make(map[string]string)
+	if cfg == nil {
+		return invalid
+	}
+	for name, anvil := range cfg.Anvils {
+		if anvil.Platform == "" {
+			continue // empty defaults to GitHub — not an error
+		}
+		if _, err := vcs.ParsePlatform(anvil.Platform); err != nil {
+			invalid[name] = anvil.Platform
+		}
+	}
+	return invalid
+}
+
+// checkVCSTools returns platform-aware checks for VCS CLI tools.
+// Only tools required by the configured anvil platforms are checked.
+func checkVCSTools() []checkResult {
+	var results []checkResult
+
+	// Warn about any anvils with unrecognised platform values.
+	for name, raw := range invalidPlatformAnvils() {
+		results = append(results, checkResult{
+			Name:   "VCS platform config",
+			Status: "warn",
+			Detail: fmt.Sprintf("anvil %q has unknown platform %q — check forge.yaml", name, raw),
+		})
+	}
+
+	if anyAnvilUsesPlatform(vcs.GitHub) {
+		results = append(results, checkGitHub())
+	} else {
+		// Collect configured platform names for context.
+		platforms := configuredPlatforms()
+		detail := "not required — no GitHub anvils configured"
+		if len(platforms) > 0 {
+			detail += " (using " + strings.Join(platforms, ", ") + ")"
+		}
+		results = append(results, checkResult{
+			Name:   "GitHub CLI",
+			Status: "ok",
+			Detail: detail,
+		})
+	}
+
+	return results
+}
+
+// configuredPlatforms returns deduplicated platform names from config.
+func configuredPlatforms() []string {
+	if cfg == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var platforms []string
+	for _, anvil := range cfg.Anvils {
+		p, err := vcs.ParsePlatform(anvil.Platform)
+		if err != nil {
+			continue
+		}
+		name := string(p)
+		if !seen[name] {
+			seen[name] = true
+			platforms = append(platforms, name)
+		}
+	}
+	sort.Strings(platforms)
+	return platforms
 }
 
 func checkGitHub() checkResult {
