@@ -15,6 +15,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/autostart"
 	"github.com/Robin831/Forge/internal/changelog"
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/daemon"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/provider"
@@ -97,7 +98,13 @@ var doctorCmd = &cobra.Command{
 		// 14. Check changelog fragment validity
 		checks = append(checks, checkChangelogFragments())
 
-		// 15. Check autostart registration (Windows only)
+		// 15. Check config file permissions
+		checks = append(checks, checkConfigPermissions())
+
+		// 16. Check disk space on key paths
+		checks = append(checks, checkDiskSpace()...)
+
+		// 17. Check autostart registration (Windows only)
 		if runtime.GOOS == "windows" {
 			checks = append(checks, checkAutostart())
 		}
@@ -762,6 +769,168 @@ func checkChangelogFragments() checkResult {
 		Status: "warn",
 		Detail: fmt.Sprintf("%d valid, %d invalid: %s", valid, len(errs), strings.Join(summaries, "; ")),
 	}
+}
+
+// diskSpaceWarnThreshold is the minimum free disk space before doctor emits a
+// warning. Worktrees, logs, and the SQLite state DB all live under ~/.forge, so
+// running out of space can silently corrupt data.
+const diskSpaceWarnThreshold = 1 << 30 // 1 GiB
+
+// checkConfigPermissions verifies that the active forge.yaml config file
+// exists and is readable. On Unix, it warns if the file is world-readable
+// since it may contain webhook URLs or other sensitive data.
+func checkConfigPermissions() checkResult {
+	var path string
+	if configFile != "" {
+		// --config was provided: stat/open it directly without going through
+		// Viper so that an unreadable file is caught rather than silently
+		// reported as "no config file found".
+		path = configFile
+	} else {
+		path = config.ConfigFilePath("")
+		if path == "" {
+			home, _ := os.UserHomeDir()
+			return checkResult{
+				Name:   "Config file",
+				Status: "warn",
+				Detail: fmt.Sprintf("no config file found (checked ./forge.yaml, %s/forge.yaml)", filepath.Join(home, ".forge")),
+			}
+		}
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return checkResult{
+				Name:   "Config file",
+				Status: "warn",
+				Detail: fmt.Sprintf("config file not found: %s", path),
+			}
+		}
+		return checkResult{
+			Name:   "Config file",
+			Status: "warn",
+			Detail: fmt.Sprintf("cannot stat %s: %v", path, err),
+		}
+	}
+
+	// Try opening to confirm read access.
+	f, err := os.Open(path)
+	if err != nil {
+		return checkResult{
+			Name:   "Config file",
+			Status: "warn",
+			Detail: fmt.Sprintf("cannot read %s: %v", path, err),
+		}
+	}
+	f.Close()
+
+	// On Unix, warn if the file is world-readable (mode & 0o004).
+	if runtime.GOOS != "windows" {
+		mode := info.Mode().Perm()
+		if mode&0o004 != 0 {
+			return checkResult{
+				Name:   "Config file",
+				Status: "warn",
+				Detail: fmt.Sprintf("%s is world-readable (%s) — consider chmod 600", path, mode),
+			}
+		}
+	}
+
+	return checkResult{
+		Name:   "Config file",
+		Status: "ok",
+		Detail: path,
+	}
+}
+
+// pathEntry pairs a human-readable label with the filesystem path to check.
+type pathEntry struct {
+	label string
+	dir   string
+}
+
+// checkDiskSpace warns when free disk space is below diskSpaceWarnThreshold on
+// the volume containing ~/.forge and each configured anvil path.
+func checkDiskSpace() []checkResult {
+	// Collect paths into a sorted slice for deterministic output ordering.
+	var entries []pathEntry
+	if home, err := os.UserHomeDir(); err == nil {
+		entries = append(entries, pathEntry{"~/.forge", filepath.Join(home, ".forge")})
+	}
+	if cfg != nil {
+		for name, anvil := range cfg.Anvils {
+			if anvil.Path != "" {
+				entries = append(entries, pathEntry{"anvil:" + name, anvil.Path})
+			}
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].label < entries[j].label })
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// Deduplicate by filesystem identity so we don't double-report the same
+	// volume. filesystemKey returns a platform-appropriate key: on Windows the
+	// volume name, on Unix the filesystem ID (Fsid) from statfs.
+	checked := make(map[string]bool)
+	var results []checkResult
+
+	for _, e := range entries {
+		key := filesystemKey(e.dir)
+		if checked[key] {
+			continue
+		}
+		checked[key] = true
+
+		// Fall back to a parent directory if the target path doesn't exist
+		// (e.g. ~/.forge hasn't been created yet) so we still report real
+		// volume free space rather than a noisy "cannot check" warning.
+		checkDir := e.dir
+		if _, statErr := os.Stat(checkDir); os.IsNotExist(statErr) {
+			if parent := filepath.Dir(checkDir); parent != checkDir {
+				checkDir = parent
+			}
+		}
+		free, err := diskFreeBytes(checkDir)
+		root := volumeRoot(checkDir)
+		if err != nil {
+			results = append(results, checkResult{
+				Name:   "Disk space (" + e.label + ")",
+				Status: "warn",
+				Detail: fmt.Sprintf("cannot check free space on %s: %v", checkDir, err),
+			})
+			continue
+		}
+
+		freeGiB := float64(free) / float64(1<<30)
+		if free < diskSpaceWarnThreshold {
+			results = append(results, checkResult{
+				Name:   "Disk space (" + e.label + ")",
+				Status: "warn",
+				Detail: fmt.Sprintf("%.1f GiB free on %s — worktrees and logs may fill disk", freeGiB, root),
+			})
+		} else {
+			results = append(results, checkResult{
+				Name:   "Disk space (" + e.label + ")",
+				Status: "ok",
+				Detail: fmt.Sprintf("%.1f GiB free", freeGiB),
+			})
+		}
+	}
+
+	return results
+}
+
+// volumeRoot returns the volume root for a path (e.g., "C:\" on Windows,
+// "/" on Unix).
+func volumeRoot(path string) string {
+	vol := filepath.VolumeName(path)
+	if vol != "" {
+		return vol + `\`
+	}
+	return "/"
 }
 
 func checkAutostart() checkResult {

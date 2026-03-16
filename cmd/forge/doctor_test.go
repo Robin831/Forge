@@ -375,6 +375,101 @@ func TestCheckChangelogFragments_InvalidFragment(t *testing.T) {
 	}
 }
 
+// --- Config permissions tests ---
+
+func TestCheckConfigPermissions_NoConfig(t *testing.T) {
+	// Point configFile at a nonexistent path to ensure no config is found.
+	origConfigFile := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = origConfigFile }()
+
+	result := checkConfigPermissions()
+	// configFile points at a nonexistent path, so os.Stat returns IsNotExist → expect warn.
+	if result.Status != "warn" {
+		t.Errorf("expected warn when no config file, got %q: %s", result.Status, result.Detail)
+	}
+}
+
+func TestCheckConfigPermissions_ValidFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	if err := os.WriteFile(cfgPath, []byte("anvils: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	origConfigFile := configFile
+	configFile = cfgPath
+	defer func() { configFile = origConfigFile }()
+
+	result := checkConfigPermissions()
+	if result.Status != "ok" {
+		t.Errorf("expected ok for valid config file, got %q: %s", result.Status, result.Detail)
+	}
+}
+
+// --- Disk space tests ---
+
+func TestCheckDiskSpace_ReturnsResults(t *testing.T) {
+	// With default config (cfg may be nil), should still check ~/.forge.
+	results := checkDiskSpace()
+	if len(results) == 0 {
+		t.Skip("no paths to check (home dir unavailable)")
+	}
+	for _, r := range results {
+		if r.Status != "ok" && r.Status != "warn" {
+			t.Errorf("unexpected status %q for disk space check: %s", r.Status, r.Detail)
+		}
+	}
+}
+
+func TestCheckDiskSpace_WithAnvils(t *testing.T) {
+	dir := t.TempDir()
+
+	origCfg := cfg
+	cfg = &config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test": {Path: dir},
+		},
+	}
+	defer func() { cfg = origCfg }()
+
+	results := checkDiskSpace()
+	if len(results) == 0 {
+		t.Error("expected at least one disk space result")
+	}
+}
+
+func TestVolumeRoot(t *testing.T) {
+	// volumeRoot is used for display purposes only (e.g. "%.1f GiB free on X").
+	// Deduplication uses filesystemKey instead, which distinguishes separate
+	// mounts on Unix via the device ID.
+	tests := []struct {
+		path string
+		want string
+	}{
+		{`/home/user/.forge`, "/"},
+	}
+	for _, tt := range tests {
+		got := volumeRoot(tt.path)
+		if got != tt.want {
+			t.Errorf("volumeRoot(%q) = %q, want %q", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestFilesystemKey_SamePath(t *testing.T) {
+	// Two references to the same directory should produce the same key.
+	dir := t.TempDir()
+	k1 := filesystemKey(dir)
+	k2 := filesystemKey(dir)
+	if k1 != k2 {
+		t.Errorf("filesystemKey(%q) not stable: %q vs %q", dir, k1, k2)
+	}
+	if k1 == "" {
+		t.Errorf("filesystemKey(%q) returned empty string", dir)
+	}
+}
+
 func TestCheckProviderChain_NilConfig(t *testing.T) {
 	// When cfg is nil, checkProviderChain should return a single warn result
 	// rather than an empty slice.
