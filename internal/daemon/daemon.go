@@ -1950,12 +1950,16 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "already exists") {
 			d.logger.Warn("PR already exists for branch, skipping creation", "bead", bead.ID, "branch", outcome.Branch, "error", err)
-			_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR already exists for branch %s (duplicate run)", outcome.Branch), bead.ID, bead.Anvil)
+			if logErr := d.db.LogEvent(state.EventPRCreationFailed, fmt.Sprintf("PR already exists for branch %s (duplicate run)", outcome.Branch), bead.ID, bead.Anvil); logErr != nil {
+				d.logger.Error("failed to log duplicate PR event", "bead", bead.ID, "error", logErr)
+			}
 			return
 		}
 
 		d.logger.Error("PR creation failed", "bead", bead.ID, "error", err)
-		_ = d.db.LogEvent(state.EventPRCreationFailed, fmt.Sprintf("PR creation failed: %v", err), bead.ID, bead.Anvil)
+		if logErr := d.db.LogEvent(state.EventPRCreationFailed, fmt.Sprintf("PR creation failed: %v", err), bead.ID, bead.Anvil); logErr != nil {
+			d.logger.Error("failed to log PR creation failure event", "bead", bead.ID, "error", logErr)
+		}
 		reason := fmt.Sprintf("PR creation failed: %v", err)
 		if err := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); err != nil {
 			d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", err)
