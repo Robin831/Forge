@@ -677,13 +677,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.ActionRequest) {
 	d.logger.Info("lifecycle action requested", "action", req.Action, "pr", req.PRNumber, "bead", req.BeadID)
 
-	// Skip automatic (Bellows-triggered) lifecycle actions for PRs with no
-	// associated bead (e.g. warden-learn PRs). These are not Smith-managed
-	// branches and have no bead worktree to operate in — running them would
-	// corrupt the .workers dir. Manual user-triggered actions are allowed
-	// through; they use the PR number as the worktree/lock key instead.
-	if req.BeadID == "" && !req.IsManual {
-		d.logger.Info("skipping automatic lifecycle action for non-bead PR", "action", req.Action, "pr", req.PRNumber, "branch", req.Branch)
+	// If there's no bead ID, fall back to the PR number as the worktree/lock
+	// key (e.g. warden-learn PRs). Both Bellows-triggered and manual actions
+	// are allowed through — the pr-{N} key prevents the .workers dir corruption
+	// that the original Forge-6sed guard was protecting against. Only bail out
+	// if we have neither a bead ID nor a PR number to derive a key from.
+	if req.BeadID == "" && req.PRNumber == 0 {
+		d.logger.Info("skipping lifecycle action: no bead ID or PR number", "action", req.Action, "branch", req.Branch)
 		return
 	}
 
