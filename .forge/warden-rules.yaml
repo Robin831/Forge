@@ -641,3 +641,9 @@ rules:
       check: Verify that test comments accurately describe what the code actually does — e.g., if the comment says 'skip if set' but the code forcibly clears the value with t.Setenv, update the comment to say 'force env var to be unset'
       source: copilot:PR#286
       added: "2026-03-16"
+    - id: deduplicate-error-chain-sentinel-rules
+      category: other
+      pattern: A new warden rule is added to warden-rules.yaml that requires preserving an underlying error when returning a sentinel or wrapping an error
+      check: Verify the new rule does not duplicate an existing rule (e.g. preserve-error-chain-on-sentinel). If the scope overlaps, consolidate or clearly differentiate the two rules to avoid redundant checks and rule list bloat.
+      source: copilot:PR#285
+      added: "2026-03-16"
