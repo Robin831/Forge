@@ -15,7 +15,6 @@ import (
 
 	"github.com/Robin831/Forge/internal/autostart"
 	"github.com/Robin831/Forge/internal/changelog"
-	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/daemon"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/provider"
@@ -47,6 +46,14 @@ type checkResult struct {
 	Name   string `json:"name"`
 	Status string `json:"status"` // "ok", "warn", "fail"
 	Detail string `json:"detail"`
+}
+
+// doctorStrict causes doctor to treat warnings as failures (non-zero exit).
+// Used by the release formula to gate releases on a clean doctor report.
+var doctorStrict bool
+
+func init() {
+	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "Treat warnings as failures (non-zero exit)")
 }
 
 var doctorCmd = &cobra.Command{
@@ -109,27 +116,43 @@ var doctorCmd = &cobra.Command{
 			checks = append(checks, checkAutostart())
 		}
 
+		okCount, warnCount, failCount := 0, 0, 0
+		for _, c := range checks {
+			switch c.Status {
+			case "warn":
+				warnCount++
+			case "fail":
+				failCount++
+			default:
+				okCount++
+			}
+		}
+
 		if jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
-			return enc.Encode(checks)
+			if err := enc.Encode(checks); err != nil {
+				return err
+			}
+			if failCount > 0 {
+				return fmt.Errorf("%d health checks failed", failCount)
+			}
+			if doctorStrict && warnCount > 0 {
+				return fmt.Errorf("%d health check warnings (strict mode)", warnCount)
+			}
+			return nil
 		}
 
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintf(tw, "CHECK\tSTATUS\tDETAIL\n")
 
-		okCount, warnCount, failCount := 0, 0, 0
 		for _, c := range checks {
 			icon := "✓"
 			switch c.Status {
 			case "warn":
 				icon = "⚠"
-				warnCount++
 			case "fail":
 				icon = "✗"
-				failCount++
-			default:
-				okCount++
 			}
 			fmt.Fprintf(tw, "%s %s\t%s\t%s\n", icon, c.Name, c.Status, c.Detail)
 		}
@@ -139,6 +162,9 @@ var doctorCmd = &cobra.Command{
 
 		if failCount > 0 {
 			return fmt.Errorf("%d health checks failed", failCount)
+		}
+		if doctorStrict && warnCount > 0 {
+			return fmt.Errorf("%d health check warnings (strict mode)", warnCount)
 		}
 		return nil
 	},
@@ -781,32 +807,37 @@ const diskSpaceWarnThreshold = 1 << 30 // 1 GiB
 // since it may contain webhook URLs or other sensitive data.
 func checkConfigPermissions() checkResult {
 	var path string
+
 	if configFile != "" {
-		// --config was provided: stat/open it directly without going through
-		// Viper so that an unreadable file is caught rather than silently
-		// reported as "no config file found".
+		// Explicit --config flag: check that exact path directly rather than
+		// going through viper (which returns "" on any parse/read error and
+		// would produce a misleading "no config file found" warning).
 		path = configFile
 	} else {
-		path = config.ConfigFilePath("")
+		// Auto-discovery: probe the expected locations so we can distinguish
+		// missing (no warn) from unreadable/invalid (warn with detail).
+		home, _ := os.UserHomeDir()
+		candidates := []string{
+			"forge.yaml",
+			filepath.Join(home, ".forge", "forge.yaml"),
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				path = c
+				break
+			}
+		}
 		if path == "" {
-			home, _ := os.UserHomeDir()
 			return checkResult{
 				Name:   "Config file",
 				Status: "warn",
-				Detail: fmt.Sprintf("no config file found (checked ./forge.yaml, %s/forge.yaml)", filepath.Join(home, ".forge")),
+				Detail: fmt.Sprintf("no config file found (checked ./forge.yaml, %s)", filepath.Join(home, ".forge", "forge.yaml")),
 			}
 		}
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return checkResult{
-				Name:   "Config file",
-				Status: "warn",
-				Detail: fmt.Sprintf("config file not found: %s", path),
-			}
-		}
 		return checkResult{
 			Name:   "Config file",
 			Status: "warn",
@@ -878,12 +909,6 @@ func checkDiskSpace() []checkResult {
 	var results []checkResult
 
 	for _, e := range entries {
-		key := filesystemKey(e.dir)
-		if checked[key] {
-			continue
-		}
-		checked[key] = true
-
 		// Fall back to a parent directory if the target path doesn't exist
 		// (e.g. ~/.forge hasn't been created yet) so we still report real
 		// volume free space rather than a noisy "cannot check" warning.
@@ -893,6 +918,14 @@ func checkDiskSpace() []checkResult {
 				checkDir = parent
 			}
 		}
+
+		// Compute the dedup key from the resolved checkDir so that multiple
+		// missing paths on the same filesystem deduplicate correctly.
+		key := filesystemKey(checkDir)
+		if checked[key] {
+			continue
+		}
+		checked[key] = true
 		free, err := diskFreeBytes(checkDir)
 		root := volumeRoot(checkDir)
 		if err != nil {
