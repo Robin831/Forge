@@ -14,7 +14,7 @@ If no file is found, built-in defaults are used. The daemon hot-reloads the conf
 anvils:
   my-api:
     path: /path/to/repos/my-api
-    platform: github               # VCS platform: github, gitlab, gitea, bitbucket, azuredevops (default: github)
+    platform: github               # VCS platform: github, gitlab, gitea (default: github)
     max_smiths: 2
     auto_dispatch: all
     auto_merge: true               # Automatically merge PRs when ready (default: false)
@@ -98,7 +98,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `path` | string | **required** | Filesystem path to the repository root. Must contain a `.beads/` directory. |
-| `platform` | string | `"github"` | VCS hosting platform for this anvil. Valid values: `github`, `gitlab`, `gitea`, `bitbucket`, `azuredevops`. Determines which VCS provider handles PR operations. See [Platform Requirements](#platform-requirements) below. |
+| `platform` | string | `"github"` | VCS hosting platform for this anvil. Valid values: `github`, `gitlab`, `gitea`. Determines which VCS provider handles PR operations. See [Platform Requirements](#platform-requirements) below. |
 | `max_smiths` | int | 1 | Maximum concurrent workers for this anvil. Values <= 0 are treated as 1. Overall concurrency is still limited by `max_total_smiths`. |
 | `auto_dispatch` | string | `"all"` | Dispatch mode — see below. |
 | `auto_dispatch_tag` | string | | Required when `auto_dispatch: tagged`. Beads must have this tag (case-insensitive) to be dispatched. |
@@ -127,8 +127,6 @@ Each platform requires specific CLI tools or environment variables to be availab
 | GitHub | `github` | `gh` CLI, authenticated via `gh auth login`. |
 | GitLab | `gitlab` | `glab` CLI, authenticated via `glab auth login`. |
 | Gitea / Forgejo | `gitea` | `GITEA_TOKEN` (or `FORGEJO_TOKEN`) environment variable set to a personal access token with repo scope. `GITEA_URL` (or `FORGEJO_URL`) should be set to the instance base URL (e.g. `https://gitea.example.com`); if omitted, the URL is inferred from the git remote. |
-| Bitbucket | `bitbucket` | Not yet implemented — reserved for future use. |
-| Azure DevOps | `azuredevops` | Not yet implemented — reserved for future use. |
 
 Omitting `platform` or setting it to an empty string defaults to `github`. Existing configurations that don't specify a platform require no changes.
 
@@ -303,7 +301,7 @@ The config is validated at load time. Errors are reported as a list:
 - `depcheck_interval` must be >= 1h when enabled, or 0 to disable
 - `depcheck_timeout` must not be negative
 - Each anvil `path` must be non-empty
-- Each anvil `platform` (if set) must be one of: `github`, `gitlab`, `gitea`, `bitbucket`, `azuredevops`
+- Each anvil `platform` (if set) must be one of: `github`, `gitlab`, `gitea`
 - Each anvil `max_smiths` must be >= 0
 - `auto_dispatch` must be one of: `all`, `tagged`, `priority`, `off`
 - If `auto_dispatch: tagged`, then `auto_dispatch_tag` must be non-empty
