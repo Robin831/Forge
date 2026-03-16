@@ -1186,7 +1186,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		if recovered := d.shutdownMgr.RecoverOrphanedBeads(); recovered > 0 {
 			d.logger.Info("periodic bead recovery", "recovered", recovered)
 		}
-		// Periodically reconcile GitHub PRs so external PRs appear in Hearth
+		// Periodically reconcile open PRs so external PRs appear in Hearth
 		d.reconcileOpenPRs(ctx)
 	}
 
