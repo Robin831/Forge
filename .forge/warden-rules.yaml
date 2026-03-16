@@ -581,3 +581,33 @@ rules:
       check: Verify that pipeline contexts (Temper, Warden, PR creation) are derived from context.Background() with a timeout, not from a shutdown-cancellable context, so in-flight work is not interrupted mid-flight during graceful shutdown
       source: copilot:PR#274
       added: "2026-03-15"
+    - id: distinct-event-types-for-expected-paths
+      category: error-handling
+      pattern: Code emits or logs an error/failure event for a condition that represents normal or expected system behavior (e.g., duplicate detection, idempotency checks, already-exists responses)
+      check: Verify that error/failure event types are not used for conditions that are expected or benign. Expected outcomes (like a PR already existing) should use a distinct neutral event type (e.g., EventPRAlreadyExists) rather than a failure event, to avoid misleading dashboards, history views, and monitoring.
+      source: copilot:PR#283
+      added: "2026-03-16"
+    - id: pr-creation-failure-tracking
+      category: error-handling
+      pattern: Post-pipeline failures (e.g. PR creation, VCS errors) reuse dispatch/smith failure tracking functions
+      check: Verify that PR creation and other post-pipeline failures use a distinct failure recording path rather than dispatch-failure counters, to avoid incorrectly triggering retry exhaustion or auto-close behavior for VCS/provider issues unrelated to the bead's implementation
+      source: copilot:PR#283
+      added: "2026-03-16"
+    - id: preserve-error-chain-on-sentinel
+      category: error-handling
+      pattern: Returning a sentinel error (e.g., ErrPRAlreadyExists) in a branch that also has an underlying error from an operation (e.g., cmd.Run())
+      check: Verify that the original underlying error is preserved in the error chain alongside the sentinel, using errors.Join or a wrapper, so that debugging context (exit status, exec error type) is not lost
+      source: copilot:PR#283
+      added: "2026-03-16"
+    - id: preserve-sentinel-error-chain
+      category: error-handling
+      pattern: Sentinel error returned without wrapping original error (e.g., `return vcs.ErrPRAlreadyExists` after a failed cmd.Run())
+      check: When returning a sentinel error, verify the original error is preserved in the chain using errors.Join or fmt.Errorf with %w, so both errors.Is(err, sentinel) works and the root cause remains diagnosable
+      source: copilot:PR#283
+      added: "2026-03-16"
+    - id: error-chain-preservation-and-precise-string-matching
+      category: error-handling
+      pattern: Code that wraps errors by creating new error values (losing the original error) or uses strings.Contains to match error status codes/numbers in formatted error messages
+      check: Verify that original errors are preserved in the chain using fmt.Errorf with %w or errors.Join, and that status code string matching targets the specific formatted prefix (e.g., 'status 409') rather than a bare number that could appear anywhere in the message
+      source: copilot:PR#283
+      added: "2026-03-16"
