@@ -49,6 +49,14 @@ type checkResult struct {
 	Detail string `json:"detail"`
 }
 
+// doctorStrict causes doctor to treat warnings as failures (non-zero exit).
+// Used by the release formula to gate releases on a clean doctor report.
+var doctorStrict bool
+
+func init() {
+	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "Treat warnings as failures (non-zero exit)")
+}
+
 var doctorCmd = &cobra.Command{
 	Use:     "doctor",
 	Short:   "Run health checks on Forge installation",
@@ -139,6 +147,9 @@ var doctorCmd = &cobra.Command{
 
 		if failCount > 0 {
 			return fmt.Errorf("%d health checks failed", failCount)
+		}
+		if doctorStrict && warnCount > 0 {
+			return fmt.Errorf("%d health check warnings (strict mode)", warnCount)
 		}
 		return nil
 	},

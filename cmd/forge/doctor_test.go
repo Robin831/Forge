@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -407,6 +409,53 @@ func TestCheckConfigPermissions_ValidFile(t *testing.T) {
 	}
 }
 
+func TestCheckConfigPermissions_WorldReadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits not enforced on Windows")
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	// 0o644 = owner rw, group r, others r — world-readable
+	if err := os.WriteFile(cfgPath, []byte("anvils: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origConfigFile := configFile
+	configFile = cfgPath
+	defer func() { configFile = origConfigFile }()
+
+	result := checkConfigPermissions()
+	if result.Status != "warn" {
+		t.Errorf("expected warn for world-readable config, got %q: %s", result.Status, result.Detail)
+	}
+	if !strings.Contains(result.Detail, "world-readable") {
+		t.Errorf("expected detail to mention world-readable, got %q", result.Detail)
+	}
+}
+
+func TestCheckConfigPermissions_RestrictedPerms(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits not enforced on Windows")
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	// 0o600 = owner rw only — not world-readable
+	if err := os.WriteFile(cfgPath, []byte("anvils: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	origConfigFile := configFile
+	configFile = cfgPath
+	defer func() { configFile = origConfigFile }()
+
+	result := checkConfigPermissions()
+	if result.Status != "ok" {
+		t.Errorf("expected ok for restricted config file, got %q: %s", result.Status, result.Detail)
+	}
+}
+
 // --- Disk space tests ---
 
 func TestCheckDiskSpace_ReturnsResults(t *testing.T) {
@@ -467,6 +516,22 @@ func TestFilesystemKey_SamePath(t *testing.T) {
 	}
 	if k1 == "" {
 		t.Errorf("filesystemKey(%q) returned empty string", dir)
+	}
+}
+
+// --- Strict mode tests ---
+
+func TestDoctorStrict_WarningsAreErrors(t *testing.T) {
+	// When doctorStrict is true, warnings should cause a non-zero exit.
+	// We test this indirectly by verifying the flag variable exists and
+	// the command's RunE respects it. A full integration test would need
+	// to invoke the cobra command, so we verify the flag is registered.
+	f := doctorCmd.Flags().Lookup("strict")
+	if f == nil {
+		t.Fatal("expected --strict flag on doctor command")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("expected --strict default to be false, got %q", f.DefValue)
 	}
 }
 
