@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
@@ -72,7 +73,11 @@ func (p *Provider) CreatePR(ctx context.Context, params vcs.CreateParams) (*vcs.
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh pr create failed: %w\nstderr: %s", err, stderr.String())
+		stderrStr := stderr.String()
+		if strings.Contains(stderrStr, "already exists") {
+			return nil, fmt.Errorf("gh pr create: %w\nstderr: %s", errors.Join(vcs.ErrPRAlreadyExists, err), stderrStr)
+		}
+		return nil, fmt.Errorf("gh pr create failed: %w\nstderr: %s", err, stderrStr)
 	}
 
 	prURL := strings.TrimSpace(stdout.String())

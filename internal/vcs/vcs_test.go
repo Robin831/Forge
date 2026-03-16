@@ -1,6 +1,8 @@
 package vcs
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -138,6 +140,24 @@ func TestRedactURL(t *testing.T) {
 			assert.Equal(t, tt.want, redactURL(tt.input))
 		})
 	}
+}
+
+func TestErrPRAlreadyExists(t *testing.T) {
+	t.Run("sentinel is detectable with errors.Is", func(t *testing.T) {
+		wrapped := fmt.Errorf("gh pr create: %w: A pull request already exists for branch", ErrPRAlreadyExists)
+		assert.True(t, errors.Is(wrapped, ErrPRAlreadyExists))
+	})
+
+	t.Run("double-wrapped sentinel is detectable", func(t *testing.T) {
+		inner := fmt.Errorf("gitea create PR: %w: 409 conflict", ErrPRAlreadyExists)
+		outer := fmt.Errorf("provider error: %w", inner)
+		assert.True(t, errors.Is(outer, ErrPRAlreadyExists))
+	})
+
+	t.Run("unrelated error is not detected", func(t *testing.T) {
+		other := fmt.Errorf("gh pr create failed: permission denied")
+		assert.False(t, errors.Is(other, ErrPRAlreadyExists))
+	})
 }
 
 func TestMergeabilityFromStatus(t *testing.T) {

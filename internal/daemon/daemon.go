@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1926,11 +1927,10 @@ normalPipeline:
 	d.finalizePipeline(pipelineCtx, outcome, bead, anvilCfg.Path, claimWorkerID)
 }
 
-// finalizePipeline handles the post-success pipeline flow: clear retries,
-// create PR, send notifications, and close the bead. Both the normal dispatch
+// finalizePipeline handles the post-success pipeline flow: create PR, clear
+// retries, send notifications, and close the bead. Both the normal dispatch
 // path and the force smith path call this to avoid duplicating PR creation logic.
 func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome, bead poller.Bead, anvilPath, workerID string) {
-	_ = d.db.ClearRetry(bead.ID, bead.Anvil)
 	d.logger.Info("pipeline succeeded", "bead", bead.ID, "branch", outcome.Branch, "iterations", outcome.Iterations)
 
 	// Build a change summary for the PR description.
@@ -1955,10 +1955,43 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		ChangeSummary:   changeSummary,
 	})
 	if err != nil {
+		// If a PR already exists for this branch (duplicate run), log a warning
+		// and continue rather than failing — the work is already represented.
+		if errors.Is(err, vcs.ErrPRAlreadyExists) {
+			d.logger.Warn("PR already exists for branch, skipping creation", "bead", bead.ID, "branch", outcome.Branch, "error", err)
+			if logErr := d.db.LogEvent(state.EventPRAlreadyExists, fmt.Sprintf("PR already exists for branch %s (duplicate run)", outcome.Branch), bead.ID, bead.Anvil); logErr != nil {
+				d.logger.Error("failed to log duplicate PR event", "bead", bead.ID, "error", logErr)
+			}
+			// Update worker state so it doesn't hang in WorkerMonitoring
+			// with no PR record for bellows to track.
+			if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerDone); dbErr != nil {
+				d.logger.Error("failed to update worker status to done", "worker", workerID, "error", dbErr)
+			}
+			if dbErr := d.db.ClearRetry(bead.ID, bead.Anvil); dbErr != nil {
+				d.logger.Error("failed to clear retry state", "bead", bead.ID, "error", dbErr)
+			}
+			return
+		}
+
 		d.logger.Error("PR creation failed", "bead", bead.ID, "error", err)
+		if logErr := d.db.LogEvent(state.EventPRCreationFailed, fmt.Sprintf("PR creation failed: %v", err), bead.ID, bead.Anvil); logErr != nil {
+			d.logger.Error("failed to log PR creation failure event", "bead", bead.ID, "error", logErr)
+		}
+		reason := fmt.Sprintf("PR creation failed: %v", err)
+		if err := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); err != nil {
+			d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", err)
+		}
+		if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); dbErr != nil {
+			d.logger.Error("failed to update worker status to failed", "worker", workerID, "error", dbErr)
+		}
 		return
 	}
 
+	// Clear retry state only after PR creation succeeds, so that a PR
+	// creation failure preserves the existing dispatch failure count.
+	if dbErr := d.db.ClearRetry(bead.ID, bead.Anvil); dbErr != nil {
+		d.logger.Error("failed to clear retry state", "bead", bead.ID, "error", dbErr)
+	}
 	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
 
 	disp := d.dispatcher.Load()

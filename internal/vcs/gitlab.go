@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -65,7 +66,11 @@ func (g *GitLabProvider) CreatePR(ctx context.Context, params CreateParams) (*PR
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("glab mr create failed: %w\nstderr: %s", err, stderr.String())
+		stderrStr := stderr.String()
+		if strings.Contains(stderrStr, "already exists") {
+			return nil, fmt.Errorf("glab mr create: %w\nstderr: %s", errors.Join(ErrPRAlreadyExists, err), stderrStr)
+		}
+		return nil, fmt.Errorf("glab mr create failed: %w\nstderr: %s", err, stderrStr)
 	}
 
 	output := stdout.String()

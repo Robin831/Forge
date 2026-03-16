@@ -8,11 +8,16 @@ package vcs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 	"time"
 )
+
+// ErrPRAlreadyExists is returned by CreatePR when a PR already exists for
+// the given branch. Callers should use errors.Is to check for this sentinel.
+var ErrPRAlreadyExists = errors.New("pull request already exists for branch")
 
 // buildPRBody creates a structured PR/MR description from bead metadata.
 // This is the canonical body builder for all vcs providers; it mirrors the
