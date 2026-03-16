@@ -1916,11 +1916,10 @@ normalPipeline:
 	d.finalizePipeline(pipelineCtx, outcome, bead, anvilCfg.Path, claimWorkerID)
 }
 
-// finalizePipeline handles the post-success pipeline flow: clear retries,
-// create PR, send notifications, and close the bead. Both the normal dispatch
+// finalizePipeline handles the post-success pipeline flow: create PR, clear
+// retries, send notifications, and close the bead. Both the normal dispatch
 // path and the force smith path call this to avoid duplicating PR creation logic.
 func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome, bead poller.Bead, anvilPath, workerID string) {
-	_ = d.db.ClearRetry(bead.ID, bead.Anvil)
 	d.logger.Info("pipeline succeeded", "bead", bead.ID, "branch", outcome.Branch, "iterations", outcome.Iterations)
 
 	// Build a change summary for the PR description.
@@ -1953,6 +1952,10 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 			if logErr := d.db.LogEvent(state.EventPRCreationFailed, fmt.Sprintf("PR already exists for branch %s (duplicate run)", outcome.Branch), bead.ID, bead.Anvil); logErr != nil {
 				d.logger.Error("failed to log duplicate PR event", "bead", bead.ID, "error", logErr)
 			}
+			// Update worker state so it doesn't hang in WorkerMonitoring
+			// with no PR record for bellows to track.
+			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
+			_ = d.db.ClearRetry(bead.ID, bead.Anvil)
 			return
 		}
 
@@ -1964,10 +1967,14 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		if err := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); err != nil {
 			d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", err)
 		}
+		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
 		d.recordDispatchFailure(bead.ID, bead.Anvil, reason)
 		return
 	}
 
+	// Clear retry state only after PR creation succeeds, so that a PR
+	// creation failure preserves the existing dispatch failure count.
+	_ = d.db.ClearRetry(bead.ID, bead.Anvil)
 	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
 
 	disp := d.dispatcher.Load()

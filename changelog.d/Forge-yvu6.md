@@ -1,2 +1,2 @@
 category: Fixed
-- **PR creation failures now surface in Needs Attention panel** - When CreatePR fails in finalizePipeline, a `pr_creation_failed` DB event is logged and the bead is marked `needs_human` so it appears in `forge history events` and the Hearth TUI. Duplicate PR errors (re-runs) are handled gracefully with a warning instead of failing. (Forge-yvu6)
+- **Handle PR creation failures and duplicate PRs in finalizePipeline** - PR creation errors now log a DB event, mark the bead as needs_human, and update worker status to failed. Duplicate PR detection marks the worker as done instead of leaving it stranded in monitoring state. Retry state is preserved when PR creation fails by deferring ClearRetry until after successful PR creation. (Forge-yvu6)
