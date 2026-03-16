@@ -55,7 +55,7 @@ type Handler func(ctx context.Context, event PREvent)
 // Monitor watches open PRs and dispatches events on status changes.
 type Monitor struct {
 	db               *state.DB
-	vcs              vcs.Provider
+	vcsLookup        func(anvil string) vcs.Provider
 	interval         time.Duration
 	anvilPaths       map[string]string // anvil name → path
 	pathsMu          sync.RWMutex      // protects anvilPaths
@@ -84,12 +84,14 @@ type prSnapshot struct {
 	IsConflicting        bool
 }
 
-// New creates a Bellows monitor. The autoLearnRules function is called on each
-// PR merge to check whether warden rule learning is enabled, so hot-reloaded
-// config changes take effect without restarting the daemon. The maxCIFixAttempts
-// function returns the current max CI fix attempts from config (may be nil, in
-// which case the state.DefaultMaxCIFixAttempts is used).
-func New(db *state.DB, vcsProvider vcs.Provider, interval time.Duration, anvilPaths map[string]string, autoLearnRules func() bool, maxCIFixAttempts func() int) *Monitor {
+// New creates a Bellows monitor. The vcsLookup function returns the VCS
+// provider for a given anvil name, enabling per-anvil platform support.
+// The autoLearnRules function is called on each PR merge to check whether
+// warden rule learning is enabled, so hot-reloaded config changes take effect
+// without restarting the daemon. The maxCIFixAttempts function returns the
+// current max CI fix attempts from config (may be nil, in which case the
+// state.DefaultMaxCIFixAttempts is used).
+func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.Duration, anvilPaths map[string]string, autoLearnRules func() bool, maxCIFixAttempts func() int) *Monitor {
 	if interval < 30*time.Second {
 		interval = 30 * time.Second
 	}
@@ -98,7 +100,7 @@ func New(db *state.DB, vcsProvider vcs.Provider, interval time.Duration, anvilPa
 	}
 	return &Monitor{
 		db:               db,
-		vcs:              vcsProvider,
+		vcsLookup:        vcsLookup,
 		interval:         interval,
 		anvilPaths:       anvilPaths,
 		lastStatuses:     make(map[string]*prSnapshot),
@@ -249,11 +251,16 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		return
 	}
 
-	if m.vcs == nil {
+	if m.vcsLookup == nil {
 		log.Printf("[bellows] No VCS provider configured; skipping status check for PR #%d", pr.Number)
 		return
 	}
-	status, err := m.vcs.CheckStatus(ctx, anvilPath, pr.Number)
+	anvilVCS := m.vcsLookup(pr.Anvil)
+	if anvilVCS == nil {
+		log.Printf("[bellows] No VCS provider for anvil %s; skipping status check for PR #%d", pr.Anvil, pr.Number)
+		return
+	}
+	status, err := anvilVCS.CheckStatus(ctx, anvilPath, pr.Number)
 	if err != nil {
 		log.Printf("[bellows] Error checking PR #%d: %v", pr.Number, err)
 		return
@@ -564,8 +571,13 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, be
 	if ctx.Err() != nil {
 		return
 	}
-	if m.vcs == nil {
+	if m.vcsLookup == nil {
 		log.Printf("[bellows] No VCS provider configured; skipping auto-learn for PR #%d", prNumber)
+		return
+	}
+	anvilVCS := m.vcsLookup(anvilName)
+	if anvilVCS == nil {
+		log.Printf("[bellows] No VCS provider for anvil %s; skipping auto-learn for PR #%d", anvilName, prNumber)
 		return
 	}
 
@@ -699,7 +711,7 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, be
 		added, prNumber, warden.RulesFileName,
 	)
 
-	pr, err := m.vcs.CreatePR(ctx, vcs.CreateParams{
+	pr, err := anvilVCS.CreatePR(ctx, vcs.CreateParams{
 		WorktreePath: wtPath,
 		Title:        fmt.Sprintf("forge: learn %d warden rule(s) from PR #%d [no-changelog]", added, prNumber),
 		Body:         prBody,
