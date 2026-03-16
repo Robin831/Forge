@@ -88,20 +88,29 @@ If no bead IDs are given, validates all existing fragments for correct format.`,
 		fragDir := filepath.Join(dir, "changelog.d")
 
 		if len(args) == 0 {
-			// Validate all existing fragments
-			fragments, err := changelog.CollectFragments(fragDir)
-			if err != nil {
-				return err
-			}
+			// Validate all existing fragments for correct format
+			valid, errs := changelog.ValidateAllFragments(fragDir)
 
 			if jsonOutput {
+				errStrs := make([]string, len(errs))
+				for i, e := range errs {
+					errStrs[i] = e.Error()
+				}
 				return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-					"valid": true,
-					"count": len(fragments),
+					"valid":  len(errs) == 0,
+					"count":  valid,
+					"errors": errStrs,
 				})
 			}
 
-			fmt.Fprintf(os.Stderr, "All %d fragments are valid\n", len(fragments))
+			if len(errs) > 0 {
+				for _, e := range errs {
+					fmt.Fprintf(os.Stderr, "Invalid fragment: %s\n", e.Error())
+				}
+				return fmt.Errorf("%d changelog fragment(s) have invalid format", len(errs))
+			}
+
+			fmt.Fprintf(os.Stderr, "All %d fragments are valid\n", valid)
 			return nil
 		}
 

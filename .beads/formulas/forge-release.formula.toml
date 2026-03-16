@@ -33,6 +33,13 @@ echo "Releasing v$VERSION"
 """
 
 [[steps]]
+name = "validate-fragments"
+run = """
+echo "Validating changelog fragments..."
+forge changelog validate
+"""
+
+[[steps]]
 name = "assemble-changelog"
 run = """
 VERSION="${1:?}"

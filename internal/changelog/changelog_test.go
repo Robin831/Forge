@@ -172,6 +172,64 @@ func TestValidateFragmentExists(t *testing.T) {
 	}
 }
 
+func TestValidateAllFragments(t *testing.T) {
+	dir := t.TempDir()
+
+	// Mix of valid and invalid fragments
+	os.WriteFile(filepath.Join(dir, "Forge-good.md"), []byte("category: Added\n- **Feature** - desc (Forge-good)\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "Forge-nocategory.md"), []byte("- Just a bullet with no category header\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "Forge-badcat.md"), []byte("category: Bogus\n- **Thing** - stuff\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "Forge-nobullets.md"), []byte("category: Fixed\n\n"), 0644)
+
+	valid, errs := ValidateAllFragments(dir)
+	if valid != 1 {
+		t.Errorf("valid = %d, want 1", valid)
+	}
+	if len(errs) != 3 {
+		t.Fatalf("got %d errors, want 3", len(errs))
+	}
+
+	// All three bad files should be reported
+	combined := ""
+	for _, e := range errs {
+		combined += e.Error() + "\n"
+	}
+	if !strings.Contains(combined, "missing 'category:'") {
+		t.Error("should report missing category")
+	}
+	if !strings.Contains(combined, "invalid category") {
+		t.Error("should report invalid category")
+	}
+	if !strings.Contains(combined, "no changelog entries") {
+		t.Error("should report no bullets")
+	}
+}
+
+func TestValidateAllFragmentsAllValid(t *testing.T) {
+	dir := t.TempDir()
+
+	os.WriteFile(filepath.Join(dir, "Forge-a.md"), []byte("category: Added\n- **A** - thing\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "Forge-b.md"), []byte("category: Fixed\n- **B** - thing\n"), 0644)
+
+	valid, errs := ValidateAllFragments(dir)
+	if valid != 2 {
+		t.Errorf("valid = %d, want 2", valid)
+	}
+	if len(errs) != 0 {
+		t.Errorf("expected no errors, got %d", len(errs))
+	}
+}
+
+func TestValidateAllFragmentsNonExistent(t *testing.T) {
+	valid, errs := ValidateAllFragments("/nonexistent/path")
+	if valid != 0 {
+		t.Errorf("valid = %d, want 0", valid)
+	}
+	if len(errs) != 0 {
+		t.Errorf("expected no errors, got %d", len(errs))
+	}
+}
+
 func TestCollectEmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	fragments, err := CollectFragments(dir)
