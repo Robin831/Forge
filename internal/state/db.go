@@ -1235,6 +1235,7 @@ const (
 	EventWardenRuleLearned    EventType = "warden_rule_learned"
 	EventBeadAutoClosed       EventType = "bead_auto_closed"
 	EventNoChangesNeeded      EventType = "no_changes_needed"
+	EventPRCreationFailed     EventType = "pr_creation_failed"
 
 	// Crucible events — parent bead orchestration with children on feature branches.
 	EventCrucibleStarted         EventType = "crucible_started"
