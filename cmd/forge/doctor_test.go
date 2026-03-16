@@ -252,7 +252,7 @@ func TestCheckDepcheckTooling_Disabled(t *testing.T) {
 func TestCheckDepcheckTooling_GoAnvil(t *testing.T) {
 	// Create a temp dir with a go.mod file.
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -299,10 +299,19 @@ func TestCheckDepcheckTooling_NoEcosystems(t *testing.T) {
 
 func TestCheckChangelogFragments_NoDir(t *testing.T) {
 	// Run from a temp dir where changelog.d doesn't exist.
-	origDir, _ := os.Getwd()
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("failed to restore working directory: %v", err)
+		}
+	}()
 
 	result := checkChangelogFragments()
 	if result.Status != "ok" {
@@ -311,13 +320,26 @@ func TestCheckChangelogFragments_NoDir(t *testing.T) {
 }
 
 func TestCheckChangelogFragments_ValidFragments(t *testing.T) {
-	origDir, _ := os.Getwd()
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("failed to restore working directory: %v", err)
+		}
+	}()
 
-	os.Mkdir("changelog.d", 0755)
-	os.WriteFile(filepath.Join("changelog.d", "test-1.md"), []byte("category: Added\n- **Test** - Added something\n"), 0644)
+	if err := os.Mkdir("changelog.d", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("changelog.d", "test-1.md"), []byte("category: Added\n- **Test** - Added something\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	result := checkChangelogFragments()
 	if result.Status != "ok" {
@@ -326,13 +348,26 @@ func TestCheckChangelogFragments_ValidFragments(t *testing.T) {
 }
 
 func TestCheckChangelogFragments_InvalidFragment(t *testing.T) {
-	origDir, _ := os.Getwd()
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(origDir); err != nil {
+			t.Errorf("failed to restore working directory: %v", err)
+		}
+	}()
 
-	os.Mkdir("changelog.d", 0755)
-	os.WriteFile(filepath.Join("changelog.d", "bad.md"), []byte("no category header\n"), 0644)
+	if err := os.Mkdir("changelog.d", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("changelog.d", "bad.md"), []byte("no category header\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	result := checkChangelogFragments()
 	if result.Status != "warn" {

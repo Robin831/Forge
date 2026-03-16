@@ -683,6 +683,9 @@ func checkDepcheckTooling() []checkResult {
 	// Scan anvil paths for ecosystem marker files.
 	hasGo, hasDotNet, hasNpm := false, false, false
 	for _, anvil := range cfg.Anvils {
+		if anvil.Path == "" {
+			continue
+		}
 		if anvil.DepcheckEnabled != nil && !*anvil.DepcheckEnabled {
 			continue
 		}
