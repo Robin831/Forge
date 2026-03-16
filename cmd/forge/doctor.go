@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,13 +11,29 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/Robin831/Forge/internal/autostart"
 	"github.com/Robin831/Forge/internal/daemon"
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/spf13/cobra"
+)
+
+// commandTimeout is the maximum time allowed for external CLI checks in doctor.
+const commandTimeout = 5 * time.Second
+
+// execLookPath and execRunCommand are package-level variables so tests can
+// inject mock implementations without relying on real binaries in PATH.
+var (
+	execLookPath   = exec.LookPath
+	execRunCommand = func(name string, args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	}
 )
 
 func init() {
@@ -37,34 +54,40 @@ var doctorCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var checks []checkResult
 
-		// 1. Check bd (beads) installed
+		// 1. Check git installed
+		checks = append(checks, checkGit())
+
+		// 2. Check bd (beads) installed
 		checks = append(checks, checkBinary("bd", "beads issue tracker"))
 
-		// 2. Check VCS CLI tools — platform-aware based on configured anvils
+		// 3. Check VCS CLI tools — platform-aware based on configured anvils
 		checks = append(checks, checkVCSTools()...)
 
-		// 3. Check claude installed
+		// 4. Check claude installed
 		checks = append(checks, checkBinary("claude", "Claude CLI"))
 
-		// 4. Check state.db accessible
+		// 5. Check provider chain CLIs and auth
+		checks = append(checks, checkProviderChain()...)
+
+		// 6. Check state.db accessible
 		checks = append(checks, checkStateDB())
 
-		// 5. Check daemon running
+		// 7. Check daemon running
 		checks = append(checks, checkDaemon())
 
-		// 6. Check IPC socket
+		// 8. Check IPC socket
 		checks = append(checks, checkIPC())
 
-		// 7. Check forge dir
+		// 9. Check forge dir
 		checks = append(checks, checkForgeDir())
 
-		// 8. Check anvils configured
+		// 10. Check anvils configured
 		checks = append(checks, checkAnvils())
 
-		// 9. Check govulncheck (optional — needed for vulnerability scanning)
+		// 11. Check govulncheck (optional — needed for vulnerability scanning)
 		checks = append(checks, checkGovulncheck())
 
-		// 10. Check autostart registration (Windows only)
+		// 12. Check autostart registration (Windows only)
 		if runtime.GOOS == "windows" {
 			checks = append(checks, checkAutostart())
 		}
@@ -104,8 +127,223 @@ var doctorCmd = &cobra.Command{
 	},
 }
 
+func checkGit() checkResult {
+	gitPath, err := execLookPath("git")
+	if err != nil {
+		return checkResult{
+			Name:   "Git",
+			Status: "fail",
+			Detail: "git not found in PATH — required for worktree operations",
+		}
+	}
+	// Get version for extra detail.
+	out, err := execRunCommand(gitPath, "--version")
+	if err != nil {
+		return checkResult{
+			Name:   "Git",
+			Status: "ok",
+			Detail: gitPath,
+		}
+	}
+	version := strings.TrimSpace(string(out))
+	return checkResult{
+		Name:   "Git",
+		Status: "ok",
+		Detail: version,
+	}
+}
+
+// checkProviderChain verifies that every provider in the configured chain has
+// its CLI binary available in PATH and that basic authentication is in place.
+func checkProviderChain() []checkResult {
+	if cfg == nil {
+		return []checkResult{{
+			Name:   "Provider chain",
+			Status: "warn",
+			Detail: "no config loaded — provider chain checks skipped",
+		}}
+	}
+
+	specs := cfg.Settings.SmithProviders
+	if len(specs) == 0 {
+		specs = cfg.Settings.Providers
+	}
+	providers := provider.FromConfig(specs)
+
+	if len(providers) == 0 {
+		return []checkResult{{
+			Name:   "Provider chain",
+			Status: "warn",
+			Detail: "no providers configured — set smith_providers in forge.yaml",
+		}}
+	}
+
+	var results []checkResult
+	for _, p := range providers {
+		results = append(results, checkProviderCLI(p))
+		results = append(results, checkProviderAuth(p))
+	}
+	return results
+}
+
+// checkProviderCLI verifies that a provider's CLI binary is available in PATH.
+func checkProviderCLI(p provider.Provider) checkResult {
+	name := "Provider CLI (" + p.Label() + ")"
+	bin := p.Cmd()
+	path, err := execLookPath(bin)
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "fail",
+			Detail: fmt.Sprintf("%s not found in PATH", bin),
+		}
+	}
+	return checkResult{
+		Name:   name,
+		Status: "ok",
+		Detail: path,
+	}
+}
+
+// checkProviderAuth verifies authentication for a provider.
+// Each provider kind has different auth mechanisms:
+//   - claude: OAuth-based login stored locally
+//   - gemini: GOOGLE_API_KEY or gcloud auth
+//   - copilot: GitHub auth via gh CLI
+//   - openai: OPENAI_API_KEY environment variable
+func checkProviderAuth(p provider.Provider) checkResult {
+	name := "Provider auth (" + p.Label() + ")"
+
+	// If the provider has a known backend with injected env vars (e.g. ollama),
+	// auth is handled by those env vars — skip external checks.
+	if p.Backend != "" {
+		return checkResult{
+			Name:   name,
+			Status: "ok",
+			Detail: fmt.Sprintf("backend %q provides auth via environment", p.Backend),
+		}
+	}
+
+	switch p.Kind {
+	case provider.Claude:
+		return checkClaudeAuth(name)
+	case provider.Gemini:
+		return checkGeminiAuth(name)
+	case provider.Copilot:
+		return checkCopilotAuth(name)
+	case provider.OpenAI:
+		return checkOpenAIAuth(name)
+	default:
+		return checkResult{
+			Name:   name,
+			Status: "warn",
+			Detail: fmt.Sprintf("unknown provider kind %q — cannot verify auth", p.Kind),
+		}
+	}
+}
+
+func checkClaudeAuth(name string) checkResult {
+	// Claude CLI uses OAuth login. Check if ANTHROPIC_API_KEY is set (API
+	// key mode) or if the CLI has a stored session (OAuth mode). We can't
+	// easily verify OAuth tokens, but the API key env var is straightforward.
+	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		return checkResult{
+			Name:   name,
+			Status: "ok",
+			Detail: "ANTHROPIC_API_KEY is set",
+		}
+	}
+	// ANTHROPIC_API_KEY is not set. `claude --version` only confirms the
+	// binary is present — it does NOT verify an OAuth session is active.
+	// Return warn so users aren't misled into thinking auth is confirmed.
+	bin, err := execLookPath("claude")
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "warn",
+			Detail: "claude not in PATH — cannot verify auth",
+		}
+	}
+	out, err := execRunCommand(bin, "--version")
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "warn",
+			Detail: "claude CLI error: " + strings.TrimSpace(string(out)),
+		}
+	}
+	return checkResult{
+		Name:   name,
+		Status: "warn",
+		Detail: "ANTHROPIC_API_KEY not set — cannot verify OAuth session (run 'claude auth login' if needed)",
+	}
+}
+
+func checkGeminiAuth(name string) checkResult {
+	// Gemini CLI typically uses GOOGLE_API_KEY or GEMINI_API_KEY.
+	if os.Getenv("GOOGLE_API_KEY") != "" {
+		return checkResult{
+			Name:   name,
+			Status: "ok",
+			Detail: "GOOGLE_API_KEY is set",
+		}
+	}
+	if os.Getenv("GEMINI_API_KEY") != "" {
+		return checkResult{
+			Name:   name,
+			Status: "ok",
+			Detail: "GEMINI_API_KEY is set",
+		}
+	}
+	return checkResult{
+		Name:   name,
+		Status: "warn",
+		Detail: "neither GOOGLE_API_KEY nor GEMINI_API_KEY is set — gemini CLI may require authentication",
+	}
+}
+
+func checkCopilotAuth(name string) checkResult {
+	// Copilot CLI relies on GitHub authentication.
+	ghPath, err := execLookPath("gh")
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "warn",
+			Detail: "gh not in PATH — copilot requires GitHub auth via gh CLI",
+		}
+	}
+	out, err := execRunCommand(ghPath, "auth", "status")
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "warn",
+			Detail: "gh not authenticated — copilot requires GitHub auth: " + strings.TrimSpace(string(out)),
+		}
+	}
+	return checkResult{
+		Name:   name,
+		Status: "ok",
+		Detail: "GitHub auth active (via gh CLI)",
+	}
+}
+
+func checkOpenAIAuth(name string) checkResult {
+	if os.Getenv("OPENAI_API_KEY") != "" {
+		return checkResult{
+			Name:   name,
+			Status: "ok",
+			Detail: "OPENAI_API_KEY is set",
+		}
+	}
+	return checkResult{
+		Name:   name,
+		Status: "warn",
+		Detail: "OPENAI_API_KEY is not set — OpenAI provider requires authentication",
+	}
+}
+
 func checkBinary(name, description string) checkResult {
-	path, err := exec.LookPath(name)
+	path, err := execLookPath(name)
 	if err != nil {
 		return checkResult{
 			Name:   description,
@@ -214,7 +452,7 @@ func configuredPlatforms() []string {
 
 func checkGitHub() checkResult {
 	// Check gh exists
-	ghPath, err := exec.LookPath("gh")
+	ghPath, err := execLookPath("gh")
 	if err != nil {
 		return checkResult{
 			Name:   "GitHub CLI",
@@ -224,8 +462,7 @@ func checkGitHub() checkResult {
 	}
 
 	// Check gh auth status
-	cmd := exec.Command(ghPath, "auth", "status")
-	output, err := cmd.CombinedOutput()
+	output, err := execRunCommand(ghPath, "auth", "status")
 	if err != nil {
 		return checkResult{
 			Name:   "GitHub CLI",
@@ -374,7 +611,7 @@ func checkAnvils() checkResult {
 }
 
 func checkGovulncheck() checkResult {
-	path, err := exec.LookPath("govulncheck")
+	path, err := execLookPath("govulncheck")
 	if err != nil {
 		return checkResult{
 			Name:   "govulncheck",
