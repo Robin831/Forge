@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -138,10 +139,37 @@ func anyAnvilUsesPlatform(p vcs.Platform) bool {
 	return false
 }
 
+// invalidPlatformAnvils returns a map of anvil name → raw platform string
+// for any anvils whose platform value cannot be parsed.
+func invalidPlatformAnvils() map[string]string {
+	invalid := make(map[string]string)
+	if cfg == nil {
+		return invalid
+	}
+	for name, anvil := range cfg.Anvils {
+		if anvil.Platform == "" {
+			continue // empty defaults to GitHub — not an error
+		}
+		if _, err := vcs.ParsePlatform(anvil.Platform); err != nil {
+			invalid[name] = anvil.Platform
+		}
+	}
+	return invalid
+}
+
 // checkVCSTools returns platform-aware checks for VCS CLI tools.
 // Only tools required by the configured anvil platforms are checked.
 func checkVCSTools() []checkResult {
 	var results []checkResult
+
+	// Warn about any anvils with unrecognised platform values.
+	for name, raw := range invalidPlatformAnvils() {
+		results = append(results, checkResult{
+			Name:   "VCS platform config",
+			Status: "warn",
+			Detail: fmt.Sprintf("anvil %q has unknown platform %q — check forge.yaml", name, raw),
+		})
+	}
 
 	if anyAnvilUsesPlatform(vcs.GitHub) {
 		results = append(results, checkGitHub())
@@ -180,6 +208,7 @@ func configuredPlatforms() []string {
 			platforms = append(platforms, name)
 		}
 	}
+	sort.Strings(platforms)
 	return platforms
 }
 
