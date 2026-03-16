@@ -1,2 +1,0 @@
-category: Fixed
-- **Force Smith note input now works correctly in Hearth** - Selecting "Force Smith" in the Needs Attention action menu now shows a note input overlay, accepts fast typing, and removes the bead from Needs Attention immediately when the smith starts. Four bugs fixed: missing `Init()` (form never started), missing `View()` (form was invisible), blocking tick commands in `driveHuhSync` (typing at ~1 char/sec), and `needs_human` only cleared after smith completed. (Forge-wnlx)
