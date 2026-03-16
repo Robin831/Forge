@@ -125,13 +125,18 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 	// Pull latest main so the scanner sees current dependency versions.
 	// Without this, merged dependency updates that haven't been pulled
 	// locally would be re-detected as outdated, creating duplicate beads.
+	// If the pull fails we must not scan — scanning a stale tree would
+	// produce beads for work that is already done.
 	pullCtx, pullCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer pullCancel()
 	pullCmd := executil.HideWindow(exec.CommandContext(pullCtx, "git", "pull", "--ff-only"))
 	pullCmd.Dir = path
-	if out, err := pullCmd.CombinedOutput(); err != nil {
-		log.Printf("[depcheck] %s: git pull --ff-only failed (scanning stale tree): %v: %s",
-			name, err, strings.TrimSpace(string(out)))
+	if out, pullErr := pullCmd.CombinedOutput(); pullErr != nil {
+		msg := fmt.Sprintf("git pull --ff-only failed for anvil %s — skipping depcheck to avoid stale results: %v: %s",
+			name, pullErr, strings.TrimSpace(string(out)))
+		log.Printf("[depcheck] %s", msg)
+		_ = s.db.LogEvent(state.EventDepcheckFailed, msg, "", name)
+		return
 	}
 
 	// Run each ecosystem scanner. Each returns nil if the ecosystem is not
