@@ -605,3 +605,39 @@ rules:
       check: Verify that original errors are preserved in the chain using fmt.Errorf with %w or errors.Join, and that status code string matching targets the specific formatted prefix (e.g., 'status 409') rather than a bare number that could appear anywhere in the message
       source: copilot:PR#283
       added: "2026-03-16"
+    - id: health-check-auth-verify
+      category: security
+      pattern: Doctor/health-check commands that verify a CLI tool is present (e.g. `--version`) and report `ok` without confirming the user is actually authenticated
+      check: Verify that auth checks use a subcommand or API call that confirms a valid session/token exists, not just that the binary runs. Return `warn` or `error` when authentication cannot be confirmed, to avoid false-positive `ok` status.
+      source: copilot:PR#286
+      added: "2026-03-16"
+    - id: empty-check-silent-skip
+      category: error-handling
+      pattern: A function returns early with an empty/nil result when config or required data is missing, causing the caller to silently skip output
+      check: Verify that early-exit paths (nil config, empty collections) return at least one diagnostic result (warn or info) explaining why checks were skipped, rather than returning nothing
+      source: copilot:PR#286
+      added: "2026-03-16"
+    - id: exec-command-timeout
+      category: error-handling
+      pattern: exec.Command(...).CombinedOutput() used for external CLI calls without a context or timeout
+      check: Verify that all external CLI invocations use exec.CommandContext with a short timeout so that a slow or hanging subprocess cannot block the caller indefinitely; return a warning or error on timeout rather than waiting forever
+      source: copilot:PR#286
+      added: "2026-03-16"
+    - id: doctor-message-provider-consistency
+      category: style
+      pattern: Doctor check output messages that reference a CLI tool or provider name
+      check: Verify that the doctor output message consistently names the actual provider or CLI being checked (e.g., reference 'OpenAI' when checking OPENAI_API_KEY, not an unrelated CLI like 'codex CLI') so users know exactly what to fix
+      source: copilot:PR#286
+      added: "2026-03-16"
+    - id: injectable-exec-runner
+      category: testing
+      pattern: Tests that invoke real system binaries via exec.LookPath or exec.Command directly, without dependency injection
+      check: Verify that exec/lookpath calls are behind an injectable interface or function parameter so unit tests can mock the runner deterministically, rather than skipping when the binary is absent from the test environment
+      source: copilot:PR#286
+      added: "2026-03-16"
+    - id: test-comment-matches-behavior
+      category: testing
+      pattern: Test comments describing setup behavior (e.g., 'skip if set', 'restore after test')
+      check: Verify that test comments accurately describe what the code actually does — e.g., if the comment says 'skip if set' but the code forcibly clears the value with t.Setenv, update the comment to say 'force env var to be unset'
+      source: copilot:PR#286
+      added: "2026-03-16"
