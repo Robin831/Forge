@@ -384,7 +384,7 @@ func TestCheckConfigPermissions_NoConfig(t *testing.T) {
 	defer func() { configFile = origConfigFile }()
 
 	result := checkConfigPermissions()
-	// ConfigFilePath returns "" when the file doesn't exist, so expect warn.
+	// configFile points at a nonexistent path, so os.Stat returns IsNotExist → expect warn.
 	if result.Status != "warn" {
 		t.Errorf("expected warn when no config file, got %q: %s", result.Status, result.Detail)
 	}

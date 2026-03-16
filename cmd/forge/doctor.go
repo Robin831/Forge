@@ -819,7 +819,7 @@ func checkConfigPermissions() checkResult {
 	if err != nil {
 		return checkResult{
 			Name:   "Config file",
-			Status: "fail",
+			Status: "warn",
 			Detail: fmt.Sprintf("cannot read %s: %v", path, err),
 		}
 	}
@@ -873,7 +873,7 @@ func checkDiskSpace() []checkResult {
 
 	// Deduplicate by filesystem identity so we don't double-report the same
 	// volume. filesystemKey returns a platform-appropriate key: on Windows the
-	// volume name, on Unix the device ID from statfs.
+	// volume name, on Unix the filesystem ID (Fsid) from statfs.
 	checked := make(map[string]bool)
 	var results []checkResult
 
@@ -884,13 +884,22 @@ func checkDiskSpace() []checkResult {
 		}
 		checked[key] = true
 
-		free, err := diskFreeBytes(e.dir)
-		root := volumeRoot(e.dir)
+		// Fall back to a parent directory if the target path doesn't exist
+		// (e.g. ~/.forge hasn't been created yet) so we still report real
+		// volume free space rather than a noisy "cannot check" warning.
+		checkDir := e.dir
+		if _, statErr := os.Stat(checkDir); os.IsNotExist(statErr) {
+			if parent := filepath.Dir(checkDir); parent != checkDir {
+				checkDir = parent
+			}
+		}
+		free, err := diskFreeBytes(checkDir)
+		root := volumeRoot(checkDir)
 		if err != nil {
 			results = append(results, checkResult{
 				Name:   "Disk space (" + e.label + ")",
 				Status: "warn",
-				Detail: fmt.Sprintf("cannot check free space on %s: %v", e.dir, err),
+				Detail: fmt.Sprintf("cannot check free space on %s: %v", checkDir, err),
 			})
 			continue
 		}
