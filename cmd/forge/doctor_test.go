@@ -416,8 +416,14 @@ func TestCheckConfigPermissions_WorldReadable(t *testing.T) {
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "forge.yaml")
-	// 0o644 = owner rw, group r, others r — world-readable
+	// Write with any mode first; chmod below overrides the umask.
 	if err := os.WriteFile(cfgPath, []byte("anvils: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Explicitly set 0o644 after writing so the test is not affected by the
+	// process umask (e.g. umask 0o022 would produce 0o644, but umask 0o077
+	// would produce 0o600, making the test flaky).
+	if err := os.Chmod(cfgPath, 0o644); err != nil {
 		t.Fatal(err)
 	}
 

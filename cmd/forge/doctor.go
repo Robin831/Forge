@@ -15,7 +15,6 @@ import (
 
 	"github.com/Robin831/Forge/internal/autostart"
 	"github.com/Robin831/Forge/internal/changelog"
-	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/daemon"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/provider"
@@ -117,27 +116,43 @@ var doctorCmd = &cobra.Command{
 			checks = append(checks, checkAutostart())
 		}
 
+		okCount, warnCount, failCount := 0, 0, 0
+		for _, c := range checks {
+			switch c.Status {
+			case "warn":
+				warnCount++
+			case "fail":
+				failCount++
+			default:
+				okCount++
+			}
+		}
+
 		if jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
-			return enc.Encode(checks)
+			if err := enc.Encode(checks); err != nil {
+				return err
+			}
+			if failCount > 0 {
+				return fmt.Errorf("%d health checks failed", failCount)
+			}
+			if doctorStrict && warnCount > 0 {
+				return fmt.Errorf("%d health check warnings (strict mode)", warnCount)
+			}
+			return nil
 		}
 
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintf(tw, "CHECK\tSTATUS\tDETAIL\n")
 
-		okCount, warnCount, failCount := 0, 0, 0
 		for _, c := range checks {
 			icon := "✓"
 			switch c.Status {
 			case "warn":
 				icon = "⚠"
-				warnCount++
 			case "fail":
 				icon = "✗"
-				failCount++
-			default:
-				okCount++
 			}
 			fmt.Fprintf(tw, "%s %s\t%s\t%s\n", icon, c.Name, c.Status, c.Detail)
 		}
@@ -791,18 +806,33 @@ const diskSpaceWarnThreshold = 1 << 30 // 1 GiB
 // exists and is readable. On Unix, it warns if the file is world-readable
 // since it may contain webhook URLs or other sensitive data.
 func checkConfigPermissions() checkResult {
-	// Use the same config resolution path that PersistentPreRun uses so
-	// the check reflects the file that was (or would be) loaded.
-	// When --config is provided and valid, PersistentPreRun already loaded
-	// it successfully before doctor runs; ConfigFilePath returns the path.
-	// When no config is found, ConfigFilePath returns "" and we emit a warn.
-	path := config.ConfigFilePath(configFile)
-	if path == "" {
+	var path string
+
+	if configFile != "" {
+		// Explicit --config flag: check that exact path directly rather than
+		// going through viper (which returns "" on any parse/read error and
+		// would produce a misleading "no config file found" warning).
+		path = configFile
+	} else {
+		// Auto-discovery: probe the expected locations so we can distinguish
+		// missing (no warn) from unreadable/invalid (warn with detail).
 		home, _ := os.UserHomeDir()
-		return checkResult{
-			Name:   "Config file",
-			Status: "warn",
-			Detail: fmt.Sprintf("no config file found (checked ./forge.yaml, %s/forge.yaml)", filepath.Join(home, ".forge")),
+		candidates := []string{
+			"forge.yaml",
+			filepath.Join(home, ".forge", "forge.yaml"),
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				path = c
+				break
+			}
+		}
+		if path == "" {
+			return checkResult{
+				Name:   "Config file",
+				Status: "warn",
+				Detail: fmt.Sprintf("no config file found (checked ./forge.yaml, %s)", filepath.Join(home, ".forge", "forge.yaml")),
+			}
 		}
 	}
 
