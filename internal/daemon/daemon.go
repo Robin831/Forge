@@ -676,11 +676,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.ActionRequest) {
 	d.logger.Info("lifecycle action requested", "action", req.Action, "pr", req.PRNumber, "bead", req.BeadID)
 
-	// Skip lifecycle actions for PRs with no associated bead (e.g. warden-learn
-	// PRs created by Bellows). These are not Smith-managed branches and have no
-	// bead worktree to operate in — running them would corrupt the .workers dir.
-	if req.BeadID == "" {
-		d.logger.Info("skipping lifecycle action for non-bead PR", "action", req.Action, "pr", req.PRNumber, "branch", req.Branch)
+	// Skip automatic (Bellows-triggered) lifecycle actions for PRs with no
+	// associated bead (e.g. warden-learn PRs). These are not Smith-managed
+	// branches and have no bead worktree to operate in — running them would
+	// corrupt the .workers dir. Manual user-triggered actions are allowed
+	// through; they use the PR number as the worktree/lock key instead.
+	if req.BeadID == "" && !req.IsManual {
+		d.logger.Info("skipping automatic lifecycle action for non-bead PR", "action", req.Action, "pr", req.PRNumber, "branch", req.Branch)
 		return
 	}
 
@@ -690,9 +692,16 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		return
 	}
 
+	// Use the bead ID as the in-flight lock key; fall back to "pr-{N}" for
+	// manual actions on non-bead PRs (e.g. warden-learn PRs triggered by user).
+	lockKey := req.BeadID
+	if lockKey == "" {
+		lockKey = fmt.Sprintf("pr-%d", req.PRNumber)
+	}
+
 	// If bead is already in flight, park the action for after it finishes.
-	if _, inFlight := d.activeBeads.LoadOrStore(req.BeadID, true); inFlight {
-		d.pendingActions.Store(req.BeadID, req)
+	if _, inFlight := d.activeBeads.LoadOrStore(lockKey, true); inFlight {
+		d.pendingActions.Store(lockKey, req)
 		d.logger.Info("bead in flight, queued lifecycle action for later", "bead", req.BeadID, "action", req.Action)
 		return
 	}
@@ -706,10 +715,10 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		// Skip draining during shutdown to avoid wg.Add after wg.Wait.
 		defer func() {
 			if ctx.Err() == nil {
-				d.drainPendingAction(ctx, req.BeadID)
+				d.drainPendingAction(ctx, lockKey)
 			}
 		}()
-		defer d.activeBeads.Delete(req.BeadID)
+		defer d.activeBeads.Delete(lockKey)
 
 		// Actions that don't need a worktree — handle before worktree creation
 		// so they succeed even when the branch/worktree is already cleaned up.
@@ -727,8 +736,9 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			return
 		}
 
-		// Create/get worktree for the PR branch
-		wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, req.BeadID, req.Branch)
+		// Create/get worktree for the PR branch. Use lockKey (which may be
+		// "pr-{N}" for non-bead PRs) so the path is always non-empty/valid.
+		wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, lockKey, req.Branch)
 		if err != nil {
 			d.logger.Error("failed to create worktree for lifecycle fix", "error", err)
 			return
@@ -3246,6 +3256,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				BeadID:   pa.BeadID,
 				Anvil:    pa.Anvil,
 				Branch:   pa.Branch,
+				IsManual: true,
 			}
 			go d.handleLifecycleAction(d.runCtx, req)
 			_ = d.db.LogEvent(state.EventCIFixStarted, fmt.Sprintf("PR #%d CI fix triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
@@ -3262,6 +3273,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				BeadID:   pa.BeadID,
 				Anvil:    pa.Anvil,
 				Branch:   pa.Branch,
+				IsManual: true,
 			}
 			go d.handleLifecycleAction(d.runCtx, req)
 			_ = d.db.LogEvent(state.EventReviewFixStarted, fmt.Sprintf("PR #%d review fix triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
@@ -3288,6 +3300,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				Anvil:      pa.Anvil,
 				Branch:     pa.Branch,
 				BaseBranch: baseBranch,
+				IsManual:   true,
 			}
 			go d.handleLifecycleAction(d.runCtx, req)
 			_ = d.db.LogEvent(state.EventRebaseStarted, fmt.Sprintf("PR #%d rebase triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)

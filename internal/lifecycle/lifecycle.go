@@ -61,6 +61,7 @@ type ActionRequest struct {
 	Anvil      string
 	Branch     string
 	BaseBranch string // Target branch for the PR (empty = main)
+	IsManual   bool   // true when triggered by a user IPC action (not auto-detected by Bellows)
 }
 
 // ActionHandler processes lifecycle actions. Implementations should be async-safe.
