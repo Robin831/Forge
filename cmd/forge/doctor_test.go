@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/provider"
@@ -17,6 +18,55 @@ func TestCheckGit(t *testing.T) {
 	}
 	if result.Detail == "" {
 		t.Error("expected non-empty Detail when git is found")
+	}
+}
+
+// mockExec sets execLookPath and execRunCommand to the given stubs for the
+// duration of the test, restoring the originals on cleanup.
+func mockExec(t *testing.T,
+	lookPath func(string) (string, error),
+	runCommand func(string, ...string) ([]byte, error),
+) {
+	t.Helper()
+	origLook := execLookPath
+	origRun := execRunCommand
+	execLookPath = lookPath
+	execRunCommand = runCommand
+	t.Cleanup(func() {
+		execLookPath = origLook
+		execRunCommand = origRun
+	})
+}
+
+func TestCheckGit_MockFound(t *testing.T) {
+	mockExec(t,
+		func(file string) (string, error) {
+			if file == "git" {
+				return "/usr/bin/git", nil
+			}
+			return "", errors.New("not found")
+		},
+		func(name string, args ...string) ([]byte, error) {
+			return []byte("git version 2.40.0"), nil
+		},
+	)
+	result := checkGit()
+	if result.Status != "ok" {
+		t.Errorf("expected ok, got %q", result.Status)
+	}
+	if result.Detail != "git version 2.40.0" {
+		t.Errorf("expected version string in Detail, got %q", result.Detail)
+	}
+}
+
+func TestCheckGit_MockNotFound(t *testing.T) {
+	mockExec(t,
+		func(file string) (string, error) { return "", errors.New("not found") },
+		func(name string, args ...string) ([]byte, error) { return nil, nil },
+	)
+	result := checkGit()
+	if result.Status != "fail" {
+		t.Errorf("expected fail when git not in PATH, got %q", result.Status)
 	}
 }
 
@@ -57,7 +107,7 @@ func TestCheckProviderAuth_UnknownKind(t *testing.T) {
 }
 
 func TestCheckGeminiAuth_NoKeys(t *testing.T) {
-	// Only meaningful when env vars are not set; skip if they are.
+	// Force env vars to be unset so the check must return warn.
 	t.Setenv("GOOGLE_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
 	result := checkGeminiAuth("test")
@@ -105,5 +155,42 @@ func TestCheckClaudeAuth_WithAPIKey(t *testing.T) {
 	result := checkClaudeAuth("test")
 	if result.Status != "ok" {
 		t.Errorf("expected ok when ANTHROPIC_API_KEY set, got %q", result.Status)
+	}
+}
+
+func TestCheckClaudeAuth_NoAPIKey_ReturnsWarn(t *testing.T) {
+	// Without ANTHROPIC_API_KEY, claude --version only proves the binary is
+	// present — it cannot verify an OAuth session. Expect warn, not ok.
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	mockExec(t,
+		func(file string) (string, error) {
+			if file == "claude" {
+				return "/usr/local/bin/claude", nil
+			}
+			return "", errors.New("not found")
+		},
+		func(name string, args ...string) ([]byte, error) {
+			return []byte("claude 1.0.0"), nil
+		},
+	)
+	result := checkClaudeAuth("test")
+	if result.Status != "warn" {
+		t.Errorf("expected warn when ANTHROPIC_API_KEY not set, got %q (detail: %s)", result.Status, result.Detail)
+	}
+}
+
+func TestCheckProviderChain_NilConfig(t *testing.T) {
+	// When cfg is nil, checkProviderChain should return a single warn result
+	// rather than an empty slice.
+	origCfg := cfg
+	cfg = nil
+	defer func() { cfg = origCfg }()
+
+	results := checkProviderChain()
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result when cfg is nil, got %d", len(results))
+	}
+	if results[0].Status != "warn" {
+		t.Errorf("expected warn when cfg is nil, got %q", results[0].Status)
 	}
 }

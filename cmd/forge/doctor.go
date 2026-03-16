@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/Robin831/Forge/internal/autostart"
 	"github.com/Robin831/Forge/internal/daemon"
@@ -18,6 +20,20 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/spf13/cobra"
+)
+
+// commandTimeout is the maximum time allowed for external CLI checks in doctor.
+const commandTimeout = 5 * time.Second
+
+// execLookPath and execRunCommand are package-level variables so tests can
+// inject mock implementations without relying on real binaries in PATH.
+var (
+	execLookPath   = exec.LookPath
+	execRunCommand = func(name string, args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	}
 )
 
 func init() {
@@ -112,7 +128,7 @@ var doctorCmd = &cobra.Command{
 }
 
 func checkGit() checkResult {
-	gitPath, err := exec.LookPath("git")
+	gitPath, err := execLookPath("git")
 	if err != nil {
 		return checkResult{
 			Name:   "Git",
@@ -121,7 +137,7 @@ func checkGit() checkResult {
 		}
 	}
 	// Get version for extra detail.
-	out, err := exec.Command(gitPath, "--version").Output()
+	out, err := execRunCommand(gitPath, "--version")
 	if err != nil {
 		return checkResult{
 			Name:   "Git",
@@ -140,14 +156,27 @@ func checkGit() checkResult {
 // checkProviderChain verifies that every provider in the configured chain has
 // its CLI binary available in PATH and that basic authentication is in place.
 func checkProviderChain() []checkResult {
-	var specs []string
-	if cfg != nil {
-		specs = cfg.Settings.SmithProviders
-		if len(specs) == 0 {
-			specs = cfg.Settings.Providers
-		}
+	if cfg == nil {
+		return []checkResult{{
+			Name:   "Provider chain",
+			Status: "warn",
+			Detail: "no config loaded — provider chain checks skipped",
+		}}
+	}
+
+	specs := cfg.Settings.SmithProviders
+	if len(specs) == 0 {
+		specs = cfg.Settings.Providers
 	}
 	providers := provider.FromConfig(specs)
+
+	if len(providers) == 0 {
+		return []checkResult{{
+			Name:   "Provider chain",
+			Status: "warn",
+			Detail: "no providers configured — set smith_providers in forge.yaml",
+		}}
+	}
 
 	var results []checkResult
 	for _, p := range providers {
@@ -161,7 +190,7 @@ func checkProviderChain() []checkResult {
 func checkProviderCLI(p provider.Provider) checkResult {
 	name := "Provider CLI (" + p.Label() + ")"
 	bin := p.Cmd()
-	path, err := exec.LookPath(bin)
+	path, err := execLookPath(bin)
 	if err != nil {
 		return checkResult{
 			Name:   name,
@@ -224,9 +253,10 @@ func checkClaudeAuth(name string) checkResult {
 			Detail: "ANTHROPIC_API_KEY is set",
 		}
 	}
-	// Try `claude --version` as a lightweight connectivity check. If the
-	// binary runs without error, the CLI is at least functional.
-	bin, err := exec.LookPath("claude")
+	// ANTHROPIC_API_KEY is not set. `claude --version` only confirms the
+	// binary is present — it does NOT verify an OAuth session is active.
+	// Return warn so users aren't misled into thinking auth is confirmed.
+	bin, err := execLookPath("claude")
 	if err != nil {
 		return checkResult{
 			Name:   name,
@@ -234,7 +264,7 @@ func checkClaudeAuth(name string) checkResult {
 			Detail: "claude not in PATH — cannot verify auth",
 		}
 	}
-	out, err := exec.Command(bin, "--version").CombinedOutput()
+	out, err := execRunCommand(bin, "--version")
 	if err != nil {
 		return checkResult{
 			Name:   name,
@@ -244,8 +274,8 @@ func checkClaudeAuth(name string) checkResult {
 	}
 	return checkResult{
 		Name:   name,
-		Status: "ok",
-		Detail: "CLI functional (OAuth or API key)",
+		Status: "warn",
+		Detail: "ANTHROPIC_API_KEY not set — cannot verify OAuth session (run 'claude auth login' if needed)",
 	}
 }
 
@@ -274,7 +304,7 @@ func checkGeminiAuth(name string) checkResult {
 
 func checkCopilotAuth(name string) checkResult {
 	// Copilot CLI relies on GitHub authentication.
-	ghPath, err := exec.LookPath("gh")
+	ghPath, err := execLookPath("gh")
 	if err != nil {
 		return checkResult{
 			Name:   name,
@@ -282,7 +312,7 @@ func checkCopilotAuth(name string) checkResult {
 			Detail: "gh not in PATH — copilot requires GitHub auth via gh CLI",
 		}
 	}
-	out, err := exec.Command(ghPath, "auth", "status").CombinedOutput()
+	out, err := execRunCommand(ghPath, "auth", "status")
 	if err != nil {
 		return checkResult{
 			Name:   name,
@@ -308,12 +338,12 @@ func checkOpenAIAuth(name string) checkResult {
 	return checkResult{
 		Name:   name,
 		Status: "warn",
-		Detail: "OPENAI_API_KEY is not set — codex CLI may require authentication",
+		Detail: "OPENAI_API_KEY is not set — OpenAI provider requires authentication",
 	}
 }
 
 func checkBinary(name, description string) checkResult {
-	path, err := exec.LookPath(name)
+	path, err := execLookPath(name)
 	if err != nil {
 		return checkResult{
 			Name:   description,
@@ -422,7 +452,7 @@ func configuredPlatforms() []string {
 
 func checkGitHub() checkResult {
 	// Check gh exists
-	ghPath, err := exec.LookPath("gh")
+	ghPath, err := execLookPath("gh")
 	if err != nil {
 		return checkResult{
 			Name:   "GitHub CLI",
@@ -432,8 +462,7 @@ func checkGitHub() checkResult {
 	}
 
 	// Check gh auth status
-	cmd := exec.Command(ghPath, "auth", "status")
-	output, err := cmd.CombinedOutput()
+	output, err := execRunCommand(ghPath, "auth", "status")
 	if err != nil {
 		return checkResult{
 			Name:   "GitHub CLI",
@@ -582,7 +611,7 @@ func checkAnvils() checkResult {
 }
 
 func checkGovulncheck() checkResult {
-	path, err := exec.LookPath("govulncheck")
+	path, err := execLookPath("govulncheck")
 	if err != nil {
 		return checkResult{
 			Name:   "govulncheck",
