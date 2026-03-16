@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/autostart"
+	"github.com/Robin831/Forge/internal/changelog"
 	"github.com/Robin831/Forge/internal/daemon"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/provider"
@@ -87,7 +88,16 @@ var doctorCmd = &cobra.Command{
 		// 11. Check govulncheck (optional — needed for vulnerability scanning)
 		checks = append(checks, checkGovulncheck())
 
-		// 12. Check autostart registration (Windows only)
+		// 12. Check Dolt/beads database connectivity
+		checks = append(checks, checkDoltConnectivity())
+
+		// 13. Check depcheck tooling for configured anvils
+		checks = append(checks, checkDepcheckTooling()...)
+
+		// 14. Check changelog fragment validity
+		checks = append(checks, checkChangelogFragments())
+
+		// 15. Check autostart registration (Windows only)
 		if runtime.GOOS == "windows" {
 			checks = append(checks, checkAutostart())
 		}
@@ -623,6 +633,131 @@ func checkGovulncheck() checkResult {
 		Name:   "govulncheck",
 		Status: "ok",
 		Detail: path,
+	}
+}
+
+// checkDoltConnectivity verifies that the beads database is reachable by
+// running a lightweight bd list command with a short timeout.
+func checkDoltConnectivity() checkResult {
+	bdPath, err := execLookPath("bd")
+	if err != nil {
+		return checkResult{
+			Name:   "Beads DB connectivity",
+			Status: "warn",
+			Detail: "bd not in PATH — cannot verify database connectivity",
+		}
+	}
+	out, err := execRunCommand(bdPath, "list", "--limit", "1", "--json")
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			detail = err.Error()
+		}
+		return checkResult{
+			Name:   "Beads DB connectivity",
+			Status: "fail",
+			Detail: "cannot reach beads database: " + detail,
+		}
+	}
+	return checkResult{
+		Name:   "Beads DB connectivity",
+		Status: "ok",
+		Detail: "connected",
+	}
+}
+
+// checkDepcheckTooling verifies that the CLI tools required by depcheck are
+// available for each ecosystem detected across configured anvils.
+func checkDepcheckTooling() []checkResult {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.Settings.DepcheckInterval == 0 {
+		return []checkResult{{
+			Name:   "Depcheck tooling",
+			Status: "ok",
+			Detail: "depcheck disabled (interval = 0)",
+		}}
+	}
+
+	// Scan anvil paths for ecosystem marker files.
+	hasGo, hasDotNet, hasNpm := false, false, false
+	for _, anvil := range cfg.Anvils {
+		if anvil.DepcheckEnabled != nil && !*anvil.DepcheckEnabled {
+			continue
+		}
+		if !hasGo {
+			if _, err := os.Stat(filepath.Join(anvil.Path, "go.mod")); err == nil {
+				hasGo = true
+			}
+		}
+		if !hasDotNet {
+			// Check for any .sln or .csproj in root.
+			if matches, _ := filepath.Glob(filepath.Join(anvil.Path, "*.sln")); len(matches) > 0 {
+				hasDotNet = true
+			} else if matches, _ := filepath.Glob(filepath.Join(anvil.Path, "*.csproj")); len(matches) > 0 {
+				hasDotNet = true
+			}
+		}
+		if !hasNpm {
+			if _, err := os.Stat(filepath.Join(anvil.Path, "package.json")); err == nil {
+				hasNpm = true
+			}
+		}
+	}
+
+	var results []checkResult
+	if hasGo {
+		results = append(results, checkBinary("go", "Depcheck: Go"))
+	}
+	if hasDotNet {
+		results = append(results, checkBinary("dotnet", "Depcheck: .NET"))
+	}
+	if hasNpm {
+		results = append(results, checkBinary("npm", "Depcheck: npm"))
+	}
+	if len(results) == 0 {
+		results = append(results, checkResult{
+			Name:   "Depcheck tooling",
+			Status: "ok",
+			Detail: "no ecosystems detected in configured anvils",
+		})
+	}
+	return results
+}
+
+// checkChangelogFragments validates all existing changelog fragments in
+// changelog.d/ and reports any that have parse errors (bad category, etc.).
+func checkChangelogFragments() checkResult {
+	dir := "changelog.d"
+	valid, errs := changelog.ValidateAllFragments(dir)
+	if len(errs) == 0 {
+		if valid == 0 {
+			return checkResult{
+				Name:   "Changelog fragments",
+				Status: "ok",
+				Detail: "no fragments present",
+			}
+		}
+		return checkResult{
+			Name:   "Changelog fragments",
+			Status: "ok",
+			Detail: fmt.Sprintf("%d fragments, all valid", valid),
+		}
+	}
+	// Build a summary of the first few errors.
+	summaries := make([]string, 0, len(errs))
+	for i, e := range errs {
+		if i >= 3 {
+			summaries = append(summaries, fmt.Sprintf("… and %d more", len(errs)-3))
+			break
+		}
+		summaries = append(summaries, e.Error())
+	}
+	return checkResult{
+		Name:   "Changelog fragments",
+		Status: "warn",
+		Detail: fmt.Sprintf("%d valid, %d invalid: %s", valid, len(errs), strings.Join(summaries, "; ")),
 	}
 }
 
