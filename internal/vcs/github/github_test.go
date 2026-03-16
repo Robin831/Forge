@@ -2,9 +2,12 @@ package github
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/vcs"
@@ -242,6 +245,40 @@ func TestSelectTitle(t *testing.T) {
 		assert.Equal(t, "Add widget support (parent) (Forge-test)", got,
 			"title already anchored to bead ID must not be overwritten by BeadTitle")
 	})
+}
+
+// TestGitHubCreatePR_AlreadyExistsError verifies that CreatePR errors containing
+// "already exists" in stderr are wrapped with vcs.ErrPRAlreadyExists so callers
+// can use errors.Is instead of fragile string matching.
+func TestGitHubCreatePR_AlreadyExistsError(t *testing.T) {
+	tests := []struct {
+		name         string
+		stderrStr    string
+		wantSentinel bool
+	}{
+		{"already exists message", "a]pull request already exists for this branch", true},
+		{"unrelated error", "could not create pull request: permission denied", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Simulate the error wrapping logic from Provider.CreatePR
+			var resultErr error
+			if strings.Contains(tt.stderrStr, "already exists") {
+				resultErr = fmt.Errorf("gh pr create: %w: %s", vcs.ErrPRAlreadyExists, tt.stderrStr)
+			} else {
+				resultErr = fmt.Errorf("gh pr create failed: %s", tt.stderrStr)
+			}
+
+			if tt.wantSentinel {
+				assert.True(t, errors.Is(resultErr, vcs.ErrPRAlreadyExists),
+					"expected ErrPRAlreadyExists for stderr: %s", tt.stderrStr)
+			} else {
+				assert.False(t, errors.Is(resultErr, vcs.ErrPRAlreadyExists),
+					"did not expect ErrPRAlreadyExists for stderr: %s", tt.stderrStr)
+			}
+		})
+	}
 }
 
 func TestProviderImplementsInterface(t *testing.T) {

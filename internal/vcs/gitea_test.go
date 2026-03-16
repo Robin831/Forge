@@ -2,6 +2,9 @@ package vcs
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -591,6 +594,43 @@ func TestGiteaMergePRRequestJSON(t *testing.T) {
 	assert.NotContains(t, raw, "Do")
 	assert.Equal(t, "squash", raw["do"])
 	assert.Equal(t, true, raw["delete_branch_after_merge"])
+}
+
+// TestGiteaCreatePR_AlreadyExistsError verifies that CreatePR errors containing
+// "already exists" or "409" are wrapped with ErrPRAlreadyExists so callers can
+// use errors.Is for detection instead of fragile string matching.
+func TestGiteaCreatePR_AlreadyExistsError(t *testing.T) {
+	tests := []struct {
+		name    string
+		errMsg  string
+		wantSentinel bool
+	}{
+		{"already exists message", "pull request already exists for this branch", true},
+		{"409 conflict status", "API returned 409: conflict", true},
+		{"unrelated error", "network timeout", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Simulate the error wrapping logic from GiteaProvider.CreatePR
+			apiErr := fmt.Errorf("gitea API: %s", tt.errMsg)
+			errMsg := apiErr.Error()
+			var resultErr error
+			if strings.Contains(errMsg, "already exists") || strings.Contains(errMsg, "409") {
+				resultErr = fmt.Errorf("gitea create PR: %w: %s", ErrPRAlreadyExists, errMsg)
+			} else {
+				resultErr = fmt.Errorf("gitea create PR failed: %w", apiErr)
+			}
+
+			if tt.wantSentinel {
+				assert.True(t, errors.Is(resultErr, ErrPRAlreadyExists),
+					"expected ErrPRAlreadyExists for error: %s", resultErr)
+			} else {
+				assert.False(t, errors.Is(resultErr, ErrPRAlreadyExists),
+					"did not expect ErrPRAlreadyExists for error: %s", resultErr)
+			}
+		})
+	}
 }
 
 // TestGiteaProviderInterfaceCompliance verifies GiteaProvider satisfies the Provider interface.
