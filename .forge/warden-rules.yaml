@@ -595,14 +595,8 @@ rules:
       added: "2026-03-16"
     - id: preserve-error-chain-on-sentinel
       category: error-handling
-      pattern: Returning a sentinel error (e.g., ErrPRAlreadyExists) in a branch that also has an underlying error from an operation (e.g., cmd.Run())
-      check: Verify that the original underlying error is preserved in the error chain alongside the sentinel, using errors.Join or a wrapper, so that debugging context (exit status, exec error type) is not lost
-      source: copilot:PR#283
-      added: "2026-03-16"
-    - id: preserve-sentinel-error-chain
-      category: error-handling
-      pattern: Sentinel error returned without wrapping original error (e.g., `return vcs.ErrPRAlreadyExists` after a failed cmd.Run())
-      check: When returning a sentinel error, verify the original error is preserved in the chain using errors.Join or fmt.Errorf with %w, so both errors.Is(err, sentinel) works and the root cause remains diagnosable
+      pattern: Sentinel error returned without wrapping the original underlying error (e.g., `return vcs.ErrPRAlreadyExists` after a failed cmd.Run())
+      check: When returning a sentinel error in a branch that also has an underlying error, verify the original error is preserved in the chain using errors.Join or fmt.Errorf with %w, so that errors.Is(err, sentinel) continues to work and the root cause (exit status, exec error type) remains diagnosable
       source: copilot:PR#283
       added: "2026-03-16"
     - id: error-chain-preservation-and-precise-string-matching
