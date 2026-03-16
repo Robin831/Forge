@@ -27,5 +27,5 @@ func filesystemKey(path string) string {
 	if err := syscall.Statfs(path, &stat); err != nil {
 		return path
 	}
-	return fmt.Sprintf("%d:%d", stat.Fsid.Val[0], stat.Fsid.Val[1])
+	return fmt.Sprintf("%v", stat.Fsid)
 }
