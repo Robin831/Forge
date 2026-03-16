@@ -102,6 +102,10 @@ func (g *GiteaProvider) CreatePR(ctx context.Context, params CreateParams) (*PR,
 	endpoint := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls", baseURL, url.PathEscape(owner), url.PathEscape(repo))
 	var result giteaPullRequest
 	if err := giteaAPIRequest(ctx, http.MethodPost, endpoint, payload, &result); err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "already exists") || strings.Contains(errMsg, "409") {
+			return nil, fmt.Errorf("gitea create PR: %w: %s", ErrPRAlreadyExists, errMsg)
+		}
 		return nil, fmt.Errorf("gitea create PR failed: %w", err)
 	}
 
