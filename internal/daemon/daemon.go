@@ -1949,7 +1949,7 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		// and continue rather than failing — the work is already represented.
 		if errors.Is(err, vcs.ErrPRAlreadyExists) {
 			d.logger.Warn("PR already exists for branch, skipping creation", "bead", bead.ID, "branch", outcome.Branch, "error", err)
-			if logErr := d.db.LogEvent(state.EventPRCreationFailed, fmt.Sprintf("PR already exists for branch %s (duplicate run)", outcome.Branch), bead.ID, bead.Anvil); logErr != nil {
+			if logErr := d.db.LogEvent(state.EventPRAlreadyExists, fmt.Sprintf("PR already exists for branch %s (duplicate run)", outcome.Branch), bead.ID, bead.Anvil); logErr != nil {
 				d.logger.Error("failed to log duplicate PR event", "bead", bead.ID, "error", logErr)
 			}
 			// Update worker state so it doesn't hang in WorkerMonitoring
@@ -1974,7 +1974,6 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); dbErr != nil {
 			d.logger.Error("failed to update worker status to failed", "worker", workerID, "error", dbErr)
 		}
-		d.recordDispatchFailure(bead.ID, bead.Anvil, reason)
 		return
 	}
 

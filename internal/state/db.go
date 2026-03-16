@@ -1236,6 +1236,7 @@ const (
 	EventBeadAutoClosed       EventType = "bead_auto_closed"
 	EventNoChangesNeeded      EventType = "no_changes_needed"
 	EventPRCreationFailed     EventType = "pr_creation_failed"
+	EventPRAlreadyExists      EventType = "pr_already_exists"
 
 	// Crucible events — parent bead orchestration with children on feature branches.
 	EventCrucibleStarted         EventType = "crucible_started"
