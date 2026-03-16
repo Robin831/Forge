@@ -71,7 +71,7 @@ var doctorCmd = &cobra.Command{
 		// 11. Check govulncheck (optional — needed for vulnerability scanning)
 		checks = append(checks, checkGovulncheck())
 
-		// 10. Check autostart registration (Windows only)
+		// 12. Check autostart registration (Windows only)
 		if runtime.GOOS == "windows" {
 			checks = append(checks, checkAutostart())
 		}
