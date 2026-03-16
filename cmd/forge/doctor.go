@@ -780,17 +780,33 @@ const diskSpaceWarnThreshold = 1 << 30 // 1 GiB
 // exists and is readable. On Unix, it warns if the file is world-readable
 // since it may contain webhook URLs or other sensitive data.
 func checkConfigPermissions() checkResult {
-	path := config.ConfigFilePath(configFile)
-	if path == "" {
-		return checkResult{
-			Name:   "Config file",
-			Status: "warn",
-			Detail: "no config file found (checked forge.yaml, ~/.forge/config.yaml)",
+	var path string
+	if configFile != "" {
+		// --config was provided: stat/open it directly without going through
+		// Viper so that an unreadable file is caught rather than silently
+		// reported as "no config file found".
+		path = configFile
+	} else {
+		path = config.ConfigFilePath("")
+		if path == "" {
+			home, _ := os.UserHomeDir()
+			return checkResult{
+				Name:   "Config file",
+				Status: "warn",
+				Detail: fmt.Sprintf("no config file found (checked ./forge.yaml, %s/forge.yaml)", filepath.Join(home, ".forge")),
+			}
 		}
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return checkResult{
+				Name:   "Config file",
+				Status: "warn",
+				Detail: fmt.Sprintf("config file not found: %s", path),
+			}
+		}
 		return checkResult{
 			Name:   "Config file",
 			Status: "warn",
@@ -828,44 +844,53 @@ func checkConfigPermissions() checkResult {
 	}
 }
 
+// pathEntry pairs a human-readable label with the filesystem path to check.
+type pathEntry struct {
+	label string
+	dir   string
+}
+
 // checkDiskSpace warns when free disk space is below diskSpaceWarnThreshold on
 // the volume containing ~/.forge and each configured anvil path.
 func checkDiskSpace() []checkResult {
-	// Collect unique paths to check.
-	paths := make(map[string]string) // label → path
+	// Collect paths into a sorted slice for deterministic output ordering.
+	var entries []pathEntry
 	if home, err := os.UserHomeDir(); err == nil {
-		forgeDir := filepath.Join(home, ".forge")
-		paths["~/.forge"] = forgeDir
+		entries = append(entries, pathEntry{"~/.forge", filepath.Join(home, ".forge")})
 	}
 	if cfg != nil {
 		for name, anvil := range cfg.Anvils {
 			if anvil.Path != "" {
-				paths["anvil:"+name] = anvil.Path
+				entries = append(entries, pathEntry{"anvil:" + name, anvil.Path})
 			}
 		}
 	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].label < entries[j].label })
 
-	if len(paths) == 0 {
+	if len(entries) == 0 {
 		return nil
 	}
 
-	// Deduplicate by volume root (on Windows) or mount point.
+	// Deduplicate by filesystem identity so we don't double-report the same
+	// volume. filesystemKey returns a platform-appropriate key: on Windows the
+	// volume name, on Unix the device ID from statfs.
 	checked := make(map[string]bool)
 	var results []checkResult
 
-	for label, dir := range paths {
-		root := volumeRoot(dir)
-		if checked[root] {
+	for _, e := range entries {
+		key := filesystemKey(e.dir)
+		if checked[key] {
 			continue
 		}
-		checked[root] = true
+		checked[key] = true
 
-		free, err := diskFreeBytes(dir)
+		free, err := diskFreeBytes(e.dir)
+		root := volumeRoot(e.dir)
 		if err != nil {
 			results = append(results, checkResult{
-				Name:   "Disk space (" + label + ")",
+				Name:   "Disk space (" + e.label + ")",
 				Status: "warn",
-				Detail: fmt.Sprintf("cannot check free space on %s: %v", dir, err),
+				Detail: fmt.Sprintf("cannot check free space on %s: %v", e.dir, err),
 			})
 			continue
 		}
@@ -873,13 +898,13 @@ func checkDiskSpace() []checkResult {
 		freeGiB := float64(free) / float64(1<<30)
 		if free < diskSpaceWarnThreshold {
 			results = append(results, checkResult{
-				Name:   "Disk space (" + label + ")",
+				Name:   "Disk space (" + e.label + ")",
 				Status: "warn",
 				Detail: fmt.Sprintf("%.1f GiB free on %s — worktrees and logs may fill disk", freeGiB, root),
 			})
 		} else {
 			results = append(results, checkResult{
-				Name:   "Disk space (" + label + ")",
+				Name:   "Disk space (" + e.label + ")",
 				Status: "ok",
 				Detail: fmt.Sprintf("%.1f GiB free", freeGiB),
 			})

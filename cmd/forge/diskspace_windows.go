@@ -3,6 +3,7 @@
 package main
 
 import (
+	"path/filepath"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -21,4 +22,14 @@ func diskFreeBytes(path string) (uint64, error) {
 		return 0, err
 	}
 	return free, nil
+}
+
+// filesystemKey returns a string that uniquely identifies the volume
+// containing path. On Windows this is the volume name (e.g. "C:\").
+func filesystemKey(path string) string {
+	vol := filepath.VolumeName(path)
+	if vol != "" {
+		return vol + `\`
+	}
+	return `\`
 }

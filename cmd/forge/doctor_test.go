@@ -440,6 +440,9 @@ func TestCheckDiskSpace_WithAnvils(t *testing.T) {
 }
 
 func TestVolumeRoot(t *testing.T) {
+	// volumeRoot is used for display purposes only (e.g. "%.1f GiB free on X").
+	// Deduplication uses filesystemKey instead, which distinguishes separate
+	// mounts on Unix via the device ID.
 	tests := []struct {
 		path string
 		want string
@@ -451,6 +454,19 @@ func TestVolumeRoot(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("volumeRoot(%q) = %q, want %q", tt.path, got, tt.want)
 		}
+	}
+}
+
+func TestFilesystemKey_SamePath(t *testing.T) {
+	// Two references to the same directory should produce the same key.
+	dir := t.TempDir()
+	k1 := filesystemKey(dir)
+	k2 := filesystemKey(dir)
+	if k1 != k2 {
+		t.Errorf("filesystemKey(%q) not stable: %q vs %q", dir, k1, k2)
+	}
+	if k1 == "" {
+		t.Errorf("filesystemKey(%q) returned empty string", dir)
 	}
 }
 
