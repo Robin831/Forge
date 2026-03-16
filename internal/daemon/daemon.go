@@ -3147,8 +3147,18 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// without waiting for the next bellows poll cycle (up to 2 minutes).
 		_ = d.db.UpdatePRStatus(pr.ID, state.PRMerged)
 		_ = d.db.CompleteWorkersByBead(beadID)
-		// Trigger an immediate bellows poll so downstream lifecycle effects
-		// (bead close, worktree cleanup) happen promptly.
+		// Close the bead directly — bellows cannot detect the merge transition
+		// because UpdatePRStatus(PRMerged) is called above, making lastSnap.IsMerged
+		// true before Refresh() fires, so EventPRMerged never emits.
+		if beadID != "" && !strings.HasPrefix(beadID, "ext-") {
+			closeCtx, closeCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+			if err := d.closeBead(closeCtx, beadID, anvilCfg.Path, fmt.Sprintf("PR #%d merged", mergeNumber)); err != nil {
+				d.logger.Warn("failed to close bead after merge", "bead", beadID, "pr", mergeNumber, "error", err)
+			}
+			closeCancel()
+		}
+		// Trigger an immediate bellows poll so other downstream lifecycle effects
+		// (worktree cleanup) happen promptly.
 		if d.bellowsMonitor != nil {
 			d.bellowsMonitor.Refresh()
 		}
