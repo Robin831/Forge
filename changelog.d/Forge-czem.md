@@ -1,0 +1,2 @@
+category: Added
+- **New `internal/ingot` package with schema, types, and CRUD operations** - Introduces the `Ingot` data model that bundles a bead, PR, worker lifecycle, and structured test results into a single queryable record. Adds `ingots` and `ingot_test_results` tables via a new state migration, along with full CRUD operations (`InsertIngot`, `UpdateIngotStatus`, `UpdateIngotTemperResults`, `UpdateIngotPR`, `GetIngot`, `GetIngotsByStatus`, `InsertTestResult`, `GetTestResults`). (Forge-czem)
