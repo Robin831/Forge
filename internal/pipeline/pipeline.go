@@ -186,6 +186,35 @@ func releaseBead(beadID, anvilPath string) error {
 	return nil
 }
 
+// shouldRunSchematic determines whether the Schematic pre-worker should run
+// for the given bead and provider chain.
+//
+// The Copilot provider charges per-request rather than per-token, so running
+// Schematic would consume an additional premium request with limited benefit.
+// When the first provider is Copilot, Schematic is skipped unless the bead is
+// explicitly tagged "decompose".
+func shouldRunSchematic(cfg schematic.Config, bead poller.Bead, providers []provider.Provider) bool {
+	if !cfg.Enabled {
+		return false
+	}
+	// Skip schematic for Copilot to save a premium request,
+	// unless the bead explicitly needs decomposition.
+	if len(providers) > 0 && providers[0].Kind == provider.Copilot {
+		hasDecompose := false
+		for _, tag := range bead.Labels {
+			if strings.EqualFold(tag, "decompose") {
+				hasDecompose = true
+				break
+			}
+		}
+		if !hasDecompose {
+			log.Printf("[pipeline] skipping schematic for Copilot provider to save premium request")
+			return false
+		}
+	}
+	return schematic.ShouldRun(cfg, bead)
+}
+
 // Run executes the full Smith → Temper → Warden pipeline for a bead.
 func Run(ctx context.Context, p Params) *Outcome {
 	start := time.Now()
@@ -318,7 +347,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 		}
 
-		if schematic.ShouldRun(schemCfg, p.Bead) {
+		if shouldRunSchematic(schemCfg, p.Bead, providers) {
 			log.Printf("[pipeline:%s] Running Schematic pre-analysis", workerID)
 			_ = p.DB.UpdateWorkerPhase(workerID, "schematic")
 			_ = p.DB.LogEvent(state.EventSchematicStarted, "Analysing bead scope", p.Bead.ID, p.AnvilName)
