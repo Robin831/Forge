@@ -61,6 +61,8 @@ forge notify release \
   --changelog "- Added X\n- Fixed Y" \
   --webhook-url https://... \
   --extra-url https://...    # --version required; other flags (--tag/--release-url/--changelog/--webhook-url/--extra-url) optional
+forge update                          # Download and install the latest Forge release
+forge update --check                  # Check for updates without installing
 forge version                         # Print version information
 ```
 

@@ -353,20 +353,65 @@ func startDaemon(exe string) error {
 	return nil
 }
 
-// printUpdateHint checks GitHub for a newer release and prints a hint if one is found.
-// Network or parse errors are silently ignored so they do not disrupt normal output.
-func printUpdateHint() {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+// updateCache is the on-disk cache for the latest known release tag.
+type updateCache struct {
+	TagName   string    `json:"tag_name"`
+	CheckedAt time.Time `json:"checked_at"`
+}
 
-	release, err := getLatestRelease(ctx)
+const updateCacheTTL = 1 * time.Hour
+
+func forgeUpdateCachePath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".forge", "update-cache.json")
+}
+
+func readUpdateCache() *updateCache {
+	data, err := os.ReadFile(forgeUpdateCachePath())
 	if err != nil {
+		return nil
+	}
+	var c updateCache
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil
+	}
+	return &c
+}
+
+func writeUpdateCache(tagName string) {
+	p := forgeUpdateCachePath()
+	_ = os.MkdirAll(filepath.Dir(p), 0755)
+	c := updateCache{TagName: tagName, CheckedAt: time.Now()}
+	data, _ := json.Marshal(c)
+	_ = os.WriteFile(p, data, 0644)
+}
+
+// printUpdateHint reads the local update cache and prints a hint if a newer release is cached.
+// If the cache is missing or stale (> 1h), a background goroutine refreshes it for the next run.
+// This function never makes a synchronous network call, so it does not add latency to forge status.
+func printUpdateHint() {
+	cache := readUpdateCache()
+
+	// Refresh cache in background if missing or stale.
+	if cache == nil || time.Since(cache.CheckedAt) > updateCacheTTL {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			release, err := getLatestRelease(ctx)
+			if err != nil {
+				return
+			}
+			writeUpdateCache(release.TagName)
+		}()
+	}
+
+	if cache == nil {
 		return
 	}
 
 	current := stripV(forge.Version)
-	latest := stripV(release.TagName)
+	latest := stripV(cache.TagName)
 	if current == "dev" || compareVersions(current, latest) < 0 {
-		fmt.Printf("\n%s available — run forge update\n", release.TagName)
+		fmt.Printf("\n%s available — run forge update\n", cache.TagName)
 	}
 }
