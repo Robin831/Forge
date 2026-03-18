@@ -1327,7 +1327,7 @@ func TestShouldRunSchematic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shouldRunSchematic(tt.cfg, tt.bead, tt.providers)
+			got, _ := shouldRunSchematic(tt.cfg, tt.bead, tt.providers)
 			assert.Equal(t, tt.want, got)
 		})
 	}
