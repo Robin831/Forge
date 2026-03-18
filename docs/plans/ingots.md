@@ -43,7 +43,13 @@ The ingot tracks the full bead→PR→merge journey in a single queryable record
 
 **Unique constraint**: `(bead_id, anvil)`
 
-**Status values**: `init` → `smith` → `temper` → `warden` → `approved` → `pr_open` → `pr_merged` | `failed` | `stalled`
+**Status values:**
+
+```
+init → smith → temper → warden → approved → pr_open → pr_merged
+                  ↘         ↘         ↘                ↗
+                   failed    failed    failed    stalled
+```
 
 #### `ingot_test_results`
 

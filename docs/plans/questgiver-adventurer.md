@@ -163,6 +163,8 @@ QuestgiverInterval time.Duration `mapstructure:"questgiver_interval" yaml:"quest
 AdventurerTimeout  time.Duration `mapstructure:"adventurer_timeout" yaml:"adventurer_timeout,omitempty"`
 ```
 
+> **Note:** `SettingsConfig` uses a custom `MarshalYAML()` with a shadow struct for duration fields. New `time.Duration` fields must also be added to the shadow struct and the defaults/parsing/validation logic to ensure proper YAML round-tripping via `config.Save()` and correct loading from `forge.yaml`. Follow the existing pattern for `DepcheckInterval` / `VulncheckInterval`.
+
 In `forge.yaml`:
 
 ```yaml
@@ -172,17 +174,25 @@ settings:
   adventurer_timeout: 5m      # max time per quest execution
 ```
 
-Per-anvil override in anvil config:
+Per-anvil overrides use the existing `map[string]AnvilConfig` pattern with flat fields:
 
 ```yaml
 anvils:
-  - name: my-app
+  my-app:
     path: /path/to/app
-    questgiver:
-      enabled: true
-      base_url: "http://localhost:3000"   # template variable for quests
-      setup_cmd: "podman compose up -d"    # run before quest execution
-      teardown_cmd: "podman compose down" # run after quest execution
+    questgiver_enabled: true
+    questgiver_base_url: "http://localhost:3000"  # template variable for quests
+    questgiver_setup_cmd: "podman compose up -d"   # run before quest execution
+    questgiver_teardown_cmd: "podman compose down"  # run after quest execution
+```
+
+This requires adding the following fields to `AnvilConfig`:
+
+```go
+QuestgiverEnabled     *bool  `mapstructure:"questgiver_enabled" yaml:"questgiver_enabled,omitempty"`
+QuestgiverBaseURL     string `mapstructure:"questgiver_base_url" yaml:"questgiver_base_url,omitempty"`
+QuestgiverSetupCmd    string `mapstructure:"questgiver_setup_cmd" yaml:"questgiver_setup_cmd,omitempty"`
+QuestgiverTeardownCmd string `mapstructure:"questgiver_teardown_cmd" yaml:"questgiver_teardown_cmd,omitempty"`
 ```
 
 ## Daemon Integration
@@ -240,9 +250,16 @@ func (m *Monitor) createFailureBead(ctx context.Context, anvilPath string, quest
         "--title", title,
         "--description", description,
         "--type", "bug",
-        "--priority=1")
+        "--priority=1",
+        "--json")
     cmd.Dir = anvilPath
-    return cmd.Run()
+    executil.HideWindow(cmd)
+
+    out, err := cmd.CombinedOutput()
+    if err != nil {
+        return fmt.Errorf("bd create: %w: %s", err, string(out))
+    }
+    return nil
 }
 ```
 
@@ -250,16 +267,35 @@ func (m *Monitor) createFailureBead(ctx context.Context, anvilPath string, quest
 
 Before creating a bead, check if one already exists for the same quest failure (same pattern as vulncheck):
 
+Follow the existing dedup pattern from `internal/depcheck/dedup.go` — parse `bd list --json` output as structured JSON and filter by status:
+
 ```go
 func (m *Monitor) failureBeadExists(ctx context.Context, anvilPath, questName string) bool {
-    cmd := exec.CommandContext(ctx, "bd", "search", questName, "--json")
+    cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+    defer cancel()
+
+    cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
+        "bd", "list", "--status=open", "--limit", "0", "--json"))
     cmd.Dir = anvilPath
     out, err := cmd.Output()
     if err != nil {
         return false
     }
-    // Parse JSON, check for open beads matching this quest
-    return strings.Contains(string(out), questName)
+
+    var issues []struct {
+        Title  string `json:"title"`
+        Status string `json:"status"`
+    }
+    if err := json.Unmarshal(out, &issues); err != nil {
+        return false
+    }
+    for _, issue := range issues {
+        if strings.Contains(issue.Title, "E2E failure: "+questName) &&
+            (issue.Status == "open" || issue.Status == "in_progress") {
+            return true
+        }
+    }
+    return false
 }
 ```
 
@@ -277,13 +313,13 @@ forge quest results [--anvil <name>]      # Show recent quest results
 Timer tick (every 24h by default)
   │
   ├─ For each anvil with questgiver_enabled:
-  │    ├─ Run setup_cmd (e.g. docker compose up)
+  │    ├─ Run setup_cmd (e.g. podman compose up)
   │    ├─ Discover quests from .forge/quests/*.yaml
   │    ├─ For each quest:
   │    │    ├─ adventurer.Execute(quest)
   │    │    ├─ Log event (passed/failed)
   │    │    └─ If failed AND no existing bead → bd create
-  │    └─ Run teardown_cmd (e.g. docker compose down)
+  │    └─ Run teardown_cmd (e.g. podman compose down)
   │
   └─ Log questgiver_scan_done event
 ```

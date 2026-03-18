@@ -109,12 +109,12 @@ Warden and Schematic don't need the strongest model — they produce short struc
 
 ```yaml
 settings:
-  smith_providers:
-    - kind: copilot
-      model: claude-sonnet-4.6     # 1x for code generation
-  warden_model_override: claude-haiku-4.5   # 0.33x for review
-  schematic_model_override: claude-haiku-4.5 # 0.33x for analysis
+  smith_providers: ["copilot/claude-sonnet-4-6"]  # 1x for code generation
+  warden_model_override: claude-haiku-4-5          # 0.33x for review
+  schematic_model_override: claude-haiku-4-5       # 0.33x for analysis
 ```
+
+> **Note:** `smith_providers` uses the existing `[]string` format (`"kind/model"`). The `warden_model_override` and `schematic_model_override` are new string fields on `SettingsConfig` that only override the model within the provider, not the provider itself.
 
 In `internal/pipeline/pipeline.go`, when spawning Warden or Schematic with a Copilot provider, substitute the model:
 
@@ -226,16 +226,19 @@ Track these metrics before and after each phase:
 
 Add a dashboard query:
 
+The existing `copilot_premium_requests` table is keyed by `date` with `requests_used` (REAL, weighted count) and `request_limit` (INTEGER). Query using the actual schema:
+
 ```sql
 SELECT
-    date(recorded_at) as day,
-    SUM(multiplier) as premium_requests,
-    COUNT(*) as raw_requests
+    date,
+    requests_used as premium_requests,
+    request_limit
 FROM copilot_premium_requests
-WHERE recorded_at >= date('now', '-30 days')
-GROUP BY day
-ORDER BY day;
+WHERE date >= date('now', '-30 days')
+ORDER BY date;
 ```
+
+> **Note:** Per-invocation tracking (which stage triggered each request) would require a schema extension — e.g., adding an `invocations` table with `date`, `bead_id`, `stage`, `multiplier` columns. This is recommended for measuring Strategy 1-4 effectiveness but is not strictly required for Phase 1.
 
 ## Config Summary
 
