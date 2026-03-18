@@ -1,6 +1,12 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -53,6 +59,48 @@ func TestPlatformAssetName(t *testing.T) {
 	// Should contain OS and arch
 	if !strings.Contains(name, "-") {
 		t.Errorf("platformAssetName() = %q, expected OS-arch separator", name)
+	}
+}
+
+func TestVerifyChecksum(t *testing.T) {
+	// Write a temp file with known content
+	content := []byte("forge binary content")
+	tmp, err := os.CreateTemp("", "forge-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+
+	// Compute expected checksum
+	h := sha256.Sum256(content)
+	hash := hex.EncodeToString(h[:])
+	assetName := "forge-linux-amd64"
+	checksumBody := fmt.Sprintf("%s  %s\n", hash, assetName)
+
+	// Serve checksums via httptest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, checksumBody)
+	}))
+	defer srv.Close()
+
+	ctx := t.Context()
+	if err := verifyChecksum(ctx, tmp.Name(), assetName, srv.URL); err != nil {
+		t.Errorf("verifyChecksum() unexpected error: %v", err)
+	}
+
+	// Wrong hash should fail
+	badBody := strings.Replace(checksumBody, hash[:4], "dead", 1)
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, badBody)
+	}))
+	defer srv2.Close()
+
+	if err := verifyChecksum(ctx, tmp.Name(), assetName, srv2.URL); err == nil {
+		t.Error("verifyChecksum() with wrong hash: want error, got nil")
 	}
 }
 

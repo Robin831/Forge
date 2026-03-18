@@ -126,10 +126,11 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	if checksumURL != "" {
 		fmt.Println("Verifying checksum...")
 		csCtx, csCancel := context.WithTimeout(rootCtx, 30*time.Second)
-		defer csCancel()
-		if err := verifyChecksum(csCtx, stagingPath, assetName, checksumURL); err != nil {
+		csErr := verifyChecksum(csCtx, stagingPath, assetName, checksumURL)
+		csCancel()
+		if csErr != nil {
 			_ = os.Remove(stagingPath)
-			return fmt.Errorf("checksum verification: %w", err)
+			return fmt.Errorf("checksum verification: %w", csErr)
 		}
 		fmt.Println("Checksum OK.")
 	}
@@ -159,18 +160,23 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	_ = os.Remove(stagingPath)
 	fmt.Printf("Successfully updated to %s.\n", release.TagName)
 
-	// Remove backup now that the update is confirmed
-	_ = os.Remove(backupPath)
-
-	// Restart daemon if it was running before the update
+	// Restart daemon if it was running before the update.
+	// Keep the backup alive until the daemon confirms a clean start so the user
+	// can restore it manually if the new binary misbehaves.
 	if daemonRunning {
 		fmt.Println("Restarting daemon...")
 		if err := startDaemon(currentBinary); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not restart daemon: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Previous binary preserved at %s — restore it manually if needed.\n", backupPath)
 			fmt.Println("Run 'forge up' to start the daemon manually.")
 		} else {
 			fmt.Println("Daemon restarted.")
+			// Remove backup only after the daemon has started with the new binary.
+			_ = os.Remove(backupPath)
 		}
+	} else {
+		// Daemon was not running; safe to remove backup immediately.
+		_ = os.Remove(backupPath)
 	}
 
 	return nil
@@ -288,7 +294,7 @@ func verifyChecksum(ctx context.Context, binaryPath, binaryName, checksumURL str
 	}
 
 	var expected string
-	for line := range strings.SplitSeq(string(data), "\n") {
+	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
