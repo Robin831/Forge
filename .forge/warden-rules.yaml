@@ -647,3 +647,33 @@ rules:
       check: Verify the new rule does not duplicate an existing rule (e.g. preserve-error-chain-on-sentinel). If the scope overlaps, consolidate or clearly differentiate the two rules to avoid redundant checks and rule list bloat.
       source: copilot:PR#285
       added: "2026-03-16"
+    - id: windows-exe-rename-lock
+      category: error-handling
+      pattern: Renaming or replacing a currently-running executable, especially on Windows (os.Rename on self binary)
+      check: Verify that the code handles the Windows file-lock on a running .exe (e.g., by spawning a helper process to perform the swap after the parent exits). Also verify that the target/backup path is checked for existence before renaming, to avoid failure from a previous incomplete update.
+      source: copilot:PR#293
+      added: "2026-03-18"
+    - id: goroutine-outlives-process
+      category: concurrency
+      pattern: Goroutine spawned in a CLI command that exits shortly after
+      check: Verify that goroutines launched near program exit will actually complete before the process terminates. If the main function or command handler returns without waiting, the goroutine is silently killed. Prefer a synchronous call with a short timeout, a detached subprocess, or an explicit sync point (e.g. WaitGroup) before exit.
+      source: copilot:PR#293
+      added: "2026-03-18"
+    - id: octal-literal-style
+      category: style
+      pattern: File mode literals using legacy prefix (0755, 0644) instead of Go 1.13+ octal prefix (0o755, 0o644)
+      check: Verify all file permission literals use the 0o prefix (e.g. 0o755, 0o644) rather than the legacy bare-0 prefix, consistent with repo convention
+      source: copilot:PR#293
+      added: "2026-03-18"
+    - id: http-status-before-body-parse
+      category: error-handling
+      pattern: HTTP response body is read or parsed without first checking resp.StatusCode
+      check: Verify that every HTTP response checks the status code before reading/parsing the body. Non-2xx responses (404, 403, rate-limit HTML) must be detected early and returned as clear errors including the HTTP status, rather than falling through to confusing parse failures.
+      source: copilot:PR#293
+      added: "2026-03-18"
+    - id: wait-for-process-exit
+      category: concurrency
+      pattern: Fixed sleep/delay after stopping a process or service before accessing its resources
+      check: Verify that code waiting for a process to stop uses an active polling loop (e.g., checking IsRunning() with backoff and timeout) rather than a fixed sleep, to avoid races where the process hasn't fully released resources
+      source: copilot:PR#293
+      added: "2026-03-18"
