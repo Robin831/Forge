@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -116,7 +117,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 
 	// Set executable permissions on non-Windows
 	if runtime.GOOS != "windows" {
-		if err := os.Chmod(stagingPath, 0755); err != nil {
+		if err := os.Chmod(stagingPath, 0o755); err != nil {
 			_ = os.Remove(stagingPath)
 			return fmt.Errorf("setting executable permissions: %w", err)
 		}
@@ -143,13 +144,27 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 			_ = os.Remove(stagingPath)
 			return fmt.Errorf("stopping daemon: %w", err)
 		}
-		// Brief pause for graceful shutdown
-		time.Sleep(2 * time.Second)
+		// Wait for the daemon to fully stop before touching the binary.
+		stopDeadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(stopDeadline) {
+			_, running := daemon.IsRunning()
+			if !running {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
 
 	// Replace the binary: backup current, place new
 	fmt.Println("Installing update...")
 	if err := installUpdate(stagingPath, currentBinary, backupPath); err != nil {
+		if errors.Is(err, errWindowsUpdateScheduled) {
+			// The swap is handled asynchronously by a helper script on Windows.
+			// stagingPath must not be removed — the script will move it into place.
+			fmt.Printf("Update to %s scheduled — the binary will be replaced after Forge exits.\n", release.TagName)
+			fmt.Println("Run 'forge up' once the update completes to restart the daemon.")
+			return nil
+		}
 		_ = os.Remove(stagingPath)
 		if daemonRunning {
 			_ = startDaemon(currentBinary)
@@ -264,7 +279,7 @@ func downloadFile(ctx context.Context, url, destPath string) error {
 		return fmt.Errorf("server returned %s", resp.Status)
 	}
 
-	f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
@@ -287,6 +302,10 @@ func verifyChecksum(ctx context.Context, binaryPath, binaryName, checksumURL str
 		return fmt.Errorf("downloading checksums: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("checksums server returned %s", resp.Status)
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -328,10 +347,25 @@ func verifyChecksum(ctx context.Context, binaryPath, binaryName, checksumURL str
 	return nil
 }
 
+// errWindowsUpdateScheduled signals that the binary swap has been handed off to
+// a helper batch script on Windows (async — completes after the current process exits).
+var errWindowsUpdateScheduled = errors.New("windows update scheduled")
+
 // installUpdate backs up the current binary and moves the new one into place.
 // On failure it attempts to restore the backup.
+// On Windows, if the running exe cannot be renamed directly, it falls back to a
+// detached batch script that completes the swap after this process exits.
 func installUpdate(newBinary, currentBinary, backupPath string) error {
+	// Remove any stale backup left by a previous failed update so that the
+	// rename below does not fail with "file exists".
+	_ = os.Remove(backupPath)
+
 	if err := os.Rename(currentBinary, backupPath); err != nil {
+		if runtime.GOOS == "windows" {
+			// The running .exe may be locked on Windows. Delegate the swap to a
+			// detached helper script that runs after this process exits.
+			return scheduleWindowsUpdate(newBinary, currentBinary, backupPath)
+		}
 		return fmt.Errorf("backing up current binary to %s: %w", backupPath, err)
 	}
 	if err := os.Rename(newBinary, currentBinary); err != nil {
@@ -339,6 +373,50 @@ func installUpdate(newBinary, currentBinary, backupPath string) error {
 		return fmt.Errorf("placing new binary: %w", err)
 	}
 	return nil
+}
+
+// scheduleWindowsUpdate writes a batch script that waits for the current process
+// to exit and then performs the binary swap. The script is launched detached and
+// this function returns errWindowsUpdateScheduled so the caller can exit cleanly.
+func scheduleWindowsUpdate(newBinary, currentBinary, backupPath string) error {
+	pid := os.Getpid()
+	scriptPath := filepath.Join(filepath.Dir(currentBinary), ".forge-update.bat")
+
+	// The script retries the move until the forge process has released the file,
+	// then cleans itself up.
+	script := fmt.Sprintf(`@echo off
+setlocal
+:waitloop
+tasklist /fi "PID eq %d" 2>nul | findstr /i /c:"%d" >nul
+if not errorlevel 1 (
+    ping -n 2 127.0.0.1 >nul
+    goto waitloop
+)
+move /Y "%s" "%s"
+if errorlevel 1 exit /b 1
+move /Y "%s" "%s"
+if errorlevel 1 (
+    move /Y "%s" "%s"
+    exit /b 1
+)
+del "%%~f0"
+`, pid, pid, currentBinary, backupPath, newBinary, currentBinary, backupPath, currentBinary)
+
+	if err := os.WriteFile(scriptPath, []byte(script), 0o644); err != nil {
+		return fmt.Errorf("creating update script: %w", err)
+	}
+
+	cmd := exec.Command("cmd.exe", "/C", scriptPath)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Stdin = nil
+	detachProcess(cmd)
+	if err := cmd.Start(); err != nil {
+		_ = os.Remove(scriptPath)
+		return fmt.Errorf("launching update script: %w", err)
+	}
+	_ = cmd.Process.Release()
+	return errWindowsUpdateScheduled
 }
 
 // startDaemon launches the daemon in the background.
@@ -386,29 +464,30 @@ func readUpdateCache() *updateCache {
 
 func writeUpdateCache(tagName string) {
 	p := forgeUpdateCachePath()
-	_ = os.MkdirAll(filepath.Dir(p), 0755)
+	_ = os.MkdirAll(filepath.Dir(p), 0o755)
 	c := updateCache{TagName: tagName, CheckedAt: time.Now()}
 	data, _ := json.Marshal(c)
-	_ = os.WriteFile(p, data, 0644)
+	_ = os.WriteFile(p, data, 0o644)
 }
 
 // printUpdateHint reads the local update cache and prints a hint if a newer release is cached.
-// If the cache is missing or stale (> 1h), a background goroutine refreshes it for the next run.
-// This function never makes a synchronous network call, so it does not add latency to forge status.
+// If the cache is missing or stale (> 1h), it refreshes synchronously with a short timeout so
+// that the cache is populated before the process exits.
 func printUpdateHint() {
 	cache := readUpdateCache()
 
-	// Refresh cache in background if missing or stale.
+	// Refresh cache synchronously (with a short timeout) if missing or stale, so the
+	// data is written to disk before the process exits rather than being lost when a
+	// background goroutine is killed on exit.
 	if cache == nil || time.Since(cache.CheckedAt) > updateCacheTTL {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			release, err := getLatestRelease(ctx)
-			if err != nil {
-				return
-			}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		release, err := getLatestRelease(ctx)
+		if err == nil {
 			writeUpdateCache(release.TagName)
-		}()
+			cache = &updateCache{TagName: release.TagName, CheckedAt: time.Now()}
+		}
+		// Network errors are silently swallowed — the hint is best-effort.
 	}
 
 	if cache == nil {
