@@ -39,9 +39,8 @@ func InsertIngot(db *sql.DB, ingot *Ingot) error {
 		INSERT INTO ingots
 			(bead_id, anvil, pr_id, worker_id, status,
 			 created_at, updated_at,
-			 temper_passed, temper_failed_step, temper_duration_ms,
 			 pr_number, pr_url, title, branch)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ingot.BeadID,
 		ingot.Anvil,
 		ingot.PRID,
@@ -49,9 +48,6 @@ func InsertIngot(db *sql.DB, ingot *Ingot) error {
 		string(ingot.Status),
 		formatTime(ingot.CreatedAt),
 		formatTime(ingot.UpdatedAt),
-		boolToInt(ingot.TemperPassed),
-		ingot.TemperFailedStep,
-		ingot.TemperDurationMs,
 		ingot.PRNumber,
 		ingot.PRURL,
 		ingot.Title,
@@ -142,6 +138,7 @@ func GetIngotsByStatus(db *sql.DB, status Status, limit int) ([]Ingot, error) {
 		       pr_number, pr_url, title, branch, created_at, updated_at
 		FROM ingots
 		WHERE status = ?
+		ORDER BY updated_at DESC
 		LIMIT ?`,
 		string(status), limit,
 	)

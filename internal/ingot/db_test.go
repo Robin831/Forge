@@ -146,12 +146,25 @@ func TestUpdateIngotPR(t *testing.T) {
 	defer cleanup()
 	db := sdb.Conn()
 
+	// Insert a real PR row so the FK constraint on ingots.pr_id is satisfied.
+	pr := &state.PR{
+		Number:    99,
+		Anvil:     "anvil-1",
+		BeadID:    "bd-4",
+		Branch:    "forge/bd-4",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	if err := sdb.InsertPR(pr); err != nil {
+		t.Fatalf("InsertPR: %v", err)
+	}
+
 	ingot := &Ingot{BeadID: "bd-4", Anvil: "anvil-1", Status: StatusApproved}
 	if err := InsertIngot(db, ingot); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := UpdateIngotPR(db, "bd-4", "anvil-1", 99, "https://github.com/org/repo/pull/99", 7); err != nil {
+	if err := UpdateIngotPR(db, "bd-4", "anvil-1", 99, "https://github.com/org/repo/pull/99", pr.ID); err != nil {
 		t.Fatalf("UpdateIngotPR: %v", err)
 	}
 
@@ -165,8 +178,8 @@ func TestUpdateIngotPR(t *testing.T) {
 	if got.PRURL != "https://github.com/org/repo/pull/99" {
 		t.Errorf("PRURL = %q", got.PRURL)
 	}
-	if got.PRID == nil || *got.PRID != 7 {
-		t.Errorf("PRID = %v; want 7", got.PRID)
+	if got.PRID == nil || *got.PRID != pr.ID {
+		t.Errorf("PRID = %v; want %d", got.PRID, pr.ID)
 	}
 }
 

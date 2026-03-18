@@ -304,7 +304,7 @@ CREATE TABLE IF NOT EXISTS ingots (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     bead_id             TEXT NOT NULL,
     anvil               TEXT NOT NULL,
-    pr_id               INTEGER,
+    pr_id               INTEGER REFERENCES prs(id),
     worker_id           TEXT NOT NULL DEFAULT '',
     status              TEXT NOT NULL DEFAULT 'init',
     created_at          TEXT NOT NULL,
@@ -335,6 +335,7 @@ CREATE TABLE IF NOT EXISTS ingot_test_results (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ingots_status ON ingots(status);
+CREATE INDEX IF NOT EXISTS idx_ingots_pr_id ON ingots(pr_id);
 CREATE INDEX IF NOT EXISTS idx_ingot_test_results_ingot_id ON ingot_test_results(ingot_id);
 `
 
