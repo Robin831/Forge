@@ -96,6 +96,7 @@ var statusCmd = &cobra.Command{
 							}
 							tw.Flush()
 						}
+						printUpdateHint()
 						return nil
 					}
 					// Malformed IPC response: fall through to state-DB fallback below.
@@ -209,6 +210,7 @@ var statusCmd = &cobra.Command{
 			}
 		}
 
+		printUpdateHint()
 		return nil
 	},
 }
