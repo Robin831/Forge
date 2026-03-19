@@ -1,6 +1,7 @@
 package questgiver
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -32,11 +33,11 @@ type Quest struct {
 func ParseQuest(path string) (*Quest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("questgiver: reading quest file %s: %w", path, err)
 	}
 	var q Quest
 	if err := yaml.Unmarshal(data, &q); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("questgiver: parsing quest file %s: %w", path, err)
 	}
 	q.FilePath = path
 	return &q, nil
@@ -45,14 +46,34 @@ func ParseQuest(path string) (*Quest, error) {
 // DiscoverQuests finds all quest YAML files under <anvilPath>/.forge/quests/
 // and returns the parsed quests. Returns an empty slice if the directory does not exist.
 func DiscoverQuests(anvilPath string) ([]Quest, error) {
-	pattern := filepath.Join(anvilPath, ".forge", "quests", "*.yaml")
-	matches, err := filepath.Glob(pattern)
+	questsDir := filepath.Join(anvilPath, ".forge", "quests")
+
+	info, err := os.Stat(questsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []Quest{}, nil
+		}
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, &os.PathError{Op: "readdir", Path: questsDir, Err: os.ErrInvalid}
+	}
+
+	entries, err := os.ReadDir(questsDir)
 	if err != nil {
 		return nil, err
 	}
-	quests := make([]Quest, 0, len(matches))
-	for _, m := range matches {
-		q, err := ParseQuest(m)
+
+	quests := make([]Quest, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+		path := filepath.Join(questsDir, entry.Name())
+		q, err := ParseQuest(path)
 		if err != nil {
 			return nil, err
 		}
