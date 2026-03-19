@@ -28,6 +28,8 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+
+	"github.com/Robin831/Forge/internal/ingot"
 )
 
 // Panel identifies a TUI panel.
@@ -297,6 +299,8 @@ type Model struct {
 	workers        []WorkerItem
 	events         []EventItem
 	usage          UsageData
+	ingotCounts    map[ingot.Status]int
+	ingotTotal     int
 
 	// Data source for polling
 	data *DataSource
@@ -1475,6 +1479,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(toastCmds) > 0 {
 			return m, tea.Batch(toastCmds...)
 		}
+
+	case UpdateIngotCountsMsg:
+		m.ingotCounts = msg.Counts
+		m.ingotTotal = msg.Total
 
 	case UpdateAnvilHealthMsg:
 		if m.anvilHealth == nil {
@@ -3566,8 +3574,8 @@ func (m *Model) renderWorkerList(width, height int) string {
 func (m *Model) renderCenterColumn(width, topHeight, bottomHeight int) string {
 	fullHeight := topHeight + bottomHeight
 
-	// Usage panel gets a compact fixed height (~8 lines content + 2 border = 10).
-	usagePanelHeight := 10
+	// Usage panel gets a compact fixed height (~9 lines content + 2 border = 11).
+	usagePanelHeight := 11
 	if fullHeight < 20 {
 		// Terminal too small for a split — render workers only.
 		return m.renderWorkerList(width, fullHeight)
@@ -3634,11 +3642,54 @@ func (m *Model) renderUsagePanel(width, height int) string {
 		lines = append(lines, totalLine)
 	}
 
+	// Ingot status counts
+	if m.ingotTotal > 0 {
+		lines = append(lines, m.renderIngotCountsLine())
+	}
+
 	if height <= 0 {
 		return style.Render("")
 	}
 	content := strings.Join(lines, "\n")
 	return style.Height(height).Render(content)
+}
+
+// renderIngotCountsLine returns a compact summary of ingot status counts.
+// Example: "Ingots   3 smith │ 1 temper │ 2 pr_open │ 45 merged"
+func (m *Model) renderIngotCountsLine() string {
+	// Display order: active pipeline stages first, then terminal states.
+	type statusEntry struct {
+		status ingot.Status
+		label  string
+	}
+	order := []statusEntry{
+		{ingot.StatusSmith, "smith"},
+		{ingot.StatusTemper, "temper"},
+		{ingot.StatusWarden, "warden"},
+		{ingot.StatusApproved, "approved"},
+		{ingot.StatusPROpen, "pr_open"},
+		{ingot.StatusPRMerged, "merged"},
+		{ingot.StatusFailed, "failed"},
+		{ingot.StatusStalled, "stalled"},
+		{ingot.StatusInit, "init"},
+	}
+
+	var parts []string
+	for _, e := range order {
+		if c, ok := m.ingotCounts[e.status]; ok && c > 0 {
+			part := fmt.Sprintf("%d %s", c, e.label)
+			// Highlight failure states
+			if e.status == ingot.StatusFailed || e.status == ingot.StatusStalled {
+				part = lipgloss.NewStyle().Foreground(colorDanger).Render(part)
+			}
+			parts = append(parts, part)
+		}
+	}
+
+	if len(parts) == 0 {
+		return dimStyle.Render(fmt.Sprintf("Ingots   %d total", m.ingotTotal))
+	}
+	return fmt.Sprintf("Ingots   %s", strings.Join(parts, " │ "))
 }
 
 // renderWorkerActivity renders the activity panel: a live log view for the

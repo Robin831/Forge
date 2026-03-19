@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -1026,6 +1027,44 @@ func FetchOpenPRs(db *state.DB) tea.Cmd {
 	}
 }
 
+// UpdateIngotCountsMsg carries aggregated ingot status counts to the TUI.
+type UpdateIngotCountsMsg struct {
+	Counts map[ingot.Status]int
+	Total  int
+}
+
+// FetchIngotCounts queries the state DB for ingot counts grouped by status.
+// It fetches all ingots (no filter) and aggregates counts client-side to
+// keep the query simple and reuse the existing GetIngots function.
+func FetchIngotCounts(db *state.DB) tea.Cmd {
+	return func() tea.Msg {
+		conn := db.Conn()
+		if conn == nil {
+			return UpdateIngotCountsMsg{}
+		}
+
+		rows, err := conn.Query(`SELECT status, COUNT(*) FROM ingots GROUP BY status`)
+		if err != nil {
+			return UpdateIngotCountsMsg{}
+		}
+		defer rows.Close()
+
+		counts := make(map[ingot.Status]int)
+		total := 0
+		for rows.Next() {
+			var status string
+			var count int
+			if err := rows.Scan(&status, &count); err != nil {
+				continue
+			}
+			counts[ingot.Status(status)] = count
+			total += count
+		}
+
+		return UpdateIngotCountsMsg{Counts: counts, Total: total}
+	}
+}
+
 // FetchAll returns a batch command that refreshes all panels.
 // Daemon health is NOT included here; it is fetched on a slower cadence
 // controlled by healthTickDivisor in the TickMsg handler.
@@ -1041,5 +1080,6 @@ func FetchAll(ds *DataSource, logCache *LogTailerCache) tea.Cmd {
 		FetchPendingOrphans(ds.DB),
 		FetchAnvilHealth(ds),
 		FetchOpenPRs(ds.DB),
+		FetchIngotCounts(ds.DB),
 	)
 }
