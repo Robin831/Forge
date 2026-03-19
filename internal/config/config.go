@@ -219,10 +219,11 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		AutoLearnRules            bool     `yaml:"auto_learn_rules"`
 		CopilotDailyRequestLimit  int      `yaml:"copilot_daily_request_limit,omitempty"`
 		CrucibleEnabled           bool     `yaml:"crucible_enabled"`
-		AutoMergeCrucibleChildren *bool    `yaml:"auto_merge_crucible_children,omitempty"`
-		WardenModelOverride         string `yaml:"warden_model_override,omitempty"`
-		SchematicModelOverride      string `yaml:"schematic_model_override,omitempty"`
-		CopilotSkipWardenSmallDiffs bool   `yaml:"copilot_skip_warden_small_diffs"`
+		AutoMergeCrucibleChildren *bool  `yaml:"auto_merge_crucible_children,omitempty"`
+		WardenModelOverride      string `yaml:"warden_model_override,omitempty"`
+		SchematicModelOverride   string `yaml:"schematic_model_override,omitempty"`
+
+		CopilotSkipWardenSmallDiffs bool `yaml:"copilot_skip_warden_small_diffs"`
 	}
 
 	sh := shadow{
@@ -250,8 +251,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		CopilotDailyRequestLimit:  s.CopilotDailyRequestLimit,
 		CrucibleEnabled:           s.CrucibleEnabled,
 		AutoMergeCrucibleChildren: s.AutoMergeCrucibleChildren,
-		WardenModelOverride:         s.WardenModelOverride,
-		SchematicModelOverride:      s.SchematicModelOverride,
+		WardenModelOverride:      s.WardenModelOverride,
+		SchematicModelOverride:   s.SchematicModelOverride,
+
 		CopilotSkipWardenSmallDiffs: s.CopilotSkipWardenSmallDiffs,
 	}
 

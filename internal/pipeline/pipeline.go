@@ -1041,75 +1041,45 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		// Step 4: Run Warden review (or skip for small Copilot diffs)
 		diffStat := computeDiffStat(wt.Path, preSmithSHA)
+		var reviewResult *warden.ReviewResult
 		if shouldSkipWarden(diffStat, p.Bead, providers, p.CopilotSkipWardenSmallDiffs) {
 			log.Printf("[pipeline:%s] Skipping Warden review for small Copilot diff (lines_changed=%d, files_changed=%d, reason=low-risk diff under threshold)",
 				workerID, diffStat.LinesChanged, diffStat.FilesChanged)
-			_ = p.DB.LogEvent(state.EventWardenPass,
-				fmt.Sprintf("Auto-approved: small Copilot diff (%d lines, %d files)", diffStat.LinesChanged, diffStat.FilesChanged),
-				p.Bead.ID, p.AnvilName)
-			outcome.ReviewResult = &warden.ReviewResult{
+			reviewResult = &warden.ReviewResult{
 				Verdict: warden.VerdictApprove,
 				Summary: fmt.Sprintf("Auto-approved: small low-risk diff (%d lines, %d files)", diffStat.LinesChanged, diffStat.FilesChanged),
 			}
-			outcome.Verdict = warden.VerdictApprove
-			outcome.Success = true
-			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerMonitoring)
-			_ = p.DB.UpdateWorkerPhase(workerID, "bellows")
+		} else {
+			log.Printf("[pipeline:%s] Running Warden review", workerID)
+			_ = p.DB.UpdateWorkerPhase(workerID, "warden")
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
 			if p.DB != nil {
-				logIngotErr(workerID, "approved", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusApproved))
-			}
-			outcome.ChangelogSummary = extractChangelogSummary(wt.Path, p.Bead.ID)
-
-			pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", wt.Branch))
-			pushCmd.Dir = wt.Path
-			if pushErr := pushCmd.Run(); pushErr != nil {
-				log.Printf("[pipeline:%s] Warning: explicit push failed (Smith may have already pushed): %v", workerID, pushErr)
+				logIngotErr(workerID, "warden", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusWarden))
 			}
 
-			outcome.Duration = time.Since(start)
-			return outcome
-		}
-
-		log.Printf("[pipeline:%s] Running Warden review", workerID)
-		_ = p.DB.UpdateWorkerPhase(workerID, "warden")
-		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
-		if p.DB != nil {
-			logIngotErr(workerID, "warden", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusWarden))
-		}
-
-		reviewResult, err := reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.Description, p.AnvilConfig.Path, p.DB, p.wardenProviders(providers)...)
-		if err != nil {
-			log.Printf("[pipeline:%s] Warden error: %v", workerID, err)
-			// Warden failure is not fatal — default to approve and let human review
-			outcome.ReviewResult = &warden.ReviewResult{
-				Verdict: warden.VerdictApprove,
-				Summary: "Warden failed, defaulting to approve for human review",
-			}
-			outcome.Verdict = warden.VerdictApprove
-			outcome.Success = true
-			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
-			_ = p.DB.LogEvent(state.EventWardenPass, "Warden failed, defaulting to approve", p.Bead.ID, p.AnvilName)
-			if p.DB != nil {
-				logIngotErr(workerID, "approved", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusApproved))
-			}
-
-			outcome.ChangelogSummary = extractChangelogSummary(wt.Path, p.Bead.ID)
-
-			outcome.Duration = time.Since(start)
-			return outcome
-		}
-
-		outcome.ReviewResult = reviewResult
-
-		// Record Copilot premium request for warden review if applicable.
-		if reviewResult.UsedProvider != nil && reviewResult.UsedProvider.Kind == provider.Copilot {
-			multiplier := cost.CopilotPremiumMultiplier(reviewResult.UsedProvider.Model)
-			if multiplier > 0 {
-				if err := p.DB.AddCopilotRequest(cost.Today(), multiplier); err != nil {
-					log.Printf("[pipeline:%s] Failed to record copilot premium request for warden: %v", workerID, err)
+			var err error
+			reviewResult, err = reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.Description, p.AnvilConfig.Path, p.DB, p.wardenProviders(providers)...)
+			if err != nil {
+				log.Printf("[pipeline:%s] Warden error: %v", workerID, err)
+				// Warden failure is not fatal — default to approve and let human review
+				reviewResult = &warden.ReviewResult{
+					Verdict: warden.VerdictApprove,
+					Summary: "Warden failed, defaulting to approve for human review",
+				}
+				_ = p.DB.LogEvent(state.EventWardenPass, "Warden failed, defaulting to approve", p.Bead.ID, p.AnvilName)
+			} else {
+				// Record Copilot premium request for warden review if applicable.
+				if reviewResult.UsedProvider != nil && reviewResult.UsedProvider.Kind == provider.Copilot {
+					multiplier := cost.CopilotPremiumMultiplier(reviewResult.UsedProvider.Model)
+					if multiplier > 0 {
+						if err := p.DB.AddCopilotRequest(cost.Today(), multiplier); err != nil {
+							log.Printf("[pipeline:%s] Failed to record copilot premium request for warden: %v", workerID, err)
+						}
+					}
 				}
 			}
 		}
+		outcome.ReviewResult = reviewResult
 
 		switch reviewResult.Verdict {
 		case warden.VerdictApprove:
