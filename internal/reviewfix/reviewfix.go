@@ -96,8 +96,8 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	start := time.Now()
 	result := &FixResult{}
 
+	result.CommentsFound = len(p.Comments)
 	actionable := filterActionableComments(p.Comments)
-	result.CommentsFound = len(actionable)
 
 	if len(actionable) == 0 {
 		result.Addressed = true
@@ -107,7 +107,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 
 	providers := p.Providers
 
-	prompt := buildBatchReviewPrompt(p.PRNumber, p.Branch, p.BeadID, p.WorktreePath, actionable)
+	prompt := buildBatchReviewPrompt(p.PRNumber, p.Branch, p.BeadID, actionable)
 
 	if p.DB != nil {
 		_ = p.DB.LogEvent(state.EventReviewFixStarted,
@@ -193,11 +193,13 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 
 	// Resolve threads after successful fix.
 	resolvedCount := 0
+	resolvableCount := 0
 	if p.VCS != nil {
 		for _, comment := range actionable {
 			if comment.ThreadID == "" {
 				continue
 			}
+			resolvableCount++
 			if err := p.VCS.ResolveThread(ctx, p.WorktreePath, comment.ThreadID); err != nil {
 				log.Printf("[burnish] PR #%d: Warning: failed to resolve thread %s: %v", p.PRNumber, comment.ThreadID, err)
 			} else {
@@ -205,7 +207,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 			}
 		}
 		if resolvedCount > 0 {
-			log.Printf("[burnish] PR #%d: Resolved %d/%d threads on GitHub", p.PRNumber, resolvedCount, len(actionable))
+			log.Printf("[burnish] PR #%d: Resolved %d/%d threads on GitHub", p.PRNumber, resolvedCount, resolvableCount)
 		}
 	}
 
@@ -220,7 +222,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 }
 
 // buildBatchReviewPrompt creates a prompt listing all review comments for Smith to address in one pass.
-func buildBatchReviewPrompt(prNumber int, branch, beadID, worktreePath string, comments []vcs.ReviewComment) string {
+func buildBatchReviewPrompt(prNumber int, branch, beadID string, comments []vcs.ReviewComment) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, `You are addressing multiple review comments on PR #%d (branch: %s) for bead %s.

@@ -808,9 +808,11 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				} else {
 					ciLogs, logsErr := anvilVCS.FetchCILogs(ctx, wt.Path, failingChecks)
 					if logsErr != nil {
-						d.logger.Warn("failed to fetch CI logs for batch CI fix", "pr", req.PRNumber, "error", logsErr)
+						d.logger.Warn("failed to fetch CI logs for batch CI fix, falling back to single fix", "pr", req.PRNumber, "error", logsErr)
+						useBatch = false
 					}
-					res = cifix.BatchFix(ctx, cifix.BatchFixParams{
+					if useBatch {
+						res = cifix.BatchFix(ctx, cifix.BatchFixParams{
 						WorktreePath:  wt.Path,
 						BeadID:        req.BeadID,
 						AnvilName:     req.Anvil,
@@ -822,7 +824,8 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 						Providers:     cifixProviders,
 						FailingChecks: failingChecks,
 						CILogs:        ciLogs,
-					})
+						})
+					}
 				}
 			}
 			if !useBatch {

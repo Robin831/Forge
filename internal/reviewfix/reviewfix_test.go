@@ -132,7 +132,7 @@ func TestBuildBatchReviewPrompt(t *testing.T) {
 		{Author: "bob", Body: "Add error handling here"},
 	}
 
-	prompt := buildBatchReviewPrompt(42, "forge/Forge-xyz", "Forge-xyz", "/tmp/worktree", comments)
+	prompt := buildBatchReviewPrompt(42, "forge/Forge-xyz", "Forge-xyz", comments)
 
 	if !strings.Contains(prompt, "PR #42") {
 		t.Error("prompt should contain PR number")
@@ -185,7 +185,7 @@ func TestBuildBatchReviewPrompt_NoAuthorOrPath(t *testing.T) {
 	comments := []vcs.ReviewComment{
 		{Body: "fix something"},
 	}
-	prompt := buildBatchReviewPrompt(1, "main", "Forge-abc", "/tmp/wt", comments)
+	prompt := buildBatchReviewPrompt(1, "main", "Forge-abc", comments)
 	if !strings.Contains(prompt, "fix something") {
 		t.Error("prompt should include body even when author and path are empty")
 	}

@@ -143,7 +143,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		}
 		process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
 		if err != nil {
-			result.Error = fmt.Errorf("spawning smith (%s) for batch CI fix: %w", pv.Kind, err)
+			result.Error = fmt.Errorf("spawning smith (%s) for batch CI fix: %w", pv.Label(), err)
 			result.Duration = time.Since(start)
 			return result
 		}
