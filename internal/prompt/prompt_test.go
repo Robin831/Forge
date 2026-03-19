@@ -102,6 +102,8 @@ func TestBuild_CombinedModeChecklistBeforeOverrides(t *testing.T) {
 
 	checklistIdx := strings.Index(result, "## Self-Review Checklist")
 	overridesIdx := strings.Index(result, "## Orchestrator Overrides")
+	assert.GreaterOrEqual(t, checklistIdx, 0, "## Self-Review Checklist section must be present in combined mode prompt")
+	assert.GreaterOrEqual(t, overridesIdx, 0, "## Orchestrator Overrides section must be present in prompt")
 	assert.Greater(t, overridesIdx, checklistIdx,
 		"Self-Review Checklist should appear before Orchestrator Overrides")
 }

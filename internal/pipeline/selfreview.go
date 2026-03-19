@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"math/rand"
 	"regexp"
+	"strings"
+	"time"
 
 	"github.com/Robin831/Forge/internal/poller"
 )
@@ -39,18 +41,27 @@ func parseSelfReview(smithOutput string) *SelfReview {
 		return nil
 	}
 
-	// Require a non-empty verdict.
-	if env.SelfReview.Verdict == "" {
+	// Normalize verdict: trim whitespace and lowercase for consistent matching.
+	normalized := strings.ToLower(strings.TrimSpace(env.SelfReview.Verdict))
+	if normalized != "approve" && normalized != "request_changes" {
+		// Unknown or empty verdict — fail safe and return nil so the caller
+		// falls back to a real Warden review.
 		return nil
 	}
+	env.SelfReview.Verdict = normalized
 
 	return &env.SelfReview
 }
 
+// rng is a time-seeded random number generator for Warden sampling. Using an
+// explicit seed makes seeding visible and avoids relying on package-global
+// state (even though Go 1.20+ auto-seeds the global source).
+var rng = rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec // not cryptographic
+
 // randFloat64 is the random number generator used for Warden sampling.
-// It defaults to math/rand.Float64 but can be overridden in tests for
+// It defaults to a time-seeded RNG but can be overridden in tests for
 // deterministic behavior.
-var randFloat64 = rand.Float64
+var randFloat64 = rng.Float64
 
 // shouldRunRealWarden decides whether a real Warden review should be spawned
 // when running in combined Smith+Warden mode. A real Warden is always required
@@ -61,8 +72,10 @@ func shouldRunRealWarden(selfReview *SelfReview, bead poller.Bead, sampleRate fl
 	if bead.Priority <= 1 {
 		return true
 	}
-	// Parse failure or self-review flagged concerns — real review needed.
-	if selfReview == nil || selfReview.Verdict == "request_changes" {
+	// Parse failure, request_changes verdict, or any listed concerns — real review needed.
+	// Concerns are treated as a signal even when the overall verdict is "approve",
+	// because Smith may self-approve while still identifying issues.
+	if selfReview == nil || selfReview.Verdict == "request_changes" || len(selfReview.Concerns) > 0 {
 		return true
 	}
 	// Random sampling for ongoing quality validation.

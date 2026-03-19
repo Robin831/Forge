@@ -1099,7 +1099,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		// Combined Smith+Warden mode: parse Smith's self-review and decide
 		// whether a real Warden is needed.
+		// forceRealWarden bypasses shouldSkipWarden so a real review always runs
+		// when we cannot derive a verdict from Smith's output.
+		var forceRealWarden bool
 		if combinedMode && smithResult == nil {
+			forceRealWarden = true
 			log.Printf("[pipeline:%s] Combined mode: smithResult is nil (SkipSmith=%v, iteration=%d), falling back to real Warden", workerID, p.SkipSmith, iteration)
 		}
 		if combinedMode && smithResult != nil {
@@ -1135,7 +1139,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		if reviewResult != nil {
 			// Already resolved (skip-warden or combined mode auto-approve).
-		} else if shouldSkipWarden(diffStat, p.Bead, providers, p.CopilotSkipWardenSmallDiffs) {
+		} else if !forceRealWarden && shouldSkipWarden(diffStat, p.Bead, providers, p.CopilotSkipWardenSmallDiffs) {
 			log.Printf("[pipeline:%s] Skipping Warden review for small Copilot diff (lines_changed=%d, files_changed=%d, reason=low-risk diff under threshold)",
 				workerID, diffStat.LinesChanged, diffStat.FilesChanged)
 			_ = p.DB.UpdateWorkerPhase(workerID, "warden")

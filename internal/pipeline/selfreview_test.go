@@ -53,6 +53,19 @@ func TestParseSelfReview_EmptyVerdict(t *testing.T) {
 	assert.Nil(t, sr, "empty verdict should return nil")
 }
 
+func TestParseSelfReview_UnknownVerdict(t *testing.T) {
+	output := "```json\n{\"self_review\": {\"verdict\": \"approved\", \"concerns\": []}}\n```"
+	sr := parseSelfReview(output)
+	assert.Nil(t, sr, "unknown verdict 'approved' should return nil (only 'approve'/'request_changes' are valid)")
+}
+
+func TestParseSelfReview_VerdictCaseNormalized(t *testing.T) {
+	output := "```json\n{\"self_review\": {\"verdict\": \"  Approve  \", \"concerns\": []}}\n```"
+	sr := parseSelfReview(output)
+	require.NotNil(t, sr, "verdict with whitespace/casing should be normalized and accepted")
+	assert.Equal(t, "approve", sr.Verdict, "verdict should be normalized to lowercase")
+}
+
 func TestParseSelfReview_NoSelfReviewKey(t *testing.T) {
 	output := "```json\n{\"verdict\": \"approve\"}\n```"
 	sr := parseSelfReview(output)
@@ -87,6 +100,13 @@ func TestShouldRunRealWarden_ApprovedP3NoSampling(t *testing.T) {
 	bead := poller.Bead{Priority: 3}
 	// With sample rate 0.0, should never trigger sampling.
 	assert.False(t, shouldRunRealWarden(sr, bead, 0.0))
+}
+
+func TestShouldRunRealWarden_ApprovedWithConcerns(t *testing.T) {
+	// Even an "approve" verdict should trigger real Warden when concerns are listed.
+	sr := &SelfReview{Verdict: "approve", Concerns: []string{"potential nil dereference"}}
+	bead := poller.Bead{Priority: 3}
+	assert.True(t, shouldRunRealWarden(sr, bead, 0.0), "non-empty concerns should always trigger real Warden")
 }
 
 func TestShouldRunRealWarden_ApprovedP4NoSampling(t *testing.T) {

@@ -251,7 +251,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		CopilotBatchReviewFixes     bool    `yaml:"copilot_batch_review_fixes"`
 		WardenFullRereview          bool    `yaml:"warden_full_rereview"`
 		CopilotCombinedSmithWarden  bool    `yaml:"copilot_combined_smith_warden"`
-		CopilotWardenSampleRate     float64 `yaml:"copilot_warden_sample_rate,omitempty"`
+		CopilotWardenSampleRate     float64 `yaml:"copilot_warden_sample_rate"`
 	}
 
 	sh := shadow{
@@ -614,6 +614,10 @@ func (c *Config) Validate() []string {
 
 	if c.Settings.CopilotDailyRequestLimit < 0 {
 		errs = append(errs, "settings.copilot_daily_request_limit must be >= 0 (0 = no limit)")
+	}
+	if math.IsNaN(c.Settings.CopilotWardenSampleRate) || math.IsInf(c.Settings.CopilotWardenSampleRate, 0) ||
+		c.Settings.CopilotWardenSampleRate < 0 || c.Settings.CopilotWardenSampleRate > 1 {
+		errs = append(errs, "settings.copilot_warden_sample_rate must be a finite value in [0.0, 1.0]")
 	}
 
 	if c.Settings.DepcheckInterval < 0 {
