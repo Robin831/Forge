@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/warden"
@@ -367,6 +368,11 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
 
+		// Best-effort ingot lifecycle update
+		if err := ingot.UpdateIngotStatus(m.db.Conn(), pr.BeadID, pr.Anvil, ingot.StatusPRMerged); err != nil {
+			log.Printf("[bellows] Failed to update ingot status to pr_merged for %s (%s): %v", pr.BeadID, pr.Anvil, err)
+		}
+
 		if m.autoLearnRules != nil && m.autoLearnRules() {
 			anvilMu := m.getLearnMu(pr.Anvil)
 			prNum := pr.Number
@@ -401,6 +407,11 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.UpdatePRStatus(pr.ID, state.PRClosed)
 		_ = m.db.LogEvent(state.EventPRClosed, fmt.Sprintf("PR #%d closed without merge", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
+
+		// Best-effort ingot lifecycle update
+		if err := ingot.UpdateIngotStatus(m.db.Conn(), pr.BeadID, pr.Anvil, ingot.StatusFailed); err != nil {
+			log.Printf("[bellows] Failed to update ingot status to failed for %s (%s): %v", pr.BeadID, pr.Anvil, err)
+		}
 	}
 
 	if newSnap.CIPassing && !lastSnap.CIPassing {
