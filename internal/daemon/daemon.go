@@ -36,6 +36,7 @@ import (
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/hotreload"
@@ -368,6 +369,37 @@ func (d *Daemon) vcsForAnvil(anvil string) vcs.Provider {
 	}
 	// Fallback to GitHub with DB access for PR state tracking.
 	return github.New(d.db)
+}
+
+// ingotMarkFailed is a best-effort helper that sets an ingot's status to failed.
+// It guards against a nil DB connection so callers don't need to repeat the pattern.
+func (d *Daemon) ingotMarkFailed(beadID, anvil string) {
+	if conn := d.db.Conn(); conn != nil {
+		if err := ingot.UpdateIngotStatus(conn, beadID, anvil, ingot.StatusFailed); err != nil {
+			d.logger.Warn("ingot status update to failed", "bead", beadID, "error", err)
+		}
+	}
+}
+
+// ingotRecordPR is a best-effort helper that records PR details on an ingot
+// and transitions its status to pr_open. It resolves the internal PR ID from
+// state.db so the ingot row references the correct foreign key.
+func (d *Daemon) ingotRecordPR(beadID, anvil string, prNumber int, prURL string) {
+	conn := d.db.Conn()
+	if conn == nil {
+		return
+	}
+	var prID *int
+	if dbPR, err := d.db.GetPRByNumber(anvil, prNumber); err == nil && dbPR != nil {
+		id := dbPR.ID
+		prID = &id
+	}
+	if err := ingot.UpdateIngotPR(conn, beadID, anvil, prNumber, prURL, prID); err != nil {
+		d.logger.Warn("ingot PR update failed", "bead", beadID, "error", err)
+	}
+	if err := ingot.UpdateIngotStatus(conn, beadID, anvil, ingot.StatusPROpen); err != nil {
+		d.logger.Warn("ingot status update to pr_open failed", "bead", beadID, "error", err)
+	}
 }
 
 // buildVCSProviders creates a VCS provider for each configured anvil based on
@@ -1988,6 +2020,7 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); dbErr != nil {
 			d.logger.Error("failed to update worker status to failed", "worker", workerID, "error", dbErr)
 		}
+		d.ingotMarkFailed(bead.ID, bead.Anvil)
 		return
 	}
 
@@ -1997,6 +2030,8 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		d.logger.Error("failed to clear retry state", "bead", bead.ID, "error", dbErr)
 	}
 	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
+
+	d.ingotRecordPR(bead.ID, bead.Anvil, pr.Number, pr.URL)
 
 	disp := d.dispatcher.Load()
 	go func(anvil, beadID, prURL, prTitle string, prNumber int, dur time.Duration) {
@@ -4104,6 +4139,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 			d.logger.Error("warden_rerun: PR creation failed", "bead", beadID, "error", err)
 			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
 			_ = d.db.MarkNeedsHuman(beadID, anvil, fmt.Sprintf("warden_rerun: PR creation failed: %v", err))
+			d.ingotMarkFailed(beadID, anvil)
 			return
 		}
 		// Clear needs_human only after PR is successfully created.
@@ -4111,6 +4147,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		d.logger.Info("warden_rerun: PR created", "bead", beadID, "pr", pr.URL)
 		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 		_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created: %s", pr.Number, pr.URL), beadID, anvil)
+		d.ingotRecordPR(beadID, anvil, pr.Number, pr.URL)
 	} else {
 		d.logger.Info("warden_rerun: not approved", "bead", beadID, "verdict", result.Verdict, "summary", result.Summary)
 		_ = d.db.LogEvent(state.EventWardenReject, fmt.Sprintf("Warden re-review: %s — %s", result.Verdict, result.Summary), beadID, anvil)
@@ -4178,6 +4215,7 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 		d.logger.Error("approve_as_is: PR creation failed", "bead", beadID, "error", err)
 		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
 		_ = d.db.MarkNeedsHuman(beadID, anvil, fmt.Sprintf("approve_as_is: PR creation failed: %v", err))
+		d.ingotMarkFailed(beadID, anvil)
 		return
 	}
 
@@ -4186,6 +4224,7 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 	d.logger.Info("approve_as_is: PR created", "bead", beadID, "pr", pr.URL)
 	_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 	_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created (approved as-is): %s", pr.Number, pr.URL), beadID, anvil)
+	d.ingotRecordPR(beadID, anvil, pr.Number, pr.URL)
 }
 
 // handleForceSmith re-invokes smith on the same branch with existing warden

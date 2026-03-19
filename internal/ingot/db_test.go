@@ -164,7 +164,8 @@ func TestUpdateIngotPR(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := UpdateIngotPR(db, "bd-4", "anvil-1", 99, "https://github.com/org/repo/pull/99", pr.ID); err != nil {
+	prID := pr.ID
+	if err := UpdateIngotPR(db, "bd-4", "anvil-1", 99, "https://github.com/org/repo/pull/99", &prID); err != nil {
 		t.Fatalf("UpdateIngotPR: %v", err)
 	}
 

@@ -92,7 +92,9 @@ func UpdateIngotTemperResults(db *sql.DB, beadID, anvil string, passed bool, fai
 }
 
 // UpdateIngotPR updates pr_number, pr_url, pr_id, and updated_at.
-func UpdateIngotPR(db *sql.DB, beadID, anvil string, prNum int, prURL string, prID int) error {
+// prID may be nil when the internal PR row has not yet been resolved, in which
+// case the column is stored as NULL to avoid a FK violation.
+func UpdateIngotPR(db *sql.DB, beadID, anvil string, prNum int, prURL string, prID *int) error {
 	_, err := db.Exec(`
 		UPDATE ingots
 		SET pr_number = ?, pr_url = ?, pr_id = ?, updated_at = ?
