@@ -1034,8 +1034,7 @@ type UpdateIngotCountsMsg struct {
 }
 
 // FetchIngotCounts queries the state DB for ingot counts grouped by status.
-// It fetches all ingots (no filter) and aggregates counts client-side to
-// keep the query simple and reuse the existing GetIngots function.
+// It runs a single GROUP BY status aggregation query directly against the DB.
 func FetchIngotCounts(db *state.DB) tea.Cmd {
 	return func() tea.Msg {
 		conn := db.Conn()

@@ -3442,6 +3442,23 @@ func TestUpdateIngotCountsMsg(t *testing.T) {
 	}
 }
 
+func TestUpdateIngotCountsMsgNilPreservesExisting(t *testing.T) {
+	m := NewModel(nil)
+	// Seed some existing counts.
+	m.ingotCounts = map[ingot.Status]int{ingot.StatusSmith: 5}
+	m.ingotTotal = 5
+
+	// A zero-value message (Counts==nil) should NOT wipe the existing data.
+	mUpdated, _ := m.Update(UpdateIngotCountsMsg{})
+	model := mUpdated.(*Model)
+	if model.ingotTotal != 5 {
+		t.Errorf("expected ingotTotal to be preserved as 5, got %d", model.ingotTotal)
+	}
+	if model.ingotCounts[ingot.StatusSmith] != 5 {
+		t.Errorf("expected smith count to be preserved as 5, got %d", model.ingotCounts[ingot.StatusSmith])
+	}
+}
+
 func TestRenderUsagePanelIncludesIngots(t *testing.T) {
 	m := NewModel(nil)
 	m.ingotCounts = map[ingot.Status]int{

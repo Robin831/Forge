@@ -1481,8 +1481,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case UpdateIngotCountsMsg:
-		m.ingotCounts = msg.Counts
-		m.ingotTotal = msg.Total
+		// Counts is nil when the fetch failed (DB error, nil conn, etc.).
+		// Skip the update to preserve the previously displayed values rather
+		// than wiping them on a transient failure.
+		if msg.Counts != nil {
+			m.ingotCounts = msg.Counts
+			m.ingotTotal = msg.Total
+		}
 
 	case UpdateAnvilHealthMsg:
 		if m.anvilHealth == nil {
@@ -3674,6 +3679,12 @@ func (m *Model) renderIngotCountsLine() string {
 		{ingot.StatusInit, "init"},
 	}
 
+	// Track which statuses are handled by the ordered list.
+	known := make(map[ingot.Status]struct{}, len(order))
+	for _, e := range order {
+		known[e.status] = struct{}{}
+	}
+
 	var parts []string
 	for _, e := range order {
 		if c, ok := m.ingotCounts[e.status]; ok && c > 0 {
@@ -3686,10 +3697,18 @@ func (m *Model) renderIngotCountsLine() string {
 		}
 	}
 
+	// Append any statuses not in the known ordered list so the breakdown
+	// always accounts for every status in the total (prevents misleading totals).
+	for status, c := range m.ingotCounts {
+		if _, handled := known[status]; !handled && c > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", c, string(status)))
+		}
+	}
+
 	if len(parts) == 0 {
 		return dimStyle.Render(fmt.Sprintf("Ingots   %d total", m.ingotTotal))
 	}
-	return fmt.Sprintf("Ingots   %s", strings.Join(parts, " │ "))
+	return fmt.Sprintf("Ingots   %s  (%d total)", strings.Join(parts, " │ "), m.ingotTotal)
 }
 
 // renderWorkerActivity renders the activity panel: a live log view for the
