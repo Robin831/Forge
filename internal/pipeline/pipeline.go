@@ -314,6 +314,17 @@ type Params struct {
 	// whether prior feedback was addressed. Default: false (focused re-review).
 	WardenFullRereview bool
 
+	// CopilotCombinedSmithWarden, when true, embeds Warden review criteria
+	// into the Smith prompt so Smith self-reviews its own diff. A real Warden
+	// is still spawned for P0-P1 beads, when the self-review flags concerns,
+	// or via random sampling. Only effective when the primary provider is
+	// Copilot.
+	CopilotCombinedSmithWarden bool
+
+	// CopilotWardenSampleRate is the probability (0.0–1.0) that a real Warden
+	// review is spawned even when the self-review approves. Default: 0.1.
+	CopilotWardenSampleRate float64
+
 	// SkipSmith, when true, skips the Schematic pre-worker and the initial
 	// Smith run on the first iteration. The pipeline creates a worktree on
 	// the existing branch (ResetBranch should be false) and proceeds directly
@@ -605,18 +616,31 @@ func Run(ctx context.Context, p Params) *Outcome {
 	}
 	activeProviderIdx := 0
 
+	// Determine whether combined Smith+Warden mode should be used. Only
+	// enable when configured AND the primary provider is Copilot.
+	combinedMode := p.CopilotCombinedSmithWarden && len(providers) > 0 && providers[0].Kind == provider.Copilot
+
 	// Build initial prompt context
 	beadCtx := prompt.BeadContext{
-		BeadID:       p.Bead.ID,
-		Title:        p.Bead.Title,
-		Description:  p.Bead.Description,
-		IssueType:    p.Bead.IssueType,
-		Priority:     p.Bead.Priority,
-		Parent:       p.Bead.Parent,
-		Branch:       wt.Branch,
-		AnvilName:    p.AnvilName,
-		AnvilPath:    p.AnvilConfig.Path,
-		WorktreePath: wt.Path,
+		BeadID:              p.Bead.ID,
+		Title:               p.Bead.Title,
+		Description:         p.Bead.Description,
+		IssueType:           p.Bead.IssueType,
+		Priority:            p.Bead.Priority,
+		Parent:              p.Bead.Parent,
+		Branch:              wt.Branch,
+		AnvilName:           p.AnvilName,
+		AnvilPath:           p.AnvilConfig.Path,
+		WorktreePath:        wt.Path,
+		CopilotCombinedMode: combinedMode,
+	}
+
+	// When combined mode is active, load learned Warden rules for the anvil
+	// and inject them into the prompt context.
+	if combinedMode {
+		if rf, err := warden.LoadRules(p.AnvilConfig.Path); err == nil {
+			beadCtx.WardenRules = rf.FormatChecklist()
+		}
 	}
 
 	// Run Schematic pre-worker (optional — skipped when SkipSmith is set)
@@ -808,6 +832,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// and compute the diff for the next iteration's prompt context.
 		preSmithSHA := gitRevParseHEAD(wt.Path)
 
+		// smithResult is declared at loop scope so the combined-mode
+		// Warden logic can inspect Smith's output.
+		var smithResult *smith.Result
+
 		// When SkipSmith is set on the first iteration, smith already
 		// completed externally — skip directly to temper verification.
 		if p.SkipSmith && iteration == 1 {
@@ -824,8 +852,6 @@ func Run(ctx context.Context, p Params) *Outcome {
 		_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d (provider: %s)", iteration, providers[activeProviderIdx].Label()), p.Bead.ID, p.AnvilName)
 
 		logDir := wt.Path + "/.forge-logs"
-
-		var smithResult *smith.Result
 		for pi := activeProviderIdx; pi < len(providers); pi++ {
 			pv := providers[pi]
 			if pi > activeProviderIdx {
@@ -1067,10 +1093,50 @@ func Run(ctx context.Context, p Params) *Outcome {
 			return outcome
 		}
 
-		// Step 4: Run Warden review (or skip for small Copilot diffs)
+		// Step 4: Run Warden review (or skip for small Copilot diffs / combined mode)
 		diffStat := computeDiffStat(wt.Path, preSmithSHA)
 		var reviewResult *warden.ReviewResult
-		if shouldSkipWarden(diffStat, p.Bead, providers, p.CopilotSkipWardenSmallDiffs) {
+
+		// Combined Smith+Warden mode: parse Smith's self-review and decide
+		// whether a real Warden is needed.
+		// forceRealWarden bypasses shouldSkipWarden so a real review always runs
+		// when we cannot derive a verdict from Smith's output.
+		var forceRealWarden bool
+		if combinedMode && smithResult == nil {
+			forceRealWarden = true
+			log.Printf("[pipeline:%s] Combined mode: smithResult is nil (SkipSmith=%v, iteration=%d), falling back to real Warden", workerID, p.SkipSmith, iteration)
+		}
+		if combinedMode && smithResult != nil {
+			selfReview := parseSelfReview(smithResult.FullOutput)
+			if !shouldRunRealWarden(selfReview, p.Bead, p.CopilotWardenSampleRate) {
+				log.Printf("[pipeline:%s] Combined mode: self-review approved, skipping real Warden", workerID)
+				_ = p.DB.UpdateWorkerPhase(workerID, "warden")
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
+				if p.DB != nil {
+					logIngotErr(workerID, "warden", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusWarden))
+				}
+				summary := "Auto-approved: Smith self-review passed (combined mode)"
+				_ = p.DB.LogEvent(state.EventWardenPass, summary, p.Bead.ID, p.AnvilName)
+				reviewResult = &warden.ReviewResult{
+					Verdict: warden.VerdictApprove,
+					Summary: summary,
+				}
+			} else {
+				if selfReview == nil {
+					log.Printf("[pipeline:%s] Combined mode: self-review parse failed, falling back to real Warden", workerID)
+				} else if selfReview.Verdict == "request_changes" {
+					log.Printf("[pipeline:%s] Combined mode: self-review flagged concerns, running real Warden", workerID)
+				} else if p.Bead.Priority <= 1 {
+					log.Printf("[pipeline:%s] Combined mode: P%d bead requires real Warden", workerID, p.Bead.Priority)
+				} else {
+					log.Printf("[pipeline:%s] Combined mode: sampled for real Warden review", workerID)
+				}
+			}
+		}
+
+		if reviewResult != nil {
+			// Already resolved (skip-warden or combined mode auto-approve).
+		} else if !forceRealWarden && shouldSkipWarden(diffStat, p.Bead, providers, p.CopilotSkipWardenSmallDiffs) {
 			log.Printf("[pipeline:%s] Skipping Warden review for small Copilot diff (lines_changed=%d, files_changed=%d, reason=low-risk diff under threshold)",
 				workerID, diffStat.LinesChanged, diffStat.FilesChanged)
 			_ = p.DB.UpdateWorkerPhase(workerID, "warden")

@@ -1,0 +1,2 @@
+category: Added
+- **Combined Smith+Warden prompt for Copilot single-request mode** - When `copilot_combined_smith_warden` is enabled and the primary provider is Copilot, Warden review criteria are embedded into the Smith prompt so Smith self-reviews its own diff. A real Warden still runs for P0-P1 beads, when concerns are flagged, or via configurable random sampling (`copilot_warden_sample_rate`, default 10%). Saves 1+ premium requests per bead. (Forge-d4ey)

@@ -1792,6 +1792,8 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 
 			CopilotSkipWardenSmallDiffs: d.cfg.Load().Settings.CopilotSkipWardenSmallDiffs,
 			WardenFullRereview:          d.cfg.Load().Settings.WardenFullRereview,
+			CopilotCombinedSmithWarden:  d.cfg.Load().Settings.CopilotCombinedSmithWarden,
+			CopilotWardenSampleRate:     d.cfg.Load().Settings.CopilotWardenSampleRate,
 
 			StatusCallback: func(s crucible.Status) {
 				d.crucibleStatuses.Store(bead.Anvil+"/"+bead.ID, s)
@@ -1898,6 +1900,8 @@ normalPipeline:
 		SchematicModelOverride:      d.cfg.Load().Settings.SchematicModelOverride,
 		CopilotSkipWardenSmallDiffs: d.cfg.Load().Settings.CopilotSkipWardenSmallDiffs,
 		WardenFullRereview:          d.cfg.Load().Settings.WardenFullRereview,
+		CopilotCombinedSmithWarden:  d.cfg.Load().Settings.CopilotCombinedSmithWarden,
+		CopilotWardenSampleRate:     d.cfg.Load().Settings.CopilotWardenSampleRate,
 	}
 
 	// If this bead has had previous dispatch failures, reset the worktree
@@ -4556,6 +4560,8 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 		SchematicModelOverride:      d.cfg.Load().Settings.SchematicModelOverride,
 		CopilotSkipWardenSmallDiffs: d.cfg.Load().Settings.CopilotSkipWardenSmallDiffs,
 		WardenFullRereview:          d.cfg.Load().Settings.WardenFullRereview,
+		CopilotCombinedSmithWarden:  d.cfg.Load().Settings.CopilotCombinedSmithWarden,
+		CopilotWardenSampleRate:     d.cfg.Load().Settings.CopilotWardenSampleRate,
 	})
 
 	if outcome.Error != nil {

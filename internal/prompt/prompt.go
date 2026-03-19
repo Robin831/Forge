@@ -51,6 +51,12 @@ type BeadContext struct {
 	// Included in the prompt on iteration 2+ so Smith can see what it
 	// already implemented without re-exploring the codebase.
 	PriorDiff string
+	// CopilotCombinedMode, when true, appends a self-review checklist to
+	// the prompt so Smith reviews its own diff against Warden criteria.
+	CopilotCombinedMode bool
+	// WardenRules is a pre-formatted checklist of learned Warden rules.
+	// Injected into the self-review section when CopilotCombinedMode is true.
+	WardenRules string
 }
 
 // Builder constructs prompts from templates and context.
@@ -308,6 +314,36 @@ Follow it as a guide, but use your judgement if you discover the plan needs adju
 ## AI Instructions (CLAUDE.md)
 
 {{.ClaudeMD}}
+{{- end}}
+
+{{- if .Bead.CopilotCombinedMode}}
+
+## Self-Review Checklist
+
+After implementing the change, review your own diff against these criteria:
+
+1. Check for correctness — does the code work as intended?
+2. Check for coding standards — does it follow the repository's conventions?
+3. Check for completeness — does it fully implement what was requested?
+4. Check for safety — any security issues, resource leaks, error handling gaps?
+5. Check for tests — are there adequate tests for the changes?
+6. Check for scope alignment — does the diff implement what the bead requested?
+{{- if .Bead.WardenRules}}
+
+### Learned Review Rules
+
+{{.Bead.WardenRules}}
+{{- end}}
+
+**REQUIRED**: Output a JSON block at the end of your response with your self-review verdict:
+
+` + "```" + `json
+{"self_review": {"verdict": "approve", "concerns": []}}
+` + "```" + `
+
+Set ` + "`" + `verdict` + "`" + ` to ` + "`" + `"approve"` + "`" + ` or ` + "`" + `"request_changes"` + "`" + `. List any concerns in the ` + "`" + `concerns` + "`" + ` array.
+If your verdict is ` + "`" + `request_changes` + "`" + `, revise your code to address the concerns before finalizing,
+then output the JSON block again with your final verdict.
 {{- end}}
 
 ## Orchestrator Overrides (non-negotiable)
