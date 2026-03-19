@@ -1,9 +1,11 @@
 package cifix
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/vcs"
 )
 
@@ -86,6 +88,45 @@ func TestBuildBatchCIPrompt_NoLogs(t *testing.T) {
 	// Should not contain log block markers when no logs available.
 	if strings.Contains(prompt, "**CI Log:**") {
 		t.Error("prompt should not contain CI Log header when no log for the check exists")
+	}
+}
+
+func TestBatchFix_NoFailingChecks(t *testing.T) {
+	result := BatchFix(context.Background(), BatchFixParams{
+		PRNumber:      42,
+		Branch:        "forge/test",
+		BeadID:        "test-1",
+		WorktreePath:  "/tmp/wt",
+		FailingChecks: nil,
+	})
+
+	if !result.Fixed {
+		t.Error("BatchFix with no failing checks should return Fixed=true")
+	}
+	if result.Error != nil {
+		t.Errorf("BatchFix with no failing checks should not error, got: %v", result.Error)
+	}
+}
+
+func TestBatchFix_NoProviders(t *testing.T) {
+	// With a single invalid provider, smith.SpawnWithProvider will fail to
+	// launch, returning early with an error. Verify BatchFix surfaces it.
+	result := BatchFix(context.Background(), BatchFixParams{
+		PRNumber:     42,
+		Branch:       "forge/test",
+		BeadID:       "test-1",
+		WorktreePath: t.TempDir(),
+		FailingChecks: []vcs.CICheck{
+			{Name: "build", Status: "fail"},
+		},
+		Providers: provider.Defaults(),
+	})
+
+	if result.Fixed {
+		t.Error("BatchFix should not return Fixed=true when smith cannot spawn")
+	}
+	if result.Error == nil {
+		t.Error("BatchFix should return an error when smith fails to spawn")
 	}
 }
 

@@ -798,30 +798,34 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			cfg := d.config()
 			// Use batch mode when copilot_batch_ci_fixes is enabled and the primary provider is Copilot.
 			var res *cifix.FixResult
-			if cfg.Settings.CopilotBatchCIFixes && len(cifixProviders) > 0 && cifixProviders[0].Kind == provider.Copilot {
+			useBatch := cfg.Settings.CopilotBatchCIFixes && len(cifixProviders) > 0 && cifixProviders[0].Kind == provider.Copilot
+			if useBatch {
 				anvilVCS := d.vcsForAnvil(req.Anvil)
 				_, failingChecks, fetchErr := anvilVCS.FetchPRChecks(ctx, wt.Path, req.PRNumber)
 				if fetchErr != nil {
-					d.logger.Warn("failed to fetch PR checks for batch CI fix", "pr", req.PRNumber, "error", fetchErr)
+					d.logger.Warn("failed to fetch PR checks for batch CI fix, falling back to single fix", "pr", req.PRNumber, "error", fetchErr)
+					useBatch = false
+				} else {
+					ciLogs, logsErr := anvilVCS.FetchCILogs(ctx, wt.Path, failingChecks)
+					if logsErr != nil {
+						d.logger.Warn("failed to fetch CI logs for batch CI fix", "pr", req.PRNumber, "error", logsErr)
+					}
+					res = cifix.BatchFix(ctx, cifix.BatchFixParams{
+						WorktreePath:  wt.Path,
+						BeadID:        req.BeadID,
+						AnvilName:     req.Anvil,
+						PRNumber:      req.PRNumber,
+						Branch:        req.Branch,
+						DB:            d.db,
+						WorkerID:      workerID,
+						ExtraFlags:    cfg.Settings.ClaudeFlags,
+						Providers:     cifixProviders,
+						FailingChecks: failingChecks,
+						CILogs:        ciLogs,
+					})
 				}
-				ciLogs, logsErr := anvilVCS.FetchCILogs(ctx, wt.Path, failingChecks)
-				if logsErr != nil {
-					d.logger.Warn("failed to fetch CI logs for batch CI fix", "pr", req.PRNumber, "error", logsErr)
-				}
-				res = cifix.BatchFix(ctx, cifix.BatchFixParams{
-					WorktreePath:  wt.Path,
-					BeadID:        req.BeadID,
-					AnvilName:     req.Anvil,
-					PRNumber:      req.PRNumber,
-					Branch:        req.Branch,
-					DB:            d.db,
-					WorkerID:      workerID,
-					ExtraFlags:    cfg.Settings.ClaudeFlags,
-					Providers:     cifixProviders,
-					FailingChecks: failingChecks,
-					CILogs:        ciLogs,
-				})
-			} else {
+			}
+			if !useBatch {
 				cifixDetectOpts := temper.DetectOptionsFromAnvilFlag(anvilCfg.GolangciLint)
 				res = cifix.Fix(ctx, cifix.FixParams{
 					WorktreePath:    wt.Path,
@@ -879,26 +883,30 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			reviewCfg := d.cfg.Load()
 			// Use batch mode when copilot_batch_review_fixes is enabled and the primary provider is Copilot.
 			var res *reviewfix.FixResult
-			if reviewCfg.Settings.CopilotBatchReviewFixes && len(reviewProviders) > 0 && reviewProviders[0].Kind == provider.Copilot {
+			useReviewBatch := reviewCfg.Settings.CopilotBatchReviewFixes && len(reviewProviders) > 0 && reviewProviders[0].Kind == provider.Copilot
+			if useReviewBatch {
 				anvilVCS := d.vcsForAnvil(req.Anvil)
 				comments, fetchErr := anvilVCS.FetchReviewComments(ctx, wt.Path, req.PRNumber)
 				if fetchErr != nil {
-					d.logger.Warn("failed to fetch review comments for batch fix", "pr", req.PRNumber, "error", fetchErr)
+					d.logger.Warn("failed to fetch review comments for batch fix, falling back to single fix", "pr", req.PRNumber, "error", fetchErr)
+					useReviewBatch = false
+				} else {
+					res = reviewfix.BatchFix(ctx, reviewfix.BatchFixParams{
+						WorktreePath: wt.Path,
+						BeadID:       req.BeadID,
+						AnvilName:    req.Anvil,
+						PRNumber:     req.PRNumber,
+						Branch:       req.Branch,
+						DB:           d.db,
+						WorkerID:     workerID,
+						ExtraFlags:   reviewCfg.Settings.ClaudeFlags,
+						Providers:    reviewProviders,
+						Comments:     comments,
+						VCS:          anvilVCS,
+					})
 				}
-				res = reviewfix.BatchFix(ctx, reviewfix.BatchFixParams{
-					WorktreePath: wt.Path,
-					BeadID:       req.BeadID,
-					AnvilName:    req.Anvil,
-					PRNumber:     req.PRNumber,
-					Branch:       req.Branch,
-					DB:           d.db,
-					WorkerID:     workerID,
-					ExtraFlags:   reviewCfg.Settings.ClaudeFlags,
-					Providers:    reviewProviders,
-					Comments:     comments,
-					VCS:          anvilVCS,
-				})
-			} else {
+			}
+			if !useReviewBatch {
 				res = reviewfix.Fix(ctx, reviewfix.FixParams{
 					WorktreePath: wt.Path,
 					BeadID:       req.BeadID,

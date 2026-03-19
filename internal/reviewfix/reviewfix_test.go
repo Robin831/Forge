@@ -1,9 +1,11 @@
 package reviewfix
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/vcs"
 )
 
@@ -186,5 +188,46 @@ func TestBuildBatchReviewPrompt_NoAuthorOrPath(t *testing.T) {
 	prompt := buildBatchReviewPrompt(1, "main", "Forge-abc", "/tmp/wt", comments)
 	if !strings.Contains(prompt, "fix something") {
 		t.Error("prompt should include body even when author and path are empty")
+	}
+}
+
+func TestBatchFix_NoActionableComments(t *testing.T) {
+	result := BatchFix(context.Background(), BatchFixParams{
+		PRNumber:     42,
+		Branch:       "forge/test",
+		BeadID:       "test-1",
+		WorktreePath: "/tmp/wt",
+		Comments: []vcs.ReviewComment{
+			{Author: "alice", Body: "looks good", State: "APPROVED"},
+		},
+	})
+
+	if !result.Addressed {
+		t.Error("BatchFix with no actionable comments should return Addressed=true")
+	}
+	if result.Error != nil {
+		t.Errorf("BatchFix with no actionable comments should not error, got: %v", result.Error)
+	}
+}
+
+func TestBatchFix_NoProviders(t *testing.T) {
+	// With default providers, smith.SpawnWithProvider will fail to launch
+	// (no claude binary in test). Verify BatchFix surfaces the error.
+	result := BatchFix(context.Background(), BatchFixParams{
+		PRNumber:     42,
+		Branch:       "forge/test",
+		BeadID:       "test-1",
+		WorktreePath: t.TempDir(),
+		Comments: []vcs.ReviewComment{
+			{Author: "copilot", Body: "fix this bug", State: "CHANGES_REQUESTED"},
+		},
+		Providers: provider.Defaults(),
+	})
+
+	if result.Addressed {
+		t.Error("BatchFix should not return Addressed=true when smith cannot spawn")
+	}
+	if result.Error == nil {
+		t.Error("BatchFix should return an error when smith fails to spawn")
 	}
 }

@@ -174,6 +174,17 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		}
 	}
 
+	if smithResult == nil {
+		result.Error = fmt.Errorf("batch CI fix: no smith result (no providers available)")
+		if p.DB != nil {
+			_ = p.DB.LogEvent(state.EventCIFixFailed,
+				fmt.Sprintf("PR #%d batch fix: no smith result", p.PRNumber),
+				p.BeadID, p.AnvilName)
+		}
+		result.Duration = time.Since(start)
+		return result
+	}
+
 	if smithResult.RateLimited {
 		result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 		if p.DB != nil {
