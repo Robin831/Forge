@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"text/tabwriter"
+	"unicode/utf8"
 
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/ipc"
@@ -96,8 +97,9 @@ var ingotsListCmd = &cobra.Command{
 				temper = "FAIL"
 			}
 			title := ig.Title
-			if len(title) > 50 {
-				title = title[:47] + "..."
+			if utf8.RuneCountInString(title) > 50 {
+				runes := []rune(title)
+				title = string(runes[:47]) + "..."
 			}
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 				ig.BeadID, ig.Anvil, string(ig.Status), title, pr, temper)
