@@ -251,7 +251,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		CopilotBatchReviewFixes     bool    `yaml:"copilot_batch_review_fixes"`
 		WardenFullRereview          bool    `yaml:"warden_full_rereview"`
 		CopilotCombinedSmithWarden  bool    `yaml:"copilot_combined_smith_warden"`
-		CopilotWardenSampleRate     float64 `yaml:"copilot_warden_sample_rate,omitempty"`
+		CopilotWardenSampleRate     float64 `yaml:"copilot_warden_sample_rate"`
 	}
 
 	sh := shadow{
