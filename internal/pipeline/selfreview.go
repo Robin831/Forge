@@ -47,6 +47,11 @@ func parseSelfReview(smithOutput string) *SelfReview {
 	return &env.SelfReview
 }
 
+// randFloat64 is the random number generator used for Warden sampling.
+// It defaults to math/rand.Float64 but can be overridden in tests for
+// deterministic behavior.
+var randFloat64 = rand.Float64
+
 // shouldRunRealWarden decides whether a real Warden review should be spawned
 // when running in combined Smith+Warden mode. A real Warden is always required
 // for high-priority beads, when the self-review failed to parse, when Smith
@@ -61,5 +66,5 @@ func shouldRunRealWarden(selfReview *SelfReview, bead poller.Bead, sampleRate fl
 		return true
 	}
 	// Random sampling for ongoing quality validation.
-	return rand.Float64() < sampleRate
+	return randFloat64() < sampleRate
 }

@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"math"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/poller"
@@ -103,21 +102,34 @@ func TestShouldRunRealWarden_SamplingRate100Percent(t *testing.T) {
 	assert.True(t, shouldRunRealWarden(sr, bead, 1.0))
 }
 
-func TestShouldRunRealWarden_SamplingStatistical(t *testing.T) {
+func TestShouldRunRealWarden_SamplingDeterministic(t *testing.T) {
 	sr := &SelfReview{Verdict: "approve"}
 	bead := poller.Bead{Priority: 3}
-	sampleRate := 0.5
 
-	triggered := 0
-	trials := 10000
-	for i := 0; i < trials; i++ {
-		if shouldRunRealWarden(sr, bead, sampleRate) {
-			triggered++
-		}
+	// Replace the random source with a deterministic sequence so the test
+	// is fully reproducible.
+	callCount := 0
+	values := []float64{0.05, 0.15, 0.50, 0.95, 0.09, 0.11}
+	origRand := randFloat64
+	randFloat64 = func() float64 {
+		v := values[callCount%len(values)]
+		callCount++
+		return v
 	}
+	defer func() { randFloat64 = origRand }()
 
-	// Expect ~50% with some tolerance.
-	ratio := float64(triggered) / float64(trials)
-	assert.True(t, math.Abs(ratio-sampleRate) < 0.05,
-		"expected ~%.0f%% sampling, got %.1f%%", sampleRate*100, ratio*100)
+	sampleRate := 0.1
+
+	// 0.05 < 0.1 → true
+	assert.True(t, shouldRunRealWarden(sr, bead, sampleRate), "0.05 should trigger sampling")
+	// 0.15 >= 0.1 → false
+	assert.False(t, shouldRunRealWarden(sr, bead, sampleRate), "0.15 should not trigger sampling")
+	// 0.50 >= 0.1 → false
+	assert.False(t, shouldRunRealWarden(sr, bead, sampleRate), "0.50 should not trigger sampling")
+	// 0.95 >= 0.1 → false
+	assert.False(t, shouldRunRealWarden(sr, bead, sampleRate), "0.95 should not trigger sampling")
+	// 0.09 < 0.1 → true
+	assert.True(t, shouldRunRealWarden(sr, bead, sampleRate), "0.09 should trigger sampling")
+	// 0.11 >= 0.1 → false
+	assert.False(t, shouldRunRealWarden(sr, bead, sampleRate), "0.11 should not trigger sampling")
 }
