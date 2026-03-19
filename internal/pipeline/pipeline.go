@@ -1105,10 +1105,15 @@ func Run(ctx context.Context, p Params) *Outcome {
 		if combinedMode && smithResult == nil {
 			forceRealWarden = true
 			log.Printf("[pipeline:%s] Combined mode: smithResult is nil (SkipSmith=%v, iteration=%d), falling back to real Warden", workerID, p.SkipSmith, iteration)
-		}
-		if combinedMode && smithResult != nil {
+		} else if combinedMode && smithResult != nil {
 			selfReview := parseSelfReview(smithResult.FullOutput)
-			if !shouldRunRealWarden(selfReview, p.Bead, p.CopilotWardenSampleRate) {
+			// Only skip real Warden when Smith actually ran under Copilot; if Smith
+			// fell back to a different provider the combined-mode guarantee no longer
+			// holds, so force a real review regardless of the self-review verdict.
+			if smithResult.ProviderUsed != provider.Copilot {
+				log.Printf("[pipeline:%s] Combined mode: Smith ran under non-Copilot provider (%v), forcing real Warden", workerID, smithResult.ProviderUsed)
+				forceRealWarden = true
+			} else if !shouldRunRealWarden(selfReview, p.Bead, p.CopilotWardenSampleRate) {
 				log.Printf("[pipeline:%s] Combined mode: self-review approved, skipping real Warden", workerID)
 				_ = p.DB.UpdateWorkerPhase(workerID, "warden")
 				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
@@ -1116,7 +1121,6 @@ func Run(ctx context.Context, p Params) *Outcome {
 					logIngotErr(workerID, "warden", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusWarden))
 				}
 				summary := "Auto-approved: Smith self-review passed (combined mode)"
-				_ = p.DB.LogEvent(state.EventWardenPass, summary, p.Bead.ID, p.AnvilName)
 				reviewResult = &warden.ReviewResult{
 					Verdict: warden.VerdictApprove,
 					Summary: summary,

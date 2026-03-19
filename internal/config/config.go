@@ -407,6 +407,7 @@ func Defaults() Config {
 			DepcheckTimeout:      5 * time.Minute,
 			VulncheckInterval:    24 * time.Hour,
 			VulncheckTimeout:     10 * time.Minute,
+			// Copilot combined Smith+Warden mode settings.
 			CopilotWardenSampleRate: 0.1,
 		},
 	}

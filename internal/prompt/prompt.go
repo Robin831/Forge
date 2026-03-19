@@ -99,7 +99,17 @@ func (b *Builder) Build(ctx BeadContext) (string, error) {
 		return "", fmt.Errorf("executing template: %w", err)
 	}
 
-	return buf.String(), nil
+	result := buf.String()
+
+	// Replace the warden rules placeholder with the actual content.
+	// WardenRules is injected via placeholder rather than through the
+	// template engine to prevent template-injection attacks — learned
+	// rules come from external PR comments and could contain {{ }}.
+	if ctx.WardenRules != "" {
+		result = strings.Replace(result, wardenRulesPlaceholder, ctx.WardenRules, 1)
+	}
+
+	return result, nil
 }
 
 // LoadCustomTemplate reads a custom template file for an anvil.
@@ -127,6 +137,13 @@ type templateData struct {
 	ClaudeMD string
 	ReadmeMD string
 }
+
+// wardenRulesPlaceholder is a sentinel string that is never valid prompt
+// content. The template emits it literally; Build() replaces it with the
+// real WardenRules value *after* template execution so that learned-rule
+// content (which originates from external PR comments) is never interpreted
+// by text/template.
+const wardenRulesPlaceholder = "__WARDEN_RULES_PLACEHOLDER_7f3a9c__"
 
 // readFileSafe reads a file and returns its contents, or empty string on error.
 func readFileSafe(path string) string {
@@ -332,7 +349,7 @@ After implementing the change, review your own diff against these criteria:
 
 ### Learned Review Rules
 
-{{.Bead.WardenRules}}
+` + wardenRulesPlaceholder + `
 {{- end}}
 
 **REQUIRED**: Output a JSON block at the end of your response with your self-review verdict:
