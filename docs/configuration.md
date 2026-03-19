@@ -333,6 +333,8 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `max_total_smiths` is re-read and applied to subsequent scheduling decisions
 - `claude_flags` are re-read and used for newly started smiths
 - `smith_providers` are re-read and used for newly dispatched beads
+- `copilot_combined_smith_warden` toggles combined Smith+Warden mode at runtime
+- `copilot_warden_sample_rate` adjusts the sampling rate at runtime
 - `notifications.*` (webhook URL, enabled, events, etc.) are re-read and applied immediately
 - In-flight workers are **not** interrupted
 

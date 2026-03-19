@@ -108,6 +108,36 @@ func TestBuild_CombinedModeChecklistBeforeOverrides(t *testing.T) {
 		"Self-Review Checklist should appear before Orchestrator Overrides")
 }
 
+func TestBuild_CombinedModeWardenRulesTemplateInjection(t *testing.T) {
+	// Verify that WardenRules containing Go template directives are rendered
+	// literally and do NOT trigger template execution (defense-in-depth).
+	b := NewBuilder()
+	maliciousRules := "1. [ ] Check: {{.AgentsMD}} injection attempt (pattern: {{template}})\n"
+	ctx := BeadContext{
+		BeadID:              "test-inject",
+		Title:               "Injection test",
+		Description:         "Verify template injection is safe",
+		IssueType:           "task",
+		Priority:            3,
+		Branch:              "forge/test-inject",
+		AnvilName:           "test-anvil",
+		AnvilPath:           t.TempDir(),
+		WorktreePath:        t.TempDir(),
+		CopilotCombinedMode: true,
+		WardenRules:         maliciousRules,
+	}
+
+	result, err := b.Build(ctx)
+	require.NoError(t, err)
+
+	// The malicious template directives must appear literally in the output,
+	// not be interpreted by the template engine.
+	assert.Contains(t, result, "{{.AgentsMD}}")
+	assert.Contains(t, result, "{{template}}")
+	assert.NotContains(t, result, wardenRulesPlaceholder,
+		"placeholder must be replaced with actual rules content")
+}
+
 func TestBuild_CombinedModeWithLoadedWardenRules(t *testing.T) {
 	// Create a temporary anvil directory with a .forge/warden-rules.yaml file
 	// to verify the full LoadRules → FormatChecklist → prompt injection path.
