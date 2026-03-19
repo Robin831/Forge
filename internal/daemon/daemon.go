@@ -1985,6 +1985,12 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); dbErr != nil {
 			d.logger.Error("failed to update worker status to failed", "worker", workerID, "error", dbErr)
 		}
+		// Best-effort ingot lifecycle tracking for PR creation failure.
+		if conn := d.db.Conn(); conn != nil {
+			if ingotErr := ingot.UpdateIngotStatus(conn, bead.ID, bead.Anvil, ingot.StatusFailed); ingotErr != nil {
+				d.logger.Warn("ingot status update to failed on PR creation error", "bead", bead.ID, "error", ingotErr)
+			}
+		}
 		return
 	}
 
@@ -1997,7 +2003,11 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 
 	// Best-effort ingot lifecycle tracking for PR creation.
 	if conn := d.db.Conn(); conn != nil {
-		if err := ingot.UpdateIngotPR(conn, bead.ID, bead.Anvil, pr.Number, pr.URL, pr.Number); err != nil {
+		prID := 0
+		if dbPR, err := d.db.GetPRByNumber(bead.Anvil, pr.Number); err == nil && dbPR != nil {
+			prID = dbPR.ID
+		}
+		if err := ingot.UpdateIngotPR(conn, bead.ID, bead.Anvil, pr.Number, pr.URL, prID); err != nil {
 			d.logger.Warn("ingot PR update failed", "bead", bead.ID, "error", err)
 		}
 		if err := ingot.UpdateIngotStatus(conn, bead.ID, bead.Anvil, ingot.StatusPROpen); err != nil {
@@ -4111,6 +4121,12 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 			d.logger.Error("warden_rerun: PR creation failed", "bead", beadID, "error", err)
 			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
 			_ = d.db.MarkNeedsHuman(beadID, anvil, fmt.Sprintf("warden_rerun: PR creation failed: %v", err))
+			// Best-effort ingot lifecycle tracking for failure.
+			if conn := d.db.Conn(); conn != nil {
+				if ingotErr := ingot.UpdateIngotStatus(conn, beadID, anvil, ingot.StatusFailed); ingotErr != nil {
+					d.logger.Warn("ingot status update to failed", "bead", beadID, "error", ingotErr)
+				}
+			}
 			return
 		}
 		// Clear needs_human only after PR is successfully created.
@@ -4120,7 +4136,11 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created: %s", pr.Number, pr.URL), beadID, anvil)
 		// Best-effort ingot lifecycle tracking.
 		if conn := d.db.Conn(); conn != nil {
-			if err := ingot.UpdateIngotPR(conn, beadID, anvil, pr.Number, pr.URL, pr.Number); err != nil {
+			prID := 0
+			if dbPR, lookupErr := d.db.GetPRByNumber(anvil, pr.Number); lookupErr == nil && dbPR != nil {
+				prID = dbPR.ID
+			}
+			if err := ingot.UpdateIngotPR(conn, beadID, anvil, pr.Number, pr.URL, prID); err != nil {
 				d.logger.Warn("ingot PR update failed", "bead", beadID, "error", err)
 			}
 			if err := ingot.UpdateIngotStatus(conn, beadID, anvil, ingot.StatusPROpen); err != nil {
@@ -4194,6 +4214,12 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 		d.logger.Error("approve_as_is: PR creation failed", "bead", beadID, "error", err)
 		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
 		_ = d.db.MarkNeedsHuman(beadID, anvil, fmt.Sprintf("approve_as_is: PR creation failed: %v", err))
+		// Best-effort ingot lifecycle tracking for failure.
+		if conn := d.db.Conn(); conn != nil {
+			if ingotErr := ingot.UpdateIngotStatus(conn, beadID, anvil, ingot.StatusFailed); ingotErr != nil {
+				d.logger.Warn("ingot status update to failed", "bead", beadID, "error", ingotErr)
+			}
+		}
 		return
 	}
 
@@ -4204,7 +4230,11 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 	_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created (approved as-is): %s", pr.Number, pr.URL), beadID, anvil)
 	// Best-effort ingot lifecycle tracking.
 	if conn := d.db.Conn(); conn != nil {
-		if err := ingot.UpdateIngotPR(conn, beadID, anvil, pr.Number, pr.URL, pr.Number); err != nil {
+		prID := 0
+		if dbPR, lookupErr := d.db.GetPRByNumber(anvil, pr.Number); lookupErr == nil && dbPR != nil {
+			prID = dbPR.ID
+		}
+		if err := ingot.UpdateIngotPR(conn, beadID, anvil, pr.Number, pr.URL, prID); err != nil {
 			d.logger.Warn("ingot PR update failed", "bead", beadID, "error", err)
 		}
 		if err := ingot.UpdateIngotStatus(conn, beadID, anvil, ingot.StatusPROpen); err != nil {
