@@ -1690,6 +1690,8 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			AutoMergeCrucibleChildren: d.cfg.Load().Settings.IsAutoMergeCrucibleChildren(),
 			MaxPipelineIterations:     d.cfg.Load().Settings.MaxPipelineIterations,
 			WorkerID:                  claimWorkerID,
+			WardenModelOverride:       d.cfg.Load().Settings.WardenModelOverride,
+			SchematicModelOverride:    d.cfg.Load().Settings.SchematicModelOverride,
 			StatusCallback: func(s crucible.Status) {
 				d.crucibleStatuses.Store(bead.Anvil+"/"+bead.ID, s)
 			},

@@ -1347,15 +1347,16 @@ func TestWardenProviders_OverrideCopilotModel(t *testing.T) {
 }
 
 // TestWardenProviders_EmptyOverride verifies that wardenProviders returns the
-// original slice when WardenModelOverride is empty.
+// original slice (no clone) when WardenModelOverride is empty.
 func TestWardenProviders_EmptyOverride(t *testing.T) {
 	p := &Params{WardenModelOverride: ""}
 	providers := []provider.Provider{
 		{Kind: provider.Copilot, Model: "claude-sonnet-4-6"},
 	}
 	got := p.wardenProviders(providers)
-	// Same slice (no clone) when override is empty.
-	assert.Equal(t, providers, got)
+	// Assert aliasing: mutating got must be visible through providers.
+	got[0].Model = "mutated"
+	assert.Equal(t, "mutated", providers[0].Model, "wardenProviders must return the original slice when override is empty")
 }
 
 // TestWardenProviders_NonCopilotUnmodified verifies that non-Copilot providers
@@ -1385,14 +1386,16 @@ func TestSchematicProviders_OverrideCopilotModel(t *testing.T) {
 }
 
 // TestSchematicProviders_EmptyOverride verifies that schematicProviders returns
-// the original slice when SchematicModelOverride is empty.
+// the original slice (no clone) when SchematicModelOverride is empty.
 func TestSchematicProviders_EmptyOverride(t *testing.T) {
 	p := &Params{SchematicModelOverride: ""}
 	providers := []provider.Provider{
 		{Kind: provider.Copilot, Model: "claude-sonnet-4-6"},
 	}
 	got := p.schematicProviders(providers)
-	assert.Equal(t, providers, got)
+	// Assert aliasing: mutating got must be visible through providers.
+	got[0].Model = "mutated"
+	assert.Equal(t, "mutated", providers[0].Model, "schematicProviders must return the original slice when override is empty")
 }
 
 // TestSchematicProviders_NonCopilotUnmodified verifies that non-Copilot

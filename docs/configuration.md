@@ -56,11 +56,14 @@ settings:
     - --max-turns
     - "50"
   providers:
+    - copilot/claude-sonnet-4-6  # warden/schematic overrides only apply to copilot entries
     - claude
     - gemini/gemini-2.5-pro
     - gemini/gemini-2.5-flash
   smith_providers:
     - claude/claude-opus-4-6
+  # Note: warden_model_override and schematic_model_override only affect Copilot
+  # provider entries. They have no effect when no Copilot provider is configured.
   warden_model_override: claude-haiku-4-5    # 0.33x premium for review
   schematic_model_override: claude-haiku-4-5 # 0.33x premium for analysis
   rate_limit_backoff: 5m

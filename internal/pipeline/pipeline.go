@@ -403,19 +403,23 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerPhase(workerID, "schematic")
 			_ = p.DB.LogEvent(state.EventSchematicStarted, "Analysing bead scope", p.Bead.ID, p.AnvilName)
 
-			sResult := runSchematic(ctx, schemCfg, p.Bead, p.AnvilConfig.Path, p.schematicProviders(providers)[0])
+			schemProviders := p.schematicProviders(providers)
+			usedSchem := schemProviders[0]
+			sResult := runSchematic(ctx, schemCfg, p.Bead, p.AnvilConfig.Path, usedSchem)
 			outcome.SchematicResult = sResult
 
 			// Persist provider quota from the schematic's claude session.
+			// Use usedSchem (the possibly-overridden provider) so quota and cost
+			// accounting reflect the actual model/kind used by Schematic.
 			if sResult.Quota != nil {
-				if err := p.DB.UpsertProviderQuota(string(providers[0].Kind), sResult.Quota); err != nil {
-					log.Printf("[pipeline:%s] Failed to update provider %s quota from schematic: %v", workerID, providers[0].Label(), err)
+				if err := p.DB.UpsertProviderQuota(string(usedSchem.Kind), sResult.Quota); err != nil {
+					log.Printf("[pipeline:%s] Failed to update provider %s quota from schematic: %v", workerID, usedSchem.Label(), err)
 				}
 			}
 
 			// Record Copilot premium request for schematic if applicable.
-			if providers[0].Kind == provider.Copilot && sResult.Action != schematic.ActionSkip {
-				if m := cost.CopilotPremiumMultiplier(providers[0].Model); m > 0 {
+			if usedSchem.Kind == provider.Copilot && sResult.Action != schematic.ActionSkip {
+				if m := cost.CopilotPremiumMultiplier(usedSchem.Model); m > 0 {
 					_ = p.DB.AddCopilotRequest(cost.Today(), m)
 				}
 			}
