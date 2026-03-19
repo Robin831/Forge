@@ -64,6 +64,204 @@ type FixResult struct {
 	Error error
 }
 
+// BatchFixParams holds the inputs for a batched review fix attempt.
+type BatchFixParams struct {
+	// WorktreePath is the git worktree for this PR's branch.
+	WorktreePath string
+	// BeadID for tracking.
+	BeadID string
+	// AnvilName for tracking.
+	AnvilName string
+	// PRNumber being fixed.
+	PRNumber int
+	// Branch name for the PR.
+	Branch string
+	// DB for state tracking.
+	DB *state.DB
+	// WorkerID is the state DB worker ID.
+	WorkerID string
+	// ExtraFlags for Claude CLI.
+	ExtraFlags []string
+	// Providers is the ordered list of AI providers to try.
+	Providers []provider.Provider
+	// Comments is the list of review comments to address.
+	Comments []vcs.ReviewComment
+	// VCS is the VCS provider for thread resolution.
+	VCS vcs.Provider
+}
+
+// BatchFix combines multiple review comments into one Smith prompt.
+// Use this when copilot_batch_review_fixes is enabled and the provider is Copilot.
+func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
+	start := time.Now()
+	result := &FixResult{}
+
+	result.CommentsFound = len(p.Comments)
+	actionable := filterActionableComments(p.Comments)
+
+	if len(actionable) == 0 {
+		result.Addressed = true
+		result.Duration = time.Since(start)
+		return result
+	}
+
+	providers := p.Providers
+
+	prompt := buildBatchReviewPrompt(p.PRNumber, p.Branch, p.BeadID, actionable)
+
+	if p.DB != nil {
+		_ = p.DB.LogEvent(state.EventReviewFixStarted,
+			fmt.Sprintf("PR #%d: batch fix for %d comments", p.PRNumber, len(actionable)),
+			p.BeadID, p.AnvilName)
+	}
+
+	result.Attempts = 1
+
+	logDir := p.WorktreePath + "/.forge-logs"
+	var smithResult *smith.Result
+	for pi := 0; pi < len(providers); pi++ {
+		pv := providers[pi]
+		if pi > 0 {
+			log.Printf("[burnish] PR #%d: Provider %s rate limited, retrying with %s",
+				p.PRNumber, providers[pi-1].Label(), pv.Label())
+		}
+		process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
+		if err != nil {
+			result.Error = fmt.Errorf("spawning smith (%s) for batch review fix: %w", pv.Label(), err)
+			result.Duration = time.Since(start)
+			return result
+		}
+		if p.WorkerID != "" && p.DB != nil {
+			if err := p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath); err != nil {
+				log.Printf("[burnish] PR #%d: failed to update worker log path: %v", p.PRNumber, err)
+			}
+		}
+		smithResult = process.Wait()
+		if smithResult.ResultSubtype == "success" && !smithResult.IsError {
+			smithResult.RateLimited = false
+		}
+		if smithResult.Quota != nil && p.DB != nil {
+			if err := p.DB.UpsertProviderQuota(string(pv.Kind), smithResult.Quota); err != nil {
+				log.Printf("[burnish] PR #%d: Failed to update provider %s quota: %v", p.PRNumber, pv.Label(), err)
+			}
+		}
+		if pv.Kind == provider.Copilot && !smithResult.RateLimited {
+			if m := cost.CopilotPremiumMultiplier(pv.Model); m > 0 && p.DB != nil {
+				_ = p.DB.AddCopilotRequest(cost.Today(), m)
+			}
+		}
+		if !smithResult.RateLimited {
+			break
+		}
+	}
+
+	if smithResult == nil {
+		result.Error = fmt.Errorf("batch review fix: no smith result (no providers available)")
+		if p.DB != nil {
+			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+				fmt.Sprintf("PR #%d batch fix: no smith result", p.PRNumber),
+				p.BeadID, p.AnvilName)
+		}
+		result.Duration = time.Since(start)
+		return result
+	}
+
+	if smithResult.RateLimited {
+		result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
+		if p.DB != nil {
+			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+				fmt.Sprintf("PR #%d batch fix: all providers rate limited", p.PRNumber),
+				p.BeadID, p.AnvilName)
+		}
+		result.Duration = time.Since(start)
+		return result
+	}
+
+	if smithResult.ExitCode != 0 {
+		result.Error = fmt.Errorf("batch review fix failed (exit %d)", smithResult.ExitCode)
+		if p.DB != nil {
+			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+				fmt.Sprintf("PR #%d: batch Smith exit %d", p.PRNumber, smithResult.ExitCode),
+				p.BeadID, p.AnvilName)
+		}
+		result.Duration = time.Since(start)
+		return result
+	}
+
+	log.Printf("[burnish] PR #%d: batch review fix applied for %d comments", p.PRNumber, len(actionable))
+	result.Addressed = true
+
+	// Resolve threads after successful fix.
+	resolvedCount := 0
+	resolvableCount := 0
+	if p.VCS != nil {
+		for _, comment := range actionable {
+			if comment.ThreadID == "" {
+				continue
+			}
+			resolvableCount++
+			if err := p.VCS.ResolveThread(ctx, p.WorktreePath, comment.ThreadID); err != nil {
+				log.Printf("[burnish] PR #%d: Warning: failed to resolve thread %s: %v", p.PRNumber, comment.ThreadID, err)
+			} else {
+				resolvedCount++
+			}
+		}
+		if resolvedCount > 0 {
+			log.Printf("[burnish] PR #%d: Resolved %d/%d threads on GitHub", p.PRNumber, resolvedCount, resolvableCount)
+		}
+	}
+
+	if p.DB != nil {
+		_ = p.DB.LogEvent(state.EventReviewFixSuccess,
+			fmt.Sprintf("PR #%d: batch addressed %d comments", p.PRNumber, len(actionable)),
+			p.BeadID, p.AnvilName)
+	}
+
+	result.Duration = time.Since(start)
+	return result
+}
+
+// buildBatchReviewPrompt creates a prompt listing all review comments for Smith to address in one pass.
+func buildBatchReviewPrompt(prNumber int, branch, beadID string, comments []vcs.ReviewComment) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, `You are addressing multiple review comments on PR #%d (branch: %s) for bead %s.
+
+## Review Comments to Address
+
+`, prNumber, branch, beadID)
+
+	for i, c := range comments {
+		fmt.Fprintf(&b, "### %d.", i+1)
+		if c.Author != "" {
+			fmt.Fprintf(&b, " (by @%s)", c.Author)
+		}
+		b.WriteString("\n")
+
+		if c.Path != "" {
+			fmt.Fprintf(&b, "**File**: %s", c.Path)
+			if c.Line > 0 {
+				fmt.Fprintf(&b, " line %d", c.Line)
+			}
+			b.WriteString("\n")
+		}
+
+		fmt.Fprintf(&b, "\n%s\n\n", c.Body)
+	}
+
+	fmt.Fprintf(&b, `## Instructions
+
+1. Address ALL %d review comments above in a single pass
+2. Make the requested changes — follow each reviewer's guidance
+3. **Run the test suite** and fix any failures before continuing
+4. Commit with message: "fix: address review comments for %s"
+5. Push to branch: %s
+
+`, len(comments), beadID, branch)
+
+	return b.String()
+}
+
 // Fix fetches review comments and spawns Smith to address them.
 func Fix(ctx context.Context, p FixParams) *FixResult {
 	start := time.Now()
@@ -316,10 +514,7 @@ func buildReviewFixPrompt(p FixParams, comments []vcs.ReviewComment) string {
 4. Commit with message: "fix: address review comments for %s"
 5. Push to branch: %s
 
-## Working Directory
-
-%s
-`, p.BeadID, p.Branch, p.WorktreePath)
+`, p.BeadID, p.Branch)
 
 	return b.String()
 }

@@ -180,6 +180,14 @@ type SettingsConfig struct {
 	// request for trivial changes (docs, tests, or ≤2 files under 100 lines).
 	// Default: false (opt-in).
 	CopilotSkipWardenSmallDiffs bool `mapstructure:"copilot_skip_warden_small_diffs" yaml:"copilot_skip_warden_small_diffs"`
+	// CopilotBatchCIFixes enables batching multiple CI failures into a single
+	// Smith invocation when the provider is Copilot. Saves premium requests
+	// when a PR has multiple failing checks. Default: false (opt-in).
+	CopilotBatchCIFixes bool `mapstructure:"copilot_batch_ci_fixes" yaml:"copilot_batch_ci_fixes"`
+	// CopilotBatchReviewFixes enables batching multiple review comments into a
+	// single Smith invocation when the provider is Copilot. Saves premium
+	// requests when a PR has multiple review comments. Default: false (opt-in).
+	CopilotBatchReviewFixes bool `mapstructure:"copilot_batch_review_fixes" yaml:"copilot_batch_review_fixes"`
 }
 
 // durationString returns the duration string, or omits zero values.
@@ -224,6 +232,8 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		SchematicModelOverride    string   `yaml:"schematic_model_override,omitempty"`
 
 		CopilotSkipWardenSmallDiffs bool `yaml:"copilot_skip_warden_small_diffs"`
+		CopilotBatchCIFixes         bool `yaml:"copilot_batch_ci_fixes"`
+		CopilotBatchReviewFixes     bool `yaml:"copilot_batch_review_fixes"`
 	}
 
 	sh := shadow{
@@ -255,6 +265,8 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		SchematicModelOverride:    s.SchematicModelOverride,
 
 		CopilotSkipWardenSmallDiffs: s.CopilotSkipWardenSmallDiffs,
+		CopilotBatchCIFixes:         s.CopilotBatchCIFixes,
+		CopilotBatchReviewFixes:     s.CopilotBatchReviewFixes,
 	}
 
 	// Only include non-zero optional durations.
