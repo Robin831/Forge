@@ -83,6 +83,156 @@ type FixResult struct {
 }
 
 
+// BatchFixParams holds the inputs for a batched CI fix attempt.
+type BatchFixParams struct {
+	// WorktreePath is the git worktree for this PR's branch.
+	WorktreePath string
+	// BeadID for tracking.
+	BeadID string
+	// AnvilName for tracking.
+	AnvilName string
+	// PRNumber being fixed.
+	PRNumber int
+	// Branch name for the PR.
+	Branch string
+	// DB for state tracking.
+	DB *state.DB
+	// WorkerID is the state DB worker ID.
+	WorkerID string
+	// ExtraFlags for Claude CLI.
+	ExtraFlags []string
+	// Providers is the ordered list of AI providers to try.
+	Providers []provider.Provider
+	// FailingChecks is the list of CI checks that are failing.
+	FailingChecks []vcs.CICheck
+	// CILogs maps check name to its log output.
+	CILogs map[string]string
+}
+
+// BatchFix combines multiple CI failures into one Smith prompt.
+// Use this when copilot_batch_ci_fixes is enabled and the provider is Copilot.
+func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
+	start := time.Now()
+	result := &FixResult{}
+
+	if len(p.FailingChecks) == 0 {
+		result.Fixed = true
+		result.Duration = time.Since(start)
+		return result
+	}
+
+	providers := p.Providers
+	if len(providers) == 0 {
+		providers = provider.Defaults()
+	}
+
+	prompt := buildBatchCIPrompt(p)
+
+	_ = p.DB.LogEvent(state.EventCIFixStarted,
+		fmt.Sprintf("PR #%d: batch fix for %d failing checks", p.PRNumber, len(p.FailingChecks)),
+		p.BeadID, p.AnvilName)
+
+	result.Attempts = 1
+
+	logDir := p.WorktreePath + "/.forge-logs"
+	var smithResult *smith.Result
+	for pi := 0; pi < len(providers); pi++ {
+		pv := providers[pi]
+		if pi > 0 {
+			log.Printf("[quench] PR #%d: Provider %s rate limited, retrying with %s",
+				p.PRNumber, providers[pi-1].Kind, pv.Kind)
+		}
+		process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
+		if err != nil {
+			result.Error = fmt.Errorf("spawning smith (%s) for batch CI fix: %w", pv.Kind, err)
+			result.Duration = time.Since(start)
+			return result
+		}
+		if p.WorkerID != "" && p.DB != nil {
+			if err := p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath); err != nil {
+				log.Printf("[quench] PR #%d: failed to update worker log path: %v", p.PRNumber, err)
+			}
+		}
+		smithResult = process.Wait()
+		if smithResult.ResultSubtype == "success" && !smithResult.IsError {
+			smithResult.RateLimited = false
+		}
+		if smithResult.Quota != nil && p.DB != nil {
+			if err := p.DB.UpsertProviderQuota(string(pv.Kind), smithResult.Quota); err != nil {
+				log.Printf("[quench] PR #%d: Failed to update provider %s quota: %v", p.PRNumber, pv.Label(), err)
+			}
+		}
+		if pv.Kind == provider.Copilot && !smithResult.RateLimited {
+			if m := cost.CopilotPremiumMultiplier(pv.Model); m > 0 && p.DB != nil {
+				_ = p.DB.AddCopilotRequest(cost.Today(), m)
+			}
+		}
+		if !smithResult.RateLimited {
+			break
+		}
+	}
+
+	if smithResult.RateLimited {
+		result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
+		_ = p.DB.LogEvent(state.EventCIFixFailed,
+			fmt.Sprintf("PR #%d batch fix: all providers rate limited", p.PRNumber),
+			p.BeadID, p.AnvilName)
+		result.Duration = time.Since(start)
+		return result
+	}
+
+	if smithResult.ExitCode != 0 {
+		result.Error = fmt.Errorf("batch CI fix failed (exit %d)", smithResult.ExitCode)
+		_ = p.DB.LogEvent(state.EventCIFixFailed,
+			fmt.Sprintf("PR #%d: batch Smith exit %d", p.PRNumber, smithResult.ExitCode),
+			p.BeadID, p.AnvilName)
+		result.Duration = time.Since(start)
+		return result
+	}
+
+	log.Printf("[quench] PR #%d: batch CI fix applied for %d checks", p.PRNumber, len(p.FailingChecks))
+	result.Fixed = true
+	_ = p.DB.LogEvent(state.EventCIFixSuccess,
+		fmt.Sprintf("PR #%d: batch fix applied for %d checks", p.PRNumber, len(p.FailingChecks)),
+		p.BeadID, p.AnvilName)
+	result.Duration = time.Since(start)
+	return result
+}
+
+// buildBatchCIPrompt creates a prompt listing all CI failures for Smith to fix in one pass.
+func buildBatchCIPrompt(p BatchFixParams) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, `You are fixing multiple CI failures on PR #%d (branch: %s) for bead %s.
+
+## Failing CI Checks
+
+`, p.PRNumber, p.Branch, p.BeadID)
+
+	for i, check := range p.FailingChecks {
+		fmt.Fprintf(&b, "### %d. %s (status: %s)\n\n", i+1, check.Name, check.Status)
+		if logContent, ok := p.CILogs[check.Name]; ok {
+			fmt.Fprintf(&b, "**CI Log:**\n```\n%s\n```\n\n", truncateOutput(logContent, 3000))
+		}
+	}
+
+	fmt.Fprintf(&b, `## Instructions
+
+1. Analyze ALL the CI failures listed above
+2. Fix the root cause of EACH failure — do NOT just suppress warnings or skip tests
+3. **Run the test suite locally** and verify it passes before committing
+4. Address all %d failing checks in a single commit
+5. Commit fixes with message: "fix: resolve CI failures for %s"
+6. Push to branch: %s
+
+## Working Directory
+
+%s
+`, len(p.FailingChecks), p.BeadID, p.Branch, p.WorktreePath)
+
+	return b.String()
+}
+
 // Fix attempts to resolve CI failures on a PR branch.
 func Fix(ctx context.Context, p FixParams) *FixResult {
 	start := time.Now()

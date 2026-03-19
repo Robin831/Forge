@@ -122,3 +122,69 @@ func TestBuildReviewFixPrompt_NoAuthorOrPath(t *testing.T) {
 		t.Error("prompt should include body even when author and path are empty")
 	}
 }
+
+func TestBuildBatchReviewPrompt(t *testing.T) {
+	comments := []vcs.ReviewComment{
+		{Author: "copilot", Body: "Fix the nil pointer", Path: "main.go", Line: 10},
+		{Author: "alice", Body: "Rename this variable", Path: "util.go", Line: 25},
+		{Author: "bob", Body: "Add error handling here"},
+	}
+
+	prompt := buildBatchReviewPrompt(42, "forge/Forge-xyz", "Forge-xyz", "/tmp/worktree", comments)
+
+	if !strings.Contains(prompt, "PR #42") {
+		t.Error("prompt should contain PR number")
+	}
+	if !strings.Contains(prompt, "forge/Forge-xyz") {
+		t.Error("prompt should contain branch name")
+	}
+	if !strings.Contains(prompt, "Forge-xyz") {
+		t.Error("prompt should contain bead ID")
+	}
+
+	// All comment bodies should be present.
+	for _, body := range []string{"Fix the nil pointer", "Rename this variable", "Add error handling here"} {
+		if !strings.Contains(prompt, body) {
+			t.Errorf("prompt should contain comment body %q", body)
+		}
+	}
+
+	// File paths should be present.
+	if !strings.Contains(prompt, "main.go") {
+		t.Error("prompt should contain file path")
+	}
+	if !strings.Contains(prompt, "util.go") {
+		t.Error("prompt should contain file path")
+	}
+
+	// Authors should be present.
+	if !strings.Contains(prompt, "@copilot") {
+		t.Error("prompt should contain author")
+	}
+	if !strings.Contains(prompt, "@alice") {
+		t.Error("prompt should contain author")
+	}
+
+	// Numbered format.
+	if !strings.Contains(prompt, "1.") {
+		t.Error("prompt should number comments")
+	}
+	if !strings.Contains(prompt, "3.") {
+		t.Error("prompt should number all comments")
+	}
+
+	// Instructions should mention total count.
+	if !strings.Contains(prompt, "3 review comments") {
+		t.Error("prompt should mention total number of comments in instructions")
+	}
+}
+
+func TestBuildBatchReviewPrompt_NoAuthorOrPath(t *testing.T) {
+	comments := []vcs.ReviewComment{
+		{Body: "fix something"},
+	}
+	prompt := buildBatchReviewPrompt(1, "main", "Forge-abc", "/tmp/wt", comments)
+	if !strings.Contains(prompt, "fix something") {
+		t.Error("prompt should include body even when author and path are empty")
+	}
+}
