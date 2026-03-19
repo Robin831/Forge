@@ -1060,6 +1060,9 @@ func FetchIngotCounts(db *state.DB) tea.Cmd {
 			counts[ingot.Status(status)] = count
 			total += count
 		}
+		if err := rows.Err(); err != nil {
+			return UpdateIngotCountsMsg{}
+		}
 
 		return UpdateIngotCountsMsg{Counts: counts, Total: total}
 	}
