@@ -1791,6 +1791,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			SchematicModelOverride:    d.cfg.Load().Settings.SchematicModelOverride,
 
 			CopilotSkipWardenSmallDiffs: d.cfg.Load().Settings.CopilotSkipWardenSmallDiffs,
+			WardenFullRereview:          d.cfg.Load().Settings.WardenFullRereview,
 
 			StatusCallback: func(s crucible.Status) {
 				d.crucibleStatuses.Store(bead.Anvil+"/"+bead.ID, s)
@@ -1896,6 +1897,7 @@ normalPipeline:
 		WardenModelOverride:         d.cfg.Load().Settings.WardenModelOverride,
 		SchematicModelOverride:      d.cfg.Load().Settings.SchematicModelOverride,
 		CopilotSkipWardenSmallDiffs: d.cfg.Load().Settings.CopilotSkipWardenSmallDiffs,
+		WardenFullRereview:          d.cfg.Load().Settings.WardenFullRereview,
 	}
 
 	// If this bead has had previous dispatch failures, reset the worktree
@@ -4252,7 +4254,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		baseBranch = beads[0].EpicBranch
 	}
 
-	result, err := warden.Review(ctx, wt.Path, beadID, title, description, anvilCfg.Path, d.db, providers...)
+	result, err := warden.Review(ctx, wt.Path, beadID, title, description, anvilCfg.Path, d.db, "", providers...)
 	if err != nil {
 		d.logger.Error("warden_rerun: review failed", "bead", beadID, "error", err)
 		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
@@ -4553,6 +4555,7 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 		WardenModelOverride:         d.cfg.Load().Settings.WardenModelOverride,
 		SchematicModelOverride:      d.cfg.Load().Settings.SchematicModelOverride,
 		CopilotSkipWardenSmallDiffs: d.cfg.Load().Settings.CopilotSkipWardenSmallDiffs,
+		WardenFullRereview:          d.cfg.Load().Settings.WardenFullRereview,
 	})
 
 	if outcome.Error != nil {

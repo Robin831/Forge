@@ -78,7 +78,7 @@ type ReviewIssue struct {
 // db is used to log lifecycle events; db may be nil to skip logging.
 // providers is the ordered list of AI providers to try. When empty,
 // provider.Defaults() is used. Provider fallback applies on rate limit.
-func Review(ctx context.Context, worktreePath, beadID, beadTitle, beadDescription, anvilPath string, db *state.DB, providers ...provider.Provider) (*ReviewResult, error) {
+func Review(ctx context.Context, worktreePath, beadID, beadTitle, beadDescription, anvilPath string, db *state.DB, priorFeedback string, providers ...provider.Provider) (*ReviewResult, error) {
 	start := time.Now()
 	anvilName := filepath.Base(anvilPath)
 
@@ -113,7 +113,7 @@ func Review(ctx context.Context, worktreePath, beadID, beadTitle, beadDescriptio
 	}
 
 	// Build the review prompt
-	prompt := buildReviewPrompt(beadID, beadTitle, beadDescription, diff, anvilPath)
+	prompt := buildReviewPrompt(beadID, beadTitle, beadDescription, diff, anvilPath, priorFeedback)
 
 	// Spawn a Claude review session. The diff is embedded in the prompt so
 	// Claude doesn't need to read files. Previously --tools "" was passed to
@@ -233,7 +233,9 @@ func getDiff(ctx context.Context, worktreePath string) (string, error) {
 }
 
 // buildReviewPrompt creates the Warden's review prompt.
-func buildReviewPrompt(beadID, beadTitle, beadDescription, diff, anvilPath string) string {
+// When priorFeedback is non-empty, the prompt switches to a focused re-review
+// mode that only checks whether previously raised issues were addressed.
+func buildReviewPrompt(beadID, beadTitle, beadDescription, diff, anvilPath, priorFeedback string) string {
 	// Read AGENTS.md for context on coding standards
 	agentsMD := ""
 	if data, err := os.ReadFile(filepath.Join(anvilPath, "AGENTS.md")); err == nil {
@@ -271,6 +273,57 @@ func buildReviewPrompt(beadID, beadTitle, beadDescription, diff, anvilPath strin
 		)
 	}
 
+	jsonInstructions := "Use the following JSON format, replacing each field with your actual verdict, summary, and issues:\n\n```json\n{\"verdict\": \"approve\", \"summary\": \"\", \"issues\": []}\n```\n\nSet `verdict` to one of: `approve`, `reject`, `request_changes`."
+	diffBlock := "```diff\n" + truncateDiff(diff, 50000) + "\n```"
+	agentsSection := conditionalSection("## Repository Guidelines (AGENTS.md)", agentsMD)
+
+	// Focused re-review mode: only check previously raised issues.
+	if priorFeedback != "" {
+		return fmt.Sprintf(`You are re-reviewing a diff (the "Warden") after the author addressed your previous feedback.
+
+## REQUIRED: Output Your Verdict JSON Block First
+
+Before writing anything else, output a JSON block as the VERY FIRST content in your response:
+
+%s
+
+Fields:
+- verdict: one of "approve", "reject", or "request_changes" (required)
+- summary: a one-line summary of your re-review finding
+- issues: array of issues that are STILL_PRESENT; use [] when all prior issues are resolved
+
+## Bead Being Reviewed
+
+%s
+
+## Your Previous Feedback
+
+%s
+
+## Your Task
+
+You are re-reviewing bead %s after the author attempted to fix your previous feedback.
+
+1. Check ONLY whether each previously raised issue has been adequately addressed
+2. For each prior issue, determine: RESOLVED or STILL_PRESENT (with explanation)
+3. If the fix introduced an obvious regression or new bug, flag it — but do NOT raise new style nits, suggestions, or unrelated concerns
+4. If all previous issues are resolved and no regressions were introduced, approve
+
+## Git Diff
+
+%s
+
+%s`,
+			jsonInstructions,
+			beadContext,
+			priorFeedback,
+			beadID,
+			diffBlock,
+			agentsSection,
+		)
+	}
+
+	// Full review mode (first iteration or when warden_full_rereview is enabled).
 	return fmt.Sprintf(`You are a code reviewer (the "Warden") for an AI-generated pull request.
 
 ## REQUIRED: Output Your Verdict JSON Block First
@@ -313,12 +366,12 @@ After outputting the JSON verdict above, review the following git diff:
 
 %s
 %s`,
-		"Use the following JSON format, replacing each field with your actual verdict, summary, and issues:\n\n```json\n{\"verdict\": \"approve\", \"summary\": \"\", \"issues\": []}\n```\n\nSet `verdict` to one of: `approve`, `reject`, `request_changes`.",
+		jsonInstructions,
 		beadContext,
 		beadID,
 		rulesSection,
-		"```diff\n"+truncateDiff(diff, 50000)+"\n```",
-		conditionalSection("## Repository Guidelines (AGENTS.md)", agentsMD),
+		diffBlock,
+		agentsSection,
 		"Be thorough but practical. Focus on issues that would cause bugs or maintenance problems.",
 	)
 }

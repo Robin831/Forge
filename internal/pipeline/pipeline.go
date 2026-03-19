@@ -273,7 +273,7 @@ type Params struct {
 	// TemperRunner overrides temper.Run. Used in tests.
 	TemperRunner func(ctx context.Context, wtPath string, cfg temper.Config, db *state.DB, beadID, anvilName string) *temper.Result
 	// WardenReviewer overrides warden.Review. Used in tests.
-	WardenReviewer func(ctx context.Context, wtPath, beadID, beadTitle, beadDescription, anvilPath string, db *state.DB, providers ...provider.Provider) (*warden.ReviewResult, error)
+	WardenReviewer func(ctx context.Context, wtPath, beadID, beadTitle, beadDescription, anvilPath string, db *state.DB, priorFeedback string, providers ...provider.Provider) (*warden.ReviewResult, error)
 	// BeadReleaser overrides the default exec-based bd-update call for releasing
 	// a bead back to open. Used in tests.
 	BeadReleaser func(beadID, anvilPath string) error
@@ -308,6 +308,11 @@ type Params struct {
 	// small, low-risk diffs without running Warden when the primary provider is
 	// Copilot. This saves one premium request for trivial changes.
 	CopilotSkipWardenSmallDiffs bool
+
+	// WardenFullRereview, when true, forces the Warden to do a full independent
+	// review on every iteration instead of a focused re-review that only checks
+	// whether prior feedback was addressed. Default: false (focused re-review).
+	WardenFullRereview bool
 
 	// SkipSmith, when true, skips the Schematic pre-worker and the initial
 	// Smith run on the first iteration. The pipeline creates a worktree on
@@ -791,6 +796,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 		currentPrompt = promptText
 	}
 
+	// Track prior warden feedback for focused re-review.
+	var priorWardenFeedback string
+
 	// Feedback loop
 	for iteration := 1; iteration <= maxIter; iteration++ {
 		outcome.Iterations = iteration
@@ -1085,8 +1093,14 @@ func Run(ctx context.Context, p Params) *Outcome {
 				logIngotErr(workerID, "warden", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusWarden))
 			}
 
+			// On re-review iterations, pass prior feedback unless full re-review is configured.
+			wardenFeedbackArg := priorWardenFeedback
+			if p.WardenFullRereview {
+				wardenFeedbackArg = ""
+			}
+
 			var err error
-			reviewResult, err = reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.Description, p.AnvilConfig.Path, p.DB, p.wardenProviders(providers)...)
+			reviewResult, err = reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.Description, p.AnvilConfig.Path, p.DB, wardenFeedbackArg, p.wardenProviders(providers)...)
 			if err != nil {
 				log.Printf("[pipeline:%s] Warden error: %v", workerID, err)
 				// Warden failure is not fatal — default to approve and let human review
@@ -1173,6 +1187,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 				fmt.Sprintf("Request changes (iteration %d/%d): %s", iteration, maxIter, wardenEventSummary(reviewResult)),
 				p.Bead.ID, p.AnvilName)
 
+			// Capture warden feedback for focused re-review on next iteration.
+			priorWardenFeedback = formatWardenFeedback(reviewResult.Summary, reviewResult.Issues)
+
 			if iteration < maxIter {
 				// Capture the diff from this iteration so the next smith
 				// session can see what was already implemented.
@@ -1181,7 +1198,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 				// Rebuild prompt with warden feedback for next iteration
 				beadCtx.Iteration = iteration + 1
 				beadCtx.PriorFeedbackSource = "Warden code review"
-				beadCtx.PriorFeedback = formatWardenFeedback(reviewResult.Summary, reviewResult.Issues)
+				beadCtx.PriorFeedback = priorWardenFeedback
 				if rebuilt, err := p.PromptBuilder.Build(beadCtx); err == nil {
 					currentPrompt = rebuilt
 				} else {

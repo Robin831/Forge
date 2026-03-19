@@ -69,6 +69,7 @@ settings:
   copilot_skip_warden_small_diffs: false     # opt-in: skip Warden for small Copilot diffs
   copilot_batch_ci_fixes: false              # opt-in: batch CI failures into one fix request
   copilot_batch_review_fixes: false          # opt-in: batch review comments into one fix request
+  warden_full_rereview: false                # false = focused re-review; true = full review every iteration
   rate_limit_backoff: 5m
   schematic_enabled: true
   schematic_word_threshold: 150
@@ -155,6 +156,7 @@ Omitting `platform` or setting it to an empty string defaults to `github`. Exist
 | `copilot_skip_warden_small_diffs` | bool | `false` | | When true, auto-approves small low-risk diffs (≤100 lines, docs/tests/config or ≤2 files, no security-sensitive paths, P3+) without running Warden when the primary provider is Copilot. Saves one premium request per skipped review. |
 | `copilot_batch_ci_fixes` | bool | `false` | | When true and the primary provider is Copilot, batches all CI failures into a single Smith invocation instead of the default per-attempt loop. Saves premium requests when a PR has multiple failing checks. |
 | `copilot_batch_review_fixes` | bool | `false` | | When true and the primary provider is Copilot, batches all review comments into a single Smith invocation instead of the default per-attempt loop. Saves premium requests when a PR has multiple review comments. |
+| `warden_full_rereview` | bool | `false` | | When true, the Warden performs a full independent review on every iteration. When false (default), re-review iterations only check whether previously raised issues were addressed, preventing the whack-a-mole pattern. |
 | `rate_limit_backoff` | duration | `5m` | | How long to wait before retrying when all providers are rate-limited. |
 | `schematic_enabled` | bool | `false` | | Enable Schematic pre-worker globally for complex beads. |
 | `schematic_word_threshold` | int | `100` | | Minimum word count in bead description to trigger Schematic analysis. |

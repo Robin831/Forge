@@ -188,6 +188,10 @@ type SettingsConfig struct {
 	// single Smith invocation when the provider is Copilot. Saves premium
 	// requests when a PR has multiple review comments. Default: false (opt-in).
 	CopilotBatchReviewFixes bool `mapstructure:"copilot_batch_review_fixes" yaml:"copilot_batch_review_fixes"`
+	// WardenFullRereview, when true, forces the Warden to do a full independent
+	// review on every iteration instead of a focused re-review that only checks
+	// whether prior feedback was addressed. Default: false (focused re-review).
+	WardenFullRereview bool `mapstructure:"warden_full_rereview" yaml:"warden_full_rereview"`
 }
 
 // durationString returns the duration string, or omits zero values.
@@ -234,6 +238,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		CopilotSkipWardenSmallDiffs bool `yaml:"copilot_skip_warden_small_diffs"`
 		CopilotBatchCIFixes         bool `yaml:"copilot_batch_ci_fixes"`
 		CopilotBatchReviewFixes     bool `yaml:"copilot_batch_review_fixes"`
+		WardenFullRereview          bool `yaml:"warden_full_rereview"`
 	}
 
 	sh := shadow{
@@ -267,6 +272,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		CopilotSkipWardenSmallDiffs: s.CopilotSkipWardenSmallDiffs,
 		CopilotBatchCIFixes:         s.CopilotBatchCIFixes,
 		CopilotBatchReviewFixes:     s.CopilotBatchReviewFixes,
+		WardenFullRereview:          s.WardenFullRereview,
 	}
 
 	// Only include non-zero optional durations.
