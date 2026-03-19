@@ -132,6 +132,39 @@ func GetIngot(db *sql.DB, beadID, anvil string) (*Ingot, error) {
 	return ingot, nil
 }
 
+// GetIngotByBeadID fetches all ingots matching beadID across any anvil,
+// ordered deterministically by anvil name. Returns (nil, nil) when not found.
+// When multiple rows are returned the caller should ask the user to supply
+// --anvil to disambiguate.
+func GetIngotByBeadID(db *sql.DB, beadID string) ([]Ingot, error) {
+	rows, err := db.Query(`
+		SELECT id, bead_id, anvil, pr_id, worker_id, status,
+		       temper_passed, temper_failed_step, temper_duration_ms,
+		       pr_number, pr_url, title, branch, created_at, updated_at
+		FROM ingots
+		WHERE bead_id = ?
+		ORDER BY anvil`,
+		beadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying ingots by bead_id: %w", err)
+	}
+	defer rows.Close()
+
+	var ingots []Ingot
+	for rows.Next() {
+		ig, err := scanIngot(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning ingot: %w", err)
+		}
+		ingots = append(ingots, *ig)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating ingots: %w", err)
+	}
+	return ingots, nil
+}
+
 // GetIngotsByStatus returns ingots filtered by status, limited to limit rows.
 func GetIngotsByStatus(db *sql.DB, status Status, limit int) ([]Ingot, error) {
 	rows, err := db.Query(`
@@ -146,6 +179,53 @@ func GetIngotsByStatus(db *sql.DB, status Status, limit int) ([]Ingot, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying ingots by status: %w", err)
+	}
+	defer rows.Close()
+
+	var ingots []Ingot
+	for rows.Next() {
+		ingot, err := scanIngot(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning ingot: %w", err)
+		}
+		ingots = append(ingots, *ingot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating ingots: %w", err)
+	}
+	return ingots, nil
+}
+
+// GetIngots returns ingots with optional filtering by anvil and/or status,
+// ordered by updated_at descending, limited to limit rows.
+func GetIngots(db *sql.DB, anvil string, status string, limit int) ([]Ingot, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	query := `
+		SELECT id, bead_id, anvil, pr_id, worker_id, status,
+		       temper_passed, temper_failed_step, temper_duration_ms,
+		       pr_number, pr_url, title, branch, created_at, updated_at
+		FROM ingots
+		WHERE 1=1`
+	var args []any
+
+	if anvil != "" {
+		query += ` AND anvil = ?`
+		args = append(args, anvil)
+	}
+	if status != "" {
+		query += ` AND status = ?`
+		args = append(args, status)
+	}
+
+	query += ` ORDER BY updated_at DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying ingots: %w", err)
 	}
 	defer rows.Close()
 

@@ -24,36 +24,36 @@ const (
 // Ingot bundles a bead, PR, worker lifecycle, and test results into a
 // single queryable record.
 type Ingot struct {
-	ID               int
-	BeadID           string
-	Anvil            string
-	PRID             *int       // FK to prs.id, NULL until PR created
-	WorkerID         string
-	Status           Status
-	TemperPassed     bool
-	TemperFailedStep string
-	TemperDurationMs int
-	PRNumber         *int // GitHub PR number
-	PRURL            string
-	Title            string
-	Branch           string
-	TestResults      []TestResult // eager-loaded
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID               int          `json:"id"`
+	BeadID           string       `json:"bead_id"`
+	Anvil            string       `json:"anvil"`
+	PRID             *int         `json:"pr_id,omitempty"`       // FK to prs.id, NULL until PR created
+	WorkerID         string       `json:"worker_id"`
+	Status           Status       `json:"status"`
+	TemperPassed     bool         `json:"temper_passed"`
+	TemperFailedStep string       `json:"temper_failed_step,omitempty"`
+	TemperDurationMs int          `json:"temper_duration_ms"`
+	PRNumber         *int         `json:"pr_number,omitempty"` // GitHub PR number
+	PRURL            string       `json:"pr_url,omitempty"`
+	Title            string       `json:"title"`
+	Branch           string       `json:"branch"`
+	TestResults      []TestResult `json:"test_results,omitempty"` // eager-loaded
+	CreatedAt        time.Time    `json:"created_at"`
+	UpdatedAt        time.Time    `json:"updated_at"`
 }
 
 // TestResult stores the outcome of a single temper step for an ingot.
 type TestResult struct {
-	ID             int
-	IngotID        int
-	StepIndex      int
-	StepName       string
-	Command        string
-	ExitCode       int
-	DurationMs     int
-	Passed         bool
-	Optional       bool
-	OutputSummary  string // first ~1000 chars or key errors
-	FullOutputPath string
-	RecordedAt     time.Time
+	ID             int       `json:"id"`
+	IngotID        int       `json:"ingot_id"`
+	StepIndex      int       `json:"step_index"`
+	StepName       string    `json:"step_name"`
+	Command        string    `json:"command"`
+	ExitCode       int       `json:"exit_code"`
+	DurationMs     int       `json:"duration_ms"`
+	Passed         bool      `json:"passed"`
+	Optional       bool      `json:"optional"`
+	OutputSummary  string    `json:"output_summary,omitempty"`  // first ~1000 chars or key errors
+	FullOutputPath string    `json:"full_output_path,omitempty"`
+	RecordedAt     time.Time `json:"recorded_at"`
 }
