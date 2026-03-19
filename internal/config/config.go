@@ -192,6 +192,17 @@ type SettingsConfig struct {
 	// review on every iteration instead of a focused re-review that only checks
 	// whether prior feedback was addressed. Default: false (focused re-review).
 	WardenFullRereview bool `mapstructure:"warden_full_rereview" yaml:"warden_full_rereview"`
+	// CopilotCombinedSmithWarden embeds Warden review criteria into the Smith
+	// prompt so Smith self-reviews its own diff, eliminating the separate
+	// Warden request. A real Warden still runs for P0-P1 beads, when the
+	// self-review flags concerns, or via random sampling. Only effective when
+	// the primary provider is Copilot. Default: false (opt-in, high risk).
+	CopilotCombinedSmithWarden bool `mapstructure:"copilot_combined_smith_warden" yaml:"copilot_combined_smith_warden"`
+	// CopilotWardenSampleRate is the probability (0.0–1.0) that a real Warden
+	// review is spawned even when the self-review approves, for quality
+	// validation. Only used when CopilotCombinedSmithWarden is true.
+	// Default: 0.1 (10%).
+	CopilotWardenSampleRate float64 `mapstructure:"copilot_warden_sample_rate" yaml:"copilot_warden_sample_rate"`
 }
 
 // durationString returns the duration string, or omits zero values.
@@ -235,10 +246,12 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WardenModelOverride       string   `yaml:"warden_model_override,omitempty"`
 		SchematicModelOverride    string   `yaml:"schematic_model_override,omitempty"`
 
-		CopilotSkipWardenSmallDiffs bool `yaml:"copilot_skip_warden_small_diffs"`
-		CopilotBatchCIFixes         bool `yaml:"copilot_batch_ci_fixes"`
-		CopilotBatchReviewFixes     bool `yaml:"copilot_batch_review_fixes"`
-		WardenFullRereview          bool `yaml:"warden_full_rereview"`
+		CopilotSkipWardenSmallDiffs bool    `yaml:"copilot_skip_warden_small_diffs"`
+		CopilotBatchCIFixes         bool    `yaml:"copilot_batch_ci_fixes"`
+		CopilotBatchReviewFixes     bool    `yaml:"copilot_batch_review_fixes"`
+		WardenFullRereview          bool    `yaml:"warden_full_rereview"`
+		CopilotCombinedSmithWarden  bool    `yaml:"copilot_combined_smith_warden"`
+		CopilotWardenSampleRate     float64 `yaml:"copilot_warden_sample_rate,omitempty"`
 	}
 
 	sh := shadow{
@@ -273,6 +286,8 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		CopilotBatchCIFixes:         s.CopilotBatchCIFixes,
 		CopilotBatchReviewFixes:     s.CopilotBatchReviewFixes,
 		WardenFullRereview:          s.WardenFullRereview,
+		CopilotCombinedSmithWarden:  s.CopilotCombinedSmithWarden,
+		CopilotWardenSampleRate:     s.CopilotWardenSampleRate,
 	}
 
 	// Only include non-zero optional durations.
@@ -390,8 +405,9 @@ func Defaults() Config {
 			StaleInterval:        5 * time.Minute,
 			DepcheckInterval:     168 * time.Hour, // weekly
 			DepcheckTimeout:      5 * time.Minute,
-			VulncheckInterval:    24 * time.Hour,
-			VulncheckTimeout:     10 * time.Minute,
+			VulncheckInterval:       24 * time.Hour,
+			VulncheckTimeout:        10 * time.Minute,
+			CopilotWardenSampleRate: 0.1,
 		},
 	}
 }
@@ -420,6 +436,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.vulncheck_interval", "24h")
 	v.SetDefault("settings.vulncheck_timeout", "10m")
 	v.SetDefault("settings.vulncheck_enabled", true)
+	v.SetDefault("settings.copilot_warden_sample_rate", 0.1)
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	// SetEnvKeyReplacer maps dotted config keys (settings.auto_learn_rules) to
