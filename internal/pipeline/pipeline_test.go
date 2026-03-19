@@ -1517,7 +1517,8 @@ func TestCombinedMode_SelfReviewApprove_SkipsRealWarden(t *testing.T) {
 
 	// Smith outputs a passing self-review.
 	params.SmithRunner = immediateSmith(&smith.Result{
-		ExitCode: 0,
+		ExitCode:     0,
+		ProviderUsed: provider.Copilot,
 		FullOutput: "Implemented the change.\n\n```json\n{\"self_review\": {\"verdict\": \"approve\", \"concerns\": []}}\n```\n",
 	})
 
@@ -1546,7 +1547,8 @@ func TestCombinedMode_SelfReviewRequestChanges_RunsRealWarden(t *testing.T) {
 	params.Bead.Priority = 3
 
 	params.SmithRunner = immediateSmith(&smith.Result{
-		ExitCode: 0,
+		ExitCode:     0,
+		ProviderUsed: provider.Copilot,
 		FullOutput: "Implemented but found issues.\n\n```json\n{\"self_review\": {\"verdict\": \"request_changes\", \"concerns\": [\"missing error handling\"]}}\n```\n",
 	})
 
@@ -1577,7 +1579,8 @@ func TestCombinedMode_HighPriority_AlwaysRunsRealWarden(t *testing.T) {
 			params.Bead.Priority = prio
 
 			params.SmithRunner = immediateSmith(&smith.Result{
-				ExitCode: 0,
+				ExitCode:     0,
+				ProviderUsed: provider.Copilot,
 				FullOutput: "Done.\n\n```json\n{\"self_review\": {\"verdict\": \"approve\", \"concerns\": []}}\n```\n",
 			})
 
@@ -1678,4 +1681,37 @@ func TestCombinedMode_Disabled_RunsNormalWarden(t *testing.T) {
 
 	assert.True(t, outcome.Success)
 	assert.True(t, wardenCalled, "real Warden must run when combined mode is disabled")
+}
+
+
+
+// TestCombinedMode_FallbackProvider_RunsNormalWarden verifies that when Smith
+// starts with Copilot (combinedMode=true) but actually ran under a different
+// provider due to rate-limiting fallback, a real Warden is forced.
+func TestCombinedMode_FallbackProvider_RunsNormalWarden(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	params.Providers = []provider.Provider{{Kind: provider.Copilot}}
+	params.CopilotCombinedSmithWarden = true
+	params.CopilotWardenSampleRate = 0.0 // would skip Warden if Copilot ran
+	params.Bead.Priority = 3
+
+	// Smith fell back to Claude (e.g. due to Copilot rate limit).
+	params.SmithRunner = immediateSmith(&smith.Result{
+		ExitCode:     0,
+				FullOutput:   "Done.\n\n```json\n{\"self_review\": {\"verdict\": \"approve\", \"concerns\": []}}\n```\n",
+		ProviderUsed: provider.Claude,
+	})
+
+	wardenCalled := false
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		wardenCalled = true
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove}, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.True(t, outcome.Success)
+	assert.True(t, wardenCalled, "real Warden must run when Smith fell back to a non-Copilot provider")
 }
