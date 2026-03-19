@@ -567,10 +567,10 @@ func TestCheckPR_PRClosedUpdatesIngotStatus(t *testing.T) {
 	assert.Equal(t, ingot.StatusFailed, got.Status)
 }
 
-// TestCheckPR_IngotUpdateErrorDoesNotDisrupt verifies that a failing ingot
-// update (e.g., no matching ingot row) does not prevent bellows from
-// completing its normal PR lifecycle handling.
-func TestCheckPR_IngotUpdateErrorDoesNotDisrupt(t *testing.T) {
+// TestCheckPR_MissingIngotIsNoOp verifies that when no ingot row exists for a
+// PR, UpdateIngotStatus silently does nothing (returns nil, 0 rows updated)
+// and bellows still completes its normal PR lifecycle handling.
+func TestCheckPR_MissingIngotIsNoOp(t *testing.T) {
 	db, cleanup := openTempDB(t)
 	defer cleanup()
 
