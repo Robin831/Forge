@@ -9,24 +9,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Step represents a single action in a quest sequence.
-type Step struct {
-	Action   string        `yaml:"action"`
-	URL      string        `yaml:"url,omitempty"`
-	Selector string        `yaml:"selector,omitempty"`
-	Value    string        `yaml:"value,omitempty"`
-	Contains string        `yaml:"contains,omitempty"`
-	Timeout  time.Duration `yaml:"timeout,omitempty"`
-}
-
-// Quest represents a named sequence of browser automation steps.
+// Quest represents an E2E test scenario defined in YAML.
 type Quest struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
 	URL         string   `yaml:"url"`
 	Tags        []string `yaml:"tags"`
 	Steps       []Step   `yaml:"steps"`
-	FilePath    string   `yaml:"-"`
+	FilePath    string   `yaml:"-"` // populated at discovery time
+}
+
+// Step represents a single action in a quest sequence.
+type Step struct {
+	Action   string        `yaml:"action"`   // navigate, fill, click, wait, assert, screenshot
+	URL      string        `yaml:"url,omitempty"`
+	Selector string        `yaml:"selector,omitempty"`
+	Value    string        `yaml:"value,omitempty"`
+	Contains string        `yaml:"contains,omitempty"`
+	Timeout  time.Duration `yaml:"timeout,omitempty"`
 }
 
 // ParseQuest reads a YAML file at path and returns the parsed Quest.
