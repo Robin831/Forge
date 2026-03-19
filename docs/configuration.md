@@ -56,11 +56,16 @@ settings:
     - --max-turns
     - "50"
   providers:
+    - copilot/claude-sonnet-4-6  # warden/schematic overrides only apply to copilot entries
     - claude
     - gemini/gemini-2.5-pro
     - gemini/gemini-2.5-flash
   smith_providers:
     - claude/claude-opus-4-6
+  # Note: warden_model_override and schematic_model_override only affect Copilot
+  # provider entries. They have no effect when no Copilot provider is configured.
+  warden_model_override: claude-haiku-4-5    # 0.33x premium for review
+  schematic_model_override: claude-haiku-4-5 # 0.33x premium for analysis
   rate_limit_backoff: 5m
   schematic_enabled: true
   schematic_word_threshold: 150
@@ -142,6 +147,8 @@ Omitting `platform` or setting it to an empty string defaults to `github`. Exist
 | `claude_flags` | []string | `[]` | | Additional flags passed to the Claude CLI (or translated for other providers). |
 | `providers` | []string | `["claude", "gemini"]` | | Ordered provider fallback chain. See [Providers](providers.md). |
 | `smith_providers` | []string | `[]` (uses `providers`) | | Provider chain for Smith/Warden/Schematic only. Lets dispatch use a more capable model while lifecycle workers (cifix, reviewfix) use `providers`. Same syntax as `providers`. |
+| `warden_model_override` | string | `""` | | When set, overrides the model used by Copilot provider entries for the Warden review stage only. Non-Copilot providers are unaffected. E.g. `claude-haiku-4-5` (0.33× premium) reduces review cost compared to `claude-sonnet-4-6` (1×). |
+| `schematic_model_override` | string | `""` | | When set, overrides the model used by Copilot provider entries for the Schematic pre-analysis stage only. Non-Copilot providers are unaffected. |
 | `rate_limit_backoff` | duration | `5m` | | How long to wait before retrying when all providers are rate-limited. |
 | `schematic_enabled` | bool | `false` | | Enable Schematic pre-worker globally for complex beads. |
 | `schematic_word_threshold` | int | `100` | | Minimum word count in bead description to trigger Schematic analysis. |

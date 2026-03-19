@@ -1332,3 +1332,92 @@ func TestShouldRunSchematic(t *testing.T) {
 		})
 	}
 }
+
+// TestWardenProviders_OverrideCopilotModel verifies that wardenProviders
+// replaces the model on Copilot entries when WardenModelOverride is set.
+func TestWardenProviders_OverrideCopilotModel(t *testing.T) {
+	p := &Params{WardenModelOverride: "claude-haiku-4-5"}
+	providers := []provider.Provider{
+		{Kind: provider.Copilot, Model: "claude-sonnet-4-6"},
+		{Kind: provider.Claude, Model: "claude-opus-4-6"},
+	}
+	got := p.wardenProviders(providers)
+	assert.Equal(t, "claude-haiku-4-5", got[0].Model, "Copilot model should be overridden")
+	assert.Equal(t, "claude-opus-4-6", got[1].Model, "non-Copilot model should be unchanged")
+}
+
+// TestWardenProviders_EmptyOverride verifies that wardenProviders returns the
+// original slice (no clone) when WardenModelOverride is empty.
+func TestWardenProviders_EmptyOverride(t *testing.T) {
+	p := &Params{WardenModelOverride: ""}
+	providers := []provider.Provider{
+		{Kind: provider.Copilot, Model: "claude-sonnet-4-6"},
+	}
+	got := p.wardenProviders(providers)
+	// Assert aliasing: mutating got must be visible through providers.
+	got[0].Model = "mutated"
+	assert.Equal(t, "mutated", providers[0].Model, "wardenProviders must return the original slice when override is empty")
+}
+
+// TestWardenProviders_NonCopilotUnmodified verifies that non-Copilot providers
+// are not modified even when WardenModelOverride is set.
+func TestWardenProviders_NonCopilotUnmodified(t *testing.T) {
+	p := &Params{WardenModelOverride: "claude-haiku-4-5"}
+	providers := []provider.Provider{
+		{Kind: provider.Claude, Model: "claude-opus-4-6"},
+		{Kind: provider.Gemini, Model: "gemini-2.5-pro"},
+	}
+	got := p.wardenProviders(providers)
+	assert.Equal(t, "claude-opus-4-6", got[0].Model)
+	assert.Equal(t, "gemini-2.5-pro", got[1].Model)
+}
+
+// TestSchematicProviders_OverrideCopilotModel verifies that schematicProviders
+// replaces the model on Copilot entries when SchematicModelOverride is set.
+func TestSchematicProviders_OverrideCopilotModel(t *testing.T) {
+	p := &Params{SchematicModelOverride: "claude-haiku-4-5"}
+	providers := []provider.Provider{
+		{Kind: provider.Copilot, Model: "claude-sonnet-4-6"},
+		{Kind: provider.Claude, Model: "claude-opus-4-6"},
+	}
+	got := p.schematicProviders(providers)
+	assert.Equal(t, "claude-haiku-4-5", got[0].Model, "Copilot model should be overridden")
+	assert.Equal(t, "claude-opus-4-6", got[1].Model, "non-Copilot model should be unchanged")
+}
+
+// TestSchematicProviders_EmptyOverride verifies that schematicProviders returns
+// the original slice (no clone) when SchematicModelOverride is empty.
+func TestSchematicProviders_EmptyOverride(t *testing.T) {
+	p := &Params{SchematicModelOverride: ""}
+	providers := []provider.Provider{
+		{Kind: provider.Copilot, Model: "claude-sonnet-4-6"},
+	}
+	got := p.schematicProviders(providers)
+	// Assert aliasing: mutating got must be visible through providers.
+	got[0].Model = "mutated"
+	assert.Equal(t, "mutated", providers[0].Model, "schematicProviders must return the original slice when override is empty")
+}
+
+// TestSchematicProviders_NonCopilotUnmodified verifies that non-Copilot
+// providers are not modified even when SchematicModelOverride is set.
+func TestSchematicProviders_NonCopilotUnmodified(t *testing.T) {
+	p := &Params{SchematicModelOverride: "claude-haiku-4-5"}
+	providers := []provider.Provider{
+		{Kind: provider.Claude, Model: "claude-opus-4-6"},
+		{Kind: provider.Gemini, Model: "gemini-2.5-pro"},
+	}
+	got := p.schematicProviders(providers)
+	assert.Equal(t, "claude-opus-4-6", got[0].Model)
+	assert.Equal(t, "gemini-2.5-pro", got[1].Model)
+}
+
+// TestWardenProviders_DoesNotMutateOriginal verifies that wardenProviders
+// clones the slice and does not modify the original providers.
+func TestWardenProviders_DoesNotMutateOriginal(t *testing.T) {
+	p := &Params{WardenModelOverride: "claude-haiku-4-5"}
+	original := []provider.Provider{
+		{Kind: provider.Copilot, Model: "claude-sonnet-4-6"},
+	}
+	_ = p.wardenProviders(original)
+	assert.Equal(t, "claude-sonnet-4-6", original[0].Model, "original slice must not be mutated")
+}

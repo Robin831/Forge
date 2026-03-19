@@ -49,6 +49,12 @@ type Params struct {
 	SmithTimeout          time.Duration
 	MaxPipelineIterations int
 
+	// WardenModelOverride and SchematicModelOverride mirror the same fields in
+	// pipeline.Params — they are threaded into each child pipeline so that
+	// Crucible pipelines honour the configured model overrides.
+	WardenModelOverride    string
+	SchematicModelOverride string
+
 	// WorkerID is the state DB worker record ID for this crucible run.
 	// When set, the worker's PID and log_path are updated when the schematic
 	// subprocess starts so that hearth can tail logs in real time.
@@ -533,18 +539,20 @@ func (p *Params) runChildPipeline(ctx context.Context, child poller.Bead, baseBr
 	defer cancel()
 
 	params := pipeline.Params{
-		DB:              p.DB,
-		WorktreeManager: p.WorktreeManager,
-		PromptBuilder:   p.PromptBuilder,
-		AnvilName:       p.AnvilName,
-		AnvilConfig:     p.AnvilConfig,
-		Bead:            child,
-		ExtraFlags:      p.ExtraFlags,
-		GoRaceDetection: p.GoRaceDetection,
-		Providers:       p.Providers,
-		BaseBranch:      baseBranch,
-		SchematicConfig: p.SchematicConfig,
-		MaxIterations:   p.MaxPipelineIterations,
+		DB:                     p.DB,
+		WorktreeManager:        p.WorktreeManager,
+		PromptBuilder:          p.PromptBuilder,
+		AnvilName:              p.AnvilName,
+		AnvilConfig:            p.AnvilConfig,
+		Bead:                   child,
+		ExtraFlags:             p.ExtraFlags,
+		GoRaceDetection:        p.GoRaceDetection,
+		Providers:              p.Providers,
+		BaseBranch:             baseBranch,
+		SchematicConfig:        p.SchematicConfig,
+		MaxIterations:          p.MaxPipelineIterations,
+		WardenModelOverride:    p.WardenModelOverride,
+		SchematicModelOverride: p.SchematicModelOverride,
 	}
 
 	if p.PipelineRunner != nil {

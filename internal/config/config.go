@@ -166,6 +166,15 @@ type SettingsConfig struct {
 	// feature branch are automatically merged (squash) after the pipeline
 	// succeeds. Default: true.
 	AutoMergeCrucibleChildren *bool `mapstructure:"auto_merge_crucible_children" yaml:"auto_merge_crucible_children,omitempty"`
+	// WardenModelOverride sets an alternative model for Copilot provider entries
+	// when running the Warden review stage. Non-Copilot providers are unaffected.
+	// Useful for routing review to a cheaper model (e.g. claude-haiku-4-5 at 0.33x
+	// premium) while keeping Smith on a stronger model. Empty = use provider default.
+	WardenModelOverride string `mapstructure:"warden_model_override" yaml:"warden_model_override,omitempty"`
+	// SchematicModelOverride sets an alternative model for Copilot provider entries
+	// when running the Schematic pre-analysis stage. Non-Copilot providers are
+	// unaffected. Empty = use provider default.
+	SchematicModelOverride string `mapstructure:"schematic_model_override" yaml:"schematic_model_override,omitempty"`
 }
 
 // durationString returns the duration string, or omits zero values.
@@ -206,6 +215,8 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		CopilotDailyRequestLimit  int      `yaml:"copilot_daily_request_limit,omitempty"`
 		CrucibleEnabled           bool     `yaml:"crucible_enabled"`
 		AutoMergeCrucibleChildren *bool    `yaml:"auto_merge_crucible_children,omitempty"`
+		WardenModelOverride       string   `yaml:"warden_model_override,omitempty"`
+		SchematicModelOverride    string   `yaml:"schematic_model_override,omitempty"`
 	}
 
 	sh := shadow{
@@ -233,6 +244,8 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		CopilotDailyRequestLimit:  s.CopilotDailyRequestLimit,
 		CrucibleEnabled:           s.CrucibleEnabled,
 		AutoMergeCrucibleChildren: s.AutoMergeCrucibleChildren,
+		WardenModelOverride:       s.WardenModelOverride,
+		SchematicModelOverride:    s.SchematicModelOverride,
 	}
 
 	// Only include non-zero optional durations.
