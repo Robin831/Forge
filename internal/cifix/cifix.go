@@ -139,7 +139,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		pv := providers[pi]
 		if pi > 0 {
 			log.Printf("[quench] PR #%d: Provider %s rate limited, retrying with %s",
-				p.PRNumber, providers[pi-1].Kind, pv.Kind)
+				p.PRNumber, providers[pi-1].Label(), pv.Label())
 		}
 		process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
 		if err != nil {
@@ -241,10 +241,7 @@ func buildBatchCIPrompt(p BatchFixParams) string {
 5. Commit fixes with message: "fix: resolve CI failures for %s"
 6. Push to branch: %s
 
-## Working Directory
-
-%s
-`, len(p.FailingChecks), p.BeadID, p.Branch, p.WorktreePath)
+`, len(p.FailingChecks), p.BeadID, p.Branch)
 
 	return b.String()
 }
@@ -348,7 +345,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			pv := providers[pi]
 			if pi > activeProviderIdx {
 				log.Printf("[quench] PR #%d: Provider %s rate limited, retrying with %s",
-					p.PRNumber, providers[pi-1].Kind, pv.Kind)
+					p.PRNumber, providers[pi-1].Label(), pv.Label())
 			}
 			process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
 			if err != nil {
@@ -516,10 +513,7 @@ func buildCIFixPrompt(p FixParams, tr *temper.Result, prChecksRaw string, failin
 4. Commit fixes with message: "fix: resolve CI failures for %s"
 5. Push to branch: %s
 
-## Working Directory
-
-%s
-`, p.BeadID, p.Branch, p.WorktreePath)
+`, p.BeadID, p.Branch)
 
 	return b.String()
 }
@@ -590,10 +584,7 @@ Look at existing files in changelog.d/ for examples of the expected format.
 4. Commit fixes with message: "fix: resolve CI failures for %s"
 5. Push to branch: %s
 
-## Working Directory
-
-%s
-`, p.BeadID, p.Branch, p.WorktreePath)
+`, p.BeadID, p.Branch)
 
 	return b.String()
 }

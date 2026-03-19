@@ -255,10 +255,7 @@ func buildBatchReviewPrompt(prNumber int, branch, beadID, worktreePath string, c
 4. Commit with message: "fix: address review comments for %s"
 5. Push to branch: %s
 
-## Working Directory
-
-%s
-`, len(comments), beadID, branch, worktreePath)
+`, len(comments), beadID, branch)
 
 	return b.String()
 }
@@ -515,10 +512,7 @@ func buildReviewFixPrompt(p FixParams, comments []vcs.ReviewComment) string {
 4. Commit with message: "fix: address review comments for %s"
 5. Push to branch: %s
 
-## Working Directory
-
-%s
-`, p.BeadID, p.Branch, p.WorktreePath)
+`, p.BeadID, p.Branch)
 
 	return b.String()
 }
