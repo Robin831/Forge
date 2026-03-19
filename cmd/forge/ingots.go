@@ -12,6 +12,30 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// truncateTitle returns title truncated to at most maxRunes runes, appending
+// "..." when truncation occurs. Truncation is rune-safe (multi-byte characters
+// and emoji are not split).
+func truncateTitle(title string, maxRunes int) string {
+	if utf8.RuneCountInString(title) > maxRunes {
+		runes := []rune(title)
+		return string(runes[:maxRunes-3]) + "..."
+	}
+	return title
+}
+
+// temperDisplay returns the display string for the temper column in the
+// ingots list table.
+func temperDisplay(status string, passed bool) string {
+	switch {
+	case status == string(ingot.StatusInit) || status == string(ingot.StatusSmith):
+		return "--"
+	case passed:
+		return "pass"
+	default:
+		return "FAIL"
+	}
+}
+
 func init() {
 	ingotsListCmd.Flags().StringP("anvil", "a", "", "Filter by anvil name")
 	ingotsListCmd.Flags().StringP("status", "s", "", "Filter by status (init, smith, temper, warden, approved, pr_open, pr_merged, failed, stalled)")
@@ -87,20 +111,8 @@ var ingotsListCmd = &cobra.Command{
 			if ig.PRNumber != nil {
 				pr = fmt.Sprintf("#%d", *ig.PRNumber)
 			}
-			temper := "--"
-			switch {
-			case ig.Status == ingot.StatusInit || ig.Status == ingot.StatusSmith:
-				// temper hasn't run yet
-			case ig.TemperPassed:
-				temper = "pass"
-			default:
-				temper = "FAIL"
-			}
-			title := ig.Title
-			if utf8.RuneCountInString(title) > 50 {
-				runes := []rune(title)
-				title = string(runes[:47]) + "..."
-			}
+			temper := temperDisplay(string(ig.Status), ig.TemperPassed)
+			title := truncateTitle(ig.Title, 50)
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 				ig.BeadID, ig.Anvil, string(ig.Status), title, pr, temper)
 		}

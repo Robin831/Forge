@@ -6,15 +6,6 @@ import (
 	"unicode/utf8"
 )
 
-// truncateTitle mirrors the title truncation logic used in ingotsListCmd.
-func truncateTitle(title string, maxRunes int) string {
-	if utf8.RuneCountInString(title) > maxRunes {
-		runes := []rune(title)
-		return string(runes[:maxRunes-3]) + "..."
-	}
-	return title
-}
-
 func TestTruncateTitle_ASCII(t *testing.T) {
 	short := "Short title"
 	if got := truncateTitle(short, 50); got != short {
@@ -102,14 +93,3 @@ func TestTemperDisplay(t *testing.T) {
 	}
 }
 
-// temperDisplay mirrors the temper column logic in ingotsListCmd.
-func temperDisplay(status string, passed bool) string {
-	switch {
-	case status == "init" || status == "smith":
-		return "--"
-	case passed:
-		return "pass"
-	default:
-		return "FAIL"
-	}
-}

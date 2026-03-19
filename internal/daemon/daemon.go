@@ -3460,19 +3460,38 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			respData, _ := json.Marshal(ig)
 			return ipc.Response{Type: "ok", Payload: respData}
 		}
-		// No anvil specified — search across all configured anvils
-		for anvilName := range d.cfg.Load().Anvils {
-			ig, err := ingot.GetIngot(conn, p.BeadID, anvilName)
-			if err != nil {
-				continue
-			}
-			if ig != nil {
-				respData, _ := json.Marshal(ig)
-				return ipc.Response{Type: "ok", Payload: respData}
-			}
+		// No anvil specified — query DB directly across all anvils.
+		matches, err := ingot.GetIngotByBeadID(conn, p.BeadID)
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
 		}
-		msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("ingot %s not found", p.BeadID)})
-		return ipc.Response{Type: "error", Payload: msg}
+		switch len(matches) {
+		case 0:
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("ingot %s not found", p.BeadID)})
+			return ipc.Response{Type: "error", Payload: msg}
+		case 1:
+			// Exactly one match — fetch with test results eager-loaded.
+			ig, err := ingot.GetIngot(conn, p.BeadID, matches[0].Anvil)
+			if err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": err.Error()})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			if ig == nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("ingot %s not found", p.BeadID)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			respData, _ := json.Marshal(ig)
+			return ipc.Response{Type: "ok", Payload: respData}
+		default:
+			// Multiple matches — require --anvil to disambiguate.
+			anvils := make([]string, len(matches))
+			for i, m := range matches {
+				anvils[i] = m.Anvil
+			}
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("ingot %s found in multiple anvils (%s): use --anvil to disambiguate", p.BeadID, strings.Join(anvils, ", "))})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
 
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})

@@ -232,7 +232,7 @@ func TestHandleIPC_GetIngot_SearchAcrossAnvils(t *testing.T) {
 	}
 	require.NoError(t, ingot.InsertIngot(conn, ig))
 
-	// Search without specifying anvil — should find it via configured anvils
+	// Search without specifying anvil — should find it via DB lookup.
 	payload, _ := json.Marshal(ipc.GetIngotPayload{BeadID: "TEST-001"})
 	resp := d.handleIPC(ipc.Command{Type: "get_ingot", Payload: payload})
 	assert.Equal(t, "ok", resp.Type)
@@ -240,6 +240,39 @@ func TestHandleIPC_GetIngot_SearchAcrossAnvils(t *testing.T) {
 	var got ingot.Ingot
 	require.NoError(t, json.Unmarshal(resp.Payload, &got))
 	assert.Equal(t, "TEST-001", got.BeadID)
+}
+
+func TestHandleIPC_GetIngot_MultipleAnvils_RequiresDisambiguation(t *testing.T) {
+	d, db := setupTestDaemon(t)
+	conn := db.Conn()
+
+	// Insert the same bead_id in two different anvils.
+	ig1 := &ingot.Ingot{
+		BeadID:   "TEST-001",
+		Anvil:    "alpha-anvil",
+		WorkerID: "w1",
+		Status:   ingot.StatusSmith,
+		Title:    "First",
+	}
+	ig2 := &ingot.Ingot{
+		BeadID:   "TEST-001",
+		Anvil:    "beta-anvil",
+		WorkerID: "w2",
+		Status:   ingot.StatusSmith,
+		Title:    "Second",
+	}
+	require.NoError(t, ingot.InsertIngot(conn, ig1))
+	require.NoError(t, ingot.InsertIngot(conn, ig2))
+
+	// Without --anvil the daemon should report ambiguity, not pick one randomly.
+	payload, _ := json.Marshal(ipc.GetIngotPayload{BeadID: "TEST-001"})
+	resp := d.handleIPC(ipc.Command{Type: "get_ingot", Payload: payload})
+	assert.Equal(t, "error", resp.Type)
+
+	var msg map[string]string
+	require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+	assert.Contains(t, msg["message"], "multiple anvils")
+	assert.Contains(t, msg["message"], "--anvil")
 }
 
 func TestHandleIPC_GetIngot_InvalidPayload(t *testing.T) {
