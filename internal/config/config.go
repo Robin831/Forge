@@ -175,6 +175,11 @@ type SettingsConfig struct {
 	// when running the Schematic pre-analysis stage. Non-Copilot providers are
 	// unaffected. Empty = use provider default.
 	SchematicModelOverride string `mapstructure:"schematic_model_override" yaml:"schematic_model_override,omitempty"`
+	// CopilotSkipWardenSmallDiffs enables automatic Warden skip for small,
+	// low-risk diffs when the primary provider is Copilot. Saves one premium
+	// request for trivial changes (docs, tests, or ≤2 files under 100 lines).
+	// Default: false (opt-in).
+	CopilotSkipWardenSmallDiffs bool `mapstructure:"copilot_skip_warden_small_diffs" yaml:"copilot_skip_warden_small_diffs"`
 }
 
 // durationString returns the duration string, or omits zero values.
@@ -217,6 +222,8 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		AutoMergeCrucibleChildren *bool    `yaml:"auto_merge_crucible_children,omitempty"`
 		WardenModelOverride       string   `yaml:"warden_model_override,omitempty"`
 		SchematicModelOverride    string   `yaml:"schematic_model_override,omitempty"`
+
+		CopilotSkipWardenSmallDiffs bool `yaml:"copilot_skip_warden_small_diffs"`
 	}
 
 	sh := shadow{
@@ -246,6 +253,8 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		AutoMergeCrucibleChildren: s.AutoMergeCrucibleChildren,
 		WardenModelOverride:       s.WardenModelOverride,
 		SchematicModelOverride:    s.SchematicModelOverride,
+
+		CopilotSkipWardenSmallDiffs: s.CopilotSkipWardenSmallDiffs,
 	}
 
 	// Only include non-zero optional durations.

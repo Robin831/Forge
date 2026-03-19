@@ -87,6 +87,145 @@ type Outcome struct {
 	ChangelogSummary string
 }
 
+// DiffStat summarises the diff produced by Smith for skip-warden evaluation.
+type DiffStat struct {
+	LinesChanged         int
+	FilesChanged         int
+	TouchesSecurityFiles bool
+	IsDocsOnly           bool
+	IsTestsOnly          bool
+	// Valid is true only when the diff stat was successfully computed.
+	// A zero-value DiffStat (Valid==false) must never satisfy the skip criteria.
+	Valid bool
+}
+
+// securityPathPatterns are substrings that flag a file path as security-sensitive.
+var securityPathPatterns = []string{
+	"auth", "crypto", "permission", "secret", "token",
+	"credential", "password", "key", "cert", "acl", "rbac", "policy",
+}
+
+// shouldSkipWarden decides whether the Warden review can be auto-approved for
+// a small, low-risk Copilot diff. All criteria must be true:
+//  1. skipEnabled (copilot_skip_warden_small_diffs config toggle)
+//  2. Primary provider is Copilot
+//  3. Bead priority is P3 or P4 (>= 3)
+//  4. Diff stat was successfully computed (Valid==true) and has at least one changed file
+//  5. Diff is 100 lines or fewer changed (≤100)
+//  6. No security-sensitive files touched
+//  7. Changes are docs-only, tests-only, or at most 2 files
+func shouldSkipWarden(diffStat DiffStat, bead poller.Bead, providers []provider.Provider, skipEnabled bool) bool {
+	if !skipEnabled {
+		return false
+	}
+	if len(providers) == 0 || providers[0].Kind != provider.Copilot {
+		return false
+	}
+	if bead.Priority <= 2 {
+		return false
+	}
+	// A failed or empty diff stat must never silently skip Warden.
+	if !diffStat.Valid || diffStat.FilesChanged == 0 {
+		return false
+	}
+	if diffStat.LinesChanged > 100 {
+		return false
+	}
+	if diffStat.TouchesSecurityFiles {
+		return false
+	}
+	return diffStat.IsDocsOnly || diffStat.IsTestsOnly || diffStat.FilesChanged <= 2
+}
+
+// computeDiffStat analyses the git diff in the worktree to produce a DiffStat.
+// It shells out to "git diff --numstat" against the base branch and inspects file paths.
+func computeDiffStat(worktreePath, baseSHA string) DiffStat {
+	if baseSHA == "" {
+		baseSHA = "HEAD~1"
+	}
+	var ds DiffStat
+
+	// Get the list of changed files with line counts.
+	numstatCmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "diff", "--numstat", baseSHA))
+	numstatOut, err := numstatCmd.Output()
+	if err != nil {
+		return ds
+	}
+
+	allDocs := true
+	allTests := true
+
+	for _, line := range strings.Split(strings.TrimSpace(string(numstatOut)), "\n") {
+		if line == "" {
+			continue
+		}
+		// --numstat output is tab-delimited: "<added>\t<deleted>\t<path>"
+		// For renames/copies the path field looks like "old => new" or "{old => new}/suffix".
+		// We split on tabs to correctly handle file paths that contain spaces.
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) < 3 {
+			continue
+		}
+		ds.FilesChanged++
+
+		// Parse added/deleted lines (binary files show "-")
+		var added, deleted int
+		if fields[0] != "-" {
+			fmt.Sscanf(fields[0], "%d", &added)
+		}
+		if fields[1] != "-" {
+			fmt.Sscanf(fields[1], "%d", &deleted)
+		}
+		ds.LinesChanged += added + deleted
+
+		// For rename/copy paths like "old => new" or "{a => b}/file", extract the
+		// destination path for classification purposes.
+		rawPath := fields[2]
+		if idx := strings.Index(rawPath, " => "); idx >= 0 {
+			rawPath = rawPath[idx+4:]
+			// Handle brace notation: "prefix/{old => new}/suffix" — strip any trailing "}"
+			rawPath = strings.TrimSuffix(rawPath, "}")
+		}
+		filePath := strings.ToLower(rawPath)
+
+		// Check security-sensitive paths.
+		for _, pat := range securityPathPatterns {
+			if strings.Contains(filePath, pat) {
+				ds.TouchesSecurityFiles = true
+				break
+			}
+		}
+
+		// Check docs-only: files under docs/ or ending in .md
+		isDoc := strings.HasPrefix(filePath, "docs/") || strings.HasSuffix(filePath, ".md")
+		if !isDoc {
+			allDocs = false
+		}
+
+		// Check tests-only: files ending in _test.go, .test.ts, .test.js, .spec.ts, .spec.js,
+		// or under a test/ or tests/ directory.
+		isTest := strings.HasSuffix(filePath, "_test.go") ||
+			strings.HasSuffix(filePath, ".test.ts") ||
+			strings.HasSuffix(filePath, ".test.js") ||
+			strings.HasSuffix(filePath, ".spec.ts") ||
+			strings.HasSuffix(filePath, ".spec.js") ||
+			strings.HasPrefix(filePath, "test/") ||
+			strings.HasPrefix(filePath, "tests/") ||
+			strings.Contains(filePath, "/test/") ||
+			strings.Contains(filePath, "/tests/")
+		if !isTest {
+			allTests = false
+		}
+	}
+
+	if ds.FilesChanged > 0 {
+		ds.IsDocsOnly = allDocs
+		ds.IsTestsOnly = allTests
+	}
+	ds.Valid = true
+	return ds
+}
+
 // Params holds the dependencies for running a pipeline.
 type Params struct {
 	DB              *state.DB
@@ -164,6 +303,11 @@ type Params struct {
 	// Copilot provider entry when spawning the Schematic pre-analysis stage.
 	// Non-Copilot providers are unaffected.
 	SchematicModelOverride string
+
+	// CopilotSkipWardenSmallDiffs, when true, allows the pipeline to auto-approve
+	// small, low-risk diffs without running Warden when the primary provider is
+	// Copilot. This saves one premium request for trivial changes.
+	CopilotSkipWardenSmallDiffs bool
 
 	// SkipSmith, when true, skips the Schematic pre-worker and the initial
 	// Smith run on the first iteration. The pipeline creates a worktree on
@@ -915,47 +1059,55 @@ func Run(ctx context.Context, p Params) *Outcome {
 			return outcome
 		}
 
-		// Step 4: Run Warden review
-		log.Printf("[pipeline:%s] Running Warden review", workerID)
-		_ = p.DB.UpdateWorkerPhase(workerID, "warden")
-		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
-		if p.DB != nil {
-			logIngotErr(workerID, "warden", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusWarden))
-		}
-
-		reviewResult, err := reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.Description, p.AnvilConfig.Path, p.DB, p.wardenProviders(providers)...)
-		if err != nil {
-			log.Printf("[pipeline:%s] Warden error: %v", workerID, err)
-			// Warden failure is not fatal — default to approve and let human review
-			outcome.ReviewResult = &warden.ReviewResult{
-				Verdict: warden.VerdictApprove,
-				Summary: "Warden failed, defaulting to approve for human review",
-			}
-			outcome.Verdict = warden.VerdictApprove
-			outcome.Success = true
-			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
-			_ = p.DB.LogEvent(state.EventWardenPass, "Warden failed, defaulting to approve", p.Bead.ID, p.AnvilName)
+		// Step 4: Run Warden review (or skip for small Copilot diffs)
+		diffStat := computeDiffStat(wt.Path, preSmithSHA)
+		var reviewResult *warden.ReviewResult
+		if shouldSkipWarden(diffStat, p.Bead, providers, p.CopilotSkipWardenSmallDiffs) {
+			log.Printf("[pipeline:%s] Skipping Warden review for small Copilot diff (lines_changed=%d, files_changed=%d, reason=low-risk diff under threshold)",
+				workerID, diffStat.LinesChanged, diffStat.FilesChanged)
+			_ = p.DB.UpdateWorkerPhase(workerID, "warden")
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
 			if p.DB != nil {
-				logIngotErr(workerID, "approved", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusApproved))
+				logIngotErr(workerID, "warden", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusWarden))
+			}
+			_ = p.DB.LogEvent(state.EventWardenPass,
+				fmt.Sprintf("Warden skipped: small low-risk Copilot diff (%d lines, %d files)", diffStat.LinesChanged, diffStat.FilesChanged),
+				p.Bead.ID, p.AnvilName)
+			reviewResult = &warden.ReviewResult{
+				Verdict: warden.VerdictApprove,
+				Summary: fmt.Sprintf("Auto-approved: small low-risk diff (%d lines, %d files)", diffStat.LinesChanged, diffStat.FilesChanged),
+			}
+		} else {
+			log.Printf("[pipeline:%s] Running Warden review", workerID)
+			_ = p.DB.UpdateWorkerPhase(workerID, "warden")
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
+			if p.DB != nil {
+				logIngotErr(workerID, "warden", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusWarden))
 			}
 
-			outcome.ChangelogSummary = extractChangelogSummary(wt.Path, p.Bead.ID)
-
-			outcome.Duration = time.Since(start)
-			return outcome
-		}
-
-		outcome.ReviewResult = reviewResult
-
-		// Record Copilot premium request for warden review if applicable.
-		if reviewResult.UsedProvider != nil && reviewResult.UsedProvider.Kind == provider.Copilot {
-			multiplier := cost.CopilotPremiumMultiplier(reviewResult.UsedProvider.Model)
-			if multiplier > 0 {
-				if err := p.DB.AddCopilotRequest(cost.Today(), multiplier); err != nil {
-					log.Printf("[pipeline:%s] Failed to record copilot premium request for warden: %v", workerID, err)
+			var err error
+			reviewResult, err = reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.Description, p.AnvilConfig.Path, p.DB, p.wardenProviders(providers)...)
+			if err != nil {
+				log.Printf("[pipeline:%s] Warden error: %v", workerID, err)
+				// Warden failure is not fatal — default to approve and let human review
+				reviewResult = &warden.ReviewResult{
+					Verdict: warden.VerdictApprove,
+					Summary: "Warden failed, defaulting to approve for human review",
+				}
+				_ = p.DB.LogEvent(state.EventWardenPass, "Warden failed, defaulting to approve", p.Bead.ID, p.AnvilName)
+			} else {
+				// Record Copilot premium request for warden review if applicable.
+				if reviewResult.UsedProvider != nil && reviewResult.UsedProvider.Kind == provider.Copilot {
+					multiplier := cost.CopilotPremiumMultiplier(reviewResult.UsedProvider.Model)
+					if multiplier > 0 {
+						if err := p.DB.AddCopilotRequest(cost.Today(), multiplier); err != nil {
+							log.Printf("[pipeline:%s] Failed to record copilot premium request for warden: %v", workerID, err)
+						}
+					}
 				}
 			}
 		}
+		outcome.ReviewResult = reviewResult
 
 		switch reviewResult.Verdict {
 		case warden.VerdictApprove:
