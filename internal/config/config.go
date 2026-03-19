@@ -405,8 +405,8 @@ func Defaults() Config {
 			StaleInterval:        5 * time.Minute,
 			DepcheckInterval:     168 * time.Hour, // weekly
 			DepcheckTimeout:      5 * time.Minute,
-			VulncheckInterval:      24 * time.Hour,
-			VulncheckTimeout:       10 * time.Minute,
+			VulncheckInterval:       24 * time.Hour,
+			VulncheckTimeout:        10 * time.Minute,
 			CopilotWardenSampleRate: 0.1,
 		},
 	}
