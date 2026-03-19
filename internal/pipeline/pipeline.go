@@ -1116,6 +1116,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 					logIngotErr(workerID, "warden", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusWarden))
 				}
 				summary := "Auto-approved: Smith self-review passed (combined mode)"
+				if selfReview != nil && len(selfReview.Concerns) > 0 {
+					summary += fmt.Sprintf(" [%d concerns noted]", len(selfReview.Concerns))
+				}
 				_ = p.DB.LogEvent(state.EventWardenPass, summary, p.Bead.ID, p.AnvilName)
 				reviewResult = &warden.ReviewResult{
 					Verdict: warden.VerdictApprove,
