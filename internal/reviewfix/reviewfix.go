@@ -106,9 +106,6 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	}
 
 	providers := p.Providers
-	if len(providers) == 0 {
-		providers = provider.Defaults()
-	}
 
 	prompt := buildBatchReviewPrompt(p.PRNumber, p.Branch, p.BeadID, p.WorktreePath, actionable)
 
