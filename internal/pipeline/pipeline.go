@@ -186,6 +186,40 @@ func releaseBead(beadID, anvilPath string) error {
 	return nil
 }
 
+// shouldRunSchematic determines whether the Schematic pre-worker should run
+// for the given bead and provider chain.
+//
+// The Copilot provider charges per-request rather than per-token, so running
+// Schematic would consume an additional premium request with limited benefit.
+// When the first provider is Copilot, Schematic is skipped unless the bead is
+// explicitly tagged "decompose".
+//
+// It returns (run, reason) so the caller can log a single accurate message
+// with its workerID context prefix.
+func shouldRunSchematic(cfg schematic.Config, bead poller.Bead, providers []provider.Provider) (bool, string) {
+	if !cfg.Enabled {
+		return false, "schematic disabled in config"
+	}
+	// Skip schematic for Copilot to save a premium request,
+	// unless the bead explicitly needs decomposition.
+	if len(providers) > 0 && providers[0].Kind == provider.Copilot {
+		hasDecompose := false
+		for _, tag := range bead.Labels {
+			if strings.EqualFold(tag, "decompose") {
+				hasDecompose = true
+				break
+			}
+		}
+		if !hasDecompose {
+			return false, "skipping schematic for Copilot provider to save premium request"
+		}
+	}
+	if !schematic.ShouldRun(cfg, bead) {
+		return false, "schematic not needed for this bead"
+	}
+	return true, ""
+}
+
 // Run executes the full Smith → Temper → Warden pipeline for a bead.
 func Run(ctx context.Context, p Params) *Outcome {
 	start := time.Now()
@@ -318,7 +352,8 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 		}
 
-		if schematic.ShouldRun(schemCfg, p.Bead) {
+		runSchemBool, skipReason := shouldRunSchematic(schemCfg, p.Bead, providers)
+		if runSchemBool {
 			log.Printf("[pipeline:%s] Running Schematic pre-analysis", workerID)
 			_ = p.DB.UpdateWorkerPhase(workerID, "schematic")
 			_ = p.DB.LogEvent(state.EventSchematicStarted, "Analysing bead scope", p.Bead.ID, p.AnvilName)
@@ -429,7 +464,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 				_ = p.DB.LogEvent(state.EventSchematicSkipped, sResult.Reason, p.Bead.ID, p.AnvilName)
 			}
 		} else {
-			log.Printf("[pipeline:%s] Schematic not needed for this bead", workerID)
+			log.Printf("[pipeline:%s] %s", workerID, skipReason)
 		}
 	}
 

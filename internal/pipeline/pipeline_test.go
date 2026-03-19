@@ -1280,3 +1280,55 @@ func TestTruncateDiff(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldRunSchematic(t *testing.T) {
+	enabled := schematic.Config{Enabled: true, WordThreshold: 1}
+	disabled := schematic.Config{Enabled: false, WordThreshold: 1}
+
+	beadSimple := poller.Bead{Description: "do something"}
+	beadDecompose := poller.Bead{Description: "do something", Labels: []string{"decompose"}}
+
+	tests := []struct {
+		name      string
+		cfg       schematic.Config
+		bead      poller.Bead
+		providers []provider.Provider
+		want      bool
+	}{
+		{
+			name:      "Copilot provider without decompose tag skips schematic",
+			cfg:       enabled,
+			bead:      beadSimple,
+			providers: []provider.Provider{{Kind: provider.Copilot}},
+			want:      false,
+		},
+		{
+			name:      "Copilot provider with decompose tag runs schematic",
+			cfg:       enabled,
+			bead:      beadDecompose,
+			providers: []provider.Provider{{Kind: provider.Copilot}},
+			want:      true,
+		},
+		{
+			name:      "non-Copilot provider runs schematic when enabled",
+			cfg:       enabled,
+			bead:      beadSimple,
+			providers: []provider.Provider{{Kind: provider.Claude}},
+			want:      true,
+		},
+		{
+			name:      "schematic disabled skips regardless of provider",
+			cfg:       disabled,
+			bead:      beadDecompose,
+			providers: []provider.Provider{{Kind: provider.Copilot}},
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := shouldRunSchematic(tt.cfg, tt.bead, tt.providers)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
