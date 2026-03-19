@@ -3412,6 +3412,68 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		respData, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d: %s", pa.PRNumber, pa.Action)})
 		return ipc.Response{Type: "ok", Payload: respData}
 
+	case "get_ingots":
+		var p ipc.GetIngotsPayload
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid payload: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		conn := d.db.Conn()
+		if conn == nil {
+			msg, _ := json.Marshal(map[string]string{"message": "database not available"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		ingots, err := ingot.GetIngots(conn, p.Anvil, p.Status, p.Limit)
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		respData, _ := json.Marshal(ingots)
+		return ipc.Response{Type: "ok", Payload: respData}
+
+	case "get_ingot":
+		var p ipc.GetIngotPayload
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid payload: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if p.BeadID == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id is required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		conn := d.db.Conn()
+		if conn == nil {
+			msg, _ := json.Marshal(map[string]string{"message": "database not available"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		// If anvil is provided, query directly; otherwise search all anvils
+		if p.Anvil != "" {
+			ig, err := ingot.GetIngot(conn, p.BeadID, p.Anvil)
+			if err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": err.Error()})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			if ig == nil {
+				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("ingot %s not found in anvil %s", p.BeadID, p.Anvil)})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			respData, _ := json.Marshal(ig)
+			return ipc.Response{Type: "ok", Payload: respData}
+		}
+		// No anvil specified — search across all configured anvils
+		for anvilName := range d.cfg.Load().Anvils {
+			ig, err := ingot.GetIngot(conn, p.BeadID, anvilName)
+			if err != nil {
+				continue
+			}
+			if ig != nil {
+				respData, _ := json.Marshal(ig)
+				return ipc.Response{Type: "ok", Payload: respData}
+			}
+		}
+		msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("ingot %s not found", p.BeadID)})
+		return ipc.Response{Type: "error", Payload: msg}
+
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}

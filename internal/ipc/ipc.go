@@ -235,6 +235,19 @@ type CruciblesResponse struct {
 	Crucibles []CrucibleStatusItem `json:"crucibles"`
 }
 
+// GetIngotsPayload is the payload for a "get_ingots" command.
+type GetIngotsPayload struct {
+	Anvil  string `json:"anvil,omitempty"`
+	Status string `json:"status,omitempty"`
+	Limit  int    `json:"limit,omitempty"` // default 50
+}
+
+// GetIngotPayload is the payload for a "get_ingot" command.
+type GetIngotPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil,omitempty"`
+}
+
 // CommandHandler is called by the server for each incoming command.
 type CommandHandler func(cmd Command) Response
 
