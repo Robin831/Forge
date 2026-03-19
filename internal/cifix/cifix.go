@@ -128,9 +128,11 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 
 	prompt := buildBatchCIPrompt(p)
 
-	_ = p.DB.LogEvent(state.EventCIFixStarted,
-		fmt.Sprintf("PR #%d: batch fix for %d failing checks", p.PRNumber, len(p.FailingChecks)),
-		p.BeadID, p.AnvilName)
+	if p.DB != nil {
+		_ = p.DB.LogEvent(state.EventCIFixStarted,
+			fmt.Sprintf("PR #%d: batch fix for %d failing checks", p.PRNumber, len(p.FailingChecks)),
+			p.BeadID, p.AnvilName)
+	}
 
 	result.Attempts = 1
 
@@ -174,27 +176,33 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 
 	if smithResult.RateLimited {
 		result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
-		_ = p.DB.LogEvent(state.EventCIFixFailed,
-			fmt.Sprintf("PR #%d batch fix: all providers rate limited", p.PRNumber),
-			p.BeadID, p.AnvilName)
+		if p.DB != nil {
+			_ = p.DB.LogEvent(state.EventCIFixFailed,
+				fmt.Sprintf("PR #%d batch fix: all providers rate limited", p.PRNumber),
+				p.BeadID, p.AnvilName)
+		}
 		result.Duration = time.Since(start)
 		return result
 	}
 
 	if smithResult.ExitCode != 0 {
 		result.Error = fmt.Errorf("batch CI fix failed (exit %d)", smithResult.ExitCode)
-		_ = p.DB.LogEvent(state.EventCIFixFailed,
-			fmt.Sprintf("PR #%d: batch Smith exit %d", p.PRNumber, smithResult.ExitCode),
-			p.BeadID, p.AnvilName)
+		if p.DB != nil {
+			_ = p.DB.LogEvent(state.EventCIFixFailed,
+				fmt.Sprintf("PR #%d: batch Smith exit %d", p.PRNumber, smithResult.ExitCode),
+				p.BeadID, p.AnvilName)
+		}
 		result.Duration = time.Since(start)
 		return result
 	}
 
 	log.Printf("[quench] PR #%d: batch CI fix applied for %d checks", p.PRNumber, len(p.FailingChecks))
 	result.Fixed = true
-	_ = p.DB.LogEvent(state.EventCIFixSuccess,
-		fmt.Sprintf("PR #%d: batch fix applied for %d checks", p.PRNumber, len(p.FailingChecks)),
-		p.BeadID, p.AnvilName)
+	if p.DB != nil {
+		_ = p.DB.LogEvent(state.EventCIFixSuccess,
+			fmt.Sprintf("PR #%d: batch fix applied for %d checks", p.PRNumber, len(p.FailingChecks)),
+			p.BeadID, p.AnvilName)
+	}
 	result.Duration = time.Since(start)
 	return result
 }

@@ -800,8 +800,14 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			var res *cifix.FixResult
 			if cfg.Settings.CopilotBatchCIFixes && len(cifixProviders) > 0 && cifixProviders[0].Kind == provider.Copilot {
 				anvilVCS := d.vcsForAnvil(req.Anvil)
-				_, failingChecks, _ := anvilVCS.FetchPRChecks(ctx, wt.Path, req.PRNumber)
-				ciLogs, _ := anvilVCS.FetchCILogs(ctx, wt.Path, failingChecks)
+				_, failingChecks, fetchErr := anvilVCS.FetchPRChecks(ctx, wt.Path, req.PRNumber)
+				if fetchErr != nil {
+					d.logger.Warn("failed to fetch PR checks for batch CI fix", "pr", req.PRNumber, "error", fetchErr)
+				}
+				ciLogs, logsErr := anvilVCS.FetchCILogs(ctx, wt.Path, failingChecks)
+				if logsErr != nil {
+					d.logger.Warn("failed to fetch CI logs for batch CI fix", "pr", req.PRNumber, "error", logsErr)
+				}
 				res = cifix.BatchFix(ctx, cifix.BatchFixParams{
 					WorktreePath:  wt.Path,
 					BeadID:        req.BeadID,
@@ -875,7 +881,10 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			var res *reviewfix.FixResult
 			if reviewCfg.Settings.CopilotBatchReviewFixes && len(reviewProviders) > 0 && reviewProviders[0].Kind == provider.Copilot {
 				anvilVCS := d.vcsForAnvil(req.Anvil)
-				comments, _ := anvilVCS.FetchReviewComments(ctx, wt.Path, req.PRNumber)
+				comments, fetchErr := anvilVCS.FetchReviewComments(ctx, wt.Path, req.PRNumber)
+				if fetchErr != nil {
+					d.logger.Warn("failed to fetch review comments for batch fix", "pr", req.PRNumber, "error", fetchErr)
+				}
 				res = reviewfix.BatchFix(ctx, reviewfix.BatchFixParams{
 					WorktreePath: wt.Path,
 					BeadID:       req.BeadID,

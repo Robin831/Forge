@@ -112,9 +112,11 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 
 	prompt := buildBatchReviewPrompt(p.PRNumber, p.Branch, p.BeadID, p.WorktreePath, actionable)
 
-	_ = p.DB.LogEvent(state.EventReviewFixStarted,
-		fmt.Sprintf("PR #%d: batch fix for %d comments", p.PRNumber, len(actionable)),
-		p.BeadID, p.AnvilName)
+	if p.DB != nil {
+		_ = p.DB.LogEvent(state.EventReviewFixStarted,
+			fmt.Sprintf("PR #%d: batch fix for %d comments", p.PRNumber, len(actionable)),
+			p.BeadID, p.AnvilName)
+	}
 
 	result.Attempts = 1
 
@@ -147,7 +149,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 			}
 		}
 		if pv.Kind == provider.Copilot && !smithResult.RateLimited {
-			if m := cost.CopilotPremiumMultiplier(pv.Model); m > 0 {
+			if m := cost.CopilotPremiumMultiplier(pv.Model); m > 0 && p.DB != nil {
 				_ = p.DB.AddCopilotRequest(cost.Today(), m)
 			}
 		}
@@ -158,18 +160,22 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 
 	if smithResult.RateLimited {
 		result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
-		_ = p.DB.LogEvent(state.EventReviewFixFailed,
-			fmt.Sprintf("PR #%d batch fix: all providers rate limited", p.PRNumber),
-			p.BeadID, p.AnvilName)
+		if p.DB != nil {
+			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+				fmt.Sprintf("PR #%d batch fix: all providers rate limited", p.PRNumber),
+				p.BeadID, p.AnvilName)
+		}
 		result.Duration = time.Since(start)
 		return result
 	}
 
 	if smithResult.ExitCode != 0 {
 		result.Error = fmt.Errorf("batch review fix failed (exit %d)", smithResult.ExitCode)
-		_ = p.DB.LogEvent(state.EventReviewFixFailed,
-			fmt.Sprintf("PR #%d: batch Smith exit %d", p.PRNumber, smithResult.ExitCode),
-			p.BeadID, p.AnvilName)
+		if p.DB != nil {
+			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+				fmt.Sprintf("PR #%d: batch Smith exit %d", p.PRNumber, smithResult.ExitCode),
+				p.BeadID, p.AnvilName)
+		}
 		result.Duration = time.Since(start)
 		return result
 	}
@@ -195,9 +201,11 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		}
 	}
 
-	_ = p.DB.LogEvent(state.EventReviewFixSuccess,
-		fmt.Sprintf("PR #%d: batch addressed %d comments", p.PRNumber, len(actionable)),
-		p.BeadID, p.AnvilName)
+	if p.DB != nil {
+		_ = p.DB.LogEvent(state.EventReviewFixSuccess,
+			fmt.Sprintf("PR #%d: batch addressed %d comments", p.PRNumber, len(actionable)),
+			p.BeadID, p.AnvilName)
+	}
 
 	result.Duration = time.Since(start)
 	return result
