@@ -76,6 +76,7 @@ type Monitor struct {
 // prSnapshot tracks the last seen state of a PR.
 type prSnapshot struct {
 	CIPassing            bool
+	CIInProgress         bool
 	HasApproval          bool
 	NeedsChanges         bool
 	HasUnresolvedThreads bool
@@ -267,8 +268,10 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		return
 	}
 
+	ciInProgress := status.CIsInProgress()
 	newSnap := &prSnapshot{
 		CIPassing:            status.CIsPassing(),
+		CIInProgress:         ciInProgress,
 		HasApproval:          status.HasApproval(),
 		NeedsChanges:         status.NeedsChanges(),
 		HasUnresolvedThreads: status.UnresolvedThreads > 0,
@@ -276,6 +279,10 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		IsMerged:             status.IsMerged(),
 		IsClosed:             status.IsClosed(),
 		IsConflicting:        status.Mergeable == "CONFLICTING",
+	}
+
+	if ciInProgress {
+		log.Printf("[bellows] PR #%d (%s): CI checks still in progress, skipping failure evaluation", pr.Number, pr.Anvil)
 	}
 
 	// Detect transitions and emit events. We re-acquire the lock and re-check the
@@ -424,7 +431,10 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			Details:   "All CI checks passed",
 			Timestamp: time.Now(),
 		})
-	} else if !newSnap.CIPassing && lastSnap.CIPassing {
+	} else if !newSnap.CIPassing && !newSnap.CIInProgress && lastSnap.CIPassing {
+		// Only flag CI as failed when all checks have completed and at least
+		// one has a non-success conclusion. If any checks are still in
+		// progress we wait for the next poll cycle.
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
@@ -437,12 +447,13 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
 		_ = m.db.LogEvent(state.EventCIFailed, fmt.Sprintf("PR #%d CI checks failed", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d CI failed", pr.Number), pr.BeadID, pr.Anvil)
-	} else if !newSnap.CIPassing && !lastSnap.CIPassing {
+	} else if !newSnap.CIPassing && !newSnap.CIInProgress && !lastSnap.CIPassing {
 		// CI is still failing with no transition. Check if a previous cifix
 		// attempt completed (PR status reset to open) and retries remain.
 		// This catches the gap where NotifyCIFixCompleted() clears the fix
 		// state but bellows never re-emits EventCIFailed because it only
 		// detected transitions.
+		// Skip if checks are still in progress — wait for completion.
 		maxCI := m.maxCIFixAttempts()
 		if pr.Status != state.PRNeedsFix && pr.CIFixCount > 0 && pr.CIFixCount < maxCI {
 			m.emit(ctx, PREvent{
