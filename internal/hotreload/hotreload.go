@@ -11,6 +11,8 @@
 //   - settings.max_ci_fix_attempts (applied immediately to lifecycle manager)
 //   - settings.max_review_fix_attempts (applied immediately to lifecycle manager)
 //   - settings.max_rebase_attempts (applied immediately to lifecycle manager)
+//   - settings.copilot_combined_smith_warden (toggle combined mode at runtime)
+//   - settings.copilot_warden_sample_rate (adjust sampling rate at runtime)
 //   - notifications.* (all notification settings)
 //   - anvils.<name>.auto_merge (takes effect on next ready-to-merge transition)
 //   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
@@ -236,6 +238,16 @@ func applyChanges(old, new *config.Config) []string {
 	if old.Settings.MaxRebaseAttempts != new.Settings.MaxRebaseAttempts {
 		changes = append(changes, fmt.Sprintf("max_rebase_attempts: %d → %d",
 			old.Settings.MaxRebaseAttempts, new.Settings.MaxRebaseAttempts))
+	}
+
+	if old.Settings.CopilotCombinedSmithWarden != new.Settings.CopilotCombinedSmithWarden {
+		changes = append(changes, fmt.Sprintf("copilot_combined_smith_warden: %v → %v",
+			old.Settings.CopilotCombinedSmithWarden, new.Settings.CopilotCombinedSmithWarden))
+	}
+
+	if old.Settings.CopilotWardenSampleRate != new.Settings.CopilotWardenSampleRate {
+		changes = append(changes, fmt.Sprintf("copilot_warden_sample_rate: %v → %v",
+			old.Settings.CopilotWardenSampleRate, new.Settings.CopilotWardenSampleRate))
 	}
 
 	// Detect anvil changes (add, remove, path change, max_smiths)
