@@ -257,6 +257,9 @@ func recordIngotTemperResults(db *state.DB, workerID, beadID, anvil string, temp
 		return
 	}
 	conn := db.Conn()
+	if conn == nil {
+		return
+	}
 	logIngotErr(workerID, "temper_results", ingot.UpdateIngotTemperResults(
 		conn, beadID, anvil,
 		temperResult.Passed,
