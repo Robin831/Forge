@@ -89,11 +89,14 @@ type Outcome struct {
 
 // DiffStat summarises the diff produced by Smith for skip-warden evaluation.
 type DiffStat struct {
-	LinesChanged        int
-	FilesChanged        int
+	LinesChanged         int
+	FilesChanged         int
 	TouchesSecurityFiles bool
-	IsDocsOnly          bool
-	IsTestsOnly         bool
+	IsDocsOnly           bool
+	IsTestsOnly          bool
+	// Valid is true only when the diff stat was successfully computed.
+	// A zero-value DiffStat (Valid==false) must never satisfy the skip criteria.
+	Valid bool
 }
 
 // securityPathPatterns are substrings that flag a file path as security-sensitive.
@@ -107,9 +110,10 @@ var securityPathPatterns = []string{
 //  1. skipEnabled (copilot_skip_warden_small_diffs config toggle)
 //  2. Primary provider is Copilot
 //  3. Bead priority is P3 or P4 (>= 3)
-//  4. Diff is under 100 lines changed
-//  5. No security-sensitive files touched
-//  6. Changes are docs-only, tests-only, or at most 2 files
+//  4. Diff stat was successfully computed (Valid==true) and has at least one changed file
+//  5. Diff is 100 lines or fewer changed (≤100)
+//  6. No security-sensitive files touched
+//  7. Changes are docs-only, tests-only, or at most 2 files
 func shouldSkipWarden(diffStat DiffStat, bead poller.Bead, providers []provider.Provider, skipEnabled bool) bool {
 	if !skipEnabled {
 		return false
@@ -118,6 +122,10 @@ func shouldSkipWarden(diffStat DiffStat, bead poller.Bead, providers []provider.
 		return false
 	}
 	if bead.Priority <= 2 {
+		return false
+	}
+	// A failed or empty diff stat must never silently skip Warden.
+	if !diffStat.Valid || diffStat.FilesChanged == 0 {
 		return false
 	}
 	if diffStat.LinesChanged > 100 {
@@ -130,7 +138,7 @@ func shouldSkipWarden(diffStat DiffStat, bead poller.Bead, providers []provider.
 }
 
 // computeDiffStat analyses the git diff in the worktree to produce a DiffStat.
-// It shells out to "git diff --stat" against the base branch and inspects file paths.
+// It shells out to "git diff --numstat" against the base branch and inspects file paths.
 func computeDiffStat(worktreePath, baseSHA string) DiffStat {
 	if baseSHA == "" {
 		baseSHA = "HEAD~1"
@@ -151,7 +159,10 @@ func computeDiffStat(worktreePath, baseSHA string) DiffStat {
 		if line == "" {
 			continue
 		}
-		fields := strings.Fields(line)
+		// --numstat output is tab-delimited: "<added>\t<deleted>\t<path>"
+		// For renames/copies the path field looks like "old => new" or "{old => new}/suffix".
+		// We split on tabs to correctly handle file paths that contain spaces.
+		fields := strings.SplitN(line, "\t", 3)
 		if len(fields) < 3 {
 			continue
 		}
@@ -167,7 +178,15 @@ func computeDiffStat(worktreePath, baseSHA string) DiffStat {
 		}
 		ds.LinesChanged += added + deleted
 
-		filePath := strings.ToLower(fields[2])
+		// For rename/copy paths like "old => new" or "{a => b}/file", extract the
+		// destination path for classification purposes.
+		rawPath := fields[2]
+		if idx := strings.Index(rawPath, " => "); idx >= 0 {
+			rawPath = rawPath[idx+4:]
+			// Handle brace notation: "prefix/{old => new}/suffix" — strip any trailing "}"
+			rawPath = strings.TrimSuffix(rawPath, "}")
+		}
+		filePath := strings.ToLower(rawPath)
 
 		// Check security-sensitive paths.
 		for _, pat := range securityPathPatterns {
@@ -203,6 +222,7 @@ func computeDiffStat(worktreePath, baseSHA string) DiffStat {
 		ds.IsDocsOnly = allDocs
 		ds.IsTestsOnly = allTests
 	}
+	ds.Valid = true
 	return ds
 }
 
@@ -1045,6 +1065,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 		if shouldSkipWarden(diffStat, p.Bead, providers, p.CopilotSkipWardenSmallDiffs) {
 			log.Printf("[pipeline:%s] Skipping Warden review for small Copilot diff (lines_changed=%d, files_changed=%d, reason=low-risk diff under threshold)",
 				workerID, diffStat.LinesChanged, diffStat.FilesChanged)
+			_ = p.DB.UpdateWorkerPhase(workerID, "warden")
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
+			if p.DB != nil {
+				logIngotErr(workerID, "warden", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusWarden))
+			}
 			_ = p.DB.LogEvent(state.EventWardenPass,
 				fmt.Sprintf("Warden skipped: small low-risk Copilot diff (%d lines, %d files)", diffStat.LinesChanged, diffStat.FilesChanged),
 				p.Bead.ID, p.AnvilName)
