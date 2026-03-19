@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -3365,5 +3366,119 @@ func TestCrucibleActionMenuNilOnCrucibleAction(t *testing.T) {
 	}
 	if !strings.Contains(m.statusMsg, "unavailable") {
 		t.Errorf("expected statusMsg to mention 'unavailable', got %q", m.statusMsg)
+	}
+}
+
+func TestRenderIngotCountsLineMultipleStatuses(t *testing.T) {
+	m := NewModel(nil)
+	m.ingotCounts = map[ingot.Status]int{
+		ingot.StatusSmith:    3,
+		ingot.StatusTemper:   1,
+		ingot.StatusPROpen:   2,
+		ingot.StatusPRMerged: 45,
+	}
+	m.ingotTotal = 51
+
+	line := m.renderIngotCountsLine()
+	if !strings.Contains(line, "Ingots") {
+		t.Errorf("expected line to contain 'Ingots', got: %s", line)
+	}
+	if !strings.Contains(line, "3 smith") {
+		t.Errorf("expected '3 smith' in line: %s", line)
+	}
+	if !strings.Contains(line, "1 temper") {
+		t.Errorf("expected '1 temper' in line: %s", line)
+	}
+	if !strings.Contains(line, "2 pr_open") {
+		t.Errorf("expected '2 pr_open' in line: %s", line)
+	}
+	if !strings.Contains(line, "45 merged") {
+		t.Errorf("expected '45 merged' in line: %s", line)
+	}
+}
+
+func TestRenderIngotCountsLineZeroCounts(t *testing.T) {
+	m := NewModel(nil)
+	m.ingotCounts = map[ingot.Status]int{}
+	m.ingotTotal = 5
+
+	line := m.renderIngotCountsLine()
+	if !strings.Contains(line, "5 total") {
+		t.Errorf("expected '5 total' fallback when no per-status counts, got: %s", line)
+	}
+}
+
+func TestRenderIngotCountsLineFailureHighlighted(t *testing.T) {
+	m := NewModel(nil)
+	m.ingotCounts = map[ingot.Status]int{
+		ingot.StatusFailed:  2,
+		ingot.StatusStalled: 1,
+	}
+	m.ingotTotal = 3
+
+	line := m.renderIngotCountsLine()
+	// The failure counts should appear in the output (with ANSI styling).
+	if !strings.Contains(line, "2 failed") {
+		t.Errorf("expected '2 failed' in line: %s", line)
+	}
+	if !strings.Contains(line, "1 stalled") {
+		t.Errorf("expected '1 stalled' in line: %s", line)
+	}
+}
+
+func TestUpdateIngotCountsMsg(t *testing.T) {
+	m := NewModel(nil)
+	counts := map[ingot.Status]int{
+		ingot.StatusSmith: 2,
+		ingot.StatusPROpen: 1,
+	}
+	mUpdated, _ := m.Update(UpdateIngotCountsMsg{Counts: counts, Total: 3})
+	model := mUpdated.(*Model)
+	if model.ingotTotal != 3 {
+		t.Errorf("expected ingotTotal=3, got %d", model.ingotTotal)
+	}
+	if model.ingotCounts[ingot.StatusSmith] != 2 {
+		t.Errorf("expected smith count=2, got %d", model.ingotCounts[ingot.StatusSmith])
+	}
+}
+
+func TestUpdateIngotCountsMsgNilPreservesExisting(t *testing.T) {
+	m := NewModel(nil)
+	// Seed some existing counts.
+	m.ingotCounts = map[ingot.Status]int{ingot.StatusSmith: 5}
+	m.ingotTotal = 5
+
+	// A zero-value message (Counts==nil) should NOT wipe the existing data.
+	mUpdated, _ := m.Update(UpdateIngotCountsMsg{})
+	model := mUpdated.(*Model)
+	if model.ingotTotal != 5 {
+		t.Errorf("expected ingotTotal to be preserved as 5, got %d", model.ingotTotal)
+	}
+	if model.ingotCounts[ingot.StatusSmith] != 5 {
+		t.Errorf("expected smith count to be preserved as 5, got %d", model.ingotCounts[ingot.StatusSmith])
+	}
+}
+
+func TestRenderUsagePanelIncludesIngots(t *testing.T) {
+	m := NewModel(nil)
+	m.ingotCounts = map[ingot.Status]int{
+		ingot.StatusSmith: 1,
+	}
+	m.ingotTotal = 1
+
+	rendered := m.renderUsagePanel(80, 15)
+	if !strings.Contains(rendered, "Ingots") {
+		t.Errorf("expected usage panel to include ingot counts, got: %s", rendered)
+	}
+}
+
+func TestRenderUsagePanelHidesIngotsWhenZero(t *testing.T) {
+	m := NewModel(nil)
+	m.ingotCounts = nil
+	m.ingotTotal = 0
+
+	rendered := m.renderUsagePanel(80, 15)
+	if strings.Contains(rendered, "Ingots") {
+		t.Errorf("expected usage panel to hide ingots when total is 0, got: %s", rendered)
 	}
 }
