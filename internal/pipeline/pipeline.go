@@ -153,6 +153,17 @@ type Params struct {
 	// config.Settings.MaxPipelineIterations.
 	MaxIterations int
 
+	// WardenModelOverride, when non-empty, overrides the Model field for any
+	// Copilot provider entry when spawning the Warden review stage. Non-Copilot
+	// providers are unaffected. Use to route review to a cheaper model (e.g.
+	// claude-haiku-4-5) while keeping Smith on a stronger model.
+	WardenModelOverride string
+
+	// SchematicModelOverride, when non-empty, overrides the Model field for any
+	// Copilot provider entry when spawning the Schematic pre-analysis stage.
+	// Non-Copilot providers are unaffected.
+	SchematicModelOverride string
+
 	// SkipSmith, when true, skips the Schematic pre-worker and the initial
 	// Smith run on the first iteration. The pipeline creates a worktree on
 	// the existing branch (ResetBranch should be false) and proceeds directly
@@ -161,6 +172,40 @@ type Params struct {
 	// force smith to continue the pipeline after smith has already completed
 	// separately.
 	SkipSmith bool
+}
+
+// wardenProviders returns the provider list with the Model field overridden for
+// Copilot entries when WardenModelOverride is set. Non-Copilot providers are
+// returned unchanged. When the override is empty, providers is returned as-is.
+func (p *Params) wardenProviders(providers []provider.Provider) []provider.Provider {
+	if p.WardenModelOverride == "" {
+		return providers
+	}
+	cloned := make([]provider.Provider, len(providers))
+	copy(cloned, providers)
+	for i, pv := range cloned {
+		if pv.Kind == provider.Copilot {
+			cloned[i].Model = p.WardenModelOverride
+		}
+	}
+	return cloned
+}
+
+// schematicProviders returns the provider list with the Model field overridden
+// for Copilot entries when SchematicModelOverride is set. Non-Copilot providers
+// are returned unchanged. When the override is empty, providers is returned as-is.
+func (p *Params) schematicProviders(providers []provider.Provider) []provider.Provider {
+	if p.SchematicModelOverride == "" {
+		return providers
+	}
+	cloned := make([]provider.Provider, len(providers))
+	copy(cloned, providers)
+	for i, pv := range cloned {
+		if pv.Kind == provider.Copilot {
+			cloned[i].Model = p.SchematicModelOverride
+		}
+	}
+	return cloned
 }
 
 // releaseBead resets a bead status to open via the bd CLI. It always uses a
@@ -358,7 +403,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerPhase(workerID, "schematic")
 			_ = p.DB.LogEvent(state.EventSchematicStarted, "Analysing bead scope", p.Bead.ID, p.AnvilName)
 
-			sResult := runSchematic(ctx, schemCfg, p.Bead, p.AnvilConfig.Path, providers[0])
+			sResult := runSchematic(ctx, schemCfg, p.Bead, p.AnvilConfig.Path, p.schematicProviders(providers)[0])
 			outcome.SchematicResult = sResult
 
 			// Persist provider quota from the schematic's claude session.
@@ -759,7 +804,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		_ = p.DB.UpdateWorkerPhase(workerID, "warden")
 		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
 
-		reviewResult, err := reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.Description, p.AnvilConfig.Path, p.DB, providers...)
+		reviewResult, err := reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.Description, p.AnvilConfig.Path, p.DB, p.wardenProviders(providers)...)
 		if err != nil {
 			log.Printf("[pipeline:%s] Warden error: %v", workerID, err)
 			// Warden failure is not fatal — default to approve and let human review
