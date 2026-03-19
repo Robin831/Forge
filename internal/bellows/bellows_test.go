@@ -2,13 +2,16 @@ package bellows
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -459,4 +462,143 @@ func TestCIFixRetryLogic(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fakeVCSProvider is a minimal vcs.Provider that returns a fixed PRStatus.
+type fakeVCSProvider struct {
+	status *vcs.PRStatus
+}
+
+func (f *fakeVCSProvider) CreatePR(context.Context, vcs.CreateParams) (*vcs.PR, error) {
+	return nil, nil
+}
+func (f *fakeVCSProvider) MergePR(context.Context, string, int, string) error { return nil }
+func (f *fakeVCSProvider) CheckStatus(context.Context, string, int) (*vcs.PRStatus, error) {
+	return f.status, nil
+}
+func (f *fakeVCSProvider) CheckStatusLight(context.Context, string, int) (*vcs.PRStatus, error) {
+	return f.status, nil
+}
+func (f *fakeVCSProvider) ListOpenPRs(context.Context, string) ([]vcs.OpenPR, error) {
+	return nil, nil
+}
+func (f *fakeVCSProvider) GetRepoOwnerAndName(context.Context, string) (string, string, error) {
+	return "owner", "repo", nil
+}
+func (f *fakeVCSProvider) FetchUnresolvedThreadCount(context.Context, string, int) (int, error) {
+	return 0, nil
+}
+func (f *fakeVCSProvider) FetchPendingReviewRequests(context.Context, string, int) ([]vcs.ReviewRequest, error) {
+	return nil, nil
+}
+func (f *fakeVCSProvider) FetchPRChecks(context.Context, string, int) (string, []vcs.CICheck, error) {
+	return "", nil, nil
+}
+func (f *fakeVCSProvider) FetchCILogs(context.Context, string, []vcs.CICheck) (map[string]string, error) {
+	return nil, nil
+}
+func (f *fakeVCSProvider) FetchReviewComments(context.Context, string, int) ([]vcs.ReviewComment, error) {
+	return nil, nil
+}
+func (f *fakeVCSProvider) ResolveThread(context.Context, string, string) error { return nil }
+func (f *fakeVCSProvider) Platform() vcs.Platform                              { return "fake" }
+
+// seedIngot inserts an ingot row so UpdateIngotStatus has something to update.
+func seedIngot(t *testing.T, sqlDB *sql.DB, beadID, anvil string) {
+	t.Helper()
+	require.NoError(t, ingot.InsertIngot(sqlDB, &ingot.Ingot{
+		BeadID: beadID,
+		Anvil:  anvil,
+		Status: ingot.StatusPROpen,
+	}))
+}
+
+// TestCheckPR_PRMergedUpdatesIngotStatus verifies that when bellows detects a
+// PR merge, it updates the corresponding ingot status to "pr_merged".
+func TestCheckPR_PRMergedUpdatesIngotStatus(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    10,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-merge",
+		Branch:    "forge/forge-merge",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	seedIngot(t, db.Conn(), pr.BeadID, pr.Anvil)
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "MERGED"}}
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+
+	m.checkAll(context.Background())
+
+	got, err := ingot.GetIngot(db.Conn(), pr.BeadID, pr.Anvil)
+	require.NoError(t, err)
+	assert.Equal(t, ingot.StatusPRMerged, got.Status)
+}
+
+// TestCheckPR_PRClosedUpdatesIngotStatus verifies that when bellows detects a
+// PR closed without merge, it updates the corresponding ingot status to "failed".
+func TestCheckPR_PRClosedUpdatesIngotStatus(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    20,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-close",
+		Branch:    "forge/forge-close",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	seedIngot(t, db.Conn(), pr.BeadID, pr.Anvil)
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "CLOSED"}}
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+
+	m.checkAll(context.Background())
+
+	got, err := ingot.GetIngot(db.Conn(), pr.BeadID, pr.Anvil)
+	require.NoError(t, err)
+	assert.Equal(t, ingot.StatusFailed, got.Status)
+}
+
+// TestCheckPR_MissingIngotIsNoOp verifies that when no ingot row exists for a
+// PR, UpdateIngotStatus silently does nothing (returns nil, 0 rows updated)
+// and bellows still completes its normal PR lifecycle handling.
+func TestCheckPR_MissingIngotIsNoOp(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    30,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-noingot",
+		Branch:    "forge/forge-noingot",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	// Intentionally do NOT seed an ingot — update will be a no-op
+
+	var events []string
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "MERGED"}}
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	// The PR merged event should still fire even though there's no ingot row.
+	assert.Contains(t, events, EventPRMerged)
+
+	// PR status should still be updated in state DB.
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	assert.Equal(t, state.PRMerged, updated.Status)
 }
