@@ -321,7 +321,7 @@ You are re-reviewing bead %s after the author attempted to fix your previous fee
 			jsonInstructions,
 			beadContext,
 			priorFeedback,
-			beadID,
+			safeID,
 			diffBlock,
 			agentsSection,
 		)
@@ -372,7 +372,7 @@ After outputting the JSON verdict above, review the following git diff:
 %s`,
 		jsonInstructions,
 		beadContext,
-		beadID,
+		safeID,
 		rulesSection,
 		diffBlock,
 		agentsSection,
