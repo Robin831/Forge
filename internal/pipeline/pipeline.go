@@ -1105,8 +1105,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		if combinedMode && smithResult == nil {
 			forceRealWarden = true
 			log.Printf("[pipeline:%s] Combined mode: smithResult is nil (SkipSmith=%v, iteration=%d), falling back to real Warden", workerID, p.SkipSmith, iteration)
-		}
-		if combinedMode && smithResult != nil {
+		} else if combinedMode && smithResult != nil {
 			selfReview := parseSelfReview(smithResult.FullOutput)
 			if !shouldRunRealWarden(selfReview, p.Bead, p.CopilotWardenSampleRate) {
 				log.Printf("[pipeline:%s] Combined mode: self-review approved, skipping real Warden", workerID)
