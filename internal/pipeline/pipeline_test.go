@@ -1421,3 +1421,71 @@ func TestWardenProviders_DoesNotMutateOriginal(t *testing.T) {
 	_ = p.wardenProviders(original)
 	assert.Equal(t, "claude-sonnet-4-6", original[0].Model, "original slice must not be mutated")
 }
+
+// --- shouldSkipWarden tests ---
+
+func TestShouldSkipWarden_AllCriteriaMet(t *testing.T) {
+	ds := DiffStat{LinesChanged: 50, FilesChanged: 1, IsDocsOnly: true}
+	bead := poller.Bead{Priority: 3}
+	providers := []provider.Provider{{Kind: provider.Copilot}}
+	assert.True(t, shouldSkipWarden(ds, bead, providers, true))
+}
+
+func TestShouldSkipWarden_DisabledInConfig(t *testing.T) {
+	ds := DiffStat{LinesChanged: 50, FilesChanged: 1, IsDocsOnly: true}
+	bead := poller.Bead{Priority: 3}
+	providers := []provider.Provider{{Kind: provider.Copilot}}
+	assert.False(t, shouldSkipWarden(ds, bead, providers, false))
+}
+
+func TestShouldSkipWarden_NotCopilotProvider(t *testing.T) {
+	ds := DiffStat{LinesChanged: 50, FilesChanged: 1, IsDocsOnly: true}
+	bead := poller.Bead{Priority: 3}
+	providers := []provider.Provider{{Kind: provider.Claude}}
+	assert.False(t, shouldSkipWarden(ds, bead, providers, true))
+}
+
+func TestShouldSkipWarden_HighPriority(t *testing.T) {
+	for _, p := range []int{0, 1, 2} {
+		ds := DiffStat{LinesChanged: 50, FilesChanged: 1, IsDocsOnly: true}
+		bead := poller.Bead{Priority: p}
+		providers := []provider.Provider{{Kind: provider.Copilot}}
+		assert.False(t, shouldSkipWarden(ds, bead, providers, true),
+			"should not skip for priority %d", p)
+	}
+}
+
+func TestShouldSkipWarden_TooManyLines(t *testing.T) {
+	ds := DiffStat{LinesChanged: 101, FilesChanged: 1, IsDocsOnly: true}
+	bead := poller.Bead{Priority: 3}
+	providers := []provider.Provider{{Kind: provider.Copilot}}
+	assert.False(t, shouldSkipWarden(ds, bead, providers, true))
+}
+
+func TestShouldSkipWarden_SecurityFiles(t *testing.T) {
+	ds := DiffStat{LinesChanged: 20, FilesChanged: 1, TouchesSecurityFiles: true}
+	bead := poller.Bead{Priority: 4}
+	providers := []provider.Provider{{Kind: provider.Copilot}}
+	assert.False(t, shouldSkipWarden(ds, bead, providers, true))
+}
+
+func TestShouldSkipWarden_TooManyFilesNotDocsOrTests(t *testing.T) {
+	ds := DiffStat{LinesChanged: 30, FilesChanged: 3}
+	bead := poller.Bead{Priority: 3}
+	providers := []provider.Provider{{Kind: provider.Copilot}}
+	assert.False(t, shouldSkipWarden(ds, bead, providers, true))
+}
+
+func TestShouldSkipWarden_DocsOnlyManyFiles(t *testing.T) {
+	ds := DiffStat{LinesChanged: 80, FilesChanged: 5, IsDocsOnly: true}
+	bead := poller.Bead{Priority: 3}
+	providers := []provider.Provider{{Kind: provider.Copilot}}
+	assert.True(t, shouldSkipWarden(ds, bead, providers, true))
+}
+
+func TestShouldSkipWarden_TestsOnlyManyFiles(t *testing.T) {
+	ds := DiffStat{LinesChanged: 90, FilesChanged: 4, IsTestsOnly: true}
+	bead := poller.Bead{Priority: 4}
+	providers := []provider.Provider{{Kind: provider.Copilot}}
+	assert.True(t, shouldSkipWarden(ds, bead, providers, true))
+}

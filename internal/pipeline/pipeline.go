@@ -87,6 +87,125 @@ type Outcome struct {
 	ChangelogSummary string
 }
 
+// DiffStat summarises the diff produced by Smith for skip-warden evaluation.
+type DiffStat struct {
+	LinesChanged        int
+	FilesChanged        int
+	TouchesSecurityFiles bool
+	IsDocsOnly          bool
+	IsTestsOnly         bool
+}
+
+// securityPathPatterns are substrings that flag a file path as security-sensitive.
+var securityPathPatterns = []string{
+	"auth", "crypto", "permission", "secret", "token",
+	"credential", "password", "key", "cert", "acl", "rbac", "policy",
+}
+
+// shouldSkipWarden decides whether the Warden review can be auto-approved for
+// a small, low-risk Copilot diff. All criteria must be true:
+//  1. skipEnabled (copilot_skip_warden_small_diffs config toggle)
+//  2. Primary provider is Copilot
+//  3. Bead priority is P3 or P4 (>= 3)
+//  4. Diff is under 100 lines changed
+//  5. No security-sensitive files touched
+//  6. Changes are docs-only, tests-only, or at most 2 files
+func shouldSkipWarden(diffStat DiffStat, bead poller.Bead, providers []provider.Provider, skipEnabled bool) bool {
+	if !skipEnabled {
+		return false
+	}
+	if len(providers) == 0 || providers[0].Kind != provider.Copilot {
+		return false
+	}
+	if bead.Priority <= 2 {
+		return false
+	}
+	if diffStat.LinesChanged > 100 {
+		return false
+	}
+	if diffStat.TouchesSecurityFiles {
+		return false
+	}
+	return diffStat.IsDocsOnly || diffStat.IsTestsOnly || diffStat.FilesChanged <= 2
+}
+
+// computeDiffStat analyses the git diff in the worktree to produce a DiffStat.
+// It shells out to "git diff --stat" against the base branch and inspects file paths.
+func computeDiffStat(worktreePath, baseSHA string) DiffStat {
+	if baseSHA == "" {
+		baseSHA = "HEAD~1"
+	}
+	var ds DiffStat
+
+	// Get the list of changed files with line counts.
+	numstatCmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "diff", "--numstat", baseSHA))
+	numstatOut, err := numstatCmd.Output()
+	if err != nil {
+		return ds
+	}
+
+	allDocs := true
+	allTests := true
+
+	for _, line := range strings.Split(strings.TrimSpace(string(numstatOut)), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		ds.FilesChanged++
+
+		// Parse added/deleted lines (binary files show "-")
+		var added, deleted int
+		if fields[0] != "-" {
+			fmt.Sscanf(fields[0], "%d", &added)
+		}
+		if fields[1] != "-" {
+			fmt.Sscanf(fields[1], "%d", &deleted)
+		}
+		ds.LinesChanged += added + deleted
+
+		filePath := strings.ToLower(fields[2])
+
+		// Check security-sensitive paths.
+		for _, pat := range securityPathPatterns {
+			if strings.Contains(filePath, pat) {
+				ds.TouchesSecurityFiles = true
+				break
+			}
+		}
+
+		// Check docs-only: files under docs/ or ending in .md
+		isDoc := strings.HasPrefix(filePath, "docs/") || strings.HasSuffix(filePath, ".md")
+		if !isDoc {
+			allDocs = false
+		}
+
+		// Check tests-only: files ending in _test.go, .test.ts, .test.js, .spec.ts, .spec.js,
+		// or under a test/ or tests/ directory.
+		isTest := strings.HasSuffix(filePath, "_test.go") ||
+			strings.HasSuffix(filePath, ".test.ts") ||
+			strings.HasSuffix(filePath, ".test.js") ||
+			strings.HasSuffix(filePath, ".spec.ts") ||
+			strings.HasSuffix(filePath, ".spec.js") ||
+			strings.HasPrefix(filePath, "test/") ||
+			strings.HasPrefix(filePath, "tests/") ||
+			strings.Contains(filePath, "/test/") ||
+			strings.Contains(filePath, "/tests/")
+		if !isTest {
+			allTests = false
+		}
+	}
+
+	if ds.FilesChanged > 0 {
+		ds.IsDocsOnly = allDocs
+		ds.IsTestsOnly = allTests
+	}
+	return ds
+}
+
 // Params holds the dependencies for running a pipeline.
 type Params struct {
 	DB              *state.DB
@@ -164,6 +283,11 @@ type Params struct {
 	// Copilot provider entry when spawning the Schematic pre-analysis stage.
 	// Non-Copilot providers are unaffected.
 	SchematicModelOverride string
+
+	// CopilotSkipWardenSmallDiffs, when true, allows the pipeline to auto-approve
+	// small, low-risk diffs without running Warden when the primary provider is
+	// Copilot. This saves one premium request for trivial changes.
+	CopilotSkipWardenSmallDiffs bool
 
 	// SkipSmith, when true, skips the Schematic pre-worker and the initial
 	// Smith run on the first iteration. The pipeline creates a worktree on
@@ -915,7 +1039,37 @@ func Run(ctx context.Context, p Params) *Outcome {
 			return outcome
 		}
 
-		// Step 4: Run Warden review
+		// Step 4: Run Warden review (or skip for small Copilot diffs)
+		diffStat := computeDiffStat(wt.Path, preSmithSHA)
+		if shouldSkipWarden(diffStat, p.Bead, providers, p.CopilotSkipWardenSmallDiffs) {
+			log.Printf("[pipeline:%s] Skipping Warden review for small Copilot diff (lines_changed=%d, files_changed=%d, reason=low-risk diff under threshold)",
+				workerID, diffStat.LinesChanged, diffStat.FilesChanged)
+			_ = p.DB.LogEvent(state.EventWardenPass,
+				fmt.Sprintf("Auto-approved: small Copilot diff (%d lines, %d files)", diffStat.LinesChanged, diffStat.FilesChanged),
+				p.Bead.ID, p.AnvilName)
+			outcome.ReviewResult = &warden.ReviewResult{
+				Verdict: warden.VerdictApprove,
+				Summary: fmt.Sprintf("Auto-approved: small low-risk diff (%d lines, %d files)", diffStat.LinesChanged, diffStat.FilesChanged),
+			}
+			outcome.Verdict = warden.VerdictApprove
+			outcome.Success = true
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerMonitoring)
+			_ = p.DB.UpdateWorkerPhase(workerID, "bellows")
+			if p.DB != nil {
+				logIngotErr(workerID, "approved", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusApproved))
+			}
+			outcome.ChangelogSummary = extractChangelogSummary(wt.Path, p.Bead.ID)
+
+			pushCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "push", "-u", "origin", wt.Branch))
+			pushCmd.Dir = wt.Path
+			if pushErr := pushCmd.Run(); pushErr != nil {
+				log.Printf("[pipeline:%s] Warning: explicit push failed (Smith may have already pushed): %v", workerID, pushErr)
+			}
+
+			outcome.Duration = time.Since(start)
+			return outcome
+		}
+
 		log.Printf("[pipeline:%s] Running Warden review", workerID)
 		_ = p.DB.UpdateWorkerPhase(workerID, "warden")
 		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
