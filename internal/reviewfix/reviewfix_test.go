@@ -211,8 +211,8 @@ func TestBatchFix_NoActionableComments(t *testing.T) {
 }
 
 func TestBatchFix_NoProviders(t *testing.T) {
-	// With default providers, smith.SpawnWithProvider will fail to launch
-	// (no claude binary in test). Verify BatchFix surfaces the error.
+	// With an empty provider list, the smith loop never executes and
+	// smithResult stays nil. Verify BatchFix surfaces the error.
 	result := BatchFix(context.Background(), BatchFixParams{
 		PRNumber:     42,
 		Branch:       "forge/test",
@@ -221,7 +221,7 @@ func TestBatchFix_NoProviders(t *testing.T) {
 		Comments: []vcs.ReviewComment{
 			{Author: "copilot", Body: "fix this bug", State: "CHANGES_REQUESTED"},
 		},
-		Providers: provider.Defaults(),
+		Providers: []provider.Provider{},
 	})
 
 	if result.Addressed {

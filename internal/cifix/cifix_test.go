@@ -109,8 +109,8 @@ func TestBatchFix_NoFailingChecks(t *testing.T) {
 }
 
 func TestBatchFix_NoProviders(t *testing.T) {
-	// With a single invalid provider, smith.SpawnWithProvider will fail to
-	// launch, returning early with an error. Verify BatchFix surfaces it.
+	// With an empty provider list, the smith loop never executes and
+	// smithResult stays nil. Verify BatchFix surfaces the error.
 	result := BatchFix(context.Background(), BatchFixParams{
 		PRNumber:     42,
 		Branch:       "forge/test",
@@ -119,7 +119,7 @@ func TestBatchFix_NoProviders(t *testing.T) {
 		FailingChecks: []vcs.CICheck{
 			{Name: "build", Status: "fail"},
 		},
-		Providers: provider.Defaults(),
+		Providers: []provider.Provider{},
 	})
 
 	if result.Fixed {
