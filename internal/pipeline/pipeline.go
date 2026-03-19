@@ -26,6 +26,7 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/notify"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
@@ -220,6 +221,55 @@ func shouldRunSchematic(cfg schematic.Config, bead poller.Bead, providers []prov
 	return true, ""
 }
 
+// logIngotErr logs an ingot write error without propagating it. All ingot
+// writes are best-effort — the pipeline must work identically if they fail.
+func logIngotErr(workerID, op string, err error) {
+	if err != nil {
+		log.Printf("[pipeline:%s] ingot write failed op=%s: %v", workerID, op, err)
+	}
+}
+
+// truncateOutput truncates s to at most maxBytes, cutting at the last newline
+// before the limit to avoid partial lines.
+func truncateOutput(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	if idx := strings.LastIndex(s[:maxBytes], "\n"); idx > 0 {
+		return s[:idx]
+	}
+	return s[:maxBytes]
+}
+
+// recordIngotTemperResults writes temper results and per-step test results to
+// the ingot tables. All writes are best-effort.
+func recordIngotTemperResults(db *state.DB, workerID, beadID, anvil string, temperResult *temper.Result, ingotRec *ingot.Ingot) {
+	if db == nil {
+		return
+	}
+	conn := db.Conn()
+	logIngotErr(workerID, "temper_results", ingot.UpdateIngotTemperResults(
+		conn, beadID, anvil,
+		temperResult.Passed,
+		temperResult.FailedStep,
+		int(temperResult.Duration.Milliseconds()),
+	))
+	for i, step := range temperResult.Steps {
+		tr := &ingot.TestResult{
+			IngotID:       ingotRec.ID,
+			StepIndex:     i,
+			StepName:      step.Name,
+			Command:       step.Command,
+			ExitCode:      step.ExitCode,
+			DurationMs:    int(step.Duration.Milliseconds()),
+			Passed:        step.Passed,
+			Optional:      step.Optional,
+			OutputSummary: truncateOutput(step.Output, 1000),
+		}
+		logIngotErr(workerID, "test_result", ingot.InsertTestResult(conn, tr))
+	}
+}
+
 // Run executes the full Smith → Temper → Warden pipeline for a bead.
 func Run(ctx context.Context, p Params) *Outcome {
 	start := time.Now()
@@ -306,6 +356,27 @@ func Run(ctx context.Context, p Params) *Outcome {
 	}
 	_ = p.DB.InsertWorker(dbWorker)
 	_ = p.DB.LogEvent(state.EventBeadClaimed, fmt.Sprintf("Pipeline started for %s", p.Bead.ID), p.Bead.ID, p.AnvilName)
+
+	// Create ingot record (best-effort lifecycle tracking).
+	ingotRec := &ingot.Ingot{
+		BeadID:   p.Bead.ID,
+		Anvil:    p.AnvilName,
+		Title:    p.Bead.Title,
+		Branch:   wt.Branch,
+		WorkerID: workerID,
+		Status:   ingot.StatusInit,
+	}
+	if p.DB != nil {
+		logIngotErr(workerID, "insert", ingot.InsertIngot(p.DB.Conn(), ingotRec))
+	}
+
+	// markIngotFailed is a convenience to set the ingot to "failed" on any
+	// abort path. It is best-effort and safe to call with a nil DB.
+	markIngotFailed := func() {
+		if p.DB != nil {
+			logIngotErr(workerID, "failed", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusFailed))
+		}
+	}
 
 	// Resolve provider list.
 	providers := p.Providers
@@ -495,6 +566,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			outcome.Error = fmt.Errorf("building prompt: %w", err)
 			outcome.Duration = time.Since(start)
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			markIngotFailed()
 			return outcome
 		}
 		currentPrompt = promptText
@@ -519,6 +591,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// Run Smith (with provider fallback on rate limit)
 		log.Printf("[pipeline:%s] Running Smith (provider: %s)", workerID, providers[activeProviderIdx].Label())
 		_ = p.DB.UpdateWorkerPhase(workerID, "smith")
+		if p.DB != nil {
+			logIngotErr(workerID, "smith", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusSmith))
+		}
 		_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d (provider: %s)", iteration, providers[activeProviderIdx].Label()), p.Bead.ID, p.AnvilName)
 
 		logDir := wt.Path + "/.forge-logs"
@@ -537,6 +612,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 				outcome.Error = fmt.Errorf("spawning smith (%s): %w", pv.Label(), err)
 				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
 				_ = p.DB.LogEvent(state.EventSmithFailed, err.Error(), p.Bead.ID, p.AnvilName)
+				markIngotFailed()
 				outcome.Duration = time.Since(start)
 				return outcome
 			}
@@ -613,6 +689,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 					p.Bead.ID, p.AnvilName)
 				outcome.Error = fmt.Errorf("all providers (%d) are rate limited, and failed to release bead back to open: %w", len(providers), err)
 				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+				markIngotFailed()
 				outcome.Duration = time.Since(start)
 				return outcome
 			}
@@ -620,6 +697,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			outcome.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 			outcome.RateLimited = true
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			markIngotFailed()
 			outcome.Duration = time.Since(start)
 			return outcome
 		}
@@ -631,6 +709,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 				p.Bead.ID, p.AnvilName)
 			outcome.Error = fmt.Errorf("smith exit code %d", smithResult.ExitCode)
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			markIngotFailed()
 			outcome.Duration = time.Since(start)
 			return outcome
 		}
@@ -647,6 +726,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 				outcome.NeedsHuman = true
 				outcome.Error = fmt.Errorf("smith emitted NO_CHANGES_NEEDED in review iteration %d — warden feedback was not addressed", iteration)
 				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+				markIngotFailed()
 				outcome.Duration = time.Since(start)
 				return outcome
 			}
@@ -709,6 +789,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			outcome.NeedsHuman = true
 			outcome.Error = fmt.Errorf("smith made no changes in response to warden feedback (iteration %d)", iteration)
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+			markIngotFailed()
 			outcome.Duration = time.Since(start)
 			return outcome
 		}
@@ -717,6 +798,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// Step 3: Run Temper (build/test)
 		log.Printf("[pipeline:%s] Running Temper verification", workerID)
 		_ = p.DB.UpdateWorkerPhase(workerID, "temper")
+		if p.DB != nil {
+			logIngotErr(workerID, "temper", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusTemper))
+		}
 		temperCfg := p.TemperConfig
 		if temperCfg == nil {
 			detected := temper.DefaultConfigWithRace(wt.Path, temper.DetectOptionsFromAnvilFlag(p.AnvilConfig.GolangciLint), p.GoRaceDetection)
@@ -725,6 +809,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		temperResult := runTemper(ctx, wt.Path, *temperCfg, p.DB, p.Bead.ID, p.AnvilName)
 		outcome.TemperResult = temperResult
+		recordIngotTemperResults(p.DB, workerID, p.Bead.ID, p.AnvilName, temperResult, ingotRec)
 
 		if !temperResult.Passed {
 			log.Printf("[pipeline:%s] Temper failed at step: %s", workerID, temperResult.FailedStep)
@@ -750,6 +835,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			// Final iteration and still failing
 			outcome.Error = fmt.Errorf("temper verification failed after %d iterations: %s", iteration, temperResult.FailedStep)
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			markIngotFailed()
 			outcome.Duration = time.Since(start)
 			return outcome
 		}
@@ -758,6 +844,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 		log.Printf("[pipeline:%s] Running Warden review", workerID)
 		_ = p.DB.UpdateWorkerPhase(workerID, "warden")
 		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerReviewing)
+		if p.DB != nil {
+			logIngotErr(workerID, "warden", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusWarden))
+		}
 
 		reviewResult, err := reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.Description, p.AnvilConfig.Path, p.DB, providers...)
 		if err != nil {
@@ -771,6 +860,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 			outcome.Success = true
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
 			_ = p.DB.LogEvent(state.EventWardenPass, "Warden failed, defaulting to approve", p.Bead.ID, p.AnvilName)
+			if p.DB != nil {
+				logIngotErr(workerID, "approved", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusApproved))
+			}
 
 			outcome.ChangelogSummary = extractChangelogSummary(wt.Path, p.Bead.ID)
 
@@ -798,6 +890,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerMonitoring)
 			_ = p.DB.UpdateWorkerPhase(workerID, "bellows")
 			_ = p.DB.LogEvent(state.EventWardenPass, reviewResult.Summary, p.Bead.ID, p.AnvilName)
+			if p.DB != nil {
+				logIngotErr(workerID, "approved", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusApproved))
+			}
 
 			outcome.ChangelogSummary = extractChangelogSummary(wt.Path, p.Bead.ID)
 
@@ -818,6 +913,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			log.Printf("[pipeline:%s] Warden hard-rejected", workerID)
 			outcome.Verdict = warden.VerdictReject
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			markIngotFailed()
 			_ = p.DB.LogEvent(state.EventWardenHardReject,
 				fmt.Sprintf("Verdict: reject — %s", wardenEventSummary(reviewResult)),
 				p.Bead.ID, p.AnvilName)
@@ -876,6 +972,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			outcome.NeedsHuman = true
 			outcome.Error = fmt.Errorf("warden still requesting changes after %d iterations", iteration)
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			markIngotFailed()
 			outcome.Duration = time.Since(start)
 			return outcome
 		}
