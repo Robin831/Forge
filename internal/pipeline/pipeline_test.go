@@ -103,7 +103,7 @@ func TestNoDiff_ReleasesBeadToOpen(t *testing.T) {
 	db := newTestDB(t)
 	params, releasedID, mu := baseParams(t, db)
 
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{
 			Verdict: warden.VerdictReject,
 			NoDiff:  true,
@@ -128,7 +128,7 @@ func TestNoDiff_NeedsHumanFalse_WhenReleaseFails(t *testing.T) {
 	db := newTestDB(t)
 	params, _, _ := baseParams(t, db)
 
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{
 			Verdict: warden.VerdictReject,
 			NoDiff:  true,
@@ -178,7 +178,7 @@ func TestNoDiff_BeadReleaser_IgnoresCancelledPipelineCtx(t *testing.T) {
 		// TemperRunner ignores ctx
 		TemperRunner: passingTemper(),
 		// WardenReviewer ignores ctx and returns NoDiff
-		WardenReviewer: func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		WardenReviewer: func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 			return &warden.ReviewResult{
 				Verdict: warden.VerdictReject,
 				NoDiff:  true,
@@ -215,7 +215,7 @@ func TestRateLimited_ReleasesBeadToOpen(t *testing.T) {
 	})
 
 	// Warden should not be called for rate-limited path, but set it anyway.
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove}, nil
 	}
 
@@ -244,7 +244,7 @@ func TestWardenApprove_Success(t *testing.T) {
 		}, nil
 	}
 
-	params.WardenReviewer = func(_ context.Context, wtPath, beadID, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, wtPath, beadID, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		// Create a fake changelog fragment in the worktree.
 		changelogDir := filepath.Join(wtPath, "changelog.d")
 		require.NoError(t, os.MkdirAll(changelogDir, 0o755))
@@ -340,7 +340,7 @@ func TestSchematic_Plan_InjectsIntoSmithPrompt(t *testing.T) {
 		capturedPrompt = promptText
 		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
 	}
 
@@ -518,7 +518,7 @@ func TestSchematic_Skip_ContinuesToSmith(t *testing.T) {
 		smithCalled = true
 		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove}, nil
 	}
 
@@ -548,7 +548,7 @@ func TestSmith_NeedsHuman_ReleasesBeadAndSetsFlag(t *testing.T) {
 		ExitCode:   0,
 		FullOutput: "I investigated the task but cannot proceed.\nNEEDS_HUMAN: Missing API credentials for the payment service\nStopping here.",
 	})
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		t.Fatal("Warden should not be called when Smith escalates")
 		return nil, nil
 	}
@@ -573,7 +573,7 @@ func TestSmith_NeedsHuman_NotTriggeredWithoutMarker(t *testing.T) {
 		ExitCode:   0,
 		FullOutput: "Implemented the feature successfully.\nAll changes committed and pushed.",
 	})
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
 	}
 
@@ -663,7 +663,7 @@ func TestSmith_NoChangesNeeded_SkipsWardenAndTemper(t *testing.T) {
 		t.Fatal("Temper should not be called when Smith signals no changes needed")
 		return nil
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		t.Fatal("Warden should not be called when Smith signals no changes needed")
 		return nil, nil
 	}
@@ -690,7 +690,7 @@ func TestWardenFeedback_PassedToSmithOnRetry(t *testing.T) {
 		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
 	}
 
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		iteration++
 		if iteration == 1 {
 			return &warden.ReviewResult{
@@ -748,7 +748,7 @@ func TestTemperFeedback_PassedToSmithOnRetry(t *testing.T) {
 		}
 		return &temper.Result{Passed: true}
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
 	}
 
@@ -830,7 +830,7 @@ func TestGoRaceDetection_AutoConfig(t *testing.T) {
 				capturedConfig = cfg
 				return &temper.Result{Passed: true}
 			}
-			params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+			params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 				return &warden.ReviewResult{Verdict: warden.VerdictApprove}, nil
 			}
 
@@ -860,7 +860,7 @@ func TestSchematic_PerAnvilDisable(t *testing.T) {
 		schematicCalled = true
 		return &schematic.Result{Action: schematic.ActionSkip}
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove}, nil
 	}
 
@@ -884,7 +884,7 @@ func TestSchematic_Quota_PersistedToStateDB(t *testing.T) {
 	db := newTestDB(t)
 	params, _, _ := baseParams(t, db)
 
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
 	}
 
@@ -1008,7 +1008,7 @@ func TestMaxIterations_StopsAfterConfiguredCap(t *testing.T) {
 		smithCallCount++
 		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{
 			Verdict: warden.VerdictRequestChanges,
 			Summary: "Still has issues",
@@ -1042,7 +1042,7 @@ func TestSkipSmith_SkipsSmithOnFirstIteration(t *testing.T) {
 	}
 
 	wardenCallCount := 0
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		wardenCallCount++
 		if wardenCallCount == 1 {
 			// First Warden call: request changes to trigger Smith on iteration 2.
@@ -1132,7 +1132,7 @@ func TestSchematic_OnSpawn_UpdatesWorkerPIDAndLogPath(t *testing.T) {
 		}
 		return &schematic.Result{Action: schematic.ActionSkip, Reason: "simple enough"}
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove}, nil
 	}
 

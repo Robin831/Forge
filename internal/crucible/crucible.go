@@ -55,6 +55,7 @@ type Params struct {
 	WardenModelOverride         string
 	SchematicModelOverride      string
 	CopilotSkipWardenSmallDiffs bool
+	WardenFullRereview          bool
 
 	// WorkerID is the state DB worker record ID for this crucible run.
 	// When set, the worker's PID and log_path are updated when the schematic
@@ -556,6 +557,7 @@ func (p *Params) runChildPipeline(ctx context.Context, child poller.Bead, baseBr
 		WardenModelOverride:         p.WardenModelOverride,
 		SchematicModelOverride:      p.SchematicModelOverride,
 		CopilotSkipWardenSmallDiffs: p.CopilotSkipWardenSmallDiffs,
+		WardenFullRereview:          p.WardenFullRereview,
 	}
 
 	if p.PipelineRunner != nil {

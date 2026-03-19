@@ -1,0 +1,2 @@
+category: Added
+- **Warden focused re-review on subsequent iterations** - When the Warden requests changes, subsequent reviews now only check whether the previously raised issues were addressed, instead of doing a full independent review. This prevents the 'whack-a-mole' pattern where each fix triggers new unrelated feedback and burns through iterations without converging. A new `warden_full_rereview` config toggle (default: false) reverts to the previous full-review-every-iteration behavior. (Forge-fwp7)
