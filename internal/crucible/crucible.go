@@ -552,7 +552,6 @@ func (p *Params) runChildPipeline(ctx context.Context, child poller.Bead, baseBr
 		BaseBranch:      baseBranch,
 		SchematicConfig: p.SchematicConfig,
 		MaxIterations:   p.MaxPipelineIterations,
-
 		WardenModelOverride:         p.WardenModelOverride,
 		SchematicModelOverride:      p.SchematicModelOverride,
 		CopilotSkipWardenSmallDiffs: p.CopilotSkipWardenSmallDiffs,

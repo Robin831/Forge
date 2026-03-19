@@ -1722,11 +1722,9 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			AutoMergeCrucibleChildren: d.cfg.Load().Settings.IsAutoMergeCrucibleChildren(),
 			MaxPipelineIterations:     d.cfg.Load().Settings.MaxPipelineIterations,
 			WorkerID:                  claimWorkerID,
-
 			WardenModelOverride:         d.cfg.Load().Settings.WardenModelOverride,
 			SchematicModelOverride:      d.cfg.Load().Settings.SchematicModelOverride,
 			CopilotSkipWardenSmallDiffs: d.cfg.Load().Settings.CopilotSkipWardenSmallDiffs,
-
 			StatusCallback: func(s crucible.Status) {
 				d.crucibleStatuses.Store(bead.Anvil+"/"+bead.ID, s)
 			},
@@ -1822,12 +1820,11 @@ normalPipeline:
 		Bead:            bead,
 		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
-		Providers:    d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
-		Notifier:     d.notifier.Load(),
-		BaseBranch:   bead.EpicBranch,
-		WorkerID:     claimWorkerID,
-		MaxIterations: d.cfg.Load().Settings.MaxPipelineIterations,
-
+		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
+		Notifier:        d.notifier.Load(),
+		BaseBranch:      bead.EpicBranch,
+		WorkerID:        claimWorkerID,
+		MaxIterations:   d.cfg.Load().Settings.MaxPipelineIterations,
 		WardenModelOverride:         d.cfg.Load().Settings.WardenModelOverride,
 		SchematicModelOverride:      d.cfg.Load().Settings.SchematicModelOverride,
 		CopilotSkipWardenSmallDiffs: d.cfg.Load().Settings.CopilotSkipWardenSmallDiffs,
@@ -4399,11 +4396,10 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 		BaseBranch:      bead.EpicBranch, // empty for non-Crucible beads; set for children
 		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
-		Providers:     d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
-		Notifier:      d.notifier.Load(),
-		MaxIterations: d.cfg.Load().Settings.MaxPipelineIterations,
-		SkipSmith:     true,
-
+		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
+		Notifier:        d.notifier.Load(),
+		MaxIterations:   d.cfg.Load().Settings.MaxPipelineIterations,
+		SkipSmith:       true,
 		WardenModelOverride:         d.cfg.Load().Settings.WardenModelOverride,
 		SchematicModelOverride:      d.cfg.Load().Settings.SchematicModelOverride,
 		CopilotSkipWardenSmallDiffs: d.cfg.Load().Settings.CopilotSkipWardenSmallDiffs,
