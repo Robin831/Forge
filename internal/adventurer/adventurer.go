@@ -58,15 +58,17 @@ func (e *Executor) Execute(ctx context.Context, quest *questgiver.Quest) *Result
 	}
 
 	// Launch headless browser.
-	l, err := launcher.New().Headless(true).Launch()
+	l := launcher.New().Headless(true)
+	controlURL, err := l.Launch()
 	if err != nil {
 		result.ErrorMessage = fmt.Sprintf("failed to launch browser: %v", err)
 		result.Duration = time.Since(start)
 		return result
 	}
 
-	browser := rod.New().ControlURL(l)
+	browser := rod.New().ControlURL(controlURL)
 	if err := browser.Connect(); err != nil {
+		l.Kill() // Clean up the launched Chrome process on connect failure.
 		result.ErrorMessage = fmt.Sprintf("failed to connect to browser: %v", err)
 		result.Duration = time.Since(start)
 		return result

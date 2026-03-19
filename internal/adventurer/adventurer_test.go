@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/questgiver"
+	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 )
 
 func TestNew(t *testing.T) {
@@ -99,12 +101,139 @@ func TestResultFailure(t *testing.T) {
 	}
 }
 
-func TestIntegrationNavigate(t *testing.T) {
-	// Skip if Chrome is not available.
-	_, err := launcher.New().Headless(true).Launch()
+// launchBrowser launches a headless browser for integration tests and returns
+// the browser and a cleanup function. Calls t.Skip if Chrome is unavailable.
+func launchBrowser(t *testing.T) (*rod.Browser, func()) {
+	t.Helper()
+	l := launcher.New().Headless(true)
+	controlURL, err := l.Launch()
 	if err != nil {
 		t.Skipf("Chrome not available, skipping integration test: %v", err)
 	}
+	browser := rod.New().ControlURL(controlURL)
+	if err := browser.Connect(); err != nil {
+		l.Kill()
+		t.Skipf("failed to connect to browser: %v", err)
+	}
+	return browser, func() { browser.Close() }
+}
+
+func TestExecuteStepNavigate(t *testing.T) {
+	browser, cleanup := launchBrowser(t)
+	defer cleanup()
+
+	page, err := browser.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	if err != nil {
+		t.Fatalf("failed to create page: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	exec := New(10*time.Second, logger)
+
+	step := questgiver.Step{Action: "navigate", URL: "about:blank"}
+	var screenshotPath string
+	sr := exec.executeStep(page, step, 0, &screenshotPath)
+
+	if !sr.Passed {
+		t.Errorf("expected navigate step to pass, got error: %s", sr.Error)
+	}
+	if sr.Action != "navigate" {
+		t.Errorf("expected action 'navigate', got %q", sr.Action)
+	}
+	if sr.Duration <= 0 {
+		t.Error("expected positive duration")
+	}
+}
+
+func TestExecuteStepUnknownAction(t *testing.T) {
+	browser, cleanup := launchBrowser(t)
+	defer cleanup()
+
+	page, err := browser.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	if err != nil {
+		t.Fatalf("failed to create page: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	exec := New(10*time.Second, logger)
+
+	step := questgiver.Step{Action: "dance"}
+	var screenshotPath string
+	sr := exec.executeStep(page, step, 0, &screenshotPath)
+
+	if sr.Passed {
+		t.Error("expected unknown action to fail")
+	}
+	if sr.Error == "" {
+		t.Error("expected error message for unknown action")
+	}
+}
+
+func TestExecuteStopsOnFirstFailure(t *testing.T) {
+	// Verify Chrome is available without leaking a process.
+	_, cleanup := launchBrowser(t)
+	cleanup()
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	exec := New(10*time.Second, logger)
+
+	quest := &questgiver.Quest{
+		Name: "stop on failure",
+		Steps: []questgiver.Step{
+			{Action: "navigate", URL: "about:blank"},
+			{Action: "click", Selector: "#nonexistent-element-that-wont-exist"},
+			{Action: "navigate", URL: "about:blank"}, // Should not be reached.
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result := exec.Execute(ctx, quest)
+
+	if result.Passed {
+		t.Error("expected quest to fail")
+	}
+	if result.FailedStep != 1 {
+		t.Errorf("expected FailedStep 1, got %d", result.FailedStep)
+	}
+	// Third step should not have been executed.
+	if len(result.StepResults) != 2 {
+		t.Errorf("expected 2 step results (stopped at failure), got %d", len(result.StepResults))
+	}
+}
+
+func TestExecuteContextCancellation(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	exec := New(10*time.Second, logger)
+
+	// Cancel context before execution.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	quest := &questgiver.Quest{
+		Name: "cancelled quest",
+		Steps: []questgiver.Step{
+			{Action: "navigate", URL: "about:blank"},
+		},
+	}
+
+	result := exec.Execute(ctx, quest)
+
+	// With a cancelled context, we expect either a launch failure or a
+	// browser/page error — either way the result should not be Passed.
+	if result.Passed {
+		t.Error("expected quest to fail with cancelled context")
+	}
+	if result.ErrorMessage == "" {
+		t.Error("expected error message for cancelled context")
+	}
+}
+
+func TestIntegrationNavigate(t *testing.T) {
+	// Verify Chrome is available without leaking a process.
+	_, cleanup := launchBrowser(t)
+	cleanup()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	exec := New(30*time.Second, logger)
