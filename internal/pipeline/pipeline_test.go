@@ -1700,7 +1700,7 @@ func TestCombinedMode_FallbackProvider_RunsNormalWarden(t *testing.T) {
 	// Smith fell back to Claude (e.g. due to Copilot rate limit).
 	params.SmithRunner = immediateSmith(&smith.Result{
 		ExitCode:     0,
-				FullOutput:   "Done.\n\n```json\n{\"self_review\": {\"verdict\": \"approve\", \"concerns\": []}}\n```\n",
+			FullOutput:   "Done.\n\n```json\n{\"self_review\": {\"verdict\": \"approve\", \"concerns\": []}}\n```\n",
 		ProviderUsed: provider.Claude,
 	})
 
