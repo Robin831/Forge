@@ -677,3 +677,9 @@ rules:
       check: Verify that code waiting for a process to stop uses an active polling loop (e.g., checking IsRunning() with backoff and timeout) rather than a fixed sleep, to avoid races where the process hasn't fully released resources
       source: copilot:PR#293
       added: "2026-03-18"
+    - id: avoid-duplicate-logging-in-helpers-and-callers
+      category: style
+      pattern: A helper function logs a decision/reason AND the caller also logs about the same decision
+      check: When a helper returns a boolean decision, ensure only one site logs the outcome. Prefer returning (bool, reason) from the helper and letting the caller log once with full context (e.g., workerID), rather than having both the helper and caller emit overlapping log lines.
+      source: copilot:PR#296
+      added: "2026-03-19"
