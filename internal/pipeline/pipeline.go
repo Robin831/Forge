@@ -232,22 +232,25 @@ func logIngotErr(workerID, op string, err error) {
 // truncateOutput truncates s to at most maxRunes Unicode code points, cutting
 // at the last newline before the limit to avoid partial lines.
 func truncateOutput(s string, maxRunes int) string {
-	if utf8.RuneCountInString(s) <= maxRunes {
-		return s
-	}
-	// Walk maxRunes runes to find the byte offset of the cut point.
+	// Scan up to maxRunes+1 runes only — avoids O(n) count over large output.
 	byteOff := 0
-	for i := 0; i < maxRunes; i++ {
+	count := 0
+	for byteOff < len(s) {
 		_, size := utf8.DecodeRuneInString(s[byteOff:])
 		if size == 0 {
 			break
 		}
+		if count == maxRunes {
+			// Truncation needed — cut at last newline before the limit.
+			if idx := strings.LastIndex(s[:byteOff], "\n"); idx > 0 {
+				return s[:idx]
+			}
+			return s[:byteOff]
+		}
 		byteOff += size
+		count++
 	}
-	if idx := strings.LastIndex(s[:byteOff], "\n"); idx > 0 {
-		return s[:idx]
-	}
-	return s[:byteOff]
+	return s
 }
 
 // recordIngotTemperResults writes temper results and per-step test results to
@@ -266,6 +269,10 @@ func recordIngotTemperResults(db *state.DB, workerID, beadID, anvil string, temp
 		temperResult.FailedStep,
 		int(temperResult.Duration.Milliseconds()),
 	))
+	if ingotRec == nil || ingotRec.ID <= 0 {
+		// No valid ingot ID — skip per-step inserts to avoid FK violations.
+		return
+	}
 	for i, step := range temperResult.Steps {
 		tr := &ingot.TestResult{
 			IngotID:       ingotRec.ID,
@@ -379,7 +386,14 @@ func Run(ctx context.Context, p Params) *Outcome {
 		Status:   ingot.StatusInit,
 	}
 	if p.DB != nil {
-		logIngotErr(workerID, "insert", ingot.InsertIngot(p.DB.Conn(), ingotRec))
+		if err := ingot.InsertIngot(p.DB.Conn(), ingotRec); err != nil {
+			logIngotErr(workerID, "insert", err)
+			// On reruns the UNIQUE(bead_id, anvil) constraint fires — resolve the
+			// existing ingot so downstream steps have a valid ID for FK inserts.
+			if existing, getErr := ingot.GetIngot(p.DB.Conn(), p.Bead.ID, p.AnvilName); getErr == nil && existing != nil {
+				ingotRec.ID = existing.ID
+			}
+		}
 	}
 
 	// markIngotFailed is a convenience to set the ingot to "failed" on any

@@ -389,9 +389,10 @@ func (d *Daemon) ingotRecordPR(beadID, anvil string, prNumber int, prURL string)
 	if conn == nil {
 		return
 	}
-	prID := 0
+	var prID *int
 	if dbPR, err := d.db.GetPRByNumber(anvil, prNumber); err == nil && dbPR != nil {
-		prID = dbPR.ID
+		id := dbPR.ID
+		prID = &id
 	}
 	if err := ingot.UpdateIngotPR(conn, beadID, anvil, prNumber, prURL, prID); err != nil {
 		d.logger.Warn("ingot PR update failed", "bead", beadID, "error", err)
