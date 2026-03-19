@@ -299,6 +299,44 @@ CREATE TABLE IF NOT EXISTS pending_orphans (
     created_at TEXT NOT NULL,
     PRIMARY KEY (bead_id, anvil)
 );
+
+CREATE TABLE IF NOT EXISTS ingots (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    bead_id             TEXT NOT NULL,
+    anvil               TEXT NOT NULL,
+    pr_id               INTEGER REFERENCES prs(id),
+    worker_id           TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT 'init',
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    temper_passed       INTEGER,
+    temper_failed_step  TEXT NOT NULL DEFAULT '',
+    temper_duration_ms  INTEGER NOT NULL DEFAULT 0,
+    pr_number           INTEGER,
+    pr_url              TEXT NOT NULL DEFAULT '',
+    title               TEXT NOT NULL DEFAULT '',
+    branch              TEXT NOT NULL DEFAULT '',
+    UNIQUE(bead_id, anvil)
+);
+
+CREATE TABLE IF NOT EXISTS ingot_test_results (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    ingot_id         INTEGER NOT NULL REFERENCES ingots(id),
+    step_index       INTEGER NOT NULL DEFAULT 0,
+    step_name        TEXT NOT NULL DEFAULT '',
+    command          TEXT NOT NULL DEFAULT '',
+    exit_code        INTEGER NOT NULL DEFAULT 0,
+    duration_ms      INTEGER NOT NULL DEFAULT 0,
+    passed           INTEGER NOT NULL DEFAULT 0,
+    optional         INTEGER NOT NULL DEFAULT 0,
+    output_summary   TEXT NOT NULL DEFAULT '',
+    full_output_path TEXT NOT NULL DEFAULT '',
+    recorded_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingots_status ON ingots(status);
+CREATE INDEX IF NOT EXISTS idx_ingots_pr_id ON ingots(pr_id);
+CREATE INDEX IF NOT EXISTS idx_ingot_test_results_ingot_id ON ingot_test_results(ingot_id);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
