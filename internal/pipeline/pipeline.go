@@ -1045,6 +1045,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 		if shouldSkipWarden(diffStat, p.Bead, providers, p.CopilotSkipWardenSmallDiffs) {
 			log.Printf("[pipeline:%s] Skipping Warden review for small Copilot diff (lines_changed=%d, files_changed=%d, reason=low-risk diff under threshold)",
 				workerID, diffStat.LinesChanged, diffStat.FilesChanged)
+			_ = p.DB.LogEvent(state.EventWardenPass,
+				fmt.Sprintf("Warden skipped: small low-risk Copilot diff (%d lines, %d files)", diffStat.LinesChanged, diffStat.FilesChanged),
+				p.Bead.ID, p.AnvilName)
 			reviewResult = &warden.ReviewResult{
 				Verdict: warden.VerdictApprove,
 				Summary: fmt.Sprintf("Auto-approved: small low-risk diff (%d lines, %d files)", diffStat.LinesChanged, diffStat.FilesChanged),
