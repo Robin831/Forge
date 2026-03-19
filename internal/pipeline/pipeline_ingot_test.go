@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/provider"
@@ -156,7 +157,7 @@ func TestIngot_NilDB_DoesNotPanic(t *testing.T) {
 }
 
 // TestIngot_OutputTruncation verifies that long temper output is truncated to
-// approximately 1000 characters in the ingot test result.
+// approximately 1000 runes in the ingot test result.
 func TestIngot_OutputTruncation(t *testing.T) {
 	db := newTestDB(t)
 	params, _, _ := baseParams(t, db)
@@ -195,8 +196,8 @@ func TestIngot_OutputTruncation(t *testing.T) {
 	require.NotNil(t, got)
 	require.Len(t, got.TestResults, 1)
 
-	assert.LessOrEqual(t, len(got.TestResults[0].OutputSummary), 1000,
-		"output should be truncated to ~1000 chars")
+	assert.LessOrEqual(t, utf8.RuneCountInString(got.TestResults[0].OutputSummary), 1000,
+		"output should be truncated to ~1000 runes")
 }
 
 // TestTruncateOutput verifies the truncateOutput helper.
@@ -204,18 +205,20 @@ func TestTruncateOutput(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		maxBytes int
-		wantMax  int
+		maxRunes int
+		wantMax  int // max rune count in result
 	}{
 		{"short unchanged", "hello", 100, 5},
 		{"exact limit", "hello", 5, 5},
 		{"truncated at newline", "line1\nline2\nline3", 12, 12},
 		{"no newline", "abcdefghijklmnop", 10, 10},
+		{"multi-byte runes", "héllo wörld café", 8, 8},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := truncateOutput(tt.input, tt.maxBytes)
-			assert.LessOrEqual(t, len(got), tt.wantMax)
+			got := truncateOutput(tt.input, tt.maxRunes)
+			assert.LessOrEqual(t, utf8.RuneCountInString(got), tt.wantMax)
+			assert.True(t, utf8.ValidString(got), "result must be valid UTF-8")
 		})
 	}
 }

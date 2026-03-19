@@ -229,16 +229,25 @@ func logIngotErr(workerID, op string, err error) {
 	}
 }
 
-// truncateOutput truncates s to at most maxBytes, cutting at the last newline
-// before the limit to avoid partial lines.
-func truncateOutput(s string, maxBytes int) string {
-	if len(s) <= maxBytes {
+// truncateOutput truncates s to at most maxRunes Unicode code points, cutting
+// at the last newline before the limit to avoid partial lines.
+func truncateOutput(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
 		return s
 	}
-	if idx := strings.LastIndex(s[:maxBytes], "\n"); idx > 0 {
+	// Walk maxRunes runes to find the byte offset of the cut point.
+	byteOff := 0
+	for i := 0; i < maxRunes; i++ {
+		_, size := utf8.DecodeRuneInString(s[byteOff:])
+		if size == 0 {
+			break
+		}
+		byteOff += size
+	}
+	if idx := strings.LastIndex(s[:byteOff], "\n"); idx > 0 {
 		return s[:idx]
 	}
-	return s[:maxBytes]
+	return s[:byteOff]
 }
 
 // recordIngotTemperResults writes temper results and per-step test results to

@@ -36,6 +36,7 @@ import (
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/hotreload"
@@ -1993,6 +1994,16 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		d.logger.Error("failed to clear retry state", "bead", bead.ID, "error", dbErr)
 	}
 	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
+
+	// Best-effort ingot lifecycle tracking for PR creation.
+	if conn := d.db.Conn(); conn != nil {
+		if err := ingot.UpdateIngotPR(conn, bead.ID, bead.Anvil, pr.Number, pr.URL, pr.Number); err != nil {
+			d.logger.Warn("ingot PR update failed", "bead", bead.ID, "error", err)
+		}
+		if err := ingot.UpdateIngotStatus(conn, bead.ID, bead.Anvil, ingot.StatusPROpen); err != nil {
+			d.logger.Warn("ingot status update to pr_open failed", "bead", bead.ID, "error", err)
+		}
+	}
 
 	disp := d.dispatcher.Load()
 	go func(anvil, beadID, prURL, prTitle string, prNumber int, dur time.Duration) {
@@ -4107,6 +4118,15 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		d.logger.Info("warden_rerun: PR created", "bead", beadID, "pr", pr.URL)
 		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 		_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created: %s", pr.Number, pr.URL), beadID, anvil)
+		// Best-effort ingot lifecycle tracking.
+		if conn := d.db.Conn(); conn != nil {
+			if err := ingot.UpdateIngotPR(conn, beadID, anvil, pr.Number, pr.URL, pr.Number); err != nil {
+				d.logger.Warn("ingot PR update failed", "bead", beadID, "error", err)
+			}
+			if err := ingot.UpdateIngotStatus(conn, beadID, anvil, ingot.StatusPROpen); err != nil {
+				d.logger.Warn("ingot status update to pr_open failed", "bead", beadID, "error", err)
+			}
+		}
 	} else {
 		d.logger.Info("warden_rerun: not approved", "bead", beadID, "verdict", result.Verdict, "summary", result.Summary)
 		_ = d.db.LogEvent(state.EventWardenReject, fmt.Sprintf("Warden re-review: %s — %s", result.Verdict, result.Summary), beadID, anvil)
@@ -4182,6 +4202,15 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 	d.logger.Info("approve_as_is: PR created", "bead", beadID, "pr", pr.URL)
 	_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 	_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created (approved as-is): %s", pr.Number, pr.URL), beadID, anvil)
+	// Best-effort ingot lifecycle tracking.
+	if conn := d.db.Conn(); conn != nil {
+		if err := ingot.UpdateIngotPR(conn, beadID, anvil, pr.Number, pr.URL, pr.Number); err != nil {
+			d.logger.Warn("ingot PR update failed", "bead", beadID, "error", err)
+		}
+		if err := ingot.UpdateIngotStatus(conn, beadID, anvil, ingot.StatusPROpen); err != nil {
+			d.logger.Warn("ingot status update to pr_open failed", "bead", beadID, "error", err)
+		}
+	}
 }
 
 // handleForceSmith re-invokes smith on the same branch with existing warden
