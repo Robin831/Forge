@@ -683,3 +683,21 @@ rules:
       check: When a helper returns a boolean decision, ensure only one site logs the outcome. Prefer returning (bool, reason) from the helper and letting the caller log once with full context (e.g., workerID), rather than having both the helper and caller emit overlapping log lines.
       source: copilot:PR#296
       added: "2026-03-19"
+    - id: sanitize-llm-output-in-prompts
+      category: security
+      pattern: LLM-generated text or prior feedback interpolated directly into a prompt string without fencing or sanitization
+      check: Verify that any untrusted or LLM-originated text embedded into prompts is wrapped in fenced blocks (e.g., XML-style tags) with an explicit instruction to treat it as data only, and that prompt-breaking characters (e.g., triple backticks) are escaped or stripped before interpolation
+      source: copilot:PR#306
+      added: "2026-03-19"
+    - id: test-new-review-loop-behavior
+      category: testing
+      pattern: Adding or changing behavior in the Warden review loop (e.g., passing prior feedback, toggling re-review modes) in pipeline.go
+      check: "Verify that new or modified Warden re-review behavior is covered by a unit test: assert that across multiple iterations the correct prior feedback string is passed (non-empty when focused re-review is active, empty when full re-review is enabled)"
+      source: copilot:PR#306
+      added: "2026-03-19"
+    - id: sanitized-id-consistent-use
+      category: security
+      pattern: A variable is sanitized (e.g. safeID) but the original unsanitized value is still used elsewhere in the same function, especially in string interpolation or template formatting
+      check: When untrusted input is sanitized into a safe variable, verify that ALL subsequent references use the sanitized version consistently — no code path should fall back to the raw value, particularly in fmt.Sprintf, template execution, or prompt construction
+      source: copilot:PR#306
+      added: "2026-03-19"
