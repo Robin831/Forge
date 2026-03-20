@@ -1303,6 +1303,11 @@ const (
 	EventAdventurerPassed   EventType = "adventurer_passed"
 	EventAdventurerFailed   EventType = "adventurer_failed"
 	EventTestBeadCreated    EventType = "test_bead_created"
+
+	// Smelter events — batch warden rule flushing.
+	EventSmelterStarted EventType = "smelter_started"
+	EventSmelterFlushed EventType = "smelter_flushed"
+	EventSmelterFailed  EventType = "smelter_failed"
 )
 
 // Event represents a logged event.
