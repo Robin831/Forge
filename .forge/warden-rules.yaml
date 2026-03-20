@@ -1292,10 +1292,10 @@ rules:
     - id: zero-interval-ticker-panic
       category: error-handling
       pattern: >-
-        time.NewTicker called with a duration that could be zero or negative based on configuration
+        time.NewTicker called with a duration that could be zero or negative based on configuration, including intervals that may be changed at runtime (e.g., via hot-reload)
       check: >-
-        Verify that time.NewTicker is never called with a zero or negative duration. If an interval of 0 means 'disabled', add a guard before ticker creation to skip scheduling (e.g. block on ctx.Done() or return early) instead of panicking at runtime.
-      source: copilot:PR#362
+        Verify that time.NewTicker is never called with a zero or negative duration. If an interval of 0 means 'disabled', add a guard before ticker creation to skip scheduling (e.g. block on ctx.Done() or return early) instead of panicking at runtime. For hot-reload scenarios where the interval can change at runtime, also verify that setting the interval to zero or negative actually pauses/stops the ticker rather than being silently ignored, and that the ticker can be re-enabled when a positive value is later provided.
+      source: copilot:PR#362,copilot:PR#366
       added: "2026-03-20"
     - id: emit-event-on-empty-flush
       category: error-handling
@@ -1334,14 +1334,6 @@ rules:
         Worker or goroutine creation gated by both an enabled flag AND a secondary config value at startup
       check: >-
         Verify that conditionally-started workers are created when enabled regardless of scheduling parameters, so hot-reload can later start/stop them when config values change at runtime
-      source: copilot:PR#366
-      added: "2026-03-20"
-    - id: hot-reload-ticker-zero-interval
-      category: concurrency
-      pattern: >-
-        A ticker or periodic scheduler that accepts an interval value which can be changed at runtime (e.g., via hot-reload)
-      check: >-
-        Verify that setting the interval to zero or a negative value actually pauses/stops the ticker rather than being silently ignored, and that the ticker can be re-enabled when a positive value is later provided
       source: copilot:PR#366
       added: "2026-03-20"
     - id: non-blocking-channel-send
