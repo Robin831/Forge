@@ -8,6 +8,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.9.0] - 2026-03-20
+
+### Added
+
+- **Adventurer browser executor** - New `internal/adventurer` package using Rod (go-rod/rod) for headless Chrome automation. Executes quest steps (navigate, fill, click, wait, assert, screenshot) with per-step timing and graceful error handling. (Forge-i0fr)
+- **Batch CI fix and review fix modes for Copilot** - New `copilot_batch_ci_fixes` and `copilot_batch_review_fixes` settings combine multiple CI failures or review comments into a single Smith invocation, saving 1-3 premium requests per PR when using Copilot. Both default to false (opt-in). (Forge-99pk)
+- **Changelog fragment format validation** - `forge changelog validate` (no args) now reports all malformed fragments instead of stopping at the first error. The release formula runs this check before assembly so bad fragments are caught early with clear error messages. (Forge-42fk)
+- **Combined Smith+Warden prompt for Copilot single-request mode** - When `copilot_combined_smith_warden` is enabled and the primary provider is Copilot, Warden review criteria are embedded into the Smith prompt so Smith self-reviews its own diff. A real Warden still runs for P0-P1 beads, when concerns are flagged, or via configurable random sampling (`copilot_warden_sample_rate`, default 10%). Saves 1+ premium requests per bead. Config defaults to opt-in false with 10% sample rate. (Forge-d4ey)
+- **Config file and disk space doctor checks** - `forge doctor` now warns about missing or unreadable config files, world-readable permissions (Unix), and low disk space (<1 GiB) on the forge directory and anvil volumes. Added `--strict` flag to treat warnings as failures. The release formula now runs `forge doctor --strict` as a pre-release gate. (Forge-cxwi)
+- **Ingot lifecycle tracking in pipeline** - Every bead processed through pipeline.Run() now gets a corresponding ingot record tracking its journey through init, smith, temper, warden, approved, pr_open, and failed stages. Temper step results are recorded as structured test results with rune-based output truncation. PR creation updates ingot records with PR number and URL. All ingot writes are best-effort and never fail the pipeline. (Forge-y41p)
+- **Ingot status counts in Hearth dashboard** - The Usage panel now shows a summary of ingot counts by pipeline status (smith, temper, warden, pr_open, merged, failed, etc.), giving operators a quick view of ingot pipeline health. (Forge-dw3n)
+- **Ingot status updates on PR lifecycle events** - Bellows now updates ingot status to "pr_merged" when a PR is merged and "failed" when a PR is closed without merge, completing the ingot lifecycle tracking. (Forge-4eia)
+- **New `internal/ingot` package with schema, types, and CRUD operations** - Introduces the `Ingot` data model that bundles a bead, PR, worker lifecycle, and structured test results into a single queryable record. Adds `ingots` and `ingot_test_results` tables via a new state migration, along with full CRUD operations (`InsertIngot`, `UpdateIngotStatus`, `UpdateIngotTemperResults`, `UpdateIngotPR`, `GetIngot`, `GetIngotsByStatus`, `InsertTestResult`, `GetTestResults`). (Forge-czem)
+- **New forge doctor checks for git, provider CLIs, and provider auth** - Doctor now verifies git is in PATH (with version), checks that each configured provider's CLI binary is available, and validates per-provider authentication (API keys, OAuth, GitHub auth). (Forge-9507)
+- **Per-anvil VCS provider support** - Each anvil now uses its own VCS provider based on its `platform` config setting instead of hardcoding GitHub for all anvils. Supports GitHub, GitLab, and Gitea. Providers are rebuilt on config hot-reload when anvil platforms change. (Forge-cdp4)
+- **Quest CLI commands** - Added `forge quest list` and `forge quest run` subcommands for discovering and manually executing E2E quests across anvils. (Forge-9c3i)
+- **Quest types and YAML parsing for QuestGiver** - Added `internal/questgiver` package with Quest and Step structs, YAML parsing via `ParseQuest`, and directory-based discovery via `DiscoverQuests`. (Forge-oihe)
+- **QuestGiver configuration and daemon integration** - Added `questgiver_enabled`, `questgiver_interval`, and `adventurer_timeout` settings, per-anvil QuestGiver fields (`questgiver_enabled`, `questgiver_base_url`, `questgiver_setup_cmd`, `questgiver_teardown_cmd`), and wired the QuestGiver monitor into the daemon lifecycle with hot-reload support. (Forge-91p4)
+- **QuestGiver monitor for E2E quest execution** - Adds a background monitor that polls anvils for quest definitions, executes them via the Adventurer browser executor, and automatically creates bug beads on failure with deduplication to prevent duplicates. (Forge-ghtw)
+- **Skip Warden review for small Copilot diffs** - New opt-in setting `copilot_skip_warden_small_diffs` auto-approves small, low-risk diffs when the primary provider is Copilot, saving one premium request per skipped review. Applies when all criteria are met: ≤100 lines changed, docs/tests-only or ≤2 files, no security-sensitive paths, and P3+ priority. (Forge-mvqd)
+- **Staggered anvil poll timers** - Anvil polls are now evenly distributed across the poll interval instead of all firing simultaneously, reducing burst load on Dolt and git. (Forge-w5x0)
+- **Warden focused re-review on subsequent iterations** - When the Warden requests changes, subsequent reviews now only check whether the previously raised issues were addressed, instead of doing a full independent review. This prevents the 'whack-a-mole' pattern where each fix triggers new unrelated feedback and burns through iterations without converging. A new `warden_full_rereview` config toggle (default: false) reverts to the previous full-review-every-iteration behavior. (Forge-fwp7)
+- **`forge ingots list` and `forge ingots show` CLI commands** - Query ingot records (bead lifecycle snapshots) from the daemon. List supports `--anvil` and `--status` filters; show displays full detail with temper test results. (Forge-wfc8)
+- **`forge update` command for self-updating the binary** - Downloads the latest release from GitHub, verifies the checksum if a checksums file is present, gracefully stops the daemon, replaces the binary (with a `.bak` rollback on failure), and restarts the daemon. Works without Go installed. `forge status` now hints when a newer release is available. (Forge-1xir)
+- **`warden_model_override` and `schematic_model_override` config settings** - Route Warden review and Schematic pre-analysis to a cheaper Copilot model (e.g. `claude-haiku-4-5` at 0.33× premium) while keeping Smith on a stronger model (`claude-sonnet-4-6` at 1×). Only Copilot provider entries are affected; non-Copilot providers are unchanged. (Forge-mtfa)
+- **forge doctor: Dolt connectivity, depcheck tooling, and changelog fragment checks** - Added three new health checks: beads database connectivity verification via `bd list`, ecosystem-aware depcheck tooling detection (Go/npm/.NET), and changelog fragment validation for parse errors. (Forge-5rt6)
+
+### Changed
+
+- **Platform-aware `gh` check in `forge doctor`** - The GitHub CLI check now only runs when at least one anvil uses the GitHub platform. Non-GitHub setups (GitLab, Gitea, Bitbucket, Azure DevOps) no longer report a false failure for missing `gh`. (Forge-khg5)
+- **Skip Schematic pre-analysis when primary provider is Copilot** - Copilot charges per-request rather than per-token, so Schematic pre-analysis would consume an extra premium request. The phase is now skipped automatically when the first provider in the chain is Copilot, unless the bead is tagged "decompose". (Forge-qkn6)
+- **Update modernc.org/sqlite v1.46.1 → v1.47.0** - Routine minor version update of the SQLite driver dependency. (Forge-neab)
+
+### Fixed
+
+- **Allow all lifecycle actions on non-bead PRs** - The BeadID guard was too broad, blocking burnish/quench/rebase on PRs with no associated bead (e.g. warden-learn PRs). Added IsManual flag so both automatic and manual actions work on non-bead PRs. (Forge-3l3w)
+- **Bellows no longer flags CI as failed while checks are still in progress** - Added proper handling for GitHub StatusContext items (legacy commit status API) alongside CheckRun items in CI status evaluation. Fixed edge cases where COMPLETED checks with empty conclusions (transient state) and REQUESTED status were not detected as in-progress. (Forge-d793)
+- **Bellows no longer flags CI as failed while checks are still running** - Previously, bellows would emit `ci_failed` events when any CI check had a non-success conclusion, including checks that were still in progress. Now bellows waits until all checks have completed before evaluating CI status, preventing false failure events and unnecessary cifix attempts. (Forge-68vu)
+- **Depcheck npm scanner now syncs node_modules before scanning** - Runs `npm install --ignore-scripts` before `npm outdated` so reported versions match the lock file instead of potentially stale installed versions. (Forge-cehs)
+- **Handle PR creation failures and duplicate PRs in finalizePipeline** - PR creation errors now log a DB event, mark the bead as needs_human, and update worker status to failed. Duplicate PR detection uses a VCS-layer sentinel error (`ErrPRAlreadyExists`) instead of fragile string matching, and marks the worker as done instead of leaving it stranded in monitoring state. All DB write errors (UpdateWorkerStatus, ClearRetry) are logged instead of silently discarded. (Forge-yvu6)
+- **close bead immediately when PR merged via IPC (Forge-xxn4)** (Forge-xxn4)
+- **depcheck aborts scan when git pull fails on anvil (Forge-5qce)** (Forge-5qce)
+- **log dispatch failure to event log on every attempt (Forge-eyds)** (Forge-eyds)
+- **run bead close in background after IPC merge to avoid timeout (Forge-kox3)** (Forge-kox3)
+
 ## [0.8.0] - 2026-03-16
 
 ### Added

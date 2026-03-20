@@ -1,2 +1,0 @@
-category: Added
-- **Ingot lifecycle tracking in pipeline** - Every bead processed through pipeline.Run() now gets a corresponding ingot record tracking its journey through init, smith, temper, warden, approved, pr_open, and failed stages. Temper step results are recorded as structured test results with rune-based output truncation. PR creation updates ingot records with PR number and URL. All ingot writes are best-effort and never fail the pipeline. (Forge-y41p)
