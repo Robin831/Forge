@@ -69,12 +69,29 @@ That's my verdict.`
 }
 
 func TestParseVerdict_PlainFence(t *testing.T) {
+	output := "```\n" + `{"action":"decompose","sub_tasks":[{"title":"Task A","description":"Detailed desc A"},{"title":"Task B","description":"Detailed desc B"}],"reason":"Too large"}` + "\n```"
+
+	v, err := parseVerdict(output)
+	require.NoError(t, err)
+	assert.Equal(t, "decompose", v.Action)
+	require.Len(t, v.SubTasks, 2)
+	assert.Equal(t, "Task A", v.SubTasks[0].Title)
+	assert.Equal(t, "Detailed desc A", v.SubTasks[0].Description)
+	assert.Equal(t, "Task B", v.SubTasks[1].Title)
+	assert.Equal(t, "Detailed desc B", v.SubTasks[1].Description)
+}
+
+func TestParseVerdict_LegacySubTasksStringArray(t *testing.T) {
 	output := "```\n" + `{"action":"decompose","sub_tasks":["Task A","Task B"],"reason":"Too large"}` + "\n```"
 
 	v, err := parseVerdict(output)
 	require.NoError(t, err)
 	assert.Equal(t, "decompose", v.Action)
-	assert.Equal(t, []string{"Task A", "Task B"}, v.SubTasks)
+	require.Len(t, v.SubTasks, 2)
+	assert.Equal(t, "Task A", v.SubTasks[0].Title)
+	assert.Equal(t, "", v.SubTasks[0].Description)
+	assert.Equal(t, "Task B", v.SubTasks[1].Title)
+	assert.Equal(t, "", v.SubTasks[1].Description)
 }
 
 func TestParseVerdict_RawJSON(t *testing.T) {
@@ -198,7 +215,11 @@ func newFakeRunner() *fakeRunner {
 func TestCreateSubBeads_SequentialDepsAdded(t *testing.T) {
 	fake := newFakeRunner()
 	parent := poller.Bead{ID: "parent-1", Title: "Big feature", Priority: 2}
-	tasks := []string{"Task A", "Task B", "Task C"}
+	tasks := []subTaskVerdict{
+		{Title: "Task A", Description: "Detailed description for Task A"},
+		{Title: "Task B", Description: "Detailed description for Task B"},
+		{Title: "Task C", Description: "Detailed description for Task C"},
+	}
 
 	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
 	require.NoError(t, err)
@@ -253,7 +274,10 @@ func TestCreateSubBeads_DepAddFailureIsFatal(t *testing.T) {
 	}
 
 	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2}
-	tasks := []string{"Task A", "Task B"}
+	tasks := []subTaskVerdict{
+		{Title: "Task A", Description: "Desc A"},
+		{Title: "Task B", Description: "Desc B"},
+	}
 
 	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
 	// Must return an error so the caller can escalate to ActionClarify.
@@ -267,7 +291,7 @@ func TestCreateSubBeads_SingleTaskNoDep(t *testing.T) {
 	fake := newFakeRunner()
 	parent := poller.Bead{ID: "parent-1", Title: "Simple task", Priority: 1}
 
-	subs, err := createSubBeads(context.Background(), parent, []string{"Only task"}, "/tmp", fake.run)
+	subs, err := createSubBeads(context.Background(), parent, []subTaskVerdict{{Title: "Only task", Description: "Single task desc"}}, "/tmp", fake.run)
 	require.NoError(t, err)
 	require.Len(t, subs, 1)
 
