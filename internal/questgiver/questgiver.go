@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
@@ -99,28 +100,36 @@ func (m *Monitor) scan(ctx context.Context) {
 		}
 	}
 
-	_ = m.db.LogEvent(state.EventQuestgiverScanDone, "quest scan complete", "", "")
+	if err := m.db.LogEvent(state.EventQuestgiverScanDone, "quest scan complete", "", ""); err != nil {
+		m.logger.Warn("failed to log scan-done event", "error", err)
+	}
 }
 
 // runQuest executes a single quest and handles the result.
 func (m *Monitor) runQuest(ctx context.Context, anvilName, anvilPath string, quest *Quest) {
 	m.logger.Info("starting quest", "quest", quest.Name, "anvil", anvilName)
-	_ = m.db.LogEvent(state.EventAdventurerStarted, quest.Name, "", anvilName)
+	if err := m.db.LogEvent(state.EventAdventurerStarted, quest.Name, "", anvilName); err != nil {
+		m.logger.Warn("failed to log adventurer-started event", "quest", quest.Name, "error", err)
+	}
 
 	executor := m.newExec()
 	result := executor.Execute(ctx, quest)
 
 	if result.Passed {
 		m.logger.Info("quest passed", "quest", quest.Name, "anvil", anvilName, "duration", result.Duration)
-		_ = m.db.LogEvent(state.EventAdventurerPassed, quest.Name, "", anvilName)
+		if err := m.db.LogEvent(state.EventAdventurerPassed, quest.Name, "", anvilName); err != nil {
+			m.logger.Warn("failed to log adventurer-passed event", "quest", quest.Name, "error", err)
+		}
 		return
 	}
 
 	m.logger.Warn("quest failed", "quest", quest.Name, "anvil", anvilName,
 		"step", result.FailedStep, "error", result.ErrorMessage)
-	_ = m.db.LogEvent(state.EventAdventurerFailed,
+	if err := m.db.LogEvent(state.EventAdventurerFailed,
 		fmt.Sprintf("%s: step %d — %s", quest.Name, result.FailedStep, result.ErrorMessage),
-		"", anvilName)
+		"", anvilName); err != nil {
+		m.logger.Warn("failed to log adventurer-failed event", "quest", quest.Name, "error", err)
+	}
 
 	if isDuplicate(ctx, anvilPath, quest.Name) {
 		m.logger.Info("duplicate bead exists, skipping creation", "quest", quest.Name, "anvil", anvilName)
@@ -154,29 +163,9 @@ func isDuplicate(ctx context.Context, anvilPath, questName string) bool {
 	if err := json.Unmarshal(out, &beads); err != nil {
 		return strings.Contains(string(out), prefix)
 	}
+	// bd list --status=open returns both open and in_progress beads,
+	// so a single call is sufficient for deduplication.
 	for _, b := range beads {
-		if strings.Contains(b.Title, prefix) && (b.Status == "open" || b.Status == "in_progress") {
-			return true
-		}
-	}
-
-	// Also check in_progress status.
-	cmdCtx2, cancel2 := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel2()
-
-	cmd2 := executil.HideWindow(exec.CommandContext(cmdCtx2,
-		"bd", "list", "--status=in_progress", "--limit", "0", "--json"))
-	cmd2.Dir = anvilPath
-	out2, err := cmd2.Output()
-	if err != nil {
-		return false
-	}
-
-	var beads2 []bdBead
-	if err := json.Unmarshal(out2, &beads2); err != nil {
-		return strings.Contains(string(out2), prefix)
-	}
-	for _, b := range beads2 {
 		if strings.Contains(b.Title, prefix) {
 			return true
 		}
@@ -194,7 +183,7 @@ func (m *Monitor) createBead(ctx context.Context, anvilName, anvilPath string, q
 
 	title := fmt.Sprintf("E2E failure: %s — step %d (%s)", quest.Name, result.FailedStep, result.ErrorMessage)
 	if len(title) > 200 {
-		title = title[:197] + "..."
+		title = truncateUTF8(title, 197) + "..."
 	}
 
 	description := fmt.Sprintf(
@@ -218,6 +207,20 @@ func (m *Monitor) createBead(ctx context.Context, anvilName, anvilPath string, q
 	}
 
 	m.logger.Info("created bead for quest failure", "quest", quest.Name, "anvil", anvilName)
-	_ = m.db.LogEvent(state.EventTestBeadCreated,
-		fmt.Sprintf("E2E failure: %s", quest.Name), "", anvilName)
+	if err := m.db.LogEvent(state.EventTestBeadCreated,
+		fmt.Sprintf("E2E failure: %s", quest.Name), "", anvilName); err != nil {
+		m.logger.Warn("failed to log test-bead-created event", "quest", quest.Name, "error", err)
+	}
+}
+
+// truncateUTF8 truncates s to at most maxBytes bytes without splitting a
+// multi-byte UTF-8 character.
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes]
 }

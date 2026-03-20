@@ -106,6 +106,30 @@ func TestRunCancellation(t *testing.T) {
 	}
 }
 
+func TestTruncateUTF8(t *testing.T) {
+	// ASCII-only: should truncate cleanly at byte boundary.
+	s := strings.Repeat("a", 210)
+	got := truncateUTF8(s, 197)
+	if len(got) != 197 {
+		t.Errorf("ASCII truncation: len = %d, want 197", len(got))
+	}
+
+	// Multi-byte: em dash (—) is 3 bytes (E2 80 94).
+	// Build a string where byte 197 falls mid-character.
+	base := strings.Repeat("x", 195) + "—" // 195 + 3 = 198 bytes
+	got = truncateUTF8(base, 197)
+	if len(got) != 195 {
+		t.Errorf("multi-byte truncation: len = %d, want 195 (should back up past partial rune)", len(got))
+	}
+
+	// Short string: should return unchanged.
+	short := "hello"
+	got = truncateUTF8(short, 200)
+	if got != short {
+		t.Errorf("short string: got %q, want %q", got, short)
+	}
+}
+
 // hasDuplicateInJSON is a test helper that checks parsed bd list JSON output
 // for a duplicate quest bead, mirroring the logic in isDuplicate without
 // needing to shell out to bd.
