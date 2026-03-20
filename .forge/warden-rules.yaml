@@ -925,4 +925,21 @@ rules:
       check: Verify that peer-dependency or cross-package relationship lookups are scoped to the correct ecosystem. A shared set containing packages from all ecosystems can incorrectly union unrelated packages that happen to share a name across ecosystems (e.g., an npm peer-dep name matching a Go module). Use ecosystem-specific sets for adjacency and dependency accounting.
       source: copilot:PR#338
       added: "2026-03-20"
-
+    - id: keybinding-scope-conflict
+      category: ui
+      pattern: Adding or modifying global keybindings in a multi-view TUI (e.g. Bubble Tea key handlers that apply across all views)
+      check: Verify that new keybindings do not conflict with existing navigation in other views. Scope view-specific shortcuts behind a view-type check (e.g. only bind in list view, not kanban) so that standard navigation (vim-style hjkl, arrow keys) remains functional in all modes.
+      source: copilot:PR#342
+      added: "2026-03-20"
+    - id: empty-form-overwrites-existing-data
+      category: ui
+      pattern: Form submit/submit-handler logic that writes user input to a persistent field (notes, description, metadata) without checking whether the input is non-empty, non-blank, or changed from the existing value
+      check: Verify that submitting an empty, blank, or unchanged form field does not silently overwrite existing data — either treat empty/blank input as a no-op, validate and block submission, or prefill the form with the current value so the user edits rather than replaces blindly. Form action handlers should guard against empty/blank input before issuing update commands to prevent unintentional clearing of existing values.
+      source: copilot:PR#342
+      added: "2026-03-20"
+    - id: dedup-priority-mapping
+      category: style
+      pattern: Switch statement or map converting priority strings to integers (e.g. 'high'→1, 'medium'→2)
+      check: Verify that priority string-to-int conversion is not duplicated across code paths. It should be factored into a shared helper function (or use strconv.Atoi with bounds checking) so all callers stay consistent.
+      source: copilot:PR#342
+      added: "2026-03-20"
