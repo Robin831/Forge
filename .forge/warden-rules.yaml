@@ -725,3 +725,39 @@ rules:
       check: "When a Cobra command prints its own failure summary before returning an error, set SilenceUsage: true on the command and either return a descriptive error (including relevant context like IDs or names) or use SilenceErrors to avoid Cobra double-printing a less-helpful generic message"
       source: copilot:PR#316
       added: "2026-03-20"
+    - id: unused-declarations
+      category: style
+      pattern: Type, variable, or import declarations that are not referenced anywhere in the surrounding code
+      check: Verify that all declared types, variables, and imports are actually used — Go treats unused declarations as compilation errors
+      source: copilot:PR#320
+      added: "2026-03-20"
+    - id: bd-list-missing-limit
+      category: other
+      pattern: Calls to `bd list` or `bdExec` with `list` subcommand
+      check: Verify that `--limit 0` is passed to all `bd list` invocations that need the complete set of results, otherwise the default limit may silently truncate the list
+      source: copilot:PR#320
+      added: "2026-03-20"
+    - id: capture-non-critical-errors
+      category: error-handling
+      pattern: Goroutine or background task silently discards errors from non-critical operations (e.g., bare `return` after an error check with no logging or propagation)
+      check: Verify that errors from supplementary/non-critical operations are captured (e.g., stored in a shared firstErr variable or accumulated as warnings) so the caller or UI can surface them, rather than being silently swallowed
+      source: copilot:PR#320
+      added: "2026-03-20"
+    - id: propagate-enrichment-errors
+      category: error-handling
+      pattern: When a secondary data-fetching call (e.g. enrichment, decoration) fails and the error is assigned to _ or ignored
+      check: Verify that errors from enrichment/decoration calls are either propagated to the caller or surfaced to the user so they know the result is incomplete
+      source: copilot:PR#320
+      added: "2026-03-20"
+    - id: guard-periodic-fetch-overlap
+      category: concurrency
+      pattern: A periodic timer (tick, interval) triggers an async fetch or external process call without tracking whether a previous invocation is still in flight
+      check: Verify that periodic/timer-triggered async operations (e.g., polling external commands, fetching data) have an in-flight guard or cancellation mechanism to prevent overlapping executions from piling up goroutines or processes when the operation is slower than the tick interval
+      source: copilot:PR#320
+      added: "2026-03-20"
+    - id: pr-description-matches-contents
+      category: other
+      pattern: PR description references files, components, or deliverables
+      check: Verify that every file, component, or artifact mentioned in the PR description is actually included in the changeset. If something listed is not shipped, either add it or update the description to match what is actually being delivered.
+      source: copilot:PR#320
+      added: "2026-03-20"
