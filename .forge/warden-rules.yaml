@@ -1234,3 +1234,39 @@ rules:
         Verify that the stated count in PR metadata (title, description, commit message) actually matches the diff — e.g. if it says 'learn 1 new rule' confirm exactly 1 new rule entry was added, not just an edit to an existing one
       source: copilot:PR#349
       added: "2026-03-20"
+    - id: unreachable-early-return
+      category: other
+      pattern: Early return guard checking for empty slices or nil values on results from functions that guarantee non-empty output (e.g., fallback/default values)
+      check: Verify that early-return guards on function results are actually reachable — if the called function guarantees a non-empty result (e.g., by adding a fallback/default entry), the guard is dead code. Either remove it or adjust it to detect the fallback value if a true 'no-op' mode is intended.
+      source: copilot:PR#346
+      added: "2026-03-20"
+    - id: resolve-go-race-detection-config
+      category: testing
+      pattern: Code that reads GoRaceDetection from a single config source (e.g., anvilConfig.GoRaceDetection) instead of using the full resolution chain
+      check: Verify that GoRaceDetection is resolved using the full precedence chain (.forge/temper.yaml > per-anvil config > global config) rather than reading from a single config level. Use the shared resolution helper (e.g., config.ResolveGoRaceDetection or Daemon.resolveGoRaceDetection) to ensure consistent behavior with the main Temper pipeline.
+      source: copilot:PR#346
+      added: "2026-03-20"
+    - id: git-checkout-vs-reset-hard
+      category: error-handling
+      pattern: Code using `git checkout -- .` to discard uncommitted changes
+      check: Verify that rollback/discard operations reset both the index and working tree. `git checkout -- .` only restores from the index and leaves staged changes intact. Prefer `git reset --hard` (or `git reset --hard` followed by `git clean -fd` if untracked files matter) to ensure the repo is fully clean.
+      source: copilot:PR#346
+      added: "2026-03-20"
+    - id: git-clean-ignored-artifacts
+      category: other
+      pattern: git clean commands used to undo install or build side-effects
+      check: Verify git clean uses -fdx or -fdX to also remove ignored files/directories (e.g., node_modules/, bin/, obj/) when the intent is to fully undo install side-effects. Plain -fd leaves ignored artifacts behind.
+      source: copilot:PR#346
+      added: "2026-03-20"
+    - id: doc-matches-implementation
+      category: style
+      pattern: Function or method doc comments that describe error behavior, return values, or fallback logic
+      check: Verify that doc comments accurately describe the actual implementation behavior — especially around error returns, fallback paths, and edge cases. If the code silently falls back instead of returning an error, the comment must not claim an error is returned, and vice versa.
+      source: copilot:PR#346
+      added: "2026-03-20"
+    - id: test-helper-filesystem-errors
+      category: testing
+      pattern: Test helper functions calling os.WriteFile, os.MkdirAll, os.Create, or similar filesystem operations without checking the returned error
+      check: Verify that all filesystem operations in test helpers (os.WriteFile, os.MkdirAll, os.Create, etc.) have their errors checked, typically with require.NoError(t, err), so that fixture setup failures are caught immediately rather than causing misleading test failures downstream
+      source: copilot:PR#346
+      added: "2026-03-20"
