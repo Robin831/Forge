@@ -3,7 +3,6 @@
 package ledger
 
 import (
-	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +13,13 @@ import (
 
 // refreshInterval controls how often the ledger auto-refreshes bead data.
 const refreshInterval = 30 * time.Second
+
+// ViewMode determines which screen the Ledger is showing.
+type ViewMode int
+
+const (
+	ViewList ViewMode = iota
+)
 
 // tickMsg triggers a periodic data refresh.
 type tickMsg struct{}
@@ -34,31 +40,52 @@ type Model struct {
 	width  int
 	height int
 
+	view   ViewMode
+	list   listState
+	// sortChoice holds the pointer used by the huh sort selector form.
+	sortChoice *string
+
 	anvils map[string]string // name → path
 	db     *state.DB
 }
 
 // NewModel creates a new Ledger model.
-func NewModel(anvils map[string]string, db *state.DB) Model {
-	return Model{
+func NewModel(anvils map[string]string, db *state.DB) *Model {
+	return &Model{
 		anvils:  anvils,
 		db:      db,
 		loading: true,
+		view:    ViewList,
 	}
 }
 
 // Init schedules the initial data fetch and periodic refresh tick.
-func (m Model) Init() tea.Cmd {
+func (m *Model) Init() tea.Cmd {
 	return tea.Batch(tickCmd(), FetchAllBeads(m.anvils, m.db))
 }
 
 // Update handles incoming messages.
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
+		// Global quit key: always handle ctrl+c, even when forms/overlays are active.
+		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
+		}
+
+		// Global quit key "q" (only when sort form is not open).
+		if m.list.sortForm == nil {
+			switch msg.String() {
+			case "q":
+				return m, tea.Quit
+			}
+		}
+
+		// Delegate to view-specific handler.
+		switch m.view {
+		case ViewList:
+			cmd := m.updateList(msg)
+			return m, cmd
 		}
 
 	case tea.WindowSizeMsg:
@@ -70,9 +97,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetching = false
 		m.beads = msg.Beads
 		m.err = msg.Err
+		m.list.vp.ClampToTotal(len(m.beads))
 
 	case tickMsg:
-		// Only launch a new fetch if no fetch is already in-flight.
 		if m.fetching {
 			return m, tickCmd()
 		}
@@ -83,55 +110,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View renders the current state.
-func (m Model) View() string {
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(colorAccent).
-		Padding(1, 2)
-
+func (m *Model) View() string {
 	if m.loading {
+		titleStyle := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorAccent).
+			Padding(1, 2)
 		return titleStyle.Render("⚒ Forge Ledger — Loading beads...")
 	}
 
-	var statusCounts [4]int // open, in_progress, closed, total
-	for _, b := range m.beads {
-		statusCounts[3]++
-		switch b.Status {
-		case "open":
-			statusCounts[0]++
-		case "in_progress":
-			statusCounts[1]++
-		case "closed":
-			statusCounts[2]++
-		}
+	switch m.view {
+	case ViewList:
+		return m.renderList()
+	default:
+		return m.renderList()
 	}
-
-	header := titleStyle.Render("⚒ Forge Ledger")
-
-	countStyle := lipgloss.NewStyle().Padding(0, 2)
-	counts := countStyle.Render(fmt.Sprintf(
-		"%d beads total  |  %s open  |  %s in progress  |  %s recently closed",
-		statusCounts[3],
-		lipgloss.NewStyle().Foreground(colorInfo).Render(fmt.Sprintf("%d", statusCounts[0])),
-		lipgloss.NewStyle().Foreground(colorWarning).Render(fmt.Sprintf("%d", statusCounts[1])),
-		lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("%d", statusCounts[2])),
-	))
-
-	var errLine string
-	if m.err != nil {
-		errLine = lipgloss.NewStyle().
-			Foreground(colorDanger).
-			Padding(0, 2).
-			Render(fmt.Sprintf("Warning: %v", m.err))
-	}
-
-	help := lipgloss.NewStyle().
-		Foreground(colorMuted).
-		Padding(1, 2).
-		Render("Press q to quit")
-
-	if errLine != "" {
-		return header + "\n" + counts + "\n" + errLine + "\n" + help
-	}
-	return header + "\n" + counts + "\n" + help
 }
