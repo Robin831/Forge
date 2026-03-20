@@ -899,3 +899,9 @@ rules:
       check: Verify that unit tests exist covering the legacy/alternative input format, asserting that the parser correctly handles the old shape and produces the expected default values for any missing fields
       source: copilot:PR#336
       added: "2026-03-20"
+    - id: warden-rule-dedup-overlap
+      category: other
+      pattern: Adding a new warden rule in .forge/warden-rules.yaml that targets the same file scope (e.g. same glob pattern or directory) as an existing rule
+      check: Verify the new rule does not significantly overlap with an existing rule targeting the same scope. If it does, consolidate the check into the existing rule (updating its source field) rather than adding a separate entry. Clearly differentiate scopes if both rules must remain.
+      source: copilot:PR#340
+      added: "2026-03-20"
