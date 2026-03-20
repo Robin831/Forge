@@ -434,7 +434,8 @@ rules:
       added: "2026-03-11"
     - id: hot-reload-claim-accuracy
       category: other
-      pattern: Changelog, documentation, or PR description claims a config setting is hot-reloadable
+      pattern: >-
+        Changelog, documentation, or PR description claims a config setting is hot-reloadable
       check: >-
         Verify the setting is actually tracked in the hot-reload allowlist (internal/hotreload/hotreload.go:applyChanges). If it is not in the allowlist, either add it there (plus any downstream scheduler/callback wiring) and update the Hot Reload docs, or remove the hot-reloadable claim from the changelog/docs/PR description.
       source: copilot:PR#178, copilot:PR#356
@@ -1256,4 +1257,35 @@ rules:
       check: >-
         Verify that a unit test exists covering the invalid duration parsing failure mode, consistent with existing invalid duration tests (e.g., invalid poll_interval, bellows_interval). The test should write a config with an invalid duration string and assert the returned error mentions the specific field name.
       source: copilot:PR#356
+      added: "2026-03-20"
+    - id: nil-func-param-validation
+      category: error-handling
+      pattern: >-
+        Exported functions that accept function parameters (callbacks, inserters, handlers)
+      check: >-
+        Verify that function parameters are checked for nil before invocation, returning a clear error instead of allowing a nil-dereference panic
+      source: copilot:PR#358
+      added: "2026-03-20"
+    - id: wire-config-to-all-callers
+      category: other
+      pattern: >-
+        A function accepts an optional config/options parameter that enables alternate behavior paths, but some callers never pass it
+      check: >-
+        When adding an optional config parameter to a function, verify that ALL call sites are updated to pass the config where the new behavior should apply — otherwise the new code path is dead code that contradicts the stated intent
+      source: copilot:PR#358
+      added: "2026-03-20"
+    - id: test-new-branches
+      category: testing
+      pattern: >-
+        A new conditional branch is added to an existing function that changes its observable behavior (e.g., calling a different dependency, skipping a write, inserting into a different store)
+      check: >-
+        When a function gains a new code path (e.g., a feature-flag branch or mode switch), verify that unit tests cover the new branch — assert the expected side-effects occur and the old path's side-effects do not
+      source: copilot:PR#358
+      added: "2026-03-20"
+    - id: log-event-missing-bead-id
+      category: error-handling
+      pattern: LogEvent calls in error paths where a bead ID variable is in scope
+      check: >-
+        Verify that LogEvent calls pass the available bead ID rather than an empty string, so failures can be correlated back to the originating bead in state.db
+      source: copilot:PR#358
       added: "2026-03-20"
