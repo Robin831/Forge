@@ -645,7 +645,7 @@ rules:
       category: other
       pattern: Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
       check: Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: copilot:PR#285,PR#322,PR#324,PR#326,PR#328,PR#329
+      source: copilot:PR#285,PR#322,PR#324,PR#326,PR#328,PR#329,PR#331
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
