@@ -833,7 +833,7 @@ rules:
         Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
       check: >-
         Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: ['copilot:PR#285', 'copilot:PR#322', 'copilot:PR#324', 'copilot:PR#326', 'copilot:PR#328', 'copilot:PR#329', 'copilot:PR#331', 'copilot:PR#332', 'copilot:PR#334', 'copilot:PR#340', 'copilot:PR#345']
+      source: ['copilot:PR#285', 'copilot:PR#322', 'copilot:PR#324', 'copilot:PR#326', 'copilot:PR#328', 'copilot:PR#329', 'copilot:PR#331', 'copilot:PR#332', 'copilot:PR#334', 'copilot:PR#340', 'copilot:PR#344', 'copilot:PR#345']
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
@@ -1233,10 +1233,4 @@ rules:
       check: >-
         Verify that the stated count in PR metadata (title, description, commit message) actually matches the diff — e.g. if it says 'learn 1 new rule' confirm exactly 1 new rule entry was added, not just an edit to an existing one
       source: copilot:PR#349
-      added: "2026-03-20"
-    - id: deduplicate-overlapping-warden-rules
-      category: maintainability
-      pattern: Adding a new entry to warden-rules.yaml that covers a pattern already addressed by an existing rule
-      check: Before adding a new warden rule, check existing rules for semantic overlap. If an existing rule already covers the same concern, update that rule's source and check text instead of creating a duplicate entry that could cause double-flagging.
-      source: copilot:PR#344
       added: "2026-03-20"
