@@ -141,7 +141,10 @@ func TestQuestListFilterUnknownAnvil(t *testing.T) {
 	}
 
 	// Reset flags so --anvil can be set fresh.
-	listCmd.Flags().Set("anvil", "nonexistent")
+	if err := listCmd.Flags().Set("anvil", "nonexistent"); err != nil {
+		t.Fatalf("failed to set --anvil flag: %v", err)
+	}
+	t.Cleanup(func() { listCmd.Flags().Set("anvil", "") })
 	err := listCmd.RunE(listCmd, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown anvil filter")
@@ -149,7 +152,6 @@ func TestQuestListFilterUnknownAnvil(t *testing.T) {
 	if got := err.Error(); !strings.Contains(got, "not found") {
 		t.Errorf("expected 'not found' in error, got: %s", got)
 	}
-	listCmd.Flags().Set("anvil", "")
 }
 
 func TestQuestListWithQuests(t *testing.T) {
@@ -163,12 +165,11 @@ func TestQuestListWithQuests(t *testing.T) {
 		t.Fatal(err)
 	}
 	questYAML := `name: smoke-test
-base_url: http://localhost:8080
+url: http://localhost:8080
 tags: [smoke]
 steps:
   - action: navigate
     url: /health
-    expect_status: 200
 `
 	if err := os.WriteFile(filepath.Join(questDir, "smoke.yaml"), []byte(questYAML), 0o644); err != nil {
 		t.Fatal(err)
@@ -227,7 +228,10 @@ func TestQuestRunUnknownAnvil(t *testing.T) {
 		t.Fatal("quest run command not found")
 	}
 
-	runCmd.Flags().Set("anvil", "missing")
+	if err := runCmd.Flags().Set("anvil", "missing"); err != nil {
+		t.Fatalf("failed to set --anvil flag: %v", err)
+	}
+	t.Cleanup(func() { runCmd.Flags().Set("anvil", "") })
 	err := runCmd.RunE(runCmd, []string{"some-quest"})
 	if err == nil {
 		t.Fatal("expected error for unknown anvil")
@@ -235,7 +239,6 @@ func TestQuestRunUnknownAnvil(t *testing.T) {
 	if got := err.Error(); !strings.Contains(got, "not found") {
 		t.Errorf("expected 'not found' in error, got: %s", got)
 	}
-	runCmd.Flags().Set("anvil", "")
 }
 
 func TestQuestRunQuestNotFound(t *testing.T) {
@@ -271,7 +274,10 @@ func TestQuestRunQuestNotFound(t *testing.T) {
 		t.Fatal("quest run command not found")
 	}
 
-	runCmd.Flags().Set("anvil", "testanvil")
+	if err := runCmd.Flags().Set("anvil", "testanvil"); err != nil {
+		t.Fatalf("failed to set --anvil flag: %v", err)
+	}
+	t.Cleanup(func() { runCmd.Flags().Set("anvil", "") })
 	err := runCmd.RunE(runCmd, []string{"nonexistent-quest"})
 	if err == nil {
 		t.Fatal("expected error for quest not found")
@@ -279,6 +285,5 @@ func TestQuestRunQuestNotFound(t *testing.T) {
 	if got := err.Error(); !strings.Contains(got, "no quests found") {
 		t.Errorf("expected 'no quests found' in error, got: %s", got)
 	}
-	runCmd.Flags().Set("anvil", "")
 }
 

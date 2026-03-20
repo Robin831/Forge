@@ -18,7 +18,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// errQuestFailed is returned when a quest execution fails, causing a non-zero exit.
+// errQuestFailed is a sentinel used to build quest failure errors.
 var errQuestFailed = errors.New("quest failed")
 
 func init() {
@@ -110,10 +110,11 @@ var questListCmd = &cobra.Command{
 }
 
 var questRunCmd = &cobra.Command{
-	Use:     "run <quest-name>",
-	Short:   "Execute a quest and report results",
-	Args:    cobra.ExactArgs(1),
-	Example: "  forge quest run login-flow --anvil heimdall",
+	Use:          "run <quest-name>",
+	Short:        "Execute a quest and report results",
+	Args:         cobra.ExactArgs(1),
+	Example:      "  forge quest run login-flow --anvil heimdall",
+	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		questName := args[0]
 		anvilName, _ := cmd.Flags().GetString("anvil")
@@ -213,7 +214,7 @@ var questRunCmd = &cobra.Command{
 			if result.ErrorMessage != "" {
 				fmt.Printf("Error: %s\n", result.ErrorMessage)
 			}
-			return errQuestFailed
+			return fmt.Errorf("%w: quest %q in anvil %q", errQuestFailed, questName, anvilName)
 		}
 
 		return nil
