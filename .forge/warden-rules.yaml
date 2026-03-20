@@ -761,9 +761,3 @@ rules:
       check: Verify that every file, component, or artifact mentioned in the PR description is actually included in the changeset. If something listed is not shipped, either add it or update the description to match what is actually being delivered.
       source: copilot:PR#320
       added: "2026-03-20"
-    - id: go-unused-imports-locals
-      category: style
-      pattern: Unused imports or local variables in Go code that are not referenced anywhere in the surrounding function or file
-      check: Verify that all imports and local variables in Go files are actually used — Go treats unused imports and unused local variables as compilation errors, but package-level declarations and types may be intentionally unused and should not be auto-flagged by this rule
-      source: copilot:PR#321
-      added: "2026-03-20"
