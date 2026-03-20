@@ -1235,8 +1235,8 @@ rules:
       source: copilot:PR#349
       added: "2026-03-20"
     - id: deduplicate-overlapping-warden-rules
-      category: other
+      category: maintainability
       pattern: Adding a new entry to warden-rules.yaml that covers a pattern already addressed by an existing rule
-      check: Before adding a new warden rule, check existing rules for semantic overlap. If an existing rule already covers the same concern, extend that rule's source list and check text instead of creating a duplicate entry that could cause double-flagging.
+      check: Before adding a new warden rule, check existing rules for semantic overlap. If an existing rule already covers the same concern, update that rule's source and check text instead of creating a duplicate entry that could cause double-flagging.
       source: copilot:PR#344
       added: "2026-03-20"
