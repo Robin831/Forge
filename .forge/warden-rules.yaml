@@ -434,10 +434,10 @@ rules:
       added: "2026-03-11"
     - id: hot-reload-claim-accuracy
       category: other
-      pattern: Changelog or documentation claims a config setting is hot-reloadable
+      pattern: Changelog, documentation, or PR description claims a config setting is hot-reloadable
       check: >-
-        Verify the setting is actually tracked in the hot-reload allowlist (internal/hotreload/hotreload.go:applyChanges). If it is not in the allowlist, either add it there and update the Hot Reload docs, or remove the hot-reloadable claim from the changelog/docs.
-      source: copilot:PR#178
+        Verify the setting is actually tracked in the hot-reload allowlist (internal/hotreload/hotreload.go:applyChanges). If it is not in the allowlist, either add it there (plus any downstream scheduler/callback wiring) and update the Hot Reload docs, or remove the hot-reloadable claim from the changelog/docs/PR description.
+      source: copilot:PR#178, copilot:PR#356
       added: "2026-03-11"
     - id: config-override-needs-test
       category: testing
@@ -1248,13 +1248,6 @@ rules:
         Custom MarshalYAML or MarshalJSON methods that conditionally omit fields based on zero/empty values
       check: >-
         Verify that intentional zero values (e.g., 0 duration to disable a feature) are still serialized correctly. If a zero value has semantic meaning (like disabling a scheduled task), the marshal method must emit it rather than omitting it, otherwise round-tripping through save/load will silently replace it with the default.
-      source: copilot:PR#356
-      added: "2026-03-20"
-    - id: hot-reload-parity
-      category: other
-      pattern: New config settings are added and described as hot-reloadable
-      check: >-
-        Verify that any config keys claimed to be hot-reloadable are actually handled in the hot-reload watcher (e.g. internal/hotreload.applyChanges). If the new settings are missing from the comparison/apply logic, either add them (plus any downstream scheduler/callback wiring) or remove hot-reload claims from docs and PR description.
       source: copilot:PR#356
       added: "2026-03-20"
     - id: test-invalid-duration-parsing
