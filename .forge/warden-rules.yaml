@@ -893,3 +893,15 @@ rules:
       check: When testing visual-width truncation, use the same width-measurement function the implementation uses (e.g. lipgloss.Width()) rather than byte length (len()). Byte length can differ from visual width for multi-byte characters, ANSI sequences, and wide glyphs, making the assertion too loose or incorrect.
       source: copilot:PR#335
       added: "2026-03-20"
+    - id: deduplicate-warden-rules-before-adding
+      category: other
+      pattern: New entries being added to warden-rules.yaml
+      check: Before adding a new warden rule, check if an existing rule already covers the same concern. If so, update the existing rule's source/attribution field instead of creating a duplicate entry.
+      source: copilot:PR#334
+      added: "2026-03-20"
+    - id: warden-rule-source-append-not-replace
+      category: other
+      pattern: Modifying the `source` field of a warden rule entry
+      check: When adding a new PR reference to a warden rule's source, append it to the existing list rather than replacing previous references — dropping prior PR numbers loses traceability for why the rule exists
+      source: copilot:PR#334
+      added: "2026-03-20"
