@@ -791,3 +791,51 @@ rules:
       check: Verify that terminal column width is calculated using visual-width-aware helpers (e.g. lipgloss.Width or runewidth) rather than rune count, since CJK characters and emoji occupy 2 columns and combining marks occupy 0
       source: copilot:PR#323
       added: "2026-03-20"
+    - id: filtered-zero-results-messaging
+      category: ui
+      pattern: Function returns a 'none found' or 'all clear' message when a count is zero, but filters/flags can exclude results
+      check: When displaying a zero-results message, verify whether active filters could be hiding results. If filters are enabled, the message should indicate that no results matched the current filters rather than implying none exist at all.
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: filter-excludes-all-updates-test
+      category: testing
+      pattern: Summary or display logic that applies filter flags to exclude categories of results, where filters could potentially exclude all items
+      check: When filter options (e.g., NoMajor, NoMinor) can exclude all available updates, verify tests cover the edge case where every update is filtered out — ensuring summary output distinguishes between 'genuinely up to date' and 'updates exist but were excluded by filters'
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: use-time-constants
+      category: style
+      pattern: Raw numeric literals used for time durations (e.g., 60e9, 1000000000, 3600) instead of time.Duration constants
+      check: Verify that all time duration values use Go's time package constants (time.Second, time.Minute, time.Hour) instead of raw nanosecond literals or magic numbers, ensuring the intent is immediately clear to readers
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: distinguish-empty-from-error
+      category: error-handling
+      pattern: Skipping or short-circuiting when a function returns an empty/nil result without distinguishing between 'nothing found', 'not applicable', and 'error occurred'
+      check: Verify that empty or zero-length results are not silently treated as success. Functions that scan, search, or collect should differentiate between 'no results found', 'not applicable/unsupported', and 'an error occurred' so callers can report accurate status and avoid misleading summary messages like 'all clear' when nothing was actually checked.
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: silent-error-discard
+      category: error-handling
+      pattern: Logging an error then discarding the result or continuing without propagating it to the caller
+      check: Verify that scan/check errors are propagated to callers (returned as part of results or as aggregated errors) rather than logged-and-dropped, so that CLI commands and upstream consumers can accurately report failures instead of falsely indicating success
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: severity-sort-order-consistency
+      category: style
+      pattern: Code that filters or concatenates items by severity/priority level (e.g., patch/minor/major, low/medium/high)
+      check: Verify that severity ordering is consistent with established conventions elsewhere in the codebase — if existing code sorts by highest severity first (major→minor→patch), new code handling the same data should preserve that order rather than reversing it
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: no-dead-struct-fields
+      category: style
+      pattern: Struct field that is assigned during construction but never read or written by any method
+      check: Verify that every struct field is actually used. If a field duplicates a method parameter, either wire the field through (use it in methods instead of passing the param) or remove the field to avoid dead state.
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: filtered-results-messaging
+      category: ui
+      pattern: Displaying 'no results' or 'all up to date' messages when query filters are active
+      check: When filters narrow results to zero, the summary message must reflect that filters were applied rather than implying nothing exists. Report excluded counts or name the active filter so the user understands why results are empty.
+      source: copilot:PR#327
+      added: "2026-03-20"
