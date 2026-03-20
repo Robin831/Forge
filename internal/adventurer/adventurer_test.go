@@ -102,9 +102,13 @@ func TestResultFailure(t *testing.T) {
 }
 
 // launchBrowser launches a headless browser for integration tests and returns
-// the browser and a cleanup function. Calls t.Skip if Chrome is unavailable.
+// the browser and a cleanup function. Calls t.Skip if Chrome is unavailable or
+// if the test is running in short mode (-short flag).
 func launchBrowser(t *testing.T) (*rod.Browser, func()) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping browser integration test in short mode")
+	}
 	l := launcher.New().Headless(true)
 	controlURL, err := l.Launch()
 	if err != nil {
@@ -115,7 +119,10 @@ func launchBrowser(t *testing.T) (*rod.Browser, func()) {
 		l.Kill()
 		t.Skipf("failed to connect to browser: %v", err)
 	}
-	return browser, func() { browser.Close() }
+	return browser, func() {
+		_ = browser.Close()
+		l.Cleanup()
+	}
 }
 
 func TestExecuteStepNavigate(t *testing.T) {

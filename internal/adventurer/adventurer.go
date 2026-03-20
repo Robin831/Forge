@@ -73,6 +73,7 @@ func (e *Executor) Execute(ctx context.Context, quest *questgiver.Quest) *Result
 		result.Duration = time.Since(start)
 		return result
 	}
+	defer l.Cleanup()
 	defer browser.Close()
 
 	// Close browser on context cancellation.
