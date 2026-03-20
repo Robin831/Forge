@@ -63,14 +63,6 @@ type AnvilConfig struct {
 	// quests for this anvil. When nil (default), the global setting is used.
 	// Set to false to skip this anvil entirely.
 	QuestgiverEnabled *bool `mapstructure:"questgiver_enabled" yaml:"questgiver_enabled,omitempty"`
-	// QuestgiverBaseURL is the base URL for quest API endpoints for this anvil.
-	QuestgiverBaseURL string `mapstructure:"questgiver_base_url" yaml:"questgiver_base_url,omitempty"`
-	// QuestgiverSetupCmd is a shell command to run before executing quests
-	// for this anvil (e.g. starting a local server).
-	QuestgiverSetupCmd string `mapstructure:"questgiver_setup_cmd" yaml:"questgiver_setup_cmd,omitempty"`
-	// QuestgiverTeardownCmd is a shell command to run after executing quests
-	// for this anvil (e.g. stopping a local server).
-	QuestgiverTeardownCmd string `mapstructure:"questgiver_teardown_cmd" yaml:"questgiver_teardown_cmd,omitempty"`
 	// AutoMerge enables automatic merging of PRs when they reach the
 	// ready-to-merge state (CI passing, no conflicts, no unresolved
 	// threads, no pending reviews). External PRs (ext-*) are never
@@ -687,6 +679,15 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.DepcheckTimeout < 0 {
 		errs = append(errs, "settings.depcheck_timeout must not be negative")
+	}
+
+	if c.Settings.QuestgiverInterval < 0 {
+		errs = append(errs, "settings.questgiver_interval must not be negative (set to 0 to disable)")
+	} else if c.Settings.IsQuestgiverEnabled() && c.Settings.QuestgiverInterval == 0 {
+		errs = append(errs, "settings.questgiver_interval must be > 0 when questgiver is enabled")
+	}
+	if c.Settings.AdventurerTimeout < 0 {
+		errs = append(errs, "settings.adventurer_timeout must not be negative")
 	}
 
 	for name, anvil := range c.Anvils {

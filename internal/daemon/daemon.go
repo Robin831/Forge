@@ -30,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Robin831/Forge/internal/adventurer"
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/cifix"
 	"github.com/Robin831/Forge/internal/config"
@@ -690,21 +691,31 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Start QuestGiver monitor (if enabled)
 	if d.config().Settings.IsQuestgiverEnabled() {
-		qgAnvils := filterQuestgiverAnvils(monitorAnvils, d.cfg.Load().Anvils)
-		for name := range monitorAnvils {
-			if _, ok := qgAnvils[name]; !ok {
-				d.logger.Info("Skipping anvil for questgiver (questgiver_enabled=false)", "anvil", name)
+		if d.config().Settings.QuestgiverInterval <= 0 {
+			d.logger.Error("QuestGiver enabled but questgiver_interval <= 0; skipping QuestGiver monitor")
+		} else {
+			qgAnvils := filterQuestgiverAnvils(monitorAnvils, d.cfg.Load().Anvils)
+			for name := range monitorAnvils {
+				if _, ok := qgAnvils[name]; !ok {
+					d.logger.Info("Skipping anvil for questgiver (questgiver_enabled=false)", "anvil", name)
+				}
 			}
+			adventurerTimeout := d.config().Settings.AdventurerTimeout
+			newExec := func() questgiver.QuestExecutor {
+				return &adventurerExecutorAdapter{
+					exec: adventurer.New(adventurerTimeout, d.logger),
+				}
+			}
+			d.questgiverMonitor = questgiver.New(d.db,
+				d.config().Settings.QuestgiverInterval,
+				adventurerTimeout,
+				qgAnvils, newExec)
+			go func() {
+				if err := d.questgiverMonitor.Run(ctx); err != nil && err != context.Canceled {
+					d.logger.Error("QuestGiver monitor error", "error", err)
+				}
+			}()
 		}
-		d.questgiverMonitor = questgiver.New(d.db,
-			d.config().Settings.QuestgiverInterval,
-			d.config().Settings.AdventurerTimeout,
-			qgAnvils, nil)
-		go func() {
-			if err := d.questgiverMonitor.Run(ctx); err != nil && err != context.Canceled {
-				d.logger.Error("QuestGiver monitor error", "error", err)
-			}
-		}()
 	}
 
 	for {
@@ -4070,6 +4081,13 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 				changed = true
 				break
 			}
+			// Also detect questgiver_enabled toggle
+			oldQG := oldAnvil.QuestgiverEnabled
+			newQG := newAnvil.QuestgiverEnabled
+			if (oldQG == nil) != (newQG == nil) || (oldQG != nil && newQG != nil && *oldQG != *newQG) {
+				changed = true
+				break
+			}
 		}
 	}
 	if !changed {
@@ -4104,11 +4122,17 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 		d.logger.Info("updated depcheck anvil paths", "count", len(depcheckPaths))
 	}
 
-	// Update questgiver monitor (filter by questgiver_enabled)
+	// Update questgiver monitor (respect global questgiver_enabled)
 	if d.questgiverMonitor != nil {
-		qgPaths := filterQuestgiverAnvils(paths, new.Anvils)
-		d.questgiverMonitor.UpdateAnvilPaths(qgPaths)
-		d.logger.Info("updated questgiver anvil paths", "count", len(qgPaths))
+		if !new.Settings.IsQuestgiverEnabled() {
+			// Questgiver globally disabled: clear anvil paths so the monitor stops polling.
+			d.questgiverMonitor.UpdateAnvilPaths(map[string]string{})
+			d.logger.Info("disabled questgiver monitor via config; cleared anvil paths")
+		} else {
+			qgPaths := filterQuestgiverAnvils(paths, new.Anvils)
+			d.questgiverMonitor.UpdateAnvilPaths(qgPaths)
+			d.logger.Info("updated questgiver anvil paths", "count", len(qgPaths))
+		}
 	}
 }
 
@@ -4200,6 +4224,23 @@ func trimStrings(ss []string) []string {
 		}
 	}
 	return res
+}
+
+// adventurerExecutorAdapter wraps an adventurer.Executor to implement the
+// questgiver.QuestExecutor interface, bridging the two packages without an
+// import cycle (adventurer imports questgiver, not the other way around).
+type adventurerExecutorAdapter struct {
+	exec *adventurer.Executor
+}
+
+func (a *adventurerExecutorAdapter) Execute(ctx context.Context, quest *questgiver.Quest) *questgiver.QuestResult {
+	r := a.exec.Execute(ctx, quest)
+	return &questgiver.QuestResult{
+		Passed:       r.Passed,
+		FailedStep:   r.FailedStep,
+		ErrorMessage: r.ErrorMessage,
+		Duration:     r.Duration,
+	}
 }
 
 // filterDepcheckAnvils returns the subset of anvils that should be scanned by
