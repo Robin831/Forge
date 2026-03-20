@@ -99,6 +99,85 @@ func ReopenBeadCmd(anvilPath, beadID string) tea.Cmd {
 	}
 }
 
+// UpdateLabelCmd adds or removes a label from a bead.
+func UpdateLabelCmd(anvilPath, beadID, label string, remove bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		flag := "--add-label"
+		if remove {
+			flag = "--remove-label"
+		}
+		args := []string{"update", beadID, flag, label}
+		_, err := bdExec(ctx, anvilPath, args...)
+		if err != nil {
+			return ActionErrorMsg{Err: fmt.Errorf("update label %s: %w", beadID, err)}
+		}
+		return BeadUpdatedMsg{ID: beadID}
+	}
+}
+
+// UpdatePriorityCmd changes a bead's priority.
+func UpdatePriorityCmd(anvilPath, beadID string, priority int) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		args := []string{"update", beadID, "--priority", fmt.Sprintf("%d", priority)}
+		_, err := bdExec(ctx, anvilPath, args...)
+		if err != nil {
+			return ActionErrorMsg{Err: fmt.Errorf("update priority %s: %w", beadID, err)}
+		}
+		return BeadUpdatedMsg{ID: beadID}
+	}
+}
+
+// AppendNotesCmd appends text to a bead's notes field.
+func AppendNotesCmd(anvilPath, beadID, notes string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		args := []string{"update", beadID, "--append-notes", notes}
+		_, err := bdExec(ctx, anvilPath, args...)
+		if err != nil {
+			return ActionErrorMsg{Err: fmt.Errorf("append notes %s: %w", beadID, err)}
+		}
+		return BeadUpdatedMsg{ID: beadID}
+	}
+}
+
+// UpdateNotesCmd replaces a bead's notes field.
+func UpdateNotesCmd(anvilPath, beadID, notes string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		args := []string{"update", beadID, "--notes", notes}
+		_, err := bdExec(ctx, anvilPath, args...)
+		if err != nil {
+			return ActionErrorMsg{Err: fmt.Errorf("update notes %s: %w", beadID, err)}
+		}
+		return BeadUpdatedMsg{ID: beadID}
+	}
+}
+
+// UpdateAssigneeCmd assigns or unassigns a bead.
+func UpdateAssigneeCmd(anvilPath, beadID, assignee string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		args := []string{"update", beadID, "--assignee=" + assignee}
+		_, err := bdExec(ctx, anvilPath, args...)
+		if err != nil {
+			return ActionErrorMsg{Err: fmt.Errorf("assign %s: %w", beadID, err)}
+		}
+		return BeadUpdatedMsg{ID: beadID}
+	}
+}
+
 // extractIDFromJSON does a best-effort extraction of the "id" field from
 // bd create --json output. The output may be a JSON array (e.g. [{"id":...}])
 // or a plain object. Returns empty string on failure.
