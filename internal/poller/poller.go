@@ -60,6 +60,12 @@ type AnvilResult struct {
 // BeadPoller polls registered anvils for ready beads.
 type BeadPoller struct {
 	anvils map[string]config.AnvilConfig
+	// StaggerInterval is the delay between starting each anvil's poll.
+	// When non-zero, each anvil's poll is started sequentially with this delay
+	// between starts, giving a staggered start across anvils and spreading
+	// bd/git commands over time instead of firing all at once. The total
+	// stagger should be less than the poll interval.
+	StaggerInterval time.Duration
 }
 
 // New creates a BeadPoller for the given anvil configurations.
@@ -67,19 +73,64 @@ func New(anvils map[string]config.AnvilConfig) *BeadPoller {
 	return &BeadPoller{anvils: anvils}
 }
 
+// NewStaggered creates a BeadPoller that staggers anvil polls across the
+// given poll interval. When there are 2 or more anvils, each anvil's poll is
+// delayed by pollInterval / len(anvils) relative to the previous one. With
+// only one anvil no stagger is applied (StaggerInterval remains zero).
+func NewStaggered(anvils map[string]config.AnvilConfig, pollInterval time.Duration) *BeadPoller {
+	var stagger time.Duration
+	if len(anvils) > 1 {
+		stagger = pollInterval / time.Duration(len(anvils))
+	}
+	return &BeadPoller{anvils: anvils, StaggerInterval: stagger}
+}
+
 // Poll runs 'bd ready --json' in each anvil directory, merges results,
 // and returns them sorted by priority (lowest number = highest priority).
 // Errors per-anvil are collected but do not stop other anvils from being polled.
+// When StaggerInterval is set, each anvil's poll is delayed relative to the
+// previous one to spread bd/git commands over time.
 func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 	results := make([]AnvilResult, 0, len(p.anvils))
 
-	// Poll all anvils concurrently and merge results.
+	// Build a stable ordering of anvil names so stagger offsets are deterministic.
+	names := make([]string, 0, len(p.anvils))
+	for name := range p.anvils {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	// Poll all anvils concurrently, with optional stagger delay per anvil.
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for name, anvil := range p.anvils {
+	for i, name := range names {
 		wg.Add(1)
-		go func(name string, anvil config.AnvilConfig) {
+		delay := p.StaggerInterval * time.Duration(i)
+		go func(name string, anvil config.AnvilConfig, delay time.Duration) {
 			defer wg.Done()
+			// Wait for stagger delay, respecting context cancellation.
+			if delay > 0 {
+				timer := time.NewTimer(delay)
+				defer func() {
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+				}()
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					mu.Lock()
+					results = append(results, AnvilResult{
+						Name: name,
+						Err:  ctx.Err(),
+					})
+					mu.Unlock()
+					return
+				}
+			}
 			beads, err := pollAnvil(ctx, name, anvil)
 			mu.Lock()
 			results = append(results, AnvilResult{
@@ -88,7 +139,7 @@ func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 				Err:   err,
 			})
 			mu.Unlock()
-		}(name, anvil)
+		}(name, p.anvils[name], delay)
 	}
 	wg.Wait()
 

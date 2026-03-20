@@ -1351,7 +1351,22 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 
 	// Always poll so the Hearth TUI queue cache stays current even when all
 	// smith slots are occupied. Capacity is checked below before dispatching.
-	p := poller.New(cfg.Anvils)
+	// Stagger anvil polls to avoid simultaneous bd/git command bursts.
+	pollInterval := cfg.Settings.PollInterval
+	if pollInterval == 0 {
+		pollInterval = DefaultPollInterval
+	}
+	// When running under a context with a deadline (e.g. short IPC refreshes),
+	// avoid using a stagger interval that extends beyond the remaining time
+	// budget; otherwise some anvils may never start polling before the
+	// context is cancelled.
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining > 0 && remaining < pollInterval {
+			pollInterval = remaining
+		}
+	}
+	p := poller.NewStaggered(cfg.Anvils, pollInterval)
 	beads, results := p.Poll(ctx)
 
 	anvilPaths := make(map[string]string, len(cfg.Anvils))
