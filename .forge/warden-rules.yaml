@@ -857,3 +857,9 @@ rules:
       check: When designing or reviewing scan/search/collection API signatures, ensure the return type can explicitly represent all three outcomes — 'no results found', 'not applicable/unsupported', and 'an error occurred' — for example via a dedicated status enum, sentinel values, or clearly documented nil/empty/error semantics. Callers must be able to report accurate status rather than collapsing different empty/failure states into a single generic result. This rule addresses API design and return-type representation; see distinguish-empty-from-error for the related concern of migrating an existing API to a tri-state contract.
       source: copilot:PR#329
       added: "2026-03-20"
+    - id: deduplicate-warden-rules
+      category: other
+      pattern: Adding a new warden rule to .forge/warden-rules.yaml
+      check: Before adding a new rule, check existing rules for semantic overlap. If an existing rule already covers the same concern, update its source/attribution field instead of adding a duplicate entry.
+      source: copilot:PR#331
+      added: "2026-03-20"
