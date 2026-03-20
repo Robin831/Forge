@@ -1352,3 +1352,10 @@ rules:
         Verify that channel send operations cannot block under concurrent callers. If a function is intended to be non-blocking and called from multiple goroutines, ensure all channel sends use non-blocking select patterns or are serialized with a mutex to prevent goroutine blocking when the channel buffer is full.
       source: copilot:PR#366
       added: "2026-03-20"
+    - id: avoid-generic-rule-category
+      category: style
+      pattern: Warden rule definitions in warden-rules.yaml
+      check: >-
+        Verify that a specific, descriptive category is assigned when an appropriate one exists (for example, `style`, `testing`, or `concurrency`). The generic `category: other` should only be used when no more precise category applies, to keep triage, search, and reporting meaningful.
+      source: copilot:PR#348
+      added: "2026-03-20"
