@@ -54,6 +54,7 @@ import (
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/shutdown"
+	"github.com/Robin831/Forge/internal/smelter"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
 	"github.com/Robin831/Forge/internal/vulncheck"
@@ -130,6 +131,9 @@ type Daemon struct {
 
 	// Vulnerability scanning
 	vulnScanner *vulncheck.Scanner
+
+	// Smelter: batches pending warden rules into PRs
+	smelterWorker *smelter.Smelter
 
 	// QuestGiver monitor (E2E quest execution)
 	questgiverMonitor *questgiver.Monitor
@@ -598,6 +602,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 			// Update bellows and depcheck when anvils change
 			d.updateAnvilPaths(old, new)
+			// Always check smelter settings on each reload: interval/enabled can change
+			// independently of anvil paths and must not be gated on anvil change detection.
+			d.updateSmelterSettings(old, new)
 			d.db.LogEvent(state.EventConfigReload, "Configuration reloaded", "", "")
 		})
 		go func() {
@@ -701,6 +708,23 @@ func (d *Daemon) Run(ctx context.Context) error {
 		go d.vulnScanner.RunScheduled(ctx, d.config().Settings.VulncheckInterval)
 	} else {
 		d.logger.Info("vulncheck disabled via configuration (vulncheck_enabled: false)")
+	}
+
+	// Start smelter (batches pending warden rules into PRs on a schedule).
+	// Always create the worker when enabled so hot-reload can update interval/paths.
+	// Run handles interval <= 0 by pausing the ticker until a positive value arrives.
+	if d.config().Settings.IsSmelterEnabled() {
+		d.smelterWorker = smelter.New(d.db, d.config().Settings.SmelterInterval, monitorAnvils)
+		go func() {
+			if err := d.smelterWorker.Run(ctx); err != nil && err != context.Canceled {
+				d.logger.Error("Smelter error", "error", err)
+			}
+		}()
+		if d.config().Settings.SmelterInterval <= 0 {
+			d.logger.Info("smelter enabled but smelter_interval <= 0; scheduled flushes are paused until interval is updated")
+		}
+	} else {
+		d.logger.Info("smelter disabled via configuration (smelter_enabled: false)")
 	}
 
 	// Start QuestGiver monitor (if enabled)
@@ -4162,6 +4186,43 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 			qgPaths := filterQuestgiverAnvils(paths, new.Anvils)
 			d.questgiverMonitor.UpdateAnvilPaths(qgPaths)
 			d.logger.Info("updated questgiver anvil paths", "count", len(qgPaths))
+		}
+	}
+}
+
+// updateSmelterSettings is called from the hot-reload callback on every config
+// reload. It updates the smelter's anvil paths and interval independently of
+// whether the anvil set changed, ensuring that smelter_enabled and
+// smelter_interval changes take effect without a daemon restart.
+func (d *Daemon) updateSmelterSettings(old, new *config.Config) {
+	if d.smelterWorker == nil {
+		return
+	}
+
+	// Build current anvil paths for smelter.
+	paths := make(map[string]string, len(new.Anvils))
+	for name, a := range new.Anvils {
+		if a.Path != "" {
+			paths[name] = a.Path
+		}
+	}
+
+	if !new.Settings.IsSmelterEnabled() {
+		// Smelter globally disabled: clear anvil paths and pause its ticker.
+		d.smelterWorker.UpdateAnvilPaths(map[string]string{})
+		d.smelterWorker.UpdateInterval(0)
+		d.logger.Info("disabled smelter via config; cleared anvil paths and paused ticker")
+	} else {
+		d.smelterWorker.UpdateAnvilPaths(paths)
+		d.logger.Info("updated smelter anvil paths", "count", len(paths))
+		// Restore/update the interval when it changes, or when transitioning
+		// from disabled to enabled (to re-enable a previously paused ticker).
+		if old.Settings.SmelterInterval != new.Settings.SmelterInterval ||
+			!old.Settings.IsSmelterEnabled() {
+			d.smelterWorker.UpdateInterval(new.Settings.SmelterInterval)
+			d.logger.Info("updated smelter interval",
+				"old", old.Settings.SmelterInterval,
+				"new", new.Settings.SmelterInterval)
 		}
 	}
 }
