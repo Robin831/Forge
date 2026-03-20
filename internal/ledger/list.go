@@ -172,6 +172,9 @@ func (m *Model) updateList(msg tea.KeyMsg) tea.Cmd {
 		m.list.vp.ScrollUp()
 	case "S":
 		return m.openSortSelector()
+	case "tab":
+		m.view = ViewKanban
+		m.refreshKanbanLanes()
 	}
 	return nil
 }
@@ -273,7 +276,7 @@ func (m *Model) renderList() string {
 	if m.err != nil {
 		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  ⚠ %v", m.err))
 	}
-	footer := footerStyle.Render("j/k: navigate  S: sort  q: quit") + errNote
+	footer := footerStyle.Render("j/k: navigate  S: sort  Tab: kanban  q: quit") + errNote
 
 	out := header + "\n" + colHeader + "\n" + rows.String() + "\n" + footer
 

@@ -19,6 +19,7 @@ type ViewMode int
 
 const (
 	ViewList ViewMode = iota
+	ViewKanban
 )
 
 // tickMsg triggers a periodic data refresh.
@@ -42,6 +43,7 @@ type Model struct {
 
 	view   ViewMode
 	list   listState
+	kanban kanbanState
 	// sortChoice holds the pointer used by the huh sort selector form.
 	sortChoice *string
 
@@ -86,6 +88,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ViewList:
 			cmd := m.updateList(msg)
 			return m, cmd
+		case ViewKanban:
+			cmd := m.updateKanban(msg)
+			return m, cmd
 		}
 
 	case tea.WindowSizeMsg:
@@ -98,6 +103,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.beads = msg.Beads
 		m.err = msg.Err
 		m.list.vp.ClampToTotal(len(m.beads))
+		m.refreshKanbanLanes()
+
+	case moveBeadMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+		}
+		// Refresh on both success and failure so all views see the
+		// authoritative state promptly (success: confirm optimistic move;
+		// failure: revert it).
+		m.fetching = true
+		return m, FetchAllBeads(m.anvils, m.db)
 
 	case tickMsg:
 		if m.fetching {
@@ -120,8 +136,8 @@ func (m *Model) View() string {
 	}
 
 	switch m.view {
-	case ViewList:
-		return m.renderList()
+	case ViewKanban:
+		return m.renderKanban()
 	default:
 		return m.renderList()
 	}
