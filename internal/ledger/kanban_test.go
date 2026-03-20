@@ -272,3 +272,37 @@ func TestRenderCardBlocked(t *testing.T) {
 	card := renderCard(b, 25, false, true)
 	assert.Contains(t, card, "blocked-1")
 }
+
+func TestRenderCardFixedHeight(t *testing.T) {
+	cases := []struct {
+		name string
+		b    Bead
+	}{
+		{"short title no anvil", Bead{ID: "x-1", Title: "Short", Priority: 2}},
+		{"short title with anvil", Bead{ID: "x-2", Title: "Short", Priority: 2, Anvil: "heimdall"}},
+		{"long title wraps", Bead{ID: "x-3", Title: "A much longer title that needs wrapping across two lines", Priority: 0, Anvil: "heimdall"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			card := renderCard(tc.b, 25, false, false)
+			assert.Equal(t, cardContentLines, lipgloss.Height(card),
+				"renderCard must always emit exactly cardContentLines lines")
+		})
+	}
+}
+
+func TestMoveBeadToInReviewDisallowed(t *testing.T) {
+	m := &Model{
+		width:  80,
+		height: 24,
+		view:   ViewKanban,
+		anvils: map[string]string{"test": "/tmp/test"},
+	}
+	m.kanban.lanes[LaneOpen] = []Bead{{ID: "a", Anvil: "test"}}
+
+	cmd := m.moveBeadToLane(LaneInReview)
+	assert.Nil(t, cmd, "moving into LaneInReview should be disallowed (HasPR is DB-derived)")
+	// Source lane must be unchanged.
+	require.Len(t, m.kanban.lanes[LaneOpen], 1)
+	assert.Empty(t, m.kanban.lanes[LaneInReview])
+}

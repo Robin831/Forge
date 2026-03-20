@@ -51,6 +51,15 @@ func laneColor(lane int) lipgloss.AdaptiveColor {
 	}
 }
 
+// cardContentLines is the number of content lines every kanban card emits.
+// Keeping this fixed lets renderLane compute lane padding and scrolling correctly.
+// A blank separator line is appended after each card by renderLane, making the
+// total per-card height cardHeight = cardContentLines + 1.
+const (
+	cardContentLines = 3
+	cardHeight       = cardContentLines + 1
+)
+
 // kanbanState holds kanban-view-specific state.
 type kanbanState struct {
 	activeLane int                       // 0-3
@@ -170,6 +179,13 @@ func (m *Model) moveBeadToLane(targetLane int) tea.Cmd {
 		return nil
 	}
 
+	// LaneInReview is read-only — HasPR is derived from Forge's state DB
+	// (FetchAllBeads) and cannot be set via `bd update --status=...`.
+	// Disallow moves into it to avoid temporary UI inconsistency.
+	if targetLane == LaneInReview {
+		return nil
+	}
+
 	// Optimistically move the bead in the UI.
 	// Build a new slice to avoid mutating the original backing array.
 	newLane := make([]Bead, 0, len(beads)-1)
@@ -178,9 +194,6 @@ func (m *Model) moveBeadToLane(targetLane int) tea.Cmd {
 	m.kanban.lanes[lane] = newLane
 	m.kanban.laneVP[lane].ClampToTotal(len(m.kanban.lanes[lane]))
 	b.Status = targetStatus
-	if targetLane == LaneInReview {
-		b.HasPR = true
-	}
 	m.kanban.lanes[targetLane] = append(m.kanban.lanes[targetLane], b)
 
 	// Shell out to bd in the background.
@@ -229,14 +242,13 @@ func (m *Model) renderKanban() string {
 	)
 	chromeHeight := headerLines + detailLines + footerLines + laneHeaderLines
 	cardAreaHeight := max(m.height-chromeHeight, 3)
-	// Each card is 4 lines tall (priority+ID, title line 1, title line 2/anvil, blank separator).
-	cardHeight := 4
+	// visibleCards uses the package-level cardHeight constant (cardContentLines + 1 separator).
 	visibleCards := max(cardAreaHeight/cardHeight, 1)
 
 	// Render each lane
 	var laneCols []string
 	for i := range laneCount {
-		col := m.renderLane(i, laneWidth, visibleCards, cardHeight, cardAreaHeight, i == m.kanban.activeLane)
+		col := m.renderLane(i, laneWidth, visibleCards, cardAreaHeight, i == m.kanban.activeLane)
 		laneCols = append(laneCols, col)
 	}
 
@@ -263,7 +275,7 @@ func (m *Model) kanbanLaneWidth() int {
 }
 
 // renderLane renders a single kanban lane column.
-func (m *Model) renderLane(lane, width, visibleCards, cardHeight, areaHeight int, active bool) string {
+func (m *Model) renderLane(lane, width, visibleCards, areaHeight int, active bool) string {
 	beads := m.kanban.lanes[lane]
 	total := len(beads)
 
@@ -291,12 +303,11 @@ func (m *Model) renderLane(lane, width, visibleCards, cardHeight, areaHeight int
 		selected := active && idx == m.kanban.laneVP[lane].Selected()
 		blocked := isBlocked(b)
 		card := renderCard(b, width-2, selected, blocked)
-		if linesUsed > 0 {
-			cards.WriteByte('\n')
-			linesUsed++
-		}
+		// renderCard always emits exactly cardContentLines lines.
+		// Append an explicit blank separator to make each slot cardHeight lines.
 		cards.WriteString(card)
-		linesUsed += cardHeight - 1 // card itself is cardHeight-1 lines + 1 separator
+		cards.WriteByte('\n')
+		linesUsed += cardHeight
 	}
 
 	// Pad remaining height so all lanes are the same height
@@ -316,6 +327,8 @@ func (m *Model) renderLane(lane, width, visibleCards, cardHeight, areaHeight int
 }
 
 // renderCard renders a single bead card for the kanban board.
+// It always emits exactly cardContentLines lines so that lane padding,
+// scrolling, and column-height alignment remain correct.
 func renderCard(b Bead, width int, selected, blocked bool) string {
 	if width < 5 {
 		width = 5
@@ -324,26 +337,23 @@ func renderCard(b Bead, width int, selected, blocked bool) string {
 	// Priority dot
 	dot := priorityDot(b.Priority)
 
-	// Line 1: dot + ID
+	// Line 1: dot + ID (always rendered)
 	line1 := dot + " " + truncate(b.ID, width-3)
 
-	// Line 2-3: title (up to 2 lines)
+	// Line 2: first title line (always rendered)
 	titleLines := wrapTitle(b.Title, width-1)
+	line2 := titleLines[0]
 
-	// Anvil tag
-	anvilTag := ""
-	if b.Anvil != "" {
-		anvilTag = lipgloss.NewStyle().Foreground(colorMuted).Render("[" + truncate(b.Anvil, width-3) + "]")
+	// Line 3: second title line if the title wrapped; otherwise anvil tag; otherwise blank.
+	// This keeps the card at exactly cardContentLines (3) lines.
+	line3 := ""
+	if len(titleLines) > 1 {
+		line3 = titleLines[1]
+	} else if b.Anvil != "" {
+		line3 = lipgloss.NewStyle().Foreground(colorMuted).Render("[" + truncate(b.Anvil, width-3) + "]")
 	}
 
-	var cardLines []string
-	cardLines = append(cardLines, line1)
-	cardLines = append(cardLines, titleLines...)
-	if anvilTag != "" {
-		cardLines = append(cardLines, anvilTag)
-	}
-
-	content := strings.Join(cardLines, "\n")
+	content := line1 + "\n" + line2 + "\n" + line3
 
 	style := lipgloss.NewStyle().
 		Width(width).

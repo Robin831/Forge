@@ -108,10 +108,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case moveBeadMsg:
 		if msg.Err != nil {
 			m.err = msg.Err
-			// Refresh to get the real state back.
-			m.fetching = true
-			return m, FetchAllBeads(m.anvils, m.db)
 		}
+		// Refresh on both success and failure so all views see the
+		// authoritative state promptly (success: confirm optimistic move;
+		// failure: revert it).
+		m.fetching = true
+		return m, FetchAllBeads(m.anvils, m.db)
 
 	case tickMsg:
 		if m.fetching {
