@@ -24,8 +24,8 @@ func TestTruncate(t *testing.T) {
 		{"negative max", "hello", -1, ""},
 		{"unicode fits", "héllo", 5, "héllo"},
 		{"unicode truncated", "héllo world", 5, "héll…"},
-		{"multibyte runes", "日本語テスト", 4, "日本語…"},
-		{"emoji truncated", "🎉🎊🎈🎁", 3, "🎉🎊…"},
+		{"multibyte runes", "日本語テスト", 4, "日…"},
+		{"emoji truncated", "🎉🎊🎈🎁", 3, "🎉…"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -46,7 +46,7 @@ func TestPadRight(t *testing.T) {
 		{"exact width", "hello", 5, "hello"},
 		{"longer", "hello!", 5, "hello!"},
 		{"empty input", "", 3, "   "},
-		{"unicode input", "日本", 5, "日本   "},
+		{"unicode input", "日本", 5, "日本 "},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

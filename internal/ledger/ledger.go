@@ -68,10 +68,15 @@ func (m *Model) Init() tea.Cmd {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Global quit keys (unless sort form is open).
+		// Global quit key: always handle ctrl+c, even when forms/overlays are active.
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+
+		// Global quit key "q" (only when sort form is not open).
 		if m.list.sortForm == nil {
 			switch msg.String() {
-			case "q", "ctrl+c":
+			case "q":
 				return m, tea.Quit
 			}
 		}

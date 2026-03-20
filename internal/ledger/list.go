@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -55,27 +56,65 @@ func sortBeads(beads []Bead, field SortField) []Bead {
 	sorted := make([]Bead, len(beads))
 	copy(sorted, beads)
 	sort.SliceStable(sorted, func(i, j int) bool {
+		a := sorted[i]
+		b := sorted[j]
+
+		// Primary key comparison based on the selected sort field.
 		switch field {
 		case SortStatus:
-			return statusOrder(sorted[i].Status) < statusOrder(sorted[j].Status)
+			si := statusOrder(a.Status)
+			sj := statusOrder(b.Status)
+			if si != sj {
+				return si < sj
+			}
 		case SortUpdatedAt:
-			ti := sorted[i].UpdatedAt
-			tj := sorted[j].UpdatedAt
-			if ti == nil && tj == nil {
-				return false
-			}
-			if ti == nil {
-				return false
-			}
-			if tj == nil {
+			if updatedAfterDesc(a.UpdatedAt, b.UpdatedAt) {
 				return true
 			}
-			return ti.After(*tj)
+			if updatedAfterDesc(b.UpdatedAt, a.UpdatedAt) {
+				return false
+			}
 		default: // SortPriority
-			return sorted[i].Priority < sorted[j].Priority
+			if a.Priority != b.Priority {
+				return a.Priority < b.Priority
+			}
 		}
+
+		// Secondary: UpdatedAt descending (newest first, nil treated as oldest).
+		if updatedAfterDesc(a.UpdatedAt, b.UpdatedAt) {
+			return true
+		}
+		if updatedAfterDesc(b.UpdatedAt, a.UpdatedAt) {
+			return false
+		}
+
+		// Tertiary: ID ascending, then Title ascending for deterministic ordering.
+		if a.ID != b.ID {
+			return a.ID < b.ID
+		}
+
+		return a.Title < b.Title
 	})
 	return sorted
+}
+
+// updatedAfterDesc reports whether ti should come before tj when sorting by
+// UpdatedAt in descending order. Non-nil timestamps are considered more
+// recent than nil (nil is treated as the oldest).
+func updatedAfterDesc(ti, tj *time.Time) bool {
+	if ti == nil && tj == nil {
+		return false
+	}
+	if ti == nil {
+		return false
+	}
+	if tj == nil {
+		return true
+	}
+	if ti.Equal(*tj) {
+		return false
+	}
+	return ti.After(*tj)
 }
 
 // statusOrder returns a numeric ordering for status values so that active
@@ -120,7 +159,8 @@ func (m *Model) updateList(msg tea.KeyMsg) tea.Cmd {
 			m.list.sortForm = nil
 		} else if m.list.sortForm.State == huh.StateAborted {
 			m.list.sortForm = nil
-			return nil
+			m.sortChoice = nil
+			return cmd
 		}
 		return cmd
 	}
@@ -208,8 +248,8 @@ func (m *Model) renderList() string {
 			padRight("Assignee", colAssignee),
 	)
 
-	// Compute available height for rows: total height - header(1) - col header(1) - footer(1) - padding(2)
-	rowsHeight := max(m.height-5, 1)
+	// Compute available height for rows: total height - header(1) - col header(1) - footer(1)
+	rowsHeight := max(m.height-3, 1)
 
 	m.list.vp.ClampToTotal(total)
 	m.list.vp.AdjustViewport(rowsHeight, total)
@@ -305,26 +345,53 @@ func (m *Model) renderBeadRow(b Bead, titleWidth int, selected bool) string {
 		Render(row)
 }
 
-// truncate shortens s to maxLen runes, appending "…" if truncated.
+// truncate shortens s so its visual width is at most maxLen columns, appending "…" if truncated.
 func truncate(s string, maxLen int) string {
 	if maxLen <= 0 {
 		return ""
 	}
-	runes := []rune(s)
-	if len(runes) <= maxLen {
+
+	// If already fits within the available visual width, return as-is.
+	if lipgloss.Width(s) <= maxLen {
 		return s
 	}
-	if maxLen <= 1 {
-		return "…"
+
+	ellipsis := "…"
+	ellipsisWidth := lipgloss.Width(ellipsis)
+
+	// For very small widths, just show an ellipsis to indicate truncation.
+	if maxLen <= ellipsisWidth {
+		return ellipsis
 	}
-	return string(runes[:maxLen-1]) + "…"
+
+	var (
+		builder      strings.Builder
+		currentWidth int
+	)
+
+	for _, r := range s {
+		runeStr := string(r)
+		rw := lipgloss.Width(runeStr)
+
+		// Leave room for the ellipsis at the end.
+		if currentWidth+rw+ellipsisWidth > maxLen {
+			break
+		}
+
+		builder.WriteString(runeStr)
+		currentWidth += rw
+	}
+
+	return builder.String() + ellipsis
 }
 
-// padRight pads s with spaces so the total rune count equals width.
+// padRight pads s with spaces so the total visual width equals width.
 func padRight(s string, width int) string {
-	n := len([]rune(s))
-	if n >= width {
+	currentWidth := lipgloss.Width(s)
+	if currentWidth >= width {
 		return s
 	}
-	return s + strings.Repeat(" ", width-n)
+
+	padding := width - currentWidth
+	return s + strings.Repeat(" ", padding)
 }
