@@ -1234,3 +1234,9 @@ rules:
         Verify that the stated count in PR metadata (title, description, commit message) actually matches the diff — e.g. if it says 'learn 1 new rule' confirm exactly 1 new rule entry was added, not just an edit to an existing one
       source: copilot:PR#349
       added: "2026-03-20"
+    - id: deduplicate-overlapping-warden-rules
+      category: other
+      pattern: Adding a new entry to warden-rules.yaml that covers a pattern already addressed by an existing rule
+      check: Before adding a new warden rule, check existing rules for semantic overlap. If an existing rule already covers the same concern, extend that rule's source list and check text instead of creating a duplicate entry that could cause double-flagging.
+      source: copilot:PR#344
+      added: "2026-03-20"
