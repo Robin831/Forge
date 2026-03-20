@@ -1289,3 +1289,18 @@ rules:
         Verify that LogEvent calls pass the available bead ID rather than an empty string, so failures can be correlated back to the originating bead in state.db
       source: copilot:PR#358
       added: "2026-03-20"
+    - id: warden-source-yaml-sequence
+      category: style
+      pattern: >-
+        Multi-value `source` fields in YAML configuration files using comma-separated scalars instead of YAML sequences
+      check: >-
+        Verify that multi-value fields (especially `source` in warden-rules.yaml) use YAML flow sequences (`[val1, val2]`) or block sequences instead of comma-separated scalars, so each value is properly parsed as a separate list element
+      source: copilot:PR#359
+      added: "2026-03-20"
+    - id: dedup-warden-rules-before-adding
+      category: other
+      pattern: Adding a new entry to warden-rules.yaml or any review-rules list
+      check: >-
+        Verify the new rule is not redundant with an existing rule. If it overlaps, expand the existing rule's wording or append the new source to its source list instead of creating a duplicate entry.
+      source: copilot:PR#359
+      added: "2026-03-20"
