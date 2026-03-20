@@ -337,6 +337,16 @@ CREATE TABLE IF NOT EXISTS ingot_test_results (
 CREATE INDEX IF NOT EXISTS idx_ingots_status ON ingots(status);
 CREATE INDEX IF NOT EXISTS idx_ingots_pr_id ON ingots(pr_id);
 CREATE INDEX IF NOT EXISTS idx_ingot_test_results_ingot_id ON ingot_test_results(ingot_id);
+
+CREATE TABLE IF NOT EXISTS pending_warden_rules (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    anvil      TEXT NOT NULL,
+    rule_yaml  TEXT NOT NULL,
+    source_pr  TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_warden_rules_anvil ON pending_warden_rules(anvil);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
@@ -2493,6 +2503,67 @@ func (db *DB) RemovePendingOrphan(beadID, anvil string) error {
 	_, err := db.conn.Exec(
 		`DELETE FROM pending_orphans WHERE bead_id = ? AND anvil = ?`,
 		beadID, anvil,
+	)
+	return err
+}
+
+// PendingRule represents a warden rule awaiting human approval.
+type PendingRule struct {
+	ID        int
+	Anvil     string
+	RuleYAML  string
+	SourcePR  string
+	CreatedAt time.Time
+}
+
+// InsertPendingRule adds a new pending warden rule for the given anvil.
+func (db *DB) InsertPendingRule(anvil, ruleYAML, sourcePR string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO pending_warden_rules (anvil, rule_yaml, source_pr, created_at)
+		 VALUES (?, ?, ?, ?)`,
+		anvil, ruleYAML, sourcePR, time.Now().UTC().Format(dbTimeLayout),
+	)
+	return err
+}
+
+// QueryPendingRulesByAnvil returns all pending warden rules grouped by anvil.
+func (db *DB) QueryPendingRulesByAnvil() (map[string][]PendingRule, error) {
+	rows, err := db.conn.Query(
+		`SELECT id, anvil, rule_yaml, source_pr, created_at
+		 FROM pending_warden_rules ORDER BY anvil, created_at`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string][]PendingRule)
+	for rows.Next() {
+		var r PendingRule
+		var createdAt string
+		if err := rows.Scan(&r.ID, &r.Anvil, &r.RuleYAML, &r.SourcePR, &createdAt); err != nil {
+			return nil, err
+		}
+		r.CreatedAt = parseTime(createdAt)
+		result[r.Anvil] = append(result[r.Anvil], r)
+	}
+	return result, rows.Err()
+}
+
+// DeletePendingRules removes pending warden rules by their IDs.
+func (db *DB) DeletePendingRules(ids []int) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	_, err := db.conn.Exec(
+		`DELETE FROM pending_warden_rules WHERE id IN (`+strings.Join(placeholders, ",")+`)`,
+		args...,
 	)
 	return err
 }
