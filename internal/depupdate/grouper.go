@@ -140,14 +140,17 @@ func buildPeerDepGroups(ctx context.Context, npmPkgs []taggedUpdate, updateSet m
 		uf.add(u.Path)
 	}
 
-	// Track how many packages peer-depend on each package (to find roots).
-	dependedOn := make(map[string]int)
+	// Track how many packages peer-depend on each package (to find roots)
+	// and how many in-set peer deps each package declares (outgoing edges).
+	dependedOn := make(map[string]int) // inbound: others peer-depend on this
+	dependsOn := make(map[string]int)  // outbound: this package peers others in-set
 	for _, u := range npmPkgs {
 		key := u.Path + "@" + u.Latest
 		for peerName := range peerCache[key] {
 			if _, inSet := updateSet[peerName]; inSet {
 				uf.union(u.Path, peerName)
 				dependedOn[peerName]++
+				dependsOn[u.Path]++
 			}
 		}
 	}
@@ -165,13 +168,15 @@ func buildPeerDepGroups(ctx context.Context, npmPkgs []taggedUpdate, updateSet m
 			continue // not a peer dep group
 		}
 
-		// Name after the package most depended on by others.
+		// Name after the "root" package: most depended on by others,
+		// breaking ties by fewest outgoing peer deps (true roots don't
+		// depend on others), then alphabetically for determinism.
 		bestRoot := members[0].Path
-		bestCount := dependedOn[bestRoot]
 		for _, m := range members[1:] {
-			if dependedOn[m.Path] > bestCount {
+			if dependedOn[m.Path] > dependedOn[bestRoot] ||
+				(dependedOn[m.Path] == dependedOn[bestRoot] && dependsOn[m.Path] < dependsOn[bestRoot]) ||
+				(dependedOn[m.Path] == dependedOn[bestRoot] && dependsOn[m.Path] == dependsOn[bestRoot] && m.Path < bestRoot) {
 				bestRoot = m.Path
-				bestCount = dependedOn[m.Path]
 			}
 		}
 
