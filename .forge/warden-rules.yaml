@@ -833,4 +833,21 @@ rules:
       check: Verify that every struct field is actually used. If a field duplicates a method parameter, either wire the field through (use it in methods instead of passing the param) or remove the field to avoid dead state.
       source: copilot:PR#327
       added: "2026-03-20"
-
+    - id: kanban-card-height-consistency
+      category: ui
+      pattern: UI layout code that uses a constant card/row/cell height for spacing, scrolling, or alignment calculations while the actual render function produces variable-height output
+      check: Verify that any constant used for item height in layout math (padding, scrolling, column alignment) matches the actual rendered height. Either enforce a fixed height in the render function (pad/truncate + explicit separator) or compute height dynamically from the rendered output (e.g., lipgloss.Height). Mixing a constant assumption with variable-height rendering causes misaligned columns and broken scrolling.
+      source: copilot:PR#330
+      added: "2026-03-20"
+    - id: no-mutate-derived-fields
+      category: ui
+      pattern: Code that directly sets fields derived from external state (e.g. database-enriched flags like HasPR) during user-initiated actions such as lane moves or status changes
+      check: Verify that derived/enriched fields (populated by background refresh or DB queries) are not manually overwritten in UI action handlers, as this causes temporary inconsistency until the next refresh cycle
+      source: copilot:PR#330
+      added: "2026-03-20"
+    - id: state-sync-after-mutation
+      category: ui
+      pattern: A message or command handler updates state on the backend (e.g. moves, edits, deletes an item) but only handles the error path, without refreshing or updating the local in-memory data on success
+      check: After a successful mutation (move, update, delete), verify that the local view state (e.g. in-memory lists, cached entries, UI lanes) is updated or a refresh is triggered so all views reflect the change immediately, rather than waiting for the next periodic tick
+      source: copilot:PR#330
+      added: "2026-03-20"
