@@ -899,3 +899,33 @@ rules:
       check: Verify that unit tests exist covering the legacy/alternative input format, asserting that the parser correctly handles the old shape and produces the expected default values for any missing fields
       source: copilot:PR#336
       added: "2026-03-20"
+    - id: no-duplicate-warden-rules
+      category: other
+      pattern: Adding a new rule to warden-rules.yaml that has the same pattern/check as an existing rule
+      check: Before adding a new warden rule, verify it does not duplicate an existing rule in the file. If the same pattern/check already exists, consolidate by updating the existing rule's source metadata instead of creating a duplicate entry.
+      source: copilot:PR#332
+      added: "2026-03-20"
+    - id: deduplicate-warden-rules-before-adding
+      category: other
+      pattern: New rule added to warden-rules.yaml
+      check: Before adding a new warden rule, check existing rules for substantial overlap. If a new rule duplicates or largely overlaps an existing one, update the existing rule's source list with the new PR attribution instead of creating a separate entry.
+      source: copilot:PR#332
+      added: "2026-03-20"
+    - id: deduplicate-overlapping-warden-rules
+      category: other
+      pattern: New warden rule being added to .forge/warden-rules.yaml that covers the same intent as an existing rule
+      check: Before adding a new warden rule, verify it does not duplicate or overlap with existing rules in the file. If overlap exists, consolidate by updating the existing rule (e.g. extending its source list) rather than adding a redundant entry.
+      source: copilot:PR#332
+      added: "2026-03-20"
+    - id: pr-description-matches-actual-changes
+      category: other
+      pattern: PR description or title claims a specific count of added/changed/removed items
+      check: Verify that the count stated in the PR description or title matches the actual number of changes in the diff — e.g., if the PR says 'learned 4 rules', confirm exactly 4 new rules appear in the changed files
+      source: copilot:PR#332
+      added: "2026-03-20"
+    - id: preserve-rule-attribution-sources
+      category: other
+      pattern: Modifications to source attribution lists in warden-rules.yaml or similar config files
+      check: When updating a rule's source list, verify that existing PR attributions are preserved and new PRs are appended rather than replacing prior entries
+      source: copilot:PR#332
+      added: "2026-03-20"
