@@ -68,6 +68,12 @@ type AnvilConfig struct {
 	// threads, no pending reviews). External PRs (ext-*) are never
 	// auto-merged. Default: false.
 	AutoMerge bool `mapstructure:"auto_merge" yaml:"auto_merge,omitempty"`
+	// QuestgiverSetupCmd is a shell command to run before quest execution
+	// for this anvil (e.g. "podman compose up -d").
+	QuestgiverSetupCmd string `mapstructure:"questgiver_setup_cmd" yaml:"questgiver_setup_cmd,omitempty"`
+	// QuestgiverTeardownCmd is a shell command to run after quest execution
+	// for this anvil (e.g. "podman compose down").
+	QuestgiverTeardownCmd string `mapstructure:"questgiver_teardown_cmd" yaml:"questgiver_teardown_cmd,omitempty"`
 }
 
 // SettingsConfig holds global operational settings.

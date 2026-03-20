@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -14,6 +17,9 @@ import (
 	"github.com/Robin831/Forge/internal/questgiver"
 	"github.com/spf13/cobra"
 )
+
+// errQuestFailed is returned when a quest execution fails, causing a non-zero exit.
+var errQuestFailed = errors.New("quest failed")
 
 func init() {
 	questListCmd.Flags().StringP("anvil", "a", "", "Only list quests for a specific anvil")
@@ -163,10 +169,26 @@ var questRunCmd = &cobra.Command{
 			ctx = context.Background()
 		}
 
+		// Run setup command if configured.
+		if ac.QuestgiverSetupCmd != "" {
+			fmt.Printf("Running setup: %s\n", ac.QuestgiverSetupCmd)
+			if err := runShellCmd(ctx, ac.QuestgiverSetupCmd, ac.Path); err != nil {
+				return fmt.Errorf("setup command failed: %w", err)
+			}
+		}
+
 		fmt.Printf("Running quest %q from anvil %q...\n\n", target.Name, anvilName)
 		result := executor.Execute(ctx, target)
 
-		// Print per-step results
+		// Run teardown command if configured (always, even on failure).
+		if ac.QuestgiverTeardownCmd != "" {
+			fmt.Printf("Running teardown: %s\n", ac.QuestgiverTeardownCmd)
+			if err := runShellCmd(ctx, ac.QuestgiverTeardownCmd, ac.Path); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: teardown command failed: %v\n", err)
+			}
+		}
+
+		// Print per-step results.
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintf(tw, "STEP\tACTION\tRESULT\tDURATION\tERROR\n")
 		for _, sr := range result.StepResults {
@@ -182,7 +204,7 @@ var questRunCmd = &cobra.Command{
 		}
 		tw.Flush()
 
-		// Print summary
+		// Print summary.
 		fmt.Println()
 		if result.Passed {
 			fmt.Printf("PASSED — %s (%s)\n", result.QuestName, result.Duration.Round(time.Millisecond))
@@ -191,11 +213,23 @@ var questRunCmd = &cobra.Command{
 			if result.ErrorMessage != "" {
 				fmt.Printf("Error: %s\n", result.ErrorMessage)
 			}
+			return errQuestFailed
 		}
 
-		if !result.Passed {
-			os.Exit(1)
-		}
 		return nil
 	},
+}
+
+// runShellCmd executes a shell command string in the given directory.
+func runShellCmd(ctx context.Context, command, dir string) error {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	}
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
