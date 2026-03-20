@@ -275,7 +275,7 @@ func TestExtractScope(t *testing.T) {
 		{"lodash", ""},
 		{"react-dom", ""},
 		{"@scope", ""},    // malformed
-		{"@scope/", ""},   // has slash but empty name — still valid scope
+		{"@scope/", ""},   // malformed: has slash but empty name, treated as no scope
 		{"github.com/foo/bar", ""}, // Go module path, no @ prefix
 	}
 	for _, tt := range tests {

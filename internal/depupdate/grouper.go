@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -53,12 +54,6 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 		return nil
 	}
 
-	// Quick lookup: package path → tagged update.
-	updateSet := make(map[string]taggedUpdate, len(all))
-	for _, u := range all {
-		updateSet[u.Path] = u
-	}
-
 	grouped := make(map[string]bool)
 	var groups []UpdateGroup
 
@@ -71,7 +66,7 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 	}
 
 	if len(npmPkgs) > 0 {
-		peerGroups := buildPeerDepGroups(ctx, npmPkgs, updateSet)
+		peerGroups := buildPeerDepGroups(ctx, npmPkgs)
 		for _, g := range peerGroups {
 			groups = append(groups, g)
 			for _, u := range g.Updates {
@@ -118,12 +113,33 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 		})
 	}
 
+	// Sort groups for deterministic output: by Name, then Kind.
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].Name != groups[j].Name {
+			return groups[i].Name < groups[j].Name
+		}
+		return groups[i].Kind < groups[j].Kind
+	})
+	// Sort each group's updates by Path.
+	for i := range groups {
+		sort.Slice(groups[i].Updates, func(a, b int) bool {
+			return groups[i].Updates[a].Path < groups[i].Updates[b].Path
+		})
+	}
+
 	return groups
 }
 
 // buildPeerDepGroups discovers peer dependency relationships among outdated npm
 // packages and merges connected packages into groups via union-find.
-func buildPeerDepGroups(ctx context.Context, npmPkgs []taggedUpdate, updateSet map[string]taggedUpdate) []UpdateGroup {
+func buildPeerDepGroups(ctx context.Context, npmPkgs []taggedUpdate) []UpdateGroup {
+	// Build an npm-only lookup set to avoid matching peer deps against
+	// non-npm packages that happen to share a name.
+	npmSet := make(map[string]struct{}, len(npmPkgs))
+	for _, u := range npmPkgs {
+		npmSet[u.Path] = struct{}{}
+	}
+
 	// Fetch peer deps with caching to avoid duplicate npm view calls.
 	peerCache := make(map[string]map[string]string) // "pkg@ver" → peer deps
 	for _, u := range npmPkgs {
@@ -147,7 +163,7 @@ func buildPeerDepGroups(ctx context.Context, npmPkgs []taggedUpdate, updateSet m
 	for _, u := range npmPkgs {
 		key := u.Path + "@" + u.Latest
 		for peerName := range peerCache[key] {
-			if _, inSet := updateSet[peerName]; inSet {
+			if _, inSet := npmSet[peerName]; inSet {
 				uf.union(u.Path, peerName)
 				dependedOn[peerName]++
 				dependsOn[u.Path]++
