@@ -2,944 +2,1235 @@ rules:
     - id: background-phases-constant-sync
       category: other
       pattern: Adding a new worker phase or pipeline stage that runs as a background process
-      check: Verify that the backgroundPhases constant in internal/state/db.go includes the new phase, so it is excluded from stall detection and dispatch capacity counting. Also update any doc comments that enumerate background phases (e.g. on ActiveDispatchWorkers, ActiveDispatchWorkersByAnvil, StalledWorkers).
+      check: >-
+        Verify that the backgroundPhases constant in internal/state/db.go includes the new phase, so it is excluded from stall detection and dispatch capacity counting. Also update any doc comments that enumerate background phases (e.g. on ActiveDispatchWorkers, ActiveDispatchWorkersByAnvil, StalledWorkers).
       source: copilot:PR#130
       added: "2026-03-09"
     - id: test-new-render-behavior
       category: testing
-      pattern: New conditional rendering logic added to a function that already has test coverage
-      check: When adding new display/rendering branches to a function with existing test coverage, verify that test cases are added for both the truthy and falsy paths of the new condition
+      pattern: >-
+        New conditional rendering logic added to a function that already has test coverage
+      check: >-
+        When adding new display/rendering branches to a function with existing test coverage, verify that test cases are added for both the truthy and falsy paths of the new condition
       source: copilot:PR#130
       added: "2026-03-09"
     - id: reuse-worktree-manager
       category: other
-      pattern: Code that calls git worktree add/remove, git fetch, or manages branch creation/deletion outside of internal/worktree
-      check: Verify that worktree operations use internal/worktree.Manager instead of reimplementing git worktree creation, cleanup, fetch, or branch management. This ensures consistent handling of edge cases (existing branches/worktrees, remote-only branches) and maintains the standard .workers layout across all Forge components.
+      pattern: >-
+        Code that calls git worktree add/remove, git fetch, or manages branch creation/deletion outside of internal/worktree
+      check: >-
+        Verify that worktree operations use internal/worktree.Manager instead of reimplementing git worktree creation, cleanup, fetch, or branch management. This ensures consistent handling of edge cases (existing branches/worktrees, remote-only branches) and maintains the standard .workers layout across all Forge components.
       source: copilot:PR#129
       added: "2026-03-09"
     - id: new-logic-needs-tests
       category: testing
-      pattern: New conditional logic paths or failure modes added to a package that already has unit tests
-      check: Verify that new logic paths (especially those with multiple failure modes like branch resolution, external tool invocation, or state-dependent behavior) have corresponding unit tests — either by injecting dependencies for isolation or by factoring decisions into pure functions that can be tested directly
+      pattern: >-
+        New conditional logic paths or failure modes added to a package that already has unit tests
+      check: >-
+        Verify that new logic paths (especially those with multiple failure modes like branch resolution, external tool invocation, or state-dependent behavior) have corresponding unit tests — either by injecting dependencies for isolation or by factoring decisions into pure functions that can be tested directly
       source: copilot:PR#129
       added: "2026-03-09"
     - id: pr-base-branch-consistency
       category: other
-      pattern: Creating a PR via ghpr.Create without explicitly setting the Base field, especially when a base branch has already been resolved elsewhere in the code
-      check: Verify that when creating a PR, the Base branch is explicitly passed to ghpr.CreateParams using the already-resolved base ref (without origin/ prefix), rather than relying on the default. This prevents PRs from targeting the wrong branch when a repo uses master instead of main.
+      pattern: >-
+        Creating a PR via ghpr.Create without explicitly setting the Base field, especially when a base branch has already been resolved elsewhere in the code
+      check: >-
+        Verify that when creating a PR, the Base branch is explicitly passed to ghpr.CreateParams using the already-resolved base ref (without origin/ prefix), rather than relying on the default. This prevents PRs from targeting the wrong branch when a repo uses master instead of main.
       source: copilot:PR#129
       added: "2026-03-09"
     - id: pr-creation-requires-bead-id-or-skip-flag
       category: other
-      pattern: ghpr.Create calls that insert PRs into the state DB without a BeadID or distinguishing type
-      check: Verify that every ghpr.Create call either sets a BeadID or is explicitly excluded from bellows monitoring, to prevent untracked PRs from being treated as normal work PRs and triggering unintended side-effects (e.g., infinite auto-learn loops)
+      pattern: >-
+        ghpr.Create calls that insert PRs into the state DB without a BeadID or distinguishing type
+      check: >-
+        Verify that every ghpr.Create call either sets a BeadID or is explicitly excluded from bellows monitoring, to prevent untracked PRs from being treated as normal work PRs and triggering unintended side-effects (e.g., infinite auto-learn loops)
       source: copilot:PR#129
       added: "2026-03-09"
     - id: cleanup-defer-canceled-ctx
       category: concurrency
-      pattern: defer cleanup functions that run git or subprocess commands using a parent context parameter
-      check: Verify that cleanup/teardown defers use context.Background() with a short timeout instead of the passed-in context, so cleanup still runs when the parent context is canceled (shutdown/timeout)
+      pattern: >-
+        defer cleanup functions that run git or subprocess commands using a parent context parameter
+      check: >-
+        Verify that cleanup/teardown defers use context.Background() with a short timeout instead of the passed-in context, so cleanup still runs when the parent context is canceled (shutdown/timeout)
       source: copilot:PR#129
       added: "2026-03-09"
     - id: unique-branch-worktree-names
       category: error-handling
-      pattern: Creating git branch names or worktree paths derived solely from deterministic identifiers (e.g., PR number, bead ID) without a unique component
-      check: Verify that branch names and worktree paths include a unique component (e.g., timestamp or random suffix) to prevent collisions on retry after a crash, or that existing branches/worktrees are detected and reused gracefully
+      pattern: >-
+        Creating git branch names or worktree paths derived solely from deterministic identifiers (e.g., PR number, bead ID) without a unique component
+      check: >-
+        Verify that branch names and worktree paths include a unique component (e.g., timestamp or random suffix) to prevent collisions on retry after a crash, or that existing branches/worktrees are detected and reused gracefully
       source: copilot:PR#129
       added: "2026-03-09"
     - id: truncation-off-by-one
       category: ui
-      pattern: Code that truncates text to N lines and then appends an ellipsis or overflow indicator on an additional line
-      check: Verify that any ellipsis or truncation indicator is included within the stated line limit, not appended as an extra line beyond it
+      pattern: >-
+        Code that truncates text to N lines and then appends an ellipsis or overflow indicator on an additional line
+      check: >-
+        Verify that any ellipsis or truncation indicator is included within the stated line limit, not appended as an extra line beyond it
       source: copilot:PR#128
       added: "2026-03-09"
     - id: utf8-safe-truncation
       category: ui
       pattern: String slicing by byte index (s[:n]) on user-visible text
-      check: Verify that string truncation is rune-safe and does not slice through multi-byte UTF-8 characters. Use []rune slicing or runewidth.Truncate instead of byte-based slicing.
+      check: >-
+        Verify that string truncation is rune-safe and does not slice through multi-byte UTF-8 characters. Use []rune slicing or runewidth.Truncate instead of byte-based slicing.
       source: copilot:PR#128
       added: "2026-03-09"
     - id: new-ui-behavior-needs-tests
       category: testing
-      pattern: Changes that introduce or modify user-visible UI output in components that already have rendering tests
-      check: Verify that new or changed user-visible behavior (new fields displayed, text wrapping, truncation/ellipsis) has corresponding test coverage in the existing test file, asserting expected output format and edge cases
+      pattern: >-
+        Changes that introduce or modify user-visible UI output in components that already have rendering tests
+      check: >-
+        Verify that new or changed user-visible behavior (new fields displayed, text wrapping, truncation/ellipsis) has corresponding test coverage in the existing test file, asserting expected output format and edge cases
       source: copilot:PR#128
       added: "2026-03-09"
     - id: changelog-matches-implementation
       category: other
-      pattern: Changelog or release note entries that describe UI changes, new features, or behavior changes
-      check: Verify that changelog descriptions accurately reflect the actual code changes — if the changelog claims a feature applies to multiple views or components, confirm each one was actually modified to support it; also ensure the changelog does not claim full functionality (e.g., 'enables autostart') when the code only partially implements it (e.g., only runs daemon-reload without enabling the service)
+      pattern: >-
+        Changelog or release note entries that describe UI changes, new features, or behavior changes
+      check: >-
+        Verify that changelog descriptions accurately reflect the actual code changes — if the changelog claims a feature applies to multiple views or components, confirm each one was actually modified to support it; also ensure the changelog does not claim full functionality (e.g., 'enables autostart') when the code only partially implements it (e.g., only runs daemon-reload without enabling the service)
       source: copilot:PR#128
       added: "2026-03-09"
     - id: use-style-frame-size
       category: ui
-      pattern: Calculating content width by subtracting a hardcoded number from a styled container width (e.g. `width - 4`, `width - 2`) instead of using the style's frame size methods
-      check: Verify that content width calculations use the style's GetHorizontalFrameSize() or GetVerticalFrameSize() methods rather than hardcoded offsets, so truncation and layout stay correct if border or padding values change
+      pattern: >-
+        Calculating content width by subtracting a hardcoded number from a styled container width (e.g. `width - 4`, `width - 2`) instead of using the style's frame size methods
+      check: >-
+        Verify that content width calculations use the style's GetHorizontalFrameSize() or GetVerticalFrameSize() methods rather than hardcoded offsets, so truncation and layout stay correct if border or padding values change
       source: copilot:PR#128
       added: "2026-03-09"
     - id: popup-content-width-frame-size
       category: ui
-      pattern: Manual arithmetic to compute content width inside a styled container (e.g. `width - N` for padding/border)
-      check: Use GetHorizontalFrameSize() (or GetVerticalFrameSize()) from the lipgloss style instead of hard-coded offsets so content width stays consistent when padding or border styles change
+      pattern: >-
+        Manual arithmetic to compute content width inside a styled container (e.g. `width - N` for padding/border)
+      check: >-
+        Use GetHorizontalFrameSize() (or GetVerticalFrameSize()) from the lipgloss style instead of hard-coded offsets so content width stays consistent when padding or border styles change
       source: copilot:PR#128
       added: "2026-03-09"
     - id: utf8-safe-string-ops
       category: ui
-      pattern: Using len() or byte-slicing on strings that may contain non-ASCII text, especially for display width calculations or truncation
-      check: Verify that string measurement and slicing uses rune-aware operations (or existing helpers like wordWrap) instead of byte-level len()/slicing, which can split multi-byte UTF-8 characters and produce incorrect width calculations
+      pattern: >-
+        Using len() or byte-slicing on strings that may contain non-ASCII text, especially for display width calculations or truncation
+      check: >-
+        Verify that string measurement and slicing uses rune-aware operations (or existing helpers like wordWrap) instead of byte-level len()/slicing, which can split multi-byte UTF-8 characters and produce incorrect width calculations
       source: copilot:PR#128
       added: "2026-03-09"
     - id: naming-matches-semantics
       category: style
-      pattern: Function, constant, or type names that reference a specific concept (e.g. 'Epic') but the implementation handles a broader or different concept
-      check: Verify that function/constant/type names accurately reflect their actual scope and behavior. When semantics broaden beyond the original name, rename to match (e.g. ExtractEpicBranch → ExtractParentBranch) and keep the old name as a deprecated wrapper for backward compatibility.
+      pattern: >-
+        Function, constant, or type names that reference a specific concept (e.g. 'Epic') but the implementation handles a broader or different concept
+      check: >-
+        Verify that function/constant/type names accurately reflect their actual scope and behavior. When semantics broaden beyond the original name, rename to match (e.g. ExtractEpicBranch → ExtractParentBranch) and keep the old name as a deprecated wrapper for backward compatibility.
       source: copilot:PR#126
       added: "2026-03-09"
     - id: comment-code-consistency
       category: other
       pattern: Code comments or docstrings that describe behavior, eligibility, or control flow
-      check: Verify that comments accurately reflect the actual code behavior and control flow. When a comment claims something is eligible, enabled, or handled, trace the execution path to confirm the code actually supports that claim. Update comments to match reality or fix the code to match the intent.
+      check: >-
+        Verify that comments accurately reflect the actual code behavior and control flow. When a comment claims something is eligible, enabled, or handled, trace the execution path to confirm the code actually supports that claim. Update comments to match reality or fix the code to match the intent.
       source: copilot:PR#126
       added: "2026-03-09"
     - id: changelog-matches-behavior
       category: other
       pattern: Changelog entries or documentation describing feature behavior changes
-      check: Verify that changelog entries and documentation accurately describe the actual implemented behavior, including any exceptions or edge cases where legacy paths or special handling still apply
+      check: >-
+        Verify that changelog entries and documentation accurately describe the actual implemented behavior, including any exceptions or edge cases where legacy paths or special handling still apply
       source: copilot:PR#126
       added: "2026-03-09"
     - id: bd-show-json-array-unwrap
       category: error-handling
-      pattern: Unmarshaling output from `bd show --json` into a single struct without handling the array wrapper
-      check: Verify that code consuming `bd show --json` output handles both single-object (`{...}`) and single-element-array (`[{...}]`) forms, and logs unmarshal failures (including stderr and raw output) instead of silently returning zero values
+      pattern: >-
+        Unmarshaling output from `bd show --json` into a single struct without handling the array wrapper
+      check: >-
+        Verify that code consuming `bd show --json` output handles both single-object (`{...}`) and single-element-array (`[{...}]`) forms, and logs unmarshal failures (including stderr and raw output) instead of silently returning zero values
       source: copilot:PR#126
       added: "2026-03-09"
     - id: default-epic-branch-scope
       category: testing
-      pattern: Default branch name assignment for beads/issues based on type (e.g., feature/<id>)
-      check: Verify that default epic/feature branch names are only assigned to appropriate bead types (epics, features) — not broadly to all types like tasks or bugs, which could accidentally force non-existent base branches in unrelated dependency graphs
+      pattern: >-
+        Default branch name assignment for beads/issues based on type (e.g., feature/<id>)
+      check: >-
+        Verify that default epic/feature branch names are only assigned to appropriate bead types (epics, features) — not broadly to all types like tasks or bugs, which could accidentally force non-existent base branches in unrelated dependency graphs
       source: copilot:PR#126
       added: "2026-03-09"
     - id: epic-branch-guard
       category: other
-      pattern: Code that resolves or assigns epic/feature branches based on bead relationships (parent, blocks, dependencies)
-      check: Verify that epic branch resolution only applies to actual parent-child (epic/feature) relationships, not ordinary task dependencies. Unconditionally deriving a feature branch name like `feature/<id>` from any related bead can cause pipelines and PRs to target non-existent base branches. Ensure there is a guard — such as checking for an explicit label, restricting to epic/feature bead types, or verifying the bead actually has children — before assigning an epic branch.
+      pattern: >-
+        Code that resolves or assigns epic/feature branches based on bead relationships (parent, blocks, dependencies)
+      check: >-
+        Verify that epic branch resolution only applies to actual parent-child (epic/feature) relationships, not ordinary task dependencies. Unconditionally deriving a feature branch name like `feature/<id>` from any related bead can cause pipelines and PRs to target non-existent base branches. Ensure there is a guard — such as checking for an explicit label, restricting to epic/feature bead types, or verifying the bead actually has children — before assigning an epic branch.
       source: copilot:PR#126
       added: "2026-03-09"
     - id: wrapper-preserves-original-semantics
       category: other
-      pattern: A function is described as a backward-compatible wrapper or compatibility shim around a new function
-      check: Verify the wrapper actually preserves the original behavior. If the underlying function's semantics changed (e.g., new default return values), the wrapper must replicate the old behavior — not just delegate to the new function. Update comments and names to accurately reflect whether compatibility is truly maintained.
+      pattern: >-
+        A function is described as a backward-compatible wrapper or compatibility shim around a new function
+      check: >-
+        Verify the wrapper actually preserves the original behavior. If the underlying function's semantics changed (e.g., new default return values), the wrapper must replicate the old behavior — not just delegate to the new function. Update comments and names to accurately reflect whether compatibility is truly maintained.
       source: copilot:PR#126
       added: "2026-03-09"
     - id: remove-unused-scaffolding
       category: style
-      pattern: Code contains types, variables, or comments suggesting functionality (like deduplication) that is not actually implemented
-      check: Verify that declared types, variables, and structural comments correspond to actual implemented behavior — remove scaffolding for unimplemented features or implement the implied functionality
+      pattern: >-
+        Code contains types, variables, or comments suggesting functionality (like deduplication) that is not actually implemented
+      check: >-
+        Verify that declared types, variables, and structural comments correspond to actual implemented behavior — remove scaffolding for unimplemented features or implement the implied functionality
       source: copilot:PR#126
       added: "2026-03-09"
     - id: bd-show-json-unwrap-array
       category: error-handling
-      pattern: Code that unmarshals output from `bd show --json` directly into a struct without preprocessing
-      check: Verify that `unwrapJSONArray` is called before `json.Unmarshal` when processing `bd show --json` output, since the command may return either `{...}` or `[{...}]` depending on context. Also verify that unmarshal errors are logged rather than silently ignored.
+      pattern: >-
+        Code that unmarshals output from `bd show --json` directly into a struct without preprocessing
+      check: >-
+        Verify that `unwrapJSONArray` is called before `json.Unmarshal` when processing `bd show --json` output, since the command may return either `{...}` or `[{...}]` depending on context. Also verify that unmarshal errors are logged rather than silently ignored.
       source: copilot:PR#125
       added: "2026-03-09"
     - id: manual-dispatch-epic-branch-resolution
       category: other
-      pattern: Manual bead dispatch (e.g. IPC `run_bead`) where a bead's `Blocks` field may be empty or unresolved before epic branch resolution
-      check: When manually dispatching a bead, verify that `Blocks` is resolved (e.g. via `poller.ResolveBlocks`) before calling `ResolveEpicBranches`, so that beads blocking an epic are correctly assigned an `EpicBranch` instead of creating PRs against main
+      pattern: >-
+        Manual bead dispatch (e.g. IPC `run_bead`) where a bead's `Blocks` field may be empty or unresolved before epic branch resolution
+      check: >-
+        When manually dispatching a bead, verify that `Blocks` is resolved (e.g. via `poller.ResolveBlocks`) before calling `ResolveEpicBranches`, so that beads blocking an epic are correctly assigned an `EpicBranch` instead of creating PRs against main
       source: copilot:PR#125
       added: "2026-03-09"
     - id: new-detection-paths-need-tests
       category: testing
       pattern: Adding a new detection/resolution path to an existing function
-      check: Verify that new detection paths have corresponding unit tests, especially when the path involves external calls (e.g., shelling out to CLI tools) — these should be injectable/mockable so tests don't depend on external processes
+      check: >-
+        Verify that new detection paths have corresponding unit tests, especially when the path involves external calls (e.g., shelling out to CLI tools) — these should be injectable/mockable so tests don't depend on external processes
       source: copilot:PR#125
       added: "2026-03-09"
     - id: bubbletea-cmd-must-be-dispatched
       category: ui
-      pattern: A Bubbletea method returns a tea.Cmd but the call site discards it instead of returning or batching it
-      check: Verify that every call to a function returning tea.Cmd actually dispatches the command via return or tea.Batch — a discarded Cmd means the async operation silently never executes
+      pattern: >-
+        A Bubbletea method returns a tea.Cmd but the call site discards it instead of returning or batching it
+      check: >-
+        Verify that every call to a function returning tea.Cmd actually dispatches the command via return or tea.Batch — a discarded Cmd means the async operation silently never executes
       source: copilot:PR#123
       added: "2026-03-09"
     - id: nullable-bool-config-docs
       category: other
-      pattern: Documentation for optional/nullable config fields that use pointer types (*bool, *int, etc.) in Go structs
-      check: Verify that docs accurately reflect nullable types as `type|null` with default `null (use global/default)` rather than showing them as plain non-nullable types with a hardcoded default. Document that when set, the per-scope value overrides the global setting.
+      pattern: >-
+        Documentation for optional/nullable config fields that use pointer types (*bool, *int, etc.) in Go structs
+      check: >-
+        Verify that docs accurately reflect nullable types as `type|null` with default `null (use global/default)` rather than showing them as plain non-nullable types with a hardcoded default. Document that when set, the per-scope value overrides the global setting.
       source: copilot:PR#122
       added: "2026-03-09"
     - id: cli-docs-match-cobra-flags
       category: other
       pattern: CLI documentation or help text for a command that has flags registered in Cobra
-      check: Verify that all flags wired in the Cobra command definition (including shorthand aliases like -p, -n) are documented in the CLI reference docs. Missing flags means the docs don't match the actual interface.
+      check: >-
+        Verify that all flags wired in the Cobra command definition (including shorthand aliases like -p, -n) are documented in the CLI reference docs. Missing flags means the docs don't match the actual interface.
       source: copilot:PR#122
       added: "2026-03-09"
     - id: docs-match-implementation
       category: other
       pattern: Documentation or comments describing supported tools, formats, or integrations
-      check: Verify that documentation accurately reflects the current implementation — do not claim support for tools, formats, or integrations that are not actually implemented in the code
+      check: >-
+        Verify that documentation accurately reflects the current implementation — do not claim support for tools, formats, or integrations that are not actually implemented in the code
       source: copilot:PR#122
       added: "2026-03-09"
     - id: exhaustive-list-completeness
       category: other
-      pattern: Documentation or comments that enumerate items from a known set (packages, config keys, enum values, CLI commands)
-      check: When a list claims or appears to be comprehensive, verify all items are included. If the list is intentionally partial, ensure it says so explicitly (e.g., 'key packages include…') to avoid misleading readers into thinking unlisted items don't exist
+      pattern: >-
+        Documentation or comments that enumerate items from a known set (packages, config keys, enum values, CLI commands)
+      check: >-
+        When a list claims or appears to be comprehensive, verify all items are included. If the list is intentionally partial, ensure it says so explicitly (e.g., 'key packages include…') to avoid misleading readers into thinking unlisted items don't exist
       source: copilot:PR#122
       added: "2026-03-09"
     - id: clamp-before-slice
       category: error-handling
-      pattern: Arithmetic on terminal/container width used as a slice bound (e.g. `text[:width - N]`)
-      check: Verify the computed slice index is clamped to a safe minimum (>= 0, and >= offset+1 when subtracting further) so narrow dimensions cannot produce a negative or out-of-bounds slice bound
+      pattern: >-
+        Arithmetic on terminal/container width used as a slice bound (e.g. `text[:width - N]`)
+      check: >-
+        Verify the computed slice index is clamped to a safe minimum (>= 0, and >= offset+1 when subtracting further) so narrow dimensions cannot produce a negative or out-of-bounds slice bound
       source: copilot:PR#121
       added: "2026-03-09"
     - id: hidden-panel-focus-cycle
       category: ui
-      pattern: A panel or UI element is included in a focus/tab cycle but can be conditionally hidden or not rendered
-      check: Verify that conditionally-hidden panels are excluded from the focus cycle when not visible, or are always rendered (even if empty), so focus never lands on a non-rendered element
+      pattern: >-
+        A panel or UI element is included in a focus/tab cycle but can be conditionally hidden or not rendered
+      check: >-
+        Verify that conditionally-hidden panels are excluded from the focus cycle when not visible, or are always rendered (even if empty), so focus never lands on a non-rendered element
       source: copilot:PR#121
       added: "2026-03-09"
     - id: doc-comment-accuracy
       category: style
       pattern: Function or method doc comments that describe behavior, layout, or parameters
-      check: Verify that doc comments accurately reflect the current behavior of the function, especially after changes that add conditional paths or new UI panels
+      check: >-
+        Verify that doc comments accurately reflect the current behavior of the function, especially after changes that add conditional paths or new UI panels
       source: copilot:PR#121
       added: "2026-03-09"
     - id: delayed-status-cleanup
       category: ui
       pattern: Deferred deletion of UI-visible status/state immediately after completion
-      check: When removing a status entry that the UI displays, ensure there is an actual delay (e.g., time.AfterFunc) before deletion so the terminal state is visible for at least one refresh cycle. Do not delete immediately if a comment or intent says 'after a short delay'.
+      check: >-
+        When removing a status entry that the UI displays, ensure there is an actual delay (e.g., time.AfterFunc) before deletion so the terminal state is visible for at least one refresh cycle. Do not delete immediately if a comment or intent says 'after a short delay'.
       source: copilot:PR#121
       added: "2026-03-09"
     - id: sort-ipc-collections
       category: ui
       pattern: sync.Map.Range or map iteration results returned via IPC for display in TUI/CLI
-      check: Verify that collections built from map/sync.Map iteration are sorted deterministically before being returned to callers, to prevent UI list jumping and cursor/viewport issues
+      check: >-
+        Verify that collections built from map/sync.Map iteration are sorted deterministically before being returned to callers, to prevent UI list jumping and cursor/viewport issues
       source: copilot:PR#121
       added: "2026-03-09"
     - id: nullable-bool-doc-mismatch
       category: other
-      pattern: Documentation describing a config field as `bool` with a fixed default when the actual Go type is `*bool` (pointer/nullable)
-      check: Verify that documentation for nullable/pointer config fields accurately reflects the tri-state nature (true/false/null) and documents the nil behavior (e.g., 'use global setting') rather than showing a simple bool with a fixed default
+      pattern: >-
+        Documentation describing a config field as `bool` with a fixed default when the actual Go type is `*bool` (pointer/nullable)
+      check: >-
+        Verify that documentation for nullable/pointer config fields accurately reflects the tri-state nature (true/false/null) and documents the nil behavior (e.g., 'use global setting') rather than showing a simple bool with a fixed default
       source: copilot:PR#131
       added: "2026-03-09"
     - id: test-new-config-behavior
       category: testing
       pattern: New config fields or flags that filter, gate, or change operational behavior
-      check: Verify that new configuration options affecting runtime behavior (feature toggles, per-entity filters, operational flags) have unit tests covering both enabled and disabled paths to prevent regressions
+      check: >-
+        Verify that new configuration options affecting runtime behavior (feature toggles, per-entity filters, operational flags) have unit tests covering both enabled and disabled paths to prevent regressions
       source: copilot:PR#131
       added: "2026-03-09"
     - id: normalize-path-once
       category: other
-      pattern: A file path is resolved/normalized in one function but the original (possibly relative) path is used elsewhere in the same struct
-      check: When a path is normalized (e.g., via filepath.Abs or filepath.EvalSymlinks), verify the normalized value is stored back or used consistently across all operations (logging, watching, loading) to avoid mismatches if the working directory changes
+      pattern: >-
+        A file path is resolved/normalized in one function but the original (possibly relative) path is used elsewhere in the same struct
+      check: >-
+        When a path is normalized (e.g., via filepath.Abs or filepath.EvalSymlinks), verify the normalized value is stored back or used consistently across all operations (logging, watching, loading) to avoid mismatches if the working directory changes
       source: copilot:PR#133
       added: "2026-03-09"
     - id: platform-accurate-terminology
       category: style
-      pattern: Comments or documentation referencing platform-specific concepts (e.g., 'inode', 'symlink', 'fork') in cross-platform code
-      check: Verify that comments use platform-neutral terminology or explicitly qualify platform-specific terms. For example, use 'file identity' or 'file handle' instead of 'inode' when the code runs on Windows, where inodes do not exist in the Unix sense.
+      pattern: >-
+        Comments or documentation referencing platform-specific concepts (e.g., 'inode', 'symlink', 'fork') in cross-platform code
+      check: >-
+        Verify that comments use platform-neutral terminology or explicitly qualify platform-specific terms. For example, use 'file identity' or 'file handle' instead of 'inode' when the code runs on Windows, where inodes do not exist in the Unix sense.
       source: copilot:PR#133
       added: "2026-03-09"
     - id: changelog-fragment-bead-id-match
       category: style
       pattern: Adding or modifying files in changelog.d/
-      check: Verify the changelog fragment filename matches the current PR's bead ID (changelog.d/<bead-id>.md) and that the trailing bead reference in the bullet text also matches the same bead ID. Also verify the fragment file ends with a trailing blank line to maintain consistent formatting across all entries.
+      check: >-
+        Verify the changelog fragment filename matches the current PR's bead ID (changelog.d/<bead-id>.md) and that the trailing bead reference in the bullet text also matches the same bead ID. Also verify the fragment file ends with a trailing blank line to maintain consistent formatting across all entries.
       source: copilot:PR#143,PR#336
       added: "2026-03-09"
     - id: no-dead-db-columns
       category: other
-      pattern: Database schema defines columns or query functions whose results are consumed in application logic
-      check: Verify that every queried database column is actually written to somewhere in the codebase. A column that is never populated will always return its default value, making any read-side logic (e.g., conditional overrides) dead code. Also check that the read path does not shadow outer error variables when handling the query result.
+      pattern: >-
+        Database schema defines columns or query functions whose results are consumed in application logic
+      check: >-
+        Verify that every queried database column is actually written to somewhere in the codebase. A column that is never populated will always return its default value, making any read-side logic (e.g., conditional overrides) dead code. Also check that the read path does not shadow outer error variables when handling the query result.
       source: copilot:PR#147
       added: "2026-03-09"
     - id: new-render-paths-need-tests
       category: testing
-      pattern: New or renamed rendering/UI functions that replace existing ones called in View() or main render paths
-      check: Verify that new rendering functions have corresponding test coverage, and that existing tests are updated to call the new function signatures rather than stale ones they replaced
+      pattern: >-
+        New or renamed rendering/UI functions that replace existing ones called in View() or main render paths
+      check: >-
+        Verify that new rendering functions have corresponding test coverage, and that existing tests are updated to call the new function signatures rather than stale ones they replaced
       source: copilot:PR#147
       added: "2026-03-09"
     - id: format-precision-loss
       category: ui
-      pattern: Integer division or truncating format verbs (e.g. %d) applied to numeric display values that discard meaningful fractional parts
-      check: Verify that numeric formatting preserves appropriate precision — e.g. use %.1f instead of %d when dividing values for human-readable display, so 1500 renders as '1.5k' not '1k'
+      pattern: >-
+        Integer division or truncating format verbs (e.g. %d) applied to numeric display values that discard meaningful fractional parts
+      check: >-
+        Verify that numeric formatting preserves appropriate precision — e.g. use %.1f instead of %d when dividing values for human-readable display, so 1500 renders as '1.5k' not '1k'
       source: copilot:PR#147
       added: "2026-03-09"
     - id: unreachable-dead-code-guard
       category: style
-      pattern: Defensive guard clauses on computed values that are already constrained by earlier returns
-      check: When a function has an early return based on a value X, verify that subsequent guards on values derived from X are actually reachable. If a prior check guarantees X >= N, and Y is computed as X - constant, then guards like Y < M may be dead code when M <= N - constant.
+      pattern: >-
+        Defensive guard clauses on computed values that are already constrained by earlier returns
+      check: >-
+        When a function has an early return based on a value X, verify that subsequent guards on values derived from X are actually reachable. If a prior check guarantees X >= N, and Y is computed as X - constant, then guards like Y < M may be dead code when M <= N - constant.
       source: copilot:PR#147
       added: "2026-03-09"
     - id: nil-map-write-guard
       category: error-handling
       pattern: Assigning into a map field without checking if the map has been initialized
-      check: Before writing to a map field, verify the map is non-nil. If the struct can be constructed as a zero value (common in tests), lazily initialize the map before the first write (e.g., `if m.myMap == nil { m.myMap = make(map[K]V) }`) or ensure all constructors call the proper initializer.
+      check: >-
+        Before writing to a map field, verify the map is non-nil. If the struct can be constructed as a zero value (common in tests), lazily initialize the map before the first write (e.g., `if m.myMap == nil { m.myMap = make(map[K]V) }`) or ensure all constructors call the proper initializer.
       source: copilot:PR#156
       added: "2026-03-09"
     - id: cursor-identity-after-clamp
       category: ui
-      pattern: List/cursor state updated via ClampToTotal or similar re-index after the backing collection changes (e.g., worker list refresh)
-      check: When the backing list changes and the cursor is clamped or shifted, verify that any associated state tied to the previously-selected item (expansion, scroll position, sub-cursors) is detected as stale and reset. Compare the selected item's identity (e.g., ID) before and after the update; if it changed, reset dependent state.
+      pattern: >-
+        List/cursor state updated via ClampToTotal or similar re-index after the backing collection changes (e.g., worker list refresh)
+      check: >-
+        When the backing list changes and the cursor is clamped or shifted, verify that any associated state tied to the previously-selected item (expansion, scroll position, sub-cursors) is detected as stale and reset. Compare the selected item's identity (e.g., ID) before and after the update; if it changed, reset dependent state.
       source: copilot:PR#156
       added: "2026-03-09"
     - id: docstring-matches-keybindings
       category: ui
       pattern: Comments or docstrings that describe keyboard shortcuts or key bindings
-      check: Verify that docstrings and comments describing key bindings match the actual key handling implementation. If a comment says a key does X, confirm the keypress handler actually does X — update the comment or the code so they agree.
+      check: >-
+        Verify that docstrings and comments describing key bindings match the actual key handling implementation. If a comment says a key does X, confirm the keypress handler actually does X — update the comment or the code so they agree.
       source: copilot:PR#156
       added: "2026-03-09"
     - id: comment-matches-behavior
       category: style
-      pattern: Code comments describing toggle/bidirectional behavior (e.g. 'expand or collapse', 'enable/disable', 'add or remove') near handlers that only implement one direction
-      check: Verify that inline comments accurately describe what the code actually does — if only one branch of a described toggle is implemented here, the comment should reflect the actual behavior or reference where the other branch lives
+      pattern: >-
+        Code comments describing toggle/bidirectional behavior (e.g. 'expand or collapse', 'enable/disable', 'add or remove') near handlers that only implement one direction
+      check: >-
+        Verify that inline comments accurately describe what the code actually does — if only one branch of a described toggle is implemented here, the comment should reflect the actual behavior or reference where the other branch lives
       source: copilot:PR#156
       added: "2026-03-09"
     - id: needs-human-circuit-breaker-prefix
       category: error-handling
-      pattern: Code calling markChildNeedsHuman or writing needs_human=1 retry records with a LastError string
-      check: Verify that error message prefixes accurately identify the originating subsystem or failure mode. Do not reuse prefixes from unrelated code paths (e.g. using 'circuit breaker:' for a crucible child failure) as this conflates failure modes and misleads operators reading logs or state. This guidance supersedes any older advice to force 'circuit breaker:' prefixes on generic needs_human errors — dispatch now relies on NeedsHumanBeadIDSet(), not on specific LastError prefixes, so choose a prefix that accurately reflects the actual failure mode.
+      pattern: >-
+        Code calling markChildNeedsHuman or writing needs_human=1 retry records with a LastError string
+      check: >-
+        Verify that error message prefixes accurately identify the originating subsystem or failure mode. Do not reuse prefixes from unrelated code paths (e.g. using 'circuit breaker:' for a crucible child failure) as this conflates failure modes and misleads operators reading logs or state. This guidance supersedes any older advice to force 'circuit breaker:' prefixes on generic needs_human errors — dispatch now relies on NeedsHumanBeadIDSet(), not on specific LastError prefixes, so choose a prefix that accurately reflects the actual failure mode.
       source: copilot:PR#169
       added: "2026-03-10"
     - id: handle-db-upsert-errors
       category: error-handling
-      pattern: Calling state DB write methods like UpsertRetry, UpdateWorker, InsertEvent without checking or handling the returned error
-      check: Verify that errors returned from state DB write operations (UpsertRetry, UpdateWorker, InsertEvent, etc.) are handled — at minimum logged with context (bead_id, anvil, operation). Discarding these errors can leave the system in an inconsistent state (e.g., a bead reset to open but not marked needs_human, causing infinite dispatch loops).
+      pattern: >-
+        Calling state DB write methods like UpsertRetry, UpdateWorker, InsertEvent without checking or handling the returned error
+      check: >-
+        Verify that errors returned from state DB write operations (UpsertRetry, UpdateWorker, InsertEvent, etc.) are handled — at minimum logged with context (bead_id, anvil, operation). Discarding these errors can leave the system in an inconsistent state (e.g., a bead reset to open but not marked needs_human, causing infinite dispatch loops).
       source: copilot:PR#166
       added: "2026-03-10"
     - id: preserve-existing-retry-state
       category: error-handling
       pattern: UpsertRetry called with a partially-populated RetryRecord struct
-      check: Verify that UpsertRetry does not silently overwrite existing retry state (retry_count, next_retry, dispatch_failures, clarification_needed). Load the existing record first and only update the fields you intend to change, preserving counters and backoff state.
+      check: >-
+        Verify that UpsertRetry does not silently overwrite existing retry state (retry_count, next_retry, dispatch_failures, clarification_needed). Load the existing record first and only update the fields you intend to change, preserving counters and backoff state.
       source: copilot:PR#166
       added: "2026-03-10"
     - id: test-dispatch-eligibility-filters
       category: testing
-      pattern: Changes to SQL queries or filter logic in state/db.go that affect bead dispatch eligibility sets (e.g. needs_human, clarification_needed, circuit breaker filters)
-      check: When modifying query filters that determine dispatch eligibility (e.g. which beads are blocked, need human attention, or are circuit-broken), verify that a unit test exists asserting which rows are included and excluded by the new filter criteria — covering edge cases like different reason strings, flag combinations, and boundary values
+      pattern: >-
+        Changes to SQL queries or filter logic in state/db.go that affect bead dispatch eligibility sets (e.g. needs_human, clarification_needed, circuit breaker filters)
+      check: >-
+        When modifying query filters that determine dispatch eligibility (e.g. which beads are blocked, need human attention, or are circuit-broken), verify that a unit test exists asserting which rows are included and excluded by the new filter criteria — covering edge cases like different reason strings, flag combinations, and boundary values
       source: copilot:PR#169
       added: "2026-03-10"
     - id: event-include-bead-anvil-context
       category: ui
-      pattern: Logging or emitting events (especially skip/no-op events) that reference a PR number or external identifier without including the associated BeadID and anvil name
-      check: When logging to the Hearth event log via state.DB.LogEvent, always pass bead_id and anvil fields when that context is known. Because Hearth does not currently display the structured Anvil field, include the anvil name in the message text only when it materially helps operators correlate behavior across anvils. If bead_id is unknown or blank but you reference a PR or other external identifier, include the BeadID string in the message so the event remains traceable; daemon/lifecycle events with no associated bead do not need artificial bead/anvil context.
+      pattern: >-
+        Logging or emitting events (especially skip/no-op events) that reference a PR number or external identifier without including the associated BeadID and anvil name
+      check: >-
+        When logging to the Hearth event log via state.DB.LogEvent, always pass bead_id and anvil fields when that context is known. Because Hearth does not currently display the structured Anvil field, include the anvil name in the message text only when it materially helps operators correlate behavior across anvils. If bead_id is unknown or blank but you reference a PR or other external identifier, include the BeadID string in the message so the event remains traceable; daemon/lifecycle events with no associated bead do not need artificial bead/anvil context.
       source: copilot:PR#171
       added: "2026-03-10"
     - id: auto-learn-skip-event-context
       category: error-handling
-      pattern: Logging a skip or no-op event in a background worker (e.g., auto-learn, bellows monitor) where identifying context (bead ID, anvil name) or suppressed error counts may be missing
-      check: Verify that skip/no-op events include all relevant identifiers (bead ID, anvil name) so they are traceable in dashboards and logs. When the skip is caused by upstream failures (e.g., all distillation calls errored), track the failure count and either include it in the skip message or emit a dedicated error event instead of silently skipping.
+      pattern: >-
+        Logging a skip or no-op event in a background worker (e.g., auto-learn, bellows monitor) where identifying context (bead ID, anvil name) or suppressed error counts may be missing
+      check: >-
+        Verify that skip/no-op events include all relevant identifiers (bead ID, anvil name) so they are traceable in dashboards and logs. When the skip is caused by upstream failures (e.g., all distillation calls errored), track the failure count and either include it in the skip message or emit a dedicated error event instead of silently skipping.
       source: copilot:PR#171
       added: "2026-03-10"
     - id: test-exercises-described-scenario
       category: testing
-      pattern: Test function name describes a specific scenario (e.g. narrow width, negative index, empty input) but the test setup does not actually produce that condition due to hardcoded values or internal logic
-      check: Verify that the test setup actually triggers the scenario described in the test name. If the code under test uses fixed/hardcoded values that ignore the test's input, either refactor the code to accept the relevant parameter or adjust the test to exercise the real code path.
+      pattern: >-
+        Test function name describes a specific scenario (e.g. narrow width, negative index, empty input) but the test setup does not actually produce that condition due to hardcoded values or internal logic
+      check: >-
+        Verify that the test setup actually triggers the scenario described in the test name. If the code under test uses fixed/hardcoded values that ignore the test's input, either refactor the code to accept the relevant parameter or adjust the test to exercise the real code path.
       source: copilot:PR#175
       added: "2026-03-11"
     - id: hot-reload-claim-accuracy
       category: other
       pattern: Changelog or documentation claims a config setting is hot-reloadable
-      check: Verify the setting is actually tracked in the hot-reload allowlist (internal/hotreload/hotreload.go:applyChanges). If it is not in the allowlist, either add it there and update the Hot Reload docs, or remove the hot-reloadable claim from the changelog/docs.
+      check: >-
+        Verify the setting is actually tracked in the hot-reload allowlist (internal/hotreload/hotreload.go:applyChanges). If it is not in the allowlist, either add it there and update the Hot Reload docs, or remove the hot-reloadable claim from the changelog/docs.
       source: copilot:PR#178
       added: "2026-03-11"
     - id: config-override-needs-test
       category: testing
       pattern: Adding a new configurable parameter or field that overrides default behavior
-      check: Verify that unit tests exercise the new override by setting it to a boundary value (e.g., minimum) and confirming the overridden behavior takes effect
+      check: >-
+        Verify that unit tests exercise the new override by setting it to a boundary value (e.g., minimum) and confirming the overridden behavior takes effect
       source: copilot:PR#178
       added: "2026-03-11"
     - id: comment-matches-implementation
       category: style
-      pattern: Code comments describing behavior for specific values (e.g., 'when zero', 'if nil', 'when empty') next to implementation that handles a broader range (e.g., <= 0, != nil, len > 0)
-      check: Verify that doc comments accurately describe the exact conditions handled by the code. If the code uses <= 0 but the comment says 'when zero', update the comment to say 'when zero or negative' (or tighten the condition to match the comment).
+      pattern: >-
+        Code comments describing behavior for specific values (e.g., 'when zero', 'if nil', 'when empty') next to implementation that handles a broader range (e.g., <= 0, != nil, len > 0)
+      check: >-
+        Verify that doc comments accurately describe the exact conditions handled by the code. If the code uses <= 0 but the comment says 'when zero', update the comment to say 'when zero or negative' (or tighten the condition to match the comment).
       source: copilot:PR#178
       added: "2026-03-11"
     - id: cross-repo-token-permissions
       category: security
-      pattern: CI/CD or GoReleaser configuration publishes artifacts to an external repository (e.g., Homebrew tap, Scoop bucket, separate package registry)
-      check: Verify that the workflow uses a dedicated secret (PAT or fine-grained token) with write access to the target repository. The default GITHUB_TOKEN is scoped to the current repo only and cannot push to external repos — using it for cross-repo publishing will silently fail or error.
+      pattern: >-
+        CI/CD or GoReleaser configuration publishes artifacts to an external repository (e.g., Homebrew tap, Scoop bucket, separate package registry)
+      check: >-
+        Verify that the workflow uses a dedicated secret (PAT or fine-grained token) with write access to the target repository. The default GITHUB_TOKEN is scoped to the current repo only and cannot push to external repos — using it for cross-repo publishing will silently fail or error.
       source: copilot:PR#186,PR#187
       added: "2026-03-11"
     - id: homebrew-desc-length
       category: style
       pattern: Homebrew formula or goreleaser brew section with a `desc` or `description` field
-      check: Verify the Homebrew description is a concise one-liner. Long descriptions trigger `brew audit` warnings and tap CI noise.
+      check: >-
+        Verify the Homebrew description is a concise one-liner. Long descriptions trigger `brew audit` warnings and tap CI noise.
       source: copilot:PR#187
       added: "2026-03-11"
     - id: docker-registry-auth
       category: security
-      pattern: Docker image publishing configuration (e.g., GoReleaser dockers/docker_manifests, CI docker push steps) targeting a container registry like GHCR
-      check: Verify that registry authentication is configured — either credentials (username/password or token) in the publishing tool config, or a prior docker login step in the CI workflow — so that image pushes do not fail at release time
+      pattern: >-
+        Docker image publishing configuration (e.g., GoReleaser dockers/docker_manifests, CI docker push steps) targeting a container registry like GHCR
+      check: >-
+        Verify that registry authentication is configured — either credentials (username/password or token) in the publishing tool config, or a prior docker login step in the CI workflow — so that image pushes do not fail at release time
       source: copilot:PR#191
       added: "2026-03-11"
     - id: docker-ghcr-workflow-permissions
       category: other
       pattern: GoReleaser or workflow config that builds/pushes container images to GHCR
-      check: "Verify the GitHub Actions workflow grants `packages: write` permission to GITHUB_TOKEN for GHCR pushes. If the workflow builds and publishes multi-architecture images, also ensure it sets up QEMU and Docker buildx before the GoReleaser or docker build step. Missing permissions or required setup will typically surface as explicit 403 or build errors rather than a successful run with missing images."
+      check: >-
+        Verify the GitHub Actions workflow grants `packages: write` permission to GITHUB_TOKEN for GHCR pushes. If the workflow builds and publishes multi-architecture images, also ensure it sets up QEMU and Docker buildx before the GoReleaser or docker build step. Missing permissions or required setup will typically surface as explicit 403 or build errors rather than a successful run with missing images.
       source: copilot:PR#191
       added: "2026-03-11"
     - id: dockerfile-non-root-user
       category: security
-      pattern: Production or runtime Dockerfile without a USER directive that runs as root by default
-      check: Prefer that production/runtime Dockerfiles run as a non-root user (typically via a USER directive). If the image intentionally runs as root, verify there is a documented justification and that an alternative hardening strategy is in place (for example, dropping privileges in the entrypoint or restricting capabilities/FS access).
+      pattern: >-
+        Production or runtime Dockerfile without a USER directive that runs as root by default
+      check: >-
+        Prefer that production/runtime Dockerfiles run as a non-root user (typically via a USER directive). If the image intentionally runs as root, verify there is a documented justification and that an alternative hardening strategy is in place (for example, dropping privileges in the entrypoint or restricting capabilities/FS access).
       source: copilot:PR#191
       added: "2026-03-11"
     - id: test-layout-must-match-render-logic
       category: testing
       pattern: Tests that assert which UI panel occupies a screen coordinate or region
-      check: When testing UI hit-testing or coordinate-based panel lookups, verify that test assertions use the same height calculations and panel stacking order as the actual render functions — do not hardcode simplified region-to-panel mappings that diverge from how View() lays out subpanels (e.g. stacked Queue/Crucibles, ReadyToMerge/NeedsAttention splits)
+      check: >-
+        When testing UI hit-testing or coordinate-based panel lookups, verify that test assertions use the same height calculations and panel stacking order as the actual render functions — do not hardcode simplified region-to-panel mappings that diverge from how View() lays out subpanels (e.g. stacked Queue/Crucibles, ReadyToMerge/NeedsAttention splits)
       source: copilot:PR#192
       added: "2026-03-11"
     - id: test-layout-sync
       category: testing
-      pattern: Test helpers that compute expected UI panel positions or layout boundaries using their own formulas
-      check: Verify that test layout calculations exactly mirror the production rendering logic (same height computations, same split ratios, same fixed-size regions) rather than reimplementing layout math that can drift out of sync with the real UI
+      pattern: >-
+        Test helpers that compute expected UI panel positions or layout boundaries using their own formulas
+      check: >-
+        Verify that test layout calculations exactly mirror the production rendering logic (same height computations, same split ratios, same fixed-size regions) rather than reimplementing layout math that can drift out of sync with the real UI
       source: copilot:PR#192
       added: "2026-03-11"
     - id: comment-should-match-condition
       category: style
-      pattern: A code comment describes behavior more broadly than the actual conditional logic implements
-      check: Verify that comments accurately describe the scope of the condition they annotate — if the code only handles specific cases (e.g., left/right click), the comment should not claim broader behavior (e.g., 'any button press')
+      pattern: >-
+        A code comment describes behavior more broadly than the actual conditional logic implements
+      check: >-
+        Verify that comments accurately describe the scope of the condition they annotate — if the code only handles specific cases (e.g., left/right click), the comment should not claim broader behavior (e.g., 'any button press')
       source: copilot:PR#192
       added: "2026-03-11"
     - id: mouse-wheel-action-gate
       category: ui
-      pattern: Bubbletea mouse message handling with WheelUp/WheelDown cases when mouse cell motion is enabled
-      check: Verify that WheelUp/WheelDown handlers check msg.Action == tea.MouseActionPress to prevent spurious scrolling from motion/release events when tea.WithMouseCellMotion() is active
+      pattern: >-
+        Bubbletea mouse message handling with WheelUp/WheelDown cases when mouse cell motion is enabled
+      check: >-
+        Verify that WheelUp/WheelDown handlers check msg.Action == tea.MouseActionPress to prevent spurious scrolling from motion/release events when tea.WithMouseCellMotion() is active
       source: copilot:PR#192
       added: "2026-03-11"
     - id: hit-test-covers-all-subpanels
       category: ui
-      pattern: A panel position/hit-test function that maps screen coordinates to panel identifiers, where a single column or region contains multiple stacked sub-panels
-      check: Verify that hit-testing logic distinguishes between all visually distinct sub-panels within a column — not just the primary one. If a column renders multiple panels (e.g., a list above and a usage/status panel below), the coordinate mapping must check the y-position against each sub-panel's boundary and return the correct panel identifier, otherwise mouse focus and scroll events will target the wrong panel.
+      pattern: >-
+        A panel position/hit-test function that maps screen coordinates to panel identifiers, where a single column or region contains multiple stacked sub-panels
+      check: >-
+        Verify that hit-testing logic distinguishes between all visually distinct sub-panels within a column — not just the primary one. If a column renders multiple panels (e.g., a list above and a usage/status panel below), the coordinate mapping must check the y-position against each sub-panel's boundary and return the correct panel identifier, otherwise mouse focus and scroll events will target the wrong panel.
       source: copilot:PR#192
       added: "2026-03-11"
     - id: hearth-mouse-panel-hit-testing
       category: ui
-      pattern: Mouse click hit-testing in multi-panel layouts where panels are conditionally shown or split
-      check: Verify that mouse hit-testing logic mirrors the actual rendering layout. When panels are conditionally stacked or split (e.g., Queue and Crucibles sharing a column), the click target regions must use the same height calculations as the render function, so each visible panel remains individually focusable via mouse.
+      pattern: >-
+        Mouse click hit-testing in multi-panel layouts where panels are conditionally shown or split
+      check: >-
+        Verify that mouse hit-testing logic mirrors the actual rendering layout. When panels are conditionally stacked or split (e.g., Queue and Crucibles sharing a column), the click target regions must use the same height calculations as the render function, so each visible panel remains individually focusable via mouse.
       source: copilot:PR#192
       added: "2026-03-11"
     - id: layout-math-consistency
       category: ui
-      pattern: Hit-testing, click/scroll mapping, or coordinate translation logic that duplicates layout calculations from a separate rendering/view function
-      check: Verify that mouse/input position mapping uses the exact same layout computation as the rendering code — factor shared geometry (header height, footer height, column splits, panel borders, minimums) into a single helper used by both the view/render path and the hit-testing/input-handling path, so they cannot diverge at different terminal sizes or when content wraps
+      pattern: >-
+        Hit-testing, click/scroll mapping, or coordinate translation logic that duplicates layout calculations from a separate rendering/view function
+      check: >-
+        Verify that mouse/input position mapping uses the exact same layout computation as the rendering code — factor shared geometry (header height, footer height, column splits, panel borders, minimums) into a single helper used by both the view/render path and the hit-testing/input-handling path, so they cannot diverge at different terminal sizes or when content wraps
       source: copilot:PR#192
       added: "2026-03-11"
     - id: doc-comment-matches-implementation
       category: other
-      pattern: Doc comments or function comments that describe specific behavior, edge cases, or special-case handling
-      check: Verify that the implementation actually matches what the doc comment claims — if a comment says a condition is special-cased, the code must contain that special-case logic, and vice versa
+      pattern: >-
+        Doc comments or function comments that describe specific behavior, edge cases, or special-case handling
+      check: >-
+        Verify that the implementation actually matches what the doc comment claims — if a comment says a condition is special-cased, the code must contain that special-case logic, and vice versa
       source: copilot:PR#192
       added: "2026-03-11"
     - id: pr-description-accuracy
       category: other
-      pattern: PR description claims no functional changes but code modifies runtime behavior, UI rendering, or user-facing output
-      check: Verify that the PR description accurately reflects the scope of changes — if code alters UI behavior, runtime logic, or user-facing output, the description must not claim 'no functional changes'
+      pattern: >-
+        PR description claims no functional changes but code modifies runtime behavior, UI rendering, or user-facing output
+      check: >-
+        Verify that the PR description accurately reflects the scope of changes — if code alters UI behavior, runtime logic, or user-facing output, the description must not claim 'no functional changes'
       source: copilot:PR#193
       added: "2026-03-11"
     - id: unique-event-fingerprint
       category: ui
-      pattern: Building a deduplication or fingerprint key from display-formatted or partial fields of an event/record
-      check: Verify that deduplication keys include a stable unique identifier (e.g., DB row ID) and all distinguishing fields (such as BeadID and full-precision timestamps), rather than relying on display-only formatted values that can collide across records
+      pattern: >-
+        Building a deduplication or fingerprint key from display-formatted or partial fields of an event/record
+      check: >-
+        Verify that deduplication keys include a stable unique identifier (e.g., DB row ID) and all distinguishing fields (such as BeadID and full-precision timestamps), rather than relying on display-only formatted values that can collide across records
       source: copilot:PR#195
       added: "2026-03-11"
     - id: toast-stack-ordering
       category: ui
       pattern: Prepending items to a display list that is rendered in slice order
-      check: Verify that the insertion order (prepend vs append) matches the intended visual order. If newest items should appear closest to a fixed UI edge (e.g., footer), ensure the storage order and render iteration produce that result — prepending newest while iterating in slice order places newest *furthest* from the end.
+      check: >-
+        Verify that the insertion order (prepend vs append) matches the intended visual order. If newest items should appear closest to a fixed UI edge (e.g., footer), ensure the storage order and render iteration produce that result — prepending newest while iterating in slice order places newest *furthest* from the end.
       source: copilot:PR#195
       added: "2026-03-11"
     - id: toast-fallback-ordering
       category: ui
-      pattern: Building display messages with a chain of fallbacks where an early fallback (e.g. raw ID) shadows a more descriptive synthesized message
-      check: When constructing user-facing messages with multiple fallback values, verify that more descriptive/synthesized fallbacks are preferred over raw identifiers. A bare ID pre-filling the message variable can make later event-specific fallbacks unreachable.
+      pattern: >-
+        Building display messages with a chain of fallbacks where an early fallback (e.g. raw ID) shadows a more descriptive synthesized message
+      check: >-
+        When constructing user-facing messages with multiple fallback values, verify that more descriptive/synthesized fallbacks are preferred over raw identifiers. A bare ID pre-filling the message variable can make later event-specific fallbacks unreachable.
       source: copilot:PR#195
       added: "2026-03-11"
     - id: pr-description-matches-implementation
       category: other
-      pattern: PR title, description, or changelog mentions a specific library, API, or mechanism
-      check: Verify that the actual implementation uses the library/API/mechanism described in the PR title, description, and changelog. If a different approach was used, ensure the PR metadata is updated to accurately reflect the real implementation.
+      pattern: >-
+        PR title, description, or changelog mentions a specific library, API, or mechanism
+      check: >-
+        Verify that the actual implementation uses the library/API/mechanism described in the PR title, description, and changelog. If a different approach was used, ensure the PR metadata is updated to accurately reflect the real implementation.
       source: copilot:PR#195
       added: "2026-03-11"
     - id: no-duplicate-overlay-helpers
       category: ui
-      pattern: New overlay/positioning helper function that performs ANSI-safe slicing, padding, or string overlay insertion
-      check: Verify the new helper does not duplicate logic already present in an existing overlay function. If similar logic exists, extract a shared helper with configurable placement rather than maintaining parallel implementations that can drift.
+      pattern: >-
+        New overlay/positioning helper function that performs ANSI-safe slicing, padding, or string overlay insertion
+      check: >-
+        Verify the new helper does not duplicate logic already present in an existing overlay function. If similar logic exists, extract a shared helper with configurable placement rather than maintaining parallel implementations that can drift.
       source: copilot:PR#195
       added: "2026-03-11"
     - id: test-name-matches-intent
       category: testing
-      pattern: Test function names or comments that reference concepts not actually tested (e.g., naming a test after an internal detail like 'NoParticle' when the test verifies 'NoPanic')
-      check: Verify that test function names and their doc comments accurately describe the behavior being tested, not internal implementation details or leftover naming from earlier drafts
+      pattern: >-
+        Test function names or comments that reference concepts not actually tested (e.g., naming a test after an internal detail like 'NoParticle' when the test verifies 'NoPanic')
+      check: >-
+        Verify that test function names and their doc comments accurately describe the behavior being tested, not internal implementation details or leftover naming from earlier drafts
       source: copilot:PR#195
       added: "2026-03-11"
     - id: iota-label-array-sync
       category: ui
       pattern: Adding or reordering iota constants that have a corresponding label/string array
-      check: Verify that all parallel arrays or switch cases indexed by iota constants are updated in sync — inserting a new iota value shifts all subsequent values, so every array, slice literal, or map keyed by those constants must add the new entry at the correct position
+      check: >-
+        Verify that all parallel arrays or switch cases indexed by iota constants are updated in sync — inserting a new iota value shifts all subsequent values, so every array, slice literal, or map keyed by those constants must add the new entry at the correct position
       source: copilot:PR#230
       added: "2026-03-13"
     - id: alpine-user-management-compat
       category: other
-      pattern: Shell scripts using useradd, getent, or /usr/sbin/nologin for user management in packages targeting multiple Linux distributions including Alpine
-      check: Verify that user creation and existence checks are portable across distros. Alpine (apk) lacks useradd by default — use `id -u <user>` for existence checks and fall back to `adduser` when `useradd` is unavailable, or declare the required package dependency for apk builds.
+      pattern: >-
+        Shell scripts using useradd, getent, or /usr/sbin/nologin for user management in packages targeting multiple Linux distributions including Alpine
+      check: >-
+        Verify that user creation and existence checks are portable across distros. Alpine (apk) lacks useradd by default — use `id -u <user>` for existence checks and fall back to `adduser` when `useradd` is unavailable, or declare the required package dependency for apk builds.
       source: copilot:PR#235
       added: "2026-03-13"
     - id: systemd-service-enable
       category: other
       pattern: Package post-install scripts that run systemctl daemon-reload for a service unit
-      check: Verify that if documentation or changelog claims the service auto-starts after install, the post-install script actually calls systemctl enable (and optionally start) for the service. If the script only reloads the daemon, update either the script or the documentation so they match.
+      check: >-
+        Verify that if documentation or changelog claims the service auto-starts after install, the post-install script actually calls systemctl enable (and optionally start) for the service. If the script only reloads the daemon, update either the script or the documentation so they match.
       source: copilot:PR#235
       added: "2026-03-13"
     - id: systemd-protecthome-breaks-homedir-access
       category: security
-      pattern: systemd service unit files with ProtectHome=read-only or ProtectHome=true for services that need write access to user home directories
-      check: Verify that systemd hardening directives (ProtectHome, ProtectSystem, etc.) do not prevent the service from accessing paths it needs at runtime — especially home directories containing repos or worktrees. If hardening is desired, prefer making it configurable via a drop-in override rather than baking in restrictive defaults.
+      pattern: >-
+        systemd service unit files with ProtectHome=read-only or ProtectHome=true for services that need write access to user home directories
+      check: >-
+        Verify that systemd hardening directives (ProtectHome, ProtectSystem, etc.) do not prevent the service from accessing paths it needs at runtime — especially home directories containing repos or worktrees. If hardening is desired, prefer making it configurable via a drop-in override rather than baking in restrictive defaults.
       source: copilot:PR#235
       added: "2026-03-13"
     - id: service-config-path-mismatch
       category: other
-      pattern: Systemd service files that declare ConfigurationDirectory or create config directories but do not pass an explicit --config flag or set WorkingDirectory in ExecStart
-      check: Verify that the service ExecStart command references the configuration path established by ConfigurationDirectory (e.g. --config /etc/<name>/config.yaml) or sets WorkingDirectory appropriately, so the process actually reads config from the expected location rather than falling back to CWD or home directory defaults
+      pattern: >-
+        Systemd service files that declare ConfigurationDirectory or create config directories but do not pass an explicit --config flag or set WorkingDirectory in ExecStart
+      check: >-
+        Verify that the service ExecStart command references the configuration path established by ConfigurationDirectory (e.g. --config /etc/<name>/config.yaml) or sets WorkingDirectory appropriately, so the process actually reads config from the expected location rather than falling back to CWD or home directory defaults
       source: copilot:PR#235
       added: "2026-03-13"
     - id: bool-config-null-semantics
       category: other
-      pattern: Configuration examples or docs showing a boolean field set to true when the code only checks for explicit false/disable
-      check: Verify that config examples and documentation accurately reflect the actual semantics of boolean fields — if true behaves the same as unset/null (e.g., feature auto-detects rather than being forced on), use null or omit the field instead of true, and update comments to describe the real behavior
+      pattern: >-
+        Configuration examples or docs showing a boolean field set to true when the code only checks for explicit false/disable
+      check: >-
+        Verify that config examples and documentation accurately reflect the actual semantics of boolean fields — if true behaves the same as unset/null (e.g., feature auto-detects rather than being forced on), use null or omit the field instead of true, and update comments to describe the real behavior
       source: copilot:PR#238
       added: "2026-03-14"
     - id: doc-config-gating-accuracy
       category: other
-      pattern: Documentation describing config-driven feature behavior without mentioning required enable flags or gating conditions
-      check: "Verify that docs for config-based features accurately describe any prerequisite flags (e.g. `enabled: true`) that gate whether those config values are actually read and used by the implementation"
+      pattern: >-
+        Documentation describing config-driven feature behavior without mentioning required enable flags or gating conditions
+      check: >-
+        Verify that docs for config-based features accurately describe any prerequisite flags (e.g. `enabled: true`) that gate whether those config values are actually read and used by the implementation
       source: copilot:PR#238
       added: "2026-03-14"
     - id: docs-webhook-schema-distinction
       category: other
-      pattern: Documentation describing webhook or notification endpoints that send different payload schemas depending on configuration path or target
-      check: Verify that documentation clearly distinguishes between different payload schemas sent to different webhook targets, specifying which config path or flag produces which JSON schema so integrators know exactly what to expect
+      pattern: >-
+        Documentation describing webhook or notification endpoints that send different payload schemas depending on configuration path or target
+      check: >-
+        Verify that documentation clearly distinguishes between different payload schemas sent to different webhook targets, specifying which config path or flag produces which JSON schema so integrators know exactly what to expect
       source: copilot:PR#238
       added: "2026-03-14"
     - id: grep-pipeline-under-strict-mode
       category: error-handling
       pattern: grep piped to awk/cut/sed in a script using set -e or set -euo pipefail
-      check: Verify that grep failures (no match or regex errors) won't cause silent script exit. Prefer a single awk with exact field matching (e.g., $2 == value) that returns zero exit status on no match, and add an explicit error message when the expected value is empty.
+      check: >-
+        Verify that grep failures (no match or regex errors) won't cause silent script exit. Prefer a single awk with exact field matching (e.g., $2 == value) that returns zero exit status on no match, and add an explicit error message when the expected value is empty.
       source: copilot:PR#242
       added: "2026-03-14"
     - id: doc-comment-matches-param-usage
       category: style
       pattern: Function parameter used for more purposes than its doc comment describes
-      check: Verify that doc comments for parameters accurately reflect all their usages — if a parameter drives behavior (e.g. sets a header value) in addition to logging, the comment must say so or the parameter should be renamed to reflect its full role
+      check: >-
+        Verify that doc comments for parameters accurately reflect all their usages — if a parameter drives behavior (e.g. sets a header value) in addition to logging, the comment must say so or the parameter should be renamed to reflect its full role
       source: copilot:PR#259
       added: "2026-03-15"
     - id: env-override-dedup
       category: other
-      pattern: Appending environment variable overrides to a slice without removing pre-existing keys first
-      check: Verify that before appending new env key=value pairs, any existing entries with the same key are stripped from the slice to avoid duplicate keys with undefined precedence across platforms
+      pattern: >-
+        Appending environment variable overrides to a slice without removing pre-existing keys first
+      check: >-
+        Verify that before appending new env key=value pairs, any existing entries with the same key are stripped from the slice to avoid duplicate keys with undefined precedence across platforms
       source: copilot:PR#257
       added: "2026-03-15"
     - id: tui-filter-quit-fallthrough
       category: ui
       pattern: Text input or filter field intercepts all keypresses before global key handler
-      check: Verify that quit keys (ctrl+c, q) are explicitly handled or allowed to fall through when a filter/input component is active, so the app remains consistently quittable
+      check: >-
+        Verify that quit keys (ctrl+c, q) are explicitly handled or allowed to fall through when a filter/input component is active, so the app remains consistently quittable
       source: copilot:PR#258
       added: "2026-03-15"
     - id: ui-hint-matches-behavior
       category: ui
-      pattern: UI components that display keyboard shortcut hints or help text (e.g., '(/ edit, Esc clear)')
-      check: Verify that every keyboard shortcut listed in hint/help text is actually implemented for all relevant states. If a hint says 'Esc clears', ensure Esc clears the filter in all states where a filter may be active, not just when the input is focused.
+      pattern: >-
+        UI components that display keyboard shortcut hints or help text (e.g., '(/ edit, Esc clear)')
+      check: >-
+        Verify that every keyboard shortcut listed in hint/help text is actually implemented for all relevant states. If a hint says 'Esc clears', ensure Esc clears the filter in all states where a filter may be active, not just when the input is focused.
       source: copilot:PR#258
       added: "2026-03-15"
     - id: silent-db-error-in-loop
       category: error-handling
       pattern: DB/state query errors ignored inside a loop that proceeds to mutate state
-      check: Verify that all errors from state DB queries (e.g., GetRetry, GetWorker) inside recovery/poll loops are handled explicitly — log a warning and continue rather than silently proceeding with stale or zero-value data that could incorrectly reset beads parked for human attention
+      check: >-
+        Verify that all errors from state DB queries (e.g., GetRetry, GetWorker) inside recovery/poll loops are handled explicitly — log a warning and continue rather than silently proceeding with stale or zero-value data that could incorrectly reset beads parked for human attention
       source: copilot:PR#271
       added: "2026-03-15"
     - id: docstring-matches-conditional-behavior
       category: style
-      pattern: Boolean flags or parameters that alter control flow only on specific iterations or conditions
-      check: Verify that the docstring accurately describes the actual conditional behavior, not an oversimplified summary — e.g., 'skips initial run but allows on later iterations' rather than 'skips entirely'
+      pattern: >-
+        Boolean flags or parameters that alter control flow only on specific iterations or conditions
+      check: >-
+        Verify that the docstring accurately describes the actual conditional behavior, not an oversimplified summary — e.g., 'skips initial run but allows on later iterations' rather than 'skips entirely'
       source: copilot:PR#274
       added: "2026-03-15"
     - id: test-new-control-flow-paths
       category: testing
-      pattern: A new boolean flag or branch introduces an alternative execution path through an existing pipeline or workflow (e.g., SkipSmith, SkipX) that bypasses one or more stages
-      check: "Verify a focused test case exists covering the skip path: confirm the skipped stage is not invoked on iteration 1, that phase/status transitions are correct, and that downstream logic (e.g., request_changes triggering a re-run of the skipped stage) still works on subsequent iterations"
+      pattern: >-
+        A new boolean flag or branch introduces an alternative execution path through an existing pipeline or workflow (e.g., SkipSmith, SkipX) that bypasses one or more stages
+      check: >-
+        Verify a focused test case exists covering the skip path: confirm the skipped stage is not invoked on iteration 1, that phase/status transitions are correct, and that downstream logic (e.g., request_changes triggering a re-run of the skipped stage) still works on subsequent iterations
       source: copilot:PR#274
       added: "2026-03-15"
     - id: epic-branch-resolution-before-pipeline
       category: other
-      pattern: Code that fetches bead metadata and passes it into pipeline.Params or PR creation without calling ResolveEpicBranches first
-      check: Verify that epic branches are resolved (as done in warden_rerun/approve_as_is) before constructing pipeline.Params.BaseBranch and bead.EpicBranch, so Crucible children create PRs against the epic branch rather than the provider default base
+      pattern: >-
+        Code that fetches bead metadata and passes it into pipeline.Params or PR creation without calling ResolveEpicBranches first
+      check: >-
+        Verify that epic branches are resolved (as done in warden_rerun/approve_as_is) before constructing pipeline.Params.BaseBranch and bead.EpicBranch, so Crucible children create PRs against the epic branch rather than the provider default base
       source: copilot:PR#274
       added: "2026-03-15"
     - id: pipeline-ctx-from-background
       category: concurrency
-      pattern: Pipeline or post-smith execution context derived from a cancellable parent context (e.g. runCtx) rather than context.Background()
-      check: Verify that pipeline contexts (Temper, Warden, PR creation) are derived from context.Background() with a timeout, not from a shutdown-cancellable context, so in-flight work is not interrupted mid-flight during graceful shutdown
+      pattern: >-
+        Pipeline or post-smith execution context derived from a cancellable parent context (e.g. runCtx) rather than context.Background()
+      check: >-
+        Verify that pipeline contexts (Temper, Warden, PR creation) are derived from context.Background() with a timeout, not from a shutdown-cancellable context, so in-flight work is not interrupted mid-flight during graceful shutdown
       source: copilot:PR#274
       added: "2026-03-15"
     - id: distinct-event-types-for-expected-paths
       category: error-handling
-      pattern: Code emits or logs an error/failure event for a condition that represents normal or expected system behavior (e.g., duplicate detection, idempotency checks, already-exists responses)
-      check: Verify that error/failure event types are not used for conditions that are expected or benign. Expected outcomes (like a PR already existing) should use a distinct neutral event type (e.g., EventPRAlreadyExists) rather than a failure event, to avoid misleading dashboards, history views, and monitoring.
+      pattern: >-
+        Code emits or logs an error/failure event for a condition that represents normal or expected system behavior (e.g., duplicate detection, idempotency checks, already-exists responses)
+      check: >-
+        Verify that error/failure event types are not used for conditions that are expected or benign. Expected outcomes (like a PR already existing) should use a distinct neutral event type (e.g., EventPRAlreadyExists) rather than a failure event, to avoid misleading dashboards, history views, and monitoring.
       source: copilot:PR#283
       added: "2026-03-16"
     - id: pr-creation-failure-tracking
       category: error-handling
-      pattern: Post-pipeline failures (e.g. PR creation, VCS errors) reuse dispatch/smith failure tracking functions
-      check: Verify that PR creation and other post-pipeline failures use a distinct failure recording path rather than dispatch-failure counters, to avoid incorrectly triggering retry exhaustion or auto-close behavior for VCS/provider issues unrelated to the bead's implementation
+      pattern: >-
+        Post-pipeline failures (e.g. PR creation, VCS errors) reuse dispatch/smith failure tracking functions
+      check: >-
+        Verify that PR creation and other post-pipeline failures use a distinct failure recording path rather than dispatch-failure counters, to avoid incorrectly triggering retry exhaustion or auto-close behavior for VCS/provider issues unrelated to the bead's implementation
       source: copilot:PR#283
       added: "2026-03-16"
     - id: preserve-error-chain-on-sentinel
       category: error-handling
-      pattern: Sentinel error returned without wrapping the original underlying error (e.g., `return vcs.ErrPRAlreadyExists` after a failed cmd.Run())
-      check: When returning a sentinel error in a branch that also has an underlying error, verify the original error is preserved in the chain using errors.Join or fmt.Errorf with %w, so that errors.Is(err, sentinel) continues to work and the root cause (exit status, exec error type) remains diagnosable
+      pattern: >-
+        Sentinel error returned without wrapping the original underlying error (e.g., `return vcs.ErrPRAlreadyExists` after a failed cmd.Run())
+      check: >-
+        When returning a sentinel error in a branch that also has an underlying error, verify the original error is preserved in the chain using errors.Join or fmt.Errorf with %w, so that errors.Is(err, sentinel) continues to work and the root cause (exit status, exec error type) remains diagnosable
       source: copilot:PR#283
       added: "2026-03-16"
     - id: error-chain-preservation-and-precise-string-matching
       category: error-handling
-      pattern: Code that wraps errors by creating new error values (losing the original error) or uses strings.Contains to match error status codes/numbers in formatted error messages
-      check: Verify that original errors are preserved in the chain using fmt.Errorf with %w or errors.Join, and that status code string matching targets the specific formatted prefix (e.g., 'status 409') rather than a bare number that could appear anywhere in the message
+      pattern: >-
+        Code that wraps errors by creating new error values (losing the original error) or uses strings.Contains to match error status codes/numbers in formatted error messages
+      check: >-
+        Verify that original errors are preserved in the chain using fmt.Errorf with %w or errors.Join, and that status code string matching targets the specific formatted prefix (e.g., 'status 409') rather than a bare number that could appear anywhere in the message
       source: copilot:PR#283
       added: "2026-03-16"
     - id: health-check-auth-verify
       category: security
-      pattern: Doctor/health-check commands that verify a CLI tool is present (e.g. `--version`) and report `ok` without confirming the user is actually authenticated
-      check: Verify that auth checks use a subcommand or API call that confirms a valid session/token exists, not just that the binary runs. Return `warn` or `error` when authentication cannot be confirmed, to avoid false-positive `ok` status.
+      pattern: >-
+        Doctor/health-check commands that verify a CLI tool is present (e.g. `--version`) and report `ok` without confirming the user is actually authenticated
+      check: >-
+        Verify that auth checks use a subcommand or API call that confirms a valid session/token exists, not just that the binary runs. Return `warn` or `error` when authentication cannot be confirmed, to avoid false-positive `ok` status.
       source: copilot:PR#286
       added: "2026-03-16"
     - id: empty-check-silent-skip
       category: error-handling
-      pattern: A function returns early with an empty/nil result when config or required data is missing, causing the caller to silently skip output
-      check: Verify that early-exit paths (nil config, empty collections) return at least one diagnostic result (warn or info) explaining why checks were skipped, rather than returning nothing
+      pattern: >-
+        A function returns early with an empty/nil result when config or required data is missing, causing the caller to silently skip output
+      check: >-
+        Verify that early-exit paths (nil config, empty collections) return at least one diagnostic result (warn or info) explaining why checks were skipped, rather than returning nothing
       source: copilot:PR#286
       added: "2026-03-16"
     - id: exec-command-timeout
       category: error-handling
-      pattern: exec.Command(...).CombinedOutput() used for external CLI calls without a context or timeout
-      check: Verify that all external CLI invocations use exec.CommandContext with a short timeout so that a slow or hanging subprocess cannot block the caller indefinitely; return a warning or error on timeout rather than waiting forever
+      pattern: >-
+        exec.Command(...).CombinedOutput() used for external CLI calls without a context or timeout
+      check: >-
+        Verify that all external CLI invocations use exec.CommandContext with a short timeout so that a slow or hanging subprocess cannot block the caller indefinitely; return a warning or error on timeout rather than waiting forever
       source: copilot:PR#286
       added: "2026-03-16"
     - id: doctor-message-provider-consistency
       category: style
       pattern: Doctor check output messages that reference a CLI tool or provider name
-      check: Verify that the doctor output message consistently names the actual provider or CLI being checked (e.g., reference 'OpenAI' when checking OPENAI_API_KEY, not an unrelated CLI like 'codex CLI') so users know exactly what to fix
+      check: >-
+        Verify that the doctor output message consistently names the actual provider or CLI being checked (e.g., reference 'OpenAI' when checking OPENAI_API_KEY, not an unrelated CLI like 'codex CLI') so users know exactly what to fix
       source: copilot:PR#286
       added: "2026-03-16"
     - id: injectable-exec-runner
       category: testing
-      pattern: Tests that invoke real system binaries via exec.LookPath or exec.Command directly, without dependency injection
-      check: Verify that exec/lookpath calls are behind an injectable interface or function parameter so unit tests can mock the runner deterministically, rather than skipping when the binary is absent from the test environment
+      pattern: >-
+        Tests that invoke real system binaries via exec.LookPath or exec.Command directly, without dependency injection
+      check: >-
+        Verify that exec/lookpath calls are behind an injectable interface or function parameter so unit tests can mock the runner deterministically, rather than skipping when the binary is absent from the test environment
       source: copilot:PR#286
       added: "2026-03-16"
     - id: test-comment-matches-behavior
       category: testing
-      pattern: Test comments describing setup behavior (e.g., 'skip if set', 'restore after test') or test case comments describing expected values and edge cases
+      pattern: >-
+        Test comments describing setup behavior (e.g., 'skip if set', 'restore after test') or test case comments describing expected values and edge cases
       check: >-
-        Verify that test comments accurately describe what the code actually does — e.g., if the comment
-        says 'skip if set' but the code forcibly clears the value with t.Setenv, update the comment to say
-        'force env var to be unset'. Also verify that test case comments accurately describe the actual
-        expected values and behavior being asserted — misleading comments cause confusion about intended
-        semantics.
-      source: [copilot:PR#286, copilot:PR#338]
+        Verify that test comments accurately describe what the code actually does — e.g., if the comment says 'skip if set' but the code forcibly clears the value with t.Setenv, update the comment to say 'force env var to be unset'. Also verify that test case comments accurately describe the actual expected values and behavior being asserted — misleading comments cause confusion about intended semantics.
+      source: ['copilot:PR#286', 'copilot:PR#338']
       added: "2026-03-16"
     - id: deduplicate-error-chain-sentinel-rules
       category: other
-      pattern: Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
-      check: Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: [copilot:PR#285, copilot:PR#322, copilot:PR#324, copilot:PR#326, copilot:PR#328, copilot:PR#329, copilot:PR#331, copilot:PR#332, copilot:PR#334, copilot:PR#340, copilot:PR#345]
+      pattern: >-
+        Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
+      check: >-
+        Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
+      source: ['copilot:PR#285', 'copilot:PR#322', 'copilot:PR#324', 'copilot:PR#326', 'copilot:PR#328', 'copilot:PR#329', 'copilot:PR#331', 'copilot:PR#332', 'copilot:PR#334', 'copilot:PR#340', 'copilot:PR#345']
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
-      pattern: Renaming or replacing a currently-running executable, especially on Windows (os.Rename on self binary)
-      check: Verify that the code handles the Windows file-lock on a running .exe (e.g., by spawning a helper process to perform the swap after the parent exits). Also verify that the target/backup path is checked for existence before renaming, to avoid failure from a previous incomplete update.
+      pattern: >-
+        Renaming or replacing a currently-running executable, especially on Windows (os.Rename on self binary)
+      check: >-
+        Verify that the code handles the Windows file-lock on a running .exe (e.g., by spawning a helper process to perform the swap after the parent exits). Also verify that the target/backup path is checked for existence before renaming, to avoid failure from a previous incomplete update.
       source: copilot:PR#293
       added: "2026-03-18"
     - id: goroutine-outlives-process
       category: concurrency
       pattern: Goroutine spawned in a CLI command that exits shortly after
-      check: Verify that goroutines launched near program exit will actually complete before the process terminates. If the main function or command handler returns without waiting, the goroutine is silently killed. Prefer a synchronous call with a short timeout, a detached subprocess, or an explicit sync point (e.g. WaitGroup) before exit.
+      check: >-
+        Verify that goroutines launched near program exit will actually complete before the process terminates. If the main function or command handler returns without waiting, the goroutine is silently killed. Prefer a synchronous call with a short timeout, a detached subprocess, or an explicit sync point (e.g. WaitGroup) before exit.
       source: copilot:PR#293
       added: "2026-03-18"
     - id: octal-literal-style
       category: style
-      pattern: File mode literals using legacy prefix (0755, 0644) instead of Go 1.13+ octal prefix (0o755, 0o644)
-      check: Verify all file permission literals use the 0o prefix (e.g. 0o755, 0o644) rather than the legacy bare-0 prefix, consistent with repo convention
+      pattern: >-
+        File mode literals using legacy prefix (0755, 0644) instead of Go 1.13+ octal prefix (0o755, 0o644)
+      check: >-
+        Verify all file permission literals use the 0o prefix (e.g. 0o755, 0o644) rather than the legacy bare-0 prefix, consistent with repo convention
       source: copilot:PR#293
       added: "2026-03-18"
     - id: http-status-before-body-parse
       category: error-handling
       pattern: HTTP response body is read or parsed without first checking resp.StatusCode
-      check: Verify that every HTTP response checks the status code before reading/parsing the body. Non-2xx responses (404, 403, rate-limit HTML) must be detected early and returned as clear errors including the HTTP status, rather than falling through to confusing parse failures.
+      check: >-
+        Verify that every HTTP response checks the status code before reading/parsing the body. Non-2xx responses (404, 403, rate-limit HTML) must be detected early and returned as clear errors including the HTTP status, rather than falling through to confusing parse failures.
       source: copilot:PR#293
       added: "2026-03-18"
     - id: wait-for-process-exit
       category: concurrency
-      pattern: Fixed sleep/delay after stopping a process or service before accessing its resources
-      check: Verify that code waiting for a process to stop uses an active polling loop (e.g., checking IsRunning() with backoff and timeout) rather than a fixed sleep, to avoid races where the process hasn't fully released resources
+      pattern: >-
+        Fixed sleep/delay after stopping a process or service before accessing its resources
+      check: >-
+        Verify that code waiting for a process to stop uses an active polling loop (e.g., checking IsRunning() with backoff and timeout) rather than a fixed sleep, to avoid races where the process hasn't fully released resources
       source: copilot:PR#293
       added: "2026-03-18"
     - id: avoid-duplicate-logging-in-helpers-and-callers
       category: style
-      pattern: A helper function logs a decision/reason AND the caller also logs about the same decision
-      check: When a helper returns a boolean decision, ensure only one site logs the outcome. Prefer returning (bool, reason) from the helper and letting the caller log once with full context (e.g., workerID), rather than having both the helper and caller emit overlapping log lines.
+      pattern: >-
+        A helper function logs a decision/reason AND the caller also logs about the same decision
+      check: >-
+        When a helper returns a boolean decision, ensure only one site logs the outcome. Prefer returning (bool, reason) from the helper and letting the caller log once with full context (e.g., workerID), rather than having both the helper and caller emit overlapping log lines.
       source: copilot:PR#296
       added: "2026-03-19"
     - id: sanitize-llm-output-in-prompts
       category: security
-      pattern: LLM-generated text or prior feedback interpolated directly into a prompt string without fencing or sanitization
-      check: Verify that any untrusted or LLM-originated text embedded into prompts is wrapped in fenced blocks (e.g., XML-style tags) with an explicit instruction to treat it as data only, and that prompt-breaking characters (e.g., triple backticks) are escaped or stripped before interpolation
+      pattern: >-
+        LLM-generated text or prior feedback interpolated directly into a prompt string without fencing or sanitization
+      check: >-
+        Verify that any untrusted or LLM-originated text embedded into prompts is wrapped in fenced blocks (e.g., XML-style tags) with an explicit instruction to treat it as data only, and that prompt-breaking characters (e.g., triple backticks) are escaped or stripped before interpolation
       source: copilot:PR#306
       added: "2026-03-19"
     - id: test-new-review-loop-behavior
       category: testing
-      pattern: Adding or changing behavior in the Warden review loop (e.g., passing prior feedback, toggling re-review modes) in pipeline.go
-      check: "Verify that new or modified Warden re-review behavior is covered by a unit test: assert that across multiple iterations the correct prior feedback string is passed (non-empty when focused re-review is active, empty when full re-review is enabled)"
+      pattern: >-
+        Adding or changing behavior in the Warden review loop (e.g., passing prior feedback, toggling re-review modes) in pipeline.go
+      check: >-
+        Verify that new or modified Warden re-review behavior is covered by a unit test: assert that across multiple iterations the correct prior feedback string is passed (non-empty when focused re-review is active, empty when full re-review is enabled)
       source: copilot:PR#306
       added: "2026-03-19"
     - id: sanitized-id-consistent-use
       category: security
-      pattern: A variable is sanitized (e.g. safeID) but the original unsanitized value is still used elsewhere in the same function, especially in string interpolation or template formatting
-      check: When untrusted input is sanitized into a safe variable, verify that ALL subsequent references use the sanitized version consistently — no code path should fall back to the raw value, particularly in fmt.Sprintf, template execution, or prompt construction
+      pattern: >-
+        A variable is sanitized (e.g. safeID) but the original unsanitized value is still used elsewhere in the same function, especially in string interpolation or template formatting
+      check: >-
+        When untrusted input is sanitized into a safe variable, verify that ALL subsequent references use the sanitized version consistently — no code path should fall back to the raw value, particularly in fmt.Sprintf, template execution, or prompt construction
       source: copilot:PR#306
       added: "2026-03-19"
     - id: doc-new-config-keys
       category: other
       pattern: Adding new fields to AnvilConfig or top-level config structs
-      check: Verify that any new configuration keys are documented in docs/configuration.md with their type, default value, and description — not just referenced in design plans or code comments
+      check: >-
+        Verify that any new configuration keys are documented in docs/configuration.md with their type, default value, and description — not just referenced in design plans or code comments
       source: copilot:PR#316
       added: "2026-03-20"
     - id: yaml-field-alignment
       category: testing
       pattern: Test fixtures or YAML test data that define struct fields
-      check: Verify that field names in test YAML/JSON fixtures exactly match the struct tags in the corresponding Go type definitions, since YAML/JSON unmarshalling silently ignores unknown fields
+      check: >-
+        Verify that field names in test YAML/JSON fixtures exactly match the struct tags in the corresponding Go type definitions, since YAML/JSON unmarshalling silently ignores unknown fields
       source: copilot:PR#316
       added: "2026-03-20"
     - id: test-flag-set-error-handling
       category: testing
       pattern: Calling cmd.Flags().Set(...) in tests without checking the returned error
-      check: Verify that the error returned by Flags().Set() is asserted (e.g., require.NoError) and that t.Cleanup is used to reset the flag value, preventing masked failures and leaked state across tests sharing global command instances
+      check: >-
+        Verify that the error returned by Flags().Set() is asserted (e.g., require.NoError) and that t.Cleanup is used to reset the flag value, preventing masked failures and leaked state across tests sharing global command instances
       source: copilot:PR#316
       added: "2026-03-20"
     - id: cobra-silence-expected-errors
       category: error-handling
-      pattern: Cobra command returns a sentinel error after already printing detailed output to the user
-      check: "When a Cobra command prints its own failure summary before returning an error, set SilenceUsage: true on the command and either return a descriptive error (including relevant context like IDs or names) or use SilenceErrors to avoid Cobra double-printing a less-helpful generic message"
+      pattern: >-
+        Cobra command returns a sentinel error after already printing detailed output to the user
+      check: >-
+        When a Cobra command prints its own failure summary before returning an error, set SilenceUsage: true on the command and either return a descriptive error (including relevant context like IDs or names) or use SilenceErrors to avoid Cobra double-printing a less-helpful generic message
       source: copilot:PR#316
       added: "2026-03-20"
     - id: unused-declarations
       category: style
-      pattern: Unused imports or local variables in Go code that are not referenced anywhere in the surrounding function or file
-      check: Verify that all imports and local variables in Go files are actually used — Go treats unused imports and unused local variables as compilation errors, but package-level declarations and types may be intentionally unused and should not be auto-flagged by this rule
+      pattern: >-
+        Unused imports or local variables in Go code that are not referenced anywhere in the surrounding function or file
+      check: >-
+        Verify that all imports and local variables in Go files are actually used — Go treats unused imports and unused local variables as compilation errors, but package-level declarations and types may be intentionally unused and should not be auto-flagged by this rule
       source: copilot:PR#320
       added: "2026-03-20"
     - id: bd-list-missing-limit
       category: other
       pattern: Calls to `bd list` or `bdExec` with `list` subcommand
-      check: Verify that `--limit 0` is passed to all `bd list` invocations that need the complete set of results, otherwise the default limit may silently truncate the list
+      check: >-
+        Verify that `--limit 0` is passed to all `bd list` invocations that need the complete set of results, otherwise the default limit may silently truncate the list
       source: copilot:PR#320
       added: "2026-03-20"
     - id: capture-non-critical-errors
       category: error-handling
-      pattern: Goroutine or background task silently discards errors from non-critical operations (e.g., bare `return` after an error check with no logging or propagation)
-      check: Verify that errors from supplementary/non-critical operations are captured (e.g., stored in a shared firstErr variable or accumulated as warnings) so the caller or UI can surface them, rather than being silently swallowed
+      pattern: >-
+        Goroutine or background task silently discards errors from non-critical operations (e.g., bare `return` after an error check with no logging or propagation)
+      check: >-
+        Verify that errors from supplementary/non-critical operations are captured (e.g., stored in a shared firstErr variable or accumulated as warnings) so the caller or UI can surface them, rather than being silently swallowed
       source: copilot:PR#320
       added: "2026-03-20"
     - id: propagate-enrichment-errors
       category: error-handling
-      pattern: When a secondary data-fetching call (e.g. enrichment, decoration) fails and the error is assigned to _ or ignored
-      check: Verify that errors from enrichment/decoration calls are either propagated to the caller or surfaced to the user so they know the result is incomplete
+      pattern: >-
+        When a secondary data-fetching call (e.g. enrichment, decoration) fails and the error is assigned to _ or ignored
+      check: >-
+        Verify that errors from enrichment/decoration calls are either propagated to the caller or surfaced to the user so they know the result is incomplete
       source: copilot:PR#320
       added: "2026-03-20"
     - id: guard-periodic-fetch-overlap
       category: concurrency
-      pattern: A periodic timer (tick, interval) triggers an async fetch or external process call without tracking whether a previous invocation is still in flight
-      check: Verify that periodic/timer-triggered async operations (e.g., polling external commands, fetching data) have an in-flight guard or cancellation mechanism to prevent overlapping executions from piling up goroutines or processes when the operation is slower than the tick interval
+      pattern: >-
+        A periodic timer (tick, interval) triggers an async fetch or external process call without tracking whether a previous invocation is still in flight
+      check: >-
+        Verify that periodic/timer-triggered async operations (e.g., polling external commands, fetching data) have an in-flight guard or cancellation mechanism to prevent overlapping executions from piling up goroutines or processes when the operation is slower than the tick interval
       source: copilot:PR#320
       added: "2026-03-20"
     - id: pr-description-matches-contents
       category: other
       pattern: PR description references files, components, or deliverables
-      check: Verify that every file, component, or artifact mentioned in the PR description is actually included in the changeset. If something listed is not shipped, either add it or update the description to match what is actually being delivered.
+      check: >-
+        Verify that every file, component, or artifact mentioned in the PR description is actually included in the changeset. If something listed is not shipped, either add it or update the description to match what is actually being delivered.
       source: copilot:PR#320
       added: "2026-03-20"
     - id: abort-path-cleanup
       category: ui
       pattern: Handling abort/cancel in Bubble Tea form or prompt updates
-      check: "When a form or prompt is aborted, verify that: (1) the cmd returned from the sub-model's Update is propagated (not replaced with nil), and (2) any related selection state is cleared to avoid stale values on the next interaction"
+      check: >-
+        When a form or prompt is aborted, verify that: (1) the cmd returned from the sub-model's Update is propagated (not replaced with nil), and (2) any related selection state is cleared to avoid stale values on the next interaction
       source: copilot:PR#323
       added: "2026-03-20"
     - id: global-quit-key-overlay
       category: ui
-      pattern: TUI Update() method with overlay/form active guards that intercept key messages before global quit handling
-      check: Verify that ctrl+c is handled as a global quit key BEFORE any overlay/form-specific key handling, so users always have an escape hatch even when modals, sort selectors, or other overlays are active
+      pattern: >-
+        TUI Update() method with overlay/form active guards that intercept key messages before global quit handling
+      check: >-
+        Verify that ctrl+c is handled as a global quit key BEFORE any overlay/form-specific key handling, so users always have an escape hatch even when modals, sort selectors, or other overlays are active
       source: copilot:PR#323
       added: "2026-03-20"
     - id: tui-row-height-calc
       category: ui
-      pattern: Calculating available row/content height by subtracting a hardcoded constant from total height in a TUI layout
-      check: Verify the subtracted constant matches the actual number of fixed-height elements (headers, footers, status bars, padding). Count each rendered line outside the dynamic content area and confirm the arithmetic leaves no unaccounted blank space or clipped rows. Prefer computing from actual rendered heights (e.g., lipgloss.Height) over magic numbers.
+      pattern: >-
+        Calculating available row/content height by subtracting a hardcoded constant from total height in a TUI layout
+      check: >-
+        Verify the subtracted constant matches the actual number of fixed-height elements (headers, footers, status bars, padding). Count each rendered line outside the dynamic content area and confirm the arithmetic leaves no unaccounted blank space or clipped rows. Prefer computing from actual rendered heights (e.g., lipgloss.Height) over magic numbers.
       source: copilot:PR#323
       added: "2026-03-20"
     - id: deterministic-sort-tiebreakers
       category: ui
-      pattern: Sort/comparison functions that only compare a single key, especially when input order may be nondeterministic (e.g., data from concurrent goroutines, maps, or unordered sources)
-      check: Verify that sort comparators include deterministic tie-breaker fields (e.g., secondary sort by timestamp, then by unique ID) so that equal-key items render in a stable, predictable order across refreshes
+      pattern: >-
+        Sort/comparison functions that only compare a single key, especially when input order may be nondeterministic (e.g., data from concurrent goroutines, maps, or unordered sources)
+      check: >-
+        Verify that sort comparators include deterministic tie-breaker fields (e.g., secondary sort by timestamp, then by unique ID) so that equal-key items render in a stable, predictable order across refreshes
       source: copilot:PR#323
       added: "2026-03-20"
     - id: visual-width-not-rune-count
       category: ui
-      pattern: String truncation or padding functions that use len(), utf8.RuneCountInString(), or range-loop rune counting to measure display width
-      check: Verify that terminal column width is calculated using visual-width-aware helpers (e.g. lipgloss.Width or runewidth) rather than rune count, since CJK characters and emoji occupy 2 columns and combining marks occupy 0
+      pattern: >-
+        String truncation or padding functions that use len(), utf8.RuneCountInString(), or range-loop rune counting to measure display width
+      check: >-
+        Verify that terminal column width is calculated using visual-width-aware helpers (e.g. lipgloss.Width or runewidth) rather than rune count, since CJK characters and emoji occupy 2 columns and combining marks occupy 0
       source: copilot:PR#323
       added: "2026-03-20"
     - id: filtered-zero-results-messaging
       category: ui
-      pattern: Function returns a 'none found', 'all clear', or 'up to date' message when a count is zero, but filters/flags can exclude results
-      check: When displaying a zero-results message, verify whether active filters could be hiding results. If filters are enabled, the message must indicate that no results matched the current filters (e.g., by reporting excluded counts or naming the active filter) rather than implying none exist at all. This covers both 'no results found' and 'all up to date' phrasing.
+      pattern: >-
+        Function returns a 'none found', 'all clear', or 'up to date' message when a count is zero, but filters/flags can exclude results
+      check: >-
+        When displaying a zero-results message, verify whether active filters could be hiding results. If filters are enabled, the message must indicate that no results matched the current filters (e.g., by reporting excluded counts or naming the active filter) rather than implying none exist at all. This covers both 'no results found' and 'all up to date' phrasing.
       source: copilot:PR#327
       added: "2026-03-20"
     - id: filter-excludes-all-updates-test
       category: testing
-      pattern: Summary or display logic that applies filter flags to exclude categories of results, where filters could potentially exclude all items
-      check: When filter options (e.g., NoMajor, NoMinor) can exclude all available updates, verify tests cover the edge case where every update is filtered out — ensuring summary output distinguishes between 'genuinely up to date' and 'updates exist but were excluded by filters'
+      pattern: >-
+        Summary or display logic that applies filter flags to exclude categories of results, where filters could potentially exclude all items
+      check: >-
+        When filter options (e.g., NoMajor, NoMinor) can exclude all available updates, verify tests cover the edge case where every update is filtered out — ensuring summary output distinguishes between 'genuinely up to date' and 'updates exist but were excluded by filters'
       source: copilot:PR#327
       added: "2026-03-20"
     - id: use-time-constants
       category: style
-      pattern: Raw numeric literals used for time durations (e.g., 60e9, 1000000000, 3600) instead of time.Duration constants
-      check: Verify that all time duration values use Go's time package constants (time.Second, time.Minute, time.Hour) instead of raw nanosecond literals or magic numbers, ensuring the intent is immediately clear to readers
+      pattern: >-
+        Raw numeric literals used for time durations (e.g., 60e9, 1000000000, 3600) instead of time.Duration constants
+      check: >-
+        Verify that all time duration values use Go's time package constants (time.Second, time.Minute, time.Hour) instead of raw nanosecond literals or magic numbers, ensuring the intent is immediately clear to readers
       source: copilot:PR#327
       added: "2026-03-20"
     - id: distinguish-empty-from-error
       category: error-handling
-      pattern: Refactors or extensions of existing scan/search/collection APIs to introduce or clarify a third 'not applicable/unsupported' state in addition to 'no results found' and 'error occurred' (for example, changing a bool+error or slice+error signature to return an explicit status enum or tri-state result)
-      check: When evolving an existing API to expose three distinct outcomes ('no results found', 'not applicable/unsupported', and 'error occurred'), verify that the new tri-state contract is clearly documented, all direct and indirect callers are updated to handle each state explicitly, and tests cover the migration semantics (including backward-compatibility where required).
+      pattern: >-
+        Refactors or extensions of existing scan/search/collection APIs to introduce or clarify a third 'not applicable/unsupported' state in addition to 'no results found' and 'error occurred' (for example, changing a bool+error or slice+error signature to return an explicit status enum or tri-state result)
+      check: >-
+        When evolving an existing API to expose three distinct outcomes ('no results found', 'not applicable/unsupported', and 'error occurred'), verify that the new tri-state contract is clearly documented, all direct and indirect callers are updated to handle each state explicitly, and tests cover the migration semantics (including backward-compatibility where required).
       source: copilot:PR#327,PR#329
       added: "2026-03-20"
     - id: silent-error-discard
       category: error-handling
-      pattern: Top-level scan/check orchestration or CLI command logs an error from a worker/provider and continues without surfacing it in the aggregated result or command status
-      check: For top-level scan/check pipelines (CLI commands, orchestrators, or summary builders), verify that downstream errors are not only logged but also surfaced to callers (e.g., included in aggregated error collections or used to mark the command as failed). This rule is distinct from capture-non-critical-errors and propagate-enrichment-errors, which cover background/enrichment flows; use this rule only when logged errors would otherwise cause a high-level operation to appear fully successful.
+      pattern: >-
+        Top-level scan/check orchestration or CLI command logs an error from a worker/provider and continues without surfacing it in the aggregated result or command status
+      check: >-
+        For top-level scan/check pipelines (CLI commands, orchestrators, or summary builders), verify that downstream errors are not only logged but also surfaced to callers (e.g., included in aggregated error collections or used to mark the command as failed). This rule is distinct from capture-non-critical-errors and propagate-enrichment-errors, which cover background/enrichment flows; use this rule only when logged errors would otherwise cause a high-level operation to appear fully successful.
       source: copilot:PR#327,PR#329
       added: "2026-03-20"
     - id: severity-sort-order-consistency
       category: style
-      pattern: Code that filters or concatenates items by severity/priority level (e.g., patch/minor/major, low/medium/high)
-      check: Verify that severity ordering is consistent with established conventions elsewhere in the codebase — if existing code sorts by highest severity first (major→minor→patch), new code handling the same data should preserve that order rather than reversing it
+      pattern: >-
+        Code that filters or concatenates items by severity/priority level (e.g., patch/minor/major, low/medium/high)
+      check: >-
+        Verify that severity ordering is consistent with established conventions elsewhere in the codebase — if existing code sorts by highest severity first (major→minor→patch), new code handling the same data should preserve that order rather than reversing it
       source: copilot:PR#327
       added: "2026-03-20"
     - id: no-dead-struct-fields
       category: style
-      pattern: Struct field that is assigned during construction but never read or written by any method
-      check: Verify that every struct field is actually used. If a field duplicates a method parameter, either wire the field through (use it in methods instead of passing the param) or remove the field to avoid dead state.
+      pattern: >-
+        Struct field that is assigned during construction but never read or written by any method
+      check: >-
+        Verify that every struct field is actually used. If a field duplicates a method parameter, either wire the field through (use it in methods instead of passing the param) or remove the field to avoid dead state.
       source: copilot:PR#327
       added: "2026-03-20"
     - id: kanban-card-height-consistency
       category: ui
-      pattern: UI layout code that uses a constant card/row/cell height for spacing, scrolling, or alignment calculations while the actual render function produces variable-height output
-      check: Verify that any constant used for item height in layout math (padding, scrolling, column alignment) matches the actual rendered height. Either enforce a fixed height in the render function (pad/truncate + explicit separator) or compute height dynamically from the rendered output (e.g., lipgloss.Height). Mixing a constant assumption with variable-height rendering causes misaligned columns and broken scrolling.
+      pattern: >-
+        UI layout code that uses a constant card/row/cell height for spacing, scrolling, or alignment calculations while the actual render function produces variable-height output
+      check: >-
+        Verify that any constant used for item height in layout math (padding, scrolling, column alignment) matches the actual rendered height. Either enforce a fixed height in the render function (pad/truncate + explicit separator) or compute height dynamically from the rendered output (e.g., lipgloss.Height). Mixing a constant assumption with variable-height rendering causes misaligned columns and broken scrolling.
       source: copilot:PR#330
       added: "2026-03-20"
     - id: no-mutate-derived-fields
       category: ui
-      pattern: Code that directly sets fields derived from external state (e.g. database-enriched flags like HasPR) during user-initiated actions such as lane moves or status changes
-      check: Verify that derived/enriched fields (populated by background refresh or DB queries) are not manually overwritten in UI action handlers, as this causes temporary inconsistency until the next refresh cycle
+      pattern: >-
+        Code that directly sets fields derived from external state (e.g. database-enriched flags like HasPR) during user-initiated actions such as lane moves or status changes
+      check: >-
+        Verify that derived/enriched fields (populated by background refresh or DB queries) are not manually overwritten in UI action handlers, as this causes temporary inconsistency until the next refresh cycle
       source: copilot:PR#330
       added: "2026-03-20"
     - id: state-sync-after-mutation
       category: ui
-      pattern: A message or command handler updates state on the backend (e.g. moves, edits, deletes an item) but only handles the error path, without refreshing or updating the local in-memory data on success
-      check: After a successful mutation (move, update, delete), verify that the local view state (e.g. in-memory lists, cached entries, UI lanes) is updated or a refresh is triggered so all views reflect the change immediately, rather than waiting for the next periodic tick
+      pattern: >-
+        A message or command handler updates state on the backend (e.g. moves, edits, deletes an item) but only handles the error path, without refreshing or updating the local in-memory data on success
+      check: >-
+        After a successful mutation (move, update, delete), verify that the local view state (e.g. in-memory lists, cached entries, UI lanes) is updated or a refresh is triggered so all views reflect the change immediately, rather than waiting for the next periodic tick
       source: copilot:PR#330
       added: "2026-03-20"
     - id: tri-state-return-distinction
       category: error-handling
-      pattern: APIs or helper functions whose return types cannot clearly represent the three distinct states 'no results found', 'not applicable/unsupported', and 'error occurred' (for example, returning only an empty slice plus an error, or a bool+error that conflates these cases)
-      check: When designing or reviewing scan/search/collection API signatures, ensure the return type can explicitly represent all three outcomes — 'no results found', 'not applicable/unsupported', and 'an error occurred' — for example via a dedicated status enum, sentinel values, or clearly documented nil/empty/error semantics. Callers must be able to report accurate status rather than collapsing different empty/failure states into a single generic result. This rule addresses API design and return-type representation; see distinguish-empty-from-error for the related concern of migrating an existing API to a tri-state contract.
+      pattern: >-
+        APIs or helper functions whose return types cannot clearly represent the three distinct states 'no results found', 'not applicable/unsupported', and 'error occurred' (for example, returning only an empty slice plus an error, or a bool+error that conflates these cases)
+      check: >-
+        When designing or reviewing scan/search/collection API signatures, ensure the return type can explicitly represent all three outcomes — 'no results found', 'not applicable/unsupported', and 'an error occurred' — for example via a dedicated status enum, sentinel values, or clearly documented nil/empty/error semantics. Callers must be able to report accurate status rather than collapsing different empty/failure states into a single generic result. This rule addresses API design and return-type representation; see distinguish-empty-from-error for the related concern of migrating an existing API to a tri-state contract.
       source: copilot:PR#329
       added: "2026-03-20"
     - id: form-overlay-msg-routing
       category: ui
-      pattern: A form/overlay/modal intercepts all messages in an Update method by returning early before the main message switch
-      check: Verify that when a form overlay is active, only key/mouse messages are routed to the form handler. Non-key messages (data updates, ticks, window resize) must still be handled by the main Update switch to prevent dropped messages, stuck loading states, or broken periodic loops.
+      pattern: >-
+        A form/overlay/modal intercepts all messages in an Update method by returning early before the main message switch
+      check: >-
+        Verify that when a form overlay is active, only key/mouse messages are routed to the form handler. Non-key messages (data updates, ticks, window resize) must still be handled by the main Update switch to prevent dropped messages, stuck loading states, or broken periodic loops.
       source: copilot:PR#335
       added: "2026-03-20"
     - id: silent-nil-on-unresolved-state
       category: error-handling
-      pattern: A function or command handler returns nil (or a no-op) when a required lookup or precondition fails, instead of surfacing the error to the caller or user
-      check: Verify that every early-return path in action/command handlers propagates a meaningful error (e.g. ActionErrorMsg, error return) rather than silently returning nil, so failures are visible and diagnosable
+      pattern: >-
+        A function or command handler returns nil (or a no-op) when a required lookup or precondition fails, instead of surfacing the error to the caller or user
+      check: >-
+        Verify that every early-return path in action/command handlers propagates a meaningful error (e.g. ActionErrorMsg, error return) rather than silently returning nil, so failures are visible and diagnosable
       source: copilot:PR#335
       added: "2026-03-20"
     - id: sort-map-keys-for-stable-ui
       category: ui
-      pattern: Building a slice from map iteration (e.g., ranging over a map to collect keys) and using that slice for display ordering, default selection, CLI/TUI output, or test comparisons
+      pattern: >-
+        Building a slice from map iteration (e.g., ranging over a map to collect keys) and using that slice for display ordering, default selection, CLI/TUI output, or test comparisons
       check: >-
-        Verify that slices derived from map iteration are sorted before use in UI elements, option lists,
-        default selections, CLI output, or test assertions — Go map iteration order is randomized and
-        produces nondeterministic ordering that causes unstable output and flaky tests.
-      source: [copilot:PR#335, copilot:PR#338]
+        Verify that slices derived from map iteration are sorted before use in UI elements, option lists, default selections, CLI output, or test assertions — Go map iteration order is randomized and produces nondeterministic ordering that causes unstable output and flaky tests.
+      source: ['copilot:PR#335', 'copilot:PR#338']
       added: "2026-03-20"
     - id: ansi-safe-toast-overlay
       category: ui
-      pattern: Toast or overlay rendering that replaces background row content using string padding or strings.Repeat with spaces
-      check: Verify that overlay compositing is ANSI-aware and preserves underlying content/styling beyond the overlay bounds. Naive space-padding destroys lipgloss escape sequences and causes misalignment. Use an ANSI-aware overlay compositor (like placeOverlayAt) that splices the overlay into the background line while keeping surrounding styled content intact.
+      pattern: >-
+        Toast or overlay rendering that replaces background row content using string padding or strings.Repeat with spaces
+      check: >-
+        Verify that overlay compositing is ANSI-aware and preserves underlying content/styling beyond the overlay bounds. Naive space-padding destroys lipgloss escape sequences and causes misalignment. Use an ANSI-aware overlay compositor (like placeOverlayAt) that splices the overlay into the background line while keeping surrounding styled content intact.
       source: copilot:PR#335
       added: "2026-03-20"
     - id: empty-id-toast-feedback
       category: ui
-      pattern: Toast or status messages that interpolate an ID or name from a fallback-prone operation
-      check: Verify that user-facing messages degrade gracefully when a dynamic value (e.g., ID, name) is empty — provide a meaningful fallback string instead of rendering blank text
+      pattern: >-
+        Toast or status messages that interpolate an ID or name from a fallback-prone operation
+      check: >-
+        Verify that user-facing messages degrade gracefully when a dynamic value (e.g., ID, name) is empty — provide a meaningful fallback string instead of rendering blank text
       source: copilot:PR#335
       added: "2026-03-20"
     - id: test-visual-width-assertion
       category: testing
-      pattern: Tests that validate visual/display width truncation using byte length (len()) instead of visual width measurement
-      check: When testing visual-width truncation, use the same width-measurement function the implementation uses (e.g. lipgloss.Width()) rather than byte length (len()). Byte length can differ from visual width for multi-byte characters, ANSI sequences, and wide glyphs, making the assertion too loose or incorrect.
+      pattern: >-
+        Tests that validate visual/display width truncation using byte length (len()) instead of visual width measurement
+      check: >-
+        When testing visual-width truncation, use the same width-measurement function the implementation uses (e.g. lipgloss.Width()) rather than byte length (len()). Byte length can differ from visual width for multi-byte characters, ANSI sequences, and wide glyphs, making the assertion too loose or incorrect.
       source: copilot:PR#335
       added: "2026-03-20"
     - id: test-backward-compat-unmarshalling
       category: testing
-      pattern: Adding backward-compatible unmarshalling or parsing logic that accepts legacy/alternative input formats
-      check: Verify that unit tests exist covering the legacy/alternative input format, asserting that the parser correctly handles the old shape and produces the expected default values for any missing fields
+      pattern: >-
+        Adding backward-compatible unmarshalling or parsing logic that accepts legacy/alternative input formats
+      check: >-
+        Verify that unit tests exist covering the legacy/alternative input format, asserting that the parser correctly handles the old shape and produces the expected default values for any missing fields
       source: copilot:PR#336
       added: "2026-03-20"
     - id: pr-description-matches-actual-changes
       category: other
       pattern: PR description or title claims a specific count of added/changed/removed items
-      check: Verify that the count stated in the PR description or title matches the actual number of changes in the diff — e.g., if the PR says 'learned 4 rules', confirm exactly 4 new rules appear in the changed files
+      check: >-
+        Verify that the count stated in the PR description or title matches the actual number of changes in the diff — e.g., if the PR says 'learned 4 rules', confirm exactly 4 new rules appear in the changed files
       source: copilot:PR#332
       added: "2026-03-20"
     - id: preserve-rule-attribution-sources
       category: other
-      pattern: Modifications to source attribution lists in warden-rules.yaml or similar config files
-      check: When updating a rule's source field (a comma-separated list of PR attributions), verify that existing PR attributions are preserved and new PRs are appended rather than replacing prior entries
+      pattern: >-
+        Modifications to source attribution lists in warden-rules.yaml or similar config files
+      check: >-
+        When updating a rule's source field (a comma-separated list of PR attributions), verify that existing PR attributions are preserved and new PRs are appended rather than replacing prior entries
       source: copilot:PR#332
       added: "2026-03-20"
     - id: peer-dep-ecosystem-scope
       category: other
-      pattern: Code that matches or groups dependencies across different package ecosystems (npm, Go, .NET) using a shared set or map
-      check: Verify that peer-dependency or cross-package relationship lookups are scoped to the correct ecosystem. A shared set containing packages from all ecosystems can incorrectly union unrelated packages that happen to share a name across ecosystems (e.g., an npm peer-dep name matching a Go module). Use ecosystem-specific sets for adjacency and dependency accounting.
+      pattern: >-
+        Code that matches or groups dependencies across different package ecosystems (npm, Go, .NET) using a shared set or map
+      check: >-
+        Verify that peer-dependency or cross-package relationship lookups are scoped to the correct ecosystem. A shared set containing packages from all ecosystems can incorrectly union unrelated packages that happen to share a name across ecosystems (e.g., an npm peer-dep name matching a Go module). Use ecosystem-specific sets for adjacency and dependency accounting.
       source: copilot:PR#338
       added: "2026-03-20"
     - id: keybinding-scope-conflict
       category: ui
-      pattern: Adding or modifying global keybindings in a multi-view TUI (e.g. Bubble Tea key handlers that apply across all views)
-      check: Verify that new keybindings do not conflict with existing navigation in other views. Scope view-specific shortcuts behind a view-type check (e.g. only bind in list view, not kanban) so that standard navigation (vim-style hjkl, arrow keys) remains functional in all modes.
+      pattern: >-
+        Adding or modifying global keybindings in a multi-view TUI (e.g. Bubble Tea key handlers that apply across all views)
+      check: >-
+        Verify that new keybindings do not conflict with existing navigation in other views. Scope view-specific shortcuts behind a view-type check (e.g. only bind in list view, not kanban) so that standard navigation (vim-style hjkl, arrow keys) remains functional in all modes.
       source: copilot:PR#342
       added: "2026-03-20"
     - id: empty-form-overwrites-existing-data
       category: ui
-      pattern: Form submit/submit-handler logic that writes user input to a persistent field (notes, description, metadata) without checking whether the input is non-empty, non-blank, or changed from the existing value
-      check: Verify that submitting an empty, blank, or unchanged form field does not silently overwrite existing data — either treat empty/blank input as a no-op, validate and block submission, or prefill the form with the current value so the user edits rather than replaces blindly. Form action handlers should guard against empty/blank input before issuing update commands to prevent unintentional clearing of existing values.
+      pattern: >-
+        Form submit/submit-handler logic that writes user input to a persistent field (notes, description, metadata) without checking whether the input is non-empty, non-blank, or changed from the existing value
+      check: >-
+        Verify that submitting an empty, blank, or unchanged form field does not silently overwrite existing data — either treat empty/blank input as a no-op, validate and block submission, or prefill the form with the current value so the user edits rather than replaces blindly. Form action handlers should guard against empty/blank input before issuing update commands to prevent unintentional clearing of existing values.
       source: copilot:PR#342
       added: "2026-03-20"
     - id: dedup-priority-mapping
       category: style
-      pattern: Switch statement or map converting priority strings to integers (e.g. 'high'→1, 'medium'→2)
-      check: Verify that priority string-to-int conversion is not duplicated across code paths. It should be factored into a shared helper function (or use strconv.Atoi with bounds checking) so all callers stay consistent.
+      pattern: >-
+        Switch statement or map converting priority strings to integers (e.g. 'high'→1, 'medium'→2)
+      check: >-
+        Verify that priority string-to-int conversion is not duplicated across code paths. It should be factored into a shared helper function (or use strconv.Atoi with bounds checking) so all callers stay consistent.
       source: copilot:PR#342
+      added: "2026-03-20"
+    - id: deduplicate-warden-rules
+      category: other
+      pattern: >-
+        Adding a new warden rule entry that shares the same category and pattern intent as an existing rule
+      check: >-
+        Verify the new rule does not duplicate or overlap with an existing rule in warden-rules.yaml. If it does, consolidate by appending the new source (e.g. PR number) to the existing rule's source field instead of creating a separate entry.
+      source: copilot:PR#349
+      added: "2026-03-20"
+    - id: sourcelist-yaml-flow-sequence
+      category: style
+      pattern: >-
+        Modifications to source fields in warden-rules.yaml or similar config files using SourceList type
+      check: >-
+        Verify that multi-value source fields remain as YAML flow sequences (e.g. `source: [copilot:PR#285, copilot:PR#322]`) rather than being collapsed into a single scalar string. The SourceList type treats scalar values as a single-element list, which breaks structured multi-source attribution.
+      source: copilot:PR#349
+      added: "2026-03-20"
+    - id: pr-metadata-matches-diff
+      category: other
+      pattern: >-
+        PR title or description claims a specific count of added, changed, or removed items
+      check: >-
+        Verify that the stated count in PR metadata (title, description, commit message) actually matches the diff — e.g. if it says 'learn 1 new rule' confirm exactly 1 new rule entry was added, not just an edit to an existing one
+      source: copilot:PR#349
       added: "2026-03-20"
