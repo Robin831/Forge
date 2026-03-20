@@ -645,7 +645,7 @@ rules:
       category: other
       pattern: Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
       check: Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: copilot:PR#285,PR#322
+      source: copilot:PR#285,PR#322,PR#324
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
@@ -790,10 +790,4 @@ rules:
       pattern: String truncation or padding functions that use len(), utf8.RuneCountInString(), or range-loop rune counting to measure display width
       check: Verify that terminal column width is calculated using visual-width-aware helpers (e.g. lipgloss.Width or runewidth) rather than rune count, since CJK characters and emoji occupy 2 columns and combining marks occupy 0
       source: copilot:PR#323
-      added: "2026-03-20"
-    - id: consolidate-overlapping-warden-rules
-      category: other
-      pattern: Adding a new warden rule whose intent overlaps with an existing rule in .forge/warden-rules.yaml
-      check: Before adding a new rule, scan the existing rule list for overlapping or redundant guidance. If a similar rule already exists, broaden or update it instead of adding a duplicate entry.
-      source: copilot:PR#324
       added: "2026-03-20"
