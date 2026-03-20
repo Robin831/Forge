@@ -242,8 +242,8 @@ rules:
     - id: changelog-fragment-bead-id-match
       category: style
       pattern: Adding or modifying files in changelog.d/
-      check: Verify the changelog fragment filename matches the current PR's bead ID (changelog.d/<bead-id>.md) and that the trailing bead reference in the bullet text also matches the same bead ID
-      source: copilot:PR#143
+      check: Verify the changelog fragment filename matches the current PR's bead ID (changelog.d/<bead-id>.md) and that the trailing bead reference in the bullet text also matches the same bead ID. Also verify the fragment file ends with a trailing blank line to maintain consistent formatting across all entries.
+      source: copilot:PR#143,PR#336
       added: "2026-03-09"
     - id: no-dead-db-columns
       category: other
@@ -897,11 +897,5 @@ rules:
       category: testing
       pattern: Adding backward-compatible unmarshalling or parsing logic that accepts legacy/alternative input formats
       check: Verify that unit tests exist covering the legacy/alternative input format, asserting that the parser correctly handles the old shape and produces the expected default values for any missing fields
-      source: copilot:PR#336
-      added: "2026-03-20"
-    - id: changelog-trailing-newline
-      category: style
-      pattern: Files in changelog.d/ directory
-      check: Verify that changelog fragment files end with a trailing blank line to maintain consistent formatting across all entries
       source: copilot:PR#336
       added: "2026-03-20"
