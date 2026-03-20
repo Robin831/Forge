@@ -79,6 +79,8 @@ settings:
   vulncheck_interval: 24h
   vulncheck_timeout: 10m
   auto_learn_rules: true
+  smelter_enabled: true
+  smelter_interval: 8h
   crucible_enabled: true
   auto_merge_crucible_children: true
 
@@ -179,6 +181,8 @@ Omitting `platform` or setting it to an empty string defaults to `github`. Exist
 | `vulncheck_interval` | duration | `24h` | `0` | How often `govulncheck` runs on registered Go anvils. `0` disables. |
 | `vulncheck_timeout` | duration | `10m` | | Maximum time for a single govulncheck invocation per anvil. |
 | `auto_learn_rules` | bool | `false` | | Automatically learn Warden review rules from Copilot comments when a PR is merged. Rules are saved to each anvil's `.forge/warden-rules.yaml`. |
+| `smelter_enabled` | bool | `true` | | Enable/disable the Smelter background process. When `false`, scheduled smelter runs are disabled. |
+| `smelter_interval` | duration | `8h` | `1h` or `0` | How often the Smelter runs its background processing. `0` disables scheduled runs. |
 | `crucible_enabled` | bool | `false` | | Enable Crucible auto-orchestration for parent beads with children. When a ready bead blocks other beads, the Crucible creates a feature branch, dispatches children in topological order, merges each child PR, then creates a final PR to main. |
 | `auto_merge_crucible_children` | bool | `true` | | Auto-merge child PRs targeting a Crucible feature branch after the pipeline succeeds. Set to `false` to require manual merge of child PRs. |
 
@@ -292,6 +296,8 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_VULNCHECK_INTERVAL` | `settings.vulncheck_interval` |
 | `FORGE_SETTINGS_VULNCHECK_TIMEOUT` | `settings.vulncheck_timeout` |
 | `FORGE_SETTINGS_AUTO_LEARN_RULES` | `settings.auto_learn_rules` |
+| `FORGE_SETTINGS_SMELTER_ENABLED` | `settings.smelter_enabled` |
+| `FORGE_SETTINGS_SMELTER_INTERVAL` | `settings.smelter_interval` |
 | `FORGE_SETTINGS_GO_RACE_DETECTION` | `settings.go_race_detection` |
 | `FORGE_SETTINGS_CRUCIBLE_ENABLED` | `settings.crucible_enabled` |
 | `FORGE_SETTINGS_AUTO_MERGE_CRUCIBLE_CHILDREN` | `settings.auto_merge_crucible_children` |
@@ -317,6 +323,7 @@ The config is validated at load time. Errors are reported as a list:
 - `bellows_interval` must be >= 30s
 - `daily_cost_limit` must be a non-negative finite number
 - `stale_interval` must be >= 30s when enabled, or 0 to disable
+- `smelter_interval` must be >= 1h when enabled, or 0 to disable
 - `depcheck_interval` must be >= 1h when enabled, or 0 to disable
 - `depcheck_timeout` must not be negative
 - Each anvil `path` must be non-empty
