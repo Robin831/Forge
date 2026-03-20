@@ -263,7 +263,7 @@ func (m *Model) renderKanban() string {
 	if m.err != nil {
 		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  ⚠ %v", m.err))
 	}
-	footer := footerStyle.Render("h/l: lane  j/k: card  H/L: move bead  Tab: list  q: quit") + errNote
+	footer := footerStyle.Render("h/l: lane  j/k: card  H/L: move  n: new  e: edit  x: close  r: reopen  Tab: list  q: quit") + errNote
 
 	return header + "\n" + board + "\n" + detail + "\n" + footer
 }
