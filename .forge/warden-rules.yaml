@@ -899,3 +899,9 @@ rules:
       check: Verify that unit tests exist covering the legacy/alternative input format, asserting that the parser correctly handles the old shape and produces the expected default values for any missing fields
       source: copilot:PR#336
       added: "2026-03-20"
+    - id: deduplicate-overlapping-warden-rules
+      category: other
+      pattern: Adding a new warden rule to .forge/warden-rules.yaml that overlaps with an existing rule's intent or coverage
+      check: Before adding a new rule, search existing rules for overlapping guidance. If a rule already covers the same concern, append the new PR source to the existing rule's source list instead of creating a duplicate entry.
+      source: copilot:PR#341
+      added: "2026-03-20"
