@@ -377,6 +377,16 @@ func (d *Daemon) vcsForAnvil(anvil string) vcs.Provider {
 	return github.New(d.db)
 }
 
+// cifixLearnConfig builds a warden.LearnConfig for the CI-fix path that routes
+// learned rules into the pending_warden_rules table when smelter is enabled.
+func (d *Daemon) cifixLearnConfig(anvilName string) *warden.LearnConfig {
+	return &warden.LearnConfig{
+		SmelterEnabled: d.cfg.Load().Settings.IsSmelterEnabled(),
+		AnvilName:      anvilName,
+		InsertPending:  d.db.InsertPendingRule,
+	}
+}
+
 // ingotMarkFailed is a best-effort helper that sets an ingot's status to failed.
 // It guards against a nil DB connection so callers don't need to repeat the pattern.
 func (d *Daemon) ingotMarkFailed(beadID, anvil string) {
@@ -882,6 +892,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 					Providers:       cifixProviders,
 					VCS:             d.vcsForAnvil(req.Anvil),
+					LearnConfig:     d.cifixLearnConfig(req.Anvil),
 				})
 			}
 			status := state.WorkerDone

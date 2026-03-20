@@ -231,3 +231,58 @@ func TestLearnFromCIFix_NoLogs(t *testing.T) {
 		t.Error("expected no rules file to be created for empty inputs")
 	}
 }
+
+// TestLearnFromCIFix_SmelterEnabled verifies that when a LearnConfig with
+// SmelterEnabled=true is provided, learned rules are inserted via the
+// InsertPending callback and the rules file is not written or modified.
+func TestLearnFromCIFix_SmelterEnabled(t *testing.T) {
+	anvilPath := t.TempDir()
+
+	// Stub aiRunner so no real process is spawned.
+	old := aiRunner
+	t.Cleanup(func() { aiRunner = old })
+	aiRunner = func(_ context.Context, _, _ string) ([]byte, error) {
+		return []byte(`{"id":"react-hooks-exhaustive-deps","category":"ui","pattern":"missing dep in useEffect","check":"ensure all used values are in the deps array"}`), nil
+	}
+
+	logs := map[string]string{
+		"eslint": "  2:5  error  React Hook issue  react-hooks/exhaustive-deps",
+	}
+	fixDiff := "diff --git a/src/Foo.tsx b/src/Foo.tsx\n--- a/src/Foo.tsx\n+++ b/src/Foo.tsx\n@@ -1 +1 @@\n-bad\n+good"
+
+	var insertedAnvil, insertedYAML, insertedSource string
+	stubInsert := func(anvil, ruleYAML, sourcePR string) error {
+		insertedAnvil = anvil
+		insertedYAML = ruleYAML
+		insertedSource = sourcePR
+		return nil
+	}
+
+	cfg := &LearnConfig{
+		SmelterEnabled: true,
+		AnvilName:      "test-anvil",
+		InsertPending:  stubInsert,
+	}
+
+	ctx := context.Background()
+	if err := LearnFromCIFix(ctx, anvilPath, anvilPath, logs, fixDiff, 77, cfg); err != nil {
+		t.Fatalf("LearnFromCIFix returned unexpected error: %v", err)
+	}
+
+	// Inserter must have been called with the expected anvil and source.
+	if insertedAnvil != "test-anvil" {
+		t.Errorf("expected insertedAnvil %q, got %q", "test-anvil", insertedAnvil)
+	}
+	wantSource := "cifix:PR#77"
+	if insertedSource != wantSource {
+		t.Errorf("expected insertedSource %q, got %q", wantSource, insertedSource)
+	}
+	if insertedYAML == "" {
+		t.Error("expected non-empty YAML payload passed to inserter")
+	}
+
+	// No rules file should have been written in smelter mode.
+	if _, err := os.Stat(filepath.Join(anvilPath, RulesFileName)); !os.IsNotExist(err) {
+		t.Error("expected no rules file to be written when smelter is enabled")
+	}
+}

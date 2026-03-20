@@ -720,7 +720,7 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, be
 	if m.smelterEnabled != nil && m.smelterEnabled() {
 		if err := warden.InsertRulesAsPending(newRules, anvilName, m.db.InsertPendingRule); err != nil {
 			log.Printf("[bellows] Auto-learn: error inserting pending rules for %s: %v", anvilName, err)
-			_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: failed to insert pending rules: %v", prNumber, err), "", anvilName)
+			_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: failed to insert pending rules: %v", prNumber, err), beadID, anvilName)
 			return
 		}
 		log.Printf("[bellows] Auto-learn: inserted %d pending rule(s) from PR #%d (%s)", added, prNumber, anvilName)

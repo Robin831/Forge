@@ -38,6 +38,12 @@ type LearnConfig struct {
 // InsertRulesAsPending serializes each rule to YAML and inserts it into the
 // pending_warden_rules table via the provided inserter function.
 func InsertRulesAsPending(rules []Rule, anvilName string, insert PendingInserter) error {
+	if insert == nil {
+		return fmt.Errorf("InsertRulesAsPending: insert function must not be nil")
+	}
+	if anvilName == "" {
+		return fmt.Errorf("InsertRulesAsPending: anvilName must not be empty")
+	}
 	for _, r := range rules {
 		ruleYAML, err := yaml.Marshal(&r)
 		if err != nil {
