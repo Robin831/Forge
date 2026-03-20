@@ -144,7 +144,8 @@ func (s *Scanner) ScanAnvilDeps(ctx context.Context, name, path string) []*Check
 		}
 		if result.Error != nil {
 			log.Printf("[depcheck] Error checking %s (%s): %v", name, sc.name, result.Error)
-			continue
+			// Return the errored result so the CLI can display the failure rather
+			// than silently treating the anvil as up to date.
 		}
 		results = append(results, result)
 	}

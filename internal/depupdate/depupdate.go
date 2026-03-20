@@ -10,6 +10,7 @@ import (
 	"io"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/depcheck"
@@ -47,7 +48,6 @@ func (ar *AnvilResult) TotalUpdates(opts Options) int {
 // and PR creation methods.
 type Runner struct {
 	scanner *depcheck.Scanner
-	opts    Options
 }
 
 // NewRunner creates a Runner that uses the provided depcheck Scanner for
@@ -55,18 +55,18 @@ type Runner struct {
 func NewRunner(db *state.DB, anvilPaths map[string]string, cfg *config.SettingsConfig) *Runner {
 	timeout := cfg.DepcheckTimeout
 	if timeout == 0 {
-		timeout = 5 * 60e9 // 5 minutes in nanoseconds
+		timeout = 5 * time.Minute
 	}
-	// Use a minimal interval since the CLI runs one-shot, not periodic.
-	scanner := depcheck.New(db, 1, timeout, anvilPaths)
+	// Use a one-hour interval — the CLI is one-shot and the ticker never fires again.
+	scanner := depcheck.New(db, time.Hour, timeout, anvilPaths)
 	return &Runner{
 		scanner: scanner,
 	}
 }
 
 // Scan runs dependency checks on all configured anvils and returns the
-// aggregated results. It reuses the depcheck.Scanner.ScanAnvilDeps method
-// to get results without creating beads.
+// aggregated results. Every anvil is included in the output so that callers
+// can distinguish "no supported ecosystems" from "no updates" from "scan error".
 func (r *Runner) Scan(ctx context.Context, anvilPaths map[string]string) []AnvilResult {
 	var results []AnvilResult
 	for name, path := range anvilPaths {
@@ -74,9 +74,6 @@ func (r *Runner) Scan(ctx context.Context, anvilPaths map[string]string) []Anvil
 			break
 		}
 		ecosystems := r.scanner.ScanAnvilDeps(ctx, name, path)
-		if len(ecosystems) == 0 {
-			continue
-		}
 		results = append(results, AnvilResult{
 			Anvil:      name,
 			Path:       path,
@@ -95,6 +92,15 @@ func PrintSummary(w io.Writer, results []AnvilResult, opts Options) int {
 		anvilHasUpdates := false
 
 		for _, cr := range ar.Ecosystems {
+			if cr.Error != nil {
+				if !anvilHasUpdates {
+					fmt.Fprintf(w, "\nAnvil: %s\n", ar.Anvil)
+					anvilHasUpdates = true
+				}
+				fmt.Fprintf(w, "  %s (scan error: %v)\n", cr.Ecosystem, cr.Error)
+				continue
+			}
+
 			updates := filterUpdates(cr, opts)
 			if len(updates) == 0 {
 				continue
@@ -116,7 +122,13 @@ func PrintSummary(w io.Writer, results []AnvilResult, opts Options) int {
 		}
 
 		if !anvilHasUpdates {
-			fmt.Fprintf(w, "\nAnvil: %s — all dependencies up to date\n", ar.Anvil)
+			msg := "all dependencies up to date"
+			if opts.PatchOnly {
+				msg = "no dependency updates matching patch-only filter"
+			} else if opts.NoMajor {
+				msg = "no dependency updates matching non-major filter"
+			}
+			fmt.Fprintf(w, "\nAnvil: %s — %s\n", ar.Anvil, msg)
 		}
 	}
 
@@ -136,6 +148,11 @@ func FormatSummaryLine(results []AnvilResult, opts Options) string {
 	}
 
 	if totalUpdates == 0 {
+		if opts.PatchOnly {
+			return "0 outdated (patch only) across all anvils."
+		} else if opts.NoMajor {
+			return "0 outdated (excluding major) across all anvils."
+		}
 		return "All dependencies up to date across all anvils."
 	}
 
@@ -150,15 +167,16 @@ func FormatSummaryLine(results []AnvilResult, opts Options) string {
 }
 
 // filterUpdates returns the subset of updates from a CheckResult that match
-// the given filter options.
+// the given filter options, in Major→Minor→Patch order to match depcheck's
+// established severity ordering.
 func filterUpdates(cr *depcheck.CheckResult, opts Options) []depcheck.ModuleUpdate {
 	var updates []depcheck.ModuleUpdate
-	updates = append(updates, cr.Patch...)
-	if !opts.PatchOnly {
-		updates = append(updates, cr.Minor...)
-	}
 	if !opts.PatchOnly && !opts.NoMajor {
 		updates = append(updates, cr.Major...)
 	}
+	if !opts.PatchOnly {
+		updates = append(updates, cr.Minor...)
+	}
+	updates = append(updates, cr.Patch...)
 	return updates
 }

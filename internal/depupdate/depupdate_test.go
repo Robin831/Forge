@@ -203,3 +203,43 @@ func TestFormatSummaryLine_NoMajorLabel(t *testing.T) {
 	line := FormatSummaryLine(results, Options{NoMajor: true})
 	require.Contains(t, line, "(excluding major)")
 }
+
+// When only major updates exist and NoMajor is true, all updates are filtered out.
+// Ensure the summary reflects "0 outdated (excluding major)" rather than treating
+// the situation as if all dependencies were genuinely up to date.
+func TestFormatSummaryLine_NoMajor_AllMajorUpdatesFiltered(t *testing.T) {
+	results := []AnvilResult{
+		{
+			Anvil:      "repo1",
+			Ecosystems: []*depcheck.CheckResult{makeCheckResult("Go", 0, 0, 3)},
+		},
+	}
+
+	line := FormatSummaryLine(results, Options{NoMajor: true})
+
+	// After applying NoMajor, there should be 0 applicable updates.
+	require.Contains(t, line, "0 outdated")
+	// The filter label should still be present.
+	require.Contains(t, line, "(excluding major)")
+	// Guard against regressions where this case is treated as "all up to date".
+	require.NotEqual(t, "All dependencies up to date across all anvils.", line)
+}
+
+func TestPrintSummary_NoMajor_AllMajorUpdatesFiltered(t *testing.T) {
+	results := []AnvilResult{
+		{
+			Anvil:      "repo1",
+			Ecosystems: []*depcheck.CheckResult{makeCheckResult("Go", 0, 0, 2)},
+		},
+	}
+
+	var buf bytes.Buffer
+	total := PrintSummary(&buf, results, Options{NoMajor: true})
+
+	// No applicable updates should remain after filtering majors.
+	require.Equal(t, 0, total)
+	out := buf.String()
+	// Ensure we do not incorrectly claim that all dependencies are up to date
+	// when updates do exist but have been filtered out by NoMajor.
+	require.NotContains(t, out, "all dependencies up to date")
+}
