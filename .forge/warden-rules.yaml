@@ -857,3 +857,39 @@ rules:
       check: When designing or reviewing scan/search/collection API signatures, ensure the return type can explicitly represent all three outcomes — 'no results found', 'not applicable/unsupported', and 'an error occurred' — for example via a dedicated status enum, sentinel values, or clearly documented nil/empty/error semantics. Callers must be able to report accurate status rather than collapsing different empty/failure states into a single generic result. This rule addresses API design and return-type representation; see distinguish-empty-from-error for the related concern of migrating an existing API to a tri-state contract.
       source: copilot:PR#329
       added: "2026-03-20"
+    - id: form-overlay-msg-routing
+      category: ui
+      pattern: A form/overlay/modal intercepts all messages in an Update method by returning early before the main message switch
+      check: Verify that when a form overlay is active, only key/mouse messages are routed to the form handler. Non-key messages (data updates, ticks, window resize) must still be handled by the main Update switch to prevent dropped messages, stuck loading states, or broken periodic loops.
+      source: copilot:PR#335
+      added: "2026-03-20"
+    - id: silent-nil-on-unresolved-state
+      category: error-handling
+      pattern: A function or command handler returns nil (or a no-op) when a required lookup or precondition fails, instead of surfacing the error to the caller or user
+      check: Verify that every early-return path in action/command handlers propagates a meaningful error (e.g. ActionErrorMsg, error return) rather than silently returning nil, so failures are visible and diagnosable
+      source: copilot:PR#335
+      added: "2026-03-20"
+    - id: sort-map-keys-for-stable-ui
+      category: ui
+      pattern: Building a slice from map iteration (e.g., ranging over a map to collect keys) and using that slice for display ordering or default selection
+      check: Verify that slices derived from map iteration are sorted before use in UI elements, option lists, or default selections, since Go map iteration order is randomized and will produce unstable ordering between runs
+      source: copilot:PR#335
+      added: "2026-03-20"
+    - id: ansi-safe-toast-overlay
+      category: ui
+      pattern: Toast or overlay rendering that replaces background row content using string padding or strings.Repeat with spaces
+      check: Verify that overlay compositing is ANSI-aware and preserves underlying content/styling beyond the overlay bounds. Naive space-padding destroys lipgloss escape sequences and causes misalignment. Use an ANSI-aware overlay compositor (like placeOverlayAt) that splices the overlay into the background line while keeping surrounding styled content intact.
+      source: copilot:PR#335
+      added: "2026-03-20"
+    - id: empty-id-toast-feedback
+      category: ui
+      pattern: Toast or status messages that interpolate an ID or name from a fallback-prone operation
+      check: Verify that user-facing messages degrade gracefully when a dynamic value (e.g., ID, name) is empty — provide a meaningful fallback string instead of rendering blank text
+      source: copilot:PR#335
+      added: "2026-03-20"
+    - id: test-visual-width-assertion
+      category: testing
+      pattern: Tests that validate visual/display width truncation using byte length (len()) instead of visual width measurement
+      check: When testing visual-width truncation, use the same width-measurement function the implementation uses (e.g. lipgloss.Width()) rather than byte length (len()). Byte length can differ from visual width for multi-byte characters, ANSI sequences, and wide glyphs, making the assertion too loose or incorrect.
+      source: copilot:PR#335
+      added: "2026-03-20"
