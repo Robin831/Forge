@@ -1,0 +1,18 @@
+name: "Login and create image"
+description: "Verify a user can log in and create a new image"
+url: "http://localhost:3000"
+tags: [smoke, auth, images]
+steps:
+  - action: navigate
+    url: "{{.BaseURL}}/login"
+  - action: fill
+    selector: "#email"
+    value: "test@example.com"
+  - action: click
+    selector: "button[type=submit]"
+  - action: wait
+    selector: ".dashboard"
+    timeout: 10s
+  - action: assert
+    selector: ".success-message"
+    contains: "Image created"
