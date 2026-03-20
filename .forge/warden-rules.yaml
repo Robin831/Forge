@@ -645,7 +645,7 @@ rules:
       category: other
       pattern: Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
       check: Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: copilot:PR#285,PR#322,PR#324,PR#326
+      source: copilot:PR#285,PR#322,PR#324,PR#326,PR#328
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
@@ -832,10 +832,4 @@ rules:
       pattern: Struct field that is assigned during construction but never read or written by any method
       check: Verify that every struct field is actually used. If a field duplicates a method parameter, either wire the field through (use it in methods instead of passing the param) or remove the field to avoid dead state.
       source: copilot:PR#327
-      added: "2026-03-20"
-    - id: deduplicate-warden-rules-before-adding
-      category: other
-      pattern: Adding a new rule to warden-rules.yaml
-      check: Before adding a new warden rule, check if an existing rule already covers the same semantic concern. If so, update the existing rule's source/attribution instead of creating a duplicate entry.
-      source: copilot:PR#328
       added: "2026-03-20"
