@@ -14,7 +14,7 @@ func TestNew(t *testing.T) {
 		"repo2": "/path/to/repo2",
 	}
 
-	m := New(nil, 5*time.Minute, 30*time.Second, anvils)
+	m := New(nil, 5*time.Minute, 30*time.Second, anvils, nil)
 
 	if m.interval != 5*time.Minute {
 		t.Errorf("interval = %v, want %v", m.interval, 5*time.Minute)
@@ -30,6 +30,9 @@ func TestNew(t *testing.T) {
 	}
 	if m.logger == nil {
 		t.Error("logger should not be nil")
+	}
+	if m.newExec == nil {
+		t.Error("newExec should default to non-nil when nil is passed")
 	}
 }
 
@@ -72,7 +75,6 @@ func TestIsDuplicate_ClosedNotMatched(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Closed beads should not be considered duplicates.
 	if hasDuplicateInJSON(data, "login-flow") {
 		t.Error("closed bead should not count as duplicate")
 	}
@@ -93,7 +95,7 @@ func TestIsDuplicate_InProgressMatches(t *testing.T) {
 }
 
 func TestRunCancellation(t *testing.T) {
-	m := New(nil, 1*time.Hour, 10*time.Second, nil)
+	m := New(nil, 1*time.Hour, 10*time.Second, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately

@@ -9,10 +9,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Robin831/Forge/internal/adventurer"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
 )
+
+// QuestResult holds the outcome of executing a quest, decoupled from the
+// adventurer package to avoid an import cycle.
+type QuestResult struct {
+	Passed       bool
+	FailedStep   int
+	ErrorMessage string
+	Duration     time.Duration
+}
+
+// QuestExecutor executes a quest and returns the result. This interface
+// decouples the monitor from the adventurer package to avoid an import cycle
+// (adventurer imports questgiver for the Quest type).
+type QuestExecutor interface {
+	Execute(ctx context.Context, quest *Quest) *QuestResult
+}
 
 // Monitor polls anvils for quests and executes them, creating beads on failure
 // with deduplication.
@@ -22,17 +37,30 @@ type Monitor struct {
 	timeout  time.Duration
 	anvils   map[string]string // name -> path
 	logger   *slog.Logger
+	newExec  func() QuestExecutor
 }
 
 // New creates a Monitor that polls anvils for quests at the given interval.
-func New(db *state.DB, interval, timeout time.Duration, anvils map[string]string) *Monitor {
+// The newExec function is called to create a QuestExecutor for each quest
+// execution. Pass nil to use a no-op executor (useful for testing).
+func New(db *state.DB, interval, timeout time.Duration, anvils map[string]string, newExec func() QuestExecutor) *Monitor {
+	if newExec == nil {
+		newExec = func() QuestExecutor { return nopExecutor{} }
+	}
 	return &Monitor{
 		db:       db,
 		interval: interval,
 		timeout:  timeout,
 		anvils:   anvils,
 		logger:   slog.Default(),
+		newExec:  newExec,
 	}
+}
+
+type nopExecutor struct{}
+
+func (nopExecutor) Execute(context.Context, *Quest) *QuestResult {
+	return &QuestResult{Passed: true, FailedStep: -1}
 }
 
 // Run starts the quest polling loop. It blocks until ctx is cancelled.
@@ -79,7 +107,7 @@ func (m *Monitor) runQuest(ctx context.Context, anvilName, anvilPath string, que
 	m.logger.Info("starting quest", "quest", quest.Name, "anvil", anvilName)
 	_ = m.db.LogEvent(state.EventAdventurerStarted, quest.Name, "", anvilName)
 
-	executor := adventurer.New(m.timeout, m.logger)
+	executor := m.newExec()
 	result := executor.Execute(ctx, quest)
 
 	if result.Passed {
@@ -124,7 +152,6 @@ func isDuplicate(ctx context.Context, anvilPath, questName string) bool {
 	prefix := "E2E failure: " + questName
 	var beads []bdBead
 	if err := json.Unmarshal(out, &beads); err != nil {
-		// Fallback to raw string search.
 		return strings.Contains(string(out), prefix)
 	}
 	for _, b := range beads {
@@ -159,14 +186,13 @@ func isDuplicate(ctx context.Context, anvilPath, questName string) bool {
 }
 
 // createBead creates a bug bead for a failed quest.
-func (m *Monitor) createBead(ctx context.Context, anvilName, anvilPath string, quest *Quest, result *adventurer.Result) {
+func (m *Monitor) createBead(ctx context.Context, anvilName, anvilPath string, quest *Quest, result *QuestResult) {
 	stepAction := ""
 	if result.FailedStep >= 0 && result.FailedStep < len(quest.Steps) {
 		stepAction = quest.Steps[result.FailedStep].Action
 	}
 
 	title := fmt.Sprintf("E2E failure: %s — step %d (%s)", quest.Name, result.FailedStep, result.ErrorMessage)
-	// Truncate title if excessively long (bd may have limits).
 	if len(title) > 200 {
 		title = title[:197] + "..."
 	}
