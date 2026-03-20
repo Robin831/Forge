@@ -203,6 +203,24 @@ func (s *PRStatus) IsClosed() bool {
 	return s.State == "CLOSED"
 }
 
+// CIsInProgress returns true if any CI check is still running (not yet completed).
+// GitHub check runs use Status values like "IN_PROGRESS", "QUEUED", "PENDING",
+// or "WAITING". When a check hasn't completed, its Conclusion is empty.
+func (s *PRStatus) CIsInProgress() bool {
+	for _, check := range s.StatusCheckRollup {
+		st := strings.ToUpper(check.Status)
+		if st == "IN_PROGRESS" || st == "QUEUED" || st == "PENDING" || st == "WAITING" {
+			return true
+		}
+		// Some platforms leave Status empty but Conclusion empty too for
+		// checks that haven't finished yet. Treat that as in-progress.
+		if st != "COMPLETED" && check.Conclusion == "" {
+			return true
+		}
+	}
+	return false
+}
+
 // CIsPassing returns true if all CI checks have passed.
 func (s *PRStatus) CIsPassing() bool {
 	if len(s.StatusCheckRollup) == 0 {

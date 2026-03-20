@@ -203,6 +203,24 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 			noEvents: []string{EventPRReadyToMerge},
 		},
 		{
+			name:     "CI checks in progress → no ci_failed even though CIPassing is false",
+			old:      prSnapshot{CIPassing: true},
+			new:      prSnapshot{CIPassing: false, CIInProgress: true},
+			noEvents: []string{EventCIFailed},
+		},
+		{
+			name:     "CI checks in progress with mix of completed failures → no ci_failed",
+			old:      prSnapshot{CIPassing: true},
+			new:      prSnapshot{CIPassing: false, CIInProgress: true},
+			noEvents: []string{EventCIFailed, EventCIPassed},
+		},
+		{
+			name:       "CI checks all completed with failure → ci_failed",
+			old:        prSnapshot{CIPassing: true},
+			new:        prSnapshot{CIPassing: false, CIInProgress: false},
+			wantEvents: []string{EventCIFailed},
+		},
+		{
 			name: "threads resolved while CI passing → pr_ready_to_merge",
 			old:  prSnapshot{CIPassing: true, HasUnresolvedThreads: true},
 			new:  prSnapshot{CIPassing: true, HasUnresolvedThreads: false},
@@ -244,9 +262,9 @@ func computeTransitionEventsWithPR(old, new *prSnapshot, prStatus string, ciFixC
 
 	if new.CIPassing && !old.CIPassing {
 		events = append(events, EventCIPassed)
-	} else if !new.CIPassing && old.CIPassing {
+	} else if !new.CIPassing && !new.CIInProgress && old.CIPassing {
 		events = append(events, EventCIFailed)
-	} else if !new.CIPassing && !old.CIPassing {
+	} else if !new.CIPassing && !new.CIInProgress && !old.CIPassing {
 		// Secondary check: CI still failing after a completed fix attempt.
 		if prStatus != "needs_fix" && ciFixCount > 0 && ciFixCount < maxCI {
 			events = append(events, EventCIFailed)
@@ -450,6 +468,24 @@ func TestCIFixRetryLogic(t *testing.T) {
 			maxCI:      5,
 			wantCIFail: true,
 		},
+		{
+			name:       "CI checks in progress after fix attempt → no ci_failed",
+			old:        prSnapshot{CIPassing: false},
+			new:        prSnapshot{CIPassing: false, CIInProgress: true},
+			prStatus:   "open",
+			ciFixCount: 1,
+			maxCI:      5,
+			wantCIFail: false,
+		},
+		{
+			name:       "CI checks in progress on initial transition → no ci_failed",
+			old:        prSnapshot{CIPassing: true},
+			new:        prSnapshot{CIPassing: false, CIInProgress: true},
+			prStatus:   "open",
+			ciFixCount: 0,
+			maxCI:      5,
+			wantCIFail: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -462,6 +498,130 @@ func TestCIFixRetryLogic(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCheckPR_CIInProgressDoesNotTriggerFailure verifies that bellows does not
+// emit ci_failed when CI checks are still running (in_progress/queued).
+func TestCheckPR_CIInProgressDoesNotTriggerFailure(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    40,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-inprogress",
+		Branch:    "forge/forge-inprogress",
+		Status:    state.PROpen,
+		CIPassing: true, // seed as passing so transition would normally fire
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	// Simulate CI with one passing check and one still running.
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State: "OPEN",
+		StatusCheckRollup: []vcs.CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{Name: "test", Status: "IN_PROGRESS", Conclusion: ""},
+		},
+	}}
+
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	assert.NotContains(t, events, EventCIFailed, "ci_failed must not fire while checks are in progress")
+	assert.NotContains(t, events, EventCIPassed, "ci_passed must not fire while checks are incomplete")
+}
+
+// TestCheckPR_CICompletedFailureTriggersCIFailed verifies that bellows correctly
+// emits ci_failed when all checks have completed and at least one has failed.
+func TestCheckPR_CICompletedFailureTriggersCIFailed(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    41,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-cifail",
+		Branch:    "forge/forge-cifail",
+		Status:    state.PROpen,
+		CIPassing: true, // seed as passing so the transition fires
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	// All checks completed, one failure.
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State: "OPEN",
+		StatusCheckRollup: []vcs.CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{Name: "test", Status: "COMPLETED", Conclusion: "FAILURE"},
+		},
+	}}
+
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	assert.Contains(t, events, EventCIFailed, "ci_failed should fire when all checks completed with failure")
+}
+
+// TestCheckPR_PassingThenInProgressThenFailure is a regression test for the
+// sequence: passing → in_progress (no event) → completed with failure (must
+// emit ci_failed exactly once). This verifies that bellows does not lose the
+// last completed CIPassing state when a poll sees checks still running.
+func TestCheckPR_PassingThenInProgressThenFailure(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    42,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-pending-then-fail",
+		Branch:    "forge/forge-pending-then-fail",
+		Status:    state.PROpen,
+		CIPassing: true, // seed as passing
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	fake := &fakeVCSProvider{}
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	// Poll 1: CI was passing, now one check is in-progress → no ci_failed.
+	fake.status = &vcs.PRStatus{
+		State: "OPEN",
+		StatusCheckRollup: []vcs.CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{Name: "test", Status: "IN_PROGRESS", Conclusion: ""},
+		},
+	}
+	m.checkAll(context.Background())
+	assert.NotContains(t, events, EventCIFailed, "ci_failed must not fire while checks are in progress")
+
+	// Poll 2: All checks completed, one failure → ci_failed must fire.
+	fake.status = &vcs.PRStatus{
+		State: "OPEN",
+		StatusCheckRollup: []vcs.CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{Name: "test", Status: "COMPLETED", Conclusion: "FAILURE"},
+		},
+	}
+	m.checkAll(context.Background())
+	assert.Contains(t, events, EventCIFailed, "ci_failed must fire when checks finish failing after a pending period")
 }
 
 // fakeVCSProvider is a minimal vcs.Provider that returns a fixed PRStatus.

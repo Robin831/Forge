@@ -69,6 +69,48 @@ func TestPRStatus_CIsPassing(t *testing.T) {
 	}).CIsPassing())
 }
 
+func TestPRStatus_CIsInProgress(t *testing.T) {
+	assert.False(t, (&PRStatus{}).CIsInProgress(), "no checks = not in progress")
+	assert.False(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{Status: "COMPLETED", Conclusion: "FAILURE"},
+		},
+	}).CIsInProgress(), "all completed = not in progress")
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{Status: "IN_PROGRESS", Conclusion: ""},
+		},
+	}).CIsInProgress(), "one in_progress = in progress")
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Status: "QUEUED", Conclusion: ""},
+		},
+	}).CIsInProgress(), "queued = in progress")
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Status: "PENDING", Conclusion: ""},
+		},
+	}).CIsInProgress(), "pending = in progress")
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Status: "WAITING", Conclusion: ""},
+		},
+	}).CIsInProgress(), "waiting = in progress")
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Status: "", Conclusion: ""},
+		},
+	}).CIsInProgress(), "empty status with empty conclusion = in progress")
+	assert.False(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{Status: "COMPLETED", Conclusion: "NEUTRAL"},
+		},
+	}).CIsInProgress(), "all completed success/neutral = not in progress")
+}
+
 func TestPRStatus_HasApproval(t *testing.T) {
 	assert.False(t, (&PRStatus{}).HasApproval())
 	assert.True(t, (&PRStatus{
