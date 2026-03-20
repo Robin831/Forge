@@ -1242,3 +1242,25 @@ rules:
         Verify that new DB CRUD functions have focused tests in the matching _test.go file covering insert, query (grouping, ordering, date parsing), and delete (ensuring only targeted rows are removed)
       source: copilot:PR#354
       added: "2026-03-20"
+    - id: zero-value-yaml-marshal
+      category: other
+      pattern: >-
+        Custom MarshalYAML or MarshalJSON methods that conditionally omit fields based on zero/empty values
+      check: >-
+        Verify that intentional zero values (e.g., 0 duration to disable a feature) are still serialized correctly. If a zero value has semantic meaning (like disabling a scheduled task), the marshal method must emit it rather than omitting it, otherwise round-tripping through save/load will silently replace it with the default.
+      source: copilot:PR#356
+      added: "2026-03-20"
+    - id: hot-reload-parity
+      category: other
+      pattern: New config settings are added and described as hot-reloadable
+      check: >-
+        Verify that any config keys claimed to be hot-reloadable are actually handled in the hot-reload watcher (e.g. internal/hotreload.applyChanges). If the new settings are missing from the comparison/apply logic, either add them (plus any downstream scheduler/callback wiring) or remove hot-reload claims from docs and PR description.
+      source: copilot:PR#356
+      added: "2026-03-20"
+    - id: test-invalid-duration-parsing
+      category: testing
+      pattern: Adding a new duration config field with error handling for invalid values
+      check: >-
+        Verify that a unit test exists covering the invalid duration parsing failure mode, consistent with existing invalid duration tests (e.g., invalid poll_interval, bellows_interval). The test should write a config with an invalid duration string and assert the returned error mentions the specific field name.
+      source: copilot:PR#356
+      added: "2026-03-20"
