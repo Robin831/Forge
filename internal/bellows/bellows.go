@@ -71,6 +71,7 @@ type Monitor struct {
 	learnSem         chan struct{}          // caps overall concurrent auto-learn goroutines
 	wasUnmanaged     map[string]bool       // keys of ext- PRs seen as unmanaged (for managed transition detection)
 	autoMergeHandler func(ctx context.Context, anvil string, pr state.PR) // called when a PR becomes ready-to-merge
+	smelterEnabled   func() bool           // when true, route learned rules to pending table instead of PR
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -120,6 +121,13 @@ func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.
 // for anvils that have auto_merge enabled.
 func (m *Monitor) SetAutoMergeHandler(h func(ctx context.Context, anvil string, pr state.PR)) {
 	m.autoMergeHandler = h
+}
+
+// SetSmelterEnabled registers a callback that returns whether the smelter is
+// enabled. When true, learned warden rules are inserted into the pending
+// table instead of creating immediate PRs.
+func (m *Monitor) SetSmelterEnabled(f func() bool) {
+	m.smelterEnabled = f
 }
 
 // OnEvent registers a handler for PR events.
@@ -676,6 +684,7 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, be
 
 	added := 0
 	distillErrors := 0
+	var newRules []warden.Rule
 	for _, group := range groups {
 		if ctx.Err() != nil {
 			return
@@ -691,6 +700,7 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, be
 		}
 		if rf.AddRule(*rule) {
 			added++
+			newRules = append(newRules, *rule)
 		}
 	}
 
@@ -702,6 +712,19 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, be
 			log.Printf("[bellows] Auto-learn: no new rules from PR #%d (%s)", prNumber, anvilName)
 			_ = m.db.LogEvent(state.EventAutoLearnSkipped, fmt.Sprintf("%s PR #%d: no new rules from %d comment(s)", anvilName, prNumber, len(comments)), beadID, anvilName)
 		}
+		return
+	}
+
+	// When smelter is enabled, insert rules into the pending table for batch
+	// processing instead of creating an immediate PR.
+	if m.smelterEnabled != nil && m.smelterEnabled() {
+		if err := warden.InsertRulesAsPending(newRules, anvilName, m.db.InsertPendingRule); err != nil {
+			log.Printf("[bellows] Auto-learn: error inserting pending rules for %s: %v", anvilName, err)
+			_ = m.db.LogEvent(state.EventAutoLearnError, fmt.Sprintf("PR #%d: failed to insert pending rules: %v", prNumber, err), beadID, anvilName)
+			return
+		}
+		log.Printf("[bellows] Auto-learn: inserted %d pending rule(s) from PR #%d (%s)", added, prNumber, anvilName)
+		_ = m.db.LogEvent(state.EventWardenRuleLearned, fmt.Sprintf("PR #%d: learned %d rule(s), inserted as pending", prNumber, added), beadID, anvilName)
 		return
 	}
 

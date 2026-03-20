@@ -66,6 +66,11 @@ type FixParams struct {
 	// VCS is the VCS provider for fetching CI check status and logs.
 	// Required — callers must set this before calling Fix.
 	VCS vcs.Provider
+	// LearnConfig provides optional smelter-aware routing for warden rule
+	// learning after a successful CI fix. When set and SmelterEnabled is
+	// true, learned rules are inserted into the pending_warden_rules table
+	// instead of being written directly to the rules file.
+	LearnConfig *warden.LearnConfig
 }
 
 // FixResult captures the outcome of a CI fix attempt.
@@ -428,10 +433,11 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 					for k, v := range ciLogs {
 						logsCopy[k] = v
 					}
+					learnCfg := p.LearnConfig
 					go func() {
 						learnCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 						defer cancel()
-						if err := warden.LearnFromCIFix(learnCtx, anvilPath, worktreePath, logsCopy, fixDiff, prNum); err != nil {
+						if err := warden.LearnFromCIFix(learnCtx, anvilPath, worktreePath, logsCopy, fixDiff, prNum, learnCfg); err != nil {
 							log.Printf("[quench] PR #%d: warden learn from CI fix: %v", prNum, err)
 						}
 					}()

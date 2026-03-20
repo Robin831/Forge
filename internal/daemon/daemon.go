@@ -89,6 +89,7 @@ const (
 type bellowsMonitorIface interface {
 	OnEvent(h bellows.Handler)
 	SetAutoMergeHandler(h func(ctx context.Context, anvil string, pr state.PR))
+	SetSmelterEnabled(f func() bool)
 	UpdateAnvilPaths(paths map[string]string)
 	Refresh()
 	Run(ctx context.Context) error
@@ -376,6 +377,16 @@ func (d *Daemon) vcsForAnvil(anvil string) vcs.Provider {
 	return github.New(d.db)
 }
 
+// cifixLearnConfig builds a warden.LearnConfig for the CI-fix path that routes
+// learned rules into the pending_warden_rules table when smelter is enabled.
+func (d *Daemon) cifixLearnConfig(anvilName string) *warden.LearnConfig {
+	return &warden.LearnConfig{
+		SmelterEnabled: d.cfg.Load().Settings.IsSmelterEnabled(),
+		AnvilName:      anvilName,
+		InsertPending:  d.db.InsertPendingRule,
+	}
+}
+
 // ingotMarkFailed is a best-effort helper that sets an ingot's status to failed.
 // It guards against a nil DB connection so callers don't need to repeat the pattern.
 func (d *Daemon) ingotMarkFailed(beadID, anvil string) {
@@ -630,6 +641,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("daemon initialization failed: %w", err)
 	}
 	d.bellowsMonitor.SetAutoMergeHandler(d.handleAutoMerge)
+	d.bellowsMonitor.SetSmelterEnabled(func() bool {
+		return d.cfg.Load().Settings.IsSmelterEnabled()
+	})
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
 	d.bellowsMonitor.OnEvent(d.handleBellowsNotifications)
 	d.bellowsMonitor.OnEvent(d.handleBeadCloseOnMerge)
@@ -878,6 +892,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 					Providers:       cifixProviders,
 					VCS:             d.vcsForAnvil(req.Anvil),
+					LearnConfig:     d.cifixLearnConfig(req.Anvil),
 				})
 			}
 			status := state.WorkerDone
