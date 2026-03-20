@@ -3,9 +3,13 @@
 package ledger
 
 import (
+	"fmt"
+	"reflect"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Robin831/Forge/internal/state"
@@ -31,6 +35,16 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+// FormKind tracks which overlay form is active.
+type FormKind int
+
+const (
+	FormNone FormKind = iota
+	FormNewBead
+	FormEditBead
+	FormCloseBead
+)
+
 // Model is the top-level Bubbletea model for the Ledger TUI.
 type Model struct {
 	beads    []Bead
@@ -49,6 +63,23 @@ type Model struct {
 
 	anvils map[string]string // name → path
 	db     *state.DB
+
+	// Form overlay state
+	activeForm     *huh.Form
+	activeFormKind FormKind
+	formTarget     *Bead // bead being edited/closed (nil for new)
+
+	// Form field bindings for new/edit bead
+	formTitle       string
+	formDescription string
+	formType        string
+	formPriority    string
+	formAnvil       string
+	formReason      string // close reason
+
+	// Toast notifications
+	toasts      []toast
+	nextToastID int
 }
 
 // NewModel creates a new Ledger model.
@@ -68,9 +99,20 @@ func (m *Model) Init() tea.Cmd {
 
 // Update handles incoming messages.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle toast dismissals first — they apply regardless of form state.
+	if dismiss, ok := msg.(toastDismissMsg); ok {
+		m.dismissToast(dismiss.id)
+		return m, nil
+	}
+
+	// Handle active form overlay.
+	if m.activeForm != nil {
+		return m.updateForm(msg)
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Global quit key: always handle ctrl+c, even when forms/overlays are active.
+		// Global quit key: always handle ctrl+c.
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
@@ -80,6 +122,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "q":
 				return m, tea.Quit
+			}
+		}
+
+		// CRUD key bindings (available in both views when no form is open).
+		if m.list.sortForm == nil {
+			switch msg.String() {
+			case "n":
+				return m, m.openNewBeadForm()
+			case "e":
+				return m, m.openEditBeadForm()
+			case "x":
+				return m, m.openCloseBeadForm()
+			case "r":
+				return m, m.reopenSelectedBead()
 			}
 		}
 
@@ -109,11 +165,32 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.err = msg.Err
 		}
-		// Refresh on both success and failure so all views see the
-		// authoritative state promptly (success: confirm optimistic move;
-		// failure: revert it).
 		m.fetching = true
 		return m, FetchAllBeads(m.anvils, m.db)
+
+	case BeadCreatedMsg:
+		cmd := m.addToast(fmt.Sprintf("Created %s", msg.ID), false)
+		m.fetching = true
+		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+
+	case BeadUpdatedMsg:
+		cmd := m.addToast(fmt.Sprintf("Updated %s", msg.ID), false)
+		m.fetching = true
+		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+
+	case BeadClosedMsg:
+		cmd := m.addToast(fmt.Sprintf("Closed %s", msg.ID), false)
+		m.fetching = true
+		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+
+	case BeadReopenedMsg:
+		cmd := m.addToast(fmt.Sprintf("Reopened %s", msg.ID), false)
+		m.fetching = true
+		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+
+	case ActionErrorMsg:
+		cmd := m.addToast(msg.Err.Error(), true)
+		return m, cmd
 
 	case tickMsg:
 		if m.fetching {
@@ -123,6 +200,324 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tickCmd(), FetchAllBeads(m.anvils, m.db))
 	}
 	return m, nil
+}
+
+// updateForm handles input when a form overlay is active.
+func (m *Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		if k.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+		if k.Type == tea.KeyEsc {
+			m.clearForm()
+			return m, nil
+		}
+	}
+
+	cmd := m.driveHuhForm(&m.activeForm, msg)
+
+	if m.activeForm.State == huh.StateCompleted {
+		actionCmd := m.executeFormAction()
+		m.clearForm()
+		if cmd != nil {
+			return m, tea.Batch(cmd, actionCmd)
+		}
+		return m, actionCmd
+	}
+	if m.activeForm.State == huh.StateAborted {
+		m.clearForm()
+		return m, cmd
+	}
+
+	return m, cmd
+}
+
+// clearForm resets the form overlay state.
+func (m *Model) clearForm() {
+	m.activeForm = nil
+	m.activeFormKind = FormNone
+	m.formTarget = nil
+	m.formTitle = ""
+	m.formDescription = ""
+	m.formType = ""
+	m.formPriority = ""
+	m.formAnvil = ""
+	m.formReason = ""
+}
+
+// executeFormAction dispatches the appropriate bd command based on the active form.
+func (m *Model) executeFormAction() tea.Cmd {
+	switch m.activeFormKind {
+	case FormNewBead:
+		anvilPath, ok := m.anvils[m.formAnvil]
+		if !ok {
+			return func() tea.Msg {
+				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil: %s", m.formAnvil)}
+			}
+		}
+		pri := 2
+		switch m.formPriority {
+		case "0":
+			pri = 0
+		case "1":
+			pri = 1
+		case "2":
+			pri = 2
+		case "3":
+			pri = 3
+		case "4":
+			pri = 4
+		}
+		return NewBeadCmd(anvilPath, m.formTitle, m.formDescription, m.formType, pri)
+
+	case FormEditBead:
+		if m.formTarget == nil {
+			return nil
+		}
+		anvilPath, ok := m.anvils[m.formTarget.Anvil]
+		if !ok {
+			return nil
+		}
+		return EditBeadCmd(anvilPath, m.formTarget.ID, m.formTitle, m.formDescription)
+
+	case FormCloseBead:
+		if m.formTarget == nil {
+			return nil
+		}
+		anvilPath, ok := m.anvils[m.formTarget.Anvil]
+		if !ok {
+			return nil
+		}
+		return CloseBeadCmd(anvilPath, m.formTarget.ID, m.formReason)
+	}
+	return nil
+}
+
+// selectedBead returns a pointer to the currently selected bead, or nil.
+func (m *Model) selectedBead() *Bead {
+	switch m.view {
+	case ViewList:
+		sorted := sortBeads(m.beads, m.list.sortBy)
+		idx := m.list.vp.Selected()
+		if idx >= 0 && idx < len(sorted) {
+			return &sorted[idx]
+		}
+	case ViewKanban:
+		lane := m.kanban.activeLane
+		beads := m.kanban.lanes[lane]
+		idx := m.kanban.laneVP[lane].Selected()
+		if idx >= 0 && idx < len(beads) {
+			return &beads[idx]
+		}
+	}
+	return nil
+}
+
+// openNewBeadForm creates and displays the new bead form.
+func (m *Model) openNewBeadForm() tea.Cmd {
+	// Build anvil options from registered anvils.
+	anvilNames := make([]string, 0, len(m.anvils))
+	for name := range m.anvils {
+		anvilNames = append(anvilNames, name)
+	}
+	if len(anvilNames) == 0 {
+		return func() tea.Msg {
+			return ActionErrorMsg{Err: fmt.Errorf("no anvils registered")}
+		}
+	}
+
+	m.formType = "task"
+	m.formPriority = "2"
+	m.formAnvil = anvilNames[0]
+
+	anvilOpts := make([]huh.Option[string], len(anvilNames))
+	for i, n := range anvilNames {
+		anvilOpts[i] = huh.NewOption(n, n)
+	}
+
+	m.activeForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Title").
+				Value(&m.formTitle),
+			huh.NewText().
+				Title("Description").
+				Value(&m.formDescription),
+			huh.NewSelect[string]().
+				Title("Type").
+				Options(
+					huh.NewOption("Task", "task"),
+					huh.NewOption("Bug", "bug"),
+					huh.NewOption("Feature", "feature"),
+					huh.NewOption("Epic", "epic"),
+				).
+				Value(&m.formType),
+			huh.NewSelect[string]().
+				Title("Priority").
+				Options(
+					huh.NewOption("P0 — Critical", "0"),
+					huh.NewOption("P1 — High", "1"),
+					huh.NewOption("P2 — Medium", "2"),
+					huh.NewOption("P3 — Low", "3"),
+					huh.NewOption("P4 — Backlog", "4"),
+				).
+				Value(&m.formPriority),
+			huh.NewSelect[string]().
+				Title("Anvil").
+				Options(anvilOpts...).
+				Value(&m.formAnvil),
+		),
+	).WithShowHelp(false).WithShowErrors(false)
+
+	m.activeFormKind = FormNewBead
+	return m.activeForm.Init()
+}
+
+// openEditBeadForm creates and displays the edit bead form for the selected bead.
+func (m *Model) openEditBeadForm() tea.Cmd {
+	b := m.selectedBead()
+	if b == nil {
+		return nil
+	}
+
+	m.formTarget = b
+	m.formTitle = b.Title
+	m.formDescription = b.Description
+
+	m.activeForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Title").
+				Value(&m.formTitle),
+			huh.NewText().
+				Title("Description").
+				Value(&m.formDescription),
+		),
+	).WithShowHelp(false).WithShowErrors(false)
+
+	m.activeFormKind = FormEditBead
+	return m.activeForm.Init()
+}
+
+// openCloseBeadForm creates and displays the close bead form for the selected bead.
+func (m *Model) openCloseBeadForm() tea.Cmd {
+	b := m.selectedBead()
+	if b == nil {
+		return nil
+	}
+	if b.Status == "closed" {
+		return nil
+	}
+
+	m.formTarget = b
+	m.formReason = ""
+
+	m.activeForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title(fmt.Sprintf("Close %s — Reason (optional)", b.ID)).
+				Value(&m.formReason),
+		),
+	).WithShowHelp(false).WithShowErrors(false)
+
+	m.activeFormKind = FormCloseBead
+	return m.activeForm.Init()
+}
+
+// reopenSelectedBead dispatches a reopen command for the selected bead.
+func (m *Model) reopenSelectedBead() tea.Cmd {
+	b := m.selectedBead()
+	if b == nil {
+		return nil
+	}
+	if b.Status != "closed" {
+		return nil
+	}
+
+	anvilPath, ok := m.anvils[b.Anvil]
+	if !ok {
+		return nil
+	}
+	return ReopenBeadCmd(anvilPath, b.ID)
+}
+
+// driveHuhForm updates a huh form and synchronously drives internal messages.
+func (m *Model) driveHuhForm(form **huh.Form, msg tea.Msg) tea.Cmd {
+	f, cmd := (*form).Update(msg)
+	if f != nil {
+		if hf, ok := f.(*huh.Form); ok {
+			*form = hf
+		}
+	}
+	return m.driveHuhSync(form, cmd)
+}
+
+// driveHuhSync recursively drives internal commands produced by a huh form.
+func (m *Model) driveHuhSync(form **huh.Form, cmd tea.Cmd) tea.Cmd {
+	if cmd == nil || (*form).State != huh.StateNormal {
+		return cmd
+	}
+
+	var pendingCmds []tea.Cmd
+	pendingCmds = append(pendingCmds, cmd)
+	var externalCmds []tea.Cmd
+
+	for len(pendingCmds) > 0 {
+		currentCmd := pendingCmds[0]
+		pendingCmds = pendingCmds[1:]
+
+		if currentCmd == nil {
+			continue
+		}
+
+		var nextMsg tea.Msg
+		done := make(chan tea.Msg, 1)
+		go func(c tea.Cmd) { done <- c() }(currentCmd)
+		select {
+		case nextMsg = <-done:
+		case <-time.After(2 * time.Millisecond):
+			externalCmds = append(externalCmds, currentCmd)
+			continue
+		}
+		if nextMsg == nil {
+			continue
+		}
+
+		if batch, ok := nextMsg.(tea.BatchMsg); ok {
+			for _, bc := range batch {
+				if bc != nil {
+					pendingCmds = append(pendingCmds, bc)
+				}
+			}
+			continue
+		}
+
+		typ := reflect.TypeOf(nextMsg)
+		pkg := typ.PkgPath()
+		if !strings.Contains(pkg, "charmbracelet/huh") && !strings.Contains(pkg, "charmbracelet/bubbletea") {
+			msg := nextMsg
+			externalCmds = append(externalCmds, func() tea.Msg { return msg })
+			continue
+		}
+
+		f, newCmd := (*form).Update(nextMsg)
+		if f != nil {
+			if hf, ok := f.(*huh.Form); ok {
+				*form = hf
+			}
+		}
+		if newCmd != nil {
+			pendingCmds = append(pendingCmds, newCmd)
+		}
+		if (*form).State != huh.StateNormal {
+			break
+		}
+	}
+
+	if len(externalCmds) > 0 {
+		return tea.Batch(externalCmds...)
+	}
+	return nil
 }
 
 // View renders the current state.
@@ -135,10 +530,65 @@ func (m *Model) View() string {
 		return titleStyle.Render("⚒ Forge Ledger — Loading beads...")
 	}
 
+	var out string
 	switch m.view {
 	case ViewKanban:
-		return m.renderKanban()
+		out = m.renderKanban()
 	default:
-		return m.renderList()
+		out = m.renderList()
 	}
+
+	// Overlay active form.
+	if m.activeForm != nil {
+		formView := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorAccent).
+			Padding(1, 2).
+			Render(m.activeForm.View())
+		out = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, formView,
+			lipgloss.WithWhitespaceBackground(lipgloss.AdaptiveColor{Dark: "0", Light: "15"}))
+	}
+
+	// Overlay toasts at the bottom.
+	toastView := m.renderToasts()
+	if toastView != "" {
+		toastLines := strings.Split(toastView, "\n")
+		outLines := strings.Split(out, "\n")
+
+		// Pad output to fill height.
+		for len(outLines) < m.height {
+			outLines = append(outLines, "")
+		}
+
+		// Place toasts near the bottom (above last line which is footer).
+		toastHeight := len(toastLines)
+		startY := m.height - 1 - toastHeight
+		if startY < 0 {
+			startY = 0
+		}
+
+		// Center horizontally.
+		toastWidth := 0
+		for _, l := range toastLines {
+			if w := lipgloss.Width(l); w > toastWidth {
+				toastWidth = w
+			}
+		}
+		startX := (m.width - toastWidth) / 2
+		if startX < 0 {
+			startX = 0
+		}
+
+		for i, tl := range toastLines {
+			row := startY + i
+			if row >= 0 && row < len(outLines) {
+				// Simple overlay: pad the toast line and replace the row.
+				padded := strings.Repeat(" ", startX) + tl
+				outLines[row] = padded
+			}
+		}
+		out = strings.Join(outLines[:m.height], "\n")
+	}
+
+	return out
 }
