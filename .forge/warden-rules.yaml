@@ -1234,3 +1234,11 @@ rules:
         Verify that the stated count in PR metadata (title, description, commit message) actually matches the diff — e.g. if it says 'learn 1 new rule' confirm exactly 1 new rule entry was added, not just an edit to an existing one
       source: copilot:PR#349
       added: "2026-03-20"
+    - id: new-crud-needs-tests
+      category: testing
+      pattern: >-
+        New CRUD functions or database operations added to internal/state/db.go (or similar data-access files) without corresponding test coverage
+      check: >-
+        Verify that new DB CRUD functions have focused tests in the matching _test.go file covering insert, query (grouping, ordering, date parsing), and delete (ensuring only targeted rows are removed)
+      source: copilot:PR#354
+      added: "2026-03-20"
