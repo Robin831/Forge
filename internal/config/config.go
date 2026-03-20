@@ -280,7 +280,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		CopilotCombinedSmithWarden  bool    `yaml:"copilot_combined_smith_warden"`
 		CopilotWardenSampleRate     float64 `yaml:"copilot_warden_sample_rate"`
 		SmelterEnabled              *bool   `yaml:"smelter_enabled,omitempty"`
-		SmelterInterval             string  `yaml:"smelter_interval,omitempty"`
+		SmelterInterval             string  `yaml:"smelter_interval"`
 		QuestgiverEnabled           *bool   `yaml:"questgiver_enabled,omitempty"`
 		QuestgiverInterval          string  `yaml:"questgiver_interval,omitempty"`
 		AdventurerTimeout           string  `yaml:"adventurer_timeout,omitempty"`
@@ -337,9 +337,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	if s.VulncheckTimeout > 0 {
 		sh.VulncheckTimeout = durationString(s.VulncheckTimeout)
 	}
-	if s.SmelterInterval > 0 {
-		sh.SmelterInterval = durationString(s.SmelterInterval)
-	}
+	// Always emit SmelterInterval so an intentional 0 (disable scheduled runs)
+	// is persisted and not silently dropped back to the 8h default on next load.
+	sh.SmelterInterval = durationString(s.SmelterInterval)
 	if s.QuestgiverInterval > 0 {
 		sh.QuestgiverInterval = durationString(s.QuestgiverInterval)
 	}

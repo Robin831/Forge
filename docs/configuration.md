@@ -344,6 +344,8 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `smith_providers` are re-read and used for newly dispatched beads
 - `copilot_combined_smith_warden` toggles combined Smith+Warden mode at runtime
 - `copilot_warden_sample_rate` adjusts the sampling rate at runtime
+- `smelter_enabled` enables or disables the Smelter background process at runtime
+- `smelter_interval` changes the Smelter schedule; takes effect on the next scheduled run
 - `notifications.*` (webhook URL, enabled, events, etc.) are re-read and applied immediately
 - In-flight workers are **not** interrupted
 
