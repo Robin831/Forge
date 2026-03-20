@@ -89,6 +89,7 @@ const (
 type bellowsMonitorIface interface {
 	OnEvent(h bellows.Handler)
 	SetAutoMergeHandler(h func(ctx context.Context, anvil string, pr state.PR))
+	SetSmelterEnabled(f func() bool)
 	UpdateAnvilPaths(paths map[string]string)
 	Refresh()
 	Run(ctx context.Context) error
@@ -630,6 +631,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("daemon initialization failed: %w", err)
 	}
 	d.bellowsMonitor.SetAutoMergeHandler(d.handleAutoMerge)
+	d.bellowsMonitor.SetSmelterEnabled(func() bool {
+		return d.cfg.Load().Settings.IsSmelterEnabled()
+	})
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
 	d.bellowsMonitor.OnEvent(d.handleBellowsNotifications)
 	d.bellowsMonitor.OnEvent(d.handleBeadCloseOnMerge)

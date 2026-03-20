@@ -18,7 +18,39 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
+	"gopkg.in/yaml.v3"
 )
+
+// PendingInserter is a function that inserts a rule into the pending_warden_rules
+// table. It matches the signature of state.DB.InsertPendingRule.
+type PendingInserter func(anvil, ruleYAML, sourcePR string) error
+
+// LearnConfig provides optional smelter-aware routing for learned rules.
+// When SmelterEnabled is true and InsertPending is non-nil, new rules are
+// inserted into the pending_warden_rules table instead of being written
+// directly to the rules file.
+type LearnConfig struct {
+	SmelterEnabled bool
+	AnvilName      string          // anvil name for pending rule insertion
+	InsertPending  PendingInserter // typically state.DB.InsertPendingRule
+}
+
+// InsertRulesAsPending serializes each rule to YAML and inserts it into the
+// pending_warden_rules table via the provided inserter function.
+func InsertRulesAsPending(rules []Rule, anvilName string, insert PendingInserter) error {
+	for _, r := range rules {
+		ruleYAML, err := yaml.Marshal(&r)
+		if err != nil {
+			return fmt.Errorf("marshaling rule %s: %w", r.ID, err)
+		}
+		sourcePR := r.Source.String()
+		if err := insert(anvilName, string(ruleYAML), sourcePR); err != nil {
+			return fmt.Errorf("inserting pending rule %s: %w", r.ID, err)
+		}
+		log.Printf("[warden] Inserted pending rule: %s (anvil: %s, source: %s)", r.ID, anvilName, sourcePR)
+	}
+	return nil
+}
 
 // PRComment represents a review comment fetched from GitHub.
 type PRComment struct {
@@ -292,9 +324,14 @@ func extractLintRuleNames(logs map[string]string) []string {
 // subsequent fix diff, then stores them as warden rules so future Smith
 // sessions avoid the anti-patterns before they reach CI.
 //
+// When cfg is non-nil and cfg.SmelterEnabled is true, new rules are inserted
+// into the pending_warden_rules table instead of being written directly to
+// the rules file. When cfg is nil or SmelterEnabled is false, the existing
+// direct-save behavior is preserved.
+//
 // It is intentionally non-fatal: callers should log any returned error but
 // not let it block the successful CI fix result from being recorded.
-func LearnFromCIFix(ctx context.Context, anvilPath, repoDir string, failingLogs map[string]string, fixDiff string, prNumber int) error {
+func LearnFromCIFix(ctx context.Context, anvilPath, repoDir string, failingLogs map[string]string, fixDiff string, prNumber int, cfg ...*LearnConfig) error {
 	if len(failingLogs) == 0 || fixDiff == "" {
 		return nil
 	}
@@ -323,8 +360,15 @@ func LearnFromCIFix(ctx context.Context, anvilPath, repoDir string, failingLogs 
 		existingIDs[r.ID] = true
 	}
 
+	// Resolve optional smelter config from variadic parameter.
+	var lc *LearnConfig
+	if len(cfg) > 0 {
+		lc = cfg[0]
+	}
+
 	source := fmt.Sprintf("cifix:PR#%d", prNumber)
 	changed := false
+	var pendingRules []Rule
 
 	for _, ruleName := range ruleNames {
 		// Derive a candidate rule ID: strip @ and replace / with -.
@@ -342,14 +386,22 @@ func LearnFromCIFix(ctx context.Context, anvilPath, repoDir string, failingLogs 
 		if rf.AddRule(*rule) {
 			existingIDs[rule.ID] = true
 			changed = true
+			pendingRules = append(pendingRules, *rule)
 			log.Printf("[warden] Learned new CI fix rule: %s (source: %s)", rule.ID, rule.Source)
 		}
 	}
 
-	if changed {
-		return SaveRules(anvilPath, rf)
+	if !changed {
+		return nil
 	}
-	return nil
+
+	// When smelter is enabled, insert rules into the pending table
+	// for batch processing instead of saving directly to the rules file.
+	if lc != nil && lc.SmelterEnabled && lc.InsertPending != nil {
+		return InsertRulesAsPending(pendingRules, lc.AnvilName, lc.InsertPending)
+	}
+
+	return SaveRules(anvilPath, rf)
 }
 
 // distillCIFixRule asks Claude to convert a CI lint failure pattern and its
