@@ -1242,14 +1242,8 @@ rules:
       added: "2026-03-20"
     - id: deduplicate-overlapping-warden-rules
       category: other
-      pattern: New warden rule being added to warden-rules.yaml that covers the same concern as an existing rule
-      check: Before adding a new warden rule, check if an existing rule already covers the same or overlapping concern. If so, update the existing rule's source field to include the new PR reference instead of creating a duplicate entry.
-      source: copilot:PR#337
-      added: "2026-03-20"
-    - id: consolidate-duplicate-warden-rules
-      category: other
-      pattern: New warden rule being added to .forge/warden-rules.yaml that substantially duplicates or overlaps an existing rule's intent, pattern, or check
-      check: Before adding a new warden rule, search existing rules for substantial overlap in intent, pattern, or check. If a matching rule already exists, consolidate by updating that rule (e.g. extending its pattern/check scope or appending the new PR to its source list) instead of creating a separate, redundant entry.
+      pattern: New warden rule being added to .forge/warden-rules.yaml or warden-rules.yaml that substantially duplicates or overlaps an existing rule's intent, pattern, check, or overall concern
+      check: Before adding a new warden rule, search existing rules for the same or substantially overlapping concern in intent, pattern, or check. If a matching rule already exists, consolidate by updating that rule (for example, extending its pattern/check scope and appending the new PR reference to its source field as a comma-separated attribution entry) instead of creating a separate, redundant entry.
       source: copilot:PR#337
       added: "2026-03-20"
     - id: pr-description-matches-diff-count
