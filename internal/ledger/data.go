@@ -62,11 +62,6 @@ func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		type result struct {
-			beads []Bead
-			err   error
-		}
-
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		var allBeads []Bead
@@ -77,7 +72,7 @@ func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
 			wg.Add(1)
 			go func(name, path string) {
 				defer wg.Done()
-				out, err := bdExec(ctx, path, "list", "--status=open", "--status=in_progress", "--json")
+				out, err := bdExec(ctx, path, "list", "--status=open", "--status=in_progress", "--limit", "0", "--json")
 				if err != nil {
 					mu.Lock()
 					if firstErr == nil {
@@ -107,13 +102,23 @@ func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
 			wg.Add(1)
 			go func(name, path string) {
 				defer wg.Done()
-				out, err := bdExec(ctx, path, "list", "--status=closed", "--json")
+				out, err := bdExec(ctx, path, "list", "--status=closed", "--limit", "0", "--json")
 				if err != nil {
-					// Non-critical: closed beads are supplementary
+					// Non-critical: closed beads are supplementary, but record the first error so the UI can surface it.
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("fetching closed beads for %s: %w", name, err)
+					}
+					mu.Unlock()
 					return
 				}
 				var beads []Bead
 				if err := json.Unmarshal(out, &beads); err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("parsing closed beads for %s: %w", name, err)
+					}
+					mu.Unlock()
 					return
 				}
 				cutoff := time.Now().AddDate(0, 0, -7)
@@ -136,7 +141,13 @@ func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
 		// Enrich with PR data from state DB
 		if db != nil {
 			openPRs, err := db.OpenPRs()
-			if err == nil {
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("fetching open PRs: %w", err)
+				}
+				mu.Unlock()
+			} else {
 				prBeads := make(map[string]bool)
 				for _, pr := range openPRs {
 					if pr.BeadID != "" {

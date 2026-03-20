@@ -26,9 +26,10 @@ func tickCmd() tea.Cmd {
 
 // Model is the top-level Bubbletea model for the Ledger TUI.
 type Model struct {
-	beads   []Bead
-	loading bool
-	err     error
+	beads    []Bead
+	loading  bool
+	fetching bool // true while a FetchAllBeads call is in-flight
+	err      error
 
 	width  int
 	height int
@@ -66,10 +67,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateBeadsMsg:
 		m.loading = false
+		m.fetching = false
 		m.beads = msg.Beads
 		m.err = msg.Err
 
 	case tickMsg:
+		// Only launch a new fetch if no fetch is already in-flight.
+		if m.fetching {
+			return m, tickCmd()
+		}
+		m.fetching = true
 		return m, tea.Batch(tickCmd(), FetchAllBeads(m.anvils, m.db))
 	}
 	return m, nil
