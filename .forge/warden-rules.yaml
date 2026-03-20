@@ -701,3 +701,27 @@ rules:
       check: When untrusted input is sanitized into a safe variable, verify that ALL subsequent references use the sanitized version consistently — no code path should fall back to the raw value, particularly in fmt.Sprintf, template execution, or prompt construction
       source: copilot:PR#306
       added: "2026-03-19"
+    - id: doc-new-config-keys
+      category: other
+      pattern: Adding new fields to AnvilConfig or top-level config structs
+      check: Verify that any new configuration keys are documented in docs/configuration.md with their type, default value, and description — not just referenced in design plans or code comments
+      source: copilot:PR#316
+      added: "2026-03-20"
+    - id: yaml-field-alignment
+      category: testing
+      pattern: Test fixtures or YAML test data that define struct fields
+      check: Verify that field names in test YAML/JSON fixtures exactly match the struct tags in the corresponding Go type definitions, since YAML/JSON unmarshalling silently ignores unknown fields
+      source: copilot:PR#316
+      added: "2026-03-20"
+    - id: test-flag-set-error-handling
+      category: testing
+      pattern: Calling cmd.Flags().Set(...) in tests without checking the returned error
+      check: Verify that the error returned by Flags().Set() is asserted (e.g., require.NoError) and that t.Cleanup is used to reset the flag value, preventing masked failures and leaked state across tests sharing global command instances
+      source: copilot:PR#316
+      added: "2026-03-20"
+    - id: cobra-silence-expected-errors
+      category: error-handling
+      pattern: Cobra command returns a sentinel error after already printing detailed output to the user
+      check: "When a Cobra command prints its own failure summary before returning an error, set SilenceUsage: true on the command and either return a descriptive error (including relevant context like IDs or names) or use SilenceErrors to avoid Cobra double-printing a less-helpful generic message"
+      source: copilot:PR#316
+      added: "2026-03-20"
