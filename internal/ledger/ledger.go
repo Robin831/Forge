@@ -145,8 +145,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openCloseBeadForm()
 			case "r":
 				return m, m.reopenSelectedBead()
-			case "l":
-				return m, m.openLabelForm()
 			case "p":
 				return m, m.openPriorityForm()
 			case "c":
@@ -155,6 +153,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openNotesForm()
 			case "a":
 				return m, m.openAssignForm()
+			}
+			// "l" opens label form only in list view; in kanban it navigates lanes.
+			if msg.String() == "l" && m.view == ViewList {
+				return m, m.openLabelForm()
 			}
 		}
 
@@ -272,6 +274,22 @@ func (m *Model) clearForm() {
 	m.formAssignee = ""
 }
 
+// parsePriority converts a priority string ("0"–"4") to an int, defaulting to 2.
+func parsePriority(s string) int {
+	switch s {
+	case "0":
+		return 0
+	case "1":
+		return 1
+	case "3":
+		return 3
+	case "4":
+		return 4
+	default:
+		return 2
+	}
+}
+
 // executeFormAction dispatches the appropriate bd command based on the active form.
 func (m *Model) executeFormAction() tea.Cmd {
 	switch m.activeFormKind {
@@ -282,20 +300,7 @@ func (m *Model) executeFormAction() tea.Cmd {
 				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil: %s", m.formAnvil)}
 			}
 		}
-		pri := 2
-		switch m.formPriority {
-		case "0":
-			pri = 0
-		case "1":
-			pri = 1
-		case "2":
-			pri = 2
-		case "3":
-			pri = 3
-		case "4":
-			pri = 4
-		}
-		return NewBeadCmd(anvilPath, m.formTitle, m.formDescription, m.formType, pri)
+		return NewBeadCmd(anvilPath, m.formTitle, m.formDescription, m.formType, parsePriority(m.formPriority))
 
 	case FormEditBead:
 		if m.formTarget == nil {
@@ -347,20 +352,7 @@ func (m *Model) executeFormAction() tea.Cmd {
 				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil for bead %s: %s", m.formTarget.ID, m.formTarget.Anvil)}
 			}
 		}
-		pri := 2
-		switch m.formPriority {
-		case "0":
-			pri = 0
-		case "1":
-			pri = 1
-		case "2":
-			pri = 2
-		case "3":
-			pri = 3
-		case "4":
-			pri = 4
-		}
-		return UpdatePriorityCmd(anvilPath, m.formTarget.ID, pri)
+		return UpdatePriorityCmd(anvilPath, m.formTarget.ID, parsePriority(m.formPriority))
 
 	case FormComment:
 		if m.formTarget == nil || m.formNotes == "" {
@@ -375,7 +367,7 @@ func (m *Model) executeFormAction() tea.Cmd {
 		return AppendNotesCmd(anvilPath, m.formTarget.ID, m.formNotes)
 
 	case FormNotes:
-		if m.formTarget == nil {
+		if m.formTarget == nil || m.formNotes == "" {
 			return nil
 		}
 		anvilPath, ok := m.anvils[m.formTarget.Anvil]
