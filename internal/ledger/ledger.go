@@ -42,6 +42,11 @@ const (
 	FormNewBead
 	FormEditBead
 	FormCloseBead
+	FormLabel
+	FormPriority
+	FormComment
+	FormNotes
+	FormAssign
 )
 
 // Model is the top-level Bubbletea model for the Ledger TUI.
@@ -75,6 +80,12 @@ type Model struct {
 	formPriority    string
 	formAnvil       string
 	formReason      string // close reason
+
+	// Form field bindings for metadata operations
+	formLabel       string // label name
+	formLabelAction string // "add" or "remove"
+	formNotes       string // comment/notes text
+	formAssignee    string // assignee username
 
 	// Toast notifications
 	toasts      []toast
@@ -134,6 +145,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openCloseBeadForm()
 			case "r":
 				return m, m.reopenSelectedBead()
+			case "p":
+				return m, m.openPriorityForm()
+			case "c":
+				return m, m.openCommentForm()
+			case "N":
+				return m, m.openNotesForm()
+			case "a":
+				return m, m.openAssignForm()
+			}
+			// "l" opens label form only in list view; in kanban it navigates lanes.
+			if msg.String() == "l" && m.view == ViewList {
+				return m, m.openLabelForm()
 			}
 		}
 
@@ -245,6 +268,26 @@ func (m *Model) clearForm() {
 	m.formPriority = ""
 	m.formAnvil = ""
 	m.formReason = ""
+	m.formLabel = ""
+	m.formLabelAction = ""
+	m.formNotes = ""
+	m.formAssignee = ""
+}
+
+// parsePriority converts a priority string ("0"–"4") to an int, defaulting to 2.
+func parsePriority(s string) int {
+	switch s {
+	case "0":
+		return 0
+	case "1":
+		return 1
+	case "3":
+		return 3
+	case "4":
+		return 4
+	default:
+		return 2
+	}
 }
 
 // executeFormAction dispatches the appropriate bd command based on the active form.
@@ -257,20 +300,7 @@ func (m *Model) executeFormAction() tea.Cmd {
 				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil: %s", m.formAnvil)}
 			}
 		}
-		pri := 2
-		switch m.formPriority {
-		case "0":
-			pri = 0
-		case "1":
-			pri = 1
-		case "2":
-			pri = 2
-		case "3":
-			pri = 3
-		case "4":
-			pri = 4
-		}
-		return NewBeadCmd(anvilPath, m.formTitle, m.formDescription, m.formType, pri)
+		return NewBeadCmd(anvilPath, m.formTitle, m.formDescription, m.formType, parsePriority(m.formPriority))
 
 	case FormEditBead:
 		if m.formTarget == nil {
@@ -299,6 +329,66 @@ func (m *Model) executeFormAction() tea.Cmd {
 			}
 		}
 		return CloseBeadCmd(anvilPath, m.formTarget.ID, m.formReason)
+
+	case FormLabel:
+		if m.formTarget == nil || m.formLabel == "" {
+			return nil
+		}
+		anvilPath, ok := m.anvils[m.formTarget.Anvil]
+		if !ok {
+			return func() tea.Msg {
+				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil for bead %s: %s", m.formTarget.ID, m.formTarget.Anvil)}
+			}
+		}
+		return UpdateLabelCmd(anvilPath, m.formTarget.ID, m.formLabel, m.formLabelAction == "remove")
+
+	case FormPriority:
+		if m.formTarget == nil {
+			return nil
+		}
+		anvilPath, ok := m.anvils[m.formTarget.Anvil]
+		if !ok {
+			return func() tea.Msg {
+				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil for bead %s: %s", m.formTarget.ID, m.formTarget.Anvil)}
+			}
+		}
+		return UpdatePriorityCmd(anvilPath, m.formTarget.ID, parsePriority(m.formPriority))
+
+	case FormComment:
+		if m.formTarget == nil || m.formNotes == "" {
+			return nil
+		}
+		anvilPath, ok := m.anvils[m.formTarget.Anvil]
+		if !ok {
+			return func() tea.Msg {
+				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil for bead %s: %s", m.formTarget.ID, m.formTarget.Anvil)}
+			}
+		}
+		return AppendNotesCmd(anvilPath, m.formTarget.ID, m.formNotes)
+
+	case FormNotes:
+		if m.formTarget == nil || m.formNotes == "" {
+			return nil
+		}
+		anvilPath, ok := m.anvils[m.formTarget.Anvil]
+		if !ok {
+			return func() tea.Msg {
+				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil for bead %s: %s", m.formTarget.ID, m.formTarget.Anvil)}
+			}
+		}
+		return UpdateNotesCmd(anvilPath, m.formTarget.ID, m.formNotes)
+
+	case FormAssign:
+		if m.formTarget == nil {
+			return nil
+		}
+		anvilPath, ok := m.anvils[m.formTarget.Anvil]
+		if !ok {
+			return func() tea.Msg {
+				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil for bead %s: %s", m.formTarget.ID, m.formTarget.Anvil)}
+			}
+		}
+		return UpdateAssigneeCmd(anvilPath, m.formTarget.ID, m.formAssignee)
 	}
 	return nil
 }
@@ -450,6 +540,133 @@ func (m *Model) reopenSelectedBead() tea.Cmd {
 		return nil
 	}
 	return ReopenBeadCmd(anvilPath, b.ID)
+}
+
+// openLabelForm creates and displays the label manager form for the selected bead.
+func (m *Model) openLabelForm() tea.Cmd {
+	b := m.selectedBead()
+	if b == nil {
+		return nil
+	}
+
+	m.formTarget = b
+	m.formLabel = ""
+	m.formLabelAction = "add"
+
+	m.activeForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title(fmt.Sprintf("Label for %s", b.ID)).
+				Placeholder("label name").
+				Value(&m.formLabel),
+			huh.NewSelect[string]().
+				Title("Action").
+				Options(
+					huh.NewOption("Add label", "add"),
+					huh.NewOption("Remove label", "remove"),
+				).
+				Value(&m.formLabelAction),
+		),
+	).WithShowHelp(false).WithShowErrors(false)
+
+	m.activeFormKind = FormLabel
+	return m.activeForm.Init()
+}
+
+// openPriorityForm creates and displays the priority changer form for the selected bead.
+func (m *Model) openPriorityForm() tea.Cmd {
+	b := m.selectedBead()
+	if b == nil {
+		return nil
+	}
+
+	m.formTarget = b
+	m.formPriority = fmt.Sprintf("%d", b.Priority)
+
+	m.activeForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(fmt.Sprintf("Priority for %s", b.ID)).
+				Options(
+					huh.NewOption("P0 — Critical", "0"),
+					huh.NewOption("P1 — High", "1"),
+					huh.NewOption("P2 — Medium", "2"),
+					huh.NewOption("P3 — Low", "3"),
+					huh.NewOption("P4 — Backlog", "4"),
+				).
+				Value(&m.formPriority),
+		),
+	).WithShowHelp(false).WithShowErrors(false)
+
+	m.activeFormKind = FormPriority
+	return m.activeForm.Init()
+}
+
+// openCommentForm creates and displays the comment textarea overlay for the selected bead.
+func (m *Model) openCommentForm() tea.Cmd {
+	b := m.selectedBead()
+	if b == nil {
+		return nil
+	}
+
+	m.formTarget = b
+	m.formNotes = ""
+
+	m.activeForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewText().
+				Title(fmt.Sprintf("Add comment to %s", b.ID)).
+				Value(&m.formNotes),
+		),
+	).WithShowHelp(false).WithShowErrors(false)
+
+	m.activeFormKind = FormComment
+	return m.activeForm.Init()
+}
+
+// openNotesForm creates and displays the notes editor overlay for the selected bead.
+func (m *Model) openNotesForm() tea.Cmd {
+	b := m.selectedBead()
+	if b == nil {
+		return nil
+	}
+
+	m.formTarget = b
+	m.formNotes = ""
+
+	m.activeForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewText().
+				Title(fmt.Sprintf("Edit notes for %s", b.ID)).
+				Value(&m.formNotes),
+		),
+	).WithShowHelp(false).WithShowErrors(false)
+
+	m.activeFormKind = FormNotes
+	return m.activeForm.Init()
+}
+
+// openAssignForm creates and displays the assignee input form for the selected bead.
+func (m *Model) openAssignForm() tea.Cmd {
+	b := m.selectedBead()
+	if b == nil {
+		return nil
+	}
+
+	m.formTarget = b
+	m.formAssignee = b.Assignee
+
+	m.activeForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title(fmt.Sprintf("Assign %s", b.ID)).
+				Placeholder("username (empty to unassign)").
+				Value(&m.formAssignee),
+		),
+	).WithShowHelp(false).WithShowErrors(false)
+
+	m.activeFormKind = FormAssign
+	return m.activeForm.Init()
 }
 
 // driveHuhForm updates a huh form and returns the resulting command for
