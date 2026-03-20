@@ -1305,3 +1305,50 @@ rules:
         Verify that completion or summary events are emitted even when the effective result count is zero (e.g., all duplicates, all filtered). Silent early returns on zero-result paths make successful queue draining invisible in the event log and break observability contracts.
       source: copilot:PR#362
       added: "2026-03-20"
+    - id: no-sleep-in-tests
+      category: testing
+      pattern: time.Sleep used in tests to wait for goroutine or background loop side effects
+      check: >-
+        Tests must not use fixed time.Sleep delays for synchronization with background goroutines. Use deterministic synchronization instead: require.Eventually polling, test-only hooks, or channels to signal that the expected state change was processed.
+      source: copilot:PR#366
+      added: "2026-03-20"
+    - id: disable-background-worker-fully
+      category: concurrency
+      pattern: >-
+        A background worker/goroutine with a ticker is disabled via config toggle but only its data/state is cleared without stopping the ticker loop
+      check: >-
+        When a feature-flag or config toggle disables a background worker, verify that the ticker/loop is also paused or stopped — not just the worker's data cleared. Otherwise the goroutine continues waking up on its schedule, performing no-op work, and potentially logging spurious errors for stale state.
+      source: copilot:PR#366
+      added: "2026-03-20"
+    - id: hot-reload-change-detection-gate
+      category: other
+      pattern: >-
+        Code that updates runtime behavior inside a function guarded by a change-detection early return
+      check: >-
+        Verify that settings updates requiring hot-reload are not placed inside functions that short-circuit when an unrelated subset of config is unchanged. Each independently-configurable feature should either have its own change-detection gate or be placed on a reload path that always executes.
+      source: copilot:PR#366
+      added: "2026-03-20"
+    - id: hot-reload-aware-worker-init
+      category: concurrency
+      pattern: >-
+        Worker or goroutine creation gated by both an enabled flag AND a secondary config value at startup
+      check: >-
+        Verify that conditionally-started workers are created when enabled regardless of scheduling parameters, so hot-reload can later start/stop them when config values change at runtime
+      source: copilot:PR#366
+      added: "2026-03-20"
+    - id: hot-reload-ticker-zero-interval
+      category: concurrency
+      pattern: >-
+        A ticker or periodic scheduler that accepts an interval value which can be changed at runtime (e.g., via hot-reload)
+      check: >-
+        Verify that setting the interval to zero or a negative value actually pauses/stops the ticker rather than being silently ignored, and that the ticker can be re-enabled when a positive value is later provided
+      source: copilot:PR#366
+      added: "2026-03-20"
+    - id: non-blocking-channel-send
+      category: concurrency
+      pattern: >-
+        Channel send operations in functions that may be called concurrently, especially using select with default branch followed by unconditional send
+      check: >-
+        Verify that channel send operations cannot block under concurrent callers. If a function is intended to be non-blocking and called from multiple goroutines, ensure all channel sends use non-blocking select patterns or are serialized with a mutex to prevent goroutine blocking when the channel buffer is full.
+      source: copilot:PR#366
+      added: "2026-03-20"
