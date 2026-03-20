@@ -1234,3 +1234,27 @@ rules:
         Verify that the stated count in PR metadata (title, description, commit message) actually matches the diff — e.g. if it says 'learn 1 new rule' confirm exactly 1 new rule entry was added, not just an edit to an existing one
       source: copilot:PR#349
       added: "2026-03-20"
+    - id: warden-source-field-wording
+      category: style
+      pattern: Warden rule check text or description references 'source list' or treats the source field as a YAML list
+      check: Verify that warden rule text refers to 'source field' or 'comma-separated PR attributions' rather than 'source list', since the source value in warden-rules.yaml is a single scalar string (often comma-separated), not a YAML list
+      source: copilot:PR#337
+      added: "2026-03-20"
+    - id: deduplicate-overlapping-warden-rules
+      category: other
+      pattern: New warden rule being added to warden-rules.yaml that covers the same concern as an existing rule
+      check: Before adding a new warden rule, check if an existing rule already covers the same or overlapping concern. If so, update the existing rule's source field to include the new PR reference instead of creating a duplicate entry.
+      source: copilot:PR#337
+      added: "2026-03-20"
+    - id: consolidate-duplicate-warden-rules
+      category: other
+      pattern: New warden rule being added to .forge/warden-rules.yaml that substantially duplicates or overlaps an existing rule's intent, pattern, or check
+      check: Before adding a new warden rule, search existing rules for substantial overlap in intent, pattern, or check. If a matching rule already exists, consolidate by updating that rule (e.g. extending its pattern/check scope or appending the new PR to its source list) instead of creating a separate, redundant entry.
+      source: copilot:PR#337
+      added: "2026-03-20"
+    - id: pr-description-matches-diff-count
+      category: other
+      pattern: PR description or title claims a specific count of items added, changed, or removed
+      check: Verify that the stated count in the PR title/description matches the actual number of additions, changes, or removals in the diff. If the count is wrong, flag the mismatch and ask the author to either correct the description or include the missing items.
+      source: copilot:PR#337
+      added: "2026-03-20"
