@@ -727,8 +727,8 @@ rules:
       added: "2026-03-20"
     - id: unused-declarations
       category: style
-      pattern: Type, variable, or import declarations that are not referenced anywhere in the surrounding code
-      check: Verify that all declared types, variables, and imports are actually used — Go treats unused declarations as compilation errors
+      pattern: Unused imports or local variables in Go code that are not referenced anywhere in the surrounding function or file
+      check: Verify that all imports and local variables in Go files are actually used — Go treats unused imports and unused local variables as compilation errors, but package-level declarations and types may be intentionally unused and should not be auto-flagged by this rule
       source: copilot:PR#320
       added: "2026-03-20"
     - id: bd-list-missing-limit
