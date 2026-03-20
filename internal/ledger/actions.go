@@ -100,9 +100,15 @@ func ReopenBeadCmd(anvilPath, beadID string) tea.Cmd {
 }
 
 // extractIDFromJSON does a best-effort extraction of the "id" field from
-// bd create --json output. Returns empty string on failure.
+// bd create --json output. The output may be a JSON array (e.g. [{"id":...}])
+// or a plain object. Returns empty string on failure.
 func extractIDFromJSON(data []byte) string {
-	// Simple approach: unmarshal into a Bead struct.
+	// Try as array first — bd --json typically wraps results in an array.
+	var arr []Bead
+	if err := json.Unmarshal(data, &arr); err == nil && len(arr) > 0 {
+		return arr[0].ID
+	}
+	// Fall back to single object.
 	var b Bead
 	if err := json.Unmarshal(data, &b); err != nil {
 		return ""

@@ -11,9 +11,19 @@ func TestExtractIDFromJSON(t *testing.T) {
 		want string
 	}{
 		{
-			name: "valid json",
+			name: "valid json object",
 			data: `{"id":"Forge-abc1","title":"Test","status":"open"}`,
 			want: "Forge-abc1",
+		},
+		{
+			name: "json array wrapper",
+			data: `[{"id":"Forge-xyz9","title":"Test","status":"open"}]`,
+			want: "Forge-xyz9",
+		},
+		{
+			name: "empty array",
+			data: `[]`,
+			want: "",
 		},
 		{
 			name: "empty json",

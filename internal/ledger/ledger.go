@@ -4,7 +4,6 @@ package ledger
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 	"time"
 
@@ -441,7 +440,10 @@ func (m *Model) reopenSelectedBead() tea.Cmd {
 	return ReopenBeadCmd(anvilPath, b.ID)
 }
 
-// driveHuhForm updates a huh form and synchronously drives internal messages.
+// driveHuhForm updates a huh form and returns the resulting command for
+// bubbletea's runtime to execute. This is the standard huh embedding pattern —
+// bubbletea handles cmd execution and delivers resulting messages back through
+// Update, avoiding goroutine leaks from manual sync driving.
 func (m *Model) driveHuhForm(form **huh.Form, msg tea.Msg) tea.Cmd {
 	f, cmd := (*form).Update(msg)
 	if f != nil {
@@ -449,75 +451,7 @@ func (m *Model) driveHuhForm(form **huh.Form, msg tea.Msg) tea.Cmd {
 			*form = hf
 		}
 	}
-	return m.driveHuhSync(form, cmd)
-}
-
-// driveHuhSync recursively drives internal commands produced by a huh form.
-func (m *Model) driveHuhSync(form **huh.Form, cmd tea.Cmd) tea.Cmd {
-	if cmd == nil || (*form).State != huh.StateNormal {
-		return cmd
-	}
-
-	var pendingCmds []tea.Cmd
-	pendingCmds = append(pendingCmds, cmd)
-	var externalCmds []tea.Cmd
-
-	for len(pendingCmds) > 0 {
-		currentCmd := pendingCmds[0]
-		pendingCmds = pendingCmds[1:]
-
-		if currentCmd == nil {
-			continue
-		}
-
-		var nextMsg tea.Msg
-		done := make(chan tea.Msg, 1)
-		go func(c tea.Cmd) { done <- c() }(currentCmd)
-		select {
-		case nextMsg = <-done:
-		case <-time.After(2 * time.Millisecond):
-			externalCmds = append(externalCmds, currentCmd)
-			continue
-		}
-		if nextMsg == nil {
-			continue
-		}
-
-		if batch, ok := nextMsg.(tea.BatchMsg); ok {
-			for _, bc := range batch {
-				if bc != nil {
-					pendingCmds = append(pendingCmds, bc)
-				}
-			}
-			continue
-		}
-
-		typ := reflect.TypeOf(nextMsg)
-		pkg := typ.PkgPath()
-		if !strings.Contains(pkg, "charmbracelet/huh") && !strings.Contains(pkg, "charmbracelet/bubbletea") {
-			msg := nextMsg
-			externalCmds = append(externalCmds, func() tea.Msg { return msg })
-			continue
-		}
-
-		f, newCmd := (*form).Update(nextMsg)
-		if f != nil {
-			if hf, ok := f.(*huh.Form); ok {
-				*form = hf
-			}
-		}
-		if newCmd != nil {
-			pendingCmds = append(pendingCmds, newCmd)
-		}
-		if (*form).State != huh.StateNormal {
-			break
-		}
-	}
-
-	if len(externalCmds) > 0 {
-		return tea.Batch(externalCmds...)
-	}
-	return nil
+	return cmd
 }
 
 // View renders the current state.
