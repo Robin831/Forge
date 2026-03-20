@@ -761,3 +761,33 @@ rules:
       check: Verify that every file, component, or artifact mentioned in the PR description is actually included in the changeset. If something listed is not shipped, either add it or update the description to match what is actually being delivered.
       source: copilot:PR#320
       added: "2026-03-20"
+    - id: abort-path-cleanup
+      category: ui
+      pattern: Handling abort/cancel in Bubble Tea form or prompt updates
+      check: "When a form or prompt is aborted, verify that: (1) the cmd returned from the sub-model's Update is propagated (not replaced with nil), and (2) any related selection state is cleared to avoid stale values on the next interaction"
+      source: copilot:PR#323
+      added: "2026-03-20"
+    - id: global-quit-key-overlay
+      category: ui
+      pattern: TUI Update() method with overlay/form active guards that intercept key messages before global quit handling
+      check: Verify that ctrl+c is handled as a global quit key BEFORE any overlay/form-specific key handling, so users always have an escape hatch even when modals, sort selectors, or other overlays are active
+      source: copilot:PR#323
+      added: "2026-03-20"
+    - id: tui-row-height-calc
+      category: ui
+      pattern: Calculating available row/content height by subtracting a hardcoded constant from total height in a TUI layout
+      check: Verify the subtracted constant matches the actual number of fixed-height elements (headers, footers, status bars, padding). Count each rendered line outside the dynamic content area and confirm the arithmetic leaves no unaccounted blank space or clipped rows. Prefer computing from actual rendered heights (e.g., lipgloss.Height) over magic numbers.
+      source: copilot:PR#323
+      added: "2026-03-20"
+    - id: deterministic-sort-tiebreakers
+      category: ui
+      pattern: Sort/comparison functions that only compare a single key, especially when input order may be nondeterministic (e.g., data from concurrent goroutines, maps, or unordered sources)
+      check: Verify that sort comparators include deterministic tie-breaker fields (e.g., secondary sort by timestamp, then by unique ID) so that equal-key items render in a stable, predictable order across refreshes
+      source: copilot:PR#323
+      added: "2026-03-20"
+    - id: visual-width-not-rune-count
+      category: ui
+      pattern: String truncation or padding functions that use len(), utf8.RuneCountInString(), or range-loop rune counting to measure display width
+      check: Verify that terminal column width is calculated using visual-width-aware helpers (e.g. lipgloss.Width or runewidth) rather than rune count, since CJK characters and emoji occupy 2 columns and combining marks occupy 0
+      source: copilot:PR#323
+      added: "2026-03-20"
