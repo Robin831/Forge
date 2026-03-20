@@ -35,6 +35,7 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
+	"github.com/Robin831/Forge/internal/questgiver"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/vcs"
@@ -127,6 +128,9 @@ type Daemon struct {
 
 	// Vulnerability scanning
 	vulnScanner *vulncheck.Scanner
+
+	// QuestGiver monitor (E2E quest execution)
+	questgiverMonitor *questgiver.Monitor
 
 	// Teams notifications (nil = disabled). Uses atomic.Pointer so the hot-reload
 	// callback can swap in a new Notifier without a mutex while concurrent
@@ -682,6 +686,25 @@ func (d *Daemon) Run(ctx context.Context) error {
 		go d.vulnScanner.RunScheduled(ctx, d.config().Settings.VulncheckInterval)
 	} else {
 		d.logger.Info("vulncheck disabled via configuration (vulncheck_enabled: false)")
+	}
+
+	// Start QuestGiver monitor (if enabled)
+	if d.config().Settings.IsQuestgiverEnabled() {
+		qgAnvils := filterQuestgiverAnvils(monitorAnvils, d.cfg.Load().Anvils)
+		for name := range monitorAnvils {
+			if _, ok := qgAnvils[name]; !ok {
+				d.logger.Info("Skipping anvil for questgiver (questgiver_enabled=false)", "anvil", name)
+			}
+		}
+		d.questgiverMonitor = questgiver.New(d.db,
+			d.config().Settings.QuestgiverInterval,
+			d.config().Settings.AdventurerTimeout,
+			qgAnvils, nil)
+		go func() {
+			if err := d.questgiverMonitor.Run(ctx); err != nil && err != context.Canceled {
+				d.logger.Error("QuestGiver monitor error", "error", err)
+			}
+		}()
 	}
 
 	for {
@@ -4080,6 +4103,13 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 		d.depcheckScanner.UpdateAnvilPaths(depcheckPaths)
 		d.logger.Info("updated depcheck anvil paths", "count", len(depcheckPaths))
 	}
+
+	// Update questgiver monitor (filter by questgiver_enabled)
+	if d.questgiverMonitor != nil {
+		qgPaths := filterQuestgiverAnvils(paths, new.Anvils)
+		d.questgiverMonitor.UpdateAnvilPaths(qgPaths)
+		d.logger.Info("updated questgiver anvil paths", "count", len(qgPaths))
+	}
 }
 
 // buildDispatcher constructs a new *notify.WebhookDispatcher from the given
@@ -4178,6 +4208,21 @@ func filterDepcheckAnvils(anvils map[string]string, anvilCfgs map[string]config.
 	result := make(map[string]string, len(anvils))
 	for name, path := range anvils {
 		if ac, ok := anvilCfgs[name]; ok && ac.DepcheckEnabled != nil && !*ac.DepcheckEnabled {
+			continue
+		}
+		result[name] = path
+	}
+	return result
+}
+
+// filterQuestgiverAnvils returns the subset of anvils that should be monitored
+// by the QuestGiver. Anvils with QuestgiverEnabled explicitly set to false are
+// excluded. When the per-anvil setting is nil (unset), the anvil is included
+// (the global IsQuestgiverEnabled gate has already been checked by the caller).
+func filterQuestgiverAnvils(anvils map[string]string, anvilCfgs map[string]config.AnvilConfig) map[string]string {
+	result := make(map[string]string, len(anvils))
+	for name, path := range anvils {
+		if ac, ok := anvilCfgs[name]; ok && ac.QuestgiverEnabled != nil && !*ac.QuestgiverEnabled {
 			continue
 		}
 		result[name] = path

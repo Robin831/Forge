@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -36,6 +37,7 @@ type Monitor struct {
 	db       *state.DB
 	interval time.Duration
 	timeout  time.Duration
+	mu       sync.RWMutex
 	anvils   map[string]string // name -> path
 	logger   *slog.Logger
 	newExec  func() QuestExecutor
@@ -58,6 +60,18 @@ func New(db *state.DB, interval, timeout time.Duration, anvils map[string]string
 		logger:   slog.Default(),
 		newExec:  newExec,
 	}
+}
+
+// UpdateAnvilPaths replaces the set of anvils the monitor polls.
+// Safe to call concurrently with Run.
+func (m *Monitor) UpdateAnvilPaths(paths map[string]string) {
+	copied := make(map[string]string, len(paths))
+	for k, v := range paths {
+		copied[k] = v
+	}
+	m.mu.Lock()
+	m.anvils = copied
+	m.mu.Unlock()
 }
 
 type nopExecutor struct{}
@@ -87,7 +101,14 @@ func (m *Monitor) Run(ctx context.Context) error {
 
 // scan iterates all anvils, discovers quests, and executes them.
 func (m *Monitor) scan(ctx context.Context) {
-	for anvilName, anvilPath := range m.anvils {
+	m.mu.RLock()
+	anvils := make(map[string]string, len(m.anvils))
+	for k, v := range m.anvils {
+		anvils[k] = v
+	}
+	m.mu.RUnlock()
+
+	for anvilName, anvilPath := range anvils {
 		if ctx.Err() != nil {
 			return
 		}

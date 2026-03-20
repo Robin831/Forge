@@ -59,6 +59,18 @@ type AnvilConfig struct {
 	// anvil for outdated dependencies. When nil (default), depcheck runs
 	// as normal (opt-out). Set to false to skip this anvil entirely.
 	DepcheckEnabled *bool `mapstructure:"depcheck_enabled" yaml:"depcheck_enabled,omitempty"`
+	// QuestgiverEnabled controls whether the QuestGiver monitor runs
+	// quests for this anvil. When nil (default), the global setting is used.
+	// Set to false to skip this anvil entirely.
+	QuestgiverEnabled *bool `mapstructure:"questgiver_enabled" yaml:"questgiver_enabled,omitempty"`
+	// QuestgiverBaseURL is the base URL for quest API endpoints for this anvil.
+	QuestgiverBaseURL string `mapstructure:"questgiver_base_url" yaml:"questgiver_base_url,omitempty"`
+	// QuestgiverSetupCmd is a shell command to run before executing quests
+	// for this anvil (e.g. starting a local server).
+	QuestgiverSetupCmd string `mapstructure:"questgiver_setup_cmd" yaml:"questgiver_setup_cmd,omitempty"`
+	// QuestgiverTeardownCmd is a shell command to run after executing quests
+	// for this anvil (e.g. stopping a local server).
+	QuestgiverTeardownCmd string `mapstructure:"questgiver_teardown_cmd" yaml:"questgiver_teardown_cmd,omitempty"`
 	// AutoMerge enables automatic merging of PRs when they reach the
 	// ready-to-merge state (CI passing, no conflicts, no unresolved
 	// threads, no pending reviews). External PRs (ext-*) are never
@@ -203,6 +215,16 @@ type SettingsConfig struct {
 	// validation. Only used when CopilotCombinedSmithWarden is true.
 	// Default: 0.1 (10%).
 	CopilotWardenSampleRate float64 `mapstructure:"copilot_warden_sample_rate" yaml:"copilot_warden_sample_rate"`
+	// QuestgiverEnabled controls whether the QuestGiver monitor is active
+	// globally. When nil (default), QuestGiver is disabled. Set to true to
+	// enable scheduled quest execution.
+	QuestgiverEnabled *bool `mapstructure:"questgiver_enabled" yaml:"questgiver_enabled,omitempty"`
+	// QuestgiverInterval is how often the QuestGiver monitor polls anvils
+	// for quests to execute. Defaults to 24h (daily).
+	QuestgiverInterval time.Duration `mapstructure:"questgiver_interval" yaml:"questgiver_interval,omitempty"`
+	// AdventurerTimeout is the maximum time allowed for a single quest
+	// execution. Defaults to 5 minutes.
+	AdventurerTimeout time.Duration `mapstructure:"adventurer_timeout" yaml:"adventurer_timeout,omitempty"`
 }
 
 // durationString returns the duration string, or omits zero values.
@@ -252,6 +274,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WardenFullRereview          bool    `yaml:"warden_full_rereview"`
 		CopilotCombinedSmithWarden  bool    `yaml:"copilot_combined_smith_warden"`
 		CopilotWardenSampleRate     float64 `yaml:"copilot_warden_sample_rate"`
+		QuestgiverEnabled           *bool   `yaml:"questgiver_enabled,omitempty"`
+		QuestgiverInterval          string  `yaml:"questgiver_interval,omitempty"`
+		AdventurerTimeout           string  `yaml:"adventurer_timeout,omitempty"`
 	}
 
 	sh := shadow{
@@ -288,6 +313,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WardenFullRereview:          s.WardenFullRereview,
 		CopilotCombinedSmithWarden:  s.CopilotCombinedSmithWarden,
 		CopilotWardenSampleRate:     s.CopilotWardenSampleRate,
+		QuestgiverEnabled:           s.QuestgiverEnabled,
 	}
 
 	// Only include non-zero optional durations.
@@ -302,6 +328,12 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	}
 	if s.VulncheckTimeout > 0 {
 		sh.VulncheckTimeout = durationString(s.VulncheckTimeout)
+	}
+	if s.QuestgiverInterval > 0 {
+		sh.QuestgiverInterval = durationString(s.QuestgiverInterval)
+	}
+	if s.AdventurerTimeout > 0 {
+		sh.AdventurerTimeout = durationString(s.AdventurerTimeout)
 	}
 
 	return sh, nil
@@ -322,6 +354,15 @@ func (s SettingsConfig) IsAutoMergeCrucibleChildren() bool {
 		return true
 	}
 	return *s.AutoMergeCrucibleChildren
+}
+
+// IsQuestgiverEnabled returns true only when questgiver_enabled is explicitly true.
+// Defaults to false (nil = disabled).
+func (s SettingsConfig) IsQuestgiverEnabled() bool {
+	if s.QuestgiverEnabled == nil {
+		return false
+	}
+	return *s.QuestgiverEnabled
 }
 
 // TeamsNotificationConfig holds configuration for the MS Teams webhook.
@@ -407,6 +448,8 @@ func Defaults() Config {
 			DepcheckTimeout:      5 * time.Minute,
 			VulncheckInterval:    24 * time.Hour,
 			VulncheckTimeout:     10 * time.Minute,
+			QuestgiverInterval: 24 * time.Hour,
+			AdventurerTimeout:  5 * time.Minute,
 			// Copilot combined Smith+Warden mode settings.
 			CopilotWardenSampleRate: 0.1,
 		},
@@ -437,6 +480,8 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.vulncheck_interval", "24h")
 	v.SetDefault("settings.vulncheck_timeout", "10m")
 	v.SetDefault("settings.vulncheck_enabled", true)
+	v.SetDefault("settings.questgiver_interval", "24h")
+	v.SetDefault("settings.adventurer_timeout", "5m")
 	v.SetDefault("settings.copilot_warden_sample_rate", 0.1)
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
@@ -546,6 +591,20 @@ func Load(configFile string) (*Config, error) {
 			return nil, fmt.Errorf("invalid vulncheck_timeout %q: %w", raw, err)
 		}
 		cfg.Settings.VulncheckTimeout = d
+	}
+	if raw := v.GetString("settings.questgiver_interval"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid questgiver_interval %q: %w", raw, err)
+		}
+		cfg.Settings.QuestgiverInterval = d
+	}
+	if raw := v.GetString("settings.adventurer_timeout"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid adventurer_timeout %q: %w", raw, err)
+		}
+		cfg.Settings.AdventurerTimeout = d
 	}
 
 	return &cfg, nil
