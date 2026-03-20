@@ -5,6 +5,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -218,6 +219,46 @@ func TestRenderCard(t *testing.T) {
 	assert.Contains(t, card, "Forge-abc1")
 	assert.Contains(t, card, "Fix the broken build")
 	assert.Contains(t, card, "heimdall")
+}
+
+func TestMoveBeadDoesNotCorruptSourceLane(t *testing.T) {
+	m := &Model{
+		width:  80,
+		height: 24,
+		view:   ViewKanban,
+		anvils: map[string]string{"test": "/tmp/test"},
+	}
+	m.kanban.lanes[LaneOpen] = []Bead{
+		{ID: "a", Anvil: "test"},
+		{ID: "b", Anvil: "test"},
+		{ID: "c", Anvil: "test"},
+	}
+
+	// Keep a reference to the original backing array via a snapshot of element values.
+	origIDs := []string{"a", "b", "c"}
+
+	// Select "b" (index 1) and move it right.
+	m.kanban.laneVP[LaneOpen].ScrollDown(3) // cursor → 1
+	_ = m.moveBeadToLane(LaneInProgress)
+
+	// Source lane should have [a, c] — verify no corruption.
+	require.Len(t, m.kanban.lanes[LaneOpen], 2)
+	assert.Equal(t, origIDs[0], m.kanban.lanes[LaneOpen][0].ID)
+	assert.Equal(t, origIDs[2], m.kanban.lanes[LaneOpen][1].ID)
+
+	// Target lane should have [b].
+	require.Len(t, m.kanban.lanes[LaneInProgress], 1)
+	assert.Equal(t, "b", m.kanban.lanes[LaneInProgress][0].ID)
+}
+
+func TestWrapTitleRuneSafe(t *testing.T) {
+	// Multi-byte characters should not be split mid-rune.
+	lines := wrapTitle("日本語のタイトル", 10)
+	require.NotEmpty(t, lines)
+	for _, l := range lines {
+		// Each line should be valid and within width.
+		assert.LessOrEqual(t, lipgloss.Width(l), 10)
+	}
 }
 
 func TestRenderCardBlocked(t *testing.T) {

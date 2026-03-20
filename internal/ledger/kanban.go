@@ -171,7 +171,11 @@ func (m *Model) moveBeadToLane(targetLane int) tea.Cmd {
 	}
 
 	// Optimistically move the bead in the UI.
-	m.kanban.lanes[lane] = append(beads[:cursor], beads[cursor+1:]...)
+	// Build a new slice to avoid mutating the original backing array.
+	newLane := make([]Bead, 0, len(beads)-1)
+	newLane = append(newLane, beads[:cursor]...)
+	newLane = append(newLane, beads[cursor+1:]...)
+	m.kanban.lanes[lane] = newLane
 	m.kanban.laneVP[lane].ClampToTotal(len(m.kanban.lanes[lane]))
 	b.Status = targetStatus
 	if targetLane == LaneInReview {
@@ -216,8 +220,15 @@ func (m *Model) renderKanban() string {
 
 	// Lane dimensions
 	laneWidth := m.kanbanLaneWidth()
-	// Available height: total - header(1) - detail(3) - footer(1) - lane_header(1)
-	cardAreaHeight := max(m.height-6, 3)
+	// Reserve vertical space for chrome around the card area.
+	const (
+		headerLines     = 1 // top header row
+		detailLines     = 3 // bottom detail preview
+		footerLines     = 1 // footer help line
+		laneHeaderLines = 1 // per-lane column header
+	)
+	chromeHeight := headerLines + detailLines + footerLines + laneHeaderLines
+	cardAreaHeight := max(m.height-chromeHeight, 3)
 	// Each card is 4 lines tall (priority+ID, title line 1, title line 2/anvil, blank separator).
 	cardHeight := 4
 	visibleCards := max(cardAreaHeight/cardHeight, 1)
@@ -425,9 +436,17 @@ func wrapTitle(title string, width int) []string {
 		}
 	}
 
-	lines := []string{line1.String()}
+	l1 := line1.String()
+	if lipgloss.Width(l1) > width {
+		l1 = truncate(l1, width)
+	}
+	lines := []string{l1}
 	if line2.Len() > 0 {
-		lines = append(lines, truncate(line2.String(), width))
+		l2 := line2.String()
+		if lipgloss.Width(l2) > width {
+			l2 = truncate(l2, width)
+		}
+		lines = append(lines, l2)
 	}
 	return lines
 }
