@@ -911,3 +911,21 @@ rules:
       check: When updating a rule's source field (a comma-separated list of PR attributions), verify that existing PR attributions are preserved and new PRs are appended rather than replacing prior entries
       source: copilot:PR#332
       added: "2026-03-20"
+    - id: peer-dep-ecosystem-scope
+      category: other
+      pattern: Code that matches or groups dependencies across different package ecosystems (npm, Go, .NET) using a shared set or map
+      check: Verify that peer-dependency or cross-package relationship lookups are scoped to the correct ecosystem. A shared set containing packages from all ecosystems can incorrectly union unrelated packages that happen to share a name across ecosystems (e.g., an npm peer-dep name matching a Go module). Use ecosystem-specific sets for adjacency and dependency accounting.
+      source: copilot:PR#338
+      added: "2026-03-20"
+    - id: stable-map-iteration-order
+      category: ui
+      pattern: Functions that collect results by iterating over Go maps before returning slices or displaying output
+      check: Verify that slices built from map iteration are sorted before being returned, displayed, or compared in tests — unsorted map iteration produces nondeterministic ordering that causes unstable CLI/TUI output and flaky tests
+      source: copilot:PR#338
+      added: "2026-03-20"
+    - id: test-comment-accuracy
+      category: testing
+      pattern: Test case comments that describe expected behavior or edge cases
+      check: Verify that test case comments accurately describe the actual expected values and behavior being tested — misleading comments on test cases cause confusion about intended semantics
+      source: copilot:PR#338
+      added: "2026-03-20"
