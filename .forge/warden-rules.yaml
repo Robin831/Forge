@@ -893,3 +893,15 @@ rules:
       check: When testing visual-width truncation, use the same width-measurement function the implementation uses (e.g. lipgloss.Width()) rather than byte length (len()). Byte length can differ from visual width for multi-byte characters, ANSI sequences, and wide glyphs, making the assertion too loose or incorrect.
       source: copilot:PR#335
       added: "2026-03-20"
+    - id: test-backward-compat-unmarshalling
+      category: testing
+      pattern: Adding backward-compatible unmarshalling or parsing logic that accepts legacy/alternative input formats
+      check: Verify that unit tests exist covering the legacy/alternative input format, asserting that the parser correctly handles the old shape and produces the expected default values for any missing fields
+      source: copilot:PR#336
+      added: "2026-03-20"
+    - id: changelog-trailing-newline
+      category: style
+      pattern: Files in changelog.d/ directory
+      check: Verify that changelog fragment files end with a trailing blank line to maintain consistent formatting across all entries
+      source: copilot:PR#336
+      added: "2026-03-20"
