@@ -75,7 +75,7 @@ func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
 		for name, path := range anvils {
 			// Fetch open + in_progress beads
 			wg.Add(1)
-			go func() {
+			go func(name, path string) {
 				defer wg.Done()
 				out, err := bdExec(ctx, path, "list", "--status=open", "--status=in_progress", "--json")
 				if err != nil {
@@ -101,11 +101,11 @@ func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
 				mu.Lock()
 				allBeads = append(allBeads, beads...)
 				mu.Unlock()
-			}()
+			}(name, path)
 
 			// Fetch recently closed beads
 			wg.Add(1)
-			go func() {
+			go func(name, path string) {
 				defer wg.Done()
 				out, err := bdExec(ctx, path, "list", "--status=closed", "--json")
 				if err != nil {
@@ -129,7 +129,7 @@ func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
 				mu.Lock()
 				allBeads = append(allBeads, recent...)
 				mu.Unlock()
-			}()
+			}(name, path)
 		}
 		wg.Wait()
 
