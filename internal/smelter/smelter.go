@@ -72,24 +72,29 @@ func (s *Smelter) UpdateAnvilPaths(paths map[string]string) {
 }
 
 // UpdateInterval signals the Run loop to reset its ticker with d. If d <= 0
-// the ticker is effectively paused (the Run loop idles until a positive
-// interval is sent). Safe to call while Run is active.
+// the ticker is paused until a positive interval is sent. Safe to call
+// concurrently while Run is active.
 func (s *Smelter) UpdateInterval(d time.Duration) {
-	// Non-blocking send; if a previous value hasn't been consumed yet the
-	// latest one wins.
-	select {
-	case s.intervalCh <- d:
-	default:
-		// Drain the old value and send the new one.
+	// Loop until we successfully send d into the buffered channel (capacity 1).
+	// If the channel is full we drain the stale value first, then retry.
+	// This guarantees the latest value always wins without blocking callers.
+	for {
+		select {
+		case s.intervalCh <- d:
+			return
+		default:
+		}
+		// Channel is full — drain the stale value and retry.
 		select {
 		case <-s.intervalCh:
 		default:
 		}
-		s.intervalCh <- d
 	}
 }
 
 // Run starts the periodic flush loop. Blocks until ctx is canceled.
+// If interval <= 0 at startup, scheduled flushes are paused until
+// UpdateInterval is called with a positive value.
 func (s *Smelter) Run(ctx context.Context) error {
 	log.Printf("[smelter] Starting smelter (interval: %s)", s.interval)
 	_ = s.db.LogEvent(state.EventSmelterStarted,
@@ -100,14 +105,18 @@ func (s *Smelter) Run(ctx context.Context) error {
 		log.Printf("[smelter] Initial flush error: %v", err)
 	}
 
-	// If interval <= 0, scheduled runs are disabled; just wait for shutdown.
-	if s.interval <= 0 {
-		<-ctx.Done()
-		log.Println("[smelter] Shutting down smelter")
-		return ctx.Err()
+	// Create a ticker. If the initial interval is <= 0, use a placeholder
+	// duration and stop the ticker immediately so scheduled flushes are paused
+	// until a positive interval arrives via UpdateInterval.
+	startInterval := s.interval
+	if startInterval <= 0 {
+		startInterval = time.Hour // placeholder; stopped immediately below
 	}
-
-	ticker := time.NewTicker(s.interval)
+	ticker := time.NewTicker(startInterval)
+	if s.interval <= 0 {
+		ticker.Stop()
+		log.Println("[smelter] Scheduled flushes paused (interval <= 0); waiting for positive interval")
+	}
 	defer ticker.Stop()
 
 	for {
@@ -116,12 +125,15 @@ func (s *Smelter) Run(ctx context.Context) error {
 			log.Println("[smelter] Shutting down smelter")
 			return ctx.Err()
 		case newInterval := <-s.intervalCh:
+			s.mu.Lock()
+			s.interval = newInterval
+			s.mu.Unlock()
 			if newInterval > 0 {
 				log.Printf("[smelter] Interval changed to %s; resetting ticker", newInterval)
 				ticker.Reset(newInterval)
-				s.mu.Lock()
-				s.interval = newInterval
-				s.mu.Unlock()
+			} else {
+				log.Printf("[smelter] Interval set to <= 0; pausing ticker")
+				ticker.Stop()
 			}
 		case <-ticker.C:
 			if err := s.Flush(ctx); err != nil {

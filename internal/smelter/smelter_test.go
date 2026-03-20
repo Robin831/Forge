@@ -99,19 +99,15 @@ func TestUpdateInterval_ResetsTicker(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
 
-	// Give Run a moment to start.
-	time.Sleep(50 * time.Millisecond)
-
 	// Update the interval and verify it's stored.
 	s.UpdateInterval(4 * time.Hour)
 
-	// Wait for the Run loop to process the channel.
-	time.Sleep(50 * time.Millisecond)
-
-	s.mu.RLock()
-	got := s.interval
-	s.mu.RUnlock()
-	assert.Equal(t, 4*time.Hour, got)
+	// Wait deterministically for the Run loop to process the update.
+	require.Eventually(t, func() bool {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		return s.interval == 4*time.Hour
+	}, 2*time.Second, 10*time.Millisecond)
 
 	cancel()
 	<-done
