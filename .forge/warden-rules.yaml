@@ -638,14 +638,19 @@ rules:
     - id: test-comment-matches-behavior
       category: testing
       pattern: Test comments describing setup behavior (e.g., 'skip if set', 'restore after test') or test case comments describing expected values and edge cases
-      check: Verify that test comments accurately describe what the code actually does — e.g., if the comment says 'skip if set' but the code forcibly clears the value with t.Setenv, update the comment to say 'force env var to be unset'. Also verify that test case comments accurately describe the actual expected values and behavior being asserted — misleading comments cause confusion about intended semantics.
-      source: copilot:PR#286,PR#338
+      check: >-
+        Verify that test comments accurately describe what the code actually does — e.g., if the comment
+        says 'skip if set' but the code forcibly clears the value with t.Setenv, update the comment to say
+        'force env var to be unset'. Also verify that test case comments accurately describe the actual
+        expected values and behavior being asserted — misleading comments cause confusion about intended
+        semantics.
+      source: [copilot:PR#286, copilot:PR#338]
       added: "2026-03-16"
     - id: deduplicate-error-chain-sentinel-rules
       category: other
       pattern: Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
       check: Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: copilot:PR#285,PR#322,PR#324,PR#326,PR#328,PR#329,PR#331,PR#332,PR#334,PR#340
+      source: [copilot:PR#285, copilot:PR#322, copilot:PR#324, copilot:PR#326, copilot:PR#328, copilot:PR#329, copilot:PR#331, copilot:PR#334, copilot:PR#340]
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
@@ -872,8 +877,11 @@ rules:
     - id: sort-map-keys-for-stable-ui
       category: ui
       pattern: Building a slice from map iteration (e.g., ranging over a map to collect keys) and using that slice for display ordering, default selection, CLI/TUI output, or test comparisons
-      check: Verify that slices derived from map iteration are sorted before use in UI elements, option lists, default selections, CLI output, or test assertions — Go map iteration order is randomized and produces nondeterministic ordering that causes unstable output and flaky tests
-      source: copilot:PR#335,PR#338
+      check: >-
+        Verify that slices derived from map iteration are sorted before use in UI elements, option lists,
+        default selections, CLI output, or test assertions — Go map iteration order is randomized and
+        produces nondeterministic ordering that causes unstable output and flaky tests.
+      source: [copilot:PR#335, copilot:PR#338]
       added: "2026-03-20"
     - id: ansi-safe-toast-overlay
       category: ui

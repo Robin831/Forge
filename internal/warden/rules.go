@@ -13,14 +13,59 @@ import (
 // RulesFileName is the per-anvil file storing learned review rules.
 const RulesFileName = ".forge/warden-rules.yaml"
 
+// SourceList is a slice of source references. It YAML-marshals as a plain
+// scalar when there is exactly one element and as a flow sequence when there
+// are multiple, making multi-PR attribution programmatically accessible.
+// It unmarshals from either format for backward compatibility.
+type SourceList []string
+
+// String returns the sources joined by ", " for display purposes.
+func (sl SourceList) String() string {
+	return strings.Join(sl, ", ")
+}
+
+// MarshalYAML emits a plain scalar for a single source and a YAML flow
+// sequence for multiple sources.
+func (sl SourceList) MarshalYAML() (any, error) {
+	switch len(sl) {
+	case 0:
+		return "", nil
+	case 1:
+		return sl[0], nil
+	default:
+		node := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
+		for _, s := range sl {
+			node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: s})
+		}
+		return node, nil
+	}
+}
+
+// UnmarshalYAML reads either a scalar string or a YAML sequence into a SourceList.
+func (sl *SourceList) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		*sl = SourceList{value.Value}
+	case yaml.SequenceNode:
+		var list []string
+		if err := value.Decode(&list); err != nil {
+			return err
+		}
+		*sl = SourceList(list)
+	default:
+		return fmt.Errorf("unexpected YAML node kind for SourceList: %v", value.Kind)
+	}
+	return nil
+}
+
 // Rule represents a single learned review pattern.
 type Rule struct {
-	ID       string `yaml:"id"       json:"id"`
-	Category string `yaml:"category" json:"category"`
-	Pattern  string `yaml:"pattern"  json:"pattern"`
-	Check    string `yaml:"check"    json:"check"`
-	Source   string `yaml:"source"   json:"source"`
-	Added    string `yaml:"added"    json:"added"`
+	ID       string     `yaml:"id"       json:"id"`
+	Category string     `yaml:"category" json:"category"`
+	Pattern  string     `yaml:"pattern"  json:"pattern"`
+	Check    string     `yaml:"check"    json:"check"`
+	Source   SourceList `yaml:"source"   json:"source"`
+	Added    string     `yaml:"added"    json:"added"`
 }
 
 // needsQuoting returns true if a YAML scalar value needs explicit quoting
@@ -41,11 +86,16 @@ func needsQuoting(s string) bool {
 	return false
 }
 
-// MarshalYAML implements yaml.Marshaler for Rule, ensuring string values
-// containing special YAML characters (like ": ") are double-quoted.
+// MarshalYAML implements yaml.Marshaler for Rule, applying appropriate YAML
+// styles to string fields:
+//   - Scalars longer than 80 characters use a folded block scalar (>-) for
+//     readability and easier editing.
+//   - Shorter scalars that contain YAML-special sequences (": ", '"') or a
+//     comment-introducing '#' are double-quoted.
+//
 // It uses a type alias to get automatic field marshaling (so future fields
 // on Rule are included without updating this method), then post-processes
-// the resulting yaml.Node tree to apply quoting styles.
+// the resulting yaml.Node tree.
 func (r Rule) MarshalYAML() (any, error) {
 	type RuleAlias Rule
 	raw, err := yaml.Marshal(RuleAlias(r))
@@ -62,7 +112,12 @@ func (r Rule) MarshalYAML() (any, error) {
 	mapping := doc.Content[0]
 	for i := 1; i < len(mapping.Content); i += 2 {
 		vn := mapping.Content[i]
-		if vn.Kind == yaml.ScalarNode && needsQuoting(vn.Value) {
+		if vn.Kind != yaml.ScalarNode {
+			continue
+		}
+		if len(vn.Value) > 80 {
+			vn.Style = yaml.FoldedStyle
+		} else if needsQuoting(vn.Value) {
 			vn.Style = yaml.DoubleQuotedStyle
 		}
 	}
