@@ -119,6 +119,39 @@ func (s *Scanner) ScanAll(ctx context.Context) {
 	}
 }
 
+// ScanAnvilDeps runs all applicable ecosystem scanners for a single anvil and
+// returns the results without creating beads. This is used by the update-deps
+// CLI command where bead creation is not desired. Unlike scanAnvil, it does not
+// pull from the remote — the CLI should scan the working tree as-is.
+func (s *Scanner) ScanAnvilDeps(ctx context.Context, name, path string) []*CheckResult {
+	scanners := []struct {
+		name string
+		fn   func(ctx context.Context, anvil, path string) *CheckResult
+	}{
+		{"Go", s.scanGo},
+		{"NuGet", s.scanDotnet},
+		{"npm", s.scanNpm},
+	}
+
+	var results []*CheckResult
+	for _, sc := range scanners {
+		if ctx.Err() != nil {
+			return results
+		}
+		result := sc.fn(ctx, name, path)
+		if result == nil {
+			continue // ecosystem not present
+		}
+		if result.Error != nil {
+			log.Printf("[depcheck] Error checking %s (%s): %v", name, sc.name, result.Error)
+			// Return the errored result so the CLI can display the failure rather
+			// than silently treating the anvil as up to date.
+		}
+		results = append(results, result)
+	}
+	return results
+}
+
 // scanAnvil runs all applicable ecosystem scanners for a single anvil and
 // creates beads for any outdated dependencies found.
 func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
