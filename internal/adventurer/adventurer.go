@@ -40,7 +40,11 @@ type Executor struct {
 }
 
 // New creates an Executor with the given default timeout and logger.
+// If logger is nil, slog.Default() is used so that executeStep is always safe to call.
 func New(timeout time.Duration, logger *slog.Logger) *Executor {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Executor{
 		timeout: timeout,
 		logger:  logger,
@@ -50,6 +54,12 @@ func New(timeout time.Duration, logger *slog.Logger) *Executor {
 // Execute runs all steps of a quest in a headless Chrome browser and returns
 // the result. On the first step failure, execution stops immediately.
 func (e *Executor) Execute(ctx context.Context, quest *questgiver.Quest) *Result {
+	if quest == nil {
+		return &Result{
+			FailedStep:   -1,
+			ErrorMessage: "quest must not be nil",
+		}
+	}
 	start := time.Now()
 	result := &Result{
 		QuestName:   quest.Name,
@@ -68,7 +78,8 @@ func (e *Executor) Execute(ctx context.Context, quest *questgiver.Quest) *Result
 
 	browser := rod.New().ControlURL(controlURL)
 	if err := browser.Connect(); err != nil {
-		l.Kill() // Clean up the launched Chrome process on connect failure.
+		l.Kill()    // Terminate the Chrome process.
+		l.Cleanup() // Release temp profile dir and other launcher resources.
 		result.ErrorMessage = fmt.Sprintf("failed to connect to browser: %v", err)
 		result.Duration = time.Since(start)
 		return result

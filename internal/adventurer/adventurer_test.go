@@ -117,6 +117,7 @@ func launchBrowser(t *testing.T) (*rod.Browser, func()) {
 	browser := rod.New().ControlURL(controlURL)
 	if err := browser.Connect(); err != nil {
 		l.Kill()
+		l.Cleanup()
 		t.Skipf("failed to connect to browser: %v", err)
 	}
 	return browser, func() {
