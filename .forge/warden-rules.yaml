@@ -645,7 +645,7 @@ rules:
       category: other
       pattern: Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
       check: Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: copilot:PR#285,PR#322,PR#324,PR#326,PR#328,PR#329
+      source: copilot:PR#285,PR#322,PR#324,PR#326,PR#328,PR#331
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
@@ -856,10 +856,4 @@ rules:
       pattern: APIs or helper functions whose return types cannot clearly represent the three distinct states 'no results found', 'not applicable/unsupported', and 'error occurred' (for example, returning only an empty slice plus an error, or a bool+error that conflates these cases)
       check: When designing or reviewing scan/search/collection API signatures, ensure the return type can explicitly represent all three outcomes — 'no results found', 'not applicable/unsupported', and 'an error occurred' — for example via a dedicated status enum, sentinel values, or clearly documented nil/empty/error semantics. Callers must be able to report accurate status rather than collapsing different empty/failure states into a single generic result. This rule addresses API design and return-type representation; see distinguish-empty-from-error for the related concern of migrating an existing API to a tri-state contract.
       source: copilot:PR#329
-      added: "2026-03-20"
-    - id: deduplicate-warden-rules
-      category: other
-      pattern: Adding a new warden rule to .forge/warden-rules.yaml
-      check: Before adding a new rule, check existing rules for semantic overlap. If an existing rule already covers the same concern, update its source/attribution field instead of adding a duplicate entry.
-      source: copilot:PR#331
       added: "2026-03-20"
