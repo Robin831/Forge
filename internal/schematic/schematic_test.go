@@ -81,6 +81,19 @@ func TestParseVerdict_PlainFence(t *testing.T) {
 	assert.Equal(t, "Detailed desc B", v.SubTasks[1].Description)
 }
 
+func TestParseVerdict_LegacySubTasksStringArray(t *testing.T) {
+	output := "```\n" + `{"action":"decompose","sub_tasks":["Task A","Task B"],"reason":"Too large"}` + "\n```"
+
+	v, err := parseVerdict(output)
+	require.NoError(t, err)
+	assert.Equal(t, "decompose", v.Action)
+	require.Len(t, v.SubTasks, 2)
+	assert.Equal(t, "Task A", v.SubTasks[0].Title)
+	assert.Equal(t, "", v.SubTasks[0].Description)
+	assert.Equal(t, "Task B", v.SubTasks[1].Title)
+	assert.Equal(t, "", v.SubTasks[1].Description)
+}
+
 func TestParseVerdict_RawJSON(t *testing.T) {
 	output := `I think this needs decomposition.
 {"action":"clarify","reason":"Missing acceptance criteria"}
