@@ -650,7 +650,7 @@ rules:
       category: other
       pattern: Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
       check: Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: [copilot:PR#285, copilot:PR#322, copilot:PR#324, copilot:PR#326, copilot:PR#328, copilot:PR#329, copilot:PR#331, copilot:PR#334, copilot:PR#340]
+      source: copilot:PR#285,PR#322,PR#324,PR#326,PR#328,PR#329,PR#331,PR#332,PR#334,PR#340,PR#345
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
@@ -942,10 +942,4 @@ rules:
       pattern: Switch statement or map converting priority strings to integers (e.g. 'high'→1, 'medium'→2)
       check: Verify that priority string-to-int conversion is not duplicated across code paths. It should be factored into a shared helper function (or use strconv.Atoi with bounds checking) so all callers stay consistent.
       source: copilot:PR#342
-      added: "2026-03-20"
-    - id: deduplicate-overlapping-warden-rules
-      category: other
-      pattern: Adding a new warden rule to .forge/warden-rules.yaml that overlaps with or duplicates guidance already present in an existing rule
-      check: Before adding a new warden rule, check whether an existing rule already covers the same guidance. If so, update the existing rule's source attribution to include the new PR instead of creating a duplicate entry.
-      source: copilot:PR#345
       added: "2026-03-20"
