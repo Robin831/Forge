@@ -833,7 +833,7 @@ rules:
         Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
       check: >-
         Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: ['copilot:PR#285', 'copilot:PR#322', 'copilot:PR#324', 'copilot:PR#326', 'copilot:PR#328', 'copilot:PR#329', 'copilot:PR#331', 'copilot:PR#332', 'copilot:PR#334', 'copilot:PR#340', 'copilot:PR#345']
+      source: ['copilot:PR#285', 'copilot:PR#322', 'copilot:PR#324', 'copilot:PR#326', 'copilot:PR#328', 'copilot:PR#329', 'copilot:PR#331', 'copilot:PR#332', 'copilot:PR#334', 'copilot:PR#337', 'copilot:PR#340', 'copilot:PR#345']
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
@@ -1168,7 +1168,7 @@ rules:
       pattern: PR description or title claims a specific count of added/changed/removed items
       check: >-
         Verify that the count stated in the PR description or title matches the actual number of changes in the diff — e.g., if the PR says 'learned 4 rules', confirm exactly 4 new rules appear in the changed files
-      source: copilot:PR#332
+      source: copilot:PR#332, copilot:PR#337
       added: "2026-03-20"
     - id: preserve-rule-attribution-sources
       category: other
@@ -1238,17 +1238,5 @@ rules:
       category: style
       pattern: Warden rule check text or description references 'source list' or treats the source field as a YAML list
       check: Verify that warden rule text refers to 'source field' or 'comma-separated PR attributions' rather than 'source list', since the source value in warden-rules.yaml is a single scalar string (often comma-separated), not a YAML list
-      source: copilot:PR#337
-      added: "2026-03-20"
-    - id: deduplicate-overlapping-warden-rules
-      category: other
-      pattern: New warden rule being added to .forge/warden-rules.yaml or warden-rules.yaml that substantially duplicates or overlaps an existing rule's intent, pattern, check, or overall concern
-      check: Before adding a new warden rule, search existing rules for the same or substantially overlapping concern in intent, pattern, or check. If a matching rule already exists, consolidate by updating that rule (for example, extending its pattern/check scope and appending the new PR reference to its source field as a comma-separated attribution entry) instead of creating a separate, redundant entry.
-      source: copilot:PR#337
-      added: "2026-03-20"
-    - id: pr-description-matches-diff-count
-      category: other
-      pattern: PR description or title claims a specific count of items added, changed, or removed
-      check: Verify that the stated count in the PR title/description matches the actual number of additions, changes, or removals in the diff. If the count is wrong, flag the mismatch and ask the author to either correct the description or include the missing items.
       source: copilot:PR#337
       added: "2026-03-20"
