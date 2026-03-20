@@ -363,6 +363,19 @@ settings:
 	assert.ErrorContains(t, err, "poll_interval")
 }
 
+func TestLoad_InvalidSmelterInterval(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  smelter_interval: notaduration
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	_, err := Load(cfgPath)
+	assert.ErrorContains(t, err, "smelter_interval")
+}
+
 func TestIsVulncheckEnabled(t *testing.T) {
 	// nil (not set) → default true
 	s := SettingsConfig{}
