@@ -1217,7 +1217,7 @@ rules:
         Adding a new warden rule entry that shares the same category and pattern intent as an existing rule
       check: >-
         Verify the new rule does not duplicate or overlap with an existing rule in warden-rules.yaml. If it does, consolidate by appending the new source (e.g. PR number) to the existing rule's source field instead of creating a separate entry.
-      source: copilot:PR#349
+      source: [copilot:PR#349, copilot:PR#359]
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -1225,7 +1225,7 @@ rules:
         Modifications to source fields in warden-rules.yaml or similar config files using SourceList type
       check: >-
         Verify that multi-value source fields remain as YAML flow sequences (e.g. `source: [copilot:PR#285, copilot:PR#322]`) rather than being collapsed into a single scalar string. The SourceList type treats scalar values as a single-element list, which breaks structured multi-source attribution.
-      source: copilot:PR#349
+      source: [copilot:PR#349, copilot:PR#359]
       added: "2026-03-20"
     - id: pr-metadata-matches-diff
       category: other
@@ -1288,19 +1288,4 @@ rules:
       check: >-
         Verify that LogEvent calls pass the available bead ID rather than an empty string, so failures can be correlated back to the originating bead in state.db
       source: copilot:PR#358
-      added: "2026-03-20"
-    - id: warden-source-yaml-sequence
-      category: style
-      pattern: >-
-        Multi-value `source` fields in YAML configuration files using comma-separated scalars instead of YAML sequences
-      check: >-
-        Verify that multi-value fields (especially `source` in warden-rules.yaml) use YAML flow sequences (`[val1, val2]`) or block sequences instead of comma-separated scalars, so each value is properly parsed as a separate list element
-      source: copilot:PR#359
-      added: "2026-03-20"
-    - id: dedup-warden-rules-before-adding
-      category: other
-      pattern: Adding a new entry to warden-rules.yaml or any review-rules list
-      check: >-
-        Verify the new rule is not redundant with an existing rule. If it overlaps, expand the existing rule's wording or append the new source to its source list instead of creating a duplicate entry.
-      source: copilot:PR#359
       added: "2026-03-20"
