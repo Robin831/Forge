@@ -791,3 +791,9 @@ rules:
       check: Verify that terminal column width is calculated using visual-width-aware helpers (e.g. lipgloss.Width or runewidth) rather than rune count, since CJK characters and emoji occupy 2 columns and combining marks occupy 0
       source: copilot:PR#323
       added: "2026-03-20"
+    - id: deduplicate-warden-rules-before-adding
+      category: other
+      pattern: Adding a new rule to warden-rules.yaml
+      check: Before adding a new warden rule, check if an existing rule already covers the same semantic concern. If so, update the existing rule's source/attribution instead of creating a duplicate entry.
+      source: copilot:PR#328
+      added: "2026-03-20"
