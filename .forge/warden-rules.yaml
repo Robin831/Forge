@@ -1217,7 +1217,7 @@ rules:
         Adding a new warden rule entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
         Before inserting a new warden rule, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364']
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -1304,11 +1304,4 @@ rules:
       check: >-
         Verify that completion or summary events are emitted even when the effective result count is zero (e.g., all duplicates, all filtered). Silent early returns on zero-result paths make successful queue draining invisible in the event log and break observability contracts.
       source: copilot:PR#362
-      added: "2026-03-20"
-    - id: consolidate-overlapping-warden-rules
-      category: other
-      pattern: Adding a new warden rule to .forge/warden-rules.yaml
-      check: >-
-        Before adding a new warden rule, check all existing rules for overlapping or duplicate coverage. If a rule with similar intent already exists, consolidate by updating the existing rule's pattern/check wording and appending the new source to its source field (as a YAML flow sequence) instead of creating a separate entry.
-      source: copilot:PR#365
       added: "2026-03-20"
