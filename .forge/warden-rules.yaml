@@ -803,7 +803,7 @@ rules:
         exec.Command(...).CombinedOutput() used for external CLI calls without a context or timeout
       check: >-
         Verify that all external CLI invocations use exec.CommandContext with a short timeout so that a slow or hanging subprocess cannot block the caller indefinitely; return a warning or error on timeout rather than waiting forever
-      source: [copilot:PR#286, copilot:PR#362]
+      source: ['copilot:PR#286', 'copilot:PR#362']
       added: "2026-03-16"
     - id: doctor-message-provider-consistency
       category: style
@@ -1304,4 +1304,20 @@ rules:
       check: >-
         Verify that completion or summary events are emitted even when the effective result count is zero (e.g., all duplicates, all filtered). Silent early returns on zero-result paths make successful queue draining invisible in the event log and break observability contracts.
       source: copilot:PR#362
+      added: "2026-03-20"
+    - id: warden-rule-dedup
+      category: other
+      pattern: >-
+        Adding a new warden rule to .forge/warden-rules.yaml that overlaps with an existing rule's scope
+      check: >-
+        Before adding a new warden rule, check existing rules for overlapping coverage. If a similar rule exists, consolidate by updating the existing rule's pattern/check and appending the new source to its source field instead of creating a duplicate entry.
+      source: copilot:PR#364
+      added: "2026-03-20"
+    - id: consolidate-overlapping-warden-rules
+      category: style
+      pattern: >-
+        New warden rule being added to .forge/warden-rules.yaml that overlaps with an existing rule's scope
+      check: >-
+        Verify the new rule does not duplicate or overlap with an existing rule. If it does, consolidate by appending the new source to the existing rule's source field (as a YAML flow sequence) instead of creating a separate entry.
+      source: copilot:PR#364
       added: "2026-03-20"
