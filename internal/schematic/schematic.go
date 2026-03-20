@@ -155,12 +155,38 @@ func ShouldRun(cfg Config, bead poller.Bead) bool {
 	return wordCount >= cfg.WordThreshold
 }
 
+// subTaskVerdict holds a single sub-task from the AI decomposition verdict.
+type subTaskVerdict struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+}
+
+// UnmarshalJSON supports both the new object format {"title":"...","description":"..."}
+// and the legacy plain string format "Task title" for backward compatibility.
+func (s *subTaskVerdict) UnmarshalJSON(data []byte) error {
+	// Try as a plain string first (legacy format).
+	var plain string
+	if err := json.Unmarshal(data, &plain); err == nil {
+		s.Title = plain
+		s.Description = ""
+		return nil
+	}
+	// Otherwise, decode as an object.
+	type alias subTaskVerdict
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*s = subTaskVerdict(a)
+	return nil
+}
+
 // schematicVerdict is the JSON structure we ask the AI to produce.
 type schematicVerdict struct {
-	Action   string   `json:"action"`
-	Plan     string   `json:"plan,omitempty"`
-	SubTasks []string `json:"sub_tasks,omitempty"`
-	Reason   string   `json:"reason"`
+	Action   string           `json:"action"`
+	Plan     string           `json:"plan,omitempty"`
+	SubTasks []subTaskVerdict `json:"sub_tasks,omitempty"`
+	Reason   string           `json:"reason"`
 }
 
 // Run executes the Schematic analysis for a bead. It spawns a lightweight AI
@@ -377,7 +403,7 @@ func defaultRunCmd(ctx context.Context, dir string, args ...string) ([]byte, err
 // specified. If adding a sequential dependency fails the function returns an
 // error immediately (with the partial list of already-created sub-beads) so
 // the caller can escalate to ActionClarify and prevent out-of-order dispatch.
-func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anvilPath string, run bdRunner) ([]SubBead, error) {
+func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerdict, anvilPath string, run bdRunner) ([]SubBead, error) {
 	if len(tasks) == 0 {
 		return nil, fmt.Errorf("no sub-tasks to create")
 	}
@@ -392,13 +418,20 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 
 	var subBeads []SubBead
 	for _, task := range tasks {
+		// Build the description: use the AI-generated description if available,
+		// otherwise fall back to a generic placeholder.
+		desc := task.Description
+		if desc == "" {
+			desc = "Sub-task decomposed from " + parent.ID + ": " + parent.Title
+		}
+
 		// Create sub-bead with blocks dependency so the parent is blocked
 		// until all sub-beads are closed.
 		createCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		out, err := run(createCtx, anvilPath,
 			"create",
-			"--title="+task,
-			"--description=Sub-task decomposed from "+parent.ID+": "+parent.Title,
+			"--title="+task.Title,
+			"--description="+desc,
 			"--type=task",
 			fmt.Sprintf("--priority=%d", parent.Priority),
 			"--deps", "blocks:"+parent.ID,
@@ -408,7 +441,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 		if err != nil {
 			log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: %v", parent.ID, len(subBeads), err)
 			resetParent()
-			return subBeads, fmt.Errorf("creating sub-bead %q: %w: %s", task, err, out)
+			return subBeads, fmt.Errorf("creating sub-bead %q: %w: %s", task.Title, err, out)
 		}
 
 		// Extract ID from JSON output
@@ -430,7 +463,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []string, anv
 			}
 		}
 
-		subBeads = append(subBeads, SubBead{ID: created.ID, Title: task})
+		subBeads = append(subBeads, SubBead{ID: created.ID, Title: task.Title})
 
 		// Chain sequential dependency: child N+1 depends on child N.
 		// The schematic prompt asks the AI to order sub-tasks logically,
@@ -516,12 +549,25 @@ You MUST output your verdict as a JSON block in your VERY FIRST response. Do NOT
 {
   "action": "plan|decompose|clarify",
   "plan": "Step-by-step implementation plan (only for action=plan)",
-  "sub_tasks": ["Task 1 title", "Task 2 title"],
+  "sub_tasks": [
+    {
+      "title": "Short task title",
+      "description": "Detailed description including: files to create/modify, key function signatures, implementation approach, and how this sub-task connects to sibling sub-tasks"
+    }
+  ],
   "reason": "Brief explanation of your decision"
 }
 ` + "```" + `
 
-Keep sub_tasks to 2-5 items. Each should be a clear, self-contained task title.
+Keep sub_tasks to 2-5 items. Each must have both a "title" and a "description".
+
+**Sub-task description requirements (for action=decompose):**
+- Which files to create or modify
+- Key function signatures or types to implement
+- Implementation approach (algorithm, pattern, or technique)
+- How this sub-task connects to or depends on sibling sub-tasks
+- Ground each description in the parent bead's requirements above
+
 For "plan", provide concrete steps: which files to modify, what to add, what to test.
 
 REMINDER: Output the JSON verdict NOW. Do not use tools. Your turn budget is very limited.
