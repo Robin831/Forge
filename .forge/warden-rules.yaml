@@ -933,14 +933,8 @@ rules:
       added: "2026-03-20"
     - id: empty-form-overwrites-existing-data
       category: ui
-      pattern: Form submit handler that writes user input to a persistent field (notes, description, metadata) without checking whether the input is empty or unchanged
-      check: Verify that submitting an empty or unchanged form field does not silently overwrite existing data — either treat empty input as a no-op, or prefill the form with the current value so the user edits rather than replaces blindly
-      source: copilot:PR#342
-      added: "2026-03-20"
-    - id: guard-empty-form-value
-      category: ui
-      pattern: Form submission handlers that update a field from user input without validating the input is non-empty
-      check: Verify that form action handlers guard against empty/blank input before issuing update commands, to prevent unintentional clearing of existing values
+      pattern: Form submit/submit-handler logic that writes user input to a persistent field (notes, description, metadata) without checking whether the input is non-empty, non-blank, or changed from the existing value
+      check: Verify that submitting an empty, blank, or unchanged form field does not silently overwrite existing data — either treat empty/blank input as a no-op, validate and block submission, or prefill the form with the current value so the user edits rather than replaces blindly. Form action handlers should guard against empty/blank input before issuing update commands to prevent unintentional clearing of existing values.
       source: copilot:PR#342
       added: "2026-03-20"
     - id: dedup-priority-mapping
