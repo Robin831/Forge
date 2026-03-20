@@ -645,7 +645,7 @@ rules:
       category: other
       pattern: Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
       check: Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: copilot:PR#285,PR#322,PR#324,PR#326,PR#328,PR#329,PR#331,PR#334,PR#340,PR#341
+      source: copilot:PR#285,PR#322,PR#324,PR#326,PR#328,PR#329,PR#331,PR#332,PR#334,PR#340
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
@@ -898,4 +898,16 @@ rules:
       pattern: Adding backward-compatible unmarshalling or parsing logic that accepts legacy/alternative input formats
       check: Verify that unit tests exist covering the legacy/alternative input format, asserting that the parser correctly handles the old shape and produces the expected default values for any missing fields
       source: copilot:PR#336
+      added: "2026-03-20"
+    - id: pr-description-matches-actual-changes
+      category: other
+      pattern: PR description or title claims a specific count of added/changed/removed items
+      check: Verify that the count stated in the PR description or title matches the actual number of changes in the diff — e.g., if the PR says 'learned 4 rules', confirm exactly 4 new rules appear in the changed files
+      source: copilot:PR#332
+      added: "2026-03-20"
+    - id: preserve-rule-attribution-sources
+      category: other
+      pattern: Modifications to source attribution lists in warden-rules.yaml or similar config files
+      check: When updating a rule's source field (a comma-separated list of PR attributions), verify that existing PR attributions are preserved and new PRs are appended rather than replacing prior entries
+      source: copilot:PR#332
       added: "2026-03-20"
