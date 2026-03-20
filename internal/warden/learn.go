@@ -234,7 +234,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 	for _, n := range sortedNums {
 		sources = append(sources, fmt.Sprintf("copilot:PR#%d", n))
 	}
-	rule.Source = strings.Join(sources, ", ")
+	rule.Source = SourceList(sources)
 	rule.Added = time.Now().Format("2006-01-02")
 
 	return &rule, nil
@@ -421,7 +421,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) using this 
 	// Enforce the expected ID regardless of what Claude returned, so the
 	// existingIDs skip logic and deduplication remain consistent.
 	rule.ID = ruleID
-	rule.Source = source
+	rule.Source = SourceList{source}
 	rule.Added = time.Now().Format("2006-01-02")
 	return &rule, nil
 }

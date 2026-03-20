@@ -19,7 +19,7 @@ func TestSaveAndLoadRules(t *testing.T) {
 	dir := t.TempDir()
 	rf := &RulesFile{
 		Rules: []Rule{
-			{ID: "test-rule", Category: "testing", Pattern: "test pattern", Check: "verify test", Source: "manual", Added: "2026-03-07"},
+			{ID: "test-rule", Category: "testing", Pattern: "test pattern", Check: "verify test", Source: SourceList{"manual"}, Added: "2026-03-07"},
 		},
 	}
 
@@ -98,7 +98,7 @@ func TestSaveAndLoadRulesWithColonSpace(t *testing.T) {
 				Category: "convention: naming",
 				Pattern:  "pattern: either use X or Y",
 				Check:    "convention: either use camelCase or snake_case",
-				Source:   "copilot:PR#130", // '#' not preceded by whitespace — must NOT be quoted
+				Source:   SourceList{"copilot:PR#130"}, // '#' not preceded by whitespace — must NOT be quoted
 				Added:    "2026-03-14",
 			},
 			{
@@ -106,7 +106,7 @@ func TestSaveAndLoadRulesWithColonSpace(t *testing.T) {
 				Category: "comments",
 				Pattern:  "inline comment",
 				Check:    "avoid # style comments in YAML values", // ' #' preceded by whitespace — must be quoted
-				Source:   "manual",
+				Source:   SourceList{"manual"},
 				Added:    "2026-03-14",
 			},
 		},
@@ -123,7 +123,7 @@ func TestSaveAndLoadRulesWithColonSpace(t *testing.T) {
 	assert.Equal(t, "convention: either use camelCase or snake_case", loaded.Rules[0].Check)
 	assert.Equal(t, "convention: naming", loaded.Rules[0].Category)
 	assert.Equal(t, "pattern: either use X or Y", loaded.Rules[0].Pattern)
-	assert.Equal(t, "copilot:PR#130", loaded.Rules[0].Source)
+	assert.Equal(t, SourceList{"copilot:PR#130"}, loaded.Rules[0].Source)
 	assert.Equal(t, "avoid # style comments in YAML values", loaded.Rules[1].Check)
 
 	// Verify raw YAML: copilot:PR#130 source should NOT be quoted (no spurious churn)
