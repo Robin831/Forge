@@ -1886,3 +1886,97 @@ func TestDB_OpenPRsWithDetail(t *testing.T) {
 		}
 	})
 }
+
+func TestDB_PendingWardenRules(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert rules across two anvils.
+	if err := db.InsertPendingRule("anvil-a", "rule: no-fmt", "PR-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertPendingRule("anvil-b", "rule: no-lint", "PR-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertPendingRule("anvil-a", "rule: no-vet", "PR-3"); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("QueryPendingRulesByAnvil groups correctly", func(t *testing.T) {
+		result, err := db.QueryPendingRulesByAnvil()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result["anvil-a"]) != 2 {
+			t.Errorf("anvil-a: got %d rules, want 2", len(result["anvil-a"]))
+		}
+		if len(result["anvil-b"]) != 1 {
+			t.Errorf("anvil-b: got %d rules, want 1", len(result["anvil-b"]))
+		}
+	})
+
+	t.Run("rules are ordered by created_at within anvil", func(t *testing.T) {
+		result, err := db.QueryPendingRulesByAnvil()
+		if err != nil {
+			t.Fatal(err)
+		}
+		rules := result["anvil-a"]
+		if len(rules) == 2 && rules[0].CreatedAt.After(rules[1].CreatedAt) {
+			t.Error("anvil-a rules not in ascending created_at order")
+		}
+	})
+
+	t.Run("CreatedAt is parsed into non-zero time", func(t *testing.T) {
+		result, err := db.QueryPendingRulesByAnvil()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for anvil, rules := range result {
+			for _, r := range rules {
+				if r.CreatedAt.IsZero() {
+					t.Errorf("anvil %s rule %d has zero CreatedAt", anvil, r.ID)
+				}
+			}
+		}
+	})
+
+	t.Run("DeletePendingRules removes only the requested IDs", func(t *testing.T) {
+		result, err := db.QueryPendingRulesByAnvil()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Delete only the first anvil-a rule.
+		idToDelete := result["anvil-a"][0].ID
+		if err := db.DeletePendingRules([]int{idToDelete}); err != nil {
+			t.Fatal(err)
+		}
+		after, err := db.QueryPendingRulesByAnvil()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(after["anvil-a"]) != 1 {
+			t.Errorf("anvil-a: got %d rules after delete, want 1", len(after["anvil-a"]))
+		}
+		if len(after["anvil-b"]) != 1 {
+			t.Errorf("anvil-b: got %d rules after delete, want 1 (should be untouched)", len(after["anvil-b"]))
+		}
+		// Confirm the remaining anvil-a rule is the other one.
+		if after["anvil-a"][0].ID == idToDelete {
+			t.Error("deleted rule still present after DeletePendingRules")
+		}
+	})
+
+	t.Run("DeletePendingRules with empty slice is a no-op", func(t *testing.T) {
+		if err := db.DeletePendingRules(nil); err != nil {
+			t.Errorf("DeletePendingRules(nil) returned error: %v", err)
+		}
+	})
+}
