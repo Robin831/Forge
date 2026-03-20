@@ -645,7 +645,7 @@ rules:
       category: other
       pattern: Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
       check: Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: copilot:PR#285,PR#322,PR#324,PR#326,PR#328
+      source: copilot:PR#285,PR#322,PR#324,PR#326,PR#329
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
@@ -811,15 +811,15 @@ rules:
       added: "2026-03-20"
     - id: distinguish-empty-from-error
       category: error-handling
-      pattern: APIs or helper functions whose return types cannot clearly represent the three distinct states 'no results found', 'not applicable/unsupported', and 'error occurred' (for example, returning only an empty slice plus an error, or a bool+error that conflates these cases)
-      check: When designing or evolving scan/search/collection APIs, ensure the public contract and call sites can explicitly distinguish between 'no results found', 'not applicable/unsupported', and 'an error occurred' — for example via a dedicated status enum, sentinel values, or clearly documented semantics for result+error combinations — so callers can report accurate status rather than collapsing different failure/empty states into a single generic 'success with empty results'.
-      source: copilot:PR#327
+      pattern: Refactors or extensions of existing scan/search/collection APIs to introduce or clarify a third 'not applicable/unsupported' state in addition to 'no results found' and 'error occurred' (for example, changing a bool+error or slice+error signature to return an explicit status enum or tri-state result)
+      check: When evolving an existing API to expose three distinct outcomes ('no results found', 'not applicable/unsupported', and 'error occurred'), verify that the new tri-state contract is clearly documented, all direct and indirect callers are updated to handle each state explicitly, and tests cover the migration semantics (including backward-compatibility where required). Use this rule for API evolution and migration concerns; rely on distinguish-empty-from-error for more general empty-vs-error result handling.
+      source: copilot:PR#327,PR#329
       added: "2026-03-20"
     - id: silent-error-discard
       category: error-handling
       pattern: Top-level scan/check orchestration or CLI command logs an error from a worker/provider and continues without surfacing it in the aggregated result or command status
       check: For top-level scan/check pipelines (CLI commands, orchestrators, or summary builders), verify that downstream errors are not only logged but also surfaced to callers (e.g., included in aggregated error collections or used to mark the command as failed). This rule is distinct from capture-non-critical-errors and propagate-enrichment-errors, which cover background/enrichment flows; use this rule only when logged errors would otherwise cause a high-level operation to appear fully successful.
-      source: copilot:PR#327
+      source: copilot:PR#327,PR#329
       added: "2026-03-20"
     - id: severity-sort-order-consistency
       category: style
@@ -850,28 +850,4 @@ rules:
       pattern: A message or command handler updates state on the backend (e.g. moves, edits, deletes an item) but only handles the error path, without refreshing or updating the local in-memory data on success
       check: After a successful mutation (move, update, delete), verify that the local view state (e.g. in-memory lists, cached entries, UI lanes) is updated or a refresh is triggered so all views reflect the change immediately, rather than waiting for the next periodic tick
       source: copilot:PR#330
-      added: "2026-03-20"
-    - id: surface-logged-errors-in-aggregated-results
-      category: error-handling
-      pattern: Top-level scan/check orchestration or CLI command logs an error from a worker/provider and continues without surfacing it in the aggregated result or command status
-      check: For top-level scan/check pipelines (CLI commands, orchestrators, or summary builders), verify that downstream errors are not only logged but also surfaced to callers (e.g., included in aggregated error collections or used to mark the command as failed). This rule is distinct from capture-non-critical-errors and propagate-enrichment-errors, which cover background/enrichment flows; use this rule only when logged errors would otherwise cause a high-level operation to appear fully successful.
-      source: copilot:PR#329
-      added: "2026-03-20"
-    - id: deduplicate-overlapping-warden-rules
-      category: other
-      pattern: Multiple warden rules in .forge/warden-rules.yaml that target the same code pattern or enforce the same requirement
-      check: When adding a new warden rule, verify it does not substantially overlap with existing rules. If overlap is found, consolidate into a single rule and remove the duplicate to avoid redundant enforcement.
-      source: copilot:PR#329
-      added: "2026-03-20"
-    - id: no-duplicate-warden-rules
-      category: other
-      pattern: Adding a new warden rule to warden-rules.yaml that has similar intent or overlapping scope with an existing rule
-      check: Verify that new warden rules are not duplicative of existing rules. If two rules share near-identical intent, consolidate them into one rule or clearly differentiate their scopes to avoid overlapping checks.
-      source: copilot:PR#329
-      added: "2026-03-20"
-    - id: tri-state-return-distinction
-      category: error-handling
-      pattern: APIs or helper functions whose return types cannot clearly represent the three distinct states 'no results found', 'not applicable/unsupported', and 'error occurred' (for example, returning only an empty slice plus an error, or a bool+error that conflates these cases)
-      check: When designing or evolving scan/search/collection APIs, ensure the public contract and call sites can explicitly distinguish between 'no results found', 'not applicable/unsupported', and 'an error occurred' — for example via a dedicated status enum, sentinel values, or clearly documented semantics for result+error combinations — so callers can report accurate status rather than collapsing different failure/empty states into a single generic 'success with empty results'.
-      source: copilot:PR#329
       added: "2026-03-20"
