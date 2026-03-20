@@ -1286,6 +1286,13 @@ const (
 	EventCrucibleFinalPR         EventType = "crucible_final_pr"
 	EventCrucibleComplete        EventType = "crucible_complete"
 	EventCruciblePaused          EventType = "crucible_paused"
+
+	// Questgiver/Adventurer events — E2E quest execution and bead creation.
+	EventQuestgiverScanDone EventType = "questgiver_scan_done"
+	EventAdventurerStarted  EventType = "adventurer_started"
+	EventAdventurerPassed   EventType = "adventurer_passed"
+	EventAdventurerFailed   EventType = "adventurer_failed"
+	EventTestBeadCreated    EventType = "test_bead_created"
 )
 
 // Event represents a logged event.
