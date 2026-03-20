@@ -467,6 +467,43 @@ func TestSave_RoundTrip_PreservesAllFields(t *testing.T) {
 	assert.Equal(t, original.Settings.SmithTimeout, loaded.Settings.SmithTimeout)
 }
 
+func TestIsQuestgiverEnabled(t *testing.T) {
+	// nil (not set) → default false
+	s := SettingsConfig{}
+	assert.False(t, s.IsQuestgiverEnabled())
+
+	// explicitly true
+	tr := true
+	s.QuestgiverEnabled = &tr
+	assert.True(t, s.IsQuestgiverEnabled())
+
+	// explicitly false
+	fa := false
+	s.QuestgiverEnabled = &fa
+	assert.False(t, s.IsQuestgiverEnabled())
+}
+
+func TestSave_RoundTrip_QuestgiverDurations(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+
+	qgEnabled := true
+	original := Defaults()
+	original.Settings.QuestgiverEnabled = &qgEnabled
+	original.Settings.QuestgiverInterval = 24 * time.Hour
+	original.Settings.AdventurerTimeout = 5 * time.Minute
+
+	require.NoError(t, Save(&original, cfgPath))
+
+	loaded, err := Load(cfgPath)
+	require.NoError(t, err)
+
+	require.NotNil(t, loaded.Settings.QuestgiverEnabled)
+	assert.True(t, *loaded.Settings.QuestgiverEnabled)
+	assert.Equal(t, 24*time.Hour, loaded.Settings.QuestgiverInterval)
+	assert.Equal(t, 5*time.Minute, loaded.Settings.AdventurerTimeout)
+}
+
 func TestLoad_NoFile_UsesDefaults(t *testing.T) {
 	// Load with a path that doesn't exist → viper.ConfigFileNotFoundError → uses defaults
 	cfg, err := Load("/nonexistent/forge.yaml")

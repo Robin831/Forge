@@ -175,3 +175,34 @@ func TestFilterDepcheckAnvils(t *testing.T) {
 	// Correct count
 	assert.Len(t, result, 3)
 }
+
+func TestFilterQuestgiverAnvils(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+
+	allAnvils := map[string]string{
+		"enabled":  "/path/enabled",
+		"disabled": "/path/disabled",
+		"default":  "/path/default",
+		"no-cfg":   "/path/no-cfg",
+	}
+
+	anvilCfgs := map[string]config.AnvilConfig{
+		"enabled":  {QuestgiverEnabled: boolPtr(true)},
+		"disabled": {QuestgiverEnabled: boolPtr(false)},
+		"default":  {QuestgiverEnabled: nil},
+		// "no-cfg" intentionally absent from config
+	}
+
+	result := filterQuestgiverAnvils(allAnvils, anvilCfgs)
+
+	// Explicitly enabled → included
+	assert.Contains(t, result, "enabled")
+	// Explicitly disabled → excluded
+	assert.NotContains(t, result, "disabled")
+	// nil (default) → included (global gate already checked by caller)
+	assert.Contains(t, result, "default")
+	// Not in config at all → included
+	assert.Contains(t, result, "no-cfg")
+	// Correct count
+	assert.Len(t, result, 3)
+}

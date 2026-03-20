@@ -30,11 +30,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Robin831/Forge/internal/adventurer"
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/cifix"
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
+	"github.com/Robin831/Forge/internal/questgiver"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/vcs"
@@ -127,6 +129,9 @@ type Daemon struct {
 
 	// Vulnerability scanning
 	vulnScanner *vulncheck.Scanner
+
+	// QuestGiver monitor (E2E quest execution)
+	questgiverMonitor *questgiver.Monitor
 
 	// Teams notifications (nil = disabled). Uses atomic.Pointer so the hot-reload
 	// callback can swap in a new Notifier without a mutex while concurrent
@@ -682,6 +687,35 @@ func (d *Daemon) Run(ctx context.Context) error {
 		go d.vulnScanner.RunScheduled(ctx, d.config().Settings.VulncheckInterval)
 	} else {
 		d.logger.Info("vulncheck disabled via configuration (vulncheck_enabled: false)")
+	}
+
+	// Start QuestGiver monitor (if enabled)
+	if d.config().Settings.IsQuestgiverEnabled() {
+		if d.config().Settings.QuestgiverInterval <= 0 {
+			d.logger.Error("QuestGiver enabled but questgiver_interval <= 0; skipping QuestGiver monitor")
+		} else {
+			qgAnvils := filterQuestgiverAnvils(monitorAnvils, d.cfg.Load().Anvils)
+			for name := range monitorAnvils {
+				if _, ok := qgAnvils[name]; !ok {
+					d.logger.Info("Skipping anvil for questgiver (questgiver_enabled=false)", "anvil", name)
+				}
+			}
+			adventurerTimeout := d.config().Settings.AdventurerTimeout
+			newExec := func() questgiver.QuestExecutor {
+				return &adventurerExecutorAdapter{
+					exec: adventurer.New(adventurerTimeout, d.logger),
+				}
+			}
+			d.questgiverMonitor = questgiver.New(d.db,
+				d.config().Settings.QuestgiverInterval,
+				adventurerTimeout,
+				qgAnvils, newExec)
+			go func() {
+				if err := d.questgiverMonitor.Run(ctx); err != nil && err != context.Canceled {
+					d.logger.Error("QuestGiver monitor error", "error", err)
+				}
+			}()
+		}
 	}
 
 	for {
@@ -4047,6 +4081,13 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 				changed = true
 				break
 			}
+			// Also detect questgiver_enabled toggle
+			oldQG := oldAnvil.QuestgiverEnabled
+			newQG := newAnvil.QuestgiverEnabled
+			if (oldQG == nil) != (newQG == nil) || (oldQG != nil && newQG != nil && *oldQG != *newQG) {
+				changed = true
+				break
+			}
 		}
 	}
 	if !changed {
@@ -4079,6 +4120,19 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 		depcheckPaths := filterDepcheckAnvils(paths, new.Anvils)
 		d.depcheckScanner.UpdateAnvilPaths(depcheckPaths)
 		d.logger.Info("updated depcheck anvil paths", "count", len(depcheckPaths))
+	}
+
+	// Update questgiver monitor (respect global questgiver_enabled)
+	if d.questgiverMonitor != nil {
+		if !new.Settings.IsQuestgiverEnabled() {
+			// Questgiver globally disabled: clear anvil paths so the monitor stops polling.
+			d.questgiverMonitor.UpdateAnvilPaths(map[string]string{})
+			d.logger.Info("disabled questgiver monitor via config; cleared anvil paths")
+		} else {
+			qgPaths := filterQuestgiverAnvils(paths, new.Anvils)
+			d.questgiverMonitor.UpdateAnvilPaths(qgPaths)
+			d.logger.Info("updated questgiver anvil paths", "count", len(qgPaths))
+		}
 	}
 }
 
@@ -4172,12 +4226,44 @@ func trimStrings(ss []string) []string {
 	return res
 }
 
+// adventurerExecutorAdapter wraps an adventurer.Executor to implement the
+// questgiver.QuestExecutor interface, bridging the two packages without an
+// import cycle (adventurer imports questgiver, not the other way around).
+type adventurerExecutorAdapter struct {
+	exec *adventurer.Executor
+}
+
+func (a *adventurerExecutorAdapter) Execute(ctx context.Context, quest *questgiver.Quest) *questgiver.QuestResult {
+	r := a.exec.Execute(ctx, quest)
+	return &questgiver.QuestResult{
+		Passed:       r.Passed,
+		FailedStep:   r.FailedStep,
+		ErrorMessage: r.ErrorMessage,
+		Duration:     r.Duration,
+	}
+}
+
 // filterDepcheckAnvils returns the subset of anvils that should be scanned by
 // depcheck. Anvils with DepcheckEnabled explicitly set to false are excluded.
 func filterDepcheckAnvils(anvils map[string]string, anvilCfgs map[string]config.AnvilConfig) map[string]string {
 	result := make(map[string]string, len(anvils))
 	for name, path := range anvils {
 		if ac, ok := anvilCfgs[name]; ok && ac.DepcheckEnabled != nil && !*ac.DepcheckEnabled {
+			continue
+		}
+		result[name] = path
+	}
+	return result
+}
+
+// filterQuestgiverAnvils returns the subset of anvils that should be monitored
+// by the QuestGiver. Anvils with QuestgiverEnabled explicitly set to false are
+// excluded. When the per-anvil setting is nil (unset), the anvil is included
+// (the global IsQuestgiverEnabled gate has already been checked by the caller).
+func filterQuestgiverAnvils(anvils map[string]string, anvilCfgs map[string]config.AnvilConfig) map[string]string {
+	result := make(map[string]string, len(anvils))
+	for name, path := range anvils {
+		if ac, ok := anvilCfgs[name]; ok && ac.QuestgiverEnabled != nil && !*ac.QuestgiverEnabled {
 			continue
 		}
 		result[name] = path
