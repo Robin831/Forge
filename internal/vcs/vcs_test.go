@@ -67,6 +67,46 @@ func TestPRStatus_CIsPassing(t *testing.T) {
 			{Conclusion: "FAILURE"},
 		},
 	}).CIsPassing())
+	// Case-insensitive conclusion
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Conclusion: "success"},
+		},
+	}).CIsPassing(), "lowercase conclusion should be handled")
+	// StatusContext items
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{State: "SUCCESS", Context: "ci/build"},
+		},
+	}).CIsPassing(), "StatusContext SUCCESS = passing")
+	assert.False(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{State: "FAILURE", Context: "ci/build"},
+		},
+	}).CIsPassing(), "StatusContext FAILURE = not passing")
+	assert.False(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{State: "PENDING", Context: "ci/build"},
+		},
+	}).CIsPassing(), "StatusContext PENDING = not passing")
+	assert.False(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{State: "ERROR", Context: "ci/build"},
+		},
+	}).CIsPassing(), "StatusContext ERROR = not passing")
+	// Mixed CheckRun and StatusContext
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{State: "SUCCESS", Context: "ci/deploy"},
+		},
+	}).CIsPassing(), "mixed CheckRun+StatusContext all passing")
+	assert.False(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{State: "FAILURE", Context: "ci/deploy"},
+		},
+	}).CIsPassing(), "mixed CheckRun passing + StatusContext failing = not passing")
 }
 
 func TestPRStatus_CIsInProgress(t *testing.T) {
@@ -100,15 +140,65 @@ func TestPRStatus_CIsInProgress(t *testing.T) {
 	}).CIsInProgress(), "waiting = in progress")
 	assert.True(t, (&PRStatus{
 		StatusCheckRollup: []CheckRun{
+			{Status: "REQUESTED", Conclusion: ""},
+		},
+	}).CIsInProgress(), "requested = in progress")
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
 			{Status: "", Conclusion: ""},
 		},
 	}).CIsInProgress(), "empty status with empty conclusion = in progress")
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Status: "COMPLETED", Conclusion: ""},
+		},
+	}).CIsInProgress(), "completed with empty conclusion = transient, treat as in progress")
 	assert.False(t, (&PRStatus{
 		StatusCheckRollup: []CheckRun{
 			{Status: "COMPLETED", Conclusion: "SUCCESS"},
 			{Status: "COMPLETED", Conclusion: "NEUTRAL"},
 		},
 	}).CIsInProgress(), "all completed success/neutral = not in progress")
+	// StatusContext items
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{State: "PENDING", Context: "ci/build"},
+		},
+	}).CIsInProgress(), "StatusContext PENDING = in progress")
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{State: "EXPECTED", Context: "ci/build"},
+		},
+	}).CIsInProgress(), "StatusContext EXPECTED = in progress")
+	assert.False(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{State: "SUCCESS", Context: "ci/build"},
+		},
+	}).CIsInProgress(), "StatusContext SUCCESS = not in progress")
+	assert.False(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{State: "FAILURE", Context: "ci/build"},
+		},
+	}).CIsInProgress(), "StatusContext FAILURE = not in progress (completed)")
+	assert.False(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{State: "ERROR", Context: "ci/build"},
+		},
+	}).CIsInProgress(), "StatusContext ERROR = not in progress (completed)")
+	// Mixed: one CheckRun completed, one StatusContext pending
+	assert.True(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "FAILURE"},
+			{State: "PENDING", Context: "ci/deploy"},
+		},
+	}).CIsInProgress(), "CheckRun completed+failure with StatusContext pending = in progress")
+	// Mixed: all completed
+	assert.False(t, (&PRStatus{
+		StatusCheckRollup: []CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{State: "SUCCESS", Context: "ci/deploy"},
+		},
+	}).CIsInProgress(), "all completed across CheckRun and StatusContext = not in progress")
 }
 
 func TestPRStatus_HasApproval(t *testing.T) {

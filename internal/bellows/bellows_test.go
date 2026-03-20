@@ -624,6 +624,84 @@ func TestCheckPR_PassingThenInProgressThenFailure(t *testing.T) {
 	assert.Contains(t, events, EventCIFailed, "ci_failed must fire when checks finish failing after a pending period")
 }
 
+// TestCheckPR_StatusContextPendingBlocksCIFailed verifies that a StatusContext
+// check in PENDING state prevents ci_failed from firing, even if a CheckRun
+// has already completed with failure. This covers repos that use both GitHub
+// Actions (CheckRun) and legacy commit statuses (StatusContext).
+func TestCheckPR_StatusContextPendingBlocksCIFailed(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    50,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-statusctx",
+		Branch:    "forge/forge-statusctx",
+		Status:    state.PROpen,
+		CIPassing: true,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	// One CheckRun completed with failure, one StatusContext still pending.
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State: "OPEN",
+		StatusCheckRollup: []vcs.CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "FAILURE"},
+			{State: "PENDING", Context: "ci/integration"},
+		},
+	}}
+
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	assert.NotContains(t, events, EventCIFailed, "ci_failed must not fire while StatusContext checks are pending")
+	assert.NotContains(t, events, EventCIPassed, "ci_passed must not fire while StatusContext checks are pending")
+}
+
+// TestCheckPR_CompletedEmptyConclusionBlocksCIFailed verifies that a CheckRun
+// with status COMPLETED but empty conclusion (transient state) prevents
+// premature ci_failed.
+func TestCheckPR_CompletedEmptyConclusionBlocksCIFailed(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    51,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-transient",
+		Branch:    "forge/forge-transient",
+		Status:    state.PROpen,
+		CIPassing: true,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	// One check completed with failure, another COMPLETED but no conclusion yet (transient).
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State: "OPEN",
+		StatusCheckRollup: []vcs.CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "FAILURE"},
+			{Name: "deploy", Status: "COMPLETED", Conclusion: ""},
+		},
+	}}
+
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	assert.NotContains(t, events, EventCIFailed, "ci_failed must not fire when a check has COMPLETED with empty conclusion (transient)")
+}
+
 // fakeVCSProvider is a minimal vcs.Provider that returns a fixed PRStatus.
 type fakeVCSProvider struct {
 	status *vcs.PRStatus
