@@ -107,6 +107,33 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/autostart` | Windows Task Scheduler integration |
 | `cmd/forge` | Cobra CLI — subcommands wired to daemon/state/ipc |
 
+### Changelog Fragments
+
+Every PR must include a changelog fragment in `changelog.d/`. The file name should be `<bead-id>.md` (e.g. `Forge-abc1.md`).
+
+**Required format:**
+```
+category: Added
+- **Short title** - Description of the change. (Forge-abc1)
+```
+
+**Rules:**
+- **Line 1 MUST be `category: <Category>`** — one of: `Added`, `Changed`, `Fixed`, `Removed`, `Deprecated`, `Security`
+- **Line 2+ are markdown bullet points** describing the change
+- **Include the bead ID** in parentheses at the end of each bullet
+- **Do NOT use commit-message style** (e.g. `fix: description`) — that format will break the changelog assembler
+
+**Examples:**
+```
+category: Added
+- **Ingot lifecycle tracking** - Track bead→PR→merge journey with structured test results in SQLite. (Forge-czem)
+```
+
+```
+category: Fixed
+- **Bellows CI status timing** - Only flag CI as failed when all checks are completed, not while still in progress. (Forge-68vu)
+```
+
 ### Data Flow
 
 ```
