@@ -803,7 +803,7 @@ rules:
         exec.Command(...).CombinedOutput() used for external CLI calls without a context or timeout
       check: >-
         Verify that all external CLI invocations use exec.CommandContext with a short timeout so that a slow or hanging subprocess cannot block the caller indefinitely; return a warning or error on timeout rather than waiting forever
-      source: copilot:PR#286
+      source: [copilot:PR#286, copilot:PR#362]
       added: "2026-03-16"
     - id: doctor-message-provider-consistency
       category: style
@@ -1303,21 +1303,5 @@ rules:
         A function processes a batch of items and early-returns when no items matched or all were filtered out, skipping the normal completion event/log
       check: >-
         Verify that completion or summary events are emitted even when the effective result count is zero (e.g., all duplicates, all filtered). Silent early returns on zero-result paths make successful queue draining invisible in the event log and break observability contracts.
-      source: copilot:PR#362
-      added: "2026-03-20"
-    - id: git-cmd-timeout
-      category: concurrency
-      pattern: >-
-        Calling git commands (via exec.Command or helper functions) using an unbounded context or no timeout
-      check: >-
-        Verify that all git command invocations use a bounded timeout context (e.g. context.WithTimeout) rather than relying solely on a parent context, so a single stuck git call (auth prompt, stalled network) cannot hang the caller indefinitely
-      source: copilot:PR#362
-      added: "2026-03-20"
-    - id: gh-cli-timeout
-      category: concurrency
-      pattern: >-
-        Executing gh CLI commands (gh pr list, gh pr create, etc.) without a bounded context timeout
-      check: >-
-        Verify that all gh CLI invocations are wrapped in a context.WithTimeout so a hung process (network/auth issues) cannot stall background loops or block other work
       source: copilot:PR#362
       added: "2026-03-20"
