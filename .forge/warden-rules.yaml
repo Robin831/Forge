@@ -1305,3 +1305,10 @@ rules:
         Verify that completion or summary events are emitted even when the effective result count is zero (e.g., all duplicates, all filtered). Silent early returns on zero-result paths make successful queue draining invisible in the event log and break observability contracts.
       source: copilot:PR#362
       added: "2026-03-20"
+    - id: consolidate-overlapping-warden-rules
+      category: other
+      pattern: Adding a new warden rule to .forge/warden-rules.yaml
+      check: >-
+        Before adding a new warden rule, check all existing rules for overlapping or duplicate coverage. If a rule with similar intent already exists, consolidate by updating the existing rule's pattern/check wording and appending the new source to its source field (as a YAML flow sequence) instead of creating a separate entry.
+      source: copilot:PR#365
+      added: "2026-03-20"
