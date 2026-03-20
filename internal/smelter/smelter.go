@@ -2,7 +2,7 @@
 // periodically queries pending_warden_rules from the state DB, groups them
 // by anvil, appends them to each anvil's .forge/warden-rules.yaml (deduping
 // by rule ID), commits the change, and creates or updates a PR on the
-// forge/warden-learn-batch branch.
+// forge/warden-learn-batch/<anvil> branch.
 package smelter
 
 import (
@@ -20,20 +20,28 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/warden"
+	"github.com/Robin831/Forge/internal/worktree"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	// branchName is the well-known branch used for batched warden rule PRs.
-	branchName = "forge/warden-learn-batch"
-
 	// prTitle is the title used for smelter PRs.
 	prTitle = "forge: batch warden rule update [no-changelog]"
+
+	// cleanupTimeout is how long cleanup operations (worktree removal) are
+	// allowed to run after the parent context has been canceled.
+	cleanupTimeout = 30 * time.Second
 )
+
+// branchForAnvil returns the per-anvil batch branch name.
+func branchForAnvil(anvilName string) string {
+	return "forge/warden-learn-batch/" + anvilName
+}
 
 // Smelter batches pending warden rules into PRs on a schedule.
 type Smelter struct {
 	db         *state.DB
+	wtMgr      *worktree.Manager
 	interval   time.Duration
 	anvilPaths map[string]string // anvil name -> path
 	mu         sync.RWMutex
@@ -44,6 +52,7 @@ type Smelter struct {
 func New(db *state.DB, interval time.Duration, anvilPaths map[string]string) *Smelter {
 	return &Smelter{
 		db:         db,
+		wtMgr:      worktree.NewManager(),
 		interval:   interval,
 		anvilPaths: anvilPaths,
 	}
@@ -86,7 +95,7 @@ func (s *Smelter) Run(ctx context.Context) error {
 }
 
 // Flush queries all pending warden rules, groups them by anvil, and for each
-// anvil: pulls latest main, appends rules to warden-rules.yaml (deduping by
+// anvil: creates a worktree, appends rules to warden-rules.yaml (deduping by
 // rule ID), commits, force-pushes to the batch branch, and creates/updates a
 // PR. Flushed rules are deleted from the DB on success.
 func (s *Smelter) Flush(ctx context.Context) error {
@@ -125,22 +134,29 @@ func (s *Smelter) Flush(ctx context.Context) error {
 }
 
 func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, rules []state.PendingRule) error {
-	// 1. Pull latest main so we append to current rules, not stale ones.
-	//    Follow the depcheck pattern: if pull fails, skip this anvil.
-	pullCtx, pullCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer pullCancel()
-	pullCmd := executil.HideWindow(exec.CommandContext(pullCtx, "git", "pull", "--ff-only"))
-	pullCmd.Dir = anvilPath
-	if out, pullErr := pullCmd.CombinedOutput(); pullErr != nil {
-		msg := fmt.Sprintf("git pull --ff-only failed for anvil %s — skipping smelter flush to avoid stale rules: %v: %s",
-			anvilName, pullErr, strings.TrimSpace(string(out)))
-		log.Printf("[smelter] %s", msg)
-		_ = s.db.LogEvent(state.EventSmelterFailed, msg, "", anvilName)
-		return nil // skip, don't error — other anvils can still proceed
+	branch := branchForAnvil(anvilName)
+	wtBeadID := "smelter-batch-" + anvilName
+
+	// 1. Create an isolated worktree for the batch branch.
+	wt, err := s.wtMgr.CreateWithOptions(ctx, anvilPath, wtBeadID, worktree.CreateOptions{
+		Branch:      branch,
+		ResetBranch: true, // always reset to main for a clean diff
+	})
+	if err != nil {
+		return fmt.Errorf("creating worktree for %s: %w", anvilName, err)
 	}
 
-	// 2. Parse each pending rule's YAML and load the current rules file.
-	rf, err := warden.LoadRules(anvilPath)
+	// Clean up the worktree when done, using a background context so cleanup
+	// succeeds even if the parent ctx has been canceled.
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		_ = s.wtMgr.Remove(cleanupCtx, anvilPath, wt)
+	}()
+
+	// 2. Parse each pending rule's YAML and load the current rules file
+	//    from the worktree (reflects main branch state after reset).
+	rf, err := warden.LoadRules(wt.Path)
 	if err != nil {
 		return fmt.Errorf("loading warden rules for %s: %w", anvilName, err)
 	}
@@ -167,18 +183,18 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 		return s.db.DeletePendingRules(flushedIDs)
 	}
 
-	// 3. Save the updated rules file.
-	if err := warden.SaveRules(anvilPath, rf); err != nil {
+	// 3. Save the updated rules file in the worktree.
+	if err := warden.SaveRules(wt.Path, rf); err != nil {
 		return fmt.Errorf("saving warden rules for %s: %w", anvilName, err)
 	}
 
-	// 4. Create or switch to the batch branch, commit, and force-push.
-	if err := s.commitAndPush(ctx, anvilPath, anvilName, added); err != nil {
+	// 4. Commit and force-push from the worktree.
+	if err := s.commitAndPush(ctx, wt.Path, branch, added); err != nil {
 		return fmt.Errorf("commit/push for %s: %w", anvilName, err)
 	}
 
 	// 5. Create or update the PR.
-	if err := s.ensurePR(ctx, anvilPath, anvilName, added); err != nil {
+	if err := s.ensurePR(ctx, wt.Path, anvilName, branch, added); err != nil {
 		return fmt.Errorf("PR creation for %s: %w", anvilName, err)
 	}
 
@@ -194,61 +210,18 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	return nil
 }
 
-// commitAndPush creates/resets the batch branch from main, stages the rules
-// file, commits, and force-pushes.
-func (s *Smelter) commitAndPush(ctx context.Context, anvilPath, anvilName string, ruleCount int) error {
+// commitAndPush stages the rules file, commits, and force-pushes from the
+// worktree. The worktree is already on the correct branch.
+func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, ruleCount int) error {
 	git := func(args ...string) error {
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "git", args...))
-		cmd.Dir = anvilPath
+		cmd.Dir = wtPath
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, stderr.String())
 		}
 		return nil
-	}
-
-	gitOutput := func(args ...string) (string, error) {
-		cmd := executil.HideWindow(exec.CommandContext(ctx, "git", args...))
-		cmd.Dir = anvilPath
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, stderr.String())
-		}
-		return strings.TrimSpace(stdout.String()), nil
-	}
-
-	// Fetch latest remote state so we know if the branch exists remotely.
-	_ = git("fetch", "origin")
-
-	// Check if the remote branch exists.
-	_, remoteBranchErr := gitOutput("rev-parse", "--verify", "origin/"+branchName)
-
-	// Always start from main so we get a clean diff.
-	if err := git("checkout", "main"); err != nil {
-		return err
-	}
-
-	if remoteBranchErr == nil {
-		// Remote branch exists — check it out and rebase on main.
-		if err := git("checkout", "-B", branchName, "origin/"+branchName); err != nil {
-			return err
-		}
-		// Rebase on main to pick up any changes; if it fails, just reset to main.
-		if err := git("rebase", "main"); err != nil {
-			log.Printf("[smelter] Rebase failed for %s, resetting branch to main", anvilName)
-			_ = git("rebase", "--abort")
-			if err := git("checkout", "-B", branchName, "main"); err != nil {
-				return err
-			}
-		}
-	} else {
-		// Branch doesn't exist remotely — create from main.
-		if err := git("checkout", "-B", branchName, "main"); err != nil {
-			return err
-		}
 	}
 
 	// Stage the rules file.
@@ -263,21 +236,18 @@ func (s *Smelter) commitAndPush(ctx context.Context, anvilPath, anvilName string
 	}
 
 	// Force-push to the batch branch.
-	if err := git("push", "--force-with-lease", "origin", branchName); err != nil {
+	if err := git("push", "--force-with-lease", "origin", branch); err != nil {
 		return err
 	}
-
-	// Return to main so we leave the worktree clean.
-	_ = git("checkout", "main")
 
 	return nil
 }
 
 // ensurePR creates a PR for the batch branch if one doesn't already exist.
 // If a previous PR was merged or closed, creates a new one.
-func (s *Smelter) ensurePR(ctx context.Context, anvilPath, anvilName string, ruleCount int) error {
+func (s *Smelter) ensurePR(ctx context.Context, wtPath, anvilName, branch string, ruleCount int) error {
 	// Check for an existing open PR on the batch branch.
-	prNumber, prState, err := s.findBatchPR(ctx, anvilPath)
+	prNumber, prState, err := s.findBatchPR(ctx, wtPath, branch)
 	if err != nil {
 		log.Printf("[smelter] Warning: could not check for existing PR on %s: %v", anvilName, err)
 		// Fall through to create — gh pr create will error if one already exists.
@@ -298,9 +268,9 @@ func (s *Smelter) ensurePR(ctx context.Context, anvilPath, anvilName string, rul
 		"--title", prTitle,
 		"--body", body,
 		"--base", "main",
-		"--head", branchName,
+		"--head", branch,
 	))
-	cmd.Dir = anvilPath
+	cmd.Dir = wtPath
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -308,7 +278,7 @@ func (s *Smelter) ensurePR(ctx context.Context, anvilPath, anvilName string, rul
 	if err := cmd.Run(); err != nil {
 		stderrStr := stderr.String()
 		if strings.Contains(stderrStr, "already exists") {
-			log.Printf("[smelter] PR already exists for %s on branch %s", anvilName, branchName)
+			log.Printf("[smelter] PR already exists for %s on branch %s", anvilName, branch)
 			return nil
 		}
 		return fmt.Errorf("gh pr create failed: %w\nstderr: %s", err, stderrStr)
@@ -322,14 +292,14 @@ func (s *Smelter) ensurePR(ctx context.Context, anvilPath, anvilName string, rul
 // findBatchPR looks for an existing PR on the batch branch and returns its
 // number and state ("OPEN", "MERGED", "CLOSED"). Returns (0, "", nil) if
 // no PR exists for the branch.
-func (s *Smelter) findBatchPR(ctx context.Context, anvilPath string) (int, string, error) {
+func (s *Smelter) findBatchPR(ctx context.Context, wtPath, branch string) (int, string, error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", "pr", "list",
-		"--head", branchName,
+		"--head", branch,
 		"--state", "all",
 		"--json", "number,state",
 		"--limit", "1",
 	))
-	cmd.Dir = anvilPath
+	cmd.Dir = wtPath
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

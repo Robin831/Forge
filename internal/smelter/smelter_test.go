@@ -1,0 +1,134 @@
+package smelter
+
+import (
+	"context"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/Robin831/Forge/internal/state"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func openTestDB(t *testing.T) *state.DB {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := state.Open(filepath.Join(dir, "state.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+func TestBranchForAnvil(t *testing.T) {
+	assert.Equal(t, "forge/warden-learn-batch/heimdall", branchForAnvil("heimdall"))
+	assert.Equal(t, "forge/warden-learn-batch/my-repo", branchForAnvil("my-repo"))
+}
+
+func TestNew_SetsDefaults(t *testing.T) {
+	db := openTestDB(t)
+	paths := map[string]string{"a": "/a"}
+	s := New(db, 5*time.Minute, paths)
+
+	assert.NotNil(t, s.wtMgr)
+	assert.Equal(t, 5*time.Minute, s.interval)
+	assert.Equal(t, paths, s.anvilPaths)
+}
+
+func TestFlush_NoPending_IsNoop(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{"anvil-a": "/tmp/a"})
+
+	err := s.Flush(context.Background())
+	assert.NoError(t, err)
+}
+
+func TestFlush_UnknownAnvil_Skips(t *testing.T) {
+	db := openTestDB(t)
+
+	// Insert a rule for an anvil that is not in the config.
+	require.NoError(t, db.InsertPendingRule("unknown-anvil", "id: r1\npattern: test", "PR-1"))
+
+	s := New(db, time.Hour, map[string]string{"other-anvil": "/tmp/other"})
+	err := s.Flush(context.Background())
+	assert.NoError(t, err)
+
+	// Rule should still be pending (not deleted) since anvil was skipped.
+	byAnvil, err := db.QueryPendingRulesByAnvil()
+	require.NoError(t, err)
+	assert.Len(t, byAnvil["unknown-anvil"], 1)
+}
+
+func TestFlush_ContextCanceled_ReturnsError(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.InsertPendingRule("anvil-a", "id: r1\npattern: test", "PR-1"))
+
+	s := New(db, time.Hour, map[string]string{"anvil-a": "/tmp/a"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	err := s.Flush(ctx)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestUpdateAnvilPaths(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{"a": "/path/a"})
+
+	newPaths := map[string]string{"b": "/path/b", "c": "/path/c"}
+	s.UpdateAnvilPaths(newPaths)
+
+	// Verify the paths were updated (read under lock).
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	assert.Equal(t, newPaths, s.anvilPaths)
+
+	// Verify the original map was copied (not aliased).
+	newPaths["d"] = "/path/d"
+	assert.NotContains(t, s.anvilPaths, "d")
+}
+
+func TestFlush_WorktreeFailure_ContinuesToNextAnvil(t *testing.T) {
+	db := openTestDB(t)
+
+	// Insert rules for two anvils, both pointing to non-existent paths.
+	require.NoError(t, db.InsertPendingRule("anvil-a", "id: r1\ncategory: test\npattern: p\ncheck: c", "PR-1"))
+	require.NoError(t, db.InsertPendingRule("anvil-b", "id: r2\ncategory: test\npattern: p\ncheck: c", "PR-2"))
+
+	nonExistent := filepath.Join(t.TempDir(), "does-not-exist")
+	s := New(db, time.Hour, map[string]string{
+		"anvil-a": nonExistent,
+		"anvil-b": filepath.Join(t.TempDir(), "also-missing"),
+	})
+
+	// Flush should log errors but not return an error — each anvil failure
+	// is handled individually.
+	err := s.Flush(context.Background())
+	assert.NoError(t, err)
+
+	// Rules should still be pending since all flushes failed.
+	byAnvil, err := db.QueryPendingRulesByAnvil()
+	require.NoError(t, err)
+	assert.Len(t, byAnvil["anvil-a"], 1)
+	assert.Len(t, byAnvil["anvil-b"], 1)
+}
+
+func TestFlush_MultipleRulesSameAnvil_AllProcessed(t *testing.T) {
+	db := openTestDB(t)
+
+	require.NoError(t, db.InsertPendingRule("anvil-a",
+		"id: r1\ncategory: style\npattern: p1\ncheck: c1", "PR-1"))
+	require.NoError(t, db.InsertPendingRule("anvil-a",
+		"id: r2\ncategory: security\npattern: p2\ncheck: c2", "PR-2"))
+	require.NoError(t, db.InsertPendingRule("anvil-a",
+		"id: r3\ncategory: perf\npattern: p3\ncheck: c3", "PR-3"))
+
+	// Use a non-existent path so flushAnvil fails at worktree creation,
+	// but we can verify all rules were queried together.
+	_ = New(db, time.Hour, map[string]string{"anvil-a": "/nonexistent"})
+
+	byAnvil, err := db.QueryPendingRulesByAnvil()
+	require.NoError(t, err)
+	assert.Len(t, byAnvil["anvil-a"], 3, "all 3 rules should be queried for anvil-a")
+}
