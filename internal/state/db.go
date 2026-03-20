@@ -406,7 +406,7 @@ const (
 // external state changes (e.g. PR events) and can be legitimately silent for
 // long stretches, so they are excluded from stale detection and dispatch
 // capacity queries. Update this constant when new background phases are added.
-const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'crucible', 'schematic', 'warden_rerun', 'approve_as_is', 'force_smith'"
+const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'crucible', 'schematic', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter'"
 
 // Worker represents a Smith worker entry.
 type Worker struct {
@@ -1303,6 +1303,11 @@ const (
 	EventAdventurerPassed   EventType = "adventurer_passed"
 	EventAdventurerFailed   EventType = "adventurer_failed"
 	EventTestBeadCreated    EventType = "test_bead_created"
+
+	// Smelter events — batch warden rule flushing.
+	EventSmelterStarted EventType = "smelter_started"
+	EventSmelterFlushed EventType = "smelter_flushed"
+	EventSmelterFailed  EventType = "smelter_failed"
 )
 
 // Event represents a logged event.
