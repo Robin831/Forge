@@ -43,9 +43,11 @@ type Monitor struct {
 
 // New creates a Monitor that polls anvils for quests at the given interval.
 // The newExec function is called to create a QuestExecutor for each quest
-// execution. Pass nil to use a no-op executor (useful for testing).
+// execution. Passing nil for newExec is permitted for testing but produces a
+// warning — the resulting monitor will pass every quest without executing it.
 func New(db *state.DB, interval, timeout time.Duration, anvils map[string]string, newExec func() QuestExecutor) *Monitor {
 	if newExec == nil {
+		slog.Warn("questgiver: newExec is nil; using no-op executor — quests will not be executed and failures will never produce beads")
 		newExec = func() QuestExecutor { return nopExecutor{} }
 	}
 	return &Monitor{
@@ -65,7 +67,11 @@ func (nopExecutor) Execute(context.Context, *Quest) *QuestResult {
 }
 
 // Run starts the quest polling loop. It blocks until ctx is cancelled.
+// Returns an error if the configured interval is non-positive.
 func (m *Monitor) Run(ctx context.Context) error {
+	if m.interval <= 0 {
+		return fmt.Errorf("questgiver: monitor interval must be > 0, got %s", m.interval)
+	}
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
 
@@ -100,35 +106,50 @@ func (m *Monitor) scan(ctx context.Context) {
 		}
 	}
 
-	if err := m.db.LogEvent(state.EventQuestgiverScanDone, "quest scan complete", "", ""); err != nil {
-		m.logger.Warn("failed to log scan-done event", "error", err)
+	if m.db != nil {
+		if err := m.db.LogEvent(state.EventQuestgiverScanDone, "quest scan complete", "", ""); err != nil {
+			m.logger.Warn("failed to log scan-done event", "error", err)
+		}
 	}
 }
 
 // runQuest executes a single quest and handles the result.
 func (m *Monitor) runQuest(ctx context.Context, anvilName, anvilPath string, quest *Quest) {
 	m.logger.Info("starting quest", "quest", quest.Name, "anvil", anvilName)
-	if err := m.db.LogEvent(state.EventAdventurerStarted, quest.Name, "", anvilName); err != nil {
-		m.logger.Warn("failed to log adventurer-started event", "quest", quest.Name, "error", err)
+	if m.db != nil {
+		if err := m.db.LogEvent(state.EventAdventurerStarted, quest.Name, "", anvilName); err != nil {
+			m.logger.Warn("failed to log adventurer-started event", "quest", quest.Name, "error", err)
+		}
 	}
 
+	questCtx := ctx
+	questCancel := func() {}
+	if m.timeout > 0 {
+		questCtx, questCancel = context.WithTimeout(ctx, m.timeout)
+	}
+	defer questCancel()
+
 	executor := m.newExec()
-	result := executor.Execute(ctx, quest)
+	result := executor.Execute(questCtx, quest)
 
 	if result.Passed {
 		m.logger.Info("quest passed", "quest", quest.Name, "anvil", anvilName, "duration", result.Duration)
-		if err := m.db.LogEvent(state.EventAdventurerPassed, quest.Name, "", anvilName); err != nil {
-			m.logger.Warn("failed to log adventurer-passed event", "quest", quest.Name, "error", err)
+		if m.db != nil {
+			if err := m.db.LogEvent(state.EventAdventurerPassed, quest.Name, "", anvilName); err != nil {
+				m.logger.Warn("failed to log adventurer-passed event", "quest", quest.Name, "error", err)
+			}
 		}
 		return
 	}
 
 	m.logger.Warn("quest failed", "quest", quest.Name, "anvil", anvilName,
 		"step", result.FailedStep, "error", result.ErrorMessage)
-	if err := m.db.LogEvent(state.EventAdventurerFailed,
-		fmt.Sprintf("%s: step %d — %s", quest.Name, result.FailedStep, result.ErrorMessage),
-		"", anvilName); err != nil {
-		m.logger.Warn("failed to log adventurer-failed event", "quest", quest.Name, "error", err)
+	if m.db != nil {
+		if err := m.db.LogEvent(state.EventAdventurerFailed,
+			fmt.Sprintf("%s: step %d — %s", quest.Name, result.FailedStep, result.ErrorMessage),
+			"", anvilName); err != nil {
+			m.logger.Warn("failed to log adventurer-failed event", "quest", quest.Name, "error", err)
+		}
 	}
 
 	if isDuplicate(ctx, anvilPath, quest.Name) {
@@ -145,29 +166,40 @@ type bdBead struct {
 	Status string `json:"status"`
 }
 
-// isDuplicate checks if an open/in_progress bead already exists for this quest.
+// isDuplicate checks if an open or in_progress bead already exists for this
+// quest. If bd list fails, it returns true to prevent creating duplicate beads
+// when deduplication state is unknown.
 func isDuplicate(ctx context.Context, anvilPath, questName string) bool {
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "list", "--status=open", "--limit", "0", "--json"))
-	cmd.Dir = anvilPath
-	out, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-
 	prefix := "E2E failure: " + questName
-	var beads []bdBead
-	if err := json.Unmarshal(out, &beads); err != nil {
-		return strings.Contains(string(out), prefix)
-	}
-	// bd list --status=open returns both open and in_progress beads,
-	// so a single call is sufficient for deduplication.
-	for _, b := range beads {
-		if strings.Contains(b.Title, prefix) {
+
+	for _, status := range []string{"open", "in_progress"} {
+		cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
+			"bd", "list", "--status="+status, "--limit", "0", "--json"))
+		cmd.Dir = anvilPath
+		out, err := cmd.Output()
+		cancel()
+
+		if err != nil {
+			slog.Error("bd list failed during quest deduplication; treating as duplicate and skipping bead creation",
+				"anvil_path", anvilPath,
+				"quest_name", questName,
+				"status", status,
+				"error", err)
 			return true
+		}
+
+		var beads []bdBead
+		if err := json.Unmarshal(out, &beads); err != nil {
+			if strings.Contains(string(out), prefix) {
+				return true
+			}
+			continue
+		}
+		for _, b := range beads {
+			if strings.Contains(b.Title, prefix) {
+				return true
+			}
 		}
 	}
 
@@ -207,9 +239,11 @@ func (m *Monitor) createBead(ctx context.Context, anvilName, anvilPath string, q
 	}
 
 	m.logger.Info("created bead for quest failure", "quest", quest.Name, "anvil", anvilName)
-	if err := m.db.LogEvent(state.EventTestBeadCreated,
-		fmt.Sprintf("E2E failure: %s", quest.Name), "", anvilName); err != nil {
-		m.logger.Warn("failed to log test-bead-created event", "quest", quest.Name, "error", err)
+	if m.db != nil {
+		if err := m.db.LogEvent(state.EventTestBeadCreated,
+			fmt.Sprintf("E2E failure: %s", quest.Name), "", anvilName); err != nil {
+			m.logger.Warn("failed to log test-bead-created event", "quest", quest.Name, "error", err)
+		}
 	}
 }
 
