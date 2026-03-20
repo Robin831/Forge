@@ -131,13 +131,14 @@ func (m *Model) updateList(msg tea.KeyMsg) tea.Cmd {
 	case "k", "up":
 		m.list.vp.ScrollUp()
 	case "S":
-		m.openSortSelector()
+		return m.openSortSelector()
 	}
 	return nil
 }
 
-// openSortSelector creates a huh.Form for choosing the sort field.
-func (m *Model) openSortSelector() {
+// openSortSelector creates a huh.Form for choosing the sort field and returns
+// the tea.Cmd from its Init call so Bubbletea can schedule it.
+func (m *Model) openSortSelector() tea.Cmd {
 	var choice string
 	switch m.list.sortBy {
 	case SortPriority:
@@ -161,10 +162,12 @@ func (m *Model) openSortSelector() {
 		),
 	).WithShowHelp(false).WithShowErrors(false)
 
-	m.list.sortForm.Init()
+	cmd := m.list.sortForm.Init()
 
 	// Store a pointer to choice so we can read the result in processSortResult.
 	m.sortChoice = &choice
+
+	return cmd
 }
 
 // processSortResult reads the sort form result and applies it.
@@ -302,24 +305,26 @@ func (m *Model) renderBeadRow(b Bead, titleWidth int, selected bool) string {
 		Render(row)
 }
 
-// truncate shortens s to maxLen, appending "…" if truncated.
+// truncate shortens s to maxLen runes, appending "…" if truncated.
 func truncate(s string, maxLen int) string {
 	if maxLen <= 0 {
 		return ""
 	}
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
 	if maxLen <= 1 {
 		return "…"
 	}
-	return s[:maxLen-1] + "…"
+	return string(runes[:maxLen-1]) + "…"
 }
 
-// padRight pads s with spaces to the given width.
+// padRight pads s with spaces so the total rune count equals width.
 func padRight(s string, width int) string {
-	if len(s) >= width {
+	n := len([]rune(s))
+	if n >= width {
 		return s
 	}
-	return s + strings.Repeat(" ", width-len(s))
+	return s + strings.Repeat(" ", width-n)
 }
