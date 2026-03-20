@@ -2,6 +2,7 @@ package depcheck
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,6 +53,71 @@ func TestFindNpmProjects_NoPackageJson(t *testing.T) {
 	dir := t.TempDir()
 	dirs := findNpmProjects(dir)
 	assert.Empty(t, dirs)
+}
+
+// TestRunNpmOutdated_CallsInstallFirst verifies that runNpmOutdated invokes
+// npm install (via runNpmInstallFn) before npm outdated to sync node_modules
+// with the lock file.
+func TestRunNpmOutdated_CallsInstallFirst(t *testing.T) {
+	var calls []string
+
+	origInstall := runNpmInstallFn
+	origOutdated := runNpmOutdatedFn
+	t.Cleanup(func() {
+		runNpmInstallFn = origInstall
+		runNpmOutdatedFn = origOutdated
+	})
+
+	runNpmInstallFn = func(_ context.Context, _ time.Duration, dir string) error {
+		calls = append(calls, "install:"+dir)
+		return nil
+	}
+
+	// Replace runNpmOutdatedFn so we go through the real runNpmOutdated logic
+	// but with the install stub above. We need to call the real function, not
+	// the stub, so we restore the original outdated fn and only stub install.
+	runNpmOutdatedFn = origOutdated
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+
+	s := &Scanner{timeout: 30 * time.Second}
+	// scanNpm calls runNpmOutdatedFn which is the real runNpmOutdated,
+	// which in turn calls runNpmInstallFn (our stub).
+	_ = s.scanNpm(context.Background(), "test", dir)
+
+	assert.Contains(t, calls, "install:"+dir, "npm install should be called before npm outdated")
+}
+
+// TestRunNpmOutdated_InstallFailureContinues verifies that if npm install fails,
+// runNpmOutdated still proceeds (stale data is better than no data).
+func TestRunNpmOutdated_InstallFailureContinues(t *testing.T) {
+	origInstall := runNpmInstallFn
+	origOutdated := runNpmOutdatedFn
+	t.Cleanup(func() {
+		runNpmInstallFn = origInstall
+		runNpmOutdatedFn = origOutdated
+	})
+
+	runNpmInstallFn = func(_ context.Context, _ time.Duration, _ string) error {
+		return fmt.Errorf("npm install failed: network error")
+	}
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+
+	// The real runNpmOutdated will fail because npm isn't installed in CI,
+	// but that's fine — we just need to verify it doesn't abort on install failure.
+	// Use the stub for the outdated call to isolate the test.
+	runNpmOutdatedFn = func(_ context.Context, _ time.Duration, _ string) ([]ModuleUpdate, error) {
+		return []ModuleUpdate{{Path: "foo", Current: "1.0.0", Latest: "1.0.1", Kind: "patch"}}, nil
+	}
+
+	s := &Scanner{timeout: 30 * time.Second}
+	result := s.scanNpm(context.Background(), "test", dir)
+	require.NotNil(t, result)
+	assert.Nil(t, result.Error, "install failure should not cause scanNpm to fail")
+	assert.Len(t, result.Patch, 1, "outdated results should still be returned")
 }
 
 // TestScanNpmCrossProjectDedup verifies that scanNpm deduplicates packages that

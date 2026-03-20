@@ -15,6 +15,10 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 )
 
+// runNpmInstallFn is the function used to invoke npm install. It is a
+// package-level variable so tests can replace it without requiring npm.
+var runNpmInstallFn = runNpmInstall
+
 // runNpmOutdatedFn is the function used to invoke npm outdated. It is a
 // package-level variable so tests can replace it without requiring npm to be
 // installed on the test machine.
@@ -107,9 +111,35 @@ type npmOutdatedEntry struct {
 	Latest  string `json:"latest"`
 }
 
+// runNpmInstall runs 'npm install --ignore-scripts' in the given directory to
+// sync node_modules with package-lock.json. This ensures that 'npm outdated'
+// reports versions from the lock file rather than stale installed versions.
+func runNpmInstall(ctx context.Context, timeout time.Duration, dir string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "npm", "install", "--ignore-scripts"))
+	cmd.Dir = dir
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("npm install --ignore-scripts: %w (stderr: %s)", err, stderr.String())
+	}
+	return nil
+}
+
 // runNpmOutdated runs 'npm outdated --json' in the given directory and
-// parses the output into ModuleUpdate entries.
+// parses the output into ModuleUpdate entries. It first runs npm install
+// to sync node_modules with the lock file so reported versions are accurate.
 func runNpmOutdated(ctx context.Context, timeout time.Duration, dir string) ([]ModuleUpdate, error) {
+	// Sync node_modules with lock file before checking for outdated packages.
+	// If install fails, log and continue — stale data is better than no data.
+	if err := runNpmInstallFn(ctx, timeout, dir); err != nil {
+		fmt.Fprintf(os.Stderr, "depcheck: warning: %s in %s, continuing with potentially stale versions\n", err, dir)
+	}
+
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
