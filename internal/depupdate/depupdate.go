@@ -37,14 +37,7 @@ type AnvilResult struct {
 func (ar *AnvilResult) TotalUpdates(opts Options) int {
 	total := 0
 	for _, cr := range ar.Ecosystems {
-		total += len(cr.Patch) + len(cr.Minor)
-		if !opts.PatchOnly && !opts.NoMajor {
-			total += len(cr.Major)
-		}
-		if opts.PatchOnly {
-			// Only patch counted, minor already included above — subtract it
-			total -= len(cr.Minor)
-		}
+		total += len(filterUpdates(cr, opts))
 	}
 	return total
 }
