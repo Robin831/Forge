@@ -3,8 +3,10 @@ package poller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/stretchr/testify/assert"
@@ -300,4 +302,50 @@ func TestPoll_MultipleAnvils(t *testing.T) {
 
 	// No beads expected since all polls failed
 	assert.Empty(t, beads)
+}
+
+func TestNewStaggered_CalculatesInterval(t *testing.T) {
+	tests := []struct {
+		name       string
+		anvilCount int
+		interval   time.Duration
+		wantStag   time.Duration
+	}{
+		{"5 anvils 30s", 5, 30 * time.Second, 6 * time.Second},
+		{"3 anvils 60s", 3, 60 * time.Second, 20 * time.Second},
+		{"1 anvil 30s", 1, 30 * time.Second, 0},
+		{"0 anvils 30s", 0, 30 * time.Second, 0},
+		{"2 anvils 10s", 2, 10 * time.Second, 5 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			anvils := make(map[string]config.AnvilConfig, tt.anvilCount)
+			for i := 0; i < tt.anvilCount; i++ {
+				anvils[fmt.Sprintf("anvil-%d", i)] = config.AnvilConfig{Path: "/tmp"}
+			}
+			p := NewStaggered(anvils, tt.interval)
+			assert.Equal(t, tt.wantStag, p.StaggerInterval)
+		})
+	}
+}
+
+func TestPoll_StaggerRespectsContextCancellation(t *testing.T) {
+	anvils := map[string]config.AnvilConfig{
+		"anvil-a": {Path: t.TempDir()},
+		"anvil-b": {Path: t.TempDir()},
+		"anvil-c": {Path: t.TempDir()},
+	}
+
+	// Use a large stagger so the later anvils won't start before cancellation.
+	p := NewStaggered(anvils, 30*time.Minute)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately so staggered goroutines bail out.
+	cancel()
+
+	_, results := p.Poll(ctx)
+
+	// All anvils should still be represented in results.
+	assert.Len(t, results, len(anvils))
 }
