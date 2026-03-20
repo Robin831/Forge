@@ -1289,3 +1289,35 @@ rules:
         Verify that LogEvent calls pass the available bead ID rather than an empty string, so failures can be correlated back to the originating bead in state.db
       source: copilot:PR#358
       added: "2026-03-20"
+    - id: zero-interval-ticker-panic
+      category: error-handling
+      pattern: >-
+        time.NewTicker called with a duration that could be zero or negative based on configuration
+      check: >-
+        Verify that time.NewTicker is never called with a zero or negative duration. If an interval of 0 means 'disabled', add a guard before ticker creation to skip scheduling (e.g. block on ctx.Done() or return early) instead of panicking at runtime.
+      source: copilot:PR#362
+      added: "2026-03-20"
+    - id: emit-event-on-empty-flush
+      category: error-handling
+      pattern: >-
+        A function processes a batch of items and early-returns when no items matched or all were filtered out, skipping the normal completion event/log
+      check: >-
+        Verify that completion or summary events are emitted even when the effective result count is zero (e.g., all duplicates, all filtered). Silent early returns on zero-result paths make successful queue draining invisible in the event log and break observability contracts.
+      source: copilot:PR#362
+      added: "2026-03-20"
+    - id: git-cmd-timeout
+      category: concurrency
+      pattern: >-
+        Calling git commands (via exec.Command or helper functions) using an unbounded context or no timeout
+      check: >-
+        Verify that all git command invocations use a bounded timeout context (e.g. context.WithTimeout) rather than relying solely on a parent context, so a single stuck git call (auth prompt, stalled network) cannot hang the caller indefinitely
+      source: copilot:PR#362
+      added: "2026-03-20"
+    - id: gh-cli-timeout
+      category: concurrency
+      pattern: >-
+        Executing gh CLI commands (gh pr list, gh pr create, etc.) without a bounded context timeout
+      check: >-
+        Verify that all gh CLI invocations are wrapped in a context.WithTimeout so a hung process (network/auth issues) cannot stall background loops or block other work
+      source: copilot:PR#362
+      added: "2026-03-20"
