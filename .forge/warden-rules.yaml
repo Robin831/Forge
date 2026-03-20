@@ -803,7 +803,7 @@ rules:
         exec.Command(...).CombinedOutput() used for external CLI calls without a context or timeout
       check: >-
         Verify that all external CLI invocations use exec.CommandContext with a short timeout so that a slow or hanging subprocess cannot block the caller indefinitely; return a warning or error on timeout rather than waiting forever
-      source: copilot:PR#286
+      source: [copilot:PR#286, copilot:PR#362]
       added: "2026-03-16"
     - id: doctor-message-provider-consistency
       category: style
@@ -1288,4 +1288,20 @@ rules:
       check: >-
         Verify that LogEvent calls pass the available bead ID rather than an empty string, so failures can be correlated back to the originating bead in state.db
       source: copilot:PR#358
+      added: "2026-03-20"
+    - id: zero-interval-ticker-panic
+      category: error-handling
+      pattern: >-
+        time.NewTicker called with a duration that could be zero or negative based on configuration
+      check: >-
+        Verify that time.NewTicker is never called with a zero or negative duration. If an interval of 0 means 'disabled', add a guard before ticker creation to skip scheduling (e.g. block on ctx.Done() or return early) instead of panicking at runtime.
+      source: copilot:PR#362
+      added: "2026-03-20"
+    - id: emit-event-on-empty-flush
+      category: error-handling
+      pattern: >-
+        A function processes a batch of items and early-returns when no items matched or all were filtered out, skipping the normal completion event/log
+      check: >-
+        Verify that completion or summary events are emitted even when the effective result count is zero (e.g., all duplicates, all filtered). Silent early returns on zero-result paths make successful queue draining invisible in the event log and break observability contracts.
+      source: copilot:PR#362
       added: "2026-03-20"
