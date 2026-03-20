@@ -833,7 +833,7 @@ rules:
         Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
       check: >-
         Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: ['copilot:PR#285', 'copilot:PR#322', 'copilot:PR#324', 'copilot:PR#326', 'copilot:PR#328', 'copilot:PR#329', 'copilot:PR#331', 'copilot:PR#332', 'copilot:PR#334', 'copilot:PR#340', 'copilot:PR#345']
+      source: ['copilot:PR#285', 'copilot:PR#322', 'copilot:PR#324', 'copilot:PR#326', 'copilot:PR#328', 'copilot:PR#329', 'copilot:PR#331', 'copilot:PR#332', 'copilot:PR#334', 'copilot:PR#340', 'copilot:PR#344', 'copilot:PR#345']
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
