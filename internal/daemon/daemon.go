@@ -1356,6 +1356,16 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	if pollInterval == 0 {
 		pollInterval = DefaultPollInterval
 	}
+	// When running under a context with a deadline (e.g. short IPC refreshes),
+	// avoid using a stagger interval that extends beyond the remaining time
+	// budget; otherwise some anvils may never start polling before the
+	// context is cancelled.
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining > 0 && remaining < pollInterval {
+			pollInterval = remaining
+		}
+	}
 	p := poller.NewStaggered(cfg.Anvils, pollInterval)
 	beads, results := p.Poll(ctx)
 

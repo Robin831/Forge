@@ -61,9 +61,10 @@ type AnvilResult struct {
 type BeadPoller struct {
 	anvils map[string]config.AnvilConfig
 	// StaggerInterval is the delay between starting each anvil's poll.
-	// When non-zero, anvils are polled sequentially with this delay between
-	// each start, spreading bd/git commands over time instead of firing all
-	// at once. The total stagger should be less than the poll interval.
+	// When non-zero, each anvil's poll is started sequentially with this delay
+	// between starts, giving a staggered start across anvils and spreading
+	// bd/git commands over time instead of firing all at once. The total
+	// stagger should be less than the poll interval.
 	StaggerInterval time.Duration
 }
 
@@ -73,8 +74,9 @@ func New(anvils map[string]config.AnvilConfig) *BeadPoller {
 }
 
 // NewStaggered creates a BeadPoller that staggers anvil polls across the
-// given poll interval. Each anvil's poll is delayed by
-// pollInterval / len(anvils) relative to the previous one.
+// given poll interval. When there are 2 or more anvils, each anvil's poll is
+// delayed by pollInterval / len(anvils) relative to the previous one. With
+// only one anvil no stagger is applied (StaggerInterval remains zero).
 func NewStaggered(anvils map[string]config.AnvilConfig, pollInterval time.Duration) *BeadPoller {
 	var stagger time.Duration
 	if len(anvils) > 1 {
@@ -108,8 +110,17 @@ func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 			defer wg.Done()
 			// Wait for stagger delay, respecting context cancellation.
 			if delay > 0 {
+				timer := time.NewTimer(delay)
+				defer func() {
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+				}()
 				select {
-				case <-time.After(delay):
+				case <-timer.C:
 				case <-ctx.Done():
 					mu.Lock()
 					results = append(results, AnvilResult{
