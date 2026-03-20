@@ -167,7 +167,7 @@ func (m *Model) updateList(msg tea.KeyMsg) tea.Cmd {
 
 	switch msg.String() {
 	case "j", "down":
-		m.list.vp.ScrollDown(len(m.beads))
+		m.list.vp.ScrollDown(len(m.filter.FilterBeads(m.beads)))
 	case "k", "up":
 		m.list.vp.ScrollUp()
 	case "S":
@@ -231,12 +231,18 @@ func (m *Model) processSortResult() {
 
 // renderList renders the bead list as a table.
 func (m *Model) renderList() string {
-	sorted := sortBeads(m.beads, m.list.sortBy)
+	filtered := m.filter.FilterBeads(m.beads)
+	sorted := sortBeads(filtered, m.list.sortBy)
 	total := len(sorted)
 
 	// Header
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Padding(0, 2)
-	header := headerStyle.Render(fmt.Sprintf("⚒ Forge Ledger — %d beads (sorted by %s)", total, m.list.sortBy))
+	headerText := fmt.Sprintf("⚒ Forge Ledger — %d beads (sorted by %s)", total, m.list.sortBy)
+	if m.filter.HasActiveFilter() {
+		filterStyle := lipgloss.NewStyle().Bold(true).Foreground(colorWarning)
+		headerText += "  " + filterStyle.Render("Filter: "+m.filter.Summary())
+	}
+	header := headerStyle.Render(headerText)
 
 	// Column header
 	colHeaderStyle := lipgloss.NewStyle().Bold(true).Foreground(colorMuted).Padding(0, 2)
@@ -276,7 +282,13 @@ func (m *Model) renderList() string {
 	if m.err != nil {
 		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  ⚠ %v", m.err))
 	}
-	footer := footerStyle.Render("j/k: navigate  S: sort  n: new  e: edit  x: close  r: reopen  Tab: kanban  q: quit") + errNote
+	var footerText string
+	if m.filter.active {
+		footerText = "  " + m.filter.input.View()
+	} else {
+		footerText = footerStyle.Render("/: filter  j/k: navigate  S: sort  n: new  e: edit  x: close  r: reopen  Tab: kanban  q: quit")
+	}
+	footer := footerText + errNote
 
 	out := header + "\n" + colHeader + "\n" + rows.String() + "\n" + footer
 

@@ -212,9 +212,10 @@ func (m *Model) moveBeadToLane(targetLane int) tea.Cmd {
 	}
 }
 
-// refreshKanbanLanes repopulates the kanban lanes from the current bead list.
+// refreshKanbanLanes repopulates the kanban lanes from the current bead list,
+// applying the active filter before distributing beads into lanes.
 func (m *Model) refreshKanbanLanes() {
-	m.kanban.lanes = populateLanes(m.beads)
+	m.kanban.lanes = populateLanes(m.filter.FilterBeads(m.beads))
 	for i := range laneCount {
 		m.kanban.laneVP[i].ClampToTotal(len(m.kanban.lanes[i]))
 	}
@@ -229,7 +230,12 @@ func (m *Model) renderKanban() string {
 
 	// Header
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Padding(0, 2)
-	header := headerStyle.Render(fmt.Sprintf("⚒ Forge Ledger — Kanban (%d beads)", totalBeads))
+	headerText := fmt.Sprintf("⚒ Forge Ledger — Kanban (%d beads)", totalBeads)
+	if m.filter.HasActiveFilter() {
+		filterStyle := lipgloss.NewStyle().Bold(true).Foreground(colorWarning)
+		headerText += "  " + filterStyle.Render("Filter: "+m.filter.Summary())
+	}
+	header := headerStyle.Render(headerText)
 
 	// Lane dimensions
 	laneWidth := m.kanbanLaneWidth()
@@ -263,7 +269,13 @@ func (m *Model) renderKanban() string {
 	if m.err != nil {
 		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  ⚠ %v", m.err))
 	}
-	footer := footerStyle.Render("h/l: lane  j/k: card  H/L: move  n: new  e: edit  x: close  r: reopen  Tab: list  q: quit") + errNote
+	var footerText string
+	if m.filter.active {
+		footerText = "  " + m.filter.input.View()
+	} else {
+		footerText = footerStyle.Render("/: filter  h/l: lane  j/k: card  H/L: move  n: new  e: edit  x: close  r: reopen  Tab: list  q: quit")
+	}
+	footer := footerText + errNote
 
 	return header + "\n" + board + "\n" + detail + "\n" + footer
 }

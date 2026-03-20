@@ -62,6 +62,7 @@ type Model struct {
 	view   ViewMode
 	list   listState
 	kanban kanbanState
+	filter FilterState
 	// sortChoice holds the pointer used by the huh sort selector form.
 	sortChoice *string
 
@@ -99,6 +100,7 @@ func NewModel(anvils map[string]string, db *state.DB) *Model {
 		db:      db,
 		loading: true,
 		view:    ViewList,
+		filter:  newFilterState(),
 	}
 }
 
@@ -115,6 +117,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Forward non-key messages to filter input when active (e.g. cursor blink).
+	if m.filter.active {
+		if _, isKey := msg.(tea.KeyMsg); !isKey {
+			var cmd tea.Cmd
+			m.filter.input, cmd = m.filter.input.Update(msg)
+			if cmd != nil {
+				return m, cmd
+			}
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// When a form overlay is active, route key events to the form handler.
@@ -126,12 +139,30 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+		// When filter input is active, route keys to the filter.
+		if m.filter.active {
+			cmd, consumed := m.filter.update(msg)
+			if consumed {
+				// After filter text changes, clamp viewports to new filtered counts.
+				filtered := m.filter.FilterBeads(m.beads)
+				m.list.vp.ClampToTotal(len(filtered))
+				m.refreshKanbanLanes()
+				return m, cmd
+			}
+		}
+
 		// Global quit key "q" (only when sort form is not open).
 		if m.list.sortForm == nil {
 			switch msg.String() {
 			case "q":
 				return m, tea.Quit
 			}
+		}
+
+		// "/" activates the filter search input.
+		if m.list.sortForm == nil && msg.String() == "/" {
+			cmd := m.filter.activate()
+			return m, cmd
 		}
 
 		// CRUD key bindings (available in both views when no form is open).
@@ -179,7 +210,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetching = false
 		m.beads = msg.Beads
 		m.err = msg.Err
-		m.list.vp.ClampToTotal(len(m.beads))
+		filtered := m.filter.FilterBeads(m.beads)
+		m.list.vp.ClampToTotal(len(filtered))
 		m.refreshKanbanLanes()
 
 	case moveBeadMsg:
@@ -397,7 +429,7 @@ func (m *Model) executeFormAction() tea.Cmd {
 func (m *Model) selectedBead() *Bead {
 	switch m.view {
 	case ViewList:
-		sorted := sortBeads(m.beads, m.list.sortBy)
+		sorted := sortBeads(m.filter.FilterBeads(m.beads), m.list.sortBy)
 		idx := m.list.vp.Selected()
 		if idx >= 0 && idx < len(sorted) {
 			return &sorted[idx]
