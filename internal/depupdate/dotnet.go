@@ -74,7 +74,9 @@ func findCsprojFiles(root string) ([]string, error) {
 
 // findCsprojForPackage searches through the given .csproj files for one that
 // contains a PackageReference to the named package. If only one .csproj exists,
-// it is returned directly. Returns an error if the package cannot be located.
+// it is returned directly. If no matching PackageReference is found, the first
+// .csproj in the list is returned and the caller relies on `dotnet add` to
+// handle adding a new or implicit reference.
 func findCsprojForPackage(csprojFiles []string, packageName string) (string, error) {
 	if len(csprojFiles) == 1 {
 		return csprojFiles[0], nil

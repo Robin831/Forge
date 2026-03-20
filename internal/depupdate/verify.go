@@ -18,13 +18,15 @@ import (
 // that the group's updates haven't broken anything. Returns the temper result
 // so the caller can decide to commit or rollback.
 func VerifyGroup(ctx context.Context, anvilPath string, anvilConfig config.AnvilConfig) (*temper.Result, error) {
+	// Resolve race detection with full precedence:
+	// .forge/temper.yaml > per-anvil forge.yaml config > default (off).
 	raceEnabled := anvilConfig.GoRaceDetection != nil && *anvilConfig.GoRaceDetection
+	if anvilTemper, err := temper.LoadAnvilConfig(anvilPath); err == nil && anvilTemper != nil && anvilTemper.GoRaceDetection != nil {
+		raceEnabled = *anvilTemper.GoRaceDetection
+	}
 	detectOpts := temper.DetectOptionsFromAnvilFlag(anvilConfig.GolangciLint)
 
 	cfg := temper.DefaultConfigWithRace(anvilPath, detectOpts, raceEnabled)
-	if len(cfg.Steps) == 0 {
-		return &temper.Result{Passed: true, Summary: "no verification steps detected"}, nil
-	}
 
 	// Pass nil for db/beadID/anvil since depupdate runs outside the normal
 	// pipeline lifecycle and doesn't need event logging.
@@ -33,7 +35,9 @@ func VerifyGroup(ctx context.Context, anvilPath string, anvilConfig config.Anvil
 }
 
 // RollbackGroup discards all uncommitted changes in the anvil directory by
-// running `git checkout -- .`. It logs which group failed and why.
+// running `git reset --hard` (resets both index and working tree) followed by
+// `git clean -fdx` (removes untracked files including ignored artifacts such as
+// node_modules/, bin/, obj/). It logs which group failed and why.
 // Uses a fresh context with a 30-second timeout so that rollback still succeeds
 // even when the caller's context has been cancelled.
 func RollbackGroup(_ context.Context, anvilPath string, group UpdateGroup, reason error) error {
@@ -42,18 +46,18 @@ func RollbackGroup(_ context.Context, anvilPath string, group UpdateGroup, reaso
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := executil.HideWindow(exec.CommandContext(rollbackCtx, "git", "checkout", "--", "."))
+	cmd := executil.HideWindow(exec.CommandContext(rollbackCtx, "git", "reset", "--hard"))
 	cmd.Dir = anvilPath
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git checkout during rollback of group %q: %w\nstderr: %s", group.Name, err, stderr.String())
+		return fmt.Errorf("git reset --hard during rollback of group %q: %w\nstderr: %s", group.Name, err, stderr.String())
 	}
 
-	// Also clean any untracked files that the install may have created.
-	cleanCmd := executil.HideWindow(exec.CommandContext(rollbackCtx, "git", "clean", "-fd"))
+	// Also clean any untracked files (including ignored artifacts) that the install may have created.
+	cleanCmd := executil.HideWindow(exec.CommandContext(rollbackCtx, "git", "clean", "-fdx"))
 	cleanCmd.Dir = anvilPath
 
 	var cleanStderr bytes.Buffer

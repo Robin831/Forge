@@ -85,19 +85,23 @@ func TestFindCsprojForPackage_MultipleFiles_MatchesPackageReference(t *testing.T
 
 	// First csproj: has a PackageReference for Serilog
 	csproj1 := filepath.Join(dir, "Logging.csproj")
-	os.WriteFile(csproj1, []byte(`<Project Sdk="Microsoft.NET.Sdk">
+	if err := os.WriteFile(csproj1, []byte(`<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="Serilog" Version="3.0.0" />
   </ItemGroup>
-</Project>`), 0644)
+</Project>`), 0644); err != nil {
+		t.Fatalf("failed to write %s: %v", csproj1, err)
+	}
 
 	// Second csproj: has a PackageReference for Newtonsoft.Json
 	csproj2 := filepath.Join(dir, "Api.csproj")
-	os.WriteFile(csproj2, []byte(`<Project Sdk="Microsoft.NET.Sdk">
+	if err := os.WriteFile(csproj2, []byte(`<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
   </ItemGroup>
-</Project>`), 0644)
+</Project>`), 0644); err != nil {
+		t.Fatalf("failed to write %s: %v", csproj2, err)
+	}
 
 	got, err := findCsprojForPackage([]string{csproj1, csproj2}, "Newtonsoft.Json")
 	if err != nil {
@@ -112,18 +116,22 @@ func TestFindCsprojForPackage_MultipleFiles_FallbackWhenNotFound(t *testing.T) {
 	dir := t.TempDir()
 
 	csproj1 := filepath.Join(dir, "App.csproj")
-	os.WriteFile(csproj1, []byte(`<Project Sdk="Microsoft.NET.Sdk">
+	if err := os.WriteFile(csproj1, []byte(`<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="Serilog" Version="3.0.0" />
   </ItemGroup>
-</Project>`), 0644)
+</Project>`), 0644); err != nil {
+		t.Fatalf("failed to write %s: %v", csproj1, err)
+	}
 
 	csproj2 := filepath.Join(dir, "Web.csproj")
-	os.WriteFile(csproj2, []byte(`<Project Sdk="Microsoft.NET.Sdk">
+	if err := os.WriteFile(csproj2, []byte(`<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="FluentValidation" Version="11.0.0" />
   </ItemGroup>
-</Project>`), 0644)
+</Project>`), 0644); err != nil {
+		t.Fatalf("failed to write %s: %v", csproj2, err)
+	}
 
 	// Package not in any csproj — should fall back to the first file.
 	files := []string{csproj1, csproj2}
@@ -141,20 +149,24 @@ func TestFindCsprojForPackage_DoesNotMatchLooseText(t *testing.T) {
 
 	// This csproj mentions "Newtonsoft.Json" in a comment but NOT as a PackageReference.
 	csproj1 := filepath.Join(dir, "App.csproj")
-	os.WriteFile(csproj1, []byte(`<Project Sdk="Microsoft.NET.Sdk">
+	if err := os.WriteFile(csproj1, []byte(`<Project Sdk="Microsoft.NET.Sdk">
   <!-- Removed Newtonsoft.Json in favor of System.Text.Json -->
   <ItemGroup>
     <PackageReference Include="System.Text.Json" Version="8.0.0" />
   </ItemGroup>
-</Project>`), 0644)
+</Project>`), 0644); err != nil {
+		t.Fatalf("failed to write %s: %v", csproj1, err)
+	}
 
 	// This csproj has the actual PackageReference.
 	csproj2 := filepath.Join(dir, "Legacy.csproj")
-	os.WriteFile(csproj2, []byte(`<Project Sdk="Microsoft.NET.Sdk">
+	if err := os.WriteFile(csproj2, []byte(`<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
   </ItemGroup>
-</Project>`), 0644)
+</Project>`), 0644); err != nil {
+		t.Fatalf("failed to write %s: %v", csproj2, err)
+	}
 
 	got, err := findCsprojForPackage([]string{csproj1, csproj2}, "Newtonsoft.Json")
 	if err != nil {
@@ -169,14 +181,22 @@ func TestFindCsprojFiles_SkipsExcludedDirs(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create valid csproj files.
-	os.MkdirAll(filepath.Join(dir, "src"), 0755)
-	os.WriteFile(filepath.Join(dir, "src", "App.csproj"), []byte("<Project/>"), 0644)
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0755); err != nil {
+		t.Fatalf("failed to create src dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "src", "App.csproj"), []byte("<Project/>"), 0644); err != nil {
+		t.Fatalf("failed to write App.csproj: %v", err)
+	}
 
 	// Create csproj files in excluded directories.
 	for _, excluded := range []string{"bin", "obj", ".git", "node_modules"} {
 		excDir := filepath.Join(dir, "src", excluded)
-		os.MkdirAll(excDir, 0755)
-		os.WriteFile(filepath.Join(excDir, "Bad.csproj"), []byte("<Project/>"), 0644)
+		if err := os.MkdirAll(excDir, 0755); err != nil {
+			t.Fatalf("failed to create %s dir: %v", excluded, err)
+		}
+		if err := os.WriteFile(filepath.Join(excDir, "Bad.csproj"), []byte("<Project/>"), 0644); err != nil {
+			t.Fatalf("failed to write Bad.csproj in %s: %v", excluded, err)
+		}
 	}
 
 	files, err := findCsprojFiles(dir)
@@ -196,12 +216,16 @@ func TestRollbackGroup_RestoresChanges(t *testing.T) {
 
 	// Create and commit a file.
 	testFile := filepath.Join(dir, "hello.txt")
-	os.WriteFile(testFile, []byte("original"), 0644)
+	if err := os.WriteFile(testFile, []byte("original"), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-m", "initial")
 
 	// Modify the file (uncommitted change).
-	os.WriteFile(testFile, []byte("modified"), 0644)
+	if err := os.WriteFile(testFile, []byte("modified"), 0644); err != nil {
+		t.Fatalf("failed to modify test file: %v", err)
+	}
 
 	err := RollbackGroup(t.Context(), dir, UpdateGroup{Name: "test", Kind: "patch"}, fmt.Errorf("test failure"))
 	if err != nil {
@@ -218,13 +242,17 @@ func TestRollbackGroup_CleansUntrackedFiles(t *testing.T) {
 	dir := initTestGitRepo(t)
 
 	// Create an initial commit so the repo isn't empty.
-	os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep"), 0644); err != nil {
+		t.Fatalf("failed to write keep.txt: %v", err)
+	}
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-m", "initial")
 
 	// Create an untracked file.
 	untrackedFile := filepath.Join(dir, "untracked.txt")
-	os.WriteFile(untrackedFile, []byte("junk"), 0644)
+	if err := os.WriteFile(untrackedFile, []byte("junk"), 0644); err != nil {
+		t.Fatalf("failed to write untracked file: %v", err)
+	}
 
 	err := RollbackGroup(t.Context(), dir, UpdateGroup{Name: "test", Kind: "patch"}, fmt.Errorf("test failure"))
 	if err != nil {
@@ -240,12 +268,16 @@ func TestCommitGroup_CreatesCommit(t *testing.T) {
 	dir := initTestGitRepo(t)
 
 	// Create and commit a baseline.
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test"), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-m", "initial")
 
 	// Make a change to commit via CommitGroup.
-	os.WriteFile(filepath.Join(dir, "go.sum"), []byte("some-dep v1.2.3 h1:abc"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "go.sum"), []byte("some-dep v1.2.3 h1:abc"), 0644); err != nil {
+		t.Fatalf("failed to write go.sum: %v", err)
+	}
 
 	group := UpdateGroup{
 		Name: "some-dep",
