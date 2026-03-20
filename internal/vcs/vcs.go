@@ -205,15 +205,28 @@ func (s *PRStatus) IsClosed() bool {
 
 // CIsInProgress returns true if any CI check is still running (not yet completed).
 // GitHub check runs use Status values like "IN_PROGRESS", "QUEUED", "PENDING",
-// or "WAITING". When a check hasn't completed, its Conclusion is empty.
+// or "WAITING". StatusContext items use State values like "PENDING" or "EXPECTED".
 func (s *PRStatus) CIsInProgress() bool {
 	for _, check := range s.StatusCheckRollup {
+		// Handle StatusContext items (State populated, Status empty).
+		if check.State != "" && check.Status == "" {
+			st := strings.ToUpper(check.State)
+			if st == "PENDING" || st == "EXPECTED" {
+				return true
+			}
+			continue // SUCCESS, FAILURE, ERROR are terminal states
+		}
+
 		st := strings.ToUpper(check.Status)
-		if st == "IN_PROGRESS" || st == "QUEUED" || st == "PENDING" || st == "WAITING" {
+		if st == "IN_PROGRESS" || st == "QUEUED" || st == "PENDING" || st == "WAITING" || st == "REQUESTED" {
 			return true
 		}
-		// Some platforms leave Status empty but Conclusion empty too for
-		// checks that haven't finished yet. Treat that as in-progress.
+		// A check marked COMPLETED but with no conclusion is in a transient
+		// state — treat it as still in progress until the conclusion arrives.
+		if st == "COMPLETED" && check.Conclusion == "" {
+			return true
+		}
+		// Unknown/empty status with no conclusion is likely in progress.
 		if st != "COMPLETED" && check.Conclusion == "" {
 			return true
 		}
@@ -221,13 +234,26 @@ func (s *PRStatus) CIsInProgress() bool {
 	return false
 }
 
-// CIsPassing returns true if all CI checks have passed.
+// CIsPassing returns true if all CI checks have completed with a passing result.
+// Checks that are still in progress are treated as not passing (their empty
+// Conclusion does not match SUCCESS/NEUTRAL/SKIPPED). Use CIsInProgress() to
+// distinguish "failing" from "not yet completed".
 func (s *PRStatus) CIsPassing() bool {
 	if len(s.StatusCheckRollup) == 0 {
 		return true
 	}
 	for _, check := range s.StatusCheckRollup {
-		if check.Conclusion != "SUCCESS" && check.Conclusion != "NEUTRAL" && check.Conclusion != "SKIPPED" {
+		// Handle StatusContext items (State populated, Status empty).
+		if check.State != "" && check.Status == "" {
+			st := strings.ToUpper(check.State)
+			if st != "SUCCESS" {
+				return false // PENDING, EXPECTED, FAILURE, ERROR
+			}
+			continue
+		}
+
+		conclusion := strings.ToUpper(check.Conclusion)
+		if conclusion != "SUCCESS" && conclusion != "NEUTRAL" && conclusion != "SKIPPED" {
 			return false
 		}
 	}
@@ -260,10 +286,22 @@ func (s *PRStatus) HasPendingReviewRequests() bool {
 }
 
 // CheckRun represents a CI check on a PR.
+//
+// GitHub's statusCheckRollup returns two types: CheckRun (GitHub Actions) and
+// StatusContext (legacy commit status API). They use different field schemas:
+//
+//   - CheckRun:      Name, Status (QUEUED/IN_PROGRESS/COMPLETED/…), Conclusion (SUCCESS/FAILURE/…)
+//   - StatusContext:  Context (the check name), State (PENDING/SUCCESS/FAILURE/ERROR/EXPECTED)
+//
+// Both types are deserialized into this struct. Callers should use the helper
+// methods (CIsInProgress, CIsPassing) which handle both schemas.
 type CheckRun struct {
 	Name       string
-	Status     string
-	Conclusion string
+	Status     string // CheckRun: QUEUED, IN_PROGRESS, COMPLETED, WAITING, PENDING, REQUESTED
+	Conclusion string // CheckRun: SUCCESS, FAILURE, NEUTRAL, SKIPPED, CANCELLED, TIMED_OUT, etc.
+	// State and Context are populated for GitHub StatusContext items.
+	State   string // StatusContext: PENDING, SUCCESS, FAILURE, ERROR, EXPECTED
+	Context string // StatusContext: the check name (e.g., "ci/build")
 }
 
 // ReviewAuthor identifies the author of a review.
