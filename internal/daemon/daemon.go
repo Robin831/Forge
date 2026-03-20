@@ -54,6 +54,7 @@ import (
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/shutdown"
+	"github.com/Robin831/Forge/internal/smelter"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
 	"github.com/Robin831/Forge/internal/vulncheck"
@@ -130,6 +131,9 @@ type Daemon struct {
 
 	// Vulnerability scanning
 	vulnScanner *vulncheck.Scanner
+
+	// Smelter: batches pending warden rules into PRs
+	smelterWorker *smelter.Smelter
 
 	// QuestGiver monitor (E2E quest execution)
 	questgiverMonitor *questgiver.Monitor
@@ -701,6 +705,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 		go d.vulnScanner.RunScheduled(ctx, d.config().Settings.VulncheckInterval)
 	} else {
 		d.logger.Info("vulncheck disabled via configuration (vulncheck_enabled: false)")
+	}
+
+	// Start smelter (batches pending warden rules into PRs on a schedule)
+	if d.config().Settings.IsSmelterEnabled() && d.config().Settings.SmelterInterval > 0 {
+		d.smelterWorker = smelter.New(d.db, d.config().Settings.SmelterInterval, monitorAnvils)
+		go func() {
+			if err := d.smelterWorker.Run(ctx); err != nil && err != context.Canceled {
+				d.logger.Error("Smelter error", "error", err)
+			}
+		}()
+	} else if !d.config().Settings.IsSmelterEnabled() {
+		d.logger.Info("smelter disabled via configuration (smelter_enabled: false)")
 	}
 
 	// Start QuestGiver monitor (if enabled)
@@ -4150,6 +4166,17 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 		depcheckPaths := filterDepcheckAnvils(paths, new.Anvils)
 		d.depcheckScanner.UpdateAnvilPaths(depcheckPaths)
 		d.logger.Info("updated depcheck anvil paths", "count", len(depcheckPaths))
+	}
+
+	// Update smelter anvil paths (respect smelter_enabled)
+	if d.smelterWorker != nil {
+		if !new.Settings.IsSmelterEnabled() {
+			d.smelterWorker.UpdateAnvilPaths(map[string]string{})
+			d.logger.Info("disabled smelter via config; cleared anvil paths")
+		} else {
+			d.smelterWorker.UpdateAnvilPaths(paths)
+			d.logger.Info("updated smelter anvil paths", "count", len(paths))
+		}
 	}
 
 	// Update questgiver monitor (respect global questgiver_enabled)
