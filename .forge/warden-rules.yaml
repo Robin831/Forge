@@ -791,3 +791,46 @@ rules:
       check: Verify that terminal column width is calculated using visual-width-aware helpers (e.g. lipgloss.Width or runewidth) rather than rune count, since CJK characters and emoji occupy 2 columns and combining marks occupy 0
       source: copilot:PR#323
       added: "2026-03-20"
+    - id: filtered-zero-results-messaging
+      category: ui
+      pattern: Function returns a 'none found', 'all clear', or 'up to date' message when a count is zero, but filters/flags can exclude results
+      check: When displaying a zero-results message, verify whether active filters could be hiding results. If filters are enabled, the message must indicate that no results matched the current filters (e.g., by reporting excluded counts or naming the active filter) rather than implying none exist at all. This covers both 'no results found' and 'all up to date' phrasing.
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: filter-excludes-all-updates-test
+      category: testing
+      pattern: Summary or display logic that applies filter flags to exclude categories of results, where filters could potentially exclude all items
+      check: When filter options (e.g., NoMajor, NoMinor) can exclude all available updates, verify tests cover the edge case where every update is filtered out — ensuring summary output distinguishes between 'genuinely up to date' and 'updates exist but were excluded by filters'
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: use-time-constants
+      category: style
+      pattern: Raw numeric literals used for time durations (e.g., 60e9, 1000000000, 3600) instead of time.Duration constants
+      check: Verify that all time duration values use Go's time package constants (time.Second, time.Minute, time.Hour) instead of raw nanosecond literals or magic numbers, ensuring the intent is immediately clear to readers
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: distinguish-empty-from-error
+      category: error-handling
+      pattern: APIs or helper functions whose return types cannot clearly represent the three distinct states 'no results found', 'not applicable/unsupported', and 'error occurred' (for example, returning only an empty slice plus an error, or a bool+error that conflates these cases)
+      check: When designing or evolving scan/search/collection APIs, ensure the public contract and call sites can explicitly distinguish between 'no results found', 'not applicable/unsupported', and 'an error occurred' — for example via a dedicated status enum, sentinel values, or clearly documented semantics for result+error combinations — so callers can report accurate status rather than collapsing different failure/empty states into a single generic 'success with empty results'.
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: silent-error-discard
+      category: error-handling
+      pattern: Top-level scan/check orchestration or CLI command logs an error from a worker/provider and continues without surfacing it in the aggregated result or command status
+      check: For top-level scan/check pipelines (CLI commands, orchestrators, or summary builders), verify that downstream errors are not only logged but also surfaced to callers (e.g., included in aggregated error collections or used to mark the command as failed). This rule is distinct from capture-non-critical-errors and propagate-enrichment-errors, which cover background/enrichment flows; use this rule only when logged errors would otherwise cause a high-level operation to appear fully successful.
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: severity-sort-order-consistency
+      category: style
+      pattern: Code that filters or concatenates items by severity/priority level (e.g., patch/minor/major, low/medium/high)
+      check: Verify that severity ordering is consistent with established conventions elsewhere in the codebase — if existing code sorts by highest severity first (major→minor→patch), new code handling the same data should preserve that order rather than reversing it
+      source: copilot:PR#327
+      added: "2026-03-20"
+    - id: no-dead-struct-fields
+      category: style
+      pattern: Struct field that is assigned during construction but never read or written by any method
+      check: Verify that every struct field is actually used. If a field duplicates a method parameter, either wire the field through (use it in methods instead of passing the param) or remove the field to avoid dead state.
+      source: copilot:PR#327
+      added: "2026-03-20"
+
