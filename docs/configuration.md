@@ -117,6 +117,8 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `go_race_detection` | bool\|null | null (use global) | Per-anvil override for Go race detection in Temper. When set, takes precedence over the global setting. |
 | `depcheck_enabled` | bool\|null | null (enabled) | Per-anvil toggle for depcheck scanning. When null, depcheck runs as normal. Set to `false` to skip this anvil entirely. |
 | `auto_merge` | bool | `false` | When enabled, PRs that reach the ready-to-merge state (CI passing, no conflicts, no unresolved threads, no pending reviews) are automatically merged using the configured `merge_strategy`. External PRs (`ext-*`) are never auto-merged. |
+| `questgiver_setup_cmd` | string | | Shell command to run before executing quests for this anvil (e.g. `"podman compose up -d"`). Runs in the anvil's root directory. If the command fails, quest execution is aborted. Used by `forge quest run` and the QuestGiver monitor. |
+| `questgiver_teardown_cmd` | string | | Shell command to run after executing quests for this anvil (e.g. `"podman compose down"`). Runs in the anvil's root directory. Always runs even if quests fail; teardown failures are logged as warnings rather than errors. |
 
 ### Auto-Dispatch Modes
 
