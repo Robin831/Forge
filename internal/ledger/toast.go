@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 const (
@@ -90,6 +91,106 @@ func (m *Model) renderToasts() string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// placeToastsOverlay places the toast overlay at the bottom-center of the
+// background, positioned above the last footerH rows.
+// It uses an ANSI-aware compositor to preserve background content and styling.
+func placeToastsOverlay(width, height, footerH int, overlay, background string) string {
+	overlayLines := strings.Split(overlay, "\n")
+	bgLines := strings.Split(background, "\n")
+	for len(bgLines) < height {
+		bgLines = append(bgLines, "")
+	}
+
+	overlayHeight := len(overlayLines)
+	overlayWidth := 0
+	for _, l := range overlayLines {
+		if w := lipgloss.Width(l); w > overlayWidth {
+			overlayWidth = w
+		}
+	}
+
+	startY := height - footerH - overlayHeight
+	if startY < 0 {
+		startY = 0
+	}
+	startX := (width - overlayWidth) / 2
+	if startX < 0 {
+		startX = 0
+	}
+
+	placeOverlayAt(startX, startY, overlayWidth, overlayLines, bgLines)
+	return strings.Join(bgLines[:height], "\n")
+}
+
+// placeOverlayAt composites overlayLines into bgLines starting at (startX, startY),
+// preserving background content to the right of the overlay. It is ANSI-aware:
+// escape sequences in the background lines are skipped during visual-column math.
+func placeOverlayAt(startX, startY, overlayWidth int, overlayLines, bgLines []string) {
+	for i, overlayLine := range overlayLines {
+		bgIdx := startY + i
+		if bgIdx >= len(bgLines) {
+			break
+		}
+		bgLine := bgLines[bgIdx]
+		bgRunes := []rune(bgLine)
+		olRunes := []rune(overlayLine)
+
+		bgCutStart := visualToRuneIndex(bgLine, startX)
+
+		var result []rune
+		result = append(result, bgRunes[:bgCutStart]...)
+		for lipgloss.Width(string(result)) < startX {
+			result = append(result, ' ')
+		}
+		result = append(result, olRunes...)
+		bgCutEnd := visualToRuneIndex(bgLine, startX+overlayWidth)
+		if bgCutEnd < len(bgRunes) {
+			result = append(result, bgRunes[bgCutEnd:]...)
+		}
+		bgLines[bgIdx] = string(result)
+	}
+}
+
+// visualToRuneIndex returns the rune index in s corresponding to visual column
+// col, skipping ANSI CSI escape sequences and using cell-width-aware counting.
+func visualToRuneIndex(s string, col int) int {
+	runes := []rune(s)
+	visual := 0
+	i := 0
+	for i < len(runes) {
+		if visual >= col {
+			return i
+		}
+		if n := ansiEscapeLen(runes, i); n > 0 {
+			i += n
+			continue
+		}
+		visual += runewidth.RuneWidth(runes[i])
+		i++
+	}
+	return i
+}
+
+// ansiEscapeLen returns the number of runes consumed by an ANSI CSI escape
+// sequence starting at runes[i], or 0 if no escape sequence starts there.
+func ansiEscapeLen(runes []rune, i int) int {
+	if i >= len(runes) || runes[i] != '\x1b' {
+		return 0
+	}
+	if i+1 >= len(runes) || runes[i+1] != '[' {
+		return 0
+	}
+	j := i + 2
+	for j < len(runes) {
+		r := runes[j]
+		j++
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+			return j - i
+		}
+	}
+	return 0
 }
 
 // truncateToast truncates s so its visual width does not exceed maxWidth.

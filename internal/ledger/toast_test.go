@@ -3,6 +3,8 @@ package ledger
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestTruncateToast(t *testing.T) {
@@ -16,8 +18,8 @@ func TestTruncateToast(t *testing.T) {
 	// Long string — should be truncated with "...".
 	long := strings.Repeat("x", 100)
 	got = truncateToast(long, 20)
-	if len(got) > 25 { // visual width ≤ 20 + "..." suffix
-		t.Errorf("expected truncated string, got length %d: %q", len(got), got)
+	if lipgloss.Width(got) > 20 {
+		t.Errorf("expected visual width ≤ 20, got %d: %q", lipgloss.Width(got), got)
 	}
 	if !strings.HasSuffix(got, "...") {
 		t.Errorf("expected '...' suffix, got %q", got)

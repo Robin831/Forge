@@ -4,7 +4,7 @@ package ledger
 
 import (
 	"fmt"
-	"strings"
+	"sort"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -104,13 +104,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Handle active form overlay.
-	if m.activeForm != nil {
-		return m.updateForm(msg)
-	}
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// When a form overlay is active, route key events to the form handler.
+		if m.activeForm != nil {
+			return m.updateForm(msg)
+		}
 		// Global quit key: always handle ctrl+c.
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
@@ -168,7 +167,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, FetchAllBeads(m.anvils, m.db)
 
 	case BeadCreatedMsg:
-		cmd := m.addToast(fmt.Sprintf("Created %s", msg.ID), false)
+		label := msg.ID
+		if label == "" {
+			label = "bead"
+		}
+		cmd := m.addToast(fmt.Sprintf("Created %s", label), false)
 		m.fetching = true
 		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
 
@@ -271,21 +274,29 @@ func (m *Model) executeFormAction() tea.Cmd {
 
 	case FormEditBead:
 		if m.formTarget == nil {
-			return nil
+			return func() tea.Msg {
+				return ActionErrorMsg{Err: fmt.Errorf("no form target for edit bead action")}
+			}
 		}
 		anvilPath, ok := m.anvils[m.formTarget.Anvil]
 		if !ok {
-			return nil
+			return func() tea.Msg {
+				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil for bead %s: %s", m.formTarget.ID, m.formTarget.Anvil)}
+			}
 		}
 		return EditBeadCmd(anvilPath, m.formTarget.ID, m.formTitle, m.formDescription)
 
 	case FormCloseBead:
 		if m.formTarget == nil {
-			return nil
+			return func() tea.Msg {
+				return ActionErrorMsg{Err: fmt.Errorf("no form target for close bead action")}
+			}
 		}
 		anvilPath, ok := m.anvils[m.formTarget.Anvil]
 		if !ok {
-			return nil
+			return func() tea.Msg {
+				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil for bead %s: %s", m.formTarget.ID, m.formTarget.Anvil)}
+			}
 		}
 		return CloseBeadCmd(anvilPath, m.formTarget.ID, m.formReason)
 	}
@@ -319,6 +330,7 @@ func (m *Model) openNewBeadForm() tea.Cmd {
 	for name := range m.anvils {
 		anvilNames = append(anvilNames, name)
 	}
+	sort.Strings(anvilNames)
 	if len(anvilNames) == 0 {
 		return func() tea.Msg {
 			return ActionErrorMsg{Err: fmt.Errorf("no anvils registered")}
@@ -483,45 +495,10 @@ func (m *Model) View() string {
 			lipgloss.WithWhitespaceBackground(lipgloss.AdaptiveColor{Dark: "0", Light: "15"}))
 	}
 
-	// Overlay toasts at the bottom.
+	// Overlay toasts at the bottom using ANSI-aware compositor.
 	toastView := m.renderToasts()
 	if toastView != "" {
-		toastLines := strings.Split(toastView, "\n")
-		outLines := strings.Split(out, "\n")
-
-		// Pad output to fill height.
-		for len(outLines) < m.height {
-			outLines = append(outLines, "")
-		}
-
-		// Place toasts near the bottom (above last line which is footer).
-		toastHeight := len(toastLines)
-		startY := m.height - 1 - toastHeight
-		if startY < 0 {
-			startY = 0
-		}
-
-		// Center horizontally.
-		toastWidth := 0
-		for _, l := range toastLines {
-			if w := lipgloss.Width(l); w > toastWidth {
-				toastWidth = w
-			}
-		}
-		startX := (m.width - toastWidth) / 2
-		if startX < 0 {
-			startX = 0
-		}
-
-		for i, tl := range toastLines {
-			row := startY + i
-			if row >= 0 && row < len(outLines) {
-				// Simple overlay: pad the toast line and replace the row.
-				padded := strings.Repeat(" ", startX) + tl
-				outLines[row] = padded
-			}
-		}
-		out = strings.Join(outLines[:m.height], "\n")
+		out = placeToastsOverlay(m.width, m.height, 1, toastView, out)
 	}
 
 	return out
