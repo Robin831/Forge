@@ -363,6 +363,19 @@ settings:
 	assert.ErrorContains(t, err, "poll_interval")
 }
 
+func TestLoad_InvalidSmelterInterval(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  smelter_interval: notaduration
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	_, err := Load(cfgPath)
+	assert.ErrorContains(t, err, "smelter_interval")
+}
+
 func TestIsVulncheckEnabled(t *testing.T) {
 	// nil (not set) → default true
 	s := SettingsConfig{}
@@ -502,6 +515,94 @@ func TestSave_RoundTrip_QuestgiverDurations(t *testing.T) {
 	assert.True(t, *loaded.Settings.QuestgiverEnabled)
 	assert.Equal(t, 24*time.Hour, loaded.Settings.QuestgiverInterval)
 	assert.Equal(t, 5*time.Minute, loaded.Settings.AdventurerTimeout)
+}
+
+func TestIsSmelterEnabled(t *testing.T) {
+	// nil (not set) → default true
+	s := SettingsConfig{}
+	assert.True(t, s.IsSmelterEnabled())
+
+	// explicitly true
+	tr := true
+	s.SmelterEnabled = &tr
+	assert.True(t, s.IsSmelterEnabled())
+
+	// explicitly false
+	fa := false
+	s.SmelterEnabled = &fa
+	assert.False(t, s.IsSmelterEnabled())
+}
+
+func TestConfig_Validate_SmelterInterval(t *testing.T) {
+	base := func() Config {
+		return Config{
+			Settings: SettingsConfig{
+				MaxTotalSmiths:        4,
+				MaxReviewAttempts:     5,
+				MaxPipelineIterations: 5,
+				PollInterval:          1 * time.Minute,
+				SmithTimeout:          30 * time.Minute,
+				BellowsInterval:       2 * time.Minute,
+				MaxCIFixAttempts:      5,
+				MaxReviewFixAttempts:  5,
+				MaxRebaseAttempts:     3,
+			},
+			Anvils: map[string]AnvilConfig{
+				"test": {Path: "/path/to/repo"},
+			},
+		}
+	}
+
+	t.Run("zero disables", func(t *testing.T) {
+		cfg := base()
+		cfg.Settings.SmelterInterval = 0
+		errs := cfg.Validate()
+		for _, e := range errs {
+			assert.NotContains(t, e, "smelter_interval")
+		}
+	})
+
+	t.Run("valid 8h", func(t *testing.T) {
+		cfg := base()
+		cfg.Settings.SmelterInterval = 8 * time.Hour
+		errs := cfg.Validate()
+		for _, e := range errs {
+			assert.NotContains(t, e, "smelter_interval")
+		}
+	})
+
+	t.Run("too short", func(t *testing.T) {
+		cfg := base()
+		cfg.Settings.SmelterInterval = 30 * time.Minute
+		errs := cfg.Validate()
+		assert.Contains(t, errs, "settings.smelter_interval must be >= 1h when enabled (or 0 to disable)")
+	})
+
+	t.Run("negative", func(t *testing.T) {
+		cfg := base()
+		cfg.Settings.SmelterInterval = -1 * time.Hour
+		errs := cfg.Validate()
+		assert.Contains(t, errs, "settings.smelter_interval must not be negative (set to 0 to disable)")
+	})
+}
+
+func TestSave_RoundTrip_SmelterSettings(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+
+	smelterEnabled := true
+	original := Defaults()
+	original.Settings.SmelterEnabled = &smelterEnabled
+	original.Settings.SmelterInterval = 12 * time.Hour
+
+	require.NoError(t, Save(&original, cfgPath))
+
+	loaded, err := Load(cfgPath)
+	require.NoError(t, err)
+
+	require.NotNil(t, loaded.Settings.SmelterEnabled)
+	assert.True(t, *loaded.Settings.SmelterEnabled)
+	assert.Equal(t, 12*time.Hour, loaded.Settings.SmelterInterval)
 }
 
 func TestLoad_NoFile_UsesDefaults(t *testing.T) {

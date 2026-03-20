@@ -13,6 +13,8 @@
 //   - settings.max_rebase_attempts (applied immediately to lifecycle manager)
 //   - settings.copilot_combined_smith_warden (toggle combined mode at runtime)
 //   - settings.copilot_warden_sample_rate (adjust sampling rate at runtime)
+//   - settings.smelter_enabled (enable/disable Smelter at runtime)
+//   - settings.smelter_interval (change Smelter schedule at runtime)
 //   - notifications.* (all notification settings)
 //   - anvils.<name>.auto_merge (takes effect on next ready-to-merge transition)
 //   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
@@ -248,6 +250,18 @@ func applyChanges(old, new *config.Config) []string {
 	if old.Settings.CopilotWardenSampleRate != new.Settings.CopilotWardenSampleRate {
 		changes = append(changes, fmt.Sprintf("copilot_warden_sample_rate: %v → %v",
 			old.Settings.CopilotWardenSampleRate, new.Settings.CopilotWardenSampleRate))
+	}
+
+	oldSmelterEnabled := old.Settings.IsSmelterEnabled()
+	newSmelterEnabled := new.Settings.IsSmelterEnabled()
+	if oldSmelterEnabled != newSmelterEnabled {
+		changes = append(changes, fmt.Sprintf("smelter_enabled: %v → %v",
+			oldSmelterEnabled, newSmelterEnabled))
+	}
+
+	if old.Settings.SmelterInterval != new.Settings.SmelterInterval {
+		changes = append(changes, fmt.Sprintf("smelter_interval: %v → %v",
+			old.Settings.SmelterInterval, new.Settings.SmelterInterval))
 	}
 
 	// Detect anvil changes (add, remove, path change, max_smiths)

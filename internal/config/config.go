@@ -213,6 +213,13 @@ type SettingsConfig struct {
 	// validation. Only used when CopilotCombinedSmithWarden is true.
 	// Default: 0.1 (10%).
 	CopilotWardenSampleRate float64 `mapstructure:"copilot_warden_sample_rate" yaml:"copilot_warden_sample_rate"`
+	// SmelterEnabled controls whether the Smelter background process is active.
+	// When true (default), the Smelter runs on a schedule defined by
+	// SmelterInterval. Set to false to disable.
+	SmelterEnabled *bool `mapstructure:"smelter_enabled" yaml:"smelter_enabled,omitempty"`
+	// SmelterInterval is how often the Smelter runs its background processing.
+	// Defaults to 8h. Set to 0 to disable scheduled runs.
+	SmelterInterval time.Duration `mapstructure:"smelter_interval" yaml:"smelter_interval,omitempty"`
 	// QuestgiverEnabled controls whether the QuestGiver monitor is active
 	// globally. When nil (default), QuestGiver is disabled. Set to true to
 	// enable scheduled quest execution.
@@ -272,6 +279,8 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WardenFullRereview          bool    `yaml:"warden_full_rereview"`
 		CopilotCombinedSmithWarden  bool    `yaml:"copilot_combined_smith_warden"`
 		CopilotWardenSampleRate     float64 `yaml:"copilot_warden_sample_rate"`
+		SmelterEnabled              *bool   `yaml:"smelter_enabled,omitempty"`
+		SmelterInterval             string  `yaml:"smelter_interval"`
 		QuestgiverEnabled           *bool   `yaml:"questgiver_enabled,omitempty"`
 		QuestgiverInterval          string  `yaml:"questgiver_interval,omitempty"`
 		AdventurerTimeout           string  `yaml:"adventurer_timeout,omitempty"`
@@ -311,6 +320,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WardenFullRereview:          s.WardenFullRereview,
 		CopilotCombinedSmithWarden:  s.CopilotCombinedSmithWarden,
 		CopilotWardenSampleRate:     s.CopilotWardenSampleRate,
+		SmelterEnabled:              s.SmelterEnabled,
 		QuestgiverEnabled:           s.QuestgiverEnabled,
 	}
 
@@ -327,6 +337,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	if s.VulncheckTimeout > 0 {
 		sh.VulncheckTimeout = durationString(s.VulncheckTimeout)
 	}
+	// Always emit SmelterInterval so an intentional 0 (disable scheduled runs)
+	// is persisted and not silently dropped back to the 8h default on next load.
+	sh.SmelterInterval = durationString(s.SmelterInterval)
 	if s.QuestgiverInterval > 0 {
 		sh.QuestgiverInterval = durationString(s.QuestgiverInterval)
 	}
@@ -352,6 +365,15 @@ func (s SettingsConfig) IsAutoMergeCrucibleChildren() bool {
 		return true
 	}
 	return *s.AutoMergeCrucibleChildren
+}
+
+// IsSmelterEnabled returns true unless smelter_enabled is explicitly false.
+// Defaults to true.
+func (s SettingsConfig) IsSmelterEnabled() bool {
+	if s.SmelterEnabled == nil {
+		return true
+	}
+	return *s.SmelterEnabled
 }
 
 // IsQuestgiverEnabled returns true only when questgiver_enabled is explicitly true.
@@ -446,6 +468,7 @@ func Defaults() Config {
 			DepcheckTimeout:      5 * time.Minute,
 			VulncheckInterval:    24 * time.Hour,
 			VulncheckTimeout:     10 * time.Minute,
+			SmelterInterval:    8 * time.Hour,
 			QuestgiverInterval: 24 * time.Hour,
 			AdventurerTimeout:  5 * time.Minute,
 			// Copilot combined Smith+Warden mode settings.
@@ -478,6 +501,8 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.vulncheck_interval", "24h")
 	v.SetDefault("settings.vulncheck_timeout", "10m")
 	v.SetDefault("settings.vulncheck_enabled", true)
+	v.SetDefault("settings.smelter_enabled", true)
+	v.SetDefault("settings.smelter_interval", "8h")
 	v.SetDefault("settings.questgiver_interval", "24h")
 	v.SetDefault("settings.adventurer_timeout", "5m")
 	v.SetDefault("settings.copilot_warden_sample_rate", 0.1)
@@ -590,6 +615,13 @@ func Load(configFile string) (*Config, error) {
 		}
 		cfg.Settings.VulncheckTimeout = d
 	}
+	if raw := v.GetString("settings.smelter_interval"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid smelter_interval %q: %w", raw, err)
+		}
+		cfg.Settings.SmelterInterval = d
+	}
 	if raw := v.GetString("settings.questgiver_interval"); raw != "" {
 		d, err := time.ParseDuration(raw)
 		if err != nil {
@@ -685,6 +717,12 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.DepcheckTimeout < 0 {
 		errs = append(errs, "settings.depcheck_timeout must not be negative")
+	}
+
+	if c.Settings.SmelterInterval < 0 {
+		errs = append(errs, "settings.smelter_interval must not be negative (set to 0 to disable)")
+	} else if c.Settings.IsSmelterEnabled() && c.Settings.SmelterInterval > 0 && c.Settings.SmelterInterval < 1*time.Hour {
+		errs = append(errs, "settings.smelter_interval must be >= 1h when enabled (or 0 to disable)")
 	}
 
 	if c.Settings.QuestgiverInterval < 0 {

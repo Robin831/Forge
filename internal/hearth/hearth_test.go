@@ -1319,11 +1319,13 @@ func TestQueueActionMenuCloseNilOnCloseBead(t *testing.T) {
 	m.queueVP = scrollViewport{cursor: 0}
 	// OnCloseBead intentionally nil
 	m.rebuildQueueNav()
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = drainHuh(&m, cmd)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = drainHuh(&m, cmd)
 	if !strings.Contains(m.statusMsg, "unavailable") {
 		t.Errorf("expected 'unavailable' statusMsg, got %q (form nil: %v)", m.statusMsg, m.queueActionForm == nil)
 	}
