@@ -7,6 +7,7 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
@@ -33,10 +34,15 @@ func VerifyGroup(ctx context.Context, anvilPath string, anvilConfig config.Anvil
 
 // RollbackGroup discards all uncommitted changes in the anvil directory by
 // running `git checkout -- .`. It logs which group failed and why.
-func RollbackGroup(ctx context.Context, anvilPath string, group UpdateGroup, reason error) error {
+// Uses a fresh context with a 30-second timeout so that rollback still succeeds
+// even when the caller's context has been cancelled.
+func RollbackGroup(_ context.Context, anvilPath string, group UpdateGroup, reason error) error {
 	log.Printf("depupdate: rolling back group %q (%s) — %v", group.Name, group.Kind, reason)
 
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "checkout", "--", "."))
+	rollbackCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(rollbackCtx, "git", "checkout", "--", "."))
 	cmd.Dir = anvilPath
 
 	var stderr bytes.Buffer
@@ -47,7 +53,7 @@ func RollbackGroup(ctx context.Context, anvilPath string, group UpdateGroup, rea
 	}
 
 	// Also clean any untracked files that the install may have created.
-	cleanCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "clean", "-fd"))
+	cleanCmd := executil.HideWindow(exec.CommandContext(rollbackCtx, "git", "clean", "-fd"))
 	cleanCmd.Dir = anvilPath
 
 	var cleanStderr bytes.Buffer

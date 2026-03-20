@@ -80,13 +80,17 @@ func findCsprojForPackage(csprojFiles []string, packageName string) (string, err
 		return csprojFiles[0], nil
 	}
 
-	needle := strings.ToLower(packageName)
+	// Search for a PackageReference that includes this specific package name.
+	// We look for Include="<packageName>" (case-insensitive) to avoid false
+	// positives from comments, property values, or similarly-named packages.
+	needle := fmt.Sprintf(`include="%s"`, strings.ToLower(packageName))
 	for _, path := range csprojFiles {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		if strings.Contains(strings.ToLower(string(data)), needle) {
+		lower := strings.ToLower(string(data))
+		if strings.Contains(lower, "packagereference") && strings.Contains(lower, needle) {
 			return path, nil
 		}
 	}

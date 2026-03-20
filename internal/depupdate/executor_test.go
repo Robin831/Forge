@@ -2,6 +2,10 @@ package depupdate
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/depcheck"
@@ -51,15 +55,12 @@ func TestCommitGroup_MessageFormat(t *testing.T) {
 		},
 	}
 
-	// We can't run a real git commit without a repo, but we can verify the
-	// group struct is well-formed for the commit message.
 	expected := "chore(deps): update lodash (minor)"
 	got := fmt.Sprintf("chore(deps): update %s (%s)", group.Name, group.Kind)
 	if got != expected {
 		t.Errorf("commit message = %q, want %q", got, expected)
 	}
 
-	// Verify the body includes package details.
 	for _, u := range group.Updates {
 		line := fmt.Sprintf("- %s: %s → %s", u.Path, u.Current, u.Latest)
 		if line == "" {
@@ -77,4 +78,223 @@ func TestFindCsprojForPackage_SingleFile(t *testing.T) {
 	if got != files[0] {
 		t.Errorf("got %q, want %q", got, files[0])
 	}
+}
+
+func TestFindCsprojForPackage_MultipleFiles_MatchesPackageReference(t *testing.T) {
+	dir := t.TempDir()
+
+	// First csproj: has a PackageReference for Serilog
+	csproj1 := filepath.Join(dir, "Logging.csproj")
+	os.WriteFile(csproj1, []byte(`<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Serilog" Version="3.0.0" />
+  </ItemGroup>
+</Project>`), 0644)
+
+	// Second csproj: has a PackageReference for Newtonsoft.Json
+	csproj2 := filepath.Join(dir, "Api.csproj")
+	os.WriteFile(csproj2, []byte(`<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+  </ItemGroup>
+</Project>`), 0644)
+
+	got, err := findCsprojForPackage([]string{csproj1, csproj2}, "Newtonsoft.Json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != csproj2 {
+		t.Errorf("expected %q, got %q", csproj2, got)
+	}
+}
+
+func TestFindCsprojForPackage_MultipleFiles_FallbackWhenNotFound(t *testing.T) {
+	dir := t.TempDir()
+
+	csproj1 := filepath.Join(dir, "App.csproj")
+	os.WriteFile(csproj1, []byte(`<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Serilog" Version="3.0.0" />
+  </ItemGroup>
+</Project>`), 0644)
+
+	csproj2 := filepath.Join(dir, "Web.csproj")
+	os.WriteFile(csproj2, []byte(`<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="FluentValidation" Version="11.0.0" />
+  </ItemGroup>
+</Project>`), 0644)
+
+	// Package not in any csproj — should fall back to the first file.
+	files := []string{csproj1, csproj2}
+	got, err := findCsprojForPackage(files, "SomeNewPackage")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != csproj1 {
+		t.Errorf("expected fallback to %q, got %q", csproj1, got)
+	}
+}
+
+func TestFindCsprojForPackage_DoesNotMatchLooseText(t *testing.T) {
+	dir := t.TempDir()
+
+	// This csproj mentions "Newtonsoft.Json" in a comment but NOT as a PackageReference.
+	csproj1 := filepath.Join(dir, "App.csproj")
+	os.WriteFile(csproj1, []byte(`<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Removed Newtonsoft.Json in favor of System.Text.Json -->
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="8.0.0" />
+  </ItemGroup>
+</Project>`), 0644)
+
+	// This csproj has the actual PackageReference.
+	csproj2 := filepath.Join(dir, "Legacy.csproj")
+	os.WriteFile(csproj2, []byte(`<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+  </ItemGroup>
+</Project>`), 0644)
+
+	got, err := findCsprojForPackage([]string{csproj1, csproj2}, "Newtonsoft.Json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != csproj2 {
+		t.Errorf("expected %q (with PackageReference), got %q", csproj2, got)
+	}
+}
+
+func TestFindCsprojFiles_SkipsExcludedDirs(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create valid csproj files.
+	os.MkdirAll(filepath.Join(dir, "src"), 0755)
+	os.WriteFile(filepath.Join(dir, "src", "App.csproj"), []byte("<Project/>"), 0644)
+
+	// Create csproj files in excluded directories.
+	for _, excluded := range []string{"bin", "obj", ".git", "node_modules"} {
+		excDir := filepath.Join(dir, "src", excluded)
+		os.MkdirAll(excDir, 0755)
+		os.WriteFile(filepath.Join(excDir, "Bad.csproj"), []byte("<Project/>"), 0644)
+	}
+
+	files, err := findCsprojFiles(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 csproj file, got %d: %v", len(files), files)
+	}
+	if filepath.Base(files[0]) != "App.csproj" {
+		t.Errorf("expected App.csproj, got %s", filepath.Base(files[0]))
+	}
+}
+
+func TestRollbackGroup_RestoresChanges(t *testing.T) {
+	dir := initTestGitRepo(t)
+
+	// Create and commit a file.
+	testFile := filepath.Join(dir, "hello.txt")
+	os.WriteFile(testFile, []byte("original"), 0644)
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-m", "initial")
+
+	// Modify the file (uncommitted change).
+	os.WriteFile(testFile, []byte("modified"), 0644)
+
+	err := RollbackGroup(t.Context(), dir, UpdateGroup{Name: "test", Kind: "patch"}, fmt.Errorf("test failure"))
+	if err != nil {
+		t.Fatalf("RollbackGroup failed: %v", err)
+	}
+
+	data, _ := os.ReadFile(testFile)
+	if string(data) != "original" {
+		t.Errorf("expected file restored to %q, got %q", "original", string(data))
+	}
+}
+
+func TestRollbackGroup_CleansUntrackedFiles(t *testing.T) {
+	dir := initTestGitRepo(t)
+
+	// Create an initial commit so the repo isn't empty.
+	os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep"), 0644)
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-m", "initial")
+
+	// Create an untracked file.
+	untrackedFile := filepath.Join(dir, "untracked.txt")
+	os.WriteFile(untrackedFile, []byte("junk"), 0644)
+
+	err := RollbackGroup(t.Context(), dir, UpdateGroup{Name: "test", Kind: "patch"}, fmt.Errorf("test failure"))
+	if err != nil {
+		t.Fatalf("RollbackGroup failed: %v", err)
+	}
+
+	if _, err := os.Stat(untrackedFile); !os.IsNotExist(err) {
+		t.Error("expected untracked file to be cleaned up")
+	}
+}
+
+func TestCommitGroup_CreatesCommit(t *testing.T) {
+	dir := initTestGitRepo(t)
+
+	// Create and commit a baseline.
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test"), 0644)
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-m", "initial")
+
+	// Make a change to commit via CommitGroup.
+	os.WriteFile(filepath.Join(dir, "go.sum"), []byte("some-dep v1.2.3 h1:abc"), 0644)
+
+	group := UpdateGroup{
+		Name: "some-dep",
+		Kind: "patch",
+		Updates: []depcheck.ModuleUpdate{
+			{Path: "some-dep", Current: "1.2.2", Latest: "1.2.3", Kind: "patch"},
+		},
+	}
+
+	if err := CommitGroup(t.Context(), dir, group); err != nil {
+		t.Fatalf("CommitGroup failed: %v", err)
+	}
+
+	// Verify the commit message.
+	out := runGit(t, dir, "log", "-1", "--pretty=%s")
+	expectedSubject := "chore(deps): update some-dep (patch)"
+	if strings.TrimSpace(out) != expectedSubject {
+		t.Errorf("commit subject = %q, want %q", strings.TrimSpace(out), expectedSubject)
+	}
+
+	// Verify no uncommitted changes remain.
+	status := runGit(t, dir, "status", "--porcelain")
+	if strings.TrimSpace(status) != "" {
+		t.Errorf("expected clean working tree after commit, got: %s", status)
+	}
+}
+
+// initTestGitRepo creates a temporary git repo and returns its path.
+func initTestGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "test@test.com")
+	runGit(t, dir, "config", "user.name", "Test")
+	return dir
+}
+
+// runGit runs a git command in the given directory and returns stdout.
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		var stderr string
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = string(ee.Stderr)
+		}
+		t.Fatalf("git %s failed: %v\nstderr: %s", strings.Join(args, " "), err, stderr)
+	}
+	return string(out)
 }
