@@ -803,7 +803,7 @@ rules:
         exec.Command(...).CombinedOutput() used for external CLI calls without a context or timeout
       check: >-
         Verify that all external CLI invocations use exec.CommandContext with a short timeout so that a slow or hanging subprocess cannot block the caller indefinitely; return a warning or error on timeout rather than waiting forever
-      source: [copilot:PR#286, copilot:PR#362]
+      source: ['copilot:PR#286', 'copilot:PR#362']
       added: "2026-03-16"
     - id: doctor-message-provider-consistency
       category: style
@@ -1217,7 +1217,7 @@ rules:
         Adding a new warden rule entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
         Before inserting a new warden rule, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361']
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
