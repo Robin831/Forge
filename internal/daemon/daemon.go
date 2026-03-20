@@ -4168,7 +4168,7 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 		d.logger.Info("updated depcheck anvil paths", "count", len(depcheckPaths))
 	}
 
-	// Update smelter anvil paths (respect smelter_enabled)
+	// Update smelter anvil paths and interval (respect smelter_enabled)
 	if d.smelterWorker != nil {
 		if !new.Settings.IsSmelterEnabled() {
 			d.smelterWorker.UpdateAnvilPaths(map[string]string{})
@@ -4176,6 +4176,12 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 		} else {
 			d.smelterWorker.UpdateAnvilPaths(paths)
 			d.logger.Info("updated smelter anvil paths", "count", len(paths))
+		}
+		if old.Settings.SmelterInterval != new.Settings.SmelterInterval {
+			d.smelterWorker.UpdateInterval(new.Settings.SmelterInterval)
+			d.logger.Info("updated smelter interval",
+				"old", old.Settings.SmelterInterval,
+				"new", new.Settings.SmelterInterval)
 		}
 	}
 

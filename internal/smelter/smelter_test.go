@@ -89,6 +89,51 @@ func TestUpdateAnvilPaths(t *testing.T) {
 	assert.NotContains(t, s.anvilPaths, "d")
 }
 
+func TestUpdateInterval_ResetsTicker(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 24*time.Hour, map[string]string{"a": "/a"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Start the Run loop in the background.
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	// Give Run a moment to start.
+	time.Sleep(50 * time.Millisecond)
+
+	// Update the interval and verify it's stored.
+	s.UpdateInterval(4 * time.Hour)
+
+	// Wait for the Run loop to process the channel.
+	time.Sleep(50 * time.Millisecond)
+
+	s.mu.RLock()
+	got := s.interval
+	s.mu.RUnlock()
+	assert.Equal(t, 4*time.Hour, got)
+
+	cancel()
+	<-done
+}
+
+func TestUpdateInterval_NonBlocking(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	// Call UpdateInterval twice without a consumer — should not block.
+	s.UpdateInterval(2 * time.Hour)
+	s.UpdateInterval(3 * time.Hour)
+
+	// The latest value should be in the channel.
+	select {
+	case v := <-s.intervalCh:
+		assert.Equal(t, 3*time.Hour, v)
+	default:
+		t.Fatal("expected a value on intervalCh")
+	}
+}
+
 func TestFlush_WorktreeFailure_ContinuesToNextAnvil(t *testing.T) {
 	db := openTestDB(t)
 

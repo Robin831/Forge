@@ -45,6 +45,9 @@ type Smelter struct {
 	interval   time.Duration
 	anvilPaths map[string]string // anvil name -> path
 	mu         sync.RWMutex
+
+	// intervalCh signals Run to reset the ticker with a new duration.
+	intervalCh chan time.Duration
 }
 
 // New creates a Smelter. interval controls how often Flush is called;
@@ -55,6 +58,7 @@ func New(db *state.DB, interval time.Duration, anvilPaths map[string]string) *Sm
 		wtMgr:      worktree.NewManager(),
 		interval:   interval,
 		anvilPaths: anvilPaths,
+		intervalCh: make(chan time.Duration, 1),
 	}
 }
 
@@ -65,6 +69,24 @@ func (s *Smelter) UpdateAnvilPaths(paths map[string]string) {
 	s.mu.Lock()
 	s.anvilPaths = copied
 	s.mu.Unlock()
+}
+
+// UpdateInterval signals the Run loop to reset its ticker with d. If d <= 0
+// the ticker is effectively paused (the Run loop idles until a positive
+// interval is sent). Safe to call while Run is active.
+func (s *Smelter) UpdateInterval(d time.Duration) {
+	// Non-blocking send; if a previous value hasn't been consumed yet the
+	// latest one wins.
+	select {
+	case s.intervalCh <- d:
+	default:
+		// Drain the old value and send the new one.
+		select {
+		case <-s.intervalCh:
+		default:
+		}
+		s.intervalCh <- d
+	}
 }
 
 // Run starts the periodic flush loop. Blocks until ctx is canceled.
@@ -93,6 +115,14 @@ func (s *Smelter) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			log.Println("[smelter] Shutting down smelter")
 			return ctx.Err()
+		case newInterval := <-s.intervalCh:
+			if newInterval > 0 {
+				log.Printf("[smelter] Interval changed to %s; resetting ticker", newInterval)
+				ticker.Reset(newInterval)
+				s.mu.Lock()
+				s.interval = newInterval
+				s.mu.Unlock()
+			}
 		case <-ticker.C:
 			if err := s.Flush(ctx); err != nil {
 				log.Printf("[smelter] Flush error: %v", err)
