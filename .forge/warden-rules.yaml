@@ -1289,3 +1289,11 @@ rules:
         Verify that LogEvent calls pass the available bead ID rather than an empty string, so failures can be correlated back to the originating bead in state.db
       source: copilot:PR#358
       added: "2026-03-20"
+    - id: merge-overlapping-warden-rules
+      category: other
+      pattern: >-
+        A new warden rule is added to warden-rules.yaml that overlaps in intent or scope with an existing rule
+      check: >-
+        Verify the new rule does not duplicate or overlap with existing rules. If it does, merge it into the existing rule by appending the new source to the existing rule's source list and incorporating any unique wording, rather than adding a separate entry.
+      source: copilot:PR#361
+      added: "2026-03-20"
