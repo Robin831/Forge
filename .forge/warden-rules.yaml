@@ -1289,3 +1289,24 @@ rules:
         Verify that LogEvent calls pass the available bead ID rather than an empty string, so failures can be correlated back to the originating bead in state.db
       source: copilot:PR#358
       added: "2026-03-20"
+    - id: avoid-generic-rule-category
+      category: other
+      pattern: Warden rule definitions in warden-rules.yaml
+      check: >-
+        Verify that a specific, descriptive category is assigned rather than a generic `category: other` to improve triage, search, and reporting capabilities.
+      source: copilot:PR#348
+      added: "2026-03-20"
+    - id: avoid-duplicate-warden-rules
+      category: other
+      pattern: Adding a new rule to warden-rules.yaml
+      check: >-
+        Verify that there is no semantic overlap with existing rules to avoid double-flagging. If an existing rule covers the same concern, update its source and check text instead of creating a duplicate entry. Ensure any rule instructions accurately reflect the schema (e.g., using singular 'source' instead of 'source list').
+      source: copilot:PR#348
+      added: "2026-03-20"
+    - id: avoid-duplicate-rules
+      category: other
+      pattern: Adding new rules to warden-rules.yaml
+      check: >-
+        Verify that the newly added rule does not duplicate an existing rule. If a similar rule exists, update its source and description instead of creating a new entry to avoid double-flagging.
+      source: copilot:PR#348
+      added: "2026-03-20"
