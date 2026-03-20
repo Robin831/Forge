@@ -327,6 +327,14 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			HasUnresolvedThreads: threadsSeed,
 		}
 	}
+	// When CI is still in progress, preserve the last *completed* CIPassing value
+	// so that a pending→completed-failure transition still fires on the next poll.
+	// Without this, the snapshot would record CIPassing=false while in-progress,
+	// and when checks finish failing, the transition branch (!new && old) would not
+	// fire because old.CIPassing is already false.
+	if ciInProgress {
+		newSnap.CIPassing = lastSnap.CIPassing
+	}
 	// Update snapshot while holding the lock
 	m.lastStatuses[key] = newSnap
 	m.mu.Unlock()

@@ -575,6 +575,55 @@ func TestCheckPR_CICompletedFailureTriggersCIFailed(t *testing.T) {
 	assert.Contains(t, events, EventCIFailed, "ci_failed should fire when all checks completed with failure")
 }
 
+// TestCheckPR_PassingThenInProgressThenFailure is a regression test for the
+// sequence: passing → in_progress (no event) → completed with failure (must
+// emit ci_failed exactly once). This verifies that bellows does not lose the
+// last completed CIPassing state when a poll sees checks still running.
+func TestCheckPR_PassingThenInProgressThenFailure(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    42,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-pending-then-fail",
+		Branch:    "forge/forge-pending-then-fail",
+		Status:    state.PROpen,
+		CIPassing: true, // seed as passing
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	fake := &fakeVCSProvider{}
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	// Poll 1: CI was passing, now one check is in-progress → no ci_failed.
+	fake.status = &vcs.PRStatus{
+		State: "OPEN",
+		StatusCheckRollup: []vcs.CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{Name: "test", Status: "IN_PROGRESS", Conclusion: ""},
+		},
+	}
+	m.checkAll(context.Background())
+	assert.NotContains(t, events, EventCIFailed, "ci_failed must not fire while checks are in progress")
+
+	// Poll 2: All checks completed, one failure → ci_failed must fire.
+	fake.status = &vcs.PRStatus{
+		State: "OPEN",
+		StatusCheckRollup: []vcs.CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{Name: "test", Status: "COMPLETED", Conclusion: "FAILURE"},
+		},
+	}
+	m.checkAll(context.Background())
+	assert.Contains(t, events, EventCIFailed, "ci_failed must fire when checks finish failing after a pending period")
+}
+
 // fakeVCSProvider is a minimal vcs.Provider that returns a fixed PRStatus.
 type fakeVCSProvider struct {
 	status *vcs.PRStatus
