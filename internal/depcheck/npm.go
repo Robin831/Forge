@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 )
 
-// runNpmInstallFn is the function used to invoke npm install. It is a
+// runNpmInstallFn is the function used to invoke npm ci/install. It is a
 // package-level variable so tests can replace it without requiring npm.
 var runNpmInstallFn = runNpmInstall
 
@@ -23,6 +24,11 @@ var runNpmInstallFn = runNpmInstall
 // package-level variable so tests can replace it without requiring npm to be
 // installed on the test machine.
 var runNpmOutdatedFn = runNpmOutdated
+
+// runNpmCmdFn is the function used to execute npm subcommands. It is a
+// package-level variable so tests can stub npm command execution without
+// requiring npm to be installed.
+var runNpmCmdFn = runNpmCmd
 
 // scanNpm runs 'npm outdated --json' in directories containing package.json.
 // Skips node_modules, .workers, .worktrees, bin, obj, and .git directories
@@ -111,64 +117,99 @@ type npmOutdatedEntry struct {
 	Latest  string `json:"latest"`
 }
 
-// runNpmInstall runs 'npm install --ignore-scripts' in the given directory to
-// sync node_modules with package-lock.json. This ensures that 'npm outdated'
-// reports versions from the lock file rather than stale installed versions.
+// runNpmInstall ensures node_modules are synced with package-lock.json for
+// accurate 'npm outdated' results. If package-lock.json is present, it runs
+// 'npm ci --ignore-scripts'. If no lock file exists, it is a no-op to avoid
+// creating or mutating tracked files in the worktree.
+// If timeout is 0, ctx is used as-is (the caller is expected to own the deadline).
 func runNpmInstall(ctx context.Context, timeout time.Duration, dir string) error {
-	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	lockPath := filepath.Join(dir, "package-lock.json")
+	if _, err := os.Stat(lockPath); err != nil {
+		if os.IsNotExist(err) {
+			// No lock file present; skip syncing to avoid generating package-lock.json.
+			return nil
+		}
+		return fmt.Errorf("stat package-lock.json: %w", err)
+	}
 
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "npm", "install", "--ignore-scripts"))
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "npm", "ci", "--ignore-scripts"))
 	cmd.Dir = dir
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("npm install --ignore-scripts: %w (stderr: %s)", err, stderr.String())
+		return fmt.Errorf("npm ci --ignore-scripts: %w (stderr: %s)", err, stderr.String())
 	}
 	return nil
 }
 
-// runNpmOutdated runs 'npm outdated --json' in the given directory and
-// parses the output into ModuleUpdate entries. It first runs npm install
-// to sync node_modules with the lock file so reported versions are accurate.
-func runNpmOutdated(ctx context.Context, timeout time.Duration, dir string) ([]ModuleUpdate, error) {
-	// Sync node_modules with lock file before checking for outdated packages.
-	// If install fails, log and continue — stale data is better than no data.
-	if err := runNpmInstallFn(ctx, timeout, dir); err != nil {
-		fmt.Fprintf(os.Stderr, "depcheck: warning: %s in %s, continuing with potentially stale versions\n", err, dir)
+// runNpmCmd executes npm with the given args in dir, returning stdout bytes.
+// If timeout is 0, ctx is used as-is (the caller is expected to own the deadline).
+// Stdout is returned alongside any error so callers can inspect output even when
+// npm exits with a non-zero code (e.g. exit status 1 from 'npm outdated').
+func runNpmCmd(ctx context.Context, timeout time.Duration, dir string, args ...string) ([]byte, error) {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "npm", "outdated", "--json"))
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "npm", args...))
 	cmd.Dir = dir
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	if err := cmd.Run(); err != nil {
+		return stdout.Bytes(), fmt.Errorf("npm %s: %w (stderr: %s)", strings.Join(args, " "), err, stderr.String())
+	}
+	return stdout.Bytes(), nil
+}
+
+// runNpmOutdated runs 'npm outdated --json' in the given directory and
+// parses the output into ModuleUpdate entries. It first runs npm ci/install
+// to sync node_modules with the lock file so reported versions are accurate.
+// A single context deadline covers both the install and outdated steps.
+func runNpmOutdated(ctx context.Context, timeout time.Duration, dir string) ([]ModuleUpdate, error) {
+	// Enforce a single overall deadline across both install and outdated so
+	// neither step can individually consume the full timeout budget.
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Sync node_modules with lock file before checking for outdated packages.
+	// If install fails, log and continue — stale data is better than no data.
+	if err := runNpmInstallFn(cmdCtx, 0, dir); err != nil {
+		log.Printf("[depcheck] warning: %s in %s, continuing with potentially stale versions", err, dir)
+	}
+
 	// npm outdated exits with code 1 when outdated packages exist — that is
 	// expected. Any other error type (binary not found, context cancelled, etc.)
 	// indicates the scan could not run at all and should be propagated.
-	if err := cmd.Run(); err != nil {
+	out, err := runNpmCmdFn(cmdCtx, 0, dir, "outdated", "--json")
+	if err != nil {
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) {
-			return nil, fmt.Errorf("npm outdated: %w", err)
+			return nil, err
 		}
 		// ExitError is expected when packages are outdated; continue parsing.
 	}
 
-	output := strings.TrimSpace(stdout.String())
+	output := strings.TrimSpace(string(out))
 	if output == "" || output == "{}" {
 		return nil, nil
 	}
 
 	var outdated map[string]npmOutdatedEntry
 	if err := json.Unmarshal([]byte(output), &outdated); err != nil {
-		return nil, fmt.Errorf("parsing npm outdated output: %w\nstderr: %s", err, stderr.String())
+		return nil, fmt.Errorf("parsing npm outdated output: %w", err)
 	}
 
 	var updates []ModuleUpdate

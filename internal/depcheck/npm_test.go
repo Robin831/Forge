@@ -56,16 +56,18 @@ func TestFindNpmProjects_NoPackageJson(t *testing.T) {
 }
 
 // TestRunNpmOutdated_CallsInstallFirst verifies that runNpmOutdated invokes
-// npm install (via runNpmInstallFn) before npm outdated to sync node_modules
-// with the lock file.
+// npm ci/install (via runNpmInstallFn) before npm outdated to sync node_modules
+// with the lock file. Uses runNpmCmdFn stub to keep the test hermetic.
 func TestRunNpmOutdated_CallsInstallFirst(t *testing.T) {
 	var calls []string
 
 	origInstall := runNpmInstallFn
 	origOutdated := runNpmOutdatedFn
+	origCmd := runNpmCmdFn
 	t.Cleanup(func() {
 		runNpmInstallFn = origInstall
 		runNpmOutdatedFn = origOutdated
+		runNpmCmdFn = origCmd
 	})
 
 	runNpmInstallFn = func(_ context.Context, _ time.Duration, dir string) error {
@@ -73,45 +75,56 @@ func TestRunNpmOutdated_CallsInstallFirst(t *testing.T) {
 		return nil
 	}
 
-	// Replace runNpmOutdatedFn so we go through the real runNpmOutdated logic
-	// but with the install stub above. We need to call the real function, not
-	// the stub, so we restore the original outdated fn and only stub install.
+	// Use the real runNpmOutdated so the ordering logic is exercised.
 	runNpmOutdatedFn = origOutdated
+
+	// Stub the npm command execution so no real npm binary is invoked.
+	runNpmCmdFn = func(_ context.Context, _ time.Duration, dir string, args ...string) ([]byte, error) {
+		calls = append(calls, "outdated:"+dir)
+		return []byte("{}"), nil
+	}
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
 
 	s := &Scanner{timeout: 30 * time.Second}
-	// scanNpm calls runNpmOutdatedFn which is the real runNpmOutdated,
-	// which in turn calls runNpmInstallFn (our stub).
 	_ = s.scanNpm(context.Background(), "test", dir)
 
-	assert.Contains(t, calls, "install:"+dir, "npm install should be called before npm outdated")
+	require.GreaterOrEqual(t, len(calls), 2, "expected install and outdated calls")
+	assert.Equal(t, "install:"+dir, calls[0], "npm install should be called before npm outdated")
+	assert.Equal(t, "outdated:"+dir, calls[1], "npm outdated should be called after npm install")
 }
 
-// TestRunNpmOutdated_InstallFailureContinues verifies that if npm install fails,
-// runNpmOutdated still proceeds (stale data is better than no data).
+// TestRunNpmOutdated_InstallFailureContinues verifies that if npm ci/install fails,
+// runNpmOutdated still proceeds to run npm outdated (stale data is better than no data).
+// This test exercises the real runNpmOutdated, stubbing only the command execution layer.
 func TestRunNpmOutdated_InstallFailureContinues(t *testing.T) {
 	origInstall := runNpmInstallFn
 	origOutdated := runNpmOutdatedFn
+	origCmd := runNpmCmdFn
 	t.Cleanup(func() {
 		runNpmInstallFn = origInstall
 		runNpmOutdatedFn = origOutdated
+		runNpmCmdFn = origCmd
 	})
 
+	// Force npm install to fail; runNpmOutdated should log/ignore this and
+	// still attempt to run 'npm outdated'.
 	runNpmInstallFn = func(_ context.Context, _ time.Duration, _ string) error {
 		return fmt.Errorf("npm install failed: network error")
 	}
 
+	// Use the real runNpmOutdated so the install-failure-then-continue path is covered.
+	runNpmOutdatedFn = origOutdated
+
+	// Stub the underlying npm command execution so that 'npm outdated' succeeds
+	// without requiring a real npm binary.
+	runNpmCmdFn = func(_ context.Context, _ time.Duration, _ string, _ ...string) ([]byte, error) {
+		return []byte(`{"foo":{"current":"1.0.0","latest":"1.0.1","type":"patch"}}`), nil
+	}
+
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
-
-	// The real runNpmOutdated will fail because npm isn't installed in CI,
-	// but that's fine — we just need to verify it doesn't abort on install failure.
-	// Use the stub for the outdated call to isolate the test.
-	runNpmOutdatedFn = func(_ context.Context, _ time.Duration, _ string) ([]ModuleUpdate, error) {
-		return []ModuleUpdate{{Path: "foo", Current: "1.0.0", Latest: "1.0.1", Kind: "patch"}}, nil
-	}
 
 	s := &Scanner{timeout: 30 * time.Second}
 	result := s.scanNpm(context.Background(), "test", dir)
