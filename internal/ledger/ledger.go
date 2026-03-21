@@ -486,6 +486,50 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+	case tea.MouseMsg:
+		// Only handle scroll wheel events; ignore clicks and motion.
+		if msg.Action != tea.MouseActionPress {
+			break
+		}
+		// Don't let scroll events mutate underlying state while a blocking overlay
+		// (form, update overlay, AI overlay, or sort selector) is active.
+		overlayActive := m.activeForm != nil ||
+			m.showUpdateOverlay ||
+			m.aiOverlay != aiOverlayNone ||
+			m.list.sortForm != nil
+		if overlayActive {
+			break
+		}
+		switch msg.Button {
+		case tea.MouseButtonWheelDown:
+			if m.helpSt.show {
+				m.helpSt.vp.ScrollDown(1)
+				break
+			}
+			switch m.view {
+			case ViewList:
+				m.list.vp.ScrollDown(m.filteredBeadsCount())
+			case ViewKanban:
+				lane := m.kanban.activeLane
+				m.kanban.laneVP[lane].ScrollDown(len(m.kanban.lanes[lane]))
+			case ViewHierarchy:
+				m.hierarchy.vp.ScrollDown(len(m.hierarchy.flat))
+			}
+		case tea.MouseButtonWheelUp:
+			if m.helpSt.show {
+				m.helpSt.vp.ScrollUp(1)
+				break
+			}
+			switch m.view {
+			case ViewList:
+				m.list.vp.ScrollUp()
+			case ViewKanban:
+				m.kanban.laneVP[m.kanban.activeLane].ScrollUp()
+			case ViewHierarchy:
+				m.hierarchy.vp.ScrollUp()
+			}
+		}
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height

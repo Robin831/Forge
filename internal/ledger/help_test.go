@@ -6,6 +6,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func sendMouseWheel(m *Model, button tea.MouseButton) *Model {
+	result, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: button})
+	if next, ok := result.(*Model); ok {
+		return next
+	}
+	return m
+}
+
 // newTestModel returns a minimal Model suitable for Update-level tests.
 func newTestModel() *Model {
 	m := &Model{
@@ -85,5 +93,128 @@ func TestHelpOverlayConsumesKeys(t *testing.T) {
 	m = sendKey(m, "q")
 	if !m.helpSt.show {
 		t.Error("`q` should not close the help overlay; only `?` and `esc` should")
+	}
+}
+
+// TestMouseWheelScrollsList verifies that wheel down/up moves the list cursor.
+func TestMouseWheelScrollsList(t *testing.T) {
+	m := newTestModel()
+	m.view = ViewList
+	m.beads = []Bead{
+		{ID: "a", Title: "A", Status: "open", Anvil: "test"},
+		{ID: "b", Title: "B", Status: "open", Anvil: "test"},
+		{ID: "c", Title: "C", Status: "open", Anvil: "test"},
+	}
+
+	initial := m.list.vp.Selected()
+	m = sendMouseWheel(m, tea.MouseButtonWheelDown)
+	if m.list.vp.Selected() <= initial {
+		t.Error("wheel down should advance the list cursor")
+	}
+
+	after := m.list.vp.Selected()
+	m = sendMouseWheel(m, tea.MouseButtonWheelUp)
+	if m.list.vp.Selected() >= after {
+		t.Error("wheel up should retreat the list cursor")
+	}
+}
+
+// TestMouseWheelScrollsKanban verifies that wheel down/up moves the kanban lane cursor.
+func TestMouseWheelScrollsKanban(t *testing.T) {
+	m := newTestModel()
+	m.view = ViewKanban
+	m.beads = []Bead{
+		{ID: "a", Title: "A", Status: "open", Anvil: "test"},
+		{ID: "b", Title: "B", Status: "open", Anvil: "test"},
+	}
+	m.refreshKanbanLanes()
+
+	lane := m.kanban.activeLane
+	initial := m.kanban.laneVP[lane].Selected()
+	m = sendMouseWheel(m, tea.MouseButtonWheelDown)
+	if m.kanban.laneVP[lane].Selected() <= initial {
+		t.Error("wheel down should advance the kanban lane cursor")
+	}
+
+	after := m.kanban.laneVP[lane].Selected()
+	m = sendMouseWheel(m, tea.MouseButtonWheelUp)
+	if m.kanban.laneVP[lane].Selected() >= after {
+		t.Error("wheel up should retreat the kanban lane cursor")
+	}
+}
+
+// TestMouseWheelScrollsHierarchy verifies that wheel down/up moves the hierarchy cursor.
+func TestMouseWheelScrollsHierarchy(t *testing.T) {
+	m := newTestModel()
+	m.view = ViewHierarchy
+	m.beads = []Bead{
+		{ID: "a", Title: "A", Status: "open", Anvil: "test"},
+		{ID: "b", Title: "B", Status: "open", Anvil: "test"},
+		{ID: "c", Title: "C", Status: "open", Anvil: "test"},
+	}
+	m.refreshHierarchy()
+
+	initial := m.hierarchy.vp.Selected()
+	m = sendMouseWheel(m, tea.MouseButtonWheelDown)
+	if m.hierarchy.vp.Selected() <= initial {
+		t.Error("wheel down should advance the hierarchy cursor")
+	}
+
+	after := m.hierarchy.vp.Selected()
+	m = sendMouseWheel(m, tea.MouseButtonWheelUp)
+	if m.hierarchy.vp.Selected() >= after {
+		t.Error("wheel up should retreat the hierarchy cursor")
+	}
+}
+
+// TestMouseWheelHelpOverlayDoesNotMoveList verifies that when the help overlay
+// is visible, wheel events scroll the help viewport but do NOT change the
+// underlying list/kanban/hierarchy selection.
+func TestMouseWheelHelpOverlayDoesNotMoveList(t *testing.T) {
+	m := newTestModel()
+	m.view = ViewList
+	m.beads = []Bead{
+		{ID: "a", Title: "A", Status: "open", Anvil: "test"},
+		{ID: "b", Title: "B", Status: "open", Anvil: "test"},
+		{ID: "c", Title: "C", Status: "open", Anvil: "test"},
+	}
+	m.refreshHierarchy()
+
+	// Open the help overlay.
+	m = sendKey(m, "?")
+	if !m.helpSt.show {
+		t.Fatal("help overlay must be open")
+	}
+
+	before := m.list.vp.Selected()
+	m = sendMouseWheel(m, tea.MouseButtonWheelDown)
+	if m.list.vp.Selected() != before {
+		t.Error("wheel down with help overlay open should not move the list cursor")
+	}
+
+	m = sendMouseWheel(m, tea.MouseButtonWheelUp)
+	if m.list.vp.Selected() != before {
+		t.Error("wheel up with help overlay open should not move the list cursor")
+	}
+}
+
+// TestMouseWheelIgnoredWhenOverlayActive verifies that wheel events are ignored
+// while an overlay (AI, update, sort form) is active, preventing selection
+// changes behind the overlay.
+func TestMouseWheelIgnoredWhenOverlayActive(t *testing.T) {
+	m := newTestModel()
+	m.view = ViewList
+	m.beads = []Bead{
+		{ID: "a", Title: "A", Status: "open", Anvil: "test"},
+		{ID: "b", Title: "B", Status: "open", Anvil: "test"},
+	}
+
+	// Simulate an active AI overlay.
+	m.aiOverlay = aiOverlaySpinner
+
+	before := m.list.vp.Selected()
+	m = sendMouseWheel(m, tea.MouseButtonWheelDown)
+	if m.list.vp.Selected() != before {
+		t.Error("wheel down should be ignored when an overlay is active")
 	}
 }
