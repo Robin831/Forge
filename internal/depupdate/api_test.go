@@ -45,7 +45,7 @@ func TestPreview_EmptyGroups(t *testing.T) {
 // ---- Scan tests ----
 
 func TestScan_CancelledContext_ReturnsEmptyReports(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	anvils := []Anvil{
@@ -58,7 +58,7 @@ func TestScan_CancelledContext_ReturnsEmptyReports(t *testing.T) {
 }
 
 func TestScan_EmptyAnvils_ReturnsEmpty(t *testing.T) {
-	reports, err := Scan(context.Background(), nil, Options{})
+	reports, err := Scan(t.Context(), nil, Options{})
 	require.NoError(t, err)
 	assert.Empty(t, reports)
 }
@@ -71,14 +71,14 @@ func TestScan_NilDB_DoesNotPanic(t *testing.T) {
 	}
 	// Should not panic even with a nil DB (depcheck.ScanAnvilDeps does not use DB).
 	require.NotPanics(t, func() {
-		_, _ = Scan(context.Background(), []Anvil{anvil}, Options{})
+		_, _ = Scan(t.Context(), []Anvil{anvil}, Options{})
 	})
 }
 
 // ---- Apply tests ----
 
 func TestApply_CancelledContext_AllResultsHaveError(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	groups := []UpdateGroup{
@@ -114,7 +114,7 @@ func TestApply_UnknownEcosystem_ResultHasError(t *testing.T) {
 			},
 		},
 	}
-	results, err := Apply(context.Background(), dir, config.AnvilConfig{}, groups)
+	results, err := Apply(t.Context(), dir, config.AnvilConfig{}, groups)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.False(t, results[0].Applied)
@@ -131,7 +131,7 @@ func TestApply_ReturnsOneResultPerGroup(t *testing.T) {
 		{Name: "a", Kind: "patch", Ecosystem: "unknown-a", Updates: []depcheck.ModuleUpdate{{Path: "a", Current: "1.0.0", Latest: "1.0.1"}}},
 		{Name: "b", Kind: "patch", Ecosystem: "unknown-b", Updates: []depcheck.ModuleUpdate{{Path: "b", Current: "1.0.0", Latest: "1.0.1"}}},
 	}
-	results, err := Apply(context.Background(), dir, config.AnvilConfig{}, groups)
+	results, err := Apply(t.Context(), dir, config.AnvilConfig{}, groups)
 	require.NoError(t, err)
 	require.Len(t, results, 2, "Apply must return exactly one Result per input group")
 }
