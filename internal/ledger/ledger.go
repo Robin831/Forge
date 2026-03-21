@@ -399,6 +399,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case moveBeadMsg:
 		if msg.Err != nil {
 			m.err = msg.Err
+			cmd := m.addToast(fmt.Sprintf("Move failed: %v", msg.Err), true)
+			m.fetching = true
+			return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
 		}
 		m.fetching = true
 		return m, FetchAllBeads(m.anvils, m.db)
