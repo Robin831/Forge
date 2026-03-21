@@ -308,7 +308,7 @@ func (m *Model) renderHierarchyRow(item flatItem, selected bool) string {
 		if item.depBead != nil {
 			icon := hierarchyStatusIcon(item.depBead)
 			// Fixed chrome before the title: indent(2*depth) + "  → "(4) + icon(1) + " "(1) + padRight(14) + "  "(2) + style padding(4) = 26 + 2*depth
-			depTitleWidth := max(m.width-26-2*item.depth, 10)
+			depTitleWidth := max(m.mainPanelWidth()-26-2*item.depth, 10)
 			label = fmt.Sprintf("%s %s  %s",
 				icon,
 				padRight(item.depID, 14),

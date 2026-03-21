@@ -1,0 +1,239 @@
+package ledger
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// ---------------------------------------------------------------------------
+// wrapDetailText
+// ---------------------------------------------------------------------------
+
+func TestWrapDetailTextEmpty(t *testing.T) {
+	assert.Nil(t, wrapDetailText("", 20))
+}
+
+func TestWrapDetailTextZeroWidth(t *testing.T) {
+	assert.Nil(t, wrapDetailText("hello world", 0))
+}
+
+func TestWrapDetailTextNegativeWidth(t *testing.T) {
+	assert.Nil(t, wrapDetailText("hello world", -1))
+}
+
+func TestWrapDetailTextFitsOnOneLine(t *testing.T) {
+	lines := wrapDetailText("hello world", 20)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "hello world", lines[0])
+}
+
+func TestWrapDetailTextWrapsAtWordBoundary(t *testing.T) {
+	// "hello world" — "world" pushes past width=8
+	lines := wrapDetailText("hello world", 8)
+	require.Len(t, lines, 2)
+	assert.Equal(t, "hello", lines[0])
+	assert.Equal(t, "world", lines[1])
+}
+
+func TestWrapDetailTextPreservesParagraphBreaks(t *testing.T) {
+	text := "first paragraph\n\nsecond paragraph"
+	lines := wrapDetailText(text, 40)
+	// Expect: "first paragraph", "", "second paragraph"
+	require.Len(t, lines, 3)
+	assert.Equal(t, "first paragraph", lines[0])
+	assert.Equal(t, "", lines[1])
+	assert.Equal(t, "second paragraph", lines[2])
+}
+
+func TestWrapDetailTextWindowsLineEndings(t *testing.T) {
+	text := "line one\r\nline two"
+	lines := wrapDetailText(text, 40)
+	require.Len(t, lines, 2)
+	assert.Equal(t, "line one", lines[0])
+	assert.Equal(t, "line two", lines[1])
+}
+
+func TestWrapDetailTextLongWordNotDropped(t *testing.T) {
+	// A single word that exceeds the width must still appear (no drop).
+	lines := wrapDetailText("superlongword", 5)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "superlongword", lines[0])
+}
+
+// ---------------------------------------------------------------------------
+// writeDetailField
+// ---------------------------------------------------------------------------
+
+func TestWriteDetailFieldBasic(t *testing.T) {
+	var sb strings.Builder
+	style := lipgloss.NewStyle()
+	writeDetailField(&sb, style, "Status", "open", 30)
+	out := sb.String()
+	assert.Contains(t, out, "Status:")
+	assert.Contains(t, out, "open")
+	assert.True(t, strings.HasSuffix(out, "\n"), "writeDetailField must end with newline")
+}
+
+func TestWriteDetailFieldTruncatesLongValue(t *testing.T) {
+	var sb strings.Builder
+	style := lipgloss.NewStyle()
+	// innerW=10; key="Priority: " is 10 chars → valW=max(10-10,1)=1
+	writeDetailField(&sb, style, "Priority", "P1 extra text", 10)
+	out := sb.String()
+	// Value should be truncated to 1 char ("…")
+	assert.Contains(t, out, "Priority:")
+}
+
+// ---------------------------------------------------------------------------
+// renderBeadDetailContent
+// ---------------------------------------------------------------------------
+
+func TestRenderBeadDetailContentMinimal(t *testing.T) {
+	var sb strings.Builder
+	b := &Bead{
+		ID:       "Forge-abc1",
+		Title:    "Test bead title",
+		Status:   "open",
+		Priority: 2,
+		Anvil:    "heimdall",
+	}
+	renderBeadDetailContent(&sb, b, 30)
+	out := sb.String()
+
+	assert.Contains(t, out, "Forge-abc1", "ID must appear")
+	assert.Contains(t, out, "Test bead title", "title must appear")
+	assert.Contains(t, out, "Status:", "Status field must appear")
+	assert.Contains(t, out, "open", "status value must appear")
+	assert.Contains(t, out, "Priority:", "Priority field must appear")
+	assert.Contains(t, out, "P2", "priority value must appear")
+	assert.Contains(t, out, "Anvil:", "Anvil field must appear")
+	assert.Contains(t, out, "heimdall", "anvil value must appear")
+}
+
+func TestRenderBeadDetailContentOptionalFields(t *testing.T) {
+	now := time.Now()
+	closed := now.Add(-24 * time.Hour)
+	var sb strings.Builder
+	b := &Bead{
+		ID:        "Forge-xyz",
+		Title:     "Full bead",
+		Status:    "closed",
+		Priority:  1,
+		Anvil:     "repo",
+		IssueType: "bug",
+		Assignee:  "alice",
+		Labels:    []string{"urgent", "backend"},
+		HasPR:     true,
+		UpdatedAt: &now,
+		ClosedAt:  &closed,
+		DependsOn: []string{"Forge-dep1"},
+		Blocks:    []string{"Forge-blk1"},
+		Description: "Some description text",
+	}
+	renderBeadDetailContent(&sb, b, 30)
+	out := sb.String()
+
+	assert.Contains(t, out, "Type:", "IssueType field must appear when set")
+	assert.Contains(t, out, "bug")
+	assert.Contains(t, out, "Assignee:")
+	assert.Contains(t, out, "@alice")
+	assert.Contains(t, out, "Labels:")
+	assert.Contains(t, out, "urgent")
+	assert.Contains(t, out, "PR:")
+	assert.Contains(t, out, "Updated:")
+	assert.Contains(t, out, "Closed:")
+	assert.Contains(t, out, "Depends on:")
+	assert.Contains(t, out, "Forge-dep1")
+	assert.Contains(t, out, "Blocks:")
+	assert.Contains(t, out, "Forge-blk1")
+	assert.Contains(t, out, "Description:")
+	assert.Contains(t, out, "Some description text")
+}
+
+func TestRenderBeadDetailContentOmitsEmptyOptionals(t *testing.T) {
+	var sb strings.Builder
+	b := &Bead{ID: "Forge-min", Title: "Minimal", Status: "open", Priority: 3, Anvil: "a"}
+	renderBeadDetailContent(&sb, b, 30)
+	out := sb.String()
+
+	assert.NotContains(t, out, "Type:")
+	assert.NotContains(t, out, "Assignee:")
+	assert.NotContains(t, out, "Labels:")
+	assert.NotContains(t, out, "PR:")
+	assert.NotContains(t, out, "Updated:")
+	assert.NotContains(t, out, "Closed:")
+	assert.NotContains(t, out, "Depends on:")
+	assert.NotContains(t, out, "Blocks:")
+	assert.NotContains(t, out, "Description:")
+}
+
+// ---------------------------------------------------------------------------
+// detailPanelW / mainPanelWidth
+// ---------------------------------------------------------------------------
+
+func TestDetailPanelWHiddenByFlag(t *testing.T) {
+	m := &Model{width: 160, showDetailPanel: false}
+	assert.Equal(t, 0, m.detailPanelW(), "hidden panel must return 0 width")
+}
+
+func TestDetailPanelWHiddenByNarrowTerminal(t *testing.T) {
+	m := &Model{width: minWidthForDetailPanel - 1, showDetailPanel: true}
+	assert.Equal(t, 0, m.detailPanelW(), "narrow terminal must suppress detail panel")
+}
+
+func TestDetailPanelWVisible(t *testing.T) {
+	m := &Model{width: minWidthForDetailPanel, showDetailPanel: true}
+	assert.Equal(t, detailPanelFixedW, m.detailPanelW())
+}
+
+func TestMainPanelWidthNoDetailPanel(t *testing.T) {
+	m := &Model{width: 100, showDetailPanel: false}
+	assert.Equal(t, 100, m.mainPanelWidth())
+}
+
+func TestMainPanelWidthWithDetailPanel(t *testing.T) {
+	m := &Model{width: 160, showDetailPanel: true}
+	assert.Equal(t, 160-detailPanelFixedW, m.mainPanelWidth())
+}
+
+// ---------------------------------------------------------------------------
+// renderDetailPanel
+// ---------------------------------------------------------------------------
+
+func TestRenderDetailPanelHidden(t *testing.T) {
+	m := &Model{width: 80, showDetailPanel: false}
+	assert.Equal(t, "", m.renderDetailPanel(), "hidden panel must render empty string")
+}
+
+func TestRenderDetailPanelNoBead(t *testing.T) {
+	m := &Model{width: 160, height: 30, showDetailPanel: true}
+	panel := m.renderDetailPanel()
+	assert.Contains(t, panel, "No bead selected", "empty state text must appear")
+}
+
+func TestRenderDetailPanelWithBead(t *testing.T) {
+	m := &Model{width: 160, height: 30, showDetailPanel: true}
+	m.beads = []Bead{
+		{ID: "Forge-t1", Title: "A bead", Status: "open", Priority: 2, Anvil: "repo"},
+	}
+	m.refreshHierarchy()
+	panel := m.renderDetailPanel()
+	assert.Contains(t, panel, "Forge-t1")
+	assert.Contains(t, panel, "A bead")
+}
+
+// ---------------------------------------------------------------------------
+// detailPanelBaseStyle frame overhead is consistent
+// ---------------------------------------------------------------------------
+
+func TestDetailPanelBaseStyleFrameWidth(t *testing.T) {
+	style := detailPanelBaseStyle()
+	// Frame must account for at least the left border (1) + padding (2).
+	assert.GreaterOrEqual(t, style.GetHorizontalFrameSize(), 3,
+		"base style horizontal frame must be at least 3 (border + padding)")
+}

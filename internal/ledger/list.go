@@ -315,8 +315,9 @@ func (m *Model) renderList() string {
 // hiddenListCols returns which optional columns should be hidden to give the
 // title more space on narrow terminals.
 func (m *Model) hiddenListCols() (hideLabels, hideAssignee bool) {
-	hideAssignee = m.width < narrowDropAssigneeWidth
-	hideLabels = m.width < narrowDropLabelsWidth
+	w := m.mainPanelWidth()
+	hideAssignee = w < narrowDropAssigneeWidth
+	hideLabels = w < narrowDropLabelsWidth
 	return
 }
 
@@ -331,7 +332,7 @@ func (m *Model) titleColumnWidth() int {
 	if !hideAssignee {
 		fixed += colAssignee
 	}
-	return max(m.width-fixed, 10)
+	return max(m.mainPanelWidth()-fixed, 10)
 }
 
 // checkboxWidth is the visual width of the checkbox prefix (e.g. "[✓] ").

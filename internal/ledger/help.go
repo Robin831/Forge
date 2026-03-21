@@ -32,6 +32,7 @@ var (
 	keyAI          = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "AI improve"))
 	keyDepUpdate   = key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "update deps"))
 	keyEventPanel  = key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "toggle events"))
+	keyDetailPanel = key.NewBinding(key.WithKeys("\\"), key.WithHelp("\\", "toggle detail"))
 	keyFilter  = key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "filter anvil"))
 	keyToggleClosed = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "toggle closed"))
 	keySpace   = key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select"))
@@ -76,7 +77,7 @@ func (listKeyMap) FullHelp() [][]key.Binding {
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},              // Bulk
 		{keyAI, keyDepUpdate},                                      // AI / Updates
 		{keyFilter, keyToggleClosed, keySort},                      // Filters
-		{keyTab, keyEventPanel, keyHelp, keyQuit},                  // General
+		{keyTab, keyEventPanel, keyDetailPanel, keyHelp, keyQuit},  // General
 	}
 }
 
@@ -96,7 +97,7 @@ func (kanbanKeyMap) FullHelp() [][]key.Binding {
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},                         // Bulk
 		{keyAI, keyDepUpdate},                                                 // AI / Updates
 		{keyFilter, keyToggleClosed},                                          // Filters
-		{keyTab, keyEventPanel, keyHelp, keyQuit},                             // General
+		{keyTab, keyEventPanel, keyDetailPanel, keyHelp, keyQuit},             // General
 	}
 }
 
@@ -116,7 +117,7 @@ func (hierarchyKeyMap) FullHelp() [][]key.Binding {
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},               // Bulk
 		{keyAI, keyDepUpdate},                                       // AI / Updates
 		{keyFilter, keyToggleClosed},                                // Filters
-		{keyTab, keyEventPanel, keyHelp, keyQuit},                   // General
+		{keyTab, keyEventPanel, keyDetailPanel, keyHelp, keyQuit},  // General
 	}
 }
 
@@ -256,14 +257,14 @@ func (m *Model) renderFooter() string {
 	case m.bulk.Count() > 0:
 		// Bulk selection mode: show bulk operation shortcuts.
 		h := m.helpSt.helper
-		h.Width = max(m.width-4, 1)
+		h.Width = max(m.mainPanelWidth()-4, 1)
 		bulkBindings := []key.Binding{keyBulkClose, keyBulkLabel, keyBulkPriority, keyCtrlA, keyEscB}
 		footerText = fmt.Sprintf("%d selected: ", m.bulk.Count()) + h.ShortHelpView(bulkBindings)
 
 	default:
 		// Normal mode: view-specific short bindings prefixed with the active view label.
 		h := m.helpSt.helper
-		h.Width = max(m.width-4, 1)
+		h.Width = max(m.mainPanelWidth()-4, 1)
 		var km help.KeyMap
 		var viewLabel string
 		switch m.view {
