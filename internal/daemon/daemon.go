@@ -1406,6 +1406,16 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 	}
 	p := poller.NewStaggered(cfg.Anvils, pollInterval)
+	// Log each anvil's poll event as soon as it finishes so Hearth shows
+	// per-anvil timestamps that reflect the actual stagger, not a single
+	// shared timestamp logged after wg.Wait().
+	p.OnAnvilDone = func(r poller.AnvilResult) {
+		if r.Err != nil {
+			_ = d.db.LogEvent(state.EventPollError, r.Err.Error(), "", r.Name)
+		} else {
+			_ = d.db.LogEvent(state.EventPoll, fmt.Sprintf("Polled anvil: %s (%d ready)", r.Name, len(r.Beads)), "", r.Name)
+		}
+	}
 	beads, results := p.Poll(ctx)
 
 	anvilPaths := make(map[string]string, len(cfg.Anvils))
@@ -1437,10 +1447,8 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	for _, r := range results {
 		if r.Err != nil {
 			d.logger.Warn("poll error", "anvil", r.Name, "error", r.Err)
-			_ = d.db.LogEvent(state.EventPollError, r.Err.Error(), "", r.Name)
 		} else {
 			d.logger.Info("poll complete", "anvil", r.Name, "ready", len(r.Beads))
-			_ = d.db.LogEvent(state.EventPoll, fmt.Sprintf("Polled anvil: %s (%d ready)", r.Name, len(r.Beads)), "", r.Name)
 		}
 	}
 

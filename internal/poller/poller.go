@@ -66,6 +66,11 @@ type BeadPoller struct {
 	// bd/git commands over time instead of firing all at once. The total
 	// stagger should be less than the poll interval.
 	StaggerInterval time.Duration
+	// OnAnvilDone, when set, is called inside each anvil's goroutine as soon
+	// as that anvil's poll completes. This lets callers record per-anvil
+	// timestamps immediately (rather than after wg.Wait), so that staggered
+	// polls produce distinct timestamps in monitoring/event logs.
+	OnAnvilDone func(AnvilResult)
 }
 
 // New creates a BeadPoller for the given anvil configurations.
@@ -132,12 +137,12 @@ func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 				}
 			}
 			beads, err := pollAnvil(ctx, name, anvil)
+			r := AnvilResult{Name: name, Beads: beads, Err: err}
+			if p.OnAnvilDone != nil {
+				p.OnAnvilDone(r)
+			}
 			mu.Lock()
-			results = append(results, AnvilResult{
-				Name:  name,
-				Beads: beads,
-				Err:   err,
-			})
+			results = append(results, r)
 			mu.Unlock()
 		}(name, p.anvils[name], delay)
 	}
