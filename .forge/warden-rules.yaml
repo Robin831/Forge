@@ -1169,7 +1169,9 @@ rules:
       pattern: PR description or title claims a specific count of added/changed/removed items
       check: >-
         Verify that the count stated in the PR description or title matches the actual number of changes in the diff — e.g., if the PR says 'learned 4 rules', confirm exactly 4 new rules appear in the changed files
-      source: copilot:PR#332, copilot:PR#337
+      source:
+        - copilot:PR#332
+        - copilot:PR#337
       added: "2026-03-20"
     - id: preserve-rule-attribution-sources
       category: other
@@ -1217,7 +1219,7 @@ rules:
         Adding a new warden rule entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
         Before inserting a new warden rule, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365']
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -1362,7 +1364,8 @@ rules:
     - id: warden-source-field-wording
       category: style
       pattern: Warden rule check text or description references 'source list' or treats the source field as a YAML list
-      check: Verify that warden rule text refers to 'source field' or 'comma-separated PR attributions' rather than 'source list', since the source value in warden-rules.yaml is a single scalar string (often comma-separated), not a YAML list
+      check: >-
+        Verify that warden rule text refers to the 'source field' or to PR attributions in the source field, rather than calling it a 'source list' or implying list semantics. The source field is modeled as a SourceList and may appear as either a single YAML scalar or a YAML sequence; commas in scalar values are just part of the string and are not treated as separators.
       source: copilot:PR#337
       added: "2026-03-20"
     - id: unreachable-early-return
