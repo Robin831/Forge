@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/depupdate"
 	"github.com/Robin831/Forge/internal/hearth"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
@@ -67,6 +68,19 @@ var hearthCmd = &cobra.Command{
 		}
 
 		model := hearth.NewModel(ds)
+
+		updateAnvils := make([]depupdate.Anvil, 0, len(cfg.Anvils))
+		for _, name := range anvilNames {
+			a := cfg.Anvils[name]
+			updateAnvils = append(updateAnvils, depupdate.Anvil{
+				Name:   name,
+				Path:   a.Path,
+				Config: a,
+				DB:     db,
+			})
+		}
+		model.UpdateAnvils = updateAnvils
+
 		model.OnKill = func(workerID string, pid int) {
 			client, err := ipc.NewClient()
 			if err != nil {
