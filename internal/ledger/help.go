@@ -29,7 +29,8 @@ var (
 	keyAssign  = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "assign"))
 	keyAddDep  = key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "add dep"))
 	keyViewDeps = key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "view deps"))
-	keyAI      = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "AI improve"))
+	keyAI         = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "AI improve"))
+	keyDepUpdate  = key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "update deps"))
 	keyFilter  = key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "filter anvil"))
 	keyToggleClosed = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "toggle closed"))
 	keySpace   = key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select"))
@@ -72,7 +73,7 @@ func (listKeyMap) FullHelp() [][]key.Binding {
 		{keyLabel, keyPriorityB, keyComment, keyNotes, keyAssign},  // Metadata
 		{keyAddDep, keyViewDeps},                                   // Dependencies
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},              // Bulk
-		{keyAI},                                                    // AI
+		{keyAI, keyDepUpdate},                                      // AI / Updates
 		{keyFilter, keyToggleClosed, keySort},                      // Filters
 		{keyTab, keyHelp, keyQuit},                                 // General
 	}
@@ -92,7 +93,7 @@ func (kanbanKeyMap) FullHelp() [][]key.Binding {
 		{keyPriorityB, keyComment, keyNotes, keyAssign},                       // Metadata
 		{keyAddDep, keyViewDeps},                                              // Dependencies
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},                         // Bulk
-		{keyAI},                                                               // AI
+		{keyAI, keyDepUpdate},                                                 // AI / Updates
 		{keyFilter, keyToggleClosed},                                          // Filters
 		{keyTab, keyHelp, keyQuit},                                            // General
 	}
@@ -112,7 +113,7 @@ func (hierarchyKeyMap) FullHelp() [][]key.Binding {
 		{keyPriorityB, keyComment, keyNotes, keyAssign},             // Metadata
 		{keyAddDep, keyViewDeps},                                    // Dependencies
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},               // Bulk
-		{keyAI},                                                     // AI
+		{keyAI, keyDepUpdate},                                       // AI / Updates
 		{keyFilter, keyToggleClosed},                                // Filters
 		{keyTab, keyHelp, keyQuit},                                  // General
 	}
@@ -135,7 +136,7 @@ func newHelpState() helpState {
 // categoryLabels are the display names for each FullHelp group, in order.
 var categoryLabels = []string{
 	"Navigation", "CRUD", "Metadata", "Dependencies",
-	"Bulk", "AI", "Filters", "General",
+	"Bulk", "AI / Updates", "Filters", "General",
 }
 
 // updateHelpOverlay handles key events when the help overlay is visible.
