@@ -489,12 +489,14 @@ type Model struct {
 	UpdateAnvils []depupdate.Anvil
 
 	// Update overlay state — shown when the user presses 'U'.
-	showUpdateOverlay bool
-	updateScanning    bool                    // true while depupdate.Scan is in flight
-	updateRunning     bool                    // true while depupdate.Apply is in flight
-	updateReports     []depupdate.AnvilReport // results from the most recent scan
-	updateForm        *huh.Form               // selection form shown after scan completes
-	updateFilterKind  updateFilterChoice      // the user's chosen filter (all / patch+minor)
+	showUpdateOverlay    bool
+	updateScanning       bool                    // true while depupdate.Scan is in flight
+	updateRunning        bool                    // true while depupdate.Apply is in flight
+	updateReports        []depupdate.AnvilReport // results from the most recent scan
+	updateForm           *huh.Form               // filter selection form shown after scan
+	updateFilterKind     updateFilterChoice      // the user's chosen filter (all / patch+minor / select groups)
+	updateGroupSelectForm *huh.Form              // group multi-select form (shown when select groups chosen)
+	updateSelectedKeys   []string                // group keys selected in the group-select form
 }
 
 // NewModel creates a new Hearth TUI model.
@@ -832,21 +834,54 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.updateScanning || m.updateRunning {
 				return m, nil
 			}
-			// Drive the selection form
+			// Drive the group multi-select form (shown when "select groups" was chosen)
+			if m.updateGroupSelectForm != nil {
+				cmd := m.driveHuhForm(&m.updateGroupSelectForm, msg)
+				if m.updateGroupSelectForm.State == huh.StateCompleted {
+					keys := m.updateSelectedKeys
+					m.updateGroupSelectForm = nil
+					if len(keys) == 0 {
+						m.closeUpdateOverlay()
+						return m, tea.Batch(cmd, m.addToast("No groups selected", false))
+					}
+					keySet := make(map[string]bool, len(keys))
+					for _, k := range keys {
+						keySet[k] = true
+					}
+					m.updateRunning = true
+					startToast := m.addToast("Applying dependency updates...", false)
+					applyCmd := runUpdateApply(m.updateReports, updateFilterAll, keySet)
+					return m, tea.Batch(cmd, startToast, applyCmd)
+				} else if m.updateGroupSelectForm.State == huh.StateAborted {
+					m.closeUpdateOverlay()
+					return m, cmd
+				}
+				if isTerminalMsg(msg) {
+					return m, cmd
+				}
+				return m, nil
+			}
+			// Drive the filter selection form
 			if m.updateForm != nil {
 				cmd := m.driveHuhForm(&m.updateForm, msg)
 				if m.updateForm.State == huh.StateCompleted {
 					choice := m.updateFilterKind
 					m.updateForm = nil
-					if choice == updateFilterCancel {
+					switch choice {
+					case updateFilterCancel:
 						m.closeUpdateOverlay()
 						return m, cmd
+					case updateFilterSelectGroups:
+						// Transition to the group multi-select form
+						m.updateGroupSelectForm = buildGroupSelectForm(m.updateReports, &m.updateSelectedKeys)
+						return m, tea.Batch(cmd, m.updateGroupSelectForm.Init())
+					default:
+						// Start applying in a background goroutine
+						m.updateRunning = true
+						startToast := m.addToast("Applying dependency updates...", false)
+						applyCmd := runUpdateApply(m.updateReports, choice, nil)
+						return m, tea.Batch(cmd, startToast, applyCmd)
 					}
-					// Start applying in a background goroutine
-					m.updateRunning = true
-					startToast := m.addToast("Applying dependency updates...", false)
-					applyCmd := runUpdateApply(m.updateReports, choice)
-					return m, tea.Batch(cmd, startToast, applyCmd)
 				} else if m.updateForm.State == huh.StateAborted {
 					m.closeUpdateOverlay()
 					return m, cmd

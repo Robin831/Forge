@@ -16,9 +16,10 @@ import (
 type updateFilterChoice int
 
 const (
-	updateFilterAll        updateFilterChoice = iota // apply all updates
-	updateFilterPatchMinor                           // skip major version bumps
-	updateFilterCancel                               // close the overlay without applying
+	updateFilterAll          updateFilterChoice = iota // apply all updates
+	updateFilterPatchMinor                             // skip major version bumps
+	updateFilterSelectGroups                           // let user pick groups individually
+	updateFilterCancel                                 // close the overlay without applying
 )
 
 // updateScanDoneMsg is delivered when the background depupdate.Scan call completes.
@@ -55,6 +56,8 @@ func (m *Model) closeUpdateOverlay() {
 	m.updateScanning = false
 	m.updateReports = nil
 	m.updateForm = nil
+	m.updateGroupSelectForm = nil
+	m.updateSelectedKeys = nil
 	m.updateRunning = false
 }
 
@@ -69,9 +72,16 @@ func (m *Model) runUpdateScan() tea.Cmd {
 	}
 }
 
-// runUpdateApply applies the scanned reports with the chosen filter in a background goroutine
-// and delivers the aggregate result as an updateApplyDoneMsg.
-func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice) tea.Cmd {
+// groupKey returns a stable string key for an update group scoped to an anvil.
+func groupKey(anvilName, groupName string) string {
+	return anvilName + "/" + groupName
+}
+
+// runUpdateApply applies the scanned reports in a background goroutine.
+// filter controls which groups to include (all or patch+minor only); it is
+// ignored when selectedKeys is non-nil, in which case only groups whose key
+// (groupKey(anvilName, groupName)) is present in the set are applied.
+func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, selectedKeys map[string]bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		opts := depupdate.Options{}
@@ -81,11 +91,26 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice) 
 
 		applied, failed, anvilsUpdated := 0, 0, 0
 		for _, report := range reports {
-			groups := depupdate.FilterGroups(report.Groups, opts)
+			var groups []depupdate.UpdateGroup
+			if selectedKeys != nil {
+				// user-selected groups: ignore filter, pick by key
+				for _, g := range report.Groups {
+					if selectedKeys[groupKey(report.Anvil.Name, g.Name)] {
+						groups = append(groups, g)
+					}
+				}
+			} else {
+				groups = depupdate.FilterGroups(report.Groups, opts)
+			}
 			if len(groups) == 0 {
 				continue
 			}
-			results, _ := depupdate.Apply(ctx, report.Anvil.Path, report.Anvil.Config, groups)
+			results, err := depupdate.Apply(ctx, report.Anvil.Path, report.Anvil.Config, groups)
+			if err != nil {
+				// Apply-level error (e.g. context cancellation); count all groups as failed.
+				failed += len(groups)
+				continue
+			}
 			anvilApplied := false
 			for _, r := range results {
 				if r.Applied {
@@ -101,6 +126,28 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice) 
 		}
 		return updateApplyDoneMsg{applied: applied, failed: failed, anvils: anvilsUpdated}
 	}
+}
+
+// buildGroupSelectForm builds a multi-select huh form that lets the user pick
+// individual update groups to apply. selectedKeys is the slice the form writes
+// its selected values into.
+func buildGroupSelectForm(reports []depupdate.AnvilReport, selectedKeys *[]string) *huh.Form {
+	var opts []huh.Option[string]
+	for _, report := range reports {
+		for _, g := range report.Groups {
+			key := groupKey(report.Anvil.Name, g.Name)
+			label := fmt.Sprintf("[%s] %s (%s)", report.Anvil.Name, g.Name, g.Kind)
+			opts = append(opts, huh.NewOption(label, key))
+		}
+	}
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Select groups to apply").
+				Options(opts...).
+				Value(selectedKeys),
+		),
+	).WithTheme(huh.ThemeCharm()).WithWidth(70)
 }
 
 // countUpdateGroups returns the total number of update groups across all reports.
@@ -132,6 +179,7 @@ func buildUpdateFilterForm(choice *updateFilterChoice, totalGroups, totalAnvils 
 				Options(
 					huh.NewOption("All updates (patch, minor, major)", updateFilterAll),
 					huh.NewOption("Patch + minor only (skip major)", updateFilterPatchMinor),
+					huh.NewOption("Select groups...", updateFilterSelectGroups),
 					huh.NewOption("Cancel", updateFilterCancel),
 				).
 				Value(choice),
@@ -165,6 +213,9 @@ func (m *Model) renderUpdateOverlay() string {
 		lines = append(lines, dimStyle.Render("  Applying updates... (working in background)"))
 		lines = append(lines, "")
 		lines = append(lines, dimStyle.Render("  Results will appear as a notification when complete"))
+
+	case m.updateGroupSelectForm != nil:
+		lines = append(lines, m.updateGroupSelectForm.View())
 
 	case m.updateForm != nil:
 		// Grouped scan results: one section per anvil, then the selection form.
