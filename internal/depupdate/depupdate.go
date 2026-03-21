@@ -241,8 +241,15 @@ func ExecuteGroups(ctx context.Context, anvilPath string, anvilCfg config.AnvilC
 			}
 			continue
 		}
-		result, _ := VerifyGroup(ctx, anvilPath, anvilCfg)
-		if result != nil && !result.Passed {
+		result, verifyErr := VerifyGroup(ctx, anvilPath, anvilCfg)
+		if verifyErr != nil {
+			log.Printf("[depupdate] verify error for group %q: %v — rolling back", g.Name, verifyErr)
+			if rbErr := RollbackGroup(ctx, anvilPath, g, verifyErr); rbErr != nil {
+				log.Printf("[depupdate] rollback failed for group %q: %v", g.Name, rbErr)
+			}
+			continue
+		}
+		if !result.Passed {
 			log.Printf("[depupdate] verify failed for group %q — rolling back", g.Name)
 			if rbErr := RollbackGroup(ctx, anvilPath, g, fmt.Errorf("temper verification failed")); rbErr != nil {
 				log.Printf("[depupdate] rollback failed for group %q: %v", g.Name, rbErr)
