@@ -23,15 +23,19 @@ const (
 )
 
 // updateScanDoneMsg is delivered when the background depupdate.Scan call completes.
+// generation matches the Model.updateScanGeneration value at the time the scan was started;
+// the handler discards the message if the generation no longer matches (e.g. overlay was closed).
 type updateScanDoneMsg struct {
-	reports []depupdate.AnvilReport
-	err     error
+	reports    []depupdate.AnvilReport
+	err        error
+	generation int
 }
 
 // updateApplyDoneMsg is delivered when dependency updates have been applied across all anvils.
 type updateApplyDoneMsg struct {
 	applied int // groups successfully installed, verified, and committed
 	failed  int // groups that failed or were rolled back
+	skipped int // groups excluded by the filter (e.g. major groups when patch+minor only)
 	anvils  int // distinct anvils with at least one applied group
 }
 
@@ -41,6 +45,7 @@ func (m *Model) openUpdateOverlay() tea.Cmd {
 	if len(m.UpdateAnvils) == 0 {
 		return m.addToast("No anvils configured for dependency updates", true)
 	}
+	m.updateScanGeneration++
 	m.showUpdateOverlay = true
 	m.updateScanning = true
 	m.updateReports = nil
@@ -65,10 +70,11 @@ func (m *Model) closeUpdateOverlay() {
 // and delivers the results as an updateScanDoneMsg.
 func (m *Model) runUpdateScan() tea.Cmd {
 	anvils := m.UpdateAnvils
+	gen := m.updateScanGeneration
 	return func() tea.Msg {
 		ctx := context.Background()
 		reports, err := depupdate.Scan(ctx, anvils, depupdate.Options{})
-		return updateScanDoneMsg{reports: reports, err: err}
+		return updateScanDoneMsg{reports: reports, err: err, generation: gen}
 	}
 }
 
@@ -89,7 +95,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 			opts.NoMajor = true
 		}
 
-		applied, failed, anvilsUpdated := 0, 0, 0
+		applied, failed, skipped, anvilsUpdated := 0, 0, 0, 0
 		for _, report := range reports {
 			var groups []depupdate.UpdateGroup
 			if selectedKeys != nil {
@@ -97,10 +103,14 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				for _, g := range report.Groups {
 					if selectedKeys[groupKey(report.Anvil.Name, g.Name)] {
 						groups = append(groups, g)
+					} else {
+						skipped++
 					}
 				}
 			} else {
+				all := depupdate.FilterGroups(report.Groups, depupdate.Options{})
 				groups = depupdate.FilterGroups(report.Groups, opts)
+				skipped += len(all) - len(groups)
 			}
 			if len(groups) == 0 {
 				continue
@@ -124,7 +134,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				anvilsUpdated++
 			}
 		}
-		return updateApplyDoneMsg{applied: applied, failed: failed, anvils: anvilsUpdated}
+		return updateApplyDoneMsg{applied: applied, failed: failed, skipped: skipped, anvils: anvilsUpdated}
 	}
 }
 
@@ -207,7 +217,7 @@ func (m *Model) renderUpdateOverlay() string {
 	case m.updateScanning:
 		lines = append(lines, dimStyle.Render("  Scanning dependencies across anvils..."))
 		lines = append(lines, "")
-		lines = append(lines, dimStyle.Render("  Press Esc to cancel"))
+		lines = append(lines, dimStyle.Render("  Press Esc to close this overlay"))
 
 	case m.updateRunning:
 		lines = append(lines, dimStyle.Render("  Applying updates... (working in background)"))
@@ -221,7 +231,12 @@ func (m *Model) renderUpdateOverlay() string {
 		// Grouped scan results: one section per anvil, then the selection form.
 		for _, report := range m.updateReports {
 			if len(report.Groups) == 0 {
-				lines = append(lines, dimStyle.Render(fmt.Sprintf("  %s: no updates found", report.Anvil.Name)))
+				if len(report.Errors) > 0 {
+					errorStyle := lipgloss.NewStyle().Foreground(colorDanger)
+					lines = append(lines, errorStyle.Render(fmt.Sprintf("  %s: scan failed: %v", report.Anvil.Name, report.Errors)))
+				} else {
+					lines = append(lines, dimStyle.Render(fmt.Sprintf("  %s: no updates found", report.Anvil.Name)))
+				}
 				continue
 			}
 			lines = append(lines, lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("  %s:", report.Anvil.Name)))

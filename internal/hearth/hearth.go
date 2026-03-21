@@ -489,14 +489,15 @@ type Model struct {
 	UpdateAnvils []depupdate.Anvil
 
 	// Update overlay state — shown when the user presses 'U'.
-	showUpdateOverlay    bool
-	updateScanning       bool                    // true while depupdate.Scan is in flight
-	updateRunning        bool                    // true while depupdate.Apply is in flight
-	updateReports        []depupdate.AnvilReport // results from the most recent scan
-	updateForm           *huh.Form               // filter selection form shown after scan
-	updateFilterKind     updateFilterChoice      // the user's chosen filter (all / patch+minor / select groups)
-	updateGroupSelectForm *huh.Form              // group multi-select form (shown when select groups chosen)
-	updateSelectedKeys   []string                // group keys selected in the group-select form
+	showUpdateOverlay     bool
+	updateScanning        bool                    // true while depupdate.Scan is in flight
+	updateRunning         bool                    // true while depupdate.Apply is in flight
+	updateReports         []depupdate.AnvilReport // results from the most recent scan
+	updateForm            *huh.Form               // filter selection form shown after scan
+	updateFilterKind      updateFilterChoice      // the user's chosen filter (all / patch+minor / select groups)
+	updateGroupSelectForm *huh.Form               // group multi-select form (shown when select groups chosen)
+	updateSelectedKeys    []string                // group keys selected in the group-select form
+	updateScanGeneration  int                     // incremented each time a scan is started; stale results are ignored
 }
 
 // NewModel creates a new Hearth TUI model.
@@ -742,6 +743,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case updateScanDoneMsg:
+		// Discard stale results from a scan that was started before the overlay was last closed.
+		if msg.generation != m.updateScanGeneration || !m.showUpdateOverlay {
+			return m, nil
+		}
 		m.updateScanning = false
 		if msg.err != nil {
 			m.closeUpdateOverlay()
@@ -765,6 +770,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.addToast("No updates were applied", false)
 		}
 		summary := fmt.Sprintf("Updated %d groups across %d anvil(s)", msg.applied, msg.anvils)
+		if msg.skipped > 0 {
+			summary += fmt.Sprintf(", %d group(s) skipped", msg.skipped)
+		}
 		if msg.failed > 0 {
 			summary += fmt.Sprintf(", %d group(s) failed", msg.failed)
 		}
@@ -1292,6 +1300,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Notes overlay intercepts all mouse events when open
 		if m.showNotesOverlay {
+			return m, nil
+		}
+		// Update overlay intercepts all mouse events when open
+		if m.showUpdateOverlay {
 			return m, nil
 		}
 		// Orphan dialog requires explicit keyboard action; consume all mouse events.

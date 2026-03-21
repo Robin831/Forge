@@ -99,11 +99,11 @@ func (k queueKeyMap) FullHelp() [][]key.Binding {
 type cruciblesKeyMap struct{ m *Model }
 
 func (k cruciblesKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyEnter, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyEnter, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k cruciblesKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyEnter, keyPRPanel},
+		{keyScroll, keyEnter, keyPRPanel, keyDepUpdate},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -111,11 +111,11 @@ func (k cruciblesKeyMap) FullHelp() [][]key.Binding {
 type readyToMergeKeyMap struct{ m *Model }
 
 func (k readyToMergeKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyMerge, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyMerge, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k readyToMergeKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyMerge, keyPRPanel},
+		{keyScroll, keyMerge, keyPRPanel, keyDepUpdate},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -123,11 +123,11 @@ func (k readyToMergeKeyMap) FullHelp() [][]key.Binding {
 type needsAttentionKeyMap struct{ m *Model }
 
 func (k needsAttentionKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyEnter, keyDesc, keyNotes, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyEnter, keyDesc, keyNotes, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k needsAttentionKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyEnter, keyDesc, keyNotes, keyPRPanel},
+		{keyScroll, keyEnter, keyDesc, keyNotes, keyPRPanel, keyDepUpdate},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -135,11 +135,11 @@ func (k needsAttentionKeyMap) FullHelp() [][]key.Binding {
 type workersKeyMap struct{ m *Model }
 
 func (k workersKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyKill, keyStop, keyViewLog, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyKill, keyStop, keyViewLog, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k workersKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyKill, keyStop, keyViewLog, keyPRPanel},
+		{keyScroll, keyKill, keyStop, keyViewLog, keyPRPanel, keyDepUpdate},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -147,11 +147,11 @@ func (k workersKeyMap) FullHelp() [][]key.Binding {
 type usageKeyMap struct{ m *Model }
 
 func (k usageKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k usageKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyPRPanel},
+		{keyScroll, keyPRPanel, keyDepUpdate},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -159,11 +159,11 @@ func (k usageKeyMap) FullHelp() [][]key.Binding {
 type liveActivityKeyMap struct{ m *Model }
 
 func (k liveActivityKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyFollow, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyFollow, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k liveActivityKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyFollow, keyPRPanel},
+		{keyScroll, keyFollow, keyPRPanel, keyDepUpdate},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -171,11 +171,11 @@ func (k liveActivityKeyMap) FullHelp() [][]key.Binding {
 type eventsKeyMap struct{ m *Model }
 
 func (k eventsKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyFollow, keyFilter, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyFollow, keyFilter, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k eventsKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyFollow, keyFilter, keyPRPanel},
+		{keyScroll, keyFollow, keyFilter, keyPRPanel, keyDepUpdate},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
