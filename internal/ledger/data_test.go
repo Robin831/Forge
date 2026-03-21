@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -170,6 +171,39 @@ func TestFetchAllBeadsWithExecMultipleAnvils(t *testing.T) {
 	}
 	assert.True(t, anvilNames["anvil-a"])
 	assert.True(t, anvilNames["anvil-b"])
+}
+
+func TestFetchAllBeadsWithExecClosedBeadFetchUsesLimit(t *testing.T) {
+	// Capture all arg slices seen for closed-status queries to verify --limit 50 is passed.
+	var mu sync.Mutex
+	var closedArgs []string
+	execFn := func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+		for _, a := range args {
+			if a == "--status=closed" {
+				mu.Lock()
+				closedArgs = append(closedArgs, args...)
+				mu.Unlock()
+				break
+			}
+		}
+		return []byte("[]"), nil
+	}
+
+	cmd := fetchAllBeadsWithExec(execFn, map[string]string{"myAnvil": "/tmp/anvil"}, nil)
+	cmd()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, closedArgs, "closed-bead fetch must be invoked")
+
+	found := false
+	for i, a := range closedArgs {
+		if a == "--limit" && i+1 < len(closedArgs) && closedArgs[i+1] == "50" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "closed-bead bd list must include --limit 50")
 }
 
 func TestFetchAllBeadsWithExecEmptyAnvils(t *testing.T) {

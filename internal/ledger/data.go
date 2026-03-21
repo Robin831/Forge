@@ -59,8 +59,11 @@ func bdExec(ctx context.Context, anvilPath string, args ...string) ([]byte, erro
 }
 
 // FetchAllBeads returns a tea.Cmd that fetches beads from all anvils in parallel.
-// It fetches open/in_progress beads plus recently closed beads (last 7 days),
-// then enriches them with PR data from the state DB.
+// It fetches open/in_progress beads plus up to 50 closed beads (best-effort),
+// then filters the closed beads to those updated or closed within the last 7 days.
+// Note: closed-bead ordering is not guaranteed, so the 7-day window is applied
+// after fetching — beads closed within 7 days but outside the first 50 results
+// may not appear.
 func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
 	return fetchAllBeadsWithExec(bdExec, anvils, db)
 }
@@ -69,19 +72,19 @@ func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
 // accepts an injectable bdExecFunc for testability.
 func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *state.DB) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		var allBeads []Bead
 		var firstErr error
 
 		for name, path := range anvils {
-			// Fetch open + in_progress beads
+			// Fetch open + in_progress beads — use a shorter timeout since these
+			// should be fast; they are critical for the Ledger view.
 			wg.Add(1)
 			go func(name, path string) {
 				defer wg.Done()
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
 				out, err := execFn(ctx, path, "list", "--status=open", "--status=in_progress", "--limit", "0", "--json")
 				if err != nil {
 					mu.Lock()
@@ -108,10 +111,14 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 				mu.Unlock()
 			}(name, path)
 
-			// Fetch recently closed beads
+			// Fetch recently closed beads — use a longer timeout since remote Dolt
+			// anvils can be slow; closed beads are supplementary so a longer wait
+			// here does not block the primary open/in_progress data.
 			wg.Add(1)
 			go func(name, path string) {
 				defer wg.Done()
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
 				out, err := execFn(ctx, path, "list", "--status=closed", "--limit", "50", "--json")
 				if err != nil {
 					// Non-critical: closed beads are supplementary, but record the first error so the UI can surface it.
