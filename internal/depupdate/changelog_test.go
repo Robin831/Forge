@@ -2,6 +2,7 @@ package depupdate
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,6 +109,113 @@ func TestGenerateChangelog_EmptyGroups(t *testing.T) {
 	// Empty groups should be a no-op with no error.
 	if err := GenerateChangelog(dir, nil, false); err != nil {
 		t.Errorf("expected nil error for empty groups, got: %v", err)
+	}
+}
+
+// initGitRepo sets up a minimal git repo in dir so git add/commit can run.
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+}
+
+func TestGenerateChangelog_Monolingual(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	groups := []UpdateGroup{
+		{
+			Name: "lodash",
+			Kind: "patch",
+			Updates: []depcheck.ModuleUpdate{
+				{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"},
+			},
+		},
+	}
+
+	if err := GenerateChangelog(dir, groups, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify exactly one .md file was created (no .en.md/.nb.md).
+	clDir := filepath.Join(dir, "changelog.d")
+	entries, err := os.ReadDir(clDir)
+	if err != nil {
+		t.Fatalf("reading changelog.d: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(entries))
+	}
+	name := entries[0].Name()
+	if strings.HasSuffix(name, ".en.md") || strings.HasSuffix(name, ".nb.md") {
+		t.Errorf("expected monolingual .md file, got %q", name)
+	}
+	if !strings.HasSuffix(name, ".md") {
+		t.Errorf("expected .md suffix, got %q", name)
+	}
+
+	content, err := os.ReadFile(filepath.Join(clDir, name))
+	if err != nil {
+		t.Fatalf("reading fragment: %v", err)
+	}
+	if !strings.HasPrefix(string(content), "category: Changed\n") {
+		t.Errorf("missing category header in %q", string(content))
+	}
+	if !strings.Contains(string(content), "`lodash`: 4.17.20 → 4.17.21") {
+		t.Errorf("expected lodash entry in %q", string(content))
+	}
+}
+
+func TestGenerateChangelog_Bilingual(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	groups := []UpdateGroup{
+		{
+			Name: "react",
+			Kind: "minor",
+			Updates: []depcheck.ModuleUpdate{
+				{Path: "react", Current: "18.0.0", Latest: "18.2.0", Kind: "minor"},
+			},
+		},
+	}
+
+	if err := GenerateChangelog(dir, groups, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	clDir := filepath.Join(dir, "changelog.d")
+	entries, err := os.ReadDir(clDir)
+	if err != nil {
+		t.Fatalf("reading changelog.d: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 files (en+nb), got %d", len(entries))
+	}
+
+	var hasEN, hasNB bool
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".en.md") {
+			hasEN = true
+		}
+		if strings.HasSuffix(e.Name(), ".nb.md") {
+			hasNB = true
+		}
+	}
+	if !hasEN {
+		t.Error("expected .en.md file to be created")
+	}
+	if !hasNB {
+		t.Error("expected .nb.md file to be created")
 	}
 }
 
