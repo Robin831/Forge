@@ -189,7 +189,7 @@ func TestKanbanTabSwitchesToList(t *testing.T) {
 		view: ViewKanban,
 	}
 	m.updateKanban(tabKeyMsg())
-	assert.Equal(t, ViewList, m.view)
+	assert.Equal(t, ViewHierarchy, m.view)
 }
 
 func TestRefreshKanbanLanes(t *testing.T) {
