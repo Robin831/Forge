@@ -486,6 +486,33 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+	case tea.MouseMsg:
+		// Only handle scroll wheel events; ignore clicks and motion.
+		if msg.Action != tea.MouseActionPress {
+			break
+		}
+		switch msg.Button {
+		case tea.MouseButtonWheelDown:
+			switch m.view {
+			case ViewList:
+				m.list.vp.ScrollDown(m.filteredBeadsCount())
+			case ViewKanban:
+				lane := m.kanban.activeLane
+				m.kanban.laneVP[lane].ScrollDown(len(m.kanban.lanes[lane]))
+			case ViewHierarchy:
+				m.hierarchy.vp.ScrollDown(len(m.hierarchy.flat))
+			}
+		case tea.MouseButtonWheelUp:
+			switch m.view {
+			case ViewList:
+				m.list.vp.ScrollUp()
+			case ViewKanban:
+				m.kanban.laneVP[m.kanban.activeLane].ScrollUp()
+			case ViewHierarchy:
+				m.hierarchy.vp.ScrollUp()
+			}
+		}
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
