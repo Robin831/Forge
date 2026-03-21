@@ -102,3 +102,42 @@ func TestExtractPRURL(t *testing.T) {
 		}
 	}
 }
+
+func TestIsDepUpdateTitle(t *testing.T) {
+	tests := []struct {
+		title string
+		want  bool
+	}{
+		{"Deps(Go): update github.com/foo/bar v1.0.0 → v1.1.0", true},
+		{"Deps(npm): update lodash 4.17.20 → 4.17.21", true},
+		{"Deps(NuGet): update Newtonsoft.Json 12.0.0 → 13.0.0", true},
+		{"fix: something unrelated", false},
+		{"update a package", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		got := isDepUpdateTitle(tt.title)
+		if got != tt.want {
+			t.Errorf("isDepUpdateTitle(%q) = %v, want %v", tt.title, got, tt.want)
+		}
+	}
+}
+
+func TestExtractPackageFromTitle(t *testing.T) {
+	tests := []struct {
+		title string
+		want  string
+	}{
+		{"Deps(Go): update github.com/foo/bar v1.0.0 → v1.1.0", "github.com/foo/bar"},
+		{"Deps(npm): update lodash 4.17.20 → 4.17.21", "lodash"},
+		{"Deps(npm): update @scope/pkg 1.0.0 → 2.0.0", "@scope/pkg"},
+		{"not a dep bead", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := extractPackageFromTitle(tt.title)
+		if got != tt.want {
+			t.Errorf("extractPackageFromTitle(%q) = %q, want %q", tt.title, got, tt.want)
+		}
+	}
+}
