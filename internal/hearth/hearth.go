@@ -366,9 +366,11 @@ type Model struct {
 	eventScroll      int
 	eventAutoScroll  bool // true = follow new events
 	prevEventCount   int  // track event count for auto-scroll
-	width            int
-	height           int
-	ready            bool
+	width          int
+	height         int
+	ready          bool
+	refreshing     bool   // true while a FetchAll is in flight; prevents concurrent refreshes
+	focusedBeadID  string // BeadID of the queue item under the cursor; restored after refresh
 
 	// Action menu overlay state (Needs Attention)
 	actionForm   *huh.Form
@@ -1232,7 +1234,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateQueueMsg:
 		m.queue = msg.Items
+		m.refreshing = false // fetch cycle complete; allow the next tick to refresh
 		m.rebuildQueueNav()
+		// Restore the cursor to the previously focused bead by ID (not by index) so
+		// that a list reorder or insertion does not shift focus to a different bead.
+		if m.focusedBeadID != "" {
+			if beadIdx := findBeadIndexByID(m.queue, m.focusedBeadID); beadIdx >= 0 {
+				for navIdx, nav := range m.queueNavItems {
+					if !nav.isAnvil && nav.beadIdx == beadIdx {
+						m.queueVP.cursor = navIdx
+						break
+					}
+				}
+			}
+		}
 		// Close the queue action menu or notes overlay if the target bead is no longer in the queue.
 		if m.queueActionForm != nil {
 			found := false
@@ -1605,10 +1620,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case TickMsg:
 		// On each tick, refresh all panels and schedule the next tick.
 		// Daemon health is checked every healthTickDivisor ticks to avoid
-		// issuing a full IPC status round-trip on every 2s cycle.
+		// issuing a full IPC status round-trip on every 5s cycle.
+		// The refreshing guard prevents concurrent FetchAll calls when a
+		// previous refresh is still in flight.
 		if m.data != nil {
 			m.healthTickCount++
-			cmds := []tea.Cmd{Tick(), FetchAll(m.data, m.logCache)}
+			cmds := []tea.Cmd{Tick()}
+			if !m.refreshing {
+				m.refreshing = true
+				cmds = append(cmds, FetchAll(m.data, m.logCache))
+			}
 			if m.healthTickCount%healthTickDivisor == 0 {
 				cmds = append(cmds, FetchDaemonHealth())
 			}
@@ -1933,6 +1954,7 @@ func (m *Model) scrollDown() {
 	case PanelQueue:
 		m.ensureQueueNav()
 		m.queueVP.ScrollDown(len(m.queueNavItems))
+		m.captureFocusedBeadID()
 	case PanelCrucibles:
 		m.crucibleVP.ScrollDown(len(m.crucibles))
 	case PanelNeedsAttention:
@@ -1962,6 +1984,7 @@ func (m *Model) scrollUp() {
 	case PanelQueue:
 		m.ensureQueueNav()
 		m.queueVP.ScrollUp()
+		m.captureFocusedBeadID()
 	case PanelCrucibles:
 		m.crucibleVP.ScrollUp()
 	case PanelNeedsAttention:
@@ -2082,6 +2105,30 @@ func (m *Model) selectedQueueBead() *QueueItem {
 		return nil
 	}
 	return &m.queue[nav.beadIdx]
+}
+
+// findBeadIndexByID returns the index of the first QueueItem with the given BeadID
+// in items, or -1 if not found.
+func findBeadIndexByID(items []QueueItem, id string) int {
+	for i, item := range items {
+		if item.BeadID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// captureFocusedBeadID records the BeadID of the queue nav item currently under
+// the cursor into m.focusedBeadID. Called after any queue cursor movement so
+// that the next refresh can restore the cursor to the same logical bead.
+func (m *Model) captureFocusedBeadID() {
+	if len(m.queueNavItems) == 0 || m.queueVP.cursor >= len(m.queueNavItems) {
+		return
+	}
+	nav := m.queueNavItems[m.queueVP.cursor]
+	if !nav.isAnvil && nav.beadIdx >= 0 && nav.beadIdx < len(m.queue) {
+		m.focusedBeadID = m.queue[nav.beadIdx].BeadID
+	}
 }
 
 // executeAction runs the selected action menu choice against the target bead.

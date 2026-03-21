@@ -45,7 +45,7 @@ func classifyAttentionReason(b state.NeedsAttentionBead) AttentionReason {
 }
 
 // TickInterval is how often the TUI refreshes data.
-const TickInterval = 2 * time.Second
+const TickInterval = 5 * time.Second
 
 // healthTickDivisor controls how often the daemon health IPC check runs relative
 // to the main tick. At TickInterval=2s and divisor=5, health is checked every 10s.
