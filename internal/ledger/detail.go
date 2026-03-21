@@ -99,7 +99,16 @@ func renderBeadDetailContent(sb *strings.Builder, b *Bead, innerW int) {
 	sb.WriteByte('\n')
 
 	// Metadata fields
-	writeDetailField(sb, keyStyle, "Status", statusStyle.Render(b.Status), innerW)
+	// Status is rendered with color; truncate the raw text first, then apply
+	// the style so ANSI escape sequences are never cut mid-sequence.
+	{
+		statusLabel := "Status: "
+		availableStatusW := max(innerW-lipgloss.Width(statusLabel), 1)
+		truncatedStatus := truncate(b.Status, availableStatusW)
+		sb.WriteString(keyStyle.Render(statusLabel))
+		sb.WriteString(statusStyle.Render(truncatedStatus))
+		sb.WriteByte('\n')
+	}
 	writeDetailField(sb, keyStyle, "Priority", fmt.Sprintf("P%d", b.Priority), innerW)
 	if b.IssueType != "" {
 		writeDetailField(sb, keyStyle, "Type", b.IssueType, innerW)

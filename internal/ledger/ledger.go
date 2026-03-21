@@ -1466,7 +1466,9 @@ func (m *Model) View() string {
 	// overlays cover it when active.
 	eventPanelVisible := false
 	if m.showEventPanel {
-		out = placeEventPanelOverlay(m.width, m.height, m.renderEventPanel(), out)
+		// Use mainPanelWidth so the overlay only replaces the left columns,
+		// leaving the right-side detail panel untouched.
+		out = placeEventPanelOverlay(m.mainPanelWidth(), m.height, m.renderEventPanel(), out)
 		eventPanelVisible = true
 	}
 
