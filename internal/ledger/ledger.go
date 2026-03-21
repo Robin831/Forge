@@ -113,6 +113,9 @@ type Model struct {
 	aiSpinFrame     int
 	aiApprovalFocus int // 0 = Accept, 1 = Reject
 	aiRunID         int // incremented each time a run starts; used to discard stale completions
+
+	// Help overlay state.
+	helpSt helpState
 }
 
 // NewModel creates a new Ledger model.
@@ -123,6 +126,7 @@ func NewModel(anvils map[string]string, db *state.DB) *Model {
 		loading:    true,
 		view:       ViewList,
 		showClosed: true,
+		helpSt:     newHelpState(),
 	}
 }
 
@@ -258,6 +262,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.activeForm != nil {
 			return m.updateForm(msg)
 		}
+		// When the help overlay is active, route key events to the help handler.
+		if m.helpSt.show {
+			return m.updateHelpOverlay(msg)
+		}
 		// Global quit key: always handle ctrl+c.
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
@@ -280,6 +288,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// CRUD key bindings (available in both views when no form is open).
 		if m.list.sortForm == nil {
 			switch msg.String() {
+			case "?":
+				m.helpSt.show = true
+				m.helpSt.vpReady = false
+				return m, nil
 			case "n":
 				return m, m.openNewBeadForm()
 			case "e":
@@ -1226,6 +1238,11 @@ func (m *Model) View() string {
 		out = m.renderAISpinnerOverlay()
 	case aiOverlayApproval:
 		out = m.renderAIApprovalOverlay()
+	}
+
+	// Overlay help screen on top of everything else.
+	if m.helpSt.show {
+		out = m.renderHelpOverlay()
 	}
 
 	// Overlay toasts at the bottom using ANSI-aware compositor.

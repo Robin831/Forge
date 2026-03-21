@@ -278,19 +278,7 @@ func (m *Model) renderList() string {
 		}
 	}
 
-	// Footer
-	footerStyle := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 2)
-	var errNote string
-	if m.err != nil {
-		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  ⚠ %v", m.err))
-	}
-	var footerText string
-	if m.bulk.Count() > 0 {
-		footerText = fmt.Sprintf("%d selected: Ctrl+X close  Ctrl+L label  Ctrl+P priority  Ctrl+A all  Esc: clear  |  j/k: navigate  Space: toggle  q: quit", m.bulk.Count())
-	} else {
-		footerText = "j/k: navigate  Space: select  Ctrl+A: all  S: sort  f: filter anvil  s: show/hide closed  n: new  e: edit  x: close  r: reopen  d: add dep  b: view deps  i: AI improve  Tab: kanban/hierarchy  q: quit"
-	}
-	footer := footerStyle.Render(footerText) + errNote
+	footer := m.renderFooter()
 
 	out := header + "\n" + colHeader + "\n" + rows.String() + "\n" + footer
 
