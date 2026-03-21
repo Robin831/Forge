@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -23,13 +24,17 @@ var updateDepsCmd = &cobra.Command{
 	Use:   "update-deps",
 	Short: "Scan and update outdated dependencies across anvils",
 	Long: `Scans all registered anvils for outdated dependencies using the existing
-depcheck scanners (Go, npm, NuGet). Displays a summary of available updates.
+depcheck scanners (Go, npm, NuGet). Displays a summary of available updates,
+then prompts for how to proceed.
 
-Use --dry-run to preview updates without making changes. Use --patch-only or
---no-major to limit which updates are included.
+Use --dry-run to preview grouped updates without prompting. Use --patch-only or
+--no-major to pre-filter which updates are included before the prompt.
 
-Future versions will support interactive selection, grouped updates, temper
-verification, and automatic PR creation.`,
+Interactive prompt choices:
+  [a]ll           — apply all filtered updates
+  [p]atch+minor   — apply only patch and minor updates (excludes majors)
+  [s]elect groups — choose specific update groups by number
+  [n]o            — exit without changes`,
 	GroupID: "work",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cfg == nil {
@@ -62,6 +67,7 @@ verification, and automatic PR creation.`,
 		opts := depupdate.Options{}
 		opts.PatchOnly, _ = cmd.Flags().GetBool("patch-only")
 		opts.NoMajor, _ = cmd.Flags().GetBool("no-major")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 		db, err := state.Open("")
 		if err != nil {
@@ -89,14 +95,51 @@ verification, and automatic PR creation.`,
 
 		fmt.Printf("\n%s\n", depupdate.FormatSummaryLine(results, opts))
 
-		dryRun, _ := cmd.Flags().GetBool("dry-run")
-		if dryRun || totalUpdates == 0 {
+		if totalUpdates == 0 {
 			return nil
 		}
 
-		// Future sub-tasks will add interactive selection and update execution here.
-		fmt.Println("\nDry-run mode is currently the default. Update execution will be added in a future release.")
+		// Build UpdateGroups from scan results, pre-filtered by --patch-only / --no-major.
+		groups := depupdate.BuildFilteredGroups(rootCtx, results, opts)
 
-		return nil
+		if len(groups) == 0 {
+			fmt.Println("No update groups to apply after filtering.")
+			return nil
+		}
+
+		// --dry-run: display groups and exit without prompting.
+		if dryRun {
+			fmt.Printf("\n%d update group(s) would be applied:\n", len(groups))
+			for i, g := range groups {
+				fmt.Printf("  %2d. %-40s  %s  (%d package(s))\n", i+1, g.Name, g.Kind, len(g.Updates))
+			}
+			return nil
+		}
+
+		// Interactive prompt: let the user choose which groups to apply.
+		selected, err := depupdate.PromptSelection(os.Stdin, os.Stdout, groups)
+		if err != nil {
+			return fmt.Errorf("selection prompt: %w", err)
+		}
+		if len(selected) == 0 {
+			return nil
+		}
+
+		// Hand off selected groups to the execution pipeline.
+		// Sibling sub-tasks will wire in install/verify/commit/PR steps here.
+		return runUpdateGroups(rootCtx, selected)
 	},
+}
+
+// runUpdateGroups is the entry point for the update execution pipeline.
+// Sibling sub-tasks (install, verify, commit, PR) will be wired in here;
+// for now it prints a summary of what was selected.
+func runUpdateGroups(ctx context.Context, groups []depupdate.UpdateGroup) error {
+	_ = ctx // will be used by future sub-tasks
+	fmt.Printf("\n%d group(s) selected for update:\n", len(groups))
+	for _, g := range groups {
+		fmt.Printf("  • %s (%s, %d package(s))\n", g.Name, g.Kind, len(g.Updates))
+	}
+	fmt.Println("\nUpdate execution will be wired in by sibling sub-tasks.")
+	return nil
 }
