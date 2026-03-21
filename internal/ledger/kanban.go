@@ -150,9 +150,6 @@ func (m *Model) updateKanban(msg tea.KeyMsg) tea.Cmd {
 		return m.moveBeadToLane(lane - 1)
 	case "L": // Shift+L: move bead right
 		return m.moveBeadToLane(lane + 1)
-	case "tab":
-		m.view = ViewHierarchy
-		m.refreshHierarchy()
 	}
 	return nil
 }

@@ -210,6 +210,20 @@ func (m *Model) sortedAnvilNames() []string {
 	return names
 }
 
+// cycleView advances the view mode: List → Kanban → Hierarchy → List.
+func (m *Model) cycleView() {
+	switch m.view {
+	case ViewList:
+		m.view = ViewKanban
+		m.refreshKanbanLanes()
+	case ViewKanban:
+		m.view = ViewHierarchy
+		m.refreshHierarchy()
+	default: // ViewHierarchy
+		m.view = ViewList
+	}
+}
+
 // cycleAnvilFilter advances the anvil filter: All → anvil1 → anvil2 → … → All.
 func (m *Model) cycleAnvilFilter() {
 	names := m.sortedAnvilNames()
@@ -391,6 +405,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// CRUD key bindings (available in both views when no form is open).
 		if m.list.sortForm == nil {
 			switch msg.String() {
+			case "tab", "v":
+				m.cycleView()
+				return m, nil
 			case "?":
 				m.helpSt.show = true
 				m.helpSt.vpReady = false

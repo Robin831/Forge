@@ -17,7 +17,7 @@ import (
 var (
 	keyQuit    = key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit"))
 	keyHelp    = key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help"))
-	keyTab     = key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch view"))
+	keyTab     = key.NewBinding(key.WithKeys("tab", "v"), key.WithHelp("tab/v", "switch view"))
 	keyNew     = key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new bead"))
 	keyEdit    = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit"))
 	keyCloseB  = key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "close"))
