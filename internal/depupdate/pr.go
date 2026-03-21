@@ -19,13 +19,54 @@ func branchName(dateStr string) string {
 	return "deps/batch-update-" + dateStr
 }
 
-// CreatePR creates or checks out a batch-update branch, pushes it to origin,
-// and opens a single pull request summarising all updated groups for the given
-// anvil. It returns the PR URL reported by gh, or an error if any step fails.
-//
-// The branch name is deps/batch-update-<YYYY-MM-DD> derived from the current
-// date. If the branch already exists locally it is checked out rather than
-// created anew. If it exists only on the remote, it is fetched and tracked.
+// CheckoutUpdateBranch creates or checks out the batch-update branch for the
+// current date (deps/batch-update-<YYYY-MM-DD>) in the given anvil directory.
+// If the branch already exists locally it is checked out. If it exists only on
+// the remote it is fetched and tracked. Returns an error if the branch cannot
+// be created or checked out.
+func CheckoutUpdateBranch(ctx context.Context, anvilPath string) error {
+	dateStr := time.Now().Format("2006-01-02")
+	branch := branchName(dateStr)
+
+	git := func(timeout time.Duration, args ...string) error {
+		cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
+		cmd.Dir = anvilPath
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, stderr.String())
+		}
+		return nil
+	}
+
+	if err := git(30*time.Second, "checkout", "-b", branch); err != nil {
+		// Check if the branch exists locally.
+		if errExists := git(10*time.Second, "rev-parse", "--verify", branch); errExists == nil {
+			// Branch exists locally — just check it out.
+			if err2 := git(30*time.Second, "checkout", branch); err2 != nil {
+				return fmt.Errorf("depupdate: checkout existing branch %q: %w", branch, err2)
+			}
+		} else {
+			// Branch doesn't exist locally; try to fetch it from the remote.
+			if err3 := git(30*time.Second, "fetch", "origin", branch); err3 != nil {
+				// Not on remote either — surface the original creation error.
+				return fmt.Errorf("depupdate: create branch %q: %w", branch, err)
+			}
+			remoteRef := "origin/" + branch
+			if err4 := git(30*time.Second, "checkout", "-B", branch, remoteRef); err4 != nil {
+				return fmt.Errorf("depupdate: checkout branch %q from %q: %w", branch, remoteRef, err4)
+			}
+		}
+	}
+	return nil
+}
+
+// CreatePR assumes the batch-update branch for today already exists and is
+// checked out. It pushes the branch to origin and opens a single pull request
+// summarising all updated groups for the given anvil. Returns the PR URL
+// reported by gh, or an error if any step fails.
 func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateGroup) (string, error) {
 	dateStr := time.Now().Format("2006-01-02")
 	branch := branchName(dateStr)
@@ -42,28 +83,6 @@ func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateG
 			return fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, stderr.String())
 		}
 		return nil
-	}
-
-	// Try to create the branch. On failure, determine whether the branch
-	// already exists locally or only on the remote, and handle accordingly.
-	if err := git(30*time.Second, "checkout", "-b", branch); err != nil {
-		// Check if the branch exists locally.
-		if errExists := git(10*time.Second, "rev-parse", "--verify", branch); errExists == nil {
-			// Branch exists locally — just check it out.
-			if err2 := git(30*time.Second, "checkout", branch); err2 != nil {
-				return "", fmt.Errorf("depupdate: checkout existing branch %q: %w", branch, err2)
-			}
-		} else {
-			// Branch doesn't exist locally; try to fetch it from the remote.
-			if err3 := git(30*time.Second, "fetch", "origin", branch); err3 != nil {
-				// Not on remote either — surface the original creation error.
-				return "", fmt.Errorf("depupdate: create branch %q: %w", branch, err)
-			}
-			remoteRef := "origin/" + branch
-			if err4 := git(30*time.Second, "checkout", "-B", branch, remoteRef); err4 != nil {
-				return "", fmt.Errorf("depupdate: checkout branch %q from %q: %w", branch, remoteRef, err4)
-			}
-		}
 	}
 
 	// Push branch and set upstream tracking reference. Allow more time for push.

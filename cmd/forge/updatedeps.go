@@ -16,7 +16,8 @@ func init() {
 	updateDepsCmd.Flags().Bool("patch-only", false, "Only include patch-level updates")
 	updateDepsCmd.Flags().Bool("no-major", false, "Exclude major version updates")
 	updateDepsCmd.Flags().Bool("dry-run", false, "Show what would be updated without making changes")
-	updateDepsCmd.Flags().Bool("create-pr", false, "Create a GitHub PR summarising the detected updates")
+	updateDepsCmd.Flags().Bool("create-pr", false, "Apply updates and create a GitHub PR for each anvil")
+	updateDepsCmd.Flags().BoolP("yes", "y", false, "Auto-accept all update groups without prompting")
 	rootCmd.AddCommand(updateDepsCmd)
 }
 
@@ -94,7 +95,10 @@ GitHub PR summarising the detected updates for each anvil.`,
 			return nil
 		}
 
-		// For each anvil with updates, generate a changelog fragment and open a PR.
+		yesAll, _ := cmd.Flags().GetBool("yes")
+
+		// For each anvil with updates: checkout branch, prompt user, apply
+		// updates, generate changelog, create PR, and close matching dep beads.
 		for _, ar := range results {
 			if ar.TotalUpdates(opts) == 0 {
 				continue
@@ -105,18 +109,47 @@ GitHub PR summarising the detected updates for each anvil.`,
 			if len(groups) == 0 {
 				continue
 			}
+
+			// Step 1: Checkout (or create) the batch-update branch so that
+			// subsequent commits land on the right branch before the PR.
+			if err := depupdate.CheckoutUpdateBranch(rootCtx, ar.Path); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: branch for %s: %v\n", ar.Anvil, err)
+				continue
+			}
+
+			// Step 2: Interactive group selection — skip groups the user declines.
+			selected := depupdate.SelectGroups(os.Stdin, os.Stdout, groups, yesAll)
+			if len(selected) == 0 {
+				fmt.Printf("No updates selected for %s.\n", ar.Anvil)
+				continue
+			}
+
+			// Step 3: Execute — install, verify (Temper), commit or rollback.
+			anvilCfg := cfg.Anvils[ar.Anvil]
+			applied := depupdate.ExecuteGroups(rootCtx, ar.Path, anvilCfg, selected)
+			if len(applied) == 0 {
+				fmt.Fprintf(os.Stderr, "No updates successfully applied for %s.\n", ar.Anvil)
+				continue
+			}
+			fmt.Printf("Applied %d group(s) for %s.\n", len(applied), ar.Anvil)
+
+			// Step 4: Generate changelog fragment and commit it on the branch.
 			isBilingual := depupdate.DetectBilingual(ar.Path)
-			if err := depupdate.GenerateChangelog(ar.Path, groups, isBilingual); err != nil {
+			if err := depupdate.GenerateChangelog(ar.Path, applied, isBilingual); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: changelog for %s: %v\n", ar.Anvil, err)
 				continue
 			}
-			prURL, err := depupdate.CreatePR(rootCtx, ar.Path, ar.Anvil, groups)
+
+			// Step 5: Push branch and open the PR.
+			prURL, err := depupdate.CreatePR(rootCtx, ar.Path, ar.Anvil, applied)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: PR for %s: %v\n", ar.Anvil, err)
 				continue
 			}
 			fmt.Printf("PR for %s: %s\n", ar.Anvil, prURL)
-			if err := depupdate.CloseMatchingDepBeads(rootCtx, ar.Path, groups); err != nil {
+
+			// Step 6: Close any open dep-check beads covered by this batch.
+			if err := depupdate.CloseMatchingDepBeads(rootCtx, ar.Path, applied); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: closing dep beads for %s: %v\n", ar.Anvil, err)
 			}
 		}
