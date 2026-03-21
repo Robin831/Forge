@@ -37,6 +37,16 @@ func (m *Model) mainPanelWidth() int {
 	return m.width - d
 }
 
+// detailPanelBaseStyle is the base lipgloss style for the detail side panel,
+// used both for rendering and for deriving the horizontal frame overhead.
+func detailPanelBaseStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		BorderLeft(true).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(colorMuted).
+		Padding(0, 1)
+}
+
 // renderDetailPanel renders the bead detail side panel as a fixed-width block
 // of height m.height. A left border acts as the visual divider from the main
 // panel.
@@ -46,8 +56,11 @@ func (m *Model) renderDetailPanel() string {
 		return ""
 	}
 
-	// Border (1) + padding (1 each side = 2) = 3 chars of chrome; rest is content.
-	innerW := max(w-4, 4)
+	base := detailPanelBaseStyle()
+	// Derive the inner content width from the style so the offset never
+	// drifts out of sync with the style definition.
+	frameW := base.GetHorizontalFrameSize()
+	innerW := max(w-frameW, 4)
 
 	b := m.selectedBead()
 
@@ -59,16 +72,10 @@ func (m *Model) renderDetailPanel() string {
 		renderBeadDetailContent(&content, b, innerW)
 	}
 
-	// The border takes 1 column, so Width = w-1 keeps the total panel width at w.
-	panelStyle := lipgloss.NewStyle().
-		Width(w - 1).
+	return base.
+		Width(w - frameW).
 		Height(m.height).
-		BorderLeft(true).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(colorMuted).
-		Padding(0, 1)
-
-	return panelStyle.Render(content.String())
+		Render(content.String())
 }
 
 // renderBeadDetailContent writes the full bead detail text into sb.
