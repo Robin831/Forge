@@ -681,7 +681,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.setStatus(fmt.Sprintf("Failed to force smith for %s: %v", target.BeadID, err), true)
 				} else {
 					m.setStatus(fmt.Sprintf("Force smith started for %s", target.BeadID), false)
-					m.removeNeedsAttentionItem(target.BeadID, target.Anvil)
+					m.removeNeedsAttentionItem(target.BeadID, target.Anvil, target.PRID)
 					if m.data != nil {
 						return m, tea.Batch(cmd, FetchNeedsAttention(m.data))
 					}
@@ -969,19 +969,32 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				item := m.actionTarget
 				// Reset choice to default so reopening doesn't reuse a stale selection.
 				m.actionChoice = ActionRetry
+				// Use the item title as the menu label when there is no bead ID
+				// (e.g. warden-learn PRs and other non-bead exhausted PRs).
+				menuLabel := item.BeadID
+				if menuLabel == "" {
+					menuLabel = item.Title
+				}
+				// Non-bead PRs (PRID set, no BeadID) only support retry/dismiss —
+				// warden rerun, approve-as-is, and force smith all require a worktree.
+				actionOptions := []huh.Option[ActionMenuChoice]{
+					huh.NewOption("Retry          — Clear flags, put back in queue", ActionRetry),
+					huh.NewOption("Dismiss        — Remove from Needs Attention", ActionDismiss),
+				}
+				if item.BeadID != "" {
+					actionOptions = append(actionOptions,
+						huh.NewOption("View Logs      — Show last worker log", ActionViewLogs),
+						huh.NewOption("Re-run Warden  — Re-review with current rules", ActionWardenRerun),
+						huh.NewOption("Approve as-is  — Skip warden, create PR now", ActionApproveAsIs),
+						huh.NewOption("Force Smith    — Push smith into another iteration", ActionForceSmith),
+					)
+				}
 				m.actionForm = huh.NewForm(
 					huh.NewGroup(
 						huh.NewSelect[ActionMenuChoice]().
-							Title(fmt.Sprintf("Actions for %s", item.BeadID)).
+							Title(fmt.Sprintf("Actions for %s", menuLabel)).
 							Description(sanitizeTitle(item.Title)).
-							Options(
-								huh.NewOption("Retry          — Clear flags, put back in queue", ActionRetry),
-								huh.NewOption("Dismiss        — Remove from Needs Attention", ActionDismiss),
-								huh.NewOption("View Logs      — Show last worker log", ActionViewLogs),
-								huh.NewOption("Re-run Warden  — Re-review with current rules", ActionWardenRerun),
-								huh.NewOption("Approve as-is  — Skip warden, create PR now", ActionApproveAsIs),
-								huh.NewOption("Force Smith    — Push smith into another iteration", ActionForceSmith),
-							).
+							Options(actionOptions...).
 							Value(&m.actionChoice),
 					),
 				).WithTheme(huh.ThemeCharm()).WithWidth(60)
@@ -2082,7 +2095,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				m.setStatus(fmt.Sprintf("Failed to retry %s: %v", bead.BeadID, err), true)
 			} else {
 				m.setStatus(fmt.Sprintf("Retry queued for %s", bead.BeadID), false)
-				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
+				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil, bead.PRID)
 				if m.data != nil {
 					return FetchNeedsAttention(m.data)
 				}
@@ -2097,7 +2110,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				m.setStatus(fmt.Sprintf("Failed to dismiss %s: %v", bead.BeadID, err), true)
 			} else {
 				m.setStatus(fmt.Sprintf("Dismissed %s", bead.BeadID), false)
-				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
+				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil, bead.PRID)
 				if m.data != nil {
 					return FetchNeedsAttention(m.data)
 				}
@@ -2121,7 +2134,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				m.setStatus(fmt.Sprintf("Failed to re-run warden for %s: %v", bead.BeadID, err), true)
 			} else {
 				m.setStatus(fmt.Sprintf("Warden re-review started for %s", bead.BeadID), false)
-				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
+				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil, bead.PRID)
 				if m.data != nil {
 					return FetchNeedsAttention(m.data)
 				}
@@ -2136,7 +2149,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				m.setStatus(fmt.Sprintf("Failed to approve %s: %v", bead.BeadID, err), true)
 			} else {
 				m.setStatus(fmt.Sprintf("Approve as-is started for %s", bead.BeadID), false)
-				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil)
+				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil, bead.PRID)
 				if m.data != nil {
 					return FetchNeedsAttention(m.data)
 				}
@@ -2184,9 +2197,19 @@ func (m *Model) openLogViewer(title, content string) {
 
 // removeNeedsAttentionItem removes the item with the given beadID and anvil from the
 // needsAttention list and adjusts the scroll position if necessary.
-func (m *Model) removeNeedsAttentionItem(beadID, anvil string) {
+// For non-bead PRs (beadID == ""), matching falls back to prID so that multiple
+// exhausted PRs in the same anvil are removed individually.
+func (m *Model) removeNeedsAttentionItem(beadID, anvil string, prID ...int) {
+	prid := 0
+	if len(prID) > 0 {
+		prid = prID[0]
+	}
 	for i, item := range m.needsAttention {
-		if item.BeadID == beadID && item.Anvil == anvil {
+		matched := item.BeadID == beadID && item.Anvil == anvil
+		if !matched && beadID == "" && prid > 0 && item.PRID == prid {
+			matched = true
+		}
+		if matched {
 			m.needsAttention = append(m.needsAttention[:i], m.needsAttention[i+1:]...)
 			m.needsAttnVP.ClampToTotal(len(m.needsAttention))
 			return
