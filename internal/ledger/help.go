@@ -141,6 +141,8 @@ var categoryLabels = []string{
 // updateHelpOverlay handles key events when the help overlay is visible.
 func (m *Model) updateHelpOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
 	case "?", "esc", "q":
 		m.helpSt.show = false
 	case "j", "down":
