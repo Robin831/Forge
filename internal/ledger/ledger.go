@@ -102,11 +102,12 @@ type Model struct {
 	bulk BulkState
 
 	// AI improvement overlay state.
-	aiOverlay      aiOverlayState
-	aiTarget       *Bead
-	aiResult       aiImprovementResult
-	aiSpinFrame    int
+	aiOverlay       aiOverlayState
+	aiTarget        *Bead
+	aiResult        aiImprovementResult
+	aiSpinFrame     int
 	aiApprovalFocus int // 0 = Accept, 1 = Reject
+	aiRunID         int // incremented each time a run starts; used to discard stale completions
 }
 
 // NewModel creates a new Ledger model.
@@ -141,6 +142,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case aiImprovementDoneMsg:
+		// Ignore completions from a previous run (e.g. user pressed esc and started a new one).
+		if msg.runID != m.aiRunID || m.aiOverlay == aiOverlayNone {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.aiOverlay = aiOverlayNone
 			m.aiTarget = nil

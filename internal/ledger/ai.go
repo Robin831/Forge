@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ type aiImprovementResult struct {
 type aiImprovementDoneMsg struct {
 	result aiImprovementResult
 	err    error
+	runID  int // matches Model.aiRunID at launch; stale if mismatched
 }
 
 // aiSpinnerTickMsg drives the spinner animation frame updates.
@@ -74,12 +76,18 @@ func getAIProvider() provider.Provider {
 
 // runAIImprovementCmd spawns the AI provider to analyze the bead and codebase,
 // then returns an improved title, description, complexity, and AI effort estimate.
-func runAIImprovementCmd(bead Bead, anvilPath string) tea.Cmd {
+// runID is embedded in the done message so stale completions can be ignored.
+func runAIImprovementCmd(bead Bead, anvilPath string, runID int) tea.Cmd {
 	return func() tea.Msg {
 		prov := getAIProvider()
 		prompt := buildAIImprovementPrompt(bead, anvilPath)
 
 		// Build command args. Use --output-format text for simple section parsing.
+		// Each provider case aligns with the invocation conventions in internal/provider/provider.go:
+		// - Gemini reads prompt from stdin when no positional arg is given.
+		// - Copilot reads from piped stdin when -p is omitted (does not support "-p -").
+		// - Claude uses -p - to read from stdin.
+		// - OpenAI Codex reads from stdin when no positional arg is given.
 		var args []string
 		switch prov.Kind {
 		case provider.Gemini:
@@ -88,11 +96,18 @@ func runAIImprovementCmd(bead Bead, anvilPath string) tea.Cmd {
 				args = append(args, "--model", prov.Model)
 			}
 		case provider.Copilot:
-			args = []string{"-p", "-", "--yolo", "--output-format", "text", "--no-auto-update"}
+			// Copilot CLI does NOT support "-p -"; omitting -p makes it read piped stdin.
+			args = []string{"--yolo", "--output-format", "text", "--no-auto-update"}
 			if prov.Model != "" {
 				args = append(args, "--model", prov.Model)
 			}
-		default: // claude and others
+		case provider.OpenAI:
+			// OpenAI Codex CLI reads from stdin when no positional prompt is given.
+			args = []string{"--full-auto", "--output-format", "text"}
+			if prov.Model != "" {
+				args = append(args, "--model", prov.Model)
+			}
+		default: // claude
 			args = []string{"--dangerously-skip-permissions", "-p", "-", "--output-format", "text"}
 			if prov.Model != "" {
 				args = append(args, "--model", prov.Model)
@@ -109,12 +124,40 @@ func runAIImprovementCmd(bead Bead, anvilPath string) tea.Cmd {
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
 
+		// Strip CLAUDECODE so claude doesn't refuse to run inside another session.
+		// Also apply per-provider env overrides (e.g. Ollama backend variables).
+		env := os.Environ()
+		filtered := env[:0:0]
+		for _, e := range env {
+			if strings.HasPrefix(e, "CLAUDECODE=") {
+				continue
+			}
+			skip := false
+			for k := range prov.Env {
+				if strings.HasPrefix(e, k+"=") {
+					skip = true
+					break
+				}
+			}
+			if !skip {
+				filtered = append(filtered, e)
+			}
+		}
+		for k, v := range prov.Env {
+			filtered = append(filtered, k+"="+v)
+		}
+		cmd.Env = filtered
+
 		if err := cmd.Run(); err != nil {
-			return aiImprovementDoneMsg{err: fmt.Errorf("AI improvement failed: %w\n%s", err, stderr.String())}
+			stderrMsg := strings.TrimSpace(stderr.String())
+			if stderrMsg != "" {
+				return aiImprovementDoneMsg{err: fmt.Errorf("%s", stderrMsg), runID: runID}
+			}
+			return aiImprovementDoneMsg{err: err, runID: runID}
 		}
 
 		result := parseAIResponse(stdout.String())
-		return aiImprovementDoneMsg{result: result}
+		return aiImprovementDoneMsg{result: result, runID: runID}
 	}
 }
 
@@ -210,11 +253,12 @@ func (m *Model) startAIImprovement() tea.Cmd {
 		}
 	}
 
+	m.aiRunID++
 	m.aiTarget = b
 	m.aiOverlay = aiOverlaySpinner
 	m.aiSpinFrame = 0
 
-	return tea.Batch(aiSpinnerTickCmd(), runAIImprovementCmd(*b, anvilPath))
+	return tea.Batch(aiSpinnerTickCmd(), runAIImprovementCmd(*b, anvilPath, m.aiRunID))
 }
 
 // acceptAIImprovement applies the AI's proposed title and description via bd update.
