@@ -233,13 +233,21 @@ func TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch(t *testing.T) {
 	// Create the local branch without setting upstream tracking.
 	runGit(localDir, "checkout", "-b", branch)
 
-	// Confirm there is no remote-tracking configuration for this branch.
-	// Without the pre-push fetch, git push --force-with-lease would reject
-	// the push because the remote has the branch but we have no lease ref.
-	cmd := exec.Command("git", "config", "--get", "branch."+branch+".remote")
-	cmd.Dir = localDir
-	out, _ := cmd.Output()
-	assert.Empty(t, string(out), "branch should have no remote tracking ref before commitAndPush")
+	// The clone above fetches all remote branches, so refs/remotes/origin/<branch>
+	// already exists. Explicitly delete it to simulate a fresh worktree where only
+	// the local branch was created (e.g. via git worktree add) without fetching.
+	// This is the exact condition that caused --force-with-lease to reject the push.
+	delRef := exec.Command("git", "update-ref", "-d", "refs/remotes/origin/"+branch)
+	delRef.Dir = localDir
+	require.NoError(t, delRef.Run(), "should be able to delete remote-tracking ref")
+
+	// Assert the remote-tracking ref is now absent — without the pre-push fetch,
+	// git push --force-with-lease would treat this as "no lease" and reject the push
+	// even though the branch exists on origin.
+	checkRef := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+branch)
+	checkRef.Dir = localDir
+	err := checkRef.Run()
+	require.Error(t, err, "remote-tracking ref should be absent before commitAndPush")
 
 	// Write the updated rules file so commitAndPush can stage and commit it.
 	require.NoError(t, os.MkdirAll(filepath.Join(localDir, ".forge"), 0o755))
@@ -253,6 +261,6 @@ func TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch(t *testing.T) {
 
 	// commitAndPush must succeed: the fetch populates the remote-tracking ref
 	// so --force-with-lease can verify the lease and allow the push.
-	err := s.commitAndPush(ctx, localDir, branch, 1)
+	err = s.commitAndPush(ctx, localDir, branch, 1)
 	require.NoError(t, err, "commitAndPush should succeed after fetching remote-tracking ref")
 }
