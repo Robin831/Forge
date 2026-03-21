@@ -274,3 +274,21 @@ func TestTitleColumnWidthNarrow(t *testing.T) {
 	// Sanity: wide terminal should have a sensible width too.
 	assert.Greater(t, wide.titleColumnWidth(), 0)
 }
+
+func TestListTabSwitchesToKanban(t *testing.T) {
+	m := &Model{view: ViewList}
+	m.updateList(tabKeyMsg())
+	assert.Equal(t, ViewKanban, m.view)
+}
+
+func TestListVKeySwitchesToKanban(t *testing.T) {
+	m := &Model{view: ViewList}
+	m.updateList(keyMsg('v'))
+	assert.Equal(t, ViewKanban, m.view)
+}
+
+func TestRenderListHeaderShowsListMode(t *testing.T) {
+	m := &Model{view: ViewList, width: 120, height: 24}
+	out := m.renderList()
+	assert.Contains(t, out, "List", "renderList header must include view mode label")
+}

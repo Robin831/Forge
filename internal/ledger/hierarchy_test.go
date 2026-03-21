@@ -153,6 +153,13 @@ func TestUpdateHierarchyTabSwitchesToList(t *testing.T) {
 	assert.Equal(t, ViewList, m.view)
 }
 
+func TestUpdateHierarchyVKeySwitchesToList(t *testing.T) {
+	m := &Model{view: ViewHierarchy}
+	m.hierarchy.expanded = make(map[string]bool)
+	m.updateHierarchy(keyMsg('v'))
+	assert.Equal(t, ViewList, m.view)
+}
+
 func TestUpdateHierarchyNavigation(t *testing.T) {
 	m := &Model{
 		view:   ViewHierarchy,

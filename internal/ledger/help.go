@@ -17,7 +17,7 @@ import (
 var (
 	keyQuit    = key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit"))
 	keyHelp    = key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help"))
-	keyTab     = key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch view"))
+	keyTab     = key.NewBinding(key.WithKeys("tab", "v"), key.WithHelp("tab/v", "switch view"))
 	keyNew     = key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new bead"))
 	keyEdit    = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit"))
 	keyCloseB  = key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "close"))
@@ -257,19 +257,23 @@ func (m *Model) renderFooter() string {
 		footerText = fmt.Sprintf("%d selected: ", m.bulk.Count()) + h.ShortHelpView(bulkBindings)
 
 	default:
-		// Normal mode: view-specific short bindings.
+		// Normal mode: view-specific short bindings prefixed with the active view label.
 		h := m.helpSt.helper
 		h.Width = max(m.width-4, 1)
 		var km help.KeyMap
+		var viewLabel string
 		switch m.view {
 		case ViewKanban:
 			km = kanbanKeyMap{}
+			viewLabel = "[Kanban]"
 		case ViewHierarchy:
 			km = hierarchyKeyMap{}
+			viewLabel = "[Hierarchy]"
 		default:
 			km = listKeyMap{}
+			viewLabel = "[List]"
 		}
-		footerText = h.ShortHelpView(km.ShortHelp())
+		footerText = viewLabel + "  " + h.ShortHelpView(km.ShortHelp())
 	}
 
 	return footerStyle.Render(footerText) + errNote

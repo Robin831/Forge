@@ -192,6 +192,14 @@ func TestKanbanTabSwitchesToHierarchy(t *testing.T) {
 	assert.Equal(t, ViewHierarchy, m.view)
 }
 
+func TestKanbanVKeySwitchesToHierarchy(t *testing.T) {
+	m := &Model{
+		view: ViewKanban,
+	}
+	m.updateKanban(keyMsg('v'))
+	assert.Equal(t, ViewHierarchy, m.view)
+}
+
 func TestRefreshKanbanLanes(t *testing.T) {
 	now := time.Now()
 	m := &Model{

@@ -172,9 +172,8 @@ func (m *Model) updateList(msg tea.KeyMsg) tea.Cmd {
 		m.list.vp.ScrollUp()
 	case "S":
 		return m.openSortSelector()
-	case "tab":
-		m.view = ViewKanban
-		m.refreshKanbanLanes()
+	case "tab", "v":
+		m.cycleView()
 	}
 	return nil
 }
@@ -236,7 +235,7 @@ func (m *Model) renderList() string {
 
 	// Header
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Padding(0, 2)
-	header := headerStyle.Render(fmt.Sprintf("⚒ Forge Ledger — %d beads (sorted by %s)%s", total, m.list.sortBy, m.filterHint()))
+	header := headerStyle.Render(fmt.Sprintf("⚒ Forge Ledger — List  %d beads (sorted by %s)%s", total, m.list.sortBy, m.filterHint()))
 
 	// Column header — when bulk mode is active the data rows have a checkboxWidth
 	// prefix and a narrower title column, so the header must match.
