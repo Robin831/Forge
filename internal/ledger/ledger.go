@@ -1217,7 +1217,6 @@ func (m *Model) driveHuhForm(form **huh.Form, msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-// View renders the current state.
 // renderTooSmall renders a full-screen message when the terminal is below the
 // minimum required dimensions.
 func (m *Model) renderTooSmall() string {
@@ -1232,6 +1231,7 @@ func (m *Model) renderTooSmall() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, style.Render(msg))
 }
 
+// View renders the current state.
 func (m *Model) View() string {
 	// Enforce minimum terminal size before rendering anything else.
 	if m.width > 0 && m.height > 0 && (m.width < minTermWidth || m.height < minTermHeight) {

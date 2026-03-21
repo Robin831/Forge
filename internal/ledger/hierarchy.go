@@ -240,8 +240,23 @@ func (m *Model) renderHierarchy() string {
 		fmt.Sprintf("⚒ Forge Ledger — Hierarchy  %d beads  (Enter: expand/collapse)%s%s", len(m.filteredBeads()), selNote, m.filterHint()),
 	)
 
-	// Reserve one line each for header and footer.
-	rowsHeight := max(m.height-2, 1)
+	// Check whether any beads have parent-child relationships so we can
+	// reserve a line for the "No epics with children" hint when needed.
+	hasEpics := false
+	for _, n := range m.hierarchy.nodes {
+		if len(n.Children) > 0 {
+			hasEpics = true
+			break
+		}
+	}
+
+	// Reserve one line each for header and footer; reserve an extra line for
+	// the hint when the tree is flat so it doesn't push past m.height.
+	hintReserve := 0
+	if total > 0 && !hasEpics {
+		hintReserve = 1
+	}
+	rowsHeight := max(m.height-2-hintReserve, 1)
 
 	m.hierarchy.vp.ClampToTotal(total)
 	m.hierarchy.vp.AdjustViewport(rowsHeight, total)
@@ -263,16 +278,6 @@ func (m *Model) renderHierarchy() string {
 		}
 		rows.WriteString(emptyStyle.Render(emptyMsg))
 	} else {
-		// Check whether any beads have parent-child relationships so we can
-		// surface the "No epics with children" hint when the tree is flat.
-		hasEpics := false
-		for _, n := range m.hierarchy.nodes {
-			if len(n.Children) > 0 {
-				hasEpics = true
-				break
-			}
-		}
-
 		for i := start; i < end; i++ {
 			row := m.renderHierarchyRow(m.hierarchy.flat[i], i == m.hierarchy.vp.Selected())
 			rows.WriteString(row)

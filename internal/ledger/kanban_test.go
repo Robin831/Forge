@@ -346,10 +346,12 @@ func TestVisibleLaneRange(t *testing.T) {
 func TestKanbanLaneWidthNarrow(t *testing.T) {
 	wide := &Model{width: 160, height: 24}
 	narrow := &Model{width: 80, height: 24}
-	// Narrow terminal divides by 2 lanes so each lane should be wider than
-	// the wide-terminal per-lane width (which divides by 4 lanes).
-	assert.Greater(t, narrow.kanbanLaneWidth(), wide.kanbanLaneWidth(),
-		"narrow terminal uses 2 lanes so each lane gets more width")
+	// Both modes use the same slack (5) so joined columns never exceed the
+	// terminal width.  (160-5)/4 = 38 wide, (80-5)/2 = 37 narrow.
+	assert.LessOrEqual(t, wide.kanbanLaneWidth()*wide.visibleLaneCount(), wide.width,
+		"wide mode: joined lanes must not exceed terminal width")
+	assert.LessOrEqual(t, narrow.kanbanLaneWidth()*narrow.visibleLaneCount(), narrow.width,
+		"narrow mode: joined lanes must not exceed terminal width")
 }
 
 func TestRenderLaneEmpty(t *testing.T) {
