@@ -93,6 +93,7 @@ func BuildDedupCache(ctx context.Context, db *state.DB, anvilPath, anvilName str
 	var openErr, ipErr error
 	cache.openRaw, openErr = fetchBeadList(ctx, anvilPath, "open")
 	cache.inProgressRaw, ipErr = fetchBeadList(ctx, anvilPath, "in_progress")
+
 	// The cache is only valid when the critical open/in_progress queries succeed.
 	// If bd is unreachable, we must not create beads (would produce duplicates).
 	cache.valid = openErr == nil && ipErr == nil
@@ -119,7 +120,7 @@ func BuildDedupCache(ctx context.Context, db *state.DB, anvilPath, anvilName str
 
 // fetchBeadList runs bd list for the given status and returns raw output.
 func fetchBeadList(ctx context.Context, anvilPath, status string) ([]byte, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
 		"bd", "list", fmt.Sprintf("--status=%s", status), "--limit", "0", "--json"))
@@ -134,7 +135,7 @@ func fetchBeadList(ctx context.Context, anvilPath, status string) ([]byte, error
 
 // fetchBeadShow runs bd show for a single bead ID and returns raw output.
 func fetchBeadShow(ctx context.Context, anvilPath, beadID string) []byte {
-	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
 		"bd", "show", beadID, "--json"))
