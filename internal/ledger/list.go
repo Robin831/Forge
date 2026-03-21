@@ -172,6 +172,8 @@ func (m *Model) updateList(msg tea.KeyMsg) tea.Cmd {
 		m.list.vp.ScrollUp()
 	case "S":
 		return m.openSortSelector()
+	case "tab", "v":
+		m.cycleView()
 	}
 	return nil
 }

@@ -405,9 +405,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// CRUD key bindings (available in both views when no form is open).
 		if m.list.sortForm == nil {
 			switch msg.String() {
-			case "tab", "v":
-				m.cycleView()
-				return m, nil
 			case "?":
 				m.helpSt.show = true
 				m.helpSt.vpReady = false

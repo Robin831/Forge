@@ -199,6 +199,8 @@ func (m *Model) updateHierarchy(msg tea.KeyMsg) tea.Cmd {
 		}
 	case "q":
 		return tea.Quit
+	case "tab", "v":
+		m.cycleView()
 	}
 	return nil
 }
