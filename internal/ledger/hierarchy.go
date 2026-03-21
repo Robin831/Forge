@@ -11,6 +11,10 @@ import (
 // maxTreeDepth caps recursion depth to guard against cycles in bead data.
 const maxTreeDepth = 20
 
+// hierarchyTitleOffset is the total fixed-width chrome consumed per hierarchy row:
+// expArrow(1) + space(1) + icon(1) + space(1) + id(colID=14) + two-spaces(2) + style-padding(4) + progress-margin(10).
+const hierarchyTitleOffset = 34
+
 // TreeNode represents a node in the bead hierarchy tree.
 type TreeNode struct {
 	Bead     *Bead
@@ -192,6 +196,8 @@ func (m *Model) updateHierarchy(msg tea.KeyMsg) tea.Cmd {
 				}
 			}
 		}
+	case "q":
+		return tea.Quit
 	case "tab":
 		m.view = ViewList
 	}
@@ -293,12 +299,12 @@ func (m *Model) renderHierarchyRow(item flatItem, selected bool) string {
 		progress = "  [" + item.progress + "]"
 	}
 
-	titleWidth := max(m.width-lipgloss.Width(indent)-34, 10)
+	titleWidth := max(m.width-lipgloss.Width(indent)-hierarchyTitleOffset, 10)
 	line := fmt.Sprintf("%s%s %s %s  %s%s",
 		indent,
 		expArrow,
 		icon,
-		padRight(b.ID, 14),
+		padRight(b.ID, colID),
 		truncate(b.Title, titleWidth),
 		progress,
 	)
