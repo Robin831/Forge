@@ -175,7 +175,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openDepViewerForm()
 			// Bulk selection operations.
 			case " ":
-				if b := m.selectedBead(); b != nil {
+				// Dep sub-rows in hierarchy view are display-only; skip bulk toggle for them.
+				if b := m.selectedBead(); b != nil && !m.isFocusedDepRow() {
 					m.bulk.Toggle(b.ID)
 				}
 				return m, nil
@@ -351,13 +352,39 @@ func (m *Model) clearForm() {
 	m.formDepID = ""
 }
 
+// isFocusedDepRow reports whether the cursor is currently on a dependency
+// sub-row (→ arrow item) in the hierarchy view. These rows are display-only
+// and should not participate in bulk selection.
+func (m *Model) isFocusedDepRow() bool {
+	if m.view != ViewHierarchy {
+		return false
+	}
+	idx := m.hierarchy.vp.Selected()
+	if idx >= 0 && idx < len(m.hierarchy.flat) {
+		return m.hierarchy.flat[idx].isDep
+	}
+	return false
+}
+
 // selectAllVisible marks all currently visible beads as selected.
-// In list view this uses the sorted order; all other views use the full bead list.
+// List view uses the sorted order; hierarchy view iterates the flattened visible
+// tree and skips hidden (collapsed) beads and dependency sub-rows; kanban uses
+// the full bead list (all beads are shown across lanes).
 func (m *Model) selectAllVisible() {
 	switch m.view {
 	case ViewList:
 		sorted := sortBeads(m.beads, m.list.sortBy)
 		m.bulk.SelectAll(sorted)
+	case ViewHierarchy:
+		// Only select beads that are actually visible in the flattened tree.
+		// Dep sub-rows (isDep=true) are display-only and excluded.
+		var visible []Bead
+		for _, item := range m.hierarchy.flat {
+			if !item.isDep && item.bead != nil {
+				visible = append(visible, *item.bead)
+			}
+		}
+		m.bulk.SelectAll(visible)
 	default:
 		m.bulk.SelectAll(m.beads)
 	}

@@ -238,13 +238,21 @@ func (m *Model) renderList() string {
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Padding(0, 2)
 	header := headerStyle.Render(fmt.Sprintf("⚒ Forge Ledger — %d beads (sorted by %s)", total, m.list.sortBy))
 
-	// Column header
+	// Column header — when bulk mode is active the data rows have a checkboxWidth
+	// prefix and a narrower title column, so the header must match.
 	colHeaderStyle := lipgloss.NewStyle().Bold(true).Foreground(colorMuted).Padding(0, 2)
 	titleWidth := m.titleColumnWidth()
+	headerPrefix := ""
+	headerTitleWidth := titleWidth
+	if m.bulk.Count() > 0 {
+		headerPrefix = strings.Repeat(" ", checkboxWidth)
+		headerTitleWidth = max(titleWidth-checkboxWidth, 4)
+	}
 	colHeader := colHeaderStyle.Render(
-		padRight("Pri", colPriority) +
+		headerPrefix +
+			padRight("Pri", colPriority) +
 			padRight("ID", colID) +
-			padRight("Title", titleWidth) +
+			padRight("Title", headerTitleWidth) +
 			padRight("Status", colStatus) +
 			padRight("Anvil", colAnvil) +
 			padRight("Labels", colLabels) +
