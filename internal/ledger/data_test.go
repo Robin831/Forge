@@ -99,7 +99,7 @@ func TestFetchAllBeadsWithExecInvalidJSONError(t *testing.T) {
 	assert.Error(t, update.Err, "invalid JSON from bd must produce an error in UpdateBeadsMsg")
 }
 
-func TestFetchAllBeadsWithExecRecentClosedIncluded(t *testing.T) {
+func TestFetchAllBeadsWithExecClosedBeadAgeFilter(t *testing.T) {
 	recent := time.Now().Add(-24 * time.Hour)
 	old := time.Now().Add(-10 * 24 * time.Hour)
 
