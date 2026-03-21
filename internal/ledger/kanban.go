@@ -268,7 +268,7 @@ func (m *Model) renderKanban() string {
 	if m.bulk.Count() > 0 {
 		kanbanFooter = fmt.Sprintf("%d selected: Ctrl+X close  Ctrl+L label  Ctrl+P priority  Esc: clear  |  h/l: lane  j/k: card  Space: toggle  q: quit", m.bulk.Count())
 	} else {
-		kanbanFooter = "h/l: lane  j/k: card  H/L: move  Space: select  Ctrl+A: all  f: filter anvil  s: show/hide closed  n: new  e: edit  x: close  r: reopen  Tab: hierarchy  q: quit"
+		kanbanFooter = "h/l: lane  j/k: card  H/L: move  Space: select  Ctrl+A: all  f: filter anvil  s: show/hide closed  n: new  e: edit  x: close  r: reopen  d: add dep  b: view deps  i: AI improve  Tab: hierarchy  q: quit"
 	}
 	footer := footerStyle.Render(kanbanFooter) + errNote
 
