@@ -100,6 +100,13 @@ type Model struct {
 
 	// Bulk selection state for multi-select operations.
 	bulk BulkState
+
+	// AI improvement overlay state.
+	aiOverlay      aiOverlayState
+	aiTarget       *Bead
+	aiResult       aiImprovementResult
+	aiSpinFrame    int
+	aiApprovalFocus int // 0 = Accept, 1 = Reject
 }
 
 // NewModel creates a new Ledger model.
@@ -126,7 +133,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case aiSpinnerTickMsg:
+		if m.aiOverlay == aiOverlaySpinner {
+			m.aiSpinFrame++
+			return m, aiSpinnerTickCmd()
+		}
+		return m, nil
+
+	case aiImprovementDoneMsg:
+		if msg.err != nil {
+			m.aiOverlay = aiOverlayNone
+			m.aiTarget = nil
+			return m, m.addToast(fmt.Sprintf("AI improve failed: %s", msg.err), true)
+		}
+		m.aiResult = msg.result
+		m.aiOverlay = aiOverlayApproval
+		m.aiApprovalFocus = 0
+		return m, nil
+
 	case tea.KeyMsg:
+		// When the AI overlay is active, route key events to the AI overlay handler.
+		if m.aiOverlay != aiOverlayNone {
+			return m.updateAIOverlay(msg)
+		}
 		// When a form overlay is active, route key events to the form handler.
 		if m.activeForm != nil {
 			return m.updateForm(msg)
@@ -173,6 +202,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openAddDepForm()
 			case "b":
 				return m, m.openDepViewerForm()
+			case "i":
+				return m, m.startAIImprovement()
 			// Bulk selection operations.
 			case " ":
 				// Dep sub-rows in hierarchy view are display-only; skip bulk toggle for them.
@@ -1075,6 +1106,14 @@ func (m *Model) View() string {
 			Render(m.activeForm.View())
 		out = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, formView,
 			lipgloss.WithWhitespaceBackground(lipgloss.AdaptiveColor{Dark: "0", Light: "15"}))
+	}
+
+	// Overlay AI improvement spinner or approval.
+	switch m.aiOverlay {
+	case aiOverlaySpinner:
+		out = m.renderAISpinnerOverlay()
+	case aiOverlayApproval:
+		out = m.renderAIApprovalOverlay()
 	}
 
 	// Overlay toasts at the bottom using ANSI-aware compositor.
