@@ -48,8 +48,10 @@ const (
 	FormComment
 	FormNotes
 	FormAssign
-	FormAddDep   // d key: pick a bead to add as a dependency
-	FormViewDeps // b key: view and optionally remove dependencies
+	FormAddDep      // d key: pick a bead to add as a dependency
+	FormViewDeps    // b key: view and optionally remove dependencies
+	FormBulkLabel   // ctrl+l: set a label on all selected beads
+	FormBulkPriority // ctrl+p: set priority on all selected beads
 )
 
 // Model is the top-level Bubbletea model for the Ledger TUI.
@@ -95,6 +97,9 @@ type Model struct {
 	// Toast notifications
 	toasts      []toast
 	nextToastID int
+
+	// Bulk selection state for multi-select operations.
+	bulk BulkState
 }
 
 // NewModel creates a new Ledger model.
@@ -139,6 +144,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Clear bulk selection on Escape (when no form or sort overlay is active).
+		if msg.String() == "esc" && m.list.sortForm == nil && m.bulk.Count() > 0 {
+			m.bulk.Clear()
+			return m, nil
+		}
+
 		// CRUD key bindings (available in both views when no form is open).
 		if m.list.sortForm == nil {
 			switch msg.String() {
@@ -162,6 +173,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openAddDepForm()
 			case "b":
 				return m, m.openDepViewerForm()
+			// Bulk selection operations.
+			case " ":
+				if b := m.selectedBead(); b != nil {
+					m.bulk.Toggle(b.ID)
+				}
+				return m, nil
+			case "ctrl+a":
+				m.selectAllVisible()
+				return m, nil
+			case "ctrl+x":
+				if m.bulk.Count() == 0 {
+					return m, nil
+				}
+				return m, BulkCloseCmd(m.anvils, m.beads, m.bulk.copySelected())
+			case "ctrl+l":
+				return m, m.openBulkLabelForm()
+			case "ctrl+p":
+				return m, m.openBulkPriorityForm()
 			}
 			// "l" opens label form only in list view; in kanban it navigates lanes.
 			if msg.String() == "l" && m.view == ViewList {
@@ -236,6 +265,30 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetching = true
 		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
 
+	case BulkCloseResultMsg:
+		m.bulk.Clear()
+		var text string
+		if msg.Failed == 0 {
+			text = fmt.Sprintf("Closed %d beads", msg.Closed)
+		} else {
+			text = fmt.Sprintf("Closed %d beads, %d failed", msg.Closed, msg.Failed)
+		}
+		cmd := m.addToast(text, msg.Failed > 0)
+		m.fetching = true
+		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+
+	case BulkUpdatedMsg:
+		m.bulk.Clear()
+		var text string
+		if msg.Failed == 0 {
+			text = fmt.Sprintf("Updated %d beads", msg.Updated)
+		} else {
+			text = fmt.Sprintf("Updated %d beads, %d failed", msg.Updated, msg.Failed)
+		}
+		cmd := m.addToast(text, msg.Failed > 0)
+		m.fetching = true
+		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+
 	case ActionErrorMsg:
 		cmd := m.addToast(msg.Err.Error(), true)
 		return m, cmd
@@ -296,6 +349,18 @@ func (m *Model) clearForm() {
 	m.formNotes = ""
 	m.formAssignee = ""
 	m.formDepID = ""
+}
+
+// selectAllVisible marks all currently visible beads as selected.
+// In list view this uses the sorted order; all other views use the full bead list.
+func (m *Model) selectAllVisible() {
+	switch m.view {
+	case ViewList:
+		sorted := sortBeads(m.beads, m.list.sortBy)
+		m.bulk.SelectAll(sorted)
+	default:
+		m.bulk.SelectAll(m.beads)
+	}
 }
 
 // parsePriority converts a priority string ("0"–"4") to an int, defaulting to 2.
@@ -425,6 +490,15 @@ func (m *Model) executeFormAction() tea.Cmd {
 			}
 		}
 		return AddDepCmd(anvilPath, m.formTarget.ID, m.formDepID)
+
+	case FormBulkLabel:
+		if m.formLabel == "" {
+			return nil
+		}
+		return BulkLabelCmd(m.anvils, m.beads, m.bulk.copySelected(), m.formLabel, m.formLabelAction == "remove")
+
+	case FormBulkPriority:
+		return BulkPriorityCmd(m.anvils, m.beads, m.bulk.copySelected(), parsePriority(m.formPriority))
 
 	case FormViewDeps:
 		if m.formTarget == nil || m.formDepID == "" {
@@ -868,6 +942,66 @@ func (m *Model) openDepViewerForm() tea.Cmd {
 	).WithShowHelp(false).WithShowErrors(false)
 
 	m.activeFormKind = FormViewDeps
+	return m.activeForm.Init()
+}
+
+// openBulkLabelForm opens a label input form for bulk label operations.
+func (m *Model) openBulkLabelForm() tea.Cmd {
+	if m.bulk.Count() == 0 {
+		return func() tea.Msg {
+			return ActionErrorMsg{Err: fmt.Errorf("no beads selected")}
+		}
+	}
+
+	m.formLabel = ""
+	m.formLabelAction = "add"
+
+	m.activeForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title(fmt.Sprintf("Label for %d selected beads", m.bulk.Count())).
+				Placeholder("label name").
+				Value(&m.formLabel),
+			huh.NewSelect[string]().
+				Title("Action").
+				Options(
+					huh.NewOption("Add label", "add"),
+					huh.NewOption("Remove label", "remove"),
+				).
+				Value(&m.formLabelAction),
+		),
+	).WithShowHelp(false).WithShowErrors(false)
+
+	m.activeFormKind = FormBulkLabel
+	return m.activeForm.Init()
+}
+
+// openBulkPriorityForm opens a priority selector form for bulk priority operations.
+func (m *Model) openBulkPriorityForm() tea.Cmd {
+	if m.bulk.Count() == 0 {
+		return func() tea.Msg {
+			return ActionErrorMsg{Err: fmt.Errorf("no beads selected")}
+		}
+	}
+
+	m.formPriority = "2"
+
+	m.activeForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(fmt.Sprintf("Priority for %d selected beads", m.bulk.Count())).
+				Options(
+					huh.NewOption("P0 — Critical", "0"),
+					huh.NewOption("P1 — High", "1"),
+					huh.NewOption("P2 — Medium", "2"),
+					huh.NewOption("P3 — Low", "3"),
+					huh.NewOption("P4 — Backlog", "4"),
+				).
+				Value(&m.formPriority),
+		),
+	).WithShowHelp(false).WithShowErrors(false)
+
+	m.activeFormKind = FormBulkPriority
 	return m.activeForm.Init()
 }
 

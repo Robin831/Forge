@@ -276,7 +276,13 @@ func (m *Model) renderList() string {
 	if m.err != nil {
 		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  ⚠ %v", m.err))
 	}
-	footer := footerStyle.Render("j/k: navigate  S: sort  n: new  e: edit  x: close  r: reopen  d: add dep  b: view deps  Tab: kanban/hierarchy  q: quit") + errNote
+	var footerText string
+	if m.bulk.Count() > 0 {
+		footerText = fmt.Sprintf("%d selected: Ctrl+X close  Ctrl+L label  Ctrl+P priority  Ctrl+A all  Esc: clear  |  j/k: navigate  Space: toggle  q: quit", m.bulk.Count())
+	} else {
+		footerText = "j/k: navigate  Space: select  Ctrl+A: all  S: sort  n: new  e: edit  x: close  r: reopen  d: add dep  b: view deps  Tab: kanban/hierarchy  q: quit"
+	}
+	footer := footerStyle.Render(footerText) + errNote
 
 	out := header + "\n" + colHeader + "\n" + rows.String() + "\n" + footer
 
@@ -300,9 +306,24 @@ func (m *Model) titleColumnWidth() int {
 	return max(m.width-fixed, 10)
 }
 
+// checkboxWidth is the visual width of the checkbox prefix (e.g. "[✓] ").
+const checkboxWidth = 4
+
 // renderBeadRow renders a single bead as a table row.
 func (m *Model) renderBeadRow(b Bead, titleWidth int, selected bool) string {
 	sc := statusColor(b.Status)
+
+	// Checkbox prefix — shown whenever any bead is selected.
+	var checkPrefix string
+	if m.bulk.Count() > 0 {
+		if m.bulk.IsSelected(b.ID) {
+			checkPrefix = "[✓] "
+		} else {
+			checkPrefix = "[ ] "
+		}
+		// Shrink title column to make room for the checkbox.
+		titleWidth = max(titleWidth-checkboxWidth, 4)
+	}
 
 	// Priority
 	priStr := fmt.Sprintf("P%d", b.Priority)
@@ -331,7 +352,7 @@ func (m *Model) renderBeadRow(b Bead, titleWidth int, selected bool) string {
 	// Assignee
 	assignee := padRight(truncate(b.Assignee, colAssignee-1), colAssignee)
 
-	row := pri + id + title + status + anvil + labels + assignee
+	row := checkPrefix + pri + id + title + status + anvil + labels + assignee
 
 	if selected {
 		return lipgloss.NewStyle().

@@ -264,7 +264,13 @@ func (m *Model) renderKanban() string {
 	if m.err != nil {
 		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  ⚠ %v", m.err))
 	}
-	footer := footerStyle.Render("h/l: lane  j/k: card  H/L: move  n: new  e: edit  x: close  r: reopen  d: add dep  b: view deps  Tab: hierarchy  q: quit") + errNote
+	var kanbanFooter string
+	if m.bulk.Count() > 0 {
+		kanbanFooter = fmt.Sprintf("%d selected: Ctrl+X close  Ctrl+L label  Ctrl+P priority  Esc: clear  |  h/l: lane  j/k: card  Space: toggle  q: quit", m.bulk.Count())
+	} else {
+		kanbanFooter = "h/l: lane  j/k: card  H/L: move  Space: select  Ctrl+A: all  n: new  e: edit  x: close  r: reopen  d: add dep  b: view deps  Tab: hierarchy  q: quit"
+	}
+	footer := footerStyle.Render(kanbanFooter) + errNote
 
 	return header + "\n" + board + "\n" + detail + "\n" + footer
 }
@@ -303,7 +309,7 @@ func (m *Model) renderLane(lane, width, visibleCards, areaHeight int, active boo
 		b := beads[idx]
 		selected := active && idx == m.kanban.laneVP[lane].Selected()
 		blocked := isBlocked(b)
-		card := renderCard(b, width-2, selected, blocked)
+		card := renderCard(b, width-2, selected, blocked, m.bulk.Count() > 0, m.bulk.IsSelected(b.ID))
 		// renderCard always emits exactly cardContentLines lines.
 		// Append an explicit blank separator to make each slot cardHeight lines.
 		cards.WriteString(card)
@@ -330,7 +336,9 @@ func (m *Model) renderLane(lane, width, visibleCards, areaHeight int, active boo
 // renderCard renders a single bead card for the kanban board.
 // It always emits exactly cardContentLines lines so that lane padding,
 // scrolling, and column-height alignment remain correct.
-func renderCard(b Bead, width int, selected, blocked bool) string {
+// showSelect indicates whether to display a bulk-selection checkbox;
+// checked indicates whether this bead is currently selected.
+func renderCard(b Bead, width int, selected, blocked, showSelect, checked bool) string {
 	if width < 5 {
 		width = 5
 	}
@@ -338,8 +346,19 @@ func renderCard(b Bead, width int, selected, blocked bool) string {
 	// Priority dot
 	dot := priorityDot(b.Priority)
 
-	// Line 1: dot + ID (always rendered)
-	line1 := dot + " " + truncate(b.ID, width-3)
+	// Selection checkbox prefix when bulk mode is active.
+	checkPrefix := ""
+	if showSelect {
+		if checked {
+			checkPrefix = "[✓] "
+		} else {
+			checkPrefix = "[ ] "
+		}
+	}
+
+	// Line 1: checkbox (if any) + dot + ID (always rendered)
+	idWidth := max(width-3-lipgloss.Width(checkPrefix), 1)
+	line1 := checkPrefix + dot + " " + truncate(b.ID, idWidth)
 
 	// Line 2: first title line (always rendered)
 	titleLines := wrapTitle(b.Title, width-1)

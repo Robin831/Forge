@@ -179,7 +179,7 @@ func (m *Model) updateHierarchy(msg tea.KeyMsg) tea.Cmd {
 		m.hierarchy.vp.ScrollDown(len(m.hierarchy.flat))
 	case "k", "up":
 		m.hierarchy.vp.ScrollUp()
-	case "enter", " ":
+	case "enter":
 		// Toggle expand/collapse for the focused node.
 		idx := m.hierarchy.vp.Selected()
 		if idx >= 0 && idx < len(m.hierarchy.flat) {
@@ -231,8 +231,12 @@ func (m *Model) renderHierarchy() string {
 	total := len(m.hierarchy.flat)
 
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Padding(0, 2)
+	selNote := ""
+	if m.bulk.Count() > 0 {
+		selNote = fmt.Sprintf("  [%d selected]", m.bulk.Count())
+	}
 	header := headerStyle.Render(
-		fmt.Sprintf("⚒ Forge Ledger — Hierarchy  %d beads  (Enter: expand/collapse)", len(m.beads)),
+		fmt.Sprintf("⚒ Forge Ledger — Hierarchy  %d beads  (Enter: expand/collapse)%s", len(m.beads), selNote),
 	)
 
 	// Reserve one line each for header and footer.
@@ -252,7 +256,13 @@ func (m *Model) renderHierarchy() string {
 	}
 
 	footerStyle := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 2)
-	footer := footerStyle.Render("j/k: navigate  Enter/Space: expand/collapse  d: add dep  b: view deps  Tab: list view  q: quit")
+	var hierarchyFooter string
+	if m.bulk.Count() > 0 {
+		hierarchyFooter = fmt.Sprintf("%d selected: Ctrl+X close  Ctrl+L label  Ctrl+P priority  Esc: clear  |  j/k: navigate  Space: toggle  Enter: expand/collapse  q: quit", m.bulk.Count())
+	} else {
+		hierarchyFooter = "j/k: navigate  Space: select  Enter: expand/collapse  d: add dep  b: view deps  Tab: list view  q: quit"
+	}
+	footer := footerStyle.Render(hierarchyFooter)
 
 	return header + "\n" + rows.String() + "\n" + footer
 }
@@ -301,8 +311,19 @@ func (m *Model) renderHierarchyRow(item flatItem, selected bool) string {
 		progress = "  [" + item.progress + "]"
 	}
 
-	titleWidth := max(m.width-lipgloss.Width(indent)-hierarchyTitleOffset, 10)
-	line := fmt.Sprintf("%s%s %s %s  %s%s",
+	// Selection checkbox prefix — shown when any bead is selected.
+	checkPrefix := ""
+	if m.bulk.Count() > 0 {
+		if m.bulk.IsSelected(b.ID) {
+			checkPrefix = "[✓] "
+		} else {
+			checkPrefix = "[ ] "
+		}
+	}
+
+	titleWidth := max(m.width-lipgloss.Width(indent)-hierarchyTitleOffset-lipgloss.Width(checkPrefix), 10)
+	line := fmt.Sprintf("%s%s%s %s %s  %s%s",
+		checkPrefix,
 		indent,
 		expArrow,
 		icon,

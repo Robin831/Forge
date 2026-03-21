@@ -215,7 +215,7 @@ func TestRenderCard(t *testing.T) {
 		Anvil:    "heimdall",
 	}
 
-	card := renderCard(b, 25, false, false)
+	card := renderCard(b, 25, false, false, false, false)
 	assert.Contains(t, card, "Forge-abc1")
 	assert.Contains(t, card, "Fix the broken build")
 	assert.Contains(t, card, "heimdall")
@@ -269,7 +269,7 @@ func TestRenderCardBlocked(t *testing.T) {
 		DependsOn: []string{"dep-1"},
 	}
 
-	card := renderCard(b, 25, false, true)
+	card := renderCard(b, 25, false, true, false, false)
 	assert.Contains(t, card, "blocked-1")
 }
 
@@ -284,7 +284,7 @@ func TestRenderCardFixedHeight(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			card := renderCard(tc.b, 25, false, false)
+			card := renderCard(tc.b, 25, false, false, false, false)
 			assert.Equal(t, cardContentLines, lipgloss.Height(card),
 				"renderCard must always emit exactly cardContentLines lines")
 		})
