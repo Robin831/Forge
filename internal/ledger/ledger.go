@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Robin831/Forge/internal/depupdate"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -132,6 +133,22 @@ type Model struct {
 
 	// Help overlay state.
 	helpSt helpState
+
+	// Update overlay state — mirrors the Hearth pattern.
+	showUpdateOverlay     bool
+	updateScanning        bool                    // true while depupdate.Scan is in flight
+	updateRunning         bool                    // true while depupdate.Apply is in flight
+	updateReports         []depupdate.AnvilReport // results from the most recent scan
+	updateFilterForm      *huh.Form               // filter selection form shown after scan
+	updateFilterKind      updateFilterChoice      // chosen filter (all / patch+minor / select groups)
+	updateGroupSelectForm *huh.Form               // group multi-select form
+	updateSelectedKeys    []string                // group keys selected in the group-select form
+	updateScanGeneration  int                     // incremented each scan; stale results discarded
+
+	// Dep bead close confirmation — offered after a successful dep update.
+	depBeadCloseForm    *huh.Form // confirm form shown after apply completes
+	depBeadCloseConfirm bool      // bound to the huh Confirm value
+	depBeadsToClose     []Bead    // dep beads identified for optional closure
 }
 
 // NewModel creates a new Ledger model.
@@ -269,7 +286,69 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.aiApprovalFocus = 0
 		return m, nil
 
+	case updateScanDoneMsg:
+		// Discard stale results from a scan that started before the overlay was last closed.
+		if msg.generation != m.updateScanGeneration || !m.showUpdateOverlay {
+			return m, nil
+		}
+		m.updateScanning = false
+		if msg.err != nil {
+			m.closeUpdateOverlay()
+			return m, m.addToast(fmt.Sprintf("Dep scan failed: %v", msg.err), true)
+		}
+		m.updateReports = msg.reports
+		total := countUpdateGroups(msg.reports)
+		if total == 0 {
+			m.closeUpdateOverlay()
+			return m, m.addToast("All dependencies are up to date", false)
+		}
+		anvilCount := countUpdateAnvils(msg.reports)
+		m.updateFilterForm = buildUpdateFilterForm(&m.updateFilterKind, total, anvilCount)
+		return m, m.updateFilterForm.Init()
+
+	case updateApplyDoneMsg:
+		m.updateRunning = false
+		// After a successful update, offer to close open dep-update beads.
+		if msg.applied > 0 {
+			depBeads := m.findOpenDepBeads()
+			if len(depBeads) > 0 {
+				m.depBeadsToClose = depBeads
+				m.depBeadCloseConfirm = false
+				m.depBeadCloseForm = buildDepBeadCloseForm(depBeads, &m.depBeadCloseConfirm)
+				// Keep the overlay open to show the confirmation form.
+				m.updateScanning = false
+				m.updateRunning = false
+				return m, m.depBeadCloseForm.Init()
+			}
+		}
+		m.closeUpdateOverlay()
+		if msg.applied == 0 && msg.failed == 0 {
+			return m, m.addToast("No updates were applied", false)
+		}
+		summary := fmt.Sprintf("Updated %d groups across %d anvil(s)", msg.applied, msg.anvils)
+		if msg.skipped > 0 {
+			summary += fmt.Sprintf(", %d group(s) skipped", msg.skipped)
+		}
+		if msg.failed > 0 {
+			summary += fmt.Sprintf(", %d group(s) failed", msg.failed)
+		}
+		return m, m.addToast(summary, msg.failed > 0 && msg.applied == 0)
+
+	case depBeadsCloseDoneMsg:
+		m.fetching = true
+		var toastMsg string
+		if msg.failed == 0 {
+			toastMsg = fmt.Sprintf("Closed %d dep update bead(s)", msg.closed)
+		} else {
+			toastMsg = fmt.Sprintf("Closed %d dep update bead(s), %d failed", msg.closed, msg.failed)
+		}
+		return m, tea.Batch(m.addToast(toastMsg, msg.failed > 0), FetchAllBeads(m.anvils, m.db))
+
 	case tea.KeyMsg:
+		// When the update overlay is active, route key events to the update overlay handler.
+		if m.showUpdateOverlay {
+			return m.updateUpdateOverlay(msg)
+		}
 		// When the AI overlay is active, route key events to the AI overlay handler.
 		if m.aiOverlay != aiOverlayNone {
 			return m.updateAIOverlay(msg)
@@ -330,6 +409,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openDepViewerForm()
 			case "i":
 				return m, m.startAIImprovement()
+			case "U":
+				return m, m.openUpdateOverlay()
 			// Bulk selection operations.
 			case " ":
 				// Dep sub-rows in hierarchy view are display-only; skip bulk toggle for them.
@@ -1268,6 +1349,11 @@ func (m *Model) View() string {
 			Render(m.activeForm.View())
 		out = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, formView,
 			lipgloss.WithWhitespaceBackground(lipgloss.AdaptiveColor{Dark: "0", Light: "15"}))
+	}
+
+	// Overlay the dependency update screen.
+	if m.showUpdateOverlay {
+		out = m.renderUpdateOverlay()
 	}
 
 	// Overlay AI improvement spinner or approval.
