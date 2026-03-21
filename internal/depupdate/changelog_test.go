@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/Robin831/Forge/internal/depcheck"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildFragmentContent_Monolingual(t *testing.T) {
@@ -24,15 +26,9 @@ func TestBuildFragmentContent_Monolingual(t *testing.T) {
 
 	got := buildFragmentContent(groups)
 
-	if !strings.HasPrefix(got, "category: Changed\n") {
-		t.Errorf("expected 'category: Changed' header, got: %q", got)
-	}
-	if !strings.Contains(got, "`vite`: 4.0.0 → 5.0.0") {
-		t.Errorf("expected vite entry, got: %q", got)
-	}
-	if !strings.Contains(got, "`vite-plugin-foo`: 1.2.0 → 1.3.0") {
-		t.Errorf("expected vite-plugin-foo entry, got: %q", got)
-	}
+	assert.True(t, strings.HasPrefix(got, "category: Changed\n"), "expected 'category: Changed' header, got: %q", got)
+	assert.Contains(t, got, "`vite`: 4.0.0 → 5.0.0")
+	assert.Contains(t, got, "`vite-plugin-foo`: 1.2.0 → 1.3.0")
 }
 
 func TestBuildFragmentContent_MultipleGroups(t *testing.T) {
@@ -55,61 +51,41 @@ func TestBuildFragmentContent_MultipleGroups(t *testing.T) {
 
 	got := buildFragmentContent(groups)
 
-	if strings.Count(got, "\n- ") != 2 {
-		t.Errorf("expected 2 bullet lines, got: %q", got)
-	}
+	assert.Equal(t, 2, strings.Count(got, "\n- "), "expected 2 bullet lines, got: %q", got)
 }
 
 func TestBuildFragmentContent_Empty(t *testing.T) {
 	got := buildFragmentContent(nil)
-	if got != "category: Changed\n" {
-		t.Errorf("expected only header for empty groups, got: %q", got)
-	}
+	assert.Equal(t, "category: Changed\n", got)
 }
 
 func TestDetectBilingual_NoDirectory(t *testing.T) {
 	dir := t.TempDir()
-	if DetectBilingual(dir) {
-		t.Error("expected false for directory with no changelog.d/")
-	}
+	assert.False(t, DetectBilingual(dir), "expected false for directory with no changelog.d/")
 }
 
 func TestDetectBilingual_MonolingualFragments(t *testing.T) {
 	dir := t.TempDir()
 	clDir := filepath.Join(dir, "changelog.d")
-	if err := os.MkdirAll(clDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(clDir, "some-bead.md"), []byte("category: Added\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(clDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(clDir, "some-bead.md"), []byte("category: Added\n"), 0o644))
 
-	if DetectBilingual(dir) {
-		t.Error("expected false for directory with only .md fragments")
-	}
+	assert.False(t, DetectBilingual(dir), "expected false for directory with only .md fragments")
 }
 
 func TestDetectBilingual_BilingualFragments(t *testing.T) {
 	dir := t.TempDir()
 	clDir := filepath.Join(dir, "changelog.d")
-	if err := os.MkdirAll(clDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(clDir, "some-bead.en.md"), []byte("category: Added\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(clDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(clDir, "some-bead.en.md"), []byte("category: Added\n"), 0o644))
 
-	if !DetectBilingual(dir) {
-		t.Error("expected true when .en.md fragment exists")
-	}
+	assert.True(t, DetectBilingual(dir), "expected true when .en.md fragment exists")
 }
 
 func TestGenerateChangelog_EmptyGroups(t *testing.T) {
 	dir := t.TempDir()
 	// Empty groups should be a no-op with no error.
-	if err := GenerateChangelog(dir, nil, false); err != nil {
-		t.Errorf("expected nil error for empty groups, got: %v", err)
-	}
+	assert.NoError(t, GenerateChangelog(dir, nil, false))
 }
 
 // initGitRepo sets up a minimal git repo in dir so git add/commit can run.
@@ -119,9 +95,8 @@ func initGitRepo(t *testing.T, dir string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
 	}
 	run("init")
 	run("config", "user.email", "test@example.com")
@@ -142,37 +117,23 @@ func TestGenerateChangelog_Monolingual(t *testing.T) {
 		},
 	}
 
-	if err := GenerateChangelog(dir, groups, false); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, GenerateChangelog(dir, groups, false))
 
 	// Verify exactly one .md file was created (no .en.md/.nb.md).
 	clDir := filepath.Join(dir, "changelog.d")
 	entries, err := os.ReadDir(clDir)
-	if err != nil {
-		t.Fatalf("reading changelog.d: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 file, got %d", len(entries))
-	}
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
 	name := entries[0].Name()
-	if strings.HasSuffix(name, ".en.md") || strings.HasSuffix(name, ".nb.md") {
-		t.Errorf("expected monolingual .md file, got %q", name)
-	}
-	if !strings.HasSuffix(name, ".md") {
-		t.Errorf("expected .md suffix, got %q", name)
-	}
+	assert.False(t, strings.HasSuffix(name, ".en.md"), "expected monolingual .md file, got %q", name)
+	assert.False(t, strings.HasSuffix(name, ".nb.md"), "expected monolingual .md file, got %q", name)
+	assert.True(t, strings.HasSuffix(name, ".md"), "expected .md suffix, got %q", name)
 
 	content, err := os.ReadFile(filepath.Join(clDir, name))
-	if err != nil {
-		t.Fatalf("reading fragment: %v", err)
-	}
-	if !strings.HasPrefix(string(content), "category: Changed\n") {
-		t.Errorf("missing category header in %q", string(content))
-	}
-	if !strings.Contains(string(content), "`lodash`: 4.17.20 → 4.17.21") {
-		t.Errorf("expected lodash entry in %q", string(content))
-	}
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(string(content), "category: Changed\n"), "missing category header in %q", string(content))
+	assert.Contains(t, string(content), "`lodash`: 4.17.20 → 4.17.21")
 }
 
 func TestGenerateChangelog_Bilingual(t *testing.T) {
@@ -189,18 +150,12 @@ func TestGenerateChangelog_Bilingual(t *testing.T) {
 		},
 	}
 
-	if err := GenerateChangelog(dir, groups, true); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, GenerateChangelog(dir, groups, true))
 
 	clDir := filepath.Join(dir, "changelog.d")
 	entries, err := os.ReadDir(clDir)
-	if err != nil {
-		t.Fatalf("reading changelog.d: %v", err)
-	}
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 files (en+nb), got %d", len(entries))
-	}
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "expected 2 files (en+nb)")
 
 	var hasEN, hasNB bool
 	for _, e := range entries {
@@ -211,12 +166,8 @@ func TestGenerateChangelog_Bilingual(t *testing.T) {
 			hasNB = true
 		}
 	}
-	if !hasEN {
-		t.Error("expected .en.md file to be created")
-	}
-	if !hasNB {
-		t.Error("expected .nb.md file to be created")
-	}
+	assert.True(t, hasEN, "expected .en.md file to be created")
+	assert.True(t, hasNB, "expected .nb.md file to be created")
 }
 
 func TestWriteFragment(t *testing.T) {
@@ -224,15 +175,9 @@ func TestWriteFragment(t *testing.T) {
 	path := filepath.Join(dir, "test.md")
 	content := "category: Changed\n- `pkg`: 1.0.0 → 2.0.0\n"
 
-	if err := writeFragment(path, content); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, writeFragment(path, content))
 
 	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading written file: %v", err)
-	}
-	if string(got) != content {
-		t.Errorf("file content mismatch: got %q, want %q", string(got), content)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, content, string(got))
 }

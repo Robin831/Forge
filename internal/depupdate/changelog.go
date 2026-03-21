@@ -40,9 +40,12 @@ func DetectBilingual(anvilPath string) bool {
 // git-adds and commits them.
 //
 // Fragment naming:
-//   - Monolingual: deps-batch-<YYYY-MM-DD>.md
-//   - Bilingual:   deps-batch-<YYYY-MM-DD>.en.md  (English)
-//                  deps-batch-<YYYY-MM-DD>.nb.md  (Norwegian — same content)
+//   - Monolingual: deps-batch-<YYYY-MM-DD-HHmmss>.md
+//   - Bilingual:   deps-batch-<YYYY-MM-DD-HHmmss>.en.md  (English)
+//                  deps-batch-<YYYY-MM-DD-HHmmss>.nb.md  (Norwegian — same content)
+//
+// The timestamp suffix makes each invocation collision-safe so that multiple
+// runs on the same day do not overwrite each other.
 //
 // The isBilingual flag can be set explicitly by the caller, or the caller can
 // use DetectBilingual to derive it from the existing changelog directory.
@@ -51,7 +54,7 @@ func GenerateChangelog(anvilPath string, groups []UpdateGroup, isBilingual bool)
 		return nil
 	}
 
-	date := time.Now().Format("2006-01-02")
+	stamp := time.Now().Format("2006-01-02-150405")
 	content := buildFragmentContent(groups)
 
 	changelogDir := filepath.Join(anvilPath, "changelog.d")
@@ -59,31 +62,36 @@ func GenerateChangelog(anvilPath string, groups []UpdateGroup, isBilingual bool)
 		return fmt.Errorf("depupdate: creating changelog.d: %w", err)
 	}
 
-	var filesToAdd []string
+	// relFiles holds repo-relative paths for git add (more portable than
+	// absolute paths, especially on Windows with drive letters).
+	var relFiles []string
 
 	if isBilingual {
-		enPath := filepath.Join(changelogDir, fmt.Sprintf("deps-batch-%s.en.md", date))
-		nbPath := filepath.Join(changelogDir, fmt.Sprintf("deps-batch-%s.nb.md", date))
+		enName := fmt.Sprintf("deps-batch-%s.en.md", stamp)
+		nbName := fmt.Sprintf("deps-batch-%s.nb.md", stamp)
 
-		if err := writeFragment(enPath, content); err != nil {
+		if err := writeFragment(filepath.Join(changelogDir, enName), content); err != nil {
 			return err
 		}
-		if err := writeFragment(nbPath, content); err != nil {
+		if err := writeFragment(filepath.Join(changelogDir, nbName), content); err != nil {
 			return err
 		}
-		filesToAdd = []string{enPath, nbPath}
+		relFiles = []string{
+			"changelog.d/" + enName,
+			"changelog.d/" + nbName,
+		}
 	} else {
-		mdPath := filepath.Join(changelogDir, fmt.Sprintf("deps-batch-%s.md", date))
-		if err := writeFragment(mdPath, content); err != nil {
+		mdName := fmt.Sprintf("deps-batch-%s.md", stamp)
+		if err := writeFragment(filepath.Join(changelogDir, mdName), content); err != nil {
 			return err
 		}
-		filesToAdd = []string{mdPath}
+		relFiles = []string{"changelog.d/" + mdName}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	addArgs := append([]string{"add", "--"}, filesToAdd...)
+	addArgs := append([]string{"add", "--"}, relFiles...)
 	addCmd := executil.HideWindow(exec.CommandContext(ctx, "git", addArgs...))
 	addCmd.Dir = anvilPath
 
@@ -93,13 +101,18 @@ func GenerateChangelog(anvilPath string, groups []UpdateGroup, isBilingual bool)
 		return fmt.Errorf("depupdate: git add changelog fragment: %w\nstderr: %s", err, addStderr.String())
 	}
 
-	commitMsg := fmt.Sprintf("chore(deps): add changelog fragment for dependency batch %s", date)
+	commitMsg := fmt.Sprintf("chore(deps): add changelog fragment for dependency batch %s", stamp)
 	commitCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "commit", "-m", commitMsg))
 	commitCmd.Dir = anvilPath
 
 	var commitStderr bytes.Buffer
 	commitCmd.Stderr = &commitStderr
 	if err := commitCmd.Run(); err != nil {
+		// Treat "nothing to commit" as a no-op — this can happen if the
+		// fragment content is identical to a previously staged file.
+		if strings.Contains(commitStderr.String(), "nothing to commit") {
+			return nil
+		}
 		return fmt.Errorf("depupdate: git commit changelog fragment: %w\nstderr: %s", err, commitStderr.String())
 	}
 
