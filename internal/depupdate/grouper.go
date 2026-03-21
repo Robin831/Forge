@@ -17,9 +17,10 @@ import (
 // UpdateGroup represents a set of related package updates that should be
 // installed together atomically.
 type UpdateGroup struct {
-	Name    string                 // e.g. "vite ecosystem", "@tailwindcss packages", "lodash"
-	Updates []depcheck.ModuleUpdate // packages in this group
-	Kind    string                 // worst-case kind: "major" > "minor" > "patch"
+	Name      string                  // e.g. "vite ecosystem", "@tailwindcss packages", "lodash"
+	Updates   []depcheck.ModuleUpdate // packages in this group
+	Kind      string                  // worst-case kind: "major" > "minor" > "patch"
+	Ecosystem string                  // e.g. "Go", "npm", "NuGet"
 }
 
 // taggedUpdate pairs a ModuleUpdate with its ecosystem for internal processing.
@@ -76,7 +77,9 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 	}
 
 	// --- 2. Scope groups ---
-	scopeMembers := make(map[string][]depcheck.ModuleUpdate) // scope → updates
+	// scopeKey encodes both scope and ecosystem to avoid cross-ecosystem collisions.
+	type scopeKey struct{ scope, ecosystem string }
+	scopeMembers := make(map[scopeKey][]depcheck.ModuleUpdate)
 	for _, u := range all {
 		if grouped[u.Path] {
 			continue
@@ -85,16 +88,18 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 		if scope == "" {
 			continue
 		}
-		scopeMembers[scope] = append(scopeMembers[scope], u.ModuleUpdate)
+		k := scopeKey{scope, u.Ecosystem}
+		scopeMembers[k] = append(scopeMembers[k], u.ModuleUpdate)
 	}
-	for scope, members := range scopeMembers {
+	for k, members := range scopeMembers {
 		if len(members) < 2 {
 			continue // single scoped package — let standalone handle it
 		}
 		groups = append(groups, UpdateGroup{
-			Name:    "@" + scope + " packages",
-			Updates: members,
-			Kind:    worstKind(members),
+			Name:      "@" + k.scope + " packages",
+			Updates:   members,
+			Kind:      worstKind(members),
+			Ecosystem: k.ecosystem,
 		})
 		for _, m := range members {
 			grouped[m.Path] = true
@@ -107,9 +112,10 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 			continue
 		}
 		groups = append(groups, UpdateGroup{
-			Name:    u.Path,
-			Updates: []depcheck.ModuleUpdate{u.ModuleUpdate},
-			Kind:    u.Kind,
+			Name:      u.Path,
+			Updates:   []depcheck.ModuleUpdate{u.ModuleUpdate},
+			Kind:      u.Kind,
+			Ecosystem: u.Ecosystem,
 		})
 	}
 
@@ -197,9 +203,10 @@ func buildPeerDepGroups(ctx context.Context, npmPkgs []taggedUpdate) []UpdateGro
 		}
 
 		groups = append(groups, UpdateGroup{
-			Name:    bestRoot + " ecosystem",
-			Updates: members,
-			Kind:    worstKind(members),
+			Name:      bestRoot + " ecosystem",
+			Updates:   members,
+			Kind:      worstKind(members),
+			Ecosystem: "npm",
 		})
 	}
 	return groups

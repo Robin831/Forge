@@ -2,8 +2,13 @@ package depupdate
 
 import (
 	"bytes"
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -242,4 +247,122 @@ func TestPrintSummary_NoMajor_AllMajorUpdatesFiltered(t *testing.T) {
 	// Ensure we do not incorrectly claim that all dependencies are up to date
 	// when updates do exist but have been filtered out by NoMajor.
 	require.NotContains(t, out, "all dependencies up to date")
+}
+
+// makeUpdateGroups builds a slice of n simple UpdateGroups for testing.
+func makeUpdateGroups(n int) []UpdateGroup {
+	groups := make([]UpdateGroup, n)
+	for i := range groups {
+		groups[i] = UpdateGroup{
+			Name:      strings.Repeat(string(rune('a'+i)), 3),
+			Kind:      "patch",
+			Ecosystem: "Go",
+			Updates: []depcheck.ModuleUpdate{
+				{Path: "example.com/pkg", Current: "v1.0.0", Latest: "v1.0.1", Kind: "patch"},
+			},
+		}
+	}
+	return groups
+}
+
+// ---- SelectGroups tests ----
+
+func TestSelectGroups_YesAll_ReturnsAll(t *testing.T) {
+	groups := makeUpdateGroups(3)
+	selected := SelectGroups(strings.NewReader(""), &bytes.Buffer{}, groups, true)
+	require.Equal(t, groups, selected)
+}
+
+func TestSelectGroups_YesAll_Empty(t *testing.T) {
+	selected := SelectGroups(strings.NewReader(""), &bytes.Buffer{}, nil, true)
+	require.Empty(t, selected)
+}
+
+func TestSelectGroups_Interactive_AcceptAll(t *testing.T) {
+	groups := makeUpdateGroups(2)
+	selected := SelectGroups(strings.NewReader("y\ny\n"), &bytes.Buffer{}, groups, false)
+	require.Len(t, selected, 2)
+}
+
+func TestSelectGroups_Interactive_RejectAll(t *testing.T) {
+	groups := makeUpdateGroups(3)
+	selected := SelectGroups(strings.NewReader("n\nN\nn\n"), &bytes.Buffer{}, groups, false)
+	require.Empty(t, selected)
+}
+
+func TestSelectGroups_Interactive_Mixed(t *testing.T) {
+	groups := makeUpdateGroups(3)
+	// Accept second only.
+	selected := SelectGroups(strings.NewReader("n\ny\nN\n"), &bytes.Buffer{}, groups, false)
+	require.Len(t, selected, 1)
+	require.Equal(t, groups[1].Name, selected[0].Name)
+}
+
+func TestSelectGroups_Interactive_CaseInsensitive(t *testing.T) {
+	groups := makeUpdateGroups(2)
+	// "Y" should be accepted, "N" should be rejected.
+	selected := SelectGroups(strings.NewReader("Y\nN\n"), &bytes.Buffer{}, groups, false)
+	require.Len(t, selected, 1)
+	require.Equal(t, groups[0].Name, selected[0].Name)
+}
+
+func TestSelectGroups_Interactive_EOFStopsEarly(t *testing.T) {
+	groups := makeUpdateGroups(3)
+	// Only one line of input — second and third groups are not prompted.
+	selected := SelectGroups(strings.NewReader("y\n"), &bytes.Buffer{}, groups, false)
+	require.Len(t, selected, 1)
+}
+
+func TestSelectGroups_PromptsIncludeGroupInfo(t *testing.T) {
+	groups := makeUpdateGroups(1)
+	var out bytes.Buffer
+	SelectGroups(strings.NewReader("n\n"), &out, groups, false)
+	prompt := out.String()
+	assert.Contains(t, prompt, groups[0].Name)
+	assert.Contains(t, prompt, "patch")
+}
+
+// ---- ExecuteGroups tests ----
+
+func TestExecuteGroups_CancelledContext_NothingApplied(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately before any work starts
+	groups := makeUpdateGroups(2)
+	applied := ExecuteGroups(ctx, t.TempDir(), config.AnvilConfig{}, groups)
+	require.Empty(t, applied, "cancelled context should prevent any group from being applied")
+}
+
+func TestExecuteGroups_UnknownEcosystem_Skipped(t *testing.T) {
+	dir := initTestGitRepo(t)
+	// Create an initial commit so rollback has something to reset to.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("hello"), 0644))
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-m", "initial")
+
+	group := UpdateGroup{
+		Name:      "some-pkg",
+		Kind:      "patch",
+		Ecosystem: "unknown-ecosystem",
+		Updates: []depcheck.ModuleUpdate{
+			{Path: "some-pkg", Current: "1.0.0", Latest: "1.0.1", Kind: "patch"},
+		},
+	}
+	applied := ExecuteGroups(t.Context(), dir, config.AnvilConfig{}, []UpdateGroup{group})
+	require.Empty(t, applied, "group with unknown ecosystem should be skipped after install failure")
+}
+
+func TestExecuteGroups_MultipleGroups_FailingGroupDoesNotBlockOthers(t *testing.T) {
+	// Two groups: unknown ecosystem (fails) followed by unknown ecosystem (fails).
+	// Both should be skipped independently.
+	dir := initTestGitRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("hello"), 0644))
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-m", "initial")
+
+	groups := []UpdateGroup{
+		{Name: "pkg-a", Kind: "patch", Ecosystem: "unknown-a", Updates: []depcheck.ModuleUpdate{{Path: "pkg-a", Current: "1.0.0", Latest: "1.0.1"}}},
+		{Name: "pkg-b", Kind: "patch", Ecosystem: "unknown-b", Updates: []depcheck.ModuleUpdate{{Path: "pkg-b", Current: "1.0.0", Latest: "1.0.1"}}},
+	}
+	applied := ExecuteGroups(t.Context(), dir, config.AnvilConfig{}, groups)
+	require.Empty(t, applied, "all groups with unknown ecosystems should be skipped")
 }

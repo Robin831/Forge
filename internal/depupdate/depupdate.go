@@ -1,13 +1,15 @@
 // Package depupdate provides direct dependency update functionality that
 // bypasses the Smith AI worker. It reuses depcheck scanners to discover
-// outdated packages, groups them, and (in future sub-tasks) applies updates
-// directly via package manager commands.
+// outdated packages, groups them, applies updates via package-manager commands,
+// verifies them with Temper, and wires changelog generation + PR creation.
 package depupdate
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -198,4 +200,88 @@ func filterUpdates(cr *depcheck.CheckResult, opts Options) []depcheck.ModuleUpda
 	}
 	updates = append(updates, cr.Patch...)
 	return updates
+}
+
+// SelectGroups presents each UpdateGroup to the user and collects a yes/no
+// response. When yesAll is true every group is accepted without prompting. The
+// function reads responses from r and writes prompts to w.
+func SelectGroups(r io.Reader, w io.Writer, groups []UpdateGroup, yesAll bool) []UpdateGroup {
+	if yesAll {
+		return groups
+	}
+	scanner := bufio.NewScanner(r)
+	var selected []UpdateGroup
+	for _, g := range groups {
+		pkgWord := "package"
+		if len(g.Updates) != 1 {
+			pkgWord = "packages"
+		}
+		fmt.Fprintf(w, "Apply %q (%s, %d %s)? [y/N] ", g.Name, g.Kind, len(g.Updates), pkgWord)
+		if !scanner.Scan() {
+			break
+		}
+		if strings.EqualFold(strings.TrimSpace(scanner.Text()), "y") {
+			selected = append(selected, g)
+		}
+	}
+	return selected
+}
+
+// ExecuteGroups applies each UpdateGroup to the given anvil by installing
+// packages, running Temper verification, and committing on success or rolling
+// back on failure. It returns the subset of groups that were successfully
+// applied and committed.
+func ExecuteGroups(ctx context.Context, anvilPath string, anvilCfg config.AnvilConfig, groups []UpdateGroup) []UpdateGroup {
+	var applied []UpdateGroup
+	for _, g := range groups {
+		if ctx.Err() != nil {
+			log.Printf("[depupdate] context cancelled — stopping before group %q", g.Name)
+			break
+		}
+		if err := installGroup(ctx, anvilPath, g); err != nil {
+			log.Printf("[depupdate] install failed for group %q: %v", g.Name, err)
+			if rbErr := RollbackGroup(ctx, anvilPath, g, err); rbErr != nil {
+				log.Printf("[depupdate] rollback failed for group %q: %v", g.Name, rbErr)
+			}
+			continue
+		}
+		result, verifyErr := VerifyGroup(ctx, anvilPath, anvilCfg)
+		if verifyErr != nil {
+			log.Printf("[depupdate] verify error for group %q: %v — rolling back", g.Name, verifyErr)
+			if rbErr := RollbackGroup(ctx, anvilPath, g, verifyErr); rbErr != nil {
+				log.Printf("[depupdate] rollback failed for group %q: %v", g.Name, rbErr)
+			}
+			continue
+		}
+		if !result.Passed {
+			log.Printf("[depupdate] verify failed for group %q — rolling back", g.Name)
+			if rbErr := RollbackGroup(ctx, anvilPath, g, fmt.Errorf("temper verification failed")); rbErr != nil {
+				log.Printf("[depupdate] rollback failed for group %q: %v", g.Name, rbErr)
+			}
+			continue
+		}
+		if err := CommitGroup(ctx, anvilPath, g); err != nil {
+			log.Printf("[depupdate] commit failed for group %q: %v — rolling back", g.Name, err)
+			if rbErr := RollbackGroup(ctx, anvilPath, g, err); rbErr != nil {
+				log.Printf("[depupdate] rollback failed for group %q: %v", g.Name, rbErr)
+			}
+			continue
+		}
+		applied = append(applied, g)
+	}
+	return applied
+}
+
+// installGroup dispatches to the appropriate ecosystem-specific installer.
+func installGroup(ctx context.Context, anvilPath string, g UpdateGroup) error {
+	switch g.Ecosystem {
+	case "npm":
+		return InstallNpmGroup(ctx, anvilPath, g)
+	case "Go":
+		return InstallGoGroup(ctx, anvilPath, g)
+	case "NuGet", ".NET":
+		return InstallDotnetGroup(ctx, anvilPath, g)
+	default:
+		return fmt.Errorf("unknown ecosystem %q for group %q", g.Ecosystem, g.Name)
+	}
 }

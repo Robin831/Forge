@@ -19,18 +19,18 @@ func branchName(dateStr string) string {
 	return "deps/batch-update-" + dateStr
 }
 
-// CreatePR creates or checks out a batch-update branch, pushes it to origin,
-// and opens a single pull request summarising all updated groups for the given
-// anvil. It returns the PR URL reported by gh, or an error if any step fails.
-//
-// The branch name is deps/batch-update-<YYYY-MM-DD> derived from the current
-// date. If the branch already exists locally it is checked out rather than
-// created anew. If it exists only on the remote, it is fetched and tracked.
-func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateGroup) (string, error) {
+// CheckoutUpdateBranch creates or checks out the batch-update branch for the
+// current date (deps/batch-update-<YYYY-MM-DD>) in the given anvil directory.
+// The branch is based on origin's default branch so that the diff never
+// includes unrelated changes from a feature branch or detached HEAD.
+// If the branch already exists locally it is checked out. If it exists only on
+// the remote it is fetched and tracked.
+// Returns the branch name and an error if the branch cannot be created or
+// checked out.
+func CheckoutUpdateBranch(ctx context.Context, anvilPath string) (string, error) {
 	dateStr := time.Now().Format("2006-01-02")
 	branch := branchName(dateStr)
 
-	// git helper: run a git command with a per-command timeout.
 	git := func(timeout time.Duration, args ...string) error {
 		cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
@@ -44,8 +44,83 @@ func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateG
 		return nil
 	}
 
-	// Try to create the branch. On failure, determine whether the branch
-	// already exists locally or only on the remote, and handle accordingly.
+	gitOutput := func(timeout time.Duration, args ...string) (string, error) {
+		cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
+		cmd.Dir = anvilPath
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, stderr.String())
+		}
+		return stdout.String(), nil
+	}
+
+	// Determine the default branch on origin so the deps branch is based on
+	// origin/<default> rather than whatever HEAD is currently checked out.
+	// Fall back to creating from the current HEAD if detection fails.
+	var baseRef string
+	if remotesOut, err := gitOutput(5*time.Second, "remote"); err == nil {
+		hasOrigin := false
+		for _, line := range strings.Split(remotesOut, "\n") {
+			if strings.TrimSpace(line) == "origin" {
+				hasOrigin = true
+				break
+			}
+		}
+		if hasOrigin {
+			// Prefer the symbolic origin/HEAD ref (e.g. "origin/main").
+			if headRef, err := gitOutput(5*time.Second, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
+				headRef = strings.TrimSpace(headRef)
+				if headRef != "" {
+					if strings.HasPrefix(headRef, "origin/") {
+						baseRef = headRef
+					} else {
+						baseRef = "origin/" + headRef
+					}
+				}
+			} else {
+				// Fallback: parse "git remote show origin" for the "HEAD branch:" line.
+				if remoteShow, err2 := gitOutput(10*time.Second, "remote", "show", "origin"); err2 == nil {
+					for _, line := range strings.Split(remoteShow, "\n") {
+						line = strings.TrimSpace(line)
+						const prefix = "HEAD branch:"
+						if strings.HasPrefix(line, prefix) {
+							name := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+							if name != "" {
+								baseRef = "origin/" + name
+							}
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// If we resolved a default-branch ref on origin, fetch it and base the
+	// deps branch on it. Otherwise fall back to creating from the current HEAD.
+	if baseRef != "" {
+		defaultBranchName := strings.TrimPrefix(baseRef, "origin/")
+		if defaultBranchName == "" || strings.Contains(defaultBranchName, " ") {
+			log.Printf("depupdate: invalid default branch ref %q, falling back to current HEAD", baseRef)
+			baseRef = ""
+		} else if err := git(30*time.Second, "fetch", "origin", defaultBranchName); err != nil {
+			log.Printf("depupdate: failed to fetch %q: %v; falling back to current HEAD", baseRef, err)
+			baseRef = ""
+		}
+	}
+
+	if baseRef != "" {
+		if err := git(30*time.Second, "checkout", "-B", branch, baseRef); err != nil {
+			return "", fmt.Errorf("depupdate: create branch %q from %q: %w", branch, baseRef, err)
+		}
+		return branch, nil
+	}
+
+	// No origin or detection failed — fall back to the existing local/remote logic.
 	if err := git(30*time.Second, "checkout", "-b", branch); err != nil {
 		// Check if the branch exists locally.
 		if errExists := git(10*time.Second, "rev-parse", "--verify", branch); errExists == nil {
@@ -64,6 +139,29 @@ func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateG
 				return "", fmt.Errorf("depupdate: checkout branch %q from %q: %w", branch, remoteRef, err4)
 			}
 		}
+	}
+	return branch, nil
+}
+
+// CreatePR pushes the given branch to origin and opens a single pull request
+// summarising all updated groups for the given anvil. The branch must have
+// already been created and checked out by CheckoutUpdateBranch. Returns the PR
+// URL reported by gh, or an error if any step fails.
+func CreatePR(ctx context.Context, anvilPath, anvilName, branch string, groups []UpdateGroup) (string, error) {
+	dateStr := time.Now().Format("2006-01-02")
+
+	// git helper: run a git command with a per-command timeout.
+	git := func(timeout time.Duration, args ...string) error {
+		cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
+		cmd.Dir = anvilPath
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, stderr.String())
+		}
+		return nil
 	}
 
 	// Push branch and set upstream tracking reference. Allow more time for push.
