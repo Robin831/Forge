@@ -69,13 +69,8 @@ var hearthCmd = &cobra.Command{
 
 		model := hearth.NewModel(ds)
 
-		anvilKeys := make([]string, 0, len(cfg.Anvils))
-		for name := range cfg.Anvils {
-			anvilKeys = append(anvilKeys, name)
-		}
-		sort.Strings(anvilKeys)
 		updateAnvils := make([]depupdate.Anvil, 0, len(cfg.Anvils))
-		for _, name := range anvilKeys {
+		for _, name := range anvilNames {
 			a := cfg.Anvils[name]
 			updateAnvils = append(updateAnvils, depupdate.Anvil{
 				Name:   name,
