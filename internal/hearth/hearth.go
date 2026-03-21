@@ -2088,13 +2088,19 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 		return nil
 	}
 	bead := *m.actionTarget
+	// Use title as label for non-bead PRs (e.g. warden-learn PRs) so status
+	// messages don't render blank when BeadID is empty.
+	label := bead.BeadID
+	if label == "" {
+		label = bead.Title
+	}
 	switch choice {
 	case ActionRetry:
 		if m.OnRetryBead != nil {
 			if err := m.OnRetryBead(bead.BeadID, bead.Anvil, bead.PRID); err != nil {
-				m.setStatus(fmt.Sprintf("Failed to retry %s: %v", bead.BeadID, err), true)
+				m.setStatus(fmt.Sprintf("Failed to retry %s: %v", label, err), true)
 			} else {
-				m.setStatus(fmt.Sprintf("Retry queued for %s", bead.BeadID), false)
+				m.setStatus(fmt.Sprintf("Retry queued for %s", label), false)
 				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil, bead.PRID)
 				if m.data != nil {
 					return FetchNeedsAttention(m.data)
@@ -2102,14 +2108,14 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				return nil
 			}
 		} else {
-			m.setStatus(fmt.Sprintf("Retry action unavailable for %s", bead.BeadID), false)
+			m.setStatus(fmt.Sprintf("Retry action unavailable for %s", label), false)
 		}
 	case ActionDismiss:
 		if m.OnDismissBead != nil {
 			if err := m.OnDismissBead(bead.BeadID, bead.Anvil, bead.PRID); err != nil {
-				m.setStatus(fmt.Sprintf("Failed to dismiss %s: %v", bead.BeadID, err), true)
+				m.setStatus(fmt.Sprintf("Failed to dismiss %s: %v", label, err), true)
 			} else {
-				m.setStatus(fmt.Sprintf("Dismissed %s", bead.BeadID), false)
+				m.setStatus(fmt.Sprintf("Dismissed %s", label), false)
 				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil, bead.PRID)
 				if m.data != nil {
 					return FetchNeedsAttention(m.data)
@@ -2117,7 +2123,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 				return nil
 			}
 		} else {
-			m.setStatus(fmt.Sprintf("Dismiss action unavailable for %s", bead.BeadID), false)
+			m.setStatus(fmt.Sprintf("Dismiss action unavailable for %s", label), false)
 		}
 	case ActionViewLogs:
 		if m.OnViewLogs != nil {
