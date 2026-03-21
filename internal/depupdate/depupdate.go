@@ -234,6 +234,10 @@ func SelectGroups(r io.Reader, w io.Writer, groups []UpdateGroup, yesAll bool) [
 func ExecuteGroups(ctx context.Context, anvilPath string, anvilCfg config.AnvilConfig, groups []UpdateGroup) []UpdateGroup {
 	var applied []UpdateGroup
 	for _, g := range groups {
+		if ctx.Err() != nil {
+			log.Printf("[depupdate] context cancelled — stopping before group %q", g.Name)
+			break
+		}
 		if err := installGroup(ctx, anvilPath, g); err != nil {
 			log.Printf("[depupdate] install failed for group %q: %v", g.Name, err)
 			if rbErr := RollbackGroup(ctx, anvilPath, g, err); rbErr != nil {

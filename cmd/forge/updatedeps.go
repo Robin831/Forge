@@ -28,8 +28,15 @@ var updateDepsCmd = &cobra.Command{
 depcheck scanners (Go, npm, NuGet). Displays a summary of available updates.
 
 Use --dry-run to preview updates without making changes. Use --patch-only or
---no-major to limit which updates are included. Use --create-pr to open a
-GitHub PR summarising the detected updates for each anvil.`,
+--no-major to limit which updates are included.
+
+Use --create-pr to apply updates end-to-end: for each anvil, a batch-update
+branch is created from the remote default branch, then each update group is
+presented interactively (y/N). Accepted groups are installed, verified with
+Temper (build + lint + test), and committed individually; groups that fail
+verification are rolled back. Accepted and passing groups are then pushed and
+a GitHub PR is opened. Use --yes (-y) to auto-accept all groups without
+per-group prompts.`,
 	GroupID: "work",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cfg == nil {
@@ -112,7 +119,8 @@ GitHub PR summarising the detected updates for each anvil.`,
 
 			// Step 1: Checkout (or create) the batch-update branch so that
 			// subsequent commits land on the right branch before the PR.
-			if err := depupdate.CheckoutUpdateBranch(rootCtx, ar.Path); err != nil {
+			branch, err := depupdate.CheckoutUpdateBranch(rootCtx, ar.Path)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: branch for %s: %v\n", ar.Anvil, err)
 				continue
 			}
@@ -141,7 +149,7 @@ GitHub PR summarising the detected updates for each anvil.`,
 			}
 
 			// Step 5: Push branch and open the PR.
-			prURL, err := depupdate.CreatePR(rootCtx, ar.Path, ar.Anvil, applied)
+			prURL, err := depupdate.CreatePR(rootCtx, ar.Path, ar.Anvil, branch, applied)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: PR for %s: %v\n", ar.Anvil, err)
 				continue
