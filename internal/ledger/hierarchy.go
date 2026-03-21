@@ -252,7 +252,7 @@ func (m *Model) renderHierarchy() string {
 	}
 
 	footerStyle := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 2)
-	footer := footerStyle.Render("j/k: navigate  Enter/Space: expand/collapse  Tab: list view  q: quit")
+	footer := footerStyle.Render("j/k: navigate  Enter/Space: expand/collapse  d: add dep  b: view deps  Tab: list view  q: quit")
 
 	return header + "\n" + rows.String() + "\n" + footer
 }

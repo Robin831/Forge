@@ -178,6 +178,48 @@ func UpdateAssigneeCmd(anvilPath, beadID, assignee string) tea.Cmd {
 	}
 }
 
+// DepAddedMsg indicates a dependency was successfully added.
+type DepAddedMsg struct {
+	BeadID string
+	DepID  string
+}
+
+// DepRemovedMsg indicates a dependency was successfully removed.
+type DepRemovedMsg struct {
+	BeadID string
+	DepID  string
+}
+
+// AddDepCmd adds a dependency to a bead via bd dep add <beadID> <depID>.
+// After this, beadID depends on depID (depID blocks beadID).
+func AddDepCmd(anvilPath, beadID, depID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		_, err := bdExec(ctx, anvilPath, "dep", "add", beadID, depID)
+		if err != nil {
+			return ActionErrorMsg{Err: fmt.Errorf("add dep %s→%s: %w", beadID, depID, err)}
+		}
+		return DepAddedMsg{BeadID: beadID, DepID: depID}
+	}
+}
+
+// RemoveDepCmd removes a dependency via bd dep remove <beadID> <depID>.
+// This removes the relationship where beadID depends on depID.
+func RemoveDepCmd(anvilPath, beadID, depID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		_, err := bdExec(ctx, anvilPath, "dep", "remove", beadID, depID)
+		if err != nil {
+			return ActionErrorMsg{Err: fmt.Errorf("remove dep %s→%s: %w", beadID, depID, err)}
+		}
+		return DepRemovedMsg{BeadID: beadID, DepID: depID}
+	}
+}
+
 // extractIDFromJSON does a best-effort extraction of the "id" field from
 // bd create --json output. The output may be a JSON array (e.g. [{"id":...}])
 // or a plain object. Returns empty string on failure.

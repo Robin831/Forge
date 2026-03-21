@@ -48,6 +48,8 @@ const (
 	FormComment
 	FormNotes
 	FormAssign
+	FormAddDep   // D key: pick a bead to add as a dependency
+	FormViewDeps // B key: view and optionally remove dependencies
 )
 
 // Model is the top-level Bubbletea model for the Ledger TUI.
@@ -88,6 +90,7 @@ type Model struct {
 	formLabelAction string // "add" or "remove"
 	formNotes       string // comment/notes text
 	formAssignee    string // assignee username
+	formDepID       string // dep bead ID selected in dep forms; "dep:<id>" or "blocks:<id>" for removal
 
 	// Toast notifications
 	toasts      []toast
@@ -155,6 +158,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openNotesForm()
 			case "a":
 				return m, m.openAssignForm()
+			case "d":
+				return m, m.openAddDepForm()
+			case "b":
+				return m, m.openDepViewerForm()
 			}
 			// "l" opens label form only in list view; in kanban it navigates lanes.
 			if msg.String() == "l" && m.view == ViewList {
@@ -219,6 +226,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetching = true
 		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
 
+	case DepAddedMsg:
+		cmd := m.addToast(fmt.Sprintf("Added dep: %s → %s", msg.BeadID, msg.DepID), false)
+		m.fetching = true
+		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+
+	case DepRemovedMsg:
+		cmd := m.addToast(fmt.Sprintf("Removed dep: %s → %s", msg.BeadID, msg.DepID), false)
+		m.fetching = true
+		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+
 	case ActionErrorMsg:
 		cmd := m.addToast(msg.Err.Error(), true)
 		return m, cmd
@@ -278,6 +295,7 @@ func (m *Model) clearForm() {
 	m.formLabelAction = ""
 	m.formNotes = ""
 	m.formAssignee = ""
+	m.formDepID = ""
 }
 
 // parsePriority converts a priority string ("0"–"4") to an int, defaulting to 2.
@@ -395,6 +413,43 @@ func (m *Model) executeFormAction() tea.Cmd {
 			}
 		}
 		return UpdateAssigneeCmd(anvilPath, m.formTarget.ID, m.formAssignee)
+
+	case FormAddDep:
+		if m.formTarget == nil || m.formDepID == "" {
+			return nil
+		}
+		anvilPath, ok := m.anvils[m.formTarget.Anvil]
+		if !ok {
+			return func() tea.Msg {
+				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil for bead %s: %s", m.formTarget.ID, m.formTarget.Anvil)}
+			}
+		}
+		return AddDepCmd(anvilPath, m.formTarget.ID, m.formDepID)
+
+	case FormViewDeps:
+		if m.formTarget == nil || m.formDepID == "" {
+			return nil // "— done —" was selected or nothing selected
+		}
+		anvilPath, ok := m.anvils[m.formTarget.Anvil]
+		if !ok {
+			return func() tea.Msg {
+				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil for bead %s: %s", m.formTarget.ID, m.formTarget.Anvil)}
+			}
+		}
+		// formDepID encodes the removal direction:
+		//   "dep:<depID>"    → this bead depends on depID; remove: bd dep remove <beadID> <depID>
+		//   "blocks:<childID>" → childID depends on this bead; remove: bd dep remove <childID> <beadID>
+		const depPrefix = "dep:"
+		const blocksPrefix = "blocks:"
+		switch {
+		case len(m.formDepID) > len(depPrefix) && m.formDepID[:len(depPrefix)] == depPrefix:
+			depID := m.formDepID[len(depPrefix):]
+			return RemoveDepCmd(anvilPath, m.formTarget.ID, depID)
+		case len(m.formDepID) > len(blocksPrefix) && m.formDepID[:len(blocksPrefix)] == blocksPrefix:
+			childID := m.formDepID[len(blocksPrefix):]
+			return RemoveDepCmd(anvilPath, childID, m.formTarget.ID)
+		}
+		return nil
 	}
 	return nil
 }
@@ -684,6 +739,120 @@ func (m *Model) openAssignForm() tea.Cmd {
 	).WithShowHelp(false).WithShowErrors(false)
 
 	m.activeFormKind = FormAssign
+	return m.activeForm.Init()
+}
+
+// openAddDepForm opens a bead picker so the user can add a dependency to the
+// selected bead. The picker is filtered to exclude the bead itself and any
+// IDs it already depends on.
+func (m *Model) openAddDepForm() tea.Cmd {
+	b := m.selectedBead()
+	if b == nil {
+		return nil
+	}
+
+	// Build set of IDs to exclude: self + existing DependsOn entries.
+	excluded := make(map[string]bool, len(b.DependsOn)+1)
+	excluded[b.ID] = true
+	for _, id := range b.DependsOn {
+		excluded[id] = true
+	}
+
+	// Collect candidate beads sorted by ID.
+	var candidates []Bead
+	for i := range m.beads {
+		if !excluded[m.beads[i].ID] {
+			candidates = append(candidates, m.beads[i])
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].ID < candidates[j].ID
+	})
+
+	if len(candidates) == 0 {
+		return func() tea.Msg {
+			return ActionErrorMsg{Err: fmt.Errorf("%s already depends on all available beads", b.ID)}
+		}
+	}
+
+	opts := make([]huh.Option[string], len(candidates))
+	for i, c := range candidates {
+		label := fmt.Sprintf("%-14s %s", c.ID, truncate(c.Title, 40))
+		opts[i] = huh.NewOption(label, c.ID)
+	}
+
+	m.formTarget = b
+	m.formDepID = candidates[0].ID
+
+	m.activeForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(fmt.Sprintf("Add dependency to %s (it will depend on…)", b.ID)).
+				Options(opts...).
+				Value(&m.formDepID),
+		),
+	).WithShowHelp(false).WithShowErrors(false)
+
+	m.activeFormKind = FormAddDep
+	return m.activeForm.Init()
+}
+
+// openDepViewerForm opens a viewer showing the selected bead's dependency
+// relationships (what it blocks, what blocks it). The user can optionally
+// select a dependency to remove.
+func (m *Model) openDepViewerForm() tea.Cmd {
+	b := m.selectedBead()
+	if b == nil {
+		return nil
+	}
+
+	// Build a lookup map for resolving IDs to titles.
+	byID := make(map[string]*Bead, len(m.beads))
+	for i := range m.beads {
+		byID[m.beads[i].ID] = &m.beads[i]
+	}
+
+	// Build options: DependsOn entries (this bead depends on them) + Blocks entries (they depend on this).
+	var opts []huh.Option[string]
+
+	for _, depID := range b.DependsOn {
+		label := fmt.Sprintf("↓ depends on: %-14s", depID)
+		if dep := byID[depID]; dep != nil {
+			label = fmt.Sprintf("↓ depends on: %-14s  %s", depID, truncate(dep.Title, 30))
+		}
+		opts = append(opts, huh.NewOption(label, "dep:"+depID))
+	}
+
+	for _, childID := range b.Blocks {
+		label := fmt.Sprintf("↑ blocks:     %-14s", childID)
+		if child := byID[childID]; child != nil {
+			label = fmt.Sprintf("↑ blocks:     %-14s  %s", childID, truncate(child.Title, 30))
+		}
+		opts = append(opts, huh.NewOption(label, "blocks:"+childID))
+	}
+
+	if len(opts) == 0 {
+		return func() tea.Msg {
+			return ActionErrorMsg{Err: fmt.Errorf("%s has no dependencies", b.ID)}
+		}
+	}
+
+	// Append a no-op "done" option so the user can close without removing anything.
+	opts = append(opts, huh.NewOption("— done (no removal) —", ""))
+
+	m.formTarget = b
+	m.formDepID = "" // default to "done"
+
+	m.activeForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(fmt.Sprintf("Dependencies for %s — select to remove", b.ID)).
+				Options(opts...).
+				Value(&m.formDepID),
+		),
+	).WithShowHelp(false).WithShowErrors(false)
+
+	m.activeFormKind = FormViewDeps
 	return m.activeForm.Init()
 }
 

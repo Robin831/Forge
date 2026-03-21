@@ -276,7 +276,7 @@ func (m *Model) renderList() string {
 	if m.err != nil {
 		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  ⚠ %v", m.err))
 	}
-	footer := footerStyle.Render("j/k: navigate  S: sort  n: new  e: edit  x: close  r: reopen  Tab: kanban/hierarchy  q: quit") + errNote
+	footer := footerStyle.Render("j/k: navigate  S: sort  n: new  e: edit  x: close  r: reopen  d: add dep  b: view deps  Tab: kanban/hierarchy  q: quit") + errNote
 
 	out := header + "\n" + colHeader + "\n" + rows.String() + "\n" + footer
 
