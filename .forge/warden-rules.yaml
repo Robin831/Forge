@@ -834,7 +834,7 @@ rules:
         Adding a new entry to warden-rules.yaml or any rules/config YAML file where an existing entry already covers the same or overlapping category, pattern, and check
       check: >-
         Verify the new rule does not duplicate or significantly overlap an existing rule. If the scope overlaps, consolidate by broadening the existing rule or clearly differentiating the two. If the intent is only to update attribution (e.g., source PR), update the existing entry instead of adding a duplicate.
-      source: ['copilot:PR#285', 'copilot:PR#322', 'copilot:PR#324', 'copilot:PR#326', 'copilot:PR#328', 'copilot:PR#329', 'copilot:PR#331', 'copilot:PR#332', 'copilot:PR#334', 'copilot:PR#340', 'copilot:PR#344', 'copilot:PR#345']
+      source: ['copilot:PR#285', 'copilot:PR#322', 'copilot:PR#324', 'copilot:PR#326', 'copilot:PR#328', 'copilot:PR#329', 'copilot:PR#331', 'copilot:PR#332', 'copilot:PR#334', 'copilot:PR#337', 'copilot:PR#340', 'copilot:PR#344', 'copilot:PR#345']
       added: "2026-03-16"
     - id: windows-exe-rename-lock
       category: error-handling
@@ -1169,7 +1169,7 @@ rules:
       pattern: PR description or title claims a specific count of added/changed/removed items
       check: >-
         Verify that the count stated in the PR description or title matches the actual number of changes in the diff — e.g., if the PR says 'learned 4 rules', confirm exactly 4 new rules appear in the changed files
-      source: copilot:PR#332
+      source: copilot:PR#332, copilot:PR#337
       added: "2026-03-20"
     - id: preserve-rule-attribution-sources
       category: other
@@ -1309,4 +1309,46 @@ rules:
       check: >-
         Verify that the newly added rule does not duplicate an existing rule. If a similar rule exists, update its source and description instead of creating a new entry to avoid double-flagging.
       source: copilot:PR#348
+      added: "2026-03-20"
+    - id: warden-source-field-wording
+      category: style
+      pattern: Warden rule check text or description references 'source list' or treats the source field as a YAML list
+      check: Verify that warden rule text refers to 'source field' or 'comma-separated PR attributions' rather than 'source list', since the source value in warden-rules.yaml is a single scalar string (often comma-separated), not a YAML list
+      source: copilot:PR#337
+      added: "2026-03-20"
+    - id: unreachable-early-return
+      category: other
+      pattern: Early return guard checking for empty slices or nil values on results from functions that guarantee non-empty output (e.g., fallback/default values)
+      check: Verify that early-return guards on function results are actually reachable — if the called function guarantees a non-empty result (e.g., by adding a fallback/default entry), the guard is dead code. Either remove it or adjust it to detect the fallback value if a true 'no-op' mode is intended.
+      source: copilot:PR#346
+      added: "2026-03-20"
+    - id: resolve-go-race-detection-config
+      category: testing
+      pattern: Code that reads GoRaceDetection from a single config source (e.g., anvilConfig.GoRaceDetection) instead of using the full resolution chain
+      check: Verify that GoRaceDetection is resolved using the full precedence chain (.forge/temper.yaml > per-anvil config > global config) rather than reading from a single config level. Use the shared resolution helper (e.g., config.ResolveGoRaceDetection or Daemon.resolveGoRaceDetection) to ensure consistent behavior with the main Temper pipeline.
+      source: copilot:PR#346
+      added: "2026-03-20"
+    - id: git-checkout-vs-reset-hard
+      category: error-handling
+      pattern: Code using `git checkout -- .` to discard uncommitted changes
+      check: Verify that rollback/discard operations reset both the index and working tree. `git checkout -- .` only restores from the index and leaves staged changes intact. Prefer `git reset --hard` (or `git reset --hard` followed by `git clean -fd` if untracked files matter) to ensure the repo is fully clean.
+      source: copilot:PR#346
+      added: "2026-03-20"
+    - id: git-clean-ignored-artifacts
+      category: other
+      pattern: git clean commands used to undo install or build side-effects
+      check: Verify git clean uses -fdx or -fdX to also remove ignored files/directories (e.g., node_modules/, bin/, obj/) when the intent is to fully undo install side-effects. Plain -fd leaves ignored artifacts behind.
+      source: copilot:PR#346
+      added: "2026-03-20"
+    - id: doc-matches-implementation
+      category: style
+      pattern: Function or method doc comments that describe error behavior, return values, or fallback logic
+      check: Verify that doc comments accurately describe the actual implementation behavior — especially around error returns, fallback paths, and edge cases. If the code silently falls back instead of returning an error, the comment must not claim an error is returned, and vice versa.
+      source: copilot:PR#346
+      added: "2026-03-20"
+    - id: test-helper-filesystem-errors
+      category: testing
+      pattern: Test helper functions calling os.WriteFile, os.MkdirAll, os.Create, or similar filesystem operations without checking the returned error
+      check: Verify that all filesystem operations in test helpers (os.WriteFile, os.MkdirAll, os.Create, etc.) have their errors checked, typically with require.NoError(t, err), so that fixture setup failures are caught immediately rather than causing misleading test failures downstream
+      source: copilot:PR#346
       added: "2026-03-20"
