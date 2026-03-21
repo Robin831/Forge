@@ -41,6 +41,10 @@ type UpdateBeadsMsg struct {
 	Err   error
 }
 
+// bdExecFunc is the function type for executing bd CLI commands.
+// It is used for dependency injection in tests.
+type bdExecFunc func(ctx context.Context, anvilPath string, args ...string) ([]byte, error)
+
 // bdExec runs a bd command in the given anvil directory, hiding the console window.
 func bdExec(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", args...))
@@ -58,6 +62,12 @@ func bdExec(ctx context.Context, anvilPath string, args ...string) ([]byte, erro
 // It fetches open/in_progress beads plus recently closed beads (last 7 days),
 // then enriches them with PR data from the state DB.
 func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
+	return fetchAllBeadsWithExec(bdExec, anvils, db)
+}
+
+// fetchAllBeadsWithExec is the internal implementation of FetchAllBeads that
+// accepts an injectable bdExecFunc for testability.
+func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *state.DB) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -72,7 +82,7 @@ func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
 			wg.Add(1)
 			go func(name, path string) {
 				defer wg.Done()
-				out, err := bdExec(ctx, path, "list", "--status=open", "--status=in_progress", "--limit", "0", "--json")
+				out, err := execFn(ctx, path, "list", "--status=open", "--status=in_progress", "--limit", "0", "--json")
 				if err != nil {
 					mu.Lock()
 					if firstErr == nil {
@@ -102,7 +112,7 @@ func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
 			wg.Add(1)
 			go func(name, path string) {
 				defer wg.Done()
-				out, err := bdExec(ctx, path, "list", "--status=closed", "--limit", "0", "--json")
+				out, err := execFn(ctx, path, "list", "--status=closed", "--limit", "0", "--json")
 				if err != nil {
 					// Non-critical: closed beads are supplementary, but record the first error so the UI can surface it.
 					mu.Lock()
