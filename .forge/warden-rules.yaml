@@ -1169,7 +1169,7 @@ rules:
       pattern: PR description or title claims a specific count of added/changed/removed items
       check: >-
         Verify that the count stated in the PR description or title matches the actual number of changes in the diff — e.g., if the PR says 'learned 4 rules', confirm exactly 4 new rules appear in the changed files
-      source: copilot:PR#332, copilot:PR#337
+      source: [copilot:PR#332, copilot:PR#337]
       added: "2026-03-20"
     - id: preserve-rule-attribution-sources
       category: other
@@ -1216,8 +1216,8 @@ rules:
       pattern: >-
         Adding a new warden rule entry that shares the same category and pattern intent as an existing rule
       check: >-
-        Verify the new rule does not duplicate or overlap with an existing rule in warden-rules.yaml. If it does, consolidate by appending the new source (e.g. PR number) to the existing rule's source field instead of creating a separate entry.
-      source: copilot:PR#349
+        Verify the new rule does not duplicate or overlap with an existing rule in warden-rules.yaml. If it does, consolidate by appending the new source (e.g. PR number) to the existing rule's source field instead of creating a separate entry. Ensure any rule instructions accurately reflect the schema (e.g., using singular 'source' instead of 'source list').
+      source: [copilot:PR#349, copilot:PR#348]
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -1290,30 +1290,17 @@ rules:
       source: copilot:PR#358
       added: "2026-03-20"
     - id: avoid-generic-rule-category
-      category: other
+      category: style
       pattern: Warden rule definitions in warden-rules.yaml
       check: >-
-        Verify that a specific, descriptive category is assigned rather than a generic `category: other` to improve triage, search, and reporting capabilities.
-      source: copilot:PR#348
-      added: "2026-03-20"
-    - id: avoid-duplicate-warden-rules
-      category: other
-      pattern: Adding a new rule to warden-rules.yaml
-      check: >-
-        Verify that there is no semantic overlap with existing rules to avoid double-flagging. If an existing rule covers the same concern, update its source and check text instead of creating a duplicate entry. Ensure any rule instructions accurately reflect the schema (e.g., using singular 'source' instead of 'source list').
-      source: copilot:PR#348
-      added: "2026-03-20"
-    - id: avoid-duplicate-rules
-      category: other
-      pattern: Adding new rules to warden-rules.yaml
-      check: >-
-        Verify that the newly added rule does not duplicate an existing rule. If a similar rule exists, update its source and description instead of creating a new entry to avoid double-flagging.
+        Verify that a specific, descriptive category is assigned when an appropriate one exists (for example, `style`, `testing`, or `concurrency`). The generic `category: other` should only be used when no more precise category applies, to keep triage, search, and reporting meaningful.
       source: copilot:PR#348
       added: "2026-03-20"
     - id: warden-source-field-wording
       category: style
       pattern: Warden rule check text or description references 'source list' or treats the source field as a YAML list
-      check: Verify that warden rule text refers to 'source field' or 'comma-separated PR attributions' rather than 'source list', since the source value in warden-rules.yaml is a single scalar string (often comma-separated), not a YAML list
+      check: >-
+        Verify that warden rule text refers to the 'source field' or to PR attributions in the source field, rather than calling it a 'source list' or implying list semantics. The source field is modeled as a SourceList and may appear as either a single YAML scalar or a YAML sequence; commas in scalar values are just part of the string and are not treated as separators.
       source: copilot:PR#337
       added: "2026-03-20"
     - id: unreachable-early-return
