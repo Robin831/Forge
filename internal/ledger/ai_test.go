@@ -45,7 +45,7 @@ func TestTruncateLines(t *testing.T) {
 		},
 		{
 			name:     "single line over limit becomes ellipsis",
-			input:    "hello world",
+			input:    "hello\nworld",
 			maxWidth: 20,
 			maxLines: 1,
 			want:     "…",
