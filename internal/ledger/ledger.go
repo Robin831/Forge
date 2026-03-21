@@ -23,6 +23,7 @@ type ViewMode int
 const (
 	ViewList ViewMode = iota
 	ViewKanban
+	ViewHierarchy
 )
 
 // tickMsg triggers a periodic data refresh.
@@ -59,9 +60,10 @@ type Model struct {
 	width  int
 	height int
 
-	view   ViewMode
-	list   listState
-	kanban kanbanState
+	view      ViewMode
+	list      listState
+	kanban    kanbanState
+	hierarchy hierarchyState
 	// sortChoice holds the pointer used by the huh sort selector form.
 	sortChoice *string
 
@@ -168,6 +170,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ViewKanban:
 			cmd := m.updateKanban(msg)
 			return m, cmd
+		case ViewHierarchy:
+			cmd := m.updateHierarchy(msg)
+			return m, cmd
 		}
 
 	case tea.WindowSizeMsg:
@@ -181,6 +186,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.Err
 		m.list.vp.ClampToTotal(len(m.beads))
 		m.refreshKanbanLanes()
+		m.refreshHierarchy()
 
 	case moveBeadMsg:
 		if msg.Err != nil {
@@ -408,6 +414,18 @@ func (m *Model) selectedBead() *Bead {
 		idx := m.kanban.laneVP[lane].Selected()
 		if idx >= 0 && idx < len(beads) {
 			return &beads[idx]
+		}
+	case ViewHierarchy:
+		flat := m.hierarchy.flat
+		idx := m.hierarchy.vp.Selected()
+		if idx >= 0 && idx < len(flat) {
+			item := flat[idx]
+			if !item.isDep && item.bead != nil {
+				return item.bead
+			}
+			if item.isDep && item.depBead != nil {
+				return item.depBead
+			}
 		}
 	}
 	return nil
@@ -697,6 +715,8 @@ func (m *Model) View() string {
 	switch m.view {
 	case ViewKanban:
 		out = m.renderKanban()
+	case ViewHierarchy:
+		out = m.renderHierarchy()
 	default:
 		out = m.renderList()
 	}
