@@ -16,6 +16,7 @@ func init() {
 	updateDepsCmd.Flags().Bool("patch-only", false, "Only include patch-level updates")
 	updateDepsCmd.Flags().Bool("no-major", false, "Exclude major version updates")
 	updateDepsCmd.Flags().Bool("dry-run", false, "Show what would be updated without making changes")
+	updateDepsCmd.Flags().Bool("create-pr", false, "Create a GitHub PR summarising the detected updates")
 	rootCmd.AddCommand(updateDepsCmd)
 }
 
@@ -26,10 +27,8 @@ var updateDepsCmd = &cobra.Command{
 depcheck scanners (Go, npm, NuGet). Displays a summary of available updates.
 
 Use --dry-run to preview updates without making changes. Use --patch-only or
---no-major to limit which updates are included.
-
-Future versions will support interactive selection, grouped updates, temper
-verification, and automatic PR creation.`,
+--no-major to limit which updates are included. Use --create-pr to open a
+GitHub PR summarising the detected updates for each anvil.`,
 	GroupID: "work",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cfg == nil {
@@ -90,7 +89,8 @@ verification, and automatic PR creation.`,
 		fmt.Printf("\n%s\n", depupdate.FormatSummaryLine(results, opts))
 
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
-		if dryRun || totalUpdates == 0 {
+		createPR, _ := cmd.Flags().GetBool("create-pr")
+		if dryRun || totalUpdates == 0 || !createPR {
 			return nil
 		}
 
@@ -99,7 +99,9 @@ verification, and automatic PR creation.`,
 			if ar.TotalUpdates(opts) == 0 {
 				continue
 			}
-			groups := depupdate.GroupUpdates(rootCtx, ar.Ecosystems)
+			// Group all updates, then apply the same filters used for display so
+			// the PR body and changelog only reflect what was shown to the user.
+			groups := depupdate.FilterGroups(depupdate.GroupUpdates(rootCtx, ar.Ecosystems), opts)
 			if len(groups) == 0 {
 				continue
 			}

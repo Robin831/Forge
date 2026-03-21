@@ -12,16 +12,22 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 )
 
+// branchName returns the batch-update branch name for the given date string
+// (formatted as YYYY-MM-DD).
+func branchName(dateStr string) string {
+	return "deps/batch-update-" + dateStr
+}
+
 // CreatePR creates or checks out a batch-update branch, pushes it to origin,
 // and opens a single pull request summarising all updated groups for the given
 // anvil. It returns the PR URL reported by gh, or an error if any step fails.
 //
 // The branch name is deps/batch-update-<YYYY-MM-DD> derived from the current
 // date. If the branch already exists locally it is checked out rather than
-// created anew.
+// created anew. If it exists only on the remote, it is fetched and tracked.
 func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateGroup) (string, error) {
-	date := time.Now().Format("2006-01-02")
-	branch := "deps/batch-update-" + date
+	dateStr := time.Now().Format("2006-01-02")
+	branch := branchName(dateStr)
 
 	// git helper: run a git command with a per-command timeout.
 	git := func(timeout time.Duration, args ...string) error {
@@ -37,10 +43,25 @@ func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateG
 		return nil
 	}
 
-	// Try to create the branch; if it already exists, just check it out.
+	// Try to create the branch. On failure, determine whether the branch
+	// already exists locally or only on the remote, and handle accordingly.
 	if err := git(30*time.Second, "checkout", "-b", branch); err != nil {
-		if err2 := git(30*time.Second, "checkout", branch); err2 != nil {
-			return "", fmt.Errorf("depupdate: checkout branch %q: %w", branch, err2)
+		// Check if the branch exists locally.
+		if errExists := git(10*time.Second, "rev-parse", "--verify", branch); errExists == nil {
+			// Branch exists locally — just check it out.
+			if err2 := git(30*time.Second, "checkout", branch); err2 != nil {
+				return "", fmt.Errorf("depupdate: checkout existing branch %q: %w", branch, err2)
+			}
+		} else {
+			// Branch doesn't exist locally; try to fetch it from the remote.
+			if err3 := git(30*time.Second, "fetch", "origin", branch); err3 != nil {
+				// Not on remote either — surface the original creation error.
+				return "", fmt.Errorf("depupdate: create branch %q: %w", branch, err)
+			}
+			remoteRef := "origin/" + branch
+			if err4 := git(30*time.Second, "checkout", "-B", branch, remoteRef); err4 != nil {
+				return "", fmt.Errorf("depupdate: checkout branch %q from %q: %w", branch, remoteRef, err4)
+			}
 		}
 	}
 
@@ -50,17 +71,21 @@ func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateG
 	}
 
 	baseBranch := detectDefaultBranch(ctx, anvilPath)
-	title := fmt.Sprintf("chore(deps): batch update %s %s", anvilName, date)
-	body := buildPRBody(groups, date)
+	title := fmt.Sprintf("chore(deps): batch update %s %s", anvilName, dateStr)
+	body := buildPRBody(groups, dateStr)
 
 	ghCtx, ghCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer ghCancel()
 
+	// Use --json url -q .url so the output is always exactly the PR URL,
+	// regardless of any extra warnings or prompts gh might emit.
 	cmd := executil.HideWindow(exec.CommandContext(ghCtx, "gh", "pr", "create",
 		"--title", title,
 		"--body", body,
 		"--head", branch,
 		"--base", baseBranch,
+		"--json", "url",
+		"-q", ".url",
 	))
 	cmd.Dir = anvilPath
 
@@ -71,8 +96,24 @@ func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateG
 	if err := cmd.Run(); err != nil {
 		stderrStr := stderr.String()
 		if strings.Contains(stderrStr, "already exists") {
-			// PR already open for this branch — extract URL from stderr/stdout.
-			existing := extractPRURL(stderrStr)
+			// PR already open for this branch — try to extract URL from
+			// combined stdout+stderr first, then fall back to gh pr view.
+			existing := extractPRURL(stdout.String() + " " + stderrStr)
+			if existing == "" {
+				viewCtx, viewCancel := context.WithTimeout(ctx, 30*time.Second)
+				defer viewCancel()
+				viewCmd := executil.HideWindow(exec.CommandContext(viewCtx, "gh", "pr", "view",
+					"--head", branch, "--json", "url", "-q", ".url"))
+				viewCmd.Dir = anvilPath
+				var viewOut bytes.Buffer
+				viewCmd.Stdout = &viewOut
+				if viewErr := viewCmd.Run(); viewErr == nil {
+					existing = strings.TrimSpace(viewOut.String())
+				}
+			}
+			if existing == "" {
+				return "", fmt.Errorf("depupdate: PR already exists for %s but URL could not be determined", anvilName)
+			}
 			log.Printf("[depupdate] PR already exists for %s on branch %s: %s", anvilName, branch, existing)
 			return existing, nil
 		}

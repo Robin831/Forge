@@ -3,22 +3,15 @@ package depupdate
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Robin831/Forge/internal/depcheck"
 )
 
 func TestBranchNameFormat(t *testing.T) {
-	date := time.Now().Format("2006-01-02")
-	branch := "deps/batch-update-" + date
-	if !strings.HasPrefix(branch, "deps/batch-update-") {
-		t.Errorf("branch name %q does not start with deps/batch-update-", branch)
-	}
-	// Verify the date portion looks like YYYY-MM-DD.
-	suffix := strings.TrimPrefix(branch, "deps/batch-update-")
-	parts := strings.Split(suffix, "-")
-	if len(parts) != 3 {
-		t.Errorf("expected date portion YYYY-MM-DD, got %q", suffix)
+	got := branchName("2026-03-21")
+	want := "deps/batch-update-2026-03-21"
+	if got != want {
+		t.Errorf("branchName(%q) = %q, want %q", "2026-03-21", got, want)
 	}
 }
 

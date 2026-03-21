@@ -166,6 +166,25 @@ func FormatSummaryLine(results []AnvilResult, opts Options) string {
 	return strings.Join(parts, " ")
 }
 
+// FilterGroups returns only the groups whose Kind is allowed by opts.
+// Groups whose kind is excluded by PatchOnly or NoMajor are dropped.
+func FilterGroups(groups []UpdateGroup, opts Options) []UpdateGroup {
+	if !opts.PatchOnly && !opts.NoMajor {
+		return groups
+	}
+	filtered := groups[:0:0]
+	for _, g := range groups {
+		if opts.PatchOnly && g.Kind != "patch" {
+			continue
+		}
+		if opts.NoMajor && g.Kind == "major" {
+			continue
+		}
+		filtered = append(filtered, g)
+	}
+	return filtered
+}
+
 // filterUpdates returns the subset of updates from a CheckResult that match
 // the given filter options, in Major→Minor→Patch order to match depcheck's
 // established severity ordering.
