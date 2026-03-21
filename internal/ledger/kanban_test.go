@@ -184,12 +184,12 @@ func TestKanbanLaneNavigationClamp(t *testing.T) {
 	assert.Equal(t, laneCount-1, m.kanban.activeLane)
 }
 
-func TestKanbanTabSwitchesToList(t *testing.T) {
+func TestKanbanTabSwitchesToHierarchy(t *testing.T) {
 	m := &Model{
 		view: ViewKanban,
 	}
 	m.updateKanban(tabKeyMsg())
-	assert.Equal(t, ViewList, m.view)
+	assert.Equal(t, ViewHierarchy, m.view)
 }
 
 func TestRefreshKanbanLanes(t *testing.T) {
