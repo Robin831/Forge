@@ -148,12 +148,6 @@ func TestRenderUpdateOverlayErrorFormatting(t *testing.T) {
 	// The error rendering path should produce readable "key: message" pairs, not
 	// Go map/slice notation like "map[go:some error]".
 	m := &Model{
-		anvils:            map[string]string{"test": "/tmp/test"},
-		width:             120,
-		height:            40,
-		showUpdateOverlay: true,
-		updateScanning:    false,
-		updateRunning:     false,
 		updateReports: []depupdate.AnvilReport{
 			{
 				Anvil:  depupdate.Anvil{Name: "test", Path: "/tmp/test"},
@@ -161,10 +155,6 @@ func TestRenderUpdateOverlayErrorFormatting(t *testing.T) {
 				Errors: map[string]error{"go": errors.New("network timeout")},
 			},
 		},
-		// updateFilterForm is nil so we hit the scanning/running default branch —
-		// we cannot render the filter form without huh initialization, but we
-		// can verify the no-group error path by setting a non-nil filter form
-		// via a sentinel check. Instead, call the helper directly.
 	}
 	// Directly verify error string formatting via the overlay; the filter form
 	// branch is exercised when updateFilterForm != nil, which requires huh

@@ -385,14 +385,8 @@ func (m *Model) updateUpdateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // renderUpdateOverlay renders the dependency update overlay.
 func (m *Model) renderUpdateOverlay() string {
-	overlayWidth := m.width - 8
-	if overlayWidth < 50 {
-		overlayWidth = 50
-	}
-	overlayHeight := m.height - 6
-	if overlayHeight < 10 {
-		overlayHeight = 10
-	}
+	overlayWidth := max(m.width-8, 50)
+	overlayHeight := max(m.height-6, 10)
 
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	dimStyle := lipgloss.NewStyle().Foreground(colorMuted)
