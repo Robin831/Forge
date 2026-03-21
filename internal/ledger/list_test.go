@@ -239,3 +239,38 @@ func TestRenderBeadRowBulkChecked(t *testing.T) {
 	assert.Contains(t, row, "[✓]", "checked checkbox shown when bead is selected in bulk mode")
 	assert.Contains(t, row, "Forge-r3")
 }
+
+func TestHiddenListColsWide(t *testing.T) {
+	m := &Model{width: 120}
+	hideLabels, hideAssignee := m.hiddenListCols()
+	assert.False(t, hideLabels, "wide terminal should show Labels column")
+	assert.False(t, hideAssignee, "wide terminal should show Assignee column")
+}
+
+func TestHiddenListColsNarrow(t *testing.T) {
+	// Below narrowDropLabelsWidth both columns should be hidden.
+	m := &Model{width: narrowDropLabelsWidth - 1}
+	hideLabels, hideAssignee := m.hiddenListCols()
+	assert.True(t, hideLabels, "narrow terminal should hide Labels column")
+	assert.True(t, hideAssignee, "narrow terminal should hide Assignee column")
+}
+
+func TestHiddenListColsMid(t *testing.T) {
+	// Between narrowDropLabelsWidth and narrowDropAssigneeWidth: only Assignee hidden.
+	m := &Model{width: narrowDropAssigneeWidth - 1}
+	if narrowDropAssigneeWidth <= narrowDropLabelsWidth {
+		t.Skip("thresholds equal; mid range does not exist")
+	}
+	hideLabels, hideAssignee := m.hiddenListCols()
+	assert.False(t, hideLabels, "mid-width terminal should show Labels column")
+	assert.True(t, hideAssignee, "mid-width terminal should hide Assignee column")
+}
+
+func TestTitleColumnWidthNarrow(t *testing.T) {
+	wide := &Model{width: 160}
+	narrow := &Model{width: narrowDropLabelsWidth - 1}
+	// Narrow terminal hides optional columns so title gets more space.
+	assert.Greater(t, narrow.titleColumnWidth(), 0, "title column width must be positive on narrow terminal")
+	// Sanity: wide terminal should have a sensible width too.
+	assert.Greater(t, wide.titleColumnWidth(), 0)
+}

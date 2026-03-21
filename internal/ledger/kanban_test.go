@@ -313,6 +313,54 @@ func TestRenderCardShowSelectFixedHeight(t *testing.T) {
 		"renderCard with showSelect=true must still emit exactly cardContentLines lines")
 }
 
+func TestVisibleLaneCount(t *testing.T) {
+	wide := &Model{width: narrowKanbanWidth, height: 24}
+	assert.Equal(t, laneCount, wide.visibleLaneCount(), "at threshold width should show all lanes")
+
+	narrow := &Model{width: narrowKanbanWidth - 1, height: 24}
+	assert.Equal(t, 2, narrow.visibleLaneCount(), "below threshold width should show 2 lanes")
+}
+
+func TestVisibleLaneRange(t *testing.T) {
+	// Wide terminal: all lanes visible.
+	m := &Model{width: narrowKanbanWidth, height: 24}
+	start, end := m.visibleLaneRange()
+	assert.Equal(t, 0, start)
+	assert.Equal(t, laneCount, end)
+
+	// Narrow terminal, active lane 0: window starts at 0.
+	m = &Model{width: narrowKanbanWidth - 1, height: 24}
+	m.kanban.activeLane = 0
+	start, end = m.visibleLaneRange()
+	assert.Equal(t, 0, start)
+	assert.Equal(t, 2, end)
+
+	// Narrow terminal, active lane at last: window ends at laneCount.
+	m = &Model{width: narrowKanbanWidth - 1, height: 24}
+	m.kanban.activeLane = laneCount - 1
+	start, end = m.visibleLaneRange()
+	assert.Equal(t, laneCount-2, start)
+	assert.Equal(t, laneCount, end)
+}
+
+func TestKanbanLaneWidthNarrow(t *testing.T) {
+	wide := &Model{width: 160, height: 24}
+	narrow := &Model{width: 80, height: 24}
+	// Both modes use the same slack (5) so joined columns never exceed the
+	// terminal width.  (160-5)/4 = 38 wide, (80-5)/2 = 37 narrow.
+	assert.LessOrEqual(t, wide.kanbanLaneWidth()*wide.visibleLaneCount(), wide.width,
+		"wide mode: joined lanes must not exceed terminal width")
+	assert.LessOrEqual(t, narrow.kanbanLaneWidth()*narrow.visibleLaneCount(), narrow.width,
+		"narrow mode: joined lanes must not exceed terminal width")
+}
+
+func TestRenderLaneEmpty(t *testing.T) {
+	m := &Model{width: 120, height: 40}
+	// Lane with no beads should render a placeholder, not crash.
+	rendered := m.renderLane(LaneOpen, 25, 5, 20, false)
+	assert.Contains(t, rendered, "No beads", "empty lane should show placeholder")
+}
+
 func TestMoveBeadToInReviewDisallowed(t *testing.T) {
 	m := &Model{
 		width:  80,

@@ -240,24 +240,29 @@ func (m *Model) renderList() string {
 
 	// Column header — when bulk mode is active the data rows have a checkboxWidth
 	// prefix and a narrower title column, so the header must match.
+	// Optional columns (Labels, Assignee) are omitted on narrow terminals.
 	colHeaderStyle := lipgloss.NewStyle().Bold(true).Foreground(colorMuted).Padding(0, 2)
 	titleWidth := m.titleColumnWidth()
+	hideLabels, hideAssignee := m.hiddenListCols()
 	headerPrefix := ""
 	headerTitleWidth := titleWidth
 	if m.bulk.Count() > 0 {
 		headerPrefix = strings.Repeat(" ", checkboxWidth)
 		headerTitleWidth = max(titleWidth-checkboxWidth, 4)
 	}
-	colHeader := colHeaderStyle.Render(
-		headerPrefix +
-			padRight("Pri", colPriority) +
-			padRight("ID", colID) +
-			padRight("Title", headerTitleWidth) +
-			padRight("Status", colStatus) +
-			padRight("Anvil", colAnvil) +
-			padRight("Labels", colLabels) +
-			padRight("Assignee", colAssignee),
-	)
+	colHeaderRow := headerPrefix +
+		padRight("Pri", colPriority) +
+		padRight("ID", colID) +
+		padRight("Title", headerTitleWidth) +
+		padRight("Status", colStatus) +
+		padRight("Anvil", colAnvil)
+	if !hideLabels {
+		colHeaderRow += padRight("Labels", colLabels)
+	}
+	if !hideAssignee {
+		colHeaderRow += padRight("Assignee", colAssignee)
+	}
+	colHeader := colHeaderStyle.Render(colHeaderRow)
 
 	// Compute available height for rows: total height - header(1) - col header(1) - footer(1)
 	rowsHeight := max(m.height-3, 1)
@@ -267,14 +272,26 @@ func (m *Model) renderList() string {
 	start, end := m.list.vp.VisibleRange(rowsHeight, total)
 
 	var rows strings.Builder
-	for i := start; i < end; i++ {
-		b := sorted[i]
-		selected := i == m.list.vp.Selected()
+	if total == 0 {
+		// Empty state: show an informative message instead of an empty table body.
+		emptyStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true).Padding(1, 2)
+		var emptyMsg string
+		if m.anvilFilter != "" || !m.showClosed {
+			emptyMsg = "No beads match the current filter"
+		} else {
+			emptyMsg = "No beads found"
+		}
+		rows.WriteString(emptyStyle.Render(emptyMsg))
+	} else {
+		for i := start; i < end; i++ {
+			b := sorted[i]
+			selected := i == m.list.vp.Selected()
 
-		row := m.renderBeadRow(b, titleWidth, selected)
-		rows.WriteString(row)
-		if i < end-1 {
-			rows.WriteByte('\n')
+			row := m.renderBeadRow(b, titleWidth, selected)
+			rows.WriteString(row)
+			if i < end-1 {
+				rows.WriteByte('\n')
+			}
 		}
 	}
 
@@ -296,9 +313,25 @@ func (m *Model) renderList() string {
 	return out
 }
 
+// hiddenListCols returns which optional columns should be hidden to give the
+// title more space on narrow terminals.
+func (m *Model) hiddenListCols() (hideLabels, hideAssignee bool) {
+	hideAssignee = m.width < narrowDropAssigneeWidth
+	hideLabels = m.width < narrowDropLabelsWidth
+	return
+}
+
 // titleColumnWidth computes the width available for the title column.
+// Optional columns (Labels, Assignee) are excluded when the terminal is narrow.
 func (m *Model) titleColumnWidth() int {
-	fixed := colPriority + colID + colStatus + colAnvil + colLabels + colAssignee + 4 // 4 for padding
+	hideLabels, hideAssignee := m.hiddenListCols()
+	fixed := colPriority + colID + colStatus + colAnvil + 4 // 4 for padding
+	if !hideLabels {
+		fixed += colLabels
+	}
+	if !hideAssignee {
+		fixed += colAssignee
+	}
 	return max(m.width-fixed, 10)
 }
 
@@ -341,14 +374,19 @@ func (m *Model) renderBeadRow(b Bead, titleWidth int, selected bool) string {
 	// Anvil
 	anvil := padRight(truncate(b.Anvil, colAnvil-1), colAnvil)
 
-	// Labels — join and truncate
-	labelStr := strings.Join(b.Labels, ",")
-	labels := padRight(truncate(labelStr, colLabels-1), colLabels)
+	// Optional columns: hidden on narrow terminals to give more title space.
+	hideLabels, hideAssignee := m.hiddenListCols()
 
-	// Assignee
-	assignee := padRight(truncate(b.Assignee, colAssignee-1), colAssignee)
+	var labelsPart, assigneePart string
+	if !hideLabels {
+		labelStr := strings.Join(b.Labels, ",")
+		labelsPart = padRight(truncate(labelStr, colLabels-1), colLabels)
+	}
+	if !hideAssignee {
+		assigneePart = padRight(truncate(b.Assignee, colAssignee-1), colAssignee)
+	}
 
-	row := checkPrefix + pri + id + title + status + anvil + labels + assignee
+	row := checkPrefix + pri + id + title + status + anvil + labelsPart + assigneePart
 
 	if selected {
 		return lipgloss.NewStyle().

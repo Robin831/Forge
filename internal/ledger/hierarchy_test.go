@@ -260,6 +260,43 @@ func TestRenderHierarchyRowDepItemNilBead(t *testing.T) {
 	assert.Contains(t, row, "dep-missing")
 }
 
+func TestRenderHierarchyEmptyNoBeads(t *testing.T) {
+	m := &Model{width: 80, height: 24}
+	m.hierarchy.expanded = make(map[string]bool)
+	m.refreshHierarchy()
+	out := m.renderHierarchy()
+	assert.Contains(t, out, "No beads found", "empty bead list should show 'No beads found'")
+}
+
+func TestRenderHierarchyEmptyWithFilter(t *testing.T) {
+	m := &Model{
+		width:       80,
+		height:      24,
+		anvilFilter: "someanvil",
+	}
+	m.hierarchy.expanded = make(map[string]bool)
+	m.refreshHierarchy()
+	out := m.renderHierarchy()
+	assert.Contains(t, out, "No beads match the current filter",
+		"empty list with active filter should show filter-specific message")
+}
+
+func TestRenderHierarchyFlatNoEpicsHint(t *testing.T) {
+	m := &Model{
+		width:  80,
+		height: 24,
+		beads: []Bead{
+			{ID: "a", Status: "open"},
+			{ID: "b", Status: "open"},
+		},
+	}
+	m.hierarchy.expanded = make(map[string]bool)
+	m.refreshHierarchy()
+	out := m.renderHierarchy()
+	assert.Contains(t, out, "No epics with children",
+		"flat hierarchy with no parent-child relationships should show epic hint")
+}
+
 func TestRefreshHierarchy(t *testing.T) {
 	m := &Model{
 		beads: []Bead{

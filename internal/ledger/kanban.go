@@ -228,9 +228,20 @@ func (m *Model) renderKanban() string {
 		totalBeads += len(m.kanban.lanes[i])
 	}
 
-	// Header
+	// Determine visible lane range (may be fewer than laneCount on narrow terminals).
+	laneStart, laneEnd := m.visibleLaneRange()
+
+	// Header — include a narrow-mode hint when only 2 of 4 lanes are visible.
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Padding(0, 2)
-	header := headerStyle.Render(fmt.Sprintf("⚒ Forge Ledger — Kanban (%d beads)%s", totalBeads, m.filterHint()))
+	narrowHint := ""
+	if laneEnd-laneStart < laneCount {
+		var visNames []string
+		for i := laneStart; i < laneEnd; i++ {
+			visNames = append(visNames, laneTitle(i))
+		}
+		narrowHint = fmt.Sprintf("  [narrow: %s]", strings.Join(visNames, "/"))
+	}
+	header := headerStyle.Render(fmt.Sprintf("⚒ Forge Ledger — Kanban (%d beads)%s%s", totalBeads, m.filterHint(), narrowHint))
 
 	// Lane dimensions
 	laneWidth := m.kanbanLaneWidth()
@@ -246,9 +257,9 @@ func (m *Model) renderKanban() string {
 	// visibleCards uses the package-level cardHeight constant (cardContentLines + 1 separator).
 	visibleCards := max(cardAreaHeight/cardHeight, 1)
 
-	// Render each lane
+	// Render visible lanes.
 	var laneCols []string
-	for i := range laneCount {
+	for i := laneStart; i < laneEnd; i++ {
 		col := m.renderLane(i, laneWidth, visibleCards, cardAreaHeight, i == m.kanban.activeLane)
 		laneCols = append(laneCols, col)
 	}
@@ -263,10 +274,40 @@ func (m *Model) renderKanban() string {
 	return header + "\n" + board + "\n" + detail + "\n" + footer
 }
 
-// kanbanLaneWidth computes the width for each lane column.
+// visibleLaneCount returns the number of kanban lanes to display based on the
+// current terminal width. Narrow terminals show 2 lanes instead of 4.
+func (m *Model) visibleLaneCount() int {
+	if m.width < narrowKanbanWidth {
+		return 2
+	}
+	return laneCount
+}
+
+// visibleLaneRange returns the [start, end) range of lane indices to render,
+// centered around the active lane when fewer than all lanes are visible.
+func (m *Model) visibleLaneRange() (start, end int) {
+	count := m.visibleLaneCount()
+	if count >= laneCount {
+		return 0, laneCount
+	}
+	// Center the window around the active lane.
+	lane := m.kanban.activeLane
+	start = max(lane-count/2, 0)
+	end = start + count
+	if end > laneCount {
+		end = laneCount
+		start = end - count
+	}
+	return start, end
+}
+
+// kanbanLaneWidth computes the width for each visible lane column.
+// A consistent slack of 5 is subtracted before dividing so that borders and
+// gutters (e.g. the active lane's left border) never push the joined columns
+// past the terminal width.
 func (m *Model) kanbanLaneWidth() int {
-	w := max((m.width-5)/laneCount, 15)
-	return w
+	count := m.visibleLaneCount()
+	return max((m.width-5)/count, 15)
 }
 
 // renderLane renders a single kanban lane column.
@@ -293,19 +334,28 @@ func (m *Model) renderLane(lane, width, visibleCards, areaHeight int, active boo
 
 	var cards strings.Builder
 	linesUsed := 0
-	for idx := start; idx < end; idx++ {
-		b := beads[idx]
-		selected := active && idx == m.kanban.laneVP[lane].Selected()
-		blocked := isBlocked(b)
-		card := renderCard(b, width-2, selected, blocked, m.bulk.Count() > 0, m.bulk.IsSelected(b.ID))
-		// renderCard always emits exactly cardContentLines lines.
-		// Append an explicit blank separator to make each slot cardHeight lines.
-		cards.WriteString(card)
+
+	if total == 0 {
+		// Empty lane — show a placeholder message.
+		emptyStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true).PaddingLeft(2)
+		cards.WriteString(emptyStyle.Render("No beads"))
 		cards.WriteByte('\n')
-		linesUsed += cardHeight
+		linesUsed++
+	} else {
+		for idx := start; idx < end; idx++ {
+			b := beads[idx]
+			selected := active && idx == m.kanban.laneVP[lane].Selected()
+			blocked := isBlocked(b)
+			card := renderCard(b, width-2, selected, blocked, m.bulk.Count() > 0, m.bulk.IsSelected(b.ID))
+			// renderCard always emits exactly cardContentLines lines.
+			// Append an explicit blank separator to make each slot cardHeight lines.
+			cards.WriteString(card)
+			cards.WriteByte('\n')
+			linesUsed += cardHeight
+		}
 	}
 
-	// Pad remaining height so all lanes are the same height
+	// Pad remaining height so all lanes are the same height.
 	for linesUsed < areaHeight {
 		cards.WriteByte('\n')
 		linesUsed++

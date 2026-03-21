@@ -240,19 +240,56 @@ func (m *Model) renderHierarchy() string {
 		fmt.Sprintf("⚒ Forge Ledger — Hierarchy  %d beads  (Enter: expand/collapse)%s%s", len(m.filteredBeads()), selNote, m.filterHint()),
 	)
 
-	// Reserve one line each for header and footer.
-	rowsHeight := max(m.height-2, 1)
+	// Check whether any beads have parent-child relationships so we can
+	// reserve a line for the "No epics with children" hint when needed.
+	hasEpics := false
+	for _, n := range m.hierarchy.nodes {
+		if len(n.Children) > 0 {
+			hasEpics = true
+			break
+		}
+	}
+
+	// Reserve one line each for header and footer; reserve an extra line for
+	// the hint when the tree is flat so it doesn't push past m.height.
+	hintReserve := 0
+	if total > 0 && !hasEpics {
+		hintReserve = 1
+	}
+	rowsHeight := max(m.height-2-hintReserve, 1)
 
 	m.hierarchy.vp.ClampToTotal(total)
 	m.hierarchy.vp.AdjustViewport(rowsHeight, total)
 	start, end := m.hierarchy.vp.VisibleRange(rowsHeight, total)
 
+	emptyStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true).Padding(1, 2)
+
 	var rows strings.Builder
-	for i := start; i < end; i++ {
-		row := m.renderHierarchyRow(m.hierarchy.flat[i], i == m.hierarchy.vp.Selected())
-		rows.WriteString(row)
-		if i < end-1 {
+	if total == 0 {
+		// Empty state: choose the most informative message for the situation.
+		var emptyMsg string
+		if len(m.beads) > 0 {
+			// There are beads but none pass the current filter.
+			emptyMsg = "No beads match the current filter"
+		} else if m.anvilFilter != "" {
+			emptyMsg = "No beads match the current filter"
+		} else {
+			emptyMsg = "No beads found"
+		}
+		rows.WriteString(emptyStyle.Render(emptyMsg))
+	} else {
+		for i := start; i < end; i++ {
+			row := m.renderHierarchyRow(m.hierarchy.flat[i], i == m.hierarchy.vp.Selected())
+			rows.WriteString(row)
+			if i < end-1 {
+				rows.WriteByte('\n')
+			}
+		}
+
+		// Append a subtle hint when there are no parent-child relationships.
+		if !hasEpics {
 			rows.WriteByte('\n')
+			rows.WriteString(emptyStyle.Render("No epics with children — use 'n' to create one"))
 		}
 	}
 
