@@ -224,9 +224,11 @@ func CloseMatchingDepBeads(ctx context.Context, anvilPath string, groups []Updat
 	defer cancel()
 	cmd := executil.HideWindow(exec.CommandContext(listCtx, "bd", "list", "--status=open", "--limit", "0", "--json"))
 	cmd.Dir = anvilPath
+	var listErr bytes.Buffer
+	cmd.Stderr = &listErr
 	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("depupdate: bd list --status=open: %w", err)
+		return fmt.Errorf("depupdate: bd list --status=open in %s: %w (stderr: %s)", anvilPath, err, strings.TrimSpace(listErr.String()))
 	}
 
 	var beads []minimalBead
@@ -260,7 +262,7 @@ func CloseMatchingDepBeads(ctx context.Context, anvilPath string, groups []Updat
 	return nil
 }
 
-// isDepUpdateTitle returns true when the bead title follows the standardised
+// isDepUpdateTitle returns true when the bead title follows the standardized
 // depcheck format: "Deps(<ecosystem>): update <package> …"
 func isDepUpdateTitle(title string) bool {
 	return strings.HasPrefix(title, "Deps(") && strings.Contains(title, "): update ")
