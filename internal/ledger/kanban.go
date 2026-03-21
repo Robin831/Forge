@@ -213,9 +213,9 @@ func (m *Model) moveBeadToLane(targetLane int) tea.Cmd {
 	}
 }
 
-// refreshKanbanLanes repopulates the kanban lanes from the current bead list.
+// refreshKanbanLanes repopulates the kanban lanes from the current filtered bead list.
 func (m *Model) refreshKanbanLanes() {
-	m.kanban.lanes = populateLanes(m.beads)
+	m.kanban.lanes = populateLanes(m.filteredBeads())
 	for i := range laneCount {
 		m.kanban.laneVP[i].ClampToTotal(len(m.kanban.lanes[i]))
 	}
@@ -230,7 +230,7 @@ func (m *Model) renderKanban() string {
 
 	// Header
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Padding(0, 2)
-	header := headerStyle.Render(fmt.Sprintf("⚒ Forge Ledger — Kanban (%d beads)", totalBeads))
+	header := headerStyle.Render(fmt.Sprintf("⚒ Forge Ledger — Kanban (%d beads)%s", totalBeads, m.filterHint()))
 
 	// Lane dimensions
 	laneWidth := m.kanbanLaneWidth()
@@ -268,7 +268,7 @@ func (m *Model) renderKanban() string {
 	if m.bulk.Count() > 0 {
 		kanbanFooter = fmt.Sprintf("%d selected: Ctrl+X close  Ctrl+L label  Ctrl+P priority  Esc: clear  |  h/l: lane  j/k: card  Space: toggle  q: quit", m.bulk.Count())
 	} else {
-		kanbanFooter = "h/l: lane  j/k: card  H/L: move  Space: select  Ctrl+A: all  n: new  e: edit  x: close  r: reopen  d: add dep  b: view deps  Tab: hierarchy  q: quit"
+		kanbanFooter = "h/l: lane  j/k: card  H/L: move  Space: select  Ctrl+A: all  f: filter anvil  s: show/hide closed  n: new  e: edit  x: close  r: reopen  Tab: hierarchy  q: quit"
 	}
 	footer := footerStyle.Render(kanbanFooter) + errNote
 

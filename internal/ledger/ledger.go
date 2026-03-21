@@ -5,6 +5,7 @@ package ledger
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -98,6 +99,10 @@ type Model struct {
 	toasts      []toast
 	nextToastID int
 
+	// Filter state — persists across view switches.
+	anvilFilter string // "" = All anvils; otherwise show only this anvil
+	showClosed  bool   // whether to show closed beads
+
 	// Bulk selection state for multi-select operations.
 	bulk BulkState
 
@@ -113,11 +118,83 @@ type Model struct {
 // NewModel creates a new Ledger model.
 func NewModel(anvils map[string]string, db *state.DB) *Model {
 	return &Model{
-		anvils:  anvils,
-		db:      db,
-		loading: true,
-		view:    ViewList,
+		anvils:     anvils,
+		db:         db,
+		loading:    true,
+		view:       ViewList,
+		showClosed: true,
 	}
+}
+
+// filteredBeads returns m.beads with the current anvil filter and closed
+// visibility applied.
+func (m *Model) filteredBeads() []Bead {
+	var result []Bead
+	for _, b := range m.beads {
+		if m.anvilFilter != "" && b.Anvil != m.anvilFilter {
+			continue
+		}
+		if !m.showClosed && b.Status == "closed" {
+			continue
+		}
+		result = append(result, b)
+	}
+	return result
+}
+
+// sortedAnvilNames returns the registered anvil names in alphabetical order.
+func (m *Model) sortedAnvilNames() []string {
+	names := make([]string, 0, len(m.anvils))
+	for name := range m.anvils {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// cycleAnvilFilter advances the anvil filter: All → anvil1 → anvil2 → … → All.
+func (m *Model) cycleAnvilFilter() {
+	names := m.sortedAnvilNames()
+	if len(names) == 0 {
+		return
+	}
+	if m.anvilFilter == "" {
+		m.anvilFilter = names[0]
+		return
+	}
+	for i, name := range names {
+		if name == m.anvilFilter {
+			if i+1 < len(names) {
+				m.anvilFilter = names[i+1]
+			} else {
+				m.anvilFilter = "" // wrap back to All
+			}
+			return
+		}
+	}
+	// Current filter no longer in registry; reset to All.
+	m.anvilFilter = ""
+}
+
+// filterHint returns a compact display string reflecting the active filters,
+// e.g. "  [forge]  +5 closed". Returns "" when no filters are active.
+func (m *Model) filterHint() string {
+	var sb strings.Builder
+	if m.anvilFilter != "" {
+		sb.WriteString(fmt.Sprintf("  [%s]", m.anvilFilter))
+	}
+	if !m.showClosed {
+		closedCount := 0
+		for _, b := range m.beads {
+			if b.Status == "closed" && (m.anvilFilter == "" || b.Anvil == m.anvilFilter) {
+				closedCount++
+			}
+		}
+		if closedCount > 0 {
+			sb.WriteString(fmt.Sprintf("  +%d closed", closedCount))
+		}
+	}
+	return sb.String()
 }
 
 // Init schedules the initial data fetch and periodic refresh tick.
@@ -228,6 +305,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openBulkLabelForm()
 			case "ctrl+p":
 				return m, m.openBulkPriorityForm()
+			case "f":
+				m.cycleAnvilFilter()
+				filtered := m.filteredBeads()
+				m.list.vp.ClampToTotal(len(filtered))
+				m.refreshKanbanLanes()
+				m.refreshHierarchy()
+				return m, nil
+			case "s":
+				m.showClosed = !m.showClosed
+				filtered := m.filteredBeads()
+				m.list.vp.ClampToTotal(len(filtered))
+				m.refreshKanbanLanes()
+				m.refreshHierarchy()
+				return m, nil
 			}
 			// "l" opens label form only in list view; in kanban it navigates lanes.
 			if msg.String() == "l" && m.view == ViewList {
@@ -257,7 +348,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetching = false
 		m.beads = msg.Beads
 		m.err = msg.Err
-		m.list.vp.ClampToTotal(len(m.beads))
+		m.list.vp.ClampToTotal(len(m.filteredBeads()))
 		m.refreshKanbanLanes()
 		m.refreshHierarchy()
 
@@ -409,7 +500,7 @@ func (m *Model) isFocusedDepRow() bool {
 func (m *Model) selectAllVisible() {
 	switch m.view {
 	case ViewList:
-		sorted := sortBeads(m.beads, m.list.sortBy)
+		sorted := sortBeads(m.filteredBeads(), m.list.sortBy)
 		m.bulk.SelectAll(sorted)
 	case ViewHierarchy:
 		// Only select beads that are actually visible in the flattened tree.
@@ -422,7 +513,7 @@ func (m *Model) selectAllVisible() {
 		}
 		m.bulk.SelectAll(visible)
 	default:
-		m.bulk.SelectAll(m.beads)
+		m.bulk.SelectAll(m.filteredBeads())
 	}
 }
 
@@ -605,7 +696,7 @@ func (m *Model) executeFormAction() tea.Cmd {
 func (m *Model) selectedBead() *Bead {
 	switch m.view {
 	case ViewList:
-		sorted := sortBeads(m.beads, m.list.sortBy)
+		sorted := sortBeads(m.filteredBeads(), m.list.sortBy)
 		idx := m.list.vp.Selected()
 		if idx >= 0 && idx < len(sorted) {
 			return &sorted[idx]

@@ -157,17 +157,18 @@ func flattenNode(n *TreeNode, expanded map[string]bool, byID map[string]*Bead, i
 	}
 }
 
-// refreshHierarchy rebuilds nodes and flat item list from current beads and
-// expanded state. Call after beads change or after toggling a node.
+// refreshHierarchy rebuilds nodes and flat item list from the current filtered
+// bead list and expanded state. Call after beads change or after toggling a node.
 func (m *Model) refreshHierarchy() {
 	if m.hierarchy.expanded == nil {
 		m.hierarchy.expanded = make(map[string]bool)
 	}
-	byID := make(map[string]*Bead, len(m.beads))
-	for i := range m.beads {
-		byID[m.beads[i].ID] = &m.beads[i]
+	filtered := m.filteredBeads()
+	byID := make(map[string]*Bead, len(filtered))
+	for i := range filtered {
+		byID[filtered[i].ID] = &filtered[i]
 	}
-	m.hierarchy.nodes = buildHierarchyTree(m.beads)
+	m.hierarchy.nodes = buildHierarchyTree(filtered)
 	m.hierarchy.flat = flattenTree(m.hierarchy.nodes, m.hierarchy.expanded, byID)
 	m.hierarchy.vp.ClampToTotal(len(m.hierarchy.flat))
 }
@@ -236,7 +237,7 @@ func (m *Model) renderHierarchy() string {
 		selNote = fmt.Sprintf("  [%d selected]", m.bulk.Count())
 	}
 	header := headerStyle.Render(
-		fmt.Sprintf("⚒ Forge Ledger — Hierarchy  %d beads  (Enter: expand/collapse)%s", len(m.beads), selNote),
+		fmt.Sprintf("⚒ Forge Ledger — Hierarchy  %d beads  (Enter: expand/collapse)%s%s", len(m.filteredBeads()), selNote, m.filterHint()),
 	)
 
 	// Reserve one line each for header and footer.
@@ -260,7 +261,7 @@ func (m *Model) renderHierarchy() string {
 	if m.bulk.Count() > 0 {
 		hierarchyFooter = fmt.Sprintf("%d selected: Ctrl+X close  Ctrl+L label  Ctrl+P priority  Esc: clear  |  j/k: navigate  Space: toggle  Enter: expand/collapse  q: quit", m.bulk.Count())
 	} else {
-		hierarchyFooter = "j/k: navigate  Space: select  Enter: expand/collapse  d: add dep  b: view deps  Tab: list view  q: quit"
+		hierarchyFooter = "j/k: navigate  Space: select  Enter: expand/collapse  f: filter anvil  s: show/hide closed  d: add dep  b: view deps  Tab: list view  q: quit"
 	}
 	footer := footerStyle.Render(hierarchyFooter)
 
