@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -90,11 +91,17 @@ func (m *Model) buildDepUpdateAnvils() []depupdate.Anvil {
 	if len(m.anvils) == 0 {
 		return nil
 	}
+	names := make([]string, 0, len(m.anvils))
+	for name := range m.anvils {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	anvils := make([]depupdate.Anvil, 0, len(m.anvils))
-	for name, path := range m.anvils {
+	for _, name := range names {
 		anvils = append(anvils, depupdate.Anvil{
 			Name:   name,
-			Path:   path,
+			Path:   m.anvils[name],
 			Config: config.AnvilConfig{},
 			DB:     m.db,
 		})
@@ -417,7 +424,12 @@ func (m *Model) renderUpdateOverlay() string {
 			if len(report.Groups) == 0 {
 				if len(report.Errors) > 0 {
 					errorStyle := lipgloss.NewStyle().Foreground(colorDanger)
-					lines = append(lines, errorStyle.Render(fmt.Sprintf("  %s: scan failed: %v", report.Anvil.Name, report.Errors)))
+					errParts := make([]string, 0, len(report.Errors))
+					for eco, err := range report.Errors {
+						errParts = append(errParts, fmt.Sprintf("%s: %s", eco, err.Error()))
+					}
+					sort.Strings(errParts)
+					lines = append(lines, errorStyle.Render(fmt.Sprintf("  %s: scan failed: %s", report.Anvil.Name, strings.Join(errParts, "; "))))
 				} else {
 					lines = append(lines, dimStyle.Render(fmt.Sprintf("  %s: no updates found", report.Anvil.Name)))
 				}
