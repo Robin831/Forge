@@ -493,6 +493,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.Button {
 		case tea.MouseButtonWheelDown:
+			if m.helpSt.show {
+				m.helpSt.vp.ScrollDown(1)
+				break
+			}
 			switch m.view {
 			case ViewList:
 				m.list.vp.ScrollDown(m.filteredBeadsCount())
@@ -503,6 +507,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.hierarchy.vp.ScrollDown(len(m.hierarchy.flat))
 			}
 		case tea.MouseButtonWheelUp:
+			if m.helpSt.show {
+				m.helpSt.vp.ScrollUp(1)
+				break
+			}
 			switch m.view {
 			case ViewList:
 				m.list.vp.ScrollUp()
