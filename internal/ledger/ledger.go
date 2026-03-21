@@ -18,6 +18,22 @@ import (
 // refreshInterval controls how often the ledger auto-refreshes bead data.
 const refreshInterval = 30 * time.Second
 
+// Minimum terminal dimensions required for the Ledger TUI to render correctly.
+const (
+	minTermWidth  = 80
+	minTermHeight = 24
+)
+
+// Narrow-terminal thresholds for adaptive column layout.
+const (
+	// Below this width, kanban degrades from 4 lanes to 2 visible lanes.
+	narrowKanbanWidth = 100
+	// Below this width, the Assignee column is hidden in list view.
+	narrowDropAssigneeWidth = 100
+	// Below this width, both Labels and Assignee columns are hidden in list view.
+	narrowDropLabelsWidth = 90
+)
+
 // ViewMode determines which screen the Ledger is showing.
 type ViewMode int
 
@@ -1202,7 +1218,26 @@ func (m *Model) driveHuhForm(form **huh.Form, msg tea.Msg) tea.Cmd {
 }
 
 // View renders the current state.
+// renderTooSmall renders a full-screen message when the terminal is below the
+// minimum required dimensions.
+func (m *Model) renderTooSmall() string {
+	msg := fmt.Sprintf(
+		"Terminal too small (%dx%d)\nMinimum required: %dx%d",
+		m.width, m.height, minTermWidth, minTermHeight,
+	)
+	style := lipgloss.NewStyle().
+		Foreground(colorWarning).
+		Bold(true).
+		Padding(1, 2)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, style.Render(msg))
+}
+
 func (m *Model) View() string {
+	// Enforce minimum terminal size before rendering anything else.
+	if m.width > 0 && m.height > 0 && (m.width < minTermWidth || m.height < minTermHeight) {
+		return m.renderTooSmall()
+	}
+
 	if m.loading {
 		titleStyle := lipgloss.NewStyle().
 			Bold(true).

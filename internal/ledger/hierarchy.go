@@ -247,12 +247,41 @@ func (m *Model) renderHierarchy() string {
 	m.hierarchy.vp.AdjustViewport(rowsHeight, total)
 	start, end := m.hierarchy.vp.VisibleRange(rowsHeight, total)
 
+	emptyStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true).Padding(1, 2)
+
 	var rows strings.Builder
-	for i := start; i < end; i++ {
-		row := m.renderHierarchyRow(m.hierarchy.flat[i], i == m.hierarchy.vp.Selected())
-		rows.WriteString(row)
-		if i < end-1 {
+	if total == 0 {
+		// Empty state: choose the most informative message for the situation.
+		var emptyMsg string
+		if m.anvilFilter != "" || !m.showClosed {
+			emptyMsg = "No beads match the current filter"
+		} else {
+			emptyMsg = "No beads found"
+		}
+		rows.WriteString(emptyStyle.Render(emptyMsg))
+	} else {
+		// Check whether any beads have parent-child relationships so we can
+		// surface the "No epics with children" hint when the tree is flat.
+		hasEpics := false
+		for _, n := range m.hierarchy.nodes {
+			if len(n.Children) > 0 {
+				hasEpics = true
+				break
+			}
+		}
+
+		for i := start; i < end; i++ {
+			row := m.renderHierarchyRow(m.hierarchy.flat[i], i == m.hierarchy.vp.Selected())
+			rows.WriteString(row)
+			if i < end-1 {
+				rows.WriteByte('\n')
+			}
+		}
+
+		// Append a subtle hint when there are no parent-child relationships.
+		if !hasEpics {
 			rows.WriteByte('\n')
+			rows.WriteString(emptyStyle.Render("No epics with children — use 'n' to create one"))
 		}
 	}
 
