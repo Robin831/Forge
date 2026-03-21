@@ -973,7 +973,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// (e.g. warden-learn PRs and other non-bead exhausted PRs).
 				menuLabel := item.BeadID
 				if menuLabel == "" {
-					menuLabel = item.Title
+					// Sanitize and truncate the title before rendering into the TUI header
+					safeTitle := sanitizeTitle(item.Title)
+					menuLabel = runewidth.Truncate(safeTitle, 80, "…")
 				}
 				// Non-bead PRs (PRID set, no BeadID) only support retry/dismiss —
 				// warden rerun, approve-as-is, and force smith all require a worktree.
@@ -2092,7 +2094,7 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 	// messages don't render blank when BeadID is empty.
 	label := bead.BeadID
 	if label == "" {
-		label = bead.Title
+		label = sanitizeTitle(bead.Title)
 	}
 	switch choice {
 	case ActionRetry:
@@ -2211,9 +2213,13 @@ func (m *Model) removeNeedsAttentionItem(beadID, anvil string, prID ...int) {
 		prid = prID[0]
 	}
 	for i, item := range m.needsAttention {
-		matched := item.BeadID == beadID && item.Anvil == anvil
-		if !matched && beadID == "" && prid > 0 && item.PRID == prid {
-			matched = true
+		var matched bool
+		// For non-bead PRs, prefer matching by PRID (and anvil) so that multiple
+		// exhausted PRs in the same anvil are removed deterministically.
+		if beadID == "" && prid > 0 {
+			matched = item.PRID == prid && item.Anvil == anvil
+		} else {
+			matched = item.BeadID == beadID && item.Anvil == anvil
 		}
 		if matched {
 			m.needsAttention = append(m.needsAttention[:i], m.needsAttention[i+1:]...)
