@@ -257,19 +257,23 @@ func (m *Model) renderFooter() string {
 		footerText = fmt.Sprintf("%d selected: ", m.bulk.Count()) + h.ShortHelpView(bulkBindings)
 
 	default:
-		// Normal mode: view-specific short bindings.
+		// Normal mode: view-specific short bindings prefixed with the active view label.
 		h := m.helpSt.helper
 		h.Width = max(m.width-4, 1)
 		var km help.KeyMap
+		var viewLabel string
 		switch m.view {
 		case ViewKanban:
 			km = kanbanKeyMap{}
+			viewLabel = "[Kanban]"
 		case ViewHierarchy:
 			km = hierarchyKeyMap{}
+			viewLabel = "[Hierarchy]"
 		default:
 			km = listKeyMap{}
+			viewLabel = "[List]"
 		}
-		footerText = h.ShortHelpView(km.ShortHelp())
+		footerText = viewLabel + "  " + h.ShortHelpView(km.ShortHelp())
 	}
 
 	return footerStyle.Render(footerText) + errNote
