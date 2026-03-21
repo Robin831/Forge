@@ -29,6 +29,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
+	"github.com/Robin831/Forge/internal/depupdate"
 	"github.com/Robin831/Forge/internal/ingot"
 )
 
@@ -482,6 +483,18 @@ type Model struct {
 
 	// Incremental log file reader — avoids re-reading entire log files on each tick.
 	logCache *LogTailerCache
+
+	// UpdateAnvils is the list of anvils to scan and update when the user presses 'U'.
+	// Populated by the caller (e.g. the daemon or CLI) before starting the TUI.
+	UpdateAnvils []depupdate.Anvil
+
+	// Update overlay state — shown when the user presses 'U'.
+	showUpdateOverlay bool
+	updateScanning    bool                    // true while depupdate.Scan is in flight
+	updateRunning     bool                    // true while depupdate.Apply is in flight
+	updateReports     []depupdate.AnvilReport // results from the most recent scan
+	updateForm        *huh.Form               // selection form shown after scan completes
+	updateFilterKind  updateFilterChoice      // the user's chosen filter (all / patch+minor)
 }
 
 // NewModel creates a new Hearth TUI model.
@@ -726,6 +739,35 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case updateScanDoneMsg:
+		m.updateScanning = false
+		if msg.err != nil {
+			m.closeUpdateOverlay()
+			return m, m.addToast(fmt.Sprintf("Dep scan failed: %v", msg.err), true)
+		}
+		m.updateReports = msg.reports
+		total := countUpdateGroups(msg.reports)
+		if total == 0 {
+			// Nothing to update — close overlay and notify
+			m.closeUpdateOverlay()
+			return m, m.addToast("All dependencies are up to date", false)
+		}
+		anvilCount := countUpdateAnvils(msg.reports)
+		m.updateForm = buildUpdateFilterForm(&m.updateFilterKind, total, anvilCount)
+		return m, m.updateForm.Init()
+
+	case updateApplyDoneMsg:
+		m.updateRunning = false
+		m.closeUpdateOverlay()
+		if msg.applied == 0 && msg.failed == 0 {
+			return m, m.addToast("No updates were applied", false)
+		}
+		summary := fmt.Sprintf("Updated %d groups across %d anvil(s)", msg.applied, msg.anvils)
+		if msg.failed > 0 {
+			summary += fmt.Sprintf(", %d group(s) failed", msg.failed)
+		}
+		return m, m.addToast(summary, msg.failed > 0 && msg.applied == 0)
+
 	case tea.KeyMsg:
 		// Log viewer overlay intercepts all keys
 		if m.showLogViewer {
@@ -773,6 +815,45 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				m.notesTA, cmd = m.notesTA.Update(msg)
 				return m, cmd
+			}
+			return m, nil
+		}
+
+		// Update overlay intercepts all keys when open
+		if m.showUpdateOverlay {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.closeUpdateOverlay()
+				return m, nil
+			}
+			// While scanning or applying, absorb all keys (except esc handled above)
+			if m.updateScanning || m.updateRunning {
+				return m, nil
+			}
+			// Drive the selection form
+			if m.updateForm != nil {
+				cmd := m.driveHuhForm(&m.updateForm, msg)
+				if m.updateForm.State == huh.StateCompleted {
+					choice := m.updateFilterKind
+					m.updateForm = nil
+					if choice == updateFilterCancel {
+						m.closeUpdateOverlay()
+						return m, cmd
+					}
+					// Start applying in a background goroutine
+					m.updateRunning = true
+					startToast := m.addToast("Applying dependency updates...", false)
+					applyCmd := runUpdateApply(m.updateReports, choice)
+					return m, tea.Batch(cmd, startToast, applyCmd)
+				} else if m.updateForm.State == huh.StateAborted {
+					m.closeUpdateOverlay()
+					return m, cmd
+				}
+				if isTerminalMsg(msg) {
+					return m, cmd
+				}
 			}
 			return m, nil
 		}
@@ -1138,6 +1219,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				item := m.needsAttention[m.needsAttnVP.cursor]
 				m.openNotesOverlay(item.BeadID, item.Anvil, item.Title)
 			}
+
+		case "U":
+			// Open the dependency update overlay — scans and applies dep updates.
+			return m, m.openUpdateOverlay()
 
 		default:
 			if m.focused == PanelWorkers {
@@ -1796,6 +1881,9 @@ func (m *Model) View() string {
 	} else if m.showNotesOverlay {
 		overlay := m.renderNotesOverlay()
 		view = placeOverlay(m.width, m.height, overlay, view)
+	} else if m.showUpdateOverlay {
+		overlay := m.renderUpdateOverlay()
+		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.orphanDialogForm != nil {
 		overlay := m.renderOrphanDialog()
 		view = placeOverlay(m.width, m.height, overlay, view)
@@ -2028,6 +2116,19 @@ func (m *Model) setStatus(msg string, isError bool) {
 	m.statusMsg = msg
 	m.statusMsgIsError = isError
 	m.statusMsgTime = time.Now()
+}
+
+// addToast adds a toast notification to the active toasts list and returns
+// a Cmd that auto-dismisses it after toastDuration. Oldest toast is dropped
+// when the cap (maxToasts) is exceeded.
+func (m *Model) addToast(message string, isError bool) tea.Cmd {
+	t := toast{id: m.nextToastID, message: message, isError: isError}
+	m.nextToastID++
+	m.toasts = append(m.toasts, t)
+	if len(m.toasts) > maxToasts {
+		m.toasts = m.toasts[1:]
+	}
+	return scheduleToastDismiss(t.id)
 }
 
 // rebuildQueueNav rebuilds the navigable item list for the queue panel.

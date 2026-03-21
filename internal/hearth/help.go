@@ -76,6 +76,10 @@ var (
 		key.WithKeys("q", "ctrl+c"),
 		key.WithHelp("q", "quit"),
 	)
+	keyDepUpdate = key.NewBinding(
+		key.WithKeys("U"),
+		key.WithHelp("U", "update deps"),
+	)
 )
 
 // --- Per-panel KeyMap types ---
@@ -83,11 +87,11 @@ var (
 type queueKeyMap struct{ m *Model }
 
 func (k queueKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyPRPanel, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k queueKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyPRPanel},
+		{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyPRPanel, keyDepUpdate},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
