@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/depupdate"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -89,8 +90,9 @@ type Model struct {
 	// sortChoice holds the pointer used by the huh sort selector form.
 	sortChoice *string
 
-	anvils map[string]string // name → path
-	db     *state.DB
+	anvils      map[string]string            // name → path
+	anvilConfigs map[string]config.AnvilConfig // per-anvil configuration (for dep updates)
+	db          *state.DB
 
 	// Form overlay state
 	activeForm     *huh.Form
@@ -151,15 +153,18 @@ type Model struct {
 	depBeadsToClose     []Bead    // dep beads identified for optional closure
 }
 
-// NewModel creates a new Ledger model.
-func NewModel(anvils map[string]string, db *state.DB) *Model {
+// NewModel creates a new Ledger model. anvilConfigs is the per-anvil
+// configuration map from forge.yaml (may be nil); it is used when running
+// dependency updates so they respect per-anvil Temper settings.
+func NewModel(anvils map[string]string, anvilConfigs map[string]config.AnvilConfig, db *state.DB) *Model {
 	return &Model{
-		anvils:     anvils,
-		db:         db,
-		loading:    true,
-		view:       ViewList,
-		showClosed: true,
-		helpSt:     newHelpState(),
+		anvils:       anvils,
+		anvilConfigs: anvilConfigs,
+		db:           db,
+		loading:      true,
+		view:         ViewList,
+		showClosed:   true,
+		helpSt:       newHelpState(),
 	}
 }
 
@@ -308,9 +313,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateApplyDoneMsg:
 		m.updateRunning = false
-		// After a successful update, offer to close open dep-update beads.
-		if msg.applied > 0 {
-			depBeads := m.findOpenDepBeads()
+		// After a successful update, offer to close open dep-update beads —
+		// but only when the overlay is still visible. The user may have pressed
+		// Esc while the apply was running (m.showUpdateOverlay == false), in
+		// which case there is no form to drive and we should only show a toast.
+		if msg.applied > 0 && m.showUpdateOverlay {
+			depBeads := m.findOpenDepBeads(msg.appliedPackages)
 			if len(depBeads) > 0 {
 				m.depBeadsToClose = depBeads
 				m.depBeadCloseConfirm = false

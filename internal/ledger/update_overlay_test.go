@@ -145,35 +145,47 @@ func TestRenderUpdateOverlayRunning(t *testing.T) {
 }
 
 func TestRenderUpdateOverlayErrorFormatting(t *testing.T) {
-	// The error rendering path should produce readable "key: message" pairs, not
-	// Go map/slice notation like "map[go:some error]".
+	// Verify that renderUpdateOverlay formats scan errors as readable
+	// "key: message" pairs (not Go map notation like "map[go:some error]"),
+	// and that multiple errors are emitted in deterministic sorted order.
+	choice := updateFilterAll
+	form := buildUpdateFilterForm(&choice, 0, 0)
 	m := &Model{
+		width:  120,
+		height: 40,
 		updateReports: []depupdate.AnvilReport{
 			{
 				Anvil:  depupdate.Anvil{Name: "test", Path: "/tmp/test"},
 				Groups: nil,
-				Errors: map[string]error{"go": errors.New("network timeout")},
+				Errors: map[string]error{
+					"go":  errors.New("network timeout"),
+					"npm": errors.New("registry unavailable"),
+				},
 			},
 		},
+		showUpdateOverlay: true,
+		updateFilterForm:  form,
 	}
-	// Directly verify error string formatting via the overlay; the filter form
-	// branch is exercised when updateFilterForm != nil, which requires huh
-	// initialization. We test the underlying rendering logic by ensuring the
-	// formatted error does not contain "[" (Go slice/map literal syntax).
-	//
-	// Build a minimal report and manually invoke the same formatting logic the
-	// overlay uses: "eco: message" joined by "; ".
-	report := m.updateReports[0]
-	var errParts []string
-	for eco, err := range report.Errors {
-		errParts = append(errParts, eco+": "+err.Error())
+
+	out := m.renderUpdateOverlay()
+
+	if strings.Contains(out, "map[") {
+		t.Errorf("error formatting must not use Go map literal syntax, got:\n%s", out)
 	}
-	formatted := strings.Join(errParts, "; ")
-	if strings.HasPrefix(formatted, "[") {
-		t.Errorf("error formatting must not start with '[' (Go literal), got: %s", formatted)
+	if !strings.Contains(out, "go: network timeout") {
+		t.Errorf("output must contain 'go: network timeout', got:\n%s", out)
 	}
-	if !strings.Contains(formatted, "go: network timeout") {
-		t.Errorf("error formatting must contain 'go: network timeout', got: %s", formatted)
+	if !strings.Contains(out, "npm: registry unavailable") {
+		t.Errorf("output must contain 'npm: registry unavailable', got:\n%s", out)
+	}
+	// Errors must be in deterministic sorted order (go < npm alphabetically).
+	goIdx := strings.Index(out, "go: network timeout")
+	npmIdx := strings.Index(out, "npm: registry unavailable")
+	if goIdx < 0 || npmIdx < 0 {
+		t.Fatal("both errors must appear in the output")
+	}
+	if goIdx >= npmIdx {
+		t.Errorf("errors must appear in sorted order: 'go' must precede 'npm'")
 	}
 }
 

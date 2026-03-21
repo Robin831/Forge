@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/depupdate"
 )
 
@@ -36,10 +35,11 @@ type updateScanDoneMsg struct {
 
 // updateApplyDoneMsg is delivered when dependency updates have been applied across all anvils.
 type updateApplyDoneMsg struct {
-	applied int // groups successfully installed, verified, and committed
-	failed  int // groups that failed or were rolled back
-	skipped int // groups excluded by the filter
-	anvils  int // distinct anvils with at least one applied group
+	applied         int             // groups successfully installed, verified, and committed
+	failed          int             // groups that failed or were rolled back
+	skipped         int             // groups excluded by the filter
+	anvils          int             // distinct anvils with at least one applied group
+	appliedPackages map[string]bool // package paths that were successfully applied
 }
 
 // depBeadsCloseDoneMsg is delivered when the dep-bead bulk close completes.
@@ -85,8 +85,9 @@ func (m *Model) closeUpdateOverlay() {
 	m.depBeadCloseConfirm = false
 }
 
-// buildDepUpdateAnvils constructs a []depupdate.Anvil from m.anvils.
-// AnvilConfig is left as zero-value (depupdate uses defaults).
+// buildDepUpdateAnvils constructs a []depupdate.Anvil from m.anvils, using
+// the real per-anvil config from m.anvilConfigs so updates respect settings
+// like GoRaceDetection and GolangciLint from forge.yaml.
 func (m *Model) buildDepUpdateAnvils() []depupdate.Anvil {
 	if len(m.anvils) == 0 {
 		return nil
@@ -99,10 +100,11 @@ func (m *Model) buildDepUpdateAnvils() []depupdate.Anvil {
 
 	anvils := make([]depupdate.Anvil, 0, len(m.anvils))
 	for _, name := range names {
+		cfg := m.anvilConfigs[name] // zero-value if not present (safe default)
 		anvils = append(anvils, depupdate.Anvil{
 			Name:   name,
 			Path:   m.anvils[name],
-			Config: config.AnvilConfig{},
+			Config: cfg,
 			DB:     m.db,
 		})
 	}
@@ -137,6 +139,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 		}
 
 		applied, failed, skipped, anvilsUpdated := 0, 0, 0, 0
+		appliedPackages := make(map[string]bool)
 		for _, report := range reports {
 			var groups []depupdate.UpdateGroup
 			if selectedKeys != nil {
@@ -165,6 +168,9 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				if r.Applied {
 					applied++
 					anvilApplied = true
+					for _, u := range r.Group.Updates {
+						appliedPackages[u.Path] = true
+					}
 				} else {
 					failed++
 				}
@@ -173,7 +179,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				anvilsUpdated++
 			}
 		}
-		return updateApplyDoneMsg{applied: applied, failed: failed, skipped: skipped, anvils: anvilsUpdated}
+		return updateApplyDoneMsg{applied: applied, failed: failed, skipped: skipped, anvils: anvilsUpdated, appliedPackages: appliedPackages}
 	}
 }
 
@@ -235,18 +241,45 @@ func buildUpdateFilterForm(choice *updateFilterChoice, totalGroups, totalAnvils 
 	).WithTheme(huh.ThemeCharm()).WithWidth(60)
 }
 
+// depBeadPackage extracts the package path from a dep-update bead title.
+// Expected format: "Deps(<Ecosystem>): update <package> <old> → <new>"
+// Returns empty string when the title does not match.
+func depBeadPackage(title string) string {
+	const marker = ": update "
+	idx := strings.Index(title, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := title[idx+len(marker):]
+	if i := strings.IndexByte(rest, ' '); i > 0 {
+		return rest[:i]
+	}
+	return rest
+}
+
 // findOpenDepBeads returns open beads that appear to be depcheck-created update beads.
 // These are identified by IssueType "chore" and a title prefix of "Deps(" —
 // the format emitted by depcheck.BeadTitle.
-func (m *Model) findOpenDepBeads() []Bead {
+//
+// When appliedPackages is non-nil, only beads whose package path appears in
+// the map are returned, limiting the close offer to beads actually resolved by
+// the just-applied updates.
+func (m *Model) findOpenDepBeads(appliedPackages map[string]bool) []Bead {
 	var result []Bead
 	for _, b := range m.beads {
 		if b.Status == "closed" {
 			continue
 		}
-		if b.IssueType == "chore" && strings.HasPrefix(b.Title, "Deps(") {
-			result = append(result, b)
+		if b.IssueType != "chore" || !strings.HasPrefix(b.Title, "Deps(") {
+			continue
 		}
+		if appliedPackages != nil {
+			pkg := depBeadPackage(b.Title)
+			if !appliedPackages[pkg] {
+				continue
+			}
+		}
+		result = append(result, b)
 	}
 	return result
 }
@@ -265,9 +298,12 @@ func buildDepBeadCloseForm(depBeads []Bead, confirm *bool) *huh.Form {
 }
 
 // closeDepBeadsCmd closes a set of dep beads across their respective anvils.
+// The context timeout scales with the number of beads (15 s each, min 30 s)
+// so a long bead list does not hit the deadline mid-loop.
 func closeDepBeadsCmd(anvils map[string]string, depBeads []Bead) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		timeout := max(time.Duration(len(depBeads))*15*time.Second, 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
 		closed, failed := 0, 0

@@ -43,7 +43,7 @@ var ledgerCmd = &cobra.Command{
 			anvils[name] = a.Path
 		}
 
-		model := ledger.NewModel(anvils, db)
+		model := ledger.NewModel(anvils, cfg.Anvils, db)
 		p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)

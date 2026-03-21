@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewModelInitialState(t *testing.T) {
-	m := NewModel(map[string]string{"test": "/tmp"}, nil)
+	m := NewModel(map[string]string{"test": "/tmp"}, nil, nil)
 
 	assert.True(t, m.loading, "NewModel must start in loading state")
 	assert.Equal(t, ViewList, m.view, "NewModel must default to list view")
@@ -17,13 +17,13 @@ func TestNewModelInitialState(t *testing.T) {
 }
 
 func TestNewModelInitReturnsCmd(t *testing.T) {
-	m := NewModel(map[string]string{"test": "/tmp"}, nil)
+	m := NewModel(map[string]string{"test": "/tmp"}, nil, nil)
 	cmd := m.Init()
 	require.NotNil(t, cmd, "Init() must return a non-nil command (batch of tick + fetch)")
 }
 
 func TestNewModelViewLoadingNonEmpty(t *testing.T) {
-	m := NewModel(map[string]string{"test": "/tmp"}, nil)
+	m := NewModel(map[string]string{"test": "/tmp"}, nil, nil)
 	m.width = 100
 	m.height = 30
 
@@ -34,7 +34,7 @@ func TestNewModelViewLoadingNonEmpty(t *testing.T) {
 
 func TestNewModelViewNilAnvils(t *testing.T) {
 	// NewModel with nil anvils must not panic and must still produce output.
-	m := NewModel(nil, nil)
+	m := NewModel(nil, nil, nil)
 	m.width = 100
 	m.height = 30
 
@@ -45,7 +45,7 @@ func TestNewModelViewNilAnvils(t *testing.T) {
 }
 
 func TestNewModelViewAfterBeadsLoaded(t *testing.T) {
-	m := NewModel(map[string]string{"test": "/tmp"}, nil)
+	m := NewModel(map[string]string{"test": "/tmp"}, nil, nil)
 	m.width = 100
 	m.height = 30
 
