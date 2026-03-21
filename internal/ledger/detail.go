@@ -169,7 +169,7 @@ func writeDetailField(sb *strings.Builder, keyStyle lipgloss.Style, label, value
 // wrapDetailText wraps text at word boundaries to fit within the given visual
 // width, preserving paragraph breaks (blank lines between paragraphs).
 func wrapDetailText(text string, width int) []string {
-	if width <= 0 {
+	if width <= 0 || text == "" {
 		return nil
 	}
 	text = strings.ReplaceAll(text, "\r\n", "\n")
