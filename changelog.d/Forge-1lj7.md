@@ -1,2 +1,2 @@
-category: Added
-- **Error toasts & bd command failure handling** - Added toast notification system to Ledger and Hearth TUIs: `toast` struct, `toastDismissMsg`, tick-based auto-dismiss, and ANSI-aware overlay rendering. All bd command errors (`ActionErrorMsg`, kanban lane moves) now surface as dismissing toast overlays instead of silent footer updates. (Forge-1lj7)
+category: Fixed
+- **Kanban move error surfacing** - `moveBeadMsg` errors in the Ledger TUI now surface as a toast notification and trigger a data refresh, instead of silently setting the error field without feedback. (Forge-1lj7)
