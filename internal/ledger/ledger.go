@@ -48,8 +48,8 @@ const (
 	FormComment
 	FormNotes
 	FormAssign
-	FormAddDep   // D key: pick a bead to add as a dependency
-	FormViewDeps // B key: view and optionally remove dependencies
+	FormAddDep   // d key: pick a bead to add as a dependency
+	FormViewDeps // b key: view and optionally remove dependencies
 )
 
 // Model is the top-level Bubbletea model for the Ledger TUI.
@@ -447,7 +447,17 @@ func (m *Model) executeFormAction() tea.Cmd {
 			return RemoveDepCmd(anvilPath, m.formTarget.ID, depID)
 		case len(m.formDepID) > len(blocksPrefix) && m.formDepID[:len(blocksPrefix)] == blocksPrefix:
 			childID := m.formDepID[len(blocksPrefix):]
-			return RemoveDepCmd(anvilPath, childID, m.formTarget.ID)
+			// Use the child bead's anvil path so bd dep remove runs in the correct repo.
+			childAnvilPath := anvilPath
+			for i := range m.beads {
+				if m.beads[i].ID == childID {
+					if p, ok := m.anvils[m.beads[i].Anvil]; ok {
+						childAnvilPath = p
+					}
+					break
+				}
+			}
+			return RemoveDepCmd(childAnvilPath, childID, m.formTarget.ID)
 		}
 		return nil
 	}
@@ -758,12 +768,17 @@ func (m *Model) openAddDepForm() tea.Cmd {
 		excluded[id] = true
 	}
 
-	// Collect candidate beads sorted by ID.
+	// Collect candidate beads from the same anvil, sorted by ID.
 	var candidates []Bead
 	for i := range m.beads {
-		if !excluded[m.beads[i].ID] {
-			candidates = append(candidates, m.beads[i])
+		// Only allow dependencies within the same anvil as the selected bead.
+		if m.beads[i].Anvil != b.Anvil {
+			continue
 		}
+		if excluded[m.beads[i].ID] {
+			continue
+		}
+		candidates = append(candidates, m.beads[i])
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].ID < candidates[j].ID
