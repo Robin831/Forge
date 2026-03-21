@@ -258,19 +258,7 @@ func (m *Model) renderKanban() string {
 	// Detail preview for selected card
 	detail := m.renderKanbanDetail(laneWidth)
 
-	// Footer
-	footerStyle := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 2)
-	var errNote string
-	if m.err != nil {
-		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  ⚠ %v", m.err))
-	}
-	var kanbanFooter string
-	if m.bulk.Count() > 0 {
-		kanbanFooter = fmt.Sprintf("%d selected: Ctrl+X close  Ctrl+L label  Ctrl+P priority  Esc: clear  |  h/l: lane  j/k: card  Space: toggle  q: quit", m.bulk.Count())
-	} else {
-		kanbanFooter = "h/l: lane  j/k: card  H/L: move  Space: select  Ctrl+A: all  f: filter anvil  s: show/hide closed  n: new  e: edit  x: close  r: reopen  d: add dep  b: view deps  i: AI improve  Tab: hierarchy  q: quit"
-	}
-	footer := footerStyle.Render(kanbanFooter) + errNote
+	footer := m.renderFooter()
 
 	return header + "\n" + board + "\n" + detail + "\n" + footer
 }
