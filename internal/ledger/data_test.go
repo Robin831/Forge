@@ -1,0 +1,189 @@
+package ledger
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// mockExec builds a bdExecFunc that returns different responses based on which
+// --status=<value> argument is present in the call.
+func mockExec(byStatus map[string][]byte, fallback []byte, execErr error) bdExecFunc {
+	return func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+		if execErr != nil {
+			return nil, execErr
+		}
+		for _, a := range args {
+			if resp, ok := byStatus[a]; ok {
+				return resp, nil
+			}
+		}
+		if fallback != nil {
+			return fallback, nil
+		}
+		return []byte("[]"), nil
+	}
+}
+
+func mustMarshal(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func TestFetchAllBeadsWithExecHappyPath(t *testing.T) {
+	openBeads := []Bead{
+		{ID: "forge-1", Title: "Fix the leak", Status: "open"},
+		{ID: "forge-2", Title: "WIP task", Status: "in_progress"},
+	}
+	execFn := mockExec(map[string][]byte{
+		"--status=open": mustMarshal(openBeads),
+	}, []byte("[]"), nil)
+
+	cmd := fetchAllBeadsWithExec(execFn, map[string]string{"myAnvil": "/tmp/anvil"}, nil)
+	require.NotNil(t, cmd)
+
+	msg := cmd()
+	update, ok := msg.(UpdateBeadsMsg)
+	require.True(t, ok, "expected UpdateBeadsMsg")
+	assert.NoError(t, update.Err)
+	require.Len(t, update.Beads, 2)
+
+	// All returned beads must have the anvil name set (not the path).
+	for _, b := range update.Beads {
+		assert.Equal(t, "myAnvil", b.Anvil)
+	}
+}
+
+func TestFetchAllBeadsWithExecAnvilNameNotPath(t *testing.T) {
+	openBeads := []Bead{{ID: "x-1", Status: "open"}}
+	execFn := mockExec(map[string][]byte{
+		"--status=open": mustMarshal(openBeads),
+	}, []byte("[]"), nil)
+
+	cmd := fetchAllBeadsWithExec(execFn, map[string]string{"anvil-name": "/some/path"}, nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	require.Len(t, update.Beads, 1)
+	assert.Equal(t, "anvil-name", update.Beads[0].Anvil, "Anvil must be the registry name, not the filesystem path")
+}
+
+func TestFetchAllBeadsWithExecErrorPropagated(t *testing.T) {
+	execErr := errors.New("bd: connection refused")
+	execFn := mockExec(nil, nil, execErr)
+
+	cmd := fetchAllBeadsWithExec(execFn, map[string]string{"myAnvil": "/tmp/anvil"}, nil)
+	msg := cmd()
+	update, ok := msg.(UpdateBeadsMsg)
+	require.True(t, ok)
+	assert.Error(t, update.Err, "an exec error must surface in UpdateBeadsMsg.Err")
+}
+
+func TestFetchAllBeadsWithExecInvalidJSONError(t *testing.T) {
+	execFn := func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+		return []byte("not-json"), nil
+	}
+
+	cmd := fetchAllBeadsWithExec(execFn, map[string]string{"myAnvil": "/tmp/anvil"}, nil)
+	msg := cmd()
+	update, ok := msg.(UpdateBeadsMsg)
+	require.True(t, ok)
+	assert.Error(t, update.Err, "invalid JSON from bd must produce an error in UpdateBeadsMsg")
+}
+
+func TestFetchAllBeadsWithExecRecentClosedIncluded(t *testing.T) {
+	recent := time.Now().Add(-24 * time.Hour)
+	old := time.Now().Add(-10 * 24 * time.Hour)
+
+	closedBeads := []Bead{
+		{ID: "recent-closed", Status: "closed", ClosedAt: &recent},
+		{ID: "old-closed", Status: "closed", ClosedAt: &old},
+	}
+	execFn := mockExec(map[string][]byte{
+		"--status=closed": mustMarshal(closedBeads),
+	}, []byte("[]"), nil)
+
+	cmd := fetchAllBeadsWithExec(execFn, map[string]string{"myAnvil": "/tmp/anvil"}, nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	ids := make(map[string]bool, len(update.Beads))
+	for _, b := range update.Beads {
+		ids[b.ID] = true
+	}
+	assert.True(t, ids["recent-closed"], "bead closed within 7 days must be included")
+	assert.False(t, ids["old-closed"], "bead closed more than 7 days ago must be excluded")
+}
+
+func TestFetchAllBeadsWithExecUpdatedAtFallback(t *testing.T) {
+	// Bead has no ClosedAt but a recent UpdatedAt — it should still be included.
+	recent := time.Now().Add(-48 * time.Hour)
+	closedBeads := []Bead{
+		{ID: "updated-recent", Status: "closed", UpdatedAt: &recent},
+	}
+	execFn := mockExec(map[string][]byte{
+		"--status=closed": mustMarshal(closedBeads),
+	}, []byte("[]"), nil)
+
+	cmd := fetchAllBeadsWithExec(execFn, map[string]string{"myAnvil": "/tmp/anvil"}, nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	ids := make(map[string]bool, len(update.Beads))
+	for _, b := range update.Beads {
+		ids[b.ID] = true
+	}
+	assert.True(t, ids["updated-recent"], "bead with recent UpdatedAt must be included even without ClosedAt")
+}
+
+func TestFetchAllBeadsWithExecMultipleAnvils(t *testing.T) {
+	execFn := func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+		for _, a := range args {
+			if a == "--status=open" {
+				bead := []Bead{{ID: "bead-in-" + anvilPath, Status: "open"}}
+				return mustMarshal(bead), nil
+			}
+		}
+		return []byte("[]"), nil
+	}
+
+	anvils := map[string]string{
+		"anvil-a": "/path/a",
+		"anvil-b": "/path/b",
+	}
+	cmd := fetchAllBeadsWithExec(execFn, anvils, nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	assert.Len(t, update.Beads, 2, "one bead per anvil must be returned")
+	anvilNames := make(map[string]bool)
+	for _, b := range update.Beads {
+		anvilNames[b.Anvil] = true
+	}
+	assert.True(t, anvilNames["anvil-a"])
+	assert.True(t, anvilNames["anvil-b"])
+}
+
+func TestFetchAllBeadsWithExecEmptyAnvils(t *testing.T) {
+	called := false
+	execFn := func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+		called = true
+		return []byte("[]"), nil
+	}
+
+	cmd := fetchAllBeadsWithExec(execFn, map[string]string{}, nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	assert.False(t, called, "exec must not be called when no anvils are registered")
+	assert.Empty(t, update.Beads)
+	assert.NoError(t, update.Err)
+}
