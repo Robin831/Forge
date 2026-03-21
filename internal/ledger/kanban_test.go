@@ -291,6 +291,27 @@ func TestRenderCardFixedHeight(t *testing.T) {
 	}
 }
 
+func TestRenderCardShowSelectUnchecked(t *testing.T) {
+	b := Bead{ID: "Forge-sel1", Title: "Selectable bead", Priority: 2}
+	card := renderCard(b, 25, false, false, true, false)
+	assert.Contains(t, card, "[ ]", "unchecked checkbox should appear when showSelect=true")
+	assert.Contains(t, card, "Forge-sel1")
+}
+
+func TestRenderCardShowSelectChecked(t *testing.T) {
+	b := Bead{ID: "Forge-sel2", Title: "Checked bead", Priority: 1}
+	card := renderCard(b, 25, false, false, true, true)
+	assert.Contains(t, card, "[✓]", "checked checkbox should appear when showSelect=true and checked=true")
+	assert.Contains(t, card, "Forge-sel2")
+}
+
+func TestRenderCardShowSelectFixedHeight(t *testing.T) {
+	b := Bead{ID: "x-sel", Title: "Height test", Priority: 0, Anvil: "test"}
+	card := renderCard(b, 25, false, false, true, true)
+	assert.Equal(t, cardContentLines, lipgloss.Height(card),
+		"renderCard with showSelect=true must still emit exactly cardContentLines lines")
+}
+
 func TestMoveBeadToInReviewDisallowed(t *testing.T) {
 	m := &Model{
 		width:  80,
