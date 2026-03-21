@@ -1,0 +1,128 @@
+package depupdate
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/Robin831/Forge/internal/executil"
+)
+
+// DetectBilingual reports whether the changelog.d/ directory in anvilPath
+// contains bilingual fragments (files ending in .en.md or .nb.md). This
+// mirrors the convention used by other projects that maintain separate English
+// and Norwegian changelog files.
+func DetectBilingual(anvilPath string) bool {
+	changelogDir := filepath.Join(anvilPath, "changelog.d")
+	entries, err := os.ReadDir(changelogDir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasSuffix(name, ".en.md") || strings.HasSuffix(name, ".nb.md") {
+			return true
+		}
+	}
+	return false
+}
+
+// GenerateChangelog writes one or two changelog fragment files for the given
+// set of dependency update groups into <anvilPath>/changelog.d/, then
+// git-adds and commits them.
+//
+// Fragment naming:
+//   - Monolingual: deps-batch-<YYYY-MM-DD>.md
+//   - Bilingual:   deps-batch-<YYYY-MM-DD>.en.md  (English)
+//                  deps-batch-<YYYY-MM-DD>.nb.md  (Norwegian — same content)
+//
+// The isBilingual flag can be set explicitly by the caller, or the caller can
+// use DetectBilingual to derive it from the existing changelog directory.
+func GenerateChangelog(anvilPath string, groups []UpdateGroup, isBilingual bool) error {
+	if len(groups) == 0 {
+		return nil
+	}
+
+	date := time.Now().Format("2006-01-02")
+	content := buildFragmentContent(groups)
+
+	changelogDir := filepath.Join(anvilPath, "changelog.d")
+	if err := os.MkdirAll(changelogDir, 0o755); err != nil {
+		return fmt.Errorf("depupdate: creating changelog.d: %w", err)
+	}
+
+	var filesToAdd []string
+
+	if isBilingual {
+		enPath := filepath.Join(changelogDir, fmt.Sprintf("deps-batch-%s.en.md", date))
+		nbPath := filepath.Join(changelogDir, fmt.Sprintf("deps-batch-%s.nb.md", date))
+
+		if err := writeFragment(enPath, content); err != nil {
+			return err
+		}
+		if err := writeFragment(nbPath, content); err != nil {
+			return err
+		}
+		filesToAdd = []string{enPath, nbPath}
+	} else {
+		mdPath := filepath.Join(changelogDir, fmt.Sprintf("deps-batch-%s.md", date))
+		if err := writeFragment(mdPath, content); err != nil {
+			return err
+		}
+		filesToAdd = []string{mdPath}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	addArgs := append([]string{"add", "--"}, filesToAdd...)
+	addCmd := executil.HideWindow(exec.CommandContext(ctx, "git", addArgs...))
+	addCmd.Dir = anvilPath
+
+	var addStderr bytes.Buffer
+	addCmd.Stderr = &addStderr
+	if err := addCmd.Run(); err != nil {
+		return fmt.Errorf("depupdate: git add changelog fragment: %w\nstderr: %s", err, addStderr.String())
+	}
+
+	commitMsg := fmt.Sprintf("chore(deps): add changelog fragment for dependency batch %s", date)
+	commitCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "commit", "-m", commitMsg))
+	commitCmd.Dir = anvilPath
+
+	var commitStderr bytes.Buffer
+	commitCmd.Stderr = &commitStderr
+	if err := commitCmd.Run(); err != nil {
+		return fmt.Errorf("depupdate: git commit changelog fragment: %w\nstderr: %s", err, commitStderr.String())
+	}
+
+	return nil
+}
+
+// buildFragmentContent constructs the changelog fragment body listing every
+// updated package across all groups.
+func buildFragmentContent(groups []UpdateGroup) string {
+	var sb strings.Builder
+	sb.WriteString("category: Changed\n")
+	for _, g := range groups {
+		for _, u := range g.Updates {
+			fmt.Fprintf(&sb, "- `%s`: %s → %s\n", u.Path, u.Current, u.Latest)
+		}
+	}
+	return sb.String()
+}
+
+// writeFragment writes content to path, returning a wrapped error on failure.
+func writeFragment(path, content string) error {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("depupdate: writing changelog fragment %s: %w", filepath.Base(path), err)
+	}
+	return nil
+}
