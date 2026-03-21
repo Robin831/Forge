@@ -140,6 +140,9 @@ type Model struct {
 	// Help overlay state.
 	helpSt helpState
 
+	// Detail panel state — persistent bead detail shown on the right side.
+	showDetailPanel bool
+
 	// Update overlay state — mirrors the Hearth pattern.
 	showUpdateOverlay     bool
 	updateScanning        bool                    // true while depupdate.Scan is in flight
@@ -162,13 +165,14 @@ type Model struct {
 // dependency updates so they respect per-anvil Temper settings.
 func NewModel(anvils map[string]string, anvilConfigs map[string]config.AnvilConfig, db *state.DB) *Model {
 	return &Model{
-		anvils:       anvils,
-		anvilConfigs: anvilConfigs,
-		db:           db,
-		loading:      true,
-		view:         ViewList,
-		showClosed:   true,
-		helpSt:       newHelpState(),
+		anvils:          anvils,
+		anvilConfigs:    anvilConfigs,
+		db:              db,
+		loading:         true,
+		view:            ViewList,
+		showClosed:      true,
+		helpSt:          newHelpState(),
+		showDetailPanel: true, // auto-shown on wide terminals (≥minWidthForDetailPanel)
 	}
 }
 
@@ -448,6 +452,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openUpdateOverlay()
 			case "E":
 				m.showEventPanel = !m.showEventPanel
+				return m, nil
+			case "\\":
+				m.showDetailPanel = !m.showDetailPanel
 				return m, nil
 			// Bulk selection operations.
 			case " ":
@@ -1435,6 +1442,23 @@ func (m *Model) View() string {
 		out = m.renderHierarchy()
 	default:
 		out = m.renderList()
+	}
+
+	// Composite the detail panel on the right side when it is visible and no
+	// full-screen overlay is blocking the main view. The sort-selector form
+	// rendered inside renderList() also expands to full width, so we skip
+	// compositing in that case too.
+	blockingOverlay := m.activeForm != nil ||
+		m.showUpdateOverlay ||
+		m.aiOverlay != aiOverlayNone ||
+		m.helpSt.show ||
+		m.list.sortForm != nil
+	if m.detailPanelW() > 0 && !blockingOverlay {
+		detailStr := m.renderDetailPanel()
+		// Pad the main panel to mainPanelWidth() so the detail panel starts
+		// at a consistent column regardless of content width.
+		mainStr := lipgloss.NewStyle().Width(m.mainPanelWidth()).Render(out)
+		out = lipgloss.JoinHorizontal(lipgloss.Top, mainStr, detailStr)
 	}
 
 	// Overlay the event panel at the bottom of the main view. The panel is

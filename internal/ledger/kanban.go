@@ -274,9 +274,9 @@ func (m *Model) renderKanban() string {
 }
 
 // visibleLaneCount returns the number of kanban lanes to display based on the
-// current terminal width. Narrow terminals show 2 lanes instead of 4.
+// available main panel width. Narrow panels show 2 lanes instead of 4.
 func (m *Model) visibleLaneCount() int {
-	if m.width < narrowKanbanWidth {
+	if m.mainPanelWidth() < narrowKanbanWidth {
 		return 2
 	}
 	return laneCount
@@ -303,10 +303,10 @@ func (m *Model) visibleLaneRange() (start, end int) {
 // kanbanLaneWidth computes the width for each visible lane column.
 // A consistent slack of 5 is subtracted before dividing so that borders and
 // gutters (e.g. the active lane's left border) never push the joined columns
-// past the terminal width.
+// past the main panel width.
 func (m *Model) kanbanLaneWidth() int {
 	count := m.visibleLaneCount()
-	return max((m.width-5)/count, 15)
+	return max((m.mainPanelWidth()-5)/count, 15)
 }
 
 // renderLane renders a single kanban lane column.
@@ -532,7 +532,7 @@ func (m *Model) renderKanbanDetail(_ int) string {
 	}
 	b := beads[cursor]
 
-	detailWidth := max(m.width-4, 20)
+	detailWidth := max(m.mainPanelWidth()-4, 20)
 	style := lipgloss.NewStyle().Foreground(colorInfo).Padding(0, 2)
 	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
 

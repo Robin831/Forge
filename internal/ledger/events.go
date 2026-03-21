@@ -76,7 +76,7 @@ func (m *Model) renderEventPanel() string {
 	warnStyle  := lipgloss.NewStyle().Foreground(colorWarning)
 	errStyle   := lipgloss.NewStyle().Foreground(colorDanger)
 
-	sepW := max(m.width-2, 1)
+	sepW := max(m.mainPanelWidth()-2, 1)
 	sep := sepStyle.Render(strings.Repeat("─", sepW))
 
 	count := fmt.Sprintf(" (%d)", len(m.eventLog))
@@ -85,7 +85,7 @@ func (m *Model) renderEventPanel() string {
 		dimStyle.Render("  E: hide")
 
 	// Build all rendered lines from the event log, word-wrapping long messages.
-	innerW := max(m.width-4, 10) // 2-char left padding + 2-char right margin
+	innerW := max(m.mainPanelWidth()-4, 10) // 2-char left padding + 2-char right margin
 	var allLines []string
 	for _, e := range m.eventLog {
 		var icon string
