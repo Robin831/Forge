@@ -302,10 +302,14 @@ func (m *Model) visibleLaneRange() (start, end int) {
 }
 
 // kanbanLaneWidth computes the width for each visible lane column.
+// In narrow mode (fewer lanes) we distribute the full width so each lane
+// gets a larger share than the per-lane width in the full 4-lane layout.
 func (m *Model) kanbanLaneWidth() int {
 	count := m.visibleLaneCount()
-	w := max((m.width-5)/count, 15)
-	return w
+	if count < laneCount {
+		return max(m.width/count, 15)
+	}
+	return max((m.width-5)/count, 15)
 }
 
 // renderLane renders a single kanban lane column.
