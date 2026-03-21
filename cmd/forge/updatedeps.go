@@ -94,8 +94,27 @@ verification, and automatic PR creation.`,
 			return nil
 		}
 
-		// Future sub-tasks will add interactive selection and update execution here.
-		fmt.Println("\nDry-run mode is currently the default. Update execution will be added in a future release.")
+		// For each anvil with updates, generate a changelog fragment and open a PR.
+		for _, ar := range results {
+			if ar.TotalUpdates(opts) == 0 {
+				continue
+			}
+			groups := depupdate.GroupUpdates(rootCtx, ar.Ecosystems)
+			if len(groups) == 0 {
+				continue
+			}
+			isBilingual := depupdate.DetectBilingual(ar.Path)
+			if err := depupdate.GenerateChangelog(ar.Path, groups, isBilingual); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: changelog for %s: %v\n", ar.Anvil, err)
+				continue
+			}
+			prURL, err := depupdate.CreatePR(rootCtx, ar.Path, ar.Anvil, groups)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: PR for %s: %v\n", ar.Anvil, err)
+				continue
+			}
+			fmt.Printf("PR for %s: %s\n", ar.Anvil, prURL)
+		}
 
 		return nil
 	},

@@ -23,9 +23,11 @@ func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateG
 	date := time.Now().Format("2006-01-02")
 	branch := "deps/batch-update-" + date
 
-	// git helper: run a git command in anvilPath, return combined stderr on failure.
-	git := func(args ...string) error {
-		cmd := executil.HideWindow(exec.CommandContext(ctx, "git", args...))
+	// git helper: run a git command with a per-command timeout.
+	git := func(timeout time.Duration, args ...string) error {
+		cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
 		cmd.Dir = anvilPath
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -36,17 +38,18 @@ func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateG
 	}
 
 	// Try to create the branch; if it already exists, just check it out.
-	if err := git("checkout", "-b", branch); err != nil {
-		if err2 := git("checkout", branch); err2 != nil {
+	if err := git(30*time.Second, "checkout", "-b", branch); err != nil {
+		if err2 := git(30*time.Second, "checkout", branch); err2 != nil {
 			return "", fmt.Errorf("depupdate: checkout branch %q: %w", branch, err2)
 		}
 	}
 
-	// Push branch and set upstream tracking reference.
-	if err := git("push", "--set-upstream", "origin", branch); err != nil {
+	// Push branch and set upstream tracking reference. Allow more time for push.
+	if err := git(120*time.Second, "push", "--set-upstream", "origin", branch); err != nil {
 		return "", fmt.Errorf("depupdate: push branch %q: %w", branch, err)
 	}
 
+	baseBranch := detectDefaultBranch(ctx, anvilPath)
 	title := fmt.Sprintf("chore(deps): batch update %s %s", anvilName, date)
 	body := buildPRBody(groups, date)
 
@@ -57,6 +60,7 @@ func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateG
 		"--title", title,
 		"--body", body,
 		"--head", branch,
+		"--base", baseBranch,
 	))
 	cmd.Dir = anvilPath
 
@@ -78,6 +82,25 @@ func CreatePR(ctx context.Context, anvilPath, anvilName string, groups []UpdateG
 	prURL := strings.TrimSpace(stdout.String())
 	log.Printf("[depupdate] Created PR for %s: %s", anvilName, prURL)
 	return prURL, nil
+}
+
+// detectDefaultBranch returns the remote's default branch name (e.g. "main").
+// Falls back to "main" if the symbolic ref cannot be resolved.
+func detectDefaultBranch(ctx context.Context, anvilPath string) string {
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"))
+	cmd.Dir = anvilPath
+	out, err := cmd.Output()
+	if err != nil {
+		return "main"
+	}
+	ref := strings.TrimSpace(string(out))
+	// ref is like "origin/main" — strip the remote prefix.
+	if _, after, ok := strings.Cut(ref, "/"); ok {
+		return after
+	}
+	return ref
 }
 
 // buildPRBody constructs a markdown PR description grouped by update kind.
