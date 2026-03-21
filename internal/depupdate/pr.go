@@ -3,6 +3,7 @@ package depupdate
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os/exec"
@@ -194,4 +195,94 @@ func extractPRURL(s string) string {
 		}
 	}
 	return ""
+}
+
+// minimalBead is used for parsing bd list --json output.
+type minimalBead struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// CloseMatchingDepBeads closes any open depcheck beads whose title references a
+// package covered by one of the provided UpdateGroups. It is called after
+// CreatePR returns successfully so that stale "Deps(<eco>): update <pkg> …"
+// beads are removed from the queue instead of accumulating as resolved work.
+func CloseMatchingDepBeads(ctx context.Context, anvilPath string, groups []UpdateGroup) error {
+	// Build a set of all package paths covered by the groups.
+	pkgSet := make(map[string]struct{})
+	for _, g := range groups {
+		for _, u := range g.Updates {
+			pkgSet[u.Path] = struct{}{}
+		}
+	}
+	if len(pkgSet) == 0 {
+		return nil
+	}
+
+	// Fetch open beads from the anvil directory.
+	listCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(listCtx, "bd", "list", "--status=open", "--limit", "0", "--json"))
+	cmd.Dir = anvilPath
+	var listErr bytes.Buffer
+	cmd.Stderr = &listErr
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("depupdate: bd list --status=open in %s: %w (stderr: %s)", anvilPath, err, strings.TrimSpace(listErr.String()))
+	}
+
+	var beads []minimalBead
+	if err := json.Unmarshal(out, &beads); err != nil {
+		return fmt.Errorf("depupdate: parse bd list output: %w", err)
+	}
+
+	const closeReason = "Updated via forge update-deps"
+
+	for _, b := range beads {
+		if !isDepUpdateTitle(b.Title) {
+			continue
+		}
+		pkg := extractPackageFromTitle(b.Title)
+		if _, ok := pkgSet[pkg]; !ok {
+			continue
+		}
+		closeCtx, closeCancel := context.WithTimeout(ctx, 30*time.Second)
+		closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", b.ID, "--reason", closeReason))
+		closeCmd.Dir = anvilPath
+		var closeErr bytes.Buffer
+		closeCmd.Stderr = &closeErr
+		if err := closeCmd.Run(); err != nil {
+			log.Printf("[depupdate] warning: bd close %s failed: %v (%s)", b.ID, err, strings.TrimSpace(closeErr.String()))
+		} else {
+			log.Printf("[depupdate] Closed stale dep bead %s (%s)", b.ID, pkg)
+		}
+		closeCancel()
+	}
+
+	return nil
+}
+
+// isDepUpdateTitle returns true when the bead title follows the standardized
+// depcheck format: "Deps(<ecosystem>): update <package> …"
+func isDepUpdateTitle(title string) bool {
+	return strings.HasPrefix(title, "Deps(") && strings.Contains(title, "): update ")
+}
+
+// extractPackageFromTitle parses the package name out of a depcheck bead title
+// of the form "Deps(<ecosystem>): update <package> <old> → <new>".
+// Returns an empty string when the title does not match.
+func extractPackageFromTitle(title string) string {
+	// Find ": update " separator.
+	const sep = "): update "
+	idx := strings.Index(title, sep)
+	if idx < 0 {
+		return ""
+	}
+	rest := title[idx+len(sep):]
+	// The package name is the first whitespace-delimited token.
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }

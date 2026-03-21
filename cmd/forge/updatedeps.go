@@ -116,6 +116,9 @@ GitHub PR summarising the detected updates for each anvil.`,
 				continue
 			}
 			fmt.Printf("PR for %s: %s\n", ar.Anvil, prURL)
+			if err := depupdate.CloseMatchingDepBeads(rootCtx, ar.Path, groups); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: closing dep beads for %s: %v\n", ar.Anvil, err)
+			}
 		}
 
 		return nil
