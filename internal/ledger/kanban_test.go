@@ -215,7 +215,7 @@ func TestRenderCard(t *testing.T) {
 		Anvil:    "heimdall",
 	}
 
-	card := renderCard(b, 25, false, false)
+	card := renderCard(b, 25, false, false, false, false)
 	assert.Contains(t, card, "Forge-abc1")
 	assert.Contains(t, card, "Fix the broken build")
 	assert.Contains(t, card, "heimdall")
@@ -269,7 +269,7 @@ func TestRenderCardBlocked(t *testing.T) {
 		DependsOn: []string{"dep-1"},
 	}
 
-	card := renderCard(b, 25, false, true)
+	card := renderCard(b, 25, false, true, false, false)
 	assert.Contains(t, card, "blocked-1")
 }
 
@@ -284,11 +284,32 @@ func TestRenderCardFixedHeight(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			card := renderCard(tc.b, 25, false, false)
+			card := renderCard(tc.b, 25, false, false, false, false)
 			assert.Equal(t, cardContentLines, lipgloss.Height(card),
 				"renderCard must always emit exactly cardContentLines lines")
 		})
 	}
+}
+
+func TestRenderCardShowSelectUnchecked(t *testing.T) {
+	b := Bead{ID: "Forge-sel1", Title: "Selectable bead", Priority: 2}
+	card := renderCard(b, 25, false, false, true, false)
+	assert.Contains(t, card, "[ ]", "unchecked checkbox should appear when showSelect=true")
+	assert.Contains(t, card, "Forge-sel1")
+}
+
+func TestRenderCardShowSelectChecked(t *testing.T) {
+	b := Bead{ID: "Forge-sel2", Title: "Checked bead", Priority: 1}
+	card := renderCard(b, 25, false, false, true, true)
+	assert.Contains(t, card, "[✓]", "checked checkbox should appear when showSelect=true and checked=true")
+	assert.Contains(t, card, "Forge-sel2")
+}
+
+func TestRenderCardShowSelectFixedHeight(t *testing.T) {
+	b := Bead{ID: "x-sel", Title: "Height test", Priority: 0, Anvil: "test"}
+	card := renderCard(b, 25, false, false, true, true)
+	assert.Equal(t, cardContentLines, lipgloss.Height(card),
+		"renderCard with showSelect=true must still emit exactly cardContentLines lines")
 }
 
 func TestMoveBeadToInReviewDisallowed(t *testing.T) {
