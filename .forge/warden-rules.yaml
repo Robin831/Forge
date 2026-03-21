@@ -1169,9 +1169,7 @@ rules:
       pattern: PR description or title claims a specific count of added/changed/removed items
       check: >-
         Verify that the count stated in the PR description or title matches the actual number of changes in the diff — e.g., if the PR says 'learned 4 rules', confirm exactly 4 new rules appear in the changed files
-      source:
-        - copilot:PR#332
-        - copilot:PR#337
+      source: ['copilot:PR#332', 'copilot:PR#337']
       added: "2026-03-20"
     - id: preserve-rule-attribution-sources
       category: other
@@ -1219,7 +1217,7 @@ rules:
         Adding a new warden rule entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
         Before inserting a new warden rule, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348']
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -1235,7 +1233,7 @@ rules:
         PR title or description claims a specific count of added, changed, or removed items
       check: >-
         Verify that the stated count in PR metadata (title, description, commit message) actually matches the diff — e.g. if it says 'learn 1 new rule' confirm exactly 1 new rule entry was added, not just an edit to an existing one
-      source: copilot:PR#349
+      source: ['copilot:PR#349', 'copilot:PR#353']
       added: "2026-03-20"
     - id: new-crud-needs-tests
       category: testing
@@ -1359,48 +1357,326 @@ rules:
       pattern: Warden rule definitions in warden-rules.yaml
       check: >-
         Verify that a specific, descriptive category is assigned when an appropriate one exists (for example, `style`, `testing`, or `concurrency`). The generic `category: other` should only be used when no more precise category applies, to keep triage, search, and reporting meaningful.
-      source: copilot:PR#348
+      source: ['copilot:PR#348', 'copilot:PR#353']
       added: "2026-03-20"
     - id: warden-source-field-wording
       category: style
-      pattern: Warden rule check text or description references 'source list' or treats the source field as a YAML list
+      pattern: >-
+        Warden rule check text or description references 'source list' or treats the source field as a YAML list
       check: >-
         Verify that warden rule text refers to the 'source field' or to PR attributions in the source field, rather than calling it a 'source list' or implying list semantics. The source field is modeled as a SourceList and may appear as either a single YAML scalar or a YAML sequence; commas in scalar values are just part of the string and are not treated as separators.
-      source: copilot:PR#337
+      source: ['copilot:PR#337', 'copilot:PR#353']
       added: "2026-03-20"
     - id: unreachable-early-return
       category: other
-      pattern: Early return guard checking for empty slices or nil values on results from functions that guarantee non-empty output (e.g., fallback/default values)
-      check: Verify that early-return guards on function results are actually reachable — if the called function guarantees a non-empty result (e.g., by adding a fallback/default entry), the guard is dead code. Either remove it or adjust it to detect the fallback value if a true 'no-op' mode is intended.
+      pattern: >-
+        Early return guard checking for empty slices or nil values on results from functions that guarantee non-empty output (e.g., fallback/default values)
+      check: >-
+        Verify that early-return guards on function results are actually reachable — if the called function guarantees a non-empty result (e.g., by adding a fallback/default entry), the guard is dead code. Either remove it or adjust it to detect the fallback value if a true 'no-op' mode is intended.
       source: copilot:PR#346
       added: "2026-03-20"
     - id: resolve-go-race-detection-config
       category: testing
-      pattern: Code that reads GoRaceDetection from a single config source (e.g., anvilConfig.GoRaceDetection) instead of using the full resolution chain
-      check: Verify that GoRaceDetection is resolved using the full precedence chain (.forge/temper.yaml > per-anvil config > global config) rather than reading from a single config level. Use the shared resolution helper (e.g., config.ResolveGoRaceDetection or Daemon.resolveGoRaceDetection) to ensure consistent behavior with the main Temper pipeline.
+      pattern: >-
+        Code that reads GoRaceDetection from a single config source (e.g., anvilConfig.GoRaceDetection) instead of using the full resolution chain
+      check: >-
+        Verify that GoRaceDetection is resolved using the full precedence chain (.forge/temper.yaml > per-anvil config > global config) rather than reading from a single config level. Use the shared resolution helper (e.g., config.ResolveGoRaceDetection or Daemon.resolveGoRaceDetection) to ensure consistent behavior with the main Temper pipeline.
       source: copilot:PR#346
       added: "2026-03-20"
     - id: git-checkout-vs-reset-hard
       category: error-handling
       pattern: Code using `git checkout -- .` to discard uncommitted changes
-      check: Verify that rollback/discard operations reset both the index and working tree. `git checkout -- .` only restores from the index and leaves staged changes intact. Prefer `git reset --hard` (or `git reset --hard` followed by `git clean -fd` if untracked files matter) to ensure the repo is fully clean.
+      check: >-
+        Verify that rollback/discard operations reset both the index and working tree. `git checkout -- .` only restores from the index and leaves staged changes intact. Prefer `git reset --hard` (or `git reset --hard` followed by `git clean -fd` if untracked files matter) to ensure the repo is fully clean.
       source: copilot:PR#346
       added: "2026-03-20"
     - id: git-clean-ignored-artifacts
       category: other
       pattern: git clean commands used to undo install or build side-effects
-      check: Verify git clean uses -fdx or -fdX to also remove ignored files/directories (e.g., node_modules/, bin/, obj/) when the intent is to fully undo install side-effects. Plain -fd leaves ignored artifacts behind.
+      check: >-
+        Verify git clean uses -fdx or -fdX to also remove ignored files/directories (e.g., node_modules/, bin/, obj/) when the intent is to fully undo install side-effects. Plain -fd leaves ignored artifacts behind.
       source: copilot:PR#346
       added: "2026-03-20"
     - id: doc-matches-implementation
       category: style
-      pattern: Function or method doc comments that describe error behavior, return values, or fallback logic
-      check: Verify that doc comments accurately describe the actual implementation behavior — especially around error returns, fallback paths, and edge cases. If the code silently falls back instead of returning an error, the comment must not claim an error is returned, and vice versa.
+      pattern: >-
+        Function or method doc comments that describe error behavior, return values, or fallback logic
+      check: >-
+        Verify that doc comments accurately describe the actual implementation behavior — especially around error returns, fallback paths, and edge cases. If the code silently falls back instead of returning an error, the comment must not claim an error is returned, and vice versa.
       source: copilot:PR#346
       added: "2026-03-20"
     - id: test-helper-filesystem-errors
       category: testing
-      pattern: Test helper functions calling os.WriteFile, os.MkdirAll, os.Create, or similar filesystem operations without checking the returned error
-      check: Verify that all filesystem operations in test helpers (os.WriteFile, os.MkdirAll, os.Create, etc.) have their errors checked, typically with require.NoError(t, err), so that fixture setup failures are caught immediately rather than causing misleading test failures downstream
+      pattern: >-
+        Test helper functions calling os.WriteFile, os.MkdirAll, os.Create, or similar filesystem operations without checking the returned error
+      check: >-
+        Verify that all filesystem operations in test helpers (os.WriteFile, os.MkdirAll, os.Create, etc.) have their errors checked, typically with require.NoError(t, err), so that fixture setup failures are caught immediately rather than causing misleading test failures downstream
       source: copilot:PR#346
       added: "2026-03-20"
+    - id: yaml-sequence-not-scalar
+      category: style
+      pattern: YAML field that holds multiple values written as a comma-separated scalar string
+      check: >-
+        Verify that multi-value YAML fields use a proper sequence (list entries with -) rather than a comma-separated scalar, which will be treated as a single string and not split automatically
+      source: copilot:PR#353
+      added: "2026-03-21"
+    - id: rule-category-self-consistency
+      category: style
+      pattern: A rule or guideline that itself violates the convention it enforces
+      check: >-
+        Verify that the rule's own metadata (e.g., category, naming, format) follows the same conventions the rule prescribes — for example, a rule that prohibits the generic `category: other` should not itself use that category; use the most specific applicable category instead.
+      source: copilot:PR#353
+      added: "2026-03-21"
+    - id: test-name-matches-assertion
+      category: testing
+      pattern: Test function or description string that references UI state/view names
+      check: >-
+        Verify test names and description strings accurately reflect the current behavior being asserted — if a tab or navigation action now leads to a different view, rename the test to match the new destination so failures remain self-explanatory
+      source: copilot:PR#369
+      added: "2026-03-21"
+    - id: expandable-state-sync
+      category: ui
+      pattern: >-
+        Toggle/expand state derived from raw data that may differ from rendered tree state
+      check: >-
+        Verify that expandable/collapsible state is derived from the same criteria used when rendering children, not from raw source data that may include unresolved or filtered-out entries
+      source: copilot:PR#369
+      added: "2026-03-21"
+    - id: dynamic-terminal-width-truncation
+      category: ui
+      pattern: >-
+        Fixed-width truncation constants used in TUI rendering (e.g., `truncate(..., 40)`) instead of deriving width from the model's viewport field
+      check: >-
+        Verify that all text truncation and padding in TUI components uses the dynamic viewport width (e.g., `m.width`) rather than hardcoded constants, so content stays within the terminal bounds at any window size
+      source: copilot:PR#369
+      added: "2026-03-21"
+    - id: changelog-fragment-collision-safe
+      category: error-handling
+      pattern: Changelog fragment filenames keyed only by date (e.g., deps-batch-YYYY-MM-DD)
+      check: >-
+        Verify fragment filenames are collision-safe when the function may run multiple times per day on the same branch — include a time component, nonce, or increment a suffix when the target file already exists. Also ensure 'nothing to commit' from git is treated as a no-op rather than an error.
+      source: copilot:PR#370
+      added: "2026-03-21"
+    - id: git-pathspec-relative-paths
+      category: other
+      pattern: >-
+        Files are staged via `git add` using absolute filesystem paths collected from os.ReadDir or filepath.Join
+      check: >-
+        Verify that paths passed to `git add` are repo-relative (e.g. `changelog.d/<file>`) rather than absolute filesystem paths; absolute paths with drive letters or backslashes are brittle as git pathspecs, especially on Windows
+      source: copilot:PR#370
+      added: "2026-03-21"
+    - id: consistent-test-assertions
+      category: testing
+      pattern: Test files using raw t.Errorf/t.Fatal/t.Error instead of testify assert/require
+      check: >-
+        Verify test assertions use testify/assert and testify/require consistently with the rest of the package tests, rather than raw t.Errorf or t.Fatal calls
+      source: copilot:PR#370
+      added: "2026-03-21"
+    - id: non-bead-pr-removal-determinism
+      category: other
+      pattern: >-
+        Functions that remove items from a list by matching on an ID field that can be empty, with a fallback match condition
+      check: >-
+        When beadID is empty and multiple items can share the same empty value, verify that removal uses a more specific identifier (e.g., PRID) to ensure deterministic removal rather than matching the first item with the empty ID
+      source: copilot:PR#371
+      added: "2026-03-21"
+    - id: sanitize-before-tui-render
+      category: security
+      pattern: >-
+        String values used as TUI labels or headers that originate from external data (bead titles, PR names, etc.)
+      check: >-
+        Verify that sanitizeTitle (or equivalent ANSI/control-character stripping) is applied to all raw strings before they are rendered into TUI components, including fallback/default label paths — not just the primary rendering path
+      source: copilot:PR#371
+      added: "2026-03-21"
+    - id: tui-title-sanitization
+      category: ui
+      pattern: >-
+        TUI label or status message assigned from raw bead.Title or similar user-controlled string without sanitization
+      check: >-
+        Verify that all bead titles rendered into TUI strings (labels, status messages, etc.) pass through sanitizeTitle() (and truncation if needed) to prevent ANSI escape codes, control characters, or newlines from corrupting the terminal UI
+      source: copilot:PR#371
+      added: "2026-03-21"
+    - id: comment-key-binding-accuracy
+      category: style
+      pattern: Code comments describing keyboard shortcuts or key bindings in UI/TUI code
+      check: >-
+        Verify that comments describing key bindings match the actual key bindings used in the code and UI footers (e.g., comment says 'D key' but binding uses lowercase 'd')
+      source: copilot:PR#372
+      added: "2026-03-21"
+    - id: form-helper-test-coverage
+      category: testing
+      pattern: >-
+        New form helper or selection logic added to a package that already has unit tests for similar helpers
+      check: >-
+        Verify that new candidate filtering, exclusion logic, and option construction in form helpers are covered by unit tests (e.g., excludes self/existing items, includes all expected options, validates default selections)
+      source: copilot:PR#372
+      added: "2026-03-21"
+    - id: dep-candidates-filter-by-anvil
+      category: other
+      pattern: >-
+        Building dependency candidate lists in UI forms that execute commands scoped to a specific anvil
+      check: >-
+        Verify that dependency candidate lists are filtered to the same anvil as the target bead, preventing invalid cross-anvil selections when the underlying command runs in a specific anvil's working directory
+      source: copilot:PR#372
+      added: "2026-03-21"
+    - id: cross-anvil-dep-scope
+      category: other
+      pattern: >-
+        Code that executes `bd dep remove` or similar dependency operations using a single anvil path for relationships that may span multiple anvils
+      check: >-
+        Verify that dependency removal operations resolve the correct anvil for each bead involved — especially when removing bidirectional relationships (e.g., blocks/blocked-by), ensure the operation executes in the anvil that owns each respective bead, not always the current anvil.
+      source: copilot:PR#372
+      added: "2026-03-21"
+    - id: gh-cli-output-parsing
+      category: other
+      pattern: Parsing stdout of `gh pr create` with string trimming to extract the PR URL
+      check: >-
+        Verify that `gh pr create` output is parsed robustly — either use `--json url -q .url` for stable machine-readable output, or extract the URL with a regex/helper rather than assuming the entire stdout is the URL, since `gh` may emit warnings or other text alongside it.
+      source: copilot:PR#373
+      added: "2026-03-21"
+    - id: deterministic-test-helpers
+      category: testing
+      pattern: >-
+        Test uses time.Now() or other non-deterministic values to construct strings/IDs that are also used in production code
+      check: >-
+        Verify that time-dependent or non-deterministic values in tests are injected via a helper (e.g., branchName(date time.Time)) so tests exercise actual production logic deterministically rather than validating locally-constructed strings
+      source: copilot:PR#373
+      added: "2026-03-21"
+    - id: filter-options-consistent-application
+      category: other
+      pattern: >-
+        Code that applies filter/option flags to one code path (e.g. summary/display) but not another (e.g. PR creation, changelog generation, grouping)
+      check: >-
+        Verify that filter options (e.g. --patch-only, --no-major) are applied consistently across ALL code paths that consume the filtered data, including PR body generation, changelog fragments, and grouping functions — not just the display/summary path
+      source: copilot:PR#373
+      added: "2026-03-21"
+    - id: pr-creation-requires-actual-changes
+      category: other
+      pattern: Code that creates a PR or changelog fragment after a scan/update command
+      check: >-
+        Verify that the PR being created contains the actual changes the command is supposed to make (e.g., updated manifests, lockfiles, applied patches), not just a changelog fragment. PR creation should be gated behind confirmation that the substantive changes have been committed.
+      source: copilot:PR#373
+      added: "2026-03-21"
+    - id: fallback-error-masking
+      category: error-handling
+      pattern: >-
+        Fallback retry logic that catches all errors from a primary operation and attempts a secondary operation
+      check: >-
+        Verify that fallback paths only trigger on the specific expected error condition (e.g., 'already exists'), not on any error. Use a pre-check (e.g., rev-parse --verify) or inspect the error message/exit code to distinguish expected vs unexpected failures, and return the original error for unexpected cases to avoid masking real failures.
+      source: copilot:PR#373
+      added: "2026-03-21"
+    - id: git-checkout-remote-fallback
+      category: error-handling
+      pattern: git checkout <branch> used as fallback when branch creation fails
+      check: >-
+        When falling back to checkout an existing branch, verify that the code handles the case where the branch exists only on the remote by fetching origin/<branch> first and using 'git checkout -B <branch> origin/<branch>' to track it, rather than assuming the branch exists locally
+      source: copilot:PR#373
+      added: "2026-03-21"
+    - id: gh-pr-already-exists-url-extraction
+      category: error-handling
+      pattern: >-
+        Code that handles `gh pr create` failures by extracting a PR URL from stderr when an 'already exists' error occurs
+      check: >-
+        Verify that the existing PR URL is extracted from both stdout and stderr, and that if no URL is found, the code returns an error or falls back to a follow-up command (e.g., `gh pr view --json url`) rather than silently returning an empty string as success
+      source: copilot:PR#373
+      added: "2026-03-21"
+    - id: capture-stderr-external-commands
+      category: error-handling
+      pattern: >-
+        External command executed via cmd.Output() or cmd.Run() without capturing cmd.Stderr
+      check: >-
+        Verify that cmd.Stderr is buffered and its contents are included in the returned error message along with relevant context (e.g., path, arguments) to make failures diagnosable
+      source: copilot:PR#375
+      added: "2026-03-21"
+    - id: american-english-spelling
+      category: style
+      pattern: >-
+        Comments or strings using British English spelling (e.g., 'standardised', 'colour', 'behaviour')
+      check: >-
+        Verify all comments and user-facing strings use American English spelling for consistency with the rest of the codebase
+      source: copilot:PR#375
+      added: "2026-03-21"
+    - id: select-all-respects-view-visibility
+      category: ui
+      pattern: Functions that select or operate on 'all visible' items in a multi-view UI
+      check: >-
+        Verify that 'select all visible' operations use the currently rendered dataset for the active view (e.g., flat hierarchy list, filtered results) rather than the full backing collection, so hidden or collapsed items are not included.
+      source: copilot:PR#374
+      added: "2026-03-21"
+    - id: bulk-mode-header-alignment
+      category: ui
+      pattern: >-
+        Table/list views that prepend a checkbox or prefix to data rows when entering a bulk/multi-select mode
+      check: >-
+        Verify that column headers receive the same prefix or equivalent left padding as data rows so that header columns remain visually aligned with their corresponding data columns
+      source: copilot:PR#374
+      added: "2026-03-21"
+    - id: bulk-select-visual-consistency
+      category: ui
+      pattern: >-
+        Bulk selection logic that allows selecting items without rendering a corresponding visual indicator (e.g., checkbox) for all selectable item types
+      check: >-
+        Verify that every item type that can be bulk-selected also renders a visual selection indicator (checkbox, highlight, etc.), and conversely that items without a visual indicator cannot be bulk-selected
+      source: copilot:PR#374
+      added: "2026-03-21"
+    - id: copilot-no-p-flag
+      category: other
+      pattern: >-
+        Claude CLI invocation args that include `-p -` or `-p` with a prompt string when the provider is copilot
+      check: >-
+        Verify that Copilot provider invocations do not use `-p -` or any `-p` flag — Copilot reads the prompt from stdin when `-p` is omitted, and may not support `-p -`. Use the shared provider arg builder or align with internal/provider/provider.go to pass prompts via stdin only.
+      source: copilot:PR#377
+      added: "2026-03-21"
+    - id: provider-switch-exhaustive
+      category: other
+      pattern: >-
+        Switch/if-else on provider type that has a default/else branch handling unknown providers
+      check: >-
+        Verify all supported providers (Claude, Gemini, Copilot, OpenAI, etc.) have explicit branches with correct flags/args; a catch-all default should not silently apply one provider's CLI flags to another
+      source: copilot:PR#377
+      added: "2026-03-21"
+    - id: provider-env-override
+      category: other
+      pattern: Code that spawns a provider/AI subprocess outside of smith.go
+      check: >-
+        Verify that per-provider environment overrides (Provider.Env) are applied and CLAUDECODE env vars are stripped, matching the env filtering logic in internal/smith/smith.go
+      source: copilot:PR#377
+      added: "2026-03-21"
+    - id: no-duplicate-error-prefix
+      category: error-handling
+      pattern: >-
+        Error message is prefixed at the source (e.g., fmt.Errorf("X failed: %w", err)) and then prefixed again at the call site or UI layer (e.g., toast/notification adds "X failed" prefix)
+      check: >-
+        Verify that error messages are not double-prefixed. Either let the error carry the full context and display it as-is, or have the error carry only the underlying detail and let the UI/caller add the user-facing prefix — never both.
+      source: copilot:PR#377
+      added: "2026-03-21"
+    - id: async-result-stale-check
+      category: concurrency
+      pattern: >-
+        Async operation result handler updates UI state without verifying the originating operation is still active
+      check: >-
+        Verify that async/in-flight result handlers check whether the operation is still relevant before applying state changes — e.g., compare a run ID, check a cancel func, or confirm the target object still matches — to prevent stale completions from corrupting UI state
+      source: copilot:PR#377
+      added: "2026-03-21"
+    - id: avoid-full-slice-rebuild-for-length
+      category: performance
+      pattern: >-
+        Calling a function that allocates and returns a full filtered/computed slice only to read its `.length`/`len()` on frequent code paths (e.g., input handlers, scroll events)
+      check: >-
+        Verify that hot paths (key-press handlers, scroll, render loops) do not rebuild slices solely to clamp or bound-check an index; prefer a cached count, a separate count function, or a pre-computed length field instead.
+      source: copilot:PR#378
+      added: "2026-03-21"
+    - id: help-text-keybinding-completeness
+      category: ui
+      pattern: Footer/status bar help text listing keyboard shortcuts in a TUI view
+      check: >-
+        Verify that all active keybindings handled in Model.Update (or equivalent input handler) are reflected in the on-screen help text, including globally-available bindings like AI improve (i), so the displayed hints match actual behavior
+      source: copilot:PR#378
+      added: "2026-03-21"
+    - id: ui-keybinding-hint-completeness
+      category: ui
+      pattern: Footer or help text listing keyboard shortcuts in a TUI view
+      check: >-
+        Verify all keybindings handled in Model.Update are reflected in the displayed help/footer text, with no omissions or stale entries
+      source: copilot:PR#378
+      added: "2026-03-21"
