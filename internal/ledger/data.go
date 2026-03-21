@@ -69,7 +69,7 @@ func FetchAllBeads(anvils map[string]string, db *state.DB) tea.Cmd {
 // accepts an injectable bdExecFunc for testability.
 func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *state.DB) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
 		var mu sync.Mutex
@@ -112,7 +112,7 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 			wg.Add(1)
 			go func(name, path string) {
 				defer wg.Done()
-				out, err := execFn(ctx, path, "list", "--status=closed", "--limit", "0", "--json")
+				out, err := execFn(ctx, path, "list", "--status=closed", "--limit", "50", "--json")
 				if err != nil {
 					// Non-critical: closed beads are supplementary, but record the first error so the UI can surface it.
 					mu.Lock()
