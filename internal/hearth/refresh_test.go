@@ -54,11 +54,12 @@ func TestCaptureFocusedBeadID(t *testing.T) {
 		t.Errorf("expected Forge-222, got %q", m.focusedBeadID)
 	}
 
-	// Cursor on anvil header → focusedBeadID should not change
+	// Cursor on anvil header → focusedBeadID should be cleared so refresh
+	// doesn't restore a stale bead selection when the user is on a header.
 	m.queueVP.cursor = 0
 	m.captureFocusedBeadID()
-	if m.focusedBeadID != "Forge-222" {
-		t.Errorf("expected focusedBeadID unchanged (Forge-222), got %q", m.focusedBeadID)
+	if m.focusedBeadID != "" {
+		t.Errorf("expected focusedBeadID cleared on anvil header, got %q", m.focusedBeadID)
 	}
 }
 

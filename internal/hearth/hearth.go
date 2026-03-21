@@ -1264,7 +1264,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case QueueErrorMsg:
-		// Preserve previous queue; surface the error in the events panel
+		// Preserve previous queue; clear the refresh guard so the next tick
+		// can retry rather than being permanently blocked.
+		m.refreshing = false
+		// Surface the error in the events panel
 		errEvent := EventItem{
 			Timestamp: time.Now().Format("15:04:05"),
 			Type:      "error",
@@ -1628,6 +1631,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds := []tea.Cmd{Tick()}
 			if !m.refreshing {
 				m.refreshing = true
+				// Capture the focused bead now, before the refresh, so
+				// cursor restoration always reflects the current selection
+				// even if the user hasn't scrolled since startup.
+				m.ensureQueueNav()
+				m.captureFocusedBeadID()
 				cmds = append(cmds, FetchAll(m.data, m.logCache))
 			}
 			if m.healthTickCount%healthTickDivisor == 0 {
@@ -2123,12 +2131,19 @@ func findBeadIndexByID(items []QueueItem, id string) int {
 // that the next refresh can restore the cursor to the same logical bead.
 func (m *Model) captureFocusedBeadID() {
 	if len(m.queueNavItems) == 0 || m.queueVP.cursor >= len(m.queueNavItems) {
+		// No valid nav item under the cursor; clear focused bead so refresh
+		// doesn't restore a stale selection.
+		m.focusedBeadID = ""
 		return
 	}
 	nav := m.queueNavItems[m.queueVP.cursor]
-	if !nav.isAnvil && nav.beadIdx >= 0 && nav.beadIdx < len(m.queue) {
-		m.focusedBeadID = m.queue[nav.beadIdx].BeadID
+	// If the cursor is on an anvil header or an invalid bead index, treat this
+	// as "no bead focused" and clear the stored bead ID.
+	if nav.isAnvil || nav.beadIdx < 0 || nav.beadIdx >= len(m.queue) {
+		m.focusedBeadID = ""
+		return
 	}
+	m.focusedBeadID = m.queue[nav.beadIdx].BeadID
 }
 
 // executeAction runs the selected action menu choice against the target bead.
