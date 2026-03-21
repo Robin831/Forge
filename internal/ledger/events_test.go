@@ -82,6 +82,30 @@ func TestEventPanelH(t *testing.T) {
 	assert.Equal(t, 2+eventPanelContentH, m.eventPanelH(), "visible panel height should be 2+content rows")
 }
 
+func TestFooterErrorHint(t *testing.T) {
+	m := newTestModel()
+
+	// No errors and panel hidden — no hint should appear.
+	footer := m.renderFooter()
+	if strings.Contains(footer, "E: show") {
+		t.Error("footer should not show error hint when no errors are logged")
+	}
+
+	// Errors logged but panel hidden — hint must appear.
+	m.addEvent(EventError, "something failed")
+	footer = m.renderFooter()
+	if !strings.Contains(footer, "E: show") {
+		t.Error("footer should show error hint when errors are logged and panel is hidden")
+	}
+
+	// Errors logged but panel is open — hint must NOT appear (panel is already visible).
+	m.showEventPanel = true
+	footer = m.renderFooter()
+	if strings.Contains(footer, "E: show") {
+		t.Error("footer should not show error hint when event panel is already open")
+	}
+}
+
 func TestPlaceEventPanelOverlay(t *testing.T) {
 	// 5-line background, 2-line panel — panel should occupy the bottom 2 lines.
 	bg := "line1\nline2\nline3\nline4\nline5"
