@@ -294,6 +294,18 @@ func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, rule
 		return err
 	}
 
+	// Fetch the specific batch branch so --force-with-lease has a remote-tracking
+	// ref to compare against. On a fresh worktree (first run or after worktree
+	// removal) the local branch has no upstream configured, so --force-with-lease
+	// would treat the expected remote state as non-existent and reject the push
+	// if the branch already exists on origin. Fetching first populates
+	// refs/remotes/origin/<branch> so git can verify the lease correctly.
+	// If the branch does not exist on origin yet, the fetch fails with
+	// "couldn't find remote ref" — that is fine and the push proceeds normally.
+	if err := git("fetch", "origin", branch); err != nil {
+		log.Printf("[smelter] pre-push fetch of %s returned error (first push or branch absent on origin): %v", branch, err)
+	}
+
 	// Force-push to the batch branch.
 	if err := git("push", "--force-with-lease", "origin", branch); err != nil {
 		return err
