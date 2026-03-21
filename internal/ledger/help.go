@@ -29,8 +29,9 @@ var (
 	keyAssign  = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "assign"))
 	keyAddDep  = key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "add dep"))
 	keyViewDeps = key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "view deps"))
-	keyAI         = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "AI improve"))
-	keyDepUpdate  = key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "update deps"))
+	keyAI          = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "AI improve"))
+	keyDepUpdate   = key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "update deps"))
+	keyEventPanel  = key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "toggle events"))
 	keyFilter  = key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "filter anvil"))
 	keyToggleClosed = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "toggle closed"))
 	keySpace   = key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select"))
@@ -75,7 +76,7 @@ func (listKeyMap) FullHelp() [][]key.Binding {
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},              // Bulk
 		{keyAI, keyDepUpdate},                                      // AI / Updates
 		{keyFilter, keyToggleClosed, keySort},                      // Filters
-		{keyTab, keyHelp, keyQuit},                                 // General
+		{keyTab, keyEventPanel, keyHelp, keyQuit},                  // General
 	}
 }
 
@@ -95,7 +96,7 @@ func (kanbanKeyMap) FullHelp() [][]key.Binding {
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},                         // Bulk
 		{keyAI, keyDepUpdate},                                                 // AI / Updates
 		{keyFilter, keyToggleClosed},                                          // Filters
-		{keyTab, keyHelp, keyQuit},                                            // General
+		{keyTab, keyEventPanel, keyHelp, keyQuit},                             // General
 	}
 }
 
@@ -115,7 +116,7 @@ func (hierarchyKeyMap) FullHelp() [][]key.Binding {
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},               // Bulk
 		{keyAI, keyDepUpdate},                                       // AI / Updates
 		{keyFilter, keyToggleClosed},                                // Filters
-		{keyTab, keyHelp, keyQuit},                                  // General
+		{keyTab, keyEventPanel, keyHelp, keyQuit},                   // General
 	}
 }
 
@@ -232,10 +233,13 @@ func (m *Model) renderHelpOverlay() string {
 func (m *Model) renderFooter() string {
 	footerStyle := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 2)
 
-	// Error note appended after footer text.
+	// Error note appended after footer text: show the last fetch error inline,
+	// or prompt the user to open the event panel when errors are logged there.
 	var errNote string
 	if m.err != nil {
 		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  ⚠ %v", m.err))
+	} else if !m.showEventPanel && m.hasEventErrors() {
+		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render("  ⚠ errors — E: show")
 	}
 
 	var footerText string

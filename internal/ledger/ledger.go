@@ -118,6 +118,10 @@ type Model struct {
 	toasts      []toast
 	nextToastID int
 
+	// Event panel state — persistent log of recent operations and errors.
+	eventLog       []EventEntry
+	showEventPanel bool
+
 	// Filter state — persists across view switches.
 	anvilFilter string // "" = All anvils; otherwise show only this anvil
 	showClosed  bool   // whether to show closed beads
@@ -296,6 +300,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != nil {
+			m.addEvent(EventError, fmt.Sprintf("AI improve failed: %s", msg.err))
 			m.aiOverlay = aiOverlayNone
 			m.aiTarget = nil
 			return m, m.addToast(fmt.Sprintf("AI improve failed: %s", msg.err), true)
@@ -312,6 +317,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.updateScanning = false
 		if msg.err != nil {
+			m.addEvent(EventError, fmt.Sprintf("Dep scan failed: %v", msg.err))
 			m.closeUpdateOverlay()
 			return m, m.addToast(fmt.Sprintf("Dep scan failed: %v", msg.err), true)
 		}
@@ -327,6 +333,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateApplyDoneMsg:
 		m.updateRunning = false
+		if msg.failed > 0 {
+			m.addEvent(EventWarn, fmt.Sprintf("Dep update: %d applied, %d failed", msg.applied, msg.failed))
+		} else if msg.applied > 0 {
+			m.addEvent(EventInfo, fmt.Sprintf("Dep update: %d group(s) applied across %d anvil(s)", msg.applied, msg.anvils))
+		}
 		// After a successful update, offer to close open dep-update beads —
 		// but only when the overlay is still visible. The user may have pressed
 		// Esc while the apply was running (m.showUpdateOverlay == false), in
@@ -361,8 +372,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var toastMsg string
 		if msg.failed == 0 {
 			toastMsg = fmt.Sprintf("Closed %d dep update bead(s)", msg.closed)
+			m.addEvent(EventInfo, toastMsg)
 		} else {
 			toastMsg = fmt.Sprintf("Closed %d dep update bead(s), %d failed", msg.closed, msg.failed)
+			m.addEvent(EventWarn, toastMsg)
 		}
 		return m, tea.Batch(m.addToast(toastMsg, msg.failed > 0), FetchAllBeads(m.anvils, m.db))
 
@@ -433,6 +446,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.startAIImprovement()
 			case "U":
 				return m, m.openUpdateOverlay()
+			case "E":
+				m.showEventPanel = !m.showEventPanel
+				return m, nil
 			// Bulk selection operations.
 			case " ":
 				// Dep sub-rows in hierarchy view are display-only; skip bulk toggle for them.
@@ -539,12 +555,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetching = false
 		m.beads = msg.Beads
 		m.err = msg.Err
+		if msg.Err != nil {
+			m.addEvent(EventError, fmt.Sprintf("Refresh error: %v", msg.Err))
+		}
 		m.list.vp.ClampToTotal(len(m.filteredBeads()))
 		m.refreshKanbanLanes()
 		m.refreshHierarchy()
 
 	case moveBeadMsg:
 		if msg.Err != nil {
+			m.addEvent(EventError, fmt.Sprintf("Move failed: %v", msg.Err))
 			m.err = msg.Err
 			cmd := m.addToast(fmt.Sprintf("Move failed: %v", msg.Err), true)
 			m.fetching = true
@@ -558,31 +578,37 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if label == "" {
 			label = "bead"
 		}
+		m.addEvent(EventInfo, fmt.Sprintf("Created %s", label))
 		cmd := m.addToast(fmt.Sprintf("Created %s", label), false)
 		m.fetching = true
 		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
 
 	case BeadUpdatedMsg:
+		m.addEvent(EventInfo, fmt.Sprintf("Updated %s", msg.ID))
 		cmd := m.addToast(fmt.Sprintf("Updated %s", msg.ID), false)
 		m.fetching = true
 		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
 
 	case BeadClosedMsg:
+		m.addEvent(EventInfo, fmt.Sprintf("Closed %s", msg.ID))
 		cmd := m.addToast(fmt.Sprintf("Closed %s", msg.ID), false)
 		m.fetching = true
 		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
 
 	case BeadReopenedMsg:
+		m.addEvent(EventInfo, fmt.Sprintf("Reopened %s", msg.ID))
 		cmd := m.addToast(fmt.Sprintf("Reopened %s", msg.ID), false)
 		m.fetching = true
 		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
 
 	case DepAddedMsg:
+		m.addEvent(EventInfo, fmt.Sprintf("Added dep: %s → %s", msg.BeadID, msg.DepID))
 		cmd := m.addToast(fmt.Sprintf("Added dep: %s → %s", msg.BeadID, msg.DepID), false)
 		m.fetching = true
 		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
 
 	case DepRemovedMsg:
+		m.addEvent(EventInfo, fmt.Sprintf("Removed dep: %s → %s", msg.BeadID, msg.DepID))
 		cmd := m.addToast(fmt.Sprintf("Removed dep: %s → %s", msg.BeadID, msg.DepID), false)
 		m.fetching = true
 		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
@@ -592,8 +618,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var text string
 		if msg.Failed == 0 {
 			text = fmt.Sprintf("Closed %d beads", msg.Closed)
+			m.addEvent(EventInfo, text)
 		} else {
 			text = fmt.Sprintf("Closed %d beads, %d failed", msg.Closed, msg.Failed)
+			m.addEvent(EventWarn, text)
 		}
 		cmd := m.addToast(text, msg.Failed > 0)
 		m.fetching = true
@@ -604,14 +632,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var text string
 		if msg.Failed == 0 {
 			text = fmt.Sprintf("Updated %d beads", msg.Updated)
+			m.addEvent(EventInfo, text)
 		} else {
 			text = fmt.Sprintf("Updated %d beads, %d failed", msg.Updated, msg.Failed)
+			m.addEvent(EventWarn, text)
 		}
 		cmd := m.addToast(text, msg.Failed > 0)
 		m.fetching = true
 		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
 
 	case ActionErrorMsg:
+		m.addEvent(EventError, msg.Err.Error())
 		cmd := m.addToast(msg.Err.Error(), true)
 		return m, cmd
 
@@ -1406,7 +1437,17 @@ func (m *Model) View() string {
 		out = m.renderList()
 	}
 
-	// Overlay active form.
+	// Overlay the event panel at the bottom of the main view. The panel is
+	// placed before form/update/AI/help overlays so that those blocking
+	// overlays cover it when active.
+	eventPanelVisible := false
+	if m.showEventPanel {
+		out = placeEventPanelOverlay(m.width, m.height, m.renderEventPanel(), out)
+		eventPanelVisible = true
+	}
+
+	// Overlay active form. Replaces out entirely with a full-screen placement,
+	// hiding the event panel underneath.
 	if m.activeForm != nil {
 		formView := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -1415,30 +1456,40 @@ func (m *Model) View() string {
 			Render(m.activeForm.View())
 		out = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, formView,
 			lipgloss.WithWhitespaceBackground(lipgloss.AdaptiveColor{Dark: "0", Light: "15"}))
+		eventPanelVisible = false
 	}
 
 	// Overlay the dependency update screen.
 	if m.showUpdateOverlay {
 		out = m.renderUpdateOverlay()
+		eventPanelVisible = false
 	}
 
 	// Overlay AI improvement spinner or approval.
 	switch m.aiOverlay {
 	case aiOverlaySpinner:
 		out = m.renderAISpinnerOverlay()
+		eventPanelVisible = false
 	case aiOverlayApproval:
 		out = m.renderAIApprovalOverlay()
+		eventPanelVisible = false
 	}
 
 	// Overlay help screen on top of everything else.
 	if m.helpSt.show {
 		out = m.renderHelpOverlay()
+		eventPanelVisible = false
 	}
 
 	// Overlay toasts at the bottom using ANSI-aware compositor.
+	// When the event panel is visible, place toasts above it.
 	toastView := m.renderToasts()
 	if toastView != "" {
-		out = placeToastsOverlay(m.width, m.height, 1, toastView, out)
+		footerH := 1
+		if eventPanelVisible {
+			footerH = m.eventPanelH()
+		}
+		out = placeToastsOverlay(m.width, m.height, footerH, toastView, out)
 	}
 
 	return out
