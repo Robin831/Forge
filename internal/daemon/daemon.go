@@ -2925,7 +2925,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "invalid retry_bead payload"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if rp.BeadID == "" || rp.Anvil == "" {
+		// When targeting an exhausted PR (PRID > 0), bead_id is optional — non-bead
+		// PRs (e.g. warden-learn PRs) have no associated bead. The PR record itself
+		// provides the anvil and bead_id needed for downstream logging.
+		if rp.PRID == 0 && (rp.BeadID == "" || rp.Anvil == "") {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
@@ -3033,7 +3036,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "invalid dismiss_bead payload"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if dp.BeadID == "" || dp.Anvil == "" {
+		// When targeting an exhausted PR (PRID > 0), bead_id is optional — non-bead
+		// PRs (e.g. warden-learn PRs) have no associated bead.
+		if dp.PRID == 0 && (dp.BeadID == "" || dp.Anvil == "") {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}

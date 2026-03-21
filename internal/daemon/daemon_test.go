@@ -721,6 +721,73 @@ func TestHandleIPC_RetryBead_ExhaustedPR(t *testing.T) {
 	assert.True(t, found, "EventRetryReset should be logged for the bead")
 }
 
+// TestHandleIPC_RetryBead_NonBeadPR verifies that retry works for exhausted PRs
+// that have no associated bead (e.g. warden-learn PRs). The retry should succeed
+// even when bead_id is empty in the payload, as long as PRID > 0.
+func TestHandleIPC_RetryBead_NonBeadPR(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	lm := lifecycle.New(db, logger, func(_ context.Context, _ lifecycle.ActionRequest) {})
+	bm := bellows.New(db, nil, time.Minute, map[string]string{"test-anvil": tmpDir}, nil, nil)
+
+	d := &Daemon{
+		db:             db,
+		logger:         logger,
+		worktreeMgr:    worktree.NewManager(),
+		promptBuilder:  prompt.NewBuilder(),
+		lifecycleMgr:   lm,
+		bellowsMonitor: bm,
+		runCtx:         context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir},
+		},
+	})
+
+	// Insert a PR with no bead_id (simulates a warden-learn or other non-bead PR).
+	pr := &state.PR{
+		Number:    99,
+		Anvil:     "test-anvil",
+		BeadID:    "", // no bead
+		Branch:    "warden-learn/forge",
+		Status:    state.PRNeedsFix,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NotZero(t, pr.ID, "InsertPR should set the ID")
+	require.NoError(t, db.UpdatePRLifecycle(pr.ID, 0, 0, 3, true))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
+
+	// Retry with only PRID set — no BeadID.
+	payload, _ := json.Marshal(ipc.RetryBeadPayload{
+		BeadID: "", // intentionally empty
+		Anvil:  "test-anvil",
+		PRID:   pr.ID,
+	})
+	resp := d.handleIPC(ipc.Command{Type: "retry_bead", Payload: payload})
+	assert.Equal(t, "ok", resp.Type, "retry should succeed for non-bead PR")
+
+	var msg map[string]string
+	require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+	assert.Equal(t, "PR fix counts reset, status set to open", msg["message"])
+
+	// Verify fix counts were reset.
+	pr2, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	require.NotNil(t, pr2)
+	assert.Equal(t, state.PROpen, pr2.Status)
+	assert.Equal(t, 0, pr2.RebaseCount)
+}
+
 func TestHandleIPC_DismissBead(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-test-*")
 	require.NoError(t, err)

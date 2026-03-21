@@ -1604,6 +1604,105 @@ func TestExecuteAction_DismissError_ItemNotRemoved(t *testing.T) {
 	}
 }
 
+// TestExecuteAction_NonBeadPR_RetryStatusUsesTitle verifies that when a NeedsAttention
+// item has no BeadID (e.g. a warden-learn PR), the status message uses the Title
+// instead of a blank string.
+func TestExecuteAction_NonBeadPR_RetryStatusUsesTitle(t *testing.T) {
+	m := NewModel(nil)
+	target := NeedsAttentionItem{BeadID: "", Anvil: "test", PRID: 5, Title: "warden-learn/forge"}
+	m.actionTarget = &target
+	m.needsAttention = []NeedsAttentionItem{target}
+	m.OnRetryBead = func(_, _ string, _ int) error { return nil }
+
+	m.executeAction(ActionRetry)
+
+	if !strings.Contains(m.statusMsg, "warden-learn/forge") {
+		t.Errorf("expected status message to contain title 'warden-learn/forge', got: %q", m.statusMsg)
+	}
+	if strings.HasPrefix(m.statusMsg, "Retry queued for ") && m.statusMsg == "Retry queued for " {
+		t.Errorf("status message should not be blank: %q", m.statusMsg)
+	}
+}
+
+// TestExecuteAction_NonBeadPR_DismissStatusUsesTitle verifies that dismiss status
+// messages use the Title when BeadID is empty.
+func TestExecuteAction_NonBeadPR_DismissStatusUsesTitle(t *testing.T) {
+	m := NewModel(nil)
+	target := NeedsAttentionItem{BeadID: "", Anvil: "test", PRID: 6, Title: "warden-learn/forge"}
+	m.actionTarget = &target
+	m.needsAttention = []NeedsAttentionItem{target}
+	m.OnDismissBead = func(_, _ string, _ int) error { return nil }
+
+	m.executeAction(ActionDismiss)
+
+	if !strings.Contains(m.statusMsg, "warden-learn/forge") {
+		t.Errorf("expected status message to contain title 'warden-learn/forge', got: %q", m.statusMsg)
+	}
+}
+
+// TestExecuteAction_NonBeadPR_RetryErrorStatusUsesTitle verifies that error status
+// messages use the Title when BeadID is empty.
+func TestExecuteAction_NonBeadPR_RetryErrorStatusUsesTitle(t *testing.T) {
+	m := NewModel(nil)
+	target := NeedsAttentionItem{BeadID: "", Anvil: "test", PRID: 7, Title: "warden-learn/forge"}
+	m.actionTarget = &target
+	m.needsAttention = []NeedsAttentionItem{target}
+	m.OnRetryBead = func(_, _ string, _ int) error { return errors.New("reset failed") }
+
+	m.executeAction(ActionRetry)
+
+	if !strings.Contains(m.statusMsg, "warden-learn/forge") {
+		t.Errorf("expected error status to contain title 'warden-learn/forge', got: %q", m.statusMsg)
+	}
+}
+
+// TestActionMenu_NonBeadPR_OnlyRetryDismiss verifies that pressing Enter on a
+// NeedsAttention item with no BeadID builds an action form (non-nil), indicating
+// that the item is still actionable. The conditional menu path is exercised.
+func TestActionMenu_NonBeadPR_OnlyRetryDismiss(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "", Anvil: "test", PRID: 8, Title: "warden-learn/forge"},
+	}
+	m.focused = PanelNeedsAttention
+	m.needsAttnVP.cursor = 0
+
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.actionTarget == nil {
+		t.Fatal("expected actionTarget to be set after Enter on NeedsAttention item")
+	}
+	if m.actionForm == nil {
+		t.Fatal("expected actionForm to be built for non-bead PR")
+	}
+	if m.actionTarget.BeadID != "" {
+		t.Errorf("expected BeadID to be empty for non-bead PR, got: %q", m.actionTarget.BeadID)
+	}
+}
+
+// TestActionMenu_BeadPR_FormIsBuilt verifies that pressing Enter on a bead PR
+// also builds an action form (regression guard for bead PRs).
+func TestActionMenu_BeadPR_FormIsBuilt(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "forge-99", Anvil: "test", PRID: 9, Title: "implement feature X"},
+	}
+	m.focused = PanelNeedsAttention
+	m.needsAttnVP.cursor = 0
+
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.actionTarget == nil {
+		t.Fatal("expected actionTarget to be set after Enter on bead NeedsAttention item")
+	}
+	if m.actionForm == nil {
+		t.Fatal("expected actionForm to be built for bead PR")
+	}
+	if m.actionTarget.BeadID != "forge-99" {
+		t.Errorf("expected BeadID 'forge-99', got: %q", m.actionTarget.BeadID)
+	}
+}
+
 func TestRenderReadyToMergeEmpty(t *testing.T) {
 	m := NewModel(nil)
 	m.readyToMerge = nil
