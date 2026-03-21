@@ -2,11 +2,14 @@ package smelter
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/warden"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -172,4 +175,92 @@ func TestFlush_MultipleRulesSameAnvil_AllProcessed(t *testing.T) {
 	byAnvil, err := db.QueryPendingRulesByAnvil()
 	require.NoError(t, err)
 	assert.Len(t, byAnvil["anvil-a"], 3, "all 3 rules should be queried for anvil-a")
+}
+
+// TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch verifies that
+// commitAndPush succeeds when the batch branch already exists on origin but
+// the local worktree has no remote-tracking ref (fresh creation path). The
+// pre-push fetch must populate refs/remotes/origin/<branch> so that
+// --force-with-lease can verify the lease correctly.
+func TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping git integration test in short mode")
+	}
+
+	ctx := context.Background()
+
+	runGit := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	// --- Set up a bare "origin" repo with an initial commit on main ---
+	originDir := t.TempDir()
+	runGit(originDir, "init", "--bare", "--initial-branch=main")
+
+	// Seed main via a temporary clone.
+	seedDir := t.TempDir()
+	runGit(seedDir, "clone", originDir, ".")
+	runGit(seedDir, "config", "user.email", "test@example.com")
+	runGit(seedDir, "config", "user.name", "Test")
+	require.NoError(t, os.WriteFile(filepath.Join(seedDir, "README"), []byte("test\n"), 0o644))
+	runGit(seedDir, "add", "README")
+	runGit(seedDir, "commit", "-m", "init")
+	runGit(seedDir, "push", "origin", "main")
+
+	// Push the batch branch to origin (simulating a prior smelter run).
+	branch := branchForAnvil("test-anvil")
+	runGit(seedDir, "checkout", "-b", branch)
+	require.NoError(t, os.MkdirAll(filepath.Join(seedDir, ".forge"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(seedDir, warden.RulesFileName),
+		[]byte("rules: []\n"), 0o644))
+	runGit(seedDir, "add", warden.RulesFileName)
+	runGit(seedDir, "commit", "-m", "initial rules")
+	runGit(seedDir, "push", "origin", branch)
+
+	// --- Fresh local worktree: cloned from origin, batch branch created
+	// locally without fetching it, so there is no remote-tracking ref. ---
+	localDir := t.TempDir()
+	runGit(localDir, "clone", originDir, ".")
+	runGit(localDir, "config", "user.email", "test@example.com")
+	runGit(localDir, "config", "user.name", "Test")
+	// Create the local branch without setting upstream tracking.
+	runGit(localDir, "checkout", "-b", branch)
+
+	// The clone above fetches all remote branches, so refs/remotes/origin/<branch>
+	// already exists. Explicitly delete it to simulate a fresh worktree where only
+	// the local branch was created (e.g. via git worktree add) without fetching.
+	// This is the exact condition that caused --force-with-lease to reject the push.
+	delRef := exec.Command("git", "update-ref", "-d", "refs/remotes/origin/"+branch)
+	delRef.Dir = localDir
+	require.NoError(t, delRef.Run(), "should be able to delete remote-tracking ref")
+
+	// Assert the remote-tracking ref is now absent — without the pre-push fetch,
+	// git push --force-with-lease would treat this as "no lease" and reject the push
+	// even though the branch exists on origin.
+	checkRef := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+branch)
+	checkRef.Dir = localDir
+	err := checkRef.Run()
+	require.Error(t, err, "remote-tracking ref should be absent before commitAndPush")
+
+	// Write the updated rules file so commitAndPush can stage and commit it.
+	require.NoError(t, os.MkdirAll(filepath.Join(localDir, ".forge"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(localDir, warden.RulesFileName),
+		[]byte("rules:\n  - id: r1\n    category: style\n    pattern: foo\n    check: bar\n"),
+		0o644))
+
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{"test-anvil": localDir})
+
+	// commitAndPush must succeed: the fetch populates the remote-tracking ref
+	// so --force-with-lease can verify the lease and allow the push.
+	err = s.commitAndPush(ctx, localDir, branch, 1)
+	require.NoError(t, err, "commitAndPush should succeed after fetching remote-tracking ref")
 }
