@@ -59,8 +59,15 @@ type Result struct {
 func Scan(ctx context.Context, anvils []Anvil, opts Options) ([]AnvilReport, error) {
 	var reports []AnvilReport
 	for _, a := range anvils {
-		if ctx.Err() != nil {
-			break
+		if err := ctx.Err(); err != nil {
+			// Context canceled or deadline exceeded; still return a report for this
+			// anvil so callers receive one report per requested anvil as documented.
+			reports = append(reports, AnvilReport{
+				Anvil:  a,
+				Groups: nil,
+				Errors: map[string]error{"scan": err},
+			})
+			continue
 		}
 		timeout := a.Timeout
 		if timeout == 0 {
@@ -106,24 +113,32 @@ func Apply(ctx context.Context, anvilPath string, anvilCfg config.AnvilConfig, g
 			continue
 		}
 		if err := installGroup(ctx, anvilPath, g); err != nil {
-			_ = RollbackGroup(ctx, anvilPath, g, err)
+			if rbErr := RollbackGroup(ctx, anvilPath, g, err); rbErr != nil {
+				err = fmt.Errorf("%w; rollback failed: %v", err, rbErr)
+			}
 			results = append(results, Result{Group: g, Err: err})
 			continue
 		}
 		tempered, verifyErr := VerifyGroup(ctx, anvilPath, anvilCfg)
 		if verifyErr != nil {
-			_ = RollbackGroup(ctx, anvilPath, g, verifyErr)
+			if rbErr := RollbackGroup(ctx, anvilPath, g, verifyErr); rbErr != nil {
+				verifyErr = fmt.Errorf("%w; rollback failed: %v", verifyErr, rbErr)
+			}
 			results = append(results, Result{Group: g, Err: verifyErr})
 			continue
 		}
 		if !tempered.Passed {
-			failErr := fmt.Errorf("temper verification failed")
-			_ = RollbackGroup(ctx, anvilPath, g, failErr)
+			failErr := fmt.Errorf("temper verification failed (step %s): %s", tempered.FailedStep, tempered.Summary)
+			if rbErr := RollbackGroup(ctx, anvilPath, g, failErr); rbErr != nil {
+				failErr = fmt.Errorf("%w; rollback failed: %v", failErr, rbErr)
+			}
 			results = append(results, Result{Group: g, Err: failErr})
 			continue
 		}
 		if err := CommitGroup(ctx, anvilPath, g); err != nil {
-			_ = RollbackGroup(ctx, anvilPath, g, err)
+			if rbErr := RollbackGroup(ctx, anvilPath, g, err); rbErr != nil {
+				err = fmt.Errorf("%w; rollback failed: %v", err, rbErr)
+			}
 			results = append(results, Result{Group: g, Err: err})
 			continue
 		}

@@ -44,7 +44,7 @@ func TestPreview_EmptyGroups(t *testing.T) {
 
 // ---- Scan tests ----
 
-func TestScan_CancelledContext_ReturnsEmptyReports(t *testing.T) {
+func TestScan_CancelledContext_ReturnsReportPerAnvil(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
@@ -53,8 +53,10 @@ func TestScan_CancelledContext_ReturnsEmptyReports(t *testing.T) {
 	}
 	reports, err := Scan(ctx, anvils, Options{})
 	require.NoError(t, err, "Scan should not propagate context cancellation as an error")
-	// The cancelled context should prevent the scan from running.
-	assert.Empty(t, reports)
+	// Even with a cancelled context, callers receive one report per requested anvil.
+	require.Len(t, reports, 1, "Scan must return one report per anvil even when context is cancelled")
+	assert.Equal(t, "repo1", reports[0].Anvil.Name)
+	assert.Error(t, reports[0].Errors["scan"], "cancelled anvil report must carry the context error")
 }
 
 func TestScan_EmptyAnvils_ReturnsEmpty(t *testing.T) {
