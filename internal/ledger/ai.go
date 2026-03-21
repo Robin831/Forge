@@ -306,7 +306,7 @@ func (m *Model) renderAIApprovalOverlay() string {
 	labelStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
 
-	maxWidth := min(m.width-12, 72)
+	maxWidth := max(1, min(m.width-12, 72))
 
 	var sb strings.Builder
 	sb.WriteString(labelStyle.Render(fmt.Sprintf("AI Improvement — %s", bead.ID)))
@@ -384,11 +384,12 @@ func (m *Model) renderAIApprovalOverlay() string {
 
 // truncateLines truncates a multi-line string to at most maxLines lines,
 // each line truncated to maxWidth visual columns.
+// When lines are dropped, the last kept line is replaced with "…".
 func truncateLines(s string, maxWidth, maxLines int) string {
 	lines := strings.Split(s, "\n")
 	if len(lines) > maxLines {
 		lines = lines[:maxLines]
-		lines = append(lines, "…")
+		lines[maxLines-1] = "…"
 	}
 	for i, l := range lines {
 		lines[i] = truncate(l, maxWidth)
