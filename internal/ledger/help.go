@@ -109,7 +109,7 @@ func (hierarchyKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{keyUp, keyDown, keyExpand, keySpace, keyCtrlA, keyEscB},    // Navigation
 		{keyNew, keyEdit, keyCloseB, keyReopen},                     // CRUD
-		{keyLabel, keyPriorityB, keyComment, keyNotes, keyAssign},   // Metadata
+		{keyPriorityB, keyComment, keyNotes, keyAssign},             // Metadata
 		{keyAddDep, keyViewDeps},                                    // Dependencies
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},               // Bulk
 		{keyAI},                                                     // AI
@@ -143,7 +143,7 @@ func (m *Model) updateHelpOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
-	case "?", "esc", "q":
+	case "?", "esc":
 		m.helpSt.show = false
 	case "j", "down":
 		m.helpSt.vp.ScrollDown(1)
@@ -202,7 +202,9 @@ func (m *Model) renderHelpOverlay() string {
 	content := sb.String()
 
 	maxW := max(m.width-8, 40)
+	maxW = min(maxW, m.width)
 	maxH := max(m.height-6, 5)
+	maxH = min(maxH, m.height)
 	contentH := strings.Count(content, "\n") + 1
 
 	vpH := min(contentH, maxH)
@@ -249,14 +251,14 @@ func (m *Model) renderFooter() string {
 	case m.bulk.Count() > 0:
 		// Bulk selection mode: show bulk operation shortcuts.
 		h := m.helpSt.helper
-		h.Width = m.width - 4
+		h.Width = max(m.width-4, 1)
 		bulkBindings := []key.Binding{keyBulkClose, keyBulkLabel, keyBulkPriority, keyCtrlA, keyEscB}
 		footerText = fmt.Sprintf("%d selected: ", m.bulk.Count()) + h.ShortHelpView(bulkBindings)
 
 	default:
 		// Normal mode: view-specific short bindings.
 		h := m.helpSt.helper
-		h.Width = m.width - 4
+		h.Width = max(m.width-4, 1)
 		var km help.KeyMap
 		switch m.view {
 		case ViewKanban:
