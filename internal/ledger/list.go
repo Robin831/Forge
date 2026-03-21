@@ -167,7 +167,7 @@ func (m *Model) updateList(msg tea.KeyMsg) tea.Cmd {
 
 	switch msg.String() {
 	case "j", "down":
-		m.list.vp.ScrollDown(len(m.filteredBeads()))
+		m.list.vp.ScrollDown(m.filteredBeadsCount())
 	case "k", "up":
 		m.list.vp.ScrollUp()
 	case "S":
@@ -288,7 +288,7 @@ func (m *Model) renderList() string {
 	if m.bulk.Count() > 0 {
 		footerText = fmt.Sprintf("%d selected: Ctrl+X close  Ctrl+L label  Ctrl+P priority  Ctrl+A all  Esc: clear  |  j/k: navigate  Space: toggle  q: quit", m.bulk.Count())
 	} else {
-		footerText = "j/k: navigate  Space: select  Ctrl+A: all  S: sort  f: filter anvil  s: show/hide closed  n: new  e: edit  x: close  r: reopen  d: add dep  b: view deps  Tab: kanban/hierarchy  q: quit"
+		footerText = "j/k: navigate  Space: select  Ctrl+A: all  S: sort  f: filter anvil  s: show/hide closed  n: new  e: edit  x: close  r: reopen  d: add dep  b: view deps  i: AI improve  Tab: kanban/hierarchy  q: quit"
 	}
 	footer := footerStyle.Render(footerText) + errNote
 

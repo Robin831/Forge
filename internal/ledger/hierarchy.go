@@ -261,7 +261,7 @@ func (m *Model) renderHierarchy() string {
 	if m.bulk.Count() > 0 {
 		hierarchyFooter = fmt.Sprintf("%d selected: Ctrl+X close  Ctrl+L label  Ctrl+P priority  Esc: clear  |  j/k: navigate  Space: toggle  Enter: expand/collapse  q: quit", m.bulk.Count())
 	} else {
-		hierarchyFooter = "j/k: navigate  Space: select  Enter: expand/collapse  f: filter anvil  s: show/hide closed  d: add dep  b: view deps  Tab: list view  q: quit"
+		hierarchyFooter = "j/k: navigate  Space: select  Enter: expand/collapse  f: filter anvil  s: show/hide closed  d: add dep  b: view deps  i: AI improve  Tab: list view  q: quit"
 	}
 	footer := footerStyle.Render(hierarchyFooter)
 

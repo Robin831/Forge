@@ -142,6 +142,22 @@ func (m *Model) filteredBeads() []Bead {
 	return result
 }
 
+// filteredBeadsCount returns the count of beads matching the current filters
+// without allocating a slice.
+func (m *Model) filteredBeadsCount() int {
+	count := 0
+	for _, b := range m.beads {
+		if m.anvilFilter != "" && b.Anvil != m.anvilFilter {
+			continue
+		}
+		if !m.showClosed && b.Status == "closed" {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 // sortedAnvilNames returns the registered anvil names in alphabetical order.
 func (m *Model) sortedAnvilNames() []string {
 	names := make([]string, 0, len(m.anvils))
