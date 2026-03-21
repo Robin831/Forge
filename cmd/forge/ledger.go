@@ -14,6 +14,7 @@ import (
 
 func init() {
 	rootCmd.AddCommand(ledgerCmd)
+	ledgerCmd.Flags().Bool("no-mouse", false, "disable mouse reporting (restores normal terminal text selection)")
 }
 
 var ledgerCmd = &cobra.Command{
@@ -44,8 +45,15 @@ var ledgerCmd = &cobra.Command{
 		}
 
 		model := ledger.NewModel(anvils, cfg.Anvils, db)
-		// tea.WithMouseCellMotion enables mouse scroll events for the bead list and kanban lanes.
-		p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		noMouse, _ := cmd.Flags().GetBool("no-mouse")
+		// tea.WithMouseCellMotion enables mouse events (scroll wheel, clicks) throughout
+		// the Ledger TUI, including list, kanban, hierarchy, and help overlay.
+		// Pass --no-mouse to disable and restore normal terminal text selection.
+		opts := []tea.ProgramOption{tea.WithAltScreen()}
+		if !noMouse {
+			opts = append(opts, tea.WithMouseCellMotion())
+		}
+		p := tea.NewProgram(model, opts...)
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			return err

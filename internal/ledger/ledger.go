@@ -491,6 +491,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Action != tea.MouseActionPress {
 			break
 		}
+		// Don't let scroll events mutate underlying state while a blocking overlay
+		// (form, update overlay, AI overlay, or sort selector) is active.
+		overlayActive := m.activeForm != nil ||
+			m.showUpdateOverlay ||
+			m.aiOverlay != aiOverlayNone ||
+			m.list.sortForm != nil
+		if overlayActive {
+			break
+		}
 		switch msg.Button {
 		case tea.MouseButtonWheelDown:
 			if m.helpSt.show {
