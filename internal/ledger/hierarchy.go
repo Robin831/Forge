@@ -185,7 +185,7 @@ func (m *Model) updateHierarchy(msg tea.KeyMsg) tea.Cmd {
 		if idx >= 0 && idx < len(m.hierarchy.flat) {
 			item := m.hierarchy.flat[idx]
 			if !item.isDep && item.bead != nil {
-				expandable := len(item.bead.Blocks) > 0 || len(item.bead.DependsOn) > 0
+				expandable := item.hasChildren || len(item.bead.DependsOn) > 0
 				if expandable {
 					if m.hierarchy.expanded[item.bead.ID] {
 						delete(m.hierarchy.expanded, item.bead.ID)
@@ -208,7 +208,7 @@ func (m *Model) updateHierarchy(msg tea.KeyMsg) tea.Cmd {
 //
 //	✓  closed
 //	•  in_progress
-//	✗  open and blocked (has unresolved DependsOn)
+//	✗  open and has any DependsOn entries (same check as isBlocked)
 //	○  open
 func hierarchyStatusIcon(b *Bead) string {
 	switch b.Status {
@@ -266,10 +266,12 @@ func (m *Model) renderHierarchyRow(item flatItem, selected bool) string {
 		label := item.depID
 		if item.depBead != nil {
 			icon := hierarchyStatusIcon(item.depBead)
+			// Fixed chrome before the title: indent(2*depth) + "  → "(4) + icon(1) + " "(1) + padRight(14) + "  "(2) + style padding(4) = 26 + 2*depth
+			depTitleWidth := max(m.width-26-2*item.depth, 10)
 			label = fmt.Sprintf("%s %s  %s",
 				icon,
 				padRight(item.depID, 14),
-				truncate(item.depBead.Title, 40),
+				truncate(item.depBead.Title, depTitleWidth),
 			)
 		}
 		line := indent + "  → " + label
