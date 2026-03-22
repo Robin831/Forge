@@ -2048,3 +2048,50 @@ rules:
         Verify that grouping constants accurately reflect the semantics of all included phases — if a phase is user-initiated, foreground, or excluded from capacity/stale detection for different reasons than the others, the comment, name, or grouping should be updated or split to reflect that distinction
       source: copilot:PR#400
       added: "2026-03-22"
+    - id: test-visual-truncation-assertions
+      category: testing
+      pattern: >-
+        Test assertions using NotContains to verify text truncation in terminal/TUI output
+      check: >-
+        When testing text truncation in rendered TUI output, don't rely solely on NotContains(output, fullString) — lipgloss or other renderers may wrap long text across lines, causing NotContains to pass even without truncation. Instead, assert that the rendered output contains a truncation marker (e.g. '…') when the text exceeds available width, and/or verify the exact number of rendered lines to rule out wrapping.
+      source: copilot:PR#402
+      added: "2026-03-22"
+    - id: test-assert-visual-truncation
+      category: testing
+      pattern: >-
+        Test assertions using NotContains or negative checks to verify long text is not rendered verbatim in constrained-width UI output
+      check: >-
+        When testing that long strings are truncated or wrapped in rendered output, do not rely solely on NotContains(output, longString) — the full string may still be present split across lines. Instead, assert that no rendered line exceeds the expected width, verify the expected number of output lines (to detect unwanted wrapping), and check for truncation indicators like an ellipsis ("…").
+      source: copilot:PR#402
+      added: "2026-03-22"
+    - id: avoid-duplicated-branch-logic
+      category: style
+      pattern: >-
+        Conditional branches (if/else or switch cases) that compute the same intermediate values independently before diverging on a small styling or formatting detail
+      check: >-
+        Verify that shared computations (e.g. prefix, widths, truncation) are factored out before the branch point, so only the truly differing logic lives inside each branch — preventing inconsistent future edits
+      source: copilot:PR#402
+      added: "2026-03-22"
+    - id: panel-width-calculation
+      category: ui
+      pattern: Width calculations for list items or content rendering in multi-panel layouts
+      check: >-
+        Verify that item width calculations account for all visible panels (e.g., detail/side panels) by using the actual available panel width rather than the full window width, to prevent content wrapping or truncation when secondary panels are displayed
+      source: copilot:PR#402
+      added: "2026-03-22"
+    - id: flush-buffered-text-before-plain-line
+      category: ui
+      pattern: >-
+        Appending a plain/non-JSON line to output while a text buffer (e.g. streaming delta accumulator) may hold unflushed content
+      check: >-
+        Verify that any buffered streaming text is flushed before appending a plain-text entry, so output preserves chronological ordering
+      source: copilot:PR#404
+      added: "2026-03-22"
+    - id: new-behavior-needs-tests
+      category: testing
+      pattern: >-
+        Adding new code paths, branches, or format handling without corresponding test coverage
+      check: >-
+        When new behavior is introduced (e.g. handling a new input format, adding a fallback path), verify that focused unit tests exist asserting the new behavior and its interaction with surrounding logic (retention, ordering, edge cases)
+      source: copilot:PR#404
+      added: "2026-03-22"
