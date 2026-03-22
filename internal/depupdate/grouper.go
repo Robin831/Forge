@@ -21,6 +21,7 @@ type UpdateGroup struct {
 	Updates   []depcheck.ModuleUpdate // packages in this group
 	Kind      string                  // worst-case kind: "major" > "minor" > "patch"
 	Ecosystem string                  // e.g. "Go", "npm", "NuGet"
+	SourceDir string                  // directory containing the manifest (e.g. package.json); empty means repo root
 }
 
 // taggedUpdate pairs a ModuleUpdate with its ecosystem for internal processing.
@@ -55,6 +56,9 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 		return nil
 	}
 
+	// grouped tracks packages already assigned to a group.
+	// Key is "sourceDir\x00path" to allow the same package name to appear in
+	// multiple package.json files (different SourceDirs) without collision.
 	grouped := make(map[string]bool)
 	var groups []UpdateGroup
 
@@ -67,28 +71,42 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 	}
 
 	if len(npmPkgs) > 0 {
-		peerGroups := buildPeerDepGroups(ctx, npmPkgs)
-		for _, g := range peerGroups {
-			groups = append(groups, g)
-			for _, u := range g.Updates {
-				grouped[u.Path] = true
+		// Partition by SourceDir so peer-dep grouping never merges packages
+		// from different package.json files.
+		bySourceDir := make(map[string][]taggedUpdate)
+		for _, u := range npmPkgs {
+			bySourceDir[u.SourceDir] = append(bySourceDir[u.SourceDir], u)
+		}
+		sourceDirs := make([]string, 0, len(bySourceDir))
+		for sd := range bySourceDir {
+			sourceDirs = append(sourceDirs, sd)
+		}
+		sort.Strings(sourceDirs)
+		for _, sd := range sourceDirs {
+			peerGroups := buildPeerDepGroups(ctx, bySourceDir[sd])
+			for _, g := range peerGroups {
+				groups = append(groups, g)
+				for _, u := range g.Updates {
+					grouped[u.SourceDir+"\x00"+u.Path] = true
+				}
 			}
 		}
 	}
 
 	// --- 2. Scope groups ---
-	// scopeKey encodes both scope and ecosystem to avoid cross-ecosystem collisions.
-	type scopeKey struct{ scope, ecosystem string }
+	// scopeKey encodes scope, ecosystem, and sourceDir to avoid grouping packages
+	// from different package.json files or different ecosystems together.
+	type scopeKey struct{ scope, ecosystem, sourceDir string }
 	scopeMembers := make(map[scopeKey][]depcheck.ModuleUpdate)
 	for _, u := range all {
-		if grouped[u.Path] {
+		if grouped[u.SourceDir+"\x00"+u.Path] {
 			continue
 		}
 		scope := extractScope(u.Path)
 		if scope == "" {
 			continue
 		}
-		k := scopeKey{scope, u.Ecosystem}
+		k := scopeKey{scope, u.Ecosystem, u.SourceDir}
 		scopeMembers[k] = append(scopeMembers[k], u.ModuleUpdate)
 	}
 	for k, members := range scopeMembers {
@@ -100,15 +118,16 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 			Updates:   members,
 			Kind:      worstKind(members),
 			Ecosystem: k.ecosystem,
+			SourceDir: k.sourceDir,
 		})
 		for _, m := range members {
-			grouped[m.Path] = true
+			grouped[m.SourceDir+"\x00"+m.Path] = true
 		}
 	}
 
 	// --- 3. Standalone ---
 	for _, u := range all {
-		if grouped[u.Path] {
+		if grouped[u.SourceDir+"\x00"+u.Path] {
 			continue
 		}
 		groups = append(groups, UpdateGroup{
@@ -116,6 +135,7 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 			Updates:   []depcheck.ModuleUpdate{u.ModuleUpdate},
 			Kind:      u.Kind,
 			Ecosystem: u.Ecosystem,
+			SourceDir: u.SourceDir,
 		})
 	}
 
@@ -207,6 +227,7 @@ func buildPeerDepGroups(ctx context.Context, npmPkgs []taggedUpdate) []UpdateGro
 			Updates:   members,
 			Kind:      worstKind(members),
 			Ecosystem: "npm",
+			SourceDir: members[0].SourceDir,
 		})
 	}
 	return groups

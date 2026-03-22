@@ -18,6 +18,47 @@ func TestInstallNpmGroup_EmptyGroup(t *testing.T) {
 	}
 }
 
+func TestInstallNpmGroup_EmptyGroupWithSourceDir(t *testing.T) {
+	// Verify that SourceDir does not cause issues for empty groups (early return).
+	group := UpdateGroup{Name: "empty", Updates: nil, Kind: "patch", SourceDir: t.TempDir()}
+	if err := InstallNpmGroup(t.Context(), t.TempDir(), group); err != nil {
+		t.Fatalf("expected nil error for empty group with SourceDir, got %v", err)
+	}
+}
+
+func TestResolveNpmInstallDir_UsesSourceDirWhenSet(t *testing.T) {
+	projectDir := t.TempDir()
+	sourceDir := t.TempDir()
+
+	group := UpdateGroup{
+		Name:      "lodash",
+		Updates:   []depcheck.ModuleUpdate{{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"}},
+		Kind:      "patch",
+		SourceDir: sourceDir,
+	}
+
+	got := resolveNpmInstallDir(projectDir, group)
+	if got != sourceDir {
+		t.Errorf("resolveNpmInstallDir = %q, want sourceDir %q", got, sourceDir)
+	}
+}
+
+func TestResolveNpmInstallDir_FallsBackToProjectDir(t *testing.T) {
+	projectDir := t.TempDir()
+
+	group := UpdateGroup{
+		Name:    "lodash",
+		Updates: []depcheck.ModuleUpdate{{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"}},
+		Kind:    "patch",
+		// SourceDir intentionally empty
+	}
+
+	got := resolveNpmInstallDir(projectDir, group)
+	if got != projectDir {
+		t.Errorf("resolveNpmInstallDir = %q, want projectDir %q", got, projectDir)
+	}
+}
+
 func TestInstallGoGroup_EmptyGroup(t *testing.T) {
 	group := UpdateGroup{Name: "empty", Updates: nil, Kind: "patch"}
 	if err := InstallGoGroup(t.Context(), t.TempDir(), group); err != nil {

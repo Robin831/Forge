@@ -225,10 +225,11 @@ func runNpmOutdated(ctx context.Context, timeout time.Duration, dir string) ([]M
 
 		kind := classifyUpdate(entry.Current, entry.Latest)
 		updates = append(updates, ModuleUpdate{
-			Path:    pkg,
-			Current: entry.Current,
-			Latest:  entry.Latest,
-			Kind:    kind,
+			Path:      pkg,
+			Current:   entry.Current,
+			Latest:    entry.Latest,
+			Kind:      kind,
+			SourceDir: dir,
 		})
 	}
 
