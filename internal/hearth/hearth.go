@@ -767,7 +767,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateRunning = false
 		m.closeUpdateOverlay()
 		if msg.applied == 0 && msg.failed == 0 {
-			return m, m.addToast("No updates were applied", false)
+			return m, tea.Batch(tea.SetWindowTitle("The Forge — Hearth"), m.addToast("No updates were applied", false))
 		}
 		summary := fmt.Sprintf("Updated %d groups across %d anvil(s)", msg.applied, msg.anvils)
 		if msg.skipped > 0 {
@@ -780,7 +780,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			summary += fmt.Sprintf("; PR creation failed for %d anvil(s)", len(msg.prErrors))
 		}
 		isError := (msg.failed > 0 && msg.applied == 0) || (len(msg.prErrors) > 0 && msg.applied == 0)
-		return m, m.addToast(summary, isError)
+		return m, tea.Batch(tea.SetWindowTitle("The Forge — Hearth"), m.addToast(summary, isError))
 
 	case tea.KeyMsg:
 		// Log viewer overlay intercepts all keys

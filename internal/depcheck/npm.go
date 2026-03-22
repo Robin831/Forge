@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -141,6 +142,7 @@ func runNpmInstall(ctx context.Context, timeout time.Duration, dir string) error
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "npm", "ci", "--ignore-scripts"))
 	cmd.Dir = dir
 
+	cmd.Stdout = io.Discard
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
