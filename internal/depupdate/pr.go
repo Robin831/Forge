@@ -167,8 +167,18 @@ func CreatePR(ctx context.Context, anvilPath, anvilName, branch string, groups [
 		return nil
 	}
 
-	// Push branch and set upstream tracking reference. Allow more time for push.
-	if err := git(120*time.Second, "push", "--set-upstream", "origin", branch); err != nil {
+	// Fetch the batch branch so --force-with-lease has a remote-tracking ref.
+	// On a fresh checkout the local branch has no upstream, so force-with-lease
+	// would reject the push if the branch already exists on origin from a
+	// previous update run. If the branch doesn't exist on origin yet, the
+	// fetch fails silently and the push proceeds as a first push.
+	if err := git(30*time.Second, "fetch", "origin", branch); err != nil {
+		log.Printf("[depupdate] pre-push fetch of %s (first push or absent on origin): %v", branch, err)
+	}
+
+	// Force-push with lease to handle same-day re-runs where the remote
+	// branch already exists with different commits from an earlier run.
+	if err := git(120*time.Second, "push", "--force-with-lease", "--set-upstream", "origin", branch); err != nil {
 		return "", fmt.Errorf("depupdate: push branch %q: %w", branch, err)
 	}
 
