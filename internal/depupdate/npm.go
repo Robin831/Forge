@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 
 	"github.com/Robin831/Forge/internal/executil"
@@ -27,6 +28,7 @@ func InstallNpmGroup(ctx context.Context, projectDir string, group UpdateGroup) 
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	cmd.Stdout = io.Discard
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("npm install for group %q: %w\nstderr: %s", group.Name, err, stderr.String())

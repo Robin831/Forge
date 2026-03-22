@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +41,7 @@ func InstallDotnetGroup(ctx context.Context, projectDir string, group UpdateGrou
 
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
+		cmd.Stdout = io.Discard
 
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("dotnet add package %s@%s to %s: %w\nstderr: %s",
