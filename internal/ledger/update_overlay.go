@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Robin831/Forge/internal/depupdate"
+	"github.com/Robin831/Forge/internal/worktree"
 )
 
 // updateFilterChoice controls which update groups are included when applying.
@@ -139,6 +140,12 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 			opts.NoMajor = true
 		}
 
+		// Compute the batch-update branch name once so all anvils land on the
+		// same branch name for this run (consistent same-day re-run semantics).
+		dateStr := time.Now().Format("2006-01-02")
+		targetBranch := "deps/batch-update-" + dateStr
+		worktreeBeadID := "depupdate-" + dateStr
+
 		applied, failed, skipped, anvilsUpdated := 0, 0, 0, 0
 		appliedPackages := make(map[string]bool)
 		var prErrors []string
@@ -161,53 +168,61 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				continue
 			}
 
-			// Step 1: Checkout (or create) the batch-update branch so that
-			// commits land on a dedicated branch rather than main.
-			branch, err := depupdate.CheckoutUpdateBranch(ctx, report.Anvil.Path)
-			if err != nil {
-				failed += len(groups)
-				continue
-			}
+			// processAnvil runs all dep-update steps for a single anvil inside an
+			// isolated git worktree, keeping the main anvil directory on main.
+			// A closure is used so defer cleanup is scoped to this anvil's work.
+			func() {
+				wtMgr := worktree.NewManager()
+				wt, err := wtMgr.CreateWithOptions(ctx, report.Anvil.Path, worktreeBeadID, worktree.CreateOptions{
+					Branch:      targetBranch,
+					ResetBranch: true,
+				})
+				if err != nil {
+					failed += len(groups)
+					return
+				}
+				defer wtMgr.Remove(ctx, report.Anvil.Path, wt)
 
-			// Step 2: Install, verify (Temper), and commit each group.
-			results, err := depupdate.Apply(ctx, report.Anvil.Path, report.Anvil.Config, groups)
-			if err != nil {
-				failed += len(groups)
-				continue
-			}
-			var appliedGroups []depupdate.UpdateGroup
-			for _, r := range results {
-				if r.Applied {
-					applied++
-					appliedGroups = append(appliedGroups, r.Group)
-					for _, u := range r.Group.Updates {
-						appliedPackages[u.Path] = true
+				// Step 2: Install, verify (Temper), and commit each group.
+				results, err := depupdate.Apply(ctx, wt.Path, report.Anvil.Config, groups)
+				if err != nil {
+					failed += len(groups)
+					return
+				}
+				var appliedGroups []depupdate.UpdateGroup
+				for _, r := range results {
+					if r.Applied {
+						applied++
+						appliedGroups = append(appliedGroups, r.Group)
+						for _, u := range r.Group.Updates {
+							appliedPackages[u.Path] = true
+						}
+					} else {
+						failed++
 					}
+				}
+				if len(appliedGroups) == 0 {
+					return
+				}
+				anvilsUpdated++
+
+				// Step 3: Generate and commit a changelog fragment.
+				isBilingual := depupdate.DetectBilingual(wt.Path)
+				if err := depupdate.GenerateChangelog(wt.Path, appliedGroups, isBilingual); err != nil {
+					prErrors = append(prErrors, fmt.Sprintf("%s: changelog generation failed: %v", report.Anvil.Name, err))
+				}
+
+				// Step 4: Push the branch and open a GitHub PR.
+				_, err = depupdate.CreatePR(ctx, wt.Path, report.Anvil.Name, targetBranch, appliedGroups)
+				if err != nil {
+					prErrors = append(prErrors, fmt.Sprintf("%s: %v", report.Anvil.Name, err))
 				} else {
-					failed++
+					// Close any open depcheck beads that match the updated packages.
+					if closeErr := depupdate.CloseMatchingDepBeads(ctx, wt.Path, appliedGroups); closeErr != nil {
+						prErrors = append(prErrors, fmt.Sprintf("%s: closing dep beads: %v", report.Anvil.Name, closeErr))
+					}
 				}
-			}
-			if len(appliedGroups) == 0 {
-				continue
-			}
-			anvilsUpdated++
-
-			// Step 3: Generate and commit a changelog fragment.
-			isBilingual := depupdate.DetectBilingual(report.Anvil.Path)
-			if err := depupdate.GenerateChangelog(report.Anvil.Path, appliedGroups, isBilingual); err != nil {
-				prErrors = append(prErrors, fmt.Sprintf("%s: changelog generation failed: %v", report.Anvil.Name, err))
-			}
-
-			// Step 4: Push the branch and open a GitHub PR.
-			_, err = depupdate.CreatePR(ctx, report.Anvil.Path, report.Anvil.Name, branch, appliedGroups)
-			if err != nil {
-				prErrors = append(prErrors, fmt.Sprintf("%s: %v", report.Anvil.Name, err))
-			} else {
-				// Close any open depcheck beads that match the updated packages.
-				if closeErr := depupdate.CloseMatchingDepBeads(ctx, report.Anvil.Path, appliedGroups); closeErr != nil {
-					prErrors = append(prErrors, fmt.Sprintf("%s: closing dep beads: %v", report.Anvil.Name, closeErr))
-				}
-			}
+			}()
 		}
 		return updateApplyDoneMsg{applied: applied, failed: failed, skipped: skipped, anvils: anvilsUpdated, appliedPackages: appliedPackages, prErrors: prErrors}
 	}

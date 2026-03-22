@@ -1,2 +1,2 @@
 category: Fixed
-- **Depupdate worktree isolation** - Use git worktree for dependency updates instead of checking out branches in the main repo, preventing branch pollution and poller disruption. (Forge-4upd)
+- **Depupdate worktree isolation** - Dependency update runs (Hearth/Ledger update panel) now execute in an isolated git worktree instead of checking out a branch directly in the main anvil directory, keeping the anvil on `main` and preventing conflicts with concurrent Smith/Bellows operations. (Forge-4upd)
