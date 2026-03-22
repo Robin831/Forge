@@ -10,26 +10,27 @@ import (
 func TestNewModelInitialState(t *testing.T) {
 	m := NewModel(map[string]string{"test": "/tmp"}, nil, nil)
 
-	assert.True(t, m.loading, "NewModel must start in loading state")
-	assert.Equal(t, ViewList, m.view, "NewModel must default to list view")
-	assert.True(t, m.showClosed, "NewModel must show closed beads by default")
+	assert.False(t, m.loading, "NewModel must not be in loading state (anvil view needs no fetch)")
+	assert.Equal(t, ViewAnvils, m.view, "NewModel must default to anvil picker view")
+	assert.False(t, m.showClosed, "NewModel must hide closed beads by default")
 	assert.NotNil(t, m.anvils, "anvils map must be initialised")
 }
 
 func TestNewModelInitReturnsCmd(t *testing.T) {
 	m := NewModel(map[string]string{"test": "/tmp"}, nil, nil)
 	cmd := m.Init()
-	require.NotNil(t, cmd, "Init() must return a non-nil command (batch of tick + fetch)")
+	require.NotNil(t, cmd, "Init() must return a non-nil command (tick)")
 }
 
-func TestNewModelViewLoadingNonEmpty(t *testing.T) {
+func TestNewModelViewAnvilPicker(t *testing.T) {
 	m := NewModel(map[string]string{"test": "/tmp"}, nil, nil)
 	m.width = 100
 	m.height = 30
 
 	out := m.View()
 	assert.NotEmpty(t, out, "View() on a new model must produce non-empty output")
-	assert.Contains(t, out, "Loading", "View() in loading state must mention loading")
+	assert.Contains(t, out, "Anvil", "View() in anvil-picker state must show anvil picker")
+	assert.Contains(t, out, "test", "View() must list the registered anvil")
 }
 
 func TestNewModelViewNilAnvils(t *testing.T) {
@@ -44,12 +45,14 @@ func TestNewModelViewNilAnvils(t *testing.T) {
 	})
 }
 
-func TestNewModelViewAfterBeadsLoaded(t *testing.T) {
+func TestNewModelViewAfterAnvilSelected(t *testing.T) {
 	m := NewModel(map[string]string{"test": "/tmp"}, nil, nil)
 	m.width = 100
 	m.height = 30
 
-	// Simulate a successful bead fetch arriving.
+	// Simulate entering an anvil and receiving beads.
+	m.selectedAnvil = "test"
+	m.view = ViewList
 	m.loading = false
 	m.beads = []Bead{
 		{ID: "test-1", Title: "Hello world", Status: "open", Anvil: "test"},
@@ -58,6 +61,6 @@ func TestNewModelViewAfterBeadsLoaded(t *testing.T) {
 
 	out := m.View()
 	assert.NotEmpty(t, out)
-	// In list view (the default), the bead ID must be visible.
+	// In list view, the bead ID must be visible.
 	assert.Contains(t, out, "test-1")
 }

@@ -271,7 +271,7 @@ func (m *Model) renderHierarchy() string {
 		if len(m.beads) > 0 {
 			// There are beads but none pass the current filter.
 			emptyMsg = "No beads match the current filter"
-		} else if m.anvilFilter != "" {
+		} else if m.selectedAnvil != "" {
 			emptyMsg = "No beads match the current filter"
 		} else {
 			emptyMsg = "No beads found"

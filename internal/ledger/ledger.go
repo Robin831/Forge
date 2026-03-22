@@ -43,7 +43,13 @@ const (
 	ViewList ViewMode = iota
 	ViewKanban
 	ViewHierarchy
+	ViewAnvils // top-level anvil picker — shown on startup
 )
+
+// anvilState holds scroll state for the anvil picker.
+type anvilState struct {
+	vp scrollViewport
+}
 
 // tickMsg triggers a periodic data refresh.
 type tickMsg struct{}
@@ -90,9 +96,13 @@ type Model struct {
 	// sortChoice holds the pointer used by the huh sort selector form.
 	sortChoice *string
 
-	anvils      map[string]string            // name → path
+	anvils       map[string]string            // name → path
 	anvilConfigs map[string]config.AnvilConfig // per-anvil configuration (for dep updates)
-	db          *state.DB
+	db           *state.DB
+
+	// Anvil picker state — used in ViewAnvils mode.
+	anvilSt       anvilState
+	selectedAnvil string // name of the anvil whose beads are currently shown; "" = none
 
 	// Form overlay state
 	activeForm     *huh.Form
@@ -123,8 +133,7 @@ type Model struct {
 	showEventPanel bool
 
 	// Filter state — persists across view switches.
-	anvilFilter string // "" = All anvils; otherwise show only this anvil
-	showClosed  bool   // whether to show closed beads
+	showClosed bool // whether to show closed beads (default false; toggle with 'c')
 
 	// Bulk selection state for multi-select operations.
 	bulk BulkState
@@ -168,9 +177,9 @@ func NewModel(anvils map[string]string, anvilConfigs map[string]config.AnvilConf
 		anvils:          anvils,
 		anvilConfigs:    anvilConfigs,
 		db:              db,
-		loading:         true,
-		view:            ViewList,
-		showClosed:      true,
+		loading:         false,
+		view:            ViewAnvils,
+		showClosed:      false,
 		helpSt:          newHelpState(),
 		showDetailPanel: true, // auto-shown on wide terminals (≥minWidthForDetailPanel)
 	}
@@ -181,7 +190,7 @@ func NewModel(anvils map[string]string, anvilConfigs map[string]config.AnvilConf
 func (m *Model) filteredBeads() []Bead {
 	var result []Bead
 	for _, b := range m.beads {
-		if m.anvilFilter != "" && b.Anvil != m.anvilFilter {
+		if m.selectedAnvil != "" && b.Anvil != m.selectedAnvil {
 			continue
 		}
 		if !m.showClosed && b.Status == "closed" {
@@ -197,7 +206,7 @@ func (m *Model) filteredBeads() []Bead {
 func (m *Model) filteredBeadsCount() int {
 	count := 0
 	for _, b := range m.beads {
-		if m.anvilFilter != "" && b.Anvil != m.anvilFilter {
+		if m.selectedAnvil != "" && b.Anvil != m.selectedAnvil {
 			continue
 		}
 		if !m.showClosed && b.Status == "closed" {
@@ -238,35 +247,35 @@ func (m *Model) cycleAnvilFilter() {
 	if len(names) == 0 {
 		return
 	}
-	if m.anvilFilter == "" {
-		m.anvilFilter = names[0]
+	if m.selectedAnvil == "" {
+		m.selectedAnvil = names[0]
 		return
 	}
 	for i, name := range names {
-		if name == m.anvilFilter {
+		if name == m.selectedAnvil {
 			if i+1 < len(names) {
-				m.anvilFilter = names[i+1]
+				m.selectedAnvil = names[i+1]
 			} else {
-				m.anvilFilter = "" // wrap back to All
+				m.selectedAnvil = "" // wrap back to All
 			}
 			return
 		}
 	}
 	// Current filter no longer in registry; reset to All.
-	m.anvilFilter = ""
+	m.selectedAnvil = ""
 }
 
 // filterHint returns a compact display string reflecting the active filters,
 // e.g. "  [forge]  +5 closed". Returns "" when no filters are active.
 func (m *Model) filterHint() string {
 	var sb strings.Builder
-	if m.anvilFilter != "" {
-		sb.WriteString(fmt.Sprintf("  [%s]", m.anvilFilter))
+	if m.selectedAnvil != "" {
+		sb.WriteString(fmt.Sprintf("  [%s]", m.selectedAnvil))
 	}
 	if !m.showClosed {
 		closedCount := 0
 		for _, b := range m.beads {
-			if b.Status == "closed" && (m.anvilFilter == "" || b.Anvil == m.anvilFilter) {
+			if b.Status == "closed" && (m.selectedAnvil == "" || b.Anvil == m.selectedAnvil) {
 				closedCount++
 			}
 		}
@@ -277,9 +286,63 @@ func (m *Model) filterHint() string {
 	return sb.String()
 }
 
-// Init schedules the initial data fetch and periodic refresh tick.
+// refreshBeads returns a Cmd that re-fetches beads for the current context:
+// when a specific anvil is selected it fetches only that anvil; otherwise
+// it fetches all anvils (used after bulk operations that span multiple anvils).
+func (m *Model) refreshBeads() tea.Cmd {
+	if m.selectedAnvil != "" {
+		path, ok := m.anvils[m.selectedAnvil]
+		if !ok {
+			return nil
+		}
+		return FetchAnvilBeads(m.selectedAnvil, path, m.db)
+	}
+	return m.refreshBeads()
+}
+
+// goBackToAnvils switches the view back to the top-level anvil picker.
+func (m *Model) goBackToAnvils() (tea.Model, tea.Cmd) {
+	m.view = ViewAnvils
+	m.selectedAnvil = ""
+	m.bulk.Clear()
+	return m, nil
+}
+
+// enterAnvil selects the given anvil and loads its beads.
+func (m *Model) enterAnvil(name string) tea.Cmd {
+	path, ok := m.anvils[name]
+	if !ok {
+		return nil
+	}
+	m.selectedAnvil = name
+	m.view = ViewList
+	m.loading = true
+	m.fetching = true
+	m.beads = nil
+	return FetchAnvilBeads(name, path, m.db)
+}
+
+// updateAnvilList handles key events when the anvil picker is active.
+func (m *Model) updateAnvilList(msg tea.KeyMsg) tea.Cmd {
+	names := m.sortedAnvilNames()
+	switch msg.String() {
+	case "j", "down":
+		m.anvilSt.vp.ScrollDown(len(names))
+	case "k", "up":
+		m.anvilSt.vp.ScrollUp()
+	case "enter", " ":
+		idx := m.anvilSt.vp.Selected()
+		if idx >= 0 && idx < len(names) {
+			return m.enterAnvil(names[idx])
+		}
+	}
+	return nil
+}
+
+// Init schedules the periodic refresh tick. Bead data is fetched lazily when
+// the user selects an anvil from the top-level ViewAnvils screen.
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(tickCmd(), FetchAllBeads(m.anvils, m.db))
+	return tickCmd()
 }
 
 // Update handles incoming messages.
@@ -381,7 +444,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			toastMsg = fmt.Sprintf("Closed %d dep update bead(s), %d failed", msg.closed, msg.failed)
 			m.addEvent(EventWarn, toastMsg)
 		}
-		return m, tea.Batch(m.addToast(toastMsg, msg.failed > 0), FetchAllBeads(m.anvils, m.db))
+		return m, tea.Batch(m.addToast(toastMsg, msg.failed > 0), m.refreshBeads())
 
 	case tea.KeyMsg:
 		// When the update overlay is active, route key events to the update overlay handler.
@@ -413,13 +476,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// In ViewAnvils mode, delegate all key events to the anvil list handler.
+		if m.view == ViewAnvils {
+			cmd := m.updateAnvilList(msg)
+			return m, cmd
+		}
+
 		// Clear bulk selection on Escape (when no form or sort overlay is active).
 		if msg.String() == "esc" && m.list.sortForm == nil && m.bulk.Count() > 0 {
 			m.bulk.Clear()
 			return m, nil
 		}
 
-		// CRUD key bindings (available in both views when no form is open).
+		// ESC (when no bulk selection and no sort form) returns to anvil picker.
+		if msg.String() == "esc" && m.list.sortForm == nil && m.bulk.Count() == 0 {
+			return m.goBackToAnvils()
+		}
+
+		// CRUD key bindings (available in bead views when no form is open).
 		if m.list.sortForm == nil {
 			switch msg.String() {
 			case "?":
@@ -437,6 +511,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "p":
 				return m, m.openPriorityForm()
 			case "c":
+				// 'c' toggles visibility of closed beads.
+				m.showClosed = !m.showClosed
+				filtered := m.filteredBeads()
+				m.list.vp.ClampToTotal(len(filtered))
+				m.refreshKanbanLanes()
+				m.refreshHierarchy()
+				return m, nil
+			case "C":
 				return m, m.openCommentForm()
 			case "N":
 				return m, m.openNotesForm()
@@ -476,19 +558,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+p":
 				return m, m.openBulkPriorityForm()
 			case "f":
-				m.cycleAnvilFilter()
-				filtered := m.filteredBeads()
-				m.list.vp.ClampToTotal(len(filtered))
-				m.refreshKanbanLanes()
-				m.refreshHierarchy()
-				return m, nil
-			case "s":
-				m.showClosed = !m.showClosed
-				filtered := m.filteredBeads()
-				m.list.vp.ClampToTotal(len(filtered))
-				m.refreshKanbanLanes()
-				m.refreshHierarchy()
-				return m, nil
+				// 'f' goes back to the anvil picker from a bead view.
+				return m.goBackToAnvils()
 			}
 			// "l" opens label form only in list view; in kanban it navigates lanes.
 			if msg.String() == "l" && m.view == ViewList {
@@ -575,10 +646,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.Err
 			cmd := m.addToast(fmt.Sprintf("Move failed: %v", msg.Err), true)
 			m.fetching = true
-			return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+			return m, tea.Batch(cmd, m.refreshBeads())
 		}
 		m.fetching = true
-		return m, FetchAllBeads(m.anvils, m.db)
+		return m, m.refreshBeads()
 
 	case BeadCreatedMsg:
 		label := msg.ID
@@ -588,37 +659,37 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addEvent(EventInfo, fmt.Sprintf("Created %s", label))
 		cmd := m.addToast(fmt.Sprintf("Created %s", label), false)
 		m.fetching = true
-		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+		return m, tea.Batch(cmd, m.refreshBeads())
 
 	case BeadUpdatedMsg:
 		m.addEvent(EventInfo, fmt.Sprintf("Updated %s", msg.ID))
 		cmd := m.addToast(fmt.Sprintf("Updated %s", msg.ID), false)
 		m.fetching = true
-		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+		return m, tea.Batch(cmd, m.refreshBeads())
 
 	case BeadClosedMsg:
 		m.addEvent(EventInfo, fmt.Sprintf("Closed %s", msg.ID))
 		cmd := m.addToast(fmt.Sprintf("Closed %s", msg.ID), false)
 		m.fetching = true
-		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+		return m, tea.Batch(cmd, m.refreshBeads())
 
 	case BeadReopenedMsg:
 		m.addEvent(EventInfo, fmt.Sprintf("Reopened %s", msg.ID))
 		cmd := m.addToast(fmt.Sprintf("Reopened %s", msg.ID), false)
 		m.fetching = true
-		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+		return m, tea.Batch(cmd, m.refreshBeads())
 
 	case DepAddedMsg:
 		m.addEvent(EventInfo, fmt.Sprintf("Added dep: %s → %s", msg.BeadID, msg.DepID))
 		cmd := m.addToast(fmt.Sprintf("Added dep: %s → %s", msg.BeadID, msg.DepID), false)
 		m.fetching = true
-		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+		return m, tea.Batch(cmd, m.refreshBeads())
 
 	case DepRemovedMsg:
 		m.addEvent(EventInfo, fmt.Sprintf("Removed dep: %s → %s", msg.BeadID, msg.DepID))
 		cmd := m.addToast(fmt.Sprintf("Removed dep: %s → %s", msg.BeadID, msg.DepID), false)
 		m.fetching = true
-		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+		return m, tea.Batch(cmd, m.refreshBeads())
 
 	case BulkCloseResultMsg:
 		m.bulk.Clear()
@@ -632,7 +703,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmd := m.addToast(text, msg.Failed > 0)
 		m.fetching = true
-		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+		return m, tea.Batch(cmd, m.refreshBeads())
 
 	case BulkUpdatedMsg:
 		m.bulk.Clear()
@@ -646,7 +717,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmd := m.addToast(text, msg.Failed > 0)
 		m.fetching = true
-		return m, tea.Batch(cmd, FetchAllBeads(m.anvils, m.db))
+		return m, tea.Batch(cmd, m.refreshBeads())
 
 	case ActionErrorMsg:
 		m.addEvent(EventError, msg.Err.Error())
@@ -657,8 +728,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.fetching {
 			return m, tickCmd()
 		}
+		// In ViewAnvils mode no beads are loaded, so skip the periodic fetch.
+		if m.view == ViewAnvils {
+			return m, tickCmd()
+		}
 		m.fetching = true
-		return m, tea.Batch(tickCmd(), FetchAllBeads(m.anvils, m.db))
+		return m, tea.Batch(tickCmd(), m.refreshBeads())
 	}
 	return m, nil
 }
@@ -927,6 +1002,8 @@ func (m *Model) executeFormAction() tea.Cmd {
 // selectedBead returns a pointer to the currently selected bead, or nil.
 func (m *Model) selectedBead() *Bead {
 	switch m.view {
+	case ViewAnvils:
+		return nil
 	case ViewList:
 		sorted := sortBeads(m.filteredBeads(), m.list.sortBy)
 		idx := m.list.vp.Selected()
@@ -1436,6 +1513,8 @@ func (m *Model) View() string {
 
 	var out string
 	switch m.view {
+	case ViewAnvils:
+		out = m.renderAnvilList()
 	case ViewKanban:
 		out = m.renderKanban()
 	case ViewHierarchy:
@@ -1519,4 +1598,57 @@ func (m *Model) View() string {
 	}
 
 	return out
+}
+
+// renderAnvilList renders the top-level anvil picker screen.
+func (m *Model) renderAnvilList() string {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Padding(0, 2)
+	title := titleStyle.Render("⚒ Forge Ledger — Select Anvil")
+
+	panelW := m.width
+	if panelW <= 0 {
+		panelW = 80
+	}
+
+	footer := m.renderFooter()
+	footerH := strings.Count(footer, "\n") + 1
+	viewH := m.height - 2 - footerH // title line + blank line + footer
+	if viewH < 1 {
+		viewH = 1
+	}
+
+	names := m.sortedAnvilNames()
+	m.anvilSt.vp.AdjustViewport(viewH, len(names))
+	start, end := m.anvilSt.vp.VisibleRange(viewH, len(names))
+
+	selectedStyle := lipgloss.NewStyle().
+		Background(lipgloss.AdaptiveColor{Dark: "237", Light: "252"}).
+		Foreground(colorAccent).
+		Bold(true)
+	cursorStyle := lipgloss.NewStyle().Foreground(colorAccent)
+	dimStyle := lipgloss.NewStyle().Foreground(colorMuted)
+
+	var rows []string
+	for i := start; i < end; i++ {
+		name := names[i]
+		path := m.anvils[name]
+		cursor := "  "
+		if i == m.anvilSt.vp.Selected() {
+			cursor = cursorStyle.Render("▶ ")
+			line := fmt.Sprintf("%s%-18s  %s", cursor, name, dimStyle.Render(path))
+			rows = append(rows, selectedStyle.Width(panelW-4).Render(line))
+		} else {
+			line := fmt.Sprintf("%s%-18s  %s", cursor, name, dimStyle.Render(path))
+			rows = append(rows, line)
+		}
+	}
+
+	if len(names) == 0 {
+		rows = []string{
+			dimStyle.Padding(0, 2).Render("No anvils registered. Run: forge anvil add <name> <path>"),
+		}
+	}
+
+	body := strings.Join(rows, "\n")
+	return title + "\n\n" + body + "\n" + footer
 }

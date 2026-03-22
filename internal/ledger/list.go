@@ -275,7 +275,7 @@ func (m *Model) renderList() string {
 		// Empty state: show an informative message instead of an empty table body.
 		emptyStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true).Padding(1, 2)
 		var emptyMsg string
-		if m.anvilFilter != "" || !m.showClosed {
+		if m.selectedAnvil != "" || !m.showClosed {
 			emptyMsg = "No beads match the current filter"
 		} else {
 			emptyMsg = "No beads found"

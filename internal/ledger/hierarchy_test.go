@@ -279,7 +279,7 @@ func TestRenderHierarchyEmptyWithFilter(t *testing.T) {
 	m := &Model{
 		width:       80,
 		height:      24,
-		anvilFilter: "someanvil",
+		selectedAnvil: "someanvil",
 	}
 	m.hierarchy.expanded = make(map[string]bool)
 	m.refreshHierarchy()

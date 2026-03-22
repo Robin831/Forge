@@ -21,7 +21,7 @@ func TestFilteredBeadsAnvilFilter(t *testing.T) {
 	assert.Len(t, got, 3)
 
 	// Filter by "forge": only forge beads returned.
-	m.anvilFilter = "forge"
+	m.selectedAnvil = "forge"
 	got = m.filteredBeads()
 	assert.Len(t, got, 2)
 	for _, b := range got {
@@ -29,7 +29,7 @@ func TestFilteredBeadsAnvilFilter(t *testing.T) {
 	}
 
 	// Filter by "heimdall": only heimdall beads returned.
-	m.anvilFilter = "heimdall"
+	m.selectedAnvil = "heimdall"
 	got = m.filteredBeads()
 	assert.Len(t, got, 1)
 	assert.Equal(t, "b", got[0].ID)
@@ -74,19 +74,19 @@ func TestCycleAnvilFilter(t *testing.T) {
 	}
 
 	// Start: All anvils.
-	assert.Equal(t, "", m.anvilFilter)
+	assert.Equal(t, "", m.selectedAnvil)
 
 	// First cycle: advance to first alphabetical anvil.
 	m.cycleAnvilFilter()
-	assert.Equal(t, "aardvark", m.anvilFilter)
+	assert.Equal(t, "aardvark", m.selectedAnvil)
 
 	// Second cycle: advance to next anvil.
 	m.cycleAnvilFilter()
-	assert.Equal(t, "zebra", m.anvilFilter)
+	assert.Equal(t, "zebra", m.selectedAnvil)
 
 	// Third cycle: wrap back to All.
 	m.cycleAnvilFilter()
-	assert.Equal(t, "", m.anvilFilter)
+	assert.Equal(t, "", m.selectedAnvil)
 }
 
 func TestCycleAnvilFilterSingleAnvil(t *testing.T) {
@@ -95,28 +95,28 @@ func TestCycleAnvilFilterSingleAnvil(t *testing.T) {
 	}
 
 	m.cycleAnvilFilter()
-	assert.Equal(t, "only", m.anvilFilter)
+	assert.Equal(t, "only", m.selectedAnvil)
 
 	m.cycleAnvilFilter()
-	assert.Equal(t, "", m.anvilFilter)
+	assert.Equal(t, "", m.selectedAnvil)
 }
 
 func TestCycleAnvilFilterNoAnvils(t *testing.T) {
 	m := &Model{anvils: map[string]string{}}
 
 	m.cycleAnvilFilter()
-	assert.Equal(t, "", m.anvilFilter, "cycling with no anvils should be a no-op")
+	assert.Equal(t, "", m.selectedAnvil, "cycling with no anvils should be a no-op")
 }
 
 func TestCycleAnvilFilterStaleFilter(t *testing.T) {
 	m := &Model{
 		anvils:      map[string]string{"forge": "/forge"},
-		anvilFilter: "removed-anvil",
+		selectedAnvil: "removed-anvil",
 	}
 
 	// Filter references an anvil that no longer exists; should reset to All.
 	m.cycleAnvilFilter()
-	assert.Equal(t, "", m.anvilFilter)
+	assert.Equal(t, "", m.selectedAnvil)
 }
 
 func TestFilterHintNoFilters(t *testing.T) {
@@ -126,7 +126,7 @@ func TestFilterHintNoFilters(t *testing.T) {
 
 func TestFilterHintAnvilOnly(t *testing.T) {
 	m := &Model{
-		anvilFilter: "forge",
+		selectedAnvil: "forge",
 		showClosed:  true,
 	}
 	hint := m.filterHint()
@@ -148,7 +148,7 @@ func TestFilterHintClosedCount(t *testing.T) {
 
 func TestFilterHintBothFilters(t *testing.T) {
 	m := &Model{
-		anvilFilter: "forge",
+		selectedAnvil: "forge",
 		showClosed:  false,
 		beads: []Bead{
 			{ID: "a", Anvil: "forge", Status: "open"},
