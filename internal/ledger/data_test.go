@@ -206,6 +206,82 @@ func TestFetchAllBeadsWithExecClosedBeadFetchUsesLimit(t *testing.T) {
 	assert.True(t, found, "closed-bead bd list must include --limit 50")
 }
 
+// ---- Tests for fetchAnvilBeadsWithExec ----
+
+func TestFetchAnvilBeadsWithExecHappyPath(t *testing.T) {
+	openBeads := []Bead{
+		{ID: "a-1", Title: "Open task", Status: "open"},
+		{ID: "a-2", Title: "In progress", Status: "in_progress"},
+	}
+	execFn := mockExec(map[string][]byte{
+		"--status=open": mustMarshal(openBeads),
+	}, []byte("[]"), nil)
+
+	cmd := fetchAnvilBeadsWithExec(execFn, "myAnvil", "/tmp/anvil", nil)
+	require.NotNil(t, cmd)
+
+	msg := cmd()
+	update, ok := msg.(UpdateBeadsMsg)
+	require.True(t, ok, "expected UpdateBeadsMsg")
+	assert.NoError(t, update.Err)
+	require.Len(t, update.Beads, 2)
+
+	for _, b := range update.Beads {
+		assert.Equal(t, "myAnvil", b.Anvil, "Anvil must be the registry name")
+	}
+}
+
+func TestFetchAnvilBeadsWithExecErrorPropagated(t *testing.T) {
+	execErr := errors.New("bd: connection refused")
+	execFn := mockExec(nil, nil, execErr)
+
+	cmd := fetchAnvilBeadsWithExec(execFn, "myAnvil", "/tmp/anvil", nil)
+	msg := cmd()
+	update, ok := msg.(UpdateBeadsMsg)
+	require.True(t, ok)
+	assert.Error(t, update.Err, "exec error must surface in UpdateBeadsMsg.Err")
+}
+
+func TestFetchAnvilBeadsWithExecClosedBeadAgeFilter(t *testing.T) {
+	recent := time.Now().Add(-24 * time.Hour)
+	old := time.Now().Add(-10 * 24 * time.Hour)
+
+	closedBeads := []Bead{
+		{ID: "recent-closed", Status: "closed", ClosedAt: &recent},
+		{ID: "old-closed", Status: "closed", ClosedAt: &old},
+	}
+	execFn := mockExec(map[string][]byte{
+		"--status=closed": mustMarshal(closedBeads),
+	}, []byte("[]"), nil)
+
+	cmd := fetchAnvilBeadsWithExec(execFn, "myAnvil", "/tmp/anvil", nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	ids := make(map[string]bool, len(update.Beads))
+	for _, b := range update.Beads {
+		ids[b.ID] = true
+	}
+	assert.True(t, ids["recent-closed"], "bead closed within 7 days must be included")
+	assert.False(t, ids["old-closed"], "bead closed more than 7 days ago must be excluded")
+}
+
+func TestFetchAnvilBeadsWithExecAnvilNameSet(t *testing.T) {
+	openBeads := []Bead{{ID: "x-1", Status: "open"}}
+	execFn := mockExec(map[string][]byte{
+		"--status=open": mustMarshal(openBeads),
+	}, []byte("[]"), nil)
+
+	cmd := fetchAnvilBeadsWithExec(execFn, "anvil-name", "/some/path", nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	require.Len(t, update.Beads, 1)
+	assert.Equal(t, "anvil-name", update.Beads[0].Anvil, "Anvil must be the registry name, not the filesystem path")
+}
+
+// ---- End of fetchAnvilBeadsWithExec tests ----
+
 func TestParseTimeSafeOutOfRangeYear(t *testing.T) {
 	// bd occasionally returns timestamps whose year is outside [0,9999].
 	// Verify that unmarshalling does not error and that the resulting Bead can

@@ -119,6 +119,93 @@ func bdExec(ctx context.Context, anvilPath string, args ...string) ([]byte, erro
 	return stdout.Bytes(), nil
 }
 
+// FetchAnvilBeads returns a tea.Cmd that fetches beads for a single named anvil.
+// It fetches open/in_progress beads plus recently-closed beads (last 7 days,
+// up to 50), then enriches the results with PR data from the state DB.
+func FetchAnvilBeads(anvilName, anvilPath string, db *state.DB) tea.Cmd {
+	return fetchAnvilBeadsWithExec(bdExec, anvilName, anvilPath, db)
+}
+
+// fetchAnvilBeadsWithExec is the testable implementation of FetchAnvilBeads.
+func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db *state.DB) tea.Cmd {
+	return func() tea.Msg {
+		var allBeads []Bead
+		var firstErr error
+
+		// Fetch open + in_progress beads.
+		{
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			out, err := execFn(ctx, anvilPath, "list", "--status=open", "--status=in_progress", "--limit", "0", "--json")
+			if err != nil {
+				firstErr = err
+			} else {
+				var beads []Bead
+				if err := json.Unmarshal(out, &beads); err != nil {
+					firstErr = fmt.Errorf("parsing beads for %s: %w", anvilName, err)
+				} else {
+					for i := range beads {
+						beads[i].Anvil = anvilName
+					}
+					allBeads = append(allBeads, beads...)
+				}
+			}
+		}
+
+		// Fetch recently-closed beads (supplementary; failure is non-fatal).
+		{
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			out, err := execFn(ctx, anvilPath, "list", "--status=closed", "--limit", "50", "--json")
+			if err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("fetching closed beads for %s: %w", anvilName, err)
+				}
+			} else {
+				var beads []Bead
+				if err := json.Unmarshal(out, &beads); err != nil {
+					if firstErr == nil {
+						firstErr = fmt.Errorf("parsing closed beads for %s: %w", anvilName, err)
+					}
+				} else {
+					cutoff := time.Now().AddDate(0, 0, -7)
+					for i := range beads {
+						beads[i].Anvil = anvilName
+						if (beads[i].ClosedAt != nil && beads[i].ClosedAt.After(cutoff)) ||
+							(beads[i].UpdatedAt != nil && beads[i].UpdatedAt.After(cutoff)) {
+							allBeads = append(allBeads, beads[i])
+						}
+					}
+				}
+			}
+		}
+
+		// Enrich with PR data from state DB.
+		if db != nil {
+			openPRs, err := db.OpenPRs()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("fetching open PRs: %w", err)
+				}
+			} else {
+				prBeads := make(map[string]bool)
+				for _, pr := range openPRs {
+					if pr.BeadID != "" {
+						prBeads[pr.BeadID] = true
+					}
+				}
+				for i := range allBeads {
+					if prBeads[allBeads[i].ID] {
+						allBeads[i].HasPR = true
+					}
+				}
+			}
+		}
+
+		return UpdateBeadsMsg{Beads: allBeads, Err: firstErr}
+	}
+}
+
 // FetchAllBeads returns a tea.Cmd that fetches beads from all anvils in parallel.
 // It fetches open/in_progress beads plus up to 50 closed beads (best-effort),
 // then filters the closed beads to those updated or closed within the last 7 days.

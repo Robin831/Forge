@@ -24,8 +24,10 @@ var (
 	keyReopen  = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reopen"))
 	keyLabel   = key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "label"))
 	keyPriorityB = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "priority"))
-	keyComment = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "comment"))
-	keyNotes   = key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "notes"))
+	keyComment      = key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "comment"))
+	keyNotes        = key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "notes"))
+	keyToggleClosed = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "toggle closed"))
+	keyBackToAnvils = key.NewBinding(key.WithKeys("esc", "f"), key.WithHelp("esc/f", "back to anvils"))
 	keyAssign  = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "assign"))
 	keyAddDep  = key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "add dep"))
 	keyViewDeps = key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "view deps"))
@@ -33,8 +35,6 @@ var (
 	keyDepUpdate   = key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "update deps"))
 	keyEventPanel  = key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "toggle events"))
 	keyDetailPanel = key.NewBinding(key.WithKeys("\\"), key.WithHelp("\\", "toggle detail"))
-	keyFilter  = key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "filter anvil"))
-	keyToggleClosed = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "toggle closed"))
 	keySpace   = key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select"))
 	keyCtrlA   = key.NewBinding(key.WithKeys("ctrl+a"), key.WithHelp("ctrl+a", "select all"))
 	keyEscB    = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear"))
@@ -57,15 +57,32 @@ var (
 
 	// Hierarchy-specific
 	keyExpand = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "expand/collapse"))
+
+	// Anvil picker-specific
+	keyAnvilSelect = key.NewBinding(key.WithKeys("enter", " "), key.WithHelp("enter/space", "select anvil"))
 )
 
 // ---- Per-view KeyMap structs implementing help.KeyMap ----
+
+// anvilsKeyMap provides keybindings for the anvil picker.
+type anvilsKeyMap struct{}
+
+func (anvilsKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{keyUp, keyDown, keyAnvilSelect, keyHelp, keyQuit}
+}
+
+func (anvilsKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{keyUp, keyDown, keyAnvilSelect}, // Navigation
+		{keyHelp, keyQuit},               // General
+	}
+}
 
 // listKeyMap provides keybindings for the list view.
 type listKeyMap struct{}
 
 func (listKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyUp, keyDown, keySpace, keyNew, keyEdit, keyFilter, keyHelp, keyQuit}
+	return []key.Binding{keyUp, keyDown, keySpace, keyNew, keyEdit, keyBackToAnvils, keyHelp, keyQuit}
 }
 
 func (listKeyMap) FullHelp() [][]key.Binding {
@@ -76,8 +93,8 @@ func (listKeyMap) FullHelp() [][]key.Binding {
 		{keyAddDep, keyViewDeps},                                   // Dependencies
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},              // Bulk
 		{keyAI, keyDepUpdate},                                      // AI / Updates
-		{keyFilter, keyToggleClosed, keySort},                      // Filters
-		{keyTab, keyEventPanel, keyDetailPanel, keyHelp, keyQuit},  // General
+		{keyToggleClosed, keySort},                                 // Filters
+		{keyTab, keyBackToAnvils, keyEventPanel, keyDetailPanel, keyHelp, keyQuit}, // General
 	}
 }
 
@@ -85,7 +102,7 @@ func (listKeyMap) FullHelp() [][]key.Binding {
 type kanbanKeyMap struct{}
 
 func (kanbanKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyUp, keyDown, keyLaneLeft, keyLaneRight, keyNew, keyFilter, keyHelp, keyQuit}
+	return []key.Binding{keyUp, keyDown, keyLaneLeft, keyLaneRight, keyNew, keyBackToAnvils, keyHelp, keyQuit}
 }
 
 func (kanbanKeyMap) FullHelp() [][]key.Binding {
@@ -96,8 +113,8 @@ func (kanbanKeyMap) FullHelp() [][]key.Binding {
 		{keyAddDep, keyViewDeps},                                              // Dependencies
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},                         // Bulk
 		{keyAI, keyDepUpdate},                                                 // AI / Updates
-		{keyFilter, keyToggleClosed},                                          // Filters
-		{keyTab, keyEventPanel, keyDetailPanel, keyHelp, keyQuit},             // General
+		{keyToggleClosed},                                                     // Filters
+		{keyTab, keyBackToAnvils, keyEventPanel, keyDetailPanel, keyHelp, keyQuit}, // General
 	}
 }
 
@@ -105,19 +122,19 @@ func (kanbanKeyMap) FullHelp() [][]key.Binding {
 type hierarchyKeyMap struct{}
 
 func (hierarchyKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyUp, keyDown, keyExpand, keySpace, keyNew, keyFilter, keyHelp, keyQuit}
+	return []key.Binding{keyUp, keyDown, keyExpand, keySpace, keyNew, keyBackToAnvils, keyHelp, keyQuit}
 }
 
 func (hierarchyKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyUp, keyDown, keyExpand, keySpace, keyCtrlA, keyEscB},    // Navigation
-		{keyNew, keyEdit, keyCloseB, keyReopen},                     // CRUD
-		{keyPriorityB, keyComment, keyNotes, keyAssign},             // Metadata
-		{keyAddDep, keyViewDeps},                                    // Dependencies
-		{keyBulkClose, keyBulkLabel, keyBulkPriority},               // Bulk
-		{keyAI, keyDepUpdate},                                       // AI / Updates
-		{keyFilter, keyToggleClosed},                                // Filters
-		{keyTab, keyEventPanel, keyDetailPanel, keyHelp, keyQuit},  // General
+		{keyUp, keyDown, keyExpand, keySpace, keyCtrlA, keyEscB},                   // Navigation
+		{keyNew, keyEdit, keyCloseB, keyReopen},                                    // CRUD
+		{keyPriorityB, keyComment, keyNotes, keyAssign},                            // Metadata
+		{keyAddDep, keyViewDeps},                                                   // Dependencies
+		{keyBulkClose, keyBulkLabel, keyBulkPriority},                              // Bulk
+		{keyAI, keyDepUpdate},                                                      // AI / Updates
+		{keyToggleClosed},                                                          // Filters
+		{keyTab, keyBackToAnvils, keyEventPanel, keyDetailPanel, keyHelp, keyQuit}, // General
 	}
 }
 
@@ -144,7 +161,7 @@ var categoryLabels = []string{
 // updateHelpOverlay handles key events when the help overlay is visible.
 func (m *Model) updateHelpOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c":
+	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "?", "esc":
 		m.helpSt.show = false
@@ -168,6 +185,8 @@ func (m *Model) updateHelpOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) renderHelpOverlay() string {
 	var km help.KeyMap
 	switch m.view {
+	case ViewAnvils:
+		km = anvilsKeyMap{}
 	case ViewKanban:
 		km = kanbanKeyMap{}
 	case ViewHierarchy:
@@ -268,6 +287,9 @@ func (m *Model) renderFooter() string {
 		var km help.KeyMap
 		var viewLabel string
 		switch m.view {
+		case ViewAnvils:
+			km = anvilsKeyMap{}
+			viewLabel = "[Anvils]"
 		case ViewKanban:
 			km = kanbanKeyMap{}
 			viewLabel = "[Kanban]"
