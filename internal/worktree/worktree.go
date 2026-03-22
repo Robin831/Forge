@@ -8,6 +8,7 @@ package worktree
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,6 +46,10 @@ type CreateOptions struct {
 	// branch as-is. This discards all previous commits on the branch,
 	// preventing cascading junk from failed pipeline runs.
 	ResetBranch bool
+	// Quiet suppresses git command stdout/stderr output (redirects to
+	// io.Discard). Use this when creating worktrees from a TUI to avoid
+	// corrupting the terminal's alt-screen with git progress output.
+	Quiet bool
 }
 
 // Manager handles creating and tearing down worktrees.
@@ -83,6 +88,16 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		targetBranch = "forge/" + sanitizePath(beadID)
 	}
 
+	// git is a local helper that suppresses stdout/stderr when opts.Quiet is set.
+	// This prevents git progress output from corrupting a Bubbletea TUI alt-screen.
+	out := io.Writer(os.Stderr)
+	if opts.Quiet {
+		out = io.Discard
+	}
+	git := func(dir string, args ...string) error {
+		return gitCmdOut(ctx, dir, out, args...)
+	}
+
 	// Ensure .workers directory exists
 	if err := os.MkdirAll(workersDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating workers directory: %w", err)
@@ -97,7 +112,7 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 				// Hard-reset the branch back to the base ref, discarding all
 				// previous commits. This prevents inheriting junk from a
 				// failed pipeline run.
-				if err := gitCmd(ctx, worktreePath, "fetch", "origin"); err != nil {
+				if err := git(worktreePath, "fetch", "origin"); err != nil {
 					return nil, fmt.Errorf("fetching origin for branch reset: %w", err)
 				}
 				var baseRef string
@@ -107,13 +122,13 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 					baseRef, _ = resolveBaseRef(ctx, worktreePath)
 				}
 				if baseRef != "" {
-					if err := gitCmd(ctx, worktreePath, "reset", "--hard", baseRef); err != nil {
+					if err := git(worktreePath, "reset", "--hard", baseRef); err != nil {
 						return nil, fmt.Errorf("resetting branch to %s: %w", baseRef, err)
 					}
 				}
 			}
-			_ = gitCmd(ctx, worktreePath, "checkout", "--force", "HEAD")
-			_ = gitCmd(ctx, worktreePath, "clean", "-fd")
+			_ = git(worktreePath, "checkout", "--force", "HEAD")
+			_ = git(worktreePath, "clean", "-fd")
 			return &Worktree{Path: worktreePath, Branch: targetBranch}, nil
 		}
 		// Not a valid worktree — remove the stale directory.
@@ -129,7 +144,7 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 	}
 
 	// Fetch origin
-	if err := gitCmd(ctx, anvilPath, "fetch", "origin"); err != nil {
+	if err := git(anvilPath, "fetch", "origin"); err != nil {
 		return nil, fmt.Errorf("git fetch: %w", err)
 	}
 
@@ -144,15 +159,15 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		// remote was auto-deleted (which would cause --force-with-lease to fail with
 		// "(stale info)" on the subsequent push).
 		localRef := "refs/heads/" + targetBranch
-		if err := gitCmd(ctx, anvilPath, "show-ref", "--verify", "--quiet", localRef); err == nil {
+		if err := git(anvilPath, "show-ref", "--verify", "--quiet", localRef); err == nil {
 			// Local branch exists; checkout directly.
-			if err := gitCmd(ctx, anvilPath, "worktree", "add", "-f", worktreePath, targetBranch); err != nil {
+			if err := git(anvilPath, "worktree", "add", "-f", worktreePath, targetBranch); err != nil {
 				return nil, fmt.Errorf("git worktree add (existing local): %w", err)
 			}
 		} else {
 			// Only remote branch exists; create a local tracking branch from origin/<branch>.
 			remoteRef := "origin/" + targetBranch
-			if err := gitCmd(ctx, anvilPath, "worktree", "add", "-f", "-b", targetBranch, worktreePath, remoteRef); err != nil {
+			if err := git(anvilPath, "worktree", "add", "-f", "-b", targetBranch, worktreePath, remoteRef); err != nil {
 				return nil, fmt.Errorf("git worktree add (from remote): %w", err)
 			}
 		}
@@ -163,7 +178,7 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		if opts.BaseBranch != "" {
 			baseRef = "origin/" + opts.BaseBranch
 			// Verify the base branch exists on origin
-			if err := gitCmd(ctx, anvilPath, "rev-parse", "--verify", baseRef); err != nil {
+			if err := git(anvilPath, "rev-parse", "--verify", baseRef); err != nil {
 				return nil, fmt.Errorf("base branch %q not found on origin (ref %q): %w", opts.BaseBranch, baseRef, err)
 			}
 		} else {
@@ -175,7 +190,7 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		}
 
 		// Create worktree with new branch
-		if err := gitCmd(ctx, anvilPath, "worktree", "add", "-f", "-b", targetBranch, worktreePath, baseRef); err != nil {
+		if err := git(anvilPath, "worktree", "add", "-f", "-b", targetBranch, worktreePath, baseRef); err != nil {
 			return nil, fmt.Errorf("git worktree add (new): %w", err)
 		}
 	}
@@ -411,17 +426,23 @@ func assertOnMainBranch(ctx context.Context, repoPath string) error {
 		"refusing to create worktree to prevent environment corruption", currentBranch)
 }
 
-// gitCmd runs a git command in the given directory with a timeout.
-func gitCmd(ctx context.Context, dir string, args ...string) error {
+// gitCmdOut runs a git command in the given directory with a timeout,
+// directing stdout and stderr to out.
+func gitCmdOut(ctx context.Context, dir string, out io.Writer, args ...string) error {
 	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
 	cmd.Dir = dir
-	cmd.Stdout = os.Stderr // Git output goes to stderr for debugging
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = out
+	cmd.Stderr = out
 
 	return cmd.Run()
+}
+
+// gitCmd runs a git command in the given directory with a timeout.
+func gitCmd(ctx context.Context, dir string, args ...string) error {
+	return gitCmdOut(ctx, dir, os.Stderr, args...)
 }
 
 // sanitizePath converts a bead ID to a safe directory/branch name.
