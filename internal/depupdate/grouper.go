@@ -78,8 +78,9 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 	}
 
 	// --- 2. Scope groups ---
-	// scopeKey encodes both scope and ecosystem to avoid cross-ecosystem collisions.
-	type scopeKey struct{ scope, ecosystem string }
+	// scopeKey encodes scope, ecosystem, and sourceDir to avoid grouping packages
+	// from different package.json files or different ecosystems together.
+	type scopeKey struct{ scope, ecosystem, sourceDir string }
 	scopeMembers := make(map[scopeKey][]depcheck.ModuleUpdate)
 	for _, u := range all {
 		if grouped[u.Path] {
@@ -89,7 +90,7 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 		if scope == "" {
 			continue
 		}
-		k := scopeKey{scope, u.Ecosystem}
+		k := scopeKey{scope, u.Ecosystem, u.SourceDir}
 		scopeMembers[k] = append(scopeMembers[k], u.ModuleUpdate)
 	}
 	for k, members := range scopeMembers {
