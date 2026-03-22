@@ -283,7 +283,6 @@ func (m *Model) renderFooter() string {
 	default:
 		// Normal mode: view-specific short bindings prefixed with the active view label.
 		h := m.helpSt.helper
-		h.Width = max(m.mainPanelWidth()-4, 1)
 		var km help.KeyMap
 		var viewLabel string
 		switch m.view {
@@ -300,7 +299,10 @@ func (m *Model) renderFooter() string {
 			km = listKeyMap{}
 			viewLabel = "[List]"
 		}
-		footerText = viewLabel + "  " + h.ShortHelpView(km.ShortHelp())
+		labelPrefix := viewLabel + "  "
+		// footerStyle has Padding(0,2) which adds 4 chars; subtract label prefix too.
+		h.Width = max(m.mainPanelWidth()-4-lipgloss.Width(labelPrefix), 1)
+		footerText = labelPrefix + h.ShortHelpView(km.ShortHelp())
 	}
 
 	return footerStyle.Render(footerText) + errNote
