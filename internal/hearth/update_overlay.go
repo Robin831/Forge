@@ -141,7 +141,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				BeadID:    "",
 				Anvil:     anvilName,
 				Branch:    "",
-				PID:       os.Getpid(),
+				PID:       0, // synthetic depupdate worker; no daemon-managed PID to signal
 				Status:    state.WorkerRunning,
 				Phase:     "depupdate",
 				Title:     "Applying dependency updates",
@@ -159,22 +159,24 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 		applied, failed, skipped, anvilsUpdated := 0, 0, 0, 0
 		for _, report := range reports {
 			var groups []depupdate.UpdateGroup
+			anvilSkipped := 0
 			if selectedKeys != nil {
 				// user-selected groups: ignore filter, pick by key
 				for _, g := range report.Groups {
 					if selectedKeys[groupKey(report.Anvil.Name, g.Name)] {
 						groups = append(groups, g)
 					} else {
-						skipped++
+						anvilSkipped++
 					}
 				}
 			} else {
 				all := depupdate.FilterGroups(report.Groups, depupdate.Options{})
 				groups = depupdate.FilterGroups(report.Groups, opts)
-				skipped += len(all) - len(groups)
+				anvilSkipped = len(all) - len(groups)
 			}
+			skipped += anvilSkipped
 			if len(groups) == 0 {
-				logLine(fmt.Sprintf("[%s] no groups to apply (skipped %d)", report.Anvil.Name, skipped))
+				logLine(fmt.Sprintf("[%s] no groups to apply (skipped %d)", report.Anvil.Name, anvilSkipped))
 				continue
 			}
 			logLine(fmt.Sprintf("[%s] applying %d group(s)...", report.Anvil.Name, len(groups)))

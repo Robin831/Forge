@@ -401,11 +401,17 @@ const (
 	WorkerStalled    WorkerStatus = "stalled"
 )
 
-// backgroundPhases is the SQL IN-list literal for worker phases that run as
-// long-lived background workers. These phases only produce log output when
-// external state changes (e.g. PR events) and can be legitimately silent for
-// long stretches, so they are excluded from stale detection and dispatch
-// capacity queries. Update this constant when new background phases are added.
+// backgroundPhases is the SQL IN-list literal for worker phases that are
+// excluded from stale detection and dispatch capacity queries. This covers two
+// categories:
+//   - Long-lived background monitors (bellows, crucible, etc.) that only
+//     produce log output when external state changes (e.g. PR events) and can
+//     legitimately be silent for long stretches.
+//   - Synthetic / non-dispatch phases (depupdate) that represent user-initiated
+//     foreground operations managed outside the normal bead dispatch cycle and
+//     should not consume dispatch capacity or trigger stale detection.
+//
+// Update this constant when new background or synthetic phases are added.
 const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'crucible', 'schematic', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter', 'depupdate'"
 
 // Worker represents a Smith worker entry.
