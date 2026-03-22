@@ -25,10 +25,10 @@ rules:
     - id: new-logic-needs-tests
       category: testing
       pattern: >-
-        New conditional logic paths or failure modes added to a package that already has unit tests
+        New conditional logic paths, failure modes, or format handling added to a package that already has unit tests
       check: >-
-        Verify that new logic paths (especially those with multiple failure modes like branch resolution, external tool invocation, or state-dependent behavior) have corresponding unit tests — either by injecting dependencies for isolation or by factoring decisions into pure functions that can be tested directly
-      source: copilot:PR#129
+        Verify that new logic paths (especially those with multiple failure modes like branch resolution, external tool invocation, state-dependent behavior, handling a new input format, or adding a fallback path) have corresponding unit tests — either by injecting dependencies for isolation or by factoring decisions into pure functions that can be tested directly. Include tests for retention, ordering, and edge cases.
+      source: copilot:PR#129, copilot:PR#404
       added: "2026-03-09"
     - id: pr-base-branch-consistency
       category: other
@@ -2051,17 +2051,9 @@ rules:
     - id: test-visual-truncation-assertions
       category: testing
       pattern: >-
-        Test assertions using NotContains to verify text truncation in terminal/TUI output
+        Test assertions using NotContains or other negative checks to verify long text is truncated or not rendered verbatim in constrained-width terminal/TUI output
       check: >-
-        When testing text truncation in rendered TUI output, don't rely solely on NotContains(output, fullString) — lipgloss or other renderers may wrap long text across lines, causing NotContains to pass even without truncation. Instead, assert that the rendered output contains a truncation marker (e.g. '…') when the text exceeds available width, and/or verify the exact number of rendered lines to rule out wrapping.
-      source: copilot:PR#402
-      added: "2026-03-22"
-    - id: test-assert-visual-truncation
-      category: testing
-      pattern: >-
-        Test assertions using NotContains or negative checks to verify long text is not rendered verbatim in constrained-width UI output
-      check: >-
-        When testing that long strings are truncated or wrapped in rendered output, do not rely solely on NotContains(output, longString) — the full string may still be present split across lines. Instead, assert that no rendered line exceeds the expected width, verify the expected number of output lines (to detect unwanted wrapping), and check for truncation indicators like an ellipsis ("…").
+        When testing visual truncation or wrapping behavior in rendered terminal/TUI output, do not rely solely on NotContains(output, fullString/longString) — lipgloss or other renderers may wrap long text across lines, so the full string can still be present split across lines while NotContains appears to pass. Instead, assert that the rendered output contains truncation indicators (e.g. an ellipsis "…") when the text exceeds the available width, verify that no rendered line exceeds the expected width, and/or assert the exact number of rendered lines to distinguish intentional truncation from simple wrapping.
       source: copilot:PR#402
       added: "2026-03-22"
     - id: avoid-duplicated-branch-logic
@@ -2087,11 +2079,4 @@ rules:
         Verify that any buffered streaming text is flushed before appending a plain-text entry, so output preserves chronological ordering
       source: copilot:PR#404
       added: "2026-03-22"
-    - id: new-behavior-needs-tests
-      category: testing
-      pattern: >-
-        Adding new code paths, branches, or format handling without corresponding test coverage
-      check: >-
-        When new behavior is introduced (e.g. handling a new input format, adding a fallback path), verify that focused unit tests exist asserting the new behavior and its interaction with surrounding logic (retention, ordering, edge cases)
-      source: copilot:PR#404
-      added: "2026-03-22"
+
