@@ -228,6 +228,50 @@ func TestRenderDetailPanelWithBead(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// clipLines
+// ---------------------------------------------------------------------------
+
+func TestClipLinesZero(t *testing.T) {
+	assert.Equal(t, "", clipLines("a\nb\nc", 0))
+}
+
+func TestClipLinesNegative(t *testing.T) {
+	assert.Equal(t, "", clipLines("a\nb\nc", -1))
+}
+
+func TestClipLinesFewerLinesThanN(t *testing.T) {
+	s := "line1\nline2"
+	assert.Equal(t, s, clipLines(s, 5), "input shorter than n must be returned unchanged")
+}
+
+func TestClipLinesExactlyN(t *testing.T) {
+	s := "line1\nline2\nline3"
+	assert.Equal(t, s, clipLines(s, 3), "input equal to n must be returned unchanged")
+}
+
+func TestClipLinesMoreThanN(t *testing.T) {
+	s := "line1\nline2\nline3\nline4\nline5"
+	got := clipLines(s, 3)
+	assert.Equal(t, "line1\nline2\nline3", got, "must keep only first n lines")
+}
+
+func TestClipLinesOneLineNoNewline(t *testing.T) {
+	assert.Equal(t, "hello", clipLines("hello", 1))
+}
+
+func TestClipLinesOneLineTruncated(t *testing.T) {
+	got := clipLines("a\nb", 1)
+	assert.Equal(t, "a", got)
+}
+
+func TestClipLinesPreservesContent(t *testing.T) {
+	// Verify that clipping does not alter the kept lines.
+	s := "alpha\nbeta\ngamma\ndelta"
+	got := clipLines(s, 2)
+	assert.Equal(t, "alpha\nbeta", got)
+}
+
+// ---------------------------------------------------------------------------
 // detailPanelBaseStyle frame overhead is consistent
 // ---------------------------------------------------------------------------
 
