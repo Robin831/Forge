@@ -35,6 +35,67 @@ type Bead struct {
 	HasPR bool   `json:"-"`
 }
 
+// beadJSON is an internal mirror of Bead used only for JSON deserialization.
+// It uses json.RawMessage for timestamp fields so we can sanitise out-of-range
+// years before storing them as *time.Time.
+type beadJSON struct {
+	ID          string          `json:"id"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Status      string          `json:"status"`
+	Priority    int             `json:"priority"`
+	IssueType   string          `json:"issue_type"`
+	Assignee    string          `json:"assignee"`
+	Labels      []string        `json:"labels"`
+	Blocks      []string        `json:"blocks"`
+	DependsOn   []string        `json:"depends_on"`
+	ClosedAt    json.RawMessage `json:"closed_at"`
+	UpdatedAt   json.RawMessage `json:"updated_at"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler for Bead.
+// It sanitises timestamp fields whose year is outside the JSON-safe range
+// [0,9999], zeroing those fields instead of storing an unrepresentable value
+// that would crash when the Bead is later re-marshalled to JSON.
+func (b *Bead) UnmarshalJSON(data []byte) error {
+	var raw beadJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	b.ID = raw.ID
+	b.Title = raw.Title
+	b.Description = raw.Description
+	b.Status = raw.Status
+	b.Priority = raw.Priority
+	b.IssueType = raw.IssueType
+	b.Assignee = raw.Assignee
+	b.Labels = raw.Labels
+	b.Blocks = raw.Blocks
+	b.DependsOn = raw.DependsOn
+	b.ClosedAt = parseTimeSafe(raw.ClosedAt)
+	b.UpdatedAt = parseTimeSafe(raw.UpdatedAt)
+	return nil
+}
+
+// parseTimeSafe parses a JSON timestamp value and returns nil when the value is
+// null, empty, unparseable, or has a year outside the range [0,9999].
+// time.Time.MarshalJSON rejects years outside that range, so we sanitise at
+// unmarshal time to prevent a later re-marshal from panicking.
+func parseTimeSafe(raw json.RawMessage) *time.Time {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var t time.Time
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return nil
+	}
+	y := t.Year()
+	if y < 0 || y > 9999 {
+		return nil
+	}
+	return &t
+}
+
 // UpdateBeadsMsg carries the result of a FetchAllBeads operation.
 type UpdateBeadsMsg struct {
 	Beads []Bead

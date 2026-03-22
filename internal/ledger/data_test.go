@@ -206,6 +206,49 @@ func TestFetchAllBeadsWithExecClosedBeadFetchUsesLimit(t *testing.T) {
 	assert.True(t, found, "closed-bead bd list must include --limit 50")
 }
 
+func TestParseTimeSafeOutOfRangeYear(t *testing.T) {
+	// bd occasionally returns timestamps whose year is outside [0,9999].
+	// Verify that unmarshalling does not error and that the resulting Bead can
+	// be re-marshalled to JSON without panic or error.
+	outOfRangeJSON := []byte(`[
+		{"id":"bad-ts","title":"bad timestamp","status":"closed",
+		 "closed_at":"99999-01-01T00:00:00Z","updated_at":"99999-06-01T00:00:00Z"}
+	]`)
+
+	var beads []Bead
+	require.NoError(t, json.Unmarshal(outOfRangeJSON, &beads), "unmarshal must not error on out-of-range year")
+	require.Len(t, beads, 1)
+	assert.Nil(t, beads[0].ClosedAt, "out-of-range closed_at must be zeroed to nil")
+	assert.Nil(t, beads[0].UpdatedAt, "out-of-range updated_at must be zeroed to nil")
+
+	// Re-marshal must succeed without panic.
+	_, err := json.Marshal(beads[0])
+	assert.NoError(t, err, "re-marshal of sanitised Bead must not error")
+}
+
+func TestFetchAllBeadsWithExecOutOfRangeTimestampSkipped(t *testing.T) {
+	// A closed bead with an out-of-range year in closed_at must not crash the
+	// fetch and must simply not appear in the recent-beads result (its ClosedAt
+	// and UpdatedAt will be nil, so it fails the 7-day recency filter).
+	outOfRangeJSON := []byte(`[
+		{"id":"bad-ts","title":"bad timestamp","status":"closed",
+		 "closed_at":"99999-01-01T00:00:00Z","updated_at":"99999-06-01T00:00:00Z"}
+	]`)
+	execFn := mockExec(map[string][]byte{
+		"--status=closed": outOfRangeJSON,
+	}, []byte("[]"), nil)
+
+	cmd := fetchAllBeadsWithExec(execFn, map[string]string{"myAnvil": "/tmp/anvil"}, nil)
+	msg := cmd()
+	update, ok := msg.(UpdateBeadsMsg)
+	require.True(t, ok)
+	assert.NoError(t, update.Err, "out-of-range timestamp must not produce an error")
+
+	for _, b := range update.Beads {
+		assert.NotEqual(t, "bad-ts", b.ID, "bead with out-of-range timestamp must be filtered out by recency check")
+	}
+}
+
 func TestFetchAllBeadsWithExecEmptyAnvils(t *testing.T) {
 	called := false
 	execFn := func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
