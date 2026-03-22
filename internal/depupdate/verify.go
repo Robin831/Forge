@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os/exec"
 	"strings"
@@ -48,6 +49,7 @@ func RollbackGroup(_ context.Context, anvilPath string, group UpdateGroup, reaso
 
 	cmd := executil.HideWindow(exec.CommandContext(rollbackCtx, "git", "reset", "--hard"))
 	cmd.Dir = anvilPath
+	cmd.Stdout = io.Discard
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -59,6 +61,7 @@ func RollbackGroup(_ context.Context, anvilPath string, group UpdateGroup, reaso
 	// Also clean any untracked files (including ignored artifacts) that the install may have created.
 	cleanCmd := executil.HideWindow(exec.CommandContext(rollbackCtx, "git", "clean", "-fdx"))
 	cleanCmd.Dir = anvilPath
+	cleanCmd.Stdout = io.Discard
 
 	var cleanStderr bytes.Buffer
 	cleanCmd.Stderr = &cleanStderr
@@ -76,6 +79,7 @@ func RollbackGroup(_ context.Context, anvilPath string, group UpdateGroup, reaso
 func CommitGroup(ctx context.Context, anvilPath string, group UpdateGroup) error {
 	addCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "add", "-A"))
 	addCmd.Dir = anvilPath
+	addCmd.Stdout = io.Discard
 
 	var addStderr bytes.Buffer
 	addCmd.Stderr = &addStderr
@@ -95,6 +99,7 @@ func CommitGroup(ctx context.Context, anvilPath string, group UpdateGroup) error
 	commitMsg := msg + "\n" + body.String()
 	commitCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "commit", "-m", commitMsg))
 	commitCmd.Dir = anvilPath
+	commitCmd.Stdout = io.Discard
 
 	var commitStderr bytes.Buffer
 	commitCmd.Stderr = &commitStderr

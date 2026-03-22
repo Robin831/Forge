@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os/exec"
 	"strings"
@@ -36,6 +37,7 @@ func CheckoutUpdateBranch(ctx context.Context, anvilPath string) (string, error)
 		defer cancel()
 		cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
 		cmd.Dir = anvilPath
+		cmd.Stdout = io.Discard
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
@@ -156,6 +158,7 @@ func CreatePR(ctx context.Context, anvilPath, anvilName, branch string, groups [
 		defer cancel()
 		cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
 		cmd.Dir = anvilPath
+		cmd.Stdout = io.Discard
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
@@ -347,6 +350,7 @@ func CloseMatchingDepBeads(ctx context.Context, anvilPath string, groups []Updat
 		closeCtx, closeCancel := context.WithTimeout(ctx, 30*time.Second)
 		closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", b.ID, "--reason", closeReason))
 		closeCmd.Dir = anvilPath
+		closeCmd.Stdout = io.Discard
 		var closeErr bytes.Buffer
 		closeCmd.Stderr = &closeErr
 		if err := closeCmd.Run(); err != nil {

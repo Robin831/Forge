@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,6 +95,7 @@ func GenerateChangelog(anvilPath string, groups []UpdateGroup, isBilingual bool)
 	addArgs := append([]string{"add", "--"}, relFiles...)
 	addCmd := executil.HideWindow(exec.CommandContext(ctx, "git", addArgs...))
 	addCmd.Dir = anvilPath
+	addCmd.Stdout = io.Discard
 
 	var addStderr bytes.Buffer
 	addCmd.Stderr = &addStderr
@@ -104,6 +106,7 @@ func GenerateChangelog(anvilPath string, groups []UpdateGroup, isBilingual bool)
 	commitMsg := fmt.Sprintf("chore(deps): add changelog fragment for dependency batch %s", stamp)
 	commitCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "commit", "-m", commitMsg))
 	commitCmd.Dir = anvilPath
+	commitCmd.Stdout = io.Discard
 
 	var commitStderr bytes.Buffer
 	commitCmd.Stderr = &commitStderr
