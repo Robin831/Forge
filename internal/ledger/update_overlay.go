@@ -202,6 +202,11 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 			_, err = depupdate.CreatePR(ctx, report.Anvil.Path, report.Anvil.Name, branch, appliedGroups)
 			if err != nil {
 				prErrors = append(prErrors, fmt.Sprintf("%s: %v", report.Anvil.Name, err))
+			} else {
+				// Close any open depcheck beads that match the updated packages.
+				if closeErr := depupdate.CloseMatchingDepBeads(ctx, report.Anvil.Path, appliedGroups); closeErr != nil {
+					prErrors = append(prErrors, fmt.Sprintf("%s: closing dep beads: %v", report.Anvil.Name, closeErr))
+				}
 			}
 		}
 		return updateApplyDoneMsg{applied: applied, failed: failed, skipped: skipped, anvils: anvilsUpdated, appliedPackages: appliedPackages, prErrors: prErrors}
