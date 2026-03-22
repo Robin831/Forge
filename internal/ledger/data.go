@@ -132,24 +132,33 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 		var allBeads []Bead
 		var firstErr error
 
-		// Fetch open + in_progress beads.
-		{
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			out, err := execFn(ctx, anvilPath, "list", "--status=open", "--status=in_progress", "--limit", "0", "--json")
-			if err != nil {
-				firstErr = err
-			} else {
+		// Fetch open and in_progress beads with separate calls (bd does not support
+		// multiple --status flags in a single invocation). A single shared timeout
+		// context covers both calls so the combined wait matches the old single-call
+		// deadline and avoids a UX regression.
+		openCtx, openCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer openCancel()
+		for _, status := range []string{"open", "in_progress"} {
+			func() {
+				out, err := execFn(openCtx, anvilPath, "list", "--status="+status, "--limit", "0", "--json")
+				if err != nil {
+					if firstErr == nil {
+						firstErr = fmt.Errorf("fetching %s beads for %s: %w", status, anvilName, err)
+					}
+					return
+				}
 				var beads []Bead
 				if err := json.Unmarshal(out, &beads); err != nil {
-					firstErr = fmt.Errorf("parsing beads for %s: %w", anvilName, err)
-				} else {
-					for i := range beads {
-						beads[i].Anvil = anvilName
+					if firstErr == nil {
+						firstErr = fmt.Errorf("parsing %s beads for %s: %w", status, anvilName, err)
 					}
-					allBeads = append(allBeads, beads...)
+					return
 				}
-			}
+				for i := range beads {
+					beads[i].Anvil = anvilName
+				}
+				allBeads = append(allBeads, beads...)
+			}()
 		}
 
 		// Fetch recently-closed beads (supplementary; failure is non-fatal).
@@ -231,32 +240,39 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 			wg.Add(1)
 			go func(name, path string) {
 				defer wg.Done()
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				out, err := execFn(ctx, path, "list", "--status=open", "--status=in_progress", "--limit", "0", "--json")
-				if err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					mu.Unlock()
-					return
+				// bd does not support multiple --status flags; make separate calls per status.
+				// A single shared timeout context covers both calls so the combined wait
+				// stays comparable to the old single-call deadline.
+				openCtx, openCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer openCancel()
+				for _, status := range []string{"open", "in_progress"} {
+					func() {
+						out, err := execFn(openCtx, path, "list", "--status="+status, "--limit", "0", "--json")
+						if err != nil {
+							mu.Lock()
+							if firstErr == nil {
+								firstErr = fmt.Errorf("listing %s beads for anvil %s at %s: %w", status, name, path, err)
+							}
+							mu.Unlock()
+							return
+						}
+						var beads []Bead
+						if err := json.Unmarshal(out, &beads); err != nil {
+							mu.Lock()
+							if firstErr == nil {
+								firstErr = fmt.Errorf("parsing %s beads for %s: %w", status, name, err)
+							}
+							mu.Unlock()
+							return
+						}
+						for i := range beads {
+							beads[i].Anvil = name
+						}
+						mu.Lock()
+						allBeads = append(allBeads, beads...)
+						mu.Unlock()
+					}()
 				}
-				var beads []Bead
-				if err := json.Unmarshal(out, &beads); err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = fmt.Errorf("parsing beads for %s: %w", name, err)
-					}
-					mu.Unlock()
-					return
-				}
-				for i := range beads {
-					beads[i].Anvil = name
-				}
-				mu.Lock()
-				allBeads = append(allBeads, beads...)
-				mu.Unlock()
 			}(name, path)
 
 			// Fetch recently closed beads — use a longer timeout since remote Dolt
