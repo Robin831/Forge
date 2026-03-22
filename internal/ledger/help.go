@@ -57,6 +57,9 @@ var (
 
 	// Hierarchy-specific
 	keyExpand = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "expand/collapse"))
+
+	// Anvil picker-specific
+	keyAnvilSelect = key.NewBinding(key.WithKeys("enter", " "), key.WithHelp("enter/space", "select anvil"))
 )
 
 // ---- Per-view KeyMap structs implementing help.KeyMap ----
@@ -65,13 +68,13 @@ var (
 type anvilsKeyMap struct{}
 
 func (anvilsKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyUp, keyDown, keyExpand, keyHelp, keyQuit}
+	return []key.Binding{keyUp, keyDown, keyAnvilSelect, keyHelp, keyQuit}
 }
 
 func (anvilsKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyUp, keyDown, keyExpand}, // Navigation
-		{keyHelp, keyQuit},          // General
+		{keyUp, keyDown, keyAnvilSelect}, // Navigation
+		{keyHelp, keyQuit},               // General
 	}
 }
 

@@ -65,59 +65,6 @@ func TestFilteredBeadsClosedShown(t *testing.T) {
 	assert.Len(t, got, 2)
 }
 
-func TestCycleAnvilFilter(t *testing.T) {
-	m := &Model{
-		anvils: map[string]string{
-			"aardvark": "/a",
-			"zebra":    "/z",
-		},
-	}
-
-	// Start: All anvils.
-	assert.Equal(t, "", m.selectedAnvil)
-
-	// First cycle: advance to first alphabetical anvil.
-	m.cycleAnvilFilter()
-	assert.Equal(t, "aardvark", m.selectedAnvil)
-
-	// Second cycle: advance to next anvil.
-	m.cycleAnvilFilter()
-	assert.Equal(t, "zebra", m.selectedAnvil)
-
-	// Third cycle: wrap back to All.
-	m.cycleAnvilFilter()
-	assert.Equal(t, "", m.selectedAnvil)
-}
-
-func TestCycleAnvilFilterSingleAnvil(t *testing.T) {
-	m := &Model{
-		anvils: map[string]string{"only": "/only"},
-	}
-
-	m.cycleAnvilFilter()
-	assert.Equal(t, "only", m.selectedAnvil)
-
-	m.cycleAnvilFilter()
-	assert.Equal(t, "", m.selectedAnvil)
-}
-
-func TestCycleAnvilFilterNoAnvils(t *testing.T) {
-	m := &Model{anvils: map[string]string{}}
-
-	m.cycleAnvilFilter()
-	assert.Equal(t, "", m.selectedAnvil, "cycling with no anvils should be a no-op")
-}
-
-func TestCycleAnvilFilterStaleFilter(t *testing.T) {
-	m := &Model{
-		anvils:      map[string]string{"forge": "/forge"},
-		selectedAnvil: "removed-anvil",
-	}
-
-	// Filter references an anvil that no longer exists; should reset to All.
-	m.cycleAnvilFilter()
-	assert.Equal(t, "", m.selectedAnvil)
-}
 
 func TestFilterHintNoFilters(t *testing.T) {
 	m := &Model{showClosed: true}

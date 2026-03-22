@@ -269,10 +269,11 @@ func (m *Model) renderHierarchy() string {
 		// Empty state: choose the most informative message for the situation.
 		var emptyMsg string
 		if len(m.beads) > 0 {
-			// There are beads but none pass the current filter.
+			// There are beads but none pass the current filter (e.g. closed hidden).
 			emptyMsg = "No beads match the current filter"
 		} else if m.selectedAnvil != "" {
-			emptyMsg = "No beads match the current filter"
+			// An anvil is selected but it has no beads at all.
+			emptyMsg = "No beads for the selected anvil"
 		} else {
 			emptyMsg = "No beads found"
 		}

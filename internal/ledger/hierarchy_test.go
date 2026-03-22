@@ -276,16 +276,35 @@ func TestRenderHierarchyEmptyNoBeads(t *testing.T) {
 }
 
 func TestRenderHierarchyEmptyWithFilter(t *testing.T) {
+	// When an anvil is selected but has no beads, show "No beads for the selected anvil".
 	m := &Model{
-		width:       80,
-		height:      24,
+		width:         80,
+		height:        24,
+		selectedAnvil: "someanvil",
+	}
+	m.hierarchy.expanded = make(map[string]bool)
+	m.refreshHierarchy()
+	out := m.renderHierarchy()
+	assert.Contains(t, out, "No beads for the selected anvil",
+		"empty anvil should show anvil-specific message")
+}
+
+func TestRenderHierarchyEmptyWithFilterBeadsExist(t *testing.T) {
+	// When beads exist but none pass the filter (e.g. closed hidden), show the filter message.
+	m := &Model{
+		width:  80,
+		height: 24,
+		beads: []Bead{
+			{ID: "a", Anvil: "someanvil", Status: "closed"},
+		},
+		showClosed:    false,
 		selectedAnvil: "someanvil",
 	}
 	m.hierarchy.expanded = make(map[string]bool)
 	m.refreshHierarchy()
 	out := m.renderHierarchy()
 	assert.Contains(t, out, "No beads match the current filter",
-		"empty list with active filter should show filter-specific message")
+		"filtered-out beads should show filter-specific message")
 }
 
 func TestRenderHierarchyFlatNoEpicsHint(t *testing.T) {

@@ -241,29 +241,6 @@ func (m *Model) cycleView() {
 	}
 }
 
-// cycleAnvilFilter advances the anvil filter: All → anvil1 → anvil2 → … → All.
-func (m *Model) cycleAnvilFilter() {
-	names := m.sortedAnvilNames()
-	if len(names) == 0 {
-		return
-	}
-	if m.selectedAnvil == "" {
-		m.selectedAnvil = names[0]
-		return
-	}
-	for i, name := range names {
-		if name == m.selectedAnvil {
-			if i+1 < len(names) {
-				m.selectedAnvil = names[i+1]
-			} else {
-				m.selectedAnvil = "" // wrap back to All
-			}
-			return
-		}
-	}
-	// Current filter no longer in registry; reset to All.
-	m.selectedAnvil = ""
-}
 
 // filterHint returns a compact display string reflecting the active filters,
 // e.g. "  [forge]  +5 closed". Returns "" when no filters are active.
@@ -304,6 +281,9 @@ func (m *Model) refreshBeads() tea.Cmd {
 func (m *Model) goBackToAnvils() (tea.Model, tea.Cmd) {
 	m.view = ViewAnvils
 	m.selectedAnvil = ""
+	m.loading = false
+	m.fetching = false
+	m.beads = nil
 	m.bulk.Clear()
 	return m, nil
 }
@@ -1641,7 +1621,11 @@ func (m *Model) renderAnvilList() string {
 		if i == m.anvilSt.vp.Selected() {
 			cursor = cursorStyle.Render("▶ ")
 			line := fmt.Sprintf("%s%-18s  %s", cursor, name, dimStyle.Render(path))
-			rows = append(rows, selectedStyle.Width(panelW-4).Render(line))
+			selectedWidth := panelW - 4
+			if selectedWidth < 1 {
+				selectedWidth = 1
+			}
+			rows = append(rows, selectedStyle.Width(selectedWidth).Render(line))
 		} else {
 			line := fmt.Sprintf("%s%-18s  %s", cursor, name, dimStyle.Render(path))
 			rows = append(rows, line)

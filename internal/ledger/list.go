@@ -275,7 +275,14 @@ func (m *Model) renderList() string {
 		// Empty state: show an informative message instead of an empty table body.
 		emptyStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true).Padding(1, 2)
 		var emptyMsg string
-		if m.selectedAnvil != "" || !m.showClosed {
+		if !m.showClosed && len(m.beads) > 0 {
+			// Beads exist but some are hidden by the closed filter.
+			emptyMsg = "No beads match the current filter"
+		} else if m.selectedAnvil != "" && len(m.beads) == 0 {
+			// Anvil selected but it has no beads at all.
+			emptyMsg = "No beads found in this anvil"
+		} else if m.selectedAnvil != "" {
+			// Anvil selected; beads were filtered out by the closed toggle.
 			emptyMsg = "No beads match the current filter"
 		} else {
 			emptyMsg = "No beads found"
