@@ -1501,7 +1501,18 @@ func (m *Model) View() string {
 			Bold(true).
 			Foreground(colorAccent).
 			Padding(1, 2)
-		return titleStyle.Render("⚒ Forge Ledger — Loading beads...")
+		dimStyle := lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 2)
+		lines := []string{
+			titleStyle.Render(fmt.Sprintf("⚒ Forge Ledger — Loading beads for %s...", m.selectedAnvil)),
+			"",
+			dimStyle.Render("  Fetching open beads..."),
+			dimStyle.Render("  Fetching in-progress beads..."),
+			dimStyle.Render("  Fetching recently closed beads..."),
+			dimStyle.Render("  Enriching with PR data..."),
+			"",
+			dimStyle.Render("  This may take a moment on slow database connections."),
+		}
+		return strings.Join(lines, "\n")
 	}
 
 	var out string
@@ -1527,9 +1538,13 @@ func (m *Model) View() string {
 		m.list.sortForm != nil
 	if m.detailPanelW() > 0 && !blockingOverlay {
 		detailStr := m.renderDetailPanel()
-		// Pad the main panel to mainPanelWidth() so the detail panel starts
-		// at a consistent column regardless of content width.
-		mainStr := lipgloss.NewStyle().Width(m.mainPanelWidth()).Render(out)
+		// Wrap the main panel in a rounded border to match the detail panel.
+		mainBorder := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorMuted).
+			Width(m.mainPanelWidth() - 2). // -2 for left+right border
+			Height(m.height - 2)           // -2 for top+bottom border
+		mainStr := mainBorder.Render(out)
 		out = lipgloss.JoinHorizontal(lipgloss.Top, mainStr, detailStr)
 	}
 

@@ -41,8 +41,7 @@ func (m *Model) mainPanelWidth() int {
 // used both for rendering and for deriving the horizontal frame overhead.
 func detailPanelBaseStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
-		BorderLeft(true).
-		BorderStyle(lipgloss.NormalBorder()).
+		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorMuted).
 		Padding(0, 1)
 }
@@ -72,16 +71,16 @@ func (m *Model) renderDetailPanel() string {
 		renderBeadDetailContent(&content, b, innerW)
 	}
 
-	// Clip content to at most m.height lines so the detail panel never
-	// grows taller than the terminal height. lipgloss Height() only pads
-	// short content; it does not truncate content that is too tall. Without
-	// this clipping, a long description expands the panel and causes
-	// JoinHorizontal to shift the list panel's viewport upward.
-	clipped := clipLines(content.String(), m.height)
+	// Compute inner height: terminal height minus vertical border (top+bottom).
+	vertFrame := base.GetVerticalFrameSize()
+	innerH := max(m.height-vertFrame, 1)
+
+	// Clip content so the detail panel never grows taller than the terminal.
+	clipped := clipLines(content.String(), innerH)
 
 	return base.
 		Width(w - frameW).
-		Height(m.height).
+		Height(innerH).
 		Render(clipped)
 }
 
