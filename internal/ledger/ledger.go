@@ -412,7 +412,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.failed > 0 {
 			summary += fmt.Sprintf(", %d group(s) failed", msg.failed)
 		}
-		return m, m.addToast(summary, msg.failed > 0 && msg.applied == 0)
+		if len(msg.prErrors) > 0 {
+			summary += fmt.Sprintf("; PR creation failed for %d anvil(s)", len(msg.prErrors))
+		}
+		isError := (msg.failed > 0 && msg.applied == 0) || (len(msg.prErrors) > 0 && msg.applied == 0)
+		return m, m.addToast(summary, isError)
 
 	case depBeadsCloseDoneMsg:
 		m.fetching = true
