@@ -203,3 +203,53 @@ func TestRenderUpdateOverlayMinimumDimensions(t *testing.T) {
 		t.Error("renderUpdateOverlay must not return empty string")
 	}
 }
+
+// --- updateApplyDoneMsg with prErrors ---
+
+// TestUpdateApplyDoneMsgPRErrors verifies that when updateApplyDoneMsg carries
+// non-empty prErrors the model emits an error toast that mentions the PR failure
+// and does NOT offer to close dep-update beads (gating behaviour).
+func TestUpdateApplyDoneMsgPRErrors(t *testing.T) {
+	m := &Model{
+		anvils:            map[string]string{"myrepo": "/tmp/myrepo"},
+		showUpdateOverlay: true,
+		updateRunning:     true,
+		// Seed a dep-update bead that would normally be eligible for closure.
+		beads: []Bead{
+			{ID: "Forge-dep1", Title: "Deps(go): update github.com/foo/bar v1.0.0 → v1.1.0", IssueType: "chore", Status: "open", Anvil: "myrepo"},
+		},
+	}
+
+	msg := updateApplyDoneMsg{
+		applied:         1,
+		failed:          0,
+		anvils:          1,
+		appliedPackages: map[string]bool{"github.com/foo/bar": true},
+		prErrors:        []string{"myrepo: push failed: permission denied"},
+	}
+
+	updatedModel, cmd := m.Update(msg)
+	updated := updatedModel.(*Model)
+
+	// The bead-close form must NOT be shown when there are PR errors.
+	if updated.depBeadCloseForm != nil {
+		t.Error("depBeadCloseForm must be nil when prErrors is non-empty (bead close gated on PR success)")
+	}
+
+	// A command must have been returned (the toast).
+	if cmd == nil {
+		t.Fatal("Update must return a non-nil cmd (toast) for updateApplyDoneMsg with prErrors")
+	}
+
+	// Inspect the toast that was queued: it must be an error toast and mention PR failures.
+	if len(updated.toasts) == 0 {
+		t.Fatal("at least one toast must be queued after updateApplyDoneMsg with prErrors")
+	}
+	toast := updated.toasts[len(updated.toasts)-1]
+	if !toast.isError {
+		t.Error("toast must be an error when prErrors is non-empty")
+	}
+	if !strings.Contains(toast.message, "PR creation failed") {
+		t.Errorf("toast text must mention 'PR creation failed', got: %q", toast.message)
+	}
+}

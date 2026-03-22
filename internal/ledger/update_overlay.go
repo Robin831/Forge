@@ -40,6 +40,7 @@ type updateApplyDoneMsg struct {
 	skipped         int             // groups excluded by the filter
 	anvils          int             // distinct anvils with at least one applied group
 	appliedPackages map[string]bool // package paths that were successfully applied
+	prErrors        []string        // per-anvil PR creation errors (non-fatal; updates were applied but PR failed)
 }
 
 // depBeadsCloseDoneMsg is delivered when the dep-bead bulk close completes.
@@ -140,6 +141,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 
 		applied, failed, skipped, anvilsUpdated := 0, 0, 0, 0
 		appliedPackages := make(map[string]bool)
+		var prErrors []string
 		for _, report := range reports {
 			var groups []depupdate.UpdateGroup
 			if selectedKeys != nil {
@@ -158,16 +160,26 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 			if len(groups) == 0 {
 				continue
 			}
+
+			// Step 1: Checkout (or create) the batch-update branch so that
+			// commits land on a dedicated branch rather than main.
+			branch, err := depupdate.CheckoutUpdateBranch(ctx, report.Anvil.Path)
+			if err != nil {
+				failed += len(groups)
+				continue
+			}
+
+			// Step 2: Install, verify (Temper), and commit each group.
 			results, err := depupdate.Apply(ctx, report.Anvil.Path, report.Anvil.Config, groups)
 			if err != nil {
 				failed += len(groups)
 				continue
 			}
-			anvilApplied := false
+			var appliedGroups []depupdate.UpdateGroup
 			for _, r := range results {
 				if r.Applied {
 					applied++
-					anvilApplied = true
+					appliedGroups = append(appliedGroups, r.Group)
 					for _, u := range r.Group.Updates {
 						appliedPackages[u.Path] = true
 					}
@@ -175,11 +187,24 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 					failed++
 				}
 			}
-			if anvilApplied {
-				anvilsUpdated++
+			if len(appliedGroups) == 0 {
+				continue
+			}
+			anvilsUpdated++
+
+			// Step 3: Generate and commit a changelog fragment.
+			isBilingual := depupdate.DetectBilingual(report.Anvil.Path)
+			if err := depupdate.GenerateChangelog(report.Anvil.Path, appliedGroups, isBilingual); err != nil {
+				prErrors = append(prErrors, fmt.Sprintf("%s: changelog generation failed: %v", report.Anvil.Name, err))
+			}
+
+			// Step 4: Push the branch and open a GitHub PR.
+			_, err = depupdate.CreatePR(ctx, report.Anvil.Path, report.Anvil.Name, branch, appliedGroups)
+			if err != nil {
+				prErrors = append(prErrors, fmt.Sprintf("%s: %v", report.Anvil.Name, err))
 			}
 		}
-		return updateApplyDoneMsg{applied: applied, failed: failed, skipped: skipped, anvils: anvilsUpdated, appliedPackages: appliedPackages}
+		return updateApplyDoneMsg{applied: applied, failed: failed, skipped: skipped, anvils: anvilsUpdated, appliedPackages: appliedPackages, prErrors: prErrors}
 	}
 }
 

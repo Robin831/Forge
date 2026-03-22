@@ -36,10 +36,11 @@ type updateScanDoneMsg struct {
 
 // updateApplyDoneMsg is delivered when dependency updates have been applied across all anvils.
 type updateApplyDoneMsg struct {
-	applied int // groups successfully installed, verified, and committed
-	failed  int // groups that failed or were rolled back
-	skipped int // groups excluded by the filter (e.g. major groups when patch+minor only)
-	anvils  int // distinct anvils with at least one applied group
+	applied   int      // groups successfully installed, verified, and committed
+	failed    int      // groups that failed or were rolled back
+	skipped   int      // groups excluded by the filter (e.g. major groups when patch+minor only)
+	anvils    int      // distinct anvils with at least one applied group
+	prErrors  []string // per-anvil PR creation errors (non-fatal; updates were applied but PR failed)
 }
 
 // openUpdateOverlay opens the update overlay and kicks off a background scan.
@@ -157,6 +158,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 		logLine("Starting dependency updates for: " + anvilName)
 
 		applied, failed, skipped, anvilsUpdated := 0, 0, 0, 0
+		var prErrors []string
 		for _, report := range reports {
 			var groups []depupdate.UpdateGroup
 			anvilSkipped := 0
@@ -179,7 +181,19 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				logLine(fmt.Sprintf("[%s] no groups to apply (skipped %d)", report.Anvil.Name, anvilSkipped))
 				continue
 			}
-			logLine(fmt.Sprintf("[%s] applying %d group(s)...", report.Anvil.Name, len(groups)))
+
+			// Step 1: Checkout (or create) the batch-update branch so that
+			// commits land on a dedicated branch rather than main.
+			logLine(fmt.Sprintf("[%s] checking out update branch...", report.Anvil.Name))
+			branch, err := depupdate.CheckoutUpdateBranch(ctx, report.Anvil.Path)
+			if err != nil {
+				logLine(fmt.Sprintf("[%s] branch error: %v", report.Anvil.Name, err))
+				failed += len(groups)
+				continue
+			}
+			logLine(fmt.Sprintf("[%s] on branch %s, applying %d group(s)...", report.Anvil.Name, branch, len(groups)))
+
+			// Step 2: Install, verify (Temper), and commit each group.
 			results, err := depupdate.Apply(ctx, report.Anvil.Path, report.Anvil.Config, groups)
 			if err != nil {
 				// Apply-level error (e.g. context cancellation); count all groups as failed.
@@ -187,19 +201,36 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				failed += len(groups)
 				continue
 			}
-			anvilApplied := false
+			var appliedGroups []depupdate.UpdateGroup
 			for _, r := range results {
 				if r.Applied {
 					logLine(fmt.Sprintf("[%s] applied: %s", report.Anvil.Name, r.Group.Name))
 					applied++
-					anvilApplied = true
+					appliedGroups = append(appliedGroups, r.Group)
 				} else {
 					logLine(fmt.Sprintf("[%s] failed: %s", report.Anvil.Name, r.Group.Name))
 					failed++
 				}
 			}
-			if anvilApplied {
-				anvilsUpdated++
+			if len(appliedGroups) == 0 {
+				continue
+			}
+			anvilsUpdated++
+
+			// Step 3: Generate and commit a changelog fragment.
+			isBilingual := depupdate.DetectBilingual(report.Anvil.Path)
+			if err := depupdate.GenerateChangelog(report.Anvil.Path, appliedGroups, isBilingual); err != nil {
+				logLine(fmt.Sprintf("[%s] changelog warning: %v", report.Anvil.Name, err))
+			}
+
+			// Step 4: Push the branch and open a GitHub PR.
+			logLine(fmt.Sprintf("[%s] creating PR...", report.Anvil.Name))
+			prURL, err := depupdate.CreatePR(ctx, report.Anvil.Path, report.Anvil.Name, branch, appliedGroups)
+			if err != nil {
+				logLine(fmt.Sprintf("[%s] PR error: %v", report.Anvil.Name, err))
+				prErrors = append(prErrors, fmt.Sprintf("%s: %v", report.Anvil.Name, err))
+			} else {
+				logLine(fmt.Sprintf("[%s] PR created: %s", report.Anvil.Name, prURL))
 			}
 		}
 
@@ -236,7 +267,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 			}()
 		}
 
-		return updateApplyDoneMsg{applied: applied, failed: failed, skipped: skipped, anvils: anvilsUpdated}
+		return updateApplyDoneMsg{applied: applied, failed: failed, skipped: skipped, anvils: anvilsUpdated, prErrors: prErrors}
 	}
 }
 
