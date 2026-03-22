@@ -314,8 +314,15 @@ func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, rule
 		if err := fetchCmd.Run(); err != nil {
 			stderrStr := fetchStderr.String()
 			if strings.Contains(stderrStr, "couldn't find remote ref") {
-				// Branch doesn't exist on origin yet — this is expected on first push.
-				log.Printf("[smelter] batch branch %s not yet on origin, proceeding with initial push", branch)
+				// Branch doesn't exist on origin — this happens on first push OR after
+				// GitHub auto-deletes the branch when a batch PR is merged. In both cases
+				// the local remote-tracking ref may be stale (pointing to the old merged
+				// commit). Delete it so --force-with-lease doesn't use it as the expected
+				// remote state (which would cause a "(stale info)" rejection).
+				pruneCmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "update-ref", "-d", "refs/remotes/origin/"+branch))
+				pruneCmd.Dir = wtPath
+				_ = pruneCmd.Run() // best effort; ignore error if ref doesn't exist
+				log.Printf("[smelter] batch branch %s not on origin (new or auto-deleted); cleared stale tracking ref", branch)
 			} else {
 				return fmt.Errorf("git fetch origin %s: %w\nstderr: %s", branch, err, stderrStr)
 			}

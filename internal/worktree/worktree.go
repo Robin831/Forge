@@ -133,10 +133,16 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		return nil, fmt.Errorf("git fetch: %w", err)
 	}
 
-	if branchExists(ctx, anvilPath, targetBranch) {
+	if branchExists(ctx, anvilPath, targetBranch) && !opts.ResetBranch {
 		// Distinguish local vs remote-only: `git worktree add <path> <branch>` requires
 		// the local ref to exist. If only the remote branch exists, create a local
 		// tracking branch from origin/<branch> instead.
+		//
+		// When ResetBranch is true we skip this path entirely and fall through to the
+		// "create from base ref" path below. This ensures a clean worktree starting
+		// from main, avoiding stale state from a previously merged batch branch whose
+		// remote was auto-deleted (which would cause --force-with-lease to fail with
+		// "(stale info)" on the subsequent push).
 		localRef := "refs/heads/" + targetBranch
 		if err := gitCmd(ctx, anvilPath, "show-ref", "--verify", "--quiet", localRef); err == nil {
 			// Local branch exists; checkout directly.
