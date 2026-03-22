@@ -194,9 +194,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 
 			// Step 3: Generate and commit a changelog fragment (non-fatal on error).
 			isBilingual := depupdate.DetectBilingual(report.Anvil.Path)
-			if clErr := depupdate.GenerateChangelog(report.Anvil.Path, appliedGroups, isBilingual); clErr != nil {
-				prErrors = append(prErrors, fmt.Sprintf("%s changelog: %v", report.Anvil.Name, clErr))
-			}
+			_ = depupdate.GenerateChangelog(report.Anvil.Path, appliedGroups, isBilingual)
 
 			// Step 4: Push the branch and open a GitHub PR.
 			_, err = depupdate.CreatePR(ctx, report.Anvil.Path, report.Anvil.Name, branch, appliedGroups)
