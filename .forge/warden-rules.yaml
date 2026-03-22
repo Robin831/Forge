@@ -2091,6 +2091,6 @@ rules:
       category: performance
       pattern: Multiple sequential operations each with their own timeout/context deadline
       check: >-
-        Verify that sequential timeout-bearing calls share a single parent context or run concurrently, so worst-case latency does not exceed the intended overall deadline
+        For fixed or otherwise bounded multi-step sequences with an intended overall deadline, verify that sequential timeout-bearing calls are coordinated via an overall parent context/deadline (and, if needed, per-step timeouts derived from it) or are run concurrently, so worst-case latency cannot exceed the intended overall bound; do not apply this pattern to open-ended/variable-length loops where per-item timeout guidance (e.g., per-item-timeout-in-loops) should remain the primary rule
       source: copilot:PR#406
       added: "2026-03-22"
