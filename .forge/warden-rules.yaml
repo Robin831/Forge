@@ -976,10 +976,11 @@ rules:
       added: "2026-03-20"
     - id: pr-description-matches-contents
       category: other
-      pattern: PR description references files, components, or deliverables
+      pattern: >-
+        PR description references files, components, deliverables, features, keybindings, or implementation changes
       check: >-
-        Verify that every file, component, or artifact mentioned in the PR description is actually included in the changeset. If something listed is not shipped, either add it or update the description to match what is actually being delivered.
-      source: copilot:PR#320
+        Verify that every file, component, or artifact mentioned in the PR description is actually included in the changeset. If something listed is not shipped, either add it or update the description to match what is actually being delivered. In particular, if only a changelog fragment is present without the actual implementation, either add the missing code or update the PR description to reflect what is actually being shipped.
+      source: ['copilot:PR#320', 'copilot:PR#383']
       added: "2026-03-20"
     - id: abort-path-cleanup
       category: ui
@@ -1742,14 +1743,6 @@ rules:
       check: >-
         Verify that each doc comment directly precedes the function it describes, especially after refactoring or reordering functions
       source: copilot:PR#381
-      added: "2026-03-21"
-    - id: pr-description-matches-diff
-      category: other
-      pattern: >-
-        PR title or description mentions features, keybindings, or implementation changes
-      check: >-
-        Verify the diff contains the actual code changes described in the PR title/description; if only a changelog fragment is present, either add the missing implementation or update the PR description to match what is actually being shipped
-      source: copilot:PR#383
       added: "2026-03-21"
     - id: changelog-key-formatting
       category: style
