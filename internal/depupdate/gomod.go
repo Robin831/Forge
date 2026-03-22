@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 
 	"github.com/Robin831/Forge/internal/executil"
@@ -26,6 +27,7 @@ func InstallGoGroup(ctx context.Context, moduleDir string, group UpdateGroup) er
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	cmd.Stdout = io.Discard
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("go get for group %q: %w\nstderr: %s", group.Name, err, stderr.String())
@@ -37,6 +39,7 @@ func InstallGoGroup(ctx context.Context, moduleDir string, group UpdateGroup) er
 
 	var tidyStderr bytes.Buffer
 	tidyCmd.Stderr = &tidyStderr
+	tidyCmd.Stdout = io.Discard
 
 	if err := tidyCmd.Run(); err != nil {
 		return fmt.Errorf("go mod tidy after group %q: %w\nstderr: %s", group.Name, err, tidyStderr.String())
