@@ -142,9 +142,11 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 
 		// Compute the batch-update branch name once so all anvils land on the
 		// same branch name for this run (consistent same-day re-run semantics).
-		dateStr := time.Now().Format("2006-01-02")
+		now := time.Now()
+		dateStr := now.Format("2006-01-02")
 		targetBranch := "deps/batch-update-" + dateStr
-		worktreeBeadID := "depupdate-" + dateStr
+		// Make the worktree bead ID unique per run to avoid collisions between concurrent runs.
+		worktreeBeadID := fmt.Sprintf("depupdate-%s-%d", dateStr, now.UnixNano())
 
 		applied, failed, skipped, anvilsUpdated := 0, 0, 0, 0
 		appliedPackages := make(map[string]bool)
@@ -176,6 +178,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				wt, err := wtMgr.CreateWithOptions(ctx, report.Anvil.Path, worktreeBeadID, worktree.CreateOptions{
 					Branch:      targetBranch,
 					ResetBranch: true,
+					Quiet:       true,
 				})
 				if err != nil {
 					failed += len(groups)

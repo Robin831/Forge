@@ -160,9 +160,10 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 
 		// Compute the batch-update branch name once so all anvils land on the
 		// same branch name for this run (consistent same-day re-run semantics).
+		// Use a per-run worktree bead ID to avoid .workers/<id> contention between concurrent/same-day depupdate runs.
 		dateStr := time.Now().Format("2006-01-02")
 		targetBranch := "deps/batch-update-" + dateStr
-		worktreeBeadID := "depupdate-" + dateStr
+		worktreeBeadID := fmt.Sprintf("depupdate-%s-%s", dateStr, workerID)
 
 		applied, failed, skipped, anvilsUpdated := 0, 0, 0, 0
 		var prErrors []string
@@ -198,6 +199,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				wt, err := wtMgr.CreateWithOptions(ctx, report.Anvil.Path, worktreeBeadID, worktree.CreateOptions{
 					Branch:      targetBranch,
 					ResetBranch: true,
+					Quiet:       true,
 				})
 				if err != nil {
 					logLine(fmt.Sprintf("[%s] worktree error: %v", report.Anvil.Name, err))
