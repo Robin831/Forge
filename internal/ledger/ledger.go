@@ -1590,7 +1590,7 @@ func (m *Model) renderAnvilList() string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Padding(0, 2)
 	title := titleStyle.Render("⚒ Forge Ledger — Select Anvil")
 
-	panelW := m.width
+	panelW := m.mainPanelWidth()
 	if panelW <= 0 {
 		panelW = 80
 	}
@@ -1613,21 +1613,32 @@ func (m *Model) renderAnvilList() string {
 	cursorStyle := lipgloss.NewStyle().Foreground(colorAccent)
 	dimStyle := lipgloss.NewStyle().Foreground(colorMuted)
 
+	itemWidth := panelW - 4
+	if itemWidth < 1 {
+		itemWidth = 1
+	}
+
 	var rows []string
 	for i := start; i < end; i++ {
 		name := names[i]
 		path := m.anvils[name]
+		selected := i == m.anvilSt.vp.Selected()
+
 		cursor := "  "
-		if i == m.anvilSt.vp.Selected() {
+		if selected {
 			cursor = cursorStyle.Render("▶ ")
-			line := fmt.Sprintf("%s%-18s  %s", cursor, name, dimStyle.Render(path))
-			selectedWidth := panelW - 4
-			if selectedWidth < 1 {
-				selectedWidth = 1
-			}
-			rows = append(rows, selectedStyle.Width(selectedWidth).Render(line))
+		}
+		prefix := fmt.Sprintf("%s%-18s  ", cursor, name)
+		prefixWidth := lipgloss.Width(prefix)
+		pathWidth := itemWidth - prefixWidth
+		if pathWidth < 0 {
+			pathWidth = 0
+		}
+		line := prefix + dimStyle.Render(truncate(path, pathWidth))
+
+		if selected {
+			rows = append(rows, selectedStyle.Width(itemWidth).Render(line))
 		} else {
-			line := fmt.Sprintf("%s%-18s  %s", cursor, name, dimStyle.Render(path))
 			rows = append(rows, line)
 		}
 	}
