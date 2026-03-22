@@ -2079,4 +2079,18 @@ rules:
         Verify that any buffered streaming text is flushed before appending a plain-text entry, so output preserves chronological ordering
       source: copilot:PR#404
       added: "2026-03-22"
-
+    - id: wrap-exec-errors-with-context
+      category: error-handling
+      pattern: >-
+        Recording raw exec/command errors without adding contextual information about which operation, status, or resource failed
+      check: >-
+        When capturing errors from exec calls or multi-step operations, verify the error is wrapped with enough context (e.g., operation name, resource identifier, status) so the caller can diagnose which step failed without ambiguity
+      source: copilot:PR#406
+      added: "2026-03-22"
+    - id: sequential-timeout-accumulation
+      category: performance
+      pattern: Multiple sequential operations each with their own timeout/context deadline
+      check: >-
+        For fixed or otherwise bounded multi-step sequences with an intended overall deadline, verify that sequential timeout-bearing calls are coordinated via an overall parent context/deadline (and, if needed, per-step timeouts derived from it) or are run concurrently, so worst-case latency cannot exceed the intended overall bound; do not apply this pattern to open-ended/variable-length loops where per-item timeout guidance (e.g., per-item-timeout-in-loops) should remain the primary rule
+      source: copilot:PR#406
+      added: "2026-03-22"
