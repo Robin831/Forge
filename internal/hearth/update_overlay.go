@@ -136,7 +136,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 
 		// Insert a synthetic worker record so the Workers panel shows progress.
 		if db != nil {
-			_ = db.InsertWorker(&state.Worker{
+			if err := db.InsertWorker(&state.Worker{
 				ID:        workerID,
 				BeadID:    "",
 				Anvil:     anvilName,
@@ -147,8 +147,12 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				Title:     "Applying dependency updates",
 				StartedAt: time.Now(),
 				LogPath:   logPath,
-			})
-			_ = db.LogEvent(state.EventDepupdateStarted, "Applying dependency updates for: "+anvilName, "", anvilName)
+			}); err != nil {
+				logLine(fmt.Sprintf("warning: failed to register worker: %v", err))
+			}
+			if err := db.LogEvent(state.EventDepupdateStarted, "Applying dependency updates for: "+anvilName, "", anvilName); err != nil {
+				logLine(fmt.Sprintf("warning: failed to log start event: %v", err))
+			}
 		}
 		logLine("Starting dependency updates for: " + anvilName)
 
@@ -200,20 +204,34 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 		// Update worker status and log the completion event.
 		if db != nil {
 			if failed > 0 && applied == 0 {
-				_ = db.UpdateWorkerStatus(workerID, state.WorkerFailed)
-				_ = db.LogEvent(state.EventDepupdateFailed,
+				if err := db.UpdateWorkerStatus(workerID, state.WorkerFailed); err != nil {
+					logLine(fmt.Sprintf("warning: failed to update worker status: %v", err))
+				}
+				if err := db.LogEvent(state.EventDepupdateFailed,
 					fmt.Sprintf("Dependency updates failed: %d applied, %d failed, %d skipped", applied, failed, skipped),
-					"", anvilName)
+					"", anvilName); err != nil {
+					logLine(fmt.Sprintf("warning: failed to log failure event: %v", err))
+				}
 			} else {
-				_ = db.UpdateWorkerStatus(workerID, state.WorkerDone)
-				_ = db.LogEvent(state.EventDepupdateCompleted,
+				if err := db.UpdateWorkerStatus(workerID, state.WorkerDone); err != nil {
+					logLine(fmt.Sprintf("warning: failed to update worker status: %v", err))
+				}
+				if err := db.LogEvent(state.EventDepupdateCompleted,
 					fmt.Sprintf("Dependency updates completed: %d applied, %d failed, %d skipped across %d anvil(s)", applied, failed, skipped, anvilsUpdated),
-					"", anvilName)
+					"", anvilName); err != nil {
+					logLine(fmt.Sprintf("warning: failed to log completion event: %v", err))
+				}
 			}
 		}
 		logLine(fmt.Sprintf("Done: %d applied, %d failed, %d skipped", applied, failed, skipped))
 		if logFile != nil {
 			logFile.Close()
+			// Remove the temp file after a short delay so the TUI has time to read
+			// the final lines before the file disappears.
+			go func() {
+				time.Sleep(30 * time.Second)
+				os.Remove(logPath)
+			}()
 		}
 
 		return updateApplyDoneMsg{applied: applied, failed: failed, skipped: skipped, anvils: anvilsUpdated}
