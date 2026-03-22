@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -49,12 +51,20 @@ var ledgerCmd = &cobra.Command{
 		// tea.WithMouseCellMotion enables mouse events (scroll wheel, clicks) throughout
 		// the Ledger TUI, including list, kanban, hierarchy, and help overlay.
 		// Pass --no-mouse to disable and restore normal terminal text selection.
+		// Redirect Go's default logger away from stderr while the TUI is
+		// running. Background goroutines use log.Printf which writes to
+		// stderr and corrupts the alt-screen.
+		prevLogOut := log.Writer()
+		log.SetOutput(io.Discard)
+
 		opts := []tea.ProgramOption{tea.WithAltScreen()}
 		if !noMouse {
 			opts = append(opts, tea.WithMouseCellMotion())
 		}
 		p := tea.NewProgram(model, opts...)
-		if _, err := p.Run(); err != nil {
+		_, err = p.Run()
+		log.SetOutput(prevLogOut)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			return err
 		}

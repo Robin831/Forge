@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"sort"
 
@@ -486,6 +488,12 @@ var hearthCmd = &cobra.Command{
 		noMouse, _ := cmd.Flags().GetBool("no-mouse")
 		mouseEnabled := !noMouse
 		model.SetMouseEnabled(mouseEnabled)
+		// Redirect Go's default logger away from stderr while the TUI is
+		// running. Background goroutines (depupdate, depcheck, etc.) use
+		// log.Printf which writes to stderr and corrupts the alt-screen.
+		prevLogOut := log.Writer()
+		log.SetOutput(io.Discard)
+
 		opts := []tea.ProgramOption{tea.WithAltScreen()}
 		if mouseEnabled {
 			// Mouse reporting enables click-to-focus and wheel scrolling.
@@ -493,7 +501,9 @@ var hearthCmd = &cobra.Command{
 			opts = append(opts, tea.WithMouseCellMotion())
 		}
 		p := tea.NewProgram(&model, opts...)
-		if _, err := p.Run(); err != nil {
+		_, err = p.Run()
+		log.SetOutput(prevLogOut)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			return err
 		}
