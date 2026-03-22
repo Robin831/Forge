@@ -858,7 +858,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.updateRunning = true
 					startToast := m.addToast("Applying dependency updates...", false)
-					applyCmd := runUpdateApply(m.updateReports, updateFilterAll, keySet)
+					applyCmd := runUpdateApply(m.updateReports, updateFilterAll, keySet, m.data.DB)
 					return m, tea.Batch(cmd, startToast, applyCmd)
 				} else if m.updateGroupSelectForm.State == huh.StateAborted {
 					m.closeUpdateOverlay()
@@ -887,7 +887,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						// Start applying in a background goroutine
 						m.updateRunning = true
 						startToast := m.addToast("Applying dependency updates...", false)
-						applyCmd := runUpdateApply(m.updateReports, choice, nil)
+						applyCmd := runUpdateApply(m.updateReports, choice, nil, m.data.DB)
 						return m, tea.Batch(cmd, startToast, applyCmd)
 					}
 				} else if m.updateForm.State == huh.StateAborted {

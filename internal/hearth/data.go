@@ -205,6 +205,8 @@ func inferWorkerType(id string, status state.WorkerStatus) string {
 		return "burnish"
 	case len(id) > 7 && id[:7] == "rebase-":
 		return "rebase"
+	case len(id) > 10 && id[:10] == "depupdate-":
+		return "depupdate"
 	}
 	// Fall back to status-based guess
 	if status == state.WorkerReviewing {
