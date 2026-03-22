@@ -1287,6 +1287,11 @@ const (
 	EventPRCreationFailed     EventType = "pr_creation_failed"
 	EventPRAlreadyExists      EventType = "pr_already_exists"
 
+	// Depupdate events — manual dependency update operations from the Hearth U panel.
+	EventDepupdateStarted   EventType = "depupdate_started"
+	EventDepupdateCompleted EventType = "depupdate_completed"
+	EventDepupdateFailed    EventType = "depupdate_failed"
+
 	// Crucible events — parent bead orchestration with children on feature branches.
 	EventCrucibleStarted         EventType = "crucible_started"
 	EventCrucibleChildDispatched EventType = "crucible_child_dispatched"

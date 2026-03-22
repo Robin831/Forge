@@ -3,13 +3,16 @@ package hearth
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Robin831/Forge/internal/depupdate"
+	"github.com/Robin831/Forge/internal/state"
 )
 
 // updateFilterChoice controls which update groups are included when applying.
@@ -87,13 +90,67 @@ func groupKey(anvilName, groupName string) string {
 // filter controls which groups to include (all or patch+minor only); it is
 // ignored when selectedKeys is non-nil, in which case only groups whose key
 // (groupKey(anvilName, groupName)) is present in the set are applied.
-func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, selectedKeys map[string]bool) tea.Cmd {
+// db is optional; when non-nil a synthetic worker record is inserted into the
+// state DB so the Hearth Workers panel and Live Activity panel show progress.
+func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, selectedKeys map[string]bool, db *state.DB) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		opts := depupdate.Options{}
 		if filter == updateFilterPatchMinor {
 			opts.NoMajor = true
 		}
+
+		// Determine a display anvil name for the worker record.
+		anvilName := ""
+		if len(reports) == 1 {
+			anvilName = reports[0].Anvil.Name
+		} else if len(reports) > 1 {
+			names := make([]string, 0, len(reports))
+			for _, r := range reports {
+				names = append(names, r.Anvil.Name)
+			}
+			anvilName = strings.Join(names, ", ")
+		}
+
+		// Create a temp log file so the Hearth Live Activity panel can tail it.
+		workerID := fmt.Sprintf("depupdate-%d", time.Now().UnixNano())
+		var logFile *os.File
+		if db != nil {
+			var err error
+			logFile, err = os.CreateTemp("", "forge-depupdate-*.log")
+			if err != nil {
+				logFile = nil // proceed without log capture
+			}
+		}
+		logPath := ""
+		if logFile != nil {
+			logPath = logFile.Name()
+		}
+
+		// Helper: write a timestamped line to the log file.
+		logLine := func(line string) {
+			if logFile != nil {
+				fmt.Fprintln(logFile, time.Now().Format("15:04:05")+" "+line)
+			}
+		}
+
+		// Insert a synthetic worker record so the Workers panel shows progress.
+		if db != nil {
+			_ = db.InsertWorker(&state.Worker{
+				ID:        workerID,
+				BeadID:    "",
+				Anvil:     anvilName,
+				Branch:    "",
+				PID:       os.Getpid(),
+				Status:    state.WorkerRunning,
+				Phase:     "depupdate",
+				Title:     "Applying dependency updates",
+				StartedAt: time.Now(),
+				LogPath:   logPath,
+			})
+			_ = db.LogEvent(state.EventDepupdateStarted, "Applying dependency updates for: "+anvilName, "", anvilName)
+		}
+		logLine("Starting dependency updates for: " + anvilName)
 
 		applied, failed, skipped, anvilsUpdated := 0, 0, 0, 0
 		for _, report := range reports {
@@ -113,20 +170,25 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				skipped += len(all) - len(groups)
 			}
 			if len(groups) == 0 {
+				logLine(fmt.Sprintf("[%s] no groups to apply (skipped %d)", report.Anvil.Name, skipped))
 				continue
 			}
+			logLine(fmt.Sprintf("[%s] applying %d group(s)...", report.Anvil.Name, len(groups)))
 			results, err := depupdate.Apply(ctx, report.Anvil.Path, report.Anvil.Config, groups)
 			if err != nil {
 				// Apply-level error (e.g. context cancellation); count all groups as failed.
+				logLine(fmt.Sprintf("[%s] apply error: %v", report.Anvil.Name, err))
 				failed += len(groups)
 				continue
 			}
 			anvilApplied := false
 			for _, r := range results {
 				if r.Applied {
+					logLine(fmt.Sprintf("[%s] applied: %s", report.Anvil.Name, r.Group.Name))
 					applied++
 					anvilApplied = true
 				} else {
+					logLine(fmt.Sprintf("[%s] failed: %s", report.Anvil.Name, r.Group.Name))
 					failed++
 				}
 			}
@@ -134,6 +196,26 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 				anvilsUpdated++
 			}
 		}
+
+		// Update worker status and log the completion event.
+		if db != nil {
+			if failed > 0 && applied == 0 {
+				_ = db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+				_ = db.LogEvent(state.EventDepupdateFailed,
+					fmt.Sprintf("Dependency updates failed: %d applied, %d failed, %d skipped", applied, failed, skipped),
+					"", anvilName)
+			} else {
+				_ = db.UpdateWorkerStatus(workerID, state.WorkerDone)
+				_ = db.LogEvent(state.EventDepupdateCompleted,
+					fmt.Sprintf("Dependency updates completed: %d applied, %d failed, %d skipped across %d anvil(s)", applied, failed, skipped, anvilsUpdated),
+					"", anvilName)
+			}
+		}
+		logLine(fmt.Sprintf("Done: %d applied, %d failed, %d skipped", applied, failed, skipped))
+		if logFile != nil {
+			logFile.Close()
+		}
+
 		return updateApplyDoneMsg{applied: applied, failed: failed, skipped: skipped, anvils: anvilsUpdated}
 	}
 }
