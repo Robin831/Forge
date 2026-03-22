@@ -189,6 +189,8 @@ func (t *logTailer) parseLines(lines []string) {
 		}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			// Not JSON — plain text line (e.g. from synthetic depupdate worker logs).
+			// Flush any buffered Gemini text so it appears before this plain-text line.
+			t.flushGeminiText()
 			t.entries = append(t.entries, line)
 			t.lastRawLine = line
 			continue

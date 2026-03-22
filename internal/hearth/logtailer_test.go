@@ -436,6 +436,57 @@ func TestLogTailerCache_GeminiDelta(t *testing.T) {
 	}
 }
 
+func TestLogTailerCache_PlainTextLines(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log")
+
+	// Plain-text lines mixed with JSON lines.
+	lines := []string{
+		assistantTextLine("json line"),
+		"plain text output from depupdate worker",
+		assistantTextLine("after plain"),
+	}
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cache := NewLogTailerCache()
+	entries, _ := cache.ReadIncremental(logPath, 100)
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries (json + plain + json), got %d: %v", len(entries), entries)
+	}
+	if !strings.Contains(entries[1], "plain text output") {
+		t.Errorf("second entry should be the plain-text line: %s", entries[1])
+	}
+}
+
+func TestLogTailerCache_PlainTextAfterGeminiDelta(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log")
+
+	// Gemini delta text followed by a plain-text line — Gemini buffer must be flushed first.
+	lines := []string{
+		`{"type":"message","role":"assistant","content":"Gemini output"}`,
+		"plain text line after gemini",
+	}
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cache := NewLogTailerCache()
+	entries, _ := cache.ReadIncremental(logPath, 100)
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (gemini text flushed + plain line), got %d: %v", len(entries), entries)
+	}
+	// Gemini text should come first (chronological order preserved).
+	if !strings.Contains(entries[0], "Gemini output") {
+		t.Errorf("first entry should contain Gemini text: %s", entries[0])
+	}
+	if entries[1] != "plain text line after gemini" {
+		t.Errorf("second entry should be plain-text line, got: %s", entries[1])
+	}
+}
+
 func TestLogTailerCache_ToolError(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log")
