@@ -133,15 +133,17 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 		var firstErr error
 
 		// Fetch open and in_progress beads with separate calls (bd does not support
-		// multiple --status flags in a single invocation).
+		// multiple --status flags in a single invocation). A single shared timeout
+		// context covers both calls so the combined wait matches the old single-call
+		// deadline and avoids a UX regression.
+		openCtx, openCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer openCancel()
 		for _, status := range []string{"open", "in_progress"} {
 			func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				out, err := execFn(ctx, anvilPath, "list", "--status="+status, "--limit", "0", "--json")
+				out, err := execFn(openCtx, anvilPath, "list", "--status="+status, "--limit", "0", "--json")
 				if err != nil {
 					if firstErr == nil {
-						firstErr = err
+						firstErr = fmt.Errorf("fetching %s beads for %s: %w", status, anvilName, err)
 					}
 					return
 				}
@@ -239,15 +241,17 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 			go func(name, path string) {
 				defer wg.Done()
 				// bd does not support multiple --status flags; make separate calls per status.
+				// A single shared timeout context covers both calls so the combined wait
+				// stays comparable to the old single-call deadline.
+				openCtx, openCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer openCancel()
 				for _, status := range []string{"open", "in_progress"} {
 					func() {
-						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-						defer cancel()
-						out, err := execFn(ctx, path, "list", "--status="+status, "--limit", "0", "--json")
+						out, err := execFn(openCtx, path, "list", "--status="+status, "--limit", "0", "--json")
 						if err != nil {
 							mu.Lock()
 							if firstErr == nil {
-								firstErr = err
+								firstErr = fmt.Errorf("listing %s beads for anvil %s at %s: %w", status, name, path, err)
 							}
 							mu.Unlock()
 							return
