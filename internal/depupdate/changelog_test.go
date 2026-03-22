@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildFragmentContent_Monolingual(t *testing.T) {
+func TestBuildFragmentContent_English(t *testing.T) {
 	groups := []UpdateGroup{
 		{
 			Name: "vite ecosystem",
@@ -24,11 +24,27 @@ func TestBuildFragmentContent_Monolingual(t *testing.T) {
 		},
 	}
 
-	got := buildFragmentContent(groups)
+	got := buildFragmentContent(groups, "deps-batch-test", false)
 
 	assert.True(t, strings.HasPrefix(got, "category: Changed\n"), "expected 'category: Changed' header, got: %q", got)
-	assert.Contains(t, got, "`vite`: 4.0.0 → 5.0.0")
-	assert.Contains(t, got, "`vite-plugin-foo`: 1.2.0 → 1.3.0")
+	assert.Contains(t, got, "**Updated vite** - Bumped from 4.0.0 to 5.0.0. (deps-batch-test)")
+	assert.Contains(t, got, "**Updated vite-plugin-foo** - Bumped from 1.2.0 to 1.3.0. (deps-batch-test)")
+}
+
+func TestBuildFragmentContent_Norwegian(t *testing.T) {
+	groups := []UpdateGroup{
+		{
+			Name: "react",
+			Kind: "minor",
+			Updates: []depcheck.ModuleUpdate{
+				{Path: "react", Current: "18.0.0", Latest: "18.2.0", Kind: "minor"},
+			},
+		},
+	}
+
+	got := buildFragmentContent(groups, "deps-batch-test", true)
+
+	assert.Contains(t, got, "**Oppdatert react** - Bumpet fra 18.0.0 til 18.2.0. (deps-batch-test)")
 }
 
 func TestBuildFragmentContent_MultipleGroups(t *testing.T) {
@@ -49,13 +65,13 @@ func TestBuildFragmentContent_MultipleGroups(t *testing.T) {
 		},
 	}
 
-	got := buildFragmentContent(groups)
+	got := buildFragmentContent(groups, "deps-batch-test", false)
 
 	assert.Equal(t, 2, strings.Count(got, "\n- "), "expected 2 bullet lines, got: %q", got)
 }
 
 func TestBuildFragmentContent_Empty(t *testing.T) {
-	got := buildFragmentContent(nil)
+	got := buildFragmentContent(nil, "deps-batch-test", false)
 	assert.Equal(t, "category: Changed\n", got)
 }
 
@@ -133,7 +149,7 @@ func TestGenerateChangelog_Monolingual(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join(clDir, name))
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(string(content), "category: Changed\n"), "missing category header in %q", string(content))
-	assert.Contains(t, string(content), "`lodash`: 4.17.20 → 4.17.21")
+	assert.Contains(t, string(content), "**Updated lodash** - Bumped from 4.17.20 to 4.17.21.")
 }
 
 func TestGenerateChangelog_Bilingual(t *testing.T) {
@@ -159,11 +175,16 @@ func TestGenerateChangelog_Bilingual(t *testing.T) {
 
 	var hasEN, hasNB bool
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".en.md") {
+		name := e.Name()
+		if strings.HasSuffix(name, ".en.md") {
 			hasEN = true
+			content, _ := os.ReadFile(filepath.Join(clDir, name))
+			assert.Contains(t, string(content), "**Updated react**")
 		}
-		if strings.HasSuffix(e.Name(), ".nb.md") {
+		if strings.HasSuffix(name, ".nb.md") {
 			hasNB = true
+			content, _ := os.ReadFile(filepath.Join(clDir, name))
+			assert.Contains(t, string(content), "**Oppdatert react**")
 		}
 	}
 	assert.True(t, hasEN, "expected .en.md file to be created")
@@ -173,7 +194,7 @@ func TestGenerateChangelog_Bilingual(t *testing.T) {
 func TestWriteFragment(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.md")
-	content := "category: Changed\n- `pkg`: 1.0.0 → 2.0.0\n"
+	content := "category: Changed\n- **Updated pkg** - Bumped from 1.0.0 to 2.0.0. (test-tag)\n"
 
 	require.NoError(t, writeFragment(path, content))
 

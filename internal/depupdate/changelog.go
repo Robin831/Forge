@@ -56,7 +56,7 @@ func GenerateChangelog(anvilPath string, groups []UpdateGroup, isBilingual bool)
 	}
 
 	stamp := time.Now().Format("2006-01-02-150405")
-	content := buildFragmentContent(groups)
+	tag := "deps-batch-" + stamp
 
 	changelogDir := filepath.Join(anvilPath, "changelog.d")
 	if err := os.MkdirAll(changelogDir, 0o755); err != nil {
@@ -68,13 +68,16 @@ func GenerateChangelog(anvilPath string, groups []UpdateGroup, isBilingual bool)
 	var relFiles []string
 
 	if isBilingual {
-		enName := fmt.Sprintf("deps-batch-%s.en.md", stamp)
-		nbName := fmt.Sprintf("deps-batch-%s.nb.md", stamp)
+		enName := fmt.Sprintf("%s.en.md", tag)
+		nbName := fmt.Sprintf("%s.nb.md", tag)
 
-		if err := writeFragment(filepath.Join(changelogDir, enName), content); err != nil {
+		enContent := buildFragmentContent(groups, tag, false)
+		nbContent := buildFragmentContent(groups, tag, true)
+
+		if err := writeFragment(filepath.Join(changelogDir, enName), enContent); err != nil {
 			return err
 		}
-		if err := writeFragment(filepath.Join(changelogDir, nbName), content); err != nil {
+		if err := writeFragment(filepath.Join(changelogDir, nbName), nbContent); err != nil {
 			return err
 		}
 		relFiles = []string{
@@ -82,7 +85,8 @@ func GenerateChangelog(anvilPath string, groups []UpdateGroup, isBilingual bool)
 			"changelog.d/" + nbName,
 		}
 	} else {
-		mdName := fmt.Sprintf("deps-batch-%s.md", stamp)
+		mdName := fmt.Sprintf("%s.md", tag)
+		content := buildFragmentContent(groups, tag, false)
 		if err := writeFragment(filepath.Join(changelogDir, mdName), content); err != nil {
 			return err
 		}
@@ -123,13 +127,18 @@ func GenerateChangelog(anvilPath string, groups []UpdateGroup, isBilingual bool)
 }
 
 // buildFragmentContent constructs the changelog fragment body listing every
-// updated package across all groups.
-func buildFragmentContent(groups []UpdateGroup) string {
+// updated package across all groups in the standard bold-title format with
+// a traceability tag.
+func buildFragmentContent(groups []UpdateGroup, tag string, norwegian bool) string {
 	var sb strings.Builder
 	sb.WriteString("category: Changed\n")
 	for _, g := range groups {
 		for _, u := range g.Updates {
-			fmt.Fprintf(&sb, "- `%s`: %s → %s\n", u.Path, u.Current, u.Latest)
+			if norwegian {
+				fmt.Fprintf(&sb, "- **Oppdatert %s** - Bumpet fra %s til %s. (%s)\n", u.Path, u.Current, u.Latest, tag)
+			} else {
+				fmt.Fprintf(&sb, "- **Updated %s** - Bumped from %s to %s. (%s)\n", u.Path, u.Current, u.Latest, tag)
+			}
 		}
 	}
 	return sb.String()
