@@ -1680,3 +1680,378 @@ rules:
         Verify all keybindings handled in Model.Update are reflected in the displayed help/footer text, with no omissions or stale entries
       source: copilot:PR#378
       added: "2026-03-21"
+    - id: help-keybinding-view-accuracy
+      category: ui
+      pattern: >-
+        Help overlay or keymap lists a keybinding that is only conditionally handled (e.g. guarded by a view/mode check)
+      check: >-
+        Verify every key shown in the help text is actually handled in the current view/mode; remove or conditionally render entries for keys that only work in other views
+      source: copilot:PR#379
+      added: "2026-03-21"
+    - id: help-overlay-close-keys-consistency
+      category: ui
+      pattern: >-
+        TUI help overlay with key bindings that handle close/quit differently inside vs outside the overlay
+      check: >-
+        Verify that keys advertised in the help keymap behave consistently: if 'q' is shown as quit in the help overlay, it should quit (not just close the overlay); if the overlay uses different close keys (esc/?), remove 'q' from the overlay's close handling and document only the actual close keys
+      source: copilot:PR#379
+      added: "2026-03-21"
+    - id: clamp-overlay-dimensions
+      category: ui
+      pattern: >-
+        UI overlay/modal dimensions calculated with min terminal size floor (e.g. max(width-N, minVal))
+      check: >-
+        Verify overlay dimensions are clamped to available terminal size with both a minimum floor and a maximum ceiling (min(calculated, available)), so overlays never exceed terminal bounds on small terminals
+      source: copilot:PR#379
+      added: "2026-03-21"
+    - id: clamp-ui-dimensions
+      category: ui
+      pattern: >-
+        UI component width/height set by arithmetic on window dimensions without bounds check
+      check: >-
+        Verify that computed dimensions (width, height) are clamped to a minimum of 1 before being assigned to UI components, to prevent zero or negative values that can cause rendering issues or panics on narrow windows
+      source: copilot:PR#379
+      added: "2026-03-21"
+    - id: ui-keybinding-test-coverage
+      category: testing
+      pattern: New keybinding or overlay behavior added to a Bubbletea Model.Update handler
+      check: >-
+        Verify a test exists that sends the triggering key message to Model.Update and asserts the expected state change (e.g., overlay toggled, key consumed)
+      source: copilot:PR#379
+      added: "2026-03-21"
+    - id: layout-width-slack-consistency
+      category: ui
+      pattern: >-
+        Functions that calculate column/lane/panel widths for terminal UI layouts with different display modes
+      check: >-
+        Verify that all display modes (narrow, full, etc.) use a consistent slack/gutter calculation so that the sum of rendered widths (including borders, padding, and active-element decorations) never exceeds the terminal width and causes wrapping or horizontal scroll.
+      source: copilot:PR#381
+      added: "2026-03-21"
+    - id: viewport-height-overflow
+      category: ui
+      pattern: >-
+        Rendering hint/status text after a viewport that already fills the available height (height minus chrome rows)
+      check: >-
+        Verify that any hint or extra line rendered outside the viewport is accounted for in the available row budget (e.g. reduce rowsHeight by 1 when the hint is visible) so the total output never exceeds m.height and causes terminal scrolling or glitching.
+      source: copilot:PR#381
+      added: "2026-03-21"
+    - id: comment-placement-accuracy
+      category: style
+      pattern: >-
+        Function comments or GoDoc placed above the wrong function after code reorganization
+      check: >-
+        Verify that each doc comment directly precedes the function it describes, especially after refactoring or reordering functions
+      source: copilot:PR#381
+      added: "2026-03-21"
+    - id: pr-description-matches-diff
+      category: other
+      pattern: >-
+        PR title or description mentions features, keybindings, or implementation changes
+      check: >-
+        Verify the diff contains the actual code changes described in the PR title/description; if only a changelog fragment is present, either add the missing implementation or update the PR description to match what is actually being shipped
+      source: copilot:PR#383
+      added: "2026-03-21"
+    - id: changelog-key-formatting
+      category: style
+      pattern: Changelog entries that mention keyboard keys or key presses
+      check: >-
+        Keyboard keys (e.g., d, Esc, q, Enter) should use inline code formatting (backticks) rather than single quotes or plain text so they render correctly in release notes
+      source: copilot:PR#383
+      added: "2026-03-21"
+    - id: refresh-guard-completeness
+      category: concurrency
+      pattern: >-
+        A boolean guard (e.g. `refreshing`, `loading`, `fetching`) is cleared in only one message handler when multiple async commands are batched via `tea.Batch`
+      check: >-
+        Verify the guard is cleared in ALL terminal message handlers (including error messages) for every command in the batch, or use a counted completion / dedicated 'all-done' message so the guard accurately covers the full async cycle and cannot get stuck or allow overlapping cycles
+      source: copilot:PR#384
+      added: "2026-03-21"
+    - id: tui-cursor-capture-before-refresh
+      category: ui
+      pattern: >-
+        Periodic refresh that restores cursor/focus position using a field updated only by user scroll events
+      check: >-
+        Verify that the focused item ID is captured immediately before triggering a refresh (e.g., in the tick/refresh handler), not relied upon from a field that may be empty or stale if the user has not scrolled since startup
+      source: copilot:PR#384
+      added: "2026-03-21"
+    - id: cursor-state-restoration
+      category: ui
+      pattern: Functions that capture or restore focused/selected item IDs for UI refresh
+      check: >-
+        Verify that the focused ID is explicitly cleared when the cursor is on a non-item element (header, separator, out-of-bounds) so that refresh does not restore a stale selection and override the user's current cursor position
+      source: copilot:PR#384
+      added: "2026-03-21"
+    - id: api-contract-partial-return
+      category: error-handling
+      pattern: >-
+        Function documents a guarantee of returning one result per input item but uses break/return inside a loop on context cancellation or error
+      check: >-
+        Verify that when a loop is interrupted early (e.g., context cancellation, deadline exceeded), the documented contract of returning one result per input is still honoured — either by appending an error-carrying result for each remaining item, or by updating the doc comment to explicitly describe partial-return behaviour
+      source: copilot:PR#386
+      added: "2026-03-21"
+    - id: surfaced-rollback-errors
+      category: error-handling
+      pattern: Rollback errors discarded with `_ = Rollback...` or similar blank assignment
+      check: >-
+        Verify that rollback failures are surfaced to callers (e.g., combined into Result.Err or a dedicated field) so consumers can detect and handle incomplete cleanup rather than silently leaving state dirty
+      source: copilot:PR#386
+      added: "2026-03-21"
+    - id: error-include-diagnostics
+      category: error-handling
+      pattern: >-
+        When returning an error from a failed verification or validation step in a programmatic API
+      check: >-
+        Verify the error message includes actionable diagnostic details (e.g. failed step name, summary) rather than a generic message, so callers can surface meaningful feedback without additional context
+      source: copilot:PR#386
+      added: "2026-03-21"
+    - id: api-contract-matches-spec
+      category: other
+      pattern: >-
+        Exported function signatures differ from the API contract described in the PR description or task specification
+      check: >-
+        Verify that exported function signatures exactly match the API contract specified in the PR description or task. If parameters were added or removed, either update the spec/task description or adjust the implementation to match the expected call sites.
+      source: copilot:PR#386
+      added: "2026-03-21"
+    - id: empty-result-vs-error-state
+      category: error-handling
+      pattern: >-
+        UI renders 'empty/not found' message when a collection is empty without first checking for errors in the result struct
+      check: >-
+        When a result struct contains both a data collection and an Errors field, verify that empty data is not displayed as 'nothing found' without first checking if errors occurred — a failed operation producing zero results should show an error state, not a success/empty state
+      source: copilot:PR#387
+      added: "2026-03-21"
+    - id: overlay-state-machine-tests
+      category: testing
+      pattern: >-
+        Multi-state overlay or wizard flow with sequential state transitions (e.g. scan → form → selection → apply)
+      check: >-
+        Verify that tests cover key state machine transitions, including cancellation paths (Esc), late/async message arrivals, and the full happy-path flow through each state
+      source: copilot:PR#387
+      added: "2026-03-21"
+    - id: late-async-result-stale-ui
+      category: concurrency
+      pattern: >-
+        Goroutine results dispatched as messages (e.g. tea.Msg) handled unconditionally in Update(), where the originating overlay/modal may have been closed before the message arrives
+      check: >-
+        Verify that async scan/fetch results are ignored when the UI state that requested them is no longer active. Use a generation counter, request ID, or cancelable context so late-arriving messages from closed overlays are discarded rather than mutating hidden state.
+      source: copilot:PR#387
+      added: "2026-03-21"
+    - id: overlay-consume-all-input
+      category: ui
+      pattern: >-
+        Modal overlay or dialog that intercepts keyboard input (tea.KeyMsg) in a Bubble Tea Update function
+      check: >-
+        Verify that ALL input event types (including tea.MouseMsg) are consumed or suppressed while the overlay is active, consistent with how other overlays in the codebase handle input isolation
+      source: copilot:PR#387
+      added: "2026-03-21"
+    - id: ui-message-matches-docs
+      category: ui
+      pattern: Toast notifications, status messages, or user-facing output text
+      check: >-
+        Verify that the wording and metrics in toast/status messages match what is described in the PR description and changelog (e.g. if docs promise 'packages + skipped groups' reporting, the toast must show both counts)
+      source: copilot:PR#387
+      added: "2026-03-21"
+    - id: global-keybinding-help-consistency
+      category: ui
+      pattern: >-
+        A keybinding is handled globally in Model.Update but only added to one panel's keymap
+      check: >-
+        Verify that any global keybinding is reflected in all relevant panel keymaps (or marked as global in help), so on-screen help matches actual behavior regardless of which panel is focused
+      source: copilot:PR#387
+      added: "2026-03-21"
+    - id: cancel-copy-matches-behavior
+      category: ui
+      pattern: >-
+        UI overlay or modal that displays cancel/dismiss text (e.g. 'Press Esc to cancel') while triggering a background goroutine or async operation
+      check: >-
+        Verify the displayed action label matches actual behavior: if the copy says 'cancel', a context cancel must be wired up and propagated to the background operation; if no cancellation is implemented, the copy should say 'close' or 'dismiss' instead
+      source: copilot:PR#387
+      added: "2026-03-21"
+    - id: async-msg-guard-overlay-state
+      category: ui
+      pattern: >-
+        Async message handler that creates or initializes form/overlay state without checking if the overlay is still visible
+      check: >-
+        Verify that any handler processing an async completion message (e.g. a background operation result) guards against the overlay having been dismissed — check the relevant visibility flag before creating new form state, and handle the dismissed case by resetting/closing state and showing a summary toast instead
+      source: copilot:PR#388
+      added: "2026-03-21"
+    - id: per-item-timeout-in-loops
+      category: error-handling
+      pattern: >-
+        A single fixed timeout context is created outside a loop that performs multiple sequential operations (e.g., API calls, CLI commands) over a variable-length collection
+      check: >-
+        Verify that the timeout is either applied per-iteration inside the loop or scaled proportionally to the number of items, so that a large collection cannot exhaust the deadline mid-loop and cause avoidable failures
+      source: copilot:PR#388
+      added: "2026-03-21"
+    - id: test-exercises-real-code-path
+      category: testing
+      pattern: >-
+        Test that manually rebuilds formatting logic instead of invoking the actual function under test
+      check: >-
+        Verify that tests exercise the real code path (e.g., set required state flags and provide minimal valid inputs) rather than reimplementing the logic inline, so regressions in the actual implementation are caught
+      source: copilot:PR#388
+      added: "2026-03-21"
+    - id: pass-real-config-not-zero-value
+      category: other
+      pattern: >-
+        Constructing a struct that accepts a config parameter (e.g., config.AnvilConfig) with a zero-value or empty literal instead of the actual loaded config
+      check: >-
+        Verify that per-anvil or per-component config structs are populated from the real loaded configuration (e.g., forge.yaml anvil settings) rather than zero-value defaults, so behavior like GoRaceDetection, GolangciLint, or other settings are respected at runtime
+      source: copilot:PR#388
+      added: "2026-03-21"
+    - id: batch-close-scope-validation
+      category: other
+      pattern: >-
+        Code that bulk-closes or batch-updates multiple records after a partial apply/selection operation
+      check: >-
+        Verify that only records matching the actually-applied items are closed/updated, not all open records of that type. The completion message or result should carry the specific identifiers of what was applied so downstream close logic can filter to matching items rather than closing everything.
+      source: copilot:PR#388
+      added: "2026-03-21"
+    - id: test-precondition-validation
+      category: testing
+      pattern: >-
+        Tests that verify fix for race/ordering bugs by setting up state after the condition being tested
+      check: >-
+        Verify the test setup accurately reproduces the failure mode: assert the problematic precondition exists before applying the fix, not after. For git worktree tests, confirm remote-tracking refs are absent before the operation under test (e.g., via `git show-ref` failing), and arrange state in the order that mirrors the real failure scenario.
+      source: copilot:PR#389
+      added: "2026-03-21"
+    - id: test-remote-tracking-ref-absence
+      category: testing
+      pattern: >-
+        Tests for git push --force-with-lease that verify upstream configuration using `git config --get branch.<branch>.remote`
+      check: >-
+        Assert the absence of the actual remote-tracking ref (refs/remotes/origin/<branch>) using `git show-ref --verify --quiet`, not just the absence of upstream config. The lease check depends on the remote-tracking ref, not the branch config.
+      source: copilot:PR#389
+      added: "2026-03-21"
+    - id: selective-error-suppression
+      category: error-handling
+      pattern: >-
+        Code that ignores or swallows all errors from an operation when only a specific expected error case should be suppressed
+      check: >-
+        Verify that error suppression is scoped to the specific expected error (e.g. 'couldn't find remote ref' for first-push scenarios) and all other errors are returned to fail fast with clear diagnostics
+      source: copilot:PR#389
+      added: "2026-03-21"
+    - id: avoid-duplicate-collection-sort
+      category: style
+      pattern: >-
+        Code that re-collects and re-sorts a set of keys/names that was already collected and sorted earlier in the same function
+      check: >-
+        Verify there is a single source of truth for collection ordering — reuse the existing sorted slice instead of rebuilding and re-sorting a parallel list that could diverge
+      source: copilot:PR#390
+      added: "2026-03-21"
+    - id: limit-without-sort-order
+      category: other
+      pattern: Using --limit on a list/query command combined with time-based filtering in code
+      check: >-
+        Verify that the data source guarantees ordering (e.g. by date desc) before applying --limit, otherwise the limit may exclude records that would pass the time filter. Either add an explicit sort flag or document the behavior as best-effort.
+      source: copilot:PR#391
+      added: "2026-03-21"
+    - id: per-context-timeouts
+      category: performance
+      pattern: >-
+        A single shared context with one timeout is used across multiple independent fetch operations (e.g., per-anvil or per-query-type calls)
+      check: >-
+        Verify that timeouts are scoped per operation or per resource rather than shared across all fetches; slow or unreachable targets should not stall unrelated results, and different operation types (e.g., open vs closed queries) should be able to use different timeout durations
+      source: copilot:PR#391
+      added: "2026-03-21"
+    - id: test-exec-args-for-behavior-changes
+      category: testing
+      pattern: >-
+        A behavior change involves adding flags or arguments to an exec/command invocation (e.g., --limit, --status, --format)
+      check: >-
+        Verify there is a unit test that inspects the exact args passed to the exec function to assert the new flag/argument is present, so future refactors cannot silently revert the behavior.
+      source: copilot:PR#391
+      added: "2026-03-21"
+    - id: ui-requirement-location-match
+      category: ui
+      pattern: Feature adds a label or indicator to a UI element (header, footer, status bar)
+      check: >-
+        Verify the label/indicator is placed in the exact UI element specified by the requirement (e.g. status bar vs header), and that the PR description clarifies the placement if it differs from the spec
+      source: copilot:PR#392
+      added: "2026-03-21"
+    - id: new-keybinding-test-coverage
+      category: testing
+      pattern: >-
+        A new key binding is added alongside an existing one for the same action (e.g., adding 'v' as an alternative to 'tab' in a view-cycle handler)
+      check: >-
+        Verify that each newly added key alias has its own test case exercising the handler directly (e.g., sending keyMsg('v') in the relevant view state) in addition to any existing tests for the original key
+      source: copilot:PR#392
+      added: "2026-03-21"
+    - id: overlay-respects-panel-width
+      category: ui
+      pattern: >-
+        Overlay or compositor renders over a partial-width panel in a multi-panel TUI layout
+      check: >-
+        Verify that overlay components (e.g. event panels, modals) are constrained to their designated column range (e.g. mainPanelWidth()) so they do not overwrite adjacent panels outside their bounds
+      source: copilot:PR#395
+      added: "2026-03-21"
+    - id: ansi-truncate-before-style
+      category: ui
+      pattern: >-
+        Styled text (e.g. lipgloss/ANSI renders) passed directly to a truncation function
+      check: >-
+        Truncate the raw string before applying ANSI/lipgloss styles, not after; truncating already-styled strings can cut escape sequences mid-sequence and corrupt terminal output
+      source: copilot:PR#395
+      added: "2026-03-21"
+    - id: comment-accuracy-bounds
+      category: style
+      pattern: >-
+        Code comments describing clipping, clamping, or bounding operations with exact equality language (e.g. 'clipped to exactly N', 'truncated to N')
+      check: >-
+        Verify that comments describing bounds use precise language: use 'at most', 'up to', or 'maximum' when the operation enforces an upper bound, not 'exactly' unless the result is guaranteed to equal that value
+      source: copilot:PR#397
+      added: "2026-03-22"
+    - id: remove-dead-code-after-refactor
+      category: style
+      pattern: >-
+        Functions or state fields that are no longer called from runtime paths but still referenced only in tests after a refactor
+      check: >-
+        Verify that any function or field retained solely for tests (with no runtime callers) is actually still needed; if the production code no longer uses it, remove the dead code and update or delete the associated tests
+      source: copilot:PR#398
+      added: "2026-03-22"
+    - id: empty-state-distinguish-filter-vs-none
+      category: ui
+      pattern: Empty state messages in list/hierarchy views with active filters
+      check: >-
+        Verify empty state distinguishes between 'no items exist' and 'items exist but are filtered out' — only show filter-related message when the unfiltered collection has items (e.g., len(m.beads) > 0)
+      source: copilot:PR#398
+      added: "2026-03-22"
+    - id: keybinding-help-text-accuracy
+      category: ui
+      pattern: >-
+        Reusing an existing keybinding/action for a different context where the help text no longer accurately describes the behavior
+      check: >-
+        Verify that each keybinding's help text accurately describes its action in the current context, and that all active bindings for an action (e.g., both Enter and Space) are represented — don't reuse bindings with generic or mismatched descriptions across different views
+      source: copilot:PR#398
+      added: "2026-03-22"
+    - id: reset-loading-on-view-switch
+      category: ui
+      pattern: >-
+        Functions that switch TUI view state (e.g. goBackToAnvils, navigating between screens)
+      check: >-
+        Verify that all loading/fetching flags (m.loading, m.fetching) and transient UI state (m.beads, etc.) are reset when switching views, so a mid-flight fetch cannot leave a loading screen stuck on the wrong view
+      source: copilot:PR#398
+      added: "2026-03-22"
+    - id: synthetic-worker-pid-sentinel
+      category: ui
+      pattern: Synthetic or virtual workers constructed in the TUI/UI layer with a PID field
+      check: >-
+        Verify synthetic workers (not managed by the daemon) set PID to 0 or a sentinel value, not os.Getpid() or any real process ID, to prevent kill actions from accidentally signaling the wrong process
+      source: copilot:PR#400
+      added: "2026-03-22"
+    - id: per-group-vs-cumulative-counters
+      category: other
+      pattern: >-
+        Loop that accumulates a running total and logs a per-iteration message using that total
+      check: >-
+        Verify that per-iteration log messages use a local/per-iteration counter, not the running cumulative total; or that the message clearly states it is the overall total so far
+      source: copilot:PR#400
+      added: "2026-03-22"
+    - id: background-phase-semantics
+      category: style
+      pattern: >-
+        Constants or variables grouping worker/phase types (e.g. backgroundPhases, longRunningPhases) that mix long-lived silent background workers with user-initiated or synthetic phases
+      check: >-
+        Verify that grouping constants accurately reflect the semantics of all included phases — if a phase is user-initiated, foreground, or excluded from capacity/stale detection for different reasons than the others, the comment, name, or grouping should be updated or split to reflect that distinction
+      source: copilot:PR#400
+      added: "2026-03-22"
