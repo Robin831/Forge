@@ -136,7 +136,7 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 		// multiple --status flags in a single invocation). A single shared timeout
 		// context covers both calls so the combined wait matches the old single-call
 		// deadline and avoids a UX regression.
-		openCtx, openCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		openCtx, openCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer openCancel()
 		for _, status := range []string{"open", "in_progress"} {
 			func() {
@@ -163,7 +163,7 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 
 		// Fetch recently-closed beads (supplementary; failure is non-fatal).
 		{
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
 			out, err := execFn(ctx, anvilPath, "list", "--status=closed", "--limit", "50", "--json")
 			if err != nil {
@@ -243,7 +243,7 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 				// bd does not support multiple --status flags; make separate calls per status.
 				// A single shared timeout context covers both calls so the combined wait
 				// stays comparable to the old single-call deadline.
-				openCtx, openCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				openCtx, openCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer openCancel()
 				for _, status := range []string{"open", "in_progress"} {
 					func() {
@@ -281,7 +281,7 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 			wg.Add(1)
 			go func(name, path string) {
 				defer wg.Done()
-				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer cancel()
 				out, err := execFn(ctx, path, "list", "--status=closed", "--limit", "50", "--json")
 				if err != nil {
