@@ -1,10 +1,62 @@
 package ledger
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestRenderAnvilListPathTruncation(t *testing.T) {
+	const panelW = 60
+	longPath := "/very/long/path/that/exceeds/the/panel/width/significantly/more/than/once"
+
+	m := &Model{
+		width:  panelW,
+		height: 20,
+		view:   ViewAnvils,
+		anvils: map[string]string{
+			"myrepo": longPath,
+		},
+	}
+
+	out := m.renderAnvilList()
+
+	// Every non-empty content line must fit within the panel width.
+	for _, line := range strings.Split(out, "\n") {
+		w := lipgloss.Width(line)
+		assert.LessOrEqualf(t, w, panelW, "line exceeds panel width %d: %q (width=%d)", panelW, line, w)
+	}
+
+	// The long path must not appear verbatim — it should be truncated.
+	assert.NotContains(t, out, longPath, "untruncated path must not appear in output")
+}
+
+func TestRenderAnvilListSelectedPathTruncation(t *testing.T) {
+	const panelW = 60
+	longPath := "/another/very/long/path/that/would/wrap/to/next/line/if/not/truncated"
+
+	m := &Model{
+		width:  panelW,
+		height: 20,
+		view:   ViewAnvils,
+		anvils: map[string]string{
+			"anvil1": longPath,
+			"anvil2": "/short/path",
+		},
+	}
+	// Select the first anvil (index 0 after sort).
+	m.anvilSt.vp.cursor = 0
+
+	out := m.renderAnvilList()
+
+	for _, line := range strings.Split(out, "\n") {
+		w := lipgloss.Width(line)
+		assert.LessOrEqualf(t, w, panelW, "line exceeds panel width %d (width=%d): %q", panelW, w, line)
+	}
+	assert.NotContains(t, out, longPath, "untruncated path must not appear in output")
+}
 
 func TestRenderTooSmallContainsSize(t *testing.T) {
 	m := &Model{width: 70, height: 20}

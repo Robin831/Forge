@@ -1631,7 +1631,7 @@ func (m *Model) renderAnvilList() string {
 			if pathWidth < 0 {
 				pathWidth = 0
 			}
-			line := prefix + truncate(dimStyle.Render(path), pathWidth)
+			line := prefix + dimStyle.Render(truncate(path, pathWidth))
 			rows = append(rows, selectedStyle.Width(itemWidth).Render(line))
 		} else {
 			prefix := fmt.Sprintf("%s%-18s  ", cursor, name)
@@ -1640,7 +1640,7 @@ func (m *Model) renderAnvilList() string {
 			if pathWidth < 0 {
 				pathWidth = 0
 			}
-			line := prefix + truncate(dimStyle.Render(path), pathWidth)
+			line := prefix + dimStyle.Render(truncate(path, pathWidth))
 			rows = append(rows, line)
 		}
 	}
