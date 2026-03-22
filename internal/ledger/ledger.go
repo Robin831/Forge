@@ -1613,6 +1613,11 @@ func (m *Model) renderAnvilList() string {
 	cursorStyle := lipgloss.NewStyle().Foreground(colorAccent)
 	dimStyle := lipgloss.NewStyle().Foreground(colorMuted)
 
+	itemWidth := panelW - 4
+	if itemWidth < 1 {
+		itemWidth = 1
+	}
+
 	var rows []string
 	for i := start; i < end; i++ {
 		name := names[i]
@@ -1620,14 +1625,22 @@ func (m *Model) renderAnvilList() string {
 		cursor := "  "
 		if i == m.anvilSt.vp.Selected() {
 			cursor = cursorStyle.Render("▶ ")
-			line := fmt.Sprintf("%s%-18s  %s", cursor, name, dimStyle.Render(path))
-			selectedWidth := panelW - 4
-			if selectedWidth < 1 {
-				selectedWidth = 1
+			prefix := fmt.Sprintf("%s%-18s  ", cursor, name)
+			prefixWidth := lipgloss.Width(prefix)
+			pathWidth := itemWidth - prefixWidth
+			if pathWidth < 0 {
+				pathWidth = 0
 			}
-			rows = append(rows, selectedStyle.Width(selectedWidth).Render(line))
+			line := prefix + truncate(dimStyle.Render(path), pathWidth)
+			rows = append(rows, selectedStyle.Width(itemWidth).Render(line))
 		} else {
-			line := fmt.Sprintf("%s%-18s  %s", cursor, name, dimStyle.Render(path))
+			prefix := fmt.Sprintf("%s%-18s  ", cursor, name)
+			prefixWidth := lipgloss.Width(prefix)
+			pathWidth := itemWidth - prefixWidth
+			if pathWidth < 0 {
+				pathWidth = 0
+			}
+			line := prefix + truncate(dimStyle.Render(path), pathWidth)
 			rows = append(rows, line)
 		}
 	}
