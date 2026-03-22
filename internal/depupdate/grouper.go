@@ -21,6 +21,7 @@ type UpdateGroup struct {
 	Updates   []depcheck.ModuleUpdate // packages in this group
 	Kind      string                  // worst-case kind: "major" > "minor" > "patch"
 	Ecosystem string                  // e.g. "Go", "npm", "NuGet"
+	SourceDir string                  // directory containing the manifest (e.g. package.json); empty means repo root
 }
 
 // taggedUpdate pairs a ModuleUpdate with its ecosystem for internal processing.
@@ -100,6 +101,7 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 			Updates:   members,
 			Kind:      worstKind(members),
 			Ecosystem: k.ecosystem,
+			SourceDir: members[0].SourceDir,
 		})
 		for _, m := range members {
 			grouped[m.Path] = true
@@ -116,6 +118,7 @@ func GroupUpdates(ctx context.Context, results []*depcheck.CheckResult) []Update
 			Updates:   []depcheck.ModuleUpdate{u.ModuleUpdate},
 			Kind:      u.Kind,
 			Ecosystem: u.Ecosystem,
+			SourceDir: u.SourceDir,
 		})
 	}
 
@@ -207,6 +210,7 @@ func buildPeerDepGroups(ctx context.Context, npmPkgs []taggedUpdate) []UpdateGro
 			Updates:   members,
 			Kind:      worstKind(members),
 			Ecosystem: "npm",
+			SourceDir: members[0].SourceDir,
 		})
 	}
 	return groups

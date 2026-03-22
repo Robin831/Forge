@@ -18,6 +18,14 @@ func TestInstallNpmGroup_EmptyGroup(t *testing.T) {
 	}
 }
 
+func TestInstallNpmGroup_EmptyGroupWithSourceDir(t *testing.T) {
+	// Verify that SourceDir does not cause issues for empty groups (early return).
+	group := UpdateGroup{Name: "empty", Updates: nil, Kind: "patch", SourceDir: t.TempDir()}
+	if err := InstallNpmGroup(t.Context(), t.TempDir(), group); err != nil {
+		t.Fatalf("expected nil error for empty group with SourceDir, got %v", err)
+	}
+}
+
 func TestInstallGoGroup_EmptyGroup(t *testing.T) {
 	group := UpdateGroup{Name: "empty", Updates: nil, Kind: "patch"}
 	if err := InstallGoGroup(t.Context(), t.TempDir(), group); err != nil {

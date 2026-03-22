@@ -22,10 +22,11 @@ import (
 
 // ModuleUpdate describes a single outdated dependency.
 type ModuleUpdate struct {
-	Path    string // module/package path
-	Current string // current version
-	Latest  string // latest available version
-	Kind    string // "patch", "minor", or "major"
+	Path      string // module/package path
+	Current   string // current version
+	Latest    string // latest available version
+	Kind      string // "patch", "minor", or "major"
+	SourceDir string // directory containing the manifest file (e.g. package.json)
 }
 
 // CheckResult holds the depcheck results for a single anvil.

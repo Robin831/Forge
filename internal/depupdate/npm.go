@@ -13,9 +13,18 @@ import (
 // InstallNpmGroup runs `npm install pkg1@v1 pkg2@v2 ...` with all packages in
 // the group at once. Returns an error if the install fails (peer dep conflict,
 // network error, etc.).
+//
+// If group.SourceDir is set, npm install runs there (the directory containing
+// the relevant package.json). Otherwise projectDir (the anvil root) is used as
+// a fallback.
 func InstallNpmGroup(ctx context.Context, projectDir string, group UpdateGroup) error {
 	if len(group.Updates) == 0 {
 		return nil
+	}
+
+	installDir := projectDir
+	if group.SourceDir != "" {
+		installDir = group.SourceDir
 	}
 
 	args := []string{"install"}
@@ -24,7 +33,7 @@ func InstallNpmGroup(ctx context.Context, projectDir string, group UpdateGroup) 
 	}
 
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "npm", args...))
-	cmd.Dir = projectDir
+	cmd.Dir = installDir
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

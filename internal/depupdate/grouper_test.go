@@ -303,6 +303,45 @@ func TestWorstKind(t *testing.T) {
 	}
 }
 
+func TestGroupUpdates_SourceDirPreserved(t *testing.T) {
+	orig := peerDepFetcher
+	defer func() { peerDepFetcher = orig }()
+	peerDepFetcher = stubPeerDeps(nil)
+
+	results := []*depcheck.CheckResult{{
+		Ecosystem: "npm",
+		Patch: []depcheck.ModuleUpdate{
+			{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch", SourceDir: "/repo/web"},
+			{Path: "express", Current: "4.18.0", Latest: "4.18.2", Kind: "patch", SourceDir: "/repo/web"},
+		},
+	}}
+
+	groups := GroupUpdates(context.Background(), results)
+	require.Len(t, groups, 2)
+	for _, g := range groups {
+		assert.Equal(t, "/repo/web", g.SourceDir, "SourceDir should be preserved for standalone group %q", g.Name)
+	}
+}
+
+func TestGroupUpdates_SourceDirPreservedInScopeGroup(t *testing.T) {
+	orig := peerDepFetcher
+	defer func() { peerDepFetcher = orig }()
+	peerDepFetcher = stubPeerDeps(nil)
+
+	results := []*depcheck.CheckResult{{
+		Ecosystem: "npm",
+		Patch: []depcheck.ModuleUpdate{
+			{Path: "@tailwindcss/vite", Current: "1.0.0", Latest: "1.0.1", Kind: "patch", SourceDir: "/repo/web"},
+			{Path: "@tailwindcss/postcss", Current: "1.0.0", Latest: "1.0.1", Kind: "patch", SourceDir: "/repo/web"},
+		},
+	}}
+
+	groups := GroupUpdates(context.Background(), results)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "@tailwindcss packages", groups[0].Name)
+	assert.Equal(t, "/repo/web", groups[0].SourceDir)
+}
+
 func TestGroupUpdates_SingleScopedPackageIsStandalone(t *testing.T) {
 	orig := peerDepFetcher
 	defer func() { peerDepFetcher = orig }()
