@@ -10,6 +10,16 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 )
 
+// resolveNpmInstallDir returns the directory in which npm install should run
+// for the given group. If group.SourceDir is set, it is used; otherwise
+// projectDir (the anvil root) is returned as a fallback.
+func resolveNpmInstallDir(projectDir string, group UpdateGroup) string {
+	if group.SourceDir != "" {
+		return group.SourceDir
+	}
+	return projectDir
+}
+
 // InstallNpmGroup runs `npm install pkg1@v1 pkg2@v2 ...` with all packages in
 // the group at once. Returns an error if the install fails (peer dep conflict,
 // network error, etc.).
@@ -22,10 +32,7 @@ func InstallNpmGroup(ctx context.Context, projectDir string, group UpdateGroup) 
 		return nil
 	}
 
-	installDir := projectDir
-	if group.SourceDir != "" {
-		installDir = group.SourceDir
-	}
+	installDir := resolveNpmInstallDir(projectDir, group)
 
 	args := []string{"install"}
 	for _, u := range group.Updates {

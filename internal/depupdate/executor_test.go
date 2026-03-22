@@ -26,40 +26,36 @@ func TestInstallNpmGroup_EmptyGroupWithSourceDir(t *testing.T) {
 	}
 }
 
-func TestInstallNpmGroup_NonEmptySourceDir_RunsInSourceDir(t *testing.T) {
-	if _, err := exec.LookPath("npm"); err != nil {
-		t.Skip("npm not found in PATH")
-	}
-
-	projectDir := t.TempDir() // intentionally no package.json here
+func TestResolveNpmInstallDir_UsesSourceDirWhenSet(t *testing.T) {
+	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
 
-	// Write a minimal package.json to sourceDir only.
-	pkgJSON := `{"name":"test-pkg","version":"1.0.0","dependencies":{}}`
-	if err := os.WriteFile(filepath.Join(sourceDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
-		t.Fatalf("failed to write package.json: %v", err)
-	}
-
 	group := UpdateGroup{
-		Name: "lodash",
-		Updates: []depcheck.ModuleUpdate{
-			{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch", SourceDir: sourceDir},
-		},
+		Name:      "lodash",
+		Updates:   []depcheck.ModuleUpdate{{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"}},
 		Kind:      "patch",
 		SourceDir: sourceDir,
 	}
 
-	// npm install may succeed or fail (registry/network), but it must run in
-	// sourceDir — not projectDir. If projectDir were used, npm would error on
-	// the missing package.json and still not create node_modules there.
-	_ = InstallNpmGroup(t.Context(), projectDir, group)
-
-	// Verify no artifacts landed in projectDir (which has no package.json).
-	if _, err := os.Stat(filepath.Join(projectDir, "node_modules")); !os.IsNotExist(err) {
-		t.Error("InstallNpmGroup must not create node_modules in projectDir when SourceDir is set")
+	got := resolveNpmInstallDir(projectDir, group)
+	if got != sourceDir {
+		t.Errorf("resolveNpmInstallDir = %q, want sourceDir %q", got, sourceDir)
 	}
-	if _, err := os.Stat(filepath.Join(projectDir, "package.json")); !os.IsNotExist(err) {
-		t.Error("InstallNpmGroup must not create package.json in projectDir when SourceDir is set")
+}
+
+func TestResolveNpmInstallDir_FallsBackToProjectDir(t *testing.T) {
+	projectDir := t.TempDir()
+
+	group := UpdateGroup{
+		Name:    "lodash",
+		Updates: []depcheck.ModuleUpdate{{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"}},
+		Kind:    "patch",
+		// SourceDir intentionally empty
+	}
+
+	got := resolveNpmInstallDir(projectDir, group)
+	if got != projectDir {
+		t.Errorf("resolveNpmInstallDir = %q, want projectDir %q", got, projectDir)
 	}
 }
 
