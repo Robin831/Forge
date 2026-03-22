@@ -189,15 +189,11 @@ func CreatePR(ctx context.Context, anvilPath, anvilName, branch string, groups [
 	ghCtx, ghCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer ghCancel()
 
-	// Use --json url -q .url so the output is always exactly the PR URL,
-	// regardless of any extra warnings or prompts gh might emit.
 	cmd := executil.HideWindow(exec.CommandContext(ghCtx, "gh", "pr", "create",
 		"--title", title,
 		"--body", body,
 		"--head", branch,
 		"--base", baseBranch,
-		"--json", "url",
-		"-q", ".url",
 	))
 	cmd.Dir = anvilPath
 
@@ -215,12 +211,13 @@ func CreatePR(ctx context.Context, anvilPath, anvilName, branch string, groups [
 				viewCtx, viewCancel := context.WithTimeout(ctx, 30*time.Second)
 				defer viewCancel()
 				viewCmd := executil.HideWindow(exec.CommandContext(viewCtx, "gh", "pr", "view",
-					"--head", branch, "--json", "url", "-q", ".url"))
+					"--head", branch))
 				viewCmd.Dir = anvilPath
 				var viewOut bytes.Buffer
 				viewCmd.Stdout = &viewOut
+				viewCmd.Stderr = io.Discard
 				if viewErr := viewCmd.Run(); viewErr == nil {
-					existing = strings.TrimSpace(viewOut.String())
+					existing = extractPRURL(viewOut.String())
 				}
 			}
 			if existing == "" {
@@ -232,7 +229,12 @@ func CreatePR(ctx context.Context, anvilPath, anvilName, branch string, groups [
 		return "", fmt.Errorf("depupdate: gh pr create failed: %w\nstderr: %s", err, stderrStr)
 	}
 
-	prURL := strings.TrimSpace(stdout.String())
+	// gh pr create prints the URL on the last line of stdout. Extract it
+	// to handle any extra output lines (e.g. warnings) preceding the URL.
+	prURL := extractPRURL(stdout.String())
+	if prURL == "" {
+		prURL = strings.TrimSpace(stdout.String())
+	}
 	log.Printf("[depupdate] Created PR for %s: %s", anvilName, prURL)
 	return prURL, nil
 }
