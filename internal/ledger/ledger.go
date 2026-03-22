@@ -389,7 +389,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// but only when the overlay is still visible. The user may have pressed
 		// Esc while the apply was running (m.showUpdateOverlay == false), in
 		// which case there is no form to drive and we should only show a toast.
-		if msg.applied > 0 && m.showUpdateOverlay {
+		if msg.applied > 0 && len(msg.prErrors) == 0 && m.showUpdateOverlay {
 			depBeads := m.findOpenDepBeads(msg.appliedPackages)
 			if len(depBeads) > 0 {
 				m.depBeadsToClose = depBeads
@@ -415,7 +415,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.prErrors) > 0 {
 			summary += fmt.Sprintf("; PR creation failed for %d anvil(s)", len(msg.prErrors))
 		}
-		isError := (msg.failed > 0 && msg.applied == 0) || (len(msg.prErrors) > 0 && msg.applied == 0)
+		isError := msg.failed > 0 || len(msg.prErrors) > 0
 		return m, m.addToast(summary, isError)
 
 	case depBeadsCloseDoneMsg:
