@@ -31,6 +31,17 @@ func TestRenderAnvilListPathTruncation(t *testing.T) {
 
 	// The long path must not appear verbatim — it should be truncated.
 	assert.NotContains(t, out, longPath, "untruncated path must not appear in output")
+
+	// Exactly one line should contain the anvil name (no wrapping produces extra lines).
+	var anvilLines []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "myrepo") {
+			anvilLines = append(anvilLines, line)
+		}
+	}
+	if assert.Len(t, anvilLines, 1, "expected exactly one line for the anvil item (no wrapping)") {
+		assert.Contains(t, anvilLines[0], "…", "truncated path should include the ellipsis marker")
+	}
 }
 
 func TestRenderAnvilListSelectedPathTruncation(t *testing.T) {
@@ -55,7 +66,23 @@ func TestRenderAnvilListSelectedPathTruncation(t *testing.T) {
 		w := lipgloss.Width(line)
 		assert.LessOrEqualf(t, w, panelW, "line exceeds panel width %d (width=%d): %q", panelW, w, line)
 	}
+
+	// The full untruncated path must not appear verbatim in the output.
 	assert.NotContains(t, out, longPath, "untruncated path must not appear in output")
+
+	// Extract just the lines corresponding to the anvil entries.
+	var anvilLines []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "anvil1") || strings.Contains(line, "anvil2") {
+			anvilLines = append(anvilLines, line)
+		}
+	}
+
+	// With two anvils, the body should render exactly two item lines (no wrapping).
+	if assert.Len(t, anvilLines, 2, "expected exactly two anvil lines in rendered list") {
+		// The long path (anvil1) should be truncated and show an ellipsis.
+		assert.Contains(t, anvilLines[0], "…", "selected long path should be truncated with an ellipsis")
+	}
 }
 
 func TestRenderTooSmallContainsSize(t *testing.T) {
