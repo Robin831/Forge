@@ -340,3 +340,80 @@ func TestFetchAllBeadsWithExecEmptyAnvils(t *testing.T) {
 	assert.Empty(t, update.Beads)
 	assert.NoError(t, update.Err)
 }
+
+// TestFetchAnvilBeadsWithExecPerStatusCalls verifies that separate bd list calls
+// are made for "open" and "in_progress" statuses and that their results are merged.
+func TestFetchAnvilBeadsWithExecPerStatusCalls(t *testing.T) {
+	openBeads := []Bead{{ID: "open-1", Status: "open"}}
+	inProgressBeads := []Bead{{ID: "ip-1", Status: "in_progress"}}
+
+	execFn := mockExec(map[string][]byte{
+		"--status=open":        mustMarshal(openBeads),
+		"--status=in_progress": mustMarshal(inProgressBeads),
+	}, []byte("[]"), nil)
+
+	cmd := fetchAnvilBeadsWithExec(execFn, "myAnvil", "/tmp/anvil", nil)
+	msg := cmd()
+	update, ok := msg.(UpdateBeadsMsg)
+	require.True(t, ok)
+	require.NoError(t, update.Err)
+
+	ids := make(map[string]bool, len(update.Beads))
+	for _, b := range update.Beads {
+		ids[b.ID] = true
+	}
+	assert.True(t, ids["open-1"], "open bead must be included")
+	assert.True(t, ids["ip-1"], "in_progress bead must be included")
+}
+
+// TestFetchAllBeadsWithExecPerStatusCalls verifies that separate bd list calls
+// are made for "open" and "in_progress" statuses across all anvils.
+func TestFetchAllBeadsWithExecPerStatusCalls(t *testing.T) {
+	openBeads := []Bead{{ID: "open-2", Status: "open"}}
+	inProgressBeads := []Bead{{ID: "ip-2", Status: "in_progress"}}
+
+	execFn := mockExec(map[string][]byte{
+		"--status=open":        mustMarshal(openBeads),
+		"--status=in_progress": mustMarshal(inProgressBeads),
+	}, []byte("[]"), nil)
+
+	cmd := fetchAllBeadsWithExec(execFn, map[string]string{"myAnvil": "/tmp/anvil"}, nil)
+	msg := cmd()
+	update, ok := msg.(UpdateBeadsMsg)
+	require.True(t, ok)
+	require.NoError(t, update.Err)
+
+	ids := make(map[string]bool, len(update.Beads))
+	for _, b := range update.Beads {
+		ids[b.ID] = true
+	}
+	assert.True(t, ids["open-2"], "open bead must be included")
+	assert.True(t, ids["ip-2"], "in_progress bead must be included")
+}
+
+// TestFetchAllBeadsWithExecSeparateStatusCallsTracked verifies that both status
+// values result in distinct exec invocations (not a single call with two flags).
+func TestFetchAllBeadsWithExecSeparateStatusCallsTracked(t *testing.T) {
+	var mu sync.Mutex
+	statusesSeen := make(map[string]int)
+
+	execFn := func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+		for _, a := range args {
+			if a == "--status=open" || a == "--status=in_progress" {
+				mu.Lock()
+				statusesSeen[a]++
+				mu.Unlock()
+				break
+			}
+		}
+		return []byte("[]"), nil
+	}
+
+	cmd := fetchAllBeadsWithExec(execFn, map[string]string{"myAnvil": "/tmp/anvil"}, nil)
+	cmd()
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, statusesSeen["--status=open"], "exactly one call for open status")
+	assert.Equal(t, 1, statusesSeen["--status=in_progress"], "exactly one call for in_progress status")
+}
