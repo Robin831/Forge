@@ -748,20 +748,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.updateScanning = false
+		// Reset window title — npm subprocesses on Windows can corrupt it
+		// via console API calls during the scan phase.
+		titleCmd := tea.SetWindowTitle("The Forge — Hearth")
 		if msg.err != nil {
 			m.closeUpdateOverlay()
-			return m, m.addToast(fmt.Sprintf("Dep scan failed: %v", msg.err), true)
+			return m, tea.Batch(titleCmd, m.addToast(fmt.Sprintf("Dep scan failed: %v", msg.err), true))
 		}
 		m.updateReports = msg.reports
 		total := countUpdateGroups(msg.reports)
 		if total == 0 {
 			// Nothing to update — close overlay and notify
 			m.closeUpdateOverlay()
-			return m, m.addToast("All dependencies are up to date", false)
+			return m, tea.Batch(titleCmd, m.addToast("All dependencies are up to date", false))
 		}
 		anvilCount := countUpdateAnvils(msg.reports)
 		m.updateForm = buildUpdateFilterForm(&m.updateFilterKind, total, anvilCount)
-		return m, m.updateForm.Init()
+		return m, tea.Batch(titleCmd, m.updateForm.Init())
 
 	case updateApplyDoneMsg:
 		m.updateRunning = false

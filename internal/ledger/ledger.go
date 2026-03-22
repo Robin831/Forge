@@ -590,6 +590,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			switch m.view {
+			case ViewAnvils:
+				m.anvilSt.vp.ScrollDown(len(m.sortedAnvilNames()))
 			case ViewList:
 				m.list.vp.ScrollDown(m.filteredBeadsCount())
 			case ViewKanban:
@@ -604,6 +606,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			switch m.view {
+			case ViewAnvils:
+				m.anvilSt.vp.ScrollUp()
 			case ViewList:
 				m.list.vp.ScrollUp()
 			case ViewKanban:
@@ -1641,7 +1645,12 @@ func (m *Model) renderAnvilList() string {
 		line := prefix + dimStyle.Render(truncate(path, pathWidth))
 
 		if selected {
-			rows = append(rows, selectedStyle.Width(itemWidth).Render(line))
+			// Pad line to fill the row width so the background color spans the full width.
+			lineWidth := lipgloss.Width(line)
+			if lineWidth < itemWidth {
+				line += strings.Repeat(" ", itemWidth-lineWidth)
+			}
+			rows = append(rows, selectedStyle.Render(line))
 		} else {
 			rows = append(rows, line)
 		}
