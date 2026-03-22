@@ -72,7 +72,7 @@ func (m *Model) renderDetailPanel() string {
 		renderBeadDetailContent(&content, b, innerW)
 	}
 
-	// Clip content to exactly m.height lines so the detail panel never
+	// Clip content to at most m.height lines so the detail panel never
 	// grows taller than the terminal height. lipgloss Height() only pads
 	// short content; it does not truncate content that is too tall. Without
 	// this clipping, a long description expands the panel and causes
@@ -184,9 +184,10 @@ func writeDetailField(sb *strings.Builder, keyStyle lipgloss.Style, label, value
 
 // clipLines returns the first n lines of s, joined with newlines. If s has
 // fewer than n lines it is returned unchanged. This is used to cap the detail
-// panel content at exactly m.height lines so that lipgloss JoinHorizontal
+// panel content at at most m.height lines so that lipgloss JoinHorizontal
 // never sees a taller-than-terminal right panel which would push the list
-// panel's viewport upward.
+// panel's viewport upward; callers are responsible for padding shorter
+// content to a fixed height if needed.
 func clipLines(s string, n int) string {
 	if n <= 0 {
 		return ""
