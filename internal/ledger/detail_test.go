@@ -198,7 +198,7 @@ func TestMainPanelWidthNoDetailPanel(t *testing.T) {
 
 func TestMainPanelWidthWithDetailPanel(t *testing.T) {
 	m := &Model{width: 160, showDetailPanel: true}
-	assert.Equal(t, 160-detailPanelFixedW, m.mainPanelWidth())
+	assert.Equal(t, 160-detailPanelFixedW-2, m.mainPanelWidth()) // -2 for main panel border
 }
 
 // ---------------------------------------------------------------------------

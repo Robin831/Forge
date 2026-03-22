@@ -26,15 +26,16 @@ func (m *Model) detailPanelW() int {
 	return detailPanelFixedW
 }
 
-// mainPanelWidth returns the width available for the main view. When the detail
-// panel is visible this is the terminal width minus the detail panel width.
-// Otherwise it equals the full terminal width.
+// mainPanelWidth returns the width available for the main view content.
+// When the detail panel is visible, both panels have rounded borders, so
+// the available content width accounts for the border overhead (2 chars
+// for left+right border on the main panel).
 func (m *Model) mainPanelWidth() int {
 	d := m.detailPanelW()
 	if d == 0 {
 		return m.width
 	}
-	return m.width - d
+	return m.width - d - 2 // -2 for main panel's left+right border
 }
 
 // detailPanelBaseStyle is the base lipgloss style for the detail side panel,
