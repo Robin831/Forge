@@ -7,24 +7,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestEventPanelToggle(t *testing.T) {
-	m := newTestModel()
-
-	if m.showEventPanel {
-		t.Fatal("event panel should be hidden initially")
-	}
-
-	// Press E to show the panel.
-	m = sendKey(m, "E")
-	if !m.showEventPanel {
-		t.Error("event panel should be visible after pressing E")
-	}
-
-	// Press E again to hide it.
-	m = sendKey(m, "E")
-	if m.showEventPanel {
-		t.Error("event panel should be hidden after pressing E a second time")
-	}
+func TestEventPanelAlwaysVisible(t *testing.T) {
+	m := &Model{}
+	// Activity panel is always visible — eventPanelH should always return non-zero.
+	assert.Greater(t, m.eventPanelH(), 0, "event panel should always have height")
 }
 
 func TestAddEvent(t *testing.T) {
@@ -68,7 +54,7 @@ func TestEventPanelRender(t *testing.T) {
 	assert.Contains(t, panel, "⚡ Activity", "panel should have title")
 	assert.Contains(t, panel, "Created Forge-abc1", "panel should show info event")
 	assert.Contains(t, panel, "Refresh error", "panel should show error event")
-	assert.Contains(t, panel, "E: hide", "panel should hint how to hide")
+	// Activity panel is always visible — no hide hint.
 
 	lines := strings.Split(panel, "\n")
 	assert.Equal(t, 2+eventPanelContentH, len(lines), "panel height should match eventPanelH")
@@ -76,33 +62,24 @@ func TestEventPanelRender(t *testing.T) {
 
 func TestEventPanelH(t *testing.T) {
 	m := &Model{}
-	assert.Equal(t, 0, m.eventPanelH(), "hidden panel has zero height")
-
-	m.showEventPanel = true
-	assert.Equal(t, 2+eventPanelContentH, m.eventPanelH(), "visible panel height should be 2+content rows")
+	// Activity panel is always visible.
+	assert.Equal(t, 2+eventPanelContentH, m.eventPanelH(), "panel height should always be 2+content rows")
 }
 
 func TestFooterErrorHint(t *testing.T) {
 	m := newTestModel()
 
-	// No errors and panel hidden — no hint should appear.
+	// No errors — no hint should appear.
 	footer := m.renderFooter()
-	if strings.Contains(footer, "E: show") {
+	if strings.Contains(footer, "⚠ errors") {
 		t.Error("footer should not show error hint when no errors are logged")
 	}
 
-	// Errors logged but panel hidden — hint must appear.
+	// Errors logged — hint should appear since activity panel shows them.
 	m.addEvent(EventError, "something failed")
 	footer = m.renderFooter()
-	if !strings.Contains(footer, "E: show") {
-		t.Error("footer should show error hint when errors are logged and panel is hidden")
-	}
-
-	// Errors logged but panel is open — hint must NOT appear (panel is already visible).
-	m.showEventPanel = true
-	footer = m.renderFooter()
-	if strings.Contains(footer, "E: show") {
-		t.Error("footer should not show error hint when event panel is already open")
+	if !strings.Contains(footer, "⚠ errors") {
+		t.Error("footer should show error hint when errors are logged")
 	}
 }
 

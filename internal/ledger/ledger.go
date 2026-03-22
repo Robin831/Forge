@@ -521,9 +521,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.startAIImprovement()
 			case "U":
 				return m, m.openUpdateOverlay()
-			case "E":
-				m.showEventPanel = !m.showEventPanel
-				return m, nil
 			case "\\":
 				m.showDetailPanel = !m.showDetailPanel
 				return m, nil
@@ -1527,6 +1524,9 @@ func (m *Model) View() string {
 		out = m.renderList()
 	}
 
+	// Always append the activity panel below the main view content.
+	out = out + "\n" + m.renderEventPanel()
+
 	// Composite the detail panel on the right side when it is visible and no
 	// full-screen overlay is blocking the main view. The sort-selector form
 	// rendered inside renderList() also expands to full width, so we skip
@@ -1550,16 +1550,7 @@ func (m *Model) View() string {
 		out = lipgloss.JoinHorizontal(lipgloss.Top, mainStr, detailStr)
 	}
 
-	// Overlay the event panel at the bottom of the main view. The panel is
-	// placed before form/update/AI/help overlays so that those blocking
-	// overlays cover it when active.
-	eventPanelVisible := false
-	if m.showEventPanel {
-		// Use mainPanelWidth so the overlay only replaces the left columns,
-		// leaving the right-side detail panel untouched.
-		out = placeEventPanelOverlay(m.mainPanelWidth(), m.height, m.renderEventPanel(), out)
-		eventPanelVisible = true
-	}
+	eventPanelVisible := true // always visible
 
 	// Overlay active form. Replaces out entirely with a full-screen placement,
 	// hiding the event panel underneath.

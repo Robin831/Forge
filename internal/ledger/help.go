@@ -33,7 +33,6 @@ var (
 	keyViewDeps = key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "view deps"))
 	keyAI          = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "AI improve"))
 	keyDepUpdate   = key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "update deps"))
-	keyEventPanel  = key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "toggle events"))
 	keyDetailPanel = key.NewBinding(key.WithKeys("\\"), key.WithHelp("\\", "toggle detail"))
 	keySpace   = key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select"))
 	keyCtrlA   = key.NewBinding(key.WithKeys("ctrl+a"), key.WithHelp("ctrl+a", "select all"))
@@ -94,7 +93,7 @@ func (listKeyMap) FullHelp() [][]key.Binding {
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},              // Bulk
 		{keyAI, keyDepUpdate},                                      // AI / Updates
 		{keyToggleClosed, keySort},                                 // Filters
-		{keyTab, keyBackToAnvils, keyEventPanel, keyDetailPanel, keyHelp, keyQuit}, // General
+		{keyTab, keyBackToAnvils, keyDetailPanel, keyHelp, keyQuit}, // General
 	}
 }
 
@@ -114,7 +113,7 @@ func (kanbanKeyMap) FullHelp() [][]key.Binding {
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},                         // Bulk
 		{keyAI, keyDepUpdate},                                                 // AI / Updates
 		{keyToggleClosed},                                                     // Filters
-		{keyTab, keyBackToAnvils, keyEventPanel, keyDetailPanel, keyHelp, keyQuit}, // General
+		{keyTab, keyBackToAnvils, keyDetailPanel, keyHelp, keyQuit}, // General
 	}
 }
 
@@ -134,7 +133,7 @@ func (hierarchyKeyMap) FullHelp() [][]key.Binding {
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},                              // Bulk
 		{keyAI, keyDepUpdate},                                                      // AI / Updates
 		{keyToggleClosed},                                                          // Filters
-		{keyTab, keyBackToAnvils, keyEventPanel, keyDetailPanel, keyHelp, keyQuit}, // General
+		{keyTab, keyBackToAnvils, keyDetailPanel, keyHelp, keyQuit}, // General
 	}
 }
 
@@ -258,8 +257,8 @@ func (m *Model) renderFooter() string {
 	var errNote string
 	if m.err != nil {
 		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  ⚠ %v", m.err))
-	} else if !m.showEventPanel && m.hasEventErrors() {
-		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render("  ⚠ errors — E: show")
+	} else if m.hasEventErrors() {
+		errNote = lipgloss.NewStyle().Foreground(colorDanger).Render("  ⚠ errors in activity log")
 	}
 
 	var footerText string

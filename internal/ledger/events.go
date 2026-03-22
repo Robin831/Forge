@@ -31,12 +31,11 @@ type EventEntry struct {
 	Message   string
 }
 
-// eventPanelH returns the number of terminal rows consumed by the event panel
-// when it is visible: 1 separator + 1 title + eventPanelContentH content rows.
-// Returns 0 when the panel is hidden.
+// eventPanelH returns the number of terminal rows consumed by the event panel:
+// 1 separator + 1 title + eventPanelContentH content rows.
+// The panel is always visible.
 func (m *Model) eventPanelH() int {
-	if !m.showEventPanel {
-		return 0
+	if false { // always visible now
 	}
 	return 2 + eventPanelContentH
 }
@@ -81,8 +80,7 @@ func (m *Model) renderEventPanel() string {
 
 	count := fmt.Sprintf(" (%d)", len(m.eventLog))
 	title := titleStyle.Render("⚡ Activity") +
-		dimStyle.Render(count) +
-		dimStyle.Render("  E: hide")
+		dimStyle.Render(count)
 
 	// Build all rendered lines from the event log, word-wrapping long messages.
 	innerW := max(m.mainPanelWidth()-4, 10) // 2-char left padding + 2-char right margin

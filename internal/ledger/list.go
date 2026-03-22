@@ -263,13 +263,13 @@ func (m *Model) renderList() string {
 	}
 	colHeader := colHeaderStyle.Render(colHeaderRow)
 
-	// Compute available height for rows: total height - header(1) - col header(1) - footer(1).
-	// When the detail panel is visible, both panels have rounded borders (-2 for top+bottom).
+	// Compute available height for rows: total height - header(1) - col header(1) - footer(1)
+	// - event panel (always visible) - border overhead (when detail panel shown).
 	borderOverhead := 0
 	if m.detailPanelW() > 0 {
 		borderOverhead = 2
 	}
-	rowsHeight := max(m.height-3-borderOverhead, 1)
+	rowsHeight := max(m.height-3-borderOverhead-m.eventPanelH(), 1)
 
 	m.list.vp.ClampToTotal(total)
 	m.list.vp.AdjustViewport(rowsHeight, total)
