@@ -25,10 +25,10 @@ rules:
     - id: new-logic-needs-tests
       category: testing
       pattern: >-
-        New conditional logic paths or failure modes added to a package that already has unit tests
+        New conditional logic paths, failure modes, or format handling added to a package that already has unit tests
       check: >-
-        Verify that new logic paths (especially those with multiple failure modes like branch resolution, external tool invocation, or state-dependent behavior) have corresponding unit tests — either by injecting dependencies for isolation or by factoring decisions into pure functions that can be tested directly
-      source: copilot:PR#129
+        Verify that new logic paths (especially those with multiple failure modes like branch resolution, external tool invocation, state-dependent behavior, handling a new input format, or adding a fallback path) have corresponding unit tests — either by injecting dependencies for isolation or by factoring decisions into pure functions that can be tested directly. Include tests for retention, ordering, and edge cases.
+      source: copilot:PR#129, copilot:PR#404
       added: "2026-03-09"
     - id: pr-base-branch-consistency
       category: other
@@ -2048,3 +2048,35 @@ rules:
         Verify that grouping constants accurately reflect the semantics of all included phases — if a phase is user-initiated, foreground, or excluded from capacity/stale detection for different reasons than the others, the comment, name, or grouping should be updated or split to reflect that distinction
       source: copilot:PR#400
       added: "2026-03-22"
+    - id: test-visual-truncation-assertions
+      category: testing
+      pattern: >-
+        Test assertions using NotContains or other negative checks to verify long text is truncated or not rendered verbatim in constrained-width terminal/TUI output
+      check: >-
+        When testing visual truncation or wrapping behavior in rendered terminal/TUI output, do not rely solely on NotContains(output, fullString/longString) — lipgloss or other renderers may wrap long text across lines, so the full string can still be present split across lines while NotContains appears to pass. Instead, assert that the rendered output contains truncation indicators (e.g. an ellipsis "…") when the text exceeds the available width, verify that no rendered line exceeds the expected width, and/or assert the exact number of rendered lines to distinguish intentional truncation from simple wrapping.
+      source: copilot:PR#402
+      added: "2026-03-22"
+    - id: avoid-duplicated-branch-logic
+      category: style
+      pattern: >-
+        Conditional branches (if/else or switch cases) that compute the same intermediate values independently before diverging on a small styling or formatting detail
+      check: >-
+        Verify that shared computations (e.g. prefix, widths, truncation) are factored out before the branch point, so only the truly differing logic lives inside each branch — preventing inconsistent future edits
+      source: copilot:PR#402
+      added: "2026-03-22"
+    - id: panel-width-calculation
+      category: ui
+      pattern: Width calculations for list items or content rendering in multi-panel layouts
+      check: >-
+        Verify that item width calculations account for all visible panels (e.g., detail/side panels) by using the actual available panel width rather than the full window width, to prevent content wrapping or truncation when secondary panels are displayed
+      source: copilot:PR#402
+      added: "2026-03-22"
+    - id: flush-buffered-text-before-plain-line
+      category: ui
+      pattern: >-
+        Appending a plain/non-JSON line to output while a text buffer (e.g. streaming delta accumulator) may hold unflushed content
+      check: >-
+        Verify that any buffered streaming text is flushed before appending a plain-text entry, so output preserves chronological ordering
+      source: copilot:PR#404
+      added: "2026-03-22"
+
