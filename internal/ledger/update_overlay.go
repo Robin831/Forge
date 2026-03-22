@@ -181,7 +181,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 					failed += len(groups)
 					return
 				}
-				defer wtMgr.Remove(ctx, report.Anvil.Path, wt)
+				defer wtMgr.Remove(context.Background(), report.Anvil.Path, wt)
 
 				// Step 2: Install, verify (Temper), and commit each group.
 				results, err := depupdate.Apply(ctx, wt.Path, report.Anvil.Config, groups)

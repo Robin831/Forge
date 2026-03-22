@@ -204,7 +204,7 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 					failed += len(groups)
 					return
 				}
-				defer wtMgr.Remove(ctx, report.Anvil.Path, wt)
+				defer wtMgr.Remove(context.Background(), report.Anvil.Path, wt)
 
 				logLine(fmt.Sprintf("[%s] on branch %s, applying %d group(s)...", report.Anvil.Name, targetBranch, len(groups)))
 
