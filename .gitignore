@@ -40,3 +40,4 @@ tmp/
 
 # Beads credentials
 .beads/.beads-credential-key
+.worktrees/
