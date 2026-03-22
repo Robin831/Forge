@@ -322,7 +322,7 @@ func (m *Model) updateAnvilList(msg tea.KeyMsg) tea.Cmd {
 // Init schedules the periodic refresh tick. Bead data is fetched lazily when
 // the user selects an anvil from the top-level ViewAnvils screen.
 func (m *Model) Init() tea.Cmd {
-	return tickCmd()
+	return tea.Batch(tea.SetWindowTitle("The Forge — Ledger"), tickCmd())
 }
 
 // Update handles incoming messages.
