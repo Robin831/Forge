@@ -2094,3 +2094,35 @@ rules:
         For fixed or otherwise bounded multi-step sequences with an intended overall deadline, verify that sequential timeout-bearing calls are coordinated via an overall parent context/deadline (and, if needed, per-step timeouts derived from it) or are run concurrently, so worst-case latency cannot exceed the intended overall bound; do not apply this pattern to open-ended/variable-length loops where per-item timeout guidance (e.g., per-item-timeout-in-loops) should remain the primary rule
       source: copilot:PR#406
       added: "2026-03-22"
+    - id: npm-group-sourcedir-partition
+      category: other
+      pattern: >-
+        Grouping or merging dependency updates from multiple package directories (e.g., npm peer-dependency grouping via union-find or similar structures)
+      check: >-
+        Verify that dependency groups are partitioned by SourceDir (or equivalent package root) before merging, so that grouped updates never mix dependencies from different manifest directories. Each group's SourceDir must be consistent across all members — do not blindly take SourceDir from members[0] without validating all members share the same value.
+      source: copilot:PR#409
+      added: "2026-03-22"
+    - id: hermetic-test-no-real-externals
+      category: testing
+      pattern: >-
+        Test function that invokes external tools (npm, dotnet, go, etc.) without stubbing command execution
+      check: >-
+        Verify tests do not depend on real external commands or network access. Stub or mock command execution to make tests hermetic, and assert on the actual behavior (e.g. working directory, arguments passed) rather than side effects that could pass vacuously.
+      source: copilot:PR#409
+      added: "2026-03-22"
+    - id: unique-worktree-id-per-run
+      category: concurrency
+      pattern: >-
+        Worktree or worker directory IDs derived solely from a date string (e.g. `fmt.Sprintf("depupdate-%s", dateStr)`)
+      check: >-
+        Verify that worktree/worker directory IDs include a per-run unique component (worker ID, timestamp, or nonce) beyond just the date, so that concurrent or repeated same-day runs on the same anvil cannot contend for the same `.workers/<id>` path or cause cleanup races
+      source: copilot:PR#410
+      added: "2026-03-22"
+    - id: tui-git-quiet-mode
+      category: ui
+      pattern: >-
+        Calling worktree.Manager.CreateWithOptions or other git-subprocess methods from a Bubbletea TUI context (Hearth, Ledger, or similar alt-screen UI)
+      check: >-
+        Verify that git commands executed from within a TUI use a quiet/redirectable output mode (stdout/stderr to io.Discard or a logger) so that git progress and status output does not corrupt the alt-screen UI or pollute the Live Activity log
+      source: copilot:PR#410
+      added: "2026-03-22"
