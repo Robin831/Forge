@@ -1539,14 +1539,16 @@ func (m *Model) View() string {
 	if m.detailPanelW() > 0 && !blockingOverlay {
 		detailStr := m.renderDetailPanel()
 		// Wrap the main panel in a rounded border to match the detail panel.
-		// Only set Height (to fill the terminal); omit Width to avoid lipgloss
-		// wrapping long lines — content is already truncated by mainPanelWidth().
 		innerH := max(m.height-2, 1) // -2 for top+bottom border
+		clipped := clipLines(out, innerH)
 		mainBorder := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(colorMuted).
 			Height(innerH)
-		mainStr := mainBorder.Render(out)
+		mainStr := mainBorder.Render(clipped)
+		// Clip both rendered panels to exactly m.height lines so they align.
+		mainStr = clipLines(mainStr, m.height)
+		detailStr = clipLines(detailStr, m.height)
 		out = lipgloss.JoinHorizontal(lipgloss.Top, mainStr, detailStr)
 	}
 
