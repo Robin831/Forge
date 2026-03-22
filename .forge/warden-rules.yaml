@@ -57,10 +57,10 @@ rules:
     - id: unique-branch-worktree-names
       category: error-handling
       pattern: >-
-        Creating git branch names or worktree paths derived solely from deterministic identifiers (e.g., PR number, bead ID) without a unique component
+        Creating git branch names, worktree paths, or worker directory IDs derived solely from deterministic identifiers (e.g., PR number, bead ID, or date string) without a unique per-run component
       check: >-
-        Verify that branch names and worktree paths include a unique component (e.g., timestamp or random suffix) to prevent collisions on retry after a crash, or that existing branches/worktrees are detected and reused gracefully
-      source: copilot:PR#129
+        Verify that branch names, worktree paths, and worker directory IDs include a unique per-run component (e.g., timestamp, worker ID, or random suffix) beyond any deterministic identifier, to prevent collisions on retry after a crash or when concurrent/repeated same-day runs on the same anvil contend for the same path; alternatively, verify that existing branches/worktrees are detected and reused gracefully
+      source: ['copilot:PR#129', 'copilot:PR#410']
       added: "2026-03-09"
     - id: truncation-off-by-one
       category: ui
@@ -2109,14 +2109,6 @@ rules:
       check: >-
         Verify tests do not depend on real external commands or network access. Stub or mock command execution to make tests hermetic, and assert on the actual behavior (e.g. working directory, arguments passed) rather than side effects that could pass vacuously.
       source: copilot:PR#409
-      added: "2026-03-22"
-    - id: unique-worktree-id-per-run
-      category: concurrency
-      pattern: >-
-        Worktree or worker directory IDs derived solely from a date string (e.g. `fmt.Sprintf("depupdate-%s", dateStr)`)
-      check: >-
-        Verify that worktree/worker directory IDs include a per-run unique component (worker ID, timestamp, or nonce) beyond just the date, so that concurrent or repeated same-day runs on the same anvil cannot contend for the same `.workers/<id>` path or cause cleanup races
-      source: copilot:PR#410
       added: "2026-03-22"
     - id: tui-git-quiet-mode
       category: ui
