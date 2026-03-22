@@ -89,10 +89,14 @@ func TestHelpOverlayConsumesKeys(t *testing.T) {
 		t.Fatal("help overlay must be open")
 	}
 
-	// `q` should NOT close the overlay (it is quit in normal mode; help uses ?/esc only).
-	m = sendKey(m, "q")
+	// `j` navigation key should not close the overlay or move the underlying list.
+	before := m.list.vp.Selected()
+	m = sendKey(m, "j")
 	if !m.helpSt.show {
-		t.Error("`q` should not close the help overlay; only `?` and `esc` should")
+		t.Error("`j` should not close the help overlay")
+	}
+	if m.list.vp.Selected() != before {
+		t.Error("`j` should not move the underlying list while help is open")
 	}
 }
 

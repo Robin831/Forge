@@ -288,7 +288,7 @@ func (m *Model) filterHint() string {
 
 // refreshBeads returns a Cmd that re-fetches beads for the current context:
 // when a specific anvil is selected it fetches only that anvil; otherwise
-// it fetches all anvils (used after bulk operations that span multiple anvils).
+// returns nil (no anvil is active, e.g. we are in ViewAnvils mode).
 func (m *Model) refreshBeads() tea.Cmd {
 	if m.selectedAnvil != "" {
 		path, ok := m.anvils[m.selectedAnvil]
@@ -297,7 +297,7 @@ func (m *Model) refreshBeads() tea.Cmd {
 		}
 		return FetchAnvilBeads(m.selectedAnvil, path, m.db)
 	}
-	return m.refreshBeads()
+	return nil
 }
 
 // goBackToAnvils switches the view back to the top-level anvil picker.
@@ -476,8 +476,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// In ViewAnvils mode, delegate all key events to the anvil list handler.
+		// In ViewAnvils mode, handle help toggle then delegate remaining keys.
 		if m.view == ViewAnvils {
+			if msg.String() == "?" {
+				m.helpSt.show = true
+				m.helpSt.vpReady = false
+				return m, nil
+			}
 			cmd := m.updateAnvilList(msg)
 			return m, cmd
 		}

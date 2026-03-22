@@ -65,13 +65,13 @@ var (
 type anvilsKeyMap struct{}
 
 func (anvilsKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyUp, keyDown, keyHelp, keyQuit}
+	return []key.Binding{keyUp, keyDown, keyExpand, keyHelp, keyQuit}
 }
 
 func (anvilsKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyUp, keyDown},          // Navigation
-		{keyHelp, keyQuit},        // General
+		{keyUp, keyDown, keyExpand}, // Navigation
+		{keyHelp, keyQuit},          // General
 	}
 }
 
@@ -158,7 +158,7 @@ var categoryLabels = []string{
 // updateHelpOverlay handles key events when the help overlay is visible.
 func (m *Model) updateHelpOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c":
+	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "?", "esc":
 		m.helpSt.show = false
