@@ -1,0 +1,2 @@
+category: Added
+- **Wicket: GitHub issue triage monitor** - New `internal/wicket` package that polls GitHub issues on a configurable interval, filters untrusted authors and already-processed issues, runs AI triage for trusted users (create bead / ask clarify / flag human), and tracks all decisions in a new `wicket_issues` state table. Includes config fields (`wicket_enabled`, `wicket_interval`, `wicket_trusted_users`, etc.), event types, and a mock-friendly design for unit testing without real AI calls. (Forge-b1vq)

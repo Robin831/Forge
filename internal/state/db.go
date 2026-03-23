@@ -347,6 +347,29 @@ CREATE TABLE IF NOT EXISTS pending_warden_rules (
 );
 
 CREATE INDEX IF NOT EXISTS idx_pending_warden_rules_anvil ON pending_warden_rules(anvil);
+
+CREATE TABLE IF NOT EXISTS wicket_issues (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo         TEXT    NOT NULL,
+    issue_number INTEGER NOT NULL,
+    anvil_name   TEXT    NOT NULL,
+    author       TEXT    NOT NULL DEFAULT '',
+    is_trusted   INTEGER NOT NULL DEFAULT 0,
+    action       TEXT    NOT NULL DEFAULT '',
+    bead_id      TEXT    NOT NULL DEFAULT '',
+    pr_number    INTEGER NOT NULL DEFAULT 0,
+    status       TEXT    NOT NULL DEFAULT 'open',
+    reasoning    TEXT    NOT NULL DEFAULT '',
+    created_at   TEXT    NOT NULL,
+    updated_at   TEXT    NOT NULL,
+    last_polled  TEXT    NOT NULL DEFAULT '',
+    UNIQUE(repo, issue_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wicket_issues_status ON wicket_issues(status);
+CREATE INDEX IF NOT EXISTS idx_wicket_issues_repo ON wicket_issues(repo);
+CREATE INDEX IF NOT EXISTS idx_wicket_issues_bead ON wicket_issues(bead_id);
+CREATE INDEX IF NOT EXISTS idx_wicket_issues_anvil ON wicket_issues(anvil_name);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
@@ -1319,6 +1342,15 @@ const (
 	EventSmelterStarted EventType = "smelter_started"
 	EventSmelterFlushed EventType = "smelter_flushed"
 	EventSmelterFailed  EventType = "smelter_failed"
+
+	// Wicket events — GitHub issue polling and AI triage.
+	EventWicketScanDone    EventType = "wicket_scan_done"
+	EventWicketIssueTriage EventType = "wicket_issue_triage"
+	EventWicketBeadCreated EventType = "wicket_bead_created"
+	EventWicketClarification EventType = "wicket_clarification"
+	EventWicketRejected    EventType = "wicket_rejected"
+	EventWicketFlaggedHuman EventType = "wicket_flagged_human"
+	EventWicketError       EventType = "wicket_error"
 )
 
 // Event represents a logged event.
@@ -2582,4 +2614,157 @@ func (db *DB) DeletePendingRules(ids []int) error {
 		args...,
 	)
 	return err
+}
+
+// ── Wicket issue tracking ────────────────────────────────────────────────────
+
+// WicketIssue represents a GitHub issue tracked by the Wicket monitor.
+type WicketIssue struct {
+	ID          int
+	Repo        string
+	IssueNumber int
+	AnvilName   string
+	Author      string
+	IsTrusted   bool
+	Action      string
+	BeadID      string
+	PRNumber    int
+	Status      string
+	Reasoning   string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	LastPolled  time.Time
+}
+
+// InsertWicketIssue records a newly-seen GitHub issue in the wicket_issues table.
+// If the (repo, issue_number) pair already exists the row is not modified.
+func (db *DB) InsertWicketIssue(w *WicketIssue) error {
+	now := time.Now().UTC().Format(dbTimeLayout)
+	_, err := db.conn.Exec(
+		`INSERT OR IGNORE INTO wicket_issues
+		 (repo, issue_number, anvil_name, author, is_trusted, action, bead_id, pr_number, status, reasoning, created_at, updated_at, last_polled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.Repo, w.IssueNumber, w.AnvilName, w.Author, boolToInt(w.IsTrusted),
+		w.Action, w.BeadID, w.PRNumber, w.Status, w.Reasoning,
+		now, now, now,
+	)
+	return err
+}
+
+// UpdateWicketIssue updates mutable fields on an existing wicket issue row.
+func (db *DB) UpdateWicketIssue(repo string, issueNumber int, action, beadID, status, reasoning string) error {
+	now := time.Now().UTC().Format(dbTimeLayout)
+	_, err := db.conn.Exec(
+		`UPDATE wicket_issues
+		 SET action = ?, bead_id = ?, status = ?, reasoning = ?, updated_at = ?, last_polled = ?
+		 WHERE repo = ? AND issue_number = ?`,
+		action, beadID, status, reasoning, now, now, repo, issueNumber,
+	)
+	return err
+}
+
+// TouchWicketIssue updates the last_polled timestamp without changing other fields.
+func (db *DB) TouchWicketIssue(repo string, issueNumber int) error {
+	now := time.Now().UTC().Format(dbTimeLayout)
+	_, err := db.conn.Exec(
+		`UPDATE wicket_issues SET last_polled = ? WHERE repo = ? AND issue_number = ?`,
+		now, repo, issueNumber,
+	)
+	return err
+}
+
+// GetWicketIssue fetches a single wicket issue by repo and issue number.
+// Returns (nil, nil) when the issue is not yet tracked.
+func (db *DB) GetWicketIssue(repo string, issueNumber int) (*WicketIssue, error) {
+	row := db.conn.QueryRow(
+		`SELECT id, repo, issue_number, anvil_name, author, is_trusted, action, bead_id, pr_number,
+		        status, reasoning, created_at, updated_at, last_polled
+		 FROM wicket_issues WHERE repo = ? AND issue_number = ?`,
+		repo, issueNumber,
+	)
+
+	var w WicketIssue
+	var isTrusted int
+	var createdAt, updatedAt, lastPolled string
+	err := row.Scan(
+		&w.ID, &w.Repo, &w.IssueNumber, &w.AnvilName, &w.Author, &isTrusted,
+		&w.Action, &w.BeadID, &w.PRNumber, &w.Status, &w.Reasoning,
+		&createdAt, &updatedAt, &lastPolled,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	w.IsTrusted = isTrusted != 0
+	w.CreatedAt = parseTime(createdAt)
+	w.UpdatedAt = parseTime(updatedAt)
+	w.LastPolled = parseTime(lastPolled)
+	return &w, nil
+}
+
+// IsIssueTracked reports whether the given (repo, issueNumber) pair is already
+// recorded in the wicket_issues table.
+func (db *DB) IsIssueTracked(repo string, issueNumber int) (bool, error) {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(1) FROM wicket_issues WHERE repo = ? AND issue_number = ?`,
+		repo, issueNumber,
+	).Scan(&count)
+	return count > 0, err
+}
+
+// WicketIssueFilter controls which rows ListWicketIssues returns.
+type WicketIssueFilter struct {
+	AnvilName string // when non-empty, restrict to this anvil
+	Status    string // when non-empty, restrict to this status
+	Limit     int    // 0 = no limit
+}
+
+// ListWicketIssues returns tracked issues matching the given filter.
+func (db *DB) ListWicketIssues(f WicketIssueFilter) ([]WicketIssue, error) {
+	q := `SELECT id, repo, issue_number, anvil_name, author, is_trusted, action, bead_id, pr_number,
+	             status, reasoning, created_at, updated_at, last_polled
+	      FROM wicket_issues WHERE 1=1`
+	var args []any
+
+	if f.AnvilName != "" {
+		q += " AND anvil_name = ?"
+		args = append(args, f.AnvilName)
+	}
+	if f.Status != "" {
+		q += " AND status = ?"
+		args = append(args, f.Status)
+	}
+	q += " ORDER BY created_at DESC"
+	if f.Limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", f.Limit)
+	}
+
+	rows, err := db.conn.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var issues []WicketIssue
+	for rows.Next() {
+		var w WicketIssue
+		var isTrusted int
+		var createdAt, updatedAt, lastPolled string
+		if err := rows.Scan(
+			&w.ID, &w.Repo, &w.IssueNumber, &w.AnvilName, &w.Author, &isTrusted,
+			&w.Action, &w.BeadID, &w.PRNumber, &w.Status, &w.Reasoning,
+			&createdAt, &updatedAt, &lastPolled,
+		); err != nil {
+			return nil, err
+		}
+		w.IsTrusted = isTrusted != 0
+		w.CreatedAt = parseTime(createdAt)
+		w.UpdatedAt = parseTime(updatedAt)
+		w.LastPolled = parseTime(lastPolled)
+		issues = append(issues, w)
+	}
+	return issues, rows.Err()
 }
