@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -13,11 +14,16 @@ import (
 )
 
 // mockExec builds a bdExecFunc that returns different responses based on which
-// --status=<value> argument is present in the call.
+// --status=<value> argument is present in the call. "bd sql" calls return an
+// error to trigger the fallback to "bd list" (which the tests validate).
 func mockExec(byStatus map[string][]byte, fallback []byte, execErr error) bdExecFunc {
 	return func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
 		if execErr != nil {
 			return nil, execErr
+		}
+		// Return error for "bd sql" calls so tests exercise the "bd list" fallback.
+		if len(args) > 0 && args[0] == "sql" {
+			return nil, fmt.Errorf("mock: bd sql not supported")
 		}
 		for _, a := range args {
 			if resp, ok := byStatus[a]; ok {
@@ -147,6 +153,9 @@ func TestFetchAllBeadsWithExecUpdatedAtFallback(t *testing.T) {
 
 func TestFetchAllBeadsWithExecMultipleAnvils(t *testing.T) {
 	execFn := func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "sql" {
+			return nil, fmt.Errorf("mock: bd sql not supported")
+		}
 		for _, a := range args {
 			if a == "--status=open" {
 				bead := []Bead{{ID: "bead-in-" + anvilPath, Status: "open"}}
@@ -178,6 +187,9 @@ func TestFetchAllBeadsWithExecClosedBeadFetchUsesLimit(t *testing.T) {
 	var mu sync.Mutex
 	var closedArgs []string
 	execFn := func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "sql" {
+			return nil, fmt.Errorf("mock: bd sql not supported")
+		}
 		for _, a := range args {
 			if a == "--status=closed" {
 				mu.Lock()
@@ -398,6 +410,9 @@ func TestFetchAllBeadsWithExecSeparateStatusCallsTracked(t *testing.T) {
 	statusesSeen := make(map[string]int)
 
 	execFn := func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "sql" {
+			return nil, fmt.Errorf("mock: bd sql not supported")
+		}
 		for _, a := range args {
 			if a == "--status=open" || a == "--status=in_progress" {
 				mu.Lock()

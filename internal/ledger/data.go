@@ -132,14 +132,19 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 		var allBeads []Bead
 		var firstErr error
 
+		// Use "bd sql" instead of "bd list" for ~6x faster queries on Dolt.
 		// Each status gets its own 3-minute timeout so a slow first call
-		// doesn't starve subsequent ones. On slow Dolt connections a single
-		// bd list can take 2+ minutes.
+		// doesn't starve subsequent ones.
 		for _, status := range []string{"open", "in_progress"} {
 			func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer cancel()
-				out, err := execFn(ctx, anvilPath, "list", "--status="+status, "--limit", "0", "--json")
+				query := fmt.Sprintf(`SELECT * FROM issues WHERE status = '%s'`, status)
+				out, err := execFn(ctx, anvilPath, "sql", "--json", query)
+				if err != nil {
+					// Fall back to bd list if bd sql is not supported.
+					out, err = execFn(ctx, anvilPath, "list", "--status="+status, "--limit", "0", "--json")
+				}
 				if err != nil {
 					if firstErr == nil {
 						firstErr = fmt.Errorf("fetching %s beads for %s: %w", status, anvilName, err)
@@ -161,11 +166,15 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 		}
 
 		// Fetch recently-closed beads (supplementary; failure is non-fatal).
-		// Errors here are logged but don't prevent showing open/in_progress beads.
+		// Uses bd sql for speed, falls back to bd list.
 		{
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
-			out, err := execFn(ctx, anvilPath, "list", "--status=closed", "--limit", "50", "--json")
+			query := `SELECT * FROM issues WHERE status = 'closed' ORDER BY updated_at DESC LIMIT 50`
+			out, err := execFn(ctx, anvilPath, "sql", "--json", query)
+			if err != nil {
+				out, err = execFn(ctx, anvilPath, "list", "--status=closed", "--limit", "50", "--json")
+			}
 			if err == nil {
 				var beads []Bead
 				if err := json.Unmarshal(out, &beads); err == nil {
@@ -236,7 +245,11 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 				defer openCancel()
 				for _, status := range []string{"open", "in_progress"} {
 					func() {
-						out, err := execFn(openCtx, path, "list", "--status="+status, "--limit", "0", "--json")
+						query := fmt.Sprintf(`SELECT * FROM issues WHERE status = '%s'`, status)
+						out, err := execFn(openCtx, path, "sql", "--json", query)
+						if err != nil {
+							out, err = execFn(openCtx, path, "list", "--status="+status, "--limit", "0", "--json")
+						}
 						if err != nil {
 							mu.Lock()
 							if firstErr == nil {
@@ -272,7 +285,11 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 				defer wg.Done()
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer cancel()
-				out, err := execFn(ctx, path, "list", "--status=closed", "--limit", "50", "--json")
+				query := `SELECT * FROM issues WHERE status = 'closed' ORDER BY updated_at DESC LIMIT 50`
+				out, err := execFn(ctx, path, "sql", "--json", query)
+				if err != nil {
+					out, err = execFn(ctx, path, "list", "--status=closed", "--limit", "50", "--json")
+				}
 				if err != nil {
 					// Non-critical: closed beads are supplementary, but record the first error so the UI can surface it.
 					mu.Lock()
