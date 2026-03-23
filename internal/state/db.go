@@ -1340,6 +1340,7 @@ const (
 	EventSmelterFailed  EventType = "smelter_failed"
 
 	// Wicket events — GitHub issue triage monitor.
+	EventWicketStarted       EventType = "wicket_started"
 	EventWicketScanDone      EventType = "wicket_scan_done"
 	EventWicketIssueTriage   EventType = "wicket_issue_triage"
 	EventWicketBeadCreated   EventType = "wicket_bead_created"
@@ -2711,6 +2712,17 @@ func (db *DB) UpdateWicketIssue(issue WicketIssue) error {
 		return fmt.Errorf("no wicket_issues row found for repo %q issue %d", issue.Repo, issue.IssueNumber)
 	}
 	return nil
+}
+
+// DeleteWicketIssue removes the wicket_issues row for the given repo and issue
+// number. Used to roll back a "pending" claim when processing fails so the
+// issue can be retried on the next scan cycle.
+func (db *DB) DeleteWicketIssue(repo string, number int) error {
+	_, err := db.conn.Exec(
+		`DELETE FROM wicket_issues WHERE repo=? AND issue_number=?`,
+		repo, number,
+	)
+	return err
 }
 
 // GetWicketIssue returns the wicket_issues row for the given repo and issue

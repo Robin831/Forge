@@ -37,7 +37,10 @@ func New(cfg *config.Config, db *state.DB) *Monitor {
 }
 
 // UpdateConfig replaces the monitor configuration. Safe to call while Run is
-// active; the new configuration takes effect on the next scan cycle.
+// active; the new configuration takes effect on the next scan cycle. Note that
+// a changed WicketInterval takes effect after the current ticker fires (i.e.
+// on the cycle after the update), not immediately. Interval changes require no
+// restart.
 func (m *Monitor) UpdateConfig(cfg *config.Config) {
 	m.mu.Lock()
 	m.cfg = cfg
@@ -61,7 +64,7 @@ func (m *Monitor) Run(ctx context.Context) error {
 	}
 
 	log.Printf("[wicket] Starting issue triage monitor (interval: %s)", interval)
-	_ = m.db.LogEvent(state.EventWicketScanDone, "Wicket monitor started", "", "")
+	_ = m.db.LogEvent(state.EventWicketStarted, "Wicket monitor started", "", "")
 
 	// Perform an initial scan immediately so the first triage cycle does not
 	// wait a full interval.
@@ -77,6 +80,20 @@ func (m *Monitor) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			m.scanAll(ctx)
+
+			// Re-read interval after each scan; reset the ticker if it changed
+			// so that runtime config updates take effect without a restart.
+			m.mu.RLock()
+			newInterval := m.cfg.Settings.WicketInterval
+			m.mu.RUnlock()
+			if newInterval <= 0 {
+				newInterval = 15 * time.Minute
+			}
+			if newInterval != interval {
+				interval = newInterval
+				ticker.Reset(interval)
+				log.Printf("[wicket] Interval updated to %s", interval)
+			}
 		}
 	}
 }
@@ -135,6 +152,9 @@ func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.Anvil
 }
 
 // scanRepo fetches open issues for a single repository and triages each new one.
+// If WicketTriggerLabel is configured, issues carrying that label are also
+// fetched (independently of WicketIssueLabels) and merged in so they are never
+// silently dropped.
 func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg config.AnvilConfig, settings config.SettingsConfig) {
 	issues, err := m.ghClient.ListIssues(ctx, repo, anvilCfg.WicketIssueLabels)
 	if err != nil {
@@ -142,6 +162,19 @@ func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg con
 		_ = m.db.LogEvent(state.EventWicketError,
 			fmt.Sprintf("Failed to list issues for %s: %v", repo, err), "", anvil)
 		return
+	}
+
+	// Union in issues that carry the trigger label so they bypass the
+	// WicketIssueLabels filter.
+	if settings.WicketTriggerLabel != "" {
+		triggerIssues, terr := m.ghClient.ListIssues(ctx, repo, []string{settings.WicketTriggerLabel})
+		if terr != nil {
+			log.Printf("[wicket] %s: list trigger-label issues for %s: %v", anvil, repo, terr)
+			_ = m.db.LogEvent(state.EventWicketError,
+				fmt.Sprintf("Failed to list trigger-label issues for %s: %v", repo, terr), "", anvil)
+		} else {
+			issues = mergeIssues(issues, triggerIssues)
+		}
 	}
 
 	processed := 0
@@ -163,7 +196,9 @@ func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg con
 
 // shouldSkip returns true when the issue should not be triaged. An issue is
 // skipped when it already carries a Wicket processing label (processed,
-// bead-created, or needs-human), or is already tracked in state.db.
+// bead-created, or needs-human), or has already reached a terminal state in
+// state.db. Issues in non-terminal states (e.g. "pending" from a prior failed
+// run) are not skipped so they can be retried.
 func (m *Monitor) shouldSkip(issue Issue, settings config.SettingsConfig) bool {
 	// Skip issues that were already handled in a previous Wicket cycle.
 	for _, label := range issue.Labels {
@@ -175,14 +210,22 @@ func (m *Monitor) shouldSkip(issue Issue, settings config.SettingsConfig) bool {
 		}
 	}
 
-	// Skip issues already recorded in state.db to prevent double-processing
-	// after restarts or concurrent scan cycles.
-	tracked, err := m.db.IsIssueTracked(issue.Repo, issue.Number)
+	// Skip issues that have already been processed to a terminal state in
+	// state.db. Issues still in "pending" (i.e. a prior attempt failed and was
+	// rolled back) are not skipped so they are retried on the next scan.
+	wi, err := m.db.GetWicketIssue(issue.Repo, issue.Number)
 	if err != nil {
 		log.Printf("[wicket] DB check %s#%d: %v — skipping to avoid double-processing", issue.Repo, issue.Number, err)
 		return true
 	}
-	return tracked
+	if wi == nil {
+		return false
+	}
+	switch wi.State {
+	case "bead_created", "ask_clarify", "needs_human":
+		return true
+	}
+	return false
 }
 
 // isTrustedUser returns true if the given GitHub login appears in the trusted
@@ -211,9 +254,15 @@ func (m *Monitor) triageIssue(ctx context.Context, anvil string, issue Issue, an
 		State:       "pending",
 	}
 	if err := m.db.InsertWicketIssue(pending); err != nil {
-		// A unique-constraint violation means another cycle already claimed
-		// this issue.
-		log.Printf("[wicket] %s: skip %s#%d — already claimed: %v", anvil, issue.Repo, issue.Number, err)
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			// Another scan cycle already claimed this issue; skip silently.
+			log.Printf("[wicket] %s: skip %s#%d — already claimed by another cycle", anvil, issue.Repo, issue.Number)
+		} else {
+			// Unexpected DB error — log and emit an event so operators can see it.
+			log.Printf("[wicket] %s: insert wicket issue %s#%d: %v", anvil, issue.Repo, issue.Number, err)
+			_ = m.db.LogEvent(state.EventWicketError,
+				fmt.Sprintf("[%s] Failed to claim %s#%d for triage: %v", anvil, issue.Repo, issue.Number, err), "", anvil)
+		}
 		return
 	}
 
@@ -271,6 +320,10 @@ func (m *Monitor) handleCreateBead(ctx context.Context, anvil string, issue Issu
 		log.Printf("[wicket] %s: create bead for %s#%d: %v", anvil, issue.Repo, issue.Number, err)
 		_ = m.db.LogEvent(state.EventWicketError,
 			fmt.Sprintf("[%s] Failed to create bead for %s#%d: %v", anvil, issue.Repo, issue.Number, err), "", anvil)
+		// Roll back the pending claim so the issue is retried on the next scan.
+		if derr := m.db.DeleteWicketIssue(issue.Repo, issue.Number); derr != nil {
+			log.Printf("[wicket] %s: delete pending claim for %s#%d: %v", anvil, issue.Repo, issue.Number, derr)
+		}
 		return
 	}
 
@@ -356,6 +409,23 @@ func (m *Monitor) persistOutcome(issue Issue, issueState string, decision Triage
 	if err := m.db.UpdateWicketIssue(wi); err != nil {
 		log.Printf("[wicket] persist outcome for %s#%d: %v", issue.Repo, issue.Number, err)
 	}
+}
+
+// mergeIssues returns the union of two issue slices deduplicated by issue
+// number. Elements from b that are not already in a are appended in order.
+func mergeIssues(a, b []Issue) []Issue {
+	seen := make(map[int]bool, len(a))
+	for _, i := range a {
+		seen[i.Number] = true
+	}
+	result := append([]Issue{}, a...)
+	for _, i := range b {
+		if !seen[i.Number] {
+			result = append(result, i)
+			seen[i.Number] = true
+		}
+	}
+	return result
 }
 
 // buildProviders returns the AI provider chain for triage based on settings.
