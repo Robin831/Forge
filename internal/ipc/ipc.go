@@ -248,6 +248,14 @@ type GetIngotPayload struct {
 	Anvil  string `json:"anvil,omitempty"`
 }
 
+// WicketStatusPayload is the response for a "wicket_status" command.
+type WicketStatusPayload struct {
+	Enabled        bool           `json:"enabled"`
+	Interval       string         `json:"interval"`
+	MonitoredRepos []string       `json:"monitored_repos"`
+	IssueCounts    map[string]int `json:"issue_counts"` // state -> count
+}
+
 // CommandHandler is called by the server for each incoming command.
 type CommandHandler func(cmd Command) Response
 

@@ -59,6 +59,7 @@ import (
 	"github.com/Robin831/Forge/internal/temper"
 	"github.com/Robin831/Forge/internal/vulncheck"
 	"github.com/Robin831/Forge/internal/warden"
+	"github.com/Robin831/Forge/internal/wicket"
 	"github.com/Robin831/Forge/internal/worker"
 	"github.com/Robin831/Forge/internal/worktree"
 )
@@ -137,6 +138,9 @@ type Daemon struct {
 
 	// QuestGiver monitor (E2E quest execution)
 	questgiverMonitor *questgiver.Monitor
+
+	// Wicket: GitHub issue triage monitor
+	wicketMonitor *wicket.Monitor
 
 	// Teams notifications (nil = disabled). Uses atomic.Pointer so the hot-reload
 	// callback can swap in a new Notifier without a mutex while concurrent
@@ -605,6 +609,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 			// Always check smelter settings on each reload: interval/enabled can change
 			// independently of anvil paths and must not be gated on anvil change detection.
 			d.updateSmelterSettings(old, new)
+			// Propagate config changes to Wicket monitor (interval, labels, etc.)
+			d.updateWicketConfig(new)
 			d.db.LogEvent(state.EventConfigReload, "Configuration reloaded", "", "")
 		})
 		go func() {
@@ -708,6 +714,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 		go d.vulnScanner.RunScheduled(ctx, d.config().Settings.VulncheckInterval)
 	} else {
 		d.logger.Info("vulncheck disabled via configuration (vulncheck_enabled: false)")
+	}
+
+	// Start Wicket issue triage monitor (if enabled)
+	if d.config().Settings.WicketEnabled {
+		d.wicketMonitor = wicket.New(d.cfg.Load(), d.db)
+		go func() {
+			if err := d.wicketMonitor.Run(ctx); err != nil && err != context.Canceled {
+				d.logger.Error("Wicket monitor error", "error", err)
+			}
+		}()
+	} else {
+		d.logger.Info("wicket disabled via configuration (wicket_enabled: false)")
 	}
 
 	// Start smelter (batches pending warden rules into PRs on a schedule).
@@ -3670,6 +3688,36 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
+	case "wicket_status":
+		cfg := d.cfg.Load()
+		enabled := cfg.Settings.WicketEnabled
+		interval := cfg.Settings.WicketInterval.String()
+
+		// Collect monitored repos from all anvil configs.
+		var repos []string
+		for _, anvil := range cfg.Anvils {
+			repos = append(repos, anvil.WicketRepos...)
+		}
+		sort.Strings(repos)
+
+		// Count wicket issues by lifecycle state.
+		counts := make(map[string]int)
+		for _, st := range []string{"pending", "bead_created", "ask_clarify", "needs_human"} {
+			issues, err := d.db.ListWicketIssues(state.ListWicketIssuesOpts{State: st})
+			if err == nil {
+				counts[st] = len(issues)
+			}
+		}
+
+		payload := ipc.WicketStatusPayload{
+			Enabled:        enabled,
+			Interval:       interval,
+			MonitoredRepos: repos,
+			IssueCounts:    counts,
+		}
+		data, _ := json.Marshal(payload)
+		return ipc.Response{Type: "ok", Payload: data}
+
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}
@@ -4200,6 +4248,16 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 			d.questgiverMonitor.UpdateAnvilPaths(qgPaths)
 			d.logger.Info("updated questgiver anvil paths", "count", len(qgPaths))
 		}
+	}
+}
+
+// updateWicketConfig propagates a new configuration to the Wicket monitor so
+// that triage settings (interval, labels, provider, etc.) take effect without
+// a daemon restart. Called from the hot-reload callback on every config reload.
+func (d *Daemon) updateWicketConfig(cfg *config.Config) {
+	if d.wicketMonitor != nil {
+		d.wicketMonitor.UpdateConfig(cfg)
+		d.logger.Info("updated wicket configuration")
 	}
 }
 
