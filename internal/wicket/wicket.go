@@ -543,7 +543,7 @@ func isLikelySpam(issue Issue) bool {
 		"hello", "hi", "aaa", "bbb", "xxx",
 	}
 	for _, s := range spamTitles {
-		if titleLower == s {
+		if titleLower == s && len(body) == 0 {
 			return true
 		}
 	}
