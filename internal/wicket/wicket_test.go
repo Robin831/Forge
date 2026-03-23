@@ -435,6 +435,343 @@ func TestDeriveRepo_ParseRemoteURL(t *testing.T) {
 	}
 }
 
+// ---- isIgnoredUser ----------------------------------------------------------
+
+func TestIsIgnoredUser_BotList(t *testing.T) {
+	tests := []struct {
+		name   string
+		author string
+		want   bool
+	}{
+		{name: "dependabot", author: "dependabot[bot]", want: true},
+		{name: "renovate", author: "renovate[bot]", want: true},
+		{name: "github-actions", author: "github-actions[bot]", want: true},
+		{name: "codecov", author: "codecov[bot]", want: true},
+		{name: "case insensitive", author: "Dependabot[Bot]", want: true},
+		{name: "real user", author: "alice", want: false},
+		{name: "empty", author: "", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isIgnoredUser(tc.author, nil))
+		})
+	}
+}
+
+func TestIsIgnoredUser_CustomList(t *testing.T) {
+	custom := []string{"spambot", "BadActor"}
+	assert.True(t, isIgnoredUser("spambot", custom))
+	assert.True(t, isIgnoredUser("BADACTOR", custom))   // case-insensitive
+	assert.False(t, isIgnoredUser("gooduser", custom))
+}
+
+// ---- hasLabel / hasAllLabels ------------------------------------------------
+
+func TestHasLabel(t *testing.T) {
+	issue := Issue{Labels: []string{"bug", "enhancement", "Help Wanted"}}
+	assert.True(t, hasLabel(issue, "bug"))
+	assert.True(t, hasLabel(issue, "BUG"))       // case-insensitive
+	assert.True(t, hasLabel(issue, "help wanted")) // case-insensitive
+	assert.False(t, hasLabel(issue, "wontfix"))
+}
+
+func TestHasAllLabels(t *testing.T) {
+	issue := Issue{Labels: []string{"bug", "backend"}}
+	assert.True(t, hasAllLabels(issue, []string{"bug", "backend"}))
+	assert.True(t, hasAllLabels(issue, []string{"bug"}))
+	assert.True(t, hasAllLabels(issue, nil))
+	assert.False(t, hasAllLabels(issue, []string{"bug", "frontend"}))
+	assert.False(t, hasAllLabels(issue, []string{"nonexistent"}))
+}
+
+// ---- isLikelySpam -----------------------------------------------------------
+
+func TestIsLikelySpam(t *testing.T) {
+	tests := []struct {
+		name  string
+		issue Issue
+		want  bool
+	}{
+		{
+			name:  "very short title no body",
+			issue: Issue{Title: "hi", Body: ""},
+			want:  true,
+		},
+		{
+			name:  "known spam title",
+			issue: Issue{Title: "test", Body: ""},
+			want:  true,
+		},
+		{
+			name:  "known spam title case-insensitive",
+			issue: Issue{Title: "TESTING", Body: "some body"},
+			want:  true, // lowercased to "testing" which is in the spam list
+		},
+		{
+			name:  "real issue",
+			issue: Issue{Title: "Login form crashes on empty password", Body: "Steps to reproduce..."},
+			want:  false,
+		},
+		{
+			name:  "short title with body",
+			issue: Issue{Title: "hi", Body: "This is a detailed issue description."},
+			want:  false, // has body
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isLikelySpam(tc.issue))
+		})
+	}
+}
+
+// ---- trigger label filter ---------------------------------------------------
+
+func TestScanRepo_TriggerLabelFilter(t *testing.T) {
+	m, mock, _ := newTestMonitor(t)
+	settings := defaultSettings()
+	settings.WicketTriggerLabel = "forge-triage"
+
+	issues := []Issue{
+		{Repo: "org/repo", Number: 1, Title: "Has trigger", Author: "alice", Labels: []string{"forge-triage"}},
+		{Repo: "org/repo", Number: 2, Title: "No trigger", Author: "alice", Labels: []string{"bug"}},
+	}
+	mock.OnListIssues = func(_ context.Context, _ string, _ []string) ([]Issue, error) {
+		return issues, nil
+	}
+
+	origRunner := bdRunner
+	defer func() { bdRunner = origRunner }()
+	bdRunner = func(_ context.Context, _ []string) (string, error) {
+		return "Forge-tr1\n", nil
+	}
+
+	anvilCfg := config.AnvilConfig{WicketTrustedUsers: []string{"alice"}}
+	m.scanRepo(context.Background(), "testrepo", "org/repo", anvilCfg, settings)
+
+	// Only issue #1 (with trigger label) should be processed.
+	assert.Len(t, mock.CommentCalls, 1)
+	assert.Equal(t, 1, mock.CommentCalls[0].Number)
+}
+
+func TestScanRepo_TriggerLabelEmpty_ProcessesAll(t *testing.T) {
+	m, mock, _ := newTestMonitor(t)
+	settings := defaultSettings()
+	settings.WicketTriggerLabel = "" // no trigger label = push model
+
+	issues := []Issue{
+		{Repo: "org/repo", Number: 1, Title: "Issue 1", Author: "alice"},
+		{Repo: "org/repo", Number: 2, Title: "Issue 2", Author: "alice"},
+	}
+	mock.OnListIssues = func(_ context.Context, _ string, _ []string) ([]Issue, error) {
+		return issues, nil
+	}
+
+	origRunner := bdRunner
+	defer func() { bdRunner = origRunner }()
+	bdRunner = func(_ context.Context, _ []string) (string, error) {
+		return "Forge-x1\n", nil
+	}
+
+	anvilCfg := config.AnvilConfig{WicketTrustedUsers: []string{"alice"}}
+	m.scanRepo(context.Background(), "testrepo", "org/repo", anvilCfg, settings)
+
+	// Both issues should be processed when no trigger label is required.
+	assert.Len(t, mock.CommentCalls, 2)
+}
+
+// ---- issue label filter (hasAllLabels) --------------------------------------
+
+func TestScanRepo_IssueLabelFilter(t *testing.T) {
+	m, mock, _ := newTestMonitor(t)
+	settings := defaultSettings()
+
+	issues := []Issue{
+		{Repo: "org/repo", Number: 1, Title: "Has all labels", Author: "alice", Labels: []string{"bug", "backend"}},
+		{Repo: "org/repo", Number: 2, Title: "Missing label", Author: "alice", Labels: []string{"bug"}},
+	}
+	mock.OnListIssues = func(_ context.Context, _ string, _ []string) ([]Issue, error) {
+		return issues, nil
+	}
+
+	origRunner := bdRunner
+	defer func() { bdRunner = origRunner }()
+	bdRunner = func(_ context.Context, _ []string) (string, error) {
+		return "Forge-il1\n", nil
+	}
+
+	// Require both "bug" and "backend" labels.
+	anvilCfg := config.AnvilConfig{
+		WicketTrustedUsers: []string{"alice"},
+		WicketIssueLabels:  []string{"bug", "backend"},
+	}
+	m.scanRepo(context.Background(), "testrepo", "org/repo", anvilCfg, settings)
+
+	// Only issue #1 has both required labels.
+	assert.Len(t, mock.CommentCalls, 1)
+	assert.Equal(t, 1, mock.CommentCalls[0].Number)
+}
+
+// ---- bot ignore list --------------------------------------------------------
+
+func TestScanRepo_BotIgnored(t *testing.T) {
+	m, mock, _ := newTestMonitor(t)
+	settings := defaultSettings()
+
+	issues := []Issue{
+		{Repo: "org/repo", Number: 1, Title: "Bot issue", Author: "dependabot[bot]"},
+		{Repo: "org/repo", Number: 2, Title: "Human issue", Author: "alice"},
+	}
+	mock.OnListIssues = func(_ context.Context, _ string, _ []string) ([]Issue, error) {
+		return issues, nil
+	}
+
+	origRunner := bdRunner
+	defer func() { bdRunner = origRunner }()
+	bdRunner = func(_ context.Context, _ []string) (string, error) {
+		return "Forge-b1\n", nil
+	}
+
+	anvilCfg := config.AnvilConfig{WicketTrustedUsers: []string{"alice"}}
+	m.scanRepo(context.Background(), "testrepo", "org/repo", anvilCfg, settings)
+
+	// Only issue #2 (human) should be processed.
+	assert.Len(t, mock.CommentCalls, 1)
+	assert.Equal(t, 2, mock.CommentCalls[0].Number)
+}
+
+func TestScanRepo_CustomIgnoreUser(t *testing.T) {
+	m, mock, _ := newTestMonitor(t)
+	settings := defaultSettings()
+
+	issues := []Issue{
+		{Repo: "org/repo", Number: 1, Title: "Ignored user issue", Author: "noise-bot"},
+		{Repo: "org/repo", Number: 2, Title: "Normal issue", Author: "alice"},
+	}
+	mock.OnListIssues = func(_ context.Context, _ string, _ []string) ([]Issue, error) {
+		return issues, nil
+	}
+
+	origRunner := bdRunner
+	defer func() { bdRunner = origRunner }()
+	bdRunner = func(_ context.Context, _ []string) (string, error) {
+		return "Forge-ci1\n", nil
+	}
+
+	anvilCfg := config.AnvilConfig{
+		WicketTrustedUsers: []string{"alice"},
+		WicketIgnoreUsers:  []string{"noise-bot"},
+	}
+	m.scanRepo(context.Background(), "testrepo", "org/repo", anvilCfg, settings)
+
+	// Only alice's issue should be processed.
+	assert.Len(t, mock.CommentCalls, 1)
+	assert.Equal(t, 2, mock.CommentCalls[0].Number)
+}
+
+// ---- non-trusted user flow --------------------------------------------------
+
+func TestNonTrustedUser_GenericResponse(t *testing.T) {
+	m, mock, db := newTestMonitor(t)
+	settings := defaultSettings()
+
+	issue := Issue{
+		Repo:   "org/repo",
+		Number: 30,
+		Title:  "Feature request from external user",
+		Body:   "Please add support for dark mode with steps to reproduce.",
+		Author: "external-contributor",
+	}
+	// No trusted users configured — external-contributor is non-trusted.
+	anvilCfg := config.AnvilConfig{}
+
+	m.triageIssue(context.Background(), "testrepo", issue, anvilCfg, settings)
+
+	// Should have posted a generic response (not flagged-for-human or bead-created).
+	require.Len(t, mock.CommentCalls, 1)
+	assert.Contains(t, mock.CommentCalls[0].Body, "external-contributor")
+	assert.Contains(t, mock.CommentCalls[0].Body, "maintainer will review")
+
+	// Should have applied processed + needs-human labels.
+	require.Len(t, mock.AddLabelCalls, 1)
+	labels := mock.AddLabelCalls[0].Labels
+	assert.Contains(t, labels, settings.WicketProcessedLabel)
+	assert.Contains(t, labels, settings.WicketNeedsHumanLabel)
+
+	// State should be needs_human.
+	wi, err := db.GetWicketIssue("org/repo", 30)
+	require.NoError(t, err)
+	require.NotNil(t, wi)
+	assert.Equal(t, "needs_human", wi.State)
+}
+
+func TestNonTrustedUser_SpamRejectedSilently(t *testing.T) {
+	m, mock, db := newTestMonitor(t)
+	settings := defaultSettings()
+
+	issue := Issue{
+		Repo:   "org/repo",
+		Number: 31,
+		Title:  "test", // known spam title
+		Body:   "",
+		Author: "spammer",
+	}
+	anvilCfg := config.AnvilConfig{}
+
+	m.triageIssue(context.Background(), "testrepo", issue, anvilCfg, settings)
+
+	// No public comment should be posted for spam.
+	assert.Empty(t, mock.CommentCalls)
+
+	// Only the processed label (no needs-human label for spam).
+	require.Len(t, mock.AddLabelCalls, 1)
+	labels := mock.AddLabelCalls[0].Labels
+	assert.Contains(t, labels, settings.WicketProcessedLabel)
+	assert.NotContains(t, labels, settings.WicketNeedsHumanLabel)
+
+	// State should be rejected.
+	wi, err := db.GetWicketIssue("org/repo", 31)
+	require.NoError(t, err)
+	require.NotNil(t, wi)
+	assert.Equal(t, "rejected", wi.State)
+}
+
+// ---- trigger + issue label interaction --------------------------------------
+
+func TestScanRepo_TriggerAndIssueLabelsBothApply(t *testing.T) {
+	m, mock, _ := newTestMonitor(t)
+	settings := defaultSettings()
+	settings.WicketTriggerLabel = "forge-triage"
+
+	issues := []Issue{
+		// Has trigger + all required labels — should be processed.
+		{Repo: "org/repo", Number: 1, Title: "OK", Author: "alice", Labels: []string{"forge-triage", "bug"}},
+		// Has trigger but missing required label — should be filtered.
+		{Repo: "org/repo", Number: 2, Title: "Missing label", Author: "alice", Labels: []string{"forge-triage"}},
+		// Has required label but missing trigger — should be filtered.
+		{Repo: "org/repo", Number: 3, Title: "Missing trigger", Author: "alice", Labels: []string{"bug"}},
+	}
+	mock.OnListIssues = func(_ context.Context, _ string, _ []string) ([]Issue, error) {
+		return issues, nil
+	}
+
+	origRunner := bdRunner
+	defer func() { bdRunner = origRunner }()
+	bdRunner = func(_ context.Context, _ []string) (string, error) {
+		return "Forge-tl1\n", nil
+	}
+
+	anvilCfg := config.AnvilConfig{
+		WicketTrustedUsers: []string{"alice"},
+		WicketIssueLabels:  []string{"bug"},
+	}
+	m.scanRepo(context.Background(), "testrepo", "org/repo", anvilCfg, settings)
+
+	// Only issue #1 passes both filters.
+	require.Len(t, mock.CommentCalls, 1)
+	assert.Equal(t, 1, mock.CommentCalls[0].Number)
+}
+
 // TestBuildProviders verifies provider selection priority.
 func TestBuildProviders(t *testing.T) {
 	t.Run("wicket provider takes priority", func(t *testing.T) {

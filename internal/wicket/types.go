@@ -18,7 +18,28 @@ const (
 	// ActionFlagHuman instructs Wicket to label the issue for human review
 	// and skip automated processing.
 	ActionFlagHuman TriageAction = "flag_human"
+	// ActionReject instructs Wicket to silently discard the issue without
+	// posting any public comment. Used for obvious spam or off-topic issues.
+	ActionReject TriageAction = "reject"
 )
+
+// defaultBotIgnoreList is a hardcoded set of well-known bot account patterns
+// that Wicket always skips regardless of configuration. Comparison is
+// case-insensitive.
+var defaultBotIgnoreList = []string{
+	"dependabot[bot]",
+	"renovate[bot]",
+	"github-actions[bot]",
+	"codecov[bot]",
+	"snyk-bot",
+	"greenkeeper[bot]",
+	"imgbot[bot]",
+	"allcontributors[bot]",
+	"semantic-release-bot",
+	"stale[bot]",
+	"copilot[bot]",
+	"github-advanced-security[bot]",
+}
 
 // TriageDecision is the structured output from the AI triage step.
 type TriageDecision struct {
@@ -100,4 +121,8 @@ type AnvilWicketConfig struct {
 	// context or constraints (e.g. "This is a public API — be conservative
 	// about accepting feature requests from external contributors.").
 	TriagePrompt string `yaml:"wicket_triage_prompt,omitempty" mapstructure:"wicket_triage_prompt"`
+	// IgnoreUsers is a list of GitHub logins to skip entirely when triaging
+	// issues. In addition to this list, defaultBotIgnoreList is always
+	// applied. Comparison is case-insensitive.
+	IgnoreUsers []string `yaml:"wicket_ignore_users,omitempty" mapstructure:"wicket_ignore_users"`
 }

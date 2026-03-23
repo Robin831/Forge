@@ -145,6 +145,21 @@ func toastForEvent(ev EventItem) (message string, isError bool, ok bool) {
 
 	case "crucible_complete":
 		return "✓ " + firstOf(msg, "Crucible complete"), false, true
+
+	case "wicket_bead_created":
+		return "✓ " + firstOf(msg, "Wicket: bead created"), false, true
+
+	case "wicket_clarification":
+		return "💬 " + firstOf(msg, "Wicket: clarification needed"), false, true
+
+	case "wicket_flagged_human":
+		return "🚩 " + firstOf(msg, "Wicket: needs human review"), false, true
+
+	case "wicket_rejected":
+		return "🗑 " + firstOf(msg, "Wicket: issue rejected (spam)"), false, true
+
+	case "wicket_error":
+		return "✗ " + firstOf(msg, "Wicket error"), true, true
 	}
 
 	return "", false, false

@@ -97,6 +97,11 @@ type AnvilConfig struct {
 	// Wicket triage system prompt, allowing project-specific context or
 	// constraints to be injected.
 	WicketTriagePrompt string `mapstructure:"wicket_triage_prompt" yaml:"wicket_triage_prompt,omitempty"`
+	// WicketIgnoreUsers is the list of GitHub logins to skip entirely when
+	// triaging issues for this anvil. In addition to this list, a set of
+	// well-known bot accounts (dependabot[bot], renovate[bot], etc.) is
+	// always ignored. Comparison is case-insensitive.
+	WicketIgnoreUsers []string `mapstructure:"wicket_ignore_users" yaml:"wicket_ignore_users,omitempty"`
 }
 
 // SettingsConfig holds global operational settings.
