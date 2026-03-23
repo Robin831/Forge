@@ -85,7 +85,11 @@ func (g *ghClient) ListIssues(ctx context.Context, repo string, labels []string)
 
 	issues := make([]Issue, 0, len(raw))
 	for _, r := range raw {
-		issues = append(issues, toIssue(r, repo))
+		issue, err := toIssue(r, repo)
+		if err != nil {
+			return nil, fmt.Errorf("gh issue list parse %s#%d: %w", repo, r.Number, err)
+		}
+		issues = append(issues, issue)
 	}
 	return issues, nil
 }
@@ -107,7 +111,10 @@ func (g *ghClient) GetIssue(ctx context.Context, repo string, number int) (*Issu
 		return nil, fmt.Errorf("gh issue view parse %s#%d: %w", repo, number, err)
 	}
 
-	issue := toIssue(raw, repo)
+	issue, err := toIssue(raw, repo)
+	if err != nil {
+		return nil, fmt.Errorf("gh issue view parse %s#%d: %w", repo, number, err)
+	}
 	return &issue, nil
 }
 
@@ -180,14 +187,18 @@ func runGH(ctx context.Context, args []string) ([]byte, error) {
 }
 
 // toIssue converts the raw gh JSON shape to an Issue.
-func toIssue(r ghIssue, repo string) Issue {
+func toIssue(r ghIssue, repo string) (Issue, error) {
 	labels := make([]string, 0, len(r.Labels))
 	for _, l := range r.Labels {
 		labels = append(labels, l.Name)
 	}
 	var createdAt time.Time
 	if r.CreatedAt != "" {
-		createdAt, _ = time.Parse(time.RFC3339, r.CreatedAt)
+		var err error
+		createdAt, err = time.Parse(time.RFC3339, r.CreatedAt)
+		if err != nil {
+			return Issue{}, fmt.Errorf("parse createdAt %q: %w", r.CreatedAt, err)
+		}
 	}
 	return Issue{
 		Number:    r.Number,
@@ -197,7 +208,7 @@ func toIssue(r ghIssue, repo string) Issue {
 		Author:    r.Author.Login,
 		Labels:    labels,
 		CreatedAt: createdAt,
-	}
+	}, nil
 }
 
 // MockGitHubClient is a test double for GitHubClient. Tests set the On*

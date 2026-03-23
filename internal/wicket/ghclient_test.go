@@ -53,7 +53,11 @@ func TestParseListIssues(t *testing.T) {
 
 	issues := make([]Issue, len(raw))
 	for i, r := range raw {
-		issues[i] = toIssue(r, "owner/repo")
+		var err error
+		issues[i], err = toIssue(r, "owner/repo")
+		if err != nil {
+			t.Fatalf("toIssue: %v", err)
+		}
 	}
 
 	first := issues[0]
@@ -92,7 +96,10 @@ func TestParseGetIssue(t *testing.T) {
 		t.Fatalf("unmarshal single: %v", err)
 	}
 
-	issue := toIssue(raw, "owner/repo")
+	issue, err := toIssue(raw, "owner/repo")
+	if err != nil {
+		t.Fatalf("toIssue: %v", err)
+	}
 	if issue.Number != 42 {
 		t.Errorf("Number: want 42, got %d", issue.Number)
 	}
