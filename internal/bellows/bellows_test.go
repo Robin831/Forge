@@ -226,6 +226,23 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 			new:  prSnapshot{CIPassing: true, HasUnresolvedThreads: false},
 			wantEvents: []string{EventPRReadyToMerge},
 		},
+		{
+			// Regression: CI in-progress with overridden CIPassing=true must NOT fire ready-to-merge.
+			// In the real code path, when ciInProgress=true the snapshot's CIPassing is overridden
+			// to the last completed value; CIInProgress=true is preserved to prevent premature events.
+			name:     "CI in-progress (CIPassing overridden to true) → no pr_ready_to_merge",
+			old:      prSnapshot{CIPassing: false},
+			new:      prSnapshot{CIPassing: true, CIInProgress: true},
+			noEvents: []string{EventPRReadyToMerge},
+		},
+		{
+			// After CI completes passing following an in-progress poll, pr_ready_to_merge must fire.
+			// lastSnap has CIInProgress=true (from the in-progress poll); newSnap has CIInProgress=false.
+			name:       "CI completes passing after in-progress poll → pr_ready_to_merge fires",
+			old:        prSnapshot{CIPassing: true, CIInProgress: true},
+			new:        prSnapshot{CIPassing: true, CIInProgress: false},
+			wantEvents: []string{EventPRReadyToMerge},
+		},
 	}
 
 	for _, tt := range tests {
@@ -286,8 +303,9 @@ func computeTransitionEventsWithPR(old, new *prSnapshot, prStatus string, ciFixC
 	// Ready-to-merge transition: CI passing + no conflicts, unresolved
 	// threads, or pending reviews. HasApproval is intentionally excluded
 	// because Copilot only submits COMMENTED reviews, never APPROVED.
-	newReady := new.CIPassing && !new.IsConflicting && !new.HasUnresolvedThreads && !new.HasPendingReviews
-	lastReady := old.CIPassing && !old.IsConflicting && !old.HasUnresolvedThreads && !old.HasPendingReviews
+	// CIInProgress is excluded: a PR is not ready while CI is still running.
+	newReady := new.CIPassing && !new.CIInProgress && !new.IsConflicting && !new.HasUnresolvedThreads && !new.HasPendingReviews
+	lastReady := old.CIPassing && !old.CIInProgress && !old.IsConflicting && !old.HasUnresolvedThreads && !old.HasPendingReviews
 	if newReady && !lastReady {
 		events = append(events, EventPRReadyToMerge)
 	}
@@ -536,6 +554,12 @@ func TestCheckPR_CIInProgressDoesNotTriggerFailure(t *testing.T) {
 
 	assert.NotContains(t, events, EventCIFailed, "ci_failed must not fire while checks are in progress")
 	assert.NotContains(t, events, EventCIPassed, "ci_passed must not fire while checks are incomplete")
+
+	// Regression: ci_passing must be false in the DB while CI is still running
+	// so the Ready-to-Merge panel does not show the PR prematurely.
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	assert.False(t, updated.CIPassing, "ci_passing must be false in DB while CI is in progress")
 }
 
 // TestCheckPR_CICompletedFailureTriggersCIFailed verifies that bellows correctly

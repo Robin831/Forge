@@ -1,0 +1,2 @@
+category: Fixed
+- **Bellows ready-to-merge with CI in progress** - The Ready to Merge panel no longer shows PRs while CI checks are still running. When bellows preserves the last completed CI passing state for transition detection, it now correctly stores `ci_passing=false` in the database until all checks complete, and excludes in-progress polls from the ready-to-merge event trigger. (Forge-i3fz)
