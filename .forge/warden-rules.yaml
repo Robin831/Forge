@@ -2118,3 +2118,34 @@ rules:
         Verify that git commands executed from within a TUI use a quiet/redirectable output mode (stdout/stderr to io.Discard or a logger) so that git progress and status output does not corrupt the alt-screen UI or pollute the Live Activity log
       source: copilot:PR#410
       added: "2026-03-22"
+    - id: omitempty-drops-zero-values
+      category: error-handling
+      pattern: >-
+        Struct fields with omitempty tags where zero values (0, false, empty string) are intentionally meaningful
+      check: >-
+        Verify that struct fields using omitempty in serialization tags do not silently drop intentional zero values. If a zero value has semantic meaning (e.g., 0 disables a feature), always emit the field so it survives a marshal/unmarshal round-trip and is not replaced by a default.
+      source: copilot:PR#413
+      added: "2026-03-23"
+    - id: normalize-default-before-insert
+      category: error-handling
+      pattern: >-
+        INSERT statement that stores a struct field which has a corresponding column DEFAULT in the schema
+      check: >-
+        Verify that empty/zero-value fields are normalized to the column's default value (or rejected with an error) before executing the INSERT, so the table's default constraint is not bypassed by storing an empty string
+      source: copilot:PR#413
+      added: "2026-03-23"
+    - id: update-rows-affected
+      category: error-handling
+      pattern: SQL UPDATE or DELETE that returns nil without checking RowsAffected
+      check: >-
+        Verify that UPDATE/DELETE operations check sql.Result.RowsAffected() and return a clear error when 0 rows were affected, to avoid silently succeeding when the target row doesn't exist
+      source: copilot:PR#413
+      added: "2026-03-23"
+    - id: struct-tags-match-comments
+      category: style
+      pattern: >-
+        Struct with comments claiming it mirrors yaml/mapstructure tags from another struct
+      check: >-
+        Verify that the struct actually has the yaml and mapstructure tags matching the referenced struct. If the comment says tags enable automatic config population, the tags must be present and their keys must match the YAML keys (e.g. wicket_enabled, not Enabled). Either add correct tags or remove the misleading comment and use explicit mapping.
+      source: copilot:PR#413
+      added: "2026-03-23"
