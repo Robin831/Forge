@@ -536,14 +536,16 @@ func isLikelySpam(issue Issue) bool {
 		return true
 	}
 
-	// Exact-match well-known placeholder/test titles.
+	// Exact-match well-known placeholder/test titles. These are always spam
+	// regardless of whether a body is present. Short entries (< 5 chars) are
+	// omitted here because they are already covered by the length check above,
+	// which exempts them when a substantive body is provided.
 	titleLower := strings.ToLower(title)
 	spamTitles := []string{
-		"test", "testing", "asdf", "asdfgh", "qwerty",
-		"hello", "hi", "aaa", "bbb", "xxx",
+		"testing", "asdfgh", "qwerty", "hello",
 	}
 	for _, s := range spamTitles {
-		if titleLower == s && len(body) == 0 {
+		if titleLower == s {
 			return true
 		}
 	}
