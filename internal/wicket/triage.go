@@ -104,6 +104,12 @@ func parseTriageDecision(output string) (TriageDecision, bool) {
 		return TriageDecision{}, false
 	}
 
+	// create_bead requires non-empty title and description so downstream bead
+	// creation doesn't produce an invalid/empty work item.
+	if action == ActionCreateBead && (raw.BeadTitle == "" || raw.BeadDescription == "") {
+		return TriageDecision{}, false
+	}
+
 	return TriageDecision{
 		Action:          action,
 		Reason:          raw.Reason,
@@ -186,7 +192,9 @@ func extractFencedTriageBlock(text, fence string) string {
 
 // RunTriage calls the AI provider with a triage prompt for the given issue and
 // returns a TriageDecision. It retries once if the first response cannot be
-// parsed, and defaults to ActionFlagHuman on persistent failure.
+// parsed (parse failure only), and defaults to ActionFlagHuman on persistent
+// failure. Runner errors (provider failures) cause an immediate fallback
+// without retrying to avoid doubling cost on provider outages.
 func RunTriage(ctx context.Context, issue Issue, cfg TriageConfig) TriageDecision {
 	run := cfg.runner
 	if run == nil {
@@ -198,8 +206,9 @@ func RunTriage(ctx context.Context, issue Issue, cfg TriageConfig) TriageDecisio
 	for attempt := 0; attempt < 2; attempt++ {
 		output, err := run(ctx, prompt)
 		if err != nil {
-			log.Printf("[wicket:triage] %s#%d attempt %d runner error: %v", issue.Repo, issue.Number, attempt+1, err)
-			continue
+			log.Printf("[wicket:triage] %s#%d runner error: %v", issue.Repo, issue.Number, err)
+			// Runner errors are not retried — fall through to flag_human.
+			break
 		}
 		dec, ok := parseTriageDecision(output)
 		if ok {
@@ -208,7 +217,7 @@ func RunTriage(ctx context.Context, issue Issue, cfg TriageConfig) TriageDecisio
 		log.Printf("[wicket:triage] %s#%d attempt %d parse failed (output: %.200s)", issue.Repo, issue.Number, attempt+1, output)
 	}
 
-	log.Printf("[wicket:triage] %s#%d defaulting to flag_human after parse failures", issue.Repo, issue.Number)
+	log.Printf("[wicket:triage] %s#%d defaulting to flag_human", issue.Repo, issue.Number)
 	return TriageDecision{
 		Action: ActionFlagHuman,
 		Reason: "triage AI returned unparseable response",
@@ -223,10 +232,15 @@ func buildDefaultTriageRunner(providers []provider.Provider) func(ctx context.Co
 		pvs = provider.Defaults()
 	}
 	return func(ctx context.Context, prompt string) (string, error) {
-		dir := os.TempDir()
+		tempDir, err := os.MkdirTemp("", "forge-triage-")
+		if err != nil {
+			return "", fmt.Errorf("create triage temp dir: %w", err)
+		}
+		defer os.RemoveAll(tempDir)
+
 		var lastErr error
 		for _, pv := range pvs {
-			proc, err := smith.SpawnWithProvider(ctx, dir, prompt, dir, pv, []string{"--max-turns", "1"})
+			proc, err := smith.SpawnWithProvider(ctx, tempDir, prompt, tempDir, pv, []string{"--max-turns", "1"})
 			if err != nil {
 				lastErr = fmt.Errorf("spawn %s: %w", pv.Label(), err)
 				continue
@@ -234,6 +248,10 @@ func buildDefaultTriageRunner(providers []provider.Provider) func(ctx context.Co
 			result := proc.Wait()
 			if result.RateLimited {
 				lastErr = fmt.Errorf("provider %s rate limited", pv.Label())
+				continue
+			}
+			if result.IsError || result.ExitCode != 0 {
+				lastErr = fmt.Errorf("provider %s failed (exit %d, subtype %q): %s", pv.Label(), result.ExitCode, result.ResultSubtype, result.ErrorOutput)
 				continue
 			}
 			if result.FullOutput != "" {

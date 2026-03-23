@@ -160,14 +160,34 @@ func TestRunTriage_MalformedJSON_RetriesAndFallsBack(t *testing.T) {
 }
 
 func TestRunTriage_RunnerError_FallsBackToFlagHuman(t *testing.T) {
+	calls := 0
 	cfg := TriageConfig{
 		runner: func(_ context.Context, _ string) (string, error) {
+			calls++
 			return "", fmt.Errorf("connection refused")
 		},
 	}
 	dec := RunTriage(context.Background(), Issue{Number: 1, Repo: "r/r", Title: "Test"}, cfg)
 	if dec.Action != ActionFlagHuman {
 		t.Errorf("got %q, want flag_human", dec.Action)
+	}
+	// Runner errors must NOT be retried.
+	if calls != 1 {
+		t.Errorf("expected 1 runner call on runner error (no retry), got %d", calls)
+	}
+}
+
+func TestParseTriageDecision_CreateBeadMissingTitle(t *testing.T) {
+	_, ok := parseTriageDecision(`{"action": "create_bead", "reason": "ok", "bead_description": "do the thing"}`)
+	if ok {
+		t.Fatal("expected parse failure when bead_title is empty")
+	}
+}
+
+func TestParseTriageDecision_CreateBeadMissingDescription(t *testing.T) {
+	_, ok := parseTriageDecision(`{"action": "create_bead", "reason": "ok", "bead_title": "My title"}`)
+	if ok {
+		t.Fatal("expected parse failure when bead_description is empty")
 	}
 }
 
