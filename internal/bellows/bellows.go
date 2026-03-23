@@ -368,7 +368,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	// mergeability state and return early.
 	if strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged {
 		m.wasUnmanaged[key] = true
-		_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval)
+		_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval)
 		if newSnap.IsMerged {
 			_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
 		} else if newSnap.IsClosed {
@@ -542,15 +542,19 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	// Note: HasApproval is intentionally excluded — Copilot only submits
 	// COMMENTED reviews, never APPROVED, so requiring it would prevent PRs
 	// from ever reaching the Ready-to-Merge state.
-	if newSnap.CIPassing && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews {
+	// ciInProgress is excluded: a PR is not truly ready while CI is still running.
+	if newSnap.CIPassing && !ciInProgress && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews {
 		_ = m.db.UpdatePRStatusIfNeedsFix(pr.ID, state.PRApproved)
 	}
 
 	// Detect transition to fully ready-to-merge state (CI passing +
 	// no conflicts, unresolved threads, or pending reviews).
 	// This matches the ReadyToMergePRs query in state/db.go.
-	newReady := newSnap.CIPassing && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews
-	lastReady := lastSnap.CIPassing && !lastSnap.IsConflicting && !lastSnap.HasUnresolvedThreads && !lastSnap.HasPendingReviews
+	// ciInProgress is excluded from both sides: a PR is not ready while CI is
+	// still running, and the previous poll must also have been fully completed
+	// (not in-progress) to count as "was already ready".
+	newReady := newSnap.CIPassing && !ciInProgress && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews
+	lastReady := lastSnap.CIPassing && !lastSnap.CIInProgress && !lastSnap.IsConflicting && !lastSnap.HasUnresolvedThreads && !lastSnap.HasPendingReviews
 	if newReady && !lastReady {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
@@ -575,7 +579,11 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	// Persist mergeability state so the ready-to-merge panel stays current.
 	// Include ci_passing so the Ready to Merge panel reflects the latest CI
 	// status every poll cycle, not just on CI transition events.
-	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval)
+	// Use !ciInProgress: when checks are still running, ci_passing must be
+	// false in the DB so the Ready-to-Merge panel does not show the PR
+	// prematurely. (newSnap.CIPassing may have been overridden to preserve
+	// the last completed value for transition detection — see above.)
+	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval)
 
 }
 
