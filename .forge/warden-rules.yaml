@@ -2141,3 +2141,57 @@ rules:
         Verify that the struct actually has the yaml and mapstructure tags matching the referenced struct. If the comment says tags enable automatic config population, the tags must be present and their keys must match the YAML keys (e.g. wicket_enabled, not Enabled). Either add correct tags or remove the misleading comment and use explicit mapping.
       source: copilot:PR#413
       added: "2026-03-23"
+    - id: gh-cli-body-via-stdin
+      category: security
+      pattern: >-
+        exec.Command passing large or sensitive text (comment bodies, PR descriptions, issue bodies) via --body CLI argument to gh
+      check: >-
+        Verify that large or sensitive text passed to gh CLI uses --body-file - with stdin piping instead of --body argv flag, to avoid OS command-line length limits (especially on Windows) and to prevent exposing content in the process argument list
+      source: copilot:PR#416
+      added: "2026-03-23"
+    - id: slice-reference-capture
+      category: testing
+      pattern: >-
+        Mock or spy structs that record method arguments by appending slices, maps, or other reference types to a calls log
+      check: >-
+        Verify that recorded arguments are defensively copied (e.g. slices.Clone) before storing, so that later mutations by the caller do not silently corrupt the test's assertions
+      source: copilot:PR#416
+      added: "2026-03-23"
+    - id: mock-record-all-args
+      category: testing
+      pattern: Mock/stub structs that record method calls but drop one or more arguments
+      check: >-
+        Verify that mock call recorders capture ALL method arguments (not just some), so tests can assert the full context of each call. Use a struct to record multiple parameters rather than storing only one field.
+      source: copilot:PR#416
+      added: "2026-03-23"
+    - id: check-test-parse-errors
+      category: testing
+      pattern: >-
+        Test code that calls time.Parse, strconv.Parse*, url.Parse, or similar fallible parsing functions and discards the error with _
+      check: >-
+        Verify that parse errors in test setup are checked and cause an immediate test failure (t.Fatalf) rather than being silently ignored, which would let the test proceed with a zero value and produce misleading results
+      source: copilot:PR#416
+      added: "2026-03-23"
+    - id: conditional-close-on-partial-failure
+      category: error-handling
+      pattern: >-
+        Code that closes/completes a parent entity or gate after a loop of fallible operations where failures are only logged as warnings
+      check: >-
+        Verify that a parent/gate is not closed unconditionally when downstream side-effect operations (e.g. dependency transfers, notifications) can partially fail. Track success of all critical operations and only close the parent when all succeed; otherwise leave it open or roll back so dependent items remain correctly gated.
+      source: copilot:PR#417
+      added: "2026-03-23"
+    - id: derive-timeout-from-parent-ctx
+      category: concurrency
+      pattern: context.WithTimeout(context.Background()
+      check: >-
+        When adding a timeout to a request- or operation-scoped task, derive it from the caller's context (e.g. context.WithTimeout(ctx, ...)) rather than context.Background(), so the work participates in caller cancellation/shutdown semantics. This guidance does NOT apply to contexts that are intentionally detached from the caller, such as cleanup defers that must run even after shutdown (see cleanup-defer-canceled-ctx) or pipeline/background contexts that are meant to outlive the initiating request (see pipeline-ctx-from-background).
+      source: copilot:PR#417
+      added: "2026-03-23"
+    - id: assert-close-reason-contains-context
+      category: testing
+      pattern: >-
+        Test asserts a CLI command was called with a flag (e.g. --force) but does not verify the accompanying --reason or message content includes expected contextual identifiers and counts
+      check: >-
+        When testing a command that closes/completes a resource with a reason or message, assert not just that the command was called, but also that the reason/message includes all relevant contextual details (e.g. related entity IDs, counts) so future changes don't silently regress operator-visible messages
+      source: copilot:PR#417
+      added: "2026-03-23"
