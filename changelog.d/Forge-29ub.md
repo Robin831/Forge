@@ -1,0 +1,2 @@
+category: Fixed
+- **Schematic decomposition now preserves dependency chain** - When a bead in the middle of a dependency chain (A → B → C) is decomposed into sub-beads (B1, B2, B3), the original `DependsOn` relationships are now transferred to B1 (first sub-bead) and `Blocks` relationships are transferred to B3 (last sub-bead). Previously, decomposing B would leave B1 unblocked by A and allow C to start before B3 completed. (Forge-29ub)

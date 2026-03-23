@@ -308,3 +308,147 @@ func TestCreateSubBeads_NoTasks(t *testing.T) {
 	_, err := createSubBeads(context.Background(), poller.Bead{ID: "p"}, nil, "/tmp", fake.run)
 	require.Error(t, err)
 }
+
+func TestCreateSubBeads_BlocksTransferToLastSubBead(t *testing.T) {
+	fake := newFakeRunner()
+	parent := poller.Bead{
+		ID:       "parent-1",
+		Title:    "Feature B",
+		Priority: 2,
+		Blocks:   []string{"downstream-c"},
+	}
+	tasks := []subTaskVerdict{
+		{Title: "B1", Description: "First sub-task"},
+		{Title: "B2", Description: "Second sub-task"},
+		{Title: "B3", Description: "Third sub-task"},
+	}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err)
+	require.Len(t, subs, 3)
+
+	lastSubID := subs[2].ID
+
+	// Find the dep add call that transfers the Blocks relationship:
+	// dep add downstream-c <last-sub-id>
+	found := false
+	for _, call := range fake.calls {
+		if len(call) == 4 && call[0] == "dep" && call[1] == "add" &&
+			call[2] == "downstream-c" && call[3] == lastSubID {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected dep add downstream-c %s (Blocks transfer to last sub-bead)", lastSubID)
+}
+
+func TestCreateSubBeads_DependsOnTransferToFirstSubBead(t *testing.T) {
+	fake := newFakeRunner()
+	parent := poller.Bead{
+		ID:        "parent-1",
+		Title:     "Feature B",
+		Priority:  2,
+		DependsOn: []string{"upstream-a"},
+	}
+	tasks := []subTaskVerdict{
+		{Title: "B1", Description: "First sub-task"},
+		{Title: "B2", Description: "Second sub-task"},
+		{Title: "B3", Description: "Third sub-task"},
+	}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err)
+	require.Len(t, subs, 3)
+
+	firstSubID := subs[0].ID
+
+	// Find the dep add call that transfers the DependsOn relationship:
+	// dep add <first-sub-id> upstream-a
+	found := false
+	for _, call := range fake.calls {
+		if len(call) == 4 && call[0] == "dep" && call[1] == "add" &&
+			call[2] == firstSubID && call[3] == "upstream-a" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected dep add %s upstream-a (DependsOn transfer to first sub-bead)", firstSubID)
+}
+
+func TestCreateSubBeads_FullChainTransfer(t *testing.T) {
+	fake := newFakeRunner()
+	parent := poller.Bead{
+		ID:        "parent-b",
+		Title:     "Feature B (middle of chain)",
+		Priority:  2,
+		DependsOn: []string{"upstream-a"},
+		Blocks:    []string{"downstream-c"},
+	}
+	tasks := []subTaskVerdict{
+		{Title: "B1", Description: "First"},
+		{Title: "B2", Description: "Second"},
+		{Title: "B3", Description: "Third"},
+	}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err)
+	require.Len(t, subs, 3)
+
+	firstSubID := subs[0].ID
+	lastSubID := subs[2].ID
+
+	// Verify DependsOn transfer: dep add <B1> upstream-a
+	foundDependsOn := false
+	// Verify Blocks transfer: dep add downstream-c <B3>
+	foundBlocks := false
+	for _, call := range fake.calls {
+		if len(call) == 4 && call[0] == "dep" && call[1] == "add" {
+			if call[2] == firstSubID && call[3] == "upstream-a" {
+				foundDependsOn = true
+			}
+			if call[2] == "downstream-c" && call[3] == lastSubID {
+				foundBlocks = true
+			}
+		}
+	}
+
+	assert.True(t, foundDependsOn, "DependsOn should transfer to first sub-bead %s", firstSubID)
+	assert.True(t, foundBlocks, "Blocks should transfer to last sub-bead %s", lastSubID)
+}
+
+func TestCreateSubBeads_SingleSubBeadInheritsChain(t *testing.T) {
+	fake := newFakeRunner()
+	// When only one sub-bead is created, it is both first and last,
+	// so it should inherit both DependsOn and Blocks from the parent.
+	parent := poller.Bead{
+		ID:        "parent-b",
+		Priority:  2,
+		DependsOn: []string{"upstream-a"},
+		Blocks:    []string{"downstream-c"},
+	}
+	tasks := []subTaskVerdict{
+		{Title: "Only task", Description: "Single sub-task"},
+	}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err)
+	require.Len(t, subs, 1)
+
+	subID := subs[0].ID
+
+	foundDependsOn := false
+	foundBlocks := false
+	for _, call := range fake.calls {
+		if len(call) == 4 && call[0] == "dep" && call[1] == "add" {
+			if call[2] == subID && call[3] == "upstream-a" {
+				foundDependsOn = true
+			}
+			if call[2] == "downstream-c" && call[3] == subID {
+				foundBlocks = true
+			}
+		}
+	}
+
+	assert.True(t, foundDependsOn, "single sub-bead should inherit parent DependsOn")
+	assert.True(t, foundBlocks, "single sub-bead should inherit parent Blocks")
+}
