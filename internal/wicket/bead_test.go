@@ -5,9 +5,21 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/Robin831/Forge/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// openTestDB creates a temporary state.DB for testing and registers cleanup.
+func openTestDB(t *testing.T) *state.DB {
+	t.Helper()
+	db, err := state.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
 
 // TestBuildBDArgs verifies that buildBDArgs produces the correct argument slice
 // for the bd create command.
@@ -87,13 +99,19 @@ func TestParseBDOutput(t *testing.T) {
 	}
 }
 
-// TestCreateBead_StoresMapping verifies that CreateBead records the
-// issue→bead mapping after a successful bd create invocation.
+// TestCreateBead_StoresMapping verifies that CreateBead persists the
+// issue→bead mapping to state.db after a successful bd create invocation.
 func TestCreateBead_StoresMapping(t *testing.T) {
-	// Reset the global store before the test.
-	wicketIssues.mu.Lock()
-	wicketIssues.mapping = make(map[issueKey]string)
-	wicketIssues.mu.Unlock()
+	db := openTestDB(t)
+
+	// Pre-insert the wicket_issues row as the monitor would.
+	err := db.InsertWicketIssue(state.WicketIssue{
+		Repo:        "org/repo",
+		IssueNumber: 7,
+		Title:       "Some issue",
+		State:       "pending",
+	})
+	require.NoError(t, err)
 
 	original := bdRunner
 	defer func() { bdRunner = original }()
@@ -109,13 +127,46 @@ func TestCreateBead_StoresMapping(t *testing.T) {
 	}
 	issue := Issue{Repo: "org/repo", Number: 7}
 
-	id, err := CreateBead(context.Background(), decision, issue, 2)
+	id, err := CreateBead(context.Background(), db, decision, issue, 2)
 	require.NoError(t, err)
 	assert.Equal(t, "Forge-test1", id)
 
-	stored, ok := BeadIDFor("org/repo", 7)
-	require.True(t, ok, "BeadIDFor returned false; expected mapping to be stored")
-	assert.Equal(t, "Forge-test1", stored)
+	// Verify the DB row was updated with the bead ID and correct state.
+	wi, err := db.GetWicketIssue("org/repo", 7)
+	require.NoError(t, err)
+	require.NotNil(t, wi, "expected wicket_issues row to exist")
+	assert.Equal(t, "Forge-test1", wi.BeadID)
+	assert.Equal(t, "bead_created", wi.State)
+	assert.NotNil(t, wi.ProcessedAt)
+}
+
+// TestCreateBead_InsertsRowWhenMissing verifies that CreateBead inserts a
+// wicket_issues row when none exists yet.
+func TestCreateBead_InsertsRowWhenMissing(t *testing.T) {
+	db := openTestDB(t)
+
+	original := bdRunner
+	defer func() { bdRunner = original }()
+	bdRunner = func(_ context.Context, _ []string) (string, error) {
+		return "Forge-new1\n", nil
+	}
+
+	decision := TriageDecision{
+		Action:          ActionCreateBead,
+		BeadTitle:       "New issue",
+		BeadDescription: "No prior row.",
+	}
+	issue := Issue{Repo: "org/repo", Number: 99}
+
+	id, err := CreateBead(context.Background(), db, decision, issue, 1)
+	require.NoError(t, err)
+	assert.Equal(t, "Forge-new1", id)
+
+	wi, err := db.GetWicketIssue("org/repo", 99)
+	require.NoError(t, err)
+	require.NotNil(t, wi)
+	assert.Equal(t, "Forge-new1", wi.BeadID)
+	assert.Equal(t, "bead_created", wi.State)
 }
 
 // TestCreateBead_RunnerError verifies that CreateBead propagates runner errors.
@@ -134,8 +185,57 @@ func TestCreateBead_RunnerError(t *testing.T) {
 	}
 	issue := Issue{Repo: "org/repo", Number: 1}
 
-	_, err := CreateBead(context.Background(), decision, issue, 2)
+	_, err := CreateBead(context.Background(), nil, decision, issue, 2)
 	assert.Error(t, err)
+}
+
+// TestCreateBead_ValidationErrors checks that invalid inputs are rejected.
+func TestCreateBead_ValidationErrors(t *testing.T) {
+	baseDecision := TriageDecision{
+		Action:          ActionCreateBead,
+		BeadTitle:       "Title",
+		BeadDescription: "Desc",
+	}
+	issue := Issue{Repo: "org/repo", Number: 1}
+
+	tests := []struct {
+		name     string
+		decision TriageDecision
+		priority int
+	}{
+		{
+			name:     "wrong action",
+			decision: TriageDecision{Action: ActionAskClarify, BeadTitle: "T", BeadDescription: "D"},
+			priority: 2,
+		},
+		{
+			name:     "missing title",
+			decision: TriageDecision{Action: ActionCreateBead, BeadDescription: "D"},
+			priority: 2,
+		},
+		{
+			name:     "missing description",
+			decision: TriageDecision{Action: ActionCreateBead, BeadTitle: "T"},
+			priority: 2,
+		},
+		{
+			name:     "priority too low",
+			decision: baseDecision,
+			priority: -1,
+		},
+		{
+			name:     "priority too high",
+			decision: baseDecision,
+			priority: 5,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := CreateBead(context.Background(), nil, tc.decision, issue, tc.priority)
+			assert.Error(t, err, "expected validation error")
+		})
+	}
 }
 
 // TestIssueURL verifies the URL helper.
@@ -175,4 +275,3 @@ func assertContainsFlag(t *testing.T, args []string, flag, value string) {
 	}
 	assert.Failf(t, "flag not found", "expected %s %s in args %v", flag, value, args)
 }
-

@@ -7,8 +7,10 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/state"
 )
 
 // issueKey uniquely identifies a GitHub issue.
@@ -94,9 +96,31 @@ func parseBDOutput(output string) (string, error) {
 }
 
 // CreateBead creates a bead from the given triage decision and GitHub issue,
-// stores the issue→bead mapping in wicket_issues, and returns the new bead ID.
-// priority is the bd priority (0–4).
-func CreateBead(ctx context.Context, decision TriageDecision, issue Issue, priority int) (string, error) {
+// stores the issue→bead mapping in both wicket_issues (via db) and an
+// in-memory cache, and returns the new bead ID.
+//
+// decision.Action must be ActionCreateBead and both BeadTitle and
+// BeadDescription must be non-empty; otherwise CreateBead returns an error
+// immediately so that misuse of the function fails fast.
+//
+// priority is the bd priority (0–4); values outside that range are rejected.
+//
+// db may be nil, in which case persistence to state.db is skipped and only
+// the in-memory cache is updated.
+func CreateBead(ctx context.Context, db *state.DB, decision TriageDecision, issue Issue, priority int) (string, error) {
+	if decision.Action != ActionCreateBead {
+		return "", fmt.Errorf("CreateBead called with action %q; only %q is allowed", decision.Action, ActionCreateBead)
+	}
+	if decision.BeadTitle == "" {
+		return "", fmt.Errorf("CreateBead: decision missing bead title")
+	}
+	if decision.BeadDescription == "" {
+		return "", fmt.Errorf("CreateBead: decision missing bead description")
+	}
+	if priority < 0 || priority > 4 {
+		return "", fmt.Errorf("invalid priority %d: must be between 0 and 4", priority)
+	}
+
 	args := buildBDArgs(decision, issue, priority)
 
 	output, err := bdRunner(ctx, args)
@@ -109,9 +133,45 @@ func CreateBead(ctx context.Context, decision TriageDecision, issue Issue, prior
 		return "", fmt.Errorf("create bead for %s#%d: %w", issue.Repo, issue.Number, err)
 	}
 
+	// Update the in-memory cache for fast same-process lookups.
 	wicketIssues.mu.Lock()
 	wicketIssues.mapping[issueKey{Repo: issue.Repo, Number: issue.Number}] = beadID
 	wicketIssues.mu.Unlock()
 
+	// Persist the bead ID to state.db so the mapping survives restarts and is
+	// visible to other components.
+	if db != nil {
+		if err := persistBeadID(db, issue, decision, beadID); err != nil {
+			return "", fmt.Errorf("persist bead ID for %s#%d: %w", issue.Repo, issue.Number, err)
+		}
+	}
+
 	return beadID, nil
+}
+
+// persistBeadID writes (or updates) the wicket_issues row for the given issue
+// with the newly created beadID and state "bead_created". If no row exists
+// yet, one is inserted.
+func persistBeadID(db *state.DB, issue Issue, decision TriageDecision, beadID string) error {
+	now := time.Now().UTC()
+	wi := state.WicketIssue{
+		Repo:         issue.Repo,
+		IssueNumber:  issue.Number,
+		Title:        issue.Title,
+		Body:         issue.Body,
+		Author:       issue.Author,
+		State:        "bead_created",
+		TriageAction: string(decision.Action),
+		TriageReason: decision.Reason,
+		BeadID:       beadID,
+		ProcessedAt:  &now,
+	}
+	existing, err := db.GetWicketIssue(issue.Repo, issue.Number)
+	if err != nil {
+		return fmt.Errorf("look up wicket issue: %w", err)
+	}
+	if existing == nil {
+		return db.InsertWicketIssue(wi)
+	}
+	return db.UpdateWicketIssue(wi)
 }
