@@ -252,8 +252,10 @@ type GetIngotPayload struct {
 type WicketStatusPayload struct {
 	Enabled        bool           `json:"enabled"`
 	Interval       string         `json:"interval"`
-	MonitoredRepos []string       `json:"monitored_repos"`
-	IssueCounts    map[string]int `json:"issue_counts"` // state -> count
+	MonitoredRepos []string       `json:"monitored_repos"`  // explicitly configured repos
+	DerivedAnvils  int            `json:"derived_anvils"`   // anvil count deriving repo from git remote at runtime
+	IssueCounts    map[string]int `json:"issue_counts"`     // state -> count
+	LastScanAt     *time.Time     `json:"last_scan_at,omitempty"`
 }
 
 // CommandHandler is called by the server for each incoming command.

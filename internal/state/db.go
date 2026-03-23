@@ -2777,6 +2777,48 @@ func (db *DB) ListWicketIssues(opts ListWicketIssuesOpts) ([]WicketIssue, error)
 	return issues, rows.Err()
 }
 
+// CountWicketIssues returns the number of wicket_issues rows matching the
+// given options using a DB-side COUNT(*) query (no full-row fetch).
+func (db *DB) CountWicketIssues(opts ListWicketIssuesOpts) (int, error) {
+	q := `SELECT COUNT(*) FROM wicket_issues`
+	var args []any
+	var where []string
+	if opts.Repo != "" {
+		where = append(where, "repo=?")
+		args = append(args, opts.Repo)
+	}
+	if opts.State != "" {
+		where = append(where, "state=?")
+		args = append(args, opts.State)
+	}
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	var n int
+	if err := db.conn.QueryRow(q, args...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// LastWicketScanAt returns the timestamp of the most recent wicket_scan_done
+// event, or nil when no such event exists yet.
+func (db *DB) LastWicketScanAt() (*time.Time, error) {
+	var ts string
+	err := db.conn.QueryRow(
+		`SELECT timestamp FROM events WHERE type=? ORDER BY id DESC LIMIT 1`,
+		string(EventWicketScanDone),
+	).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t := parseTime(ts)
+	return &t, nil
+}
+
 // scanWicketIssue scans a single *sql.Row into a WicketIssue.
 // Returns nil, nil when no row is found.
 func scanWicketIssue(row *sql.Row) (*WicketIssue, error) {

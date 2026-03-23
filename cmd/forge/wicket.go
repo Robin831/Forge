@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"text/tabwriter"
+	"time"
 
 	"github.com/Robin831/Forge/internal/daemon"
 	"github.com/Robin831/Forge/internal/ipc"
@@ -59,32 +60,57 @@ monitored repositories, issue counts by triage state, and configuration.`,
 		defer db.Close()
 
 		enabled := cfg != nil && cfg.Settings.WicketEnabled
-		interval := ""
-		if cfg != nil {
-			interval = cfg.Settings.WicketInterval.String()
-		}
 
-		var repos []string
+		// Compute the effective interval, applying the same defaulting logic as
+		// the Wicket monitor (interval <= 0 falls back to a 15m default).
+		effectiveInterval := time.Duration(0)
 		if cfg != nil {
+			effectiveInterval = cfg.Settings.WicketInterval
+		}
+		if effectiveInterval <= 0 {
+			effectiveInterval = 15 * time.Minute
+		}
+		interval := effectiveInterval.String()
+
+		// Collect explicitly configured repos; count anvils that derive from git remote.
+		var repos []string
+		derivedAnvils := 0
+		if cfg != nil {
+			repoSet := make(map[string]struct{})
 			for _, anvil := range cfg.Anvils {
-				repos = append(repos, anvil.WicketRepos...)
+				if len(anvil.WicketRepos) > 0 {
+					for _, r := range anvil.WicketRepos {
+						if r != "" {
+							repoSet[r] = struct{}{}
+						}
+					}
+				} else {
+					derivedAnvils++
+				}
+			}
+			for r := range repoSet {
+				repos = append(repos, r)
 			}
 			sort.Strings(repos)
 		}
 
 		counts := make(map[string]int)
 		for _, st := range []string{"pending", "bead_created", "ask_clarify", "needs_human"} {
-			issues, err := db.ListWicketIssues(state.ListWicketIssuesOpts{State: st})
+			n, err := db.CountWicketIssues(state.ListWicketIssuesOpts{State: st})
 			if err == nil {
-				counts[st] = len(issues)
+				counts[st] = n
 			}
 		}
+
+		lastScan, _ := db.LastWicketScanAt()
 
 		s := ipc.WicketStatusPayload{
 			Enabled:        enabled,
 			Interval:       interval,
 			MonitoredRepos: repos,
+			DerivedAnvils:  derivedAnvils,
 			IssueCounts:    counts,
+			LastScanAt:     lastScan,
 		}
 
 		if jsonOutput {
@@ -108,10 +134,16 @@ func printWicketStatus(s ipc.WicketStatusPayload) {
 	if s.Interval != "" {
 		fmt.Fprintf(tw, "Poll Interval\t%s\n", s.Interval)
 	}
+	if s.LastScanAt != nil {
+		fmt.Fprintf(tw, "Last Scan\t%s\n", s.LastScanAt.Local().Format("2006-01-02 15:04:05"))
+	}
 	if len(s.MonitoredRepos) > 0 {
-		fmt.Fprintf(tw, "Monitored Repos\t%d\n", len(s.MonitoredRepos))
+		fmt.Fprintf(tw, "Configured Repos\t%d\n", len(s.MonitoredRepos))
 	} else {
-		fmt.Fprintf(tw, "Monitored Repos\tderived from anvil git remotes\n")
+		fmt.Fprintf(tw, "Configured Repos\t(none listed; may be derived from anvil git remotes)\n")
+	}
+	if s.DerivedAnvils > 0 {
+		fmt.Fprintf(tw, "Derived Repos\t%d anvil(s) derive repo from git remote at runtime\n", s.DerivedAnvils)
 	}
 	tw.Flush()
 
@@ -128,7 +160,7 @@ func printWicketStatus(s ipc.WicketStatusPayload) {
 	}
 
 	if len(s.MonitoredRepos) > 0 {
-		fmt.Println("\nMonitored Repos:")
+		fmt.Println("\nConfigured Repos:")
 		for _, r := range s.MonitoredRepos {
 			fmt.Printf("  %s\n", r)
 		}
