@@ -119,13 +119,22 @@ func (g *ghClient) GetIssue(ctx context.Context, repo string, number int) (*Issu
 }
 
 func (g *ghClient) CommentOnIssue(ctx context.Context, repo string, number int, body string) error {
-	args := []string{
+	cmd := executil.HideWindow(exec.CommandContext(
+		ctx,
+		"gh",
 		"issue", "comment", strconv.Itoa(number),
 		"--repo", repo,
-		"--body", body,
-	}
-	_, err := runGH(ctx, args)
-	if err != nil {
+		"--body-file", "-",
+	))
+	cmd.Stdin = strings.NewReader(body)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if stderr.Len() > 0 {
+			return fmt.Errorf("gh issue comment %s#%d: %v: %s", repo, number, err, strings.TrimSpace(stderr.String()))
+		}
 		return fmt.Errorf("gh issue comment %s#%d: %w", repo, number, err)
 	}
 	return nil
@@ -231,7 +240,7 @@ type MockGitHubClient struct {
 	CommentCalls  []CommentCall
 	AddLabelCalls []AddLabelCall
 	RemoveCalls   []RemoveCall
-	CloseCalls    []int
+	CloseCalls    []CloseCall
 }
 
 // CommentCall records arguments from a CommentOnIssue invocation.
@@ -253,6 +262,12 @@ type RemoveCall struct {
 	Repo   string
 	Number int
 	Label  string
+}
+
+// CloseCall records arguments from a CloseIssue invocation.
+type CloseCall struct {
+	Repo   string
+	Number int
 }
 
 func (m *MockGitHubClient) ListIssues(ctx context.Context, repo string, labels []string) ([]Issue, error) {
@@ -278,7 +293,9 @@ func (m *MockGitHubClient) CommentOnIssue(ctx context.Context, repo string, numb
 }
 
 func (m *MockGitHubClient) AddLabels(ctx context.Context, repo string, number int, labels []string) error {
-	m.AddLabelCalls = append(m.AddLabelCalls, AddLabelCall{Repo: repo, Number: number, Labels: labels})
+	cp := make([]string, len(labels))
+	copy(cp, labels)
+	m.AddLabelCalls = append(m.AddLabelCalls, AddLabelCall{Repo: repo, Number: number, Labels: cp})
 	if m.OnAddLabels != nil {
 		return m.OnAddLabels(ctx, repo, number, labels)
 	}
@@ -294,7 +311,7 @@ func (m *MockGitHubClient) RemoveLabel(ctx context.Context, repo string, number 
 }
 
 func (m *MockGitHubClient) CloseIssue(ctx context.Context, repo string, number int) error {
-	m.CloseCalls = append(m.CloseCalls, number)
+	m.CloseCalls = append(m.CloseCalls, CloseCall{Repo: repo, Number: number})
 	if m.OnCloseIssue != nil {
 		return m.OnCloseIssue(ctx, repo, number)
 	}

@@ -76,7 +76,10 @@ func TestParseListIssues(t *testing.T) {
 	if len(first.Labels) != 2 || first.Labels[0] != "enhancement" || first.Labels[1] != "ui" {
 		t.Errorf("Labels: want [enhancement ui], got %v", first.Labels)
 	}
-	wantTime, _ := time.Parse(time.RFC3339, "2026-01-15T10:00:00Z")
+	wantTime, err := time.Parse(time.RFC3339, "2026-01-15T10:00:00Z")
+	if err != nil {
+		t.Fatalf("parse wantTime: %v", err)
+	}
 	if !first.CreatedAt.Equal(wantTime) {
 		t.Errorf("CreatedAt: want %v, got %v", wantTime, first.CreatedAt)
 	}
@@ -170,7 +173,7 @@ func TestMockGitHubClient_CloseIssue_RecordsCall(t *testing.T) {
 	if err := m.CloseIssue(context.Background(), "owner/repo", 99); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(m.CloseCalls) != 1 || m.CloseCalls[0] != 99 {
+	if len(m.CloseCalls) != 1 || m.CloseCalls[0].Repo != "owner/repo" || m.CloseCalls[0].Number != 99 {
 		t.Errorf("wrong close call recorded: %v", m.CloseCalls)
 	}
 }
