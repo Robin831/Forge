@@ -118,14 +118,25 @@ func BuildDedupCache(ctx context.Context, db *state.DB, anvilPath, anvilName str
 	return cache
 }
 
-// fetchBeadList runs bd list for the given status and returns raw output.
+// fetchBeadList runs bd sql (fast) or falls back to bd list for the given status.
 func fetchBeadList(ctx context.Context, anvilPath, status string) ([]byte, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "list", fmt.Sprintf("--status=%s", status), "--limit", "0", "--json"))
+
+	// Try bd sql first (~6x faster than bd list on Dolt).
+	query := fmt.Sprintf(`SELECT * FROM issues WHERE status = '%s'`, status)
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "sql", "--json", query))
 	cmd.Dir = anvilPath
 	out, err := cmd.Output()
+	if err == nil {
+		return out, nil
+	}
+
+	// Fall back to bd list.
+	cmd2 := executil.HideWindow(exec.CommandContext(cmdCtx,
+		"bd", "list", fmt.Sprintf("--status=%s", status), "--limit", "0", "--json"))
+	cmd2.Dir = anvilPath
+	out, err = cmd2.Output()
 	if err != nil {
 		log.Printf("[depcheck] bd list --status=%s failed in %s: %v", status, anvilPath, err)
 		return nil, err
