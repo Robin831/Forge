@@ -1247,10 +1247,10 @@ rules:
     - id: zero-value-yaml-marshal
       category: other
       pattern: >-
-        Custom MarshalYAML or MarshalJSON methods that conditionally omit fields based on zero/empty values
+        Custom MarshalYAML or MarshalJSON methods that conditionally omit fields based on zero/empty values, or struct fields with omitempty tags where zero values (0, false, empty string) are intentionally meaningful
       check: >-
-        Verify that intentional zero values (e.g., 0 duration to disable a feature) are still serialized correctly. If a zero value has semantic meaning (like disabling a scheduled task), the marshal method must emit it rather than omitting it, otherwise round-tripping through save/load will silently replace it with the default.
-      source: copilot:PR#356
+        Verify that intentional zero values (e.g., 0 duration to disable a feature) are still serialized correctly. If a zero value has semantic meaning (like disabling a scheduled task), the marshal method must emit it rather than omitting it, otherwise round-tripping through save/load will silently replace it with the default. This applies equally to omitempty struct tags — if a zero value is semantically significant, either remove the omitempty tag or use a custom marshal method that always emits the field.
+      source: copilot:PR#356, copilot:PR#413
       added: "2026-03-20"
     - id: test-invalid-duration-parsing
       category: testing
@@ -2118,14 +2118,6 @@ rules:
         Verify that git commands executed from within a TUI use a quiet/redirectable output mode (stdout/stderr to io.Discard or a logger) so that git progress and status output does not corrupt the alt-screen UI or pollute the Live Activity log
       source: copilot:PR#410
       added: "2026-03-22"
-    - id: omitempty-drops-zero-values
-      category: error-handling
-      pattern: >-
-        Struct fields with omitempty tags where zero values (0, false, empty string) are intentionally meaningful
-      check: >-
-        Verify that struct fields using omitempty in serialization tags do not silently drop intentional zero values. If a zero value has semantic meaning (e.g., 0 disables a feature), always emit the field so it survives a marshal/unmarshal round-trip and is not replaced by a default.
-      source: copilot:PR#413
-      added: "2026-03-23"
     - id: normalize-default-before-insert
       category: error-handling
       pattern: >-
