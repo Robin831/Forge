@@ -161,8 +161,9 @@ func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg con
 			continue
 		}
 
-		// Trigger label filter: when wicket_trigger_label is non-empty, only
-		// process issues that explicitly carry that label.
+		// Trigger label filter: when wicket_trigger_label is non-empty, Wicket
+		// operates in pull-model — only issues explicitly tagged with that label
+		// are processed. When empty (default), all issues are eligible.
 		if settings.WicketTriggerLabel != "" && !hasLabel(issue, settings.WicketTriggerLabel) {
 			continue
 		}
@@ -530,21 +531,38 @@ func hasAllLabels(issue Issue, requiredLabels []string) bool {
 func isLikelySpam(issue Issue) bool {
 	title := strings.TrimSpace(issue.Title)
 	body := strings.TrimSpace(issue.Body)
+	titleLower := strings.ToLower(title)
 
-	// A very short title with no body is a strong spam signal.
-	if len(title) < 5 && len(body) == 0 {
+	// Completely empty submissions are not meaningful issues.
+	if len(titleLower) == 0 && len(body) == 0 {
 		return true
 	}
 
-	// Exact-match well-known placeholder/test titles. These are always spam
-	// regardless of whether a body is present. Short entries (< 5 chars) are
-	// omitted here because they are already covered by the length check above,
-	// which exempts them when a substantive body is provided.
-	titleLower := strings.ToLower(title)
-	spamTitles := []string{
-		"testing", "asdfgh", "qwerty", "hello",
+	// Issues with no body are only treated as spam when the title is a known
+	// placeholder or explicit test phrase. This avoids dropping legitimate
+	// short-title issues like "Help" or "Docs" that forgot a description.
+	if len(body) == 0 {
+		shortPlaceholderTitles := []string{
+			"test",
+			"testing",
+			"ignore",
+			"please ignore",
+			"dummy",
+			"sample",
+		}
+		for _, ph := range shortPlaceholderTitles {
+			if titleLower == ph {
+				return true
+			}
+		}
 	}
-	for _, s := range spamTitles {
+
+	// Exact-match well-known placeholder/test titles. These are always spam
+	// regardless of whether a body is present.
+	alwaysSpamTitles := []string{
+		"asdfgh", "qwerty",
+	}
+	for _, s := range alwaysSpamTitles {
 		if titleLower == s {
 			return true
 		}

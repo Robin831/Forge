@@ -23,9 +23,9 @@ const (
 	ActionReject TriageAction = "reject"
 )
 
-// defaultBotIgnoreList is a hardcoded set of well-known bot account patterns
+// defaultBotIgnoreList is a hardcoded set of well-known bot account logins
 // that Wicket always skips regardless of configuration. Comparison is
-// case-insensitive.
+// case-insensitive exact matching (no wildcard or prefix matching).
 var defaultBotIgnoreList = []string{
 	"dependabot[bot]",
 	"renovate[bot]",
@@ -121,8 +121,4 @@ type AnvilWicketConfig struct {
 	// context or constraints (e.g. "This is a public API — be conservative
 	// about accepting feature requests from external contributors.").
 	TriagePrompt string `yaml:"wicket_triage_prompt,omitempty" mapstructure:"wicket_triage_prompt"`
-	// IgnoreUsers is a list of GitHub logins to skip entirely when triaging
-	// issues. In addition to this list, defaultBotIgnoreList is always
-	// applied. Comparison is case-insensitive.
-	IgnoreUsers []string `yaml:"wicket_ignore_users,omitempty" mapstructure:"wicket_ignore_users"`
 }

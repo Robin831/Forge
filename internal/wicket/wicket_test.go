@@ -493,19 +493,39 @@ func TestIsLikelySpam(t *testing.T) {
 		want  bool
 	}{
 		{
-			name:  "very short title no body",
-			issue: Issue{Title: "hi", Body: ""},
+			name:  "completely empty submission",
+			issue: Issue{Title: "", Body: ""},
 			want:  true,
 		},
 		{
-			name:  "known spam title",
+			name:  "placeholder title no body",
 			issue: Issue{Title: "test", Body: ""},
 			want:  true,
 		},
 		{
-			name:  "known spam title case-insensitive",
+			name:  "placeholder title no body case-insensitive",
+			issue: Issue{Title: "TESTING", Body: ""},
+			want:  true,
+		},
+		{
+			name:  "placeholder title with body is not spam",
 			issue: Issue{Title: "TESTING", Body: "some body"},
-			want:  true, // lowercased to "testing" which is in the spam list
+			want:  false, // body present, "testing" only in no-body placeholder list
+		},
+		{
+			name:  "short legitimate title with no body is not spam",
+			issue: Issue{Title: "hi", Body: ""},
+			want:  false, // "hi" is not a known placeholder
+		},
+		{
+			name:  "always-spam title no body",
+			issue: Issue{Title: "asdfgh", Body: ""},
+			want:  true,
+		},
+		{
+			name:  "always-spam title with body",
+			issue: Issue{Title: "qwerty", Body: "Please help me with this."},
+			want:  true, // always-spam regardless of body
 		},
 		{
 			name:  "real issue",
@@ -515,7 +535,7 @@ func TestIsLikelySpam(t *testing.T) {
 		{
 			name:  "short title with body",
 			issue: Issue{Title: "hi", Body: "This is a detailed issue description."},
-			want:  false, // has body
+			want:  false,
 		},
 	}
 	for _, tc := range tests {
