@@ -495,6 +495,42 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		}
 	}
 
+	// Transfer chain relationships from the parent to the first/last sub-bead.
+	// This preserves the dependency chain through decomposition so that:
+	//   - upstream blockers still prevent B1 from starting prematurely, and
+	//   - downstream beads stay blocked until B3 (the last sub-bead) completes,
+	//     even if the parent bead is auto-closed after decomposition.
+	if len(subBeads) > 0 {
+		first := subBeads[0]
+		last := subBeads[len(subBeads)-1]
+
+		// Transfer parent's upstream dependencies to B1 (first sub-bead).
+		// Without this, B1 could be dispatched before the parent's prerequisites
+		// are satisfied.
+		for _, depID := range parent.DependsOn {
+			xCtx, xCancel := context.WithTimeout(ctx, 15*time.Second)
+			xOut, xErr := run(xCtx, anvilPath, "dep", "add", first.ID, depID)
+			xCancel()
+			if xErr != nil {
+				log.Printf("[schematic:%s] Warning: failed to transfer DependsOn %s to first sub-bead %s: %v: %s",
+					parent.ID, depID, first.ID, xErr, xOut)
+			}
+		}
+
+		// Transfer parent's downstream blocks to B3 (last sub-bead).
+		// Without this, downstream beads may become unblocked before the full
+		// decomposed chain completes if the parent is auto-closed.
+		for _, blockedID := range parent.Blocks {
+			xCtx, xCancel := context.WithTimeout(ctx, 15*time.Second)
+			xOut, xErr := run(xCtx, anvilPath, "dep", "add", blockedID, last.ID)
+			xCancel()
+			if xErr != nil {
+				log.Printf("[schematic:%s] Warning: failed to transfer Blocks %s to last sub-bead %s: %v: %s",
+					parent.ID, blockedID, last.ID, xErr, xOut)
+			}
+		}
+	}
+
 	// Keep the parent open-but-blocked: its work is represented by its sub-beads.
 	// Downstream beads can depend on blocks:<parent>, and will only be ready once
 	// the children complete and unblock the parent.
