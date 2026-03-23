@@ -345,7 +345,7 @@ func (s *Scanner) createUpdateBead(ctx context.Context, result *CheckResult, kin
 		desc.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", update.Path, update.Current, update.Latest, update.Kind))
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
 	issueType := "chore"
