@@ -500,6 +500,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 	//   - upstream blockers still prevent B1 from starting prematurely, and
 	//   - downstream beads stay blocked until B3 (the last sub-bead) completes,
 	//     even if the parent bead is auto-closed after decomposition.
+	allBlocksTransferred := true
 	if len(subBeads) > 0 {
 		first := subBeads[0]
 		last := subBeads[len(subBeads)-1]
@@ -527,14 +528,31 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 			if xErr != nil {
 				log.Printf("[schematic:%s] Warning: failed to transfer Blocks %s to last sub-bead %s: %v: %s",
 					parent.ID, blockedID, last.ID, xErr, xOut)
+				allBlocksTransferred = false
 			}
 		}
 	}
 
-	// Keep the parent open-but-blocked: its work is represented by its sub-beads.
-	// Downstream beads can depend on blocks:<parent>, and will only be ready once
-	// the children complete and unblock the parent.
-	resetParent()
+	// Close the parent bead only when all downstream block transfers succeeded.
+	// If any transfer failed, keep the parent open so downstream beads remain
+	// correctly gated by the parent until the dependency can be retried.
+	if !allBlocksTransferred {
+		log.Printf("[schematic:%s] Skipping parent close: not all downstream block transfers succeeded", parent.ID)
+		return subBeads, nil
+	}
+	subIDs := make([]string, len(subBeads))
+	for i, sb := range subBeads {
+		subIDs[i] = sb.ID
+	}
+	closeReason := fmt.Sprintf("Decomposed into %d sub-beads: %s", len(subBeads), strings.Join(subIDs, ", "))
+	closeCtx, closeCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer closeCancel()
+	closeOut, closeErr := run(closeCtx, anvilPath, "close", parent.ID, "--force", "--reason", closeReason)
+	if closeErr != nil {
+		log.Printf("[schematic:%s] Warning: failed to close parent after decomposition: %v: %s", parent.ID, closeErr, closeOut)
+	} else {
+		log.Printf("[schematic:%s] Closed parent after decomposition into %d sub-beads: %s", parent.ID, len(subBeads), strings.Join(subIDs, ", "))
+	}
 
 	return subBeads, nil
 }

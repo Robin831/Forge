@@ -416,6 +416,83 @@ func TestCreateSubBeads_FullChainTransfer(t *testing.T) {
 	assert.True(t, foundBlocks, "Blocks should transfer to last sub-bead %s", lastSubID)
 }
 
+func TestCreateSubBeads_ParentClosedAfterDecomposition(t *testing.T) {
+	fake := newFakeRunner()
+	parent := poller.Bead{ID: "parent-close", Title: "Parent to decompose", Priority: 2}
+	tasks := []subTaskVerdict{
+		{Title: "Sub A", Description: "First sub-task"},
+		{Title: "Sub B", Description: "Second sub-task"},
+	}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err)
+	require.Len(t, subs, 2)
+
+	// Verify that bd close was called for the parent with --force and an appropriate --reason.
+	foundClose := false
+	var closeArgs []string
+	for _, call := range fake.calls {
+		if len(call) >= 3 && call[0] == "close" && call[1] == parent.ID {
+			foundClose = true
+			closeArgs = call[2:]
+			break
+		}
+	}
+	require.True(t, foundClose, "parent bead should be closed after successful decomposition")
+
+	// The close command should be forced.
+	assert.Contains(t, closeArgs, "--force", "parent bead should be closed with --force after successful decomposition")
+
+	// The close reason should be provided and should mention the created sub-beads.
+	reasonIdx := -1
+	for i, arg := range closeArgs {
+		if arg == "--reason" {
+			reasonIdx = i
+			break
+		}
+	}
+	require.NotEqual(t, -1, reasonIdx, "bd close should be called with --reason for parent bead")
+	require.Greater(t, len(closeArgs), reasonIdx+1, "bd close --reason flag should have an accompanying value")
+	reason := closeArgs[reasonIdx+1]
+
+	// Reason should include each sub-bead ID.
+	for _, sub := range subs {
+		assert.Contains(t, reason, sub.ID, "close reason should mention sub-bead ID %q", sub.ID)
+	}
+
+	// Reason should also mention the number of created sub-beads.
+	assert.Contains(t, reason, fmt.Sprintf("%d", len(subs)), "close reason should mention the count of created sub-beads")
+}
+
+func TestCreateSubBeads_ParentCloseFailureDoesNotFailDecomposition(t *testing.T) {
+	var idCounter int
+	var mu sync.Mutex
+	fake := &fakeRunner{
+		response: func(args []string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "create" {
+				mu.Lock()
+				idCounter++
+				id := fmt.Sprintf("test-%d", idCounter)
+				mu.Unlock()
+				return []byte(fmt.Sprintf(`{"id":%q}`, id)), nil
+			}
+			if len(args) > 0 && args[0] == "close" {
+				return []byte("error: cannot close"), fmt.Errorf("bd close failed")
+			}
+			return []byte("ok"), nil
+		},
+	}
+	parent := poller.Bead{ID: "parent-close-fail", Title: "Parent that fails to close", Priority: 2}
+	tasks := []subTaskVerdict{
+		{Title: "Sub A", Description: "First sub-task"},
+	}
+
+	// Decomposition should succeed even if closing the parent fails.
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err, "decomposition should succeed even when bd close fails")
+	require.Len(t, subs, 1)
+}
+
 func TestCreateSubBeads_SingleSubBeadInheritsChain(t *testing.T) {
 	fake := newFakeRunner()
 	// When only one sub-bead is created, it is both first and last,
