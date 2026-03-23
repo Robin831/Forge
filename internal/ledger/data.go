@@ -132,15 +132,14 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 		var allBeads []Bead
 		var firstErr error
 
-		// Fetch open and in_progress beads with separate calls (bd does not support
-		// multiple --status flags in a single invocation). A single shared timeout
-		// context covers both calls so the combined wait matches the old single-call
-		// deadline and avoids a UX regression.
-		openCtx, openCancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer openCancel()
+		// Each status gets its own 3-minute timeout so a slow first call
+		// doesn't starve subsequent ones. On slow Dolt connections a single
+		// bd list can take 2+ minutes.
 		for _, status := range []string{"open", "in_progress"} {
 			func() {
-				out, err := execFn(openCtx, anvilPath, "list", "--status="+status, "--limit", "0", "--json")
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				defer cancel()
+				out, err := execFn(ctx, anvilPath, "list", "--status="+status, "--limit", "0", "--json")
 				if err != nil {
 					if firstErr == nil {
 						firstErr = fmt.Errorf("fetching %s beads for %s: %w", status, anvilName, err)
@@ -162,21 +161,14 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 		}
 
 		// Fetch recently-closed beads (supplementary; failure is non-fatal).
+		// Errors here are logged but don't prevent showing open/in_progress beads.
 		{
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
 			out, err := execFn(ctx, anvilPath, "list", "--status=closed", "--limit", "50", "--json")
-			if err != nil {
-				if firstErr == nil {
-					firstErr = fmt.Errorf("fetching closed beads for %s: %w", anvilName, err)
-				}
-			} else {
+			if err == nil {
 				var beads []Bead
-				if err := json.Unmarshal(out, &beads); err != nil {
-					if firstErr == nil {
-						firstErr = fmt.Errorf("parsing closed beads for %s: %w", anvilName, err)
-					}
-				} else {
+				if err := json.Unmarshal(out, &beads); err == nil {
 					cutoff := time.Now().AddDate(0, 0, -7)
 					for i := range beads {
 						beads[i].Anvil = anvilName
@@ -187,16 +179,13 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 					}
 				}
 			}
+			// Silently ignore closed-beads errors — open/in_progress are the priority.
 		}
 
 		// Enrich with PR data from state DB.
 		if db != nil {
 			openPRs, err := db.OpenPRs()
-			if err != nil {
-				if firstErr == nil {
-					firstErr = fmt.Errorf("fetching open PRs: %w", err)
-				}
-			} else {
+			if err == nil {
 				prBeads := make(map[string]bool)
 				for _, pr := range openPRs {
 					if pr.BeadID != "" {
