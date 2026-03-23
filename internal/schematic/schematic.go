@@ -143,6 +143,14 @@ func ShouldRun(cfg Config, bead poller.Bead) bool {
 		return false
 	}
 
+	// Explicit skip tag — used for beads that are already part of a
+	// manually decomposed chain and should not be auto-decomposed.
+	for _, tag := range bead.Labels {
+		if strings.EqualFold(tag, "no-decompose") {
+			return false
+		}
+	}
+
 	// Explicit tag always triggers
 	for _, tag := range bead.Labels {
 		if strings.EqualFold(tag, "decompose") {
