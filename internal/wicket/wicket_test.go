@@ -1,0 +1,462 @@
+package wicket
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/state"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// defaultSettings returns a SettingsConfig with Wicket defaults for tests.
+func defaultSettings() config.SettingsConfig {
+	return config.SettingsConfig{
+		WicketEnabled:          true,
+		WicketInterval:         15 * time.Minute,
+		WicketBatchSize:        20,
+		WicketProcessedLabel:   "forge-wicket-processed",
+		WicketNeedsHumanLabel:  "forge-needs-human",
+		WicketBeadCreatedLabel: "forge-bead-created",
+		WicketTriggerLabel:     "forge-triage",
+	}
+}
+
+// newTestMonitor creates a Monitor wired up for tests: real state.DB in a temp
+// dir, MockGitHubClient, and a stub bdRunner so no external processes are spawned.
+func newTestMonitor(t *testing.T) (*Monitor, *MockGitHubClient, *state.DB) {
+	t.Helper()
+	db := openTestDB(t)
+	mock := &MockGitHubClient{}
+	m := &Monitor{
+		ghClient: mock,
+		db:       db,
+		cfg: &config.Config{
+			Settings: defaultSettings(),
+		},
+	}
+	return m, mock, db
+}
+
+// ---- isTrustedUser ----------------------------------------------------------
+
+func TestIsTrustedUser(t *testing.T) {
+	tests := []struct {
+		name    string
+		author  string
+		trusted []string
+		want    bool
+	}{
+		{name: "exact match", author: "alice", trusted: []string{"alice", "bob"}, want: true},
+		{name: "case insensitive", author: "Alice", trusted: []string{"alice"}, want: true},
+		{name: "upper in list", author: "alice", trusted: []string{"ALICE"}, want: true},
+		{name: "not in list", author: "charlie", trusted: []string{"alice", "bob"}, want: false},
+		{name: "empty list", author: "alice", trusted: nil, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isTrustedUser(tc.author, tc.trusted))
+		})
+	}
+}
+
+// ---- shouldSkip -------------------------------------------------------------
+
+func TestShouldSkip_ProcessedLabel(t *testing.T) {
+	m, _, _ := newTestMonitor(t)
+	settings := defaultSettings()
+
+	tests := []struct {
+		name   string
+		labels []string
+		want   bool
+	}{
+		{
+			name:   "has processed label",
+			labels: []string{"bug", "forge-wicket-processed"},
+			want:   true,
+		},
+		{
+			name:   "has bead-created label",
+			labels: []string{"forge-bead-created"},
+			want:   true,
+		},
+		{
+			name:   "has needs-human label",
+			labels: []string{"enhancement", "forge-needs-human"},
+			want:   true,
+		},
+		{
+			name:   "no wicket labels",
+			labels: []string{"bug", "help wanted"},
+			want:   false,
+		},
+		{
+			name:   "no labels",
+			labels: nil,
+			want:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := Issue{Repo: "org/repo", Number: 100, Labels: tc.labels}
+			assert.Equal(t, tc.want, m.shouldSkip(issue, settings))
+		})
+	}
+}
+
+func TestShouldSkip_AlreadyTracked(t *testing.T) {
+	m, _, db := newTestMonitor(t)
+	settings := defaultSettings()
+
+	issue := Issue{Repo: "org/repo", Number: 42}
+
+	// Not yet tracked — should not be skipped.
+	assert.False(t, m.shouldSkip(issue, settings))
+
+	// Insert a row to simulate a previously triaged issue.
+	err := db.InsertWicketIssue(state.WicketIssue{
+		Repo:        "org/repo",
+		IssueNumber: 42,
+		Title:       "Some issue",
+		State:       "bead_created",
+	})
+	require.NoError(t, err)
+
+	// Now should be skipped.
+	assert.True(t, m.shouldSkip(issue, settings))
+}
+
+func TestShouldSkip_DBError(t *testing.T) {
+	m, _, _ := newTestMonitor(t)
+	settings := defaultSettings()
+
+	// Close the DB to force an error on the next call.
+	m.db.Close()
+
+	issue := Issue{Repo: "org/repo", Number: 1}
+	// Should skip conservatively when DB is unavailable.
+	assert.True(t, m.shouldSkip(issue, settings))
+}
+
+// ---- isWicketEnabled --------------------------------------------------------
+
+func TestIsWicketEnabled(t *testing.T) {
+	trueVal := true
+	falseVal := false
+
+	tests := []struct {
+		name          string
+		anvilEnabled  *bool
+		globalEnabled bool
+		want          bool
+	}{
+		{name: "global on, no override", anvilEnabled: nil, globalEnabled: true, want: true},
+		{name: "global off, no override", anvilEnabled: nil, globalEnabled: false, want: false},
+		{name: "global on, anvil off", anvilEnabled: &falseVal, globalEnabled: true, want: false},
+		{name: "global off, anvil on", anvilEnabled: &trueVal, globalEnabled: false, want: true},
+		{name: "both on", anvilEnabled: &trueVal, globalEnabled: true, want: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			anvil := config.AnvilConfig{WicketEnabled: tc.anvilEnabled}
+			assert.Equal(t, tc.want, isWicketEnabled(anvil, tc.globalEnabled))
+		})
+	}
+}
+
+// ---- full triage dispatch flow ----------------------------------------------
+
+// TestTriageDispatch_CreateBead verifies that the create_bead path creates a
+// bead, posts a comment, and adds the correct labels.
+func TestTriageDispatch_CreateBead(t *testing.T) {
+	m, mock, db := newTestMonitor(t)
+	settings := defaultSettings()
+
+	// Override bdRunner to avoid shelling out to the real bd binary.
+	origRunner := bdRunner
+	defer func() { bdRunner = origRunner }()
+	bdRunner = func(_ context.Context, _ []string) (string, error) {
+		return "Forge-test1\n", nil
+	}
+
+	issue := Issue{
+		Repo:   "org/repo",
+		Number: 7,
+		Title:  "Add dark mode",
+		Body:   "Please add a dark mode toggle to the UI.",
+		Author: "alice",
+	}
+	anvilCfg := config.AnvilConfig{WicketTrustedUsers: []string{"alice"}}
+
+	// alice is trusted — no AI call, direct create_bead dispatch.
+	m.triageIssue(context.Background(), "testrepo", issue, anvilCfg, settings)
+
+	// Bead should be recorded in state.db.
+	wi, err := db.GetWicketIssue("org/repo", 7)
+	require.NoError(t, err)
+	require.NotNil(t, wi)
+	assert.Equal(t, "bead_created", wi.State)
+	assert.Equal(t, "Forge-test1", wi.BeadID)
+
+	// A comment should have been posted.
+	require.Len(t, mock.CommentCalls, 1)
+	assert.Equal(t, "org/repo", mock.CommentCalls[0].Repo)
+	assert.Equal(t, 7, mock.CommentCalls[0].Number)
+	assert.Contains(t, mock.CommentCalls[0].Body, "Forge-test1")
+
+	// Both labels should have been applied.
+	require.Len(t, mock.AddLabelCalls, 1)
+	labels := mock.AddLabelCalls[0].Labels
+	assert.Contains(t, labels, settings.WicketProcessedLabel)
+	assert.Contains(t, labels, settings.WicketBeadCreatedLabel)
+}
+
+// TestTriageDispatch_AskClarify verifies the clarification path via the AI
+// triage runner.
+func TestTriageDispatch_AskClarify(t *testing.T) {
+	m, mock, db := newTestMonitor(t)
+	settings := defaultSettings()
+
+	issue := Issue{
+		Repo:   "org/repo",
+		Number: 10,
+		Title:  "Something broke",
+		Body:   "It does not work.",
+		Author: "external-user",
+	}
+	// Inject a stubbed triage runner that always asks for clarification.
+	clarifyDecision := TriageDecision{
+		Action: ActionAskClarify,
+		Reason: "issue body is too vague",
+	}
+
+	// We call dispatchDecision directly so we do not need a real AI provider.
+	_ = m.db.InsertWicketIssue(state.WicketIssue{
+		Repo:        issue.Repo,
+		IssueNumber: issue.Number,
+		Title:       issue.Title,
+		Body:        issue.Body,
+		Author:      issue.Author,
+		State:       "pending",
+	})
+	m.dispatchDecision(context.Background(), "testrepo", issue, clarifyDecision, settings)
+
+	// State should be ask_clarify.
+	wi, err := db.GetWicketIssue("org/repo", 10)
+	require.NoError(t, err)
+	require.NotNil(t, wi)
+	assert.Equal(t, "ask_clarify", wi.State)
+
+	// Clarification comment posted.
+	require.Len(t, mock.CommentCalls, 1)
+	assert.Contains(t, mock.CommentCalls[0].Body, "Clarification needed")
+
+	// Only the processed label (not the needs-human label).
+	require.Len(t, mock.AddLabelCalls, 1)
+	assert.Equal(t, []string{settings.WicketProcessedLabel}, mock.AddLabelCalls[0].Labels)
+}
+
+// TestTriageDispatch_FlagHuman verifies the flag_human path.
+func TestTriageDispatch_FlagHuman(t *testing.T) {
+	m, mock, db := newTestMonitor(t)
+	settings := defaultSettings()
+
+	issue := Issue{
+		Repo:   "org/repo",
+		Number: 20,
+		Title:  "Redesign the entire product",
+		Body:   "Please rebuild everything from scratch.",
+		Author: "manager",
+	}
+	flagDecision := TriageDecision{
+		Action: ActionFlagHuman,
+		Reason: "scope is too large for automation",
+	}
+
+	_ = m.db.InsertWicketIssue(state.WicketIssue{
+		Repo:        issue.Repo,
+		IssueNumber: issue.Number,
+		Title:       issue.Title,
+		State:       "pending",
+	})
+	m.dispatchDecision(context.Background(), "testrepo", issue, flagDecision, settings)
+
+	// State should be needs_human.
+	wi, err := db.GetWicketIssue("org/repo", 20)
+	require.NoError(t, err)
+	require.NotNil(t, wi)
+	assert.Equal(t, "needs_human", wi.State)
+
+	// Flag comment posted.
+	require.Len(t, mock.CommentCalls, 1)
+	assert.Contains(t, mock.CommentCalls[0].Body, "Flagged for human review")
+
+	// Both processed and needs-human labels applied.
+	require.Len(t, mock.AddLabelCalls, 1)
+	labels := mock.AddLabelCalls[0].Labels
+	assert.Contains(t, labels, settings.WicketProcessedLabel)
+	assert.Contains(t, labels, settings.WicketNeedsHumanLabel)
+}
+
+// TestScanRepo_FiltersAlreadyTracked verifies that scanRepo skips issues that
+// are already tracked and only triages genuinely new ones.
+func TestScanRepo_FiltersAlreadyTracked(t *testing.T) {
+	m, mock, db := newTestMonitor(t)
+	settings := defaultSettings()
+
+	// Pre-insert issue #1 as already tracked.
+	err := db.InsertWicketIssue(state.WicketIssue{
+		Repo:        "org/repo",
+		IssueNumber: 1,
+		Title:       "Old issue",
+		State:       "bead_created",
+	})
+	require.NoError(t, err)
+
+	// Issue #2 is new (not in DB, no processed label).
+	issues := []Issue{
+		{Repo: "org/repo", Number: 1, Title: "Old issue", Author: "alice"},
+		{Repo: "org/repo", Number: 2, Title: "New issue", Author: "bob"},
+	}
+	mock.OnListIssues = func(_ context.Context, _ string, _ []string) ([]Issue, error) {
+		return issues, nil
+	}
+
+	// Stub bdRunner so issue #2 can be triaged without real processes.
+	origRunner := bdRunner
+	defer func() { bdRunner = origRunner }()
+	bdRunner = func(_ context.Context, _ []string) (string, error) {
+		return "Forge-x1\n", nil
+	}
+
+	// bob is trusted so AI is bypassed.
+	anvilCfg := config.AnvilConfig{WicketTrustedUsers: []string{"bob"}}
+	m.scanRepo(context.Background(), "testrepo", "org/repo", anvilCfg, settings)
+
+	// Only issue #2 should have been commented on.
+	assert.Len(t, mock.CommentCalls, 1)
+	assert.Equal(t, 2, mock.CommentCalls[0].Number)
+}
+
+// TestScanRepo_ListIssuesError verifies graceful handling when ListIssues fails.
+func TestScanRepo_ListIssuesError(t *testing.T) {
+	m, mock, _ := newTestMonitor(t)
+	settings := defaultSettings()
+
+	mock.OnListIssues = func(_ context.Context, _ string, _ []string) ([]Issue, error) {
+		return nil, errors.New("network error")
+	}
+
+	// Should not panic or call CommentOnIssue.
+	m.scanRepo(context.Background(), "testrepo", "org/repo", config.AnvilConfig{}, settings)
+	assert.Empty(t, mock.CommentCalls)
+}
+
+// TestScanRepo_BatchSizeLimit verifies that the batch size cap is respected.
+func TestScanRepo_BatchSizeLimit(t *testing.T) {
+	m, mock, _ := newTestMonitor(t)
+	settings := defaultSettings()
+	settings.WicketBatchSize = 2
+
+	issues := []Issue{
+		{Repo: "org/repo", Number: 1, Title: "Issue 1", Author: "alice"},
+		{Repo: "org/repo", Number: 2, Title: "Issue 2", Author: "alice"},
+		{Repo: "org/repo", Number: 3, Title: "Issue 3", Author: "alice"},
+	}
+	mock.OnListIssues = func(_ context.Context, _ string, _ []string) ([]Issue, error) {
+		return issues, nil
+	}
+
+	origRunner := bdRunner
+	defer func() { bdRunner = origRunner }()
+	callCount := 0
+	bdRunner = func(_ context.Context, _ []string) (string, error) {
+		callCount++
+		return "Forge-y1\n", nil
+	}
+
+	anvilCfg := config.AnvilConfig{WicketTrustedUsers: []string{"alice"}}
+	m.scanRepo(context.Background(), "testrepo", "org/repo", anvilCfg, settings)
+
+	// Only 2 out of 3 issues should have been processed.
+	assert.Equal(t, 2, callCount, "expected batch size to limit processing to 2 issues")
+}
+
+// TestUpdateConfig verifies that UpdateConfig replaces the configuration in a
+// thread-safe manner and the new values are visible in subsequent reads.
+func TestUpdateConfig(t *testing.T) {
+	m, _, _ := newTestMonitor(t)
+
+	newCfg := &config.Config{
+		Settings: config.SettingsConfig{
+			WicketEnabled:  true,
+			WicketInterval: 30 * time.Minute,
+		},
+	}
+	m.UpdateConfig(newCfg)
+
+	m.mu.RLock()
+	got := m.cfg.Settings.WicketInterval
+	m.mu.RUnlock()
+
+	assert.Equal(t, 30*time.Minute, got)
+}
+
+// TestDeriveRepo_SSHAndHTTPS covers URL parsing in deriveRepo.
+func TestDeriveRepo_ParseRemoteURL(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want string
+	}{
+		{"git@github.com:owner/myrepo.git", "owner/myrepo"},
+		{"git@github.com:owner/myrepo", "owner/myrepo"},
+		{"https://github.com/owner/myrepo.git", "owner/myrepo"},
+		{"https://github.com/owner/myrepo", "owner/myrepo"},
+		{"http://github.com/owner/myrepo", "owner/myrepo"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.raw, func(t *testing.T) {
+			if m := reGitHubSSH.FindStringSubmatch(tc.raw); m != nil {
+				assert.Equal(t, tc.want, m[1])
+				return
+			}
+			if m := reGitHubHTTPS.FindStringSubmatch(tc.raw); m != nil {
+				assert.Equal(t, tc.want, m[1])
+				return
+			}
+			t.Fatalf("neither SSH nor HTTPS regex matched %q", tc.raw)
+		})
+	}
+}
+
+// TestBuildProviders verifies provider selection priority.
+func TestBuildProviders(t *testing.T) {
+	t.Run("wicket provider takes priority", func(t *testing.T) {
+		s := config.SettingsConfig{
+			WicketProvider: "gemini",
+			Providers:      []string{"claude"},
+		}
+		pvs := buildProviders(s)
+		require.Len(t, pvs, 1)
+		assert.Equal(t, "gemini", string(pvs[0].Kind))
+	})
+
+	t.Run("falls back to global providers", func(t *testing.T) {
+		s := config.SettingsConfig{
+			Providers: []string{"claude", "gemini"},
+		}
+		pvs := buildProviders(s)
+		require.Len(t, pvs, 2)
+	})
+
+	t.Run("defaults when nothing configured", func(t *testing.T) {
+		pvs := buildProviders(config.SettingsConfig{})
+		assert.NotEmpty(t, pvs)
+	})
+}
