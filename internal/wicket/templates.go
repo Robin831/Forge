@@ -26,6 +26,13 @@ type FlaggedForHumanData struct {
 	Reason string
 }
 
+// GenericNonTrustedUserData holds the template data for the generic response
+// posted to issues from non-trusted contributors.
+type GenericNonTrustedUserData struct {
+	// Author is the GitHub login of the issue author.
+	Author string
+}
+
 var (
 	// tmplBeadCreated is posted on an issue when a bead has been successfully
 	// created from it.
@@ -57,6 +64,20 @@ Please update the issue description and I'll re-evaluate once the details are in
 This issue has been flagged for manual triage and will not be processed automatically.
 
 > {{ .Reason }}`))
+
+	// tmplGenericNonTrustedUser is posted when a non-trusted contributor opens
+	// an issue. It acknowledges the issue and prompts for useful details while
+	// a maintainer reviews it.
+	tmplGenericNonTrustedUser = template.Must(template.New("generic_non_trusted_user").Parse(
+		`👋 Thanks for opening this issue, @{{ .Author }}! A maintainer will review it shortly.
+
+In the meantime, if you can provide any of the following it will help speed up the review:
+
+- **Reproduction steps** (if reporting a bug)
+- **Expected vs actual behavior**
+- **Environment details** (OS, version, relevant configuration)
+
+We appreciate your contribution!`))
 )
 
 // RenderBeadCreated renders the BeadCreated comment template with the given data.
@@ -72,6 +93,12 @@ func RenderClarificationNeeded(data ClarificationNeededData) (string, error) {
 // RenderFlaggedForHuman renders the FlaggedForHuman comment template.
 func RenderFlaggedForHuman(data FlaggedForHumanData) (string, error) {
 	return renderTemplate(tmplFlaggedForHuman, data)
+}
+
+// RenderGenericNonTrustedUser renders the generic response template posted to
+// issues from non-trusted contributors.
+func RenderGenericNonTrustedUser(data GenericNonTrustedUserData) (string, error) {
+	return renderTemplate(tmplGenericNonTrustedUser, data)
 }
 
 func renderTemplate(t *template.Template, data any) (string, error) {

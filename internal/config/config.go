@@ -97,6 +97,11 @@ type AnvilConfig struct {
 	// Wicket triage system prompt, allowing project-specific context or
 	// constraints to be injected.
 	WicketTriagePrompt string `mapstructure:"wicket_triage_prompt" yaml:"wicket_triage_prompt,omitempty"`
+	// WicketIgnoreUsers is the list of GitHub logins to skip entirely when
+	// triaging issues for this anvil. In addition to this list, a set of
+	// well-known bot accounts (dependabot[bot], renovate[bot], etc.) is
+	// always ignored. Comparison is case-insensitive.
+	WicketIgnoreUsers []string `mapstructure:"wicket_ignore_users" yaml:"wicket_ignore_users,omitempty"`
 }
 
 // SettingsConfig holds global operational settings.
@@ -275,9 +280,10 @@ type SettingsConfig struct {
 	// WicketBeadCreatedLabel is the GitHub label applied to issues for which
 	// a bead was created. Defaults to "forge-bead-created".
 	WicketBeadCreatedLabel string `mapstructure:"wicket_bead_created_label" yaml:"wicket_bead_created_label,omitempty"`
-	// WicketTriggerLabel is the GitHub label that, when present on an issue,
-	// signals that Wicket should triage it regardless of other label filters.
-	// Defaults to "forge-triage".
+	// WicketTriggerLabel is the GitHub label that, when non-empty, is required
+	// for Wicket to process an issue (pull model). Issues without this label
+	// are skipped entirely. When empty (the default), Wicket processes all
+	// issues in push-model fashion without any trigger-label gate.
 	WicketTriggerLabel string `mapstructure:"wicket_trigger_label" yaml:"wicket_trigger_label,omitempty"`
 }
 
@@ -548,7 +554,7 @@ func Defaults() Config {
 			WicketProcessedLabel:   "forge-wicket-processed",
 			WicketNeedsHumanLabel:  "forge-needs-human",
 			WicketBeadCreatedLabel: "forge-bead-created",
-			WicketTriggerLabel:     "forge-triage",
+			WicketTriggerLabel:     "",
 		},
 	}
 }
@@ -588,7 +594,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.wicket_processed_label", "forge-wicket-processed")
 	v.SetDefault("settings.wicket_needs_human_label", "forge-needs-human")
 	v.SetDefault("settings.wicket_bead_created_label", "forge-bead-created")
-	v.SetDefault("settings.wicket_trigger_label", "forge-triage")
+	v.SetDefault("settings.wicket_trigger_label", "")
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	// SetEnvKeyReplacer maps dotted config keys (settings.auto_learn_rules) to

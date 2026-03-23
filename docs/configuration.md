@@ -127,6 +127,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `wicket_issue_labels` | []string | `[]` | GitHub label names an issue must carry for Wicket to consider it eligible. Empty = all issues are eligible (subject to `wicket_trigger_label`). |
 | `wicket_repos` | []string | `[]` | `"owner/repo"` strings Wicket scans for this anvil. When empty, the anvil's primary repository is derived from its git remote. |
 | `wicket_triage_prompt` | string | | Optional prompt suffix appended to the default Wicket triage system prompt, allowing project-specific context or constraints to be injected. |
+| `wicket_ignore_users` | []string | `[]` | GitHub logins to skip entirely when triaging issues for this anvil. In addition to this list, a built-in set of well-known bot accounts (dependabot[bot], renovate[bot], github-actions[bot], etc.) is always ignored. Comparison is case-insensitive. |
 
 ### Auto-Dispatch Modes
 
@@ -198,7 +199,7 @@ Omitting `platform` or setting it to an empty string defaults to `github`. Exist
 | `wicket_processed_label` | string | `"forge-wicket-processed"` | | GitHub label applied to issues that have already been triaged. |
 | `wicket_needs_human_label` | string | `"forge-needs-human"` | | GitHub label applied to issues flagged for human review. |
 | `wicket_bead_created_label` | string | `"forge-bead-created"` | | GitHub label applied to issues for which a bead was created. |
-| `wicket_trigger_label` | string | `"forge-triage"` | | GitHub label that, when present, signals Wicket should triage the issue regardless of other label filters. |
+| `wicket_trigger_label` | string | `""` | | When non-empty, only issues carrying this label are processed (pull model). When empty (default), Wicket processes all issues without a trigger-label gate (push model). |
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
 

@@ -153,6 +153,28 @@ func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg con
 			log.Printf("[wicket] %s: reached batch size %d for %s", anvil, settings.WicketBatchSize, repo)
 			break
 		}
+
+		// Bot/ignored user filter: skip issues from known bots and configured
+		// ignore-list users entirely, without recording anything in state.db.
+		if isIgnoredUser(issue.Author, anvilCfg.WicketIgnoreUsers) {
+			log.Printf("[wicket] %s: skipping %s#%d from ignored user %q", anvil, repo, issue.Number, issue.Author)
+			continue
+		}
+
+		// Trigger label filter: when wicket_trigger_label is non-empty, Wicket
+		// operates in pull-model — only issues explicitly tagged with that label
+		// are processed. When empty (default), all issues are eligible.
+		if settings.WicketTriggerLabel != "" && !hasLabel(issue, settings.WicketTriggerLabel) {
+			continue
+		}
+
+		// Issue label filter: verify all required labels are present. The
+		// ListIssues call already applies this filter at the API level, but
+		// we re-check here for safety in case the gh CLI AND semantics differ.
+		if !hasAllLabels(issue, anvilCfg.WicketIssueLabels) {
+			continue
+		}
+
 		if m.shouldSkip(issue, settings) {
 			continue
 		}
@@ -230,11 +252,24 @@ func (m *Monitor) triageIssue(ctx context.Context, anvil string, issue Issue, an
 			BeadDescription: issue.Body,
 		}
 	} else {
-		pvs := buildProviders(settings)
-		decision = RunTriage(ctx, issue, TriageConfig{
-			Providers:   pvs,
-			ExtraPrompt: anvilCfg.WicketTriagePrompt,
-		})
+		// Non-trusted user: do NOT run full AI triage. Check for spam first;
+		// if not spam, post a generic response and flag for human review.
+		if isLikelySpam(issue) {
+			log.Printf("[wicket] %s: %s#%d from %q appears to be spam — rejecting silently", anvil, issue.Repo, issue.Number, issue.Author)
+			decision = TriageDecision{
+				Action: ActionReject,
+				Reason: "issue appears to be spam or off-topic",
+			}
+		} else {
+			// Post generic response and flag for human review. This path
+			// handles everything itself and returns early.
+			log.Printf("[wicket] %s: %s#%d from non-trusted user %q — posting generic response", anvil, issue.Repo, issue.Number, issue.Author)
+			_ = m.db.LogEvent(state.EventWicketIssueTriage,
+				fmt.Sprintf("[%s] %s#%d triage=flag_human (non-trusted) author=%s", anvil, issue.Repo, issue.Number, issue.Author),
+				"", anvil)
+			m.handleNonTrustedUser(ctx, anvil, issue, settings)
+			return
+		}
 	}
 
 	_ = m.db.LogEvent(state.EventWicketIssueTriage,
@@ -253,6 +288,8 @@ func (m *Monitor) dispatchDecision(ctx context.Context, anvil string, issue Issu
 		m.handleAskClarify(ctx, anvil, issue, decision, settings)
 	case ActionFlagHuman:
 		m.handleFlagHuman(ctx, anvil, issue, decision, settings)
+	case ActionReject:
+		m.handleReject(ctx, anvil, issue, decision, settings)
 	default:
 		log.Printf("[wicket] %s: unknown triage action %q for %s#%d", anvil, decision.Action, issue.Repo, issue.Number)
 	}
@@ -337,6 +374,48 @@ func (m *Monitor) handleFlagHuman(ctx context.Context, anvil string, issue Issue
 	m.persistOutcome(issue, "needs_human", decision)
 }
 
+// handleNonTrustedUser handles the conservative triage path for issues from
+// non-trusted contributors. It posts a generic acknowledgement comment and
+// applies the processed and needs-human labels without running AI triage.
+func (m *Monitor) handleNonTrustedUser(ctx context.Context, anvil string, issue Issue, settings config.SettingsConfig) {
+	_ = m.db.LogEvent(state.EventWicketFlaggedHuman,
+		fmt.Sprintf("[%s] %s#%d flagged for human review (non-trusted user: %s)", anvil, issue.Repo, issue.Number, issue.Author),
+		"", anvil)
+
+	comment, err := RenderGenericNonTrustedUser(GenericNonTrustedUserData{Author: issue.Author})
+	if err == nil {
+		if cerr := m.ghClient.CommentOnIssue(ctx, issue.Repo, issue.Number, comment); cerr != nil {
+			log.Printf("[wicket] %s: comment on %s#%d: %v", anvil, issue.Repo, issue.Number, cerr)
+		}
+	}
+
+	labels := []string{settings.WicketProcessedLabel, settings.WicketNeedsHumanLabel}
+	if lerr := m.ghClient.AddLabels(ctx, issue.Repo, issue.Number, labels); lerr != nil {
+		log.Printf("[wicket] %s: add labels on %s#%d: %v", anvil, issue.Repo, issue.Number, lerr)
+	}
+
+	m.persistOutcome(issue, "needs_human", TriageDecision{
+		Action: ActionFlagHuman,
+		Reason: "issue author is not a trusted contributor — a maintainer will review",
+	})
+}
+
+// handleReject silently discards an issue that appears to be spam or
+// off-topic. No public comment is posted; only the processed label is applied.
+func (m *Monitor) handleReject(ctx context.Context, anvil string, issue Issue, decision TriageDecision, settings config.SettingsConfig) {
+	log.Printf("[wicket] %s: %s#%d rejected as spam/off-topic: %s", anvil, issue.Repo, issue.Number, decision.Reason)
+	_ = m.db.LogEvent(state.EventWicketRejected,
+		fmt.Sprintf("[%s] %s#%d rejected: %s", anvil, issue.Repo, issue.Number, decision.Reason),
+		"", anvil)
+
+	// Apply only the processed label — no public comment for spam.
+	if lerr := m.ghClient.AddLabels(ctx, issue.Repo, issue.Number, []string{settings.WicketProcessedLabel}); lerr != nil {
+		log.Printf("[wicket] %s: add label on %s#%d: %v", anvil, issue.Repo, issue.Number, lerr)
+	}
+
+	m.persistOutcome(issue, "rejected", decision)
+}
+
 // persistOutcome updates the wicket_issues row with the final triage state.
 // CreateBead handles its own persistence; this is used only for ask_clarify
 // and flag_human outcomes.
@@ -402,4 +481,92 @@ func deriveRepo(ctx context.Context, dir string) (string, error) {
 		return m[1], nil
 	}
 	return "", fmt.Errorf("cannot parse GitHub owner/repo from remote URL %q", raw)
+}
+
+// isIgnoredUser returns true if the author should be skipped entirely. It
+// checks against the hardcoded defaultBotIgnoreList and any custom ignore
+// users configured per-anvil. Comparison is case-insensitive.
+func isIgnoredUser(author string, customIgnoreList []string) bool {
+	for _, bot := range defaultBotIgnoreList {
+		if strings.EqualFold(author, bot) {
+			return true
+		}
+	}
+	for _, u := range customIgnoreList {
+		if strings.EqualFold(author, u) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasLabel returns true if the issue carries the specified label (case-insensitive).
+func hasLabel(issue Issue, label string) bool {
+	for _, l := range issue.Labels {
+		if strings.EqualFold(l, label) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAllLabels returns true if the issue carries all of the required labels.
+// Returns true when requiredLabels is empty.
+func hasAllLabels(issue Issue, requiredLabels []string) bool {
+	if len(requiredLabels) == 0 {
+		return true
+	}
+	for _, req := range requiredLabels {
+		if !hasLabel(issue, req) {
+			return false
+		}
+	}
+	return true
+}
+
+// isLikelySpam returns true when the issue matches simple heuristics that
+// suggest it is spam or a test submission not worth engaging with publicly.
+// This is intentionally conservative — false positives turn real issues into
+// silent rejections, so only flag the most obviously low-quality content.
+func isLikelySpam(issue Issue) bool {
+	title := strings.TrimSpace(issue.Title)
+	body := strings.TrimSpace(issue.Body)
+	titleLower := strings.ToLower(title)
+
+	// Completely empty submissions are not meaningful issues.
+	if len(titleLower) == 0 && len(body) == 0 {
+		return true
+	}
+
+	// Issues with no body are only treated as spam when the title is a known
+	// placeholder or explicit test phrase. This avoids dropping legitimate
+	// short-title issues like "Help" or "Docs" that forgot a description.
+	if len(body) == 0 {
+		shortPlaceholderTitles := []string{
+			"test",
+			"testing",
+			"ignore",
+			"please ignore",
+			"dummy",
+			"sample",
+		}
+		for _, ph := range shortPlaceholderTitles {
+			if titleLower == ph {
+				return true
+			}
+		}
+	}
+
+	// Exact-match well-known placeholder/test titles. These are always spam
+	// regardless of whether a body is present.
+	alwaysSpamTitles := []string{
+		"asdfgh", "qwerty",
+	}
+	for _, s := range alwaysSpamTitles {
+		if titleLower == s {
+			return true
+		}
+	}
+
+	return false
 }

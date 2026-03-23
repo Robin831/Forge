@@ -18,7 +18,28 @@ const (
 	// ActionFlagHuman instructs Wicket to label the issue for human review
 	// and skip automated processing.
 	ActionFlagHuman TriageAction = "flag_human"
+	// ActionReject instructs Wicket to silently discard the issue without
+	// posting any public comment. Used for obvious spam or off-topic issues.
+	ActionReject TriageAction = "reject"
 )
+
+// defaultBotIgnoreList is a hardcoded set of well-known bot account logins
+// that Wicket always skips regardless of configuration. Comparison is
+// case-insensitive exact matching (no wildcard or prefix matching).
+var defaultBotIgnoreList = []string{
+	"dependabot[bot]",
+	"renovate[bot]",
+	"github-actions[bot]",
+	"codecov[bot]",
+	"snyk-bot",
+	"greenkeeper[bot]",
+	"imgbot[bot]",
+	"allcontributors[bot]",
+	"semantic-release-bot",
+	"stale[bot]",
+	"copilot[bot]",
+	"github-advanced-security[bot]",
+}
 
 // TriageDecision is the structured output from the AI triage step.
 type TriageDecision struct {

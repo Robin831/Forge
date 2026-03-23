@@ -322,6 +322,136 @@ func TestPlaceToastsOverlay_EmptyBackground(t *testing.T) {
 	}
 }
 
+// TestToastForEvent_WicketBeadCreated verifies wicket_bead_created produces a success toast.
+func TestToastForEvent_WicketBeadCreated(t *testing.T) {
+	ev := EventItem{Type: "wicket_bead_created", Message: "bd-99 created from issue #12"}
+	msg, isError, ok := toastForEvent(ev)
+	if !ok {
+		t.Fatal("expected ok=true for wicket_bead_created")
+	}
+	if isError {
+		t.Error("expected isError=false for wicket_bead_created")
+	}
+	if !strings.Contains(msg, "bd-99 created") {
+		t.Errorf("unexpected message: %q", msg)
+	}
+}
+
+// TestToastForEvent_WicketBeadCreated_Fallback verifies the fallback message when
+// wicket_bead_created has an empty event message.
+func TestToastForEvent_WicketBeadCreated_Fallback(t *testing.T) {
+	ev := EventItem{Type: "wicket_bead_created", Message: ""}
+	msg, isError, ok := toastForEvent(ev)
+	if !ok {
+		t.Fatal("expected ok=true for wicket_bead_created with empty message")
+	}
+	if isError {
+		t.Error("expected isError=false for wicket_bead_created")
+	}
+	if !strings.Contains(msg, "Wicket: bead created") {
+		t.Errorf("expected fallback 'Wicket: bead created', got %q", msg)
+	}
+}
+
+// TestToastForEvent_WicketClarification verifies wicket_clarification produces a toast.
+func TestToastForEvent_WicketClarification(t *testing.T) {
+	ev := EventItem{Type: "wicket_clarification", Message: "asked author for more details"}
+	msg, isError, ok := toastForEvent(ev)
+	if !ok {
+		t.Fatal("expected ok=true for wicket_clarification")
+	}
+	if isError {
+		t.Error("expected isError=false for wicket_clarification")
+	}
+	if !strings.Contains(msg, "asked author") {
+		t.Errorf("unexpected message: %q", msg)
+	}
+}
+
+// TestToastForEvent_WicketFlaggedHuman verifies wicket_flagged_human produces a toast.
+func TestToastForEvent_WicketFlaggedHuman(t *testing.T) {
+	ev := EventItem{Type: "wicket_flagged_human", Message: "issue #5 needs human review"}
+	msg, isError, ok := toastForEvent(ev)
+	if !ok {
+		t.Fatal("expected ok=true for wicket_flagged_human")
+	}
+	if isError {
+		t.Error("expected isError=false for wicket_flagged_human")
+	}
+	if !strings.Contains(msg, "issue #5") {
+		t.Errorf("unexpected message: %q", msg)
+	}
+}
+
+// TestToastForEvent_WicketFlaggedHuman_Fallback verifies the fallback for wicket_flagged_human.
+func TestToastForEvent_WicketFlaggedHuman_Fallback(t *testing.T) {
+	ev := EventItem{Type: "wicket_flagged_human", Message: ""}
+	msg, _, ok := toastForEvent(ev)
+	if !ok {
+		t.Fatal("expected ok=true for wicket_flagged_human with empty message")
+	}
+	if !strings.Contains(msg, "needs human review") {
+		t.Errorf("expected fallback 'needs human review', got %q", msg)
+	}
+}
+
+// TestToastForEvent_WicketRejected verifies wicket_rejected produces a toast.
+func TestToastForEvent_WicketRejected(t *testing.T) {
+	ev := EventItem{Type: "wicket_rejected", Message: "issue #8 discarded as spam"}
+	msg, isError, ok := toastForEvent(ev)
+	if !ok {
+		t.Fatal("expected ok=true for wicket_rejected")
+	}
+	if isError {
+		t.Error("expected isError=false for wicket_rejected")
+	}
+	if !strings.Contains(msg, "issue #8") {
+		t.Errorf("unexpected message: %q", msg)
+	}
+}
+
+// TestToastForEvent_WicketRejected_Fallback verifies the fallback for wicket_rejected.
+func TestToastForEvent_WicketRejected_Fallback(t *testing.T) {
+	ev := EventItem{Type: "wicket_rejected", Message: ""}
+	msg, _, ok := toastForEvent(ev)
+	if !ok {
+		t.Fatal("expected ok=true for wicket_rejected with empty message")
+	}
+	if !strings.Contains(msg, "spam") {
+		t.Errorf("expected fallback containing 'spam', got %q", msg)
+	}
+}
+
+// TestToastForEvent_WicketError verifies wicket_error produces an error toast.
+func TestToastForEvent_WicketError(t *testing.T) {
+	ev := EventItem{Type: "wicket_error", Message: "failed to post comment: 403 Forbidden"}
+	msg, isError, ok := toastForEvent(ev)
+	if !ok {
+		t.Fatal("expected ok=true for wicket_error")
+	}
+	if !isError {
+		t.Error("expected isError=true for wicket_error")
+	}
+	if !strings.Contains(msg, "403 Forbidden") {
+		t.Errorf("unexpected message: %q", msg)
+	}
+}
+
+// TestToastForEvent_WicketError_Fallback verifies the fallback for wicket_error.
+func TestToastForEvent_WicketError_Fallback(t *testing.T) {
+	ev := EventItem{Type: "wicket_error", Message: ""}
+	msg, isError, ok := toastForEvent(ev)
+	if !ok {
+		t.Fatal("expected ok=true for wicket_error with empty message")
+	}
+	if !isError {
+		t.Error("expected isError=true for wicket_error with empty message")
+	}
+	if !strings.Contains(msg, "Wicket error") {
+		t.Errorf("expected fallback 'Wicket error', got %q", msg)
+	}
+}
+
 // TestFirstOf verifies firstOf returns s when non-empty, else fallback.
 func TestFirstOf(t *testing.T) {
 	if firstOf("hello", "world") != "hello" {
