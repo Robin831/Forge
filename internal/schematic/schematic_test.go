@@ -416,6 +416,33 @@ func TestCreateSubBeads_FullChainTransfer(t *testing.T) {
 	assert.True(t, foundBlocks, "Blocks should transfer to last sub-bead %s", lastSubID)
 }
 
+func TestCreateSubBeads_ParentClosedAfterDecomposition(t *testing.T) {
+	fake := newFakeRunner()
+	parent := poller.Bead{ID: "parent-close", Title: "Parent to decompose", Priority: 2}
+	tasks := []subTaskVerdict{
+		{Title: "Sub A", Description: "First sub-task"},
+		{Title: "Sub B", Description: "Second sub-task"},
+	}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err)
+	require.Len(t, subs, 2)
+
+	// Verify that bd close --force was called for the parent.
+	foundClose := false
+	for _, call := range fake.calls {
+		if len(call) >= 3 && call[0] == "close" && call[1] == parent.ID {
+			for _, arg := range call {
+				if arg == "--force" {
+					foundClose = true
+					break
+				}
+			}
+		}
+	}
+	assert.True(t, foundClose, "parent bead should be closed with --force after successful decomposition")
+}
+
 func TestCreateSubBeads_SingleSubBeadInheritsChain(t *testing.T) {
 	fake := newFakeRunner()
 	// When only one sub-bead is created, it is both first and last,

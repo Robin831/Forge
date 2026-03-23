@@ -531,10 +531,22 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		}
 	}
 
-	// Keep the parent open-but-blocked: its work is represented by its sub-beads.
-	// Downstream beads can depend on blocks:<parent>, and will only be ready once
-	// the children complete and unblock the parent.
-	resetParent()
+	// Close the parent bead now that decomposition is complete.
+	// Sub-beads represent all the work; leaving the parent open would cause it
+	// to be re-dispatched once the sub-beads unblock it.
+	subIDs := make([]string, len(subBeads))
+	for i, sb := range subBeads {
+		subIDs[i] = sb.ID
+	}
+	closeReason := fmt.Sprintf("Decomposed into %d sub-beads: %s", len(subBeads), strings.Join(subIDs, ", "))
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	closeOut, closeErr := run(closeCtx, anvilPath, "close", parent.ID, "--force", fmt.Sprintf("--reason=%s", closeReason))
+	closeCancel()
+	if closeErr != nil {
+		log.Printf("[schematic:%s] Warning: failed to close parent after decomposition: %v: %s", parent.ID, closeErr, closeOut)
+	} else {
+		log.Printf("[schematic:%s] Closed parent after decomposition into %d sub-beads: %s", parent.ID, len(subBeads), strings.Join(subIDs, ", "))
+	}
 
 	return subBeads, nil
 }
