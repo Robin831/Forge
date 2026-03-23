@@ -428,19 +428,40 @@ func TestCreateSubBeads_ParentClosedAfterDecomposition(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, subs, 2)
 
-	// Verify that bd close --force was called for the parent.
+	// Verify that bd close was called for the parent with --force and an appropriate --reason.
 	foundClose := false
+	var closeArgs []string
 	for _, call := range fake.calls {
 		if len(call) >= 3 && call[0] == "close" && call[1] == parent.ID {
-			for _, arg := range call {
-				if arg == "--force" {
-					foundClose = true
-					break
-				}
-			}
+			foundClose = true
+			closeArgs = call[2:]
+			break
 		}
 	}
-	assert.True(t, foundClose, "parent bead should be closed with --force after successful decomposition")
+	require.True(t, foundClose, "parent bead should be closed after successful decomposition")
+
+	// The close command should be forced.
+	assert.Contains(t, closeArgs, "--force", "parent bead should be closed with --force after successful decomposition")
+
+	// The close reason should be provided and should mention the created sub-beads.
+	reasonIdx := -1
+	for i, arg := range closeArgs {
+		if arg == "--reason" {
+			reasonIdx = i
+			break
+		}
+	}
+	require.NotEqual(t, -1, reasonIdx, "bd close should be called with --reason for parent bead")
+	require.Greater(t, len(closeArgs), reasonIdx+1, "bd close --reason flag should have an accompanying value")
+	reason := closeArgs[reasonIdx+1]
+
+	// Reason should include each sub-bead ID.
+	for _, sub := range subs {
+		assert.Contains(t, reason, sub.ID, "close reason should mention sub-bead ID %q", sub.ID)
+	}
+
+	// Reason should also mention the number of created sub-beads.
+	assert.Contains(t, reason, fmt.Sprintf("%d", len(subs)), "close reason should mention the count of created sub-beads")
 }
 
 func TestCreateSubBeads_ParentCloseFailureDoesNotFailDecomposition(t *testing.T) {
