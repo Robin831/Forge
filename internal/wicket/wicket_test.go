@@ -21,7 +21,7 @@ func defaultSettings() config.SettingsConfig {
 		WicketProcessedLabel:   "forge-wicket-processed",
 		WicketNeedsHumanLabel:  "forge-needs-human",
 		WicketBeadCreatedLabel: "forge-bead-created",
-		WicketTriggerLabel:     "forge-triage",
+		WicketTriggerLabel:     "",
 	}
 }
 
