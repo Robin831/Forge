@@ -2184,7 +2184,7 @@ rules:
       category: concurrency
       pattern: context.WithTimeout(context.Background()
       check: >-
-        When adding a timeout to an operation, derive it from the caller's context (e.g. context.WithTimeout(ctx, ...)) rather than context.Background(), so the operation participates in caller cancellation/shutdown semantics
+        When adding a timeout to a request- or operation-scoped task, derive it from the caller's context (e.g. context.WithTimeout(ctx, ...)) rather than context.Background(), so the work participates in caller cancellation/shutdown semantics. This guidance does NOT apply to contexts that are intentionally detached from the caller, such as cleanup defers that must run even after shutdown (see cleanup-defer-canceled-ctx) or pipeline/background contexts that are meant to outlive the initiating request (see pipeline-ctx-from-background).
       source: copilot:PR#417
       added: "2026-03-23"
     - id: assert-close-reason-contains-context
