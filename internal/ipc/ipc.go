@@ -248,6 +248,16 @@ type GetIngotPayload struct {
 	Anvil  string `json:"anvil,omitempty"`
 }
 
+// WicketStatusPayload is the response for a "wicket_status" command.
+type WicketStatusPayload struct {
+	Enabled        bool           `json:"enabled"`
+	Interval       string         `json:"interval"`
+	MonitoredRepos []string       `json:"monitored_repos"`  // explicitly configured repos
+	DerivedAnvils  int            `json:"derived_anvils"`   // anvil count deriving repo from git remote at runtime
+	IssueCounts    map[string]int `json:"issue_counts"`     // state -> count
+	LastScanAt     *time.Time     `json:"last_scan_at,omitempty"`
+}
+
 // CommandHandler is called by the server for each incoming command.
 type CommandHandler func(cmd Command) Response
 

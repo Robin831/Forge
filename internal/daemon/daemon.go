@@ -59,6 +59,7 @@ import (
 	"github.com/Robin831/Forge/internal/temper"
 	"github.com/Robin831/Forge/internal/vulncheck"
 	"github.com/Robin831/Forge/internal/warden"
+	"github.com/Robin831/Forge/internal/wicket"
 	"github.com/Robin831/Forge/internal/worker"
 	"github.com/Robin831/Forge/internal/worktree"
 )
@@ -137,6 +138,13 @@ type Daemon struct {
 
 	// QuestGiver monitor (E2E quest execution)
 	questgiverMonitor *questgiver.Monitor
+
+	// Wicket: GitHub issue triage monitor
+	// wicketMu guards wicketMonitor to prevent data races between the
+	// hot-reload callback (which may assign a new monitor) and the shutdown
+	// path that calls Stop(). Use loadWicketMonitor/storeWicketMonitor helpers.
+	wicketMu      sync.Mutex
+	wicketMonitor *wicket.Monitor
 
 	// Teams notifications (nil = disabled). Uses atomic.Pointer so the hot-reload
 	// callback can swap in a new Notifier without a mutex while concurrent
@@ -605,6 +613,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 			// Always check smelter settings on each reload: interval/enabled can change
 			// independently of anvil paths and must not be gated on anvil change detection.
 			d.updateSmelterSettings(old, new)
+			// Propagate config changes to Wicket monitor (interval, labels, etc.)
+			d.updateWicketConfig(new)
 			d.db.LogEvent(state.EventConfigReload, "Configuration reloaded", "", "")
 		})
 		go func() {
@@ -710,6 +720,21 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.logger.Info("vulncheck disabled via configuration (vulncheck_enabled: false)")
 	}
 
+	// Start Wicket issue triage monitor (if enabled)
+	if d.config().Settings.WicketEnabled {
+		d.wicketMu.Lock()
+		wm := wicket.New(d.cfg.Load(), d.db)
+		d.wicketMonitor = wm
+		d.wicketMu.Unlock()
+		go func() {
+			if err := wm.Run(ctx); err != nil && err != context.Canceled {
+				d.logger.Error("Wicket monitor error", "error", err)
+			}
+		}()
+	} else {
+		d.logger.Info("wicket disabled via configuration (wicket_enabled: false)")
+	}
+
 	// Start smelter (batches pending warden rules into PRs on a schedule).
 	// Always create the worker when enabled so hot-reload can update interval/paths.
 	// Run handles interval <= 0 by pausing the ticker until a positive value arrives.
@@ -760,6 +785,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			d.logger.Info("daemon shutting down", "reason", ctx.Err())
+			d.wicketMu.Lock()
+			wm := d.wicketMonitor
+			d.wicketMu.Unlock()
+			if wm != nil {
+				wm.Stop()
+			}
 			killed := d.shutdownMgr.GracefulShutdown()
 			d.shutdownMgr.CleanupWorktrees()
 			d.wg.Wait() // wait for all dispatch goroutines
@@ -3670,6 +3701,71 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
+	case "wicket_status":
+		cfg := d.cfg.Load()
+		enabled := cfg.Settings.WicketEnabled
+
+		// Compute the effective interval, applying the same defaulting logic as
+		// the Wicket monitor (interval <= 0 falls back to a 15m default).
+		effectiveInterval := cfg.Settings.WicketInterval
+		if effectiveInterval <= 0 {
+			effectiveInterval = 15 * time.Minute
+		}
+		interval := effectiveInterval.String()
+
+		// Collect explicitly configured repos from all anvil configs; count
+		// anvils that will derive their repo from git remote at runtime.
+		repoSet := make(map[string]struct{})
+		derivedAnvils := 0
+		for _, anvil := range cfg.Anvils {
+			if len(anvil.WicketRepos) > 0 {
+				for _, r := range anvil.WicketRepos {
+					if r != "" {
+						repoSet[r] = struct{}{}
+					}
+				}
+			} else {
+				derivedAnvils++
+			}
+		}
+		repos := make([]string, 0, len(repoSet))
+		for r := range repoSet {
+			repos = append(repos, r)
+		}
+		sort.Strings(repos)
+
+		// Count wicket issues by lifecycle state using cheap DB-side COUNT queries.
+		counts := make(map[string]int)
+		for _, st := range []string{"pending", "bead_created", "ask_clarify", "needs_human"} {
+			n, err := d.db.CountWicketIssues(state.ListWicketIssuesOpts{State: st})
+			if err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": "counting wicket issues: " + err.Error()})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+			counts[st] = n
+		}
+
+		lastScan, err := d.db.LastWicketScanAt()
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "querying last scan time: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+
+		payload := ipc.WicketStatusPayload{
+			Enabled:        enabled,
+			Interval:       interval,
+			MonitoredRepos: repos,
+			DerivedAnvils:  derivedAnvils,
+			IssueCounts:    counts,
+			LastScanAt:     lastScan,
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "marshalling wicket status: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		return ipc.Response{Type: "ok", Payload: data}
+
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}
@@ -4200,6 +4296,39 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 			d.questgiverMonitor.UpdateAnvilPaths(qgPaths)
 			d.logger.Info("updated questgiver anvil paths", "count", len(qgPaths))
 		}
+	}
+}
+
+// updateWicketConfig propagates a new configuration to the Wicket monitor so
+// that triage settings (such as labels and provider) take effect without a
+// daemon restart where supported. Called from the hot-reload callback on every
+// config reload. It also handles runtime enable/disable: if the monitor was not
+// running and is now enabled it is started; if running and now disabled the
+// config update prevents future scans without a restart.
+// Note: WicketInterval changes require a monitor restart to take effect because
+// the poll ticker is created once when Run starts and is not dynamically reset.
+func (d *Daemon) updateWicketConfig(cfg *config.Config) {
+	d.wicketMu.Lock()
+	defer d.wicketMu.Unlock()
+
+	if d.wicketMonitor != nil {
+		// Monitor already running — propagate new config so the next scan cycle
+		// picks up the changes (including a possible disable via WicketEnabled=false).
+		d.wicketMonitor.UpdateConfig(cfg)
+		d.logger.Info("updated wicket configuration")
+		return
+	}
+	// Monitor was never started (daemon launched with wicket_enabled: false).
+	// Start it now if the config has been switched on at runtime.
+	if cfg.Settings.WicketEnabled {
+		m := wicket.New(cfg, d.db)
+		d.wicketMonitor = m
+		go func() {
+			if err := m.Run(d.runCtx); err != nil && err != context.Canceled {
+				d.logger.Error("Wicket monitor error", "error", err)
+			}
+		}()
+		d.logger.Info("started wicket monitor via hot-reload")
 	}
 }
 
