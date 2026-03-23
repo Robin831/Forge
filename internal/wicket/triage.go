@@ -36,19 +36,22 @@ func buildTriagePrompt(issue Issue, extraPrompt string) string {
 	b.WriteString(`- "ask_clarify": The issue needs more information before it can be worked on.` + "\n")
 	b.WriteString(`- "flag_human": The issue is too complex, requires human judgment, or is not suitable for automation.` + "\n\n")
 
-	fmt.Fprintf(&b, "Repository: %s\n", issue.Repo)
-	fmt.Fprintf(&b, "Issue #%d: %s\n", issue.Number, issue.Title)
-	fmt.Fprintf(&b, "Author: %s\n", issue.Author)
+	b.WriteString("<issue>\n")
+	fmt.Fprintf(&b, "<repository>%s</repository>\n", issue.Repo)
+	fmt.Fprintf(&b, "<number>%d</number>\n", issue.Number)
+	fmt.Fprintf(&b, "<title>%s</title>\n", issue.Title)
+	fmt.Fprintf(&b, "<author>%s</author>\n", issue.Author)
 	if len(issue.Labels) > 0 {
-		fmt.Fprintf(&b, "Labels: %s\n", strings.Join(issue.Labels, ", "))
+		fmt.Fprintf(&b, "<labels>%s</labels>\n", strings.Join(issue.Labels, ", "))
 	}
-	b.WriteString("\nDescription:\n")
+	b.WriteString("<description>\n")
 	if issue.Body != "" {
 		b.WriteString(issue.Body)
 	} else {
 		b.WriteString("(no description provided)")
 	}
-	b.WriteString("\n")
+	b.WriteString("\n</description>\n")
+	b.WriteString("</issue>\n")
 
 	if extraPrompt != "" {
 		b.WriteString("\nAdditional context:\n")

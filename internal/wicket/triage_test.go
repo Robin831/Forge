@@ -21,13 +21,16 @@ func TestBuildTriagePrompt_ContainsIssueDetails(t *testing.T) {
 	for _, want := range []string{
 		"Support dark mode",
 		"owner/repo",
-		"#42",
+		"42",
 		"alice",
 		"enhancement",
 		"dark mode",
 		"create_bead",
 		"ask_clarify",
 		"flag_human",
+		"<issue>",
+		"<title>",
+		"<description>",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
