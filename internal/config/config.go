@@ -335,7 +335,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		AdventurerTimeout           string  `yaml:"adventurer_timeout,omitempty"`
 
 		WicketEnabled          bool   `yaml:"wicket_enabled"`
-		WicketInterval         string `yaml:"wicket_interval,omitempty"`
+		WicketInterval         string `yaml:"wicket_interval"`
 		WicketProvider         string `yaml:"wicket_provider,omitempty"`
 		WicketBatchSize        int    `yaml:"wicket_batch_size,omitempty"`
 		WicketProcessedLabel   string `yaml:"wicket_processed_label,omitempty"`
@@ -412,9 +412,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	if s.AdventurerTimeout > 0 {
 		sh.AdventurerTimeout = durationString(s.AdventurerTimeout)
 	}
-	if s.WicketInterval > 0 {
-		sh.WicketInterval = durationString(s.WicketInterval)
-	}
+	// Always emit WicketInterval so an intentional 0 (disable scheduled polling)
+	// is persisted and not silently dropped back to the 15m default on next load.
+	sh.WicketInterval = durationString(s.WicketInterval)
 
 	return sh, nil
 }

@@ -72,32 +72,32 @@ type Reaction struct {
 	Count int
 }
 
-// AnvilWicketConfig holds the per-anvil Wicket configuration. These fields
-// mirror the yaml/mapstructure tags in config.AnvilConfig so that config
-// loading can populate them automatically. Consumers in the wicket package
-// should read from this struct rather than calling config.AnvilConfig
+// AnvilWicketConfig holds the per-anvil Wicket configuration. Fields use the
+// same yaml/mapstructure tags as config.AnvilConfig so that config loading
+// can populate them automatically via mapstructure. Consumers in the wicket
+// package should read from this struct rather than calling config.AnvilConfig
 // directly, to keep the dependency surface narrow.
 type AnvilWicketConfig struct {
 	// Enabled controls whether Wicket scans this anvil. When nil, the
 	// global WicketEnabled setting is used. Set to false to opt out.
-	Enabled *bool
+	Enabled *bool `yaml:"wicket_enabled,omitempty" mapstructure:"wicket_enabled"`
 	// TrustedUsers is the list of GitHub logins whose issues are
 	// auto-dispatched without extra review. Issues from other authors
 	// follow the normal triage flow.
-	TrustedUsers []string
+	TrustedUsers []string `yaml:"wicket_trusted_users,omitempty" mapstructure:"wicket_trusted_users"`
 	// AutoDispatch, when true, automatically dispatches triaged beads
 	// without waiting for a human to approve the queue entry.
-	AutoDispatch bool
+	AutoDispatch bool `yaml:"wicket_auto_dispatch,omitempty" mapstructure:"wicket_auto_dispatch"`
 	// IssueLabels is the list of GitHub label names that must be present
 	// on an issue for Wicket to consider it. An empty list means all
 	// unlabelled/labelled issues are eligible (subject to WicketTriggerLabel).
-	IssueLabels []string
+	IssueLabels []string `yaml:"wicket_issue_labels,omitempty" mapstructure:"wicket_issue_labels"`
 	// Repos is the list of "owner/repo" strings to scan. When empty, the
 	// anvil's primary repository (derived from its git remote) is used.
-	Repos []string
+	Repos []string `yaml:"wicket_repos,omitempty" mapstructure:"wicket_repos"`
 	// TriagePrompt is an optional freeform prompt suffix appended to the
 	// default Wicket triage system prompt. Use it to add project-specific
 	// context or constraints (e.g. "This is a public API — be conservative
 	// about accepting feature requests from external contributors.").
-	TriagePrompt string
+	TriagePrompt string `yaml:"wicket_triage_prompt,omitempty" mapstructure:"wicket_triage_prompt"`
 }

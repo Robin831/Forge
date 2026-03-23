@@ -2650,6 +2650,9 @@ type ListWicketIssuesOpts struct {
 
 // InsertWicketIssue inserts a new wicket_issues row.
 func (db *DB) InsertWicketIssue(issue WicketIssue) error {
+	if issue.State == "" {
+		issue.State = "pending"
+	}
 	now := time.Now().UTC().Format(dbTimeLayout)
 	_, err := db.conn.Exec(
 		`INSERT INTO wicket_issues
@@ -2680,7 +2683,7 @@ func (db *DB) UpdateWicketIssue(issue WicketIssue) error {
 	if issue.ProcessedAt != nil {
 		processedAt = issue.ProcessedAt.UTC().Format(dbTimeLayout)
 	}
-	_, err := db.conn.Exec(
+	res, err := db.conn.Exec(
 		`UPDATE wicket_issues
 		    SET title=?, body=?, author=?, state=?, triage_action=?,
 		        triage_reason=?, bead_id=?, updated_at=?, processed_at=?
@@ -2697,7 +2700,17 @@ func (db *DB) UpdateWicketIssue(issue WicketIssue) error {
 		issue.Repo,
 		issue.IssueNumber,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("no wicket_issues row found for repo %q issue %d", issue.Repo, issue.IssueNumber)
+	}
+	return nil
 }
 
 // GetWicketIssue returns the wicket_issues row for the given repo and issue
