@@ -1555,6 +1555,7 @@ func (m *Model) View() string {
 		mainBorder := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(colorMuted).
+			Width(m.mainPanelWidth()).
 			Height(innerH)
 		mainStr := mainBorder.Render(clipped)
 		// Clip both rendered panels to exactly m.height lines so they align.
