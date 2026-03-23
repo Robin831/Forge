@@ -1524,6 +1524,17 @@ func (m *Model) View() string {
 		out = m.renderList()
 	}
 
+	// Pad the main content to fill the available height so the activity
+	// panel is always anchored at the bottom of the bordered panel.
+	if m.detailPanelW() > 0 {
+		targetLines := max(m.height-2-m.eventPanelH()-1, 1) // -2 border, -1 joining newline
+		contentLines := strings.Count(out, "\n") + 1
+		for contentLines < targetLines {
+			out += "\n"
+			contentLines++
+		}
+	}
+
 	// Always append the activity panel below the main view content.
 	out = out + "\n" + m.renderEventPanel()
 

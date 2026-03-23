@@ -72,13 +72,14 @@ func (m *Model) renderDetailPanel() string {
 		renderBeadDetailContent(&content, b, innerW)
 	}
 
-	// Compute inner height: terminal height minus vertical border (top+bottom)
-	// minus 1 for lipgloss rendering overhead.
+	// Compute inner height: terminal height minus vertical border (top+bottom).
 	vertFrame := base.GetVerticalFrameSize()
-	innerH := max(m.height-vertFrame-1, 1)
+	innerH := max(m.height-vertFrame, 1)
 
-	// Clip content so the detail panel never grows taller than the terminal.
-	clipped := clipLines(content.String(), innerH)
+	// Clip content to innerH-1 lines. Height(innerH) pads short content but
+	// lipgloss may add an extra trailing line when the content exactly fills
+	// the height, causing a 1-line overflow. Clipping to innerH-1 prevents this.
+	clipped := clipLines(content.String(), innerH-1)
 
 	return base.
 		Width(w - frameW).
