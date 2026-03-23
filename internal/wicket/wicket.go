@@ -116,7 +116,7 @@ func isWicketEnabled(anvil config.AnvilConfig, globalEnabled bool) bool {
 func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.AnvilConfig, settings config.SettingsConfig) {
 	repos := anvil.WicketRepos
 	if len(repos) == 0 {
-		repo, err := deriveRepo(anvil.Path)
+		repo, err := deriveRepo(ctx, anvil.Path)
 		if err != nil {
 			log.Printf("[wicket] %s: cannot determine repository: %v", name, err)
 			_ = m.db.LogEvent(state.EventWicketError,
@@ -162,9 +162,8 @@ func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg con
 }
 
 // shouldSkip returns true when the issue should not be triaged. An issue is
-// skipped when it already carries a Wicket processing label, is already
-// tracked in state.db, or carries the trigger label that supersedes normal
-// label filtering (since it was presumably already accepted for triage).
+// skipped when it already carries a Wicket processing label (processed,
+// bead-created, or needs-human), or is already tracked in state.db.
 func (m *Monitor) shouldSkip(issue Issue, settings config.SettingsConfig) bool {
 	// Skip issues that were already handled in a previous Wicket cycle.
 	for _, label := range issue.Labels {
@@ -381,8 +380,12 @@ var reGitHubHTTPS = regexp.MustCompile(`(?i)https?://github\.com/([^/]+/[^/]+?)(
 // deriveRepo returns the "owner/repo" string for the given local git directory
 // by inspecting its origin remote URL. Returns an error when the directory is
 // not a git repository or the remote URL cannot be parsed as a GitHub URL.
-func deriveRepo(dir string) (string, error) {
-	cmd := executil.HideWindow(exec.Command("git", "remote", "get-url", "origin"))
+// A 10-second timeout is applied so a slow or hung git process cannot block
+// the scan loop indefinitely.
+func deriveRepo(ctx context.Context, dir string) (string, error) {
+	tctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(tctx, "git", "remote", "get-url", "origin"))
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
