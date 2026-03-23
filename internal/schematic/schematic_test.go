@@ -443,6 +443,35 @@ func TestCreateSubBeads_ParentClosedAfterDecomposition(t *testing.T) {
 	assert.True(t, foundClose, "parent bead should be closed with --force after successful decomposition")
 }
 
+func TestCreateSubBeads_ParentCloseFailureDoesNotFailDecomposition(t *testing.T) {
+	var idCounter int
+	var mu sync.Mutex
+	fake := &fakeRunner{
+		response: func(args []string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "create" {
+				mu.Lock()
+				idCounter++
+				id := fmt.Sprintf("test-%d", idCounter)
+				mu.Unlock()
+				return []byte(fmt.Sprintf(`{"id":%q}`, id)), nil
+			}
+			if len(args) > 0 && args[0] == "close" {
+				return []byte("error: cannot close"), fmt.Errorf("bd close failed")
+			}
+			return []byte("ok"), nil
+		},
+	}
+	parent := poller.Bead{ID: "parent-close-fail", Title: "Parent that fails to close", Priority: 2}
+	tasks := []subTaskVerdict{
+		{Title: "Sub A", Description: "First sub-task"},
+	}
+
+	// Decomposition should succeed even if closing the parent fails.
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err, "decomposition should succeed even when bd close fails")
+	require.Len(t, subs, 1)
+}
+
 func TestCreateSubBeads_SingleSubBeadInheritsChain(t *testing.T) {
 	fake := newFakeRunner()
 	// When only one sub-bead is created, it is both first and last,
