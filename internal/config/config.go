@@ -74,6 +74,29 @@ type AnvilConfig struct {
 	// QuestgiverTeardownCmd is a shell command to run after quest execution
 	// for this anvil (e.g. "podman compose down").
 	QuestgiverTeardownCmd string `mapstructure:"questgiver_teardown_cmd" yaml:"questgiver_teardown_cmd,omitempty"`
+
+	// WicketEnabled controls whether the Wicket issue triage monitor scans
+	// this anvil. When nil (default), the global WicketEnabled setting is
+	// used. Set to false to opt this anvil out entirely.
+	WicketEnabled *bool `mapstructure:"wicket_enabled" yaml:"wicket_enabled,omitempty"`
+	// WicketTrustedUsers is the list of GitHub logins whose issues are
+	// automatically dispatched without extra review for this anvil.
+	WicketTrustedUsers []string `mapstructure:"wicket_trusted_users" yaml:"wicket_trusted_users,omitempty"`
+	// WicketAutoDispatch, when true, automatically dispatches triaged beads
+	// for this anvil without waiting for manual queue approval.
+	WicketAutoDispatch bool `mapstructure:"wicket_auto_dispatch" yaml:"wicket_auto_dispatch,omitempty"`
+	// WicketIssueLabels is the list of GitHub label names that an issue must
+	// carry for Wicket to consider it eligible for triage in this anvil.
+	// An empty list means all issues are eligible (subject to WicketTriggerLabel).
+	WicketIssueLabels []string `mapstructure:"wicket_issue_labels" yaml:"wicket_issue_labels,omitempty"`
+	// WicketRepos is the list of "owner/repo" strings Wicket scans for this
+	// anvil. When empty, the anvil's primary repository is derived from its
+	// git remote.
+	WicketRepos []string `mapstructure:"wicket_repos" yaml:"wicket_repos,omitempty"`
+	// WicketTriagePrompt is an optional prompt suffix appended to the default
+	// Wicket triage system prompt, allowing project-specific context or
+	// constraints to be injected.
+	WicketTriagePrompt string `mapstructure:"wicket_triage_prompt" yaml:"wicket_triage_prompt,omitempty"`
 }
 
 // SettingsConfig holds global operational settings.
@@ -230,6 +253,32 @@ type SettingsConfig struct {
 	// AdventurerTimeout is the maximum time allowed for a single quest
 	// execution. Defaults to 5 minutes.
 	AdventurerTimeout time.Duration `mapstructure:"adventurer_timeout" yaml:"adventurer_timeout,omitempty"`
+
+	// WicketEnabled controls whether the Wicket issue triage monitor is
+	// active globally. When false (default), no issue scanning occurs.
+	WicketEnabled bool `mapstructure:"wicket_enabled" yaml:"wicket_enabled"`
+	// WicketInterval is how often Wicket polls repositories for new issues.
+	// Defaults to 15m.
+	WicketInterval time.Duration `mapstructure:"wicket_interval" yaml:"wicket_interval,omitempty"`
+	// WicketProvider is the AI provider used for triage decisions. When
+	// empty, the global Providers chain is used.
+	WicketProvider string `mapstructure:"wicket_provider" yaml:"wicket_provider,omitempty"`
+	// WicketBatchSize is the maximum number of issues processed per scan
+	// cycle per repository. Defaults to 20.
+	WicketBatchSize int `mapstructure:"wicket_batch_size" yaml:"wicket_batch_size,omitempty"`
+	// WicketProcessedLabel is the GitHub label applied to issues that have
+	// already been triaged. Defaults to "forge-wicket-processed".
+	WicketProcessedLabel string `mapstructure:"wicket_processed_label" yaml:"wicket_processed_label,omitempty"`
+	// WicketNeedsHumanLabel is the GitHub label applied to issues flagged
+	// for human review. Defaults to "forge-needs-human".
+	WicketNeedsHumanLabel string `mapstructure:"wicket_needs_human_label" yaml:"wicket_needs_human_label,omitempty"`
+	// WicketBeadCreatedLabel is the GitHub label applied to issues for which
+	// a bead was created. Defaults to "forge-bead-created".
+	WicketBeadCreatedLabel string `mapstructure:"wicket_bead_created_label" yaml:"wicket_bead_created_label,omitempty"`
+	// WicketTriggerLabel is the GitHub label that, when present on an issue,
+	// signals that Wicket should triage it regardless of other label filters.
+	// Defaults to "forge-triage".
+	WicketTriggerLabel string `mapstructure:"wicket_trigger_label" yaml:"wicket_trigger_label,omitempty"`
 }
 
 // durationString returns the duration string, or omits zero values.
@@ -284,6 +333,15 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		QuestgiverEnabled           *bool   `yaml:"questgiver_enabled,omitempty"`
 		QuestgiverInterval          string  `yaml:"questgiver_interval,omitempty"`
 		AdventurerTimeout           string  `yaml:"adventurer_timeout,omitempty"`
+
+		WicketEnabled          bool   `yaml:"wicket_enabled"`
+		WicketInterval         string `yaml:"wicket_interval"`
+		WicketProvider         string `yaml:"wicket_provider,omitempty"`
+		WicketBatchSize        int    `yaml:"wicket_batch_size,omitempty"`
+		WicketProcessedLabel   string `yaml:"wicket_processed_label,omitempty"`
+		WicketNeedsHumanLabel  string `yaml:"wicket_needs_human_label,omitempty"`
+		WicketBeadCreatedLabel string `yaml:"wicket_bead_created_label,omitempty"`
+		WicketTriggerLabel     string `yaml:"wicket_trigger_label,omitempty"`
 	}
 
 	sh := shadow{
@@ -322,6 +380,14 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		CopilotWardenSampleRate:     s.CopilotWardenSampleRate,
 		SmelterEnabled:              s.SmelterEnabled,
 		QuestgiverEnabled:           s.QuestgiverEnabled,
+
+		WicketEnabled:          s.WicketEnabled,
+		WicketProvider:         s.WicketProvider,
+		WicketBatchSize:        s.WicketBatchSize,
+		WicketProcessedLabel:   s.WicketProcessedLabel,
+		WicketNeedsHumanLabel:  s.WicketNeedsHumanLabel,
+		WicketBeadCreatedLabel: s.WicketBeadCreatedLabel,
+		WicketTriggerLabel:     s.WicketTriggerLabel,
 	}
 
 	// Only include non-zero optional durations.
@@ -346,6 +412,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	if s.AdventurerTimeout > 0 {
 		sh.AdventurerTimeout = durationString(s.AdventurerTimeout)
 	}
+	// Always emit WicketInterval so an intentional 0 (disable scheduled polling)
+	// is persisted and not silently dropped back to the 15m default on next load.
+	sh.WicketInterval = durationString(s.WicketInterval)
 
 	return sh, nil
 }
@@ -473,6 +542,13 @@ func Defaults() Config {
 			AdventurerTimeout:  5 * time.Minute,
 			// Copilot combined Smith+Warden mode settings.
 			CopilotWardenSampleRate: 0.1,
+			// Wicket issue triage monitor defaults.
+			WicketInterval:         15 * time.Minute,
+			WicketBatchSize:        20,
+			WicketProcessedLabel:   "forge-wicket-processed",
+			WicketNeedsHumanLabel:  "forge-needs-human",
+			WicketBeadCreatedLabel: "forge-bead-created",
+			WicketTriggerLabel:     "forge-triage",
 		},
 	}
 }
@@ -506,6 +582,13 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.questgiver_interval", "24h")
 	v.SetDefault("settings.adventurer_timeout", "5m")
 	v.SetDefault("settings.copilot_warden_sample_rate", 0.1)
+	v.SetDefault("settings.wicket_enabled", false)
+	v.SetDefault("settings.wicket_interval", "15m")
+	v.SetDefault("settings.wicket_batch_size", 20)
+	v.SetDefault("settings.wicket_processed_label", "forge-wicket-processed")
+	v.SetDefault("settings.wicket_needs_human_label", "forge-needs-human")
+	v.SetDefault("settings.wicket_bead_created_label", "forge-bead-created")
+	v.SetDefault("settings.wicket_trigger_label", "forge-triage")
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	// SetEnvKeyReplacer maps dotted config keys (settings.auto_learn_rules) to
@@ -635,6 +718,13 @@ func Load(configFile string) (*Config, error) {
 			return nil, fmt.Errorf("invalid adventurer_timeout %q: %w", raw, err)
 		}
 		cfg.Settings.AdventurerTimeout = d
+	}
+	if raw := v.GetString("settings.wicket_interval"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid wicket_interval %q: %w", raw, err)
+		}
+		cfg.Settings.WicketInterval = d
 	}
 
 	return &cfg, nil

@@ -613,3 +613,44 @@ func TestLoad_NoFile_UsesDefaults(t *testing.T) {
 	_ = cfg
 	_ = err
 }
+
+func TestLoad_WicketInterval(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  wicket_interval: 30m
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 30*time.Minute, cfg.Settings.WicketInterval)
+}
+
+func TestLoad_WicketInterval_Default(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  max_total_smiths: 2
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 15*time.Minute, cfg.Settings.WicketInterval)
+}
+
+func TestLoad_InvalidWicketInterval(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  wicket_interval: notaduration
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	_, err := Load(cfgPath)
+	assert.ErrorContains(t, err, "wicket_interval")
+}

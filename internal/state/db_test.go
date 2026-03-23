@@ -1980,3 +1980,169 @@ func TestDB_PendingWardenRules(t *testing.T) {
 		}
 	})
 }
+
+func TestDB_WicketIssueCRUD(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-wicket-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const repo = "owner/repo"
+	const issueNum = 42
+
+	// 1. Not tracked before insert.
+	tracked, err := db.IsIssueTracked(repo, issueNum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tracked {
+		t.Fatal("issue should not be tracked before insert")
+	}
+
+	// GetWicketIssue on missing row returns nil, nil.
+	got, err := db.GetWicketIssue(repo, issueNum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil for missing issue, got %+v", got)
+	}
+
+	// 2. Insert.
+	issue := WicketIssue{
+		Repo:         repo,
+		IssueNumber:  issueNum,
+		Title:        "Test issue",
+		Body:         "Body text",
+		Author:       "alice",
+		State:        "pending",
+		TriageAction: "",
+		TriageReason: "",
+		BeadID:       "",
+	}
+	if err := db.InsertWicketIssue(issue); err != nil {
+		t.Fatalf("InsertWicketIssue: %v", err)
+	}
+
+	// 3. IsIssueTracked should be true now.
+	tracked, err = db.IsIssueTracked(repo, issueNum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tracked {
+		t.Fatal("issue should be tracked after insert")
+	}
+
+	// 4. GetWicketIssue returns correct fields.
+	got, err = db.GetWicketIssue(repo, issueNum)
+	if err != nil {
+		t.Fatalf("GetWicketIssue: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil after insert")
+	}
+	if got.Repo != repo || got.IssueNumber != issueNum {
+		t.Errorf("repo/number mismatch: got %s/%d", got.Repo, got.IssueNumber)
+	}
+	if got.Title != "Test issue" || got.Author != "alice" {
+		t.Errorf("unexpected fields: Title=%q Author=%q", got.Title, got.Author)
+	}
+	if got.State != "pending" {
+		t.Errorf("expected state=pending, got %q", got.State)
+	}
+	if got.ProcessedAt != nil {
+		t.Errorf("expected ProcessedAt=nil, got %v", got.ProcessedAt)
+	}
+
+	// 5. Update — triage the issue.
+	now := time.Now().UTC()
+	got.State = "triaged"
+	got.TriageAction = "create_bead"
+	got.TriageReason = "valid bug"
+	got.BeadID = "Forge-xyz1"
+	got.ProcessedAt = &now
+	if err := db.UpdateWicketIssue(*got); err != nil {
+		t.Fatalf("UpdateWicketIssue: %v", err)
+	}
+
+	// 6. Verify update persisted.
+	updated, err := db.GetWicketIssue(repo, issueNum)
+	if err != nil {
+		t.Fatalf("GetWicketIssue after update: %v", err)
+	}
+	if updated.State != "triaged" {
+		t.Errorf("expected state=triaged, got %q", updated.State)
+	}
+	if updated.TriageAction != "create_bead" {
+		t.Errorf("expected triage_action=create_bead, got %q", updated.TriageAction)
+	}
+	if updated.BeadID != "Forge-xyz1" {
+		t.Errorf("expected bead_id=Forge-xyz1, got %q", updated.BeadID)
+	}
+	if updated.ProcessedAt == nil {
+		t.Error("expected ProcessedAt to be set after update")
+	}
+
+	// 7. Insert a second issue then ListWicketIssues.
+	issue2 := WicketIssue{
+		Repo:        repo,
+		IssueNumber: 99,
+		Title:       "Another issue",
+		Author:      "bob",
+		State:       "pending",
+	}
+	if err := db.InsertWicketIssue(issue2); err != nil {
+		t.Fatalf("InsertWicketIssue second: %v", err)
+	}
+
+	// List all for repo.
+	all, err := db.ListWicketIssues(ListWicketIssuesOpts{Repo: repo})
+	if err != nil {
+		t.Fatalf("ListWicketIssues: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 issues, got %d", len(all))
+	}
+
+	// Filter by state=pending should return only issue2.
+	pending, err := db.ListWicketIssues(ListWicketIssuesOpts{Repo: repo, State: "pending"})
+	if err != nil {
+		t.Fatalf("ListWicketIssues pending: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending issue, got %d", len(pending))
+	}
+	if pending[0].IssueNumber != 99 {
+		t.Errorf("expected issue 99, got %d", pending[0].IssueNumber)
+	}
+
+	// Filter by state=triaged should return only issue 42.
+	triaged, err := db.ListWicketIssues(ListWicketIssuesOpts{Repo: repo, State: "triaged"})
+	if err != nil {
+		t.Fatalf("ListWicketIssues triaged: %v", err)
+	}
+	if len(triaged) != 1 || triaged[0].IssueNumber != issueNum {
+		t.Errorf("expected issue %d in triaged list, got %v", issueNum, triaged)
+	}
+
+	// Limit=1 should return 1 result.
+	limited, err := db.ListWicketIssues(ListWicketIssuesOpts{Repo: repo, Limit: 1})
+	if err != nil {
+		t.Fatalf("ListWicketIssues limit: %v", err)
+	}
+	if len(limited) != 1 {
+		t.Fatalf("expected 1 with limit=1, got %d", len(limited))
+	}
+
+	// 8. Duplicate insert should fail (unique constraint on repo+issue_number).
+	if err := db.InsertWicketIssue(issue); err == nil {
+		t.Error("expected error on duplicate insert, got nil")
+	}
+}

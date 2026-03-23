@@ -121,6 +121,12 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `auto_merge` | bool | `false` | When enabled, PRs that reach the ready-to-merge state (CI passing, no conflicts, no unresolved threads, no pending reviews) are automatically merged using the configured `merge_strategy`. External PRs (`ext-*`) are never auto-merged. |
 | `questgiver_setup_cmd` | string | | Shell command to run before executing quests for this anvil (e.g. `"podman compose up -d"`). Runs in the anvil's root directory. If the command fails, quest execution is aborted. Used by `forge quest run` and the QuestGiver monitor. |
 | `questgiver_teardown_cmd` | string | | Shell command to run after executing quests for this anvil (e.g. `"podman compose down"`). Runs in the anvil's root directory. Always runs even if quests fail; teardown failures are logged as warnings rather than errors. |
+| `wicket_enabled` | bool\|null | null (use global) | Per-anvil override for Wicket issue triage scanning. When null, uses `settings.wicket_enabled`. Set to `false` to opt this anvil out entirely. |
+| `wicket_trusted_users` | []string | `[]` | GitHub logins whose issues are automatically dispatched without extra review for this anvil. |
+| `wicket_auto_dispatch` | bool | `false` | When true, triaged beads for this anvil are auto-dispatched without waiting for manual queue approval. |
+| `wicket_issue_labels` | []string | `[]` | GitHub label names an issue must carry for Wicket to consider it eligible. Empty = all issues are eligible (subject to `wicket_trigger_label`). |
+| `wicket_repos` | []string | `[]` | `"owner/repo"` strings Wicket scans for this anvil. When empty, the anvil's primary repository is derived from its git remote. |
+| `wicket_triage_prompt` | string | | Optional prompt suffix appended to the default Wicket triage system prompt, allowing project-specific context or constraints to be injected. |
 
 ### Auto-Dispatch Modes
 
@@ -185,6 +191,14 @@ Omitting `platform` or setting it to an empty string defaults to `github`. Exist
 | `smelter_interval` | duration | `8h` | `1h` or `0` | How often the Smelter runs its background processing. `0` disables scheduled runs. |
 | `crucible_enabled` | bool | `false` | | Enable Crucible auto-orchestration for parent beads with children. When a ready bead blocks other beads, the Crucible creates a feature branch, dispatches children in topological order, merges each child PR, then creates a final PR to main. |
 | `auto_merge_crucible_children` | bool | `true` | | Auto-merge child PRs targeting a Crucible feature branch after the pipeline succeeds. Set to `false` to require manual merge of child PRs. |
+| `wicket_enabled` | bool | `false` | | Enable the Wicket GitHub issue triage monitor globally. When false, no issue scanning occurs. |
+| `wicket_interval` | duration | `15m` | `1m` or `0` | How often Wicket polls repositories for new issues. `0` disables. |
+| `wicket_provider` | string | `""` (uses `providers`) | | AI provider used for triage decisions. When empty, the global `providers` chain is used. |
+| `wicket_batch_size` | int | `20` | `1` | Maximum number of issues processed per scan cycle per repository. |
+| `wicket_processed_label` | string | `"forge-wicket-processed"` | | GitHub label applied to issues that have already been triaged. |
+| `wicket_needs_human_label` | string | `"forge-needs-human"` | | GitHub label applied to issues flagged for human review. |
+| `wicket_bead_created_label` | string | `"forge-bead-created"` | | GitHub label applied to issues for which a bead was created. |
+| `wicket_trigger_label` | string | `"forge-triage"` | | GitHub label that, when present, signals Wicket should triage the issue regardless of other label filters. |
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
 
@@ -301,6 +315,14 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_GO_RACE_DETECTION` | `settings.go_race_detection` |
 | `FORGE_SETTINGS_CRUCIBLE_ENABLED` | `settings.crucible_enabled` |
 | `FORGE_SETTINGS_AUTO_MERGE_CRUCIBLE_CHILDREN` | `settings.auto_merge_crucible_children` |
+| `FORGE_SETTINGS_WICKET_ENABLED` | `settings.wicket_enabled` |
+| `FORGE_SETTINGS_WICKET_INTERVAL` | `settings.wicket_interval` |
+| `FORGE_SETTINGS_WICKET_PROVIDER` | `settings.wicket_provider` |
+| `FORGE_SETTINGS_WICKET_BATCH_SIZE` | `settings.wicket_batch_size` |
+| `FORGE_SETTINGS_WICKET_PROCESSED_LABEL` | `settings.wicket_processed_label` |
+| `FORGE_SETTINGS_WICKET_NEEDS_HUMAN_LABEL` | `settings.wicket_needs_human_label` |
+| `FORGE_SETTINGS_WICKET_BEAD_CREATED_LABEL` | `settings.wicket_bead_created_label` |
+| `FORGE_SETTINGS_WICKET_TRIGGER_LABEL` | `settings.wicket_trigger_label` |
 | `FORGE_NOTIFICATIONS_ENABLED` | `notifications.enabled` |
 | `FORGE_NOTIFICATIONS_TEAMS_WEBHOOK_URL` | `notifications.teams_webhook_url` |
 
