@@ -273,6 +273,10 @@ Forge/
 └── LICENSE
 ```
 
+## Privacy
+
+Forge runs entirely on your local machine and does not collect, transmit, or store any telemetry, analytics, or user data. All data stays in your local filesystem (`~/.forge/state.db`) and your git repositories. Network access is limited to operations you explicitly configure: GitHub API calls (via `gh` CLI), AI provider APIs (Claude, Gemini, Copilot), and any webhooks you set up.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
