@@ -251,8 +251,12 @@ func (m *Model) renderKanban() string {
 		footerLines     = 1 // footer help line
 		laneHeaderLines = 1 // per-lane column header
 	)
-	chromeHeight := headerLines + detailLines + footerLines + laneHeaderLines
-	cardAreaHeight := max(m.height-chromeHeight, 3)
+	chromeHeight := headerLines + detailLines + footerLines + laneHeaderLines + m.eventPanelH()
+	borderOverhead := 0
+	if m.detailPanelW() > 0 {
+		borderOverhead = 2
+	}
+	cardAreaHeight := max(m.height-chromeHeight-borderOverhead, 3)
 	// visibleCards uses the package-level cardHeight constant (cardContentLines + 1 separator).
 	visibleCards := max(cardAreaHeight/cardHeight, 1)
 

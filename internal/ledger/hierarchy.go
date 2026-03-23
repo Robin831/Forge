@@ -256,7 +256,11 @@ func (m *Model) renderHierarchy() string {
 	if total > 0 && !hasEpics {
 		hintReserve = 1
 	}
-	rowsHeight := max(m.height-2-hintReserve, 1)
+	borderOverhead := 0
+	if m.detailPanelW() > 0 {
+		borderOverhead = 2
+	}
+	rowsHeight := max(m.height-2-hintReserve-borderOverhead-m.eventPanelH(), 1)
 
 	m.hierarchy.vp.ClampToTotal(total)
 	m.hierarchy.vp.AdjustViewport(rowsHeight, total)

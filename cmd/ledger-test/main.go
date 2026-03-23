@@ -146,6 +146,19 @@ func buildMockBeads() []ledger.Bead {
 			Status: "closed", Priority: 2, IssueType: "feature", Anvil: "forge",
 			ClosedAt: timePtr(twoDaysAgo), UpdatedAt: timePtr(twoDaysAgo),
 		},
+		// in_review beads for kanban testing
+		{
+			ID: "Forge-rv01", Title: "Hearth: add webhook notification panel",
+			Description: "PR is up and waiting for review. Adds a panel in the Hearth TUI for configuring and testing webhook notifications.",
+			Status: "in_review", Priority: 2, IssueType: "feature", Anvil: "forge",
+			Labels: []string{"hearth"}, Assignee: "robin", HasPR: true, UpdatedAt: timePtr(now),
+		},
+		{
+			ID: "Forge-rv02", Title: "Fix race condition in worktree cleanup",
+			Description: "The worktree remove function has a TOCTOU race when checking if the directory exists before removal.",
+			Status: "in_review", Priority: 1, IssueType: "bug", Anvil: "forge",
+			Labels: []string{"bug"}, Assignee: "robin", HasPR: true, UpdatedAt: timePtr(yesterday),
+		},
 
 		// --- hytte anvil: mix of statuses ---
 		{
@@ -177,6 +190,12 @@ func buildMockBeads() []ledger.Bead {
 			Description: "Several transitive dependencies have known CVEs. Run npm audit fix and verify all tests pass.",
 			Status: "open", Priority: 2, IssueType: "task", Anvil: "hytte",
 			Labels: []string{"forgeReady", "security"}, UpdatedAt: timePtr(twoDaysAgo),
+		},
+		{
+			ID: "Hytte-rv01", Title: "i18n: Setup react-i18next infrastructure",
+			Description: "Install packages, configure i18n instance, create translation file structure.",
+			Status: "in_review", Priority: 2, IssueType: "feature", Anvil: "hytte",
+			Labels: []string{"i18n"}, Assignee: "robin", HasPR: true, UpdatedAt: timePtr(now),
 		},
 		{
 			ID: "Hytte-f6f6", Title: "Closed: Fix CORS headers for mobile app API access",
