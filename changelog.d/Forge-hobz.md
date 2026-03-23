@@ -1,2 +1,0 @@
-category: Added
-- **Ledger TUI bulk operations** - Add multi-select and bulk close/label/priority to the Ledger TUI. Space toggles selection on the focused bead, Ctrl+A selects all visible beads, Ctrl+X bulk-closes all selected beads (with a summary toast), Ctrl+L sets a label on all selected beads, and Ctrl+P sets the priority on all selected beads. A selection count with bulk keybinding hints is shown in the footer when any beads are selected; Esc clears the selection. (Forge-hobz)

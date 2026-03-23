@@ -1,2 +1,0 @@
-category: Fixed
-- **Hearth retry/dismiss for non-bead PRs** - Retry and dismiss actions in the Needs Attention panel now work for PRs that have no associated bead (e.g. warden-learn PRs). Previously the daemon rejected these with "bead_id and anvil are required"; now `bead_id` is optional when a `pr_id` is provided. The action menu also filters out bead-only actions (warden rerun, approve as-is, force smith) for non-bead PRs. (Forge-6v7m)
