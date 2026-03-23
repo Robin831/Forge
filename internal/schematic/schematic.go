@@ -500,15 +500,32 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 	//   - upstream blockers still prevent B1 from starting prematurely, and
 	//   - downstream beads stay blocked until B3 (the last sub-bead) completes,
 	//     even if the parent bead is auto-closed after decomposition.
+	//
+	// NOTE: parent.Blocks and parent.DependsOn may be empty because the bd
+	// JSON output uses "dependencies" and "dependents" fields (not "blocks"
+	// and "depends_on"). We re-fetch the parent via "bd show --json" and
+	// parse the dependents/dependencies to get accurate data.
 	allBlocksTransferred := true
 	if len(subBeads) > 0 {
 		first := subBeads[0]
 		last := subBeads[len(subBeads)-1]
 
+		// Re-fetch parent to get accurate dependency data from bd.
+		var upstreamIDs, downstreamIDs []string
+		showCtx, showCancel := context.WithTimeout(ctx, 30*time.Second)
+		showOut, showErr := run(showCtx, anvilPath, "show", parent.ID, "--json")
+		showCancel()
+		if showErr == nil {
+			upstreamIDs, downstreamIDs = parseDepsFromShow(string(showOut))
+		} else {
+			log.Printf("[schematic:%s] Warning: could not re-fetch parent deps: %v", parent.ID, showErr)
+			// Fall back to the (possibly empty) struct fields.
+			upstreamIDs = parent.DependsOn
+			downstreamIDs = parent.Blocks
+		}
+
 		// Transfer parent's upstream dependencies to B1 (first sub-bead).
-		// Without this, B1 could be dispatched before the parent's prerequisites
-		// are satisfied.
-		for _, depID := range parent.DependsOn {
+		for _, depID := range upstreamIDs {
 			xCtx, xCancel := context.WithTimeout(ctx, 15*time.Second)
 			xOut, xErr := run(xCtx, anvilPath, "dep", "add", first.ID, depID)
 			xCancel()
@@ -519,9 +536,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		}
 
 		// Transfer parent's downstream blocks to B3 (last sub-bead).
-		// Without this, downstream beads may become unblocked before the full
-		// decomposed chain completes if the parent is auto-closed.
-		for _, blockedID := range parent.Blocks {
+		for _, blockedID := range downstreamIDs {
 			xCtx, xCancel := context.WithTimeout(ctx, 15*time.Second)
 			xOut, xErr := run(xCtx, anvilPath, "dep", "add", blockedID, last.ID)
 			xCancel()
@@ -555,6 +570,43 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 	}
 
 	return subBeads, nil
+}
+
+// parseDepsFromShow extracts upstream (dependencies) and downstream (dependents)
+// bead IDs from the JSON output of "bd show <id> --json". The bd JSON format
+// uses "dependencies" for beads this bead depends on and "dependents" for beads
+// that depend on this bead — different from the poller.Bead struct field names.
+func parseDepsFromShow(jsonOutput string) (upstreamIDs, downstreamIDs []string) {
+	// bd show --json returns an array with one element.
+	var items []json.RawMessage
+	if err := json.Unmarshal([]byte(jsonOutput), &items); err != nil || len(items) == 0 {
+		// Try parsing as a single object.
+		items = []json.RawMessage{json.RawMessage(jsonOutput)}
+	}
+
+	var parsed struct {
+		Dependencies []struct {
+			ID string `json:"id"`
+		} `json:"dependencies"`
+		Dependents []struct {
+			ID string `json:"id"`
+		} `json:"dependents"`
+	}
+	if err := json.Unmarshal(items[0], &parsed); err != nil {
+		return nil, nil
+	}
+
+	for _, d := range parsed.Dependencies {
+		if d.ID != "" {
+			upstreamIDs = append(upstreamIDs, d.ID)
+		}
+	}
+	for _, d := range parsed.Dependents {
+		if d.ID != "" {
+			downstreamIDs = append(downstreamIDs, d.ID)
+		}
+	}
+	return upstreamIDs, downstreamIDs
 }
 
 // buildPrompt creates the analysis prompt for the Schematic AI session.

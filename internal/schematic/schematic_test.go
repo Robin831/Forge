@@ -192,9 +192,15 @@ func (f *fakeRunner) run(_ context.Context, _ string, args ...string) ([]byte, e
 	return f.response(args)
 }
 
-// newFakeRunner builds a runner whose "bd create" calls return sequential IDs
-// and all other calls succeed.
+// newFakeRunner builds a runner whose "bd create" calls return sequential IDs,
+// "bd show --json" calls return dependency data, and all other calls succeed.
 func newFakeRunner() *fakeRunner {
+	return newFakeRunnerWithDeps(nil, nil)
+}
+
+// newFakeRunnerWithDeps builds a fake runner that returns the given upstream
+// (dependencies) and downstream (dependents) IDs when "bd show --json" is called.
+func newFakeRunnerWithDeps(upstreamIDs, downstreamIDs []string) *fakeRunner {
 	var idCounter int
 	var mu sync.Mutex
 	return &fakeRunner{
@@ -206,7 +212,24 @@ func newFakeRunner() *fakeRunner {
 				mu.Unlock()
 				return []byte(fmt.Sprintf(`{"id":%q}`, id)), nil
 			}
-			// dep add, update, etc. succeed silently.
+			// bd show <id> --json → return deps/dependents JSON.
+			if len(args) >= 2 && args[0] == "show" && args[len(args)-1] == "--json" {
+				var deps, dependents string
+				for _, id := range upstreamIDs {
+					if deps != "" {
+						deps += ","
+					}
+					deps += fmt.Sprintf(`{"id":%q}`, id)
+				}
+				for _, id := range downstreamIDs {
+					if dependents != "" {
+						dependents += ","
+					}
+					dependents += fmt.Sprintf(`{"id":%q}`, id)
+				}
+				return []byte(fmt.Sprintf(`[{"dependencies":[%s],"dependents":[%s]}]`, deps, dependents)), nil
+			}
+			// dep add, update, close, etc. succeed silently.
 			return []byte("ok"), nil
 		},
 	}
@@ -310,7 +333,7 @@ func TestCreateSubBeads_NoTasks(t *testing.T) {
 }
 
 func TestCreateSubBeads_BlocksTransferToLastSubBead(t *testing.T) {
-	fake := newFakeRunner()
+	fake := newFakeRunnerWithDeps(nil, []string{"downstream-c"})
 	parent := poller.Bead{
 		ID:       "parent-1",
 		Title:    "Feature B",
@@ -343,7 +366,7 @@ func TestCreateSubBeads_BlocksTransferToLastSubBead(t *testing.T) {
 }
 
 func TestCreateSubBeads_DependsOnTransferToFirstSubBead(t *testing.T) {
-	fake := newFakeRunner()
+	fake := newFakeRunnerWithDeps([]string{"upstream-a"}, nil)
 	parent := poller.Bead{
 		ID:        "parent-1",
 		Title:     "Feature B",
@@ -376,7 +399,7 @@ func TestCreateSubBeads_DependsOnTransferToFirstSubBead(t *testing.T) {
 }
 
 func TestCreateSubBeads_FullChainTransfer(t *testing.T) {
-	fake := newFakeRunner()
+	fake := newFakeRunnerWithDeps([]string{"upstream-a"}, []string{"downstream-c"})
 	parent := poller.Bead{
 		ID:        "parent-b",
 		Title:     "Feature B (middle of chain)",
@@ -494,7 +517,7 @@ func TestCreateSubBeads_ParentCloseFailureDoesNotFailDecomposition(t *testing.T)
 }
 
 func TestCreateSubBeads_SingleSubBeadInheritsChain(t *testing.T) {
-	fake := newFakeRunner()
+	fake := newFakeRunnerWithDeps([]string{"upstream-a"}, []string{"downstream-c"})
 	// When only one sub-bead is created, it is both first and last,
 	// so it should inherit both DependsOn and Blocks from the parent.
 	parent := poller.Bead{
