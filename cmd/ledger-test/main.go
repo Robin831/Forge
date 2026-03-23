@@ -160,6 +160,76 @@ func buildMockBeads() []ledger.Bead {
 			Labels: []string{"bug"}, Assignee: "robin", HasPR: true, UpdatedAt: timePtr(yesterday),
 		},
 
+		// --- forge anvil: epic with children and grandchildren ---
+		{
+			ID: "Forge-ep01", Title: "Wicket: GitHub Issues Intake Worker",
+			Description: "Epic: Build the Wicket worker that monitors GitHub issues and triages them into beads.\n\nSee .forge/plans/github-issues-worker.md for the full plan.",
+			Status: "open", Priority: 2, IssueType: "epic", Anvil: "forge",
+			Labels: []string{"epic", "wicket"}, UpdatedAt: timePtr(now),
+			Blocks: []string{"Forge-ep02", "Forge-ep03", "Forge-ep04"},
+		},
+		{
+			ID: "Forge-ep02", Title: "Wicket Phase 1: Core Scaffolding (MVP)",
+			Description: "Config types, internal/wicket package, ghClient wrapper, wicket_issues table, event types, poll loop, AI triage.",
+			Status: "in_progress", Priority: 2, IssueType: "task", Anvil: "forge",
+			Labels: []string{"wicket"}, Assignee: "robin", UpdatedAt: timePtr(now),
+		},
+		{
+			ID: "Forge-ep03", Title: "Wicket Phase 2: Non-Trusted Users + Labels",
+			Description: "Limited triage for non-trusted users, label management, trigger label, bot ignore list.",
+			Status: "open", Priority: 2, IssueType: "feature", Anvil: "forge",
+			Labels: []string{"wicket", "forgeReady"}, UpdatedAt: timePtr(yesterday),
+			DependsOn: []string{"Forge-ep02"},
+		},
+		{
+			ID: "Forge-ep04", Title: "Wicket Phase 3: Dispatch Confirmation + Follow-Up",
+			Description: "Dispatch confirmation, clarification re-triage, issue-to-PR linking, auto-close on merge.",
+			Status: "open", Priority: 2, IssueType: "feature", Anvil: "forge",
+			Labels: []string{"wicket", "forgeReady"}, UpdatedAt: timePtr(lastWeek),
+			DependsOn: []string{"Forge-ep03"},
+		},
+		// Another epic: i18n with grandchildren
+		{
+			ID: "Hytte-epic1", Title: "i18n: Internationalization for Norwegian and Thai",
+			Description: "Add multi-language support to Hytte using react-i18next.\n\nPlan: .forge/plans/hytte-i18n.md",
+			Status: "open", Priority: 2, IssueType: "epic", Anvil: "hytte",
+			Labels: []string{"epic", "i18n"}, UpdatedAt: timePtr(now),
+			Blocks: []string{"Hytte-i18n1", "Hytte-i18n2", "Hytte-i18n3"},
+		},
+		{
+			ID: "Hytte-i18n1", Title: "i18n: Setup react-i18next infrastructure",
+			Description: "Install packages, configure i18n, create translation file structure.",
+			Status: "closed", Priority: 2, IssueType: "task", Anvil: "hytte",
+			Labels: []string{"i18n"}, ClosedAt: timePtr(yesterday), UpdatedAt: timePtr(yesterday),
+		},
+		{
+			ID: "Hytte-i18n2", Title: "i18n: Language switcher UI",
+			Description: "Globe icon in sidebar, full selector in settings, persist to localStorage.",
+			Status: "in_progress", Priority: 2, IssueType: "feature", Anvil: "hytte",
+			Labels: []string{"i18n"}, Assignee: "robin", HasPR: true, UpdatedAt: timePtr(now),
+			DependsOn: []string{"Hytte-i18n1"},
+			Blocks: []string{"Hytte-i18n2a", "Hytte-i18n2b"},
+		},
+		{
+			ID: "Hytte-i18n2a", Title: "i18n: Compact globe icon for collapsed sidebar",
+			Description: "Render just a globe icon when sidebar is collapsed.",
+			Status: "open", Priority: 3, IssueType: "task", Anvil: "hytte",
+			Labels: []string{"i18n"}, UpdatedAt: timePtr(now),
+		},
+		{
+			ID: "Hytte-i18n2b", Title: "i18n: Full dropdown with native script names",
+			Description: "Full language selector showing English, Norsk (Bokmål), ไทย.",
+			Status: "open", Priority: 3, IssueType: "task", Anvil: "hytte",
+			Labels: []string{"i18n"}, UpdatedAt: timePtr(now),
+		},
+		{
+			ID: "Hytte-i18n3", Title: "i18n: Extract strings from core pages",
+			Description: "Extract hardcoded strings from Dashboard, Sidebar, Home, Weather widget.",
+			Status: "open", Priority: 2, IssueType: "task", Anvil: "hytte",
+			Labels: []string{"i18n", "forgeReady"}, UpdatedAt: timePtr(twoDaysAgo),
+			DependsOn: []string{"Hytte-i18n2"},
+		},
+
 		// --- hytte anvil: mix of statuses ---
 		{
 			ID: "Hytte-a1a1", Title: "Cabin booking calendar shows wrong month after timezone change",
