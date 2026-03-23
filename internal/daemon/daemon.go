@@ -778,6 +778,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			d.logger.Info("daemon shutting down", "reason", ctx.Err())
+			if d.wicketMonitor != nil {
+				d.wicketMonitor.Stop()
+			}
 			killed := d.shutdownMgr.GracefulShutdown()
 			d.shutdownMgr.CleanupWorktrees()
 			d.wg.Wait() // wait for all dispatch goroutines
@@ -4254,10 +4257,27 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 // updateWicketConfig propagates a new configuration to the Wicket monitor so
 // that triage settings (interval, labels, provider, etc.) take effect without
 // a daemon restart. Called from the hot-reload callback on every config reload.
+// It also handles runtime enable/disable: if the monitor was not running and is
+// now enabled it is started; if running and now disabled the config update
+// prevents future scans without a restart.
 func (d *Daemon) updateWicketConfig(cfg *config.Config) {
 	if d.wicketMonitor != nil {
+		// Monitor already running — propagate new config so the next scan cycle
+		// picks up the changes (including a possible disable via WicketEnabled=false).
 		d.wicketMonitor.UpdateConfig(cfg)
 		d.logger.Info("updated wicket configuration")
+		return
+	}
+	// Monitor was never started (daemon launched with wicket_enabled: false).
+	// Start it now if the config has been switched on at runtime.
+	if cfg.Settings.WicketEnabled {
+		d.wicketMonitor = wicket.New(cfg, d.db)
+		go func() {
+			if err := d.wicketMonitor.Run(d.runCtx); err != nil && err != context.Canceled {
+				d.logger.Error("Wicket monitor error", "error", err)
+			}
+		}()
+		d.logger.Info("started wicket monitor via hot-reload")
 	}
 }
 
