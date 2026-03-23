@@ -2195,3 +2195,232 @@ rules:
         When testing a command that closes/completes a resource with a reason or message, assert not just that the command was called, but also that the reason/message includes all relevant contextual details (e.g. related entity IDs, counts) so future changes don't silently regress operator-visible messages
       source: copilot:PR#417
       added: "2026-03-23"
+    - id: validate-create-bead-fields
+      category: error-handling
+      pattern: >-
+        Parsing or validating a structured AI/LLM decision where action is create_bead (or similar entity-creation action)
+      check: >-
+        Verify that required downstream fields (e.g. bead_title, bead_description) are non-empty before accepting the decision as valid. Treat creation actions with missing required fields as parse failures so the caller can retry or fall back, rather than propagating incomplete data to downstream creators.
+      source: copilot:PR#419
+      added: "2026-03-23"
+    - id: per-run-temp-dirs
+      category: concurrency
+      pattern: >-
+        Functions using os.TempDir() directly as a working directory or log directory for subprocess spawning
+      check: >-
+        Verify that each run creates its own isolated temporary directory via os.MkdirTemp instead of using the shared os.TempDir(), to prevent log collisions and cross-run interference when multiple runs execute concurrently. Ensure cleanup (e.g., defer os.RemoveAll) is in place.
+      source: copilot:PR#419
+      added: "2026-03-23"
+    - id: check-subprocess-exit-code
+      category: error-handling
+      pattern: >-
+        Function returns stdout/output from a subprocess without checking the exit code or stderr
+      check: >-
+        When wrapping a subprocess call, verify that the exit code and stderr are checked before treating stdout as valid output. Non-zero exit codes or stderr content should propagate as errors rather than being silently passed to callers, which can cause misclassification of failures and unnecessary retries.
+      source: copilot:PR#419
+      added: "2026-03-23"
+    - id: retry-scope-match-contract
+      category: error-handling
+      pattern: >-
+        Retry loops that catch multiple error types but the contract/spec only calls for retrying a specific subset
+      check: >-
+        Verify that retry logic only retries the specific error conditions documented in the contract. Generic retries that also cover provider/runner errors can double costs or repeat side effects when the upstream is down. The set of retried errors must match what the spec/tests/docs promise.
+      source: copilot:PR#419
+      added: "2026-03-23"
+    - id: validate-decision-action-before-use
+      category: error-handling
+      pattern: >-
+        A function accepts a decision/command object but only handles one variant without validating the variant field
+      check: >-
+        When a function accepts a union-like struct (e.g. a decision with multiple possible actions), verify it validates the action/type field matches the expected variant and that required fields for that variant are non-empty before proceeding — fail fast on misuse rather than silently producing invalid results
+      source: copilot:PR#420
+      added: "2026-03-23"
+    - id: validate-bounded-int-params
+      category: error-handling
+      pattern: >-
+        Function accepts an integer parameter documented with a valid range but performs no bounds checking before passing it to an external command or API
+      check: >-
+        Verify that integer parameters with documented valid ranges (e.g. priority 0-4) are validated or clamped at the function boundary, returning a clear error for out-of-range values rather than forwarding them to downstream tools
+      source: copilot:PR#420
+      added: "2026-03-23"
+    - id: api-signature-matches-spec
+      category: other
+      pattern: >-
+        Function signature differs from the design document, PR description, or task specification
+      check: >-
+        Verify that function signatures match their specification in PR descriptions, design docs, and task text. If extra parameters are added beyond the spec, either update all documentation and call sites to match, or derive the value internally to keep the API consistent with the agreed design.
+      source: copilot:PR#420
+      added: "2026-03-23"
+    - id: test-db-persistence
+      category: testing
+      pattern: >-
+        Test asserts against in-memory state (maps, slices, package-level variables) for features that persist data to state.db
+      check: >-
+        Verify that tests for persistent features assert against the actual database layer (e.g., state.DB.GetWicketIssue) rather than only in-memory structures, ensuring the test would fail if persistence is broken
+      source: copilot:PR#420
+      added: "2026-03-23"
+    - id: use-persistent-state-db
+      category: other
+      pattern: >-
+        Code that stores runtime state in package-level in-memory maps or global variables when a corresponding persistent table already exists in state.db
+      check: >-
+        Verify that state which must survive process restarts and be visible to other components is persisted via state.DB (SQLite) rather than kept only in package-level in-memory maps. Check whether a matching table/CRUD helper already exists in internal/state/db.go before introducing new in-memory storage.
+      source: copilot:PR#420
+      added: "2026-03-23"
+    - id: distinct-event-types
+      category: other
+      pattern: >-
+        Reusing the same event type constant for semantically different events (e.g., start vs completion)
+      check: >-
+        Verify that each logically distinct event (startup, progress, completion, failure) uses its own dedicated event type so consumers can unambiguously distinguish them in timelines and queries
+      source: copilot:PR#421
+      added: "2026-03-23"
+    - id: trigger-label-fetch-gap
+      category: other
+      pattern: >-
+        Code that filters/fetches items using one set of labels while a separate trigger/override label exists in config
+      check: >-
+        Verify that trigger/override labels are included in fetch queries — either by unioning results from both label sets with de-duplication, or by fetching broadly and filtering in code. Items matching only the trigger label must not be silently excluded.
+      source: copilot:PR#421
+      added: "2026-03-23"
+    - id: config-hot-reload-ticker
+      category: concurrency
+      pattern: >-
+        A background loop creates a ticker/timer from a config value at start, and the struct exposes an UpdateConfig or similar method
+      check: >-
+        Verify that runtime config changes (especially intervals/durations) actually take effect in running loops. If a ticker is created once from an initial config value, updating the config later won't change the polling cadence. Either recreate/reset the ticker when config changes, or document that interval changes require a restart.
+      source: copilot:PR#421
+      added: "2026-03-23"
+    - id: distinguish-db-error-types
+      category: error-handling
+      pattern: >-
+        Database insert/upsert error used as a signal for a specific condition (e.g., duplicate/already-exists) without distinguishing the actual error cause
+      check: >-
+        Verify that database insert errors are not broadly interpreted as a single expected condition (e.g., unique-constraint violation). Detect the specific error type (constraint violation, duplicate key) and handle unexpected failures (DB unavailable, timeout, schema error) separately with appropriate logging and error propagation.
+      source: copilot:PR#421
+      added: "2026-03-23"
+    - id: failed-side-effect-blocks-retry
+      category: error-handling
+      pattern: >-
+        A record is inserted/updated to track an operation BEFORE the operation completes, and skip/dedup logic checks for that record's existence
+      check: >-
+        Verify that if the tracked operation fails after the record is created, the record is either deleted or moved to a retriable state so that skip/dedup logic does not permanently block future retry attempts
+      source: copilot:PR#421
+      added: "2026-03-23"
+    - id: label-filter-coverage
+      category: other
+      pattern: >-
+        Code that filters/queries items by one set of configured labels while a separate configured label (e.g., a trigger or override label) exists that could match items outside that filter
+      check: >-
+        Verify that all configured label types are included in the query/filter logic. When multiple label configs exist (e.g., issue labels and trigger labels), ensure the fetch covers the union of all relevant labels—either by broadening the query and filtering in code, or by issuing separate queries and de-duplicating results—so items matching any configured label are not silently dropped.
+      source: copilot:PR#421
+      added: "2026-03-23"
+    - id: hot-reload-ticker-sync
+      category: concurrency
+      pattern: >-
+        A config value is documented as hot-reloadable but is only read once at goroutine startup (e.g., creating a time.Ticker or time.NewTicker in a Run/Start method)
+      check: >-
+        Verify that hot-reloaded config values used for timing (intervals, timeouts, cadences) are actually re-read by the running goroutine. If a ticker is created once in a loop, the goroutine must either watch for config changes and reset the ticker, or the documentation must state a restart is required.
+      source: copilot:PR#422
+      added: "2026-03-23"
+    - id: report-effective-defaults
+      category: ui
+      pattern: >-
+        Status or display code that reads a config value which has a fallback/default applied elsewhere at runtime
+      check: >-
+        Verify that status reports and UI displays show the effective value (after defaults are applied) rather than the raw config value, so users are not misled by zero/empty values that will be replaced at runtime
+      source: copilot:PR#422
+      added: "2026-03-23"
+    - id: ipc-handler-error-propagation
+      category: error-handling
+      pattern: >-
+        IPC/status handler that calls a fallible function (DB query, marshalling, etc.) and discards the error or returns a zero-value instead of surfacing it
+      check: >-
+        Verify that IPC and status endpoint handlers propagate errors back to the caller as error responses rather than silently swallowing them and returning empty/zero-value results
+      source: copilot:PR#422
+      added: "2026-03-23"
+    - id: status-display-completeness
+      category: ui
+      pattern: IPC status/info command that returns system state to the user
+      check: >-
+        Verify that all fields mentioned in the PR description or design doc are actually included in the IPC response payload AND rendered in both text and JSON output formats. Cross-reference the command's stated purpose against its actual output fields.
+      source: copilot:PR#422
+      added: "2026-03-23"
+    - id: wicket-repo-resolution-accuracy
+      category: ui
+      pattern: >-
+        Displaying monitored/configured resources with a fallback message when a collection is empty
+      check: >-
+        Verify that status output accurately reflects the full resolved state (e.g., per-source breakdown of configured vs derived values) rather than printing a misleading fallback when the collection is partially populated from mixed sources
+      source: copilot:PR#422
+      added: "2026-03-23"
+    - id: ipc-payload-completeness
+      category: ui
+      pattern: Adding IPC status/payload structs or updating daemon status responses
+      check: >-
+        Verify that all fields mentioned in the PR description or design doc are included in the IPC payload struct — if a feature is called out (e.g. 'show last poll time'), the corresponding data field must exist in the response type so the CLI can display it
+      source: copilot:PR#422
+      added: "2026-03-23"
+    - id: shared-field-sync
+      category: concurrency
+      pattern: >-
+        A struct field is assigned in one goroutine (e.g., hot-reload callback, background loop) and read or written in another (e.g., shutdown path, status handler) without synchronization
+      check: >-
+        Verify that all struct fields accessed from multiple goroutines are protected by a mutex, use atomic.Pointer, or follow an existing synchronization pattern (e.g., the notifier/dispatcher atomic patterns in the daemon)
+      source: copilot:PR#422
+      added: "2026-03-23"
+    - id: status-reflect-derived-config
+      category: other
+      pattern: >-
+        Status or reporting code that reads explicit configuration lists but the runtime also derives/infers values when those lists are empty
+      check: >-
+        When building status responses or diagnostic output, verify that derived/fallback values are included alongside explicitly configured ones, so the output accurately reflects actual runtime behavior rather than just what was explicitly configured
+      source: copilot:PR#422
+      added: "2026-03-23"
+    - id: prefer-count-over-list-len
+      category: performance
+      pattern: Calling a List/Fetch function and taking len() of the result just to get a count
+      check: >-
+        Use a DB-side COUNT(*) query or dedicated Count helper instead of loading full rows and measuring slice length — avoids pulling unnecessary data as the table grows
+      source: copilot:PR#422
+      added: "2026-03-23"
+    - id: display-matches-runtime-behavior
+      category: ui
+      pattern: >-
+        Status or display code that lists monitored/active resources using only explicit configuration fields
+      check: >-
+        Verify that status output reflects the actual runtime behavior, not just configured values. If the system derives or infers additional items at runtime (e.g., from git remotes, environment, defaults), the display should either use the same derivation logic or clearly label the output as showing only explicitly configured items.
+      source: copilot:PR#422
+      added: "2026-03-23"
+    - id: prefer-count-over-list
+      category: performance
+      pattern: >-
+        Loading full database rows (List*/Find* queries) only to count them or check length
+      check: >-
+        When you only need a count of records, use a dedicated COUNT(*) query instead of fetching full rows. Loading entire objects (especially those with large text fields like bodies/descriptions) just to count them wastes memory and degrades performance as data grows.
+      source: copilot:PR#422
+      added: "2026-03-23"
+    - id: config-default-semantic-mismatch
+      category: other
+      pattern: >-
+        Code that gates behavior on a config field with a non-empty default value, where the gating semantics (required vs optional) differ from how the default is documented or used elsewhere
+      check: >-
+        When a config field controls opt-in/opt-out behavior, verify that the default value's semantics match the documented behavior. If a default value like 'forge-triage' exists but code treats the field as a required filter, unlabeled items will be silently skipped — confirm the default, docs, and gating logic all agree on whether the field is required or merely advisory
+      source: copilot:PR#423
+      added: "2026-03-23"
+    - id: spam-heuristic-false-positives
+      category: security
+      pattern: >-
+        Spam/abuse detection logic that rejects content based on simple length or emptiness checks
+      check: >-
+        Verify that spam heuristics use explicit allowlists or known-placeholder matching rather than broad length thresholds, so legitimate short inputs (e.g. 'Help', 'Bug', 'Docs') are not silently discarded
+      source: copilot:PR#423
+      added: "2026-03-23"
+    - id: unused-type-field-drift
+      category: style
+      pattern: >-
+        Adding or modifying fields on a struct/type that is not actively consumed by any code path
+      check: >-
+        Verify that the type being modified is actually wired into the system. If a parallel or canonical representation exists elsewhere (e.g. a config struct in another package), updating an unused copy causes drift and misleads future readers. Either wire the unused type into consumers or update the canonical type instead.
+      source: copilot:PR#423
+      added: "2026-03-23"
