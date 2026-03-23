@@ -357,7 +357,7 @@ func (m *Model) renderHierarchyRow(item flatItem, selected bool) string {
 		}
 	}
 
-	titleWidth := max(m.width-lipgloss.Width(indent)-hierarchyTitleOffset-lipgloss.Width(checkPrefix), 10)
+	titleWidth := max(m.mainPanelWidth()-lipgloss.Width(indent)-hierarchyTitleOffset-lipgloss.Width(checkPrefix), 10)
 	line := fmt.Sprintf("%s%s%s %s %s  %s%s",
 		checkPrefix,
 		indent,
