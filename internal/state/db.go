@@ -347,6 +347,25 @@ CREATE TABLE IF NOT EXISTS pending_warden_rules (
 );
 
 CREATE INDEX IF NOT EXISTS idx_pending_warden_rules_anvil ON pending_warden_rules(anvil);
+
+CREATE TABLE IF NOT EXISTS wicket_issues (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo           TEXT NOT NULL,
+    issue_number   INTEGER NOT NULL,
+    title          TEXT NOT NULL DEFAULT '',
+    body           TEXT NOT NULL DEFAULT '',
+    author         TEXT NOT NULL DEFAULT '',
+    state          TEXT NOT NULL DEFAULT 'pending',
+    triage_action  TEXT NOT NULL DEFAULT '',
+    triage_reason  TEXT NOT NULL DEFAULT '',
+    bead_id        TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    processed_at   TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wicket_issues_repo_number ON wicket_issues(repo, issue_number);
+CREATE INDEX IF NOT EXISTS idx_wicket_issues_state ON wicket_issues(state);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
@@ -1319,6 +1338,15 @@ const (
 	EventSmelterStarted EventType = "smelter_started"
 	EventSmelterFlushed EventType = "smelter_flushed"
 	EventSmelterFailed  EventType = "smelter_failed"
+
+	// Wicket events — GitHub issue triage monitor.
+	EventWicketScanDone      EventType = "wicket_scan_done"
+	EventWicketIssueTriage   EventType = "wicket_issue_triage"
+	EventWicketBeadCreated   EventType = "wicket_bead_created"
+	EventWicketClarification EventType = "wicket_clarification"
+	EventWicketRejected      EventType = "wicket_rejected"
+	EventWicketFlaggedHuman  EventType = "wicket_flagged_human"
+	EventWicketError         EventType = "wicket_error"
 )
 
 // Event represents a logged event.
@@ -2582,4 +2610,204 @@ func (db *DB) DeletePendingRules(ids []int) error {
 		args...,
 	)
 	return err
+}
+
+// ---------------------------------------------------------------------------
+// Wicket issue triage persistence
+// ---------------------------------------------------------------------------
+
+// WicketIssue is the database representation of a GitHub issue that has been
+// seen (and optionally triaged) by the Wicket monitor.
+type WicketIssue struct {
+	ID           int
+	Repo         string
+	IssueNumber  int
+	Title        string
+	Body         string
+	Author       string
+	// State is the lifecycle state of this record: "pending", "triaged",
+	// "bead_created", "needs_human", "ask_clarify", "rejected".
+	State        string
+	TriageAction string
+	TriageReason string
+	// BeadID is the bead identifier created for this issue; empty when no
+	// bead has been created yet.
+	BeadID      string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	ProcessedAt *time.Time
+}
+
+// ListWicketIssuesOpts filters for ListWicketIssues.
+type ListWicketIssuesOpts struct {
+	// Repo filters to a specific "owner/repo" string. Empty = all repos.
+	Repo string
+	// State filters to a specific lifecycle state. Empty = all states.
+	State string
+	// Limit caps the number of rows returned. 0 = no limit.
+	Limit int
+}
+
+// InsertWicketIssue inserts a new wicket_issues row.
+func (db *DB) InsertWicketIssue(issue WicketIssue) error {
+	now := time.Now().UTC().Format(dbTimeLayout)
+	_, err := db.conn.Exec(
+		`INSERT INTO wicket_issues
+		     (repo, issue_number, title, body, author, state, triage_action,
+		      triage_reason, bead_id, created_at, updated_at, processed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		issue.Repo,
+		issue.IssueNumber,
+		issue.Title,
+		issue.Body,
+		issue.Author,
+		issue.State,
+		issue.TriageAction,
+		issue.TriageReason,
+		issue.BeadID,
+		now,
+		now,
+		nil,
+	)
+	return err
+}
+
+// UpdateWicketIssue updates the mutable fields of an existing wicket_issues
+// row, identified by repo + issue_number.
+func (db *DB) UpdateWicketIssue(issue WicketIssue) error {
+	now := time.Now().UTC().Format(dbTimeLayout)
+	var processedAt any
+	if issue.ProcessedAt != nil {
+		processedAt = issue.ProcessedAt.UTC().Format(dbTimeLayout)
+	}
+	_, err := db.conn.Exec(
+		`UPDATE wicket_issues
+		    SET title=?, body=?, author=?, state=?, triage_action=?,
+		        triage_reason=?, bead_id=?, updated_at=?, processed_at=?
+		  WHERE repo=? AND issue_number=?`,
+		issue.Title,
+		issue.Body,
+		issue.Author,
+		issue.State,
+		issue.TriageAction,
+		issue.TriageReason,
+		issue.BeadID,
+		now,
+		processedAt,
+		issue.Repo,
+		issue.IssueNumber,
+	)
+	return err
+}
+
+// GetWicketIssue returns the wicket_issues row for the given repo and issue
+// number, or nil if no such row exists.
+func (db *DB) GetWicketIssue(repo string, number int) (*WicketIssue, error) {
+	row := db.conn.QueryRow(
+		`SELECT id, repo, issue_number, title, body, author, state,
+		        triage_action, triage_reason, bead_id,
+		        created_at, updated_at, processed_at
+		   FROM wicket_issues
+		  WHERE repo=? AND issue_number=?`,
+		repo, number,
+	)
+	return scanWicketIssue(row)
+}
+
+// IsIssueTracked returns true when a wicket_issues row exists for the given
+// repo and issue number.
+func (db *DB) IsIssueTracked(repo string, number int) (bool, error) {
+	issue, err := db.GetWicketIssue(repo, number)
+	if err != nil {
+		return false, err
+	}
+	return issue != nil, nil
+}
+
+// ListWicketIssues returns wicket_issues rows matching the given options,
+// ordered by created_at descending.
+func (db *DB) ListWicketIssues(opts ListWicketIssuesOpts) ([]WicketIssue, error) {
+	q := `SELECT id, repo, issue_number, title, body, author, state,
+	             triage_action, triage_reason, bead_id,
+	             created_at, updated_at, processed_at
+	        FROM wicket_issues`
+	var args []any
+	var where []string
+	if opts.Repo != "" {
+		where = append(where, "repo=?")
+		args = append(args, opts.Repo)
+	}
+	if opts.State != "" {
+		where = append(where, "state=?")
+		args = append(args, opts.State)
+	}
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	q += " ORDER BY created_at DESC"
+	if opts.Limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", opts.Limit)
+	}
+	rows, err := db.conn.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var issues []WicketIssue
+	for rows.Next() {
+		issue, err := scanWicketIssueRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		issues = append(issues, *issue)
+	}
+	return issues, rows.Err()
+}
+
+// scanWicketIssue scans a single *sql.Row into a WicketIssue.
+// Returns nil, nil when no row is found.
+func scanWicketIssue(row *sql.Row) (*WicketIssue, error) {
+	var w WicketIssue
+	var createdAt, updatedAt string
+	var processedAt *string
+	err := row.Scan(
+		&w.ID, &w.Repo, &w.IssueNumber, &w.Title, &w.Body, &w.Author,
+		&w.State, &w.TriageAction, &w.TriageReason, &w.BeadID,
+		&createdAt, &updatedAt, &processedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	w.CreatedAt = parseTime(createdAt)
+	w.UpdatedAt = parseTime(updatedAt)
+	if processedAt != nil {
+		t := parseTime(*processedAt)
+		w.ProcessedAt = &t
+	}
+	return &w, nil
+}
+
+// scanWicketIssueRow scans a *sql.Rows cursor into a WicketIssue.
+func scanWicketIssueRow(rows *sql.Rows) (*WicketIssue, error) {
+	var w WicketIssue
+	var createdAt, updatedAt string
+	var processedAt *string
+	err := rows.Scan(
+		&w.ID, &w.Repo, &w.IssueNumber, &w.Title, &w.Body, &w.Author,
+		&w.State, &w.TriageAction, &w.TriageReason, &w.BeadID,
+		&createdAt, &updatedAt, &processedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	w.CreatedAt = parseTime(createdAt)
+	w.UpdatedAt = parseTime(updatedAt)
+	if processedAt != nil {
+		t := parseTime(*processedAt)
+		w.ProcessedAt = &t
+	}
+	return &w, nil
 }
