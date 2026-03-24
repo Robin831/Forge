@@ -2,6 +2,7 @@ package wicket
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -12,6 +13,8 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/state"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Monitor periodically polls GitHub repositories for new issues, triages them
@@ -711,11 +714,12 @@ func buildProviders(settings config.SettingsConfig) []provider.Provider {
 }
 
 // isUniqueConstraintErr returns true when err is a SQLite UNIQUE constraint
-// violation. With modernc.org/sqlite the error message always contains the
-// canonical SQLite phrase "UNIQUE constraint failed", which identifies the case
-// where a second anvil attempts to insert an already-tracked (repo, issue_number).
+// violation (extended result code SQLITE_CONSTRAINT_UNIQUE). It uses errors.As
+// to unwrap the modernc.org/sqlite driver error and checks the numeric code,
+// avoiding brittle string-matching that can break across driver versions.
 func isUniqueConstraintErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
 }
 
 // isIgnoredUser returns true if the author should be skipped entirely. It

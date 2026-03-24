@@ -1,8 +1,12 @@
 package wicket
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,9 +209,19 @@ func TestTriageIssue_SecondAnvilSkips(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// Capture log output during the second-anvil triage call.
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr) // restore default
+
 	// Second anvil attempts to triage the same issue.
 	anvilCfg := config.AnvilConfig{WicketTrustedUsers: []string{"alice"}}
 	m.triageIssue(context.Background(), "second-anvil", issue, anvilCfg, settings)
+
+	// The warning log must be emitted so regressions don't silently revert to
+	// a generic insert-failure message.
+	assert.True(t, strings.Contains(logBuf.String(), "already tracked by another anvil, skipping"),
+		"expected 'already tracked by another anvil, skipping' in log output, got: %s", logBuf.String())
 
 	// No GitHub comment should have been posted.
 	assert.Empty(t, mock.CommentCalls, "second anvil must not post a comment for a duplicate issue")
