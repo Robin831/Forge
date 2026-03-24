@@ -27,6 +27,7 @@ func defaultSettings() config.SettingsConfig {
 
 // newTestMonitor creates a Monitor wired up for tests: real state.DB in a temp
 // dir, MockGitHubClient, and a stub bdRunner so no external processes are spawned.
+// triageFunc is set to a fast no-op to avoid spawning real AI subprocesses.
 func newTestMonitor(t *testing.T) (*Monitor, *MockGitHubClient, *state.DB) {
 	t.Helper()
 	db := openTestDB(t)
@@ -36,6 +37,12 @@ func newTestMonitor(t *testing.T) (*Monitor, *MockGitHubClient, *state.DB) {
 		db:       db,
 		cfg: &config.Config{
 			Settings: defaultSettings(),
+		},
+		// Stub triageFunc so tests don't spawn real AI providers or call bd list.
+		// For trusted users the result is overridden to create_bead anyway; for
+		// all other paths triageFunc is not called.
+		triageFunc: func(_ context.Context, _ Issue, _ []Comment, _ TriageConfig) TriageDecision {
+			return TriageDecision{Action: ActionFlagHuman, Reason: "test mock"}
 		},
 	}
 	return m, mock, db

@@ -306,9 +306,14 @@ func (m *Monitor) checkClarificationForIssue(ctx context.Context, anvil string, 
 		CreatedAt: wi.CreatedAt,
 	}
 
-	decision := RunTriageWithComments(ctx, issue, comments, TriageConfig{
+	triageFn := m.triageFunc
+	if triageFn == nil {
+		triageFn = RunTriageWithComments
+	}
+	decision := triageFn(ctx, issue, comments, TriageConfig{
 		Providers:   buildProviders(settings),
 		ExtraPrompt: anvilCfg.WicketTriagePrompt,
+		AnvilPath:   anvilCfg.Path,
 	})
 
 	_ = m.db.LogEvent(state.EventWicketIssueTriage,
@@ -334,6 +339,15 @@ func (m *Monitor) checkClarificationForIssue(ctx context.Context, anvil string, 
 		}
 		wi.TriageReason = decision.Reason
 		_ = m.db.UpdateWicketIssue(wi)
+
+	case ActionDuplicate:
+		m.handleDuplicate(ctx, anvil, issue, decision, settings)
+
+	case ActionAlreadyFixed:
+		m.handleAlreadyFixed(ctx, anvil, issue, decision, settings)
+
+	case ActionOutOfScope:
+		m.handleOutOfScope(ctx, anvil, issue, decision, settings)
 
 	default:
 		// Map triage actions to the corresponding lifecycle states to avoid

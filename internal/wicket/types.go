@@ -21,6 +21,17 @@ const (
 	// ActionReject instructs Wicket to silently discard the issue without
 	// posting any public comment. Used for obvious spam or off-topic issues.
 	ActionReject TriageAction = "reject"
+	// ActionDuplicate instructs Wicket to post a comment referencing the
+	// existing open bead that already covers this issue. DuplicateID in the
+	// TriageDecision carries the matching bead identifier.
+	ActionDuplicate TriageAction = "duplicate"
+	// ActionAlreadyFixed instructs Wicket to post a comment stating the issue
+	// was resolved in a previous PR or bead. ReferencePR in the TriageDecision
+	// carries the relevant PR URL or bead ID.
+	ActionAlreadyFixed TriageAction = "already_fixed"
+	// ActionOutOfScope instructs Wicket to post a rejection comment explaining
+	// that the issue is outside the project's scope.
+	ActionOutOfScope TriageAction = "out_of_scope"
 )
 
 // defaultBotIgnoreList is a hardcoded set of well-known bot account logins
@@ -53,6 +64,12 @@ type TriageDecision struct {
 	// BeadDescription is the proposed bead description; only populated when
 	// Action is ActionCreateBead.
 	BeadDescription string
+	// DuplicateID is the existing bead ID that this issue duplicates; only
+	// populated when Action is ActionDuplicate.
+	DuplicateID string
+	// ReferencePR is the PR URL or bead ID that already resolved this issue;
+	// only populated when Action is ActionAlreadyFixed.
+	ReferencePR string
 }
 
 // Issue represents a GitHub issue retrieved during a Wicket scan.
