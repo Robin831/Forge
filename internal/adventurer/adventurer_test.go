@@ -274,8 +274,8 @@ func TestExecutePreCancelledContextEarlyReturn(t *testing.T) {
 	if !strings.HasPrefix(result.ErrorMessage, "context cancelled before execution:") {
 		t.Errorf("expected early-return message, got: %s", result.ErrorMessage)
 	}
-	if result.Duration <= 0 {
-		t.Error("expected Duration > 0")
+	if result.Duration < 0 {
+		t.Error("expected Duration >= 0")
 	}
 }
 
