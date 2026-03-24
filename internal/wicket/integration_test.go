@@ -20,9 +20,10 @@ import (
 )
 
 // newIntegrationMonitor builds a fully-wired Monitor suitable for integration
-// tests. It wires a real (temp) state.DB, a configurable MockGitHubClient, and
-// a stub bdRunner so no external processes are spawned. The caller may further
-// customise mock callbacks and triageFunc.
+// tests. It wires a real (temp) state.DB and a configurable MockGitHubClient.
+// Callers are responsible for stubbing bdRunner/bdUpdateRunner (e.g. via the
+// helpers below) so that no external bd CLI processes are spawned. The caller
+// may further customise mock callbacks and triageFunc.
 func newIntegrationMonitor(t *testing.T, triage func(context.Context, Issue, []Comment, TriageConfig) TriageDecision) (*Monitor, *MockGitHubClient, *state.DB) {
 	t.Helper()
 	db := openTestDB(t)
@@ -37,8 +38,8 @@ func newIntegrationMonitor(t *testing.T, triage func(context.Context, Issue, []C
 	return m, mock, db
 }
 
-// stubBDRunner replaces bdRunner for the duration of the test and returns a
-// cleanup function that restores the original. The stub returns beadID.
+// stubBDRunner replaces bdRunner for the duration of the test and registers
+// cleanup via t.Cleanup to restore the original. The stub returns beadID.
 func stubBDRunner(t *testing.T, beadID string) {
 	t.Helper()
 	orig := bdRunner
