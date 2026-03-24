@@ -125,11 +125,14 @@ func (rl *rateLimiter) RecordRateLimitHit() time.Duration {
 }
 
 // RecordSuccess clears the backoff state after a successful API call.
+// remaining is reset to -1 (unknown) so that IsLowQuota() does not remain
+// permanently true after a previous RecordRateLimitHit set it to 0.
 func (rl *rateLimiter) RecordSuccess() {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	rl.consecutiveFails = 0
 	rl.backoffUntil = time.Time{}
+	rl.remaining = -1
 }
 
 // isRateLimitErr reports whether err is a *RateLimitError. When target is

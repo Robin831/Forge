@@ -76,11 +76,13 @@ func (m *Monitor) Run(ctx context.Context) error {
 
 	for {
 		interval := m.effectiveInterval(baseInterval)
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			log.Println("[wicket] Shutting down issue triage monitor")
 			return ctx.Err()
-		case <-time.After(interval):
+		case <-timer.C:
 			m.scanAll(ctx)
 		}
 	}

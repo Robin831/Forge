@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -286,10 +285,6 @@ func runGH(ctx context.Context, args []string) ([]byte, error) {
 			}
 		}
 		return nil, fmt.Errorf("%w\nstderr: %s", err, stderrStr)
-	}
-	// Even on success, check stderr for soft rate-limit warnings from gh.
-	if stderrStr := strings.TrimSpace(stderr.String()); isRateLimitStderr(stderrStr) {
-		log.Printf("[wicket/gh] rate limit warning in stderr: %s", stderrStr)
 	}
 	return stdout.Bytes(), nil
 }
