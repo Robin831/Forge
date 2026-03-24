@@ -10,6 +10,26 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
+// anvilForRepo returns the anvil name whose WicketRepos list contains repo, or
+// an empty string when no match is found. Used to populate the anvil field of
+// LogEvent calls in lifecycle handlers that receive no anvil argument directly.
+func (m *Monitor) anvilForRepo(repo string) string {
+	m.mu.RLock()
+	cfg := m.cfg
+	m.mu.RUnlock()
+	if cfg == nil {
+		return ""
+	}
+	for anvilName, ac := range cfg.Anvils {
+		for _, r := range ac.WicketRepos {
+			if r == repo {
+				return anvilName
+			}
+		}
+	}
+	return ""
+}
+
 // HandlePRCreated is called by the daemon when a PR is created for a bead
 // that may have been sourced from a Wicket GitHub issue. It looks up the
 // bead ID in wicket_issues, posts a follow-up comment on the linked GitHub
@@ -47,7 +67,7 @@ func (m *Monitor) HandlePRCreated(ctx context.Context, beadID, prURL string, prN
 
 	_ = m.db.LogEvent(state.EventWicketPRLinked,
 		fmt.Sprintf("PR #%d linked to %s#%d (bead %s)", prNumber, wi.Repo, wi.IssueNumber, beadID),
-		beadID, "")
+		beadID, m.anvilForRepo(wi.Repo))
 }
 
 // HandlePRMerged is called by the daemon when a PR is merged for a bead that
@@ -95,7 +115,7 @@ func (m *Monitor) HandlePRMerged(ctx context.Context, beadID, prURL, baseBranch 
 
 	_ = m.db.LogEvent(state.EventWicketIssueClosed,
 		fmt.Sprintf("Issue %s#%d closed after PR #%d merged (bead %s)", wi.Repo, wi.IssueNumber, prNumber, beadID),
-		beadID, "")
+		beadID, m.anvilForRepo(wi.Repo))
 }
 
 // checkStaleIssues finds ask_clarify issues that have not received an author
@@ -174,6 +194,6 @@ func (m *Monitor) checkStaleClosed(ctx context.Context) {
 
 		_ = m.db.LogEvent(state.EventWicketIssueStaleClose,
 			fmt.Sprintf("Issue %s#%d auto-closed due to no reply after stale warning", wi.Repo, wi.IssueNumber),
-			wi.BeadID, "")
+			wi.BeadID, m.anvilForRepo(wi.Repo))
 	}
 }
