@@ -2268,7 +2268,7 @@ rules:
       source: copilot:PR#420
       added: "2026-03-23"
     - id: distinct-event-types
-      category: other
+      category: error-handling
       pattern: >-
         Reusing the same event type constant for semantically different events (e.g., start vs completion)
       check: >-
@@ -2278,18 +2278,18 @@ rules:
     - id: trigger-label-fetch-gap
       category: other
       pattern: >-
-        Code that filters/fetches items using one set of labels while a separate trigger/override label exists in config
+        Code that filters/fetches items using one set of labels while a separate trigger/override label exists in config, or that queries by one set of configured labels when a separate configured label (e.g., a trigger or override label) could match items outside that filter
       check: >-
-        Verify that trigger/override labels are included in fetch queries — either by unioning results from both label sets with de-duplication, or by fetching broadly and filtering in code. Items matching only the trigger label must not be silently excluded.
+        Verify that all configured label types are included in fetch queries — either by unioning results from both label sets with de-duplication, or by fetching broadly and filtering in code. Items matching only the trigger/override label must not be silently excluded. When multiple label configs exist, ensure the fetch covers the union of all relevant labels so items matching any configured label are not silently dropped.
       source: copilot:PR#421
       added: "2026-03-23"
     - id: config-hot-reload-ticker
       category: concurrency
       pattern: >-
-        A background loop creates a ticker/timer from a config value at start, and the struct exposes an UpdateConfig or similar method
+        A background loop creates a ticker/timer from a config value at start, and the struct exposes an UpdateConfig or similar method; or a config value is documented as hot-reloadable but is only read once at goroutine startup (e.g., creating a time.Ticker in a Run/Start method)
       check: >-
-        Verify that runtime config changes (especially intervals/durations) actually take effect in running loops. If a ticker is created once from an initial config value, updating the config later won't change the polling cadence. Either recreate/reset the ticker when config changes, or document that interval changes require a restart.
-      source: copilot:PR#421
+        Verify that runtime config changes (especially intervals/durations) actually take effect in running loops. If a ticker is created once from an initial config value, updating the config later won't change the polling cadence. The goroutine must either watch for config changes and reset the ticker, or the documentation must state a restart is required.
+      source: copilot:PR#421,copilot:PR#422
       added: "2026-03-23"
     - id: distinguish-db-error-types
       category: error-handling
@@ -2306,22 +2306,6 @@ rules:
       check: >-
         Verify that if the tracked operation fails after the record is created, the record is either deleted or moved to a retriable state so that skip/dedup logic does not permanently block future retry attempts
       source: copilot:PR#421
-      added: "2026-03-23"
-    - id: label-filter-coverage
-      category: other
-      pattern: >-
-        Code that filters/queries items by one set of configured labels while a separate configured label (e.g., a trigger or override label) exists that could match items outside that filter
-      check: >-
-        Verify that all configured label types are included in the query/filter logic. When multiple label configs exist (e.g., issue labels and trigger labels), ensure the fetch covers the union of all relevant labels—either by broadening the query and filtering in code, or by issuing separate queries and de-duplicating results—so items matching any configured label are not silently dropped.
-      source: copilot:PR#421
-      added: "2026-03-23"
-    - id: hot-reload-ticker-sync
-      category: concurrency
-      pattern: >-
-        A config value is documented as hot-reloadable but is only read once at goroutine startup (e.g., creating a time.Ticker or time.NewTicker in a Run/Start method)
-      check: >-
-        Verify that hot-reloaded config values used for timing (intervals, timeouts, cadences) are actually re-read by the running goroutine. If a ticker is created once in a loop, the goroutine must either watch for config changes and reset the ticker, or the documentation must state a restart is required.
-      source: copilot:PR#422
       added: "2026-03-23"
     - id: report-effective-defaults
       category: ui
@@ -2379,9 +2363,10 @@ rules:
       added: "2026-03-23"
     - id: prefer-count-over-list-len
       category: performance
-      pattern: Calling a List/Fetch function and taking len() of the result just to get a count
+      pattern: >-
+        Calling a List/Fetch function and taking len() of the result just to get a count, or loading full database rows (List*/Find* queries) only to count them or check length
       check: >-
-        Use a DB-side COUNT(*) query or dedicated Count helper instead of loading full rows and measuring slice length — avoids pulling unnecessary data as the table grows
+        Use a DB-side COUNT(*) query or dedicated Count helper instead of loading full rows and measuring slice length. Loading entire objects (especially those with large text fields like bodies/descriptions) just to count them wastes memory and degrades performance as data grows.
       source: copilot:PR#422
       added: "2026-03-23"
     - id: display-matches-runtime-behavior
@@ -2390,14 +2375,6 @@ rules:
         Status or display code that lists monitored/active resources using only explicit configuration fields
       check: >-
         Verify that status output reflects the actual runtime behavior, not just configured values. If the system derives or infers additional items at runtime (e.g., from git remotes, environment, defaults), the display should either use the same derivation logic or clearly label the output as showing only explicitly configured items.
-      source: copilot:PR#422
-      added: "2026-03-23"
-    - id: prefer-count-over-list
-      category: performance
-      pattern: >-
-        Loading full database rows (List*/Find* queries) only to count them or check length
-      check: >-
-        When you only need a count of records, use a dedicated COUNT(*) query instead of fetching full rows. Loading entire objects (especially those with large text fields like bodies/descriptions) just to count them wastes memory and degrades performance as data grows.
       source: copilot:PR#422
       added: "2026-03-23"
     - id: config-default-semantic-mismatch
