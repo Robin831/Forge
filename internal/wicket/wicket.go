@@ -25,6 +25,7 @@ type Monitor struct {
 	db       *state.DB
 	cfg      *config.Config
 	mu       sync.RWMutex
+	rl       *rateLimiter
 	// triageFunc overrides RunTriageWithComments. Nil means use the default.
 	// Tests set this to avoid spawning real AI subprocesses.
 	triageFunc func(ctx context.Context, issue Issue, comments []Comment, cfg TriageConfig) TriageDecision
@@ -36,6 +37,7 @@ func New(cfg *config.Config, db *state.DB) *Monitor {
 		ghClient: NewGitHubClient(),
 		db:       db,
 		cfg:      cfg,
+		rl:       newRateLimiter(),
 	}
 }
 
@@ -53,35 +55,55 @@ func (m *Monitor) UpdateConfig(cfg *config.Config) {
 func (m *Monitor) Stop() {}
 
 // Run starts the periodic issue triage loop. Blocks until ctx is canceled.
-// It follows the same goroutine+ticker pattern as depcheck.Scanner.Run.
+// The poll interval is dynamically adjusted: when quota is low (<100 remaining)
+// it is doubled; when a rate-limit backoff is active the loop waits until the
+// backoff expires before scanning again.
 func (m *Monitor) Run(ctx context.Context) error {
 	m.mu.RLock()
-	interval := m.cfg.Settings.WicketInterval
+	baseInterval := m.cfg.Settings.WicketInterval
 	m.mu.RUnlock()
 
-	if interval <= 0 {
-		interval = 15 * time.Minute
+	if baseInterval <= 0 {
+		baseInterval = 15 * time.Minute
 	}
 
-	log.Printf("[wicket] Starting issue triage monitor (interval: %s)", interval)
+	log.Printf("[wicket] Starting issue triage monitor (interval: %s)", baseInterval)
 	_ = m.db.LogEvent(state.EventWicketScanDone, "Wicket monitor started", "", "")
 
 	// Perform an initial scan immediately so the first triage cycle does not
 	// wait a full interval.
 	m.scanAll(ctx)
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
 	for {
+		interval := m.effectiveInterval(baseInterval)
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			log.Println("[wicket] Shutting down issue triage monitor")
 			return ctx.Err()
-		case <-ticker.C:
+		case <-timer.C:
 			m.scanAll(ctx)
 		}
 	}
+}
+
+// effectiveInterval returns the interval to wait before the next scan.
+// It doubles the base interval when quota is low and waits for the backoff
+// period when a rate-limit has been hit.
+func (m *Monitor) effectiveInterval(base time.Duration) time.Duration {
+	if m.rl.IsLimited() {
+		until := m.rl.BackoffUntil()
+		if wait := time.Until(until); wait > 0 {
+			return wait
+		}
+	}
+	if m.rl.IsLowQuota() {
+		log.Printf("[wicket] API quota low (%d remaining) — doubling poll interval to %s",
+			m.rl.Remaining(), base*2)
+		return base * 2
+	}
+	return base
 }
 
 // scanAll iterates all enabled anvils and scans their repositories for new
@@ -101,7 +123,11 @@ func (m *Monitor) scanAll(ctx context.Context) {
 		if !isWicketEnabled(anvil, cfg.Settings.WicketEnabled) {
 			continue
 		}
-		m.scanAnvil(ctx, name, anvil, cfg.Settings)
+		if rateLimited := m.scanAnvil(ctx, name, anvil, cfg.Settings); rateLimited {
+			// API quota exhausted — skip follow-up calls that would also hit
+			// the GitHub API and keep hammering while backoff is active.
+			continue
+		}
 
 		// Dispatch confirmation: check bead_created issues for rocket reactions
 		// or "dispatch" comments from the issue author.
@@ -129,7 +155,9 @@ func isWicketEnabled(anvil config.AnvilConfig, globalEnabled bool) bool {
 }
 
 // scanAnvil resolves the repository list for the anvil and scans each one.
-func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.AnvilConfig, settings config.SettingsConfig) {
+// Returns true when a rate-limit error was encountered so that the caller can
+// skip follow-up API calls for the same cycle.
+func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.AnvilConfig, settings config.SettingsConfig) (rateLimited bool) {
 	repos := anvil.WicketRepos
 	if len(repos) == 0 {
 		repo, err := deriveRepo(ctx, anvil.Path)
@@ -137,33 +165,55 @@ func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.Anvil
 			log.Printf("[wicket] %s: cannot determine repository: %v", name, err)
 			_ = m.db.LogEvent(state.EventWicketError,
 				fmt.Sprintf("Cannot determine repository for anvil %s: %v", name, err), "", name)
-			return
+			return false
 		}
 		repos = []string{repo}
 	}
 
 	for _, repo := range repos {
 		if ctx.Err() != nil {
-			return
+			return false
 		}
-		m.scanRepo(ctx, name, repo, anvil, settings)
+		if m.rl.IsLimited() {
+			log.Printf("[wicket] %s: rate-limit backoff active, skipping %s until %s",
+				name, repo, m.rl.BackoffUntil().Format(time.RFC3339))
+			return true
+		}
+		if rateLimited := m.scanRepo(ctx, name, repo, anvil, settings); rateLimited {
+			return true
+		}
 	}
+	return false
 }
 
-// scanRepo fetches open issues for a single repository and triages each new one.
-func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg config.AnvilConfig, settings config.SettingsConfig) {
+// scanRepo fetches open issues for a single repository and triages each new
+// one. Returns true when a rate-limit error was encountered so the caller can
+// abort further repo scanning for this cycle.
+func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg config.AnvilConfig, settings config.SettingsConfig) (rateLimited bool) {
 	issues, err := m.ghClient.ListIssues(ctx, repo, anvilCfg.WicketIssueLabels)
 	if err != nil {
+		var rlErr *RateLimitError
+		if isRateLimitErr(err, &rlErr) {
+			delay := m.rl.RecordRateLimitHit()
+			if rlErr != nil && rlErr.Remaining >= 0 {
+				m.rl.UpdateRemaining(rlErr.Remaining, rlErr.ResetAt)
+			}
+			log.Printf("[wicket] %s: rate limited listing issues for %s — backing off %s", anvil, repo, delay)
+			_ = m.db.LogEvent(state.EventWicketError,
+				fmt.Sprintf("Rate limited listing issues for %s — backing off %s", repo, delay), "", anvil)
+			return true
+		}
 		log.Printf("[wicket] %s: list issues for %s: %v", anvil, repo, err)
 		_ = m.db.LogEvent(state.EventWicketError,
 			fmt.Sprintf("Failed to list issues for %s: %v", repo, err), "", anvil)
-		return
+		return false
 	}
+	m.rl.RecordSuccess()
 
 	processed := 0
 	for _, issue := range issues {
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		if settings.WicketBatchSize > 0 && processed >= settings.WicketBatchSize {
 			log.Printf("[wicket] %s: reached batch size %d for %s", anvil, settings.WicketBatchSize, repo)
@@ -197,6 +247,7 @@ func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg con
 		m.triageIssue(ctx, anvil, issue, anvilCfg, settings)
 		processed++
 	}
+	return false
 }
 
 // shouldSkip returns true when the issue should not be triaged. An issue is

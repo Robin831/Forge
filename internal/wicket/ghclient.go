@@ -214,8 +214,16 @@ func (g *ghClient) CommentOnIssue(ctx context.Context, repo string, number int, 
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		stderrStr := strings.TrimSpace(stderr.String())
+		if isRateLimitStderr(stderrStr) {
+			return &RateLimitError{
+				Message:   stderrStr,
+				Remaining: 0,
+				ResetAt:   parseResetTimeFromStderr(stderrStr),
+			}
+		}
 		if stderr.Len() > 0 {
-			return fmt.Errorf("gh issue comment %s#%d: %v: %s", repo, number, err, strings.TrimSpace(stderr.String()))
+			return fmt.Errorf("gh issue comment %s#%d: %v: %s", repo, number, err, stderrStr)
 		}
 		return fmt.Errorf("gh issue comment %s#%d: %w", repo, number, err)
 	}
@@ -269,15 +277,77 @@ func (g *ghClient) CloseIssue(ctx context.Context, repo string, number int, reas
 }
 
 // runGH executes the gh CLI with the provided arguments and returns stdout.
+// When the gh CLI reports a rate-limit error (HTTP 403 or secondary rate
+// limit), it returns a *RateLimitError instead of a plain error.
 func runGH(ctx context.Context, args []string) ([]byte, error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("%w\nstderr: %s", err, strings.TrimSpace(stderr.String()))
+		stderrStr := strings.TrimSpace(stderr.String())
+		if isRateLimitStderr(stderrStr) {
+			return nil, &RateLimitError{
+				Message:   stderrStr,
+				Remaining: 0, // quota is exhausted by definition
+				ResetAt:   parseResetTimeFromStderr(stderrStr),
+			}
+		}
+		return nil, fmt.Errorf("%w\nstderr: %s", err, stderrStr)
 	}
 	return stdout.Bytes(), nil
+}
+
+// parseResetTimeFromStderr attempts to extract a rate-limit reset time from
+// gh CLI stderr output by scanning for any RFC3339-formatted timestamp.
+// Returns zero time when no parseable timestamp is found.
+func parseResetTimeFromStderr(stderr string) time.Time {
+	for field := range strings.FieldsSeq(stderr) {
+		// Strip trailing punctuation that may follow the timestamp.
+		field = strings.TrimRight(field, ".,;:")
+		if t, err := time.Parse(time.RFC3339, field); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+// isRateLimitStderr reports whether stderr output from the gh CLI indicates a
+// GitHub API rate limit has been exceeded.
+func isRateLimitStderr(stderr string) bool {
+	lower := strings.ToLower(stderr)
+	return strings.Contains(lower, "rate limit exceeded") ||
+		strings.Contains(lower, "secondary rate limit") ||
+		strings.Contains(lower, "api rate limit") ||
+		strings.Contains(lower, "x-ratelimit-remaining: 0")
+}
+
+// ghRateLimitResponse is the JSON shape of the GitHub rate_limit API endpoint.
+type ghRateLimitResponse struct {
+	Resources struct {
+		Core struct {
+			Remaining int   `json:"remaining"`
+			Reset     int64 `json:"reset"`
+		} `json:"core"`
+	} `json:"resources"`
+}
+
+// FetchRateLimitRemaining queries the GitHub rate_limit API and returns the
+// current remaining core API requests and the reset time. Returns -1 and a
+// zero time when the call fails or the response cannot be parsed.
+func FetchRateLimitRemaining(ctx context.Context) (remaining int, resetAt time.Time, err error) {
+	out, err := runGH(ctx, []string{"api", "rate_limit"})
+	if err != nil {
+		return -1, time.Time{}, fmt.Errorf("gh api rate_limit: %w", err)
+	}
+	var resp ghRateLimitResponse
+	if jsonErr := json.Unmarshal(out, &resp); jsonErr != nil {
+		return -1, time.Time{}, fmt.Errorf("parse rate_limit response: %w", jsonErr)
+	}
+	if resp.Resources.Core.Reset > 0 {
+		resetAt = time.Unix(resp.Resources.Core.Reset, 0)
+	}
+	return resp.Resources.Core.Remaining, resetAt, nil
 }
 
 // toIssue converts the raw gh JSON shape to an Issue.

@@ -38,6 +38,7 @@ func newTestMonitor(t *testing.T) (*Monitor, *MockGitHubClient, *state.DB) {
 		cfg: &config.Config{
 			Settings: defaultSettings(),
 		},
+		rl: newRateLimiter(),
 		// Stub triageFunc so tests don't spawn real AI providers or call bd list.
 		// For trusted users the result is overridden to create_bead anyway; for
 		// all other paths triageFunc is not called.
