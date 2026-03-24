@@ -107,14 +107,15 @@ per-group prompts.`,
 
 		yesAll, _ := cmd.Flags().GetBool("yes")
 
-		// Compute the batch-update branch name and a per-run worktree ID once so
+		// Compute the batch-update branch name and a stable worktree ID once so
 		// all anvils land on the same branch name (consistent same-day re-run
 		// semantics) and the main anvil directory stays on main throughout.
-		dateStr := time.Now().Format("2006-01-02")
+		now := time.Now()
+		dateStr := now.Format("2006-01-02")
 		targetBranch := "deps/batch-update-" + dateStr
-		// Include seconds so that same-day crash/retry runs get a distinct
-		// worktree path rather than colliding with an unclean previous run.
-		worktreeBeadID := "depupdate-" + time.Now().Format("20060102-150405")
+		// Derive the worktree bead ID from the date-based branch so crash/retry
+		// runs reuse the same .workers directory and let ResetBranch clean it.
+		worktreeBeadID := "depupdate-" + dateStr
 		wtMgr := worktree.NewManager()
 
 		// For each anvil with updates: create an isolated worktree, prompt user,
@@ -148,7 +149,9 @@ per-group prompts.`,
 				defer func() {
 					cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
-					_ = wtMgr.Remove(cleanupCtx, ar.Path, wt)
+					if err := wtMgr.Remove(cleanupCtx, ar.Path, wt); err != nil {
+						fmt.Fprintf(os.Stderr, "warning: failed to clean up worktree for %s: %v\n", ar.Anvil, err)
+					}
 				}()
 
 				// Step 2: Interactive group selection — skip groups the user declines.

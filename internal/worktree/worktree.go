@@ -189,6 +189,18 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 			}
 		}
 
+		// If ResetBranch is requested and the local branch already exists (but
+		// there is no matching worktree directory), delete it so that
+		// "git worktree add -b" can recreate it cleanly from baseRef.
+		if opts.ResetBranch {
+			localRef := "refs/heads/" + targetBranch
+			if err := git(anvilPath, "show-ref", "--verify", "--quiet", localRef); err == nil {
+				if err := git(anvilPath, "branch", "-D", targetBranch); err != nil {
+					return nil, fmt.Errorf("deleting stale local branch %s: %w", targetBranch, err)
+				}
+			}
+		}
+
 		// Create worktree with new branch
 		if err := git(anvilPath, "worktree", "add", "-f", "-b", targetBranch, worktreePath, baseRef); err != nil {
 			return nil, fmt.Errorf("git worktree add (new): %w", err)
