@@ -1218,7 +1218,7 @@ rules:
         Adding a new warden rule entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
         Before inserting a new warden rule, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353']
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -1358,7 +1358,7 @@ rules:
       pattern: Warden rule definitions in warden-rules.yaml
       check: >-
         Verify that a specific, descriptive category is assigned when an appropriate one exists (for example, `style`, `testing`, or `concurrency`). The generic `category: other` should only be used when no more precise category applies, to keep triage, search, and reporting meaningful.
-      source: ['copilot:PR#348', 'copilot:PR#353']
+      source: ['copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424']
       added: "2026-03-20"
     - id: warden-source-field-wording
       category: style
@@ -2401,22 +2401,6 @@ rules:
         Verify that the type being modified is actually wired into the system. If a parallel or canonical representation exists elsewhere (e.g. a config struct in another package), updating an unused copy causes drift and misleads future readers. Either wire the unused type into consumers or update the canonical type instead.
       source: copilot:PR#423
       added: "2026-03-23"
-    - id: dispatch-author-check
-      category: security
-      pattern: >-
-        Code that triggers actions (dispatch, approval, state changes) based on user comments or input without verifying the author's identity or role
-      check: >-
-        Verify that comment-driven actions check the comment author matches the expected actor (e.g., issue author, assignee, or authorized role) before processing the command, to prevent unauthorized users or bots from triggering unintended operations
-      source: copilot:PR#426
-      added: "2026-03-24"
-    - id: idempotent-comment-processing
-      category: security
-      pattern: >-
-        Processing user commands from comments or messages in a polling loop without tracking which ones have already been handled
-      check: >-
-        Verify that comment/command processing tracks which comments have been handled (e.g., last processed comment ID) to prevent duplicate processing on subsequent scans, and that commands are restricted to authorized users (e.g., issue author or allowlist)
-      source: copilot:PR#426
-      added: "2026-03-24"
     - id: action-to-state-mapping
       category: other
       pattern: Storing an action/decision enum value directly as a state field
