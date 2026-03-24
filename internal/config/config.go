@@ -285,6 +285,10 @@ type SettingsConfig struct {
 	// are skipped entirely. When empty (the default), Wicket processes all
 	// issues in push-model fashion without any trigger-label gate.
 	WicketTriggerLabel string `mapstructure:"wicket_trigger_label" yaml:"wicket_trigger_label,omitempty"`
+	// WicketStaleDays is the number of days without an author reply before a
+	// Wicket issue awaiting clarification is marked as stale. After a further 7
+	// days, the issue is closed automatically. Defaults to 14.
+	WicketStaleDays int `mapstructure:"wicket_stale_days" yaml:"wicket_stale_days,omitempty"`
 }
 
 // durationString returns the duration string, or omits zero values.
@@ -348,6 +352,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WicketNeedsHumanLabel  string `yaml:"wicket_needs_human_label,omitempty"`
 		WicketBeadCreatedLabel string `yaml:"wicket_bead_created_label,omitempty"`
 		WicketTriggerLabel     string `yaml:"wicket_trigger_label,omitempty"`
+		WicketStaleDays        int    `yaml:"wicket_stale_days,omitempty"`
 	}
 
 	sh := shadow{
@@ -394,6 +399,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WicketNeedsHumanLabel:  s.WicketNeedsHumanLabel,
 		WicketBeadCreatedLabel: s.WicketBeadCreatedLabel,
 		WicketTriggerLabel:     s.WicketTriggerLabel,
+		WicketStaleDays:        s.WicketStaleDays,
 	}
 
 	// Only include non-zero optional durations.

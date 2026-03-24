@@ -82,7 +82,8 @@ func (m *Monitor) Run(ctx context.Context) error {
 }
 
 // scanAll iterates all enabled anvils and scans their repositories for new
-// issues that need triage.
+// issues that need triage. It also runs follow-up steps: dispatch confirmation,
+// clarification re-triage, and stale detection.
 func (m *Monitor) scanAll(ctx context.Context) {
 	m.mu.RLock()
 	cfg := m.cfg
@@ -98,7 +99,19 @@ func (m *Monitor) scanAll(ctx context.Context) {
 			continue
 		}
 		m.scanAnvil(ctx, name, anvil, cfg.Settings)
+
+		// Dispatch confirmation: check bead_created issues for rocket reactions
+		// or "dispatch" comments from the issue author.
+		m.checkDispatch(ctx, name, anvil, cfg.Settings)
+
+		// Clarification re-triage: check ask_clarify issues for author replies.
+		m.checkClarificationReTriage(ctx, name, anvil, cfg.Settings)
 	}
+
+	// Stale detection runs globally (not per-anvil) since wicket_issues rows
+	// don't carry an anvil field — they are indexed by repo+number.
+	m.checkStaleIssues(ctx, cfg.Settings)
+	m.checkStaleClosed(ctx)
 
 	_ = m.db.LogEvent(state.EventWicketScanDone, "Wicket scan cycle complete", "", "")
 }
