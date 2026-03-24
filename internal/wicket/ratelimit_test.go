@@ -51,6 +51,31 @@ func TestRateLimitError_Error_WithResetTime(t *testing.T) {
 	assert.Contains(t, err.Error(), "resets at")
 }
 
+// ---- parseResetTimeFromStderr -----------------------------------------------
+
+func TestParseResetTimeFromStderr(t *testing.T) {
+	ts := "2026-06-01T00:00:00Z"
+	parsed, _ := time.Parse(time.RFC3339, ts)
+
+	tests := []struct {
+		name   string
+		stderr string
+		want   time.Time
+	}{
+		{name: "timestamp in message", stderr: "rate limit exceeded, retry after " + ts, want: parsed},
+		{name: "timestamp with trailing comma", stderr: "rate limit exceeded " + ts + ", please wait", want: parsed},
+		{name: "no timestamp", stderr: "rate limit exceeded", want: time.Time{}},
+		{name: "empty", stderr: "", want: time.Time{}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseResetTimeFromStderr(tc.stderr)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 // ---- isRateLimitErr ---------------------------------------------------------
 
 func TestIsRateLimitErr_True(t *testing.T) {
@@ -152,10 +177,20 @@ func TestRateLimiter_RecordSuccess_ClearsBackoff(t *testing.T) {
 	rl.RecordRateLimitHit()
 	require.True(t, rl.IsLimited())
 
-	// RecordSuccess resets state completely.
 	rl.RecordSuccess()
 	assert.False(t, rl.IsLimited())
 	assert.Equal(t, 0, rl.consecutiveFails)
+}
+
+func TestRateLimiter_RecordSuccess_PreservesRemaining(t *testing.T) {
+	rl := newRateLimiter()
+	rl.UpdateRemaining(50, time.Time{})
+	require.True(t, rl.IsLowQuota())
+
+	// RecordSuccess must not wipe the known quota so IsLowQuota stays accurate.
+	rl.RecordSuccess()
+	assert.True(t, rl.IsLowQuota(), "known low-quota state must survive RecordSuccess")
+	assert.Equal(t, 50, rl.Remaining())
 }
 
 func TestRateLimiter_BackoffUntil_NonZeroAfterHit(t *testing.T) {

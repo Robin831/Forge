@@ -3,7 +3,6 @@ package wicket
 import (
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 )
@@ -19,8 +18,6 @@ const (
 	// rateLimitMaxBackoff caps exponential growth to avoid very long waits.
 	rateLimitMaxBackoff = 60 * time.Minute
 
-	// rateLimitBackoffMultiplier controls how fast the backoff delay grows.
-	rateLimitBackoffMultiplier = 2.0
 )
 
 // RateLimitError is returned by GitHub client calls when the GitHub API rate
@@ -104,14 +101,29 @@ func (rl *rateLimiter) UpdateRemaining(remaining int, resetAt time.Time) {
 // When the GitHub reset time is known and greater than the computed delay, the
 // reset time plus a 5-second buffer is used instead so we avoid retrying while
 // the quota window is still exhausted.
+//
+// Integer duration doubling is used instead of math.Pow to avoid float64→int
+// overflow that can occur when consecutiveFails is large.
 func (rl *rateLimiter) RecordRateLimitHit() time.Duration {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	rl.consecutiveFails++
 	rl.remaining = 0
 
-	exp := math.Pow(rateLimitBackoffMultiplier, float64(rl.consecutiveFails-1))
-	delay := min(time.Duration(float64(rateLimitMinBackoff)*exp), rateLimitMaxBackoff)
+	// Double the delay once per previous failure, capping at the maximum.
+	// We cap consecutiveFails at the point where the delay reaches the max so
+	// that the counter does not grow unboundedly in long-running processes.
+	// Integer arithmetic is used to avoid float64→int64 overflow that can
+	// occur with math.Pow when consecutiveFails is large.
+	delay := rateLimitMinBackoff
+	for i := 1; i < rl.consecutiveFails; i++ {
+		delay *= 2 // rateLimitBackoffMultiplier is 2
+		if delay >= rateLimitMaxBackoff {
+			delay = rateLimitMaxBackoff
+			rl.consecutiveFails = i + 1
+			break
+		}
+	}
 
 	// Honour the API reset time when it would make us wait longer.
 	if !rl.resetAt.IsZero() {
@@ -125,14 +137,14 @@ func (rl *rateLimiter) RecordRateLimitHit() time.Duration {
 }
 
 // RecordSuccess clears the backoff state after a successful API call.
-// remaining is reset to -1 (unknown) so that IsLowQuota() does not remain
-// permanently true after a previous RecordRateLimitHit set it to 0.
+// Known quota values (remaining/resetAt) are preserved so that IsLowQuota()
+// continues to reflect the last-known quota state; callers should update quota
+// via UpdateRemaining when fresh header values are available.
 func (rl *rateLimiter) RecordSuccess() {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	rl.consecutiveFails = 0
 	rl.backoffUntil = time.Time{}
-	rl.remaining = -1
 }
 
 // isRateLimitErr reports whether err is a *RateLimitError. When target is

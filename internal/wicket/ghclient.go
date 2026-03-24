@@ -214,8 +214,16 @@ func (g *ghClient) CommentOnIssue(ctx context.Context, repo string, number int, 
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		stderrStr := strings.TrimSpace(stderr.String())
+		if isRateLimitStderr(stderrStr) {
+			return &RateLimitError{
+				Message:   stderrStr,
+				Remaining: 0,
+				ResetAt:   parseResetTimeFromStderr(stderrStr),
+			}
+		}
 		if stderr.Len() > 0 {
-			return fmt.Errorf("gh issue comment %s#%d: %v: %s", repo, number, err, strings.TrimSpace(stderr.String()))
+			return fmt.Errorf("gh issue comment %s#%d: %v: %s", repo, number, err, stderrStr)
 		}
 		return fmt.Errorf("gh issue comment %s#%d: %w", repo, number, err)
 	}
@@ -281,12 +289,27 @@ func runGH(ctx context.Context, args []string) ([]byte, error) {
 		if isRateLimitStderr(stderrStr) {
 			return nil, &RateLimitError{
 				Message:   stderrStr,
-				Remaining: -1,
+				Remaining: 0, // quota is exhausted by definition
+				ResetAt:   parseResetTimeFromStderr(stderrStr),
 			}
 		}
 		return nil, fmt.Errorf("%w\nstderr: %s", err, stderrStr)
 	}
 	return stdout.Bytes(), nil
+}
+
+// parseResetTimeFromStderr attempts to extract a rate-limit reset time from
+// gh CLI stderr output by scanning for any RFC3339-formatted timestamp.
+// Returns zero time when no parseable timestamp is found.
+func parseResetTimeFromStderr(stderr string) time.Time {
+	for field := range strings.FieldsSeq(stderr) {
+		// Strip trailing punctuation that may follow the timestamp.
+		field = strings.TrimRight(field, ".,;:")
+		if t, err := time.Parse(time.RFC3339, field); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // isRateLimitStderr reports whether stderr output from the gh CLI indicates a

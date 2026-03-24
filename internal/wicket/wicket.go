@@ -123,7 +123,11 @@ func (m *Monitor) scanAll(ctx context.Context) {
 		if !isWicketEnabled(anvil, cfg.Settings.WicketEnabled) {
 			continue
 		}
-		m.scanAnvil(ctx, name, anvil, cfg.Settings)
+		if rateLimited := m.scanAnvil(ctx, name, anvil, cfg.Settings); rateLimited {
+			// API quota exhausted — skip follow-up calls that would also hit
+			// the GitHub API and keep hammering while backoff is active.
+			continue
+		}
 
 		// Dispatch confirmation: check bead_created issues for rocket reactions
 		// or "dispatch" comments from the issue author.
@@ -151,9 +155,9 @@ func isWicketEnabled(anvil config.AnvilConfig, globalEnabled bool) bool {
 }
 
 // scanAnvil resolves the repository list for the anvil and scans each one.
-// When a rate-limit error is returned by a scan, the remaining repositories
-// are skipped for this cycle and the backoff is applied.
-func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.AnvilConfig, settings config.SettingsConfig) {
+// Returns true when a rate-limit error was encountered so that the caller can
+// skip follow-up API calls for the same cycle.
+func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.AnvilConfig, settings config.SettingsConfig) (rateLimited bool) {
 	repos := anvil.WicketRepos
 	if len(repos) == 0 {
 		repo, err := deriveRepo(ctx, anvil.Path)
@@ -161,24 +165,25 @@ func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.Anvil
 			log.Printf("[wicket] %s: cannot determine repository: %v", name, err)
 			_ = m.db.LogEvent(state.EventWicketError,
 				fmt.Sprintf("Cannot determine repository for anvil %s: %v", name, err), "", name)
-			return
+			return false
 		}
 		repos = []string{repo}
 	}
 
 	for _, repo := range repos {
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		if m.rl.IsLimited() {
 			log.Printf("[wicket] %s: rate-limit backoff active, skipping %s until %s",
 				name, repo, m.rl.BackoffUntil().Format(time.RFC3339))
-			return
+			return true
 		}
 		if rateLimited := m.scanRepo(ctx, name, repo, anvil, settings); rateLimited {
-			return
+			return true
 		}
 	}
+	return false
 }
 
 // scanRepo fetches open issues for a single repository and triages each new
