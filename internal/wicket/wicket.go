@@ -344,9 +344,13 @@ func (m *Monitor) triageIssue(ctx context.Context, anvil string, issue Issue, an
 		State:       "pending",
 	}
 	if err := m.db.InsertWicketIssue(pending); err != nil {
-		// A unique-constraint violation means another cycle already claimed
-		// this issue.
-		log.Printf("[wicket] %s: skip %s#%d — already claimed: %v", anvil, issue.Repo, issue.Number, err)
+		if isUniqueConstraintErr(err) {
+			// First-anvil-wins: another anvil (or a concurrent cycle) already
+			// claimed this issue via the UNIQUE(repo, issue_number) constraint.
+			log.Printf("[wicket] %s: issue already tracked by another anvil, skipping %s#%d", anvil, issue.Repo, issue.Number)
+		} else {
+			log.Printf("[wicket] %s: failed to insert wicket issue %s#%d: %v", anvil, issue.Repo, issue.Number, err)
+		}
 		return
 	}
 
@@ -707,6 +711,14 @@ func buildProviders(settings config.SettingsConfig) []provider.Provider {
 }
 
 // isIgnoredUser returns true if the author should be skipped entirely. It
+// isUniqueConstraintErr returns true when err is a SQLite UNIQUE constraint
+// violation. With modernc.org/sqlite the error message always contains the
+// canonical SQLite phrase "UNIQUE constraint failed", which identifies the case
+// where a second anvil attempts to insert an already-tracked (repo, issue_number).
+func isUniqueConstraintErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
 // checks against the hardcoded defaultBotIgnoreList and any custom ignore
 // users configured per-anvil. Comparison is case-insensitive.
 func isIgnoredUser(author string, customIgnoreList []string) bool {
