@@ -507,7 +507,7 @@ func (m *Monitor) handleCreateBead(ctx context.Context, anvil string, issue Issu
 		decision.BeadDescription = issue.Title
 	}
 
-	beadID, err := CreateBead(ctx, m.db, decision, issue, 2)
+	beadID, err := CreateBead(ctx, m.db, decision, issue, 2, anvil)
 	if err != nil {
 		log.Printf("[wicket] %s: create bead for %s#%d: %v", anvil, issue.Repo, issue.Number, err)
 		_ = m.db.LogEvent(state.EventWicketError,
