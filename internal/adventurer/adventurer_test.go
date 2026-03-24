@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	timeout := 30 * time.Second
 
@@ -28,6 +30,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestResultConstruction(t *testing.T) {
+	t.Parallel()
 	sr := StepResult{
 		Index:    0,
 		Action:   "navigate",
@@ -74,6 +77,7 @@ func TestResultConstruction(t *testing.T) {
 }
 
 func TestResultFailure(t *testing.T) {
+	t.Parallel()
 	result := Result{
 		QuestName:    "failing test",
 		Passed:       false,
@@ -127,6 +131,7 @@ func launchBrowser(t *testing.T) (*rod.Browser, func()) {
 }
 
 func TestExecuteStepNavigate(t *testing.T) {
+	t.Parallel()
 	browser, cleanup := launchBrowser(t)
 	defer cleanup()
 
@@ -154,6 +159,7 @@ func TestExecuteStepNavigate(t *testing.T) {
 }
 
 func TestExecuteStepUnknownAction(t *testing.T) {
+	t.Parallel()
 	browser, cleanup := launchBrowser(t)
 	defer cleanup()
 
@@ -178,12 +184,14 @@ func TestExecuteStepUnknownAction(t *testing.T) {
 }
 
 func TestExecuteStopsOnFirstFailure(t *testing.T) {
+	t.Parallel()
 	// Verify Chrome is available without leaking a process.
 	_, cleanup := launchBrowser(t)
 	cleanup()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	exec := New(10*time.Second, logger)
+	// Use a short timeout so the click on a non-existent element fails quickly.
+	exec := New(2*time.Second, logger)
 
 	quest := &questgiver.Quest{
 		Name: "stop on failure",
@@ -194,7 +202,7 @@ func TestExecuteStopsOnFirstFailure(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	result := exec.Execute(ctx, quest)
@@ -212,6 +220,7 @@ func TestExecuteStopsOnFirstFailure(t *testing.T) {
 }
 
 func TestExecuteContextCancellation(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	exec := New(10*time.Second, logger)
 
@@ -228,8 +237,8 @@ func TestExecuteContextCancellation(t *testing.T) {
 
 	result := exec.Execute(ctx, quest)
 
-	// With a cancelled context, we expect either a launch failure or a
-	// browser/page error — either way the result should not be Passed.
+	// With the ctx.Err() fast-path, a pre-cancelled context returns immediately
+	// with a "context cancelled before execution" error — no Chrome is launched.
 	if result.Passed {
 		t.Error("expected quest to fail with cancelled context")
 	}
@@ -238,7 +247,40 @@ func TestExecuteContextCancellation(t *testing.T) {
 	}
 }
 
+func TestExecutePreCancelledContextEarlyReturn(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	exec := New(10*time.Second, logger)
+
+	// Cancel context before calling Execute to exercise the ctx.Err() fast-path
+	// that avoids launching Chrome entirely.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	quest := &questgiver.Quest{
+		Name:  "pre-cancelled quest",
+		Steps: []questgiver.Step{{Action: "navigate", URL: "about:blank"}},
+	}
+
+	result := exec.Execute(ctx, quest)
+
+	if result.Passed {
+		t.Error("expected Passed=false for pre-cancelled context")
+	}
+	if result.ErrorMessage == "" {
+		t.Error("expected non-empty ErrorMessage for pre-cancelled context")
+	}
+	// The early-return path sets a specific message prefix.
+	if !strings.HasPrefix(result.ErrorMessage, "context cancelled before execution:") {
+		t.Errorf("expected early-return message, got: %s", result.ErrorMessage)
+	}
+	if result.Duration < 0 {
+		t.Error("expected Duration >= 0")
+	}
+}
+
 func TestIntegrationNavigate(t *testing.T) {
+	t.Parallel()
 	// Verify Chrome is available without leaking a process.
 	_, cleanup := launchBrowser(t)
 	cleanup()
