@@ -302,11 +302,16 @@ func (m *Monitor) checkClarificationForIssue(ctx context.Context, anvil string, 
 	if triageFn == nil {
 		triageFn = RunTriageWithComments
 	}
+	monitoredPaths := m.anvilPathsForRepos(anvilCfg.WicketRepos)
+	if len(monitoredPaths) == 0 && anvilCfg.Path != "" {
+		monitoredPaths = []string{anvilCfg.Path}
+	}
 	decision := triageFn(ctx, issue, comments, TriageConfig{
-		Providers:     buildProviders(settings),
-		ExtraPrompt:   anvilCfg.WicketTriagePrompt,
-		AnvilPath:     anvilCfg.Path,
-		AllAnvilPaths: m.allAnvilPaths(),
+		Providers:           buildProviders(settings),
+		ExtraPrompt:         anvilCfg.WicketTriagePrompt,
+		AnvilPath:           anvilCfg.Path,
+		AllAnvilPaths:       m.allAnvilPaths(),
+		MonitoredAnvilPaths: monitoredPaths,
 	})
 
 	_ = m.db.LogEvent(state.EventWicketIssueTriage,

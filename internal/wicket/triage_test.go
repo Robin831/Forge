@@ -324,6 +324,45 @@ func TestRunTriage_CrossAnvilNoMatch_ProceedsToAI(t *testing.T) {
 	}
 }
 
+func TestRunTriage_MultiRepoPromptContext(t *testing.T) {
+	// Verify that when MonitoredAnvilPaths is set, the triage prompt includes
+	// beads from ALL mapped repo paths, not just the triggering anvil path.
+	beadsByPath := map[string]map[string][]BeadSummary{
+		"/anvil-a": {
+			"open,in_progress": {{ID: "Forge-aa1", Title: "Feature A", Description: "Work for repo-a"}},
+			"closed":           {{ID: "Forge-aa2", Title: "Fixed A", Description: "Old fix in repo-a"}},
+		},
+		"/anvil-b": {
+			"open,in_progress": {{ID: "Forge-bb1", Title: "Feature B", Description: "Work for repo-b"}},
+			"closed":           nil,
+		},
+	}
+
+	cfg := TriageConfig{
+		MonitoredAnvilPaths: []string{"/anvil-a", "/anvil-b"},
+		monitoredAnvilLister: func(_ context.Context, anvilPath string, status string) []BeadSummary {
+			if m, ok := beadsByPath[anvilPath]; ok {
+				return m[status]
+			}
+			return nil
+		},
+		runner: func(_ context.Context, prompt string) (string, error) {
+			// All beads from both paths must appear in the prompt.
+			for _, want := range []string{"Forge-aa1", "Feature A", "Forge-bb1", "Feature B", "Forge-aa2", "Fixed A"} {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("prompt missing %q (multi-repo context)", want)
+				}
+			}
+			return `{"action": "create_bead", "reason": "ok", "bead_title": "T", "bead_description": "D"}`, nil
+		},
+	}
+	issue := Issue{Number: 1, Repo: "org/repo-a", Title: "New request"}
+	dec := RunTriage(context.Background(), issue, cfg)
+	if dec.Action != ActionCreateBead {
+		t.Errorf("action: got %q, want create_bead", dec.Action)
+	}
+}
+
 // --- end new action tests ---
 
 // noopBeadLister is a beadLister that returns nil without spawning any

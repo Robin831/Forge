@@ -53,6 +53,67 @@ func newTestMonitor(t *testing.T) (*Monitor, *MockGitHubClient, *state.DB) {
 	return m, mock, db
 }
 
+// ---- anvilPathsForRepos -----------------------------------------------------
+
+func TestAnvilPathsForRepos_MultipleAnvilsShareRepo(t *testing.T) {
+	m := &Monitor{
+		cfg: &config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"forge": {Path: "/path/forge", WicketRepos: []string{"org/Forge"}},
+				"meta":  {Path: "/path/meta", WicketRepos: []string{"org/Metadata"}},
+				"other": {Path: "/path/other", WicketRepos: []string{"org/Other"}},
+			},
+		},
+		rl: newRateLimiter(),
+	}
+
+	// Looking up repos from two of the three anvils should return exactly those paths.
+	got := m.anvilPathsForRepos([]string{"org/Forge", "org/Metadata"})
+	require.ElementsMatch(t, []string{"/path/forge", "/path/meta"}, got)
+}
+
+func TestAnvilPathsForRepos_CaseInsensitive(t *testing.T) {
+	m := &Monitor{
+		cfg: &config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"forge": {Path: "/path/forge", WicketRepos: []string{"Org/Forge"}},
+			},
+		},
+		rl: newRateLimiter(),
+	}
+
+	got := m.anvilPathsForRepos([]string{"org/forge"}) // lowercase lookup
+	require.Equal(t, []string{"/path/forge"}, got)
+}
+
+func TestAnvilPathsForRepos_EmptyRepos(t *testing.T) {
+	m := &Monitor{
+		cfg: &config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"forge": {Path: "/path/forge", WicketRepos: []string{"org/Forge"}},
+			},
+		},
+		rl: newRateLimiter(),
+	}
+
+	got := m.anvilPathsForRepos(nil)
+	require.Nil(t, got)
+}
+
+func TestAnvilPathsForRepos_NoMatch(t *testing.T) {
+	m := &Monitor{
+		cfg: &config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"forge": {Path: "/path/forge", WicketRepos: []string{"org/Forge"}},
+			},
+		},
+		rl: newRateLimiter(),
+	}
+
+	got := m.anvilPathsForRepos([]string{"org/Unrelated"})
+	require.Empty(t, got)
+}
+
 // ---- isTrustedUser ----------------------------------------------------------
 
 func TestIsTrustedUser(t *testing.T) {

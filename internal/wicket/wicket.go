@@ -369,11 +369,20 @@ func (m *Monitor) triageIssue(ctx context.Context, anvil string, issue Issue, an
 		if triageFn == nil {
 			triageFn = RunTriageWithComments
 		}
+		// Resolve monitored paths: find all anvil paths that share repos
+		// with the current anvil (via the 5a wicket_repos mapping) so the
+		// triage prompt includes bead context from all related repositories.
+		monitoredPaths := m.anvilPathsForRepos(anvilCfg.WicketRepos)
+		if len(monitoredPaths) == 0 && anvilCfg.Path != "" {
+			// Fallback: no explicit wicket_repos config; use the single anvil path.
+			monitoredPaths = []string{anvilCfg.Path}
+		}
 		decision = triageFn(ctx, issue, nil, TriageConfig{
-			Providers:     buildProviders(settings),
-			ExtraPrompt:   anvilCfg.WicketTriagePrompt,
-			AnvilPath:     anvilCfg.Path,
-			AllAnvilPaths: m.allAnvilPaths(),
+			Providers:           buildProviders(settings),
+			ExtraPrompt:         anvilCfg.WicketTriagePrompt,
+			AnvilPath:           anvilCfg.Path,
+			AllAnvilPaths:       m.allAnvilPaths(),
+			MonitoredAnvilPaths: monitoredPaths,
 		})
 		switch decision.Action {
 		case ActionDuplicate, ActionAlreadyFixed, ActionOutOfScope:
@@ -675,6 +684,43 @@ func (m *Monitor) AnvilForRepo(repo string) (string, bool) {
 	defer m.mu.RUnlock()
 	name, ok := m.repoAnvilMap[repo]
 	return name, ok
+}
+
+// anvilPathsForRepos returns the local filesystem paths of all configured
+// anvils whose explicit wicket_repos list contains any of the given GitHub
+// repo slugs. The current anvil's own path is always included via the
+// caller providing it in repos context. The result is sorted for
+// deterministic ordering. This is used to populate MonitoredAnvilPaths in
+// TriageConfig so that the triage prompt includes bead context from all
+// repos monitored by the triggering anvil (Wicket 5a mapping).
+func (m *Monitor) anvilPathsForRepos(repos []string) []string {
+	if len(repos) == 0 {
+		return nil
+	}
+	repoSet := make(map[string]struct{}, len(repos))
+	for _, r := range repos {
+		repoSet[strings.ToLower(r)] = struct{}{}
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	pathSet := make(map[string]struct{})
+	for _, anvil := range m.cfg.Anvils {
+		if anvil.Path == "" {
+			continue
+		}
+		for _, r := range anvil.WicketRepos {
+			if _, ok := repoSet[strings.ToLower(r)]; ok {
+				pathSet[anvil.Path] = struct{}{}
+				break
+			}
+		}
+	}
+	paths := make([]string, 0, len(pathSet))
+	for p := range pathSet {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // allAnvilPaths returns the filesystem paths of all currently configured
