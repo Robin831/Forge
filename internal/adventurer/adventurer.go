@@ -67,6 +67,13 @@ func (e *Executor) Execute(ctx context.Context, quest *questgiver.Quest) *Result
 		StepResults: make([]StepResult, 0, len(quest.Steps)),
 	}
 
+	// Fail fast if context is already cancelled — avoid launching Chrome.
+	if err := ctx.Err(); err != nil {
+		result.ErrorMessage = fmt.Sprintf("context cancelled before execution: %v", err)
+		result.Duration = time.Since(start)
+		return result
+	}
+
 	// Launch headless browser.
 	l := launcher.New().Headless(true)
 	controlURL, err := l.Launch()
@@ -165,7 +172,7 @@ func (e *Executor) executeStep(page *rod.Page, step questgiver.Step, index int, 
 }
 
 func (e *Executor) doFill(page *rod.Page, step questgiver.Step) error {
-	el, err := page.Element(step.Selector)
+	el, err := page.Timeout(e.timeout).Element(step.Selector)
 	if err != nil {
 		return fmt.Errorf("element %q not found: %w", step.Selector, err)
 	}
@@ -173,7 +180,7 @@ func (e *Executor) doFill(page *rod.Page, step questgiver.Step) error {
 }
 
 func (e *Executor) doClick(page *rod.Page, step questgiver.Step) error {
-	el, err := page.Element(step.Selector)
+	el, err := page.Timeout(e.timeout).Element(step.Selector)
 	if err != nil {
 		return fmt.Errorf("element %q not found: %w", step.Selector, err)
 	}
@@ -193,7 +200,7 @@ func (e *Executor) doWait(page *rod.Page, step questgiver.Step) error {
 }
 
 func (e *Executor) doAssert(page *rod.Page, step questgiver.Step) error {
-	el, err := page.Element(step.Selector)
+	el, err := page.Timeout(e.timeout).Element(step.Selector)
 	if err != nil {
 		return fmt.Errorf("element %q not found: %w", step.Selector, err)
 	}

@@ -14,6 +14,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	timeout := 30 * time.Second
 
@@ -28,6 +29,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestResultConstruction(t *testing.T) {
+	t.Parallel()
 	sr := StepResult{
 		Index:    0,
 		Action:   "navigate",
@@ -74,6 +76,7 @@ func TestResultConstruction(t *testing.T) {
 }
 
 func TestResultFailure(t *testing.T) {
+	t.Parallel()
 	result := Result{
 		QuestName:    "failing test",
 		Passed:       false,
@@ -127,6 +130,7 @@ func launchBrowser(t *testing.T) (*rod.Browser, func()) {
 }
 
 func TestExecuteStepNavigate(t *testing.T) {
+	t.Parallel()
 	browser, cleanup := launchBrowser(t)
 	defer cleanup()
 
@@ -154,6 +158,7 @@ func TestExecuteStepNavigate(t *testing.T) {
 }
 
 func TestExecuteStepUnknownAction(t *testing.T) {
+	t.Parallel()
 	browser, cleanup := launchBrowser(t)
 	defer cleanup()
 
@@ -178,12 +183,14 @@ func TestExecuteStepUnknownAction(t *testing.T) {
 }
 
 func TestExecuteStopsOnFirstFailure(t *testing.T) {
+	t.Parallel()
 	// Verify Chrome is available without leaking a process.
 	_, cleanup := launchBrowser(t)
 	cleanup()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	exec := New(10*time.Second, logger)
+	// Use a short timeout so the click on a non-existent element fails quickly.
+	exec := New(2*time.Second, logger)
 
 	quest := &questgiver.Quest{
 		Name: "stop on failure",
@@ -194,7 +201,7 @@ func TestExecuteStopsOnFirstFailure(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	result := exec.Execute(ctx, quest)
@@ -212,6 +219,7 @@ func TestExecuteStopsOnFirstFailure(t *testing.T) {
 }
 
 func TestExecuteContextCancellation(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	exec := New(10*time.Second, logger)
 
@@ -239,6 +247,7 @@ func TestExecuteContextCancellation(t *testing.T) {
 }
 
 func TestIntegrationNavigate(t *testing.T) {
+	t.Parallel()
 	// Verify Chrome is available without leaking a process.
 	_, cleanup := launchBrowser(t)
 	cleanup()
