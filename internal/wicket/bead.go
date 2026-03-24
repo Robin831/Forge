@@ -3,6 +3,7 @@ package wicket
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -65,14 +66,14 @@ func defaultBDRunner(ctx context.Context, args []string) (string, error) {
 
 // buildBDArgs constructs the argument list for `bd create` (without the
 // "create" verb itself). Separated for unit-testability.
-func buildBDArgs(decision TriageDecision, issue Issue, priority int) []string {
+func buildBDArgs(decision TriageDecision, issue Issue, priority int, anvilName string) []string {
 	sourceURL := issueURL(issue.Repo, issue.Number)
 	desc := decision.BeadDescription
 	if sourceURL != "" {
 		desc = fmt.Sprintf("%s\n\nSource: %s", desc, sourceURL)
 	}
 
-	return []string{
+	args := []string{
 		"--title", decision.BeadTitle,
 		"--description", desc,
 		"--type", "task",
@@ -81,6 +82,15 @@ func buildBDArgs(decision TriageDecision, issue Issue, priority int) []string {
 		"--tag", "github-issue",
 		"--silent",
 	}
+
+	if anvilName != "" {
+		meta, err := json.Marshal(map[string]string{"anvil_name": anvilName})
+		if err == nil {
+			args = append(args, "--metadata", string(meta))
+		}
+	}
+
+	return args
 }
 
 // parseBDOutput extracts the bead ID from the output of `bd create --silent`.
@@ -105,9 +115,13 @@ func parseBDOutput(output string) (string, error) {
 //
 // priority is the bd priority (0–4); values outside that range are rejected.
 //
+// anvilName is the name of the monitoring anvil that owns this issue; it is
+// embedded in the bead's metadata so downstream code can route the bead back
+// to the correct anvil. Pass an empty string to omit the metadata field.
+//
 // db may be nil, in which case persistence to state.db is skipped and only
 // the in-memory cache is updated.
-func CreateBead(ctx context.Context, db *state.DB, decision TriageDecision, issue Issue, priority int) (string, error) {
+func CreateBead(ctx context.Context, db *state.DB, decision TriageDecision, issue Issue, priority int, anvilName string) (string, error) {
 	if decision.Action != ActionCreateBead {
 		return "", fmt.Errorf("CreateBead called with action %q; only %q is allowed", decision.Action, ActionCreateBead)
 	}
@@ -121,7 +135,7 @@ func CreateBead(ctx context.Context, db *state.DB, decision TriageDecision, issu
 		return "", fmt.Errorf("invalid priority %d: must be between 0 and 4", priority)
 	}
 
-	args := buildBDArgs(decision, issue, priority)
+	args := buildBDArgs(decision, issue, priority, anvilName)
 
 	output, err := bdRunner(ctx, args)
 	if err != nil {

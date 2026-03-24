@@ -35,7 +35,7 @@ func TestBuildBDArgs(t *testing.T) {
 		Number: 42,
 	}
 
-	args := buildBDArgs(decision, issue, 2)
+	args := buildBDArgs(decision, issue, 2, "my-anvil")
 
 	assertFlag(t, args, "--title", "Fix login bug")
 
@@ -49,6 +49,24 @@ func TestBuildBDArgs(t *testing.T) {
 	assertContainsFlag(t, args, "--tag", "github-issue")
 
 	assert.Contains(t, args, "--silent", "expected --silent flag in args")
+
+	meta := flagValue(args, "--metadata")
+	assert.Contains(t, meta, `"anvil_name"`, "--metadata missing anvil_name key")
+	assert.Contains(t, meta, "my-anvil", "--metadata missing anvil name value")
+}
+
+// TestBuildBDArgs_NoAnvil verifies that buildBDArgs omits --metadata when
+// anvilName is empty.
+func TestBuildBDArgs_NoAnvil(t *testing.T) {
+	decision := TriageDecision{
+		Action:          ActionCreateBead,
+		BeadTitle:       "T",
+		BeadDescription: "D",
+	}
+	issue := Issue{Repo: "owner/repo", Number: 1}
+
+	args := buildBDArgs(decision, issue, 2, "")
+	assert.NotContains(t, args, "--metadata", "expected no --metadata when anvilName is empty")
 }
 
 // TestParseBDOutput covers the bead ID extraction from bd output.
@@ -127,7 +145,7 @@ func TestCreateBead_StoresMapping(t *testing.T) {
 	}
 	issue := Issue{Repo: "org/repo", Number: 7}
 
-	id, err := CreateBead(context.Background(), db, decision, issue, 2)
+	id, err := CreateBead(context.Background(), db, decision, issue, 2, "test-anvil")
 	require.NoError(t, err)
 	assert.Equal(t, "Forge-test1", id)
 
@@ -158,7 +176,7 @@ func TestCreateBead_InsertsRowWhenMissing(t *testing.T) {
 	}
 	issue := Issue{Repo: "org/repo", Number: 99}
 
-	id, err := CreateBead(context.Background(), db, decision, issue, 1)
+	id, err := CreateBead(context.Background(), db, decision, issue, 1, "test-anvil")
 	require.NoError(t, err)
 	assert.Equal(t, "Forge-new1", id)
 
@@ -185,7 +203,7 @@ func TestCreateBead_RunnerError(t *testing.T) {
 	}
 	issue := Issue{Repo: "org/repo", Number: 1}
 
-	_, err := CreateBead(context.Background(), nil, decision, issue, 2)
+	_, err := CreateBead(context.Background(), nil, decision, issue, 2, "")
 	assert.Error(t, err)
 }
 
@@ -232,7 +250,7 @@ func TestCreateBead_ValidationErrors(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := CreateBead(context.Background(), nil, tc.decision, issue, tc.priority)
+			_, err := CreateBead(context.Background(), nil, tc.decision, issue, tc.priority, "")
 			assert.Error(t, err, "expected validation error")
 		})
 	}
