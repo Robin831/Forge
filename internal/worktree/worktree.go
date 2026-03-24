@@ -50,6 +50,12 @@ type CreateOptions struct {
 	// io.Discard). Use this when creating worktrees from a TUI to avoid
 	// corrupting the terminal's alt-screen with git progress output.
 	Quiet bool
+	// LocalHead, when true, skips the assertOnMainBranch safety check and
+	// git fetch, and bases the worktree from the current local HEAD rather
+	// than origin/main. Use for read-only scan worktrees where "scan the
+	// working tree as-is" semantics are required and remote state should not
+	// be fetched.
+	LocalHead bool
 }
 
 // Manager handles creating and tearing down worktrees.
@@ -135,17 +141,19 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		_ = os.RemoveAll(worktreePath)
 	}
 
-	// Safety check: ensure the main repo is on main/master before creating a
-	// worktree. If a previous smith ran git checkout in the parent directory
-	// (corrupting the working environment), refuse immediately rather than
-	// silently proceeding on a wrong base.
-	if err := assertOnMainBranch(ctx, anvilPath); err != nil {
-		return nil, fmt.Errorf("anvil branch safety check: %w", err)
-	}
+	if !opts.LocalHead {
+		// Safety check: ensure the main repo is on main/master before creating a
+		// worktree. If a previous smith ran git checkout in the parent directory
+		// (corrupting the working environment), refuse immediately rather than
+		// silently proceeding on a wrong base.
+		if err := assertOnMainBranch(ctx, anvilPath); err != nil {
+			return nil, fmt.Errorf("anvil branch safety check: %w", err)
+		}
 
-	// Fetch origin
-	if err := git(anvilPath, "fetch", "origin"); err != nil {
-		return nil, fmt.Errorf("git fetch: %w", err)
+		// Fetch origin
+		if err := git(anvilPath, "fetch", "origin"); err != nil {
+			return nil, fmt.Errorf("git fetch: %w", err)
+		}
 	}
 
 	if branchExists(ctx, anvilPath, targetBranch) && !opts.ResetBranch {
@@ -172,10 +180,12 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 			}
 		}
 	} else {
-		// Determine base ref: use explicit BaseBranch if provided, otherwise
-		// auto-detect origin/main or origin/master.
+		// Determine base ref: use local HEAD for scan worktrees, an explicit
+		// BaseBranch if provided, or auto-detect origin/main or origin/master.
 		var baseRef string
-		if opts.BaseBranch != "" {
+		if opts.LocalHead {
+			baseRef = "HEAD"
+		} else if opts.BaseBranch != "" {
 			baseRef = "origin/" + opts.BaseBranch
 			// Verify the base branch exists on origin
 			if err := git(anvilPath, "rev-parse", "--verify", baseRef); err != nil {

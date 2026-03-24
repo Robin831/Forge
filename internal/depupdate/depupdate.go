@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -185,6 +186,66 @@ func FilterGroups(groups []UpdateGroup, opts Options) []UpdateGroup {
 		filtered = append(filtered, g)
 	}
 	return filtered
+}
+
+// RerootAnvilResultSourceDirs re-roots absolute SourceDir values in scan
+// results from scan worktree paths to original anvil paths. Call this after
+// scanning with isolated scan worktrees so that SourceDir values stored in
+// ModuleUpdate entries point into the main repository rather than the
+// temporary scan worktrees, making them valid for the apply phase.
+//
+// scanPaths maps anvil name → scan worktree path used during scanning.
+// origPaths maps anvil name → original anvil path.
+// Anvils where scanPaths[name] == origPaths[name] are skipped.
+func RerootAnvilResultSourceDirs(results []AnvilResult, scanPaths, origPaths map[string]string) {
+	for i := range results {
+		scanBase := scanPaths[results[i].Anvil]
+		origBase := origPaths[results[i].Anvil]
+		if scanBase == "" || origBase == "" || scanBase == origBase {
+			continue
+		}
+		for _, cr := range results[i].Ecosystems {
+			rerootModuleUpdates(cr.Patch, scanBase, origBase)
+			rerootModuleUpdates(cr.Minor, scanBase, origBase)
+			rerootModuleUpdates(cr.Major, scanBase, origBase)
+		}
+	}
+}
+
+// RerootGroupSourceDirs re-roots absolute SourceDir values in update groups
+// from oldBase to newBase. Call this before executing groups in an apply
+// worktree so that SourceDir values (recorded during scanning) point into the
+// apply worktree rather than the original repo directory.
+func RerootGroupSourceDirs(groups []UpdateGroup, oldBase, newBase string) {
+	if oldBase == newBase {
+		return
+	}
+	for i := range groups {
+		groups[i].SourceDir = rerootPath(groups[i].SourceDir, oldBase, newBase)
+		for j := range groups[i].Updates {
+			groups[i].Updates[j].SourceDir = rerootPath(groups[i].Updates[j].SourceDir, oldBase, newBase)
+		}
+	}
+}
+
+func rerootModuleUpdates(updates []depcheck.ModuleUpdate, oldBase, newBase string) {
+	for i := range updates {
+		updates[i].SourceDir = rerootPath(updates[i].SourceDir, oldBase, newBase)
+	}
+}
+
+// rerootPath converts an absolute path p from oldBase to newBase by computing
+// the relative portion and joining it with newBase. Returns p unchanged if it
+// cannot be expressed relative to oldBase.
+func rerootPath(p, oldBase, newBase string) string {
+	if p == "" {
+		return p
+	}
+	rel, err := filepath.Rel(oldBase, p)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return p // cannot re-root; leave unchanged
+	}
+	return filepath.Join(newBase, rel)
 }
 
 // filterUpdates returns the subset of updates from a CheckResult that match
