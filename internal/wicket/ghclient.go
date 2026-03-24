@@ -40,8 +40,9 @@ type GitHubClient interface {
 	// RemoveLabel removes a single label from the specified issue.
 	RemoveLabel(ctx context.Context, repo string, number int, label string) error
 
-	// CloseIssue closes the specified issue.
-	CloseIssue(ctx context.Context, repo string, number int) error
+	// CloseIssue closes the specified issue. reason is passed as --reason to gh
+	// (e.g. "completed", "not planned"); an empty string omits the flag.
+	CloseIssue(ctx context.Context, repo string, number int, reason string) error
 }
 
 // ghClient implements GitHubClient by shelling out to the gh CLI.
@@ -177,7 +178,7 @@ func (g *ghClient) ListComments(ctx context.Context, repo string, number int) ([
 func (g *ghClient) ListReactions(ctx context.Context, repo string, number int) ([]Reaction, error) {
 	args := []string{
 		"api", fmt.Sprintf("repos/%s/issues/%d/reactions", repo, number),
-		"--per-page", "100",
+		"--paginate",
 	}
 	out, err := runGH(ctx, args)
 	if err != nil {
@@ -252,10 +253,13 @@ func (g *ghClient) RemoveLabel(ctx context.Context, repo string, number int, lab
 	return nil
 }
 
-func (g *ghClient) CloseIssue(ctx context.Context, repo string, number int) error {
+func (g *ghClient) CloseIssue(ctx context.Context, repo string, number int, reason string) error {
 	args := []string{
 		"issue", "close", strconv.Itoa(number),
 		"--repo", repo,
+	}
+	if reason != "" {
+		args = append(args, "--reason", reason)
 	}
 	_, err := runGH(ctx, args)
 	if err != nil {
@@ -319,7 +323,7 @@ type MockGitHubClient struct {
 	// OnRemoveLabel is called by RemoveLabel if non-nil.
 	OnRemoveLabel func(ctx context.Context, repo string, number int, label string) error
 	// OnCloseIssue is called by CloseIssue if non-nil.
-	OnCloseIssue func(ctx context.Context, repo string, number int) error
+	OnCloseIssue func(ctx context.Context, repo string, number int, reason string) error
 
 	// Recorded calls — populated regardless of whether an On* func is set.
 	CommentCalls  []CommentCall
@@ -409,10 +413,10 @@ func (m *MockGitHubClient) RemoveLabel(ctx context.Context, repo string, number 
 	return nil
 }
 
-func (m *MockGitHubClient) CloseIssue(ctx context.Context, repo string, number int) error {
+func (m *MockGitHubClient) CloseIssue(ctx context.Context, repo string, number int, reason string) error {
 	m.CloseCalls = append(m.CloseCalls, CloseCall{Repo: repo, Number: number})
 	if m.OnCloseIssue != nil {
-		return m.OnCloseIssue(ctx, repo, number)
+		return m.OnCloseIssue(ctx, repo, number, reason)
 	}
 	return nil
 }

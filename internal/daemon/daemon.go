@@ -4670,6 +4670,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 		_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created: %s", pr.Number, pr.URL), beadID, anvil)
 		d.ingotRecordPR(beadID, anvil, pr.Number, pr.URL)
+		d.notifyWicketPRCreated(beadID, pr.URL, pr.Number)
 	} else {
 		d.logger.Info("warden_rerun: not approved", "bead", beadID, "verdict", result.Verdict, "summary", result.Summary)
 		_ = d.db.LogEvent(state.EventWardenReject, fmt.Sprintf("Warden re-review: %s — %s", result.Verdict, result.Summary), beadID, anvil)
@@ -4747,6 +4748,7 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 	_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 	_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created (approved as-is): %s", pr.Number, pr.URL), beadID, anvil)
 	d.ingotRecordPR(beadID, anvil, pr.Number, pr.URL)
+	d.notifyWicketPRCreated(beadID, pr.URL, pr.Number)
 }
 
 // handleForceSmith re-invokes smith on the same branch with existing warden

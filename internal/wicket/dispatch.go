@@ -7,6 +7,7 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
@@ -103,13 +104,33 @@ func (m *Monitor) checkDispatchForIssue(ctx context.Context, anvil string, wi st
 	}
 
 	// Check comments for "dispatch" keyword or "label <tag>" commands.
+	// Only comments from the issue author are honored to prevent bystanders or
+	// bots from accidentally triggering dispatch. We also track the comment count
+	// so each comment is processed only once, preventing repeated re-tagging.
 	comments, err := m.ghClient.ListComments(ctx, wi.Repo, wi.IssueNumber)
 	if err != nil {
 		log.Printf("[wicket:dispatch] %s: list comments %s#%d: %v", anvil, wi.Repo, wi.IssueNumber, err)
 		return
 	}
 
-	for _, c := range comments {
+	currentCount := len(comments)
+	previousCount := wi.CommentCount
+
+	// Persist the updated comment count so new comments are not re-processed
+	// on the next scan, regardless of whether they trigger an action.
+	if currentCount != previousCount {
+		wi.CommentCount = currentCount
+		if uerr := m.db.UpdateWicketIssue(wi); uerr != nil {
+			log.Printf("[wicket:dispatch] %s: update comment_count for %s#%d: %v", anvil, wi.Repo, wi.IssueNumber, uerr)
+		}
+	}
+
+	// Only act on new comments from the issue author.
+	for i := previousCount; i < currentCount; i++ {
+		c := comments[i]
+		if !strings.EqualFold(c.Author, wi.Author) {
+			continue // only the issue author can trigger dispatch or label commands
+		}
 		body := strings.TrimSpace(c.Body)
 		lower := strings.ToLower(body)
 
@@ -210,23 +231,26 @@ func (m *Monitor) checkClarificationReTriage(ctx context.Context, anvil string, 
 	}
 }
 
-// checkClarificationForRepo checks all ask_clarify issues in the given repo
-// for new author replies.
+// checkClarificationForRepo checks all ask_clarify and stale issues in the
+// given repo for new author replies. Stale issues are included so that an
+// author reply before the auto-close window can return the issue to the queue.
 func (m *Monitor) checkClarificationForRepo(ctx context.Context, anvil, repo string, anvilCfg config.AnvilConfig, settings config.SettingsConfig) {
-	issues, err := m.db.ListWicketIssues(state.ListWicketIssuesOpts{
-		Repo:  repo,
-		State: StateAskClarify,
-	})
-	if err != nil {
-		log.Printf("[wicket:retriage] %s: list ask_clarify issues for %s: %v", anvil, repo, err)
-		return
-	}
-
-	for _, wi := range issues {
-		if ctx.Err() != nil {
-			return
+	for _, st := range []string{StateAskClarify, StateStale} {
+		issues, err := m.db.ListWicketIssues(state.ListWicketIssuesOpts{
+			Repo:  repo,
+			State: st,
+		})
+		if err != nil {
+			log.Printf("[wicket:retriage] %s: list %s issues for %s: %v", anvil, st, repo, err)
+			continue
 		}
-		m.checkClarificationForIssue(ctx, anvil, wi, anvilCfg, settings)
+
+		for _, wi := range issues {
+			if ctx.Err() != nil {
+				return
+			}
+			m.checkClarificationForIssue(ctx, anvil, wi, anvilCfg, settings)
+		}
 	}
 }
 
@@ -254,8 +278,14 @@ func (m *Monitor) checkClarificationForIssue(ctx context.Context, anvil string, 
 		}
 	}
 
-	// Update the stored comment count regardless of who replied.
+	// Update the stored comment count and, when the author replied, record the
+	// timestamp so stale detection uses last author activity rather than
+	// UpdatedAt (which is bumped by any UpdateWicketIssue call).
 	wi.CommentCount = currentCount
+	if authorReplied {
+		now := time.Now().UTC()
+		wi.AuthorRepliedAt = &now
+	}
 	if err := m.db.UpdateWicketIssue(wi); err != nil {
 		log.Printf("[wicket:retriage] %s: update comment_count for %s#%d: %v", anvil, wi.Repo, wi.IssueNumber, err)
 	}
@@ -306,8 +336,17 @@ func (m *Monitor) checkClarificationForIssue(ctx context.Context, anvil string, 
 		_ = m.db.UpdateWicketIssue(wi)
 
 	default:
-		// For other actions (flag_human, reject), update the state.
-		wi.State = string(decision.Action)
+		// Map triage actions to the corresponding lifecycle states to avoid
+		// storing raw action strings that other code won't recognize (e.g.
+		// "flag_human" must be stored as "needs_human").
+		switch decision.Action {
+		case ActionFlagHuman:
+			wi.State = StateNeedsHuman
+		case ActionReject:
+			wi.State = StateRejected
+		default:
+			wi.State = string(decision.Action)
+		}
 		wi.TriageReason = decision.Reason
 		_ = m.db.UpdateWicketIssue(wi)
 	}

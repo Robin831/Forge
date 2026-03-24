@@ -121,6 +121,7 @@ func (db *DB) migrate() error {
 		{"wicket_issues", "pr_number", `ALTER TABLE wicket_issues ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0`},
 		{"wicket_issues", "pr_url", `ALTER TABLE wicket_issues ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''`},
 		{"wicket_issues", "comment_count", `ALTER TABLE wicket_issues ADD COLUMN comment_count INTEGER NOT NULL DEFAULT 0`},
+		{"wicket_issues", "author_replied_at", `ALTER TABLE wicket_issues ADD COLUMN author_replied_at TEXT`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -2646,9 +2647,13 @@ type WicketIssue struct {
 	PRUrl string
 	// CommentCount is the number of comments seen on the last check (used to detect new replies).
 	CommentCount int
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	ProcessedAt  *time.Time
+	// AuthorRepliedAt records the last time the issue author posted a comment.
+	// Used for stale detection to avoid false positives when non-author comments
+	// (e.g. bot comments, bystander replies) bump UpdatedAt.
+	AuthorRepliedAt *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	ProcessedAt     *time.Time
 }
 
 // ListWicketIssuesOpts filters for ListWicketIssues.
@@ -2667,11 +2672,16 @@ func (db *DB) InsertWicketIssue(issue WicketIssue) error {
 		issue.State = "pending"
 	}
 	now := time.Now().UTC().Format(dbTimeLayout)
+	var authorRepliedAt any
+	if issue.AuthorRepliedAt != nil {
+		authorRepliedAt = issue.AuthorRepliedAt.UTC().Format(dbTimeLayout)
+	}
 	_, err := db.conn.Exec(
 		`INSERT INTO wicket_issues
 		     (repo, issue_number, title, body, author, state, triage_action,
-		      triage_reason, bead_id, created_at, updated_at, processed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		      triage_reason, bead_id, pr_number, pr_url, comment_count,
+		      author_replied_at, created_at, updated_at, processed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		issue.Repo,
 		issue.IssueNumber,
 		issue.Title,
@@ -2681,6 +2691,10 @@ func (db *DB) InsertWicketIssue(issue WicketIssue) error {
 		issue.TriageAction,
 		issue.TriageReason,
 		issue.BeadID,
+		issue.PRNumber,
+		issue.PRUrl,
+		issue.CommentCount,
+		authorRepliedAt,
 		now,
 		now,
 		nil,
@@ -2696,11 +2710,15 @@ func (db *DB) UpdateWicketIssue(issue WicketIssue) error {
 	if issue.ProcessedAt != nil {
 		processedAt = issue.ProcessedAt.UTC().Format(dbTimeLayout)
 	}
+	var authorRepliedAt any
+	if issue.AuthorRepliedAt != nil {
+		authorRepliedAt = issue.AuthorRepliedAt.UTC().Format(dbTimeLayout)
+	}
 	res, err := db.conn.Exec(
 		`UPDATE wicket_issues
 		    SET title=?, body=?, author=?, state=?, triage_action=?,
 		        triage_reason=?, bead_id=?, pr_number=?, pr_url=?,
-		        comment_count=?, updated_at=?, processed_at=?
+		        comment_count=?, author_replied_at=?, updated_at=?, processed_at=?
 		  WHERE repo=? AND issue_number=?`,
 		issue.Title,
 		issue.Body,
@@ -2712,6 +2730,7 @@ func (db *DB) UpdateWicketIssue(issue WicketIssue) error {
 		issue.PRNumber,
 		issue.PRUrl,
 		issue.CommentCount,
+		authorRepliedAt,
 		now,
 		processedAt,
 		issue.Repo,
@@ -2736,7 +2755,7 @@ func (db *DB) GetWicketIssue(repo string, number int) (*WicketIssue, error) {
 	row := db.conn.QueryRow(
 		`SELECT id, repo, issue_number, title, body, author, state,
 		        triage_action, triage_reason, bead_id,
-		        pr_number, pr_url, comment_count,
+		        pr_number, pr_url, comment_count, author_replied_at,
 		        created_at, updated_at, processed_at
 		   FROM wicket_issues
 		  WHERE repo=? AND issue_number=?`,
@@ -2754,7 +2773,7 @@ func (db *DB) GetWicketIssueByBeadID(beadID string) (*WicketIssue, error) {
 	row := db.conn.QueryRow(
 		`SELECT id, repo, issue_number, title, body, author, state,
 		        triage_action, triage_reason, bead_id,
-		        pr_number, pr_url, comment_count,
+		        pr_number, pr_url, comment_count, author_replied_at,
 		        created_at, updated_at, processed_at
 		   FROM wicket_issues
 		  WHERE bead_id=?
@@ -2779,7 +2798,7 @@ func (db *DB) IsIssueTracked(repo string, number int) (bool, error) {
 func (db *DB) ListWicketIssues(opts ListWicketIssuesOpts) ([]WicketIssue, error) {
 	q := `SELECT id, repo, issue_number, title, body, author, state,
 	             triage_action, triage_reason, bead_id,
-	             pr_number, pr_url, comment_count,
+	             pr_number, pr_url, comment_count, author_replied_at,
 	             created_at, updated_at, processed_at
 	        FROM wicket_issues`
 	var args []any
@@ -2862,11 +2881,11 @@ func (db *DB) LastWicketScanAt() (*time.Time, error) {
 func scanWicketIssue(row *sql.Row) (*WicketIssue, error) {
 	var w WicketIssue
 	var createdAt, updatedAt string
-	var processedAt *string
+	var processedAt, authorRepliedAt *string
 	err := row.Scan(
 		&w.ID, &w.Repo, &w.IssueNumber, &w.Title, &w.Body, &w.Author,
 		&w.State, &w.TriageAction, &w.TriageReason, &w.BeadID,
-		&w.PRNumber, &w.PRUrl, &w.CommentCount,
+		&w.PRNumber, &w.PRUrl, &w.CommentCount, &authorRepliedAt,
 		&createdAt, &updatedAt, &processedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -2881,6 +2900,10 @@ func scanWicketIssue(row *sql.Row) (*WicketIssue, error) {
 		t := parseTime(*processedAt)
 		w.ProcessedAt = &t
 	}
+	if authorRepliedAt != nil {
+		t := parseTime(*authorRepliedAt)
+		w.AuthorRepliedAt = &t
+	}
 	return &w, nil
 }
 
@@ -2888,11 +2911,11 @@ func scanWicketIssue(row *sql.Row) (*WicketIssue, error) {
 func scanWicketIssueRow(rows *sql.Rows) (*WicketIssue, error) {
 	var w WicketIssue
 	var createdAt, updatedAt string
-	var processedAt *string
+	var processedAt, authorRepliedAt *string
 	err := rows.Scan(
 		&w.ID, &w.Repo, &w.IssueNumber, &w.Title, &w.Body, &w.Author,
 		&w.State, &w.TriageAction, &w.TriageReason, &w.BeadID,
-		&w.PRNumber, &w.PRUrl, &w.CommentCount,
+		&w.PRNumber, &w.PRUrl, &w.CommentCount, &authorRepliedAt,
 		&createdAt, &updatedAt, &processedAt,
 	)
 	if err != nil {
@@ -2903,6 +2926,10 @@ func scanWicketIssueRow(rows *sql.Rows) (*WicketIssue, error) {
 	if processedAt != nil {
 		t := parseTime(*processedAt)
 		w.ProcessedAt = &t
+	}
+	if authorRepliedAt != nil {
+		t := parseTime(*authorRepliedAt)
+		w.AuthorRepliedAt = &t
 	}
 	return &w, nil
 }

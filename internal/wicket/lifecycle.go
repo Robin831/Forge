@@ -102,7 +102,7 @@ func (m *Monitor) HandlePRMerged(ctx context.Context, beadID, prURL, baseBranch 
 		}
 	}
 
-	if cerr := m.ghClient.CloseIssue(ctx, wi.Repo, wi.IssueNumber); cerr != nil {
+	if cerr := m.ghClient.CloseIssue(ctx, wi.Repo, wi.IssueNumber, "completed"); cerr != nil {
 		log.Printf("[wicket:lifecycle] close issue %s#%d: %v", wi.Repo, wi.IssueNumber, cerr)
 	}
 
@@ -139,9 +139,15 @@ func (m *Monitor) checkStaleIssues(ctx context.Context, settings config.Settings
 		if ctx.Err() != nil {
 			return
 		}
-		// Use UpdatedAt as the staleness marker — it is bumped on every change
-		// (including when new comments are detected by checkClarificationReTriage).
-		if wi.UpdatedAt.After(threshold) {
+		// Use AuthorRepliedAt as the staleness marker when available — it is
+		// only updated when the issue author comments, so non-author activity
+		// (bot comments, bystanders) does not reset the staleness timer.
+		// Fall back to UpdatedAt for issues that predate this field.
+		activityAt := wi.UpdatedAt
+		if wi.AuthorRepliedAt != nil {
+			activityAt = *wi.AuthorRepliedAt
+		}
+		if activityAt.After(threshold) {
 			continue
 		}
 
@@ -177,13 +183,17 @@ func (m *Monitor) checkStaleClosed(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if wi.UpdatedAt.After(threshold) {
+		activityAt := wi.UpdatedAt
+		if wi.AuthorRepliedAt != nil {
+			activityAt = *wi.AuthorRepliedAt
+		}
+		if activityAt.After(threshold) {
 			continue
 		}
 
 		log.Printf("[wicket:stale] %s#%d stale with no reply — auto-closing", wi.Repo, wi.IssueNumber)
 
-		if cerr := m.ghClient.CloseIssue(ctx, wi.Repo, wi.IssueNumber); cerr != nil {
+		if cerr := m.ghClient.CloseIssue(ctx, wi.Repo, wi.IssueNumber, "not planned"); cerr != nil {
 			log.Printf("[wicket:stale] close issue %s#%d: %v", wi.Repo, wi.IssueNumber, cerr)
 		}
 
