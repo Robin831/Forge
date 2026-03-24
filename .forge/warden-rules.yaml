@@ -1218,7 +1218,7 @@ rules:
         Adding a new warden rule entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
         Before inserting a new warden rule, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353']
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -1358,7 +1358,7 @@ rules:
       pattern: Warden rule definitions in warden-rules.yaml
       check: >-
         Verify that a specific, descriptive category is assigned when an appropriate one exists (for example, `style`, `testing`, or `concurrency`). The generic `category: other` should only be used when no more precise category applies, to keep triage, search, and reporting meaningful.
-      source: ['copilot:PR#348', 'copilot:PR#353']
+      source: ['copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424']
       added: "2026-03-20"
     - id: warden-source-field-wording
       category: style
@@ -2401,3 +2401,102 @@ rules:
         Verify that the type being modified is actually wired into the system. If a parallel or canonical representation exists elsewhere (e.g. a config struct in another package), updating an unused copy causes drift and misleads future readers. Either wire the unused type into consumers or update the canonical type instead.
       source: copilot:PR#423
       added: "2026-03-23"
+    - id: action-to-state-mapping
+      category: other
+      pattern: Storing an action/decision enum value directly as a state field
+      check: >-
+        Verify that action/decision values are mapped to their corresponding lifecycle state constants before persistence, rather than storing raw action strings that may differ from the state values other code queries against
+      source: copilot:PR#426
+      added: "2026-03-24"
+    - id: gh-api-pagination
+      category: performance
+      pattern: GitHub API list calls using --per-page without --paginate
+      check: >-
+        Verify that all GitHub API list/search calls include --paginate (or manual page iteration) so results beyond the first page are not silently dropped
+      source: copilot:PR#426
+      added: "2026-03-24"
+    - id: close-reason-propagation
+      category: other
+      pattern: >-
+        Calling issue/ticket close functions (e.g. CloseIssue, close APIs) after a state transition like PR merge
+      check: >-
+        Verify that close/completion functions propagate the appropriate reason or status (e.g. 'completed', 'not planned') to the underlying API, and that the interface signature supports the reason parameter — don't silently drop context documented in the design
+      source: copilot:PR#426
+      added: "2026-03-24"
+    - id: notify-all-pr-paths
+      category: other
+      pattern: Multiple code paths that create PRs or call ingotRecordPR/emit PR-created events
+      check: >-
+        Verify that notification callbacks (e.g. notifyWicketPRCreated) are invoked in every code path that successfully creates a PR, not just the primary finalizePipeline path. Check alternate flows like warden re-run and approve-as-is for missing notification calls.
+      source: copilot:PR#426
+      added: "2026-03-24"
+    - id: stale-issue-reply-retriage
+      category: other
+      pattern: >-
+        State machine transitions that filter issues by a single lifecycle state when checking for user/author replies or re-evaluation
+      check: >-
+        Verify that reply/re-triage handlers scan ALL relevant states (e.g. both ask_clarify AND stale), not just one. If a stale issue can receive an author reply that should reactivate it, the handler must include that state in its scan or provide a separate transition path back into the active workflow.
+      source: copilot:PR#426
+      added: "2026-03-24"
+    - id: stale-detection-timestamp-accuracy
+      category: other
+      pattern: >-
+        Code that uses a generic updated_at or UpdatedAt timestamp to determine staleness, inactivity, or auto-close thresholds
+      check: >-
+        Verify that staleness/inactivity detection is based on a dedicated timestamp tracking the specific actor's last meaningful activity (e.g., last author reply), not a generic updated_at field that gets bumped by unrelated operations like automated updates, bot activity, or other users' actions
+      source: copilot:PR#426
+      added: "2026-03-24"
+    - id: struct-insert-field-sync
+      category: other
+      pattern: A struct has fields added or a DB schema is migrated with new columns
+      check: >-
+        Verify that all insert/update functions are updated to include the new fields, so values are not silently dropped or left to defaults when callers provide them
+      source: copilot:PR#426
+      added: "2026-03-24"
+    - id: capture-time-now-once
+      category: concurrency
+      pattern: Multiple time.Now() calls used to derive related values
+      check: >-
+        Verify that time.Now() is captured once into a local variable when multiple time-derived values (formatted strings, IDs, filenames) need to be consistent — repeated calls can diverge at second or midnight boundaries, causing mismatched identifiers or race-like bugs
+      source: copilot:PR#427
+      added: "2026-03-24"
+    - id: log-deferred-cleanup-errors
+      category: error-handling
+      pattern: >-
+        Deferred function calls that discard errors from cleanup operations (e.g., `defer func() { _ = cleanup(); }()` or `defer cleanup()` without error handling)
+      check: >-
+        Verify that errors from deferred cleanup operations (worktree removal, file cleanup, resource release) are logged rather than silently discarded. Silent failures can leave behind stale resources that break subsequent runs.
+      source: copilot:PR#427
+      added: "2026-03-24"
+    - id: stable-worktree-id-for-retries
+      category: error-handling
+      pattern: >-
+        Generating unique/random worktree or branch IDs for operations that may be retried or re-run
+      check: >-
+        Verify that worktree and branch IDs are stable across crash/retry runs (e.g., derived from date or deterministic input) so that ResetBranch can clean up previous attempts. Random or unique-per-run IDs cause 'branch already exists' failures when a leftover branch exists but its worktree directory does not.
+      source: copilot:PR#427
+      added: "2026-03-24"
+    - id: worktree-branch-preexist
+      category: error-handling
+      pattern: >-
+        Creating a git worktree with a new branch (e.g., ResetBranch: true or git worktree add -b)
+      check: >-
+        Verify that the code handles the case where the target branch already exists locally (e.g., from a previous interrupted run). The worktree creation will fail if the branch exists. Either delete the pre-existing branch first, or use a creation mode that can reuse/reset an existing branch.
+      source: copilot:PR#427
+      added: "2026-03-24"
+    - id: worktree-absolute-path-reroot
+      category: other
+      pattern: >-
+        Code that scans/analyzes in one worktree directory and then applies changes in a different worktree directory, especially when scan results contain absolute file paths (e.g., SourceDir, ModuleDir, manifest paths)
+      check: >-
+        Verify that absolute paths captured during a scan/analysis phase are re-rooted (converted to repo-relative paths, then joined with the apply worktree path) before being used in a different worktree context. Otherwise operations like npm install or git commit may target the wrong directory.
+      source: copilot:PR#428
+      added: "2026-03-24"
+    - id: worktree-scan-semantics
+      category: other
+      pattern: >-
+        Creating a worktree via worktree.Manager.CreateWithOptions for read-only or scan-only purposes
+      check: >-
+        Verify that scan/read-only worktrees base from the current local HEAD (no fetch, no remote branch checkout) to preserve 'scan the working tree as-is' semantics. Using the default CreateWithOptions behavior fetches origin and checks out the remote default branch, which changes scan semantics and creates inconsistency with fallback paths that scan the local checkout. Use options like ResetBranch: false or a detached worktree from HEAD when only filesystem isolation (e.g. node_modules) is needed.
+      source: copilot:PR#428
+      added: "2026-03-24"
