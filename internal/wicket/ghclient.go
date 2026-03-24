@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -269,15 +270,66 @@ func (g *ghClient) CloseIssue(ctx context.Context, repo string, number int, reas
 }
 
 // runGH executes the gh CLI with the provided arguments and returns stdout.
+// When the gh CLI reports a rate-limit error (HTTP 403 or secondary rate
+// limit), it returns a *RateLimitError instead of a plain error.
 func runGH(ctx context.Context, args []string) ([]byte, error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("%w\nstderr: %s", err, strings.TrimSpace(stderr.String()))
+		stderrStr := strings.TrimSpace(stderr.String())
+		if isRateLimitStderr(stderrStr) {
+			return nil, &RateLimitError{
+				Message:   stderrStr,
+				Remaining: -1,
+			}
+		}
+		return nil, fmt.Errorf("%w\nstderr: %s", err, stderrStr)
+	}
+	// Even on success, check stderr for soft rate-limit warnings from gh.
+	if stderrStr := strings.TrimSpace(stderr.String()); isRateLimitStderr(stderrStr) {
+		log.Printf("[wicket/gh] rate limit warning in stderr: %s", stderrStr)
 	}
 	return stdout.Bytes(), nil
+}
+
+// isRateLimitStderr reports whether stderr output from the gh CLI indicates a
+// GitHub API rate limit has been exceeded.
+func isRateLimitStderr(stderr string) bool {
+	lower := strings.ToLower(stderr)
+	return strings.Contains(lower, "rate limit exceeded") ||
+		strings.Contains(lower, "secondary rate limit") ||
+		strings.Contains(lower, "api rate limit") ||
+		strings.Contains(lower, "x-ratelimit-remaining: 0")
+}
+
+// ghRateLimitResponse is the JSON shape of the GitHub rate_limit API endpoint.
+type ghRateLimitResponse struct {
+	Resources struct {
+		Core struct {
+			Remaining int   `json:"remaining"`
+			Reset     int64 `json:"reset"`
+		} `json:"core"`
+	} `json:"resources"`
+}
+
+// FetchRateLimitRemaining queries the GitHub rate_limit API and returns the
+// current remaining core API requests and the reset time. Returns -1 and a
+// zero time when the call fails or the response cannot be parsed.
+func FetchRateLimitRemaining(ctx context.Context) (remaining int, resetAt time.Time, err error) {
+	out, err := runGH(ctx, []string{"api", "rate_limit"})
+	if err != nil {
+		return -1, time.Time{}, fmt.Errorf("gh api rate_limit: %w", err)
+	}
+	var resp ghRateLimitResponse
+	if jsonErr := json.Unmarshal(out, &resp); jsonErr != nil {
+		return -1, time.Time{}, fmt.Errorf("parse rate_limit response: %w", jsonErr)
+	}
+	if resp.Resources.Core.Reset > 0 {
+		resetAt = time.Unix(resp.Resources.Core.Reset, 0)
+	}
+	return resp.Resources.Core.Remaining, resetAt, nil
 }
 
 // toIssue converts the raw gh JSON shape to an Issue.

@@ -1,0 +1,2 @@
+category: Added
+- **Wicket rate limiting and backoff** - Added `rateLimiter` type to track GitHub API quota and apply exponential backoff when rate limits are hit. The Wicket monitor now detects rate-limit errors (HTTP 403, secondary rate limit) from gh CLI stderr, doubles the poll interval when quota drops below 100, and backs off exponentially (1m → 2m → 4m, capped at 60m) on repeated failures. Logs `EventWicketError` when rate limited and skips remaining repos for the cycle. Also adds `FetchRateLimitRemaining` to query the GitHub rate_limit API endpoint. (Forge-yuag)
