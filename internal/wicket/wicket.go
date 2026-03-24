@@ -182,6 +182,9 @@ func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.Anvil
 
 	// Update the repo→anvil mapping so downstream code can look up anvil names.
 	m.mu.Lock()
+	if m.repoAnvilMap == nil {
+		m.repoAnvilMap = make(map[string]string)
+	}
 	for _, repo := range repos {
 		m.repoAnvilMap[repo] = name
 	}
