@@ -194,6 +194,136 @@ func TestParseTriageDecision_OutOfScopeMissingReason(t *testing.T) {
 	}
 }
 
+func TestExtractSourceURL(t *testing.T) {
+	tests := []struct {
+		desc string
+		want string
+	}{
+		{
+			desc: "Implement dark mode.\n\nSource: https://github.com/org/repo/issues/42",
+			want: "https://github.com/org/repo/issues/42",
+		},
+		{
+			desc: "No source URL here.",
+			want: "",
+		},
+		{
+			desc: "Source: https://github.com/org/repo/issues/1\nExtra line",
+			want: "https://github.com/org/repo/issues/1",
+		},
+		{
+			desc: "",
+			want: "",
+		},
+	}
+	for _, tc := range tests {
+		got := extractSourceURL(tc.desc)
+		if got != tc.want {
+			t.Errorf("extractSourceURL(%q) = %q; want %q", tc.desc, got, tc.want)
+		}
+	}
+}
+
+func TestFindDuplicateBySourceURL_CrossAnvilMatch(t *testing.T) {
+	// Simulate two anvils: "anvil-a" and "anvil-b".
+	// The issue's source URL matches a bead in "anvil-b".
+	issue := Issue{Number: 99, Repo: "org/other-repo"}
+	targetURL := issueURL(issue.Repo, issue.Number)
+
+	beadsByAnvil := map[string][]BeadSummary{
+		"/anvil-a": {
+			{ID: "Forge-aa1", Title: "Unrelated", Description: "Some work.\n\nSource: https://github.com/org/other-repo/issues/1"},
+		},
+		"/anvil-b": {
+			{ID: "Forge-bb2", Title: "Dark mode", Description: "Implement dark mode.\n\nSource: " + targetURL},
+		},
+	}
+
+	lister := func(_ context.Context, anvilPath string) []BeadSummary {
+		return beadsByAnvil[anvilPath]
+	}
+
+	beadID, ok := findDuplicateBySourceURL(context.Background(), issue, []string{"/anvil-a", "/anvil-b"}, lister)
+	if !ok {
+		t.Fatal("expected duplicate to be found")
+	}
+	if beadID != "Forge-bb2" {
+		t.Errorf("beadID: got %q, want Forge-bb2", beadID)
+	}
+}
+
+func TestFindDuplicateBySourceURL_NoMatch(t *testing.T) {
+	issue := Issue{Number: 7, Repo: "org/repo"}
+	lister := func(_ context.Context, anvilPath string) []BeadSummary {
+		return []BeadSummary{
+			{ID: "Forge-x1", Title: "Other", Description: "Some work.\n\nSource: https://github.com/org/repo/issues/999"},
+		}
+	}
+	_, ok := findDuplicateBySourceURL(context.Background(), issue, []string{"/anvil-a"}, lister)
+	if ok {
+		t.Fatal("expected no duplicate")
+	}
+}
+
+func TestRunTriage_CrossAnvilDuplicateBySourceURL(t *testing.T) {
+	// Issue #55 in "org/repo-b" has already been triaged in a different anvil.
+	issue := Issue{Number: 55, Repo: "org/repo-b", Title: "Add dark mode"}
+	targetURL := issueURL(issue.Repo, issue.Number)
+
+	runnerCalled := false
+	cfg := TriageConfig{
+		runner: func(_ context.Context, _ string) (string, error) {
+			runnerCalled = true
+			return `{"action": "create_bead", "reason": "ok", "bead_title": "T", "bead_description": "D"}`, nil
+		},
+		beadLister: noopBeadLister,
+		AllAnvilPaths: []string{"/anvil-a", "/anvil-b"},
+		crossAnvilLister: func(_ context.Context, anvilPath string) []BeadSummary {
+			if anvilPath == "/anvil-b" {
+				return []BeadSummary{
+					{ID: "Forge-xdup", Title: "Add dark mode", Description: "Implement dark mode.\n\nSource: " + targetURL},
+				}
+			}
+			return nil
+		},
+	}
+
+	dec := RunTriage(context.Background(), issue, cfg)
+	if dec.Action != ActionDuplicate {
+		t.Errorf("action: got %q, want duplicate", dec.Action)
+	}
+	if dec.DuplicateID != "Forge-xdup" {
+		t.Errorf("duplicate_id: got %q, want Forge-xdup", dec.DuplicateID)
+	}
+	if runnerCalled {
+		t.Error("AI runner should not be called when cross-anvil duplicate is detected")
+	}
+}
+
+func TestRunTriage_CrossAnvilNoMatch_ProceedsToAI(t *testing.T) {
+	// When no cross-anvil match is found, the AI runner must still be called.
+	issue := Issue{Number: 3, Repo: "org/repo", Title: "New feature"}
+	runnerCalled := false
+	cfg := TriageConfig{
+		runner: func(_ context.Context, _ string) (string, error) {
+			runnerCalled = true
+			return `{"action": "create_bead", "reason": "ok", "bead_title": "T", "bead_description": "D"}`, nil
+		},
+		beadLister: noopBeadLister,
+		AllAnvilPaths: []string{"/anvil-a"},
+		crossAnvilLister: func(_ context.Context, _ string) []BeadSummary {
+			return nil // no existing beads
+		},
+	}
+	dec := RunTriage(context.Background(), issue, cfg)
+	if dec.Action != ActionCreateBead {
+		t.Errorf("action: got %q, want create_bead", dec.Action)
+	}
+	if !runnerCalled {
+		t.Error("AI runner should be called when no cross-anvil duplicate is found")
+	}
+}
+
 // --- end new action tests ---
 
 // noopBeadLister is a beadLister that returns nil without spawning any

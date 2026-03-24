@@ -303,9 +303,10 @@ func (m *Monitor) checkClarificationForIssue(ctx context.Context, anvil string, 
 		triageFn = RunTriageWithComments
 	}
 	decision := triageFn(ctx, issue, comments, TriageConfig{
-		Providers:   buildProviders(settings),
-		ExtraPrompt: anvilCfg.WicketTriagePrompt,
-		AnvilPath:   anvilCfg.Path,
+		Providers:     buildProviders(settings),
+		ExtraPrompt:   anvilCfg.WicketTriagePrompt,
+		AnvilPath:     anvilCfg.Path,
+		AllAnvilPaths: m.allAnvilPaths(),
 	})
 
 	_ = m.db.LogEvent(state.EventWicketIssueTriage,

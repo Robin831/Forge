@@ -130,6 +130,11 @@ type TriageConfig struct {
 	// passed as cmd.Dir to `bd list` so the correct .beads/ config is used.
 	// When empty, the daemon's working directory is used (may query the wrong DB).
 	AnvilPath string
+	// AllAnvilPaths is the list of ALL configured anvil paths (including the
+	// current anvil). When non-empty, RunTriage performs a cross-anvil Source
+	// URL lookup before calling the AI so that issues already tracked in a
+	// different anvil are detected as duplicates immediately.
+	AllAnvilPaths []string
 	// runner is the AI call function. Nil means use the default smith-based
 	// runner. Tests replace this to avoid spawning real subprocesses.
 	runner func(ctx context.Context, prompt string) (string, error)
@@ -138,6 +143,11 @@ type TriageConfig struct {
 	// The first call receives status "open,in_progress" and limit 50;
 	// the second receives status "closed" and limit 20.
 	beadLister func(ctx context.Context, status string, limit int) []BeadSummary
+	// crossAnvilLister overrides cross-anvil bead fetching for tests. When
+	// non-nil it is called instead of fetchBeadSummaries for each anvil path
+	// in AllAnvilPaths. Each call receives the anvil path and returns open and
+	// in-progress beads (status "open,in_progress").
+	crossAnvilLister func(ctx context.Context, anvilPath string) []BeadSummary
 }
 
 // buildTriagePrompt formats an issue into a prompt string for the triage AI.
@@ -361,6 +371,36 @@ func extractFencedTriageBlock(text, fence string) string {
 	return strings.TrimSpace(content[:end])
 }
 
+// extractSourceURL returns the GitHub issue URL embedded in a bead description
+// by buildBDArgs (format: "Source: <url>"). Returns "" if not present.
+func extractSourceURL(desc string) string {
+	for _, line := range strings.Split(desc, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Source: ") {
+			return strings.TrimPrefix(line, "Source: ")
+		}
+	}
+	return ""
+}
+
+// findDuplicateBySourceURL searches all configured anvil paths for a bead
+// whose description contains a Source URL matching the incoming GitHub issue.
+// Returns (beadID, true) on the first match, ("", false) if none found.
+// The lister callback is called once per anvil path and should return all
+// open/in-progress beads for that path.
+func findDuplicateBySourceURL(ctx context.Context, issue Issue, allAnvilPaths []string, lister func(ctx context.Context, anvilPath string) []BeadSummary) (string, bool) {
+	target := issueURL(issue.Repo, issue.Number)
+	for _, path := range allAnvilPaths {
+		beads := lister(ctx, path)
+		for _, b := range beads {
+			if extractSourceURL(b.Description) == target {
+				return b.ID, true
+			}
+		}
+	}
+	return "", false
+}
+
 // RunTriage calls the AI provider with a triage prompt for the given issue and
 // returns a TriageDecision. It retries once if the first response cannot be
 // parsed (parse failure only), and defaults to ActionFlagHuman on persistent
@@ -377,6 +417,30 @@ func RunTriageWithComments(ctx context.Context, issue Issue, comments []Comment,
 	run := cfg.runner
 	if run == nil {
 		run = buildDefaultTriageRunner(cfg.Providers)
+	}
+
+	// Cross-anvil duplicate check: before invoking the AI, search all
+	// configured anvil bead databases for a bead whose description contains
+	// a Source URL matching this issue. A match means the issue was already
+	// triaged, so we return duplicate immediately.
+	if len(cfg.AllAnvilPaths) > 0 {
+		xLister := cfg.crossAnvilLister
+		if xLister == nil {
+			// Cap the number of open/in_progress beads scanned per anvil to avoid
+			// unbounded bd list calls as databases grow.
+			const crossAnvilMaxOpenBeads = 200
+			xLister = func(ctx context.Context, anvilPath string) []BeadSummary {
+				return fetchBeadSummaries(ctx, "open,in_progress", crossAnvilMaxOpenBeads, anvilPath)
+			}
+		}
+		if beadID, ok := findDuplicateBySourceURL(ctx, issue, cfg.AllAnvilPaths, xLister); ok {
+			log.Printf("[wicket:triage] %s#%d cross-anvil duplicate found: %s", issue.Repo, issue.Number, beadID)
+			return TriageDecision{
+				Action:      ActionDuplicate,
+				Reason:      fmt.Sprintf("issue already tracked as existing bead %s", beadID),
+				DuplicateID: beadID,
+			}
+		}
 	}
 
 	// Fetch existing bead context for duplicate/already-fixed detection.
