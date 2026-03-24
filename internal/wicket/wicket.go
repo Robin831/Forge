@@ -23,9 +23,9 @@ type Monitor struct {
 	mu       sync.RWMutex
 	rl       *rateLimiter
 	resolver *RepoResolver
-	// repoAnvilMap maps "owner/repo" → anvil name. Rebuilt on every scan
-	// cycle so downstream code (dispatch, clarification) can look up which
-	// anvil owns a given repository without re-resolving the git remote.
+	// repoAnvilMap caches "owner/repo" → anvil name so downstream code
+	// (dispatch, clarification) can look up which anvil owns a given
+	// repository without always re-resolving the git remote.
 	repoAnvilMap map[string]string
 	// triageFunc overrides RunTriageWithComments. Nil means use the default.
 	// Tests set this to avoid spawning real AI subprocesses.
@@ -181,11 +181,34 @@ func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.Anvil
 	}
 
 	// Update the repo→anvil mapping so downstream code can look up anvil names.
+	// Build a set of the current repos for efficient lookup.
+	repoSet := make(map[string]struct{}, len(repos))
+	for _, repo := range repos {
+		repoSet[repo] = struct{}{}
+	}
+
 	m.mu.Lock()
 	if m.repoAnvilMap == nil {
 		m.repoAnvilMap = make(map[string]string)
 	}
-	for _, repo := range repos {
+
+	// Drop any repos previously owned by this anvil that are no longer
+	// present in its resolved repo list (e.g. wicket_repos config changed).
+	for repo, anvilName := range m.repoAnvilMap {
+		if anvilName == name {
+			if _, ok := repoSet[repo]; !ok {
+				delete(m.repoAnvilMap, repo)
+			}
+		}
+	}
+
+	// Add/update mappings for the current repos, but do not silently override
+	// another anvil's ownership.
+	for repo := range repoSet {
+		if existing, ok := m.repoAnvilMap[repo]; ok && existing != name {
+			log.Printf("[wicket] repo %s is already owned by anvil %s; ignoring duplicate ownership by %s", repo, existing, name)
+			continue
+		}
 		m.repoAnvilMap[repo] = name
 	}
 	m.mu.Unlock()
