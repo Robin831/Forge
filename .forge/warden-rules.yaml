@@ -1218,7 +1218,7 @@ rules:
         Adding a new warden rule entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
         Before inserting a new warden rule, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424']
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#425']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -2499,4 +2499,59 @@ rules:
       check: >-
         Verify that scan/read-only worktrees base from the current local HEAD (no fetch, no remote branch checkout) to preserve 'scan the working tree as-is' semantics. Using the default CreateWithOptions behavior fetches origin and checks out the remote default branch, which changes scan semantics and creates inconsistency with fallback paths that scan the local checkout. Use options like ResetBranch: false or a detached worktree from HEAD when only filesystem isolation (e.g. node_modules) is needed.
       source: copilot:PR#428
+      added: "2026-03-24"
+    - id: feature-wiring-matches-description
+      category: other
+      pattern: >-
+        New function or capability added but only called from tests or secondary code paths
+      check: >-
+        Verify that newly introduced functions are wired into all intended call sites (not just tests or secondary flows). If a PR description claims a feature applies broadly (e.g., to all new issues), confirm the primary code path actually invokes the new logic, not just a secondary or re-triage path.
+      source: copilot:PR#429
+      added: "2026-03-24"
+    - id: preserve-existing-fields-on-partial-update
+      category: other
+      pattern: >-
+        Building a new struct with only some fields populated and passing it to a full-row or general Update/Save/Upsert function (e.g. UpdateWicketIssue) instead of fetching the existing row first
+      check: >-
+        When updating a database row, verify that partially-populated structs do not overwrite existing columns with zero values and that fields not being intentionally changed are preserved. Either load the existing row first and merge changes onto it (read-modify-write), or use narrower, column-specific update methods that only touch the intended fields — otherwise unrelated fields get silently zeroed out.
+      source: copilot:PR#429
+      added: "2026-03-24"
+    - id: bd-call-timeout
+      category: concurrency
+      pattern: >-
+        Calling bd/beads CLI commands (bd list, bd show, bd ready, etc.) without a context timeout
+      check: >-
+        Verify that all bd/beads CLI invocations are wrapped in a context.WithTimeout so that Dolt connectivity issues cannot block indefinitely — especially in long-lived daemon contexts that have no inherent deadline
+      source: copilot:PR#429
+      added: "2026-03-24"
+    - id: markdown-blockquote-multiline
+      category: ui
+      pattern: >-
+        Markdown blockquote (`> ...`) used with template variable that may contain multiple lines
+      check: >-
+        Verify that multi-line content inside a `> ` blockquote prefix has each line prefixed with `>`, or is normalized to a single line, so the rendered output doesn't break after the first line
+      source: copilot:PR#429
+      added: "2026-03-24"
+    - id: triage-action-field-validation
+      category: error-handling
+      pattern: >-
+        Parsing or handling structured decisions/actions where different action types require different mandatory fields
+      check: >-
+        Verify that action-specific required fields are validated after parsing (e.g., duplicate requires duplicate_id, already_fixed requires reference_pr, out_of_scope requires a non-empty reason). Missing required fields should be treated as a parse failure so retry/fallback logic applies, rather than allowing empty or ambiguous values to persist.
+      source: copilot:PR#429
+      added: "2026-03-24"
+    - id: bd-cmd-dir-scope
+      category: other
+      pattern: exec.Command(Context) calling `bd` or other beads CLI commands
+      check: >-
+        Verify that cmd.Dir is set to the anvil path so the command uses the correct .beads/ config. Without this, the command may query the wrong beads DB or fail depending on the daemon's working directory.
+      source: copilot:PR#429
+      added: "2026-03-24"
+    - id: prompt-size-cap
+      category: performance
+      pattern: >-
+        Building LLM prompts by injecting unbounded collections (e.g., all open beads, all history entries) without a size limit
+      check: >-
+        Verify that any collection injected into an LLM prompt is capped to a reasonable maximum count or token budget to avoid blowing context limits, excessive cost, and fallback failures
+      source: copilot:PR#429
       added: "2026-03-24"
