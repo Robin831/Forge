@@ -53,6 +53,69 @@ func newTestMonitor(t *testing.T) (*Monitor, *MockGitHubClient, *state.DB) {
 	return m, mock, db
 }
 
+// ---- anvilPathsForRepos -----------------------------------------------------
+
+func TestAnvilPathsForRepos_MultipleAnvilsShareRepo(t *testing.T) {
+	// Two anvils ("forge" and "meta") both list "org/Forge" in WicketRepos.
+	// A lookup for that single slug must return both paths.
+	m := &Monitor{
+		cfg: &config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"forge": {Path: "/path/forge", WicketRepos: []string{"org/Forge"}},
+				"meta":  {Path: "/path/meta", WicketRepos: []string{"org/Forge"}},
+				"other": {Path: "/path/other", WicketRepos: []string{"org/Other"}},
+			},
+		},
+		rl: newRateLimiter(),
+	}
+
+	// Looking up a single repo that is shared by two anvils should return both paths.
+	got := m.anvilPathsForRepos([]string{"org/Forge"})
+	require.ElementsMatch(t, []string{"/path/forge", "/path/meta"}, got)
+}
+
+func TestAnvilPathsForRepos_CaseInsensitive(t *testing.T) {
+	m := &Monitor{
+		cfg: &config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"forge": {Path: "/path/forge", WicketRepos: []string{"Org/Forge"}},
+			},
+		},
+		rl: newRateLimiter(),
+	}
+
+	got := m.anvilPathsForRepos([]string{"org/forge"}) // lowercase lookup
+	require.Equal(t, []string{"/path/forge"}, got)
+}
+
+func TestAnvilPathsForRepos_EmptyRepos(t *testing.T) {
+	m := &Monitor{
+		cfg: &config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"forge": {Path: "/path/forge", WicketRepos: []string{"org/Forge"}},
+			},
+		},
+		rl: newRateLimiter(),
+	}
+
+	got := m.anvilPathsForRepos(nil)
+	require.Nil(t, got)
+}
+
+func TestAnvilPathsForRepos_NoMatch(t *testing.T) {
+	m := &Monitor{
+		cfg: &config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"forge": {Path: "/path/forge", WicketRepos: []string{"org/Forge"}},
+			},
+		},
+		rl: newRateLimiter(),
+	}
+
+	got := m.anvilPathsForRepos([]string{"org/Unrelated"})
+	require.Empty(t, got)
+}
+
 // ---- isTrustedUser ----------------------------------------------------------
 
 func TestIsTrustedUser(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
@@ -135,6 +136,13 @@ type TriageConfig struct {
 	// URL lookup before calling the AI so that issues already tracked in a
 	// different anvil are detected as duplicates immediately.
 	AllAnvilPaths []string
+	// MonitoredAnvilPaths is the list of local filesystem paths for all anvils
+	// that correspond to repos monitored by the current anvil (via the 5a
+	// wicket_repos mapping). When non-empty, open and closed beads are
+	// aggregated from all these paths and included in the triage prompt,
+	// giving the AI context across all related repositories. When empty, only
+	// AnvilPath is used for bead context.
+	MonitoredAnvilPaths []string
 	// runner is the AI call function. Nil means use the default smith-based
 	// runner. Tests replace this to avoid spawning real subprocesses.
 	runner func(ctx context.Context, prompt string) (string, error)
@@ -148,6 +156,11 @@ type TriageConfig struct {
 	// in AllAnvilPaths. Each call receives the anvil path and returns open and
 	// in-progress beads (status "open,in_progress").
 	crossAnvilLister func(ctx context.Context, anvilPath string) []BeadSummary
+	// monitoredAnvilLister overrides multi-path bead fetching for tests when
+	// MonitoredAnvilPaths is non-empty. Called once per path in
+	// MonitoredAnvilPaths; status is "open,in_progress" or "closed". If nil,
+	// fetchBeadSummaries is used.
+	monitoredAnvilLister func(ctx context.Context, anvilPath string, status string) []BeadSummary
 }
 
 // buildTriagePrompt formats an issue into a prompt string for the triage AI.
@@ -447,15 +460,97 @@ func RunTriageWithComments(ctx context.Context, issue Issue, comments []Comment,
 	// Open beads are capped at 50 to keep prompt size manageable; closed
 	// beads are limited to the 20 most recent for already-fixed detection.
 	const maxOpenBeads = 50
-	lister := cfg.beadLister
-	if lister == nil {
-		anvilPath := cfg.AnvilPath
-		lister = func(ctx context.Context, status string, limit int) []BeadSummary {
-			return fetchBeadSummaries(ctx, status, limit, anvilPath)
+	var openBeads, closedBeads []BeadSummary
+
+	if len(cfg.MonitoredAnvilPaths) > 0 {
+		// Multi-repo: aggregate beads from all monitored anvil paths and
+		// deduplicate by ID so the AI sees the full cross-repo work context.
+		mlister := cfg.monitoredAnvilLister
+		if mlister == nil {
+			mlister = func(ctx context.Context, anvilPath string, status string) []BeadSummary {
+				limit := maxOpenBeads
+				if status == "closed" {
+					limit = 20
+				}
+				return fetchBeadSummaries(ctx, status, limit, anvilPath)
+			}
 		}
+
+		// Enforce a per-path quota so later paths are not starved when the
+		// first path returns a full batch.  Each path gets an equal share of
+		// the global cap (minimum 1).
+		numPaths := len(cfg.MonitoredAnvilPaths)
+		openQuota := maxOpenBeads / numPaths
+		if openQuota < 1 {
+			openQuota = 1
+		}
+		closedQuota := 20 / numPaths
+		if closedQuota < 1 {
+			closedQuota = 1
+		}
+
+		// Fetch all paths in parallel with a shared 30-second deadline so
+		// slow paths cannot stall the triage loop indefinitely.
+		fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		type pathResult struct {
+			open   []BeadSummary
+			closed []BeadSummary
+		}
+		results := make([]pathResult, numPaths)
+		var wg sync.WaitGroup
+		for i, path := range cfg.MonitoredAnvilPaths {
+			wg.Add(1)
+			go func(i int, path string) {
+				defer wg.Done()
+				open := mlister(fetchCtx, path, "open,in_progress")
+				if len(open) > openQuota {
+					open = open[:openQuota]
+				}
+				closed := mlister(fetchCtx, path, "closed")
+				if len(closed) > closedQuota {
+					closed = closed[:closedQuota]
+				}
+				results[i] = pathResult{open: open, closed: closed}
+			}(i, path)
+		}
+		wg.Wait()
+
+		seenOpen := make(map[string]bool)
+		seenClosed := make(map[string]bool)
+		for _, r := range results {
+			for _, b := range r.open {
+				if !seenOpen[b.ID] {
+					seenOpen[b.ID] = true
+					openBeads = append(openBeads, b)
+				}
+			}
+			for _, b := range r.closed {
+				if !seenClosed[b.ID] {
+					seenClosed[b.ID] = true
+					closedBeads = append(closedBeads, b)
+				}
+			}
+		}
+		// Global cap as a safety net (per-path quotas already bound the total).
+		if len(openBeads) > maxOpenBeads {
+			openBeads = openBeads[:maxOpenBeads]
+		}
+		if len(closedBeads) > 20 {
+			closedBeads = closedBeads[:20]
+		}
+	} else {
+		lister := cfg.beadLister
+		if lister == nil {
+			anvilPath := cfg.AnvilPath
+			lister = func(ctx context.Context, status string, limit int) []BeadSummary {
+				return fetchBeadSummaries(ctx, status, limit, anvilPath)
+			}
+		}
+		openBeads = lister(ctx, "open,in_progress", maxOpenBeads)
+		closedBeads = lister(ctx, "closed", 20)
 	}
-	openBeads := lister(ctx, "open,in_progress", maxOpenBeads)
-	closedBeads := lister(ctx, "closed", 20)
 
 	prompt := buildTriagePromptWithBeads(issue, comments, cfg.ExtraPrompt, openBeads, closedBeads)
 
