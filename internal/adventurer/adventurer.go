@@ -172,7 +172,15 @@ func (e *Executor) executeStep(page *rod.Page, step questgiver.Step, index int, 
 }
 
 func (e *Executor) doFill(page *rod.Page, step questgiver.Step) error {
-	el, err := page.Timeout(e.timeout).Element(step.Selector)
+	var (
+		el  *rod.Element
+		err error
+	)
+	if e.timeout > 0 {
+		el, err = page.Timeout(e.timeout).Element(step.Selector)
+	} else {
+		el, err = page.Element(step.Selector)
+	}
 	if err != nil {
 		return fmt.Errorf("element %q not found: %w", step.Selector, err)
 	}
@@ -180,7 +188,15 @@ func (e *Executor) doFill(page *rod.Page, step questgiver.Step) error {
 }
 
 func (e *Executor) doClick(page *rod.Page, step questgiver.Step) error {
-	el, err := page.Timeout(e.timeout).Element(step.Selector)
+	var (
+		el  *rod.Element
+		err error
+	)
+	if e.timeout > 0 {
+		el, err = page.Timeout(e.timeout).Element(step.Selector)
+	} else {
+		el, err = page.Element(step.Selector)
+	}
 	if err != nil {
 		return fmt.Errorf("element %q not found: %w", step.Selector, err)
 	}
@@ -200,7 +216,15 @@ func (e *Executor) doWait(page *rod.Page, step questgiver.Step) error {
 }
 
 func (e *Executor) doAssert(page *rod.Page, step questgiver.Step) error {
-	el, err := page.Timeout(e.timeout).Element(step.Selector)
+	var (
+		el  *rod.Element
+		err error
+	)
+	if e.timeout > 0 {
+		el, err = page.Timeout(e.timeout).Element(step.Selector)
+	} else {
+		el, err = page.Element(step.Selector)
+	}
 	if err != nil {
 		return fmt.Errorf("element %q not found: %w", step.Selector, err)
 	}

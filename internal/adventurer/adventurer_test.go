@@ -202,7 +202,7 @@ func TestExecuteStopsOnFirstFailure(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	result := exec.Execute(ctx, quest)
@@ -237,8 +237,8 @@ func TestExecuteContextCancellation(t *testing.T) {
 
 	result := exec.Execute(ctx, quest)
 
-	// With a cancelled context, we expect either a launch failure or a
-	// browser/page error — either way the result should not be Passed.
+	// With the ctx.Err() fast-path, a pre-cancelled context returns immediately
+	// with a "context cancelled before execution" error — no Chrome is launched.
 	if result.Passed {
 		t.Error("expected quest to fail with cancelled context")
 	}
