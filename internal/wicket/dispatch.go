@@ -46,13 +46,9 @@ func (m *Monitor) checkDispatch(ctx context.Context, anvil string, anvilCfg conf
 		return // auto-dispatch is on; no confirmation step needed
 	}
 
-	repos := anvilCfg.WicketRepos
-	if len(repos) == 0 {
-		repo, err := deriveRepo(ctx, anvilCfg.Path)
-		if err != nil {
-			return
-		}
-		repos = []string{repo}
+	repos, err := m.resolveRepos(ctx, anvilCfg)
+	if err != nil {
+		return
 	}
 
 	for _, repo := range repos {
@@ -214,13 +210,9 @@ func (m *Monitor) handleLabelComment(ctx context.Context, anvil string, wi state
 // checkClarificationReTriage checks issues in "ask_clarify" state for new
 // author replies and re-triages them when found.
 func (m *Monitor) checkClarificationReTriage(ctx context.Context, anvil string, anvilCfg config.AnvilConfig, settings config.SettingsConfig) {
-	repos := anvilCfg.WicketRepos
-	if len(repos) == 0 {
-		repo, err := deriveRepo(ctx, anvilCfg.Path)
-		if err != nil {
-			return
-		}
-		repos = []string{repo}
+	repos, err := m.resolveRepos(ctx, anvilCfg)
+	if err != nil {
+		return
 	}
 
 	for _, repo := range repos {
