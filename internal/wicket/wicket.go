@@ -710,7 +710,6 @@ func buildProviders(settings config.SettingsConfig) []provider.Provider {
 	return provider.Defaults()
 }
 
-// isIgnoredUser returns true if the author should be skipped entirely. It
 // isUniqueConstraintErr returns true when err is a SQLite UNIQUE constraint
 // violation. With modernc.org/sqlite the error message always contains the
 // canonical SQLite phrase "UNIQUE constraint failed", which identifies the case
@@ -719,6 +718,7 @@ func isUniqueConstraintErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
+// isIgnoredUser returns true if the author should be skipped entirely. It
 // checks against the hardcoded defaultBotIgnoreList and any custom ignore
 // users configured per-anvil. Comparison is case-insensitive.
 func isIgnoredUser(author string, customIgnoreList []string) bool {
