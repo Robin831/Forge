@@ -81,8 +81,57 @@ per-group prompts.`,
 
 		runner := depupdate.NewRunner(db, anvilPaths, &cfg.Settings)
 
+		// Compute date-based identifiers up front — shared by both the scan
+		// worktrees and the apply worktree so all paths use the same stable date.
+		now := time.Now()
+		dateStr := now.Format("2006-01-02")
+		targetBranch := "deps/batch-update-" + dateStr
+		// Derive the apply worktree bead ID from the date so crash/retry runs
+		// reuse the same .workers directory and let ResetBranch clean it.
+		worktreeBeadID := "depupdate-" + dateStr
+		wtMgr := worktree.NewManager()
+
+		// Create isolated scan worktrees to avoid EPERM errors from locked
+		// node_modules on Windows (editors/antivirus hold .node binaries open
+		// in the main repo directory). Each worktree gets its own node_modules
+		// so npm ci never touches the main directory's locked files.
+		// Fall back to the main directory if worktree creation is unavailable.
+		scanBeadID := "depupdate-scan-" + dateStr
+		scanPaths := make(map[string]string, len(anvilPaths))
+		scanWorktrees := make(map[string]*worktree.Worktree, len(anvilPaths))
+		for name, path := range anvilPaths {
+			wt, wtErr := wtMgr.CreateWithOptions(rootCtx, path, scanBeadID, worktree.CreateOptions{
+				ResetBranch: true,
+				Quiet:       true,
+			})
+			if wtErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: scan worktree for %s unavailable (%v), scanning main directory\n", name, wtErr)
+				scanPaths[name] = path
+			} else {
+				scanWorktrees[name] = wt
+				scanPaths[name] = wt.Path
+			}
+		}
+		defer func() {
+			for name, wt := range scanWorktrees {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				if err := wtMgr.Remove(cleanupCtx, anvilPaths[name], wt); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to clean up scan worktree for %s: %v\n", name, err)
+				}
+				cancel()
+			}
+		}()
+
 		fmt.Fprintf(os.Stderr, "Scanning %d anvil(s) for outdated dependencies...\n", len(anvilPaths))
-		results := runner.Scan(rootCtx, anvilPaths)
+		results := runner.Scan(rootCtx, scanPaths)
+
+		// Restore original anvil paths so the apply phase creates worktrees
+		// from the main repo root rather than the temporary scan worktree.
+		for i := range results {
+			if origPath, ok := anvilPaths[results[i].Anvil]; ok {
+				results[i].Path = origPath
+			}
+		}
 
 		if jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
@@ -106,17 +155,6 @@ per-group prompts.`,
 		}
 
 		yesAll, _ := cmd.Flags().GetBool("yes")
-
-		// Compute the batch-update branch name and a stable worktree ID once so
-		// all anvils land on the same branch name (consistent same-day re-run
-		// semantics) and the main anvil directory stays on main throughout.
-		now := time.Now()
-		dateStr := now.Format("2006-01-02")
-		targetBranch := "deps/batch-update-" + dateStr
-		// Derive the worktree bead ID from the date-based branch so crash/retry
-		// runs reuse the same .workers directory and let ResetBranch clean it.
-		worktreeBeadID := "depupdate-" + dateStr
-		wtMgr := worktree.NewManager()
 
 		// For each anvil with updates: create an isolated worktree, prompt user,
 		// apply updates inside the worktree, generate changelog, create PR, and
