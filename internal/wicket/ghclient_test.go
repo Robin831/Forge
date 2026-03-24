@@ -3,6 +3,8 @@ package wicket
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -186,5 +188,60 @@ func TestMockGitHubClient_GetIssue_NilDefault(t *testing.T) {
 	}
 	if issue != nil {
 		t.Errorf("expected nil issue from empty mock, got %+v", issue)
+	}
+}
+
+// ---- isAuthError ------------------------------------------------------------
+
+func TestIsAuthError_Nil(t *testing.T) {
+	if isAuthError(nil) {
+		t.Error("expected false for nil error")
+	}
+}
+
+func TestIsAuthError_PlainError(t *testing.T) {
+	if isAuthError(errors.New("connection refused")) {
+		t.Error("expected false for non-auth error")
+	}
+}
+
+func TestIsAuthError_RateLimitError(t *testing.T) {
+	if isAuthError(errors.New("rate limit exceeded")) {
+		t.Error("expected false for rate limit error")
+	}
+}
+
+func TestIsAuthError_HTTP401(t *testing.T) {
+	err := fmt.Errorf("gh issue list failed: HTTP 401 Unauthorized\nstderr: could not resolve")
+	if !isAuthError(err) {
+		t.Error("expected true for HTTP 401 error")
+	}
+}
+
+func TestIsAuthError_HTTP403(t *testing.T) {
+	err := fmt.Errorf("exit status 1\nstderr: GraphQL: 403 Resource protected by organization SAML enforcement.")
+	if !isAuthError(err) {
+		t.Error("expected true for HTTP 403/SAML error")
+	}
+}
+
+func TestIsAuthError_AuthenticationKeyword(t *testing.T) {
+	err := fmt.Errorf("authentication required for repository org/private-repo")
+	if !isAuthError(err) {
+		t.Error("expected true for 'authentication' keyword in error")
+	}
+}
+
+func TestIsAuthError_BadCredentials(t *testing.T) {
+	err := fmt.Errorf("exit status 1\nstderr: Bad credentials")
+	if !isAuthError(err) {
+		t.Error("expected true for 'Bad credentials' error")
+	}
+}
+
+func TestIsAuthError_UnauthorizedKeyword(t *testing.T) {
+	err := fmt.Errorf("unauthorized: token lacks repo scope")
+	if !isAuthError(err) {
+		t.Error("expected true for 'unauthorized' keyword in error")
 	}
 }

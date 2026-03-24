@@ -139,7 +139,7 @@ func TestBuildTriagePromptWithBeads_InjectsBeadContext(t *testing.T) {
 		{ID: "Forge-y1", Title: "Bug Y", Description: "Fix bug Y"},
 	}
 	issue := Issue{Number: 1, Repo: "r/r", Title: "Test"}
-	prompt := buildTriagePromptWithBeads(issue, nil, "", openBeads, closedBeads)
+	prompt := buildTriagePromptWithBeads(issue, nil, "", openBeads, closedBeads, "")
 
 	for _, want := range []string{
 		"Forge-x1", "Feature X",
@@ -597,5 +597,104 @@ func TestRunTriage_PassesPromptToRunner(t *testing.T) {
 	}
 	if !strings.Contains(capturedPrompt, "org/proj") {
 		t.Error("prompt does not contain repo")
+	}
+}
+
+// ---- Anvil context for external repos (Forge-9lta) -------------------------
+
+// TestRunTriage_ExternalRepoIncludesAnvilContext verifies that when an issue
+// originates from an external repo (issue.Repo != cfg.AnvilRepo), the triage
+// prompt includes the anvil's README and AGENTS.md content under an
+// <anvil_context> section.
+func TestRunTriage_ExternalRepoIncludesAnvilContext(t *testing.T) {
+	var capturedPrompt string
+	cfg := TriageConfig{
+		runner: func(_ context.Context, prompt string) (string, error) {
+			capturedPrompt = prompt
+			return `{"action": "create_bead", "reason": "clear task", "bead_title": "Fix X", "bead_description": "Fix issue X"}`, nil
+		},
+		beadLister:  noopBeadLister,
+		AnvilRepo:   "org/myapp",                                          // anvil's own repo
+		AnvilPath:   "/fake/anvil",                                        // path used by loader
+		anvilContextLoader: func(anvilPath string) (readme, agentsMD string) {
+			// Stub filesystem reads so no real disk access is needed.
+			if anvilPath == "/fake/anvil" {
+				return "# MyApp README content", "# MyApp AGENTS instructions"
+			}
+			return "", ""
+		},
+	}
+	// Issue is from a different repo — external.
+	issue := Issue{Number: 1, Repo: "org/external-lib", Title: "Panic on nil pointer"}
+	dec := RunTriage(context.Background(), issue, cfg)
+	if dec.Action != ActionCreateBead {
+		t.Fatalf("unexpected action %q", dec.Action)
+	}
+	if !strings.Contains(capturedPrompt, "<anvil_context>") {
+		t.Error("prompt missing <anvil_context> section")
+	}
+	if !strings.Contains(capturedPrompt, "MyApp README content") {
+		t.Error("prompt missing anvil README content")
+	}
+	if !strings.Contains(capturedPrompt, "MyApp AGENTS instructions") {
+		t.Error("prompt missing anvil AGENTS.md content")
+	}
+	if !strings.Contains(capturedPrompt, "external repository") {
+		t.Error("prompt missing 'external repository' phrase")
+	}
+}
+
+// TestRunTriage_InternalRepoNoAnvilContext verifies that when an issue
+// originates from the anvil's own repo, no <anvil_context> section is added.
+func TestRunTriage_InternalRepoNoAnvilContext(t *testing.T) {
+	var capturedPrompt string
+	cfg := TriageConfig{
+		runner: func(_ context.Context, prompt string) (string, error) {
+			capturedPrompt = prompt
+			return `{"action": "create_bead", "reason": "clear task", "bead_title": "Fix X", "bead_description": "Fix issue X"}`, nil
+		},
+		beadLister: noopBeadLister,
+		AnvilRepo:  "org/myapp",
+		AnvilPath:  "/fake/anvil",
+		anvilContextLoader: func(anvilPath string) (readme, agentsMD string) {
+			return "# MyApp README content", "# AGENTS instructions"
+		},
+	}
+	// Issue is from the same repo as the anvil — internal.
+	issue := Issue{Number: 2, Repo: "org/myapp", Title: "Improve performance"}
+	dec := RunTriage(context.Background(), issue, cfg)
+	if dec.Action != ActionCreateBead {
+		t.Fatalf("unexpected action %q", dec.Action)
+	}
+	if strings.Contains(capturedPrompt, "<anvil_context>") {
+		t.Error("prompt should NOT contain <anvil_context> for internal repo issues")
+	}
+	if strings.Contains(capturedPrompt, "MyApp README content") {
+		t.Error("prompt should NOT contain anvil README for internal repo issues")
+	}
+}
+
+// TestBuildAnvilContext_BothFiles verifies the formatted output includes both
+// README and AGENTS.md when both are non-empty.
+func TestBuildAnvilContext_BothFiles(t *testing.T) {
+	ctx := buildAnvilContext("# README", "# AGENTS")
+	if !strings.Contains(ctx, "<anvil_readme>") {
+		t.Error("missing <anvil_readme>")
+	}
+	if !strings.Contains(ctx, "<anvil_agents_md>") {
+		t.Error("missing <anvil_agents_md>")
+	}
+	if !strings.Contains(ctx, "# README") {
+		t.Error("missing README content")
+	}
+	if !strings.Contains(ctx, "# AGENTS") {
+		t.Error("missing AGENTS.md content")
+	}
+}
+
+// TestBuildAnvilContext_Empty returns empty string when both inputs are empty.
+func TestBuildAnvilContext_Empty(t *testing.T) {
+	if got := buildAnvilContext("", ""); got != "" {
+		t.Errorf("expected empty string, got %q", got)
 	}
 }

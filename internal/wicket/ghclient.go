@@ -322,6 +322,25 @@ func isRateLimitStderr(stderr string) bool {
 		strings.Contains(lower, "x-ratelimit-remaining: 0")
 }
 
+// isAuthError reports whether err indicates a GitHub authentication failure.
+// This catches HTTP 401/403 responses that occur when the gh CLI is not
+// authenticated for the target repository (e.g. private repos, SAML SSO, or
+// missing scopes). Use this to distinguish auth failures from transient errors
+// so callers can log a clear, actionable message rather than a generic one.
+func isAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "401") ||
+		strings.Contains(msg, "403") ||
+		strings.Contains(msg, "authentication") ||
+		strings.Contains(msg, "credentials") ||
+		strings.Contains(msg, "unauthorized") ||
+		strings.Contains(msg, "saml") ||
+		strings.Contains(msg, "bad credentials")
+}
+
 // ghRateLimitResponse is the JSON shape of the GitHub rate_limit API endpoint.
 type ghRateLimitResponse struct {
 	Resources struct {

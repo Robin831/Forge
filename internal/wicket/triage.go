@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -131,6 +132,12 @@ type TriageConfig struct {
 	// passed as cmd.Dir to `bd list` so the correct .beads/ config is used.
 	// When empty, the daemon's working directory is used (may query the wrong DB).
 	AnvilPath string
+	// AnvilRepo is the primary GitHub repository ("owner/repo") derived from
+	// the anvil's own git remote. When set, RunTriage compares this against
+	// issue.Repo to detect issues from external (monitored) repos and
+	// prepends the anvil's README.md and AGENTS.md to the triage prompt so
+	// the AI can contextualise the foreign issue against the anvil's domain.
+	AnvilRepo string
 	// AllAnvilPaths is the list of ALL configured anvil paths (including the
 	// current anvil). When non-empty, RunTriage performs a cross-anvil Source
 	// URL lookup before calling the AI so that issues already tracked in a
@@ -161,16 +168,60 @@ type TriageConfig struct {
 	// MonitoredAnvilPaths; status is "open,in_progress" or "closed". If nil,
 	// fetchBeadSummaries is used.
 	monitoredAnvilLister func(ctx context.Context, anvilPath string, status string) []BeadSummary
+	// anvilContextLoader overrides filesystem reading of README.md and
+	// AGENTS.md when non-nil. Nil means use the real filesystem via
+	// defaultAnvilContextLoader. Tests inject a stub to avoid disk access.
+	anvilContextLoader func(anvilPath string) (readme, agentsMD string)
+}
+
+// defaultAnvilContextLoader reads the README.md and AGENTS.md files from the
+// anvil's filesystem path. Missing files are silently ignored (empty string).
+func defaultAnvilContextLoader(anvilPath string) (readme, agentsMD string) {
+	if anvilPath == "" {
+		return "", ""
+	}
+	if data, err := os.ReadFile(filepath.Join(anvilPath, "README.md")); err == nil {
+		readme = string(data)
+	}
+	if data, err := os.ReadFile(filepath.Join(anvilPath, "AGENTS.md")); err == nil {
+		agentsMD = string(data)
+	}
+	return readme, agentsMD
+}
+
+// buildAnvilContext constructs the <anvil_context> prompt section from README
+// and AGENTS.md content. Returns "" when both inputs are empty.
+func buildAnvilContext(readme, agentsMD string) string {
+	if readme == "" && agentsMD == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("The issue originates from an external repository that this anvil monitors. ")
+	b.WriteString("The following context describes the anvil codebase where any resulting work items will be implemented:\n")
+	if readme != "" {
+		b.WriteString("<anvil_readme>\n")
+		b.WriteString(readme)
+		b.WriteString("\n</anvil_readme>\n")
+	}
+	if agentsMD != "" {
+		b.WriteString("<anvil_agents_md>\n")
+		b.WriteString(agentsMD)
+		b.WriteString("\n</anvil_agents_md>\n")
+	}
+	return b.String()
 }
 
 // buildTriagePrompt formats an issue into a prompt string for the triage AI.
 func buildTriagePrompt(issue Issue, extraPrompt string) string {
-	return buildTriagePromptWithBeads(issue, nil, extraPrompt, nil, nil)
+	return buildTriagePromptWithBeads(issue, nil, extraPrompt, nil, nil, "")
 }
 
 // buildTriagePromptWithBeads builds a triage prompt including optional comment
 // history and bead context for duplicate/already-fixed detection.
-func buildTriagePromptWithBeads(issue Issue, comments []Comment, extraPrompt string, openBeads, closedBeads []BeadSummary) string {
+// anvilContext, when non-empty, is prepended as a dedicated <anvil_context>
+// section so the AI understands the domain of the codebase that will implement
+// work derived from this issue.
+func buildTriagePromptWithBeads(issue Issue, comments []Comment, extraPrompt string, openBeads, closedBeads []BeadSummary, anvilContext string) string {
 	var b strings.Builder
 
 	b.WriteString("You are a triage agent for an automated software development system.\n")
@@ -213,6 +264,15 @@ func buildTriagePromptWithBeads(issue Issue, comments []Comment, extraPrompt str
 	}
 
 	b.WriteString("</issue>\n")
+
+	// When the issue originates from an external repo, include the anvil's
+	// domain context so the AI can evaluate the issue against the codebase
+	// that will implement any resulting work item.
+	if anvilContext != "" {
+		b.WriteString("\n<anvil_context>\n")
+		b.WriteString(anvilContext)
+		b.WriteString("</anvil_context>\n")
+	}
 
 	// Inject existing bead context to help the AI detect duplicates and
 	// already-resolved issues.
@@ -552,7 +612,25 @@ func RunTriageWithComments(ctx context.Context, issue Issue, comments []Comment,
 		closedBeads = lister(ctx, "closed", 20)
 	}
 
-	prompt := buildTriagePromptWithBeads(issue, comments, cfg.ExtraPrompt, openBeads, closedBeads)
+	// When the issue originates from an external repo (issue.Repo differs from
+	// the anvil's primary repo), load the anvil's README.md and AGENTS.md to
+	// provide domain context so the AI can evaluate the foreign issue against
+	// the codebase that will implement any resulting work item.
+	var anvilContext string
+	if cfg.AnvilRepo != "" && issue.Repo != cfg.AnvilRepo && cfg.AnvilPath != "" {
+		loader := cfg.anvilContextLoader
+		if loader == nil {
+			loader = defaultAnvilContextLoader
+		}
+		readme, agentsMD := loader(cfg.AnvilPath)
+		anvilContext = buildAnvilContext(readme, agentsMD)
+		if anvilContext != "" {
+			log.Printf("[wicket:triage] %s#%d is from external repo (anvil repo: %s) — including anvil context in prompt",
+				issue.Repo, issue.Number, cfg.AnvilRepo)
+		}
+	}
+
+	prompt := buildTriagePromptWithBeads(issue, comments, cfg.ExtraPrompt, openBeads, closedBeads, anvilContext)
 
 	for attempt := 0; attempt < 2; attempt++ {
 		output, err := run(ctx, prompt)
