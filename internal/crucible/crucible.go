@@ -665,6 +665,15 @@ func FetchBead(ctx context.Context, beadID, dir string) (poller.Bead, error) {
 	}
 
 	bead := raw.Bead
+	// Clear the raw "blocks" JSON field before rebuilding from dependents.
+	// In bd's schema the "blocks" field means "beads I block" in the
+	// child→parent direction (e.g. a bead that depends_on another will list
+	// its dependency in "blocks"). If we keep that value, ResolveEpicBranches
+	// would call lookupEpicBranch on the dependency bead, which would report
+	// hasChildren=true (because this bead is its dependent) and return a
+	// spurious "feature/<dep-id>" base branch. We only want true children —
+	// beads that depend on this one — which are listed in the dependents array.
+	bead.Blocks = nil
 	// Extract blocks from the dependents array.
 	// Both "blocks" and "parent-child" dependency types indicate children.
 	for _, dep := range raw.Dependents {

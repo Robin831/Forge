@@ -1,0 +1,2 @@
+category: Fixed
+- **PR base branch wrongly set to dependency's feature branch** - `FetchBead` no longer carries the raw `blocks` JSON field (which bd populates in child→parent direction) into `ResolveEpicBranches`. This prevented beads with `depends_on` entries from having their PR created against the repo default branch when the dependency happened to have children (e.g. Hytte-f8av would incorrectly target `feature/Hytte-f7p4` instead of `main`). (Forge-26eo)
