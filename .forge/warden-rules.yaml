@@ -1218,7 +1218,7 @@ rules:
         Adding a new warden rule entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
         Before inserting a new warden rule, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424']
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#425']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -2511,25 +2511,9 @@ rules:
     - id: preserve-existing-fields-on-partial-update
       category: other
       pattern: >-
-        Building a new struct and passing it to a full-row update function instead of fetching the existing row first
+        Building a new struct with only some fields populated and passing it to a full-row or general Update/Save/Upsert function (e.g. UpdateWicketIssue) instead of fetching the existing row first
       check: >-
-        When updating a database row, verify that fields not being intentionally changed are preserved. Either fetch the existing row and merge changes onto it, or use a narrower update method that only touches the intended columns — otherwise unrelated fields get silently zeroed out.
-      source: copilot:PR#429
-      added: "2026-03-24"
-    - id: partial-struct-update-overwrites-columns
-      category: other
-      pattern: >-
-        UpdateWicketIssue or similar full-row update called with a partially-populated struct
-      check: >-
-        Verify that update operations do not overwrite existing database columns with zero values. Either load the existing row first and merge changes, or use column-specific update queries that only modify the intended fields.
-      source: copilot:PR#429
-      added: "2026-03-24"
-    - id: partial-update-overwrites-fields
-      category: other
-      pattern: >-
-        Building a new struct with only some fields populated and passing it to a general Update/Save/Upsert function
-      check: >-
-        Verify that update operations preserve existing row values for fields not being intentionally changed — use field-specific update methods or read-modify-write patterns instead of overwriting entire rows with partially-populated structs
+        When updating a database row, verify that partially-populated structs do not overwrite existing columns with zero values and that fields not being intentionally changed are preserved. Either load the existing row first and merge changes onto it (read-modify-write), or use narrower, column-specific update methods that only touch the intended fields — otherwise unrelated fields get silently zeroed out.
       source: copilot:PR#429
       added: "2026-03-24"
     - id: bd-call-timeout
@@ -2570,20 +2554,4 @@ rules:
       check: >-
         Verify that any collection injected into an LLM prompt is capped to a reasonable maximum count or token budget to avoid blowing context limits, excessive cost, and fallback failures
       source: copilot:PR#429
-      added: "2026-03-24"
-    - id: merge-overlapping-warden-rules
-      category: other
-      pattern: >-
-        Adding a new warden rule to .forge/warden-rules.yaml that overlaps semantically with an existing rule
-      check: >-
-        Before adding a new warden rule, check if an existing rule already covers the same guidance. If so, merge the new advice into the existing rule and append the new source to its source list instead of creating a duplicate entry.
-      source: copilot:PR#425
-      added: "2026-03-24"
-    - id: avoid-duplicate-warden-rules
-      category: style
-      pattern: >-
-        Adding a new rule to warden-rules.yaml that overlaps with an existing rule's intent or guidance
-      check: >-
-        Before adding a new warden rule, check existing rules for semantic overlap. If an existing rule already covers the guidance, append the new source reference to that rule instead of creating a near-duplicate entry.
-      source: copilot:PR#425
       added: "2026-03-24"
