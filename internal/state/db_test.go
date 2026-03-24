@@ -2146,3 +2146,92 @@ func TestDB_WicketIssueCRUD(t *testing.T) {
 		t.Error("expected error on duplicate insert, got nil")
 	}
 }
+
+func TestDB_GetWicketMetrics(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-wicket-metrics-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Empty DB: zero totals, empty maps.
+	m, err := db.GetWicketMetrics()
+	if err != nil {
+		t.Fatalf("GetWicketMetrics on empty DB: %v", err)
+	}
+	if m.Total != 0 {
+		t.Errorf("expected Total=0, got %d", m.Total)
+	}
+	if m.BeadsCreated != 0 {
+		t.Errorf("expected BeadsCreated=0, got %d", m.BeadsCreated)
+	}
+	if len(m.ByStatus) != 0 {
+		t.Errorf("expected empty ByStatus, got %v", m.ByStatus)
+	}
+	if len(m.ByAction) != 0 {
+		t.Errorf("expected empty ByAction, got %v", m.ByAction)
+	}
+	if m.LastScanAt != nil {
+		t.Errorf("expected LastScanAt=nil, got %v", m.LastScanAt)
+	}
+
+	// Insert a mix of issues.
+	issues := []WicketIssue{
+		{Repo: "owner/repo", IssueNumber: 1, Author: "alice", State: "pending"},
+		{Repo: "owner/repo", IssueNumber: 2, Author: "bob", State: "bead_created", TriageAction: "create_bead", BeadID: "Forge-aaa1"},
+		{Repo: "owner/repo", IssueNumber: 3, Author: "carol", State: "bead_created", TriageAction: "create_bead", BeadID: "Forge-bbb2"},
+		{Repo: "owner/repo", IssueNumber: 4, Author: "dave", State: "rejected", TriageAction: "reject"},
+		{Repo: "owner/repo", IssueNumber: 5, Author: "eve", State: "ask_clarify", TriageAction: "ask_clarify"},
+	}
+	for _, issue := range issues {
+		if err := db.InsertWicketIssue(issue); err != nil {
+			t.Fatalf("InsertWicketIssue: %v", err)
+		}
+	}
+
+	m, err = db.GetWicketMetrics()
+	if err != nil {
+		t.Fatalf("GetWicketMetrics: %v", err)
+	}
+
+	if m.Total != 5 {
+		t.Errorf("expected Total=5, got %d", m.Total)
+	}
+	if m.BeadsCreated != 2 {
+		t.Errorf("expected BeadsCreated=2, got %d", m.BeadsCreated)
+	}
+
+	// ByStatus checks.
+	if m.ByStatus["pending"] != 1 {
+		t.Errorf("expected ByStatus[pending]=1, got %d", m.ByStatus["pending"])
+	}
+	if m.ByStatus["bead_created"] != 2 {
+		t.Errorf("expected ByStatus[bead_created]=2, got %d", m.ByStatus["bead_created"])
+	}
+	if m.ByStatus["rejected"] != 1 {
+		t.Errorf("expected ByStatus[rejected]=1, got %d", m.ByStatus["rejected"])
+	}
+	if m.ByStatus["ask_clarify"] != 1 {
+		t.Errorf("expected ByStatus[ask_clarify]=1, got %d", m.ByStatus["ask_clarify"])
+	}
+
+	// ByAction checks.
+	if m.ByAction["create_bead"] != 2 {
+		t.Errorf("expected ByAction[create_bead]=2, got %d", m.ByAction["create_bead"])
+	}
+	if m.ByAction["reject"] != 1 {
+		t.Errorf("expected ByAction[reject]=1, got %d", m.ByAction["reject"])
+	}
+	if m.ByAction["ask_clarify"] != 1 {
+		t.Errorf("expected ByAction[ask_clarify]=1, got %d", m.ByAction["ask_clarify"])
+	}
+	// Issues with empty triage_action should not appear in ByAction.
+	if _, ok := m.ByAction[""]; ok {
+		t.Error("expected no empty-string key in ByAction")
+	}
+}

@@ -70,6 +70,18 @@ type StatusPayload struct {
 	CopilotRequestLimit int `json:"copilot_request_limit,omitempty"`
 	// CopilotLimitReached is true when the copilot daily request limit has been reached.
 	CopilotLimitReached bool `json:"copilot_limit_reached,omitempty"`
+	// Wicket holds aggregated Wicket issue metrics. Omitted when Wicket has
+	// never tracked any issues (Total == 0).
+	Wicket *WicketMetrics `json:"wicket,omitempty"`
+}
+
+// WicketMetrics contains aggregated Wicket issue counts for status reporting.
+type WicketMetrics struct {
+	Total        int            `json:"total"`
+	ByStatus     map[string]int `json:"by_status,omitempty"`
+	ByAction     map[string]int `json:"by_action,omitempty"`
+	BeadsCreated int            `json:"beads_created"`
+	LastScanAt   *time.Time     `json:"last_scan_at,omitempty"`
 }
 
 // KillWorkerPayload is the payload for a "kill_worker" command.

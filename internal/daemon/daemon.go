@@ -2407,6 +2407,16 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if t, ok := d.lastPollTime.Load().(time.Time); ok && !t.IsZero() {
 			lastPoll = time.Since(t).Round(time.Second).String() + " ago"
 		}
+		var wicketMetrics *ipc.WicketMetrics
+		if wm, err := d.db.GetWicketMetrics(); err == nil && wm != nil && wm.Total > 0 {
+			wicketMetrics = &ipc.WicketMetrics{
+				Total:        wm.Total,
+				ByStatus:     wm.ByStatus,
+				ByAction:     wm.ByAction,
+				BeadsCreated: wm.BeadsCreated,
+				LastScanAt:   wm.LastScanAt,
+			}
+		}
 		payload := ipc.StatusPayload{
 			Running:                true,
 			PID:                    os.Getpid(),
@@ -2422,6 +2432,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			CopilotPremiumRequests: copilotReqs,
 			CopilotRequestLimit:    copilotLimit,
 			CopilotLimitReached:    copilotLimit > 0 && copilotReqs >= float64(copilotLimit),
+			Wicket:                 wicketMetrics,
 		}
 		data, _ := json.Marshal(payload)
 		return ipc.Response{Type: "status", Payload: data}

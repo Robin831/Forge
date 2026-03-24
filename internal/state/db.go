@@ -2876,6 +2876,77 @@ func (db *DB) LastWicketScanAt() (*time.Time, error) {
 	return &t, nil
 }
 
+// WicketMetrics contains aggregated counts from the wicket_issues table
+// for use in status reporting.
+type WicketMetrics struct {
+	Total        int
+	ByStatus     map[string]int
+	ByAction     map[string]int
+	BeadsCreated int
+	LastScanAt   *time.Time
+}
+
+// GetWicketMetrics returns aggregated Wicket issue counts. It uses
+// GROUP BY queries to avoid loading full rows from the table.
+func (db *DB) GetWicketMetrics() (*WicketMetrics, error) {
+	m := &WicketMetrics{
+		ByStatus: make(map[string]int),
+		ByAction: make(map[string]int),
+	}
+
+	if err := db.conn.QueryRow(`SELECT COUNT(*) FROM wicket_issues`).Scan(&m.Total); err != nil {
+		return nil, err
+	}
+
+	stateRows, err := db.conn.Query(`SELECT state, COUNT(*) FROM wicket_issues GROUP BY state`)
+	if err != nil {
+		return nil, err
+	}
+	defer stateRows.Close()
+	for stateRows.Next() {
+		var st string
+		var n int
+		if err := stateRows.Scan(&st, &n); err != nil {
+			return nil, err
+		}
+		m.ByStatus[st] = n
+	}
+	if err := stateRows.Err(); err != nil {
+		return nil, err
+	}
+
+	actionRows, err := db.conn.Query(
+		`SELECT triage_action, COUNT(*) FROM wicket_issues WHERE triage_action != '' GROUP BY triage_action`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer actionRows.Close()
+	for actionRows.Next() {
+		var action string
+		var n int
+		if err := actionRows.Scan(&action, &n); err != nil {
+			return nil, err
+		}
+		m.ByAction[action] = n
+	}
+	if err := actionRows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := db.conn.QueryRow(`SELECT COUNT(*) FROM wicket_issues WHERE bead_id != ''`).Scan(&m.BeadsCreated); err != nil {
+		return nil, err
+	}
+
+	lastScan, err := db.LastWicketScanAt()
+	if err != nil {
+		return nil, err
+	}
+	m.LastScanAt = lastScan
+
+	return m, nil
+}
+
 // scanWicketIssue scans a single *sql.Row into a WicketIssue.
 // Returns nil, nil when no row is found.
 func scanWicketIssue(row *sql.Row) (*WicketIssue, error) {

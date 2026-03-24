@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"text/tabwriter"
 	"time"
 
@@ -15,6 +16,55 @@ import (
 )
 
 var briefOutput bool
+
+// printWicketMetrics renders the Wicket issue tracker section.
+// It is a no-op when m is nil (Wicket has never tracked any issues).
+func printWicketMetrics(m *ipc.WicketMetrics) {
+	if m == nil {
+		return
+	}
+	fmt.Printf("\nWicket Issues:\n")
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintf(tw, "Total Tracked\t%d\n", m.Total)
+	fmt.Fprintf(tw, "Beads Created\t%d\n", m.BeadsCreated)
+	if m.LastScanAt != nil {
+		age := time.Since(*m.LastScanAt).Round(time.Second)
+		fmt.Fprintf(tw, "Last Scan\t%s ago\n", age)
+	}
+	tw.Flush()
+
+	if len(m.ByStatus) > 0 {
+		fmt.Printf("\n  By Status:\n")
+		tw = tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		states := make([]string, 0, len(m.ByStatus))
+		for st := range m.ByStatus {
+			states = append(states, st)
+		}
+		sort.Strings(states)
+		for _, st := range states {
+			if m.ByStatus[st] > 0 {
+				fmt.Fprintf(tw, "    %s\t%d\n", st, m.ByStatus[st])
+			}
+		}
+		tw.Flush()
+	}
+
+	if len(m.ByAction) > 0 {
+		fmt.Printf("\n  By Triage Action:\n")
+		tw = tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		actions := make([]string, 0, len(m.ByAction))
+		for a := range m.ByAction {
+			actions = append(actions, a)
+		}
+		sort.Strings(actions)
+		for _, a := range actions {
+			if m.ByAction[a] > 0 {
+				fmt.Fprintf(tw, "    %s\t%d\n", a, m.ByAction[a])
+			}
+		}
+		tw.Flush()
+	}
+}
 
 func init() {
 	statusCmd.Flags().BoolVar(&briefOutput, "brief", false, "One-line output suitable for shell prompts or status bars")
@@ -96,6 +146,7 @@ var statusCmd = &cobra.Command{
 							}
 							tw.Flush()
 						}
+						printWicketMetrics(s.Wicket)
 						printUpdateHint()
 						return nil
 					}
