@@ -100,9 +100,13 @@ per-group prompts.`,
 		scanPaths := make(map[string]string, len(anvilPaths))
 		scanWorktrees := make(map[string]*worktree.Worktree, len(anvilPaths))
 		for name, path := range anvilPaths {
+			// For scan worktrees, base from the current local HEAD to preserve
+			// "scan the working tree as-is" semantics and avoid fetching or
+			// checking out the remote default branch. We only need node_modules
+			// isolation, not a fresh clone of origin.
 			wt, wtErr := wtMgr.CreateWithOptions(rootCtx, path, scanBeadID, worktree.CreateOptions{
-				ResetBranch: true,
-				Quiet:       true,
+				LocalHead: true,
+				Quiet:     true,
 			})
 			if wtErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: scan worktree for %s unavailable (%v), scanning main directory\n", name, wtErr)
@@ -132,6 +136,14 @@ per-group prompts.`,
 				results[i].Path = origPath
 			}
 		}
+
+		// Re-root SourceDir values in scan results from the scan worktree
+		// paths to the original anvil paths. The npm scanner stores absolute
+		// SourceDir paths (manifest directories) relative to the scan root;
+		// without this step those paths would point into the now-cleaned scan
+		// worktrees and cause npm install to run in the wrong directory during
+		// the apply phase.
+		depupdate.RerootAnvilResultSourceDirs(results, scanPaths, anvilPaths)
 
 		if jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
@@ -198,6 +210,14 @@ per-group prompts.`,
 					fmt.Printf("No updates selected for %s.\n", ar.Anvil)
 					return
 				}
+
+				// Re-root SourceDir values from the original anvil path to the
+				// apply worktree path. GroupUpdates inherits SourceDir from
+				// ModuleUpdate (already re-rooted to ar.Path above), but the
+				// apply phase runs inside wt.Path. Without this, npm install and
+				// git commit would target the main repo directory instead of the
+				// isolated worktree.
+				depupdate.RerootGroupSourceDirs(selected, ar.Path, wt.Path)
 
 				// Step 3: Execute — install, verify (Temper), commit or rollback.
 				anvilCfg := cfg.Anvils[ar.Anvil]
