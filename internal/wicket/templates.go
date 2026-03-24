@@ -5,6 +5,39 @@ import (
 	"text/template"
 )
 
+// DispatchConfirmedData holds the template data for the DispatchConfirmed comment.
+type DispatchConfirmedData struct {
+	// BeadID is the bead being dispatched.
+	BeadID string
+}
+
+// LabelAppliedData holds the template data for the LabelApplied comment.
+type LabelAppliedData struct {
+	// Tag is the label/tag that was applied.
+	Tag string
+	// BeadID is the associated bead identifier.
+	BeadID string
+}
+
+// PRCreatedData holds the template data for the PRCreated follow-up comment.
+type PRCreatedData struct {
+	// PRURL is the URL of the created pull request.
+	PRURL string
+	// BeadID is the associated bead identifier.
+	BeadID string
+}
+
+// PRMergedData holds the template data for the PRMerged auto-close comment.
+type PRMergedData struct {
+	// PRURL is the URL of the merged pull request.
+	PRURL string
+	// BaseBranch is the branch the PR was merged into.
+	BaseBranch string
+}
+
+// StaleWarningData holds the template data for the stale warning comment.
+type StaleWarningData struct{}
+
 // BeadCreatedData holds the template data for the BeadCreated comment.
 type BeadCreatedData struct {
 	// BeadID is the newly created bead identifier (e.g. "Forge-abc1").
@@ -34,6 +67,41 @@ type GenericNonTrustedUserData struct {
 }
 
 var (
+	// tmplDispatchConfirmed is posted on an issue when a dispatch signal is detected.
+	tmplDispatchConfirmed = template.Must(template.New("dispatch_confirmed").Parse(
+		`🚀 **Dispatched!**
+
+I'll update this issue when work begins on **{{ .BeadID }}** and again when the pull request is ready.`))
+
+	// tmplLabelApplied is posted after a "label <tag>" comment is processed.
+	tmplLabelApplied = template.Must(template.New("label_applied").Parse(
+		`✅ Tag **{{ .Tag }}** applied to {{ .BeadID }}.
+
+React with 🚀 or comment "dispatch" to queue this for automated implementation.`))
+
+	// tmplPRCreated is posted when a PR is created for a Wicket-tracked issue.
+	tmplPRCreated = template.Must(template.New("pr_created").Parse(
+		`🔀 **Update: Pull request created**
+
+A pull request has been opened for this issue!
+
+- PR: {{ .PRURL }}
+- Bead: {{ .BeadID }}`))
+
+	// tmplPRMerged is posted when a PR is merged, just before auto-closing the issue.
+	tmplPRMerged = template.Must(template.New("pr_merged").Parse(
+		`✅ **Fixed and merged**
+
+This issue has been resolved in {{ .PRURL }} and merged to {{ .BaseBranch }}. Closing this issue now.`))
+
+	// tmplStaleWarning is posted on an issue that has gone stale without a reply.
+	tmplStaleWarning = template.Must(template.New("stale_warning").Parse(
+		`⏰ **This issue has gone stale**
+
+It's been a while since we asked for more details. Is this still an issue you'd like addressed?
+
+If so, please provide the information requested above and we'll get it back in the queue. Otherwise, this issue will be closed automatically in 7 days.`))
+
 	// tmplBeadCreated is posted on an issue when a bead has been successfully
 	// created from it.
 	tmplBeadCreated = template.Must(template.New("bead_created").Parse(
@@ -79,6 +147,31 @@ In the meantime, if you can provide any of the following it will help speed up t
 
 We appreciate your contribution!`))
 )
+
+// RenderDispatchConfirmed renders the DispatchConfirmed comment template.
+func RenderDispatchConfirmed(data DispatchConfirmedData) (string, error) {
+	return renderTemplate(tmplDispatchConfirmed, data)
+}
+
+// RenderLabelApplied renders the LabelApplied comment template.
+func RenderLabelApplied(data LabelAppliedData) (string, error) {
+	return renderTemplate(tmplLabelApplied, data)
+}
+
+// RenderPRCreated renders the PRCreated follow-up comment template.
+func RenderPRCreated(data PRCreatedData) (string, error) {
+	return renderTemplate(tmplPRCreated, data)
+}
+
+// RenderPRMerged renders the PRMerged auto-close comment template.
+func RenderPRMerged(data PRMergedData) (string, error) {
+	return renderTemplate(tmplPRMerged, data)
+}
+
+// RenderStaleWarning renders the stale warning comment template.
+func RenderStaleWarning(data StaleWarningData) (string, error) {
+	return renderTemplate(tmplStaleWarning, data)
+}
 
 // RenderBeadCreated renders the BeadCreated comment template with the given data.
 func RenderBeadCreated(data BeadCreatedData) (string, error) {

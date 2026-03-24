@@ -24,6 +24,13 @@ type GitHubClient interface {
 	// GetIssue returns a single issue by number from the given repository.
 	GetIssue(ctx context.Context, repo string, number int) (*Issue, error)
 
+	// ListComments returns all comments on the specified issue, ordered by
+	// creation time ascending.
+	ListComments(ctx context.Context, repo string, number int) ([]Comment, error)
+
+	// ListReactions returns all emoji reactions on the specified issue.
+	ListReactions(ctx context.Context, repo string, number int) ([]Reaction, error)
+
 	// CommentOnIssue posts body as a new comment on the specified issue.
 	CommentOnIssue(ctx context.Context, repo string, number int, body string) error
 
@@ -33,8 +40,9 @@ type GitHubClient interface {
 	// RemoveLabel removes a single label from the specified issue.
 	RemoveLabel(ctx context.Context, repo string, number int, label string) error
 
-	// CloseIssue closes the specified issue.
-	CloseIssue(ctx context.Context, repo string, number int) error
+	// CloseIssue closes the specified issue. reason is passed as --reason to gh
+	// (e.g. "completed", "not planned"); an empty string omits the flag.
+	CloseIssue(ctx context.Context, repo string, number int, reason string) error
 }
 
 // ghClient implements GitHubClient by shelling out to the gh CLI.
@@ -118,6 +126,80 @@ func (g *ghClient) GetIssue(ctx context.Context, repo string, number int) (*Issu
 	return &issue, nil
 }
 
+// ghAPIComment is the JSON shape of a comment from the GitHub REST API.
+type ghAPIComment struct {
+	ID   int64  `json:"id"`
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+}
+
+// ghAPIReaction is the JSON shape of a reaction from the GitHub REST API.
+type ghAPIReaction struct {
+	Content string `json:"content"`
+	User    struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
+func (g *ghClient) ListComments(ctx context.Context, repo string, number int) ([]Comment, error) {
+	args := []string{
+		"api", fmt.Sprintf("repos/%s/issues/%d/comments", repo, number),
+		"--paginate",
+	}
+	out, err := runGH(ctx, args)
+	if err != nil {
+		return nil, fmt.Errorf("gh api comments %s#%d: %w", repo, number, err)
+	}
+
+	var raw []ghAPIComment
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("parse comments %s#%d: %w", repo, number, err)
+	}
+
+	comments := make([]Comment, 0, len(raw))
+	for _, r := range raw {
+		var createdAt time.Time
+		if r.CreatedAt != "" {
+			createdAt, _ = time.Parse(time.RFC3339, r.CreatedAt)
+		}
+		comments = append(comments, Comment{
+			ID:        r.ID,
+			Author:    r.User.Login,
+			Body:      r.Body,
+			CreatedAt: createdAt,
+		})
+	}
+	return comments, nil
+}
+
+func (g *ghClient) ListReactions(ctx context.Context, repo string, number int) ([]Reaction, error) {
+	args := []string{
+		"api", fmt.Sprintf("repos/%s/issues/%d/reactions", repo, number),
+		"--paginate",
+	}
+	out, err := runGH(ctx, args)
+	if err != nil {
+		return nil, fmt.Errorf("gh api reactions %s#%d: %w", repo, number, err)
+	}
+
+	var raw []ghAPIReaction
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("parse reactions %s#%d: %w", repo, number, err)
+	}
+
+	reactions := make([]Reaction, 0, len(raw))
+	for _, r := range raw {
+		reactions = append(reactions, Reaction{
+			Content: r.Content,
+			User:    r.User.Login,
+		})
+	}
+	return reactions, nil
+}
+
 func (g *ghClient) CommentOnIssue(ctx context.Context, repo string, number int, body string) error {
 	cmd := executil.HideWindow(exec.CommandContext(
 		ctx,
@@ -171,10 +253,13 @@ func (g *ghClient) RemoveLabel(ctx context.Context, repo string, number int, lab
 	return nil
 }
 
-func (g *ghClient) CloseIssue(ctx context.Context, repo string, number int) error {
+func (g *ghClient) CloseIssue(ctx context.Context, repo string, number int, reason string) error {
 	args := []string{
 		"issue", "close", strconv.Itoa(number),
 		"--repo", repo,
+	}
+	if reason != "" {
+		args = append(args, "--reason", reason)
 	}
 	_, err := runGH(ctx, args)
 	if err != nil {
@@ -227,6 +312,10 @@ type MockGitHubClient struct {
 	OnListIssues func(ctx context.Context, repo string, labels []string) ([]Issue, error)
 	// OnGetIssue is called by GetIssue if non-nil.
 	OnGetIssue func(ctx context.Context, repo string, number int) (*Issue, error)
+	// OnListComments is called by ListComments if non-nil.
+	OnListComments func(ctx context.Context, repo string, number int) ([]Comment, error)
+	// OnListReactions is called by ListReactions if non-nil.
+	OnListReactions func(ctx context.Context, repo string, number int) ([]Reaction, error)
 	// OnCommentOnIssue is called by CommentOnIssue if non-nil.
 	OnCommentOnIssue func(ctx context.Context, repo string, number int, body string) error
 	// OnAddLabels is called by AddLabels if non-nil.
@@ -234,7 +323,7 @@ type MockGitHubClient struct {
 	// OnRemoveLabel is called by RemoveLabel if non-nil.
 	OnRemoveLabel func(ctx context.Context, repo string, number int, label string) error
 	// OnCloseIssue is called by CloseIssue if non-nil.
-	OnCloseIssue func(ctx context.Context, repo string, number int) error
+	OnCloseIssue func(ctx context.Context, repo string, number int, reason string) error
 
 	// Recorded calls — populated regardless of whether an On* func is set.
 	CommentCalls  []CommentCall
@@ -284,6 +373,20 @@ func (m *MockGitHubClient) GetIssue(ctx context.Context, repo string, number int
 	return nil, nil
 }
 
+func (m *MockGitHubClient) ListComments(ctx context.Context, repo string, number int) ([]Comment, error) {
+	if m.OnListComments != nil {
+		return m.OnListComments(ctx, repo, number)
+	}
+	return nil, nil
+}
+
+func (m *MockGitHubClient) ListReactions(ctx context.Context, repo string, number int) ([]Reaction, error) {
+	if m.OnListReactions != nil {
+		return m.OnListReactions(ctx, repo, number)
+	}
+	return nil, nil
+}
+
 func (m *MockGitHubClient) CommentOnIssue(ctx context.Context, repo string, number int, body string) error {
 	m.CommentCalls = append(m.CommentCalls, CommentCall{Repo: repo, Number: number, Body: body})
 	if m.OnCommentOnIssue != nil {
@@ -310,10 +413,10 @@ func (m *MockGitHubClient) RemoveLabel(ctx context.Context, repo string, number 
 	return nil
 }
 
-func (m *MockGitHubClient) CloseIssue(ctx context.Context, repo string, number int) error {
+func (m *MockGitHubClient) CloseIssue(ctx context.Context, repo string, number int, reason string) error {
 	m.CloseCalls = append(m.CloseCalls, CloseCall{Repo: repo, Number: number})
 	if m.OnCloseIssue != nil {
-		return m.OnCloseIssue(ctx, repo, number)
+		return m.OnCloseIssue(ctx, repo, number, reason)
 	}
 	return nil
 }

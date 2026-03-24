@@ -85,13 +85,26 @@ type Comment struct {
 	CreatedAt time.Time
 }
 
-// Reaction represents an aggregated emoji reaction on a GitHub issue or comment.
+// Reaction represents a single emoji reaction by a user on a GitHub issue.
 type Reaction struct {
-	// Content is the reaction emoji identifier (e.g. "+1", "heart").
+	// Content is the reaction emoji identifier (e.g. "rocket", "+1", "heart").
 	Content string
-	// Count is the number of users who reacted with this emoji.
-	Count int
+	// User is the GitHub login of the user who reacted.
+	User string
 }
+
+// Wicket issue lifecycle state constants.
+const (
+	StateBeadCreated = "bead_created"
+	StateAskClarify  = "ask_clarify"
+	StateNeedsHuman  = "needs_human"
+	StateRejected    = "rejected"
+	StateDispatched  = "dispatched"
+	StateStale       = "stale"
+	StatePRCreated   = "pr_created"
+	StateMerged      = "merged"
+	StateClosed      = "closed"
+)
 
 // AnvilWicketConfig holds the per-anvil Wicket configuration. Fields use the
 // same yaml/mapstructure tags as config.AnvilConfig so that config loading

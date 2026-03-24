@@ -170,7 +170,7 @@ func TestMockGitHubClient_RemoveLabel_RecordsCall(t *testing.T) {
 
 func TestMockGitHubClient_CloseIssue_RecordsCall(t *testing.T) {
 	m := &MockGitHubClient{}
-	if err := m.CloseIssue(context.Background(), "owner/repo", 99); err != nil {
+	if err := m.CloseIssue(context.Background(), "owner/repo", 99, "completed"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(m.CloseCalls) != 1 || m.CloseCalls[0].Repo != "owner/repo" || m.CloseCalls[0].Number != 99 {

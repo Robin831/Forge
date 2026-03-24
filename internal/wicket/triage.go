@@ -27,10 +27,27 @@ type TriageConfig struct {
 
 // buildTriagePrompt formats an issue into a prompt string for the triage AI.
 func buildTriagePrompt(issue Issue, extraPrompt string) string {
+	return buildTriagePromptWithComments(issue, nil, extraPrompt)
+}
+
+// buildReTriagePrompt formats an issue with its conversation history into a
+// prompt for re-triage after the author has provided additional information.
+func buildReTriagePrompt(issue Issue, comments []Comment, extraPrompt string) string {
+	return buildTriagePromptWithComments(issue, comments, extraPrompt)
+}
+
+// buildTriagePromptWithComments builds a triage prompt optionally including
+// comment history for re-triage scenarios.
+func buildTriagePromptWithComments(issue Issue, comments []Comment, extraPrompt string) string {
 	var b strings.Builder
 
 	b.WriteString("You are a triage agent for an automated software development system.\n")
-	b.WriteString("Analyze the following GitHub issue and decide what action to take.\n\n")
+	if len(comments) > 0 {
+		b.WriteString("Analyze the following GitHub issue and its conversation history, then decide what action to take.\n")
+		b.WriteString("The issue author has provided additional information — re-evaluate the original request in light of the new context.\n\n")
+	} else {
+		b.WriteString("Analyze the following GitHub issue and decide what action to take.\n\n")
+	}
 	b.WriteString("Available actions:\n")
 	b.WriteString(`- "create_bead": The issue is clear, actionable, and suitable for automated implementation.` + "\n")
 	b.WriteString(`- "ask_clarify": The issue needs more information before it can be worked on.` + "\n")
@@ -51,6 +68,15 @@ func buildTriagePrompt(issue Issue, extraPrompt string) string {
 		b.WriteString("(no description provided)")
 	}
 	b.WriteString("\n</description>\n")
+
+	if len(comments) > 0 {
+		b.WriteString("<conversation>\n")
+		for _, c := range comments {
+			fmt.Fprintf(&b, "<comment author=%q>\n%s\n</comment>\n", c.Author, c.Body)
+		}
+		b.WriteString("</conversation>\n")
+	}
+
 	b.WriteString("</issue>\n")
 
 	if extraPrompt != "" {
@@ -196,12 +222,19 @@ func extractFencedTriageBlock(text, fence string) string {
 // failure. Runner errors (provider failures) cause an immediate fallback
 // without retrying to avoid doubling cost on provider outages.
 func RunTriage(ctx context.Context, issue Issue, cfg TriageConfig) TriageDecision {
+	return RunTriageWithComments(ctx, issue, nil, cfg)
+}
+
+// RunTriageWithComments is like RunTriage but includes the issue's comment
+// history in the prompt. Used for clarification re-triage when the author
+// has replied with additional details.
+func RunTriageWithComments(ctx context.Context, issue Issue, comments []Comment, cfg TriageConfig) TriageDecision {
 	run := cfg.runner
 	if run == nil {
 		run = buildDefaultTriageRunner(cfg.Providers)
 	}
 
-	prompt := buildTriagePrompt(issue, cfg.ExtraPrompt)
+	prompt := buildReTriagePrompt(issue, comments, cfg.ExtraPrompt)
 
 	for attempt := 0; attempt < 2; attempt++ {
 		output, err := run(ctx, prompt)

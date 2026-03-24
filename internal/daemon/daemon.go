@@ -664,6 +664,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
 	d.bellowsMonitor.OnEvent(d.handleBellowsNotifications)
 	d.bellowsMonitor.OnEvent(d.handleBeadCloseOnMerge)
+	d.bellowsMonitor.OnEvent(d.handleWicketPRMerged)
 
 	// Reconcile: register any open PRs not yet tracked in the state DB.
 	// This handles PRs created before the current DB or after a DB reset.
@@ -1158,6 +1159,50 @@ func (d *Daemon) handleBeadCloseOnMerge(ctx context.Context, event bellows.PREve
 	} else {
 		d.logger.Info("bead closed after PR merge", "bead", event.BeadID, "pr", event.PRNumber)
 	}
+}
+
+// notifyWicketPRCreated informs the Wicket monitor that a PR has been created
+// for the given bead, so it can post a follow-up comment on the linked GitHub
+// issue. This is a no-op when Wicket is not running or the bead has no linked
+// issue. The call runs in a short-lived goroutine so it does not block the
+// dispatch path.
+func (d *Daemon) notifyWicketPRCreated(beadID, prURL string, prNumber int) {
+	d.wicketMu.Lock()
+	wm := d.wicketMonitor
+	d.wicketMu.Unlock()
+	if wm == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		wm.HandlePRCreated(ctx, beadID, prURL, prNumber)
+	}()
+}
+
+// handleWicketPRMerged bridges bellows EventPRMerged events to the Wicket
+// lifecycle handler so that Wicket-sourced GitHub issues are automatically
+// closed when their linked PR is merged.
+func (d *Daemon) handleWicketPRMerged(ctx context.Context, event bellows.PREvent) {
+	if event.EventType != bellows.EventPRMerged {
+		return
+	}
+	d.wicketMu.Lock()
+	wm := d.wicketMonitor
+	d.wicketMu.Unlock()
+	if wm == nil {
+		return
+	}
+	// Derive base branch from the PR record in the DB.
+	var baseBranch string
+	if pr, err := d.db.GetPRByNumber(event.Anvil, event.PRNumber); err == nil && pr != nil {
+		baseBranch = pr.BaseBranch
+	}
+	go func() {
+		lCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		wm.HandlePRMerged(lCtx, event.BeadID, event.PRURL, baseBranch, event.PRNumber)
+	}()
 }
 
 // reconcileMergedBeads is a startup catch-up pass that closes beads whose PRs
@@ -2235,6 +2280,7 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 	d.logger.Info("PR created", "bead", bead.ID, "pr", pr.URL)
 
 	d.ingotRecordPR(bead.ID, bead.Anvil, pr.Number, pr.URL)
+	d.notifyWicketPRCreated(bead.ID, pr.URL, pr.Number)
 
 	disp := d.dispatcher.Load()
 	go func(anvil, beadID, prURL, prTitle string, prNumber int, dur time.Duration) {
@@ -4624,6 +4670,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 		_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created: %s", pr.Number, pr.URL), beadID, anvil)
 		d.ingotRecordPR(beadID, anvil, pr.Number, pr.URL)
+		d.notifyWicketPRCreated(beadID, pr.URL, pr.Number)
 	} else {
 		d.logger.Info("warden_rerun: not approved", "bead", beadID, "verdict", result.Verdict, "summary", result.Summary)
 		_ = d.db.LogEvent(state.EventWardenReject, fmt.Sprintf("Warden re-review: %s — %s", result.Verdict, result.Summary), beadID, anvil)
@@ -4701,6 +4748,7 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 	_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
 	_ = d.db.LogEvent(state.EventPRCreated, fmt.Sprintf("PR #%d created (approved as-is): %s", pr.Number, pr.URL), beadID, anvil)
 	d.ingotRecordPR(beadID, anvil, pr.Number, pr.URL)
+	d.notifyWicketPRCreated(beadID, pr.URL, pr.Number)
 }
 
 // handleForceSmith re-invokes smith on the same branch with existing warden

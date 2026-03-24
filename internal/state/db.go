@@ -118,6 +118,10 @@ func (db *DB) migrate() error {
 		{"workers", "pr_number", `ALTER TABLE workers ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0`},
 		{"prs", "title", `ALTER TABLE prs ADD COLUMN title TEXT NOT NULL DEFAULT ''`},
 		{"prs", "bellows_managed", `ALTER TABLE prs ADD COLUMN bellows_managed INTEGER NOT NULL DEFAULT 1`},
+		{"wicket_issues", "pr_number", `ALTER TABLE wicket_issues ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0`},
+		{"wicket_issues", "pr_url", `ALTER TABLE wicket_issues ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''`},
+		{"wicket_issues", "comment_count", `ALTER TABLE wicket_issues ADD COLUMN comment_count INTEGER NOT NULL DEFAULT 0`},
+		{"wicket_issues", "author_replied_at", `ALTER TABLE wicket_issues ADD COLUMN author_replied_at TEXT`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -1340,13 +1344,17 @@ const (
 	EventSmelterFailed  EventType = "smelter_failed"
 
 	// Wicket events — GitHub issue triage monitor.
-	EventWicketScanDone      EventType = "wicket_scan_done"
-	EventWicketIssueTriage   EventType = "wicket_issue_triage"
-	EventWicketBeadCreated   EventType = "wicket_bead_created"
-	EventWicketClarification EventType = "wicket_clarification"
-	EventWicketRejected      EventType = "wicket_rejected"
-	EventWicketFlaggedHuman  EventType = "wicket_flagged_human"
-	EventWicketError         EventType = "wicket_error"
+	EventWicketScanDone         EventType = "wicket_scan_done"
+	EventWicketIssueTriage      EventType = "wicket_issue_triage"
+	EventWicketBeadCreated      EventType = "wicket_bead_created"
+	EventWicketClarification    EventType = "wicket_clarification"
+	EventWicketRejected         EventType = "wicket_rejected"
+	EventWicketFlaggedHuman     EventType = "wicket_flagged_human"
+	EventWicketError            EventType = "wicket_error"
+	EventWicketDispatchConfirm  EventType = "wicket_dispatch_confirm"
+	EventWicketPRLinked         EventType = "wicket_pr_linked"
+	EventWicketIssueClosed      EventType = "wicket_issue_closed"
+	EventWicketIssueStaleClose  EventType = "wicket_issue_stale_close"
 )
 
 // Event represents a logged event.
@@ -2625,17 +2633,27 @@ type WicketIssue struct {
 	Title        string
 	Body         string
 	Author       string
-	// State is the lifecycle state of this record: "pending", "triaged",
-	// "bead_created", "needs_human", "ask_clarify", "rejected".
+	// State is the lifecycle state of this record: "pending", "bead_created",
+	// "ask_clarify", "needs_human", "rejected", "dispatched", "stale", "merged", "closed".
 	State        string
 	TriageAction string
 	TriageReason string
 	// BeadID is the bead identifier created for this issue; empty when no
 	// bead has been created yet.
-	BeadID      string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	ProcessedAt *time.Time
+	BeadID string
+	// PRNumber is the pull request number linked to this issue (0 when no PR yet).
+	PRNumber int
+	// PRUrl is the URL of the linked pull request.
+	PRUrl string
+	// CommentCount is the number of comments seen on the last check (used to detect new replies).
+	CommentCount int
+	// AuthorRepliedAt records the last time the issue author posted a comment.
+	// Used for stale detection to avoid false positives when non-author comments
+	// (e.g. bot comments, bystander replies) bump UpdatedAt.
+	AuthorRepliedAt *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	ProcessedAt     *time.Time
 }
 
 // ListWicketIssuesOpts filters for ListWicketIssues.
@@ -2654,11 +2672,16 @@ func (db *DB) InsertWicketIssue(issue WicketIssue) error {
 		issue.State = "pending"
 	}
 	now := time.Now().UTC().Format(dbTimeLayout)
+	var authorRepliedAt any
+	if issue.AuthorRepliedAt != nil {
+		authorRepliedAt = issue.AuthorRepliedAt.UTC().Format(dbTimeLayout)
+	}
 	_, err := db.conn.Exec(
 		`INSERT INTO wicket_issues
 		     (repo, issue_number, title, body, author, state, triage_action,
-		      triage_reason, bead_id, created_at, updated_at, processed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		      triage_reason, bead_id, pr_number, pr_url, comment_count,
+		      author_replied_at, created_at, updated_at, processed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		issue.Repo,
 		issue.IssueNumber,
 		issue.Title,
@@ -2668,6 +2691,10 @@ func (db *DB) InsertWicketIssue(issue WicketIssue) error {
 		issue.TriageAction,
 		issue.TriageReason,
 		issue.BeadID,
+		issue.PRNumber,
+		issue.PRUrl,
+		issue.CommentCount,
+		authorRepliedAt,
 		now,
 		now,
 		nil,
@@ -2683,10 +2710,15 @@ func (db *DB) UpdateWicketIssue(issue WicketIssue) error {
 	if issue.ProcessedAt != nil {
 		processedAt = issue.ProcessedAt.UTC().Format(dbTimeLayout)
 	}
+	var authorRepliedAt any
+	if issue.AuthorRepliedAt != nil {
+		authorRepliedAt = issue.AuthorRepliedAt.UTC().Format(dbTimeLayout)
+	}
 	res, err := db.conn.Exec(
 		`UPDATE wicket_issues
 		    SET title=?, body=?, author=?, state=?, triage_action=?,
-		        triage_reason=?, bead_id=?, updated_at=?, processed_at=?
+		        triage_reason=?, bead_id=?, pr_number=?, pr_url=?,
+		        comment_count=?, author_replied_at=?, updated_at=?, processed_at=?
 		  WHERE repo=? AND issue_number=?`,
 		issue.Title,
 		issue.Body,
@@ -2695,6 +2727,10 @@ func (db *DB) UpdateWicketIssue(issue WicketIssue) error {
 		issue.TriageAction,
 		issue.TriageReason,
 		issue.BeadID,
+		issue.PRNumber,
+		issue.PRUrl,
+		issue.CommentCount,
+		authorRepliedAt,
 		now,
 		processedAt,
 		issue.Repo,
@@ -2719,10 +2755,30 @@ func (db *DB) GetWicketIssue(repo string, number int) (*WicketIssue, error) {
 	row := db.conn.QueryRow(
 		`SELECT id, repo, issue_number, title, body, author, state,
 		        triage_action, triage_reason, bead_id,
+		        pr_number, pr_url, comment_count, author_replied_at,
 		        created_at, updated_at, processed_at
 		   FROM wicket_issues
 		  WHERE repo=? AND issue_number=?`,
 		repo, number,
+	)
+	return scanWicketIssue(row)
+}
+
+// GetWicketIssueByBeadID returns the wicket_issues row for the given bead ID,
+// or nil if no such row exists. Used for lifecycle event bridging.
+func (db *DB) GetWicketIssueByBeadID(beadID string) (*WicketIssue, error) {
+	if beadID == "" {
+		return nil, nil
+	}
+	row := db.conn.QueryRow(
+		`SELECT id, repo, issue_number, title, body, author, state,
+		        triage_action, triage_reason, bead_id,
+		        pr_number, pr_url, comment_count, author_replied_at,
+		        created_at, updated_at, processed_at
+		   FROM wicket_issues
+		  WHERE bead_id=?
+		  LIMIT 1`,
+		beadID,
 	)
 	return scanWicketIssue(row)
 }
@@ -2742,6 +2798,7 @@ func (db *DB) IsIssueTracked(repo string, number int) (bool, error) {
 func (db *DB) ListWicketIssues(opts ListWicketIssuesOpts) ([]WicketIssue, error) {
 	q := `SELECT id, repo, issue_number, title, body, author, state,
 	             triage_action, triage_reason, bead_id,
+	             pr_number, pr_url, comment_count, author_replied_at,
 	             created_at, updated_at, processed_at
 	        FROM wicket_issues`
 	var args []any
@@ -2824,10 +2881,11 @@ func (db *DB) LastWicketScanAt() (*time.Time, error) {
 func scanWicketIssue(row *sql.Row) (*WicketIssue, error) {
 	var w WicketIssue
 	var createdAt, updatedAt string
-	var processedAt *string
+	var processedAt, authorRepliedAt *string
 	err := row.Scan(
 		&w.ID, &w.Repo, &w.IssueNumber, &w.Title, &w.Body, &w.Author,
 		&w.State, &w.TriageAction, &w.TriageReason, &w.BeadID,
+		&w.PRNumber, &w.PRUrl, &w.CommentCount, &authorRepliedAt,
 		&createdAt, &updatedAt, &processedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -2842,6 +2900,10 @@ func scanWicketIssue(row *sql.Row) (*WicketIssue, error) {
 		t := parseTime(*processedAt)
 		w.ProcessedAt = &t
 	}
+	if authorRepliedAt != nil {
+		t := parseTime(*authorRepliedAt)
+		w.AuthorRepliedAt = &t
+	}
 	return &w, nil
 }
 
@@ -2849,10 +2911,11 @@ func scanWicketIssue(row *sql.Row) (*WicketIssue, error) {
 func scanWicketIssueRow(rows *sql.Rows) (*WicketIssue, error) {
 	var w WicketIssue
 	var createdAt, updatedAt string
-	var processedAt *string
+	var processedAt, authorRepliedAt *string
 	err := rows.Scan(
 		&w.ID, &w.Repo, &w.IssueNumber, &w.Title, &w.Body, &w.Author,
 		&w.State, &w.TriageAction, &w.TriageReason, &w.BeadID,
+		&w.PRNumber, &w.PRUrl, &w.CommentCount, &authorRepliedAt,
 		&createdAt, &updatedAt, &processedAt,
 	)
 	if err != nil {
@@ -2863,6 +2926,10 @@ func scanWicketIssueRow(rows *sql.Rows) (*WicketIssue, error) {
 	if processedAt != nil {
 		t := parseTime(*processedAt)
 		w.ProcessedAt = &t
+	}
+	if authorRepliedAt != nil {
+		t := parseTime(*authorRepliedAt)
+		w.AuthorRepliedAt = &t
 	}
 	return &w, nil
 }
