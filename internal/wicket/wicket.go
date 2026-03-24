@@ -362,9 +362,10 @@ func (m *Monitor) triageIssue(ctx context.Context, anvil string, issue Issue, an
 			triageFn = RunTriageWithComments
 		}
 		decision = triageFn(ctx, issue, nil, TriageConfig{
-			Providers:   buildProviders(settings),
-			ExtraPrompt: anvilCfg.WicketTriagePrompt,
-			AnvilPath:   anvilCfg.Path,
+			Providers:     buildProviders(settings),
+			ExtraPrompt:   anvilCfg.WicketTriagePrompt,
+			AnvilPath:     anvilCfg.Path,
+			AllAnvilPaths: m.allAnvilPaths(),
 		})
 		switch decision.Action {
 		case ActionDuplicate, ActionAlreadyFixed, ActionOutOfScope:
@@ -666,6 +667,21 @@ func (m *Monitor) AnvilForRepo(repo string) (string, bool) {
 	defer m.mu.RUnlock()
 	name, ok := m.repoAnvilMap[repo]
 	return name, ok
+}
+
+// allAnvilPaths returns the filesystem paths of all currently configured
+// anvils. It is used to populate AllAnvilPaths in TriageConfig so that
+// RunTriage can perform a cross-anvil Source URL duplicate check.
+func (m *Monitor) allAnvilPaths() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	paths := make([]string, 0, len(m.cfg.Anvils))
+	for _, anvil := range m.cfg.Anvils {
+		if anvil.Path != "" {
+			paths = append(paths, anvil.Path)
+		}
+	}
+	return paths
 }
 
 // buildProviders returns the AI provider chain for triage based on settings.
