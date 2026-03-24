@@ -149,7 +149,7 @@ func (m *Monitor) dispatchBead(ctx context.Context, anvil string, wi state.Wicke
 	if err := bdUpdateRunner(ctx, wi.BeadID, []string{"--tag", "auto-dispatch"}); err != nil {
 		log.Printf("[wicket:dispatch] %s: bd update tag for %s: %v", anvil, wi.BeadID, err)
 		_ = m.db.LogEvent(state.EventWicketError,
-			fmt.Sprintf("[%s] Failed to tag bead %s for dispatch: %v", anvil, wi.BeadID, err), "", anvil)
+			fmt.Sprintf("[%s] Failed to tag bead %s for dispatch: %v", anvil, wi.BeadID, err), wi.BeadID, anvil)
 		return
 	}
 
@@ -167,7 +167,7 @@ func (m *Monitor) dispatchBead(ctx context.Context, anvil string, wi state.Wicke
 
 	_ = m.db.LogEvent(state.EventWicketDispatchConfirm,
 		fmt.Sprintf("[%s] Bead %s dispatched for %s#%d", anvil, wi.BeadID, wi.Repo, wi.IssueNumber),
-		"", anvil)
+		wi.BeadID, anvil)
 
 	log.Printf("[wicket:dispatch] %s: bead %s dispatched for %s#%d", anvil, wi.BeadID, wi.Repo, wi.IssueNumber)
 }
@@ -283,7 +283,7 @@ func (m *Monitor) checkClarificationForIssue(ctx context.Context, anvil string, 
 
 	_ = m.db.LogEvent(state.EventWicketIssueTriage,
 		fmt.Sprintf("[%s] %s#%d re-triage=%s reason=%s", anvil, wi.Repo, wi.IssueNumber, decision.Action, decision.Reason),
-		"", anvil)
+		wi.BeadID, anvil)
 
 	switch decision.Action {
 	case ActionCreateBead:

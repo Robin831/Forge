@@ -47,7 +47,7 @@ func (m *Monitor) HandlePRCreated(ctx context.Context, beadID, prURL string, prN
 
 	_ = m.db.LogEvent(state.EventWicketPRLinked,
 		fmt.Sprintf("PR #%d linked to %s#%d (bead %s)", prNumber, wi.Repo, wi.IssueNumber, beadID),
-		"", "")
+		beadID, "")
 }
 
 // HandlePRMerged is called by the daemon when a PR is merged for a bead that
@@ -95,7 +95,7 @@ func (m *Monitor) HandlePRMerged(ctx context.Context, beadID, prURL, baseBranch 
 
 	_ = m.db.LogEvent(state.EventWicketIssueClosed,
 		fmt.Sprintf("Issue %s#%d closed after PR #%d merged (bead %s)", wi.Repo, wi.IssueNumber, prNumber, beadID),
-		"", "")
+		beadID, "")
 }
 
 // checkStaleIssues finds ask_clarify issues that have not received an author
@@ -172,8 +172,8 @@ func (m *Monitor) checkStaleClosed(ctx context.Context) {
 			log.Printf("[wicket:stale] update state for %s#%d: %v", wi.Repo, wi.IssueNumber, uerr)
 		}
 
-		_ = m.db.LogEvent(state.EventWicketIssueClosed,
+		_ = m.db.LogEvent(state.EventWicketIssueStaleClose,
 			fmt.Sprintf("Issue %s#%d auto-closed due to no reply after stale warning", wi.Repo, wi.IssueNumber),
-			"", "")
+			wi.BeadID, "")
 	}
 }

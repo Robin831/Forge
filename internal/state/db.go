@@ -1353,6 +1353,7 @@ const (
 	EventWicketDispatchConfirm  EventType = "wicket_dispatch_confirm"
 	EventWicketPRLinked         EventType = "wicket_pr_linked"
 	EventWicketIssueClosed      EventType = "wicket_issue_closed"
+	EventWicketIssueStaleClose  EventType = "wicket_issue_stale_close"
 )
 
 // Event represents a logged event.
