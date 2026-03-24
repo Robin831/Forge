@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -243,6 +244,38 @@ func TestExecuteContextCancellation(t *testing.T) {
 	}
 	if result.ErrorMessage == "" {
 		t.Error("expected error message for cancelled context")
+	}
+}
+
+func TestExecutePreCancelledContextEarlyReturn(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	exec := New(10*time.Second, logger)
+
+	// Cancel context before calling Execute to exercise the ctx.Err() fast-path
+	// that avoids launching Chrome entirely.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	quest := &questgiver.Quest{
+		Name:  "pre-cancelled quest",
+		Steps: []questgiver.Step{{Action: "navigate", URL: "about:blank"}},
+	}
+
+	result := exec.Execute(ctx, quest)
+
+	if result.Passed {
+		t.Error("expected Passed=false for pre-cancelled context")
+	}
+	if result.ErrorMessage == "" {
+		t.Error("expected non-empty ErrorMessage for pre-cancelled context")
+	}
+	// The early-return path sets a specific message prefix.
+	if !strings.HasPrefix(result.ErrorMessage, "context cancelled before execution:") {
+		t.Errorf("expected early-return message, got: %s", result.ErrorMessage)
+	}
+	if result.Duration <= 0 {
+		t.Error("expected Duration > 0")
 	}
 }
 
