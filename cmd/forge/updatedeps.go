@@ -112,7 +112,9 @@ per-group prompts.`,
 		// semantics) and the main anvil directory stays on main throughout.
 		dateStr := time.Now().Format("2006-01-02")
 		targetBranch := "deps/batch-update-" + dateStr
-		worktreeBeadID := "depupdate-" + dateStr
+		// Include seconds so that same-day crash/retry runs get a distinct
+		// worktree path rather than colliding with an unclean previous run.
+		worktreeBeadID := "depupdate-" + time.Now().Format("20060102-150405")
 		wtMgr := worktree.NewManager()
 
 		// For each anvil with updates: create an isolated worktree, prompt user,
@@ -143,7 +145,11 @@ per-group prompts.`,
 					fmt.Fprintf(os.Stderr, "warning: worktree for %s: %v\n", ar.Anvil, err)
 					return
 				}
-				defer wtMgr.Remove(context.Background(), ar.Path, wt)
+				defer func() {
+					cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					_ = wtMgr.Remove(cleanupCtx, ar.Path, wt)
+				}()
 
 				// Step 2: Interactive group selection — skip groups the user declines.
 				selected := depupdate.SelectGroups(os.Stdin, os.Stdout, groups, yesAll)
