@@ -66,6 +66,24 @@ type GenericNonTrustedUserData struct {
 	Author string
 }
 
+// DuplicateData holds the template data for the Duplicate comment.
+type DuplicateData struct {
+	// DuplicateID is the ID of the existing bead that already covers this issue.
+	DuplicateID string
+}
+
+// AlreadyFixedData holds the template data for the AlreadyFixed comment.
+type AlreadyFixedData struct {
+	// ReferencePR is the PR URL or bead ID that resolved the issue.
+	ReferencePR string
+}
+
+// OutOfScopeData holds the template data for the OutOfScope comment.
+type OutOfScopeData struct {
+	// Reason is the AI's explanation for why this issue is out of scope.
+	Reason string
+}
+
 var (
 	// tmplDispatchConfirmed is posted on an issue when a dispatch signal is detected.
 	tmplDispatchConfirmed = template.Must(template.New("dispatch_confirmed").Parse(
@@ -146,6 +164,35 @@ In the meantime, if you can provide any of the following it will help speed up t
 - **Environment details** (OS, version, relevant configuration)
 
 We appreciate your contribution!`))
+
+	// tmplDuplicate is posted when the triage AI determines the issue is
+	// already covered by an existing open bead.
+	tmplDuplicate = template.Must(template.New("duplicate").Parse(
+		`🔁 **Duplicate issue**
+
+This issue appears to be already tracked in **{{ .DuplicateID }}**. Please follow that work item for progress updates.
+
+If you believe this is a distinct issue, please add more details to help differentiate it.`))
+
+	// tmplAlreadyFixed is posted when the triage AI determines the issue
+	// describes a problem that has already been resolved.
+	tmplAlreadyFixed = template.Must(template.New("already_fixed").Parse(
+		`✅ **Already resolved**
+
+This issue appears to have been addressed in a previous fix: **{{ .ReferencePR }}**.
+
+If the problem persists or this is a different scenario, please reopen with additional details.`))
+
+	// tmplOutOfScope is posted when the triage AI determines the issue is
+	// outside the project's scope.
+	tmplOutOfScope = template.Must(template.New("out_of_scope").Parse(
+		`🚫 **Out of scope**
+
+After reviewing this issue, it falls outside the scope of what this project handles.
+
+> {{ .Reason }}
+
+If you believe this assessment is incorrect, please provide additional context and a maintainer will take another look.`))
 )
 
 // RenderDispatchConfirmed renders the DispatchConfirmed comment template.
@@ -192,6 +239,21 @@ func RenderFlaggedForHuman(data FlaggedForHumanData) (string, error) {
 // issues from non-trusted contributors.
 func RenderGenericNonTrustedUser(data GenericNonTrustedUserData) (string, error) {
 	return renderTemplate(tmplGenericNonTrustedUser, data)
+}
+
+// RenderDuplicate renders the Duplicate comment template.
+func RenderDuplicate(data DuplicateData) (string, error) {
+	return renderTemplate(tmplDuplicate, data)
+}
+
+// RenderAlreadyFixed renders the AlreadyFixed comment template.
+func RenderAlreadyFixed(data AlreadyFixedData) (string, error) {
+	return renderTemplate(tmplAlreadyFixed, data)
+}
+
+// RenderOutOfScope renders the OutOfScope comment template.
+func RenderOutOfScope(data OutOfScopeData) (string, error) {
+	return renderTemplate(tmplOutOfScope, data)
 }
 
 func renderTemplate(t *template.Template, data any) (string, error) {

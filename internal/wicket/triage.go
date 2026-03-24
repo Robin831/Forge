@@ -1,16 +1,95 @@
 package wicket
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 )
+
+// BeadSummary is a compact representation of a bead used to provide context
+// to the triage AI for duplicate and already-fixed detection.
+type BeadSummary struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+}
+
+// bdListRunner is the function used to execute `bd list`. Tests replace this
+// to avoid spawning a real subprocess.
+var bdListRunner func(ctx context.Context, args []string) (string, error) = defaultBDListRunner
+
+func defaultBDListRunner(ctx context.Context, args []string) (string, error) {
+	cmdArgs := append([]string{"list"}, args...)
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", cmdArgs...))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		se := strings.TrimSpace(stderr.String())
+		if se != "" {
+			return "", fmt.Errorf("bd list: %v: %s", err, se)
+		}
+		return "", fmt.Errorf("bd list: %w", err)
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// fetchBeadSummaries calls bd list with the given status filter and returns
+// parsed bead summaries. A limit of 0 means no limit.
+func fetchBeadSummaries(ctx context.Context, status string, limit int) []BeadSummary {
+	args := []string{"--status", status, "--json"}
+	if limit > 0 {
+		args = append(args, "--limit", strconv.Itoa(limit))
+	} else {
+		args = append(args, "--limit", "0")
+	}
+	output, err := bdListRunner(ctx, args)
+	if err != nil {
+		log.Printf("[wicket:triage] bd list --status=%s: %v", status, err)
+		return nil
+	}
+	if output == "" {
+		return nil
+	}
+	var summaries []BeadSummary
+	if err := json.Unmarshal([]byte(output), &summaries); err != nil {
+		log.Printf("[wicket:triage] parse bd list output: %v", err)
+		return nil
+	}
+	return summaries
+}
+
+// formatBeadSummaries formats a slice of BeadSummary into a compact multi-line
+// string suitable for injection into a prompt.
+func formatBeadSummaries(beads []BeadSummary) string {
+	if len(beads) == 0 {
+		return "(none)"
+	}
+	var b strings.Builder
+	for _, bead := range beads {
+		desc := bead.Description
+		if len(desc) > 120 {
+			desc = desc[:120] + "…"
+		}
+		fmt.Fprintf(&b, "- %s: %s", bead.ID, bead.Title)
+		if desc != "" {
+			fmt.Fprintf(&b, " — %s", desc)
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
 
 // TriageConfig holds configuration for a RunTriage call.
 type TriageConfig struct {
@@ -23,22 +102,21 @@ type TriageConfig struct {
 	// runner is the AI call function. Nil means use the default smith-based
 	// runner. Tests replace this to avoid spawning real subprocesses.
 	runner func(ctx context.Context, prompt string) (string, error)
+	// beadLister overrides bead fetching for tests. When non-nil it is called
+	// instead of fetchBeadSummaries to retrieve open and closed beads.
+	// The first call receives status "open,in_progress" and limit 0;
+	// the second receives status "closed" and limit 20.
+	beadLister func(ctx context.Context, status string, limit int) []BeadSummary
 }
 
 // buildTriagePrompt formats an issue into a prompt string for the triage AI.
 func buildTriagePrompt(issue Issue, extraPrompt string) string {
-	return buildTriagePromptWithComments(issue, nil, extraPrompt)
+	return buildTriagePromptWithBeads(issue, nil, extraPrompt, nil, nil)
 }
 
-// buildReTriagePrompt formats an issue with its conversation history into a
-// prompt for re-triage after the author has provided additional information.
-func buildReTriagePrompt(issue Issue, comments []Comment, extraPrompt string) string {
-	return buildTriagePromptWithComments(issue, comments, extraPrompt)
-}
-
-// buildTriagePromptWithComments builds a triage prompt optionally including
-// comment history for re-triage scenarios.
-func buildTriagePromptWithComments(issue Issue, comments []Comment, extraPrompt string) string {
+// buildTriagePromptWithBeads builds a triage prompt including optional comment
+// history and bead context for duplicate/already-fixed detection.
+func buildTriagePromptWithBeads(issue Issue, comments []Comment, extraPrompt string, openBeads, closedBeads []BeadSummary) string {
 	var b strings.Builder
 
 	b.WriteString("You are a triage agent for an automated software development system.\n")
@@ -51,7 +129,10 @@ func buildTriagePromptWithComments(issue Issue, comments []Comment, extraPrompt 
 	b.WriteString("Available actions:\n")
 	b.WriteString(`- "create_bead": The issue is clear, actionable, and suitable for automated implementation.` + "\n")
 	b.WriteString(`- "ask_clarify": The issue needs more information before it can be worked on.` + "\n")
-	b.WriteString(`- "flag_human": The issue is too complex, requires human judgment, or is not suitable for automation.` + "\n\n")
+	b.WriteString(`- "flag_human": The issue is too complex, requires human judgment, or is not suitable for automation.` + "\n")
+	b.WriteString(`- "duplicate": The issue is already tracked by an existing open bead. Include "duplicate_id" with the matching bead ID.` + "\n")
+	b.WriteString(`- "already_fixed": The issue describes a problem that was already resolved. Include "reference_pr" with the relevant PR URL or bead ID.` + "\n")
+	b.WriteString(`- "out_of_scope": The issue is outside the scope of this project. Include your reasoning in "reason".` + "\n\n")
 
 	b.WriteString("<issue>\n")
 	fmt.Fprintf(&b, "<repository>%s</repository>\n", issue.Repo)
@@ -79,6 +160,15 @@ func buildTriagePromptWithComments(issue Issue, comments []Comment, extraPrompt 
 
 	b.WriteString("</issue>\n")
 
+	// Inject existing bead context to help the AI detect duplicates and
+	// already-resolved issues.
+	b.WriteString("\n<existing_work>\n")
+	b.WriteString("Existing open issues (check for duplicates):\n")
+	b.WriteString(formatBeadSummaries(openBeads))
+	b.WriteString("\n\nRecently closed issues (check for already-fixed):\n")
+	b.WriteString(formatBeadSummaries(closedBeads))
+	b.WriteString("\n</existing_work>\n")
+
 	if extraPrompt != "" {
 		b.WriteString("\nAdditional context:\n")
 		b.WriteString(extraPrompt)
@@ -91,11 +181,15 @@ Respond with ONLY a JSON object using this exact format:
   "action": "create_bead",
   "reason": "brief explanation of your decision",
   "bead_title": "short title for the work item (only when action is create_bead)",
-  "bead_description": "clear description of what needs to be done (only when action is create_bead)"
+  "bead_description": "clear description of what needs to be done (only when action is create_bead)",
+  "duplicate_id": "Forge-abc1 (only when action is duplicate)",
+  "reference_pr": "PR URL or bead ID (only when action is already_fixed)"
 }
 
 Choose "create_bead" only when the issue describes a clear, specific, implementable task.
-Omit "bead_title" and "bead_description" for "ask_clarify" and "flag_human" actions.
+Omit "bead_title" and "bead_description" for non-create_bead actions.
+Omit "duplicate_id" unless action is "duplicate".
+Omit "reference_pr" unless action is "already_fixed".
 `)
 	return b.String()
 }
@@ -106,6 +200,8 @@ type rawTriageDecision struct {
 	Reason          string `json:"reason"`
 	BeadTitle       string `json:"bead_title"`
 	BeadDescription string `json:"bead_description"`
+	DuplicateID     string `json:"duplicate_id"`
+	ReferencePR     string `json:"reference_pr"`
 }
 
 // parseTriageDecision extracts a TriageDecision from raw AI output.
@@ -124,7 +220,8 @@ func parseTriageDecision(output string) (TriageDecision, bool) {
 
 	action := TriageAction(raw.Action)
 	switch action {
-	case ActionCreateBead, ActionAskClarify, ActionFlagHuman:
+	case ActionCreateBead, ActionAskClarify, ActionFlagHuman,
+		ActionDuplicate, ActionAlreadyFixed, ActionOutOfScope:
 		// valid
 	default:
 		return TriageDecision{}, false
@@ -141,6 +238,8 @@ func parseTriageDecision(output string) (TriageDecision, bool) {
 		Reason:          raw.Reason,
 		BeadTitle:       raw.BeadTitle,
 		BeadDescription: raw.BeadDescription,
+		DuplicateID:     raw.DuplicateID,
+		ReferencePR:     raw.ReferencePR,
 	}, true
 }
 
@@ -234,7 +333,15 @@ func RunTriageWithComments(ctx context.Context, issue Issue, comments []Comment,
 		run = buildDefaultTriageRunner(cfg.Providers)
 	}
 
-	prompt := buildReTriagePrompt(issue, comments, cfg.ExtraPrompt)
+	// Fetch existing bead context for duplicate/already-fixed detection.
+	lister := cfg.beadLister
+	if lister == nil {
+		lister = fetchBeadSummaries
+	}
+	openBeads := lister(ctx, "open,in_progress", 0)
+	closedBeads := lister(ctx, "closed", 20)
+
+	prompt := buildTriagePromptWithBeads(issue, comments, cfg.ExtraPrompt, openBeads, closedBeads)
 
 	for attempt := 0; attempt < 2; attempt++ {
 		output, err := run(ctx, prompt)

@@ -335,6 +335,15 @@ func (m *Monitor) checkClarificationForIssue(ctx context.Context, anvil string, 
 		wi.TriageReason = decision.Reason
 		_ = m.db.UpdateWicketIssue(wi)
 
+	case ActionDuplicate:
+		m.handleDuplicate(ctx, anvil, issue, decision, settings)
+
+	case ActionAlreadyFixed:
+		m.handleAlreadyFixed(ctx, anvil, issue, decision, settings)
+
+	case ActionOutOfScope:
+		m.handleOutOfScope(ctx, anvil, issue, decision, settings)
+
 	default:
 		// Map triage actions to the corresponding lifecycle states to avoid
 		// storing raw action strings that other code won't recognize (e.g.

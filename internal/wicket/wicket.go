@@ -303,9 +303,84 @@ func (m *Monitor) dispatchDecision(ctx context.Context, anvil string, issue Issu
 		m.handleFlagHuman(ctx, anvil, issue, decision, settings)
 	case ActionReject:
 		m.handleReject(ctx, anvil, issue, decision, settings)
+	case ActionDuplicate:
+		m.handleDuplicate(ctx, anvil, issue, decision, settings)
+	case ActionAlreadyFixed:
+		m.handleAlreadyFixed(ctx, anvil, issue, decision, settings)
+	case ActionOutOfScope:
+		m.handleOutOfScope(ctx, anvil, issue, decision, settings)
 	default:
 		log.Printf("[wicket] %s: unknown triage action %q for %s#%d", anvil, decision.Action, issue.Repo, issue.Number)
 	}
+}
+
+// handleDuplicate posts a comment referencing the existing bead that already
+// covers this issue and records the outcome in state.db.
+func (m *Monitor) handleDuplicate(ctx context.Context, anvil string, issue Issue, decision TriageDecision, settings config.SettingsConfig) {
+	log.Printf("[wicket] %s: %s#%d is duplicate of %s: %s", anvil, issue.Repo, issue.Number, decision.DuplicateID, decision.Reason)
+	_ = m.db.LogEvent(state.EventWicketRejected,
+		fmt.Sprintf("[%s] %s#%d duplicate of %s: %s", anvil, issue.Repo, issue.Number, decision.DuplicateID, decision.Reason),
+		"", anvil)
+
+	comment, err := RenderDuplicate(DuplicateData{DuplicateID: decision.DuplicateID})
+	if err == nil {
+		if cerr := m.ghClient.CommentOnIssue(ctx, issue.Repo, issue.Number, comment); cerr != nil {
+			log.Printf("[wicket] %s: comment on %s#%d: %v", anvil, issue.Repo, issue.Number, cerr)
+		}
+	}
+
+	labels := []string{settings.WicketProcessedLabel}
+	if lerr := m.ghClient.AddLabels(ctx, issue.Repo, issue.Number, labels); lerr != nil {
+		log.Printf("[wicket] %s: add label on %s#%d: %v", anvil, issue.Repo, issue.Number, lerr)
+	}
+
+	m.persistOutcome(issue, "rejected", decision)
+}
+
+// handleAlreadyFixed posts a comment referencing the PR or bead that resolved
+// the issue and records the outcome in state.db.
+func (m *Monitor) handleAlreadyFixed(ctx context.Context, anvil string, issue Issue, decision TriageDecision, settings config.SettingsConfig) {
+	log.Printf("[wicket] %s: %s#%d already fixed (ref: %s): %s", anvil, issue.Repo, issue.Number, decision.ReferencePR, decision.Reason)
+	_ = m.db.LogEvent(state.EventWicketRejected,
+		fmt.Sprintf("[%s] %s#%d already fixed (ref: %s): %s", anvil, issue.Repo, issue.Number, decision.ReferencePR, decision.Reason),
+		"", anvil)
+
+	comment, err := RenderAlreadyFixed(AlreadyFixedData{ReferencePR: decision.ReferencePR})
+	if err == nil {
+		if cerr := m.ghClient.CommentOnIssue(ctx, issue.Repo, issue.Number, comment); cerr != nil {
+			log.Printf("[wicket] %s: comment on %s#%d: %v", anvil, issue.Repo, issue.Number, cerr)
+		}
+	}
+
+	labels := []string{settings.WicketProcessedLabel}
+	if lerr := m.ghClient.AddLabels(ctx, issue.Repo, issue.Number, labels); lerr != nil {
+		log.Printf("[wicket] %s: add label on %s#%d: %v", anvil, issue.Repo, issue.Number, lerr)
+	}
+
+	m.persistOutcome(issue, "rejected", decision)
+}
+
+// handleOutOfScope posts a rejection comment with the AI reasoning and records
+// the outcome in state.db.
+func (m *Monitor) handleOutOfScope(ctx context.Context, anvil string, issue Issue, decision TriageDecision, settings config.SettingsConfig) {
+	log.Printf("[wicket] %s: %s#%d out of scope: %s", anvil, issue.Repo, issue.Number, decision.Reason)
+	_ = m.db.LogEvent(state.EventWicketRejected,
+		fmt.Sprintf("[%s] %s#%d out of scope: %s", anvil, issue.Repo, issue.Number, decision.Reason),
+		"", anvil)
+
+	comment, err := RenderOutOfScope(OutOfScopeData{Reason: decision.Reason})
+	if err == nil {
+		if cerr := m.ghClient.CommentOnIssue(ctx, issue.Repo, issue.Number, comment); cerr != nil {
+			log.Printf("[wicket] %s: comment on %s#%d: %v", anvil, issue.Repo, issue.Number, cerr)
+		}
+	}
+
+	labels := []string{settings.WicketProcessedLabel}
+	if lerr := m.ghClient.AddLabels(ctx, issue.Repo, issue.Number, labels); lerr != nil {
+		log.Printf("[wicket] %s: add label on %s#%d: %v", anvil, issue.Repo, issue.Number, lerr)
+	}
+
+	m.persistOutcome(issue, "rejected", decision)
 }
 
 // handleCreateBead creates a bead, posts a confirmation comment, and labels

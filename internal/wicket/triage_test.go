@@ -7,6 +7,174 @@ import (
 	"testing"
 )
 
+// --- new action tests ---
+
+func TestParseTriageDecision_Duplicate(t *testing.T) {
+	output := `{"action": "duplicate", "reason": "matches Forge-abc1", "duplicate_id": "Forge-abc1"}`
+	dec, ok := parseTriageDecision(output)
+	if !ok {
+		t.Fatal("expected parse success")
+	}
+	if dec.Action != ActionDuplicate {
+		t.Errorf("action: got %q, want duplicate", dec.Action)
+	}
+	if dec.DuplicateID != "Forge-abc1" {
+		t.Errorf("duplicate_id: got %q, want Forge-abc1", dec.DuplicateID)
+	}
+}
+
+func TestParseTriageDecision_AlreadyFixed(t *testing.T) {
+	output := `{"action": "already_fixed", "reason": "resolved in PR", "reference_pr": "https://github.com/org/repo/pull/42"}`
+	dec, ok := parseTriageDecision(output)
+	if !ok {
+		t.Fatal("expected parse success")
+	}
+	if dec.Action != ActionAlreadyFixed {
+		t.Errorf("action: got %q, want already_fixed", dec.Action)
+	}
+	if dec.ReferencePR != "https://github.com/org/repo/pull/42" {
+		t.Errorf("reference_pr: got %q", dec.ReferencePR)
+	}
+}
+
+func TestParseTriageDecision_OutOfScope(t *testing.T) {
+	output := `{"action": "out_of_scope", "reason": "this project does not handle UI concerns"}`
+	dec, ok := parseTriageDecision(output)
+	if !ok {
+		t.Fatal("expected parse success")
+	}
+	if dec.Action != ActionOutOfScope {
+		t.Errorf("action: got %q, want out_of_scope", dec.Action)
+	}
+	if dec.Reason == "" {
+		t.Error("expected non-empty reason")
+	}
+}
+
+func TestRunTriage_OpenBeadsDuplicate(t *testing.T) {
+	openBeads := []BeadSummary{
+		{ID: "Forge-dup1", Title: "Support dark mode", Description: "Implement dark mode toggle", Status: "open"},
+	}
+	cfg := TriageConfig{
+		runner: func(_ context.Context, prompt string) (string, error) {
+			// Verify the open beads context was injected into the prompt.
+			if !strings.Contains(prompt, "Forge-dup1") {
+				t.Error("prompt does not contain open bead ID")
+			}
+			if !strings.Contains(prompt, "Support dark mode") {
+				t.Error("prompt does not contain open bead title")
+			}
+			return `{"action": "duplicate", "reason": "already tracked", "duplicate_id": "Forge-dup1"}`, nil
+		},
+		beadLister: func(_ context.Context, status string, _ int) []BeadSummary {
+			if strings.Contains(status, "open") {
+				return openBeads
+			}
+			return nil
+		},
+	}
+	issue := Issue{Number: 10, Repo: "org/repo", Title: "Add dark mode support"}
+	dec := RunTriage(context.Background(), issue, cfg)
+	if dec.Action != ActionDuplicate {
+		t.Errorf("got %q, want duplicate", dec.Action)
+	}
+	if dec.DuplicateID != "Forge-dup1" {
+		t.Errorf("duplicate_id: got %q, want Forge-dup1", dec.DuplicateID)
+	}
+}
+
+func TestRunTriage_ClosedBeadsAlreadyFixed(t *testing.T) {
+	closedBeads := []BeadSummary{
+		{ID: "Forge-old1", Title: "Fix crash on startup", Description: "App crashes at launch", Status: "closed"},
+	}
+	cfg := TriageConfig{
+		runner: func(_ context.Context, prompt string) (string, error) {
+			if !strings.Contains(prompt, "Forge-old1") {
+				t.Error("prompt does not contain closed bead ID")
+			}
+			return `{"action": "already_fixed", "reason": "resolved in Forge-old1", "reference_pr": "Forge-old1"}`, nil
+		},
+		beadLister: func(_ context.Context, status string, _ int) []BeadSummary {
+			if strings.Contains(status, "closed") {
+				return closedBeads
+			}
+			return nil
+		},
+	}
+	issue := Issue{Number: 11, Repo: "org/repo", Title: "Crash on startup"}
+	dec := RunTriage(context.Background(), issue, cfg)
+	if dec.Action != ActionAlreadyFixed {
+		t.Errorf("got %q, want already_fixed", dec.Action)
+	}
+	if dec.ReferencePR != "Forge-old1" {
+		t.Errorf("reference_pr: got %q", dec.ReferencePR)
+	}
+}
+
+func TestRunTriage_CustomTriagePromptOutOfScope(t *testing.T) {
+	cfg := TriageConfig{
+		ExtraPrompt: "This project only handles backend API changes. Reject all UI feature requests.",
+		runner: func(_ context.Context, prompt string) (string, error) {
+			if !strings.Contains(prompt, "This project only handles backend API changes") {
+				t.Error("prompt does not contain custom triage prompt")
+			}
+			return `{"action": "out_of_scope", "reason": "UI concerns are not handled by this project"}`, nil
+		},
+		beadLister: func(_ context.Context, _ string, _ int) []BeadSummary {
+			return nil
+		},
+	}
+	issue := Issue{Number: 12, Repo: "org/repo", Title: "Add button styling"}
+	dec := RunTriage(context.Background(), issue, cfg)
+	if dec.Action != ActionOutOfScope {
+		t.Errorf("got %q, want out_of_scope", dec.Action)
+	}
+}
+
+func TestBuildTriagePromptWithBeads_InjectsBeadContext(t *testing.T) {
+	openBeads := []BeadSummary{
+		{ID: "Forge-x1", Title: "Feature X", Description: "Implement feature X"},
+	}
+	closedBeads := []BeadSummary{
+		{ID: "Forge-y1", Title: "Bug Y", Description: "Fix bug Y"},
+	}
+	issue := Issue{Number: 1, Repo: "r/r", Title: "Test"}
+	prompt := buildTriagePromptWithBeads(issue, nil, "", openBeads, closedBeads)
+
+	for _, want := range []string{
+		"Forge-x1", "Feature X",
+		"Forge-y1", "Bug Y",
+		"duplicate", "already_fixed", "out_of_scope",
+		"existing_work",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
+func TestFormatBeadSummaries_Empty(t *testing.T) {
+	got := formatBeadSummaries(nil)
+	if got != "(none)" {
+		t.Errorf("got %q, want (none)", got)
+	}
+}
+
+func TestFormatBeadSummaries_TruncatesDescription(t *testing.T) {
+	longDesc := strings.Repeat("x", 200)
+	beads := []BeadSummary{{ID: "Forge-z1", Title: "Long one", Description: longDesc}}
+	got := formatBeadSummaries(beads)
+	if !strings.Contains(got, "Forge-z1") {
+		t.Error("missing bead ID")
+	}
+	// Description should be truncated at 120 chars + ellipsis
+	if strings.Contains(got, longDesc) {
+		t.Error("description was not truncated")
+	}
+}
+
+// --- end new action tests ---
+
 func TestBuildTriagePrompt_ContainsIssueDetails(t *testing.T) {
 	issue := Issue{
 		Number: 42,
