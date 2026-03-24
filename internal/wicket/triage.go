@@ -70,6 +70,19 @@ func fetchBeadSummaries(ctx context.Context, status string, limit int) []BeadSum
 	return summaries
 }
 
+// sanitizeBeadText strips characters that could break the prompt structure when
+// bead content is interpolated into XML-tagged sections. Newlines are collapsed
+// to spaces (each bead occupies a single line) and angle brackets are removed
+// to prevent XML tag injection.
+func sanitizeBeadText(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "<", "")
+	s = strings.ReplaceAll(s, ">", "")
+	return s
+}
+
 // formatBeadSummaries formats a slice of BeadSummary into a compact multi-line
 // string suitable for injection into a prompt.
 func formatBeadSummaries(beads []BeadSummary) string {
@@ -78,11 +91,14 @@ func formatBeadSummaries(beads []BeadSummary) string {
 	}
 	var b strings.Builder
 	for _, bead := range beads {
-		desc := bead.Description
-		if len(desc) > 120 {
-			desc = desc[:120] + "…"
+		title := sanitizeBeadText(bead.Title)
+		desc := sanitizeBeadText(bead.Description)
+		// Truncate by rune count to avoid splitting multibyte UTF-8 sequences.
+		descRunes := []rune(desc)
+		if len(descRunes) > 120 {
+			desc = string(descRunes[:120]) + "…"
 		}
-		fmt.Fprintf(&b, "- %s: %s", bead.ID, bead.Title)
+		fmt.Fprintf(&b, "- %s: %s", bead.ID, title)
 		if desc != "" {
 			fmt.Fprintf(&b, " — %s", desc)
 		}

@@ -323,10 +323,10 @@ func (m *Monitor) handleDuplicate(ctx context.Context, anvil string, issue Issue
 		"", anvil)
 
 	comment, err := RenderDuplicate(DuplicateData{DuplicateID: decision.DuplicateID})
-	if err == nil {
-		if cerr := m.ghClient.CommentOnIssue(ctx, issue.Repo, issue.Number, comment); cerr != nil {
-			log.Printf("[wicket] %s: comment on %s#%d: %v", anvil, issue.Repo, issue.Number, cerr)
-		}
+	if err != nil {
+		log.Printf("[wicket] %s: render duplicate comment: %v", anvil, err)
+	} else if cerr := m.ghClient.CommentOnIssue(ctx, issue.Repo, issue.Number, comment); cerr != nil {
+		log.Printf("[wicket] %s: comment on %s#%d: %v", anvil, issue.Repo, issue.Number, cerr)
 	}
 
 	labels := []string{settings.WicketProcessedLabel}
@@ -346,10 +346,10 @@ func (m *Monitor) handleAlreadyFixed(ctx context.Context, anvil string, issue Is
 		"", anvil)
 
 	comment, err := RenderAlreadyFixed(AlreadyFixedData{ReferencePR: decision.ReferencePR})
-	if err == nil {
-		if cerr := m.ghClient.CommentOnIssue(ctx, issue.Repo, issue.Number, comment); cerr != nil {
-			log.Printf("[wicket] %s: comment on %s#%d: %v", anvil, issue.Repo, issue.Number, cerr)
-		}
+	if err != nil {
+		log.Printf("[wicket] %s: render already_fixed comment: %v", anvil, err)
+	} else if cerr := m.ghClient.CommentOnIssue(ctx, issue.Repo, issue.Number, comment); cerr != nil {
+		log.Printf("[wicket] %s: comment on %s#%d: %v", anvil, issue.Repo, issue.Number, cerr)
 	}
 
 	labels := []string{settings.WicketProcessedLabel}
@@ -369,10 +369,10 @@ func (m *Monitor) handleOutOfScope(ctx context.Context, anvil string, issue Issu
 		"", anvil)
 
 	comment, err := RenderOutOfScope(OutOfScopeData{Reason: decision.Reason})
-	if err == nil {
-		if cerr := m.ghClient.CommentOnIssue(ctx, issue.Repo, issue.Number, comment); cerr != nil {
-			log.Printf("[wicket] %s: comment on %s#%d: %v", anvil, issue.Repo, issue.Number, cerr)
-		}
+	if err != nil {
+		log.Printf("[wicket] %s: render out_of_scope comment: %v", anvil, err)
+	} else if cerr := m.ghClient.CommentOnIssue(ctx, issue.Repo, issue.Number, comment); cerr != nil {
+		log.Printf("[wicket] %s: comment on %s#%d: %v", anvil, issue.Repo, issue.Number, cerr)
 	}
 
 	labels := []string{settings.WicketProcessedLabel}
