@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
@@ -474,23 +475,65 @@ func RunTriageWithComments(ctx context.Context, issue Issue, comments []Comment,
 				return fetchBeadSummaries(ctx, status, limit, anvilPath)
 			}
 		}
+
+		// Enforce a per-path quota so later paths are not starved when the
+		// first path returns a full batch.  Each path gets an equal share of
+		// the global cap (minimum 1).
+		numPaths := len(cfg.MonitoredAnvilPaths)
+		openQuota := maxOpenBeads / numPaths
+		if openQuota < 1 {
+			openQuota = 1
+		}
+		closedQuota := 20 / numPaths
+		if closedQuota < 1 {
+			closedQuota = 1
+		}
+
+		// Fetch all paths in parallel with a shared 30-second deadline so
+		// slow paths cannot stall the triage loop indefinitely.
+		fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		type pathResult struct {
+			open   []BeadSummary
+			closed []BeadSummary
+		}
+		results := make([]pathResult, numPaths)
+		var wg sync.WaitGroup
+		for i, path := range cfg.MonitoredAnvilPaths {
+			wg.Add(1)
+			go func(i int, path string) {
+				defer wg.Done()
+				open := mlister(fetchCtx, path, "open,in_progress")
+				if len(open) > openQuota {
+					open = open[:openQuota]
+				}
+				closed := mlister(fetchCtx, path, "closed")
+				if len(closed) > closedQuota {
+					closed = closed[:closedQuota]
+				}
+				results[i] = pathResult{open: open, closed: closed}
+			}(i, path)
+		}
+		wg.Wait()
+
 		seenOpen := make(map[string]bool)
 		seenClosed := make(map[string]bool)
-		for _, path := range cfg.MonitoredAnvilPaths {
-			for _, b := range mlister(ctx, path, "open,in_progress") {
+		for _, r := range results {
+			for _, b := range r.open {
 				if !seenOpen[b.ID] {
 					seenOpen[b.ID] = true
 					openBeads = append(openBeads, b)
 				}
 			}
-			for _, b := range mlister(ctx, path, "closed") {
+			for _, b := range r.closed {
 				if !seenClosed[b.ID] {
 					seenClosed[b.ID] = true
 					closedBeads = append(closedBeads, b)
 				}
 			}
 		}
-		// Cap to keep prompt size manageable.
+		// Global cap as a safety net (per-path quotas already bound the total).
 		if len(openBeads) > maxOpenBeads {
 			openBeads = openBeads[:maxOpenBeads]
 		}
