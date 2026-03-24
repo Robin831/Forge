@@ -3812,6 +3812,79 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "wicket_list":
+		var p ipc.WicketListPayload
+		if len(cmd.Payload) > 0 {
+			if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+				msg, _ := json.Marshal(map[string]string{"message": "invalid payload: " + err.Error()})
+				return ipc.Response{Type: "error", Payload: msg}
+			}
+		}
+		opts := state.ListWicketIssuesOpts{
+			Repo:  p.Repo,
+			State: p.Status,
+			Limit: p.Limit,
+		}
+		issues, err := d.db.ListWicketIssues(opts)
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "listing wicket issues: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		items := make([]ipc.WicketIssueItem, 0, len(issues))
+		for _, wi := range issues {
+			items = append(items, ipc.WicketIssueItem{
+				ID:           wi.ID,
+				Repo:         wi.Repo,
+				IssueNumber:  wi.IssueNumber,
+				Title:        wi.Title,
+				Author:       wi.Author,
+				State:        wi.State,
+				TriageAction: wi.TriageAction,
+				TriageReason: wi.TriageReason,
+				BeadID:       wi.BeadID,
+				PRNumber:     wi.PRNumber,
+				PRUrl:        wi.PRUrl,
+				CreatedAt:    wi.CreatedAt.UTC().Format(time.RFC3339),
+				UpdatedAt:    wi.UpdatedAt.UTC().Format(time.RFC3339),
+			})
+		}
+		resp := ipc.WicketListResponse{Issues: items}
+		data, err := json.Marshal(resp)
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "marshalling wicket list: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "wicket_retriage":
+		var p ipc.WicketRetragePayload
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid payload: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if p.Repo == "" || p.IssueNumber <= 0 {
+			msg, _ := json.Marshal(map[string]string{"message": "repo and issue_number are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		wi, err := d.db.GetWicketIssue(p.Repo, p.IssueNumber)
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "looking up wicket issue: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if wi == nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("no wicket issue found for %s#%d", p.Repo, p.IssueNumber)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		wi.State = "pending"
+		wi.TriageAction = ""
+		wi.TriageReason = ""
+		if err := d.db.UpdateWicketIssue(*wi); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "resetting wicket issue: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		result, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("%s#%d reset to pending for re-triage", p.Repo, p.IssueNumber)})
+		return ipc.Response{Type: "ok", Payload: result}
+
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}

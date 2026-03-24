@@ -258,6 +258,45 @@ type WicketStatusPayload struct {
 	LastScanAt     *time.Time     `json:"last_scan_at,omitempty"`
 }
 
+// WicketListPayload is the payload for a "wicket_list" command.
+type WicketListPayload struct {
+	// Repo filters to a specific "owner/repo" string. Empty = all repos.
+	Repo   string `json:"repo,omitempty"`
+	// Status filters to a specific lifecycle state. Empty = all states.
+	Status string `json:"status,omitempty"`
+	// Limit caps the number of rows returned. 0 = no limit.
+	Limit  int    `json:"limit,omitempty"`
+}
+
+// WicketIssueItem is a serializable summary of a Wicket-tracked GitHub issue.
+type WicketIssueItem struct {
+	ID           int    `json:"id"`
+	Repo         string `json:"repo"`
+	IssueNumber  int    `json:"issue_number"`
+	Title        string `json:"title"`
+	Author       string `json:"author"`
+	State        string `json:"state"`
+	TriageAction string `json:"triage_action"`
+	TriageReason string `json:"triage_reason"`
+	BeadID       string `json:"bead_id,omitempty"`
+	PRNumber     int    `json:"pr_number,omitempty"`
+	PRUrl        string `json:"pr_url,omitempty"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
+// WicketListResponse is the response for a "wicket_list" command.
+type WicketListResponse struct {
+	Issues []WicketIssueItem `json:"issues"`
+}
+
+// WicketRetragePayload is the payload for a "wicket_retriage" command.
+// Resets the wicket_issues entry to pending so it is re-triaged on the next scan.
+type WicketRetragePayload struct {
+	Repo        string `json:"repo"`
+	IssueNumber int    `json:"issue_number"`
+}
+
 // CommandHandler is called by the server for each incoming command.
 type CommandHandler func(cmd Command) Response
 
