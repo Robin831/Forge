@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
@@ -26,12 +27,16 @@ type BeadSummary struct {
 }
 
 // bdListRunner is the function used to execute `bd list`. Tests replace this
-// to avoid spawning a real subprocess.
-var bdListRunner func(ctx context.Context, args []string) (string, error) = defaultBDListRunner
+// to avoid spawning a real subprocess. The anvilPath parameter sets cmd.Dir
+// so the correct .beads/ config is used for the target repository.
+var bdListRunner func(ctx context.Context, args []string, anvilPath string) (string, error) = defaultBDListRunner
 
-func defaultBDListRunner(ctx context.Context, args []string) (string, error) {
+func defaultBDListRunner(ctx context.Context, args []string, anvilPath string) (string, error) {
 	cmdArgs := append([]string{"list"}, args...)
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", cmdArgs...))
+	if anvilPath != "" {
+		cmd.Dir = anvilPath
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -46,15 +51,21 @@ func defaultBDListRunner(ctx context.Context, args []string) (string, error) {
 }
 
 // fetchBeadSummaries calls bd list with the given status filter and returns
-// parsed bead summaries. A limit of 0 means no limit.
-func fetchBeadSummaries(ctx context.Context, status string, limit int) []BeadSummary {
+// parsed bead summaries. A limit of 0 means no limit. anvilPath sets the
+// working directory for the bd command so the correct .beads/ config is used.
+// A 30-second timeout is applied to prevent a hung beads DB from stalling the
+// scan loop indefinitely.
+func fetchBeadSummaries(ctx context.Context, status string, limit int, anvilPath string) []BeadSummary {
+	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	args := []string{"--status", status, "--json"}
 	if limit > 0 {
 		args = append(args, "--limit", strconv.Itoa(limit))
 	} else {
 		args = append(args, "--limit", "0")
 	}
-	output, err := bdListRunner(ctx, args)
+	output, err := bdListRunner(tctx, args, anvilPath)
 	if err != nil {
 		log.Printf("[wicket:triage] bd list --status=%s: %v", status, err)
 		return nil
@@ -115,12 +126,16 @@ type TriageConfig struct {
 	// ExtraPrompt is appended to the default triage prompt to provide
 	// project-specific context or constraints.
 	ExtraPrompt string
+	// AnvilPath is the local filesystem path of the anvil repository. It is
+	// passed as cmd.Dir to `bd list` so the correct .beads/ config is used.
+	// When empty, the daemon's working directory is used (may query the wrong DB).
+	AnvilPath string
 	// runner is the AI call function. Nil means use the default smith-based
 	// runner. Tests replace this to avoid spawning real subprocesses.
 	runner func(ctx context.Context, prompt string) (string, error)
 	// beadLister overrides bead fetching for tests. When non-nil it is called
 	// instead of fetchBeadSummaries to retrieve open and closed beads.
-	// The first call receives status "open,in_progress" and limit 0;
+	// The first call receives status "open,in_progress" and limit 50;
 	// the second receives status "closed" and limit 20.
 	beadLister func(ctx context.Context, status string, limit int) []BeadSummary
 }
@@ -248,6 +263,21 @@ func parseTriageDecision(output string) (TriageDecision, bool) {
 	if action == ActionCreateBead && (raw.BeadTitle == "" || raw.BeadDescription == "") {
 		return TriageDecision{}, false
 	}
+	// duplicate requires a bead ID to reference; without it the comment would
+	// be meaningless and the outcome ambiguous.
+	if action == ActionDuplicate && raw.DuplicateID == "" {
+		return TriageDecision{}, false
+	}
+	// already_fixed requires a PR/bead reference; without it the comment
+	// cannot point the user to the fix.
+	if action == ActionAlreadyFixed && raw.ReferencePR == "" {
+		return TriageDecision{}, false
+	}
+	// out_of_scope requires a non-empty reason so the posted comment explains
+	// why the issue was declined.
+	if action == ActionOutOfScope && raw.Reason == "" {
+		return TriageDecision{}, false
+	}
 
 	return TriageDecision{
 		Action:          action,
@@ -350,11 +380,17 @@ func RunTriageWithComments(ctx context.Context, issue Issue, comments []Comment,
 	}
 
 	// Fetch existing bead context for duplicate/already-fixed detection.
+	// Open beads are capped at 50 to keep prompt size manageable; closed
+	// beads are limited to the 20 most recent for already-fixed detection.
+	const maxOpenBeads = 50
 	lister := cfg.beadLister
 	if lister == nil {
-		lister = fetchBeadSummaries
+		anvilPath := cfg.AnvilPath
+		lister = func(ctx context.Context, status string, limit int) []BeadSummary {
+			return fetchBeadSummaries(ctx, status, limit, anvilPath)
+		}
 	}
-	openBeads := lister(ctx, "open,in_progress", 0)
+	openBeads := lister(ctx, "open,in_progress", maxOpenBeads)
 	closedBeads := lister(ctx, "closed", 20)
 
 	prompt := buildTriagePromptWithBeads(issue, comments, cfg.ExtraPrompt, openBeads, closedBeads)

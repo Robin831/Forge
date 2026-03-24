@@ -2,6 +2,7 @@ package wicket
 
 import (
 	"bytes"
+	"strings"
 	"text/template"
 )
 
@@ -252,7 +253,10 @@ func RenderAlreadyFixed(data AlreadyFixedData) (string, error) {
 }
 
 // RenderOutOfScope renders the OutOfScope comment template.
+// The reason is normalized to a single line so the Markdown blockquote
+// renders correctly regardless of whether the AI returns multi-line text.
 func RenderOutOfScope(data OutOfScopeData) (string, error) {
+	data.Reason = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(data.Reason, "\r\n", " "), "\n", " "))
 	return renderTemplate(tmplOutOfScope, data)
 }
 

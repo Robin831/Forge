@@ -25,6 +25,9 @@ type Monitor struct {
 	db       *state.DB
 	cfg      *config.Config
 	mu       sync.RWMutex
+	// triageFunc overrides RunTriageWithComments. Nil means use the default.
+	// Tests set this to avoid spawning real AI subprocesses.
+	triageFunc func(ctx context.Context, issue Issue, comments []Comment, cfg TriageConfig) TriageDecision
 }
 
 // New creates a Wicket issue triage monitor with the default GitHub CLI client.
@@ -255,14 +258,33 @@ func (m *Monitor) triageIssue(ctx context.Context, anvil string, issue Issue, an
 	var decision TriageDecision
 
 	if isTrustedUser(issue.Author, anvilCfg.WicketTrustedUsers) {
-		// Trusted authors bypass AI triage; their issues are always queued for
-		// automated implementation using the issue title and body as-is.
-		log.Printf("[wicket] %s: %s#%d author %q is trusted — skipping AI triage", anvil, issue.Repo, issue.Number, issue.Author)
-		decision = TriageDecision{
-			Action:          ActionCreateBead,
-			Reason:          "issue author is a trusted user",
-			BeadTitle:       issue.Title,
-			BeadDescription: issue.Body,
+		// Trusted authors still go through AI triage so that duplicate,
+		// already-fixed, and out-of-scope outcomes are detected. If the AI
+		// fails to parse (flag_human fallback), we default to create_bead
+		// using the raw issue title and body — the author is trusted.
+		log.Printf("[wicket] %s: %s#%d author %q is trusted — running AI triage with bead context", anvil, issue.Repo, issue.Number, issue.Author)
+		triageFn := m.triageFunc
+		if triageFn == nil {
+			triageFn = RunTriageWithComments
+		}
+		decision = triageFn(ctx, issue, nil, TriageConfig{
+			Providers:   buildProviders(settings),
+			ExtraPrompt: anvilCfg.WicketTriagePrompt,
+			AnvilPath:   anvilCfg.Path,
+		})
+		switch decision.Action {
+		case ActionDuplicate, ActionAlreadyFixed, ActionOutOfScope:
+			// Honor smart triage outcomes even for trusted users.
+		default:
+			// For all other outcomes (create_bead, ask_clarify, flag_human,
+			// reject, or parse-failure fallback), default to create_bead
+			// using the issue content directly — trusted user guarantee.
+			decision = TriageDecision{
+				Action:          ActionCreateBead,
+				Reason:          "issue author is a trusted user",
+				BeadTitle:       issue.Title,
+				BeadDescription: issue.Body,
+			}
 		}
 	} else {
 		// Non-trusted user: do NOT run full AI triage. Check for spam first;
@@ -505,21 +527,36 @@ func (m *Monitor) handleReject(ctx context.Context, anvil string, issue Issue, d
 }
 
 // persistOutcome updates the wicket_issues row with the final triage state.
-// CreateBead handles its own persistence; this is used only for ask_clarify
-// and flag_human outcomes.
+// CreateBead handles its own persistence; this is used only for ask_clarify,
+// flag_human, rejected, and re-triage outcomes.
+//
+// The existing row is loaded first so that fields set by other code paths
+// (CommentCount, BeadID, PRNumber, PRUrl, AuthorRepliedAt) are not
+// accidentally zeroed out when UpdateWicketIssue overwrites all columns.
 func (m *Monitor) persistOutcome(issue Issue, issueState string, decision TriageDecision) {
-	now := time.Now().UTC()
-	wi := state.WicketIssue{
-		Repo:         issue.Repo,
-		IssueNumber:  issue.Number,
-		Title:        issue.Title,
-		Body:         issue.Body,
-		Author:       issue.Author,
-		State:        issueState,
-		TriageAction: string(decision.Action),
-		TriageReason: decision.Reason,
-		ProcessedAt:  &now,
+	existing, err := m.db.GetWicketIssue(issue.Repo, issue.Number)
+	if err != nil {
+		log.Printf("[wicket] load existing wicket issue for %s#%d: %v", issue.Repo, issue.Number, err)
 	}
+
+	now := time.Now().UTC()
+	var wi state.WicketIssue
+	if existing != nil {
+		wi = *existing
+	} else {
+		wi = state.WicketIssue{
+			Repo:        issue.Repo,
+			IssueNumber: issue.Number,
+			Title:       issue.Title,
+			Body:        issue.Body,
+			Author:      issue.Author,
+		}
+	}
+	wi.State = issueState
+	wi.TriageAction = string(decision.Action)
+	wi.TriageReason = decision.Reason
+	wi.ProcessedAt = &now
+
 	if err := m.db.UpdateWicketIssue(wi); err != nil {
 		log.Printf("[wicket] persist outcome for %s#%d: %v", issue.Repo, issue.Number, err)
 	}

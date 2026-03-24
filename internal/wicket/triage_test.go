@@ -173,7 +173,35 @@ func TestFormatBeadSummaries_TruncatesDescription(t *testing.T) {
 	}
 }
 
+func TestParseTriageDecision_DuplicateMissingID(t *testing.T) {
+	_, ok := parseTriageDecision(`{"action": "duplicate", "reason": "matches existing"}`)
+	if ok {
+		t.Fatal("expected parse failure when duplicate_id is empty")
+	}
+}
+
+func TestParseTriageDecision_AlreadyFixedMissingRef(t *testing.T) {
+	_, ok := parseTriageDecision(`{"action": "already_fixed", "reason": "resolved previously"}`)
+	if ok {
+		t.Fatal("expected parse failure when reference_pr is empty")
+	}
+}
+
+func TestParseTriageDecision_OutOfScopeMissingReason(t *testing.T) {
+	_, ok := parseTriageDecision(`{"action": "out_of_scope"}`)
+	if ok {
+		t.Fatal("expected parse failure when reason is empty for out_of_scope")
+	}
+}
+
 // --- end new action tests ---
+
+// noopBeadLister is a beadLister that returns nil without spawning any
+// subprocess. Use in tests that provide a runner mock and don't need real
+// bead context injection.
+var noopBeadLister = func(_ context.Context, _ string, _ int) []BeadSummary {
+	return nil
+}
 
 func TestBuildTriagePrompt_ContainsIssueDetails(t *testing.T) {
 	issue := Issue{
@@ -300,6 +328,7 @@ func TestRunTriage_ValidResponse(t *testing.T) {
 		runner: func(_ context.Context, _ string) (string, error) {
 			return `{"action": "ask_clarify", "reason": "Need more details"}`, nil
 		},
+		beadLister: noopBeadLister,
 	}
 	dec := RunTriage(context.Background(), Issue{Number: 1, Repo: "r/r", Title: "Test"}, cfg)
 	if dec.Action != ActionAskClarify {
@@ -317,6 +346,7 @@ func TestRunTriage_MalformedJSON_RetriesAndFallsBack(t *testing.T) {
 			calls++
 			return "this is not json at all", nil
 		},
+		beadLister: noopBeadLister,
 	}
 	dec := RunTriage(context.Background(), Issue{Number: 1, Repo: "r/r", Title: "Test"}, cfg)
 	if dec.Action != ActionFlagHuman {
@@ -334,6 +364,7 @@ func TestRunTriage_RunnerError_FallsBackToFlagHuman(t *testing.T) {
 			calls++
 			return "", fmt.Errorf("connection refused")
 		},
+		beadLister: noopBeadLister,
 	}
 	dec := RunTriage(context.Background(), Issue{Number: 1, Repo: "r/r", Title: "Test"}, cfg)
 	if dec.Action != ActionFlagHuman {
@@ -369,6 +400,7 @@ func TestRunTriage_FirstCallFailsSecondSucceeds(t *testing.T) {
 			}
 			return `{"action": "create_bead", "reason": "ok", "bead_title": "T", "bead_description": "D"}`, nil
 		},
+		beadLister: noopBeadLister,
 	}
 	dec := RunTriage(context.Background(), Issue{Number: 1, Repo: "r/r", Title: "Test"}, cfg)
 	if dec.Action != ActionCreateBead {
@@ -386,6 +418,7 @@ func TestRunTriage_PassesPromptToRunner(t *testing.T) {
 			capturedPrompt = prompt
 			return `{"action": "flag_human", "reason": "test"}`, nil
 		},
+		beadLister: noopBeadLister,
 	}
 	issue := Issue{Number: 7, Repo: "org/proj", Title: "Crash on startup", Body: "App crashes."}
 	RunTriage(context.Background(), issue, cfg)

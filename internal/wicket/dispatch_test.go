@@ -263,6 +263,10 @@ func TestCheckClarificationReTriageNewAuthorReply(t *testing.T) {
 		cfg: &config.Config{
 			Settings: config.SettingsConfig{},
 		},
+		// Inject a fast mock so the test doesn't spawn a real AI subprocess.
+		triageFunc: func(_ context.Context, _ Issue, _ []Comment, _ TriageConfig) TriageDecision {
+			return TriageDecision{Action: ActionFlagHuman, Reason: "test mock"}
+		},
 	}
 
 	settings := config.SettingsConfig{}
