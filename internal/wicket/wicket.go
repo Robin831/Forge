@@ -1,18 +1,14 @@
 package wicket
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
-	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
-	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -26,6 +22,11 @@ type Monitor struct {
 	cfg      *config.Config
 	mu       sync.RWMutex
 	rl       *rateLimiter
+	resolver *RepoResolver
+	// repoAnvilMap maps "owner/repo" → anvil name. Rebuilt on every scan
+	// cycle so downstream code (dispatch, clarification) can look up which
+	// anvil owns a given repository without re-resolving the git remote.
+	repoAnvilMap map[string]string
 	// triageFunc overrides RunTriageWithComments. Nil means use the default.
 	// Tests set this to avoid spawning real AI subprocesses.
 	triageFunc func(ctx context.Context, issue Issue, comments []Comment, cfg TriageConfig) TriageDecision
@@ -34,11 +35,24 @@ type Monitor struct {
 // New creates a Wicket issue triage monitor with the default GitHub CLI client.
 func New(cfg *config.Config, db *state.DB) *Monitor {
 	return &Monitor{
-		ghClient: NewGitHubClient(),
-		db:       db,
-		cfg:      cfg,
-		rl:       newRateLimiter(),
+		ghClient:     NewGitHubClient(),
+		db:           db,
+		cfg:          cfg,
+		rl:           newRateLimiter(),
+		resolver:     NewRepoResolver(),
+		repoAnvilMap: make(map[string]string),
 	}
+}
+
+// resolveRepos returns the list of "owner/repo" strings for the given anvil,
+// delegating to m.resolver (lazily creating a default one when nil so that
+// test-constructed Monitor values without a resolver still work correctly).
+func (m *Monitor) resolveRepos(ctx context.Context, anvil config.AnvilConfig) ([]string, error) {
+	r := m.resolver
+	if r == nil {
+		r = NewRepoResolver()
+	}
+	return r.ResolveRepos(ctx, anvil)
 }
 
 // UpdateConfig replaces the monitor configuration. Safe to call while Run is
@@ -158,17 +172,20 @@ func isWicketEnabled(anvil config.AnvilConfig, globalEnabled bool) bool {
 // Returns true when a rate-limit error was encountered so that the caller can
 // skip follow-up API calls for the same cycle.
 func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.AnvilConfig, settings config.SettingsConfig) (rateLimited bool) {
-	repos := anvil.WicketRepos
-	if len(repos) == 0 {
-		repo, err := deriveRepo(ctx, anvil.Path)
-		if err != nil {
-			log.Printf("[wicket] %s: cannot determine repository: %v", name, err)
-			_ = m.db.LogEvent(state.EventWicketError,
-				fmt.Sprintf("Cannot determine repository for anvil %s: %v", name, err), "", name)
-			return false
-		}
-		repos = []string{repo}
+	repos, err := m.resolveRepos(ctx, anvil)
+	if err != nil {
+		log.Printf("[wicket] %s: cannot determine repository: %v", name, err)
+		_ = m.db.LogEvent(state.EventWicketError,
+			fmt.Sprintf("Cannot determine repository for anvil %s: %v", name, err), "", name)
+		return false
 	}
+
+	// Update the repo→anvil mapping so downstream code can look up anvil names.
+	m.mu.Lock()
+	for _, repo := range repos {
+		m.repoAnvilMap[repo] = name
+	}
+	m.mu.Unlock()
 
 	for _, repo := range repos {
 		if ctx.Err() != nil {
@@ -624,39 +641,6 @@ func buildProviders(settings config.SettingsConfig) []provider.Provider {
 		return provider.FromConfig(settings.Providers)
 	}
 	return provider.Defaults()
-}
-
-// reGitHubSSH matches git@github.com:owner/repo.git URLs.
-var reGitHubSSH = regexp.MustCompile(`(?i)git@github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$`)
-
-// reGitHubHTTPS matches https://github.com/owner/repo URLs.
-var reGitHubHTTPS = regexp.MustCompile(`(?i)https?://github\.com/([^/]+/[^/]+?)(?:\.git)?$`)
-
-// deriveRepo returns the "owner/repo" string for the given local git directory
-// by inspecting its origin remote URL. Returns an error when the directory is
-// not a git repository or the remote URL cannot be parsed as a GitHub URL.
-// A 10-second timeout is applied so a slow or hung git process cannot block
-// the scan loop indefinitely.
-func deriveRepo(ctx context.Context, dir string) (string, error) {
-	tctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	cmd := executil.HideWindow(exec.CommandContext(tctx, "git", "remote", "get-url", "origin"))
-	cmd.Dir = dir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git remote get-url origin: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-
-	raw := strings.TrimSpace(stdout.String())
-	if m := reGitHubSSH.FindStringSubmatch(raw); m != nil {
-		return m[1], nil
-	}
-	if m := reGitHubHTTPS.FindStringSubmatch(raw); m != nil {
-		return m[1], nil
-	}
-	return "", fmt.Errorf("cannot parse GitHub owner/repo from remote URL %q", raw)
 }
 
 // isIgnoredUser returns true if the author should be skipped entirely. It
