@@ -1,8 +1,12 @@
 package wicket
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,6 +180,58 @@ func TestIsWicketEnabled(t *testing.T) {
 			assert.Equal(t, tc.want, isWicketEnabled(anvil, tc.globalEnabled))
 		})
 	}
+}
+
+// ---- cross-anvil dedup (first-anvil-wins) -----------------------------------
+
+// TestTriageIssue_SecondAnvilSkips verifies that when an issue is already
+// tracked in state.db (by a first anvil), a second anvil attempting to triage
+// the same issue skips without creating a duplicate DB record or posting any
+// GitHub comment.
+func TestTriageIssue_SecondAnvilSkips(t *testing.T) {
+	m, mock, db := newTestMonitor(t)
+	settings := defaultSettings()
+
+	issue := Issue{
+		Repo:   "org/repo",
+		Number: 99,
+		Title:  "Duplicate issue",
+		Body:   "Body text.",
+		Author: "alice",
+	}
+
+	// Simulate the first anvil having already claimed the issue.
+	err := db.InsertWicketIssue(state.WicketIssue{
+		Repo:        issue.Repo,
+		IssueNumber: issue.Number,
+		Title:       issue.Title,
+		State:       "bead_created",
+	})
+	require.NoError(t, err)
+
+	// Capture log output during the second-anvil triage call.
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr) // restore default
+
+	// Second anvil attempts to triage the same issue.
+	anvilCfg := config.AnvilConfig{WicketTrustedUsers: []string{"alice"}}
+	m.triageIssue(context.Background(), "second-anvil", issue, anvilCfg, settings)
+
+	// The warning log must be emitted so regressions don't silently revert to
+	// a generic insert-failure message.
+	assert.True(t, strings.Contains(logBuf.String(), "already tracked by another anvil, skipping"),
+		"expected 'already tracked by another anvil, skipping' in log output, got: %s", logBuf.String())
+
+	// No GitHub comment should have been posted.
+	assert.Empty(t, mock.CommentCalls, "second anvil must not post a comment for a duplicate issue")
+
+	// The DB row should still reflect the first anvil's state (bead_created),
+	// not have been overwritten.
+	wi, err := db.GetWicketIssue("org/repo", 99)
+	require.NoError(t, err)
+	require.NotNil(t, wi)
+	assert.Equal(t, "bead_created", wi.State, "first-anvil-wins: state must remain bead_created")
 }
 
 // ---- full triage dispatch flow ----------------------------------------------

@@ -2,6 +2,7 @@ package wicket
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -12,6 +13,8 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/state"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Monitor periodically polls GitHub repositories for new issues, triages them
@@ -344,9 +347,13 @@ func (m *Monitor) triageIssue(ctx context.Context, anvil string, issue Issue, an
 		State:       "pending",
 	}
 	if err := m.db.InsertWicketIssue(pending); err != nil {
-		// A unique-constraint violation means another cycle already claimed
-		// this issue.
-		log.Printf("[wicket] %s: skip %s#%d — already claimed: %v", anvil, issue.Repo, issue.Number, err)
+		if isUniqueConstraintErr(err) {
+			// First-anvil-wins: another anvil (or a concurrent cycle) already
+			// claimed this issue via the UNIQUE(repo, issue_number) constraint.
+			log.Printf("[wicket] %s: issue already tracked by another anvil, skipping %s#%d", anvil, issue.Repo, issue.Number)
+		} else {
+			log.Printf("[wicket] %s: failed to insert wicket issue %s#%d: %v", anvil, issue.Repo, issue.Number, err)
+		}
 		return
 	}
 
@@ -704,6 +711,15 @@ func buildProviders(settings config.SettingsConfig) []provider.Provider {
 		return provider.FromConfig(settings.Providers)
 	}
 	return provider.Defaults()
+}
+
+// isUniqueConstraintErr returns true when err is a SQLite UNIQUE constraint
+// violation (extended result code SQLITE_CONSTRAINT_UNIQUE). It uses errors.As
+// to unwrap the modernc.org/sqlite driver error and checks the numeric code,
+// avoiding brittle string-matching that can break across driver versions.
+func isUniqueConstraintErr(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
 }
 
 // isIgnoredUser returns true if the author should be skipped entirely. It
