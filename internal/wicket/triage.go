@@ -145,7 +145,8 @@ type TriageConfig struct {
 	beadLister func(ctx context.Context, status string, limit int) []BeadSummary
 	// crossAnvilLister overrides cross-anvil bead fetching for tests. When
 	// non-nil it is called instead of fetchBeadSummaries for each anvil path
-	// in AllAnvilPaths. Each call receives the anvil path and returns open beads.
+	// in AllAnvilPaths. Each call receives the anvil path and returns open and
+	// in-progress beads (status "open,in_progress").
 	crossAnvilLister func(ctx context.Context, anvilPath string) []BeadSummary
 }
 
@@ -421,19 +422,22 @@ func RunTriageWithComments(ctx context.Context, issue Issue, comments []Comment,
 	// Cross-anvil duplicate check: before invoking the AI, search all
 	// configured anvil bead databases for a bead whose description contains
 	// a Source URL matching this issue. A match means the issue was already
-	// triaged in another anvil, so we return duplicate immediately.
+	// triaged, so we return duplicate immediately.
 	if len(cfg.AllAnvilPaths) > 0 {
 		xLister := cfg.crossAnvilLister
 		if xLister == nil {
+			// Cap the number of open/in_progress beads scanned per anvil to avoid
+			// unbounded bd list calls as databases grow.
+			const crossAnvilMaxOpenBeads = 200
 			xLister = func(ctx context.Context, anvilPath string) []BeadSummary {
-				return fetchBeadSummaries(ctx, "open,in_progress", 0, anvilPath)
+				return fetchBeadSummaries(ctx, "open,in_progress", crossAnvilMaxOpenBeads, anvilPath)
 			}
 		}
 		if beadID, ok := findDuplicateBySourceURL(ctx, issue, cfg.AllAnvilPaths, xLister); ok {
 			log.Printf("[wicket:triage] %s#%d cross-anvil duplicate found: %s", issue.Repo, issue.Number, beadID)
 			return TriageDecision{
 				Action:      ActionDuplicate,
-				Reason:      fmt.Sprintf("issue already tracked as %s in another anvil", beadID),
+				Reason:      fmt.Sprintf("issue already tracked as existing bead %s", beadID),
 				DuplicateID: beadID,
 			}
 		}

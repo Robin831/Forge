@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -675,11 +676,19 @@ func (m *Monitor) AnvilForRepo(repo string) (string, bool) {
 func (m *Monitor) allAnvilPaths() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	paths := make([]string, 0, len(m.cfg.Anvils))
-	for _, anvil := range m.cfg.Anvils {
+	// Collect names first so we can sort them for deterministic ordering.
+	// Map iteration order is nondeterministic; sorting by name ensures the
+	// first cross-anvil duplicate match is stable across runs.
+	names := make([]string, 0, len(m.cfg.Anvils))
+	for name, anvil := range m.cfg.Anvils {
 		if anvil.Path != "" {
-			paths = append(paths, anvil.Path)
+			names = append(names, name)
 		}
+	}
+	sort.Strings(names)
+	paths := make([]string, 0, len(names))
+	for _, name := range names {
+		paths = append(paths, m.cfg.Anvils[name].Path)
 	}
 	return paths
 }
