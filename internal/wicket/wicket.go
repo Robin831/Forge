@@ -633,6 +633,18 @@ func (m *Monitor) persistOutcome(issue Issue, issueState string, decision Triage
 	}
 }
 
+// AnvilForRepo returns the anvil name that owns the given "owner/repo" string,
+// and whether a mapping exists. The mapping is populated during scanAnvil and
+// is consumed by downstream workers (Wicket phases 5b and 5c) that need to
+// route GitHub events back to the correct anvil without re-resolving the git
+// remote on every call.
+func (m *Monitor) AnvilForRepo(repo string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	name, ok := m.repoAnvilMap[repo]
+	return name, ok
+}
+
 // buildProviders returns the AI provider chain for triage based on settings.
 // If WicketProvider is set it is used exclusively; otherwise the global
 // Providers chain is used; if both are empty, provider.Defaults() is returned.
