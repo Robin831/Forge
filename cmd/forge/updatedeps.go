@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/depupdate"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
@@ -104,8 +107,17 @@ per-group prompts.`,
 
 		yesAll, _ := cmd.Flags().GetBool("yes")
 
-		// For each anvil with updates: checkout branch, prompt user, apply
-		// updates, generate changelog, create PR, and close matching dep beads.
+		// Compute the batch-update branch name and a per-run worktree ID once so
+		// all anvils land on the same branch name (consistent same-day re-run
+		// semantics) and the main anvil directory stays on main throughout.
+		dateStr := time.Now().Format("2006-01-02")
+		targetBranch := "deps/batch-update-" + dateStr
+		worktreeBeadID := "depupdate-" + dateStr
+		wtMgr := worktree.NewManager()
+
+		// For each anvil with updates: create an isolated worktree, prompt user,
+		// apply updates inside the worktree, generate changelog, create PR, and
+		// close matching dep beads. The worktree is removed after each anvil.
 		for _, ar := range results {
 			if ar.TotalUpdates(opts) == 0 {
 				continue
@@ -117,49 +129,58 @@ per-group prompts.`,
 				continue
 			}
 
-			// Step 1: Checkout (or create) the batch-update branch so that
-			// subsequent commits land on the right branch before the PR.
-			branch, err := depupdate.CheckoutUpdateBranch(rootCtx, ar.Path)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: branch for %s: %v\n", ar.Anvil, err)
-				continue
-			}
+			// processAnvil runs all dep-update steps for a single anvil inside an
+			// isolated git worktree, keeping the main anvil directory on main.
+			// A closure is used so defer cleanup is scoped to this anvil's work.
+			func() {
+				// Step 1: Create an isolated worktree on the batch-update branch so
+				// that commits never land on main in the main repo directory.
+				wt, err := wtMgr.CreateWithOptions(rootCtx, ar.Path, worktreeBeadID, worktree.CreateOptions{
+					Branch:      targetBranch,
+					ResetBranch: true,
+				})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: worktree for %s: %v\n", ar.Anvil, err)
+					return
+				}
+				defer wtMgr.Remove(context.Background(), ar.Path, wt)
 
-			// Step 2: Interactive group selection — skip groups the user declines.
-			selected := depupdate.SelectGroups(os.Stdin, os.Stdout, groups, yesAll)
-			if len(selected) == 0 {
-				fmt.Printf("No updates selected for %s.\n", ar.Anvil)
-				continue
-			}
+				// Step 2: Interactive group selection — skip groups the user declines.
+				selected := depupdate.SelectGroups(os.Stdin, os.Stdout, groups, yesAll)
+				if len(selected) == 0 {
+					fmt.Printf("No updates selected for %s.\n", ar.Anvil)
+					return
+				}
 
-			// Step 3: Execute — install, verify (Temper), commit or rollback.
-			anvilCfg := cfg.Anvils[ar.Anvil]
-			applied := depupdate.ExecuteGroups(rootCtx, ar.Path, anvilCfg, selected)
-			if len(applied) == 0 {
-				fmt.Fprintf(os.Stderr, "No updates successfully applied for %s.\n", ar.Anvil)
-				continue
-			}
-			fmt.Printf("Applied %d group(s) for %s.\n", len(applied), ar.Anvil)
+				// Step 3: Execute — install, verify (Temper), commit or rollback.
+				anvilCfg := cfg.Anvils[ar.Anvil]
+				applied := depupdate.ExecuteGroups(rootCtx, wt.Path, anvilCfg, selected)
+				if len(applied) == 0 {
+					fmt.Fprintf(os.Stderr, "No updates successfully applied for %s.\n", ar.Anvil)
+					return
+				}
+				fmt.Printf("Applied %d group(s) for %s.\n", len(applied), ar.Anvil)
 
-			// Step 4: Generate changelog fragment and commit it on the branch.
-			isBilingual := depupdate.DetectBilingual(ar.Path)
-			if err := depupdate.GenerateChangelog(ar.Path, applied, isBilingual); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: changelog for %s: %v\n", ar.Anvil, err)
-				continue
-			}
+				// Step 4: Generate changelog fragment and commit it on the branch.
+				isBilingual := depupdate.DetectBilingual(wt.Path)
+				if err := depupdate.GenerateChangelog(wt.Path, applied, isBilingual); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: changelog for %s: %v\n", ar.Anvil, err)
+					return
+				}
 
-			// Step 5: Push branch and open the PR.
-			prURL, err := depupdate.CreatePR(rootCtx, ar.Path, ar.Anvil, branch, applied)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: PR for %s: %v\n", ar.Anvil, err)
-				continue
-			}
-			fmt.Printf("PR for %s: %s\n", ar.Anvil, prURL)
+				// Step 5: Push branch and open the PR.
+				prURL, err := depupdate.CreatePR(rootCtx, wt.Path, ar.Anvil, targetBranch, applied)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: PR for %s: %v\n", ar.Anvil, err)
+					return
+				}
+				fmt.Printf("PR for %s: %s\n", ar.Anvil, prURL)
 
-			// Step 6: Close any open dep-check beads covered by this batch.
-			if err := depupdate.CloseMatchingDepBeads(rootCtx, ar.Path, applied); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: closing dep beads for %s: %v\n", ar.Anvil, err)
-			}
+				// Step 6: Close any open dep-check beads covered by this batch.
+				if err := depupdate.CloseMatchingDepBeads(rootCtx, wt.Path, applied); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: closing dep beads for %s: %v\n", ar.Anvil, err)
+				}
+			}()
 		}
 
 		return nil
