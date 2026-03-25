@@ -1,2 +1,0 @@
-category: Added
-- **Wicket foundation layer** - Add config fields, shared types, state DB table, and event constants for the Wicket GitHub issue triage monitor. Includes `wicket_issues` SQLite table with full CRUD, `AnvilWicketConfig`/`TriageDecision`/`Issue` types, global and per-anvil config knobs (`wicket_enabled`, `wicket_interval`, `wicket_batch_size`, label defaults), and `EventWicket*` event constants. (Forge-apol)
