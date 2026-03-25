@@ -3,11 +3,25 @@ package vulncheck
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/Robin831/Forge/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func newTestDB(t *testing.T) *state.DB {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := state.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("open test DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
 
 func TestParseGovulncheckJSON(t *testing.T) {
 	// Simulate govulncheck -json output (newline-delimited JSON)
@@ -151,4 +165,34 @@ func TestRunScheduledExitsWhenUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.RunScheduled(ctx, 1) // interval > 0 but should still exit
+}
+
+func TestShouldSkipStartupScan_NoEventLogged(t *testing.T) {
+	db := newTestDB(t)
+	s := &Scanner{logger: slog.Default(), db: db}
+
+	today := time.Now().Format("2006-01-02")
+	// No event logged yet — should not skip.
+	assert.False(t, s.shouldSkipStartupScan(today))
+}
+
+func TestShouldSkipStartupScan_AlreadyRanToday(t *testing.T) {
+	db := newTestDB(t)
+	s := &Scanner{logger: slog.Default(), db: db}
+
+	today := time.Now().Format("2006-01-02")
+	require.NoError(t, db.LogEvent(state.EventVulnScanDone, "scan complete", "", ""))
+
+	// Event exists for today — should skip.
+	assert.True(t, s.shouldSkipStartupScan(today))
+}
+
+func TestShouldSkipStartupScan_EventOnDifferentDay(t *testing.T) {
+	db := newTestDB(t)
+	s := &Scanner{logger: slog.Default(), db: db}
+
+	// Log event for today but ask about tomorrow — should not skip.
+	require.NoError(t, db.LogEvent(state.EventVulnScanDone, "scan complete", "", ""))
+	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	assert.False(t, s.shouldSkipStartupScan(tomorrow))
 }

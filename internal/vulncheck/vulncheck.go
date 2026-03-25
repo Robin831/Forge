@@ -514,7 +514,7 @@ func (s *Scanner) RunScheduled(ctx context.Context, interval time.Duration) {
 	// daemon restart during development or config reload). The interval ticker
 	// below will fire on the normal schedule.
 	today := time.Now().Format("2006-01-02")
-	if ranToday, err := s.db.HasEventForDate(state.EventVulnScanDone, today); err == nil && ranToday {
+	if s.shouldSkipStartupScan(today) {
 		s.logger.Info("vulncheck skipping startup scan — already ran today", "date", today)
 	} else {
 		s.runOnce(ctx)
@@ -532,6 +532,18 @@ func (s *Scanner) RunScheduled(ctx context.Context, interval time.Duration) {
 			s.runOnce(ctx)
 		}
 	}
+}
+
+// shouldSkipStartupScan returns true when a vuln scan already completed today,
+// meaning the startup scan can be safely skipped. Any DB error is logged and
+// treated as "do not skip" so we err on the side of scanning.
+func (s *Scanner) shouldSkipStartupScan(today string) bool {
+	ranToday, err := s.db.HasEventForDate(state.EventVulnScanDone, today)
+	if err != nil {
+		s.logger.Warn("vulncheck: could not check for prior scan, will run startup scan", "err", err)
+		return false
+	}
+	return ranToday
 }
 
 // runOnce performs a single scan-and-create-beads cycle.
