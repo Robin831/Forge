@@ -42,6 +42,7 @@ const (
 	PanelReadyToMerge
 	PanelNeedsAttention
 	PanelWorkers
+	PanelWicket
 	PanelUsage
 	PanelLiveActivity
 	PanelEvents
@@ -1017,10 +1018,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focused == PanelCrucibles && len(m.crucibles) == 0 {
 				m.focused = (m.focused + 1) % panelCount
 			}
+			if m.focused == PanelWicket && !m.wicketVisible() {
+				m.focused = (m.focused + 1) % panelCount
+			}
 
 		case "shift+tab":
 			m.focused = (m.focused + panelCount - 1) % panelCount
 			if m.focused == PanelCrucibles && len(m.crucibles) == 0 {
+				m.focused = (m.focused + panelCount - 1) % panelCount
+			}
+			if m.focused == PanelWicket && !m.wicketVisible() {
 				m.focused = (m.focused + panelCount - 1) % panelCount
 			}
 
@@ -1666,6 +1673,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Items != nil {
 			m.wicketSummary = msg.Items
 		}
+		// Normalize focus: if the Wicket panel is focused but is no longer visible
+		// (disabled or summary became empty), move focus to the nearest visible neighbor.
+		if m.focused == PanelWicket && !m.wicketVisible() {
+			m.focused = PanelWorkers
+		}
 
 	case UpdateIngotCountsMsg:
 		// Counts is nil when the fetch failed (DB error, nil conn, etc.).
@@ -2092,10 +2104,27 @@ func (m *Model) panelAtPos(x, y int) Panel {
 		}
 		return PanelNeedsAttention
 	case x <= centerEnd:
-		// Center column: Workers (top) + Usage panel (bottom, fixed height 10).
+		// Center column: Workers (top) + optional Wicket (middle) + Usage (bottom).
 		fullH := topH + bottomH
 		if fullH >= 20 {
-			const usagePanelHeight = 10
+			const usagePanelHeight = 11 // matches renderCenterColumn: inner 9 + 2 border rows
+			if m.wicketVisible() {
+				numRows := len(m.wicketSummary)
+				if numRows > 4 {
+					numRows = 4
+				}
+				wicketTotalH := numRows + 1 + 2 // header + rows + border
+				workerH := fullH - usagePanelHeight - wicketTotalH
+				if workerH >= 5 {
+					if contentY < workerH+2 {
+						return PanelWorkers
+					}
+					if contentY < workerH+2+wicketTotalH {
+						return PanelWicket
+					}
+					return PanelUsage
+				}
+			}
 			workerH := fullH - usagePanelHeight
 			// Worker panel occupies workerH inner rows + 2 border rows.
 			if contentY < workerH+2 {
@@ -3853,8 +3882,7 @@ func (m *Model) renderCenterColumn(width, topHeight, bottomHeight int) string {
 	}
 
 	// Show Wicket panel when enabled and there is data to display.
-	wicketEnabled := m.data != nil && m.data.WicketEnabled && len(m.wicketSummary) > 0
-	if wicketEnabled {
+	if m.wicketVisible() {
 		// Wicket inner height: 1 header + 1 row per repo (capped at 4 repos).
 		numRows := len(m.wicketSummary)
 		if numRows > 4 {
@@ -3882,10 +3910,18 @@ func (m *Model) renderCenterColumn(width, topHeight, bottomHeight int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
+// wicketVisible reports whether the Wicket panel should be shown and is navigable.
+func (m *Model) wicketVisible() bool {
+	return m.data != nil && m.data.WicketEnabled && len(m.wicketSummary) > 0
+}
+
 // renderWicketPanel renders a compact summary of GitHub issues monitored by Wicket.
 // Each row shows the repo short name, open issue count, and needs-human count.
 func (m *Model) renderWicketPanel(width, height int) string {
 	style := panelStyle.Width(width)
+	if m.focused == PanelWicket {
+		style = focusedPanelStyle.Width(width)
+	}
 
 	title := panelTitleStyle.Render("Wicket")
 
