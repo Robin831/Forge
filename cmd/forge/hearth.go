@@ -67,6 +67,7 @@ var hearthCmd = &cobra.Command{
 			// The daemon picks up auto_merge changes via hot-reload immediately;
 			// Hearth reflects changes after restart.
 			AutoMergeAnvils: func() map[string]bool { return autoMergeAnvils },
+			WicketEnabled:   cfg.Settings.WicketEnabled,
 		}
 
 		model := hearth.NewModel(ds)

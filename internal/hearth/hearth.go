@@ -178,6 +178,14 @@ type EventItem struct {
 	BeadID    string
 }
 
+// WicketRepoSummary holds per-repo issue counts for the Wicket panel.
+type WicketRepoSummary struct {
+	// Repo is the "owner/repo" string. DisplayName is derived as the part after "/".
+	Repo            string
+	OpenCount       int
+	NeedsHumanCount int
+}
+
 // CrucibleItem represents an active Crucible in the TUI.
 type CrucibleItem struct {
 	ParentID          string
@@ -302,6 +310,7 @@ type Model struct {
 	usage          UsageData
 	ingotCounts    map[ingot.Status]int
 	ingotTotal     int
+	wicketSummary  []WicketRepoSummary
 
 	// Data source for polling
 	data *DataSource
@@ -1650,6 +1659,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if len(toastCmds) > 0 {
 			return m, tea.Batch(toastCmds...)
+		}
+
+	case UpdateWicketSummaryMsg:
+		// Items is nil when the fetch failed. Preserve previous data on transient errors.
+		if msg.Items != nil {
+			m.wicketSummary = msg.Items
 		}
 
 	case UpdateIngotCountsMsg:
@@ -3826,23 +3841,121 @@ func (m *Model) renderWorkerList(width, height int) string {
 	return style.Height(height).Render(content)
 }
 
-// renderCenterColumn renders Workers (top) + Usage (bottom), splitting the
-// center column using the same stacked pattern as the right column.
+// renderCenterColumn renders Workers (top) + optional Wicket (middle) + Usage (bottom).
 func (m *Model) renderCenterColumn(width, topHeight, bottomHeight int) string {
 	fullHeight := topHeight + bottomHeight
 
 	// Usage panel gets a compact fixed height (~9 lines content + 2 border = 11).
-	usagePanelHeight := 11
+	const usagePanelHeight = 11
 	if fullHeight < 20 {
 		// Terminal too small for a split — render workers only.
 		return m.renderWorkerList(width, fullHeight)
 	}
 
-	workerHeight := fullHeight - usagePanelHeight
+	// Show Wicket panel when enabled and there is data to display.
+	wicketEnabled := m.data != nil && m.data.WicketEnabled && len(m.wicketSummary) > 0
+	if wicketEnabled {
+		// Wicket inner height: 1 header + 1 row per repo (capped at 4 repos).
+		numRows := len(m.wicketSummary)
+		if numRows > 4 {
+			numRows = 4
+		}
+		wicketInnerH := numRows + 1           // header(1) + data rows
+		wicketTotalH := wicketInnerH + 2       // inner + border(2)
+		workerHeight := fullHeight - usagePanelHeight - wicketTotalH
+		if workerHeight < 5 {
+			// Not enough vertical space — fall back to two-panel layout.
+			workerHeight = fullHeight - usagePanelHeight
+			top := m.renderWorkerList(width, workerHeight)
+			bottom := m.renderUsagePanel(width, usagePanelHeight-2)
+			return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
+		}
+		top := m.renderWorkerList(width, workerHeight)
+		mid := m.renderWicketPanel(width, wicketInnerH)
+		bottom := m.renderUsagePanel(width, usagePanelHeight-2)
+		return lipgloss.JoinVertical(lipgloss.Left, top, mid, bottom)
+	}
 
+	workerHeight := fullHeight - usagePanelHeight
 	top := m.renderWorkerList(width, workerHeight)
 	bottom := m.renderUsagePanel(width, usagePanelHeight-2) // -2 for inner content (border adds 2)
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
+}
+
+// renderWicketPanel renders a compact summary of GitHub issues monitored by Wicket.
+// Each row shows the repo short name, open issue count, and needs-human count.
+func (m *Model) renderWicketPanel(width, height int) string {
+	style := panelStyle.Width(width)
+
+	title := panelTitleStyle.Render("Wicket")
+
+	var lines []string
+	lines = append(lines, title)
+
+	// Inner content width available for data rows derived from the style's actual frame size.
+	innerWidth := width - panelStyle.GetHorizontalFrameSize()
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+
+	// Warn style for non-zero needs-human counts.
+	warnStyle := lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
+
+	// Display up to 4 repos; skip repos that somehow have 0 open issues.
+	shown := 0
+	for _, s := range m.wicketSummary {
+		if shown >= 4 {
+			break
+		}
+		// Derive short display name from "owner/repo" → "repo".
+		displayName := s.Repo
+		if idx := strings.LastIndex(s.Repo, "/"); idx >= 0 {
+			displayName = s.Repo[idx+1:]
+		}
+
+		// Format the ⚠ count, highlighted when non-zero.
+		warnStr := "0⚠"
+		if s.NeedsHumanCount > 0 {
+			warnStr = warnStyle.Render(fmt.Sprintf("%d⚠", s.NeedsHumanCount))
+		} else {
+			warnStr = dimStyle.Render(warnStr)
+		}
+
+		openStr := fmt.Sprintf("%d open", s.OpenCount)
+
+		// Build the row: name padded to 12 runes, then counts.
+		// Use rune slicing to correctly handle multi-byte Unicode characters.
+		nameRunes := []rune(displayName)
+		if len(nameRunes) > 12 {
+			nameRunes = nameRunes[:12]
+		}
+		for len(nameRunes) < 12 {
+			nameRunes = append(nameRunes, ' ')
+		}
+		nameField := string(nameRunes)
+		row := nameField + " " + openStr + "  " + warnStr
+
+		// Truncate to available width using rune counts (not byte lengths).
+		plainRow := nameField + " " + openStr + "  " + fmt.Sprintf("%d⚠", s.NeedsHumanCount)
+		plainRunes := []rune(plainRow)
+		if len(plainRunes) > innerWidth {
+			// Trim displayName runes to fit.
+			excess := len(plainRunes) - innerWidth
+			if excess < len(nameRunes) {
+				nameField = string(nameRunes[:len(nameRunes)-excess])
+				row = nameField + " " + openStr + "  " + warnStr
+			}
+		}
+
+		lines = append(lines, row)
+		shown++
+	}
+
+	if height <= 0 {
+		return style.Render("")
+	}
+	content := strings.Join(lines, "\n")
+	return style.Height(height).Render(content)
 }
 
 // renderUsagePanel renders a compact panel showing today's per-provider costs,
@@ -4340,6 +4453,9 @@ type AnvilHealth struct {
 
 // UpdateAnvilHealthMsg delivers per-anvil health data.
 type UpdateAnvilHealthMsg struct{ Items []AnvilHealth }
+
+// UpdateWicketSummaryMsg delivers per-repo Wicket issue counts.
+type UpdateWicketSummaryMsg struct{ Items []WicketRepoSummary }
 
 // KillWorkerMsg requests killing the selected worker by PID.
 type KillWorkerMsg struct {

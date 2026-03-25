@@ -91,6 +91,9 @@ type DataSource struct {
 	// reflecting config changes requires restarting Hearth.
 	// When nil, no PRs are tagged [auto].
 	AutoMergeAnvils func() map[string]bool
+	// WicketEnabled controls whether the Wicket panel is shown in the TUI.
+	// Set to true when wicket_enabled is true in the loaded config.
+	WicketEnabled bool
 }
 
 // Tick returns a Bubbletea command that sends a TickMsg after the interval.
@@ -1069,6 +1072,26 @@ func FetchIngotCounts(db *state.DB) tea.Cmd {
 	}
 }
 
+// FetchWicketSummary queries the state DB for per-repo open and needs-human
+// issue counts from the wicket_issues table.
+func FetchWicketSummary(db *state.DB) tea.Cmd {
+	return func() tea.Msg {
+		summaries, err := db.GetWicketSummary()
+		if err != nil {
+			return UpdateWicketSummaryMsg{}
+		}
+		items := make([]WicketRepoSummary, 0, len(summaries))
+		for _, s := range summaries {
+			items = append(items, WicketRepoSummary{
+				Repo:            s.Repo,
+				OpenCount:       s.OpenCount,
+				NeedsHumanCount: s.NeedsHumanCount,
+			})
+		}
+		return UpdateWicketSummaryMsg{Items: items}
+	}
+}
+
 // FetchAll returns a batch command that refreshes all panels.
 // Daemon health is NOT included here; it is fetched on a slower cadence
 // controlled by healthTickDivisor in the TickMsg handler.
@@ -1085,5 +1108,6 @@ func FetchAll(ds *DataSource, logCache *LogTailerCache) tea.Cmd {
 		FetchAnvilHealth(ds),
 		FetchOpenPRs(ds.DB),
 		FetchIngotCounts(ds.DB),
+		FetchWicketSummary(ds.DB),
 	)
 }
