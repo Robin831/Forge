@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,9 +117,9 @@ func bdExec(ctx context.Context, anvilPath string, args ...string) ([]byte, erro
 	if err := cmd.Run(); err != nil {
 		// bd sometimes writes errors to stdout instead of stderr; include
 		// whichever has content so the caller sees the actual failure reason.
-		detail := stderr.String()
+		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
-			detail = stdout.String()
+			detail = strings.TrimSpace(stdout.String())
 		}
 		return nil, fmt.Errorf("bd %v in %s: %w: %s", args, anvilPath, err, detail)
 	}
