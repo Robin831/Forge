@@ -3892,8 +3892,8 @@ func (m *Model) renderWicketPanel(width, height int) string {
 	var lines []string
 	lines = append(lines, title)
 
-	// Inner content width available for data rows (panel width minus border(2) and padding(2)).
-	innerWidth := width - 4
+	// Inner content width available for data rows derived from the style's actual frame size.
+	innerWidth := width - panelStyle.GetHorizontalFrameSize()
 	if innerWidth < 1 {
 		innerWidth = 1
 	}
@@ -3923,23 +3923,26 @@ func (m *Model) renderWicketPanel(width, height int) string {
 
 		openStr := fmt.Sprintf("%d open", s.OpenCount)
 
-		// Build the row: name padded to 12 chars, then counts.
-		nameField := displayName
-		if len(nameField) > 12 {
-			nameField = nameField[:12]
+		// Build the row: name padded to 12 runes, then counts.
+		// Use rune slicing to correctly handle multi-byte Unicode characters.
+		nameRunes := []rune(displayName)
+		if len(nameRunes) > 12 {
+			nameRunes = nameRunes[:12]
 		}
-		for len(nameField) < 12 {
-			nameField += " "
+		for len(nameRunes) < 12 {
+			nameRunes = append(nameRunes, ' ')
 		}
+		nameField := string(nameRunes)
 		row := nameField + " " + openStr + "  " + warnStr
 
-		// Truncate to available width (plain text length before styling).
+		// Truncate to available width using rune counts (not byte lengths).
 		plainRow := nameField + " " + openStr + "  " + fmt.Sprintf("%d⚠", s.NeedsHumanCount)
-		if len(plainRow) > innerWidth {
-			// Trim displayName to fit.
-			excess := len(plainRow) - innerWidth
-			if excess < len(nameField) {
-				nameField = nameField[:len(nameField)-excess]
+		plainRunes := []rune(plainRow)
+		if len(plainRunes) > innerWidth {
+			// Trim displayName runes to fit.
+			excess := len(plainRunes) - innerWidth
+			if excess < len(nameRunes) {
+				nameField = string(nameRunes[:len(nameRunes)-excess])
 				row = nameField + " " + openStr + "  " + warnStr
 			}
 		}
