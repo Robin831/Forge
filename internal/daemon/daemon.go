@@ -2369,20 +2369,76 @@ func (d *Daemon) crucibleParentTitle(parentID string) string {
 // branch for this bead exists on origin with commits ahead of main. This can
 // happen when a prior dispatch pushed commits but failed before creating a PR
 // (e.g. warden rejection). In that case Smith sees the work as already done
-// and emits NO_CHANGES_NEEDED, but no PR has been opened. We escalate to
-// needs_human rather than silently discarding the committed work.
+// and emits NO_CHANGES_NEEDED, but no PR has been opened. The daemon
+// automatically creates the PR rather than flagging needs_human — recovering
+// the common "last mile" failure. Only if auto PR creation itself fails does
+// the bead escalate to needs_human.
 func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Bead, anvilPath, reason string) {
-	if branch, ok := d.forgeBranchAheadOfMain(ctx, anvilPath, bead.ID); ok {
-		msg := fmt.Sprintf(
-			"NO_CHANGES_NEEDED but branch %s has commits ahead of main with no open PR — manual PR creation required (Smith reason: %s)",
-			branch, reason,
-		)
-		d.logger.Warn("un-PR'd forge branch detected on NO_CHANGES_NEEDED — escalating to needs_human",
-			"bead", bead.ID, "branch", branch)
-		if markErr := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, msg); markErr != nil {
-			d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", markErr)
+	if branch, ok := d.forgeBranchAheadOfMain(ctx, anvilPath, bead.ID, bead.EpicBranch); ok {
+		d.logger.Info("orphaned branch detected with commits ahead of main and no PR — auto-creating PR",
+			"bead", bead.ID, "branch", branch, "smith_reason", reason)
+		_ = d.db.LogEvent(state.EventNoChangesNeeded,
+			fmt.Sprintf("Orphaned branch %s detected on NO_CHANGES_NEEDED — attempting auto PR creation (Smith reason: %s)", branch, reason),
+			bead.ID, bead.Anvil)
+
+		// Use a dedicated longer timeout for PR creation — the original ctx
+		// may carry the 30 s closeCtx deadline, which is one of the main
+		// causes of the orphaned-branch scenario in the first place.
+		prCtx, prCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer prCancel()
+		pr, prErr := d.vcsForAnvil(bead.Anvil).CreatePR(prCtx, vcs.CreateParams{
+			WorktreePath:    anvilPath,
+			BeadID:          bead.ID,
+			Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
+			Branch:          branch,
+			Base:            bead.EpicBranch,
+			AnvilName:       bead.Anvil,
+			BeadTitle:       bead.Title,
+			BeadDescription: bead.Description,
+			BeadType:        bead.IssueType,
+		})
+		if prErr != nil {
+			if errors.Is(prErr, vcs.ErrPRAlreadyExists) {
+				d.logger.Warn("PR already exists for orphaned branch — skipping creation",
+					"bead", bead.ID, "branch", branch)
+				_ = d.db.LogEvent(state.EventPRAlreadyExists,
+					fmt.Sprintf("PR already exists for orphaned branch %s (prior run)", branch),
+					bead.ID, bead.Anvil)
+				if clearErr := d.db.ClearRetry(bead.ID, bead.Anvil); clearErr != nil {
+					d.logger.Error("failed to clear retry record after ErrPRAlreadyExists", "bead", bead.ID, "error", clearErr)
+				}
+				return
+			}
+			msg := fmt.Sprintf("NO_CHANGES_NEEDED orphaned branch %s — auto PR creation failed: %v", branch, prErr)
+			d.logger.Error("auto PR creation failed for orphaned branch — escalating to needs_human",
+				"bead", bead.ID, "branch", branch, "error", prErr)
+			_ = d.db.LogEvent(state.EventPRCreationFailed, msg, bead.ID, bead.Anvil)
+			if markErr := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, msg); markErr != nil {
+				d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", markErr)
+			}
+			return
 		}
-		_ = d.db.LogEvent(state.EventError, msg, bead.ID, bead.Anvil)
+
+		if pr == nil || pr.URL == "" || pr.Number == 0 {
+			msg := fmt.Sprintf("NO_CHANGES_NEEDED orphaned branch %s — auto PR creation returned invalid PR object (nil or missing URL/Number)", branch)
+			d.logger.Error("auto PR creation returned invalid PR object — escalating to needs_human",
+				"bead", bead.ID, "branch", branch, "pr", pr)
+			_ = d.db.LogEvent(state.EventError, msg, bead.ID, bead.Anvil)
+			if markErr := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, msg); markErr != nil {
+				d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", markErr)
+			}
+			return
+		}
+
+		d.logger.Info("auto-created PR for orphaned branch", "bead", bead.ID, "branch", branch, "pr", pr.URL)
+		d.ingotRecordPR(bead.ID, bead.Anvil, pr.Number, pr.URL)
+		d.notifyWicketPRCreated(bead.ID, pr.URL, pr.Number)
+		_ = d.db.LogEvent(state.EventPRCreated,
+			fmt.Sprintf("Auto-created PR for orphaned branch %s: %s (NO_CHANGES_NEEDED recovery)", branch, pr.URL),
+			bead.ID, bead.Anvil)
+		if clearErr := d.db.ClearRetry(bead.ID, bead.Anvil); clearErr != nil {
+			d.logger.Error("failed to clear retry record after successful PR creation", "bead", bead.ID, "error", clearErr)
+		}
 		return
 	}
 
@@ -2402,11 +2458,13 @@ func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Be
 }
 
 // forgeBranchAheadOfMain checks whether the origin remote has a forge branch
-// for the given bead that contains commits not yet merged into the main branch
-// (origin/main or origin/master). It returns the branch name and true when
-// such unmerged commits exist, signalling that work was pushed in a prior
-// dispatch but no PR was created.
-func (d *Daemon) forgeBranchAheadOfMain(ctx context.Context, anvilPath, beadID string) (string, bool) {
+// for the given bead that contains commits not yet merged into the base branch.
+// When epicBranch is set (crucible child beads), it is used as the base instead
+// of origin/main or origin/master, so crucible children are not misclassified as
+// orphaned when they are already merged into the epic branch. It returns the
+// branch name and true when such unmerged commits exist, signalling that work was
+// pushed in a prior dispatch but no PR was created.
+func (d *Daemon) forgeBranchAheadOfMain(ctx context.Context, anvilPath, beadID, epicBranch string) (string, bool) {
 	branchName := worktree.BranchName(beadID)
 
 	// ls-remote is a lightweight ref-only query — no object transfer.
@@ -2435,15 +2493,29 @@ func (d *Daemon) forgeBranchAheadOfMain(ctx context.Context, anvilPath, beadID s
 		return branchName, true
 	}
 
-	// Determine the base ref. Prefer an explicit override (e.g., for epic branches)
-	// via FORGE_BASE_REF, and fall back to origin/main or origin/master.
+	// Determine the base ref. Priority order:
+	//   1. epicBranch (origin/<epicBranch>) — for crucible children, check against
+	//      the actual PR base rather than main to avoid misclassifying merged children.
+	//   2. FORGE_BASE_REF env override.
+	//   3. origin/main or origin/master.
 	baseRef := ""
 
-	if explicit := os.Getenv("FORGE_BASE_REF"); explicit != "" {
-		verifyCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "rev-parse", "--verify", explicit))
+	if epicBranch != "" {
+		epicRef := "origin/" + epicBranch
+		verifyCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "rev-parse", "--verify", epicRef))
 		verifyCmd.Dir = anvilPath
 		if verifyCmd.Run() == nil {
-			baseRef = explicit
+			baseRef = epicRef
+		}
+	}
+
+	if baseRef == "" {
+		if explicit := os.Getenv("FORGE_BASE_REF"); explicit != "" {
+			verifyCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "rev-parse", "--verify", explicit))
+			verifyCmd.Dir = anvilPath
+			if verifyCmd.Run() == nil {
+				baseRef = explicit
+			}
 		}
 	}
 

@@ -1942,6 +1942,12 @@ func TestHandleLifecycleAction_CloseBead_Error(t *testing.T) {
 type mockVCSProvider struct {
 	mergeCalls atomic.Int32
 	mergeErr   error
+	// createPRResult and createPRErr control what CreatePR returns.
+	// Zero values return nil, nil (success with nil PR — safe for tests that
+	// don't exercise PR creation). Set createPRResult to a non-nil *vcs.PR
+	// when the caller will dereference the return value.
+	createPRResult *vcs.PR
+	createPRErr    error
 }
 
 func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error {
@@ -1949,7 +1955,7 @@ func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) 
 	return m.mergeErr
 }
 func (m *mockVCSProvider) CreatePR(_ context.Context, _ vcs.CreateParams) (*vcs.PR, error) {
-	return nil, nil
+	return m.createPRResult, m.createPRErr
 }
 func (m *mockVCSProvider) CheckStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
 	return nil, nil
@@ -2197,6 +2203,115 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 				t.Fatal("EventNoChangesNeeded should NOT be logged when close fails")
 			}
 		}
+	})
+
+	t.Run("orphaned branch: auto-creates PR on success", func(t *testing.T) {
+		const beadID = "NCN-ORPHAN-OK"
+		orphanAnvilPath := initTestGitRepo(t)
+
+		orphanDB, err := state.Open(filepath.Join(orphanAnvilPath, "state-orphan-ok.db"))
+		require.NoError(t, err)
+		defer orphanDB.Close()
+
+		// Create a forge branch with a commit ahead of main and push it to origin,
+		// simulating a prior dispatch that pushed work but never created a PR.
+		branchName := worktree.BranchName(beadID)
+		gitLocal := func(args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = orphanAnvilPath
+			out, runErr := cmd.CombinedOutput()
+			require.NoError(t, runErr, "git %v: %s", args, out)
+		}
+		gitLocal("checkout", "-b", branchName)
+		require.NoError(t, os.WriteFile(filepath.Join(orphanAnvilPath, "orphan.txt"), []byte("work\n"), 0o644))
+		gitLocal("add", "orphan.txt")
+		gitLocal("commit", "-m", "orphaned work")
+		gitLocal("push", "origin", branchName)
+		gitLocal("checkout", "main")
+
+		mockVCS := &mockVCSProvider{
+			createPRResult: &vcs.PR{Number: 42, URL: "https://github.com/test/repo/pull/42"},
+		}
+		d := &Daemon{
+			db:           orphanDB,
+			logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr:  worktree.NewManager(),
+			vcsProviders: map[string]vcs.Provider{anvil: mockVCS},
+		}
+		d.cfg.Store(&config.Config{})
+
+		// Simulate a prior run that failed and left a needs_human=1 retry record —
+		// this is the core regression scenario: the bead is stuck in Needs Attention
+		// even though the branch exists and a PR can now be created.
+		require.NoError(t, orphanDB.MarkNeedsHuman(beadID, anvil, "prior PR creation timeout"))
+
+		bead := poller.Bead{ID: beadID, Anvil: anvil, Title: "Test bead"}
+		d.applyNoChangesNeededOutcome(context.Background(), bead, orphanAnvilPath, "already done")
+
+		// Retry record must be cleared — bead should leave Needs Attention.
+		r, err := orphanDB.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		assert.Nil(t, r, "retry record should be cleared after successful auto PR creation")
+
+		// EventPRCreated should be logged.
+		events, err := orphanDB.RecentEvents(20)
+		require.NoError(t, err)
+		found := false
+		for _, ev := range events {
+			if ev.Type == state.EventPRCreated && ev.BeadID == beadID {
+				found = true
+				assert.Contains(t, ev.Message, "Auto-created PR")
+				break
+			}
+		}
+		assert.True(t, found, "EventPRCreated should be logged after auto PR creation")
+	})
+
+	t.Run("orphaned branch: PR creation failure escalates to needs_human", func(t *testing.T) {
+		const beadID = "NCN-ORPHAN-FAIL"
+		orphanAnvilPath := initTestGitRepo(t)
+
+		orphanDB, err := state.Open(filepath.Join(orphanAnvilPath, "state-orphan-fail.db"))
+		require.NoError(t, err)
+		defer orphanDB.Close()
+
+		// Create a forge branch with a commit ahead of main and push it.
+		branchName := worktree.BranchName(beadID)
+		gitLocal := func(args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = orphanAnvilPath
+			out, runErr := cmd.CombinedOutput()
+			require.NoError(t, runErr, "git %v: %s", args, out)
+		}
+		gitLocal("checkout", "-b", branchName)
+		require.NoError(t, os.WriteFile(filepath.Join(orphanAnvilPath, "orphan-fail.txt"), []byte("work\n"), 0o644))
+		gitLocal("add", "orphan-fail.txt")
+		gitLocal("commit", "-m", "orphaned work")
+		gitLocal("push", "origin", branchName)
+		gitLocal("checkout", "main")
+
+		mockVCS := &mockVCSProvider{
+			createPRErr: fmt.Errorf("GitHub timeout"),
+		}
+		d := &Daemon{
+			db:           orphanDB,
+			logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr:  worktree.NewManager(),
+			vcsProviders: map[string]vcs.Provider{anvil: mockVCS},
+		}
+		d.cfg.Store(&config.Config{})
+
+		bead := poller.Bead{ID: beadID, Anvil: anvil, Title: "Test bead"}
+		d.applyNoChangesNeededOutcome(context.Background(), bead, orphanAnvilPath, "already done")
+
+		// Bead must be marked needs_human because auto PR creation failed.
+		r, err := orphanDB.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		require.NotNil(t, r, "retry record should exist after PR creation failure")
+		assert.True(t, r.NeedsHuman, "bead should be needs_human when auto PR creation fails")
+		assert.Contains(t, r.LastError, "GitHub timeout")
 	})
 }
 
@@ -2646,7 +2761,7 @@ func TestForgeBranchAheadOfMain(t *testing.T) {
 	}
 
 	t.Run("branch absent on origin", func(t *testing.T) {
-		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID)
+		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID, "")
 		assert.False(t, ok)
 		assert.Empty(t, branch)
 	})
@@ -2657,7 +2772,7 @@ func TestForgeBranchAheadOfMain(t *testing.T) {
 		gitLocal("push", "origin", branchName)
 		gitLocal("checkout", "main")
 
-		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID)
+		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID, "")
 		assert.False(t, ok, "branch at same tip as main should not be detected as ahead")
 		assert.Empty(t, branch)
 
@@ -2675,7 +2790,7 @@ func TestForgeBranchAheadOfMain(t *testing.T) {
 		gitLocal("push", "origin", branchName)
 		gitLocal("checkout", "main")
 
-		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID)
+		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID, "")
 		assert.True(t, ok, "branch with commits ahead of main should be detected")
 		assert.Equal(t, branchName, branch)
 	})
