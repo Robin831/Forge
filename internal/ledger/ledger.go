@@ -789,8 +789,8 @@ func (m *Model) clearForm() {
 // when a form is submitted, before the bd command completes. Must be called
 // before clearForm() so that formTarget and activeFormKind are still set.
 func (m *Model) pendingToastForForm() string {
-	id := ""
-	if m.formTarget != nil {
+	id := "bead"
+	if m.formTarget != nil && m.formTarget.ID != "" {
 		id = m.formTarget.ID
 	}
 	switch m.activeFormKind {
