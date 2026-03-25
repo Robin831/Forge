@@ -339,7 +339,11 @@ func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg con
 
 // shouldSkip returns true when the issue should not be triaged. An issue is
 // skipped when it already carries a Wicket processing label (processed,
-// bead-created, or needs-human), or is already tracked in state.db.
+// bead-created, or needs-human), or is already tracked in state.db. An issue
+// tracked as "pending" with no bead_id is NOT skipped — it indicates that
+// bead creation failed on a previous cycle and the issue should be retried.
+// All other tracked states, including non-terminal workflow states, are
+// treated as already being processed and are therefore skipped.
 func (m *Monitor) shouldSkip(issue Issue, settings config.SettingsConfig) bool {
 	// Skip issues that were already handled in a previous Wicket cycle.
 	for _, label := range issue.Labels {
@@ -351,14 +355,22 @@ func (m *Monitor) shouldSkip(issue Issue, settings config.SettingsConfig) bool {
 		}
 	}
 
-	// Skip issues already recorded in state.db to prevent double-processing
-	// after restarts or concurrent scan cycles.
-	tracked, err := m.db.IsIssueTracked(issue.Repo, issue.Number)
+	// Check whether the issue is already tracked in state.db.
+	wi, err := m.db.GetWicketIssue(issue.Repo, issue.Number)
 	if err != nil {
 		log.Printf("[wicket] DB check %s#%d: %v — skipping to avoid double-processing", issue.Repo, issue.Number, err)
 		return true
 	}
-	return tracked
+	if wi == nil {
+		return false
+	}
+	// A pending row with no bead_id means bead creation failed on a previous
+	// cycle. Allow retry so the issue does not get stuck forever.
+	if wi.State == "pending" && wi.BeadID == "" {
+		log.Printf("[wicket] %s#%d: pending issue with no bead_id — will retry triage", issue.Repo, issue.Number)
+		return false
+	}
+	return true
 }
 
 // isTrustedUser returns true if the given GitHub login appears in the trusted
@@ -388,13 +400,28 @@ func (m *Monitor) triageIssue(ctx context.Context, anvil string, issue Issue, an
 	}
 	if err := m.db.InsertWicketIssue(pending); err != nil {
 		if isUniqueConstraintErr(err) {
-			// First-anvil-wins: another anvil (or a concurrent cycle) already
-			// claimed this issue via the UNIQUE(repo, issue_number) constraint.
-			log.Printf("[wicket] %s: issue already tracked by another anvil, skipping %s#%d", anvil, issue.Repo, issue.Number)
+			// Check whether this is a retry of a previously stuck pending issue
+			// (bead creation failed on a prior cycle). If so, proceed with triage
+			// instead of bailing out — the existing row is already in the right
+			// state and will be updated when the retry succeeds.
+			existing, getErr := m.db.GetWicketIssue(issue.Repo, issue.Number)
+			if getErr != nil {
+				log.Printf("[wicket] %s: unique constraint on insert but could not read existing row for %s#%d: %v — skipping", anvil, issue.Repo, issue.Number, getErr)
+				return
+			}
+			if existing != nil && existing.State == "pending" && existing.BeadID == "" {
+				log.Printf("[wicket] %s: retrying bead creation for stuck pending issue %s#%d", anvil, issue.Repo, issue.Number)
+				// Fall through: the pending row already exists; proceed with triage.
+			} else {
+				// First-anvil-wins: another anvil (or a concurrent cycle) already
+				// claimed this issue via the UNIQUE(repo, issue_number) constraint.
+				log.Printf("[wicket] %s: issue already tracked by another anvil, skipping %s#%d", anvil, issue.Repo, issue.Number)
+				return
+			}
 		} else {
 			log.Printf("[wicket] %s: failed to insert wicket issue %s#%d: %v", anvil, issue.Repo, issue.Number, err)
+			return
 		}
-		return
 	}
 
 	var decision TriageDecision
