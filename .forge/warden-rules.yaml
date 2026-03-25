@@ -88,10 +88,10 @@ rules:
     - id: changelog-matches-implementation
       category: other
       pattern: >-
-        Changelog or release note entries that describe UI changes, new features, or behavior changes
+        Changelog or release note entries that describe UI changes, new features, behavior changes, or implementation details such as caching or optimization
       check: >-
-        Verify that changelog descriptions accurately reflect the actual code changes — if the changelog claims a feature applies to multiple views or components, confirm each one was actually modified to support it; also ensure the changelog does not claim full functionality (e.g., 'enables autostart') when the code only partially implements it (e.g., only runs daemon-reload without enabling the service)
-      source: copilot:PR#128
+        Verify that changelog descriptions accurately reflect the actual code changes — if the changelog claims a feature applies to multiple views or components, confirm each one was actually modified to support it; also ensure the changelog does not claim full functionality (e.g., 'enables autostart') when the code only partially implements it (e.g., only runs daemon-reload without enabling the service). For entries describing caching, optimization, or performance improvements, cross-check the claim against the code to ensure the described mechanism (e.g., a cache avoiding repeated calls) is actually implemented and used in the relevant code paths.
+      source: ['copilot:PR#128', 'copilot:PR#434']
       added: "2026-03-09"
     - id: use-style-frame-size
       category: ui
@@ -1218,7 +1218,7 @@ rules:
         Adding a new warden rule entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
         Before inserting a new warden rule, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#425']
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#425', 'copilot:PR#430']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -2514,7 +2514,7 @@ rules:
         Building a new struct with only some fields populated and passing it to a full-row or general Update/Save/Upsert function (e.g. UpdateWicketIssue) instead of fetching the existing row first
       check: >-
         When updating a database row, verify that partially-populated structs do not overwrite existing columns with zero values and that fields not being intentionally changed are preserved. Either load the existing row first and merge changes onto it (read-modify-write), or use narrower, column-specific update methods that only touch the intended fields — otherwise unrelated fields get silently zeroed out.
-      source: copilot:PR#429
+      source: ['copilot:PR#429', 'copilot:PR#430']
       added: "2026-03-24"
     - id: bd-call-timeout
       category: concurrency
@@ -2587,22 +2587,6 @@ rules:
         Verify that the exponent or resulting value is clamped to the maximum backoff BEFORE float-to-int conversion, not after. Large exponents can overflow float64→int64, producing negative or garbled durations. Prefer integer doubling with early clamping or cap the retry counter once max backoff is reached.
       source: copilot:PR#431
       added: "2026-03-24"
-    - id: merge-overlapping-warden-rules
-      category: other
-      pattern: >-
-        New warden rules being added to .forge/warden-rules.yaml that cover guidance already present in an existing rule
-      check: >-
-        Before adding a new warden rule, search existing rules for overlapping or duplicate guidance. If a match exists, merge the new guidance into the existing rule and append the new source to its source list instead of creating a standalone rule.
-      source: copilot:PR#430
-      added: "2026-03-24"
-    - id: partial-struct-update-overwrites-columns
-      category: other
-      pattern: >-
-        Building a new struct with only some fields populated and passing it to a full-row or general Update/Save/Upsert function instead of fetching the existing row first
-      check: >-
-        When updating a database row, verify that partially-populated structs do not overwrite existing columns with zero values and that fields not being intentionally changed are preserved. Either load the existing row first and merge changes onto it (read-modify-write), or use narrower, column-specific update methods that only touch the intended fields — otherwise unrelated fields get silently zeroed out.
-      source: copilot:PR#430
-      added: "2026-03-24"
     - id: test-helper-stub-documentation
       category: testing
       pattern: >-
@@ -2656,13 +2640,6 @@ rules:
         A comment or docstring describes caching/memoization behavior (e.g. 'rebuilt on every cycle', 'avoids repeated calls') for a map or lookup structure
       check: >-
         Verify the comment accurately describes the actual implementation: if the comment says the cache is rebuilt periodically, confirm it is actually cleared and repopulated; if it claims downstream code uses the cache to skip expensive operations (e.g. git calls), confirm those code paths actually read from the cache instead of re-resolving independently
-      source: copilot:PR#434
-      added: "2026-03-24"
-    - id: changelog-accuracy
-      category: other
-      pattern: Changelog entries that describe implementation behavior or capabilities
-      check: >-
-        Verify that changelog text accurately reflects the actual implementation. Cross-check claims about caching, optimization, or behavior changes against the code to ensure the description matches what was built, not what was planned.
       source: copilot:PR#434
       added: "2026-03-24"
     - id: nondeterministic-map-iteration
