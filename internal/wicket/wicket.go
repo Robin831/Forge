@@ -192,8 +192,9 @@ func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.Anvil
 
 	// Cache the primary repo (derived from the anvil's own git remote) so
 	// triageIssue can detect issues from external monitored repos and enrich
-	// the triage prompt with anvil-domain context. We resolve once per anvil
-	// per daemon lifetime (lazy, outside the mutex to avoid blocking on IO).
+	// the triage prompt with anvil-domain context. We only cache on success;
+	// if resolveRepos fails (e.g. path is not a git repo yet), we retry on
+	// the next scan cycle (lazy, outside the mutex to avoid blocking on IO).
 	m.mu.RLock()
 	_, primaryCached := m.anvilPrimaryRepos[name]
 	m.mu.RUnlock()
@@ -282,7 +283,7 @@ func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg con
 			// the operator knows which repo and why, then continue scanning
 			// remaining repos. Common causes: missing gh auth for private repo,
 			// SAML SSO enforcement, or insufficient token scopes.
-			log.Printf("[wicket] %s: authentication failure accessing repo %s — run 'gh auth status' and ensure SAML SSO is authorized: %v", anvil, repo, err)
+			log.Printf("[wicket] %s: authentication failure accessing repo %s — run 'gh auth status' and verify token scopes, SSO (if enforced), and repository permissions: %v", anvil, repo, err)
 			_ = m.db.LogEvent(state.EventWicketError,
 				fmt.Sprintf("Authentication failure accessing repo %s: %v", repo, err), "", anvil)
 			return false

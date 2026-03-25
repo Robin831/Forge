@@ -332,13 +332,39 @@ func isAuthError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "401") ||
-		strings.Contains(msg, "403") ||
-		strings.Contains(msg, "authentication") ||
-		strings.Contains(msg, "credentials") ||
+
+	// If this looks like a rate limit error, do not treat it as an auth failure.
+	if isRateLimitStderr(msg) {
+		return false
+	}
+
+	// Known GitHub/gh authentication phrases.
+	if strings.Contains(msg, "bad credentials") ||
+		strings.Contains(msg, "authentication failed") ||
+		strings.Contains(msg, "authentication required") ||
+		strings.Contains(msg, "requires authentication") ||
+		strings.Contains(msg, "must authenticate") ||
+		strings.Contains(msg, "no authentication credentials") ||
+		strings.Contains(msg, "invalid oauth token") ||
+		strings.Contains(msg, "invalid authorization") ||
 		strings.Contains(msg, "unauthorized") ||
-		strings.Contains(msg, "saml") ||
-		strings.Contains(msg, "bad credentials")
+		strings.Contains(msg, "saml") {
+		return true
+	}
+
+	// Explicit HTTP 401/403 status patterns to avoid numeric false positives.
+	if strings.Contains(msg, "http 401") ||
+		strings.Contains(msg, "http status 401") ||
+		strings.Contains(msg, "status code 401") ||
+		strings.Contains(msg, "response status 401") ||
+		strings.Contains(msg, "http 403") ||
+		strings.Contains(msg, "http status 403") ||
+		strings.Contains(msg, "status code 403") ||
+		strings.Contains(msg, "response status 403") {
+		return true
+	}
+
+	return false
 }
 
 // ghRateLimitResponse is the JSON shape of the GitHub rate_limit API endpoint.

@@ -189,23 +189,50 @@ func defaultAnvilContextLoader(anvilPath string) (readme, agentsMD string) {
 	return readme, agentsMD
 }
 
+// anvilContextMaxLen bounds the amount of README/AGENTS content included in
+// the prompt to avoid excessive token usage.
+const anvilContextMaxLen = 16000
+
+// sanitizeAndTruncateAnvilSection escapes angle brackets to prevent content
+// from breaking the surrounding XML-like tags and truncates to a reasonable
+// maximum length, appending a notice when truncation occurs.
+func sanitizeAndTruncateAnvilSection(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Escape angle brackets so any tag-like content in README/AGENTS does not
+	// interfere with the <anvil_*> wrapper tags in the prompt.
+	sanitized := strings.ReplaceAll(s, "<", "&lt;")
+	sanitized = strings.ReplaceAll(sanitized, ">", "&gt;")
+
+	if len(sanitized) <= anvilContextMaxLen {
+		return sanitized
+	}
+
+	truncated := sanitized[:anvilContextMaxLen]
+	return truncated + "\n\n[... additional content truncated for length ...]\n"
+}
+
 // buildAnvilContext constructs the <anvil_context> prompt section from README
 // and AGENTS.md content. Returns "" when both inputs are empty.
 func buildAnvilContext(readme, agentsMD string) string {
-	if readme == "" && agentsMD == "" {
+	safeReadme := sanitizeAndTruncateAnvilSection(readme)
+	safeAgentsMD := sanitizeAndTruncateAnvilSection(agentsMD)
+
+	if safeReadme == "" && safeAgentsMD == "" {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("The issue originates from an external repository that this anvil monitors. ")
 	b.WriteString("The following context describes the anvil codebase where any resulting work items will be implemented:\n")
-	if readme != "" {
+	if safeReadme != "" {
 		b.WriteString("<anvil_readme>\n")
-		b.WriteString(readme)
+		b.WriteString(safeReadme)
 		b.WriteString("\n</anvil_readme>\n")
 	}
-	if agentsMD != "" {
+	if safeAgentsMD != "" {
 		b.WriteString("<anvil_agents_md>\n")
-		b.WriteString(agentsMD)
+		b.WriteString(safeAgentsMD)
 		b.WriteString("\n</anvil_agents_md>\n")
 	}
 	return b.String()
@@ -617,7 +644,7 @@ func RunTriageWithComments(ctx context.Context, issue Issue, comments []Comment,
 	// provide domain context so the AI can evaluate the foreign issue against
 	// the codebase that will implement any resulting work item.
 	var anvilContext string
-	if cfg.AnvilRepo != "" && issue.Repo != cfg.AnvilRepo && cfg.AnvilPath != "" {
+	if cfg.AnvilRepo != "" && !strings.EqualFold(issue.Repo, cfg.AnvilRepo) && cfg.AnvilPath != "" {
 		loader := cfg.anvilContextLoader
 		if loader == nil {
 			loader = defaultAnvilContextLoader
