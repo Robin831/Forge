@@ -203,6 +203,118 @@ Omitting `platform` or setting it to an empty string defaults to `github`. Exist
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
 
+## Wicket — GitHub Issue Triage
+
+**Wicket** is a background monitor that polls GitHub repositories for new issues, classifies them using an AI provider, and automatically creates beads, requests clarification from the issue author, or flags the issue for human review.
+
+### Push vs Pull Model
+
+Wicket supports two operating modes controlled by `wicket_trigger_label`:
+
+| Model | Configuration | Behavior |
+|-------|--------------|-----------|
+| **Push** (default) | `wicket_trigger_label: ""` | Wicket processes **all** new issues as they appear, without waiting for a human to label them. Suitable when you want every issue evaluated automatically. |
+| **Pull** | `wicket_trigger_label: "forge-triage"` | Wicket only processes issues that carry the specified label. A human (or automation) must apply the label before the issue enters the triage queue. Suitable for high-volume repositories where you want selective intake. |
+
+### Global Settings
+
+These settings live under the top-level `settings` key.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `wicket_enabled` | `false` | Master switch — no issue scanning occurs when false. |
+| `wicket_interval` | `15m` | How often Wicket polls each repository for new issues. Non-positive values (e.g. `0`) fall back to the default `15m` interval. |
+| `wicket_provider` | `""` (global `providers`) | AI provider used for triage decisions. When empty, the global `providers` chain is used. |
+| `wicket_batch_size` | `20` | Maximum number of issues processed per scan cycle per repository. |
+| `wicket_processed_label` | `"forge-wicket-processed"` | GitHub label applied to every issue Wicket has triaged (prevents re-processing). |
+| `wicket_needs_human_label` | `"forge-needs-human"` | GitHub label applied to issues the AI flagged for human review. |
+| `wicket_bead_created_label` | `"forge-bead-created"` | GitHub label applied to issues for which a bead was created. |
+| `wicket_trigger_label` | `""` | When non-empty, only issues carrying this label are processed (pull model). |
+| `wicket_stale_days` | `14` | Days without an author reply before a clarification request is marked stale. After a further 7 days the issue is closed automatically. |
+
+### Per-Anvil Settings
+
+These settings are placed under the anvil's key in `anvils`.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `wicket_enabled` | null (global) | Per-anvil override. Set to `false` to opt this anvil out entirely. |
+| `wicket_repos` | `[]` | `"owner/repo"` strings to scan for this anvil. When empty, the primary repository is inferred from the anvil's git remote. |
+| `wicket_trusted_users` | `[]` | GitHub logins whose issues are automatically dispatched without extra human review. |
+| `wicket_auto_dispatch` | `false` | When true, beads created by Wicket for this anvil are auto-dispatched without manual approval. |
+| `wicket_issue_labels` | `[]` | Label filter — an issue must carry all of these labels to be eligible. Empty means all issues are eligible. |
+| `wicket_ignore_users` | `[]` | GitHub logins to skip entirely. Known bot accounts (dependabot, renovate, etc.) are always ignored regardless of this list. |
+| `wicket_triage_prompt` | `""` | Optional text appended to the default triage system prompt, for project-specific context or constraints. |
+
+### `wicket_repos` — Multi-Repo Scanning
+
+By default Wicket resolves the target repository from the anvil's git remote. When `wicket_repos` is set, it **replaces** remote inference entirely — the listed repositories are scanned instead. Include the primary repo in the list if you still want it scanned alongside any extras.
+
+```yaml
+anvils:
+  my-service:
+    path: /repos/my-service
+    wicket_repos:
+      - myorg/my-service          # the service repo itself
+      - myorg/my-service-issues   # dedicated issue tracker
+      - myorg/shared-platform     # cross-team issues that affect this service
+```
+
+### Example Configurations
+
+#### Minimal — single repo, push model
+
+```yaml
+settings:
+  wicket_enabled: true
+  wicket_interval: 15m
+
+anvils:
+  my-api:
+    path: /repos/my-api
+    wicket_auto_dispatch: true
+```
+
+#### Multi-Repo — dedicated issue tracker + trusted contributors
+
+```yaml
+settings:
+  wicket_enabled: true
+  wicket_interval: 10m
+  wicket_batch_size: 50
+
+anvils:
+  platform:
+    path: /repos/platform
+    wicket_repos:
+      - myorg/platform
+      - myorg/platform-issues
+    wicket_trusted_users:
+      - alice
+      - bob
+    wicket_auto_dispatch: true
+    wicket_ignore_users:
+      - legacy-bot
+```
+
+#### Trigger-Label — pull model with selective intake
+
+```yaml
+settings:
+  wicket_enabled: true
+  wicket_trigger_label: forge-triage   # only labelled issues are processed
+
+anvils:
+  legacy:
+    path: /repos/legacy
+    wicket_issue_labels:
+      - bug
+      - enhancement
+    wicket_triage_prompt: |
+      This is a legacy codebase. Prefer conservative, low-risk changes.
+      Only create beads for issues labelled 'bug' or 'enhancement'.
+```
+
 ## Notifications
 
 Forge supports two styles of webhook notifications:

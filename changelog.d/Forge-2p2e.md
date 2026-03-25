@@ -1,0 +1,2 @@
+category: Added
+- **Wicket documentation** - Added a dedicated Wicket section to `docs/configuration.md` covering all global and per-anvil settings with defaults, `wicket_repos` multi-repo scanning, push vs pull (trigger_label) model explanation, and three example configurations (minimal, multi-repo, trigger-label). Added Wicket component entries to the Architecture tables in `README.md` and `CLAUDE.md`. (Forge-2p2e)
