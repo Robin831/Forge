@@ -203,7 +203,7 @@ func (m *Model) moveBeadToLane(targetLane int) tea.Cmd {
 
 		var args []string
 		if targetStatus == "closed" {
-			args = []string{"close", b.ID}
+			args = []string{"close", b.ID, "--json"}
 		} else {
 			args = []string{"update", b.ID, "--status=" + targetStatus}
 		}
