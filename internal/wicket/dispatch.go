@@ -163,7 +163,7 @@ func parseLabelComment(body string) (string, bool) {
 // dispatchBead tags the bead for auto-dispatch, posts a confirmation comment,
 // and updates the wicket_issues state to "dispatched".
 func (m *Monitor) dispatchBead(ctx context.Context, anvil string, wi state.WicketIssue) {
-	if err := bdUpdateRunner(ctx, wi.BeadID, []string{"--tag", "auto-dispatch"}); err != nil {
+	if err := bdUpdateRunner(ctx, wi.BeadID, []string{"--add-label", "auto-dispatch"}); err != nil {
 		log.Printf("[wicket:dispatch] %s: bd update tag for %s: %v", anvil, wi.BeadID, err)
 		_ = m.db.LogEvent(state.EventWicketError,
 			fmt.Sprintf("[%s] Failed to tag bead %s for dispatch: %v", anvil, wi.BeadID, err), wi.BeadID, anvil)
@@ -192,7 +192,7 @@ func (m *Monitor) dispatchBead(ctx context.Context, anvil string, wi state.Wicke
 // handleLabelComment applies a tag to the bead and posts a follow-up comment
 // re-asking about dispatch.
 func (m *Monitor) handleLabelComment(ctx context.Context, anvil string, wi state.WicketIssue, tag string) {
-	if err := bdUpdateRunner(ctx, wi.BeadID, []string{"--tag", tag}); err != nil {
+	if err := bdUpdateRunner(ctx, wi.BeadID, []string{"--add-label", tag}); err != nil {
 		log.Printf("[wicket:dispatch] %s: bd update tag %q for %s: %v", anvil, tag, wi.BeadID, err)
 		return
 	}

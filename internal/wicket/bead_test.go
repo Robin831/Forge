@@ -45,8 +45,7 @@ func TestBuildBDArgs(t *testing.T) {
 
 	assertFlag(t, args, "--type", "task")
 	assertFlag(t, args, "--priority", "2")
-	assertContainsFlag(t, args, "--tag", "wicket")
-	assertContainsFlag(t, args, "--tag", "github-issue")
+	assertContainsFlag(t, args, "--labels", "wicket,github-issue")
 
 	assert.Contains(t, args, "--silent", "expected --silent flag in args")
 

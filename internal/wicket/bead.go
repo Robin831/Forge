@@ -78,8 +78,7 @@ func buildBDArgs(decision TriageDecision, issue Issue, priority int, anvilName s
 		"--description", desc,
 		"--type", "task",
 		"--priority", fmt.Sprintf("%d", priority),
-		"--tag", "wicket",
-		"--tag", "github-issue",
+		"--labels", "wicket,github-issue",
 		"--silent",
 	}
 

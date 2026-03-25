@@ -85,7 +85,7 @@ func TestCheckDispatchRocketReaction(t *testing.T) {
 	if !dispatched {
 		t.Error("expected bead to be dispatched via rocket reaction")
 	}
-	if len(bdUpdateArgs) < 2 || bdUpdateArgs[0] != "--tag" || bdUpdateArgs[1] != "auto-dispatch" {
+	if len(bdUpdateArgs) < 2 || bdUpdateArgs[0] != "--add-label" || bdUpdateArgs[1] != "auto-dispatch" {
 		t.Errorf("unexpected bd update args: %v", bdUpdateArgs)
 	}
 	if len(mock.CommentCalls) == 0 {
@@ -180,7 +180,7 @@ func TestCheckDispatchLabelComment(t *testing.T) {
 	}
 
 	bdUpdateRunner = func(_ context.Context, beadID string, args []string) error {
-		if len(args) >= 2 && args[0] == "--tag" {
+		if len(args) >= 2 && args[0] == "--add-label" {
 			appliedTag = args[1]
 		}
 		return nil
