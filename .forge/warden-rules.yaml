@@ -127,10 +127,12 @@ rules:
       added: "2026-03-09"
     - id: comment-code-consistency
       category: other
-      pattern: Code comments or docstrings that describe behavior, eligibility, or control flow
+      pattern: Code comments or docstrings that describe behavior, eligibility, control flow, or filtering/skipping logic
       check: >-
-        Verify that comments accurately reflect the actual code behavior and control flow. When a comment claims something is eligible, enabled, or handled, trace the execution path to confirm the code actually supports that claim. Update comments to match reality or fix the code to match the intent.
-      source: copilot:PR#126
+        Verify that comments accurately reflect the actual code behavior and control flow. When a comment claims something is eligible, enabled, or handled, trace the execution path to confirm the code actually supports that claim. Pay special attention to comments describing guard or skip behavior near loops/conditionals — confirm the corresponding guard clause (e.g. continue, return, conditional block) actually exists and is correct. Update comments to match reality or fix the code to match the intent.
+      source:
+        - copilot:PR#126
+        - copilot:PR#444
       added: "2026-03-09"
     - id: changelog-matches-behavior
       category: other
@@ -2706,3 +2708,35 @@ rules:
         Verify that the test name accurately describes the behavior being tested, and that the test fixtures match the scenario implied by the name. If the name says 'shared repo across anvils', the fixture must have multiple anvils referencing the same repo; if the fixture tests 'multi-repo lookup', rename the test accordingly.
       source: copilot:PR#438
       added: "2026-03-24"
+    - id: lipgloss-margin-height-calc
+      category: ui
+      pattern: >-
+        Height calculation for TUI panels that use lipgloss styles with MarginTop/MarginBottom
+      check: >-
+        Verify that inner height calculations account for all rendered lines including margin lines from lipgloss styles (e.g. MarginBottom(1) adds an extra line that must be included in height math to avoid clipping content)
+      source: copilot:PR#444
+      added: "2026-03-25"
+    - id: lipgloss-frame-vs-padding
+      category: ui
+      pattern: >-
+        Using GetHorizontalFrameSize() to compute inner content width in lipgloss/bubbletea panels
+      check: >-
+        When computing available inner width for panel content, verify whether the width variable already excludes borders. If it does, subtract only padding (GetHorizontalPadding) not the full frame size (GetHorizontalFrameSize), which includes borders and would double-subtract, truncating content earlier than necessary.
+      source: copilot:PR#444
+      added: "2026-03-25"
+    - id: type-name-matches-semantics
+      category: style
+      pattern: >-
+        A struct or type name references a concept (e.g., 'Anvil') but the fields and usage are scoped to a different concept (e.g., grouped by repo, not by anvil)
+      check: >-
+        Verify that type/struct names accurately reflect their contents and how they are used — e.g., if a summary is grouped by repo, name it RepoSummary not AnvilSummary
+      source: copilot:PR#444
+      added: "2026-03-25"
+    - id: gate-disabled-feature-fetches
+      category: performance
+      pattern: >-
+        A fetch/query function is called unconditionally in a polling loop or tick handler for a feature that can be disabled via configuration
+      check: >-
+        Verify that expensive or periodic data fetches (e.g. DB queries, API calls) are gated on the corresponding feature-enabled flag so they are skipped when the feature is disabled and the results would never be displayed or consumed
+      source: copilot:PR#444
+      added: "2026-03-25"
