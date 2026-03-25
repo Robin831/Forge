@@ -308,7 +308,7 @@ func TestTriageDispatch_CreateBead(t *testing.T) {
 	// Override bdRunner to avoid shelling out to the real bd binary.
 	origRunner := bdRunner
 	defer func() { bdRunner = origRunner }()
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		return "Forge-test1\n", nil
 	}
 
@@ -458,7 +458,7 @@ func TestScanRepo_FiltersAlreadyTracked(t *testing.T) {
 	// Stub bdRunner so issue #2 can be triaged without real processes.
 	origRunner := bdRunner
 	defer func() { bdRunner = origRunner }()
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		return "Forge-x1\n", nil
 	}
 
@@ -503,7 +503,7 @@ func TestScanRepo_BatchSizeLimit(t *testing.T) {
 	origRunner := bdRunner
 	defer func() { bdRunner = origRunner }()
 	callCount := 0
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		callCount++
 		return "Forge-y1\n", nil
 	}
@@ -689,7 +689,7 @@ func TestScanRepo_TriggerLabelFilter(t *testing.T) {
 
 	origRunner := bdRunner
 	defer func() { bdRunner = origRunner }()
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		return "Forge-tr1\n", nil
 	}
 
@@ -716,7 +716,7 @@ func TestScanRepo_TriggerLabelEmpty_ProcessesAll(t *testing.T) {
 
 	origRunner := bdRunner
 	defer func() { bdRunner = origRunner }()
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		return "Forge-x1\n", nil
 	}
 
@@ -743,7 +743,7 @@ func TestScanRepo_IssueLabelFilter(t *testing.T) {
 
 	origRunner := bdRunner
 	defer func() { bdRunner = origRunner }()
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		return "Forge-il1\n", nil
 	}
 
@@ -775,7 +775,7 @@ func TestScanRepo_BotIgnored(t *testing.T) {
 
 	origRunner := bdRunner
 	defer func() { bdRunner = origRunner }()
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		return "Forge-b1\n", nil
 	}
 
@@ -801,7 +801,7 @@ func TestScanRepo_CustomIgnoreUser(t *testing.T) {
 
 	origRunner := bdRunner
 	defer func() { bdRunner = origRunner }()
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		return "Forge-ci1\n", nil
 	}
 
@@ -904,7 +904,7 @@ func TestScanRepo_TriggerAndIssueLabelsBothApply(t *testing.T) {
 
 	origRunner := bdRunner
 	defer func() { bdRunner = origRunner }()
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		return "Forge-tl1\n", nil
 	}
 

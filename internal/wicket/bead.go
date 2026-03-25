@@ -45,12 +45,16 @@ func issueURL(repo string, number int) string {
 }
 
 // bdRunner is the function used to execute `bd create`. Tests replace this to
-// avoid spawning a real subprocess.
-var bdRunner func(ctx context.Context, args []string) (string, error) = defaultBDRunner
+// avoid spawning a real subprocess. The dir parameter sets the working
+// directory so that `bd` can locate the anvil's .beads/ database.
+var bdRunner func(ctx context.Context, args []string, dir string) (string, error) = defaultBDRunner
 
-func defaultBDRunner(ctx context.Context, args []string) (string, error) {
+func defaultBDRunner(ctx context.Context, args []string, dir string) (string, error) {
 	cmdArgs := append([]string{"create"}, args...)
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", cmdArgs...))
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -120,7 +124,7 @@ func parseBDOutput(output string) (string, error) {
 //
 // db may be nil, in which case persistence to state.db is skipped and only
 // the in-memory cache is updated.
-func CreateBead(ctx context.Context, db *state.DB, decision TriageDecision, issue Issue, priority int, anvilName string) (string, error) {
+func CreateBead(ctx context.Context, db *state.DB, decision TriageDecision, issue Issue, priority int, anvilName, anvilPath string) (string, error) {
 	if decision.Action != ActionCreateBead {
 		return "", fmt.Errorf("CreateBead called with action %q; only %q is allowed", decision.Action, ActionCreateBead)
 	}
@@ -136,7 +140,7 @@ func CreateBead(ctx context.Context, db *state.DB, decision TriageDecision, issu
 
 	args := buildBDArgs(decision, issue, priority, anvilName)
 
-	output, err := bdRunner(ctx, args)
+	output, err := bdRunner(ctx, args, anvilPath)
 	if err != nil {
 		return "", fmt.Errorf("create bead for %s#%d: %w", issue.Repo, issue.Number, err)
 	}

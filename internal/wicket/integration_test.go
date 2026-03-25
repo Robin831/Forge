@@ -44,7 +44,7 @@ func stubBDRunner(t *testing.T, beadID string) {
 	t.Helper()
 	orig := bdRunner
 	t.Cleanup(func() { bdRunner = orig })
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		return beadID + "\n", nil
 	}
 }

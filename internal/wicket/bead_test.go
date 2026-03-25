@@ -133,7 +133,7 @@ func TestCreateBead_StoresMapping(t *testing.T) {
 	original := bdRunner
 	defer func() { bdRunner = original }()
 
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		return "Forge-test1\n", nil
 	}
 
@@ -144,7 +144,7 @@ func TestCreateBead_StoresMapping(t *testing.T) {
 	}
 	issue := Issue{Repo: "org/repo", Number: 7}
 
-	id, err := CreateBead(context.Background(), db, decision, issue, 2, "test-anvil")
+	id, err := CreateBead(context.Background(), db, decision, issue, 2, "test-anvil", "")
 	require.NoError(t, err)
 	assert.Equal(t, "Forge-test1", id)
 
@@ -164,7 +164,7 @@ func TestCreateBead_InsertsRowWhenMissing(t *testing.T) {
 
 	original := bdRunner
 	defer func() { bdRunner = original }()
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		return "Forge-new1\n", nil
 	}
 
@@ -175,7 +175,7 @@ func TestCreateBead_InsertsRowWhenMissing(t *testing.T) {
 	}
 	issue := Issue{Repo: "org/repo", Number: 99}
 
-	id, err := CreateBead(context.Background(), db, decision, issue, 1, "test-anvil")
+	id, err := CreateBead(context.Background(), db, decision, issue, 1, "test-anvil", "")
 	require.NoError(t, err)
 	assert.Equal(t, "Forge-new1", id)
 
@@ -191,7 +191,7 @@ func TestCreateBead_RunnerError(t *testing.T) {
 	original := bdRunner
 	defer func() { bdRunner = original }()
 
-	bdRunner = func(_ context.Context, _ []string) (string, error) {
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
 		return "", errors.New("bd not found")
 	}
 
@@ -202,7 +202,7 @@ func TestCreateBead_RunnerError(t *testing.T) {
 	}
 	issue := Issue{Repo: "org/repo", Number: 1}
 
-	_, err := CreateBead(context.Background(), nil, decision, issue, 2, "")
+	_, err := CreateBead(context.Background(), nil, decision, issue, 2, "", "")
 	assert.Error(t, err)
 }
 
@@ -249,7 +249,7 @@ func TestCreateBead_ValidationErrors(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := CreateBead(context.Background(), nil, tc.decision, issue, tc.priority, "")
+			_, err := CreateBead(context.Background(), nil, tc.decision, issue, tc.priority, "", "")
 			assert.Error(t, err, "expected validation error")
 		})
 	}
