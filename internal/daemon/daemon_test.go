@@ -2241,15 +2241,18 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 		}
 		d.cfg.Store(&config.Config{})
 
+		// Simulate a prior run that failed and left a needs_human=1 retry record —
+		// this is the core regression scenario: the bead is stuck in Needs Attention
+		// even though the branch exists and a PR can now be created.
+		require.NoError(t, orphanDB.MarkNeedsHuman(beadID, anvil, "prior PR creation timeout"))
+
 		bead := poller.Bead{ID: beadID, Anvil: anvil, Title: "Test bead"}
 		d.applyNoChangesNeededOutcome(context.Background(), bead, orphanAnvilPath, "already done")
 
-		// Bead must NOT be marked needs_human.
+		// Retry record must be cleared — bead should leave Needs Attention.
 		r, err := orphanDB.GetRetry(beadID, anvil)
 		require.NoError(t, err)
-		if r != nil {
-			assert.False(t, r.NeedsHuman, "bead should NOT be needs_human when auto PR creation succeeds")
-		}
+		assert.Nil(t, r, "retry record should be cleared after successful auto PR creation")
 
 		// EventPRCreated should be logged.
 		events, err := orphanDB.RecentEvents(20)
@@ -2758,7 +2761,7 @@ func TestForgeBranchAheadOfMain(t *testing.T) {
 	}
 
 	t.Run("branch absent on origin", func(t *testing.T) {
-		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID)
+		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID, "")
 		assert.False(t, ok)
 		assert.Empty(t, branch)
 	})
@@ -2769,7 +2772,7 @@ func TestForgeBranchAheadOfMain(t *testing.T) {
 		gitLocal("push", "origin", branchName)
 		gitLocal("checkout", "main")
 
-		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID)
+		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID, "")
 		assert.False(t, ok, "branch at same tip as main should not be detected as ahead")
 		assert.Empty(t, branch)
 
@@ -2787,7 +2790,7 @@ func TestForgeBranchAheadOfMain(t *testing.T) {
 		gitLocal("push", "origin", branchName)
 		gitLocal("checkout", "main")
 
-		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID)
+		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID, "")
 		assert.True(t, ok, "branch with commits ahead of main should be detected")
 		assert.Equal(t, branchName, branch)
 	})
