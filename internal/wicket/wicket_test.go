@@ -206,6 +206,44 @@ func TestShouldSkip_AlreadyTracked(t *testing.T) {
 	assert.True(t, m.shouldSkip(issue, settings))
 }
 
+func TestShouldSkip_PendingNoBeadID(t *testing.T) {
+	m, _, db := newTestMonitor(t)
+	settings := defaultSettings()
+	issue := Issue{Repo: "org/repo", Number: 55}
+
+	// Insert a pending row with no bead_id — simulates a prior cycle where
+	// bead creation failed. The issue should NOT be skipped so it can be
+	// retried.
+	err := db.InsertWicketIssue(state.WicketIssue{
+		Repo:        "org/repo",
+		IssueNumber: 55,
+		Title:       "Pending issue",
+		State:       "pending",
+		BeadID:      "",
+	})
+	require.NoError(t, err)
+
+	assert.False(t, m.shouldSkip(issue, settings), "pending issue with no bead_id should not be skipped")
+}
+
+func TestShouldSkip_PendingWithBeadID(t *testing.T) {
+	m, _, db := newTestMonitor(t)
+	settings := defaultSettings()
+	issue := Issue{Repo: "org/repo", Number: 56}
+
+	// Insert a pending row that already has a bead_id — this should be skipped.
+	err := db.InsertWicketIssue(state.WicketIssue{
+		Repo:        "org/repo",
+		IssueNumber: 56,
+		Title:       "Pending with bead",
+		State:       "pending",
+		BeadID:      "Forge-abcd",
+	})
+	require.NoError(t, err)
+
+	assert.True(t, m.shouldSkip(issue, settings), "pending issue with a bead_id should be skipped")
+}
+
 func TestShouldSkip_DBError(t *testing.T) {
 	m, _, _ := newTestMonitor(t)
 	settings := defaultSettings()
