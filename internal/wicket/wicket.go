@@ -404,7 +404,11 @@ func (m *Monitor) triageIssue(ctx context.Context, anvil string, issue Issue, an
 			// instead of bailing out — the existing row is already in the right
 			// state and will be updated when the retry succeeds.
 			existing, getErr := m.db.GetWicketIssue(issue.Repo, issue.Number)
-			if getErr == nil && existing != nil && existing.State == "pending" && existing.BeadID == "" {
+			if getErr != nil {
+				log.Printf("[wicket] %s: unique constraint on insert but could not read existing row for %s#%d: %v — skipping", anvil, issue.Repo, issue.Number, getErr)
+				return
+			}
+			if existing != nil && existing.State == "pending" && existing.BeadID == "" {
 				log.Printf("[wicket] %s: retrying bead creation for stuck pending issue %s#%d", anvil, issue.Repo, issue.Number)
 				// Fall through: the pending row already exists; proceed with triage.
 			} else {

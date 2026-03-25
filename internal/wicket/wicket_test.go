@@ -335,6 +335,54 @@ func TestTriageIssue_SecondAnvilSkips(t *testing.T) {
 	assert.Equal(t, "bead_created", wi.State, "first-anvil-wins: state must remain bead_created")
 }
 
+// TestTriageIssue_RetryStuckPending verifies that when a pending issue with no
+// bead_id already exists (bead creation failed on a prior cycle), calling
+// triageIssue again proceeds with triage rather than bailing out.
+func TestTriageIssue_RetryStuckPending(t *testing.T) {
+	m, mock, db := newTestMonitor(t)
+	settings := defaultSettings()
+
+	// Override bdRunner to succeed on this retry attempt.
+	origRunner := bdRunner
+	defer func() { bdRunner = origRunner }()
+	bdRunner = func(_ context.Context, _ []string, _ string) (string, error) {
+		return "Forge-retry1\n", nil
+	}
+
+	issue := Issue{
+		Repo:   "org/repo",
+		Number: 101,
+		Title:  "Stuck issue",
+		Body:   "Bead creation failed on the previous cycle.",
+		Author: "alice",
+	}
+
+	// Simulate a prior cycle that left a pending row with no bead_id.
+	err := db.InsertWicketIssue(state.WicketIssue{
+		Repo:        issue.Repo,
+		IssueNumber: issue.Number,
+		Title:       issue.Title,
+		State:       "pending",
+		BeadID:      "",
+	})
+	require.NoError(t, err)
+
+	// Retry triage — alice is trusted so no AI call is needed.
+	anvilCfg := config.AnvilConfig{WicketTrustedUsers: []string{"alice"}}
+	m.triageIssue(context.Background(), "testrepo", issue, anvilCfg, settings)
+
+	// Bead should now be recorded in state.db with the new bead_id.
+	wi, err := db.GetWicketIssue("org/repo", 101)
+	require.NoError(t, err)
+	require.NotNil(t, wi)
+	assert.Equal(t, "bead_created", wi.State)
+	assert.Equal(t, "Forge-retry1", wi.BeadID)
+
+	// A comment should have been posted confirming bead creation.
+	require.Len(t, mock.CommentCalls, 1)
+	assert.Contains(t, mock.CommentCalls[0].Body, "Forge-retry1")
+}
+
 // ---- full triage dispatch flow ----------------------------------------------
 
 // TestTriageDispatch_CreateBead verifies that the create_bead path creates a
