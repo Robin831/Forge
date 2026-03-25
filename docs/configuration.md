@@ -211,7 +211,7 @@ Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
 
 Wicket supports two operating modes controlled by `wicket_trigger_label`:
 
-| Model | Configuration | Behaviour |
+| Model | Configuration | Behavior |
 |-------|--------------|-----------|
 | **Push** (default) | `wicket_trigger_label: ""` | Wicket processes **all** new issues as they appear, without waiting for a human to label them. Suitable when you want every issue evaluated automatically. |
 | **Pull** | `wicket_trigger_label: "forge-triage"` | Wicket only processes issues that carry the specified label. A human (or automation) must apply the label before the issue enters the triage queue. Suitable for high-volume repositories where you want selective intake. |
