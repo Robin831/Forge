@@ -3,6 +3,8 @@ package hearth
 import (
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestRenderWicketPanel_Empty verifies the panel renders without rows gracefully.
@@ -143,5 +145,100 @@ func TestRenderCenterColumn_WicketHiddenWhenNoData(t *testing.T) {
 	got := m.renderCenterColumn(30, 15, 10)
 	if strings.Contains(got, "Wicket") {
 		t.Errorf("expected no Wicket panel when wicketSummary is empty, got: %q", got)
+	}
+}
+
+// TestTabSkipsWicketWhenNotVisible verifies that Tab skips PanelWicket when
+// wicketVisible() returns false (disabled or no data).
+func TestTabSkipsWicketWhenNotVisible(t *testing.T) {
+	// data=nil → WicketEnabled=false → wicketVisible()=false
+	m := NewModel(nil)
+	m.focused = PanelWorkers
+
+	mTmp, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got := mTmp.(*Model).focused
+	if got == PanelWicket {
+		t.Errorf("Tab from PanelWorkers should skip PanelWicket when wicketVisible()=false, got PanelWicket")
+	}
+	if got != PanelUsage {
+		t.Errorf("Tab from PanelWorkers should land on PanelUsage when PanelWicket is skipped, got %v", got)
+	}
+}
+
+// TestShiftTabSkipsWicketWhenNotVisible verifies that Shift+Tab skips PanelWicket
+// when wicketVisible() returns false.
+func TestShiftTabSkipsWicketWhenNotVisible(t *testing.T) {
+	// data=nil → WicketEnabled=false → wicketVisible()=false
+	m := NewModel(nil)
+	m.focused = PanelUsage
+
+	mTmp, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	got := mTmp.(*Model).focused
+	if got == PanelWicket {
+		t.Errorf("Shift+Tab from PanelUsage should skip PanelWicket when wicketVisible()=false, got PanelWicket")
+	}
+	if got != PanelWorkers {
+		t.Errorf("Shift+Tab from PanelUsage should land on PanelWorkers when PanelWicket is skipped, got %v", got)
+	}
+}
+
+// TestTabStopsAtWicketWhenVisible verifies that Tab lands on PanelWicket when
+// wicketVisible() returns true.
+func TestTabStopsAtWicketWhenVisible(t *testing.T) {
+	ds := &DataSource{WicketEnabled: true}
+	m := NewModel(ds)
+	m.wicketSummary = []WicketRepoSummary{{Repo: "org/forge", OpenCount: 1}}
+	m.focused = PanelWorkers
+
+	mTmp, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got := mTmp.(*Model).focused
+	if got != PanelWicket {
+		t.Errorf("Tab from PanelWorkers should land on PanelWicket when visible, got %v", got)
+	}
+}
+
+// TestPanelAtPosCenterColumn_WithWicket_ReturnsWicket verifies that panelAtPos
+// returns PanelWicket in the center column when the Wicket panel is visible,
+// positioned between Workers and Usage.
+func TestPanelAtPosCenterColumn_WithWicket_ReturnsWicket(t *testing.T) {
+	m := newTestModelForPanelAtPos()
+	ds := &DataSource{WicketEnabled: true}
+	m.data = ds
+	m.wicketSummary = []WicketRepoSummary{
+		{Repo: "org/forge", OpenCount: 2, NeedsHumanCount: 0},
+	}
+	leftEnd, centerEnd, _, headerH := panelBoundaries(m)
+	x := leftEnd + 5
+	if x > centerEnd {
+		x = (leftEnd + centerEnd) / 2
+	}
+
+	var workersY, wicketY, usageY int = -1, -1, -1
+	for y := headerH + 1; y < m.height-1; y++ {
+		panel := m.panelAtPos(x, y)
+		if panel == PanelWorkers && workersY == -1 {
+			workersY = y
+		}
+		if panel == PanelWicket && wicketY == -1 {
+			wicketY = y
+		}
+		if panel == PanelUsage && usageY == -1 {
+			usageY = y
+		}
+	}
+	if workersY == -1 {
+		t.Fatalf("expected PanelWorkers in center column, not found")
+	}
+	if wicketY == -1 {
+		t.Fatalf("expected PanelWicket in center column when wicketVisible()=true, not found")
+	}
+	if usageY == -1 {
+		t.Fatalf("expected PanelUsage in center column, not found")
+	}
+	if !(workersY < wicketY) {
+		t.Errorf("expected PanelWorkers above PanelWicket, got workersY=%d, wicketY=%d", workersY, wicketY)
+	}
+	if !(wicketY < usageY) {
+		t.Errorf("expected PanelWicket above PanelUsage, got wicketY=%d, usageY=%d", wicketY, usageY)
 	}
 }
