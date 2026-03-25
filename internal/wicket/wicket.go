@@ -31,6 +31,11 @@ type Monitor struct {
 	// (dispatch, clarification) can look up which anvil owns a given
 	// repository without always re-resolving the git remote.
 	repoAnvilMap map[string]string
+	// anvilPrimaryRepos caches anvil name → primary "owner/repo" derived
+	// from the anvil's own git remote (ignoring WicketRepos overrides).
+	// Used to detect when an issue originates from an external (monitored)
+	// repo so the triage prompt can include anvil-domain context.
+	anvilPrimaryRepos map[string]string
 	// triageFunc overrides RunTriageWithComments. Nil means use the default.
 	// Tests set this to avoid spawning real AI subprocesses.
 	triageFunc func(ctx context.Context, issue Issue, comments []Comment, cfg TriageConfig) TriageDecision
@@ -39,12 +44,13 @@ type Monitor struct {
 // New creates a Wicket issue triage monitor with the default GitHub CLI client.
 func New(cfg *config.Config, db *state.DB) *Monitor {
 	return &Monitor{
-		ghClient:     NewGitHubClient(),
-		db:           db,
-		cfg:          cfg,
-		rl:           newRateLimiter(),
-		resolver:     NewRepoResolver(),
-		repoAnvilMap: make(map[string]string),
+		ghClient:          NewGitHubClient(),
+		db:                db,
+		cfg:               cfg,
+		rl:                newRateLimiter(),
+		resolver:          NewRepoResolver(),
+		repoAnvilMap:      make(map[string]string),
+		anvilPrimaryRepos: make(map[string]string),
 	}
 }
 
@@ -184,6 +190,28 @@ func (m *Monitor) scanAnvil(ctx context.Context, name string, anvil config.Anvil
 		return false
 	}
 
+	// Cache the primary repo (derived from the anvil's own git remote) so
+	// triageIssue can detect issues from external monitored repos and enrich
+	// the triage prompt with anvil-domain context. We only cache on success;
+	// if resolveRepos fails (e.g. path is not a git repo yet), we retry on
+	// the next scan cycle (lazy, outside the mutex to avoid blocking on IO).
+	m.mu.RLock()
+	_, primaryCached := m.anvilPrimaryRepos[name]
+	m.mu.RUnlock()
+	if !primaryCached && anvil.Path != "" {
+		// Use a resolver with empty WicketRepos so git is always called,
+		// giving us the true primary repo regardless of WicketRepos overrides.
+		primaryCfg := config.AnvilConfig{Path: anvil.Path}
+		if pr, err2 := m.resolveRepos(ctx, primaryCfg); err2 == nil && len(pr) > 0 {
+			m.mu.Lock()
+			if m.anvilPrimaryRepos == nil {
+				m.anvilPrimaryRepos = make(map[string]string)
+			}
+			m.anvilPrimaryRepos[name] = pr[0]
+			m.mu.Unlock()
+		}
+	}
+
 	// Update the repo→anvil mapping so downstream code can look up anvil names.
 	// Build a set of the current repos for efficient lookup.
 	repoSet := make(map[string]struct{}, len(repos))
@@ -249,6 +277,16 @@ func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg con
 			_ = m.db.LogEvent(state.EventWicketError,
 				fmt.Sprintf("Rate limited listing issues for %s — backing off %s", repo, delay), "", anvil)
 			return true
+		}
+		if isAuthError(err) {
+			// Auth failures are non-fatal: log a clear, actionable message so
+			// the operator knows which repo and why, then continue scanning
+			// remaining repos. Common causes: missing gh auth for private repo,
+			// SAML SSO enforcement, or insufficient token scopes.
+			log.Printf("[wicket] %s: authentication failure accessing repo %s — run 'gh auth status' and verify token scopes, SSO (if enforced), and repository permissions: %v", anvil, repo, err)
+			_ = m.db.LogEvent(state.EventWicketError,
+				fmt.Sprintf("Authentication failure accessing repo %s: %v", repo, err), "", anvil)
+			return false
 		}
 		log.Printf("[wicket] %s: list issues for %s: %v", anvil, repo, err)
 		_ = m.db.LogEvent(state.EventWicketError,
@@ -377,10 +415,17 @@ func (m *Monitor) triageIssue(ctx context.Context, anvil string, issue Issue, an
 			// Fallback: no explicit wicket_repos config; use the single anvil path.
 			monitoredPaths = []string{anvilCfg.Path}
 		}
+		// Look up the cached primary repo for this anvil so RunTriage can
+		// detect when the issue originates from an external monitored repo
+		// and include anvil-domain README/AGENTS.md context in the prompt.
+		m.mu.RLock()
+		anvilPrimaryRepo := m.anvilPrimaryRepos[anvil]
+		m.mu.RUnlock()
 		decision = triageFn(ctx, issue, nil, TriageConfig{
 			Providers:           buildProviders(settings),
 			ExtraPrompt:         anvilCfg.WicketTriagePrompt,
 			AnvilPath:           anvilCfg.Path,
+			AnvilRepo:           anvilPrimaryRepo,
 			AllAnvilPaths:       m.allAnvilPaths(),
 			MonitoredAnvilPaths: monitoredPaths,
 		})

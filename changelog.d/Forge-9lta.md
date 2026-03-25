@@ -1,0 +1,3 @@
+category: Added
+- **Wicket auth error handling** - Wrap GitHub API calls in the poll loop with auth-failure detection (HTTP 401/403, SAML SSO, bad credentials); log a clear actionable message including the repo name and `gh auth status` hint without crashing the loop. (Forge-9lta)
+- **Anvil context in triage prompt for external repos** - When a triaged issue originates from an external monitored repo (different from the anvil's own git-remote repo), prepend the anvil's README.md and AGENTS.md as an `<anvil_context>` section so the AI can contextualise the foreign issue against the implementing codebase's domain. (Forge-9lta)

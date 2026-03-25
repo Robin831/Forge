@@ -944,3 +944,60 @@ func TestBuildProviders(t *testing.T) {
 		assert.NotEmpty(t, pvs)
 	})
 }
+
+// ---- Auth error handling in poll loop (Forge-9lta) -------------------------
+
+// TestScanRepo_AuthError_ContinuesPollLoop verifies that when ListIssues
+// returns an authentication error (401/403), scanRepo logs a clear actionable
+// message including the repo name and returns rateLimited=false so the poll
+// loop continues scanning other repos — it does not crash or exit early.
+func TestScanRepo_AuthError_ContinuesPollLoop(t *testing.T) {
+	m, mock, _ := newTestMonitor(t)
+	settings := defaultSettings()
+	anvilCfg := config.AnvilConfig{}
+
+	// Capture log output to verify the auth-specific message is emitted.
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	authErr := errors.New("exit status 1\nstderr: HTTP 401 Unauthorized — bad credentials")
+	mock.OnListIssues = func(_ context.Context, repo string, _ []string) ([]Issue, error) {
+		return nil, authErr
+	}
+
+	rateLimited := m.scanRepo(context.Background(), "test-anvil", "org/private-repo", anvilCfg, settings)
+
+	assert.False(t, rateLimited, "auth error should not be treated as rate limited")
+
+	logged := logBuf.String()
+	assert.Contains(t, logged, "org/private-repo", "log should include repo name")
+	assert.Contains(t, logged, "authentication failure", "log should mention authentication failure")
+	assert.Contains(t, logged, "gh auth status", "log should suggest running gh auth status")
+}
+
+// TestScanRepo_AuthError_Does_Not_Crash verifies that after an auth error
+// the monitor is still usable and can process subsequent repos in the loop.
+func TestScanRepo_AuthError_Does_Not_Crash(t *testing.T) {
+	m, mock, _ := newTestMonitor(t)
+	settings := defaultSettings()
+
+	callCount := 0
+	mock.OnListIssues = func(_ context.Context, repo string, _ []string) ([]Issue, error) {
+		callCount++
+		switch repo {
+		case "org/private-repo":
+			return nil, errors.New("HTTP 403 SAML SSO enforcement")
+		default:
+			return []Issue{}, nil
+		}
+	}
+
+	// Two separate scanRepo calls simulating sequential repo scanning.
+	r1 := m.scanRepo(context.Background(), "test-anvil", "org/private-repo", config.AnvilConfig{}, settings)
+	r2 := m.scanRepo(context.Background(), "test-anvil", "org/public-repo", config.AnvilConfig{}, settings)
+
+	assert.False(t, r1, "auth error repo should return rateLimited=false")
+	assert.False(t, r2, "subsequent repo should also succeed")
+	assert.Equal(t, 2, callCount, "both repos should be scanned")
+}
