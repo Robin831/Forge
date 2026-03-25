@@ -327,13 +327,52 @@ exit 1
 		assert.Equal(t, "ok", resp.Type)
 		var msg map[string]string
 		_ = json.Unmarshal(resp.Payload, &msg)
-		assert.Equal(t, "circuit breaker reset", msg["message"])
+		assert.Equal(t, "retry state reset", msg["message"])
 
 		// Verify circuit breaker is cleared.
 		r, err = db.GetRetry(beadID, anvil)
 		require.NoError(t, err)
 		assert.False(t, r.NeedsHuman)
 		assert.Equal(t, 0, r.DispatchFailures)
+	})
+
+	t.Run("retry_bead: resets warden rejection with dispatch failures", func(t *testing.T) {
+		// Regression test: warden rejects changes, which sets needs_human=true
+		// and may also have DispatchFailures>0 from prior attempts. The old code
+		// path called ResetDispatchFailures (which only clears circuit-breaker
+		// records) and silently matched 0 rows, leaving needs_human set.
+		const beadID = "WR-BEAD"
+		const anvil = "test-anvil"
+		err := db.UpsertRetry(&state.RetryRecord{
+			BeadID:           beadID,
+			Anvil:            anvil,
+			DispatchFailures: 2,
+			NeedsHuman:       true,
+			LastError:        "warden rejected: code quality issues found",
+		})
+		require.NoError(t, err)
+
+		r, err := db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		require.True(t, r.NeedsHuman)
+		require.Equal(t, 2, r.DispatchFailures)
+
+		// Reset via IPC — must clear both needs_human and dispatch_failures.
+		payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: beadID, Anvil: anvil})
+		resp := d.handleIPC(ipc.Command{
+			Type:    "retry_bead",
+			Payload: payload,
+		})
+		assert.Equal(t, "ok", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Equal(t, "retry state reset", msg["message"])
+
+		r, err = db.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		assert.False(t, r.NeedsHuman, "needs_human should be cleared after reset")
+		assert.Equal(t, 0, r.DispatchFailures, "dispatch_failures should be cleared after reset")
+		assert.Empty(t, r.LastError, "last_error should be cleared after reset")
 	})
 
 	t.Run("retry_bead: clears needs_human for pipeline-exhausted beads", func(t *testing.T) {
@@ -553,7 +592,7 @@ func TestHandleIPC_RetryBead(t *testing.T) {
 		assert.Equal(t, "ok", resp.Type)
 		var msg map[string]string
 		_ = json.Unmarshal(resp.Payload, &msg)
-		assert.Equal(t, "circuit breaker reset", msg["message"])
+		assert.Equal(t, "retry state reset", msg["message"])
 
 		r, err := db.GetRetry("BD-RETRY", "anvil-1")
 		require.NoError(t, err)
