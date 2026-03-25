@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -248,8 +249,7 @@ func parseGovulncheckJSON(data []byte) ([]ParsedVuln, error) {
 	osvMap := make(map[string]*osvEntry)
 	findingOSVs := make(map[string]bool) // OSV IDs that have actual findings (called vulns)
 
-	lines := bytes.Split(data, []byte("\n"))
-	for _, line := range lines {
+	for line := range bytes.SplitSeq(data, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
@@ -297,17 +297,8 @@ func parseGovulncheckJSON(data []byte) ([]ParsedVuln, error) {
 				v.CVEs = append(v.CVEs, alias)
 			}
 		}
-		if strings.HasPrefix(osv.ID, "CVE-") {
-			seen := false
-			for _, c := range v.CVEs {
-				if c == osv.ID {
-					seen = true
-					break
-				}
-			}
-			if !seen {
-				v.CVEs = append(v.CVEs, osv.ID)
-			}
+		if strings.HasPrefix(osv.ID, "CVE-") && !slices.Contains(v.CVEs, osv.ID) {
+			v.CVEs = append(v.CVEs, osv.ID)
 		}
 
 		// Extract affected packages, fix versions, and symbols
