@@ -1673,6 +1673,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Items != nil {
 			m.wicketSummary = msg.Items
 		}
+		// Normalize focus: if the Wicket panel is focused but is no longer visible
+		// (disabled or summary became empty), move focus to the nearest visible neighbor.
+		if m.focused == PanelWicket && !m.wicketVisible() {
+			m.focused = PanelWorkers
+		}
 
 	case UpdateIngotCountsMsg:
 		// Counts is nil when the fetch failed (DB error, nil conn, etc.).
@@ -2102,7 +2107,7 @@ func (m *Model) panelAtPos(x, y int) Panel {
 		// Center column: Workers (top) + optional Wicket (middle) + Usage (bottom).
 		fullH := topH + bottomH
 		if fullH >= 20 {
-			const usagePanelHeight = 10
+			const usagePanelHeight = 11 // matches renderCenterColumn: inner 9 + 2 border rows
 			if m.wicketVisible() {
 				numRows := len(m.wicketSummary)
 				if numRows > 4 {
