@@ -2706,3 +2706,66 @@ rules:
         Verify that the test name accurately describes the behavior being tested, and that the test fixtures match the scenario implied by the name. If the name says 'shared repo across anvils', the fixture must have multiple anvils referencing the same repo; if the fixture tests 'multi-repo lookup', rename the test accordingly.
       source: copilot:PR#438
       added: "2026-03-24"
+    - id: lipgloss-margin-height-calc
+      category: ui
+      pattern: >-
+        Height calculation for TUI panels that use lipgloss styles with MarginTop/MarginBottom
+      check: >-
+        Verify that inner height calculations account for all rendered lines including margin lines from lipgloss styles (e.g. MarginBottom(1) adds an extra line that must be included in height math to avoid clipping content)
+      source: copilot:PR#444
+      added: "2026-03-25"
+    - id: lipgloss-frame-vs-padding
+      category: ui
+      pattern: >-
+        Using GetHorizontalFrameSize() to compute inner content width in lipgloss/bubbletea panels
+      check: >-
+        When computing available inner width for panel content, verify whether the width variable already excludes borders. If it does, subtract only padding (GetHorizontalPadding) not the full frame size (GetHorizontalFrameSize), which includes borders and would double-subtract, truncating content earlier than necessary.
+      source: copilot:PR#444
+      added: "2026-03-25"
+    - id: type-name-matches-semantics
+      category: style
+      pattern: >-
+        A struct or type name references a concept (e.g., 'Anvil') but the fields and usage are scoped to a different concept (e.g., grouped by repo, not by anvil)
+      check: >-
+        Verify that type/struct names accurately reflect their contents and how they are used — e.g., if a summary is grouped by repo, name it RepoSummary not AnvilSummary
+      source: copilot:PR#444
+      added: "2026-03-25"
+    - id: gate-disabled-feature-fetches
+      category: performance
+      pattern: >-
+        A fetch/query function is called unconditionally in a polling loop or tick handler for a feature that can be disabled via configuration
+      check: >-
+        Verify that expensive or periodic data fetches (e.g. DB queries, API calls) are gated on the corresponding feature-enabled flag so they are skipped when the feature is disabled and the results would never be displayed or consumed
+      source: copilot:PR#444
+      added: "2026-03-25"
+    - id: dead-code-comment-mismatch
+      category: style
+      pattern: >-
+        Comments describing filtering or guard behavior (e.g. 'skip rows where X') near loops or conditionals
+      check: >-
+        Verify that the code actually implements the filtering described in the comment. If a comment says items are skipped/filtered based on a condition, ensure a corresponding guard clause (e.g. continue, return, or conditional block) exists and is correct. Either fix the code to match the comment or update the comment to match the actual behavior.
+      source: copilot:PR#444
+      added: "2026-03-25"
+    - id: type-name-matches-scope
+      category: style
+      pattern: >-
+        A struct or type name references a domain concept (e.g., 'Anvil', 'Worker') but the type actually represents data grouped or scoped by a different concept (e.g., per-repo, per-user)
+      check: >-
+        Verify that type/struct names accurately reflect their grouping or scope — e.g., if a summary is per-repo, name it RepoSummary not AnvilSummary, to avoid confusion with aggregation at a different level
+      source: copilot:PR#444
+      added: "2026-03-25"
+    - id: gate-fetch-on-feature-flag
+      category: performance
+      pattern: >-
+        A fetch/query function is called unconditionally in a polling loop or tick handler, but the feature that consumes its result can be disabled via a config flag
+      check: >-
+        Verify that expensive or periodic data-fetching calls (DB queries, API calls, subprocesses) are gated on the relevant feature-enabled flag so they are skipped when the consuming feature is disabled
+      source: copilot:PR#444
+      added: "2026-03-25"
+    - id: comment-matches-code-behavior
+      category: other
+      pattern: Code comments describing filtering or skipping logic near loops or conditionals
+      check: >-
+        Verify that comments describing skip/filter behavior are actually implemented in the code. If a comment says items are skipped under a condition, confirm the corresponding guard clause exists and correctly prevents processing (e.g., a `continue` statement). Either add the missing guard or fix the comment to match actual behavior.
+      source: copilot:PR#444
+      added: "2026-03-25"
