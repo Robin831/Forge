@@ -1303,6 +1303,7 @@ const (
 	EventVulnScanStarted      EventType = "vuln_scan_started"
 	EventVulnScanDone         EventType = "vuln_scan_done"
 	EventVulnScanFailed       EventType = "vuln_scan_failed"
+	EventVulnScanCycleDone    EventType = "vuln_scan_cycle_done"
 	EventVulnBeadCreated      EventType = "vuln_bead_created"
 	EventWardenRerun          EventType = "warden_rerun"
 	EventApproveAsIs          EventType = "approve_as_is"
@@ -1394,6 +1395,35 @@ func (db *DB) HasEventForDate(eventType EventType, date string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// HasEventWithin reports whether any event of the given type was logged within
+// the past duration d from now. Any DB error is returned to the caller.
+func (db *DB) HasEventWithin(eventType EventType, d time.Duration) (bool, error) {
+	cutoff := time.Now().Add(-d).Format(dbTimeLayout)
+	var dummy int
+	err := db.conn.QueryRow(
+		`SELECT 1 FROM events WHERE type = ? AND timestamp >= ? LIMIT 1`,
+		string(eventType), cutoff,
+	).Scan(&dummy)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// LogEventAt records an event with an explicit timestamp. It is intended for
+// use in tests where deterministic timestamps are required.
+func (db *DB) LogEventAt(typ EventType, message, beadID, anvil string, at time.Time) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO events (timestamp, type, message, bead_id, anvil)
+		 VALUES (?, ?, ?, ?, ?)`,
+		at.Format(dbTimeLayout), string(typ), message, beadID, anvil,
+	)
+	return err
 }
 
 // RecentEvents returns the most recent n events.

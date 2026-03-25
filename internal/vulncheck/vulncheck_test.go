@@ -3,11 +3,25 @@ package vulncheck
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/Robin831/Forge/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func newTestDB(t *testing.T) *state.DB {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := state.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("open test DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
 
 func TestParseGovulncheckJSON(t *testing.T) {
 	// Simulate govulncheck -json output (newline-delimited JSON)
@@ -151,4 +165,31 @@ func TestRunScheduledExitsWhenUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.RunScheduled(ctx, 1) // interval > 0 but should still exit
+}
+
+func TestShouldSkipStartupScan_NoEventLogged(t *testing.T) {
+	db := newTestDB(t)
+	s := &Scanner{logger: slog.Default(), db: db}
+
+	// No event logged yet — should not skip.
+	assert.False(t, s.shouldSkipStartupScan())
+}
+
+func TestShouldSkipStartupScan_RecentCycle(t *testing.T) {
+	db := newTestDB(t)
+	s := &Scanner{logger: slog.Default(), db: db}
+
+	// Cycle-done event logged just now — should skip.
+	require.NoError(t, db.LogEvent(state.EventVulnScanCycleDone, "cycle complete", "", ""))
+	assert.True(t, s.shouldSkipStartupScan())
+}
+
+func TestShouldSkipStartupScan_OldCycle(t *testing.T) {
+	db := newTestDB(t)
+	s := &Scanner{logger: slog.Default(), db: db}
+
+	// Cycle-done event logged more than 24 hours ago — should not skip.
+	old := time.Now().Add(-25 * time.Hour)
+	require.NoError(t, db.LogEventAt(state.EventVulnScanCycleDone, "cycle complete", "", "", old))
+	assert.False(t, s.shouldSkipStartupScan())
 }

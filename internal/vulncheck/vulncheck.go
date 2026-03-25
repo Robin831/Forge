@@ -510,7 +510,14 @@ func (s *Scanner) RunScheduled(ctx context.Context, interval time.Duration) {
 	case <-time.After(initialDelay):
 	}
 
-	s.runOnce(ctx)
+	// Skip the startup scan if a full cycle completed within the last 24 hours
+	// (e.g. after a daemon restart during development or config reload). The
+	// interval ticker below will fire on the normal schedule.
+	if s.shouldSkipStartupScan() {
+		s.logger.Info("vulncheck skipping startup scan — already ran within 24h")
+	} else {
+		s.runOnce(ctx)
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -526,15 +533,31 @@ func (s *Scanner) RunScheduled(ctx context.Context, interval time.Duration) {
 	}
 }
 
+// shouldSkipStartupScan returns true when a full vuln scan cycle completed
+// within the last 24 hours, meaning the startup scan can be safely skipped.
+// Any DB error is logged and treated as "do not skip" so we err on the side
+// of scanning.
+func (s *Scanner) shouldSkipStartupScan() bool {
+	ranRecently, err := s.db.HasEventWithin(state.EventVulnScanCycleDone, 24*time.Hour)
+	if err != nil {
+		s.logger.Warn("vulncheck: could not check for prior scan, will run startup scan", "err", err)
+		return false
+	}
+	return ranRecently
+}
+
 // runOnce performs a single scan-and-create-beads cycle.
 func (s *Scanner) runOnce(ctx context.Context) {
 	results := s.ScanAll(ctx)
 	created, err := s.CreateBeads(ctx, results)
 	if err != nil {
 		s.logger.Error("vulncheck bead creation error", "error", err)
-		return
-	}
-	if created > 0 {
+	} else if created > 0 {
 		s.logger.Info("vulncheck created new beads", "count", created)
+	}
+	// Log a cycle-level completion event so the startup deduplication check
+	// knows a full cycle completed, regardless of per-anvil outcomes.
+	if logErr := s.db.LogEvent(state.EventVulnScanCycleDone, "vuln scan cycle complete", "", ""); logErr != nil {
+		s.logger.Warn("vulncheck: failed to log cycle completion", "err", logErr)
 	}
 }
