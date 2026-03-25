@@ -3064,8 +3064,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset retry state: %v", err)})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
-			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Circuit breaker reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
-			d.logger.Info("circuit breaker reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
+			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Retry state reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
+			d.logger.Info("retry state reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
 
 			// Reset bead status to open and clear assignee so the poller can
 			// re-dispatch it. The pipeline sets status=in_progress on claim,
@@ -3080,10 +3080,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				}
 			}
 
-			// Trigger a poll immediately after resetting the circuit breaker.
+			// Trigger a poll immediately after resetting retry state.
 			go d.pollAndDispatch(d.runCtx)
 
-			data, _ := json.Marshal(map[string]string{"message": "circuit breaker reset"})
+			data, _ := json.Marshal(map[string]string{"message": "retry state reset"})
 			return ipc.Response{Type: "ok", Payload: data}
 		}
 		// Regular retry: clear needs_human and clarification_needed flags
