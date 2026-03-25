@@ -223,7 +223,7 @@ These settings live under the top-level `settings` key.
 | Field | Default | Description |
 |-------|---------|-------------|
 | `wicket_enabled` | `false` | Master switch — no issue scanning occurs when false. |
-| `wicket_interval` | `15m` | How often Wicket polls each repository for new issues. `0` disables scheduled polling. |
+| `wicket_interval` | `15m` | How often Wicket polls each repository for new issues. Non-positive values (e.g. `0`) fall back to the default `15m` interval. |
 | `wicket_provider` | `""` (global `providers`) | AI provider used for triage decisions. When empty, the global `providers` chain is used. |
 | `wicket_batch_size` | `20` | Maximum number of issues processed per scan cycle per repository. |
 | `wicket_processed_label` | `"forge-wicket-processed"` | GitHub label applied to every issue Wicket has triaged (prevents re-processing). |
@@ -242,13 +242,13 @@ These settings are placed under the anvil's key in `anvils`.
 | `wicket_repos` | `[]` | `"owner/repo"` strings to scan for this anvil. When empty, the primary repository is inferred from the anvil's git remote. |
 | `wicket_trusted_users` | `[]` | GitHub logins whose issues are automatically dispatched without extra human review. |
 | `wicket_auto_dispatch` | `false` | When true, beads created by Wicket for this anvil are auto-dispatched without manual approval. |
-| `wicket_issue_labels` | `[]` | Label filter — an issue must carry at least one of these labels to be eligible. Empty means all issues are eligible. |
+| `wicket_issue_labels` | `[]` | Label filter — an issue must carry all of these labels to be eligible. Empty means all issues are eligible. |
 | `wicket_ignore_users` | `[]` | GitHub logins to skip entirely. Known bot accounts (dependabot, renovate, etc.) are always ignored regardless of this list. |
 | `wicket_triage_prompt` | `""` | Optional text appended to the default triage system prompt, for project-specific context or constraints. |
 
 ### `wicket_repos` — Multi-Repo Scanning
 
-By default Wicket resolves the target repository from the anvil's git remote. Use `wicket_repos` to scan **additional** repositories — for example, when issues are filed in a separate issue tracker repo or you want to monitor multiple repos that all feed into the same anvil's bead queue.
+By default Wicket resolves the target repository from the anvil's git remote. When `wicket_repos` is set, it **replaces** remote inference entirely — the listed repositories are scanned instead. Include the primary repo in the list if you still want it scanned alongside any extras.
 
 ```yaml
 anvils:
