@@ -2876,6 +2876,44 @@ func (db *DB) LastWicketScanAt() (*time.Time, error) {
 	return &t, nil
 }
 
+// WicketAnvilSummary holds per-repo issue counts for the Hearth TUI Wicket panel.
+type WicketAnvilSummary struct {
+	// Repo is the "owner/repo" string used as the grouping key.
+	Repo            string
+	OpenCount       int
+	NeedsHumanCount int
+}
+
+// GetWicketSummary returns per-repo open and needs-human issue counts from
+// the wicket_issues table. Only repos that have at least one open issue
+// (state NOT IN ('closed', 'merged')) are returned, sorted by repo name.
+func (db *DB) GetWicketSummary() ([]WicketAnvilSummary, error) {
+	rows, err := db.conn.Query(`
+		SELECT
+			repo,
+			SUM(CASE WHEN state NOT IN ('closed','merged') THEN 1 ELSE 0 END) AS open_count,
+			SUM(CASE WHEN state = 'needs_human' THEN 1 ELSE 0 END) AS needs_human_count
+		FROM wicket_issues
+		GROUP BY repo
+		HAVING open_count > 0
+		ORDER BY repo
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []WicketAnvilSummary
+	for rows.Next() {
+		var s WicketAnvilSummary
+		if err := rows.Scan(&s.Repo, &s.OpenCount, &s.NeedsHumanCount); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, rows.Err()
+}
+
 // scanWicketIssue scans a single *sql.Row into a WicketIssue.
 // Returns nil, nil when no row is found.
 func scanWicketIssue(row *sql.Row) (*WicketIssue, error) {

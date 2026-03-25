@@ -2146,3 +2146,85 @@ func TestDB_WicketIssueCRUD(t *testing.T) {
 		t.Error("expected error on duplicate insert, got nil")
 	}
 }
+
+func TestDB_GetWicketSummary(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-wicket-summary-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Empty table returns empty slice.
+	summaries, err := db.GetWicketSummary()
+	if err != nil {
+		t.Fatalf("GetWicketSummary on empty table: %v", err)
+	}
+	if len(summaries) != 0 {
+		t.Errorf("expected empty summaries, got %d", len(summaries))
+	}
+
+	// Insert issues across two repos with varied states.
+	insertIssue := func(repo string, number int, state string) {
+		t.Helper()
+		if err := db.InsertWicketIssue(WicketIssue{
+			Repo:        repo,
+			IssueNumber: number,
+			Title:       "issue",
+			State:       state,
+		}); err != nil {
+			t.Fatalf("InsertWicketIssue: %v", err)
+		}
+	}
+
+	// repo-a: 3 open, 1 needs_human, 1 closed
+	insertIssue("org/repo-a", 1, "pending")
+	insertIssue("org/repo-a", 2, "needs_human")
+	insertIssue("org/repo-a", 3, "bead_created")
+	insertIssue("org/repo-a", 4, "closed")   // not counted as open
+	insertIssue("org/repo-a", 5, "merged")   // not counted as open
+
+	// repo-b: 2 open, 0 needs_human
+	insertIssue("org/repo-b", 10, "ask_clarify")
+	insertIssue("org/repo-b", 11, "dispatched")
+
+	// repo-c: all closed — should NOT appear in results
+	insertIssue("org/repo-c", 20, "closed")
+	insertIssue("org/repo-c", 21, "merged")
+
+	summaries, err = db.GetWicketSummary()
+	if err != nil {
+		t.Fatalf("GetWicketSummary: %v", err)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("expected 2 repos with open issues, got %d: %+v", len(summaries), summaries)
+	}
+
+	// Results are sorted by repo name.
+	if summaries[0].Repo != "org/repo-a" {
+		t.Errorf("expected first repo to be org/repo-a, got %q", summaries[0].Repo)
+	}
+	if summaries[1].Repo != "org/repo-b" {
+		t.Errorf("expected second repo to be org/repo-b, got %q", summaries[1].Repo)
+	}
+
+	// repo-a: 3 open (pending, needs_human, bead_created), 1 needs_human
+	if summaries[0].OpenCount != 3 {
+		t.Errorf("repo-a: expected 3 open, got %d", summaries[0].OpenCount)
+	}
+	if summaries[0].NeedsHumanCount != 1 {
+		t.Errorf("repo-a: expected 1 needs_human, got %d", summaries[0].NeedsHumanCount)
+	}
+
+	// repo-b: 2 open, 0 needs_human
+	if summaries[1].OpenCount != 2 {
+		t.Errorf("repo-b: expected 2 open, got %d", summaries[1].OpenCount)
+	}
+	if summaries[1].NeedsHumanCount != 0 {
+		t.Errorf("repo-b: expected 0 needs_human, got %d", summaries[1].NeedsHumanCount)
+	}
+}

@@ -1,0 +1,2 @@
+category: Added
+- **Wicket panel in Hearth TUI** - Adds a compact Wicket summary panel to the center column of the Hearth dashboard, positioned between the Workers panel and the Usage panel. Shows per-repo open issue counts and needs-human counts (⚠ highlighted in yellow when non-zero). The panel is shown only when `wicket_enabled: true` in config and there are repos with open issues. (Forge-jr41)
