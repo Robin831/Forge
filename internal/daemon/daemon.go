@@ -2364,7 +2364,28 @@ func (d *Daemon) crucibleParentTitle(parentID string) string {
 // record and logs EventNoChangesNeeded. On failure it immediately marks the
 // bead as needs_human so it surfaces in Hearth without waiting for the circuit
 // breaker to trip.
+//
+// Before accepting NO_CHANGES_NEEDED as terminal, we check whether a forge
+// branch for this bead exists on origin with commits ahead of main. This can
+// happen when a prior dispatch pushed commits but failed before creating a PR
+// (e.g. warden rejection). In that case Smith sees the work as already done
+// and emits NO_CHANGES_NEEDED, but no PR has been opened. We escalate to
+// needs_human rather than silently discarding the committed work.
 func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Bead, anvilPath, reason string) {
+	if branch, ok := d.forgeBranchAheadOfMain(ctx, anvilPath, bead.ID); ok {
+		msg := fmt.Sprintf(
+			"NO_CHANGES_NEEDED but branch %s has commits ahead of main with no open PR — manual PR creation required (Smith reason: %s)",
+			branch, reason,
+		)
+		d.logger.Warn("un-PR'd forge branch detected on NO_CHANGES_NEEDED — escalating to needs_human",
+			"bead", bead.ID, "branch", branch)
+		if markErr := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, msg); markErr != nil {
+			d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", markErr)
+		}
+		d.recordDispatchFailure(bead.ID, bead.Anvil, msg)
+		return
+	}
+
 	if err := d.closeBead(ctx, bead.ID, anvilPath, reason); err != nil {
 		d.logger.Error("failed to close bead after no-changes-needed", "bead", bead.ID, "error", err)
 		closeErr := fmt.Sprintf("no changes needed but close failed: %v", err)
@@ -2378,6 +2399,62 @@ func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Be
 			fmt.Sprintf("Bead closed — no changes needed: %s", reason),
 			bead.ID, bead.Anvil)
 	}
+}
+
+// forgeBranchAheadOfMain checks whether the origin remote has a forge branch
+// for the given bead that contains commits not yet merged into the main branch
+// (origin/main or origin/master). It returns the branch name and true when
+// such unmerged commits exist, signalling that work was pushed in a prior
+// dispatch but no PR was created.
+func (d *Daemon) forgeBranchAheadOfMain(ctx context.Context, anvilPath, beadID string) (string, bool) {
+	branchName := worktree.BranchName(beadID)
+
+	// ls-remote is a lightweight ref-only query — no object transfer.
+	lsCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "ls-remote", "--heads", "origin", "--", branchName))
+	lsCmd.Dir = anvilPath
+	lsOut, err := lsCmd.Output()
+	if err != nil || len(strings.TrimSpace(string(lsOut))) == 0 {
+		return "", false // branch does not exist on remote
+	}
+
+	// Branch exists on origin. Fetch it to update the local remote-tracking ref
+	// so that "git log origin/<branch>" reflects the latest state.
+	fetchCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "fetch", "origin", "--", branchName))
+	fetchCmd.Dir = anvilPath
+	if err := fetchCmd.Run(); err != nil {
+		d.logger.Warn("could not fetch forge branch for ahead-of-main check; skipping",
+			"bead", beadID, "branch", branchName, "error", err)
+		return "", false
+	}
+
+	// Determine the main base ref (origin/main or origin/master).
+	baseRef := ""
+	for _, candidate := range []string{"origin/main", "origin/master"} {
+		verifyCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "rev-parse", "--verify", candidate))
+		verifyCmd.Dir = anvilPath
+		if verifyCmd.Run() == nil {
+			baseRef = candidate
+			break
+		}
+	}
+	if baseRef == "" {
+		d.logger.Warn("cannot determine base ref (origin/main or origin/master) for ahead-of-main check", "bead", beadID)
+		return "", false
+	}
+
+	// List commits on the forge branch that are not reachable from the base.
+	logCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "log", "--oneline",
+		"origin/"+branchName, "--not", baseRef))
+	logCmd.Dir = anvilPath
+	logOut, err := logCmd.Output()
+	if err != nil {
+		return "", false
+	}
+
+	if len(strings.TrimSpace(string(logOut))) > 0 {
+		return branchName, true
+	}
+	return "", false
 }
 
 // closeBead marks a bead as closed via bd close.

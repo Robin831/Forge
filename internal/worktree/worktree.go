@@ -467,6 +467,14 @@ func gitCmd(ctx context.Context, dir string, args ...string) error {
 	return gitCmdOut(ctx, dir, os.Stderr, args...)
 }
 
+// BranchName returns the canonical forge branch name for a bead ID.
+// This matches the branch created by CreateWithOptions when no Branch override
+// is provided. Callers outside this package use this to predict the branch name
+// without creating a worktree (e.g. checking for un-PR'd remote work).
+func BranchName(beadID string) string {
+	return "forge/" + sanitizePath(beadID)
+}
+
 // sanitizePath converts a bead ID to a safe directory/branch name.
 // E.g., "Forge-n1g.4.1" → "Forge-n1g.4.1" (dots are fine in git branches).
 // Slashes and other problematic chars are replaced.
