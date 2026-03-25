@@ -72,7 +72,7 @@ func CloseBeadCmd(anvilPath, beadID, reason string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		args := []string{"close", beadID}
+		args := []string{"close", beadID, "--json"}
 		if reason != "" {
 			args = append(args, "--reason", reason)
 		}
