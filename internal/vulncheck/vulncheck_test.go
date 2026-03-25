@@ -171,28 +171,25 @@ func TestShouldSkipStartupScan_NoEventLogged(t *testing.T) {
 	db := newTestDB(t)
 	s := &Scanner{logger: slog.Default(), db: db}
 
-	today := time.Now().Format("2006-01-02")
 	// No event logged yet — should not skip.
-	assert.False(t, s.shouldSkipStartupScan(today))
+	assert.False(t, s.shouldSkipStartupScan())
 }
 
-func TestShouldSkipStartupScan_AlreadyRanToday(t *testing.T) {
+func TestShouldSkipStartupScan_RecentCycle(t *testing.T) {
 	db := newTestDB(t)
 	s := &Scanner{logger: slog.Default(), db: db}
 
-	today := time.Now().Format("2006-01-02")
-	require.NoError(t, db.LogEvent(state.EventVulnScanDone, "scan complete", "", ""))
-
-	// Event exists for today — should skip.
-	assert.True(t, s.shouldSkipStartupScan(today))
+	// Cycle-done event logged just now — should skip.
+	require.NoError(t, db.LogEvent(state.EventVulnScanCycleDone, "cycle complete", "", ""))
+	assert.True(t, s.shouldSkipStartupScan())
 }
 
-func TestShouldSkipStartupScan_EventOnDifferentDay(t *testing.T) {
+func TestShouldSkipStartupScan_OldCycle(t *testing.T) {
 	db := newTestDB(t)
 	s := &Scanner{logger: slog.Default(), db: db}
 
-	// Log event for today but ask about tomorrow — should not skip.
-	require.NoError(t, db.LogEvent(state.EventVulnScanDone, "scan complete", "", ""))
-	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
-	assert.False(t, s.shouldSkipStartupScan(tomorrow))
+	// Cycle-done event logged more than 24 hours ago — should not skip.
+	old := time.Now().Add(-25 * time.Hour)
+	require.NoError(t, db.LogEventAt(state.EventVulnScanCycleDone, "cycle complete", "", "", old))
+	assert.False(t, s.shouldSkipStartupScan())
 }
