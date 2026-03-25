@@ -180,6 +180,17 @@ func (k eventsKeyMap) FullHelp() [][]key.Binding {
 	}
 }
 
+type wicketKeyMap struct{ m *Model }
+
+func (k wicketKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{keyTab, k.m.keyMouse(), keyQuit}
+}
+func (k wicketKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
+	}
+}
+
 // keyMouse returns the mouse toggle key binding with help text updated based
 // on the current mouse state.
 func (m *Model) keyMouse() key.Binding {
@@ -202,6 +213,8 @@ func (m *Model) keyMapForPanel() help.KeyMap {
 		return needsAttentionKeyMap{m: m}
 	case PanelWorkers:
 		return workersKeyMap{m: m}
+	case PanelWicket:
+		return wicketKeyMap{m: m}
 	case PanelUsage:
 		return usageKeyMap{m: m}
 	case PanelLiveActivity:
