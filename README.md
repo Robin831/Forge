@@ -16,6 +16,7 @@ The Forge uses a blacksmith metaphor throughout:
 | **Schematic**| Pre-analysis worker (decomposes complex beads)          |
 | **Crucible** | Epic orchestrator (parent-child beads on feature branches) |
 | **Depcheck** | Multi-language dependency update scanner (Go, .NET, Node) |
+| **Wicket**   | GitHub issue triage monitor — classifies issues and creates beads |
 | **Anvil**    | Repository workspace                                    |
 | **Heat**     | Work batch / session                                    |
 
