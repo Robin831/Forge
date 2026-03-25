@@ -2555,3 +2555,177 @@ rules:
         Verify that any collection injected into an LLM prompt is capped to a reasonable maximum count or token budget to avoid blowing context limits, excessive cost, and fallback failures
       source: copilot:PR#429
       added: "2026-03-24"
+    - id: rate-limit-error-incomplete-fields
+      category: error-handling
+      pattern: >-
+        Returning a rate-limit error struct (e.g., RateLimitError) from an HTTP or CLI wrapper
+      check: >-
+        Verify that all rate-limit error fields (Remaining, ResetAt, RetryAfter) are populated with real values parsed from response headers, stderr, or a rate_limit API endpoint—not left as zero/sentinel values—and that every code path making external API calls (not just the primary helper) shares the same rate-limit detection and propagation logic
+      source: copilot:PR#431
+      added: "2026-03-24"
+    - id: rate-limit-propagation
+      category: error-handling
+      pattern: >-
+        A function encounters a rate limit and aborts early, but its caller continues executing subsequent steps that also make API calls
+      check: >-
+        When a rate limit or backoff signal is detected in a sub-operation, verify that the signal propagates to the caller so it can short-circuit remaining work in the same cycle instead of continuing to hammer the API
+      source: copilot:PR#431
+      added: "2026-03-24"
+    - id: rate-limit-remaining-reset-on-success
+      category: error-handling
+      pattern: >-
+        Rate limiter RecordSuccess() resets or discards quota-tracking fields (e.g., remaining count, reset timestamp)
+      check: >-
+        Verify that recording a successful request preserves the last-known remaining quota and reset time instead of clearing them. If remaining is only populated on error responses, ensure a periodic refresh (e.g., dedicated rate-limit API call) keeps the value current so quota-aware throttling logic can actually activate.
+      source: copilot:PR#431
+      added: "2026-03-24"
+    - id: exponential-backoff-overflow
+      category: performance
+      pattern: >-
+        Exponential backoff computed via math.Pow or float64 exponentiation with an uncapped exponent before conversion to integer/duration
+      check: >-
+        Verify that the exponent or resulting value is clamped to the maximum backoff BEFORE float-to-int conversion, not after. Large exponents can overflow float64→int64, producing negative or garbled durations. Prefer integer doubling with early clamping or cap the retry counter once max backoff is reached.
+      source: copilot:PR#431
+      added: "2026-03-24"
+    - id: merge-overlapping-warden-rules
+      category: other
+      pattern: >-
+        New warden rules being added to .forge/warden-rules.yaml that cover guidance already present in an existing rule
+      check: >-
+        Before adding a new warden rule, search existing rules for overlapping or duplicate guidance. If a match exists, merge the new guidance into the existing rule and append the new source to its source list instead of creating a standalone rule.
+      source: copilot:PR#430
+      added: "2026-03-24"
+    - id: partial-struct-update-overwrites-columns
+      category: other
+      pattern: >-
+        Building a new struct with only some fields populated and passing it to a full-row or general Update/Save/Upsert function instead of fetching the existing row first
+      check: >-
+        When updating a database row, verify that partially-populated structs do not overwrite existing columns with zero values and that fields not being intentionally changed are preserved. Either load the existing row first and merge changes onto it (read-modify-write), or use narrower, column-specific update methods that only touch the intended fields — otherwise unrelated fields get silently zeroed out.
+      source: copilot:PR#430
+      added: "2026-03-24"
+    - id: test-helper-stub-documentation
+      category: testing
+      pattern: >-
+        Test helper functions that construct objects with injectable dependencies (runners, clients, executors)
+      check: >-
+        Verify that test helper comments accurately describe which dependencies are stubbed vs left to the caller. If the helper does not install safe default stubs for external process execution, the comment must explicitly state that callers are responsible for stubbing them to prevent accidental real process spawning.
+      source: copilot:PR#432
+      added: "2026-03-24"
+    - id: zero-timeout-semantics
+      category: error-handling
+      pattern: Setting a timeout value that could be zero or negative without explicit handling
+      check: >-
+        Verify that zero/negative timeout values have well-defined semantics (e.g., fall back to a sensible default) rather than silently changing behavior to mean 'no time budget' or 'instant expiry'
+      source: copilot:PR#433
+      added: "2026-03-24"
+    - id: zero-timeout-guard
+      category: error-handling
+      pattern: >-
+        Passing a timeout value to a method like .Timeout() without checking whether it is zero or unset
+      check: >-
+        Verify that timeout values are guarded or normalized before being passed to .Timeout() calls, since a zero value may be treated as 'use default' in some contexts but as 'immediate/no wait' in others, causing unexpectedly instant operations
+      source: copilot:PR#433
+      added: "2026-03-24"
+    - id: test-comments-match-implementation
+      category: testing
+      pattern: >-
+        Test comments describing expected behavior after the code under test has been modified
+      check: >-
+        Verify that test comments and assertions accurately reflect the current implementation behavior, especially after adding fast-path returns or changing control flow. Stale comments that describe old failure modes mislead future readers.
+      source: copilot:PR#433
+      added: "2026-03-24"
+    - id: test-context-timeout-headless
+      category: testing
+      pattern: >-
+        context.WithTimeout used in tests that spawn heavyweight subprocesses (e.g. headless Chrome, real database containers)
+      check: >-
+        Verify the overall test context timeout is generous enough (≥60s) to absorb slow subprocess startup on loaded CI, even when per-element/executor timeouts are kept short to fail fast on real errors
+      source: copilot:PR#433
+      added: "2026-03-24"
+    - id: map-stale-entry-cleanup
+      category: concurrency
+      pattern: >-
+        A map that is described as being rebuilt or refreshed per cycle but only adds/overwrites entries without removing stale ones
+      check: >-
+        Verify that maps rebuilt each cycle are fully cleared or replaced (clear + repopulate, or build-new-and-swap) so stale entries from removed config are not retained, and that duplicate/conflicting ownership across sources is detected and logged rather than silently overwritten
+      source: copilot:PR#434
+      added: "2026-03-24"
+    - id: cache-comment-matches-impl
+      category: other
+      pattern: >-
+        A comment or docstring describes caching/memoization behavior (e.g. 'rebuilt on every cycle', 'avoids repeated calls') for a map or lookup structure
+      check: >-
+        Verify the comment accurately describes the actual implementation: if the comment says the cache is rebuilt periodically, confirm it is actually cleared and repopulated; if it claims downstream code uses the cache to skip expensive operations (e.g. git calls), confirm those code paths actually read from the cache instead of re-resolving independently
+      source: copilot:PR#434
+      added: "2026-03-24"
+    - id: changelog-accuracy
+      category: other
+      pattern: Changelog entries that describe implementation behavior or capabilities
+      check: >-
+        Verify that changelog text accurately reflects the actual implementation. Cross-check claims about caching, optimization, or behavior changes against the code to ensure the description matches what was built, not what was planned.
+      source: copilot:PR#434
+      added: "2026-03-24"
+    - id: nondeterministic-map-iteration
+      category: concurrency
+      pattern: >-
+        Iterating over a Go map and relying on the order of results (e.g., returning the first match, using index positions, or building ordered output from map iteration)
+      check: >-
+        Verify that code iterating over maps does not depend on iteration order. If order matters (e.g., first-match semantics, deterministic output, stable duplicate detection), sort the keys or collect values into a slice with a defined ordering before processing.
+      source: copilot:PR#436
+      added: "2026-03-24"
+    - id: accurate-dynamic-messages
+      category: error-handling
+      pattern: >-
+        Hard-coded reason/message strings that assume a specific context (e.g. 'in another anvil') when the underlying logic can match broader cases (e.g. same anvil too)
+      check: >-
+        Verify that user-facing or persisted messages accurately reflect all possible code paths. If a function can return matches from multiple contexts, either narrow the search scope to match the message or make the message dynamic/agnostic based on the actual result.
+      source: copilot:PR#436
+      added: "2026-03-24"
+    - id: cap-bd-list-scans
+      category: performance
+      pattern: >-
+        Calling bd list or fetchBeadSummaries with --limit 0 or no limit in a loop over anvils/repos
+      check: >-
+        Verify that bd list / bead summary scans are capped with a reasonable limit and not unbounded, especially when called per-anvil in a loop. Unbounded scans become slow as databases grow and timeout failures may silently degrade to expensive fallbacks.
+      source: copilot:PR#436
+      added: "2026-03-24"
+    - id: sqlite-error-type-check
+      category: error-handling
+      pattern: >-
+        String matching on error messages (err.Error() substring checks) to identify specific database or driver errors
+      check: >-
+        Verify that database/driver errors are identified using typed error unwrapping (errors.As/errors.Is) and specific error codes rather than substring matching on error message text, which is brittle across driver versions and error wrapping
+      source: copilot:PR#437
+      added: "2026-03-24"
+    - id: assert-expected-log-messages
+      category: testing
+      pattern: >-
+        Test exercises a code path whose primary behavioral change is a specific log message (warning, error, info)
+      check: >-
+        Verify that the test captures log output and asserts the expected log message is emitted, so regressions that silently change or remove the log line are caught
+      source: copilot:PR#437
+      added: "2026-03-24"
+    - id: multi-source-fair-aggregation
+      category: other
+      pattern: >-
+        Aggregating items from multiple sources then applying a global cap or limit via simple append-then-slice
+      check: >-
+        Verify that when results from multiple sources are combined and capped, each source gets fair representation (e.g., per-source quota or round-robin merge) so that a single prolific source cannot starve all others from the final result
+      source: copilot:PR#438
+      added: "2026-03-24"
+    - id: bound-aggregate-fetch-time
+      category: performance
+      pattern: >-
+        Sequential or unbounded-parallel external calls (e.g., bd list, API fetches) inside a loop over a dynamic-length collection
+      check: >-
+        Verify that aggregate I/O is bounded: use a shared context deadline or total timeout around the loop, cap the number of items queried, and/or fan out with a concurrency limit — so a single slow call or a large collection cannot stall the caller for minutes
+      source: copilot:PR#438
+      added: "2026-03-24"
+    - id: test-name-matches-fixture
+      category: testing
+      pattern: >-
+        Test function name describes a scenario that differs from what the test fixtures and assertions actually exercise
+      check: >-
+        Verify that the test name accurately describes the behavior being tested, and that the test fixtures match the scenario implied by the name. If the name says 'shared repo across anvils', the fixture must have multiple anvils referencing the same repo; if the fixture tests 'multi-repo lookup', rename the test accordingly.
+      source: copilot:PR#438
+      added: "2026-03-24"
