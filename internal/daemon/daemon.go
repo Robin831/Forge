@@ -3060,7 +3060,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 		if retry != nil && retry.DispatchFailures > 0 {
-			if err := d.db.ResetDispatchFailures(rp.BeadID, rp.Anvil); err != nil {
+			if err := d.db.ResetRetry(rp.BeadID, rp.Anvil); err != nil {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset circuit breaker: %v", err)})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
