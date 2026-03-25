@@ -130,7 +130,9 @@ rules:
       pattern: Code comments or docstrings that describe behavior, eligibility, control flow, or filtering/skipping logic
       check: >-
         Verify that comments accurately reflect the actual code behavior and control flow. When a comment claims something is eligible, enabled, or handled, trace the execution path to confirm the code actually supports that claim. Pay special attention to comments describing guard or skip behavior near loops/conditionals — confirm the corresponding guard clause (e.g. continue, return, conditional block) actually exists and is correct. Update comments to match reality or fix the code to match the intent.
-      source: copilot:PR#126, copilot:PR#444
+      source:
+        - copilot:PR#126
+        - copilot:PR#444
       added: "2026-03-09"
     - id: changelog-matches-behavior
       category: other
