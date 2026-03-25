@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os/exec"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/state"
 	sqlite "modernc.org/sqlite"
@@ -596,6 +598,30 @@ func (m *Monitor) handleCreateBead(ctx context.Context, anvil string, issue Issu
 	labels := []string{settings.WicketProcessedLabel, settings.WicketBeadCreatedLabel}
 	if lerr := m.ghClient.AddLabels(ctx, issue.Repo, issue.Number, labels); lerr != nil {
 		log.Printf("[wicket] %s: add labels on %s#%d: %v", anvil, issue.Repo, issue.Number, lerr)
+	}
+
+	// When auto-dispatch is enabled, immediately tag the bead with the
+	// anvil's dispatch tag (e.g. "forgeReady") so the poller picks it up.
+	m.mu.RLock()
+	anvilCfg := m.cfg.Anvils[anvil]
+	m.mu.RUnlock()
+	if anvilCfg.WicketAutoDispatch && anvilCfg.AutoDispatchTag != "" {
+		labelCmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "label", "add", beadID, anvilCfg.AutoDispatchTag))
+		if anvilPath != "" {
+			labelCmd.Dir = anvilPath
+		}
+		if labelOut, labelErr := labelCmd.CombinedOutput(); labelErr != nil {
+			log.Printf("[wicket] %s: auto-dispatch tag for %s: %v: %s", anvil, beadID, labelErr, labelOut)
+		} else {
+			wi := state.WicketIssue{
+				Repo:        issue.Repo,
+				IssueNumber: issue.Number,
+				BeadID:      beadID,
+			}
+			wi.State = StateDispatched
+			_ = m.db.UpdateWicketIssue(wi)
+			log.Printf("[wicket] %s: auto-dispatched bead %s for %s#%d", anvil, beadID, issue.Repo, issue.Number)
+		}
 	}
 }
 
