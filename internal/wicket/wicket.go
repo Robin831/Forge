@@ -339,10 +339,11 @@ func (m *Monitor) scanRepo(ctx context.Context, anvil, repo string, anvilCfg con
 
 // shouldSkip returns true when the issue should not be triaged. An issue is
 // skipped when it already carries a Wicket processing label (processed,
-// bead-created, or needs-human), or is already tracked in state.db with a
-// terminal state. An issue tracked as "pending" with no bead_id is NOT
-// skipped — it indicates that bead creation failed on a previous cycle and
-// the issue should be retried.
+// bead-created, or needs-human), or is already tracked in state.db. An issue
+// tracked as "pending" with no bead_id is NOT skipped — it indicates that
+// bead creation failed on a previous cycle and the issue should be retried.
+// All other tracked states, including non-terminal workflow states, are
+// treated as already being processed and are therefore skipped.
 func (m *Monitor) shouldSkip(issue Issue, settings config.SettingsConfig) bool {
 	// Skip issues that were already handled in a previous Wicket cycle.
 	for _, label := range issue.Labels {
