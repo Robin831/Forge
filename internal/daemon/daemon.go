@@ -2413,26 +2413,48 @@ func (d *Daemon) forgeBranchAheadOfMain(ctx context.Context, anvilPath, beadID s
 	lsCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "ls-remote", "--heads", "origin", "--", branchName))
 	lsCmd.Dir = anvilPath
 	lsOut, err := lsCmd.Output()
-	if err != nil || len(strings.TrimSpace(string(lsOut))) == 0 {
+	if err != nil {
+		// Treat ls-remote failures as inconclusive and fail closed to avoid
+		// silently discarding potential remote work. The caller should behave
+		// conservatively when this returns true.
+		d.logger.Error("git ls-remote failed for forge branch ahead-of-main check; treating as potential unmerged work",
+			"bead", beadID, "branch", branchName, "error", err)
+		return branchName, true
+	}
+	if len(strings.TrimSpace(string(lsOut))) == 0 {
 		return "", false // branch does not exist on remote
 	}
 
 	// Branch exists on origin. Fetch it to update the local remote-tracking ref
 	// so that "git log origin/<branch>" reflects the latest state.
 	if err := d.worktreeMgr.FetchBranch(ctx, anvilPath, branchName); err != nil {
-		d.logger.Warn("could not fetch forge branch for ahead-of-main check; skipping",
+		// Branch confirmed on origin but fetch failed (lock contention, network error, etc.).
+		// Fail closed to avoid discarding known remote work.
+		d.logger.Warn("could not fetch forge branch for ahead-of-main check; treating as potential unmerged work",
 			"bead", beadID, "branch", branchName, "error", err)
-		return "", false
+		return branchName, true
 	}
 
-	// Determine the main base ref (origin/main or origin/master).
+	// Determine the base ref. Prefer an explicit override (e.g., for epic branches)
+	// via FORGE_BASE_REF, and fall back to origin/main or origin/master.
 	baseRef := ""
-	for _, candidate := range []string{"origin/main", "origin/master"} {
-		verifyCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "rev-parse", "--verify", candidate))
+
+	if explicit := os.Getenv("FORGE_BASE_REF"); explicit != "" {
+		verifyCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "rev-parse", "--verify", explicit))
 		verifyCmd.Dir = anvilPath
 		if verifyCmd.Run() == nil {
-			baseRef = candidate
-			break
+			baseRef = explicit
+		}
+	}
+
+	if baseRef == "" {
+		for _, candidate := range []string{"origin/main", "origin/master"} {
+			verifyCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "rev-parse", "--verify", candidate))
+			verifyCmd.Dir = anvilPath
+			if verifyCmd.Run() == nil {
+				baseRef = candidate
+				break
+			}
 		}
 	}
 	if baseRef == "" {
@@ -2446,7 +2468,10 @@ func (d *Daemon) forgeBranchAheadOfMain(ctx context.Context, anvilPath, beadID s
 	logCmd.Dir = anvilPath
 	logOut, err := logCmd.Output()
 	if err != nil {
-		return "", false
+		// git log failed after confirming the branch exists — fail closed.
+		d.logger.Warn("git log failed for forge branch ahead-of-main check; treating as potential unmerged work",
+			"bead", beadID, "branch", branchName, "error", err)
+		return branchName, true
 	}
 
 	if len(strings.TrimSpace(string(logOut))) > 0 {
