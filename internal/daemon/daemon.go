@@ -2382,7 +2382,7 @@ func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Be
 		if markErr := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, msg); markErr != nil {
 			d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", markErr)
 		}
-		d.recordDispatchFailure(bead.ID, bead.Anvil, msg)
+		_ = d.db.LogEvent(state.EventError, msg, bead.ID, bead.Anvil)
 		return
 	}
 
@@ -2419,9 +2419,7 @@ func (d *Daemon) forgeBranchAheadOfMain(ctx context.Context, anvilPath, beadID s
 
 	// Branch exists on origin. Fetch it to update the local remote-tracking ref
 	// so that "git log origin/<branch>" reflects the latest state.
-	fetchCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "fetch", "origin", "--", branchName))
-	fetchCmd.Dir = anvilPath
-	if err := fetchCmd.Run(); err != nil {
+	if err := d.worktreeMgr.FetchBranch(ctx, anvilPath, branchName); err != nil {
 		d.logger.Warn("could not fetch forge branch for ahead-of-main check; skipping",
 			"bead", beadID, "branch", branchName, "error", err)
 		return "", false

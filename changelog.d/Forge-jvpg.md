@@ -1,2 +1,3 @@
 category: Fixed
 - **NO_CHANGES_NEEDED safety check for un-PR'd branch work** - Before auto-closing a bead on NO_CHANGES_NEEDED, the daemon now checks whether a forge branch with commits ahead of main exists on origin without an open PR. When detected (caused by a prior dispatch that pushed commits but failed before PR creation), the bead is escalated to needs_human instead of being silently closed. (Forge-jvpg)
+
