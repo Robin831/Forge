@@ -751,9 +751,13 @@ func (m *Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmd := m.driveHuhForm(&m.activeForm, msg)
 
 	if m.activeForm.State == huh.StateCompleted {
-		pendingCmd := m.addToast(m.pendingToastForForm(), false)
+		pendingMsg := m.pendingToastForForm()
 		actionCmd := m.executeFormAction()
 		m.clearForm()
+		var pendingCmd tea.Cmd
+		if actionCmd != nil {
+			pendingCmd = m.addToast(pendingMsg, false)
+		}
 		if cmd != nil {
 			return m, tea.Batch(cmd, pendingCmd, actionCmd)
 		}

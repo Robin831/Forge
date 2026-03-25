@@ -83,3 +83,67 @@ func TestRenderToastsNonEmpty(t *testing.T) {
 		t.Error("expected toast to contain 'oops'")
 	}
 }
+
+// TestPendingToastOnlyWhenActionNonNil verifies that a pending toast is enqueued
+// only when executeFormAction returns a non-nil cmd, and NOT for intentional no-op
+// submits (e.g. FormViewDeps with "done" selected, FormLabel with empty label).
+func TestPendingToastOnlyWhenActionNonNil(t *testing.T) {
+	target := &Bead{ID: "Forge-abc1", Anvil: "test"}
+
+	tests := []struct {
+		name       string
+		setupModel func(m *Model)
+		wantToast  bool
+	}{
+		{
+			name: "FormCloseBead with valid target enqueues pending toast",
+			setupModel: func(m *Model) {
+				m.activeFormKind = FormCloseBead
+				m.formTarget = target
+			},
+			wantToast: true,
+		},
+		{
+			name: "FormViewDeps with empty depID (done selected) does not enqueue toast",
+			setupModel: func(m *Model) {
+				m.activeFormKind = FormViewDeps
+				m.formTarget = target
+				m.formDepID = "" // "— done —" was selected
+			},
+			wantToast: false,
+		},
+		{
+			name: "FormLabel with empty label does not enqueue toast",
+			setupModel: func(m *Model) {
+				m.activeFormKind = FormLabel
+				m.formTarget = target
+				m.formLabel = ""
+			},
+			wantToast: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Model{
+				anvils: map[string]string{"test": "/tmp/test"},
+			}
+			tt.setupModel(m)
+
+			pendingMsg := m.pendingToastForForm()
+			actionCmd := m.executeFormAction()
+
+			// Simulate the conditional toast logic from updateForm.
+			if actionCmd != nil {
+				m.addToast(pendingMsg, false)
+			}
+
+			if tt.wantToast && len(m.toasts) == 0 {
+				t.Error("expected a pending toast to be enqueued, but got none")
+			}
+			if !tt.wantToast && len(m.toasts) > 0 {
+				t.Errorf("expected no pending toast for no-op submit, but got %q", m.toasts[0].message)
+			}
+		})
+	}
+}
