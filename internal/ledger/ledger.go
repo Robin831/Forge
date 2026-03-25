@@ -724,6 +724,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.fetching = true
 		return m, tea.Batch(tickCmd(), m.refreshBeads())
+
+	default:
+		// Forward unrecognised messages (e.g. huh internal focus/blur
+		// commands returned by Form.Init) to the active form so that
+		// fields initialise correctly and Enter/Tab work as expected.
+		if m.activeForm != nil {
+			return m.updateForm(msg)
+		}
 	}
 	return m, nil
 }
