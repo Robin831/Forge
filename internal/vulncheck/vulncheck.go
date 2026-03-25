@@ -510,7 +510,15 @@ func (s *Scanner) RunScheduled(ctx context.Context, interval time.Duration) {
 	case <-time.After(initialDelay):
 	}
 
-	s.runOnce(ctx)
+	// Skip the startup scan if one already completed today (e.g. after a
+	// daemon restart during development or config reload). The interval ticker
+	// below will fire on the normal schedule.
+	today := time.Now().Format("2006-01-02")
+	if ranToday, err := s.db.HasEventForDate(state.EventVulnScanDone, today); err == nil && ranToday {
+		s.logger.Info("vulncheck skipping startup scan — already ran today", "date", today)
+	} else {
+		s.runOnce(ctx)
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
