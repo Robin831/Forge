@@ -1073,10 +1073,13 @@ func FetchIngotCounts(db *state.DB) tea.Cmd {
 }
 
 // FetchWicketSummary queries the state DB for per-repo open and needs-human
-// issue counts from the wicket_issues table.
-func FetchWicketSummary(db *state.DB) tea.Cmd {
+// issue counts from the wicket_issues table. It is a no-op when Wicket is disabled.
+func FetchWicketSummary(ds *DataSource) tea.Cmd {
 	return func() tea.Msg {
-		summaries, err := db.GetWicketSummary()
+		if !ds.WicketEnabled {
+			return UpdateWicketSummaryMsg{}
+		}
+		summaries, err := ds.DB.GetWicketSummary()
 		if err != nil {
 			return UpdateWicketSummaryMsg{}
 		}
@@ -1108,6 +1111,6 @@ func FetchAll(ds *DataSource, logCache *LogTailerCache) tea.Cmd {
 		FetchAnvilHealth(ds),
 		FetchOpenPRs(ds.DB),
 		FetchIngotCounts(ds.DB),
-		FetchWicketSummary(ds.DB),
+		FetchWicketSummary(ds),
 	)
 }

@@ -2876,8 +2876,8 @@ func (db *DB) LastWicketScanAt() (*time.Time, error) {
 	return &t, nil
 }
 
-// WicketAnvilSummary holds per-repo issue counts for the Hearth TUI Wicket panel.
-type WicketAnvilSummary struct {
+// WicketRepoSummary holds per-repo issue counts for the Hearth TUI Wicket panel.
+type WicketRepoSummary struct {
 	// Repo is the "owner/repo" string used as the grouping key.
 	Repo            string
 	OpenCount       int
@@ -2887,7 +2887,7 @@ type WicketAnvilSummary struct {
 // GetWicketSummary returns per-repo open and needs-human issue counts from
 // the wicket_issues table. Only repos that have at least one open issue
 // (state NOT IN ('closed', 'merged')) are returned, sorted by repo name.
-func (db *DB) GetWicketSummary() ([]WicketAnvilSummary, error) {
+func (db *DB) GetWicketSummary() ([]WicketRepoSummary, error) {
 	rows, err := db.conn.Query(`
 		SELECT
 			repo,
@@ -2903,9 +2903,9 @@ func (db *DB) GetWicketSummary() ([]WicketAnvilSummary, error) {
 	}
 	defer rows.Close()
 
-	var summaries []WicketAnvilSummary
+	var summaries []WicketRepoSummary
 	for rows.Next() {
-		var s WicketAnvilSummary
+		var s WicketRepoSummary
 		if err := rows.Scan(&s.Repo, &s.OpenCount, &s.NeedsHumanCount); err != nil {
 			return nil, err
 		}

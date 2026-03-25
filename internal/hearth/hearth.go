@@ -3855,12 +3855,12 @@ func (m *Model) renderCenterColumn(width, topHeight, bottomHeight int) string {
 	// Show Wicket panel when enabled and there is data to display.
 	wicketEnabled := m.data != nil && m.data.WicketEnabled && len(m.wicketSummary) > 0
 	if wicketEnabled {
-		// Wicket inner height: 1 header + 1 row per repo (capped at 4 repos).
+		// Wicket inner height: 1 header + 1 blank margin line + 1 row per repo (capped at 4 repos).
 		numRows := len(m.wicketSummary)
 		if numRows > 4 {
 			numRows = 4
 		}
-		wicketInnerH := numRows + 1           // header(1) + data rows
+		wicketInnerH := numRows + 2            // header(1) + margin(1) + data rows
 		wicketTotalH := wicketInnerH + 2       // inner + border(2)
 		workerHeight := fullHeight - usagePanelHeight - wicketTotalH
 		if workerHeight < 5 {
@@ -3892,8 +3892,9 @@ func (m *Model) renderWicketPanel(width, height int) string {
 	var lines []string
 	lines = append(lines, title)
 
-	// Inner content width available for data rows derived from the style's actual frame size.
-	innerWidth := width - panelStyle.GetHorizontalFrameSize()
+	// Inner content width available for data rows: width minus horizontal padding.
+	// `width` already excludes borders; using padding keeps this consistent with other panels.
+	innerWidth := width - panelStyle.GetHorizontalPadding()
 	if innerWidth < 1 {
 		innerWidth = 1
 	}
@@ -3906,6 +3907,9 @@ func (m *Model) renderWicketPanel(width, height int) string {
 	for _, s := range m.wicketSummary {
 		if shown >= 4 {
 			break
+		}
+		if s.OpenCount == 0 {
+			continue
 		}
 		// Derive short display name from "owner/repo" → "repo".
 		displayName := s.Repo
