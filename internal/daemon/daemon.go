@@ -2377,7 +2377,7 @@ func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Be
 	if branch, ok := d.forgeBranchAheadOfMain(ctx, anvilPath, bead.ID); ok {
 		d.logger.Info("orphaned branch detected with commits ahead of main and no PR — auto-creating PR",
 			"bead", bead.ID, "branch", branch, "smith_reason", reason)
-		_ = d.db.LogEvent(state.EventPRCreationFailed,
+		_ = d.db.LogEvent(state.EventNoChangesNeeded,
 			fmt.Sprintf("Orphaned branch %s detected on NO_CHANGES_NEEDED — attempting auto PR creation (Smith reason: %s)", branch, reason),
 			bead.ID, bead.Anvil)
 
