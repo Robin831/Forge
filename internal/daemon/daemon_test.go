@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -2085,11 +2086,11 @@ func TestHandleAutoMerge(t *testing.T) {
 // - on success: retries are cleared and EventNoChangesNeeded is logged
 // - on close failure: bead is immediately marked needs_human (not circuit-broken)
 func TestApplyNoChangesNeededOutcome(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "forge-no-changes-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	// Use a real git repo so forgeBranchAheadOfMain can run ls-remote without
+	// erroring (no forge branch exists → returns false → close proceeds normally).
+	anvilPath := initTestGitRepo(t)
 
-	dbPath := filepath.Join(tmpDir, "state.db")
+	dbPath := filepath.Join(anvilPath, "state.db")
 	db, err := state.Open(dbPath)
 	require.NoError(t, err)
 	defer db.Close()
@@ -2104,27 +2105,31 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 		require.NoError(t, err)
 
 		// Build a fake bd script that handles 'bd close'.
+		scriptDir, err := os.MkdirTemp("", "forge-ncn-bd-*")
+		require.NoError(t, err)
+		defer os.RemoveAll(scriptDir)
 		var bdScript, bdContent string
 		if runtime.GOOS == "windows" {
-			bdScript = filepath.Join(tmpDir, "bd.bat")
+			bdScript = filepath.Join(scriptDir, "bd.bat")
 			bdContent = "@echo off\r\nif \"%1\"==\"close\" ( exit /b 0 )\r\nexit /b 1\r\n"
 		} else {
-			bdScript = filepath.Join(tmpDir, "bd")
+			bdScript = filepath.Join(scriptDir, "bd")
 			bdContent = "#!/bin/sh\nif [ \"$1\" = \"close\" ]; then exit 0; fi\nexit 1\n"
 		}
 		require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
 		oldPath := os.Getenv("PATH")
-		os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+		os.Setenv("PATH", scriptDir+string(os.PathListSeparator)+oldPath)
 		defer os.Setenv("PATH", oldPath)
 
 		d := &Daemon{
-			db:     db,
-			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			db:          db,
+			logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr: worktree.NewManager(),
 		}
 		d.cfg.Store(&config.Config{})
 
 		bead := poller.Bead{ID: beadID, Anvil: anvil}
-		d.applyNoChangesNeededOutcome(context.Background(), bead, tmpDir, "already fixed upstream")
+		d.applyNoChangesNeededOutcome(context.Background(), bead, anvilPath, "already fixed upstream")
 
 		// Retry record should be cleared.
 		r, err := db.GetRetry(beadID, anvil)
@@ -2148,24 +2153,34 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 	t.Run("close failure: marks needs_human immediately", func(t *testing.T) {
 		const beadID = "NCN-CLOSE-FAIL"
 
-		// Use a tmpDir with NO bd script so closeBead will fail.
-		failDir, err := os.MkdirTemp("", "forge-no-bd-*")
+		// Place a failing bd stub at the FRONT of PATH, keeping the rest of PATH
+		// intact so that git remains accessible (needed by forgeBranchAheadOfMain).
+		failScriptDir, err := os.MkdirTemp("", "forge-fail-bd-*")
 		require.NoError(t, err)
-		defer os.RemoveAll(failDir)
+		defer os.RemoveAll(failScriptDir)
+		var failBdScript, failBdContent string
+		if runtime.GOOS == "windows" {
+			failBdScript = filepath.Join(failScriptDir, "bd.bat")
+			failBdContent = "@echo off\r\nexit /b 1\r\n"
+		} else {
+			failBdScript = filepath.Join(failScriptDir, "bd")
+			failBdContent = "#!/bin/sh\nexit 1\n"
+		}
+		require.NoError(t, os.WriteFile(failBdScript, []byte(failBdContent), 0o755))
 
-		// Ensure bd is NOT on the PATH for this subtest (use isolated PATH).
 		oldPath := os.Getenv("PATH")
-		os.Setenv("PATH", failDir) // isolated: original PATH excluded so bd cannot be found
+		os.Setenv("PATH", failScriptDir+string(os.PathListSeparator)+oldPath)
 		defer os.Setenv("PATH", oldPath)
 
 		d := &Daemon{
-			db:     db,
-			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			db:          db,
+			logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr: worktree.NewManager(),
 		}
 		d.cfg.Store(&config.Config{})
 
 		bead := poller.Bead{ID: beadID, Anvil: anvil}
-		d.applyNoChangesNeededOutcome(context.Background(), bead, failDir, "no work needed")
+		d.applyNoChangesNeededOutcome(context.Background(), bead, anvilPath, "no work needed")
 
 		// Bead should be immediately marked needs_human (not waiting for circuit breaker).
 		r, err := db.GetRetry(beadID, anvil)
@@ -2558,4 +2573,110 @@ func TestReconcileMergedBeads(t *testing.T) {
 	lines := strings.Fields(strings.TrimSpace(string(content)))
 	require.Len(t, lines, 1, "expected exactly one bd close call")
 	assert.Equal(t, "REC-1", lines[0], "bd close should have been called with REC-1")
+}
+
+// initTestGitRepo sets up a bare "remote" repo and a local clone that serves
+// as the anvilPath for forgeBranchAheadOfMain tests. It returns the local path.
+func initTestGitRepo(t *testing.T) (anvilPath string) {
+	t.Helper()
+	base, err := os.MkdirTemp("", "forge-git-test-*")
+	require.NoError(t, err)
+	t.Cleanup(func() { os.RemoveAll(base) })
+
+	remotePath := filepath.Join(base, "remote")
+	anvilPath = filepath.Join(base, "local")
+
+	gitSetup := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+
+	// Bare remote.
+	require.NoError(t, os.MkdirAll(remotePath, 0o755))
+	gitSetup(remotePath, "init", "--bare")
+
+	// Local clone.
+	gitSetup(base, "clone", remotePath, "local")
+	gitSetup(anvilPath, "config", "user.email", "test@forge.test")
+	gitSetup(anvilPath, "config", "user.name", "Forge Test")
+
+	// Ensure the initial branch is explicitly named "main" regardless of Git defaults.
+	gitSetup(anvilPath, "branch", "-M", "main")
+
+	// Seed main with an initial commit so origin/main exists.
+	require.NoError(t, os.WriteFile(filepath.Join(anvilPath, "README.md"), []byte("init\n"), 0o644))
+	gitSetup(anvilPath, "add", "README.md")
+	gitSetup(anvilPath, "commit", "-m", "initial commit")
+	// Push the local main branch to origin and set upstream tracking.
+	gitSetup(anvilPath, "push", "-u", "origin", "main")
+	// Fetch from origin to ensure the local remote-tracking ref origin/main is present.
+	gitSetup(anvilPath, "fetch", "origin", "main")
+
+	return anvilPath
+}
+
+// TestForgeBranchAheadOfMain verifies the three key scenarios for the
+// un-PR'd branch detection logic.
+func TestForgeBranchAheadOfMain(t *testing.T) {
+	anvilPath := initTestGitRepo(t)
+
+	dbPath := filepath.Join(anvilPath, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:          db,
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr: worktree.NewManager(),
+	}
+
+	beadID := "TEST-jvpg"
+	branchName := worktree.BranchName(beadID) // "forge/TEST-jvpg"
+
+	gitLocal := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = anvilPath
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+
+	t.Run("branch absent on origin", func(t *testing.T) {
+		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID)
+		assert.False(t, ok)
+		assert.Empty(t, branch)
+	})
+
+	t.Run("branch present but no commits ahead of main", func(t *testing.T) {
+		// Push the branch at the same tip as main — no ahead commits.
+		gitLocal("checkout", "-b", branchName)
+		gitLocal("push", "origin", branchName)
+		gitLocal("checkout", "main")
+
+		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID)
+		assert.False(t, ok, "branch at same tip as main should not be detected as ahead")
+		assert.Empty(t, branch)
+
+		// Clean up for next sub-test.
+		gitLocal("branch", "-D", branchName)
+		gitLocal("push", "origin", "--delete", branchName)
+	})
+
+	t.Run("branch present with commits ahead of main", func(t *testing.T) {
+		// Create a forge branch with a commit ahead of main and push it.
+		gitLocal("checkout", "-b", branchName)
+		require.NoError(t, os.WriteFile(filepath.Join(anvilPath, "work.txt"), []byte("change\n"), 0o644))
+		gitLocal("add", "work.txt")
+		gitLocal("commit", "-m", "smith work")
+		gitLocal("push", "origin", branchName)
+		gitLocal("checkout", "main")
+
+		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID)
+		assert.True(t, ok, "branch with commits ahead of main should be detected")
+		assert.Equal(t, branchName, branch)
+	})
 }
