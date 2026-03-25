@@ -751,12 +751,13 @@ func (m *Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmd := m.driveHuhForm(&m.activeForm, msg)
 
 	if m.activeForm.State == huh.StateCompleted {
+		pendingCmd := m.addToast(m.pendingToastForForm(), false)
 		actionCmd := m.executeFormAction()
 		m.clearForm()
 		if cmd != nil {
-			return m, tea.Batch(cmd, actionCmd)
+			return m, tea.Batch(cmd, pendingCmd, actionCmd)
 		}
-		return m, actionCmd
+		return m, tea.Batch(pendingCmd, actionCmd)
 	}
 	if m.activeForm.State == huh.StateAborted {
 		m.clearForm()
@@ -782,6 +783,47 @@ func (m *Model) clearForm() {
 	m.formNotes = ""
 	m.formAssignee = ""
 	m.formDepID = ""
+}
+
+// pendingToastForForm returns the "in progress" message to show immediately
+// when a form is submitted, before the bd command completes. Must be called
+// before clearForm() so that formTarget and activeFormKind are still set.
+func (m *Model) pendingToastForForm() string {
+	id := ""
+	if m.formTarget != nil {
+		id = m.formTarget.ID
+	}
+	switch m.activeFormKind {
+	case FormNewBead:
+		return "Creating bead..."
+	case FormEditBead:
+		return fmt.Sprintf("Updating %s...", id)
+	case FormCloseBead:
+		return fmt.Sprintf("Closing %s...", id)
+	case FormLabel:
+		if m.formLabelAction == "remove" {
+			return fmt.Sprintf("Removing label from %s...", id)
+		}
+		return fmt.Sprintf("Adding label to %s...", id)
+	case FormPriority:
+		return fmt.Sprintf("Updating priority on %s...", id)
+	case FormComment:
+		return fmt.Sprintf("Adding comment to %s...", id)
+	case FormNotes:
+		return fmt.Sprintf("Updating notes on %s...", id)
+	case FormAssign:
+		return fmt.Sprintf("Updating assignee on %s...", id)
+	case FormAddDep:
+		return fmt.Sprintf("Adding dependency to %s...", id)
+	case FormViewDeps:
+		return fmt.Sprintf("Removing dependency from %s...", id)
+	case FormBulkLabel:
+		return fmt.Sprintf("Updating labels on %d bead(s)...", m.bulk.Count())
+	case FormBulkPriority:
+		return fmt.Sprintf("Updating priority on %d bead(s)...", m.bulk.Count())
+	default:
+		return "Processing..."
+	}
 }
 
 // isFocusedDepRow reports whether the cursor is currently on a dependency
