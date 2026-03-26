@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.11.1] - 2026-03-26
+
+### Changed
+
+- **Ledger immediate pending toast on action** - Show a "Closing Forge-xxxx..." / "Updating Forge-xxxx..." toast instantly when a form is submitted, so there is no silent gap between form dismissal and the bd command completing. (Forge-6frk)
+- **vulncheck: modernize string/slice patterns** - Replace `bytes.Split`+range with `bytes.SplitSeq` iterator and manual duplicate-check loop with `slices.Contains` in the govulncheck JSON parser. (Forge-q66l)
+
+### Fixed
+
+- **Auto-create PR for orphaned branch on NO_CHANGES_NEEDED** - When Smith reports NO_CHANGES_NEEDED but a forge branch with commits ahead of main has no open PR, the daemon now automatically creates the PR instead of flagging needs_human. Only if PR creation itself fails does the bead escalate to needs_human, eliminating the most common "last mile" stuck scenario. (Forge-ueyj)
+- **Hearth Wicket panel Tab navigation** - Include the Wicket issues panel in the Tab/Shift+Tab cycle so it can be focused like other panels. The panel highlights with the accent border when focused, and is skipped automatically when Wicket is disabled or has no data. Mouse click detection in the center column also now correctly targets the Wicket panel. (Forge-smxa)
+- **Ledger close bead fails with exit status 1** - Added `--json` flag to all `bd close` calls in the Ledger (actions, bulk, update_overlay, and kanban lane moves) so they run non-interactively (matching how the daemon closes beads). Also improved `bdExec` error reporting to trim whitespace and include stdout content when stderr is empty, surfacing the real failure reason. (Forge-cspl)
+- **Vulncheck skips redundant startup scan** - Vulncheck no longer re-scans on every daemon restart; if a scan already completed today (recorded in state.db), the startup scan is skipped and the next run follows the normal interval schedule. (Forge-nmsw)
+- **Wicket bead creation fails with "unknown flag: --tag"** - The `bd` CLI renamed `--tag` to `--labels` (for create) and `--add-label` (for update), but Wicket still used the old flag names. Updated all references. (Forge-wicket-tag-fix)
+- **Wicket pending issues no longer stuck after bead creation failure** - `shouldSkip` now treats a `pending` issue with no `bead_id` as retryable instead of permanently skipping it. The triage loop also handles the retry case when the pending row already exists in state.db, allowing the next scan cycle to reattempt bead creation without manual DB intervention. (Forge-bzii)
+- **forge update binary not found** - Fixed `forge update` failing with "no release binary found" by matching the GoReleaser archive naming convention (`forge_{version}_{os}_{arch}.zip|tar.gz`) and extracting the binary from the downloaded archive. (Forge-qepp)
+
 ## [0.11.0] - 2026-03-25
 
 ### Added
