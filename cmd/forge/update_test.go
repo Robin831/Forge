@@ -1,12 +1,17 @@
 package main
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -52,13 +57,24 @@ func TestStripV(t *testing.T) {
 }
 
 func TestPlatformAssetName(t *testing.T) {
-	name := platformAssetName()
-	if !strings.HasPrefix(name, "forge-") {
-		t.Errorf("platformAssetName() = %q, want prefix forge-", name)
+	name := platformAssetName("1.2.3")
+	if !strings.HasPrefix(name, "forge_") {
+		t.Errorf("platformAssetName() = %q, want prefix forge_", name)
 	}
-	// Should contain OS and arch
-	if !strings.Contains(name, "-") {
-		t.Errorf("platformAssetName() = %q, expected OS-arch separator", name)
+	// Should contain version, OS, and arch separated by underscores
+	if !strings.Contains(name, "_1.2.3_") {
+		t.Errorf("platformAssetName() = %q, expected version in name", name)
+	}
+	// Should contain GOOS and GOARCH
+	if !strings.Contains(name, "_"+runtime.GOOS+"_") {
+		t.Errorf("platformAssetName() = %q, expected GOOS %q in name", name, runtime.GOOS)
+	}
+	if !strings.Contains(name, "_"+runtime.GOARCH+".") {
+		t.Errorf("platformAssetName() = %q, expected GOARCH %q in name", name, runtime.GOARCH)
+	}
+	// Should end in a known archive extension
+	if !strings.HasSuffix(name, ".zip") && !strings.HasSuffix(name, ".tar.gz") {
+		t.Errorf("platformAssetName() = %q, expected .zip or .tar.gz suffix", name)
 	}
 }
 
@@ -101,6 +117,133 @@ func TestVerifyChecksum(t *testing.T) {
 
 	if err := verifyChecksum(ctx, tmp.Name(), assetName, srv2.URL); err == nil {
 		t.Error("verifyChecksum() with wrong hash: want error, got nil")
+	}
+}
+
+func TestPlatformBinaryInArchive(t *testing.T) {
+	name := platformBinaryInArchive()
+	if runtime.GOOS == "windows" {
+		if name != "forge.exe" {
+			t.Errorf("platformBinaryInArchive() = %q, want forge.exe on windows", name)
+		}
+	} else {
+		if name != "forge" {
+			t.Errorf("platformBinaryInArchive() = %q, want forge on non-windows", name)
+		}
+	}
+}
+
+func TestExtractFromZip(t *testing.T) {
+	content := []byte("fake forge binary content")
+
+	// Build a zip archive in memory containing the binary.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	fw, err := zw.Create("forge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write to a temp file.
+	archiveFile, err := os.CreateTemp("", "forge-test-*.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(archiveFile.Name())
+	if _, err := archiveFile.Write(buf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	archiveFile.Close()
+
+	destFile, err := os.CreateTemp("", "forge-test-dest-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destFile.Close()
+	defer os.Remove(destFile.Name())
+
+	if err := extractFromZip(archiveFile.Name(), "forge", destFile.Name()); err != nil {
+		t.Fatalf("extractFromZip() unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(destFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("extractFromZip() content = %q, want %q", got, content)
+	}
+
+	// Missing binary should return error.
+	if err := extractFromZip(archiveFile.Name(), "notfound", destFile.Name()); err == nil {
+		t.Error("extractFromZip() with missing binary: want error, got nil")
+	}
+}
+
+func TestExtractFromTarGz(t *testing.T) {
+	content := []byte("fake forge binary content")
+
+	// Build a tar.gz archive in memory containing the binary.
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	hdr := &tar.Header{
+		Name: "forge",
+		Mode: 0o755,
+		Size: int64(len(content)),
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write to a temp file.
+	archiveFile, err := os.CreateTemp("", "forge-test-*.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(archiveFile.Name())
+	if _, err := archiveFile.Write(buf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	archiveFile.Close()
+
+	destFile, err := os.CreateTemp("", "forge-test-dest-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destFile.Close()
+	defer os.Remove(destFile.Name())
+
+	if err := extractFromTarGz(archiveFile.Name(), "forge", destFile.Name()); err != nil {
+		t.Fatalf("extractFromTarGz() unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(destFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("extractFromTarGz() content = %q, want %q", got, content)
+	}
+
+	// Missing binary should return error.
+	if err := extractFromTarGz(archiveFile.Name(), "notfound", destFile.Name()); err == nil {
+		t.Error("extractFromTarGz() with missing binary: want error, got nil")
 	}
 }
 
