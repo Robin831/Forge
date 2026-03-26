@@ -254,8 +254,8 @@ rules:
       pattern: >-
         A panel or UI element is included in a focus/tab cycle but can be conditionally hidden or not rendered
       check: >-
-        Verify that conditionally-hidden panels are excluded from the focus cycle when not visible, or are always rendered (even if empty), so focus never lands on a non-rendered element
-      source: copilot:PR#121
+        Verify that conditionally-hidden panels are excluded from the focus cycle when not visible, or are always rendered (even if empty), so focus never lands on a non-rendered element. When a focusable panel becomes invisible or disabled, ensure focus is normalized to a visible neighbor so the UI is never left with no visible focused element or keybindings for a hidden panel.
+      source: ['copilot:PR#121', 'copilot:PR#453']
       added: "2026-03-09"
     - id: doc-comment-accuracy
       category: style
@@ -546,8 +546,8 @@ rules:
       pattern: >-
         Hit-testing, click/scroll mapping, or coordinate translation logic that duplicates layout calculations from a separate rendering/view function
       check: >-
-        Verify that mouse/input position mapping uses the exact same layout computation as the rendering code — factor shared geometry (header height, footer height, column splits, panel borders, minimums) into a single helper used by both the view/render path and the hit-testing/input-handling path, so they cannot diverge at different terminal sizes or when content wraps
-      source: copilot:PR#192
+        Verify that mouse/input position mapping uses the exact same layout computation as the rendering code — factor shared geometry (header height, footer height, column splits, panel borders, minimums) into a single helper used by both the view/render path and the hit-testing/input-handling path, so they cannot diverge at different terminal sizes or when content wraps. Layout constants (heights, widths, offsets) must never be duplicated; a single constant or helper is the source of truth so that mouse regions, keyboard navigation, and rendered layout always agree.
+      source: ['copilot:PR#192', 'copilot:PR#453']
       added: "2026-03-11"
     - id: doc-comment-matches-implementation
       category: other
@@ -2458,8 +2458,8 @@ rules:
       category: concurrency
       pattern: Multiple time.Now() calls used to derive related values
       check: >-
-        Verify that time.Now() is captured once into a local variable when multiple time-derived values (formatted strings, IDs, filenames) need to be consistent — repeated calls can diverge at second or midnight boundaries, causing mismatched identifiers or race-like bugs
-      source: copilot:PR#427
+        Verify that time.Now() is captured once into a local variable when multiple time-derived values (formatted strings, IDs, filenames) need to be consistent — repeated calls can diverge at second or midnight boundaries, causing mismatched identifiers or race-like bugs. This applies in tests too: capture a single `now := time.Now()` and derive all time-dependent values from it to prevent flaky failures around date boundaries.
+      source: ['copilot:PR#427', 'copilot:PR#455']
       added: "2026-03-24"
     - id: log-deferred-cleanup-errors
       category: error-handling
@@ -2771,22 +2771,6 @@ rules:
         Verify that ALL call sites passing `bd close` include the `--json` flag consistently. When fixing an interactive-prompt or parsing bug by adding a flag to one call site, grep for every other invocation of the same command and ensure none are missed. Also verify that changelog/PR descriptions accurately reflect which call sites were actually changed.
       source: copilot:PR#452
       added: "2026-03-25"
-    - id: hidden-panel-focus-normalization
-      category: ui
-      pattern: >-
-        A UI panel or component can be focused but also hidden/disabled based on dynamic conditions
-      check: >-
-        Verify that when a focusable panel becomes invisible or disabled, focus is normalized to a visible neighbor. Ensure stale focus state cannot leave the UI with no visible focused element or display keybindings for a hidden panel.
-      source: copilot:PR#453
-      added: "2026-03-25"
-    - id: layout-constant-sync
-      category: ui
-      pattern: >-
-        Height constants or layout dimensions used in both rendering and hit-testing/input-handling code paths
-      check: >-
-        Verify that layout constants (heights, widths, offsets) are shared between rendering and input/hit-testing code — never duplicated. A single constant or helper should be the source of truth so that mouse regions, keyboard navigation, and rendered layout always agree.
-      source: copilot:PR#453
-      added: "2026-03-25"
     - id: calendar-day-vs-duration-dedup
       category: other
       pattern: >-
@@ -2801,14 +2785,6 @@ rules:
         A function checks for any per-item event to decide whether to skip an entire batch or cycle operation
       check: >-
         Verify that skip/deduplication logic uses a cycle-level completion event rather than a per-item event, so a partially completed run does not cause the entire next cycle to be skipped
-      source: copilot:PR#455
-      added: "2026-03-25"
-    - id: time-now-test-determinism
-      category: testing
-      pattern: >-
-        Tests that call time.Now() multiple times or derive time values independently from separate time.Now() calls
-      check: >-
-        Capture a single `now := time.Now()` and derive all time-dependent values from it to prevent flaky failures around date boundaries (e.g., midnight rollover between separate Now() calls)
       source: copilot:PR#455
       added: "2026-03-25"
     - id: changelog-component-accuracy
