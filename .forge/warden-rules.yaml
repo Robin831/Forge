@@ -127,12 +127,11 @@ rules:
       added: "2026-03-09"
     - id: comment-code-consistency
       category: other
-      pattern: Code comments or docstrings that describe behavior, eligibility, control flow, or filtering/skipping logic
+      pattern: >-
+        Code comments or docstrings that describe behavior, eligibility, control flow, or filtering/skipping logic
       check: >-
         Verify that comments accurately reflect the actual code behavior and control flow. When a comment claims something is eligible, enabled, or handled, trace the execution path to confirm the code actually supports that claim. Pay special attention to comments describing guard or skip behavior near loops/conditionals — confirm the corresponding guard clause (e.g. continue, return, conditional block) actually exists and is correct. Update comments to match reality or fix the code to match the intent.
-      source:
-        - copilot:PR#126
-        - copilot:PR#444
+      source: ['copilot:PR#126', 'copilot:PR#444']
       added: "2026-03-09"
     - id: changelog-matches-behavior
       category: other
@@ -255,8 +254,8 @@ rules:
       pattern: >-
         A panel or UI element is included in a focus/tab cycle but can be conditionally hidden or not rendered
       check: >-
-        Verify that conditionally-hidden panels are excluded from the focus cycle when not visible, or are always rendered (even if empty), so focus never lands on a non-rendered element
-      source: copilot:PR#121
+        Verify that conditionally-hidden panels are excluded from the focus cycle when not visible, or are always rendered (even if empty), so focus never lands on a non-rendered element. When a focusable panel becomes invisible or disabled, ensure focus is normalized to a visible neighbor so the UI is never left with no visible focused element or keybindings for a hidden panel.
+      source: ['copilot:PR#121', 'copilot:PR#453']
       added: "2026-03-09"
     - id: doc-comment-accuracy
       category: style
@@ -547,8 +546,8 @@ rules:
       pattern: >-
         Hit-testing, click/scroll mapping, or coordinate translation logic that duplicates layout calculations from a separate rendering/view function
       check: >-
-        Verify that mouse/input position mapping uses the exact same layout computation as the rendering code — factor shared geometry (header height, footer height, column splits, panel borders, minimums) into a single helper used by both the view/render path and the hit-testing/input-handling path, so they cannot diverge at different terminal sizes or when content wraps
-      source: copilot:PR#192
+        Verify that mouse/input position mapping uses the exact same layout computation as the rendering code — factor shared geometry (header height, footer height, column splits, panel borders, minimums) into a single helper used by both the view/render path and the hit-testing/input-handling path, so they cannot diverge at different terminal sizes or when content wraps. Layout constants (heights, widths, offsets) must never be duplicated; a single constant or helper is the source of truth so that mouse regions, keyboard navigation, and rendered layout always agree.
+      source: ['copilot:PR#192', 'copilot:PR#453']
       added: "2026-03-11"
     - id: doc-comment-matches-implementation
       category: other
@@ -2459,8 +2458,8 @@ rules:
       category: concurrency
       pattern: Multiple time.Now() calls used to derive related values
       check: >-
-        Verify that time.Now() is captured once into a local variable when multiple time-derived values (formatted strings, IDs, filenames) need to be consistent — repeated calls can diverge at second or midnight boundaries, causing mismatched identifiers or race-like bugs
-      source: copilot:PR#427
+        Verify that time.Now() is captured once into a local variable when multiple time-derived values (formatted strings, IDs, filenames) need to be consistent — repeated calls can diverge at second or midnight boundaries, causing mismatched identifiers or race-like bugs. This applies in tests too: capture a single `now := time.Now()` and derive all time-dependent values from it to prevent flaky failures around date boundaries.
+      source: ['copilot:PR#427', 'copilot:PR#455']
       added: "2026-03-24"
     - id: log-deferred-cleanup-errors
       category: error-handling
@@ -2739,4 +2738,106 @@ rules:
       check: >-
         Verify that expensive or periodic data fetches (e.g. DB queries, API calls) are gated on the corresponding feature-enabled flag so they are skipped when the feature is disabled and the results would never be displayed or consumed
       source: copilot:PR#444
+      added: "2026-03-25"
+    - id: no-op-form-toast
+      category: ui
+      pattern: >-
+        Unconditionally showing user feedback (toasts, notifications, status messages) after a form submission or action dispatch without checking whether the action actually produced a result
+      check: >-
+        Verify that pending/success toasts and status indicators are only shown when the action command is non-nil. No-op form submissions (e.g. cancellation options, empty inputs) should not display misleading progress or confirmation messages.
+      source: copilot:PR#451
+      added: "2026-03-25"
+    - id: toast-action-test-coverage
+      category: testing
+      pattern: >-
+        Adding toast/notification dispatch in response to form actions or user interactions
+      check: >-
+        Verify that new toast/notification behavior has unit tests covering both the positive case (toast enqueued when action returns a non-nil result) and the negative case (no toast for intentional no-op actions)
+      source: copilot:PR#451
+      added: "2026-03-25"
+    - id: trim-cmd-output-in-errors
+      category: error-handling
+      pattern: >-
+        Building error messages from command stdout/stderr output without trimming whitespace
+      check: >-
+        Verify that stdout and stderr strings are trimmed with strings.TrimSpace() before checking emptiness and before including in error messages, so trailing newlines don't cause misleading or noisy error output
+      source: copilot:PR#452
+      added: "2026-03-25"
+    - id: bd-close-json-flag-consistency
+      category: error-handling
+      pattern: >-
+        Calls to `bd close` (or similar CLI subprocess invocations) across multiple code paths
+      check: >-
+        Verify that ALL call sites passing `bd close` include the `--json` flag consistently. When fixing an interactive-prompt or parsing bug by adding a flag to one call site, grep for every other invocation of the same command and ensure none are missed. Also verify that changelog/PR descriptions accurately reflect which call sites were actually changed.
+      source: copilot:PR#452
+      added: "2026-03-25"
+    - id: calendar-day-vs-duration-dedup
+      category: other
+      pattern: >-
+        Deduplication or throttling logic that uses calendar-day strings (YYYY-MM-DD) instead of duration-based comparisons
+      check: >-
+        Verify whether skip/dedup logic should use a rolling time window (e.g., 24h since last run) or calendar-day boundaries — ensure the implementation matches the documented intent, and that edge cases near midnight are acceptable
+      source: copilot:PR#455
+      added: "2026-03-25"
+    - id: per-item-event-skips-cycle
+      category: error-handling
+      pattern: >-
+        A function checks for any per-item event to decide whether to skip an entire batch or cycle operation
+      check: >-
+        Verify that skip/deduplication logic uses a cycle-level completion event rather than a per-item event, so a partially completed run does not cause the entire next cycle to be skipped
+      source: copilot:PR#455
+      added: "2026-03-25"
+    - id: changelog-component-accuracy
+      category: style
+      pattern: Changelog entries in changelog.d/ that reference a component or subsystem name
+      check: >-
+        Verify the component name in the changelog bullet matches the actual package/directory where the code change occurred. Cross-reference the changed files' package paths (e.g. internal/vulncheck) with the label used in the changelog entry to avoid attributing changes to the wrong subsystem.
+      source: copilot:PR#455
+      added: "2026-03-25"
+    - id: consistent-event-types-for-error-paths
+      category: error-handling
+      pattern: >-
+        Error recovery or fallback paths that log events using a different event type than the primary path for the same kind of failure
+      check: >-
+        When a failure can occur in both a normal path and a recovery/fallback path, verify that both paths log the same event type (e.g. EventPRCreationFailed) so that downstream consumers (dashboards, alerts, analytics) surface the failure consistently regardless of which code path produced it
+      source: copilot:PR#457
+      added: "2026-03-25"
+    - id: nil-check-after-create
+      category: error-handling
+      pattern: >-
+        Using return values from Create/New/Open functions without nil-checking the returned struct
+      check: >-
+        After calling a function that returns a struct pointer and error, verify the pointer is non-nil and its critical fields are populated before dereferencing — even when err is nil. Providers may return (nil, nil) or partially-populated structs. Treat unexpected nil/empty results as an error path (log + escalate).
+      source: copilot:PR#457
+      added: "2026-03-25"
+    - id: clear-retry-on-success
+      category: error-handling
+      pattern: >-
+        Code path that retries an operation (e.g. PR creation) and has retry/circuit-breaker state tracked in a database or store
+      check: >-
+        When a retried operation finally succeeds or the result already exists (e.g. ErrPRAlreadyExists), verify that retry state is explicitly cleared (e.g. ClearRetry) so the item does not remain stuck in a needs_human or needs_attention state
+      source: copilot:PR#457
+      added: "2026-03-25"
+    - id: context-timeout-propagation
+      category: concurrency
+      pattern: >-
+        A short-lived or scoped context (e.g. a 30s timeout) is reused for an operation that may need more time, such as network calls like PR creation or API requests
+      check: >-
+        Verify that operations with potentially long durations (API calls, PR creation, CI interactions) use a dedicated context with an appropriate timeout rather than inheriting a short-lived parent context that could cause the operation to fail and reintroduce the problem it was meant to fix
+      source: copilot:PR#457
+      added: "2026-03-25"
+    - id: ahead-check-must-use-actual-base
+      category: other
+      pattern: >-
+        Code comparing a branch against origin/main or origin/master to detect ahead/behind status, especially in functions like forgeBranchAheadOfMain or similar base-ref comparisons
+      check: >-
+        Verify that ahead-of-base detection uses the actual target base branch (e.g. bead.EpicBranch for crucible children) rather than hardcoding origin/main. Comparing against the wrong base can misclassify branches as ahead when they are fully merged into their real base, causing spurious PR creation and needs_human escalation.
+      source: copilot:PR#457
+      added: "2026-03-25"
+    - id: test-preexisting-state-cleanup
+      category: testing
+      pattern: Tests for recovery/retry logic that creates or modifies retry/state records
+      check: >-
+        Verify tests include a scenario where pre-existing state (e.g. a retries row with needs_human=1 from a prior failure) is properly cleaned up after successful recovery, not just that new happy/sad paths work from a clean slate
+      source: copilot:PR#457
       added: "2026-03-25"
