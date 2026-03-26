@@ -2841,3 +2841,26 @@ rules:
         Verify tests include a scenario where pre-existing state (e.g. a retries row with needs_human=1 from a prior failure) is properly cleaned up after successful recovery, not just that new happy/sad paths work from a clean slate
       source: copilot:PR#457
       added: "2026-03-25"
+    - id: zip-entry-type-check
+      category: security
+      pattern: >-
+        Extracting files from zip archives by matching on file name without checking the entry type
+      check: >-
+        When extracting from a zip archive, verify that the matched zip.File entry is a regular file (not a directory or symlink) before copying its contents — otherwise you may silently install an empty or malicious file
+      source: copilot:PR#461
+      added: "2026-03-26"
+    - id: tar-entry-type-check
+      category: security
+      pattern: Extracting files from tar archives by matching on file name or path
+      check: >-
+        Verify that the code checks the entry type flag (e.g., tar.TypeReg) and rejects directories, symlinks, and other non-regular file types before extracting — otherwise a malicious archive could write empty files or create symlinks to arbitrary paths
+      source: copilot:PR#461
+      added: "2026-03-26"
+    - id: test-assert-meaningful-values
+      category: testing
+      pattern: >-
+        Test functions that verify generated/computed strings but only check non-empty or non-error without asserting expected substrings or structural content
+      check: >-
+        Verify that tests assert meaningful content of generated values, not just that they are non-empty. For platform/environment-dependent outputs, assert that relevant runtime values (e.g., GOOS, GOARCH) appear in the result so the test would catch regressions where those fields are omitted.
+      source: copilot:PR#461
+      added: "2026-03-26"
