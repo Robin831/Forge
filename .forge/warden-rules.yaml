@@ -2851,7 +2851,7 @@ rules:
       added: "2026-03-26"
     - id: tar-entry-type-check
       category: security
-      pattern: Extracting files from tar/zip archives by matching on file name or path
+      pattern: Extracting files from tar archives by matching on file name or path
       check: >-
         Verify that the code checks the entry type flag (e.g., tar.TypeReg) and rejects directories, symlinks, and other non-regular file types before extracting — otherwise a malicious archive could write empty files or create symlinks to arbitrary paths
       source: copilot:PR#461
