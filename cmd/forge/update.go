@@ -302,6 +302,9 @@ func extractFromZip(archivePath, binaryName, destPath string) error {
 
 	for _, f := range r.File {
 		if filepath.Base(f.Name) == binaryName {
+			if f.FileInfo().IsDir() || f.FileInfo().Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("archive entry %q is not a regular file", f.Name)
+			}
 			rc, err := f.Open()
 			if err != nil {
 				return err
@@ -345,6 +348,9 @@ func extractFromTarGz(archivePath, binaryName, destPath string) error {
 		}
 
 		if filepath.Base(hdr.Name) == binaryName {
+			if hdr.Typeflag != tar.TypeReg {
+				return fmt.Errorf("archive entry %q is not a regular file", hdr.Name)
+			}
 			out, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 			if err != nil {
 				return err

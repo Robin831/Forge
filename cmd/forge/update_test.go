@@ -65,6 +65,13 @@ func TestPlatformAssetName(t *testing.T) {
 	if !strings.Contains(name, "_1.2.3_") {
 		t.Errorf("platformAssetName() = %q, expected version in name", name)
 	}
+	// Should contain GOOS and GOARCH
+	if !strings.Contains(name, "_"+runtime.GOOS+"_") {
+		t.Errorf("platformAssetName() = %q, expected GOOS %q in name", name, runtime.GOOS)
+	}
+	if !strings.Contains(name, "_"+runtime.GOARCH+".") {
+		t.Errorf("platformAssetName() = %q, expected GOARCH %q in name", name, runtime.GOARCH)
+	}
 	// Should end in a known archive extension
 	if !strings.HasSuffix(name, ".zip") && !strings.HasSuffix(name, ".tar.gz") {
 		t.Errorf("platformAssetName() = %q, expected .zip or .tar.gz suffix", name)
