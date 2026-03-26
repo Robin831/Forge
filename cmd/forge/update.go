@@ -1,6 +1,9 @@
 package main
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -75,8 +78,9 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Identify the right binary asset for this platform
-	assetName := platformAssetName()
+	// Identify the right archive asset for this platform.
+	// GoReleaser names archives: forge_{version}_{os}_{arch}.{ext}
+	assetName := platformAssetName(stripV(release.TagName))
 	var assetURL, checksumURL string
 	for _, asset := range release.Assets {
 		switch asset.Name {
@@ -88,7 +92,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if assetURL == "" {
-		return fmt.Errorf("no release binary found for %s/%s (expected %q) in %s",
+		return fmt.Errorf("no release archive found for %s/%s (expected %q) in %s",
 			runtime.GOOS, runtime.GOARCH, assetName, release.TagName)
 	}
 
@@ -104,16 +108,39 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 
 	backupPath := currentBinary + ".bak"
 	// Stage in the same directory to avoid cross-device rename failures
+	archiveStagingPath := filepath.Join(filepath.Dir(currentBinary), ".forge-update-archive")
 	stagingPath := filepath.Join(filepath.Dir(currentBinary), ".forge-update-staging")
 
-	// Download to staging path
+	// Download the release archive
 	fmt.Printf("Downloading %s...\n", assetName)
 	dlCtx, dlCancel := context.WithTimeout(rootCtx, 5*time.Minute)
 	defer dlCancel()
-	if err := downloadFile(dlCtx, assetURL, stagingPath); err != nil {
-		_ = os.Remove(stagingPath)
-		return fmt.Errorf("downloading binary: %w", err)
+	if err := downloadFile(dlCtx, assetURL, archiveStagingPath); err != nil {
+		_ = os.Remove(archiveStagingPath)
+		return fmt.Errorf("downloading archive: %w", err)
 	}
+
+	// Verify checksum of the archive before extracting
+	if checksumURL != "" {
+		fmt.Println("Verifying checksum...")
+		csCtx, csCancel := context.WithTimeout(rootCtx, 30*time.Second)
+		csErr := verifyChecksum(csCtx, archiveStagingPath, assetName, checksumURL)
+		csCancel()
+		if csErr != nil {
+			_ = os.Remove(archiveStagingPath)
+			return fmt.Errorf("checksum verification: %w", csErr)
+		}
+		fmt.Println("Checksum OK.")
+	}
+
+	// Extract the binary from the archive
+	fmt.Println("Extracting binary...")
+	if err := extractBinaryFromArchive(archiveStagingPath, platformBinaryInArchive(), stagingPath); err != nil {
+		_ = os.Remove(archiveStagingPath)
+		_ = os.Remove(stagingPath)
+		return fmt.Errorf("extracting binary: %w", err)
+	}
+	_ = os.Remove(archiveStagingPath)
 
 	// Set executable permissions on non-Windows
 	if runtime.GOOS != "windows" {
@@ -121,19 +148,6 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 			_ = os.Remove(stagingPath)
 			return fmt.Errorf("setting executable permissions: %w", err)
 		}
-	}
-
-	// Verify checksum if a checksums file is available
-	if checksumURL != "" {
-		fmt.Println("Verifying checksum...")
-		csCtx, csCancel := context.WithTimeout(rootCtx, 30*time.Second)
-		csErr := verifyChecksum(csCtx, stagingPath, assetName, checksumURL)
-		csCancel()
-		if csErr != nil {
-			_ = os.Remove(stagingPath)
-			return fmt.Errorf("checksum verification: %w", csErr)
-		}
-		fmt.Println("Checksum OK.")
 	}
 
 	// Stop daemon gracefully if it is running
@@ -253,13 +267,95 @@ func parseSemver(v string) [3]int {
 	return [3]int{major, minor, patch}
 }
 
-// platformAssetName returns the expected release binary name for the current OS and architecture.
-func platformAssetName() string {
-	name := fmt.Sprintf("forge-%s-%s", runtime.GOOS, runtime.GOARCH)
+// platformAssetName returns the release archive name for the current OS and architecture.
+// GoReleaser uses: forge_{version}_{os}_{arch}.{ext}
+func platformAssetName(version string) string {
+	ext := "tar.gz"
 	if runtime.GOOS == "windows" {
-		name += ".exe"
+		ext = "zip"
 	}
-	return name
+	return fmt.Sprintf("forge_%s_%s_%s.%s", version, runtime.GOOS, runtime.GOARCH, ext)
+}
+
+// platformBinaryInArchive returns the binary filename inside a release archive.
+func platformBinaryInArchive() string {
+	if runtime.GOOS == "windows" {
+		return "forge.exe"
+	}
+	return "forge"
+}
+
+// extractBinaryFromArchive extracts binaryName from the archive at archivePath into destPath.
+func extractBinaryFromArchive(archivePath, binaryName, destPath string) error {
+	if runtime.GOOS == "windows" {
+		return extractFromZip(archivePath, binaryName, destPath)
+	}
+	return extractFromTarGz(archivePath, binaryName, destPath)
+}
+
+func extractFromZip(archivePath, binaryName, destPath string) error {
+	r, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		if filepath.Base(f.Name) == binaryName {
+			rc, err := f.Open()
+			if err != nil {
+				return err
+			}
+			defer rc.Close()
+
+			out, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+			if err != nil {
+				return err
+			}
+			defer out.Close()
+
+			_, err = io.Copy(out, rc)
+			return err
+		}
+	}
+	return fmt.Errorf("binary %q not found in zip archive", binaryName)
+}
+
+func extractFromTarGz(archivePath, binaryName, destPath string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		if filepath.Base(hdr.Name) == binaryName {
+			out, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+			if err != nil {
+				return err
+			}
+			defer out.Close()
+
+			_, err = io.Copy(out, tr)
+			return err
+		}
+	}
+	return fmt.Errorf("binary %q not found in tar.gz archive", binaryName)
 }
 
 func downloadFile(ctx context.Context, url, destPath string) error {

@@ -52,13 +52,17 @@ func TestStripV(t *testing.T) {
 }
 
 func TestPlatformAssetName(t *testing.T) {
-	name := platformAssetName()
-	if !strings.HasPrefix(name, "forge-") {
-		t.Errorf("platformAssetName() = %q, want prefix forge-", name)
+	name := platformAssetName("1.2.3")
+	if !strings.HasPrefix(name, "forge_") {
+		t.Errorf("platformAssetName() = %q, want prefix forge_", name)
 	}
-	// Should contain OS and arch
-	if !strings.Contains(name, "-") {
-		t.Errorf("platformAssetName() = %q, expected OS-arch separator", name)
+	// Should contain version, OS, and arch separated by underscores
+	if !strings.Contains(name, "_1.2.3_") {
+		t.Errorf("platformAssetName() = %q, expected version in name", name)
+	}
+	// Should end in a known archive extension
+	if !strings.HasSuffix(name, ".zip") && !strings.HasSuffix(name, ".tar.gz") {
+		t.Errorf("platformAssetName() = %q, expected .zip or .tar.gz suffix", name)
 	}
 }
 
