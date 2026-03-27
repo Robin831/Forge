@@ -13,7 +13,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Robin831/Forge/internal/config"
-	"github.com/Robin831/Forge/internal/depupdate"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -152,26 +151,10 @@ type Model struct {
 	// Detail panel state — persistent bead detail shown on the right side.
 	showDetailPanel bool
 
-	// Update overlay state — mirrors the Hearth pattern.
-	showUpdateOverlay     bool
-	updateScanning        bool                    // true while depupdate.Scan is in flight
-	updateRunning         bool                    // true while depupdate.Apply is in flight
-	updateReports         []depupdate.AnvilReport // results from the most recent scan
-	updateFilterForm      *huh.Form               // filter selection form shown after scan
-	updateFilterKind      updateFilterChoice      // chosen filter (all / patch+minor / select groups)
-	updateGroupSelectForm *huh.Form               // group multi-select form
-	updateSelectedKeys    []string                // group keys selected in the group-select form
-	updateScanGeneration  int                     // incremented each scan; stale results discarded
-
-	// Dep bead close confirmation — offered after a successful dep update.
-	depBeadCloseForm    *huh.Form // confirm form shown after apply completes
-	depBeadCloseConfirm bool      // bound to the huh Confirm value
-	depBeadsToClose     []Bead    // dep beads identified for optional closure
 }
 
 // NewModel creates a new Ledger model. anvilConfigs is the per-anvil
-// configuration map from forge.yaml (may be nil); it is used when running
-// dependency updates so they respect per-anvil Temper settings.
+// configuration map from forge.yaml (may be nil).
 func NewModel(anvils map[string]string, anvilConfigs map[string]config.AnvilConfig, db *state.DB) *Model {
 	return &Model{
 		anvils:          anvils,
@@ -357,111 +340,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.aiApprovalFocus = 0
 		return m, nil
 
-	case updateScanDoneMsg:
-		// Discard stale results from a scan that started before the overlay was last closed.
-		if msg.generation != m.updateScanGeneration || !m.showUpdateOverlay {
-			return m, nil
-		}
-		m.updateScanning = false
-		if msg.err != nil {
-			m.addEvent(EventError, fmt.Sprintf("Dep scan failed: %v", msg.err))
-			m.closeUpdateOverlay()
-			return m, m.addToast(fmt.Sprintf("Dep scan failed: %v", msg.err), true)
-		}
-		m.updateReports = msg.reports
-		total := countUpdateGroups(msg.reports)
-		if total == 0 {
-			m.closeUpdateOverlay()
-			return m, m.addToast("All dependencies are up to date", false)
-		}
-		anvilCount := countUpdateAnvils(msg.reports)
-		m.updateFilterForm = buildUpdateFilterForm(&m.updateFilterKind, total, anvilCount)
-		return m, m.updateFilterForm.Init()
-
-	case updateApplyDoneMsg:
-		m.updateRunning = false
-		if msg.failed > 0 {
-			m.addEvent(EventWarn, fmt.Sprintf("Dep update: %d applied, %d failed", msg.applied, msg.failed))
-		} else if msg.applied > 0 {
-			m.addEvent(EventInfo, fmt.Sprintf("Dep update: %d group(s) applied across %d anvil(s)", msg.applied, msg.anvils))
-		}
-		// After a successful update, offer to close open dep-update beads —
-		// but only when the overlay is still visible. The user may have pressed
-		// Esc while the apply was running (m.showUpdateOverlay == false), in
-		// which case there is no form to drive and we should only show a toast.
-		if msg.applied > 0 && len(msg.prErrors) == 0 && m.showUpdateOverlay {
-			depBeads := m.findOpenDepBeads(msg.appliedPackages)
-			if len(depBeads) > 0 {
-				m.depBeadsToClose = depBeads
-				m.depBeadCloseConfirm = false
-				m.depBeadCloseForm = buildDepBeadCloseForm(depBeads, &m.depBeadCloseConfirm)
-				// Keep the overlay open to show the confirmation form.
-				m.updateScanning = false
-				m.updateRunning = false
-				return m, m.depBeadCloseForm.Init()
-			}
-		}
-		m.closeUpdateOverlay()
-		if msg.applied == 0 && msg.failed == 0 {
-			return m, m.addToast("No updates were applied", false)
-		}
-		summary := fmt.Sprintf("Updated %d groups across %d anvil(s)", msg.applied, msg.anvils)
-		if msg.skipped > 0 {
-			summary += fmt.Sprintf(", %d group(s) skipped", msg.skipped)
-		}
-		if msg.failed > 0 {
-			summary += fmt.Sprintf(", %d group(s) failed", msg.failed)
-		}
-		if len(msg.prErrors) > 0 {
-			summary += fmt.Sprintf("; PR creation failed for %d anvil(s)", len(msg.prErrors))
-		}
-		isError := msg.failed > 0 || len(msg.prErrors) > 0
-		return m, m.addToast(summary, isError)
-
-	case depBeadsCloseDoneMsg:
-		m.fetching = true
-		var toastMsg string
-		if msg.failed == 0 {
-			toastMsg = fmt.Sprintf("Closed %d dep update bead(s)", msg.closed)
-			m.addEvent(EventInfo, toastMsg)
-		} else {
-			toastMsg = fmt.Sprintf("Closed %d dep update bead(s), %d failed", msg.closed, msg.failed)
-			m.addEvent(EventWarn, toastMsg)
-		}
-		return m, tea.Batch(m.addToast(toastMsg, msg.failed > 0), m.refreshBeads())
-
-	case updateBeadsDispatchedMsg:
-		m.updateRunning = false
-		m.closeUpdateOverlay()
-		if msg.noDaemon {
-			m.addEvent(EventError, "Dep dispatch: Forge daemon is not running")
-			return m, m.addToast("Forge daemon is not running -- start it with \"forge up\" first", true)
-		}
-		if msg.dispatched == 0 && msg.failed == 0 {
-			m.addEvent(EventInfo, "Dep dispatch: no updates found")
-			return m, m.addToast("No outdated packages found -- all dependencies are up to date", false)
-		}
-		var summary string
-		if msg.dispatched > 0 {
-			summary = fmt.Sprintf("Dispatched %d dep bead(s) to pipeline", msg.dispatched)
-			m.addEvent(EventInfo, summary)
-		}
-		if msg.failed > 0 {
-			failMsg := fmt.Sprintf("Dep dispatch: %d anvil(s) failed", msg.failed)
-			m.addEvent(EventWarn, failMsg)
-			if summary != "" {
-				summary += fmt.Sprintf(", %d failed", msg.failed)
-			} else {
-				summary = failMsg
-			}
-		}
-		return m, m.addToast(summary, msg.failed > 0)
-
 	case tea.KeyMsg:
-		// When the update overlay is active, route key events to the update overlay handler.
-		if m.showUpdateOverlay {
-			return m.updateUpdateOverlay(msg)
-		}
 		// When the AI overlay is active, route key events to the AI overlay handler.
 		if m.aiOverlay != aiOverlayNone {
 			return m.updateAIOverlay(msg)
@@ -546,8 +425,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openDepViewerForm()
 			case "i":
 				return m, m.startAIImprovement()
-			case "U":
-				return m, m.openUpdateOverlay()
 			case "\\":
 				m.showDetailPanel = !m.showDetailPanel
 				return m, nil
@@ -599,9 +476,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		// Don't let scroll events mutate underlying state while a blocking overlay
-		// (form, update overlay, AI overlay, or sort selector) is active.
+		// (form, AI overlay, or sort selector) is active.
 		overlayActive := m.activeForm != nil ||
-			m.showUpdateOverlay ||
 			m.aiOverlay != aiOverlayNone ||
 			m.list.sortForm != nil
 		if overlayActive {
@@ -1624,7 +1500,6 @@ func (m *Model) View() string {
 	// rendered inside renderList() also expands to full width, so we skip
 	// compositing in that case too.
 	blockingOverlay := m.activeForm != nil ||
-		m.showUpdateOverlay ||
 		m.aiOverlay != aiOverlayNone ||
 		m.helpSt.show ||
 		m.list.sortForm != nil
@@ -1657,12 +1532,6 @@ func (m *Model) View() string {
 			Render(m.activeForm.View())
 		out = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, formView,
 			lipgloss.WithWhitespaceBackground(lipgloss.AdaptiveColor{Dark: "0", Light: "15"}))
-		eventPanelVisible = false
-	}
-
-	// Overlay the dependency update screen.
-	if m.showUpdateOverlay {
-		out = m.renderUpdateOverlay()
 		eventPanelVisible = false
 	}
 

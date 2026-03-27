@@ -1,0 +1,2 @@
+category: Removed
+- **Legacy update-deps command and raw command flow removed** - Deleted the `forge update-deps` CLI command, the `internal/depupdate` package (which ran raw `npm install`, `dotnet add package`, and `go get` commands directly), and the Hearth/Ledger TUI update overlay. Dependency updates are now handled exclusively through the bead-based flow created by the depcheck scanner. (Forge-8dy9)

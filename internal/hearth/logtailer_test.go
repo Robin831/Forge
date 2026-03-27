@@ -443,7 +443,7 @@ func TestLogTailerCache_PlainTextLines(t *testing.T) {
 	// Plain-text lines mixed with JSON lines.
 	lines := []string{
 		assistantTextLine("json line"),
-		"plain text output from depupdate worker",
+		"plain text output from synthetic worker",
 		assistantTextLine("after plain"),
 	}
 	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {

@@ -137,9 +137,8 @@ func (s *Scanner) ScanAll(ctx context.Context) {
 }
 
 // ScanAnvilDeps runs all applicable ecosystem scanners for a single anvil and
-// returns the results without creating beads. This is used by the update-deps
-// CLI command where bead creation is not desired. Unlike scanAnvil, it does not
-// pull from the remote — the CLI should scan the working tree as-is.
+// returns the results without creating beads. Unlike scanAnvil, it does not
+// pull from the remote — the caller should scan the working tree as-is.
 func (s *Scanner) ScanAnvilDeps(ctx context.Context, name, path string) []*CheckResult {
 	scanners := []struct {
 		name string
