@@ -126,6 +126,22 @@ func bdExec(ctx context.Context, anvilPath string, args ...string) ([]byte, erro
 	return stdout.Bytes(), nil
 }
 
+// isBdClosedJSON reports whether out is a JSON object that shows a successfully
+// closed bead (status == "closed" with a non-null closed_at).
+func isBdClosedJSON(out []byte) bool {
+	if len(out) == 0 {
+		return false
+	}
+	var result struct {
+		Status   string          `json:"status"`
+		ClosedAt json.RawMessage `json:"closed_at"`
+	}
+	return json.Unmarshal(out, &result) == nil &&
+		result.Status == "closed" &&
+		len(result.ClosedAt) > 0 &&
+		string(result.ClosedAt) != "null"
+}
+
 // bdCloseExec runs a "bd close" command and treats the result as a success if
 // the returned JSON shows the bead was actually closed (status == "closed" with
 // a non-null closed_at). This handles a known bd behaviour where it exits with
@@ -140,17 +156,10 @@ func bdCloseExec(ctx context.Context, anvilPath string, args ...string) ([]byte,
 	if err == nil {
 		return stdout.Bytes(), nil
 	}
-	// bd close --json may exit with status 1 even when the close succeeded.
-	// Parse the JSON output and treat it as success when the bead is closed.
-	if out := stdout.Bytes(); len(out) > 0 {
-		var result struct {
-			Status   string          `json:"status"`
-			ClosedAt json.RawMessage `json:"closed_at"`
-		}
-		if jsonErr := json.Unmarshal(out, &result); jsonErr == nil &&
-			result.Status == "closed" &&
-			len(result.ClosedAt) > 0 &&
-			string(result.ClosedAt) != "null" {
+	// Only apply the JSON-success override for the specific exit-status-1 case
+	// when the context itself has not been canceled or expired.
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 && ctx.Err() == nil {
+		if out := stdout.Bytes(); isBdClosedJSON(out) {
 			return out, nil
 		}
 	}

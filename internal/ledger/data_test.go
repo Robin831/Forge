@@ -432,3 +432,34 @@ func TestFetchAllBeadsWithExecSeparateStatusCallsTracked(t *testing.T) {
 	assert.Equal(t, 1, statusesSeen["--status=open"], "exactly one call for open status")
 	assert.Equal(t, 1, statusesSeen["--status=in_progress"], "exactly one call for in_progress status")
 }
+
+// ---- Tests for isBdClosedJSON ----
+
+func TestIsBdClosedJSONSuccess(t *testing.T) {
+	// exit code 1 + valid closed JSON → treated as success
+	out := []byte(`{"status":"closed","closed_at":"2026-03-27T10:00:00Z"}`)
+	assert.True(t, isBdClosedJSON(out), "closed status with non-null closed_at must return true")
+}
+
+func TestIsBdClosedJSONNonClosedStatus(t *testing.T) {
+	// exit code 1 + JSON with status != "closed" → must NOT be treated as success
+	out := []byte(`{"status":"open","closed_at":null}`)
+	assert.False(t, isBdClosedJSON(out), "non-closed status must return false")
+}
+
+func TestIsBdClosedJSONNullClosedAt(t *testing.T) {
+	// closed status but closed_at is null → must NOT be treated as success
+	out := []byte(`{"status":"closed","closed_at":null}`)
+	assert.False(t, isBdClosedJSON(out), "null closed_at must return false")
+}
+
+func TestIsBdClosedJSONInvalidJSON(t *testing.T) {
+	// invalid JSON → must NOT be treated as success
+	assert.False(t, isBdClosedJSON([]byte("not-json")), "invalid JSON must return false")
+}
+
+func TestIsBdClosedJSONEmpty(t *testing.T) {
+	// empty output → must NOT be treated as success
+	assert.False(t, isBdClosedJSON(nil), "nil output must return false")
+	assert.False(t, isBdClosedJSON([]byte{}), "empty output must return false")
+}
