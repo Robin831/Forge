@@ -253,3 +253,97 @@ func TestUpdateApplyDoneMsgPRErrors(t *testing.T) {
 		t.Errorf("toast text must mention 'PR creation failed', got: %q", toast.message)
 	}
 }
+
+// --- runDispatchBeads: no-targets early exit ---
+
+// TestRunDispatchBeadsNoTargetsEmitsMsg verifies that when all reports have no
+// update groups, runDispatchBeads returns a cmd that produces
+// updateBeadsDispatchedMsg (not a nil msg or a plain toast), so that the
+// updateRunning flag is properly cleared by the Update handler.
+func TestRunDispatchBeadsNoTargetsEmitsMsg(t *testing.T) {
+	m := &Model{}
+	// Reports with no groups — no targets to dispatch.
+	reports := []depupdate.AnvilReport{
+		makeReport("a", nil, nil),
+		makeReport("b", nil, nil),
+	}
+	cmd := m.runDispatchBeads(reports)
+	if cmd == nil {
+		t.Fatal("runDispatchBeads must return a non-nil cmd even when there are no targets")
+	}
+	msg := cmd()
+	if _, ok := msg.(updateBeadsDispatchedMsg); !ok {
+		t.Errorf("runDispatchBeads with no targets must return updateBeadsDispatchedMsg, got %T", msg)
+	}
+}
+
+// --- updateBeadsDispatchedMsg handler ---
+
+// TestUpdateBeadsDispatchedMsgClearsRunning verifies that receiving
+// updateBeadsDispatchedMsg always clears the updateRunning flag.
+func TestUpdateBeadsDispatchedMsgClearsRunning(t *testing.T) {
+	m := &Model{
+		showUpdateOverlay: true,
+		updateRunning:     true,
+	}
+	updatedModel, _ := m.Update(updateBeadsDispatchedMsg{})
+	updated := updatedModel.(*Model)
+	if updated.updateRunning {
+		t.Error("updateRunning must be false after receiving updateBeadsDispatchedMsg")
+	}
+}
+
+// TestUpdateBeadsDispatchedMsgNoDaemon verifies the noDaemon path emits an
+// error toast and clears updateRunning.
+func TestUpdateBeadsDispatchedMsgNoDaemon(t *testing.T) {
+	m := &Model{
+		showUpdateOverlay: true,
+		updateRunning:     true,
+	}
+	updatedModel, cmd := m.Update(updateBeadsDispatchedMsg{noDaemon: true})
+	updated := updatedModel.(*Model)
+	if updated.updateRunning {
+		t.Error("updateRunning must be false after noDaemon dispatch result")
+	}
+	if cmd == nil {
+		t.Fatal("must return a cmd (toast) for noDaemon case")
+	}
+	// Verify an error event was recorded.
+	found := false
+	for _, ev := range updated.eventLog {
+		if strings.Contains(ev.Message, "daemon") || strings.Contains(ev.Message, "Forge") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("noDaemon dispatch must record an error event mentioning the daemon")
+	}
+}
+
+// TestUpdateBeadsDispatchedMsgSuccess verifies a successful dispatch clears
+// updateRunning and queues a success toast.
+func TestUpdateBeadsDispatchedMsgSuccess(t *testing.T) {
+	m := &Model{
+		showUpdateOverlay: true,
+		updateRunning:     true,
+	}
+	updatedModel, cmd := m.Update(updateBeadsDispatchedMsg{dispatched: 2})
+	updated := updatedModel.(*Model)
+	if updated.updateRunning {
+		t.Error("updateRunning must be false after successful dispatch")
+	}
+	if cmd == nil {
+		t.Fatal("must return a cmd (toast) after successful dispatch")
+	}
+	if len(updated.toasts) == 0 {
+		t.Fatal("a toast must be queued after successful dispatch")
+	}
+	toast := updated.toasts[len(updated.toasts)-1]
+	if toast.isError {
+		t.Error("success toast must not be an error toast")
+	}
+	if !strings.Contains(toast.message, "2") {
+		t.Errorf("success toast must mention the count, got: %q", toast.message)
+	}
+}

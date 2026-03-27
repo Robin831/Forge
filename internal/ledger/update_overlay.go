@@ -261,7 +261,11 @@ func (m *Model) runDispatchBeads(reports []depupdate.AnvilReport) tea.Cmd {
 		}
 	}
 	if len(targets) == 0 {
-		return m.addToast("No updates available to dispatch", false)
+		// No updates to dispatch — emit the result message so the handler
+		// clears updateRunning (returning a plain toast would leave it stuck).
+		return func() tea.Msg {
+			return updateBeadsDispatchedMsg{}
+		}
 	}
 	db := m.db
 	return func() tea.Msg {
