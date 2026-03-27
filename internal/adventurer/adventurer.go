@@ -75,7 +75,10 @@ func (e *Executor) Execute(ctx context.Context, quest *questgiver.Quest) *Result
 	}
 
 	// Launch headless browser.
-	l := launcher.New().Headless(true)
+	// Leakless(false) disables the leakless helper binary that Windows Defender
+	// flags as suspicious. The process cleanup it provides is nice-to-have but
+	// not critical — our context cancellation already handles timeouts.
+	l := launcher.New().Headless(true).Leakless(false)
 	controlURL, err := l.Launch()
 	if err != nil {
 		result.ErrorMessage = fmt.Sprintf("failed to launch browser: %v", err)
