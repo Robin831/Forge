@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.11.2] - 2026-03-27
+
+### Fixed
+
+- **Windows Defender no longer flags Adventurer/Rod** - Disabled the leakless helper binary (`launcher.Leakless(false)`) that Rod extracts at runtime, which Windows Defender flagged as suspicious. Process cleanup is handled by context cancellation instead. (Forge-leakless)
+
 ## [0.11.1] - 2026-03-26
 
 ### Changed
