@@ -94,7 +94,7 @@ func BulkCloseCmd(anvils map[string]string, beads []Bead, selectedIDs map[string
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_, err := bdExec(ctx, anvilPath, "close", bead.ID, "--json")
+			_, err := bdCloseExec(ctx, anvilPath, "close", bead.ID, "--json")
 			cancel()
 			if err != nil {
 				failed++

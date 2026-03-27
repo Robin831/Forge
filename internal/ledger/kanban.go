@@ -201,13 +201,12 @@ func (m *Model) moveBeadToLane(targetLane int) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		var args []string
+		var err error
 		if targetStatus == "closed" {
-			args = []string{"close", b.ID, "--json"}
+			_, err = bdCloseExec(ctx, anvilPath, "close", b.ID, "--json")
 		} else {
-			args = []string{"update", b.ID, "--status=" + targetStatus}
+			_, err = bdExec(ctx, anvilPath, "update", b.ID, "--status="+targetStatus)
 		}
-		_, err := bdExec(ctx, anvilPath, args...)
 		return moveBeadMsg{Err: err}
 	}
 }

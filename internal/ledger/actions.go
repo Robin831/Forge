@@ -76,7 +76,7 @@ func CloseBeadCmd(anvilPath, beadID, reason string) tea.Cmd {
 		if reason != "" {
 			args = append(args, "--reason", reason)
 		}
-		_, err := bdExec(ctx, anvilPath, args...)
+		_, err := bdCloseExec(ctx, anvilPath, args...)
 		if err != nil {
 			return ActionErrorMsg{Err: fmt.Errorf("close %s: %w", beadID, err)}
 		}

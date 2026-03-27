@@ -361,7 +361,7 @@ func closeDepBeadsCmd(anvils map[string]string, depBeads []Bead) tea.Cmd {
 				failed++
 				continue
 			}
-			_, err := bdExec(ctx, anvilPath, "close", b.ID, "--reason", "Resolved by dependency update", "--json")
+			_, err := bdCloseExec(ctx, anvilPath, "close", b.ID, "--reason", "Resolved by dependency update", "--json")
 			if err != nil {
 				failed++
 			} else {

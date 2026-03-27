@@ -126,6 +126,41 @@ func bdExec(ctx context.Context, anvilPath string, args ...string) ([]byte, erro
 	return stdout.Bytes(), nil
 }
 
+// bdCloseExec runs a "bd close" command and treats the result as a success if
+// the returned JSON shows the bead was actually closed (status == "closed" with
+// a non-null closed_at). This handles a known bd behaviour where it exits with
+// status 1 even though the close succeeded and the JSON output is correct.
+func bdCloseExec(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", args...))
+	cmd.Dir = anvilPath
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return stdout.Bytes(), nil
+	}
+	// bd close --json may exit with status 1 even when the close succeeded.
+	// Parse the JSON output and treat it as success when the bead is closed.
+	if out := stdout.Bytes(); len(out) > 0 {
+		var result struct {
+			Status   string          `json:"status"`
+			ClosedAt json.RawMessage `json:"closed_at"`
+		}
+		if jsonErr := json.Unmarshal(out, &result); jsonErr == nil &&
+			result.Status == "closed" &&
+			len(result.ClosedAt) > 0 &&
+			string(result.ClosedAt) != "null" {
+			return out, nil
+		}
+	}
+	detail := strings.TrimSpace(stderr.String())
+	if detail == "" {
+		detail = strings.TrimSpace(stdout.String())
+	}
+	return nil, fmt.Errorf("bd %v in %s: %w: %s", args, anvilPath, err, detail)
+}
+
 // FetchAnvilBeads returns a tea.Cmd that fetches beads for a single named anvil.
 // It fetches open/in_progress beads plus recently-closed beads (last 7 days,
 // up to 50), then enriches the results with PR data from the state DB.
