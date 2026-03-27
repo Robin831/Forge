@@ -48,6 +48,7 @@ type Scanner struct {
 	interval   time.Duration
 	timeout    time.Duration
 	anvilPaths map[string]string // anvil name -> path
+	anvilTags  map[string]string // anvil name -> auto-dispatch label (e.g. "forgeReady")
 	mu         sync.RWMutex
 }
 
@@ -76,6 +77,20 @@ func (s *Scanner) UpdateAnvilPaths(paths map[string]string) {
 	}
 	s.mu.Lock()
 	s.anvilPaths = copied
+	s.mu.Unlock()
+}
+
+// UpdateAnvilTags replaces the per-anvil auto-dispatch label map. Tags are used
+// when creating consolidated dependency beads so that each anvil uses its own
+// configured label (e.g. "forgeReady", "forge-auto"). This is safe to call
+// while Run is active and takes effect on the next scan cycle.
+func (s *Scanner) UpdateAnvilTags(tags map[string]string) {
+	copied := make(map[string]string, len(tags))
+	for k, v := range tags {
+		copied[k] = v
+	}
+	s.mu.Lock()
+	s.anvilTags = copied
 	s.mu.Unlock()
 }
 
@@ -222,7 +237,10 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 	}
 
 	if len(allResults) > 0 {
-		s.findOrCreateConsolidatedBead(ctx, allResults, path, name)
+		s.mu.RLock()
+		autoDispatchTag := s.anvilTags[name]
+		s.mu.RUnlock()
+		s.findOrCreateConsolidatedBead(ctx, allResults, path, name, autoDispatchTag)
 	}
 }
 
@@ -281,8 +299,8 @@ func parseSemver(v string) (major, minor, patch string) {
 // findOrCreateConsolidatedBead is the main bead management entry point.
 // It searches for an existing open bead with today's consolidated title for this anvil.
 // If found, it appends any new packages to the description.
-// If not found, it creates a new bead tagged forgeReady.
-func (s *Scanner) findOrCreateConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName string) {
+// If not found, it creates a new bead tagged with autoDispatchTag.
+func (s *Scanner) findOrCreateConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName, autoDispatchTag string) {
 	title := consolidatedBeadTitle(time.Now())
 
 	existing, err := findConsolidatedBead(ctx, anvilPath, title)
@@ -296,13 +314,13 @@ func (s *Scanner) findOrCreateConsolidatedBead(ctx context.Context, allResults [
 	if existing != nil {
 		s.updateConsolidatedBead(ctx, existing, allResults, anvilPath, anvilName)
 	} else {
-		s.createConsolidatedBead(ctx, allResults, anvilPath, anvilName, title)
+		s.createConsolidatedBead(ctx, allResults, anvilPath, anvilName, title, autoDispatchTag)
 	}
 }
 
 // createConsolidatedBead creates a new consolidated dependency update bead
-// containing all outdated packages from allResults, then tags it forgeReady.
-func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName, title string) {
+// containing all outdated packages from allResults, then tags it with autoDispatchTag.
+func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName, title, autoDispatchTag string) {
 	desc := buildConsolidatedDescription(anvilName, allResults)
 
 	// Use priority 2 if any major updates are present, otherwise 3.
@@ -341,10 +359,25 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 	_ = s.db.LogEvent(state.EventDepcheckBeadCreated,
 		fmt.Sprintf("Created consolidated dep bead for %s: %s", anvilName, title), "", anvilName)
 
-	// Tag the new bead forgeReady so the poller picks it up for auto-dispatch.
-	var created bdBead
-	if err := json.Unmarshal(output, &created); err == nil && created.ID != "" {
-		s.addForgeReadyLabel(ctx, created.ID, anvilPath, anvilName)
+	// Extract the bead ID from the JSON output so we can tag it for auto-dispatch.
+	// bd create --json may emit extra lines (e.g. progress messages) before the JSON
+	// object, so fall back to scanning each line if a whole-output unmarshal fails.
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &created); err != nil || created.ID == "" {
+		for _, line := range strings.Split(string(output), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if err2 := json.Unmarshal([]byte(line), &created); err2 == nil && created.ID != "" {
+				break
+			}
+		}
+	}
+	if created.ID != "" && autoDispatchTag != "" {
+		s.addForgeReadyLabel(ctx, created.ID, anvilPath, anvilName, autoDispatchTag)
 	}
 }
 
@@ -385,18 +418,18 @@ func (s *Scanner) updateConsolidatedBead(ctx context.Context, existing *bdBead, 
 		fmt.Sprintf("Updated consolidated dep bead for %s: %s", anvilName, existing.ID), "", anvilName)
 }
 
-// addForgeReadyLabel tags a bead with the forgeReady label so the poller picks it up.
-func (s *Scanner) addForgeReadyLabel(ctx context.Context, beadID, anvilPath, anvilName string) {
+// addForgeReadyLabel tags a bead with the given label so the poller picks it up.
+func (s *Scanner) addForgeReadyLabel(ctx context.Context, beadID, anvilPath, anvilName, label string) {
 	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "update", beadID, "--add-label", "forgeReady", "--json"))
+		"bd", "update", beadID, "--add-label", label, "--json"))
 	cmd.Dir = anvilPath
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("[depcheck] %s: failed to add forgeReady label to %s: %v", anvilName, beadID, err)
+		log.Printf("[depcheck] %s: failed to add %s label to %s: %v: %s", anvilName, label, beadID, err, strings.TrimSpace(string(out)))
 		return
 	}
-	log.Printf("[depcheck] %s: tagged %s with forgeReady: %s", anvilName, beadID, strings.TrimSpace(string(out)))
+	log.Printf("[depcheck] %s: tagged %s with %s: %s", anvilName, beadID, label, strings.TrimSpace(string(out)))
 }

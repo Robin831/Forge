@@ -706,6 +706,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.config().Settings.DepcheckInterval,
 			d.config().Settings.DepcheckTimeout,
 			depcheckAnvils)
+		// Provide per-anvil auto-dispatch tags so the scanner uses each
+		// anvil's configured label rather than a hard-coded default.
+		depcheckTags := make(map[string]string, len(depcheckAnvils))
+		for name := range depcheckAnvils {
+			if ac, ok := d.cfg.Load().Anvils[name]; ok && ac.AutoDispatchTag != "" {
+				depcheckTags[name] = ac.AutoDispatchTag
+			}
+		}
+		d.depcheckScanner.UpdateAnvilTags(depcheckTags)
 		go func() {
 			if err := d.depcheckScanner.Run(ctx); err != nil && err != context.Canceled {
 				d.logger.Error("Depcheck scanner error", "error", err)
