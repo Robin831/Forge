@@ -269,9 +269,6 @@ func (m *Model) runDispatchBeads(reports []depupdate.AnvilReport) tea.Cmd {
 	}
 	db := m.db
 	return func() tea.Msg {
-		if !ipc.SocketExists() {
-			return updateBeadsDispatchedMsg{noDaemon: true}
-		}
 		var dispatched, noUpdates, failed int
 		var errors []string
 		for _, t := range targets {
@@ -289,16 +286,16 @@ func (m *Model) runDispatchBeads(reports []depupdate.AnvilReport) tea.Cmd {
 			}
 			client, err := ipc.NewClient()
 			if err != nil {
-				failed++
-				errors = append(errors, fmt.Sprintf("%s: connect to daemon: %v", t.name, err))
-				continue
+				// Connection failure means the daemon isn't running (or the
+				// socket is stale). Report noDaemon rather than a generic error.
+				return updateBeadsDispatchedMsg{noDaemon: true}
 			}
 			payload, _ := json.Marshal(ipc.RunBeadPayload{
 				BeadID:   beadID,
 				Anvil:    t.name,
 				ForceRun: true,
 			})
-			_, sendErr := client.Send(ipc.Command{
+			resp, sendErr := client.Send(ipc.Command{
 				Type:    "run_bead",
 				Payload: json.RawMessage(payload),
 			})
@@ -306,6 +303,18 @@ func (m *Model) runDispatchBeads(reports []depupdate.AnvilReport) tea.Cmd {
 			if sendErr != nil {
 				failed++
 				errors = append(errors, fmt.Sprintf("%s: dispatch bead %s: %v", t.name, beadID, sendErr))
+			} else if resp == nil || resp.Type != "ok" {
+				failed++
+				errMsg := "daemon rejected dispatch"
+				if resp != nil && len(resp.Payload) > 0 {
+					var ep struct {
+						Message string `json:"message"`
+					}
+					if json.Unmarshal(resp.Payload, &ep) == nil && ep.Message != "" {
+						errMsg = ep.Message
+					}
+				}
+				errors = append(errors, fmt.Sprintf("%s: dispatch bead %s: %s", t.name, beadID, errMsg))
 			} else {
 				dispatched++
 			}

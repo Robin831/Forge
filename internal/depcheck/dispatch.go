@@ -31,14 +31,30 @@ func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath,
 	s := &Scanner{db: db}
 	results := s.ScanAnvilDeps(ctx, anvilName, anvilPath)
 
+	var firstScanErr error
+	successfulScan := false
 	hasUpdates := false
 	for _, r := range results {
-		if r != nil && r.Error == nil && (len(r.Patch) > 0 || len(r.Minor) > 0 || len(r.Major) > 0) {
+		if r == nil {
+			continue
+		}
+		if r.Error != nil {
+			if firstScanErr == nil {
+				firstScanErr = fmt.Errorf("dependency scan failed: %w", r.Error)
+			}
+			continue
+		}
+		successfulScan = true
+		if len(r.Patch) > 0 || len(r.Minor) > 0 || len(r.Major) > 0 {
 			hasUpdates = true
-			break
 		}
 	}
 	if !hasUpdates {
+		// If no successful scans ran but at least one scanner failed, surface
+		// an error instead of reporting "nothing to update".
+		if !successfulScan && firstScanErr != nil {
+			return "", firstScanErr
+		}
 		return "", nil // nothing to update
 	}
 
@@ -51,7 +67,7 @@ func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath,
 		return "", fmt.Errorf("querying created bead: %w", err)
 	}
 	if created == nil {
-		return "", fmt.Errorf("bead created but not found — bd sync may be delayed")
+		return "", fmt.Errorf("no consolidated bead found after creation attempt — creation may have failed or bd sync may be delayed")
 	}
 	return created.ID, nil
 }
