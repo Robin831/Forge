@@ -1,0 +1,2 @@
+category: Added
+- **Ledger update panel: dispatch to pipeline** - Added a "Dispatch to pipeline (via Forge daemon)" option to the Ledger dependency update overlay. When selected, Forge finds or creates today's consolidated dep bead for each anvil (using `depcheck.FindOrCreateBeadID`) and dispatches it through the full Smith → Temper → Warden pipeline via IPC, rather than applying updates directly. Shows a clear error when the daemon is not running. (Forge-lr1w)

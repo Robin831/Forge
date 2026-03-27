@@ -430,6 +430,33 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.addToast(toastMsg, msg.failed > 0), m.refreshBeads())
 
+	case updateBeadsDispatchedMsg:
+		m.updateRunning = false
+		m.closeUpdateOverlay()
+		if msg.noDaemon {
+			m.addEvent(EventError, "Dep dispatch: Forge daemon is not running")
+			return m, m.addToast("Forge daemon is not running -- start it with \"forge up\" first", true)
+		}
+		if msg.dispatched == 0 && msg.failed == 0 {
+			m.addEvent(EventInfo, "Dep dispatch: no updates found")
+			return m, m.addToast("No outdated packages found -- all dependencies are up to date", false)
+		}
+		var summary string
+		if msg.dispatched > 0 {
+			summary = fmt.Sprintf("Dispatched %d dep bead(s) to pipeline", msg.dispatched)
+			m.addEvent(EventInfo, summary)
+		}
+		if msg.failed > 0 {
+			failMsg := fmt.Sprintf("Dep dispatch: %d anvil(s) failed", msg.failed)
+			m.addEvent(EventWarn, failMsg)
+			if summary != "" {
+				summary += fmt.Sprintf(", %d failed", msg.failed)
+			} else {
+				summary = failMsg
+			}
+		}
+		return m, m.addToast(summary, msg.failed > 0)
+
 	case tea.KeyMsg:
 		// When the update overlay is active, route key events to the update overlay handler.
 		if m.showUpdateOverlay {

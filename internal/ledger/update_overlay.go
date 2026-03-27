@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,7 +12,9 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/depupdate"
+	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/worktree"
 )
 
@@ -23,6 +26,7 @@ const (
 	updateFilterPatchMinor                             // skip major version bumps
 	updateFilterSelectGroups                           // let user pick groups individually
 	updateFilterCancel                                 // close without applying
+	updateFilterDispatch                               // find/create consolidated dep bead and dispatch via daemon
 )
 
 // updateScanDoneMsg is delivered when the background depupdate.Scan call completes.
@@ -48,6 +52,16 @@ type updateApplyDoneMsg struct {
 type depBeadsCloseDoneMsg struct {
 	closed int
 	failed int
+}
+
+// updateBeadsDispatchedMsg is delivered when consolidated dep beads have been
+// dispatched to the daemon pipeline via IPC.
+type updateBeadsDispatchedMsg struct {
+	dispatched int      // number of beads successfully dispatched
+	noUpdates  int      // anvils that had no outdated packages
+	failed     int      // anvils where dispatch failed
+	errors     []string // per-anvil error messages
+	noDaemon   bool     // true when the daemon was not reachable
 }
 
 // openUpdateOverlay opens the update overlay and kicks off a background scan.
@@ -231,6 +245,76 @@ func runUpdateApply(reports []depupdate.AnvilReport, filter updateFilterChoice, 
 	}
 }
 
+// runDispatchBeads finds or creates the consolidated dep bead for each anvil
+// that has updates, then dispatches each bead to the Forge daemon via IPC.
+// Anvils with no outdated packages are silently skipped.
+func (m *Model) runDispatchBeads(reports []depupdate.AnvilReport) tea.Cmd {
+	// Collect anvils that actually have update groups.
+	type anvilTarget struct {
+		name string
+		path string
+	}
+	var targets []anvilTarget
+	for _, r := range reports {
+		if len(r.Groups) > 0 {
+			targets = append(targets, anvilTarget{name: r.Anvil.Name, path: r.Anvil.Path})
+		}
+	}
+	if len(targets) == 0 {
+		return m.addToast("No updates available to dispatch", false)
+	}
+	db := m.db
+	return func() tea.Msg {
+		if !ipc.SocketExists() {
+			return updateBeadsDispatchedMsg{noDaemon: true}
+		}
+		var dispatched, noUpdates, failed int
+		var errors []string
+		for _, t := range targets {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			beadID, err := depcheck.FindOrCreateBeadID(ctx, db, t.name, t.path, "")
+			cancel()
+			if err != nil {
+				failed++
+				errors = append(errors, fmt.Sprintf("%s: %v", t.name, err))
+				continue
+			}
+			if beadID == "" {
+				noUpdates++
+				continue
+			}
+			client, err := ipc.NewClient()
+			if err != nil {
+				failed++
+				errors = append(errors, fmt.Sprintf("%s: connect to daemon: %v", t.name, err))
+				continue
+			}
+			payload, _ := json.Marshal(ipc.RunBeadPayload{
+				BeadID:   beadID,
+				Anvil:    t.name,
+				ForceRun: true,
+			})
+			_, sendErr := client.Send(ipc.Command{
+				Type:    "run_bead",
+				Payload: json.RawMessage(payload),
+			})
+			client.Close()
+			if sendErr != nil {
+				failed++
+				errors = append(errors, fmt.Sprintf("%s: dispatch bead %s: %v", t.name, beadID, sendErr))
+			} else {
+				dispatched++
+			}
+		}
+		return updateBeadsDispatchedMsg{
+			dispatched: dispatched,
+			noUpdates:  noUpdates,
+			failed:     failed,
+			errors:     errors,
+		}
+	}
+}
+
 // buildGroupSelectForm builds a multi-select huh form for picking individual
 // update groups to apply.
 func buildGroupSelectForm(reports []depupdate.AnvilReport, selectedKeys *[]string) *huh.Form {
@@ -282,11 +366,12 @@ func buildUpdateFilterForm(choice *updateFilterChoice, totalGroups, totalAnvils 
 					huh.NewOption("All updates (patch, minor, major)", updateFilterAll),
 					huh.NewOption("Patch + minor only (skip major)", updateFilterPatchMinor),
 					huh.NewOption("Select groups...", updateFilterSelectGroups),
+					huh.NewOption("Dispatch to pipeline (via Forge daemon)", updateFilterDispatch),
 					huh.NewOption("Cancel", updateFilterCancel),
 				).
 				Value(choice),
 		),
-	).WithTheme(huh.ThemeCharm()).WithWidth(60)
+	).WithTheme(huh.ThemeCharm()).WithWidth(65)
 }
 
 // depBeadPackage extracts the package path from a dep-update bead title.
@@ -450,6 +535,11 @@ func (m *Model) updateUpdateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case updateFilterSelectGroups:
 				m.updateGroupSelectForm = buildGroupSelectForm(m.updateReports, &m.updateSelectedKeys)
 				return m, tea.Batch(cmd, m.updateGroupSelectForm.Init())
+			case updateFilterDispatch:
+				m.updateRunning = true
+				startToast := m.addToast("Dispatching dependency beads to daemon...", false)
+				dispatchCmd := m.runDispatchBeads(m.updateReports)
+				return m, tea.Batch(cmd, startToast, dispatchCmd)
 			default:
 				m.updateRunning = true
 				startToast := m.addToast("Applying dependency updates...", false)
