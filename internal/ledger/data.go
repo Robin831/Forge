@@ -105,7 +105,9 @@ func parseTimeSafe(raw json.RawMessage) *time.Time {
 // the canonical HTTPS GitHub URL (e.g. "https://github.com/org/repo"), or ""
 // on failure or when the remote is not a GitHub URL.
 func parseGitHubURL(anvilPath string) string {
-	cmd := exec.Command("git", "-C", anvilPath, "remote", "get-url", "origin")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", anvilPath, "remote", "get-url", "origin")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""

@@ -292,3 +292,39 @@ func TestRenderListHeaderShowsListMode(t *testing.T) {
 	out := m.renderList()
 	assert.Contains(t, out, "List", "renderList header must include view mode label")
 }
+
+// ---------------------------------------------------------------------------
+// Ext column formatting in renderBeadRow
+// ---------------------------------------------------------------------------
+
+func TestRenderBeadRowExtColumnGHRef(t *testing.T) {
+	// gh-42 should be rendered as #42 in the Ext column.
+	m := &Model{width: 160}
+	b := Bead{ID: "Forge-x1", Title: "Has ext ref", Priority: 2, Status: "open", ExternalRef: "gh-42"}
+	row := m.renderBeadRow(b, 30, false)
+	assert.Contains(t, row, "#42", "gh-42 external ref should be displayed as #42 in the Ext column")
+}
+
+func TestRenderBeadRowExtColumnEmpty(t *testing.T) {
+	// No ExternalRef → Ext column is blank; row must not contain a stray '#'.
+	m := &Model{width: 160}
+	b := Bead{ID: "Forge-x2", Title: "No ext ref", Priority: 2, Status: "open", ExternalRef: ""}
+	row := m.renderBeadRow(b, 30, false)
+	assert.NotContains(t, row, "#", "empty ExternalRef should produce no '#' in the Ext column")
+}
+
+func TestRenderBeadRowExtColumnBareGHPrefix(t *testing.T) {
+	// "gh-" with no trailing number should not be formatted as "#".
+	m := &Model{width: 160}
+	b := Bead{ID: "Forge-x3", Title: "Bare prefix", Priority: 2, Status: "open", ExternalRef: "gh-"}
+	row := m.renderBeadRow(b, 30, false)
+	assert.NotContains(t, row, "#", "bare 'gh-' ExternalRef should not render as '#' in the Ext column")
+}
+
+func TestRenderBeadRowExtColumnNonGHRef(t *testing.T) {
+	// Non-gh refs (e.g. jira-123) are displayed verbatim, not as '#N'.
+	m := &Model{width: 160}
+	b := Bead{ID: "Forge-x4", Title: "Jira ref", Priority: 2, Status: "open", ExternalRef: "jira-123"}
+	row := m.renderBeadRow(b, 30, false)
+	assert.NotContains(t, row, "#", "non-gh external ref should not render as '#N'")
+}
