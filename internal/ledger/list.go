@@ -46,6 +46,7 @@ const (
 	colID       = 14
 	colStatus   = 13
 	colAnvil    = 14
+	colExt      = 6  // compact GitHub issue number, e.g. "#42"
 	colLabels   = 14
 	colAssignee = 12
 	// Title gets the remainder.
@@ -256,6 +257,7 @@ func (m *Model) renderList() string {
 		padRight("Status", colStatus) +
 		padRight("Anvil", colAnvil)
 	if !hideLabels {
+		colHeaderRow += padRight("Ext", colExt)
 		colHeaderRow += padRight("Labels", colLabels)
 	}
 	if !hideAssignee {
@@ -335,11 +337,12 @@ func (m *Model) hiddenListCols() (hideLabels, hideAssignee bool) {
 }
 
 // titleColumnWidth computes the width available for the title column.
-// Optional columns (Labels, Assignee) are excluded when the terminal is narrow.
+// Optional columns (Ext, Labels, Assignee) are excluded when the terminal is narrow.
 func (m *Model) titleColumnWidth() int {
 	hideLabels, hideAssignee := m.hiddenListCols()
 	fixed := colPriority + colID + colStatus + colAnvil + 4 // 4 for padding
 	if !hideLabels {
+		fixed += colExt
 		fixed += colLabels
 	}
 	if !hideAssignee {
@@ -390,8 +393,13 @@ func (m *Model) renderBeadRow(b Bead, titleWidth int, selected bool) string {
 	// Optional columns: hidden on narrow terminals to give more title space.
 	hideLabels, hideAssignee := m.hiddenListCols()
 
-	var labelsPart, assigneePart string
+	var extPart, labelsPart, assigneePart string
 	if !hideLabels {
+		extStr := b.ExternalRef
+		if after, ok := strings.CutPrefix(b.ExternalRef, "gh-"); ok && after != "" {
+			extStr = "#" + after
+		}
+		extPart = padRight(truncate(extStr, colExt-1), colExt)
 		labelStr := strings.Join(b.Labels, ",")
 		labelsPart = padRight(truncate(labelStr, colLabels-1), colLabels)
 	}
@@ -399,7 +407,7 @@ func (m *Model) renderBeadRow(b Bead, titleWidth int, selected bool) string {
 		assigneePart = padRight(truncate(b.Assignee, colAssignee-1), colAssignee)
 	}
 
-	row := checkPrefix + pri + id + title + status + anvil + labelsPart + assigneePart
+	row := checkPrefix + pri + id + title + status + anvil + extPart + labelsPart + assigneePart
 
 	if selected {
 		return lipgloss.NewStyle().

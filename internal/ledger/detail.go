@@ -7,6 +7,37 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// renderOSC8Link wraps text in an OSC 8 terminal hyperlink escape sequence,
+// making the text clickable in supporting terminals (e.g. Windows Terminal,
+// iTerm2). When url is empty the text is returned unchanged.
+//
+// To avoid terminal escape injection, OSC 8 sequences are only emitted when
+// both url and text contain no control characters (e.g. ESC, BEL).
+func renderOSC8Link(url, text string) string {
+	if url == "" {
+		return text
+	}
+	if !isSafeForOSC8(url) || !isSafeForOSC8(text) {
+		// Fall back to plain text when inputs contain control characters.
+		return text
+	}
+	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
+}
+
+// isSafeForOSC8 reports whether s can be safely embedded into an OSC 8
+// hyperlink sequence. It rejects ASCII control characters (0x00-0x1F, 0x7F),
+// including ESC and BEL, which could otherwise be used for terminal escape
+// injection.
+func isSafeForOSC8(s string) bool {
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b < 0x20 || b == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 // detailPanelFixedW is the fixed column width of the bead detail side panel
 // (including its left border).
 const detailPanelFixedW = 38
@@ -131,6 +162,19 @@ func renderBeadDetailContent(sb *strings.Builder, b *Bead, innerW int) {
 	}
 	if b.HasPR {
 		writeDetailField(sb, keyStyle, "PR", "open", innerW)
+	}
+	if b.ExternalRef != "" {
+		key := "GitHub: "
+		keyW := lipgloss.Width(key)
+		valW := max(innerW-keyW, 1)
+		displayText := b.ExternalRef
+		if after, ok := strings.CutPrefix(b.ExternalRef, "gh-"); ok && after != "" {
+			displayText = "#" + after
+		}
+		displayText = truncate(displayText, valW)
+		sb.WriteString(keyStyle.Render(key))
+		sb.WriteString(renderOSC8Link(b.ExternalRefURL, displayText))
+		sb.WriteByte('\n')
 	}
 	if b.UpdatedAt != nil {
 		writeDetailField(sb, keyStyle, "Updated", b.UpdatedAt.Format("2006-01-02"), innerW)

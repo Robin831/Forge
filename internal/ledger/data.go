@@ -30,10 +30,12 @@ type Bead struct {
 	DependsOn   []string   `json:"depends_on"`
 	ClosedAt    *time.Time `json:"closed_at"`
 	UpdatedAt   *time.Time `json:"updated_at"`
+	ExternalRef string     `json:"external_ref"`
 
 	// Enriched fields (not from bd JSON)
-	Anvil string `json:"-"`
-	HasPR bool   `json:"-"`
+	Anvil          string `json:"-"`
+	HasPR          bool   `json:"-"`
+	ExternalRefURL string `json:"-"` // full GitHub issue URL, built from ExternalRef
 }
 
 // beadJSON is an internal mirror of Bead used only for JSON deserialization.
@@ -52,6 +54,7 @@ type beadJSON struct {
 	DependsOn   []string        `json:"depends_on"`
 	ClosedAt    json.RawMessage `json:"closed_at"`
 	UpdatedAt   json.RawMessage `json:"updated_at"`
+	ExternalRef string          `json:"external_ref"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler for Bead.
@@ -75,6 +78,7 @@ func (b *Bead) UnmarshalJSON(data []byte) error {
 	b.DependsOn = raw.DependsOn
 	b.ClosedAt = parseTimeSafe(raw.ClosedAt)
 	b.UpdatedAt = parseTimeSafe(raw.UpdatedAt)
+	b.ExternalRef = raw.ExternalRef
 	return nil
 }
 
@@ -95,6 +99,57 @@ func parseTimeSafe(raw json.RawMessage) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+// parseGitHubURL runs "git remote get-url origin" in anvilPath and returns
+// the canonical HTTPS GitHub URL (e.g. "https://github.com/org/repo"), or ""
+// on failure or when the remote is not a GitHub URL.
+func parseGitHubURL(anvilPath string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", anvilPath, "remote", "get-url", "origin"))
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return normalizeGitHubURL(strings.TrimSpace(string(out)))
+}
+
+// normalizeGitHubURL converts a git remote URL to a canonical HTTPS GitHub URL,
+// stripping the trailing ".git" suffix. Returns "" for non-GitHub remotes.
+func normalizeGitHubURL(remote string) string {
+	if path, ok := strings.CutPrefix(remote, "git@github.com:"); ok {
+		path = strings.TrimSuffix(path, ".git")
+		return "https://github.com/" + path
+	}
+	if strings.HasPrefix(remote, "https://github.com/") {
+		return strings.TrimSuffix(remote, ".git")
+	}
+	return ""
+}
+
+// buildExternalRefURL constructs the full GitHub issue URL from a repository
+// base URL and an external_ref value (e.g. "gh-42"). Returns "" when either
+// argument is empty or when the ref does not match the "gh-N" format.
+func buildExternalRefURL(repoURL, externalRef string) string {
+	if repoURL == "" || externalRef == "" {
+		return ""
+	}
+	num, ok := strings.CutPrefix(externalRef, "gh-")
+	if !ok || num == "" {
+		return ""
+	}
+	// Guard against malformed or malicious external_ref values by ensuring the
+	// suffix is a reasonable-length, digits-only GitHub issue number.
+	if len(num) > 10 { // GitHub issue numbers are unlikely to exceed this
+		return ""
+	}
+	for i := 0; i < len(num); i++ {
+		if num[i] < '0' || num[i] > '9' {
+			return ""
+		}
+	}
+	return repoURL + "/issues/" + num
 }
 
 // UpdateBeadsMsg carries the result of a FetchAllBeads operation.
@@ -242,7 +297,8 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 			// Silently ignore closed-beads errors — open/in_progress are the priority.
 		}
 
-		// Enrich with PR data from state DB.
+		// Enrich with PR data and GitHub issue URLs from state DB and git remote.
+		repoURL := parseGitHubURL(anvilPath)
 		if db != nil {
 			openPRs, err := db.OpenPRs()
 			if err == nil {
@@ -257,6 +313,11 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 						allBeads[i].HasPR = true
 					}
 				}
+			}
+		}
+		for i := range allBeads {
+			if allBeads[i].ExternalRef != "" {
+				allBeads[i].ExternalRefURL = buildExternalRefURL(repoURL, allBeads[i].ExternalRef)
 			}
 		}
 
@@ -284,10 +345,14 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 		var firstErr error
 
 		for name, path := range anvils {
+			// Resolve the GitHub repository URL once per anvil so beads can be
+			// enriched with a full issue URL when they have an external_ref.
+			repoURL := parseGitHubURL(path)
+
 			// Fetch open + in_progress beads — use a shorter timeout since these
 			// should be fast; they are critical for the Ledger view.
 			wg.Add(1)
-			go func(name, path string) {
+			go func(name, path, repoURL string) {
 				defer wg.Done()
 				// bd does not support multiple --status flags; make separate calls per status.
 				// A single shared timeout context covers both calls so the combined wait
@@ -320,19 +385,22 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 						}
 						for i := range beads {
 							beads[i].Anvil = name
+							if beads[i].ExternalRef != "" {
+								beads[i].ExternalRefURL = buildExternalRefURL(repoURL, beads[i].ExternalRef)
+							}
 						}
 						mu.Lock()
 						allBeads = append(allBeads, beads...)
 						mu.Unlock()
 					}()
 				}
-			}(name, path)
+			}(name, path, repoURL)
 
 			// Fetch recently closed beads — use a longer timeout since remote Dolt
 			// anvils can be slow; closed beads are supplementary so a longer wait
 			// here does not block the primary open/in_progress data.
 			wg.Add(1)
-			go func(name, path string) {
+			go func(name, path, repoURL string) {
 				defer wg.Done()
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer cancel()
@@ -363,6 +431,9 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 				var recent []Bead
 				for i := range beads {
 					beads[i].Anvil = name
+					if beads[i].ExternalRef != "" {
+						beads[i].ExternalRefURL = buildExternalRefURL(repoURL, beads[i].ExternalRef)
+					}
 					if beads[i].ClosedAt != nil && beads[i].ClosedAt.After(cutoff) {
 						recent = append(recent, beads[i])
 					} else if beads[i].UpdatedAt != nil && beads[i].UpdatedAt.After(cutoff) {
@@ -372,7 +443,7 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 				mu.Lock()
 				allBeads = append(allBeads, recent...)
 				mu.Unlock()
-			}(name, path)
+			}(name, path, repoURL)
 		}
 		wg.Wait()
 
