@@ -8,6 +8,7 @@ package depcheck
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os/exec"
@@ -47,6 +48,7 @@ type Scanner struct {
 	interval   time.Duration
 	timeout    time.Duration
 	anvilPaths map[string]string // anvil name -> path
+	anvilTags  map[string]string // anvil name -> auto-dispatch label (e.g. "forgeReady")
 	mu         sync.RWMutex
 }
 
@@ -75,6 +77,20 @@ func (s *Scanner) UpdateAnvilPaths(paths map[string]string) {
 	}
 	s.mu.Lock()
 	s.anvilPaths = copied
+	s.mu.Unlock()
+}
+
+// UpdateAnvilTags replaces the per-anvil auto-dispatch label map. Tags are used
+// when creating consolidated dependency beads so that each anvil uses its own
+// configured label (e.g. "forgeReady", "forge-auto"). This is safe to call
+// while Run is active and takes effect on the next scan cycle.
+func (s *Scanner) UpdateAnvilTags(tags map[string]string) {
+	copied := make(map[string]string, len(tags))
+	for k, v := range tags {
+		copied[k] = v
+	}
+	s.mu.Lock()
+	s.anvilTags = copied
 	s.mu.Unlock()
 }
 
@@ -184,6 +200,7 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 		{"npm", s.scanNpm},
 	}
 
+	var allResults []*CheckResult
 	for _, sc := range scanners {
 		if ctx.Err() != nil {
 			return
@@ -216,7 +233,14 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 				total, sc.name, name, len(result.Patch), len(result.Minor), len(result.Major)),
 			"", name)
 
-		s.createBeads(ctx, result)
+		allResults = append(allResults, result)
+	}
+
+	if len(allResults) > 0 {
+		s.mu.RLock()
+		autoDispatchTag := s.anvilTags[name]
+		s.mu.RUnlock()
+		s.findOrCreateConsolidatedBead(ctx, allResults, path, name, autoDispatchTag)
 	}
 }
 
@@ -272,105 +296,140 @@ func parseSemver(v string) (major, minor, patch string) {
 	}
 }
 
-// createBeads creates bead issues for the outdated dependencies found in an anvil.
-// Each module gets its own bead so that dedup, PR tracking, and agent assignment
-// are per-module. A DedupCache is built for this scan result (per ecosystem in
-// scanAnvil) to avoid spawning one external command per module.
-func (s *Scanner) createBeads(ctx context.Context, result *CheckResult) {
-	cache := BuildDedupCache(ctx, s.db, result.Path, result.Anvil)
-	if !cache.valid {
-		log.Printf("[depcheck] %s: dedup cache invalid (bd unreachable?) — skipping bead creation to avoid duplicates", result.Anvil)
+// findOrCreateConsolidatedBead is the main bead management entry point.
+// It searches for an existing open bead with today's consolidated title for this anvil.
+// If found, it appends any new packages to the description.
+// If not found, it creates a new bead tagged with autoDispatchTag.
+func (s *Scanner) findOrCreateConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName, autoDispatchTag string) {
+	title := consolidatedBeadTitle(time.Now())
+
+	existing, err := findConsolidatedBead(ctx, anvilPath, title)
+	if err != nil {
+		log.Printf("[depcheck] %s: could not query existing beads — skipping bead creation: %v", anvilName, err)
 		_ = s.db.LogEvent(state.EventDepcheckFailed,
-			fmt.Sprintf("Skipped bead creation for %s — could not query existing beads for dedup", result.Anvil), "", result.Anvil)
+			fmt.Sprintf("Skipped bead creation for %s — could not query existing beads: %v", anvilName, err), "", anvilName)
 		return
 	}
 
-	for _, u := range append(result.Patch, result.Minor...) {
-		if DedupCheckWithCache(cache, u.Path) {
-			log.Printf("[depcheck] %s: bead/PR already exists for %s, skipping", result.Anvil, u.Path)
-			_ = s.db.LogEvent(state.EventDepcheckDedup,
-				fmt.Sprintf("[%s] Skipped %s update for %s (%s → %s) — existing bead or cooldown", result.Anvil, result.Ecosystem, u.Path, u.Current, u.Latest),
-				"", result.Anvil)
-			continue
-		}
-		s.createUpdateBead(ctx, result, "auto", u)
-	}
-
-	for _, u := range result.Major {
-		if DedupCheckWithCache(cache, u.Path) {
-			log.Printf("[depcheck] %s: bead/PR already exists for %s, skipping", result.Anvil, u.Path)
-			_ = s.db.LogEvent(state.EventDepcheckDedup,
-				fmt.Sprintf("[%s] Skipped %s update for %s (%s → %s) — existing bead or cooldown", result.Anvil, result.Ecosystem, u.Path, u.Current, u.Latest),
-				"", result.Anvil)
-			continue
-		}
-		s.createUpdateBead(ctx, result, "major", u)
+	if existing != nil {
+		s.updateConsolidatedBead(ctx, existing, allResults, anvilPath, anvilName)
+	} else {
+		s.createConsolidatedBead(ctx, allResults, anvilPath, anvilName, title, autoDispatchTag)
 	}
 }
 
-// createUpdateBead runs 'bd create' to create a bead for a single dependency update.
-func (s *Scanner) createUpdateBead(ctx context.Context, result *CheckResult, kind string, update ModuleUpdate) {
-	title := BeadTitle(result.Ecosystem, update.Path, update.Current, update.Latest)
-	var priority string
-	var desc strings.Builder
+// createConsolidatedBead creates a new consolidated dependency update bead
+// containing all outdated packages from allResults, then tags it with autoDispatchTag.
+func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName, title, autoDispatchTag string) {
+	desc := buildConsolidatedDescription(anvilName, allResults)
 
-	switch kind {
-	case "auto":
-		priority = "3"
-		desc.WriteString(fmt.Sprintf("Automated %s dependency update: %s %s → %s.\n\n",
-			result.Ecosystem, update.Path, update.Current, update.Latest))
-		desc.WriteString("## Module\n\n")
-		desc.WriteString("| Module | Current | Latest | Type |\n")
-		desc.WriteString("|--------|---------|--------|------|\n")
-		desc.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", update.Path, update.Current, update.Latest, update.Kind))
-		desc.WriteString("\n## Instructions\n\n")
-		desc.WriteString("```bash\n")
-		switch result.Ecosystem {
-		case "Go":
-			desc.WriteString(fmt.Sprintf("go get %s@%s\n", update.Path, update.Latest))
-			desc.WriteString("go mod tidy\n")
-		case "NuGet":
-			desc.WriteString(fmt.Sprintf("dotnet add package %s --version %s\n", update.Path, update.Latest))
-		case "npm":
-			desc.WriteString(fmt.Sprintf("npm install %s@%s\n", update.Path, update.Latest))
+	// Use priority 2 if any major updates are present, otherwise 3.
+	priority := "3"
+	for _, r := range allResults {
+		if r != nil && r.Error == nil && len(r.Major) > 0 {
+			priority = "2"
+			break
 		}
-		desc.WriteString("```\n")
-	case "major":
-		priority = "2"
-		desc.WriteString(fmt.Sprintf("%s major version update: %s %s → %s. This may contain breaking changes and requires manual review.\n\n",
-			result.Ecosystem, update.Path, update.Current, update.Latest))
-		desc.WriteString("## Module\n\n")
-		desc.WriteString("| Module | Current | Latest | Type |\n")
-		desc.WriteString("|--------|---------|--------|------|\n")
-		desc.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", update.Path, update.Current, update.Latest, update.Kind))
 	}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
-	issueType := "chore"
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
 		"bd", "create",
 		fmt.Sprintf("--title=%s", title),
-		fmt.Sprintf("--description=%s", desc.String()),
-		fmt.Sprintf("--type=%s", issueType),
+		fmt.Sprintf("--description=%s", desc),
+		"--type=chore",
 		fmt.Sprintf("--priority=%s", priority),
 		"--json",
 	))
-	cmd.Dir = result.Path
+	cmd.Dir = anvilPath
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
-		log.Printf("[depcheck] Failed to create bead for %s (%s): %v: %s", result.Anvil, kind, err, stderr.String())
+		log.Printf("[depcheck] %s: failed to create consolidated bead: %v: %s", anvilName, err, stderr.String())
 		_ = s.db.LogEvent(state.EventDepcheckFailed,
-			fmt.Sprintf("Failed to create %s update bead for %s: %v", kind, result.Anvil, err), "", result.Anvil)
+			fmt.Sprintf("Failed to create consolidated dep bead for %s: %v", anvilName, err), "", anvilName)
 		return
 	}
 
-	log.Printf("[depcheck] Created %s update bead for %s (%s): %s", kind, result.Anvil, update.Path, strings.TrimSpace(string(output)))
+	log.Printf("[depcheck] %s: created consolidated dep bead %q: %s", anvilName, title, strings.TrimSpace(string(output)))
 	_ = s.db.LogEvent(state.EventDepcheckBeadCreated,
-		fmt.Sprintf("Created %s dependency update bead for %s (%s %s → %s)", kind, result.Anvil, update.Path, update.Current, update.Latest),
-		"", result.Anvil)
+		fmt.Sprintf("Created consolidated dep bead for %s: %s", anvilName, title), "", anvilName)
+
+	// Extract the bead ID from the JSON output so we can tag it for auto-dispatch.
+	// bd create --json may emit extra lines (e.g. progress messages) before the JSON
+	// object, so fall back to scanning each line if a whole-output unmarshal fails.
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &created); err != nil || created.ID == "" {
+		for _, line := range strings.Split(string(output), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if err2 := json.Unmarshal([]byte(line), &created); err2 == nil && created.ID != "" {
+				break
+			}
+		}
+	}
+	if created.ID != "" && autoDispatchTag != "" {
+		s.addForgeReadyLabel(ctx, created.ID, anvilPath, anvilName, autoDispatchTag)
+	}
+}
+
+// updateConsolidatedBead merges new packages from allResults into the existing
+// consolidated bead, rebuilding and updating the description.
+func (s *Scanner) updateConsolidatedBead(ctx context.Context, existing *bdBead, allResults []*CheckResult, anvilPath, anvilName string) {
+	existingAuto, existingMajor := parseConsolidatedDescription(existing.Description)
+	mergedAuto, mergedMajor := mergeConsolidatedPackages(existingAuto, existingMajor, allResults)
+	newDesc := buildDescriptionFromMaps(anvilName, mergedAuto, mergedMajor)
+
+	// Skip update if description is unchanged.
+	if newDesc == existing.Description {
+		log.Printf("[depcheck] %s: consolidated bead %s already up to date", anvilName, existing.ID)
+		return
+	}
+
+	cmdCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
+		"bd", "update", existing.ID,
+		fmt.Sprintf("--description=%s", newDesc),
+		"--json",
+	))
+	cmd.Dir = anvilPath
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("[depcheck] %s: failed to update consolidated bead %s: %v: %s", anvilName, existing.ID, err, stderr.String())
+		_ = s.db.LogEvent(state.EventDepcheckFailed,
+			fmt.Sprintf("Failed to update consolidated dep bead for %s: %v", anvilName, err), "", anvilName)
+		return
+	}
+	log.Printf("[depcheck] %s: updated consolidated bead %s: %s", anvilName, existing.ID, strings.TrimSpace(string(out)))
+	_ = s.db.LogEvent(state.EventDepcheckBeadCreated,
+		fmt.Sprintf("Updated consolidated dep bead for %s: %s", anvilName, existing.ID), "", anvilName)
+}
+
+// addForgeReadyLabel tags a bead with the given label so the poller picks it up.
+func (s *Scanner) addForgeReadyLabel(ctx context.Context, beadID, anvilPath, anvilName, label string) {
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
+		"bd", "update", beadID, "--add-label", label, "--json"))
+	cmd.Dir = anvilPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[depcheck] %s: failed to add %s label to %s: %v: %s", anvilName, label, beadID, err, strings.TrimSpace(string(out)))
+		return
+	}
+	log.Printf("[depcheck] %s: tagged %s with %s: %s", anvilName, beadID, label, strings.TrimSpace(string(out)))
 }
