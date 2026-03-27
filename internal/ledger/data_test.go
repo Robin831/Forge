@@ -463,3 +463,77 @@ func TestIsBdClosedJSONEmpty(t *testing.T) {
 	assert.False(t, isBdClosedJSON(nil), "nil output must return false")
 	assert.False(t, isBdClosedJSON([]byte{}), "empty output must return false")
 }
+
+// ---------------------------------------------------------------------------
+// normalizeGitHubURL
+// ---------------------------------------------------------------------------
+
+func TestNormalizeGitHubURLSSH(t *testing.T) {
+	got := normalizeGitHubURL("git@github.com:org/repo.git")
+	assert.Equal(t, "https://github.com/org/repo", got)
+}
+
+func TestNormalizeGitHubURLSSHNoSuffix(t *testing.T) {
+	got := normalizeGitHubURL("git@github.com:org/repo")
+	assert.Equal(t, "https://github.com/org/repo", got)
+}
+
+func TestNormalizeGitHubURLHTTPS(t *testing.T) {
+	got := normalizeGitHubURL("https://github.com/org/repo.git")
+	assert.Equal(t, "https://github.com/org/repo", got)
+}
+
+func TestNormalizeGitHubURLHTTPSNoSuffix(t *testing.T) {
+	got := normalizeGitHubURL("https://github.com/org/repo")
+	assert.Equal(t, "https://github.com/org/repo", got)
+}
+
+func TestNormalizeGitHubURLNonGitHub(t *testing.T) {
+	assert.Equal(t, "", normalizeGitHubURL("https://gitlab.com/org/repo.git"))
+	assert.Equal(t, "", normalizeGitHubURL("git@bitbucket.org:org/repo.git"))
+	assert.Equal(t, "", normalizeGitHubURL(""))
+}
+
+// ---------------------------------------------------------------------------
+// buildExternalRefURL
+// ---------------------------------------------------------------------------
+
+func TestBuildExternalRefURL(t *testing.T) {
+	got := buildExternalRefURL("https://github.com/org/repo", "gh-42")
+	assert.Equal(t, "https://github.com/org/repo/issues/42", got)
+}
+
+func TestBuildExternalRefURLEmptyRepo(t *testing.T) {
+	assert.Equal(t, "", buildExternalRefURL("", "gh-42"))
+}
+
+func TestBuildExternalRefURLEmptyRef(t *testing.T) {
+	assert.Equal(t, "", buildExternalRefURL("https://github.com/org/repo", ""))
+}
+
+func TestBuildExternalRefURLNonGHRef(t *testing.T) {
+	assert.Equal(t, "", buildExternalRefURL("https://github.com/org/repo", "jira-123"))
+}
+
+func TestBuildExternalRefURLBareGHPrefix(t *testing.T) {
+	// "gh-" with no number should return "".
+	assert.Equal(t, "", buildExternalRefURL("https://github.com/org/repo", "gh-"))
+}
+
+// ---------------------------------------------------------------------------
+// ExternalRef round-trip through JSON
+// ---------------------------------------------------------------------------
+
+func TestBeadExternalRefUnmarshal(t *testing.T) {
+	raw := `{"id":"forge-1","title":"Test","status":"open","priority":2,"external_ref":"gh-42"}`
+	var b Bead
+	require.NoError(t, json.Unmarshal([]byte(raw), &b))
+	assert.Equal(t, "gh-42", b.ExternalRef)
+}
+
+func TestBeadExternalRefMissing(t *testing.T) {
+	raw := `{"id":"forge-2","title":"No ref","status":"open","priority":1}`
+	var b Bead
+	require.NoError(t, json.Unmarshal([]byte(raw), &b))
+	assert.Equal(t, "", b.ExternalRef)
+}

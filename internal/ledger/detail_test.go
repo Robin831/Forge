@@ -11,6 +11,22 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// renderOSC8Link
+// ---------------------------------------------------------------------------
+
+func TestRenderOSC8LinkWithURL(t *testing.T) {
+	out := renderOSC8Link("https://example.com", "click me")
+	assert.Contains(t, out, "https://example.com", "URL must be in escape sequence")
+	assert.Contains(t, out, "click me", "display text must appear")
+	assert.Contains(t, out, "\x1b]8;;", "OSC 8 open sequence must be present")
+}
+
+func TestRenderOSC8LinkEmptyURL(t *testing.T) {
+	out := renderOSC8Link("", "plain text")
+	assert.Equal(t, "plain text", out, "empty URL must return text unchanged")
+}
+
+// ---------------------------------------------------------------------------
 // wrapDetailText
 // ---------------------------------------------------------------------------
 
@@ -165,11 +181,66 @@ func TestRenderBeadDetailContentOmitsEmptyOptionals(t *testing.T) {
 	assert.NotContains(t, out, "Assignee:")
 	assert.NotContains(t, out, "Labels:")
 	assert.NotContains(t, out, "PR:")
+	assert.NotContains(t, out, "GitHub:")
 	assert.NotContains(t, out, "Updated:")
 	assert.NotContains(t, out, "Closed:")
 	assert.NotContains(t, out, "Depends on:")
 	assert.NotContains(t, out, "Blocks:")
 	assert.NotContains(t, out, "Description:")
+}
+
+func TestRenderBeadDetailContentExternalRefGH(t *testing.T) {
+	var sb strings.Builder
+	b := &Bead{
+		ID:          "Forge-xyz",
+		Title:       "Ref test",
+		Status:      "open",
+		Priority:    2,
+		Anvil:       "repo",
+		ExternalRef: "gh-42",
+	}
+	renderBeadDetailContent(&sb, b, 30)
+	out := sb.String()
+
+	assert.Contains(t, out, "GitHub:", "GitHub field must appear when external_ref is set")
+	assert.Contains(t, out, "#42", "issue number must be shown in #N format")
+}
+
+func TestRenderBeadDetailContentExternalRefWithURL(t *testing.T) {
+	var sb strings.Builder
+	b := &Bead{
+		ID:             "Forge-xyz",
+		Title:          "Link test",
+		Status:         "open",
+		Priority:       2,
+		Anvil:          "repo",
+		ExternalRef:    "gh-7",
+		ExternalRefURL: "https://github.com/org/repo/issues/7",
+	}
+	renderBeadDetailContent(&sb, b, 30)
+	out := sb.String()
+
+	assert.Contains(t, out, "GitHub:")
+	assert.Contains(t, out, "#7")
+	// OSC 8 hyperlink escape sequence must be present when URL is set.
+	assert.Contains(t, out, "https://github.com/org/repo/issues/7")
+}
+
+func TestRenderBeadDetailContentExternalRefNonGH(t *testing.T) {
+	var sb strings.Builder
+	b := &Bead{
+		ID:          "Forge-abc",
+		Title:       "Non-GH ref",
+		Status:      "open",
+		Priority:    2,
+		Anvil:       "repo",
+		ExternalRef: "jira-99",
+	}
+	renderBeadDetailContent(&sb, b, 30)
+	out := sb.String()
+
+	assert.Contains(t, out, "GitHub:", "GitHub field must appear for any non-empty external_ref")
+	assert.Contains(t, out, "jira-99", "raw ref value must be shown when not gh- format")
 }
 
 // ---------------------------------------------------------------------------

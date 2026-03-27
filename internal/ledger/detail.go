@@ -7,6 +7,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// renderOSC8Link wraps text in an OSC 8 terminal hyperlink escape sequence,
+// making the text clickable in supporting terminals (e.g. Windows Terminal,
+// iTerm2). When url is empty the text is returned unchanged.
+func renderOSC8Link(url, text string) string {
+	if url == "" {
+		return text
+	}
+	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
+}
+
 // detailPanelFixedW is the fixed column width of the bead detail side panel
 // (including its left border).
 const detailPanelFixedW = 38
@@ -131,6 +141,19 @@ func renderBeadDetailContent(sb *strings.Builder, b *Bead, innerW int) {
 	}
 	if b.HasPR {
 		writeDetailField(sb, keyStyle, "PR", "open", innerW)
+	}
+	if b.ExternalRef != "" {
+		key := "GitHub: "
+		keyW := lipgloss.Width(key)
+		valW := max(innerW-keyW, 1)
+		displayText := b.ExternalRef
+		if after, ok := strings.CutPrefix(b.ExternalRef, "gh-"); ok && after != "" {
+			displayText = "#" + after
+		}
+		displayText = truncate(displayText, valW)
+		sb.WriteString(keyStyle.Render(key))
+		sb.WriteString(renderOSC8Link(b.ExternalRefURL, displayText))
+		sb.WriteByte('\n')
 	}
 	if b.UpdatedAt != nil {
 		writeDetailField(sb, keyStyle, "Updated", b.UpdatedAt.Format("2006-01-02"), innerW)
