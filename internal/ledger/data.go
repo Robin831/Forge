@@ -107,7 +107,7 @@ func parseTimeSafe(raw json.RawMessage) *time.Time {
 func parseGitHubURL(anvilPath string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", anvilPath, "remote", "get-url", "origin")
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", anvilPath, "remote", "get-url", "origin"))
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -138,6 +138,16 @@ func buildExternalRefURL(repoURL, externalRef string) string {
 	num, ok := strings.CutPrefix(externalRef, "gh-")
 	if !ok || num == "" {
 		return ""
+	}
+	// Guard against malformed or malicious external_ref values by ensuring the
+	// suffix is a reasonable-length, digits-only GitHub issue number.
+	if len(num) > 10 { // GitHub issue numbers are unlikely to exceed this
+		return ""
+	}
+	for i := 0; i < len(num); i++ {
+		if num[i] < '0' || num[i] > '9' {
+			return ""
+		}
 	}
 	return repoURL + "/issues/" + num
 }
