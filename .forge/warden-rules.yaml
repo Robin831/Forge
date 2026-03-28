@@ -2933,3 +2933,18 @@ rules:
         Verify that creation/mutation functions propagate errors (returning (result, error) or at minimum a success flag) rather than relying on a follow-up query to detect failure — otherwise error messages will be misleading when creation silently fails
       source: copilot:PR#467
       added: "2026-03-27"
+    - id: phase-list-backward-compat
+      category: other
+      pattern: Removing entries from phase/status constant lists or filter sets
+      check: >-
+        Verify that removing a phase or status value from a filter list won't break backward compatibility for users upgrading from older versions that may have persisted records with that value. Consider keeping deprecated values in exclusion lists or adding a DB migration to clean up lingering records.
+      source: copilot:PR#466
+      added: "2026-03-28"
+    - id: remove-stale-references-after-flow-deletion
+      category: other
+      pattern: >-
+        Deleting or removing a feature/flow/worker while constants, phase lists, enums, or doc comments elsewhere still reference it
+      check: >-
+        When removing a flow or feature, verify that all reference lists (e.g. phase arrays, enums, constants, doc comments) are updated to either remove the deleted item or clearly mark it as legacy with an explanation of why it is retained (e.g. backward compatibility with existing DB rows)
+      source: copilot:PR#466
+      added: "2026-03-28"
