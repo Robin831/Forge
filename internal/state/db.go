@@ -431,8 +431,11 @@ const (
 //     produce log output when external state changes (e.g. PR events) and can
 //     legitimately be silent for long stretches.
 //   - Synthetic / non-dispatch phases (approve_as_is, force_smith, smelter,
-//     depupdate, etc.) that do not represent active Smith work and should not
-//     block dispatch capacity or be treated as stale.
+//     depupdate [legacy], etc.) that do not represent active Smith work and
+//     should not block dispatch capacity or be treated as stale.
+//
+// Note: depupdate is retained here only for backward compatibility with
+// historical DB rows; there is no active depupdate worker flow anymore.
 // Update this constant when new background or synthetic phases are added.
 const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'crucible', 'schematic', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter', 'depupdate'"
 
