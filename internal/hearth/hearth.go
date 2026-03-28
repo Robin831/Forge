@@ -29,7 +29,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
-	"github.com/Robin831/Forge/internal/depupdate"
 	"github.com/Robin831/Forge/internal/ingot"
 )
 
@@ -494,20 +493,6 @@ type Model struct {
 	// Incremental log file reader — avoids re-reading entire log files on each tick.
 	logCache *LogTailerCache
 
-	// UpdateAnvils is the list of anvils to scan and update when the user presses 'U'.
-	// Populated by the caller (e.g. the daemon or CLI) before starting the TUI.
-	UpdateAnvils []depupdate.Anvil
-
-	// Update overlay state — shown when the user presses 'U'.
-	showUpdateOverlay     bool
-	updateScanning        bool                    // true while depupdate.Scan is in flight
-	updateRunning         bool                    // true while depupdate.Apply is in flight
-	updateReports         []depupdate.AnvilReport // results from the most recent scan
-	updateForm            *huh.Form               // filter selection form shown after scan
-	updateFilterKind      updateFilterChoice      // the user's chosen filter (all / patch+minor / select groups)
-	updateGroupSelectForm *huh.Form               // group multi-select form (shown when select groups chosen)
-	updateSelectedKeys    []string                // group keys selected in the group-select form
-	updateScanGeneration  int                     // incremented each time a scan is started; stale results are ignored
 }
 
 // NewModel creates a new Hearth TUI model.
@@ -752,49 +737,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
-	case updateScanDoneMsg:
-		// Discard stale results from a scan that was started before the overlay was last closed.
-		if msg.generation != m.updateScanGeneration || !m.showUpdateOverlay {
-			return m, nil
-		}
-		m.updateScanning = false
-		// Reset window title — npm subprocesses on Windows can corrupt it
-		// via console API calls during the scan phase.
-		titleCmd := tea.SetWindowTitle("The Forge — Hearth")
-		if msg.err != nil {
-			m.closeUpdateOverlay()
-			return m, tea.Batch(titleCmd, m.addToast(fmt.Sprintf("Dep scan failed: %v", msg.err), true))
-		}
-		m.updateReports = msg.reports
-		total := countUpdateGroups(msg.reports)
-		if total == 0 {
-			// Nothing to update — close overlay and notify
-			m.closeUpdateOverlay()
-			return m, tea.Batch(titleCmd, m.addToast("All dependencies are up to date", false))
-		}
-		anvilCount := countUpdateAnvils(msg.reports)
-		m.updateForm = buildUpdateFilterForm(&m.updateFilterKind, total, anvilCount)
-		return m, tea.Batch(titleCmd, m.updateForm.Init())
-
-	case updateApplyDoneMsg:
-		m.updateRunning = false
-		m.closeUpdateOverlay()
-		if msg.applied == 0 && msg.failed == 0 {
-			return m, tea.Batch(tea.SetWindowTitle("The Forge — Hearth"), m.addToast("No updates were applied", false))
-		}
-		summary := fmt.Sprintf("Updated %d groups across %d anvil(s)", msg.applied, msg.anvils)
-		if msg.skipped > 0 {
-			summary += fmt.Sprintf(", %d group(s) skipped", msg.skipped)
-		}
-		if msg.failed > 0 {
-			summary += fmt.Sprintf(", %d group(s) failed", msg.failed)
-		}
-		if len(msg.prErrors) > 0 {
-			summary += fmt.Sprintf("; PR creation failed for %d anvil(s)", len(msg.prErrors))
-		}
-		isError := (msg.failed > 0 && msg.applied == 0) || (len(msg.prErrors) > 0 && msg.applied == 0)
-		return m, tea.Batch(tea.SetWindowTitle("The Forge — Hearth"), m.addToast(summary, isError))
-
 	case tea.KeyMsg:
 		// Log viewer overlay intercepts all keys
 		if m.showLogViewer {
@@ -842,78 +784,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				m.notesTA, cmd = m.notesTA.Update(msg)
 				return m, cmd
-			}
-			return m, nil
-		}
-
-		// Update overlay intercepts all keys when open
-		if m.showUpdateOverlay {
-			switch msg.String() {
-			case "ctrl+c":
-				return m, tea.Quit
-			case "esc":
-				m.closeUpdateOverlay()
-				return m, nil
-			}
-			// While scanning or applying, absorb all keys (except esc handled above)
-			if m.updateScanning || m.updateRunning {
-				return m, nil
-			}
-			// Drive the group multi-select form (shown when "select groups" was chosen)
-			if m.updateGroupSelectForm != nil {
-				cmd := m.driveHuhForm(&m.updateGroupSelectForm, msg)
-				if m.updateGroupSelectForm.State == huh.StateCompleted {
-					keys := m.updateSelectedKeys
-					m.updateGroupSelectForm = nil
-					if len(keys) == 0 {
-						m.closeUpdateOverlay()
-						return m, tea.Batch(cmd, m.addToast("No groups selected", false))
-					}
-					keySet := make(map[string]bool, len(keys))
-					for _, k := range keys {
-						keySet[k] = true
-					}
-					m.updateRunning = true
-					startToast := m.addToast("Applying dependency updates...", false)
-					applyCmd := runUpdateApply(m.updateReports, updateFilterAll, keySet, m.data.DB)
-					return m, tea.Batch(cmd, startToast, applyCmd)
-				} else if m.updateGroupSelectForm.State == huh.StateAborted {
-					m.closeUpdateOverlay()
-					return m, cmd
-				}
-				if isTerminalMsg(msg) {
-					return m, cmd
-				}
-				return m, nil
-			}
-			// Drive the filter selection form
-			if m.updateForm != nil {
-				cmd := m.driveHuhForm(&m.updateForm, msg)
-				if m.updateForm.State == huh.StateCompleted {
-					choice := m.updateFilterKind
-					m.updateForm = nil
-					switch choice {
-					case updateFilterCancel:
-						m.closeUpdateOverlay()
-						return m, cmd
-					case updateFilterSelectGroups:
-						// Transition to the group multi-select form
-						m.updateGroupSelectForm = buildGroupSelectForm(m.updateReports, &m.updateSelectedKeys)
-						return m, tea.Batch(cmd, m.updateGroupSelectForm.Init())
-					default:
-						// Start applying in a background goroutine
-						m.updateRunning = true
-						startToast := m.addToast("Applying dependency updates...", false)
-						applyCmd := runUpdateApply(m.updateReports, choice, nil, m.data.DB)
-						return m, tea.Batch(cmd, startToast, applyCmd)
-					}
-				} else if m.updateForm.State == huh.StateAborted {
-					m.closeUpdateOverlay()
-					return m, cmd
-				}
-				if isTerminalMsg(msg) {
-					return m, cmd
-				}
 			}
 			return m, nil
 		}
@@ -1286,10 +1156,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.openNotesOverlay(item.BeadID, item.Anvil, item.Title)
 			}
 
-		case "U":
-			// Open the dependency update overlay — scans and applies dep updates.
-			return m, m.openUpdateOverlay()
-
 		default:
 			if m.focused == PanelWorkers {
 				var cmd tea.Cmd
@@ -1323,10 +1189,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Notes overlay intercepts all mouse events when open
 		if m.showNotesOverlay {
-			return m, nil
-		}
-		// Update overlay intercepts all mouse events when open
-		if m.showUpdateOverlay {
 			return m, nil
 		}
 		// Orphan dialog requires explicit keyboard action; consume all mouse events.
@@ -1961,9 +1823,6 @@ func (m *Model) View() string {
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.showNotesOverlay {
 		overlay := m.renderNotesOverlay()
-		view = placeOverlay(m.width, m.height, overlay, view)
-	} else if m.showUpdateOverlay {
-		overlay := m.renderUpdateOverlay()
 		view = placeOverlay(m.width, m.height, overlay, view)
 	} else if m.orphanDialogForm != nil {
 		overlay := m.renderOrphanDialog()

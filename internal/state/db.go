@@ -430,10 +430,12 @@ const (
 //   - Long-lived background monitors (bellows, crucible, etc.) that only
 //     produce log output when external state changes (e.g. PR events) and can
 //     legitimately be silent for long stretches.
-//   - Synthetic / non-dispatch phases (depupdate) that represent user-initiated
-//     foreground operations managed outside the normal bead dispatch cycle and
-//     should not consume dispatch capacity or trigger stale detection.
+//   - Synthetic / non-dispatch phases (approve_as_is, force_smith, smelter,
+//     depupdate [legacy], etc.) that do not represent active Smith work and
+//     should not block dispatch capacity or be treated as stale.
 //
+// Note: depupdate is retained here only for backward compatibility with
+// historical DB rows; there is no active depupdate worker flow anymore.
 // Update this constant when new background or synthetic phases are added.
 const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'crucible', 'schematic', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter', 'depupdate'"
 
@@ -1316,11 +1318,6 @@ const (
 	EventNoChangesNeeded      EventType = "no_changes_needed"
 	EventPRCreationFailed     EventType = "pr_creation_failed"
 	EventPRAlreadyExists      EventType = "pr_already_exists"
-
-	// Depupdate events — manual dependency update operations from the Hearth U panel.
-	EventDepupdateStarted   EventType = "depupdate_started"
-	EventDepupdateCompleted EventType = "depupdate_completed"
-	EventDepupdateFailed    EventType = "depupdate_failed"
 
 	// Crucible events — parent bead orchestration with children on feature branches.
 	EventCrucibleStarted         EventType = "crucible_started"
