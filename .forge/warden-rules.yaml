@@ -2864,3 +2864,72 @@ rules:
         Verify that tests assert meaningful content of generated values, not just that they are non-empty. For platform/environment-dependent outputs, assert that relevant runtime values (e.g., GOOS, GOARCH) appear in the result so the test would catch regressions where those fields are omitted.
       source: copilot:PR#461
       added: "2026-03-26"
+    - id: exec-error-type-narrowing
+      category: error-handling
+      pattern: >-
+        Code that catches a generic cmd.Run() or cmd.Output() error and overrides it based on stdout/stderr content
+      check: >-
+        Verify the error override is narrowed to the specific expected failure mode (e.g. *exec.ExitError with a particular ExitCode) and that context errors (ctx.Err()) are not masked. A blanket 'if err != nil but output looks okay' can hide unrelated failures such as binary-not-found, permission denied, or context cancellation.
+      source: copilot:PR#463
+      added: "2026-03-27"
+    - id: new-exec-paths-need-tests
+      category: testing
+      pattern: >-
+        New function or execution path that handles exit codes, status detection, or success/failure logic
+      check: >-
+        Verify that new execution paths with conditional success/failure logic have unit test coverage for both the success case and the error/failure case, especially when reinterpreting non-zero exit codes as success
+      source: copilot:PR#463
+      added: "2026-03-27"
+    - id: hide-window-subprocess
+      category: ui
+      pattern: exec.Command or exec.CommandContext calls for git/gh/bd subprocesses
+      check: >-
+        Verify that all exec.Command/exec.CommandContext calls for git, gh, and bd subprocesses use executil.HideWindow (or equivalent) to prevent flashing a console window on Windows
+      source: copilot:PR#464
+      added: "2026-03-27"
+    - id: validate-external-ref-url-construction
+      category: security
+      pattern: >-
+        Building URLs from external/untrusted string data (e.g. bd JSON fields, user input) by direct string concatenation or fmt.Sprintf
+      check: >-
+        Verify that any external string used to construct a URL is validated (e.g. digits-only for issue numbers, reasonable length) and/or URL-escaped before interpolation, to prevent malformed URLs or injection into terminal escape sequences (OSC 8)
+      source: copilot:PR#464
+      added: "2026-03-27"
+    - id: terminal-escape-injection
+      category: security
+      pattern: String interpolation into terminal escape sequences (OSC 8, CSI, etc.)
+      check: >-
+        Verify that any user-controlled or external strings embedded in terminal escape sequences are sanitized to reject ASCII control characters (0x00–0x1F, 0x7F). Fall back to plain text when inputs contain unsafe characters to prevent terminal escape injection.
+      source: copilot:PR#464
+      added: "2026-03-27"
+    - id: ipc-response-error-check
+      category: error-handling
+      pattern: >-
+        Code that calls client.Send or similar IPC request functions and only checks the returned error without inspecting the response type/status
+      check: >-
+        Verify that after an IPC Send call, the code checks both the returned error AND the response type (e.g. resp.Type == "error"). A nil error only means the message was delivered, not that the command succeeded. Extract and surface any error message from resp.Payload so the user sees accurate feedback.
+      source: copilot:PR#467
+      added: "2026-03-27"
+    - id: ipc-socket-exists-stale
+      category: error-handling
+      pattern: Code that calls ipc.SocketExists() to determine daemon availability
+      check: >-
+        Verify that daemon availability is determined by actually attempting a connection (ipc.NewClient()) rather than just checking if the socket file exists, since stale socket files can persist after crashes and give false positives
+      source: copilot:PR#467
+      added: "2026-03-27"
+    - id: surface-scan-errors-on-no-results
+      category: error-handling
+      pattern: >-
+        Function iterates over results that may contain errors, returns a default/empty value when no positive results found
+      check: >-
+        When aggregating results from multiple operations, verify that the 'no results' path distinguishes between 'nothing found' and 'all operations failed'. Track whether at least one operation succeeded; if none did and errors occurred, propagate the error instead of silently returning a zero value.
+      source: copilot:PR#467
+      added: "2026-03-27"
+    - id: creation-error-propagation
+      category: error-handling
+      pattern: >-
+        A function calls a creation/mutation helper that returns no error, then infers success or failure from a subsequent query
+      check: >-
+        Verify that creation/mutation functions propagate errors (returning (result, error) or at minimum a success flag) rather than relying on a follow-up query to detect failure — otherwise error messages will be misleading when creation silently fails
+      source: copilot:PR#467
+      added: "2026-03-27"
