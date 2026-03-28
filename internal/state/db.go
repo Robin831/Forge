@@ -430,8 +430,11 @@ const (
 //   - Long-lived background monitors (bellows, crucible, etc.) that only
 //     produce log output when external state changes (e.g. PR events) and can
 //     legitimately be silent for long stretches.
+//   - Synthetic / non-dispatch phases (approve_as_is, force_smith, smelter,
+//     depupdate, etc.) that do not represent active Smith work and should not
+//     block dispatch capacity or be treated as stale.
 // Update this constant when new background or synthetic phases are added.
-const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'crucible', 'schematic', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter'"
+const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'crucible', 'schematic', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter', 'depupdate'"
 
 // Worker represents a Smith worker entry.
 type Worker struct {
