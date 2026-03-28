@@ -328,3 +328,11 @@ func TestRenderBeadRowExtColumnNonGHRef(t *testing.T) {
 	row := m.renderBeadRow(b, 30, false)
 	assert.NotContains(t, row, "#", "non-gh external ref should not render as '#N'")
 }
+
+func TestRenderBeadRowExtColumnFullURL(t *testing.T) {
+	// Full GitHub issue URL should be rendered as '#1850' in the Ext column.
+	m := &Model{width: 160}
+	b := Bead{ID: "Forge-x5", Title: "URL ref", Priority: 2, Status: "open", ExternalRef: "https://github.com/FHIDev/Munin/issues/1850"}
+	row := m.renderBeadRow(b, 30, false)
+	assert.Contains(t, row, "#1850", "full GitHub issue URL should be displayed as #1850 in the Ext column")
+}
