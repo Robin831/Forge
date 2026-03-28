@@ -48,7 +48,6 @@ type Scanner struct {
 	interval   time.Duration
 	timeout    time.Duration
 	anvilPaths map[string]string // anvil name -> path
-	anvilTags  map[string]string // anvil name -> auto-dispatch label (e.g. "forgeReady")
 	mu         sync.RWMutex
 }
 
@@ -83,15 +82,7 @@ func (s *Scanner) UpdateAnvilPaths(paths map[string]string) {
 // UpdateAnvilTags is a no-op kept for API compatibility. Consolidated dependency
 // beads are no longer auto-tagged on creation; the user applies the forgeReady
 // label manually when ready to dispatch the update.
-func (s *Scanner) UpdateAnvilTags(tags map[string]string) {
-	copied := make(map[string]string, len(tags))
-	for k, v := range tags {
-		copied[k] = v
-	}
-	s.mu.Lock()
-	s.anvilTags = copied
-	s.mu.Unlock()
-}
+func (s *Scanner) UpdateAnvilTags(_ map[string]string) {}
 
 // Run starts the periodic check loop. Blocks until ctx is canceled.
 func (s *Scanner) Run(ctx context.Context) error {
