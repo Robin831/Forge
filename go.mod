@@ -17,7 +17,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/sys v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.47.0
+	modernc.org/sqlite v1.48.0
 )
 
 require (
