@@ -80,10 +80,9 @@ func (s *Scanner) UpdateAnvilPaths(paths map[string]string) {
 	s.mu.Unlock()
 }
 
-// UpdateAnvilTags replaces the per-anvil auto-dispatch label map. Tags are used
-// when creating consolidated dependency beads so that each anvil uses its own
-// configured label (e.g. "forgeReady", "forge-auto"). This is safe to call
-// while Run is active and takes effect on the next scan cycle.
+// UpdateAnvilTags is a no-op kept for API compatibility. Consolidated dependency
+// beads are no longer auto-tagged on creation; the user applies the forgeReady
+// label manually when ready to dispatch the update.
 func (s *Scanner) UpdateAnvilTags(tags map[string]string) {
 	copied := make(map[string]string, len(tags))
 	for k, v := range tags {
@@ -236,10 +235,7 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 	}
 
 	if len(allResults) > 0 {
-		s.mu.RLock()
-		autoDispatchTag := s.anvilTags[name]
-		s.mu.RUnlock()
-		s.findOrCreateConsolidatedBead(ctx, allResults, path, name, autoDispatchTag)
+		s.findOrCreateConsolidatedBead(ctx, allResults, path, name)
 	}
 }
 
@@ -298,8 +294,9 @@ func parseSemver(v string) (major, minor, patch string) {
 // findOrCreateConsolidatedBead is the main bead management entry point.
 // It searches for an existing open bead with today's consolidated title for this anvil.
 // If found, it appends any new packages to the description.
-// If not found, it creates a new bead tagged with autoDispatchTag.
-func (s *Scanner) findOrCreateConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName, autoDispatchTag string) {
+// If not found, it creates a new bead. The bead is intentionally left untagged so
+// the user can label it forgeReady when they are ready to dispatch the update.
+func (s *Scanner) findOrCreateConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName string) {
 	title := consolidatedBeadTitle(time.Now())
 
 	existing, err := findConsolidatedBead(ctx, anvilPath, title)
@@ -313,13 +310,14 @@ func (s *Scanner) findOrCreateConsolidatedBead(ctx context.Context, allResults [
 	if existing != nil {
 		s.updateConsolidatedBead(ctx, existing, allResults, anvilPath, anvilName)
 	} else {
-		s.createConsolidatedBead(ctx, allResults, anvilPath, anvilName, title, autoDispatchTag)
+		s.createConsolidatedBead(ctx, allResults, anvilPath, anvilName, title)
 	}
 }
 
 // createConsolidatedBead creates a new consolidated dependency update bead
-// containing all outdated packages from allResults, then tags it with autoDispatchTag.
-func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName, title, autoDispatchTag string) {
+// containing all outdated packages from allResults. The bead is left untagged so
+// the user can add the forgeReady label when they are ready to dispatch the update.
+func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName, title string) {
 	desc := buildConsolidatedDescription(anvilName, allResults)
 
 	// Use priority 2 if any major updates are present, otherwise 3.
@@ -375,9 +373,6 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 			}
 		}
 	}
-	if created.ID != "" && autoDispatchTag != "" {
-		s.addForgeReadyLabel(ctx, created.ID, anvilPath, anvilName, autoDispatchTag)
-	}
 }
 
 // updateConsolidatedBead merges new packages from allResults into the existing
@@ -415,20 +410,4 @@ func (s *Scanner) updateConsolidatedBead(ctx context.Context, existing *bdBead, 
 	log.Printf("[depcheck] %s: updated consolidated bead %s: %s", anvilName, existing.ID, strings.TrimSpace(string(out)))
 	_ = s.db.LogEvent(state.EventDepcheckBeadCreated,
 		fmt.Sprintf("Updated consolidated dep bead for %s: %s", anvilName, existing.ID), "", anvilName)
-}
-
-// addForgeReadyLabel tags a bead with the given label so the poller picks it up.
-func (s *Scanner) addForgeReadyLabel(ctx context.Context, beadID, anvilPath, anvilName, label string) {
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "update", beadID, "--add-label", label, "--json"))
-	cmd.Dir = anvilPath
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("[depcheck] %s: failed to add %s label to %s: %v: %s", anvilName, label, beadID, err, strings.TrimSpace(string(out)))
-		return
-	}
-	log.Printf("[depcheck] %s: tagged %s with %s: %s", anvilName, beadID, label, strings.TrimSpace(string(out)))
 }

@@ -15,7 +15,7 @@ import (
 //   - (beadID, nil)  when a bead was found or created successfully
 //   - ("", nil)      when no outdated packages were detected (nothing to dispatch)
 //   - ("", err)      when the scan or bead-creation step failed
-func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath, autoDispatchTag string) (string, error) {
+func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath string) (string, error) {
 	title := consolidatedBeadTitle(time.Now())
 
 	// Fast path: bead already exists for today.
@@ -59,7 +59,7 @@ func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath,
 	}
 
 	// Create the consolidated bead.
-	s.createConsolidatedBead(ctx, results, anvilPath, anvilName, title, autoDispatchTag)
+	s.createConsolidatedBead(ctx, results, anvilPath, anvilName, title)
 
 	// Re-query to retrieve the newly created bead's ID.
 	created, err := findConsolidatedBead(ctx, anvilPath, title)
