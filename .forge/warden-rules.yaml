@@ -2934,14 +2934,14 @@ rules:
       source: copilot:PR#467
       added: "2026-03-27"
     - id: phase-list-backward-compat
-      category: other
+      category: backward-compatibility
       pattern: Removing entries from phase/status constant lists or filter sets
       check: >-
         Verify that removing a phase or status value from a filter list won't break backward compatibility for users upgrading from older versions that may have persisted records with that value. Consider keeping deprecated values in exclusion lists or adding a DB migration to clean up lingering records.
       source: copilot:PR#466
       added: "2026-03-28"
     - id: remove-stale-references-after-flow-deletion
-      category: other
+      category: backward-compatibility
       pattern: >-
         Deleting or removing a feature/flow/worker while constants, phase lists, enums, or doc comments elsewhere still reference it
       check: >-
