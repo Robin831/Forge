@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -429,16 +430,16 @@ func formatExternalRef(ref string) string {
 	if ref == "" {
 		return ""
 	}
-	// Handle full GitHub issue URLs: extract the trailing issue number.
+	// Handle full GitHub issue URLs: must be github.com with /issues/<number> path.
 	if strings.HasPrefix(ref, "https://") || strings.HasPrefix(ref, "http://") {
-		// Strip any fragment/query and take the last path segment.
-		clean := strings.SplitN(ref, "?", 2)[0]
-		clean = strings.SplitN(clean, "#", 2)[0]
-		clean = strings.TrimRight(clean, "/")
-		if idx := strings.LastIndex(clean, "/"); idx >= 0 {
-			seg := clean[idx+1:]
-			if seg != "" && strings.IndexFunc(seg, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
-				return "#" + seg
+		if u, err := url.Parse(ref); err == nil && u.Hostname() == "github.com" {
+			segments := strings.Split(strings.Trim(u.Path, "/"), "/")
+			// Path must be: <owner>/<repo>/issues/<number>
+			if len(segments) >= 4 && segments[len(segments)-2] == "issues" {
+				numSeg := segments[len(segments)-1]
+				if numSeg != "" && strings.IndexFunc(numSeg, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+					return "#" + numSeg
+				}
 			}
 		}
 		return ref

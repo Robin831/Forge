@@ -167,11 +167,7 @@ func renderBeadDetailContent(sb *strings.Builder, b *Bead, innerW int) {
 		key := "GitHub: "
 		keyW := lipgloss.Width(key)
 		valW := max(innerW-keyW, 1)
-		displayText := b.ExternalRef
-		if after, ok := strings.CutPrefix(b.ExternalRef, "gh-"); ok && after != "" {
-			displayText = "#" + after
-		}
-		displayText = truncate(displayText, valW)
+		displayText := truncate(formatExternalRef(b.ExternalRef), valW)
 		sb.WriteString(keyStyle.Render(key))
 		sb.WriteString(renderOSC8Link(b.ExternalRefURL, displayText))
 		sb.WriteByte('\n')

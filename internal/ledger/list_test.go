@@ -352,6 +352,7 @@ func TestFormatExternalRef(t *testing.T) {
 		{"URL with query string", "https://github.com/org/repo/issues/3?ref=foo", "#3"},
 		{"URL with fragment", "https://github.com/org/repo/issues/2#issuecomment-1", "#2"},
 		{"URL non-numeric last segment", "https://github.com/org/repo/issues/abc", "https://github.com/org/repo/issues/abc"},
+		{"non-GitHub numeric URL", "https://example.com/tickets/123", "https://example.com/tickets/123"},
 		{"plain string", "JIRA-123", "JIRA-123"},
 	}
 	for _, tt := range tests {
