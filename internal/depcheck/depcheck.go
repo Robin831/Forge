@@ -80,8 +80,8 @@ func (s *Scanner) UpdateAnvilPaths(paths map[string]string) {
 }
 
 // UpdateAnvilTags is a no-op kept for API compatibility. Consolidated dependency
-// beads are no longer auto-tagged on creation; the user applies the forgeReady
-// label manually when ready to dispatch the update.
+// beads are no longer auto-tagged on creation; the user applies the anvil's
+// configured auto-dispatch label (auto_dispatch_tag) manually when ready to dispatch the update.
 func (s *Scanner) UpdateAnvilTags(_ map[string]string) {}
 
 // Run starts the periodic check loop. Blocks until ctx is canceled.
@@ -285,8 +285,9 @@ func parseSemver(v string) (major, minor, patch string) {
 // findOrCreateConsolidatedBead is the main bead management entry point.
 // It searches for an existing open bead with today's consolidated title for this anvil.
 // If found, it appends any new packages to the description.
-// If not found, it creates a new bead. The bead is intentionally left untagged so
-// the user can label it forgeReady when they are ready to dispatch the update.
+// If not found, it creates a new bead. The bead is intentionally left untagged;
+// the user can apply the anvil's configured auto-dispatch label or workflow when they are
+// ready to dispatch the update. (In auto_dispatch: all mode the bead is eligible immediately.)
 func (s *Scanner) findOrCreateConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName string) {
 	title := consolidatedBeadTitle(time.Now())
 
@@ -306,8 +307,9 @@ func (s *Scanner) findOrCreateConsolidatedBead(ctx context.Context, allResults [
 }
 
 // createConsolidatedBead creates a new consolidated dependency update bead
-// containing all outdated packages from allResults. The bead is left untagged so
-// the user can add the forgeReady label when they are ready to dispatch the update.
+// containing all outdated packages from allResults. The bead is left untagged;
+// the user can apply the anvil's configured auto-dispatch tag when they are
+// ready to dispatch the update.
 func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName, title string) {
 	desc := buildConsolidatedDescription(anvilName, allResults)
 
@@ -343,11 +345,7 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 		return
 	}
 
-	log.Printf("[depcheck] %s: created consolidated dep bead %q: %s", anvilName, title, strings.TrimSpace(string(output)))
-	_ = s.db.LogEvent(state.EventDepcheckBeadCreated,
-		fmt.Sprintf("Created consolidated dep bead for %s: %s", anvilName, title), "", anvilName)
-
-	// Extract the bead ID from the JSON output so we can tag it for auto-dispatch.
+	// Extract the bead ID from the JSON output for logging.
 	// bd create --json may emit extra lines (e.g. progress messages) before the JSON
 	// object, so fall back to scanning each line if a whole-output unmarshal fails.
 	var created struct {
@@ -363,6 +361,15 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 				break
 			}
 		}
+	}
+	if created.ID != "" {
+		log.Printf("[depcheck] %s: created consolidated bead %s", anvilName, created.ID)
+		_ = s.db.LogEvent(state.EventDepcheckBeadCreated,
+			fmt.Sprintf("Created consolidated dep bead for %s: %s", anvilName, created.ID), "", anvilName)
+	} else {
+		log.Printf("[depcheck] %s: created consolidated dep bead %q: %s", anvilName, title, strings.TrimSpace(string(output)))
+		_ = s.db.LogEvent(state.EventDepcheckBeadCreated,
+			fmt.Sprintf("Created consolidated dep bead for %s: %s", anvilName, title), "", anvilName)
 	}
 }
 
