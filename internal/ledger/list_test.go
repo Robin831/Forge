@@ -328,3 +328,37 @@ func TestRenderBeadRowExtColumnNonGHRef(t *testing.T) {
 	row := m.renderBeadRow(b, 30, false)
 	assert.NotContains(t, row, "#", "non-gh external ref should not render as '#N'")
 }
+
+func TestRenderBeadRowExtColumnFullURL(t *testing.T) {
+	// Full GitHub issue URL should be rendered as '#1850' in the Ext column.
+	m := &Model{width: 160}
+	b := Bead{ID: "Forge-x5", Title: "URL ref", Priority: 2, Status: "open", ExternalRef: "https://github.com/FHIDev/Munin/issues/1850"}
+	row := m.renderBeadRow(b, 30, false)
+	assert.Contains(t, row, "#1850", "full GitHub issue URL should be displayed as #1850 in the Ext column")
+}
+
+func TestFormatExternalRef(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"gh-N shorthand", "gh-42", "#42"},
+		{"gh- empty suffix", "gh-", "gh-"},
+		{"full https URL", "https://github.com/org/repo/issues/99", "#99"},
+		{"full http URL", "http://github.com/org/repo/issues/7", "#7"},
+		{"URL with trailing slash", "https://github.com/org/repo/issues/5/", "#5"},
+		{"URL with query string", "https://github.com/org/repo/issues/3?ref=foo", "#3"},
+		{"URL with fragment", "https://github.com/org/repo/issues/2#issuecomment-1", "#2"},
+		{"URL non-numeric last segment", "https://github.com/org/repo/issues/abc", "https://github.com/org/repo/issues/abc"},
+		{"non-GitHub numeric URL", "https://example.com/tickets/123", "https://example.com/tickets/123"},
+		{"plain string", "JIRA-123", "JIRA-123"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatExternalRef(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

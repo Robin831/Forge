@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -395,10 +396,7 @@ func (m *Model) renderBeadRow(b Bead, titleWidth int, selected bool) string {
 
 	var extPart, labelsPart, assigneePart string
 	if !hideLabels {
-		extStr := b.ExternalRef
-		if after, ok := strings.CutPrefix(b.ExternalRef, "gh-"); ok && after != "" {
-			extStr = "#" + after
-		}
+		extStr := formatExternalRef(b.ExternalRef)
 		extPart = padRight(truncate(extStr, colExt-1), colExt)
 		labelStr := strings.Join(b.Labels, ",")
 		labelsPart = padRight(truncate(labelStr, colLabels-1), colLabels)
@@ -422,6 +420,35 @@ func (m *Model) renderBeadRow(b Bead, titleWidth int, selected bool) string {
 		Foreground(sc).
 		Padding(0, 2).
 		Render(row)
+}
+
+// formatExternalRef converts an external reference to a compact display string.
+// Full GitHub issue URLs (e.g. https://github.com/org/repo/issues/42) are
+// shortened to "#42". The gh-N shorthand format is also converted to "#N".
+// Other formats are returned verbatim.
+func formatExternalRef(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	// Handle full GitHub issue URLs: must be github.com with /issues/<number> path.
+	if strings.HasPrefix(ref, "https://") || strings.HasPrefix(ref, "http://") {
+		if u, err := url.Parse(ref); err == nil && u.Hostname() == "github.com" {
+			segments := strings.Split(strings.Trim(u.Path, "/"), "/")
+			// Path must be: <owner>/<repo>/issues/<number>
+			if len(segments) >= 4 && segments[len(segments)-2] == "issues" {
+				numSeg := segments[len(segments)-1]
+				if numSeg != "" && strings.IndexFunc(numSeg, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+					return "#" + numSeg
+				}
+			}
+		}
+		return ref
+	}
+	// Handle gh-N shorthand.
+	if after, ok := strings.CutPrefix(ref, "gh-"); ok && after != "" {
+		return "#" + after
+	}
+	return ref
 }
 
 // truncate shortens s so its visual width is at most maxLen columns, appending "…" if truncated.
