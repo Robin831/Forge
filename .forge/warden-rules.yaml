@@ -2959,29 +2959,13 @@ rules:
     - id: no-hardcoded-config-refs
       category: style
       pattern: >-
-        Doc comments or user-facing messages that reference a specific hardcoded value for a setting that is configurable per anvil or globally (e.g. tag names, label names, dispatch modes)
+        Comments, documentation, changelog entries, or other user-facing messages that reference a specific hardcoded value for a setting that is configurable per anvil or globally (e.g. tag names, label names, dispatch modes)
       check: >-
-        Verify that comments, docs, and user-facing messages reference the configured value generically (e.g. 'the anvil's configured auto-dispatch label') rather than hardcoding a specific default name that may not match the user's configuration
-      source: copilot:PR#471
-      added: "2026-03-28"
-    - id: no-hardcoded-config-in-comments
-      category: style
-      pattern: >-
-        Comments or documentation that reference a specific value for a configurable setting (e.g. hardcoding 'forgeReady' instead of referring to the configured auto_dispatch_tag)
-      check: >-
-        Verify that comments and documentation refer to configurable values generically (e.g. 'the anvil's configured auto-dispatch tag') rather than hardcoding a specific default value that may differ across configurations
-      source: copilot:PR#471
-      added: "2026-03-28"
-    - id: changelog-no-hardcoded-config-values
-      category: style
-      pattern: >-
-        Changelog entries or user-facing text that reference specific configuration values (e.g. label names, tag names) instead of describing them generically
-      check: >-
-        Verify that changelog entries and user-facing text refer to configurable values generically (e.g. 'the configured auto-dispatch label') rather than hardcoding a specific default value, to avoid implying a fixed value across deployments. Mention the default only as an example if needed.
+        Verify that comments, docs, changelog entries, and user-facing messages refer to configurable values generically (e.g. "the anvil's configured auto-dispatch label") rather than hardcoding a specific default name that may not match the user's configuration. If mentioning a default, clearly label it as an example only (e.g. 'for example, the default label "forgeReady"') and still describe behavior in terms of the configured value.
       source: copilot:PR#471
       added: "2026-03-28"
     - id: dispatch-mode-awareness
-      category: other
+      category: style
       pattern: >-
         Comments or documentation describing bead dispatch behavior, tagging, or auto-dispatch eligibility
       check: >-
@@ -2989,7 +2973,7 @@ rules:
       source: copilot:PR#471
       added: "2026-03-28"
     - id: url-shortening-scope
-      category: other
+      category: security
       pattern: >-
         Code that parses or reformats URLs, especially extracting numeric path segments to create short references like #N
       check: >-
