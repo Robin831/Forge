@@ -2948,3 +2948,43 @@ rules:
         When removing a flow or feature, verify that all reference lists (e.g. phase arrays, enums, constants, doc comments) are updated to either remove the deleted item or clearly mark it as legacy with an explanation of why it is retained (e.g. backward compatibility with existing DB rows)
       source: copilot:PR#466
       added: "2026-03-28"
+    - id: use-configured-dispatch-label
+      category: style
+      pattern: >-
+        Code or comments referencing a hardcoded label name like 'forgeReady' for auto-dispatch
+      check: >-
+        Verify that references to the auto-dispatch label use the configured value (auto_dispatch_tag) rather than hardcoding a specific label name, since each anvil can configure its own dispatch label and dispatch checks are case-insensitive
+      source: copilot:PR#471
+      added: "2026-03-28"
+    - id: no-hardcoded-config-refs
+      category: style
+      pattern: >-
+        Comments, documentation, changelog entries, or other user-facing messages that reference a specific hardcoded value for a setting that is configurable per anvil or globally (e.g. tag names, label names, dispatch modes)
+      check: >-
+        Verify that comments, docs, changelog entries, and user-facing messages refer to configurable values generically (e.g. "the anvil's configured auto-dispatch label") rather than hardcoding a specific default name that may not match the user's configuration. If mentioning a default, clearly label it as an example only (e.g. 'for example, the default label "forgeReady"') and still describe behavior in terms of the configured value.
+      source: copilot:PR#471
+      added: "2026-03-28"
+    - id: dispatch-mode-awareness
+      category: style
+      pattern: >-
+        Comments or documentation describing bead dispatch behavior, tagging, or auto-dispatch eligibility
+      check: >-
+        Verify that descriptions of dispatch/tagging behavior account for all configured auto_dispatch modes (e.g. 'tagged' vs 'all'), not just one mode. Wording should not imply a label gate when auto_dispatch:all would bypass it.
+      source: copilot:PR#471
+      added: "2026-03-28"
+    - id: url-shortening-scope
+      category: security
+      pattern: >-
+        Code that parses or reformats URLs, especially extracting numeric path segments to create short references like #N
+      check: >-
+        Verify that URL shortening/rewriting logic is scoped to known supported hosts (e.g. github.com) by parsing with net/url and inspecting host + path segments, rather than applying broad pattern matching to arbitrary URLs. Non-matching URLs should be returned verbatim.
+      source: copilot:PR#472
+      added: "2026-03-28"
+    - id: shared-display-formatting
+      category: ui
+      pattern: >-
+        Display formatting logic for the same data appearing in multiple views or components
+      check: >-
+        Verify that display formatting functions are shared/reused across all views that render the same data (e.g., list view and detail view), rather than duplicated or reimplemented independently, to prevent divergence
+      source: copilot:PR#472
+      added: "2026-03-28"
