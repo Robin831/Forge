@@ -456,7 +456,7 @@ type Worker struct {
 	LogPath     string
 	// StaleTimeout is an optional per-worker override for stale-detection. When > 0,
 	// the worker is checked independently of the global stale_interval using this
-	// shorter threshold. Lifecycle workers (quench/burnish/rebase) use this to get
+	// custom threshold. Lifecycle workers (quench/burnish/rebase) use this to get
 	// stale detection even though they are excluded from the global background-phase
 	// check. Stored as seconds in the DB.
 	StaleTimeout time.Duration
@@ -542,7 +542,8 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 
 // StalledWorkers returns active non-stalled workers whose log files have not
 // been modified within the given staleThreshold. Workers without a log path
-// are skipped. Already-stalled workers are excluded to avoid repeated
+// (pending workers) are still considered stalled if their start time exceeds
+// the threshold. Already-stalled workers are excluded to avoid repeated
 // filesystem stat calls on log files that won't change their status.
 // All phases listed in backgroundPhases are excluded from the global check
 // because they only produce log output when external state changes (e.g. PR
@@ -592,7 +593,7 @@ func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 	// Check lifecycle workers (quench/cifix/burnish/reviewfix/rebase) that carry a
 	// per-worker stale timeout. These phases are excluded from the global check
 	// above but should still surface as stalled when they stop producing log output
-	// within their own shorter threshold (set at worker registration time).
+	// within their own per-worker threshold (set at worker registration time).
 	lifecycleRows, err := db.conn.Query(`
 		SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path, stale_timeout
 		FROM workers
