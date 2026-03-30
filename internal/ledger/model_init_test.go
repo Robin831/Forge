@@ -55,12 +55,12 @@ func TestNewModelViewAfterAnvilSelected(t *testing.T) {
 	m.view = ViewList
 	m.loading = false
 	m.beads = []Bead{
-		{ID: "test-1", Title: "Hello world", Status: "open", Anvil: "test"},
+		{ID: "test-abc1", Title: "Hello world", Status: "open", Anvil: "test"},
 	}
 	m.refreshHierarchy()
 
 	out := m.View()
 	assert.NotEmpty(t, out)
-	// In list view, the bead ID must be visible.
-	assert.Contains(t, out, "test-1")
+	// In list view, the short ID suffix must be visible.
+	assert.Contains(t, out, "abc1")
 }

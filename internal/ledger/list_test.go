@@ -216,7 +216,7 @@ func TestRenderBeadRowNoBulk(t *testing.T) {
 	m := &Model{width: 120}
 	b := Bead{ID: "Forge-r1", Title: "Normal row", Priority: 2, Status: "open", Anvil: "heimdall"}
 	row := m.renderBeadRow(b, 30, false)
-	assert.Contains(t, row, "Forge-r1")
+	assert.Contains(t, row, "r1", "short ID suffix should appear in row")
 	assert.NotContains(t, row, "[ ]", "no checkbox when bulk selection is inactive")
 	assert.NotContains(t, row, "[✓]", "no checkbox when bulk selection is inactive")
 }
@@ -228,7 +228,7 @@ func TestRenderBeadRowBulkUnchecked(t *testing.T) {
 	b := Bead{ID: "Forge-r2", Title: "Unchecked row", Priority: 2, Status: "open"}
 	row := m.renderBeadRow(b, 30, false)
 	assert.Contains(t, row, "[ ]", "unchecked checkbox shown when bulk mode active and bead not selected")
-	assert.Contains(t, row, "Forge-r2")
+	assert.Contains(t, row, "r2", "short ID suffix should appear in row")
 }
 
 func TestRenderBeadRowBulkChecked(t *testing.T) {
@@ -237,7 +237,7 @@ func TestRenderBeadRowBulkChecked(t *testing.T) {
 	b := Bead{ID: "Forge-r3", Title: "Checked row", Priority: 1, Status: "in_progress"}
 	row := m.renderBeadRow(b, 30, false)
 	assert.Contains(t, row, "[✓]", "checked checkbox shown when bead is selected in bulk mode")
-	assert.Contains(t, row, "Forge-r3")
+	assert.Contains(t, row, "r3", "short ID suffix should appear in row")
 }
 
 func TestHiddenListColsWide(t *testing.T) {
