@@ -579,10 +579,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, m.refreshBeads())
 
 	case copyIDMsg:
-		if err := clipboard.WriteAll(msg.id); err != nil {
-			return m, m.addToast(fmt.Sprintf("Copy failed: %v", err), true)
+		id := msg.id
+		toastCmd := m.addToast(fmt.Sprintf("Copied: %s", id), false)
+		copyCmd := func() tea.Msg {
+			_ = clipboard.WriteAll(id)
+			return nil
 		}
-		return m, m.addToast(fmt.Sprintf("Copied: %s", msg.id), false)
+		return m, tea.Batch(toastCmd, copyCmd)
 
 	case DepAddedMsg:
 		m.addEvent(EventInfo, fmt.Sprintf("Added dep: %s → %s", msg.BeadID, msg.DepID))
