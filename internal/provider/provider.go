@@ -426,6 +426,9 @@ func IsRateLimitError(exitCode int, stderr, resultSubtype string) bool {
 		"hourly limit",
 		"daily limit",
 		"monthly limit",
+		// GitHub Copilot CLI premium request quota phrases:
+		"premium request",  // "You've exceeded your premium request quota"
+		"request quota",    // "Your request quota has been exceeded"
 	}
 	for _, phrase := range rateLimitPhrases {
 		if strings.Contains(lower, phrase) {

@@ -455,7 +455,15 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 
 		// Try to parse as stream event
 		var event StreamEvent
-		if err := json.Unmarshal([]byte(line), &event); err == nil {
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			// Non-JSON line — may be a plain-text error from providers that output
+			// quota/rate-limit messages as unstructured text (e.g., Copilot CLI when
+			// premium request quota is exhausted). Detect early so the caller can
+			// fall back to another provider rather than treating it as a generic failure.
+			if provider.IsRateLimitError(0, line, "") {
+				result.RateLimited = true
+			}
+		} else {
 			// Extract content for summary
 			if event.Content != "" {
 				lastContent = event.Content
