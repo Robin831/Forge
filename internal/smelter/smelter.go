@@ -92,20 +92,34 @@ func (s *Smelter) UpdateInterval(d time.Duration) {
 	}
 }
 
-// shouldSkipStartupFlush returns true when a full smelter flush cycle completed
-// within the last interval, meaning the startup flush can be safely skipped.
-// Only applies when the interval is positive. Any DB error is treated as "do
-// not skip" so we err on the side of flushing.
-func (s *Smelter) shouldSkipStartupFlush() bool {
+// timeUntilNextFlush returns how long to wait before the first flush after
+// startup. It bases this on the timestamp of the most recent
+// EventSmelterCycleDone event: if that cycle completed at T, the next flush
+// is due at T+interval, so the delay is max(0, T+interval-now).
+//
+// Returning a positive duration means the first flush should be deferred (the
+// ticker's initial period is set to this value); returning 0 means a flush
+// should run immediately on startup.
+//
+// When interval <= 0, or when no prior cycle is found, or on any DB error, 0
+// is returned so we err on the side of flushing promptly.
+func (s *Smelter) timeUntilNextFlush() time.Duration {
 	if s.interval <= 0 {
-		return false
+		return 0
 	}
-	ranRecently, err := s.db.HasEventWithin(state.EventSmelterCycleDone, s.interval)
+	lastCycle, ok, err := s.db.LastEventTime(state.EventSmelterCycleDone)
 	if err != nil {
-		log.Printf("[smelter] Could not check for prior flush cycle, will run startup flush: %v", err)
-		return false
+		log.Printf("[smelter] Could not read last flush cycle time, will run startup flush: %v", err)
+		return 0
 	}
-	return ranRecently
+	if !ok {
+		return 0
+	}
+	remaining := time.Until(lastCycle.Add(s.interval))
+	if remaining <= 0 {
+		return 0
+	}
+	return remaining
 }
 
 // Run starts the periodic flush loop. Blocks until ctx is canceled.
@@ -116,22 +130,40 @@ func (s *Smelter) Run(ctx context.Context) error {
 	_ = s.db.LogEvent(state.EventSmelterStarted,
 		fmt.Sprintf("Smelter started (interval: %s)", s.interval), "", "")
 
-	// Initial flush — skip if a full cycle completed within the last interval
-	// (e.g. after a daemon restart or config reload) to avoid redundant PRs.
-	if s.shouldSkipStartupFlush() {
-		log.Printf("[smelter] Skipping startup flush — already ran within %s", s.interval)
-	} else if err := s.Flush(ctx); err != nil {
-		log.Printf("[smelter] Initial flush error: %v", err)
+	// Determine when the first flush should run. If a recent successful cycle
+	// completed less than interval ago, defer the first flush to T+interval
+	// rather than running immediately — this prevents a near-2× cadence when
+	// the daemon restarts shortly before the next scheduled flush. When no
+	// recent cycle is found (or interval <= 0), firstDelay is 0 and we flush
+	// immediately on startup as before.
+	firstDelay := s.timeUntilNextFlush()
+	if firstDelay <= 0 {
+		// Initial flush: run once on startup to ensure pending rules are processed
+		// promptly. Scheduled flushes are handled by the ticker below.
+		if err := s.Flush(ctx); err != nil {
+			log.Printf("[smelter] Initial flush error: %v", err)
+		}
+	} else {
+		log.Printf("[smelter] Deferring first flush by %s (resuming prior schedule)", firstDelay.Round(time.Second))
 	}
 
-	// Create a ticker. If the initial interval is <= 0, use a placeholder
-	// duration and stop the ticker immediately so scheduled flushes are paused
-	// until a positive interval arrives via UpdateInterval.
-	startInterval := s.interval
+	// Create a ticker. For the first interval use firstDelay when positive so
+	// the initial tick aligns with lastCycle+interval rather than now+interval.
+	// After the first tick the ticker is reset to the configured interval.
+	// If the initial interval is <= 0, use a placeholder duration and stop the
+	// ticker immediately so scheduled flushes are paused until a positive
+	// interval arrives via UpdateInterval.
+	startInterval := firstDelay
+	if startInterval <= 0 {
+		startInterval = s.interval
+	}
 	if startInterval <= 0 {
 		startInterval = time.Hour // placeholder; stopped immediately below
 	}
 	ticker := time.NewTicker(startInterval)
+	// needsReset is true when the ticker was started with firstDelay and the
+	// first tick should reset it to the configured interval.
+	needsReset := firstDelay > 0 && s.interval > 0
 	if s.interval <= 0 {
 		ticker.Stop()
 		log.Println("[smelter] Scheduled flushes paused (interval <= 0); waiting for positive interval")
@@ -147,6 +179,7 @@ func (s *Smelter) Run(ctx context.Context) error {
 			s.mu.Lock()
 			s.interval = newInterval
 			s.mu.Unlock()
+			needsReset = false // interval changed externally; no longer need auto-reset
 			if newInterval > 0 {
 				log.Printf("[smelter] Interval changed to %s; resetting ticker", newInterval)
 				ticker.Reset(newInterval)
@@ -155,6 +188,15 @@ func (s *Smelter) Run(ctx context.Context) error {
 				ticker.Stop()
 			}
 		case <-ticker.C:
+			if needsReset {
+				needsReset = false
+				s.mu.RLock()
+				regularInterval := s.interval
+				s.mu.RUnlock()
+				if regularInterval > 0 {
+					ticker.Reset(regularInterval)
+				}
+			}
 			if err := s.Flush(ctx); err != nil {
 				log.Printf("[smelter] Flush error: %v", err)
 			}
@@ -183,6 +225,7 @@ func (s *Smelter) Flush(ctx context.Context) error {
 	maps.Copy(anvilPaths, s.anvilPaths)
 	s.mu.RUnlock()
 
+	var anyFailed bool
 	for anvilName, rules := range byAnvil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -195,15 +238,21 @@ func (s *Smelter) Flush(ctx context.Context) error {
 		}
 
 		if err := s.flushAnvil(ctx, anvilName, anvilPath, rules); err != nil {
+			anyFailed = true
 			log.Printf("[smelter] Error flushing anvil %s: %v", anvilName, err)
 			_ = s.db.LogEvent(state.EventSmelterFailed,
 				fmt.Sprintf("Smelter flush failed for %s: %v", anvilName, err), "", anvilName)
 			continue
 		}
 	}
-	// Record a cycle-level completion event so the startup-skip check knows a
-	// full flush cycle completed, regardless of per-anvil outcomes.
-	_ = s.db.LogEvent(state.EventSmelterCycleDone, "smelter flush cycle complete", "", "")
+	// Only record cycle-done when all pending rules were successfully drained.
+	// If any anvil failed, those rules remain in the DB and the startup-skip
+	// check must not treat this as a completed cycle — otherwise a restart
+	// shortly after a partial failure would postpone retries for still-pending
+	// rules until the next ticker interval.
+	if !anyFailed {
+		_ = s.db.LogEvent(state.EventSmelterCycleDone, "smelter flush cycle complete", "", "")
+	}
 	return nil
 }
 

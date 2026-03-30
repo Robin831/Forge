@@ -133,40 +133,54 @@ func TestUpdateInterval_NonBlocking(t *testing.T) {
 	}
 }
 
-func TestShouldSkipStartupFlush_NoEventLogged(t *testing.T) {
+func TestTimeUntilNextFlush_NoEventLogged(t *testing.T) {
 	db := openTestDB(t)
 	s := New(db, 8*time.Hour, map[string]string{})
 
-	// No event logged yet — should not skip.
-	assert.False(t, s.shouldSkipStartupFlush())
+	// No event logged yet — flush immediately (delay == 0).
+	assert.Equal(t, time.Duration(0), s.timeUntilNextFlush())
 }
 
-func TestShouldSkipStartupFlush_RecentCycle(t *testing.T) {
+func TestTimeUntilNextFlush_RecentCycle(t *testing.T) {
 	db := openTestDB(t)
 	s := New(db, 8*time.Hour, map[string]string{})
 
-	// Cycle-done event logged just now — should skip.
+	// Cycle-done just now — next flush is ~8 hours away.
 	require.NoError(t, db.LogEvent(state.EventSmelterCycleDone, "cycle complete", "", ""))
-	assert.True(t, s.shouldSkipStartupFlush())
+	delay := s.timeUntilNextFlush()
+	assert.Greater(t, delay, 7*time.Hour, "expected delay close to the full interval")
+	assert.LessOrEqual(t, delay, 8*time.Hour)
 }
 
-func TestShouldSkipStartupFlush_OldCycle(t *testing.T) {
+func TestTimeUntilNextFlush_CycleHalfwayThrough(t *testing.T) {
 	db := openTestDB(t)
 	s := New(db, 8*time.Hour, map[string]string{})
 
-	// Cycle-done event logged more than the interval ago — should not skip.
+	// Cycle completed 4 hours ago — next flush is ~4 hours away.
+	halfway := time.Now().Add(-4 * time.Hour)
+	require.NoError(t, db.LogEventAt(state.EventSmelterCycleDone, "cycle complete", "", "", halfway))
+	delay := s.timeUntilNextFlush()
+	assert.Greater(t, delay, 3*time.Hour+55*time.Minute)
+	assert.LessOrEqual(t, delay, 4*time.Hour+5*time.Minute)
+}
+
+func TestTimeUntilNextFlush_OldCycle(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 8*time.Hour, map[string]string{})
+
+	// Cycle-done event logged more than the interval ago — flush immediately.
 	old := time.Now().Add(-9 * time.Hour)
 	require.NoError(t, db.LogEventAt(state.EventSmelterCycleDone, "cycle complete", "", "", old))
-	assert.False(t, s.shouldSkipStartupFlush())
+	assert.Equal(t, time.Duration(0), s.timeUntilNextFlush())
 }
 
-func TestShouldSkipStartupFlush_ZeroInterval_NeverSkips(t *testing.T) {
+func TestTimeUntilNextFlush_ZeroInterval_AlwaysZero(t *testing.T) {
 	db := openTestDB(t)
 	s := New(db, 0, map[string]string{})
 
-	// Even with a recent event, interval=0 means we never skip.
+	// interval=0 means always flush immediately.
 	require.NoError(t, db.LogEvent(state.EventSmelterCycleDone, "cycle complete", "", ""))
-	assert.False(t, s.shouldSkipStartupFlush())
+	assert.Equal(t, time.Duration(0), s.timeUntilNextFlush())
 }
 
 func TestFlush_NoPending_LogsCycleDone(t *testing.T) {
@@ -205,6 +219,13 @@ func TestFlush_WorktreeFailure_ContinuesToNextAnvil(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, byAnvil["anvil-a"], 1)
 	assert.Len(t, byAnvil["anvil-b"], 1)
+
+	// EventSmelterCycleDone must NOT be logged when pending rules remain —
+	// otherwise a restart after a partial failure would skip the startup flush
+	// and postpone retries for still-pending rules.
+	cycleDone, err := db.HasEventWithin(state.EventSmelterCycleDone, time.Minute)
+	require.NoError(t, err)
+	assert.False(t, cycleDone, "EventSmelterCycleDone should not be logged when anvils failed")
 }
 
 func TestFlush_MultipleRulesSameAnvil_AllProcessed(t *testing.T) {
