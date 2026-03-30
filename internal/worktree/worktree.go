@@ -311,10 +311,10 @@ func (m *Manager) Remove(ctx context.Context, anvilPath string, wt *Worktree) er
 	// Delete the local branch (best effort — might have been pushed)
 	_ = gitCmd(ctx, anvilPath, "branch", "-D", wt.Branch)
 
-	// Delete the remote branch (best effort — gh pr merge uses --delete-branch=false
-	// to avoid failing while the worktree is still active, so we clean up the remote
-	// branch here instead, after the worktree has been released).
-	_ = gitCmd(ctx, anvilPath, "push", "origin", "--delete", wt.Branch)
+	// NOTE: Do NOT delete the remote branch here. Worktree cleanup runs after
+	// pipeline completion, and the remote branch is still needed by the PR that
+	// was just created. Remote branch cleanup is handled by GitHub's auto-delete
+	// setting or by Bellows after PR merge.
 
 	return nil
 }
