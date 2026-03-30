@@ -1337,9 +1337,10 @@ const (
 	EventTestBeadCreated    EventType = "test_bead_created"
 
 	// Smelter events — batch warden rule flushing.
-	EventSmelterStarted EventType = "smelter_started"
-	EventSmelterFlushed EventType = "smelter_flushed"
-	EventSmelterFailed  EventType = "smelter_failed"
+	EventSmelterStarted    EventType = "smelter_started"
+	EventSmelterFlushed    EventType = "smelter_flushed"
+	EventSmelterFailed     EventType = "smelter_failed"
+	EventSmelterCycleDone  EventType = "smelter_cycle_done"
 
 	// Wicket events — GitHub issue triage monitor.
 	EventWicketScanDone         EventType = "wicket_scan_done"
@@ -1392,6 +1393,24 @@ func (db *DB) HasEventForDate(eventType EventType, date string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// LastEventTime returns the timestamp of the most recent event of the given
+// type. The second return value is false when no such event exists. Any DB
+// error is returned to the caller.
+func (db *DB) LastEventTime(eventType EventType) (time.Time, bool, error) {
+	var ts string
+	err := db.conn.QueryRow(
+		`SELECT timestamp FROM events WHERE type = ? ORDER BY timestamp DESC LIMIT 1`,
+		string(eventType),
+	).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return parseTime(ts), true, nil
 }
 
 // HasEventWithin reports whether any event of the given type was logged within
