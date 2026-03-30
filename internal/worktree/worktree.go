@@ -308,8 +308,13 @@ func (m *Manager) Remove(ctx context.Context, anvilPath string, wt *Worktree) er
 	// Prune stale worktree references
 	_ = gitCmd(ctx, anvilPath, "worktree", "prune")
 
-	// Delete the branch (best effort — might have been pushed)
+	// Delete the local branch (best effort — might have been pushed)
 	_ = gitCmd(ctx, anvilPath, "branch", "-D", wt.Branch)
+
+	// Delete the remote branch (best effort — gh pr merge uses --delete-branch=false
+	// to avoid failing while the worktree is still active, so we clean up the remote
+	// branch here instead, after the worktree has been released).
+	_ = gitCmd(ctx, anvilPath, "push", "origin", "--delete", wt.Branch)
 
 	return nil
 }
