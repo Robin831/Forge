@@ -283,7 +283,7 @@ func TestCreateWithOptions_ResetBranch(t *testing.T) {
 }
 
 // TestRemove_DoesNotDeleteRemoteBranch is a regression test for Forge-0mmb.
-// worktree.Remove() must NOT delete the remote branch — it is still needed by
+// Manager.Remove must NOT delete the remote branch — it is still needed by
 // the PR that was just created. Remote branch cleanup is handled by GitHub's
 // auto-delete setting or Bellows after merge.
 func TestRemove_DoesNotDeleteRemoteBranch(t *testing.T) {
