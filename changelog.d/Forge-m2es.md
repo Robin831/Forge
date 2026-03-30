@@ -1,0 +1,3 @@
+category: Fixed
+- **Burnish worker no longer stalls on slow Smith exit** - Added `WaitWithExitTimeout` to `smith.Process` that signals I/O completion independently of process exit, then kills the subprocess after a 30-second grace period if it hasn't exited. The burnish (reviewfix) worker now uses this so thread resolution and the completion event are never blocked by a subprocess that is slow to terminate after pushing fixes. (Forge-m2es)
+

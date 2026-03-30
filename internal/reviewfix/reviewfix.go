@@ -19,6 +19,12 @@ import (
 	"github.com/Robin831/Forge/internal/vcs"
 )
 
+// smithExitTimeout is the deadline given to a Smith subprocess to exit after
+// its I/O stream has been fully read. If Smith does not exit within this
+// window (e.g. due to slow cleanup on Windows), the process is killed so the
+// burnish worker can advance to thread resolution and completion.
+const smithExitTimeout = 30 * time.Second
+
 // FixParams holds the inputs for a review fix attempt.
 type FixParams struct {
 	// WorktreePath is the git worktree for this PR's branch.
@@ -136,7 +142,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 				log.Printf("[burnish] PR #%d: failed to update worker log path: %v", p.PRNumber, err)
 			}
 		}
-		smithResult = process.Wait()
+		smithResult = process.WaitWithExitTimeout(smithExitTimeout)
 		if smithResult.ResultSubtype == "success" && !smithResult.IsError {
 			smithResult.RateLimited = false
 		}
@@ -350,7 +356,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 						p.PRNumber, p.WorkerID, process.LogPath, err)
 				}
 			}
-			smithResult = process.Wait()
+			smithResult = process.WaitWithExitTimeout(smithExitTimeout)
 			// Treat a genuine success event as not rate-limited.
 			// Do NOT use ExitCode == 0 here: Claude can exit 0 with is_error:true
 			// (subtype:"success") when the session was rate-limit rejected — that

@@ -72,7 +72,9 @@ type Process struct {
 
 	mu     sync.Mutex
 	done   chan struct{}
+	ioDone chan struct{} // closed when stdout/stderr reading completes (before cmd.Wait)
 	result *Result
+	onKill func() // optional hook called after Kill() attempt; used in tests for deterministic synchronization
 }
 
 // StreamEvent represents a single event from a provider's stream-json output.
@@ -241,6 +243,7 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 		LogPath: logPath,
 		PID:     cmd.Process.Pid,
 		done:    make(chan struct{}),
+		ioDone:  make(chan struct{}),
 	}
 
 	// Collect output in background
@@ -277,6 +280,11 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 		}()
 
 		wg.Wait()
+
+		// Signal that stream I/O is complete. WaitWithExitTimeout waits on this
+		// channel before starting its exit deadline, so it can safely determine
+		// success from the parsed stream result regardless of process-exit timing.
+		close(p.ioDone)
 
 		// Wait for process to exit
 		err := cmd.Wait()
@@ -349,6 +357,44 @@ func (p *Process) Wait() *Result {
 	return p.result
 }
 
+// WaitWithExitTimeout waits for I/O reading to complete, then gives the
+// process exitTimeout to exit gracefully. If the process does not exit within
+// the deadline it is killed so the caller can advance (e.g. to resolve review
+// threads and emit a completion event). When the stream result indicates
+// success (ResultSubtype "success", IsError false) AND the process had to be
+// killed, the exit code is normalized to 0 so downstream checks
+// (ExitCode != 0) don't misclassify a successful push as a failure.
+func (p *Process) WaitWithExitTimeout(exitTimeout time.Duration) *Result {
+	// Wait for stdout/stderr reading to complete. After this point the stream
+	// has been fully parsed and ResultSubtype/RateLimited/IsError are stable.
+	<-p.ioDone
+
+	timer := time.NewTimer(exitTimeout)
+	defer timer.Stop()
+
+	killed := false
+	select {
+	case <-p.done:
+		// Process exited normally within the deadline.
+	case <-timer.C:
+		// Process is slow to exit. Kill it so the worker can proceed to
+		// thread resolution and completion without waiting indefinitely.
+		killed = true
+		_ = p.Kill()
+		<-p.done // wait for goroutine to finish and assign p.result
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	r := p.result
+	// Only normalize exit code when we actually killed the process; a normal
+	// exit preserves whatever exit code the process reported.
+	if killed && r != nil && r.ResultSubtype == "success" && !r.IsError {
+		r.ExitCode = 0
+	}
+	return r
+}
+
 // Done returns a channel that is closed when the process completes.
 func (p *Process) Done() <-chan struct{} {
 	return p.done
@@ -368,12 +414,17 @@ func (p *Process) IsRunning() bool {
 func (p *Process) Kill() error {
 	p.mu.Lock()
 	cmd := p.Cmd
+	hook := p.onKill
 	p.mu.Unlock()
 
+	var err error
 	if cmd != nil && cmd.Process != nil {
-		return cmd.Process.Kill()
+		err = cmd.Process.Kill()
 	}
-	return nil
+	if hook != nil {
+		hook()
+	}
+	return err
 }
 
 // assistantMessage is used to extract text from Claude's assistant events.
