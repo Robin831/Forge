@@ -176,6 +176,40 @@ func TestReadStreamJSON_NonJSONLinesIgnored(t *testing.T) {
 	assert.Equal(t, "ok", result.FullOutput)
 }
 
+func TestReadStreamJSON_NonJSONRateLimitDetected(t *testing.T) {
+	// Non-JSON plain-text lines containing quota/rate-limit phrases (e.g. from
+	// the Copilot CLI when premium request quota is exhausted) must set RateLimited
+	// so the provider fallback chain triggers instead of treating this as a generic
+	// failure.
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"copilot premium request", "You've exceeded your premium request quota for this month."},
+		{"copilot request quota", "Your request quota has been exceeded. Please try again later."},
+		{"generic rate limit", "rate limit exceeded"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf strings.Builder
+			result := &Result{}
+			readStreamJSON(strings.NewReader(tc.input), &buf, newTestLogFile(t), result)
+			assert.True(t, result.RateLimited, "expected RateLimited=true for input: %q", tc.input)
+		})
+	}
+}
+
+func TestReadStreamJSON_NonJSONNonRateLimitNotFlagged(t *testing.T) {
+	// Ordinary non-JSON output (e.g. a startup banner) must NOT set RateLimited.
+	input := "Initializing Copilot extension...\nnot json"
+
+	var buf strings.Builder
+	result := &Result{}
+	readStreamJSON(strings.NewReader(input), &buf, newTestLogFile(t), result)
+
+	assert.False(t, result.RateLimited)
+}
+
 func TestReadStreamJSON_ContentFieldSetsLastContent(t *testing.T) {
 	// content field on an event is used as summary
 	input := `{"type":"content","content":"Some visible content"}`
