@@ -375,8 +375,10 @@ func (m *Model) renderBeadRow(b Bead, titleWidth int, selected bool) string {
 	priStr := fmt.Sprintf("P%d", b.Priority)
 	pri := padRight(priStr, colPriority)
 
-	// ID
-	id := padRight(truncate(b.ID, colID-1), colID)
+	// ID — show only the short suffix (after the last '-') to avoid truncation
+	// for long prefixes like "Fhi.Metadata". The Anvil column already identifies
+	// which repo the bead belongs to.
+	id := padRight(truncate(shortID(b.ID), colID-1), colID)
 
 	// Title — truncated to fit
 	title := padRight(truncate(b.Title, titleWidth-1), titleWidth)
@@ -449,6 +451,16 @@ func formatExternalRef(ref string) string {
 		return "#" + after
 	}
 	return ref
+}
+
+// shortID returns the short suffix of a bead ID by stripping the prefix up to
+// and including the last '-'. For example, "Fhi.Metadata-abc1" → "abc1" and
+// "Forge-jxl2" → "jxl2". If there is no '-' the original ID is returned.
+func shortID(id string) string {
+	if idx := strings.LastIndex(id, "-"); idx >= 0 {
+		return id[idx+1:]
+	}
+	return id
 }
 
 // truncate shortens s so its visual width is at most maxLen columns, appending "…" if truncated.

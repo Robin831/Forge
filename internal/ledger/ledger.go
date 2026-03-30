@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -52,6 +53,9 @@ type anvilState struct {
 
 // tickMsg triggers a periodic data refresh.
 type tickMsg struct{}
+
+// copyIDMsg requests that the given bead ID be written to the system clipboard.
+type copyIDMsg struct{ id string }
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg {
@@ -425,6 +429,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openDepViewerForm()
 			case "i":
 				return m, m.startAIImprovement()
+			case "y":
+				return m, m.copySelectedBeadID()
 			case "\\":
 				m.showDetailPanel = !m.showDetailPanel
 				return m, nil
@@ -571,6 +577,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.addToast(fmt.Sprintf("Reopened %s", msg.ID), false)
 		m.fetching = true
 		return m, tea.Batch(cmd, m.refreshBeads())
+
+	case copyIDMsg:
+		if err := clipboard.WriteAll(msg.id); err != nil {
+			return m, m.addToast(fmt.Sprintf("Copy failed: %v", err), true)
+		}
+		return m, m.addToast(fmt.Sprintf("Copied: %s", msg.id), false)
 
 	case DepAddedMsg:
 		m.addEvent(EventInfo, fmt.Sprintf("Added dep: %s → %s", msg.BeadID, msg.DepID))
@@ -978,6 +990,19 @@ func (m *Model) selectedBead() *Bead {
 		}
 	}
 	return nil
+}
+
+// copySelectedBeadID copies the full ID of the currently selected bead to the
+// system clipboard and shows a toast confirmation.
+func (m *Model) copySelectedBeadID() tea.Cmd {
+	b := m.selectedBead()
+	if b == nil {
+		return nil
+	}
+	id := b.ID
+	return func() tea.Msg {
+		return copyIDMsg{id: id}
+	}
 }
 
 // openNewBeadForm creates and displays the new bead form.

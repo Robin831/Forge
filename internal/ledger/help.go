@@ -32,6 +32,7 @@ var (
 	keyAddDep  = key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "add dep"))
 	keyViewDeps = key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "view deps"))
 	keyAI          = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "AI improve"))
+	keyCopyID      = key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy ID"))
 	keyDepUpdate   = key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "update deps"))
 	keyDetailPanel = key.NewBinding(key.WithKeys("\\"), key.WithHelp("\\", "toggle detail"))
 	keySpace   = key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select"))
@@ -91,7 +92,7 @@ func (listKeyMap) FullHelp() [][]key.Binding {
 		{keyLabel, keyPriorityB, keyComment, keyNotes, keyAssign},  // Metadata
 		{keyAddDep, keyViewDeps},                                   // Dependencies
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},              // Bulk
-		{keyAI, keyDepUpdate},                                      // AI / Updates
+		{keyAI, keyDepUpdate, keyCopyID},                           // AI / Updates
 		{keyToggleClosed, keySort},                                 // Filters
 		{keyTab, keyBackToAnvils, keyDetailPanel, keyHelp, keyQuit}, // General
 	}
@@ -111,7 +112,7 @@ func (kanbanKeyMap) FullHelp() [][]key.Binding {
 		{keyPriorityB, keyComment, keyNotes, keyAssign},                       // Metadata
 		{keyAddDep, keyViewDeps},                                              // Dependencies
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},                         // Bulk
-		{keyAI, keyDepUpdate},                                                 // AI / Updates
+		{keyAI, keyDepUpdate, keyCopyID},                                      // AI / Updates
 		{keyToggleClosed},                                                     // Filters
 		{keyTab, keyBackToAnvils, keyDetailPanel, keyHelp, keyQuit}, // General
 	}
@@ -131,7 +132,7 @@ func (hierarchyKeyMap) FullHelp() [][]key.Binding {
 		{keyPriorityB, keyComment, keyNotes, keyAssign},                            // Metadata
 		{keyAddDep, keyViewDeps},                                                   // Dependencies
 		{keyBulkClose, keyBulkLabel, keyBulkPriority},                              // Bulk
-		{keyAI, keyDepUpdate},                                                      // AI / Updates
+		{keyAI, keyDepUpdate, keyCopyID},                                           // AI / Updates
 		{keyToggleClosed},                                                          // Filters
 		{keyTab, keyBackToAnvils, keyDetailPanel, keyHelp, keyQuit}, // General
 	}
