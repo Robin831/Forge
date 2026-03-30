@@ -2988,3 +2988,11 @@ rules:
         Verify that display formatting functions are shared/reused across all views that render the same data (e.g., list view and detail view), rather than duplicated or reimplemented independently, to prevent divergence
       source: copilot:PR#472
       added: "2026-03-28"
+    - id: bubbletea-blocking-in-update
+      category: ui
+      pattern: >-
+        Blocking or potentially-blocking calls (clipboard, file I/O, shell-out, network) executed directly inside a Bubble Tea Update handler instead of via a tea.Cmd
+      check: >-
+        Verify that no blocking operations (clipboard.WriteAll, exec.Command, HTTP calls, file I/O) run synchronously in Update. They should be wrapped in a tea.Cmd function that returns a tea.Msg, so the event loop stays responsive and the UI does not freeze.
+      source: copilot:PR#475
+      added: "2026-03-30"
