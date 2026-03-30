@@ -2996,3 +2996,49 @@ rules:
         Verify that no blocking operations (clipboard.WriteAll, exec.Command, HTTP calls, file I/O) run synchronously in Update. They should be wrapped in a tea.Cmd function that returns a tea.Msg, so the event loop stays responsive and the UI does not freeze.
       source: copilot:PR#475
       added: "2026-03-30"
+    - id: lifecycle-worker-timeout-default
+      category: concurrency
+      pattern: >-
+        Creating a context for a background worker or lifecycle goroutine where a timeout/deadline value of zero or negative is treated as no timeout
+      check: >-
+        Verify that zero/negative timeout values are normalized to a sensible default rather than disabling the deadline entirely, to prevent indefinite hangs. Ensure consistency with how other workers in the codebase handle missing timeout configuration.
+      source: copilot:PR#478
+      added: "2026-03-30"
+    - id: log-context-deadline-exceeded
+      category: error-handling
+      pattern: >-
+        Context with timeout/deadline created via context.WithTimeout or context.WithDeadline where the cancel func is deferred
+      check: >-
+        Verify that when the context expires due to deadline, there is an explicit log message indicating the timeout occurred, including relevant identifiers (action, PR, bead, worker ID). Generic context cancellation errors are not sufficient for diagnosing timeout-triggered failures.
+      source: copilot:PR#478
+      added: "2026-03-30"
+    - id: exit-code-normalization-scope
+      category: error-handling
+      pattern: >-
+        Code that normalizes or overrides process exit codes after timeout/kill operations
+      check: >-
+        Verify that exit code normalization only occurs when the timeout/kill path was actually taken, not unconditionally. Overwriting real exit codes from normal process completion masks meaningful status information that callers depend on.
+      source: copilot:PR#479
+      added: "2026-03-30"
+    - id: no-sleep-based-test-timing
+      category: testing
+      pattern: Tests using time.Sleep or short timeouts to force timing-dependent code paths
+      check: >-
+        Verify tests use deterministic synchronization (channels, sync primitives) instead of time.Sleep-based timing to avoid flakiness under load or on slow CI
+      source: copilot:PR#479
+      added: "2026-03-30"
+    - id: regression-test-must-exercise-fix
+      category: testing
+      pattern: >-
+        A regression test for a specific bug that mocks or stubs the function containing the fix
+      check: >-
+        Verify that regression tests actually exercise the code path that was fixed — mocking the function-under-test makes the test pass regardless of whether the bug exists, defeating the purpose of the regression test
+      source: copilot:PR#481
+      added: "2026-03-30"
+    - id: gh-merge-branch-cleanup-side-effects
+      category: error-handling
+      pattern: gh pr merge with --delete-branch flag modifications
+      check: >-
+        Verify that changing --delete-branch behavior does not unintentionally skip remote branch cleanup. If suppressing local branch deletion, ensure remote branch deletion is handled separately (e.g., explicit remote delete after worktree removal) rather than disabling both local and remote cleanup together.
+      source: copilot:PR#482
+      added: "2026-03-30"
