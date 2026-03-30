@@ -41,3 +41,6 @@ tmp/
 # Beads credentials
 .beads/.beads-credential-key
 .worktrees/
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key

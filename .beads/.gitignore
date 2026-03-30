@@ -2,14 +2,27 @@
 dolt/
 dolt-access.lock
 
-# JSONL backup (auto-exported by pre-commit hook — not source of truth)
-backup/
-
 # Runtime files
 bd.sock
 bd.sock.startlock
 sync-state.json
 last-touched
+.exclusive-lock
+
+# Daemon runtime (lock, log, pid)
+daemon.*
+
+# Interactions log (runtime, not versioned)
+interactions.jsonl
+
+# Push state (runtime, per-machine)
+push-state.json
+
+# Lock files (various runtime locks)
+*.lock
+
+# Credential key (encryption key for federation peer auth — never commit)
+.beads-credential-key
 
 # Local version tracking (prevents upgrade notification spam after git ops)
 .local_version
@@ -35,10 +48,15 @@ dolt-server.log
 dolt-server.lock
 dolt-server.port
 dolt-server.activity
-dolt-monitor.pid
 
-# Interaction log (auto-generated, noisy in diffs)
-interactions.jsonl
+# Corrupt backup directories (created by bd doctor --fix recovery)
+*.corrupt.backup/
+
+# Backup data (auto-exported JSONL, local-only)
+backup/
+
+# Per-project environment file (Dolt connection config, GH#2520)
+.env
 
 # Legacy files (from pre-Dolt versions)
 *.db
@@ -48,10 +66,6 @@ interactions.jsonl
 *.db-shm
 db.sqlite
 bd.db
-daemon.lock
-daemon.log
-daemon-*.log.gz
-daemon.pid
 # NOTE: Do NOT add negation patterns here.
 # They would override fork protection in .git/info/exclude.
 # Config files (metadata.json, config.yaml) are tracked by git by default
