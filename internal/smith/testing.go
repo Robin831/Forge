@@ -6,8 +6,10 @@ package smith
 func NewProcessForTest(result *Result) *Process {
 	p := &Process{
 		done:   make(chan struct{}),
+		ioDone: make(chan struct{}),
 		result: result,
 	}
+	close(p.ioDone)
 	close(p.done)
 	return p
 }
