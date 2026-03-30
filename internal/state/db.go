@@ -1337,9 +1337,10 @@ const (
 	EventTestBeadCreated    EventType = "test_bead_created"
 
 	// Smelter events — batch warden rule flushing.
-	EventSmelterStarted EventType = "smelter_started"
-	EventSmelterFlushed EventType = "smelter_flushed"
-	EventSmelterFailed  EventType = "smelter_failed"
+	EventSmelterStarted    EventType = "smelter_started"
+	EventSmelterFlushed    EventType = "smelter_flushed"
+	EventSmelterFailed     EventType = "smelter_failed"
+	EventSmelterCycleDone  EventType = "smelter_cycle_done"
 
 	// Wicket events — GitHub issue triage monitor.
 	EventWicketScanDone         EventType = "wicket_scan_done"

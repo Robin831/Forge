@@ -133,6 +133,55 @@ func TestUpdateInterval_NonBlocking(t *testing.T) {
 	}
 }
 
+func TestShouldSkipStartupFlush_NoEventLogged(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 8*time.Hour, map[string]string{})
+
+	// No event logged yet — should not skip.
+	assert.False(t, s.shouldSkipStartupFlush())
+}
+
+func TestShouldSkipStartupFlush_RecentCycle(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 8*time.Hour, map[string]string{})
+
+	// Cycle-done event logged just now — should skip.
+	require.NoError(t, db.LogEvent(state.EventSmelterCycleDone, "cycle complete", "", ""))
+	assert.True(t, s.shouldSkipStartupFlush())
+}
+
+func TestShouldSkipStartupFlush_OldCycle(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 8*time.Hour, map[string]string{})
+
+	// Cycle-done event logged more than the interval ago — should not skip.
+	old := time.Now().Add(-9 * time.Hour)
+	require.NoError(t, db.LogEventAt(state.EventSmelterCycleDone, "cycle complete", "", "", old))
+	assert.False(t, s.shouldSkipStartupFlush())
+}
+
+func TestShouldSkipStartupFlush_ZeroInterval_NeverSkips(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 0, map[string]string{})
+
+	// Even with a recent event, interval=0 means we never skip.
+	require.NoError(t, db.LogEvent(state.EventSmelterCycleDone, "cycle complete", "", ""))
+	assert.False(t, s.shouldSkipStartupFlush())
+}
+
+func TestFlush_NoPending_LogsCycleDone(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	err := s.Flush(context.Background())
+	assert.NoError(t, err)
+
+	// A cycle-done event should have been logged even when nothing was pending.
+	ran, err := db.HasEventWithin(state.EventSmelterCycleDone, time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ran, "EventSmelterCycleDone should be logged after a no-op flush")
+}
+
 func TestFlush_WorktreeFailure_ContinuesToNextAnvil(t *testing.T) {
 	db := openTestDB(t)
 

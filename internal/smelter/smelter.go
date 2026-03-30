@@ -92,6 +92,22 @@ func (s *Smelter) UpdateInterval(d time.Duration) {
 	}
 }
 
+// shouldSkipStartupFlush returns true when a full smelter flush cycle completed
+// within the last interval, meaning the startup flush can be safely skipped.
+// Only applies when the interval is positive. Any DB error is treated as "do
+// not skip" so we err on the side of flushing.
+func (s *Smelter) shouldSkipStartupFlush() bool {
+	if s.interval <= 0 {
+		return false
+	}
+	ranRecently, err := s.db.HasEventWithin(state.EventSmelterCycleDone, s.interval)
+	if err != nil {
+		log.Printf("[smelter] Could not check for prior flush cycle, will run startup flush: %v", err)
+		return false
+	}
+	return ranRecently
+}
+
 // Run starts the periodic flush loop. Blocks until ctx is canceled.
 // If interval <= 0 at startup, scheduled flushes are paused until
 // UpdateInterval is called with a positive value.
@@ -100,8 +116,11 @@ func (s *Smelter) Run(ctx context.Context) error {
 	_ = s.db.LogEvent(state.EventSmelterStarted,
 		fmt.Sprintf("Smelter started (interval: %s)", s.interval), "", "")
 
-	// Initial flush.
-	if err := s.Flush(ctx); err != nil {
+	// Initial flush — skip if a full cycle completed within the last interval
+	// (e.g. after a daemon restart or config reload) to avoid redundant PRs.
+	if s.shouldSkipStartupFlush() {
+		log.Printf("[smelter] Skipping startup flush — already ran within %s", s.interval)
+	} else if err := s.Flush(ctx); err != nil {
 		log.Printf("[smelter] Initial flush error: %v", err)
 	}
 
@@ -153,6 +172,9 @@ func (s *Smelter) Flush(ctx context.Context) error {
 		return fmt.Errorf("querying pending rules: %w", err)
 	}
 	if len(byAnvil) == 0 {
+		// Record a cycle-done event even when there's nothing pending so the
+		// startup-skip check knows a flush cycle ran recently.
+		_ = s.db.LogEvent(state.EventSmelterCycleDone, "smelter flush cycle complete (nothing pending)", "", "")
 		return nil // no-op: nothing pending
 	}
 
@@ -179,6 +201,9 @@ func (s *Smelter) Flush(ctx context.Context) error {
 			continue
 		}
 	}
+	// Record a cycle-level completion event so the startup-skip check knows a
+	// full flush cycle completed, regardless of per-anvil outcomes.
+	_ = s.db.LogEvent(state.EventSmelterCycleDone, "smelter flush cycle complete", "", "")
 	return nil
 }
 
