@@ -159,7 +159,7 @@ func (p *Provider) MergePR(ctx context.Context, worktreePath string, prNumber in
 	args := []string{
 		"pr", "merge", fmt.Sprintf("%d", prNumber),
 		"--" + strategy,
-		"--delete-branch",
+		"--delete-branch=false",
 	}
 
 	log.Printf("[vcs/github] Merging PR #%d with strategy %s", prNumber, strategy)
