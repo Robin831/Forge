@@ -896,13 +896,26 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		// Derive a timeout context for the lifecycle worker so it cannot hang
 		// indefinitely. Use SmithTimeout as the budget since these workers (cifix,
 		// reviewfix, rebase) each spawn a Claude session of comparable length.
-		// Guard against a zero SmithTimeout (disabled), which would immediately
-		// expire the context and abort the worker before it can do any work.
-		workerCtx, workerCancel := ctx, context.CancelFunc(func() {})
-		if timeout := d.cfg.Load().Settings.SmithTimeout; timeout > 0 {
-			workerCtx, workerCancel = context.WithTimeout(ctx, timeout)
+		// Mirror the pipeline defaulting: treat SmithTimeout <= 0 as "use 30m"
+		// so lifecycle workers always have a deadline unless explicitly configured.
+		workerTimeout := d.cfg.Load().Settings.SmithTimeout
+		if workerTimeout <= 0 {
+			workerTimeout = 30 * time.Minute
 		}
-		defer workerCancel()
+		workerCtx, workerCancel := context.WithTimeout(ctx, workerTimeout)
+		defer func() {
+			// Always cancel the worker context, and log explicitly if the worker
+			// exceeded its deadline so timeout-triggered failures are diagnosable.
+			workerCancel()
+			if workerCtx.Err() == context.DeadlineExceeded {
+				d.logger.Error("lifecycle worker timed out",
+					"action", req.Action,
+					"pr", req.PRNumber,
+					"bead", req.BeadID,
+					"worker", workerID,
+				)
+			}
+		}()
 
 		switch req.Action {
 		case lifecycle.ActionFixCI:
