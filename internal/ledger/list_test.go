@@ -337,6 +337,47 @@ func TestRenderBeadRowExtColumnFullURL(t *testing.T) {
 	assert.Contains(t, row, "#1850", "full GitHub issue URL should be displayed as #1850 in the Ext column")
 }
 
+func TestShortID(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"standard prefix", "Forge-jxl2", "jxl2"},
+		{"dotted prefix", "Fhi.Metadata-abc1", "abc1"},
+		{"no dash", "nodash", "nodash"},
+		{"empty string", "", ""},
+		{"multiple dashes", "a-b-c-suffix", "suffix"},
+		{"trailing dash", "Forge-", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shortID(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCopySelectedBeadIDNoSelection(t *testing.T) {
+	m := &Model{view: ViewList}
+	cmd := m.copySelectedBeadID()
+	assert.Nil(t, cmd, "copySelectedBeadID should return nil when no bead is selected")
+}
+
+func TestCopySelectedBeadIDReturnsMsg(t *testing.T) {
+	m := &Model{
+		view:  ViewList,
+		beads: []Bead{{ID: "Forge-jxl2", Title: "Test bead", Status: "open", Priority: 2}},
+	}
+	m.refreshHierarchy()
+	cmd := m.copySelectedBeadID()
+	require.NotNil(t, cmd, "copySelectedBeadID should return a command when a bead is selected")
+	msg := cmd()
+	got, ok := msg.(copyIDMsg)
+	require.True(t, ok, "command should produce a copyIDMsg")
+	assert.Equal(t, "Forge-jxl2", got.id, "copyIDMsg should carry the full bead ID")
+}
+
 func TestFormatExternalRef(t *testing.T) {
 	tests := []struct {
 		name  string
