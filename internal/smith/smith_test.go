@@ -214,24 +214,21 @@ func TestWaitWithExitTimeout_NormalExit(t *testing.T) {
 // exit code normalized to 0 so downstream checks don't misclassify the push.
 func TestWaitWithExitTimeout_TimeoutKillSuccess(t *testing.T) {
 	result := &Result{ResultSubtype: "success", IsError: false, ExitCode: 1}
+	doneCh := make(chan struct{})
 	p := &Process{
-		done:   make(chan struct{}),
+		done:   doneCh,
 		ioDone: make(chan struct{}),
 		result: result,
+		// onKill closes doneCh deterministically when Kill() is invoked,
+		// eliminating the need for time.Sleep-based synchronization.
+		onKill: func() { close(doneCh) },
 	}
 	close(p.ioDone) // I/O is complete; process has not exited yet
 
-	// Simulate a process that exits after the kill signal arrives.
-	// Kill() is a no-op when cmd is nil, so we close done after a short delay.
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		close(p.done)
-	}()
-
-	got := p.WaitWithExitTimeout(10 * time.Millisecond) // timeout fires before process exits
+	got := p.WaitWithExitTimeout(10 * time.Millisecond) // timeout fires, Kill() fires onKill
 
 	assert.Equal(t, "success", got.ResultSubtype)
-	assert.Equal(t, 0, got.ExitCode, "exit code must be normalized to 0 for a successful session")
+	assert.Equal(t, 0, got.ExitCode, "exit code must be normalized to 0 for a successful session that was killed")
 }
 
 // TestWaitWithExitTimeout_TimeoutKillError verifies that a non-success result
@@ -239,17 +236,15 @@ func TestWaitWithExitTimeout_TimeoutKillSuccess(t *testing.T) {
 // deadline, preserving error diagnostics.
 func TestWaitWithExitTimeout_TimeoutKillError(t *testing.T) {
 	result := &Result{ResultSubtype: "error_max_turns", IsError: false, ExitCode: 1}
+	doneCh := make(chan struct{})
 	p := &Process{
-		done:   make(chan struct{}),
+		done:   doneCh,
 		ioDone: make(chan struct{}),
 		result: result,
+		// onKill closes doneCh deterministically when Kill() is invoked.
+		onKill: func() { close(doneCh) },
 	}
 	close(p.ioDone)
-
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		close(p.done)
-	}()
 
 	got := p.WaitWithExitTimeout(10 * time.Millisecond)
 
