@@ -37,6 +37,9 @@ dolt-server.port
 dolt-server.activity
 dolt-monitor.pid
 
+# Interaction log (auto-generated, noisy in diffs)
+interactions.jsonl
+
 # Legacy files (from pre-Dolt versions)
 *.db
 *.db?*
