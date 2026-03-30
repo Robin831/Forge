@@ -928,6 +928,80 @@ func TestDB_StalledWorkers_ExcludesLongRunningPhases(t *testing.T) {
 	}
 }
 
+func TestDB_StalledWorkers_LifecycleWithPerWorkerTimeout(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	makeStaleLog := func(name string) string {
+		p := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(p, []byte("log"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-20 * time.Minute)
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// Burnish worker without StaleTimeout — should be excluded (background phase, no per-worker timeout)
+	if err := db.InsertWorker(&Worker{
+		ID: "w-burnish-no-timeout", BeadID: "BD-1", Anvil: "anvil-1",
+		Status: WorkerRunning, Phase: "burnish",
+		StartedAt: time.Now().Add(-25 * time.Minute),
+		LogPath:   makeStaleLog("burnish-no-timeout.log"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Quench worker with StaleTimeout — should be detected as stale
+	if err := db.InsertWorker(&Worker{
+		ID: "w-quench-with-timeout", BeadID: "BD-2", Anvil: "anvil-1",
+		Status: WorkerRunning, Phase: "quench",
+		StartedAt:    time.Now().Add(-25 * time.Minute),
+		LogPath:      makeStaleLog("quench-with-timeout.log"),
+		StaleTimeout: 10 * time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Rebase worker with StaleTimeout but recently active — should NOT be stale
+	recentLog := filepath.Join(tmpDir, "rebase-recent.log")
+	if err := os.WriteFile(recentLog, []byte("log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertWorker(&Worker{
+		ID: "w-rebase-recent", BeadID: "BD-3", Anvil: "anvil-1",
+		Status: WorkerRunning, Phase: "rebase",
+		StartedAt:    time.Now().Add(-25 * time.Minute),
+		LogPath:      recentLog,
+		StaleTimeout: 10 * time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stalled, err := db.StalledWorkers(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stalled) != 1 {
+		ids := make([]string, len(stalled))
+		for i, w := range stalled {
+			ids[i] = w.ID
+		}
+		t.Fatalf("expected 1 stalled worker, got %d: %v", len(stalled), ids)
+	}
+	if stalled[0].ID != "w-quench-with-timeout" {
+		t.Errorf("expected w-quench-with-timeout, got %s", stalled[0].ID)
+	}
+}
+
 func TestDB_PendingRetries_ExcludesClarification(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

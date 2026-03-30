@@ -921,15 +921,16 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		case lifecycle.ActionFixCI:
 			d.logger.Info("spawning CI fix worker", "pr", req.PRNumber, "bead", req.BeadID)
 			_ = d.db.InsertWorker(&state.Worker{
-				ID:        workerID,
-				BeadID:    req.BeadID,
-				Anvil:     req.Anvil,
-				Branch:    req.Branch,
-				Status:    state.WorkerRunning,
-				Phase:     "quench",
-				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
-				PRNumber:  req.PRNumber,
-				StartedAt: time.Now(),
+				ID:           workerID,
+				BeadID:       req.BeadID,
+				Anvil:        req.Anvil,
+				Branch:       req.Branch,
+				Status:       state.WorkerRunning,
+				Phase:        "quench",
+				Title:        d.db.BeadTitle(req.BeadID, req.Anvil),
+				PRNumber:     req.PRNumber,
+				StartedAt:    time.Now(),
+				StaleTimeout: workerTimeout / 2,
 			})
 			cifixProviders := d.filterCopilotIfLimited(provider.FromConfig(d.config().Settings.Providers))
 			cfg := d.config()
@@ -1010,15 +1011,16 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		case lifecycle.ActionFixReview:
 			d.logger.Info("spawning review fix worker", "pr", req.PRNumber, "bead", req.BeadID)
 			_ = d.db.InsertWorker(&state.Worker{
-				ID:        workerID,
-				BeadID:    req.BeadID,
-				Anvil:     req.Anvil,
-				Branch:    req.Branch,
-				Status:    state.WorkerRunning,
-				Phase:     "burnish",
-				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
-				PRNumber:  req.PRNumber,
-				StartedAt: time.Now(),
+				ID:           workerID,
+				BeadID:       req.BeadID,
+				Anvil:        req.Anvil,
+				Branch:       req.Branch,
+				Status:       state.WorkerRunning,
+				Phase:        "burnish",
+				Title:        d.db.BeadTitle(req.BeadID, req.Anvil),
+				PRNumber:     req.PRNumber,
+				StartedAt:    time.Now(),
+				StaleTimeout: workerTimeout / 2,
 			})
 			reviewProviders := d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers))
 			reviewCfg := d.cfg.Load()
@@ -1087,15 +1089,16 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		case lifecycle.ActionRebase:
 			d.logger.Info("rebasing conflicting PR", "pr", req.PRNumber, "bead", req.BeadID)
 			_ = d.db.InsertWorker(&state.Worker{
-				ID:        workerID,
-				BeadID:    req.BeadID,
-				Anvil:     req.Anvil,
-				Branch:    req.Branch,
-				Status:    state.WorkerRunning,
-				Phase:     "rebase",
-				Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
-				PRNumber:  req.PRNumber,
-				StartedAt: time.Now(),
+				ID:           workerID,
+				BeadID:       req.BeadID,
+				Anvil:        req.Anvil,
+				Branch:       req.Branch,
+				Status:       state.WorkerRunning,
+				Phase:        "rebase",
+				Title:        d.db.BeadTitle(req.BeadID, req.Anvil),
+				PRNumber:     req.PRNumber,
+				StartedAt:    time.Now(),
+				StaleTimeout: workerTimeout / 2,
 			})
 			res := rebase.Rebase(workerCtx, rebase.Params{
 				WorktreePath: wt.Path,

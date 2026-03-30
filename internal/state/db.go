@@ -116,6 +116,7 @@ func (db *DB) migrate() error {
 		{"prs", "has_approval", `ALTER TABLE prs ADD COLUMN has_approval INTEGER NOT NULL DEFAULT 0`},
 		{"queue_cache", "description", `ALTER TABLE queue_cache ADD COLUMN description TEXT NOT NULL DEFAULT ''`},
 		{"workers", "pr_number", `ALTER TABLE workers ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0`},
+		{"workers", "stale_timeout", `ALTER TABLE workers ADD COLUMN stale_timeout INTEGER NOT NULL DEFAULT 0`},
 		{"prs", "title", `ALTER TABLE prs ADD COLUMN title TEXT NOT NULL DEFAULT ''`},
 		{"prs", "bellows_managed", `ALTER TABLE prs ADD COLUMN bellows_managed INTEGER NOT NULL DEFAULT 1`},
 		{"wicket_issues", "pr_number", `ALTER TABLE wicket_issues ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0`},
@@ -453,6 +454,12 @@ type Worker struct {
 	StartedAt   time.Time
 	CompletedAt *time.Time
 	LogPath     string
+	// StaleTimeout is an optional per-worker override for stale-detection. When > 0,
+	// the worker is checked independently of the global stale_interval using this
+	// custom threshold. Lifecycle workers (quench/burnish/rebase) use this to get
+	// stale detection even though they are excluded from the global background-phase
+	// check. Stored as seconds in the DB.
+	StaleTimeout time.Duration
 }
 
 // InsertWorker adds a new worker record.
@@ -461,10 +468,11 @@ func (db *DB) InsertWorker(w *Worker) error {
 	// survive the claim→worktree crash window) is atomically overwritten when
 	// the pipeline records the fully-initialized running worker.
 	_, err := db.conn.Exec(
-		`INSERT OR REPLACE INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR REPLACE INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path, stale_timeout)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.BeadID, w.Anvil, w.Branch, w.PID, string(w.Status), w.Phase, w.Title,
 		w.PRNumber, w.StartedAt.Format(dbTimeLayout), w.LogPath,
+		int64(w.StaleTimeout.Seconds()),
 	)
 	return err
 }
@@ -474,10 +482,11 @@ func (db *DB) InsertWorker(w *Worker) error {
 // (e.g. bellows upserts) where the row is stable between polls.
 func (db *DB) InsertWorkerIfMissing(w *Worker) error {
 	_, err := db.conn.Exec(
-		`INSERT OR IGNORE INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path, stale_timeout)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.BeadID, w.Anvil, w.Branch, w.PID, string(w.Status), w.Phase, w.Title,
 		w.PRNumber, w.StartedAt.Format(dbTimeLayout), w.LogPath,
+		int64(w.StaleTimeout.Seconds()),
 	)
 	return err
 }
@@ -533,11 +542,16 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 
 // StalledWorkers returns active non-stalled workers whose log files have not
 // been modified within the given staleThreshold. Workers without a log path
-// are skipped. Already-stalled workers are excluded to avoid repeated
+// (pending workers) are still considered stalled if their start time exceeds
+// the threshold. Already-stalled workers are excluded to avoid repeated
 // filesystem stat calls on log files that won't change their status.
-// Long-running background workers (bellows, cifix, reviewfix) are excluded
+// All phases listed in backgroundPhases are excluded from the global check
 // because they only produce log output when external state changes (e.g. PR
-// events) and can be legitimately silent for long stretches.
+// events) and can be legitimately silent for long stretches. However,
+// lifecycle workers (quench/burnish/rebase) that were registered with a
+// per-worker StaleTimeout are additionally checked using that shorter
+// threshold — these phases appear in backgroundPhases and are therefore
+// absent from the first result set, so there is no risk of duplicates.
 func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 	if staleThreshold <= 0 {
 		return nil, nil
@@ -575,6 +589,57 @@ func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 			stalled = append(stalled, w)
 		}
 	}
+
+	// Check lifecycle workers (quench/cifix/burnish/reviewfix/rebase) that carry a
+	// per-worker stale timeout. These phases are excluded from the global check
+	// above but should still surface as stalled when they stop producing log output
+	// within their own per-worker threshold (set at worker registration time).
+	lifecycleRows, err := db.conn.Query(`
+		SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path, stale_timeout
+		FROM workers
+		WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
+		  AND phase IN ('quench', 'cifix', 'burnish', 'reviewfix', 'rebase')
+		  AND stale_timeout > 0
+		ORDER BY started_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer lifecycleRows.Close()
+	now := time.Now()
+	for lifecycleRows.Next() {
+		var w Worker
+		var status, startedAt string
+		var staleTimeoutSecs int64
+		if err := lifecycleRows.Scan(&w.ID, &w.BeadID, &w.Anvil, &w.Branch, &w.PID,
+			&status, &w.Phase, &w.Title, &w.PRNumber, &startedAt, &w.LogPath, &staleTimeoutSecs); err != nil {
+			return nil, err
+		}
+		w.Status = WorkerStatus(status)
+		w.StartedAt = parseTime(startedAt)
+		w.StaleTimeout = time.Duration(staleTimeoutSecs) * time.Second
+
+		workerCutoff := now.Add(-w.StaleTimeout)
+		if w.LogPath == "" {
+			if w.StartedAt.Before(workerCutoff) {
+				stalled = append(stalled, w)
+			}
+			continue
+		}
+		info, statErr := os.Stat(w.LogPath)
+		if statErr != nil {
+			if w.StartedAt.Before(workerCutoff) {
+				stalled = append(stalled, w)
+			}
+			continue
+		}
+		if info.ModTime().Before(workerCutoff) {
+			stalled = append(stalled, w)
+		}
+	}
+	if err := lifecycleRows.Err(); err != nil {
+		return nil, err
+	}
+
 	return stalled, nil
 }
 
