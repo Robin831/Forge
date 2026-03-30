@@ -544,12 +544,13 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 // been modified within the given staleThreshold. Workers without a log path
 // are skipped. Already-stalled workers are excluded to avoid repeated
 // filesystem stat calls on log files that won't change their status.
-// Long-running background workers (bellows, cifix, reviewfix) are excluded
-// from the global check because they only produce log output when external
-// state changes (e.g. PR events) and can be legitimately silent for long
-// stretches. However, lifecycle workers (quench/burnish/rebase) that were
-// registered with a per-worker StaleTimeout are additionally checked using
-// that shorter threshold.
+// All phases listed in backgroundPhases are excluded from the global check
+// because they only produce log output when external state changes (e.g. PR
+// events) and can be legitimately silent for long stretches. However,
+// lifecycle workers (quench/burnish/rebase) that were registered with a
+// per-worker StaleTimeout are additionally checked using that shorter
+// threshold — these phases appear in backgroundPhases and are therefore
+// absent from the first result set, so there is no risk of duplicates.
 func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 	if staleThreshold <= 0 {
 		return nil, nil
