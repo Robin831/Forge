@@ -1148,7 +1148,10 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 		}
 		// Dispatch to generic webhook targets (new webhooks[] config).
 		if disp != nil {
-			msg := fmt.Sprintf("PR #%d ready to merge: %s", prNumber, prURL)
+			msg := fmt.Sprintf("PR #%d ready to merge — %s (%s, %s) — %s", prNumber, title, beadID, anvil, prURL)
+			if title == "" {
+				msg = fmt.Sprintf("PR #%d ready to merge (%s, %s) — %s", prNumber, beadID, anvil, prURL)
+			}
 			disp.Dispatch(notifyCtx, notify.EventPRReadyToMerge, beadID, anvil, msg)
 		}
 		// Legacy pr_ready_webhook_urls support.
