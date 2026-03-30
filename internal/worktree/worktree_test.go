@@ -282,6 +282,66 @@ func TestCreateWithOptions_ResetBranch(t *testing.T) {
 	}
 }
 
+// TestRemove_DoesNotDeleteRemoteBranch is a regression test for Forge-0mmb.
+// Manager.Remove must NOT delete the remote branch — it is still needed by
+// the PR that was just created. Remote branch cleanup is handled by GitHub's
+// auto-delete setting or Bellows after merge.
+func TestRemove_DoesNotDeleteRemoteBranch(t *testing.T) {
+	// Set up a bare "remote" repo.
+	remoteDir := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+		}
+	}
+	run(remoteDir, "init", "--bare", "--initial-branch=main")
+
+	// Clone the bare repo as our anvil.
+	anvilDir := t.TempDir()
+	run(anvilDir, "clone", remoteDir, ".")
+	run(anvilDir, "config", "user.email", "test@example.com")
+	run(anvilDir, "config", "user.name", "Test")
+	readme := filepath.Join(anvilDir, "README")
+	if err := os.WriteFile(readme, []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(anvilDir, "add", "README")
+	run(anvilDir, "commit", "-m", "init")
+	run(anvilDir, "push", "origin", "main")
+
+	// Create a worktree (simulates the pipeline creating the bead branch).
+	mgr := NewManager()
+	ctx := context.Background()
+	wt, err := mgr.CreateWithOptions(ctx, anvilDir, "test-bead", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+
+	// Push the branch to origin (simulates Smith pushing the implementation).
+	run(wt.Path, "push", "-u", "origin", wt.Branch)
+
+	// Verify the remote branch exists before Remove().
+	remotesBefore := gitOutput(t, anvilDir, "ls-remote", "--heads", "origin", wt.Branch)
+	if remotesBefore == "" {
+		t.Fatalf("expected remote branch %q to exist before Remove()", wt.Branch)
+	}
+
+	// Remove the worktree (simulates daemon cleanup after PR creation).
+	if err := mgr.Remove(ctx, anvilDir, wt); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// The remote branch must still exist — the PR depends on it.
+	remotesAfter := gitOutput(t, anvilDir, "ls-remote", "--heads", "origin", wt.Branch)
+	if remotesAfter == "" {
+		t.Errorf("Remove() deleted remote branch %q — this breaks PR creation (regression: Forge-0mmb)", wt.Branch)
+	}
+}
+
 // gitOutput runs a git command and returns trimmed stdout.
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
