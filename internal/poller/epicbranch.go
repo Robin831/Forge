@@ -85,19 +85,17 @@ func ResolveEpicBranches(ctx context.Context, beads []Bead, anvilPaths map[strin
 	}
 }
 
-// parentBeadResponse combines Bead fields with dependents for parent lookup.
-// We need dependents to verify the bead actually has children before returning
-// a default branch.
+// parentBeadResponse is used to unmarshal the bead fields returned by
+// `bd show <id> --json` during epic branch lookup.
 type parentBeadResponse struct {
 	Bead
-	Dependents []bdShowDependent `json:"dependents"`
 }
 
 // lookupEpicBranch fetches a parent bead's details and extracts the feature
 // branch name. It only returns a branch for beads that have an explicit
-// epic-branch label, are epics, or actually have children (dependents with
-// type "blocks"). This prevents ordinary dependency relationships (e.g.
-// task blocks task) from generating spurious feature branches.
+// epic-branch label or are of type "epic". Regular dependency relationships
+// (e.g. task blocks task) never generate a feature branch — only intentional
+// epic parents do.
 func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -122,9 +120,13 @@ func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 		return ""
 	}
 
-	// Guard: only return a branch for beads that have an explicit label,
-	// are epics, or actually have children. This prevents ordinary
-	// dependency relationships from creating non-existent base branches.
+	// Guard: only return a branch for beads that have an explicit epic-branch
+	// label or are of type "epic". Beads that merely have "blocks"-type
+	// dependents are NOT treated as epic parents — that check was the source of
+	// a bug where regular blocked-by chains (e.g. task A blocks task B, and B
+	// happens to have its own blockers) caused A's PR to incorrectly target
+	// feature/B instead of main. Crucible manages its own base branches
+	// explicitly and does not rely on this function for child PR routing.
 	hasExplicitLabel := false
 	for _, label := range resp.Labels {
 		if strings.HasPrefix(strings.ToLower(label), strings.ToLower(EpicBranchLabelPrefix)) {
@@ -133,15 +135,7 @@ func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 		}
 	}
 
-	hasChildren := false
-	for _, dep := range resp.Dependents {
-		if dep.DependencyType == "blocks" {
-			hasChildren = true
-			break
-		}
-	}
-
-	if !hasExplicitLabel && !hasChildren && !strings.EqualFold(resp.IssueType, "epic") {
+	if !hasExplicitLabel && !strings.EqualFold(resp.IssueType, "epic") {
 		return ""
 	}
 

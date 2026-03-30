@@ -146,6 +146,33 @@ func TestResolveEpicBranches_BlocksNotEpic(t *testing.T) {
 	assert.Equal(t, "", beads[0].EpicBranch)
 }
 
+// TestResolveEpicBranches_RegularDependencyChainNeverUsesFeatureBranch is a
+// regression test for Forge-t6y9: when bead A blocks bead B (regular
+// dependency, not parent-child), A's PR must target main, not feature/B.
+// Even if B itself has its own blockers, it should not be treated as an epic
+// parent unless it is explicitly typed as "epic" or has an epic-branch label.
+func TestResolveEpicBranches_RegularDependencyChainNeverUsesFeatureBranch(t *testing.T) {
+	orig := epicBranchLookupFunc
+	defer func() { epicBranchLookupFunc = orig }()
+
+	// Simulate the buggy scenario: "gnf7" happens to have its own blockers,
+	// so before the fix lookupEpicBranch would return "feature/gnf7" for it.
+	// After the fix it must return "" because gnf7 is not an epic.
+	epicBranchLookupFunc = mockLookup(map[string]string{
+		// "gnf7" is a regular task that has children but is NOT an epic — no branch
+		"gnf7": "",
+	})
+
+	beads := []Bead{
+		{ID: "w3j2", Anvil: "repo", Blocks: []string{"gnf7"}},
+	}
+	paths := map[string]string{"repo": "/tmp/repo"}
+
+	ResolveEpicBranches(context.Background(), beads, paths)
+
+	assert.Equal(t, "", beads[0].EpicBranch, "regular blocked-by dependency must not route PR to a feature branch")
+}
+
 func TestResolveEpicBranches_BlocksCached(t *testing.T) {
 	orig := epicBranchLookupFunc
 	defer func() { epicBranchLookupFunc = orig }()
