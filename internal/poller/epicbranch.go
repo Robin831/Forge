@@ -85,19 +85,17 @@ func ResolveEpicBranches(ctx context.Context, beads []Bead, anvilPaths map[strin
 	}
 }
 
-// parentBeadResponse combines Bead fields with dependents for parent lookup.
-// We need dependents to verify the bead actually has children before returning
-// a default branch.
+// parentBeadResponse is used to unmarshal the bead fields returned by
+// `bd show <id> --json` during epic branch lookup.
 type parentBeadResponse struct {
 	Bead
-	Dependents []bdShowDependent `json:"dependents"`
 }
 
 // lookupEpicBranch fetches a parent bead's details and extracts the feature
 // branch name. It only returns a branch for beads that have an explicit
-// epic-branch label, are epics, or actually have children (dependents with
-// type "blocks"). This prevents ordinary dependency relationships (e.g.
-// task blocks task) from generating spurious feature branches.
+// epic-branch label or are of type "epic". Regular dependency relationships
+// (e.g. task blocks task) never generate a feature branch — only intentional
+// epic parents do.
 func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -122,30 +120,30 @@ func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 		return ""
 	}
 
-	// Guard: only return a branch for beads that have an explicit label,
-	// are epics, or actually have children. This prevents ordinary
-	// dependency relationships from creating non-existent base branches.
-	hasExplicitLabel := false
-	for _, label := range resp.Labels {
-		if strings.HasPrefix(strings.ToLower(label), strings.ToLower(EpicBranchLabelPrefix)) {
-			hasExplicitLabel = true
-			break
-		}
-	}
-
-	hasChildren := false
-	for _, dep := range resp.Dependents {
-		if dep.DependencyType == "blocks" {
-			hasChildren = true
-			break
-		}
-	}
-
-	if !hasExplicitLabel && !hasChildren && !strings.EqualFold(resp.IssueType, "epic") {
+	// Guard: only return a branch for beads that are explicitly typed as "epic"
+	// or carry an "epic-branch:" label. Regular tasks/features with dependents
+	// are NOT epic parents — that misdetection was the source of Forge-t6y9
+	// where task A blocks task B caused A's PR to incorrectly target
+	// feature/B instead of main.
+	if !isEpicParentBead(resp.IssueType, resp.Labels) {
 		return ""
 	}
 
 	return ExtractParentBranch(resp.Bead)
+}
+
+// isEpicParentBead reports whether a bead qualifies as an epic parent that
+// should route child PRs through a shared feature branch. Only beads with
+// IssueType "epic" or an explicit "epic-branch:" label qualify. Regular
+// tasks or features that happen to have dependents do NOT qualify — that
+// distinction is what the Forge-t6y9 fix enforces.
+func isEpicParentBead(issueType string, labels []string) bool {
+	for _, label := range labels {
+		if strings.HasPrefix(strings.ToLower(label), strings.ToLower(EpicBranchLabelPrefix)) {
+			return true
+		}
+	}
+	return strings.EqualFold(issueType, "epic")
 }
 
 // DefaultFeatureBranchPrefix is the branch name prefix used for non-epic
