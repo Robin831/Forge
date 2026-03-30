@@ -216,7 +216,7 @@ func TestRenderBeadRowNoBulk(t *testing.T) {
 	m := &Model{width: 120}
 	b := Bead{ID: "Forge-r1", Title: "Normal row", Priority: 2, Status: "open", Anvil: "heimdall"}
 	row := m.renderBeadRow(b, 30, false)
-	assert.Contains(t, row, "Forge-r1")
+	assert.Contains(t, row, "r1", "short ID suffix should appear in row")
 	assert.NotContains(t, row, "[ ]", "no checkbox when bulk selection is inactive")
 	assert.NotContains(t, row, "[✓]", "no checkbox when bulk selection is inactive")
 }
@@ -228,7 +228,7 @@ func TestRenderBeadRowBulkUnchecked(t *testing.T) {
 	b := Bead{ID: "Forge-r2", Title: "Unchecked row", Priority: 2, Status: "open"}
 	row := m.renderBeadRow(b, 30, false)
 	assert.Contains(t, row, "[ ]", "unchecked checkbox shown when bulk mode active and bead not selected")
-	assert.Contains(t, row, "Forge-r2")
+	assert.Contains(t, row, "r2", "short ID suffix should appear in row")
 }
 
 func TestRenderBeadRowBulkChecked(t *testing.T) {
@@ -237,7 +237,7 @@ func TestRenderBeadRowBulkChecked(t *testing.T) {
 	b := Bead{ID: "Forge-r3", Title: "Checked row", Priority: 1, Status: "in_progress"}
 	row := m.renderBeadRow(b, 30, false)
 	assert.Contains(t, row, "[✓]", "checked checkbox shown when bead is selected in bulk mode")
-	assert.Contains(t, row, "Forge-r3")
+	assert.Contains(t, row, "r3", "short ID suffix should appear in row")
 }
 
 func TestHiddenListColsWide(t *testing.T) {
@@ -335,6 +335,47 @@ func TestRenderBeadRowExtColumnFullURL(t *testing.T) {
 	b := Bead{ID: "Forge-x5", Title: "URL ref", Priority: 2, Status: "open", ExternalRef: "https://github.com/FHIDev/Munin/issues/1850"}
 	row := m.renderBeadRow(b, 30, false)
 	assert.Contains(t, row, "#1850", "full GitHub issue URL should be displayed as #1850 in the Ext column")
+}
+
+func TestShortID(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"standard prefix", "Forge-jxl2", "jxl2"},
+		{"dotted prefix", "Fhi.Metadata-abc1", "abc1"},
+		{"no dash", "nodash", "nodash"},
+		{"empty string", "", ""},
+		{"multiple dashes", "a-b-c-suffix", "suffix"},
+		{"trailing dash", "Forge-", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shortID(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCopySelectedBeadIDNoSelection(t *testing.T) {
+	m := &Model{view: ViewList}
+	cmd := m.copySelectedBeadID()
+	assert.Nil(t, cmd, "copySelectedBeadID should return nil when no bead is selected")
+}
+
+func TestCopySelectedBeadIDReturnsMsg(t *testing.T) {
+	m := &Model{
+		view:  ViewList,
+		beads: []Bead{{ID: "Forge-jxl2", Title: "Test bead", Status: "open", Priority: 2}},
+	}
+	m.refreshHierarchy()
+	cmd := m.copySelectedBeadID()
+	require.NotNil(t, cmd, "copySelectedBeadID should return a command when a bead is selected")
+	msg := cmd()
+	got, ok := msg.(copyIDMsg)
+	require.True(t, ok, "command should produce a copyIDMsg")
+	assert.Equal(t, "Forge-jxl2", got.id, "copyIDMsg should carry the full bead ID")
 }
 
 func TestFormatExternalRef(t *testing.T) {
