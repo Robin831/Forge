@@ -146,20 +146,46 @@ func TestResolveEpicBranches_BlocksNotEpic(t *testing.T) {
 	assert.Equal(t, "", beads[0].EpicBranch)
 }
 
-// TestResolveEpicBranches_RegularDependencyChainNeverUsesFeatureBranch is a
-// regression test for Forge-t6y9: when bead A blocks bead B (regular
-// dependency, not parent-child), A's PR must target main, not feature/B.
-// Even if B itself has its own blockers, it should not be treated as an epic
-// parent unless it is explicitly typed as "epic" or has an epic-branch label.
+// TestIsEpicParentBead is a regression test for Forge-t6y9: the guard logic
+// inside lookupEpicBranch must reject regular tasks/features that merely have
+// dependents, returning false so their PR targets main instead of a feature
+// branch. Before the fix this check did not exist and any bead with blockers
+// could mistakenly be treated as an epic parent.
+func TestIsEpicParentBead(t *testing.T) {
+	tests := []struct {
+		name      string
+		issueType string
+		labels    []string
+		want      bool
+	}{
+		// Forge-t6y9 regression: "gnf7" is a regular task with its own blockers —
+		// it must NOT qualify as an epic parent even though it has dependents.
+		{"task with blockers (Forge-t6y9)", "task", nil, false},
+		{"task with unrelated labels", "task", []string{"priority:high"}, false},
+		{"feature without label", "feature", nil, false},
+		// Legitimate epic parents.
+		{"epic type", "epic", nil, true},
+		{"epic type uppercase", "EPIC", nil, true},
+		{"explicit epic-branch label on task", "task", []string{"epic-branch:feature/foo"}, true},
+		{"explicit epic-branch label on feature", "feature", []string{"epic-branch:feature/bar"}, true},
+		{"case-insensitive label", "task", []string{"Epic-Branch:feature/baz"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isEpicParentBead(tt.issueType, tt.labels))
+		})
+	}
+}
+
+// TestResolveEpicBranches_RegularDependencyChainNeverUsesFeatureBranch verifies
+// the ResolveEpicBranches routing layer: when lookupEpicBranch (correctly)
+// returns "" for a non-epic bead, no EpicBranch is set on the child.
 func TestResolveEpicBranches_RegularDependencyChainNeverUsesFeatureBranch(t *testing.T) {
 	orig := epicBranchLookupFunc
 	defer func() { epicBranchLookupFunc = orig }()
 
-	// Simulate the buggy scenario: "gnf7" happens to have its own blockers,
-	// so before the fix lookupEpicBranch would return "feature/gnf7" for it.
-	// After the fix it must return "" because gnf7 is not an epic.
 	epicBranchLookupFunc = mockLookup(map[string]string{
-		// "gnf7" is a regular task that has children but is NOT an epic — no branch
+		// "gnf7" is a regular task that has children but is NOT an epic — ignore its feature branch
 		"gnf7": "",
 	})
 
