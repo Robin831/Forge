@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -194,6 +195,66 @@ func TestReadStreamJSON_EmptyInput(t *testing.T) {
 	assert.Empty(t, result.FullOutput)
 	assert.Empty(t, result.Summary)
 	assert.False(t, result.RateLimited)
+}
+
+// TestWaitWithExitTimeout_NormalExit verifies that when the process exits
+// before the timeout, WaitWithExitTimeout returns the result immediately.
+func TestWaitWithExitTimeout_NormalExit(t *testing.T) {
+	result := &Result{ResultSubtype: "success", IsError: false, ExitCode: 0}
+	p := NewProcessForTest(result) // both ioDone and done are already closed
+
+	got := p.WaitWithExitTimeout(5 * time.Second)
+
+	assert.Equal(t, result, got)
+	assert.Equal(t, 0, got.ExitCode)
+}
+
+// TestWaitWithExitTimeout_TimeoutKillSuccess verifies that when the process
+// exceeds the exit deadline and is killed, a success-subtype result has its
+// exit code normalized to 0 so downstream checks don't misclassify the push.
+func TestWaitWithExitTimeout_TimeoutKillSuccess(t *testing.T) {
+	result := &Result{ResultSubtype: "success", IsError: false, ExitCode: 1}
+	p := &Process{
+		done:   make(chan struct{}),
+		ioDone: make(chan struct{}),
+		result: result,
+	}
+	close(p.ioDone) // I/O is complete; process has not exited yet
+
+	// Simulate a process that exits after the kill signal arrives.
+	// Kill() is a no-op when cmd is nil, so we close done after a short delay.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		close(p.done)
+	}()
+
+	got := p.WaitWithExitTimeout(10 * time.Millisecond) // timeout fires before process exits
+
+	assert.Equal(t, "success", got.ResultSubtype)
+	assert.Equal(t, 0, got.ExitCode, "exit code must be normalized to 0 for a successful session")
+}
+
+// TestWaitWithExitTimeout_TimeoutKillError verifies that a non-success result
+// does NOT have its exit code normalized when the process is killed after the
+// deadline, preserving error diagnostics.
+func TestWaitWithExitTimeout_TimeoutKillError(t *testing.T) {
+	result := &Result{ResultSubtype: "error_max_turns", IsError: false, ExitCode: 1}
+	p := &Process{
+		done:   make(chan struct{}),
+		ioDone: make(chan struct{}),
+		result: result,
+	}
+	close(p.ioDone)
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		close(p.done)
+	}()
+
+	got := p.WaitWithExitTimeout(10 * time.Millisecond)
+
+	assert.Equal(t, "error_max_turns", got.ResultSubtype)
+	assert.Equal(t, 1, got.ExitCode, "exit code must not be normalized for a non-success session")
 }
 
 func TestTruncate(t *testing.T) {
