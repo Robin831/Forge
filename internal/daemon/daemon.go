@@ -893,6 +893,12 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 
 		workerID := fmt.Sprintf("%s-%s-%d", req.Anvil, req.BeadID, time.Now().UnixNano())
 
+		// Derive a timeout context for the lifecycle worker so it cannot hang
+		// indefinitely. Use SmithTimeout as the budget since these workers (cifix,
+		// reviewfix, rebase) each spawn a Claude session of comparable length.
+		workerCtx, workerCancel := context.WithTimeout(ctx, d.cfg.Load().Settings.SmithTimeout)
+		defer workerCancel()
+
 		switch req.Action {
 		case lifecycle.ActionFixCI:
 			d.logger.Info("spawning CI fix worker", "pr", req.PRNumber, "bead", req.BeadID)
@@ -914,18 +920,18 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			useBatch := cfg.Settings.CopilotBatchCIFixes && len(cifixProviders) > 0 && cifixProviders[0].Kind == provider.Copilot
 			if useBatch {
 				anvilVCS := d.vcsForAnvil(req.Anvil)
-				_, failingChecks, fetchErr := anvilVCS.FetchPRChecks(ctx, wt.Path, req.PRNumber)
+				_, failingChecks, fetchErr := anvilVCS.FetchPRChecks(workerCtx, wt.Path, req.PRNumber)
 				if fetchErr != nil {
 					d.logger.Warn("failed to fetch PR checks for batch CI fix, falling back to single fix", "pr", req.PRNumber, "error", fetchErr)
 					useBatch = false
 				} else {
-					ciLogs, logsErr := anvilVCS.FetchCILogs(ctx, wt.Path, failingChecks)
+					ciLogs, logsErr := anvilVCS.FetchCILogs(workerCtx, wt.Path, failingChecks)
 					if logsErr != nil {
 						d.logger.Warn("failed to fetch CI logs for batch CI fix, falling back to single fix", "pr", req.PRNumber, "error", logsErr)
 						useBatch = false
 					}
 					if useBatch {
-						res = cifix.BatchFix(ctx, cifix.BatchFixParams{
+						res = cifix.BatchFix(workerCtx, cifix.BatchFixParams{
 						WorktreePath:  wt.Path,
 						BeadID:        req.BeadID,
 						AnvilName:     req.Anvil,
@@ -943,7 +949,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			}
 			if !useBatch {
 				cifixDetectOpts := temper.DetectOptionsFromAnvilFlag(anvilCfg.GolangciLint)
-				res = cifix.Fix(ctx, cifix.FixParams{
+				res = cifix.Fix(workerCtx, cifix.FixParams{
 					WorktreePath:    wt.Path,
 					BeadID:          req.BeadID,
 					AnvilName:       req.Anvil,
@@ -1003,12 +1009,12 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			useReviewBatch := reviewCfg.Settings.CopilotBatchReviewFixes && len(reviewProviders) > 0 && reviewProviders[0].Kind == provider.Copilot
 			if useReviewBatch {
 				anvilVCS := d.vcsForAnvil(req.Anvil)
-				comments, fetchErr := anvilVCS.FetchReviewComments(ctx, wt.Path, req.PRNumber)
+				comments, fetchErr := anvilVCS.FetchReviewComments(workerCtx, wt.Path, req.PRNumber)
 				if fetchErr != nil {
 					d.logger.Warn("failed to fetch review comments for batch fix, falling back to single fix", "pr", req.PRNumber, "error", fetchErr)
 					useReviewBatch = false
 				} else {
-					res = reviewfix.BatchFix(ctx, reviewfix.BatchFixParams{
+					res = reviewfix.BatchFix(workerCtx, reviewfix.BatchFixParams{
 						WorktreePath: wt.Path,
 						BeadID:       req.BeadID,
 						AnvilName:    req.Anvil,
@@ -1024,7 +1030,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				}
 			}
 			if !useReviewBatch {
-				res = reviewfix.Fix(ctx, reviewfix.FixParams{
+				res = reviewfix.Fix(workerCtx, reviewfix.FixParams{
 					WorktreePath: wt.Path,
 					BeadID:       req.BeadID,
 					AnvilName:    req.Anvil,
@@ -1073,7 +1079,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				PRNumber:  req.PRNumber,
 				StartedAt: time.Now(),
 			})
-			res := rebase.Rebase(ctx, rebase.Params{
+			res := rebase.Rebase(workerCtx, rebase.Params{
 				WorktreePath: wt.Path,
 				Branch:       req.Branch,
 				BaseBranch:   req.BaseBranch,
