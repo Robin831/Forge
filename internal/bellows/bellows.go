@@ -276,6 +276,13 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		return
 	}
 
+	// Persist title if it was missing (e.g. PRs created before this fix or on a
+	// fresh state.db that didn't carry over titles from another machine).
+	if pr.Title == "" && status.Title != "" {
+		_ = m.db.UpdatePRTitle(pr.ID, status.Title)
+		pr.Title = status.Title
+	}
+
 	ciInProgress := status.CIsInProgress()
 	newSnap := &prSnapshot{
 		CIPassing:            status.CIsPassing(),

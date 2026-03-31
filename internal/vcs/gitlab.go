@@ -142,6 +142,7 @@ func (g *GitLabProvider) MergePR(ctx context.Context, worktreePath string, prNum
 // glabMRStatus is the JSON structure returned by glab mr view --output json.
 type glabMRStatus struct {
 	IID            int    `json:"iid"`
+	Title          string `json:"title"`
 	State          string `json:"state"`
 	MergeStatus    string `json:"merge_status"`
 	HasConflicts   bool   `json:"has_conflicts"`
@@ -593,6 +594,7 @@ func (g *GitLabProvider) fetchMRView(ctx context.Context, worktreePath string, p
 		Mergeable:   mapGitLabMergeable(mr.MergeStatus, mr.HasConflicts),
 		HeadRefName: mr.SourceBranch,
 		URL:         mr.WebURL,
+		Title:       mr.Title,
 	}
 
 	// Map pipeline status to CI check runs
