@@ -3304,11 +3304,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			}
 
 			// Trigger a poll immediately after resetting retry state.
-			d.wg.Add(1)
-			go func() {
-				defer d.wg.Done()
-				d.pollAndDispatch(d.runCtx)
-			}()
+			go d.pollAndDispatch(d.runCtx)
 
 			data, _ := json.Marshal(map[string]string{"message": "retry state reset"})
 			return ipc.Response{Type: "ok", Payload: data}

@@ -21,7 +21,7 @@ const consolidatedBeadTitlePrefix = "Package updates"
 // consolidatedBeadTitle returns the standardized title for a per-anvil consolidated
 // dependency update bead. Format: "Package updates starting DD.MM.YYYY"
 func consolidatedBeadTitle(t time.Time) string {
-	return fmt.Sprintf("Package updates starting %s", t.Format("02.01.2006"))
+	return fmt.Sprintf("%s starting %s", consolidatedBeadTitlePrefix, t.Format("02.01.2006"))
 }
 
 // ecoKey normalises an ecosystem name to a lowercase short identifier used
