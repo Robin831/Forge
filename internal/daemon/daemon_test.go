@@ -424,9 +424,11 @@ exit 1
 		d.activeBeads.Delete("TEST-1")
 
 		// Pre-populate cache
+		d.lastBeadsMu.Lock()
 		d.lastBeads = []poller.Bead{
 			{ID: "TEST-1", Anvil: "test-anvil", Title: "Test Bead", Priority: 1},
 		}
+		d.lastBeadsMu.Unlock()
 
 		payload, _ := json.Marshal(ipc.RunBeadPayload{
 			BeadID: "TEST-1",

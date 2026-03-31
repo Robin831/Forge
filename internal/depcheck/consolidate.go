@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 	"sort"
 	"strings"
@@ -12,10 +13,15 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 )
 
+// consolidatedBeadTitlePrefix is the common prefix shared by all consolidated
+// dependency update bead titles. Used for prefix-based lookup so that beads
+// created on a previous day are reused rather than duplicated.
+const consolidatedBeadTitlePrefix = "Package updates"
+
 // consolidatedBeadTitle returns the standardized title for a per-anvil consolidated
 // dependency update bead. Format: "Package updates starting DD.MM.YYYY"
 func consolidatedBeadTitle(t time.Time) string {
-	return fmt.Sprintf("Package updates starting %s", t.Format("02.01.2006"))
+	return fmt.Sprintf("%s starting %s", consolidatedBeadTitlePrefix, t.Format("02.01.2006"))
 }
 
 // ecoKey normalises an ecosystem name to a lowercase short identifier used
@@ -275,24 +281,36 @@ func fetchSQL(ctx context.Context, anvilPath, query string) ([]byte, error) {
 	return cmd.Output()
 }
 
-// findConsolidatedBead searches for an open bead with the given exact title.
+// findConsolidatedBead searches for any open bead whose title starts with
+// consolidatedBeadTitlePrefix ("Package updates"). This prefix-based match
+// ensures that a bead created on a previous day is reused instead of a new
+// duplicate being created when the date changes.
+//
 // Returns (nil, nil) if no such bead exists, or (bead, nil) if found.
 // The returned bead's Description field is populated (via bd show if needed).
-func findConsolidatedBead(ctx context.Context, anvilPath, title string) (*bdBead, error) {
+func findConsolidatedBead(ctx context.Context, anvilPath string) (*bdBead, error) {
 	// Try bd sql first: fast and returns all columns including description.
-	escaped := strings.ReplaceAll(title, "'", "''")
-	query := fmt.Sprintf(`SELECT * FROM issues WHERE status = 'open' AND title = '%s'`, escaped)
+	escaped := strings.ReplaceAll(consolidatedBeadTitlePrefix, "'", "''")
+	query := fmt.Sprintf(`SELECT * FROM issues WHERE status = 'open' AND title LIKE '%s%%' ORDER BY updated_at DESC`, escaped)
 	out, err := fetchSQL(ctx, anvilPath, query)
 	if err == nil {
 		var beads []bdBead
 		if json.Unmarshal(out, &beads) == nil {
+			var matches []bdBead
 			for i := range beads {
-				if beads[i].Title == title {
-					return &beads[i], nil
+				if strings.HasPrefix(beads[i].Title, consolidatedBeadTitlePrefix) {
+					matches = append(matches, beads[i])
 				}
 			}
-			// Query succeeded with no match.
-			return nil, nil
+			if len(matches) == 0 {
+				// Query succeeded with no match.
+				return nil, nil
+			}
+			if len(matches) > 1 {
+				log.Printf("[depcheck] %s: found %d open consolidated beads — picking most recently updated (%s)", anvilPath, len(matches), matches[0].ID)
+			}
+			// matches[0] is the most recently updated due to ORDER BY updated_at DESC.
+			return &matches[0], nil
 		}
 	}
 
@@ -305,17 +323,28 @@ func findConsolidatedBead(ctx context.Context, anvilPath, title string) (*bdBead
 	if err := json.Unmarshal(listOut, &beads); err != nil {
 		return nil, fmt.Errorf("parse bd list output: %w", err)
 	}
+	var matches []bdBead
 	for i := range beads {
-		if beads[i].Title == title {
-			// Fetch full details (including description) via bd show.
-			if fullOut := fetchBeadShow(ctx, anvilPath, beads[i].ID); len(fullOut) > 0 {
-				var full bdBead
-				if json.Unmarshal(fullOut, &full) == nil {
-					return &full, nil
-				}
-			}
-			return &beads[i], nil
+		if strings.HasPrefix(beads[i].Title, consolidatedBeadTitlePrefix) {
+			matches = append(matches, beads[i])
 		}
 	}
-	return nil, nil
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	if len(matches) > 1 {
+		log.Printf("[depcheck] %s: found %d open consolidated beads — picking most recently updated by updated_at", anvilPath, len(matches))
+		// Sort by updated_at descending to pick the most recently updated bead.
+		sort.Slice(matches, func(i, j int) bool {
+			return matches[i].UpdatedAt > matches[j].UpdatedAt
+		})
+	}
+	// Fetch full details (including description) via bd show for the chosen bead.
+	if fullOut := fetchBeadShow(ctx, anvilPath, matches[0].ID); len(fullOut) > 0 {
+		var full bdBead
+		if json.Unmarshal(fullOut, &full) == nil {
+			return &full, nil
+		}
+	}
+	return &matches[0], nil
 }

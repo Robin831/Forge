@@ -8,8 +8,10 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
-// FindOrCreateBeadID locates today's consolidated dependency-update bead for the
-// given anvil, running a fresh scan and creating the bead if none exists yet.
+// FindOrCreateBeadID locates any existing open consolidated dependency-update bead
+// for the given anvil (prefix-based match), running a fresh scan and creating the
+// bead if none exists yet. An existing bead from a previous day is reused rather
+// than creating a new one each time the date changes.
 //
 // Returns:
 //   - (beadID, nil)  when a bead was found or created successfully
@@ -18,8 +20,8 @@ import (
 func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath string) (string, error) {
 	title := consolidatedBeadTitle(time.Now())
 
-	// Fast path: bead already exists for today.
-	existing, err := findConsolidatedBead(ctx, anvilPath, title)
+	// Fast path: any open "Package updates" bead already exists for this anvil.
+	existing, err := findConsolidatedBead(ctx, anvilPath)
 	if err != nil {
 		return "", fmt.Errorf("querying existing bead: %w", err)
 	}
@@ -62,7 +64,7 @@ func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath 
 	s.createConsolidatedBead(ctx, results, anvilPath, anvilName, title)
 
 	// Re-query to retrieve the newly created bead's ID.
-	created, err := findConsolidatedBead(ctx, anvilPath, title)
+	created, err := findConsolidatedBead(ctx, anvilPath)
 	if err != nil {
 		return "", fmt.Errorf("querying created bead: %w", err)
 	}
