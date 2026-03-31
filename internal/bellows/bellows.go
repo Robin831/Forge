@@ -280,6 +280,8 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	// fresh state.db that didn't carry over titles from another machine).
 	if pr.Title == "" && status.Title != "" {
 		_ = m.db.UpdatePRTitle(pr.ID, status.Title)
+		workerID := fmt.Sprintf("bellows-%s-%d", pr.Anvil, pr.Number)
+		_ = m.db.UpdateWorkerTitle(workerID, status.Title)
 		pr.Title = status.Title
 	}
 
