@@ -1787,6 +1787,93 @@ func TestDB_LastPollPerAnvil(t *testing.T) {
 	})
 }
 
+func TestDB_LastPollAllAnvils(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-poll-all-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	logEvent := func(typ EventType, anvil, msg string) {
+		t.Helper()
+		if err := db.LogEvent(typ, msg, "", anvil); err != nil {
+			t.Fatalf("LogEvent(%s/%s): %v", typ, anvil, err)
+		}
+	}
+
+	t.Run("empty DB returns nil", func(t *testing.T) {
+		results, err := db.LastPollAllAnvils()
+		if err != nil {
+			t.Fatalf("LastPollAllAnvils: %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("expected 0 results for empty DB, got %d", len(results))
+		}
+	})
+
+	// Seed events for two anvils.
+	logEvent(EventPollError, "forge", "connect timeout")
+	logEvent(EventPoll, "forge", "fetched 2 beads")  // newest for forge
+	logEvent(EventPoll, "hytte", "fetched 0 beads")  // only event for hytte
+
+	t.Run("returns latest row per distinct anvil", func(t *testing.T) {
+		results, err := db.LastPollAllAnvils()
+		if err != nil {
+			t.Fatalf("LastPollAllAnvils: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("expected 2 results, got %d", len(results))
+		}
+		byAnvil := make(map[string]AnvilPollStatus)
+		for _, r := range results {
+			byAnvil[r.Anvil] = r
+		}
+		if !byAnvil["forge"].OK {
+			t.Error("forge: expected OK=true (latest event is poll, not poll_error)")
+		}
+		if byAnvil["forge"].Message != "fetched 2 beads" {
+			t.Errorf("forge: unexpected message %q", byAnvil["forge"].Message)
+		}
+		if !byAnvil["hytte"].OK {
+			t.Error("hytte: expected OK=true")
+		}
+	})
+
+	t.Run("poll_error sets OK=false", func(t *testing.T) {
+		logEvent(EventPollError, "hytte", "network error")
+		results, err := db.LastPollAllAnvils()
+		if err != nil {
+			t.Fatalf("LastPollAllAnvils: %v", err)
+		}
+		byAnvil := make(map[string]AnvilPollStatus)
+		for _, r := range results {
+			byAnvil[r.Anvil] = r
+		}
+		if byAnvil["hytte"].OK {
+			t.Error("hytte: expected OK=false when latest event is poll_error")
+		}
+	})
+
+	t.Run("events with empty anvil are ignored", func(t *testing.T) {
+		// Log an event with no anvil (e.g. daemon_started).
+		logEvent(EventPoll, "", "should be ignored")
+		results, err := db.LastPollAllAnvils()
+		if err != nil {
+			t.Fatalf("LastPollAllAnvils: %v", err)
+		}
+		for _, r := range results {
+			if r.Anvil == "" {
+				t.Error("empty-anvil event should not appear in results")
+			}
+		}
+	})
+}
+
 func TestDB_OpenPRsWithDetail(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

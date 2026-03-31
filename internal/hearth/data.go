@@ -691,9 +691,21 @@ func FetchEvents(db *state.DB, limit int) tea.Cmd {
 
 // FetchAnvilHealth queries the last poll result per anvil and returns
 // health status items for the Queue panel headers.
+//
+// When ds.AnvilNames is empty (e.g. forge.yaml was not found in the working
+// directory), it falls back to querying all known anvils from the events
+// table so that health badges still appear even when the config is not loaded.
 func FetchAnvilHealth(ds *DataSource) tea.Cmd {
 	return func() tea.Msg {
-		statuses, err := ds.DB.LastPollPerAnvil(ds.AnvilNames)
+		var (
+			statuses []state.AnvilPollStatus
+			err      error
+		)
+		if len(ds.AnvilNames) == 0 {
+			statuses, err = ds.DB.LastPollAllAnvils()
+		} else {
+			statuses, err = ds.DB.LastPollPerAnvil(ds.AnvilNames)
+		}
 		if err != nil {
 			return UpdateAnvilHealthMsg{Items: nil}
 		}
