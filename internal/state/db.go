@@ -1659,28 +1659,38 @@ func (db *DB) LastPollPerAnvil(anvilNames []string) ([]AnvilPollStatus, error) {
 // config-derived anvil list is available (e.g. when forge.yaml is not found
 // in the working directory or ~/.forge/).
 func (db *DB) LastPollAllAnvils() ([]AnvilPollStatus, error) {
-	query := `SELECT anvil, timestamp, type, message
-		 FROM events
-		 WHERE type IN ('poll', 'poll_error')
-		   AND anvil != ''
-		 ORDER BY timestamp DESC, id DESC`
+	// Use a window function so SQLite selects the latest row per anvil,
+	// avoiding an unbounded ordered scan with client-side de-duplication.
+	query := `
+		SELECT anvil, timestamp, type, message
+		FROM (
+			SELECT
+				anvil,
+				timestamp,
+				type,
+				message,
+				ROW_NUMBER() OVER (
+					PARTITION BY anvil
+					ORDER BY timestamp DESC, id DESC
+				) AS rn
+			FROM events
+			WHERE type IN ('poll', 'poll_error')
+			  AND anvil != ''
+		) sub
+		WHERE rn = 1`
+
 	rows, err := db.conn.Query(query)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	seen := make(map[string]bool)
 	var results []AnvilPollStatus
 	for rows.Next() {
 		var anvil, ts, typ, msg string
 		if err := rows.Scan(&anvil, &ts, &typ, &msg); err != nil {
 			return nil, err
 		}
-		if seen[anvil] {
-			continue
-		}
-		seen[anvil] = true
 		results = append(results, AnvilPollStatus{
 			Anvil:     anvil,
 			Timestamp: parseTime(ts),
