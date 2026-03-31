@@ -221,3 +221,19 @@ func TestBuildDescriptionFromMaps_EmptyAutoKeepsMajor(t *testing.T) {
 	assert.Contains(t, desc, "Major updates (require manual review):")
 	assert.Contains(t, desc, "npm: webpack 4.0.0→5.0.0")
 }
+
+// TestConsolidatedBeadTitleHasPrefix verifies that generated titles always start with
+// the prefix used by findConsolidatedBead to locate existing beads. If this test
+// breaks, prefix-based reuse will silently stop working.
+func TestConsolidatedBeadTitleHasPrefix(t *testing.T) {
+	dates := []time.Time{
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC),
+	}
+	for _, d := range dates {
+		title := consolidatedBeadTitle(d)
+		assert.True(t, strings.HasPrefix(title, consolidatedBeadTitlePrefix),
+			"title %q does not start with prefix %q", title, consolidatedBeadTitlePrefix)
+	}
+}

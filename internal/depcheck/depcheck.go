@@ -291,7 +291,7 @@ func parseSemver(v string) (major, minor, patch string) {
 func (s *Scanner) findOrCreateConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName string) {
 	title := consolidatedBeadTitle(time.Now())
 
-	existing, err := findConsolidatedBead(ctx, anvilPath, title)
+	existing, err := findConsolidatedBead(ctx, anvilPath)
 	if err != nil {
 		log.Printf("[depcheck] %s: could not query existing beads — skipping bead creation: %v", anvilName, err)
 		_ = s.db.LogEvent(state.EventDepcheckFailed,

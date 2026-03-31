@@ -12,6 +12,11 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 )
 
+// consolidatedBeadTitlePrefix is the common prefix shared by all consolidated
+// dependency update bead titles. Used for prefix-based lookup so that beads
+// created on a previous day are reused rather than duplicated.
+const consolidatedBeadTitlePrefix = "Package updates"
+
 // consolidatedBeadTitle returns the standardized title for a per-anvil consolidated
 // dependency update bead. Format: "Package updates starting DD.MM.YYYY"
 func consolidatedBeadTitle(t time.Time) string {
@@ -275,19 +280,23 @@ func fetchSQL(ctx context.Context, anvilPath, query string) ([]byte, error) {
 	return cmd.Output()
 }
 
-// findConsolidatedBead searches for an open bead with the given exact title.
+// findConsolidatedBead searches for any open bead whose title starts with
+// consolidatedBeadTitlePrefix ("Package updates"). This prefix-based match
+// ensures that a bead created on a previous day is reused instead of a new
+// duplicate being created when the date changes.
+//
 // Returns (nil, nil) if no such bead exists, or (bead, nil) if found.
 // The returned bead's Description field is populated (via bd show if needed).
-func findConsolidatedBead(ctx context.Context, anvilPath, title string) (*bdBead, error) {
+func findConsolidatedBead(ctx context.Context, anvilPath string) (*bdBead, error) {
 	// Try bd sql first: fast and returns all columns including description.
-	escaped := strings.ReplaceAll(title, "'", "''")
-	query := fmt.Sprintf(`SELECT * FROM issues WHERE status = 'open' AND title = '%s'`, escaped)
+	escaped := strings.ReplaceAll(consolidatedBeadTitlePrefix, "'", "''")
+	query := fmt.Sprintf(`SELECT * FROM issues WHERE status = 'open' AND title LIKE '%s%%'`, escaped)
 	out, err := fetchSQL(ctx, anvilPath, query)
 	if err == nil {
 		var beads []bdBead
 		if json.Unmarshal(out, &beads) == nil {
 			for i := range beads {
-				if beads[i].Title == title {
+				if strings.HasPrefix(beads[i].Title, consolidatedBeadTitlePrefix) {
 					return &beads[i], nil
 				}
 			}
@@ -306,7 +315,7 @@ func findConsolidatedBead(ctx context.Context, anvilPath, title string) (*bdBead
 		return nil, fmt.Errorf("parse bd list output: %w", err)
 	}
 	for i := range beads {
-		if beads[i].Title == title {
+		if strings.HasPrefix(beads[i].Title, consolidatedBeadTitlePrefix) {
 			// Fetch full details (including description) via bd show.
 			if fullOut := fetchBeadShow(ctx, anvilPath, beads[i].ID); len(fullOut) > 0 {
 				var full bdBead

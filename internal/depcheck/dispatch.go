@@ -18,8 +18,8 @@ import (
 func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath string) (string, error) {
 	title := consolidatedBeadTitle(time.Now())
 
-	// Fast path: bead already exists for today.
-	existing, err := findConsolidatedBead(ctx, anvilPath, title)
+	// Fast path: any open "Package updates" bead already exists for this anvil.
+	existing, err := findConsolidatedBead(ctx, anvilPath)
 	if err != nil {
 		return "", fmt.Errorf("querying existing bead: %w", err)
 	}
@@ -62,7 +62,7 @@ func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath 
 	s.createConsolidatedBead(ctx, results, anvilPath, anvilName, title)
 
 	// Re-query to retrieve the newly created bead's ID.
-	created, err := findConsolidatedBead(ctx, anvilPath, title)
+	created, err := findConsolidatedBead(ctx, anvilPath)
 	if err != nil {
 		return "", fmt.Errorf("querying created bead: %w", err)
 	}
