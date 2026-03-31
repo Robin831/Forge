@@ -1654,6 +1654,53 @@ func (db *DB) LastPollPerAnvil(anvilNames []string) ([]AnvilPollStatus, error) {
 	return results, rows.Err()
 }
 
+// LastPollAllAnvils returns the most recent poll or poll_error event for every
+// distinct anvil that has ever been polled. It is used by Hearth when no
+// config-derived anvil list is available (e.g. when forge.yaml is not found
+// in the working directory or ~/.forge/).
+func (db *DB) LastPollAllAnvils() ([]AnvilPollStatus, error) {
+	// Use a window function so SQLite selects the latest row per anvil,
+	// avoiding an unbounded ordered scan with client-side de-duplication.
+	query := `
+		SELECT anvil, timestamp, type, message
+		FROM (
+			SELECT
+				anvil,
+				timestamp,
+				type,
+				message,
+				ROW_NUMBER() OVER (
+					PARTITION BY anvil
+					ORDER BY timestamp DESC, id DESC
+				) AS rn
+			FROM events
+			WHERE type IN ('poll', 'poll_error')
+			  AND anvil != ''
+		) sub
+		WHERE rn = 1`
+
+	rows, err := db.conn.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []AnvilPollStatus
+	for rows.Next() {
+		var anvil, ts, typ, msg string
+		if err := rows.Scan(&anvil, &ts, &typ, &msg); err != nil {
+			return nil, err
+		}
+		results = append(results, AnvilPollStatus{
+			Anvil:     anvil,
+			Timestamp: parseTime(ts),
+			OK:        typ == string(EventPoll),
+			Message:   msg,
+		})
+	}
+	return results, rows.Err()
+}
+
 // --- Retry tracking ---
 
 // RetryRecord tracks retry state for a bead.
