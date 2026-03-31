@@ -449,6 +449,7 @@ func (g *GiteaProvider) fetchPRView(ctx context.Context, ri giteaRepoInfo, prNum
 		Mergeable:   mapGiteaMergeable(pr.Mergeable, pr.State),
 		HeadRefName: pr.Head.Ref,
 		URL:         pr.HTMLURL,
+		Title:       pr.Title,
 	}, pr.Head.SHA, nil
 }
 

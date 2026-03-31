@@ -106,6 +106,7 @@ func (p *Provider) CreatePR(ctx context.Context, params vcs.CreateParams) (*vcs.
 			BaseBranch: params.Base,
 			Status:     state.PROpen,
 			CreatedAt:  pr.Created,
+			Title:      params.Title,
 		}
 		if err := p.db.InsertPR(dbPR); err != nil {
 			log.Printf("[vcs/github] failed to insert PR in DB (bead=%s, anvil=%s, number=%d): %v", params.BeadID, params.AnvilName, prNumber, err)
@@ -182,7 +183,7 @@ func (p *Provider) MergePR(ctx context.Context, worktreePath string, prNumber in
 func (p *Provider) CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*vcs.PRStatus, error) {
 	args := []string{
 		"pr", "view", fmt.Sprintf("%d", prNumber),
-		"--json", "state,statusCheckRollup,reviews,reviewRequests,mergeable,headRefName,url",
+		"--json", "state,statusCheckRollup,reviews,reviewRequests,mergeable,headRefName,url,title",
 	}
 
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))

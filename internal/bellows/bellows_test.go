@@ -726,6 +726,48 @@ func TestCheckPR_CompletedEmptyConclusionBlocksCIFailed(t *testing.T) {
 	assert.NotContains(t, events, EventCIFailed, "ci_failed must not fire when a check has COMPLETED with empty conclusion (transient)")
 }
 
+// TestCheckPR_TitleBackfill verifies that when a PR has an empty title in the
+// database and CheckStatus returns a title from the VCS API, the title is
+// persisted to both the prs and workers tables.
+func TestCheckPR_TitleBackfill(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    99,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-titletest",
+		Branch:    "forge/forge-titletest",
+		Status:    state.PROpen,
+		Title:     "", // empty — simulates a PR created before the fix
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State: "OPEN",
+		Title: "My PR title",
+	}}
+
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+	m.checkAll(context.Background())
+
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "My PR title", updated.Title, "PR title should be backfilled from VCS status")
+
+	workers, err := db.ActiveWorkers()
+	require.NoError(t, err)
+	var workerTitle string
+	for _, w := range workers {
+		if w.ID == "bellows-test-anvil-99" {
+			workerTitle = w.Title
+			break
+		}
+	}
+	assert.Equal(t, "My PR title", workerTitle, "worker title should be backfilled from VCS status")
+}
+
 // fakeVCSProvider is a minimal vcs.Provider that returns a fixed PRStatus.
 type fakeVCSProvider struct {
 	status *vcs.PRStatus

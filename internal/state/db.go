@@ -533,6 +533,12 @@ func (db *DB) UpdateWorkerLogPath(id string, logPath string) error {
 	return err
 }
 
+// UpdateWorkerTitle updates the display title of a worker.
+func (db *DB) UpdateWorkerTitle(id string, title string) error {
+	_, err := db.conn.Exec(`UPDATE workers SET title = ? WHERE id = ?`, title, id)
+	return err
+}
+
 // ActiveWorkers returns all workers with non-terminal status (including stalled).
 func (db *DB) ActiveWorkers() ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path

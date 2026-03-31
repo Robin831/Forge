@@ -191,6 +191,7 @@ type PRStatus struct {
 	UnresolvedThreads int
 	HeadRefName       string
 	URL               string
+	Title             string
 }
 
 // IsMerged returns true if the PR has been merged.
