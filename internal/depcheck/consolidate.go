@@ -335,8 +335,12 @@ func findConsolidatedBead(ctx context.Context, anvilPath string) (*bdBead, error
 	if len(matches) > 1 {
 		log.Printf("[depcheck] %s: found %d open consolidated beads — picking most recently updated by updated_at", anvilPath, len(matches))
 		// Sort by updated_at descending to pick the most recently updated bead.
+		// Use parseBeadTime for robust comparison; unparseable/empty timestamps
+		// sort as oldest (zero time).
 		sort.Slice(matches, func(i, j int) bool {
-			return matches[i].UpdatedAt > matches[j].UpdatedAt
+			ti, _ := parseBeadTime(matches[i].UpdatedAt)
+			tj, _ := parseBeadTime(matches[j].UpdatedAt)
+			return ti.After(tj)
 		})
 	}
 	// Fetch full details (including description) via bd show for the chosen bead.

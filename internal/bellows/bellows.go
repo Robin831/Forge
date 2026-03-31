@@ -276,9 +276,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		return
 	}
 
-	// Persist title if it was missing (e.g. PRs created before this fix or on a
-	// fresh state.db that didn't carry over titles from another machine).
-	if pr.Title == "" && status.Title != "" {
+	// Persist title if it was missing or has changed (e.g. PRs created before this
+	// fix, PRs that were renamed, or a fresh state.db that didn't carry over titles).
+	if status.Title != "" && status.Title != pr.Title {
 		if err := m.db.UpdatePRTitle(pr.ID, status.Title); err != nil {
 			log.Printf("[bellows] Failed to backfill PR title for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
 		}
