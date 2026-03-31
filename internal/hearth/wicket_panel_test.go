@@ -1,8 +1,10 @@
 package hearth
 
 import (
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -240,5 +242,129 @@ func TestPanelAtPosCenterColumn_WithWicket_ReturnsWicket(t *testing.T) {
 	}
 	if !(wicketY < usageY) {
 		t.Errorf("expected PanelWicket above PanelUsage, got wicketY=%d, usageY=%d", wicketY, usageY)
+	}
+}
+
+// TestWicketScanKeyBinding_NoCallback verifies that pressing 'w' is a no-op when
+// OnWicketScan is not set (wicket disabled).
+func TestWicketScanKeyBinding_NoCallback(t *testing.T) {
+	m := NewModel(nil)
+	m.OnWicketScan = nil
+
+	mTmp, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	got := mTmp.(*Model)
+	if cmd != nil {
+		t.Errorf("expected no command when OnWicketScan is nil, got non-nil cmd")
+	}
+	if got.statusMsg != "" {
+		t.Errorf("expected no status message when OnWicketScan is nil, got %q", got.statusMsg)
+	}
+}
+
+// TestWicketScanKeyBinding_Triggered verifies that pressing 'w' invokes the callback
+// and sets a confirmation status message.
+func TestWicketScanKeyBinding_Triggered(t *testing.T) {
+	m := NewModel(nil)
+	called := false
+	m.OnWicketScan = func() error {
+		called = true
+		return nil
+	}
+
+	mTmp, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	got := mTmp.(*Model)
+
+	if got.statusMsg != "Wicket scan triggered" {
+		t.Errorf("expected status 'Wicket scan triggered', got %q", got.statusMsg)
+	}
+	if got.statusMsgIsError {
+		t.Error("expected non-error status after trigger")
+	}
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd to be returned")
+	}
+	// Execute the command to invoke the callback.
+	msg := cmd()
+	if !called {
+		t.Error("expected OnWicketScan callback to be called")
+	}
+	result, ok := msg.(wicketScanResultMsg)
+	if !ok {
+		t.Fatalf("expected wicketScanResultMsg, got %T", msg)
+	}
+	if result.Err != nil {
+		t.Errorf("expected nil error, got %v", result.Err)
+	}
+}
+
+// TestWicketScanKeyBinding_ErrorSurfaced verifies that a callback error is surfaced
+// to the user as an error status message via wicketScanResultMsg.
+func TestWicketScanKeyBinding_ErrorSurfaced(t *testing.T) {
+	m := NewModel(nil)
+	scanErr := errors.New("daemon not reachable")
+	m.OnWicketScan = func() error { return scanErr }
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd to be returned")
+	}
+	msg := cmd()
+
+	// Feed the result message back into Update so setStatus is called.
+	mTmp2, _ := m.Update(msg)
+	got := mTmp2.(*Model)
+	if !got.statusMsgIsError {
+		t.Error("expected error status when callback returns an error")
+	}
+	if !strings.Contains(got.statusMsg, "daemon not reachable") {
+		t.Errorf("expected error text in status, got %q", got.statusMsg)
+	}
+}
+
+// TestWicketScanKeyBinding_Cooldown verifies that a second 'w' press within the
+// cooldown window shows a cooldown message instead of triggering another scan.
+func TestWicketScanKeyBinding_Cooldown(t *testing.T) {
+	m := NewModel(nil)
+	callCount := 0
+	m.OnWicketScan = func() error {
+		callCount++
+		return nil
+	}
+
+	// First press — should trigger.
+	mTmp, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	m = *mTmp.(*Model)
+
+	// Second press immediately — should be on cooldown.
+	mTmp2, cmd2 := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	got := mTmp2.(*Model)
+	if cmd2 != nil {
+		t.Error("expected no cmd on second press during cooldown")
+	}
+	if !strings.Contains(got.statusMsg, "cooldown") {
+		t.Errorf("expected cooldown message on second press, got %q", got.statusMsg)
+	}
+}
+
+// TestWicketScanKeyBinding_CooldownExpired verifies that pressing 'w' after the
+// cooldown has elapsed triggers a new scan.
+func TestWicketScanKeyBinding_CooldownExpired(t *testing.T) {
+	m := NewModel(nil)
+	callCount := 0
+	m.OnWicketScan = func() error {
+		callCount++
+		return nil
+	}
+
+	// Simulate an already-expired cooldown.
+	m.wicketScanCooldownUntil = time.Now().Add(-1 * time.Second)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	if cmd == nil {
+		t.Fatal("expected a cmd after cooldown expired")
+	}
+	cmd() // execute — invokes callback
+	if callCount != 1 {
+		t.Errorf("expected callback called once after cooldown expired, got %d", callCount)
 	}
 }

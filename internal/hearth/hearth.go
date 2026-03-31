@@ -1138,8 +1138,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus("Wicket scan triggered", false)
 			cb := m.OnWicketScan
 			return m, func() tea.Msg {
-				_ = cb()
-				return nil
+				return wicketScanResultMsg{Err: cb()}
 			}
 
 		case "esc":
@@ -1353,6 +1352,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UpdateOpenPRsMsg:
 		m.prItems = msg.Items
 		m.prVP.ClampToTotal(len(msg.Items))
+
+	case wicketScanResultMsg:
+		if msg.Err != nil {
+			m.setStatus(fmt.Sprintf("Wicket scan failed: %v", msg.Err), true)
+		}
 
 	case reconcilePRsDoneMsg:
 		// After reconciliation, refresh the PR list from the DB
