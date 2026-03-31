@@ -2792,6 +2792,18 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": "PR reconciliation triggered"})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "wicket_scan":
+		d.wicketMu.Lock()
+		wm := d.wicketMonitor
+		d.wicketMu.Unlock()
+		if wm == nil {
+			msg, _ := json.Marshal(map[string]string{"message": "wicket monitor is not running"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		wm.TriggerScan()
+		data, _ := json.Marshal(map[string]string{"message": "wicket scan triggered"})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	case "subscribe":
 		data, _ := json.Marshal(map[string]string{"message": "subscribed"})
 		return ipc.Response{Type: "ok", Payload: data}

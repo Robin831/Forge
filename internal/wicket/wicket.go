@@ -41,6 +41,8 @@ type Monitor struct {
 	// triageFunc overrides RunTriageWithComments. Nil means use the default.
 	// Tests set this to avoid spawning real AI subprocesses.
 	triageFunc func(ctx context.Context, issue Issue, comments []Comment, cfg TriageConfig) TriageDecision
+	// triggerCh is used to request an immediate scan outside the normal interval.
+	triggerCh chan struct{}
 }
 
 // New creates a Wicket issue triage monitor with the default GitHub CLI client.
@@ -53,6 +55,7 @@ func New(cfg *config.Config, db *state.DB) *Monitor {
 		resolver:          NewRepoResolver(),
 		repoAnvilMap:      make(map[string]string),
 		anvilPrimaryRepos: make(map[string]string),
+		triggerCh:         make(chan struct{}, 1),
 	}
 }
 
@@ -79,6 +82,17 @@ func (m *Monitor) UpdateConfig(cfg *config.Config) {
 // primary shutdown mechanism; this method exists for API symmetry with other
 // monitors.
 func (m *Monitor) Stop() {}
+
+// TriggerScan requests an immediate scan outside the normal interval. If a
+// trigger is already pending (not yet consumed by the Run loop) this is a
+// no-op, preventing duplicate concurrent scans.
+func (m *Monitor) TriggerScan() {
+	select {
+	case m.triggerCh <- struct{}{}:
+	default:
+		// A trigger is already queued; discard the duplicate.
+	}
+}
 
 // Run starts the periodic issue triage loop. Blocks until ctx is canceled.
 // The poll interval is dynamically adjusted: when quota is low (<100 remaining)
@@ -108,6 +122,10 @@ func (m *Monitor) Run(ctx context.Context) error {
 			timer.Stop()
 			log.Println("[wicket] Shutting down issue triage monitor")
 			return ctx.Err()
+		case <-m.triggerCh:
+			timer.Stop()
+			log.Println("[wicket] Manual scan triggered")
+			m.scanAll(ctx)
 		case <-timer.C:
 			m.scanAll(ctx)
 		}

@@ -351,6 +351,10 @@ type Model struct {
 	// Callback for triggering PR reconciliation with GitHub (set by the caller).
 	OnReconcilePRs func() error
 
+	// Callback for triggering an immediate Wicket issue scan (set by the caller).
+	// Only available when wicket is enabled.
+	OnWicketScan func() error
+
 	// Callback for resolving an orphaned bead (set by the caller).
 	// Called with (beadID, anvil, action) where action is "recover", "close", or "discard".
 	OnResolveOrphan func(beadID, anvil, action string) error
@@ -447,6 +451,9 @@ type Model struct {
 	statusMsg        string
 	statusMsgTime    time.Time
 	statusMsgIsError bool
+
+	// Cooldown for manual Wicket scans — prevents rapid repeated triggers.
+	wicketScanCooldownUntil time.Time
 
 	// Queue anvil grouping state — groups beads by anvil when 2+ anvils present.
 	queueExpandedAnvils map[string]bool // per-anvil expanded/collapsed state
@@ -1115,6 +1122,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+
+		case "w":
+			// Trigger an immediate Wicket scan (with cooldown to prevent spam).
+			if m.OnWicketScan == nil {
+				return m, nil
+			}
+			const wicketScanCooldown = 30 * time.Second
+			if time.Now().Before(m.wicketScanCooldownUntil) {
+				remaining := time.Until(m.wicketScanCooldownUntil).Round(time.Second)
+				m.setStatus("Wicket scan on cooldown — try again in "+remaining.String(), false)
+				return m, nil
+			}
+			m.wicketScanCooldownUntil = time.Now().Add(wicketScanCooldown)
+			m.setStatus("Wicket scan triggered", false)
+			cb := m.OnWicketScan
+			return m, func() tea.Msg {
+				_ = cb()
+				return nil
+			}
 
 		case "esc":
 			// Clear event filter when Events panel is focused and filter is applied

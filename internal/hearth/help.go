@@ -80,6 +80,10 @@ var (
 		key.WithKeys("U"),
 		key.WithHelp("U", "update deps"),
 	)
+	keyWicketScan = key.NewBinding(
+		key.WithKeys("w"),
+		key.WithHelp("w", "wicket scan"),
+	)
 )
 
 // --- Per-panel KeyMap types ---
@@ -183,11 +187,11 @@ func (k eventsKeyMap) FullHelp() [][]key.Binding {
 type wicketKeyMap struct{ m *Model }
 
 func (k wicketKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyWicketScan, keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k wicketKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
+		{keyWicketScan, keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
 
