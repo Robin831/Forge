@@ -8,8 +8,10 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
-// FindOrCreateBeadID locates today's consolidated dependency-update bead for the
-// given anvil, running a fresh scan and creating the bead if none exists yet.
+// FindOrCreateBeadID locates any existing open consolidated dependency-update bead
+// for the given anvil (prefix-based match), running a fresh scan and creating the
+// bead if none exists yet. An existing bead from a previous day is reused rather
+// than creating a new one each time the date changes.
 //
 // Returns:
 //   - (beadID, nil)  when a bead was found or created successfully

@@ -283,7 +283,9 @@ func parseSemver(v string) (major, minor, patch string) {
 }
 
 // findOrCreateConsolidatedBead is the main bead management entry point.
-// It searches for an existing open bead with today's consolidated title for this anvil.
+// It searches for any existing open bead whose title starts with the consolidated
+// title prefix (prefix-based match, not date-specific). An open bead from a
+// previous day is reused rather than creating a new duplicate.
 // If found, it appends any new packages to the description.
 // If not found, it creates a new bead. The bead is intentionally left untagged;
 // the user can apply the anvil's configured auto-dispatch label or workflow when they are

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 	"sort"
 	"strings"
@@ -290,18 +291,26 @@ func fetchSQL(ctx context.Context, anvilPath, query string) ([]byte, error) {
 func findConsolidatedBead(ctx context.Context, anvilPath string) (*bdBead, error) {
 	// Try bd sql first: fast and returns all columns including description.
 	escaped := strings.ReplaceAll(consolidatedBeadTitlePrefix, "'", "''")
-	query := fmt.Sprintf(`SELECT * FROM issues WHERE status = 'open' AND title LIKE '%s%%'`, escaped)
+	query := fmt.Sprintf(`SELECT * FROM issues WHERE status = 'open' AND title LIKE '%s%%' ORDER BY updated_at DESC`, escaped)
 	out, err := fetchSQL(ctx, anvilPath, query)
 	if err == nil {
 		var beads []bdBead
 		if json.Unmarshal(out, &beads) == nil {
+			var matches []bdBead
 			for i := range beads {
 				if strings.HasPrefix(beads[i].Title, consolidatedBeadTitlePrefix) {
-					return &beads[i], nil
+					matches = append(matches, beads[i])
 				}
 			}
-			// Query succeeded with no match.
-			return nil, nil
+			if len(matches) == 0 {
+				// Query succeeded with no match.
+				return nil, nil
+			}
+			if len(matches) > 1 {
+				log.Printf("[depcheck] %s: found %d open consolidated beads — picking most recently updated (%s)", anvilPath, len(matches), matches[0].ID)
+			}
+			// matches[0] is the most recently updated due to ORDER BY updated_at DESC.
+			return &matches[0], nil
 		}
 	}
 
@@ -314,17 +323,28 @@ func findConsolidatedBead(ctx context.Context, anvilPath string) (*bdBead, error
 	if err := json.Unmarshal(listOut, &beads); err != nil {
 		return nil, fmt.Errorf("parse bd list output: %w", err)
 	}
+	var matches []bdBead
 	for i := range beads {
 		if strings.HasPrefix(beads[i].Title, consolidatedBeadTitlePrefix) {
-			// Fetch full details (including description) via bd show.
-			if fullOut := fetchBeadShow(ctx, anvilPath, beads[i].ID); len(fullOut) > 0 {
-				var full bdBead
-				if json.Unmarshal(fullOut, &full) == nil {
-					return &full, nil
-				}
-			}
-			return &beads[i], nil
+			matches = append(matches, beads[i])
 		}
 	}
-	return nil, nil
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	if len(matches) > 1 {
+		log.Printf("[depcheck] %s: found %d open consolidated beads — picking most recently updated by updated_at", anvilPath, len(matches))
+		// Sort by updated_at descending to pick the most recently updated bead.
+		sort.Slice(matches, func(i, j int) bool {
+			return matches[i].UpdatedAt > matches[j].UpdatedAt
+		})
+	}
+	// Fetch full details (including description) via bd show for the chosen bead.
+	if fullOut := fetchBeadShow(ctx, anvilPath, matches[0].ID); len(fullOut) > 0 {
+		var full bdBead
+		if json.Unmarshal(fullOut, &full) == nil {
+			return &full, nil
+		}
+	}
+	return &matches[0], nil
 }
