@@ -80,6 +80,10 @@ var (
 		key.WithKeys("U"),
 		key.WithHelp("U", "update deps"),
 	)
+	keyWicketScan = key.NewBinding(
+		key.WithKeys("w"),
+		key.WithHelp("w", "wicket scan"),
+	)
 )
 
 // --- Per-panel KeyMap types ---
@@ -87,11 +91,11 @@ var (
 type queueKeyMap struct{ m *Model }
 
 func (k queueKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding(), keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k queueKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyPRPanel, keyDepUpdate},
+		{keyScroll, keyEnter, keyCollapse, keyDesc, keyNotes, keyLabel, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding()},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -99,11 +103,11 @@ func (k queueKeyMap) FullHelp() [][]key.Binding {
 type cruciblesKeyMap struct{ m *Model }
 
 func (k cruciblesKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyEnter, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyEnter, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding(), keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k cruciblesKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyEnter, keyPRPanel, keyDepUpdate},
+		{keyScroll, keyEnter, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding()},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -111,11 +115,11 @@ func (k cruciblesKeyMap) FullHelp() [][]key.Binding {
 type readyToMergeKeyMap struct{ m *Model }
 
 func (k readyToMergeKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyMerge, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyMerge, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding(), keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k readyToMergeKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyMerge, keyPRPanel, keyDepUpdate},
+		{keyScroll, keyMerge, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding()},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -123,11 +127,11 @@ func (k readyToMergeKeyMap) FullHelp() [][]key.Binding {
 type needsAttentionKeyMap struct{ m *Model }
 
 func (k needsAttentionKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyEnter, keyDesc, keyNotes, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyEnter, keyDesc, keyNotes, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding(), keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k needsAttentionKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyEnter, keyDesc, keyNotes, keyPRPanel, keyDepUpdate},
+		{keyScroll, keyEnter, keyDesc, keyNotes, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding()},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -135,11 +139,11 @@ func (k needsAttentionKeyMap) FullHelp() [][]key.Binding {
 type workersKeyMap struct{ m *Model }
 
 func (k workersKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyKill, keyStop, keyViewLog, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyKill, keyStop, keyViewLog, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding(), keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k workersKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyKill, keyStop, keyViewLog, keyPRPanel, keyDepUpdate},
+		{keyScroll, keyKill, keyStop, keyViewLog, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding()},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -147,11 +151,11 @@ func (k workersKeyMap) FullHelp() [][]key.Binding {
 type usageKeyMap struct{ m *Model }
 
 func (k usageKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding(), keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k usageKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyPRPanel, keyDepUpdate},
+		{keyScroll, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding()},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -159,11 +163,11 @@ func (k usageKeyMap) FullHelp() [][]key.Binding {
 type liveActivityKeyMap struct{ m *Model }
 
 func (k liveActivityKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyFollow, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyFollow, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding(), keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k liveActivityKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyFollow, keyPRPanel, keyDepUpdate},
+		{keyScroll, keyFollow, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding()},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -171,11 +175,11 @@ func (k liveActivityKeyMap) FullHelp() [][]key.Binding {
 type eventsKeyMap struct{ m *Model }
 
 func (k eventsKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyScroll, keyFollow, keyFilter, keyPRPanel, keyDepUpdate, keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{keyScroll, keyFollow, keyFilter, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding(), keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k eventsKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyScroll, keyFollow, keyFilter, keyPRPanel, keyDepUpdate},
+		{keyScroll, keyFollow, keyFilter, keyPRPanel, keyDepUpdate, k.m.keyWicketScanBinding()},
 		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
 }
@@ -183,12 +187,21 @@ func (k eventsKeyMap) FullHelp() [][]key.Binding {
 type wicketKeyMap struct{ m *Model }
 
 func (k wicketKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{keyTab, k.m.keyMouse(), keyQuit}
+	return []key.Binding{k.m.keyWicketScanBinding(), keyTab, k.m.keyMouse(), keyQuit}
 }
 func (k wicketKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
+		{k.m.keyWicketScanBinding(), keyTab, keyShiftTab, k.m.keyMouse(), keyQuit},
 	}
+}
+
+// keyWicketScanBinding returns the wicket scan key binding, disabled when
+// OnWicketScan is nil (i.e. Wicket is not configured). Disabled bindings are
+// omitted from the help footer by the bubbles/help renderer.
+func (m *Model) keyWicketScanBinding() key.Binding {
+	b := keyWicketScan
+	b.SetEnabled(m.OnWicketScan != nil)
+	return b
 }
 
 // keyMouse returns the mouse toggle key binding with help text updated based

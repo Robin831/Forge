@@ -997,6 +997,9 @@ type OpenPRsErrorMsg struct{ Err error }
 // reconcilePRsDoneMsg is sent after GitHub PR reconciliation completes.
 type reconcilePRsDoneMsg struct{}
 
+// wicketScanResultMsg is sent after a manual Wicket scan request completes.
+type wicketScanResultMsg struct{ Err error }
+
 // FetchOpenPRs reads all non-terminal PRs with status detail from the state DB.
 func FetchOpenPRs(db *state.DB) tea.Cmd {
 	return func() tea.Msg {

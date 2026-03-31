@@ -192,6 +192,23 @@ var hearthCmd = &cobra.Command{
 			}
 			return nil
 		}
+		if cfg.Settings.WicketEnabled {
+			model.OnWicketScan = func() error {
+				client, err := ipc.NewClient()
+				if err != nil {
+					return err
+				}
+				defer client.Close()
+				resp, err := client.Send(ipc.Command{Type: "wicket_scan"})
+				if err != nil {
+					return err
+				}
+				if resp.Type != "ok" {
+					return ipcError(resp)
+				}
+				return nil
+			}
+		}
 		model.OnPRAction = func(prID, prNumber int, anvil, beadID, branch, action string) error {
 			client, err := ipc.NewClient()
 			if err != nil {
