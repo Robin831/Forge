@@ -25,6 +25,7 @@ import (
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/vcs"
+	"github.com/Robin831/Forge/internal/wicket"
 	"github.com/Robin831/Forge/internal/worktree"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2793,5 +2794,51 @@ func TestForgeBranchAheadOfMain(t *testing.T) {
 		branch, ok := d.forgeBranchAheadOfMain(context.Background(), anvilPath, beadID, "")
 		assert.True(t, ok, "branch with commits ahead of main should be detected")
 		assert.Equal(t, branchName, branch)
+	})
+}
+
+func TestHandleIPC_WicketScan(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+	}
+	d.cfg.Store(&config.Config{})
+
+	t.Run("monitor not running returns error", func(t *testing.T) {
+		// wicketMonitor is nil by default
+		resp := d.handleIPC(ipc.Command{Type: "wicket_scan"})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+		assert.Contains(t, msg["message"], "wicket monitor is not running")
+	})
+
+	t.Run("monitor running returns ok", func(t *testing.T) {
+		wm := wicket.New(&config.Config{}, db)
+		d.wicketMu.Lock()
+		d.wicketMonitor = wm
+		d.wicketMu.Unlock()
+		defer func() {
+			d.wicketMu.Lock()
+			d.wicketMonitor = nil
+			d.wicketMu.Unlock()
+		}()
+
+		resp := d.handleIPC(ipc.Command{Type: "wicket_scan"})
+		assert.Equal(t, "ok", resp.Type)
+		var msg map[string]string
+		require.NoError(t, json.Unmarshal(resp.Payload, &msg))
+		assert.Contains(t, msg["message"], "wicket scan triggered")
 	})
 }
