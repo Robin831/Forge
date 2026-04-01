@@ -6,5 +6,5 @@
   "dolt_server_port": 3307,
   "dolt_server_user": "forge",
   "dolt_database": "forge",
-  "jsonl_export": "issues.jsonl"
+  "project_id": "af6a326f-a0e0-454b-81eb-3395bbccc547"
 }
