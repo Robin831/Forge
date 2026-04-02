@@ -131,7 +131,7 @@ rules:
         Code comments or docstrings that describe behavior, eligibility, control flow, or filtering/skipping logic
       check: >-
         Verify that comments accurately reflect the actual code behavior and control flow. When a comment claims something is eligible, enabled, or handled, trace the execution path to confirm the code actually supports that claim. Pay special attention to comments describing guard or skip behavior near loops/conditionals — confirm the corresponding guard clause (e.g. continue, return, conditional block) actually exists and is correct. Update comments to match reality or fix the code to match the intent.
-      source: ['copilot:PR#126', 'copilot:PR#444']
+      source: ['copilot:PR#126', 'copilot:PR#444', 'copilot:PR#490']
       added: "2026-03-09"
     - id: changelog-matches-behavior
       category: other
@@ -1402,10 +1402,10 @@ rules:
     - id: doc-matches-implementation
       category: style
       pattern: >-
-        Function or method doc comments that describe error behavior, return values, or fallback logic
+        Function or method doc comments that describe error behavior, return values, or fallback logic, or functions whose behavior is modified without updating doc comments
       check: >-
-        Verify that doc comments accurately describe the actual implementation behavior — especially around error returns, fallback paths, and edge cases. If the code silently falls back instead of returning an error, the comment must not claim an error is returned, and vice versa.
-      source: copilot:PR#346
+        Verify that doc comments accurately describe the actual implementation behavior — especially around error returns, fallback paths, edge cases, and reuse/lookup semantics. If the code silently falls back instead of returning an error, the comment must not claim an error is returned, and vice versa. After changing function semantics, update the doc comment to reflect the new behavior.
+      source: ['copilot:PR#346', 'copilot:PR#490']
       added: "2026-03-20"
     - id: test-helper-filesystem-errors
       category: testing
@@ -1679,8 +1679,8 @@ rules:
       category: ui
       pattern: Footer or help text listing keyboard shortcuts in a TUI view
       check: >-
-        Verify all keybindings handled in Model.Update are reflected in the displayed help/footer text, with no omissions or stale entries
-      source: copilot:PR#378
+        Verify all keybindings handled in Model.Update are reflected in the displayed help/footer text, with no omissions or stale entries. Additionally verify that keyboard shortcut scope (global vs panel-scoped) is consistent between the input handler and the help/footer display: if a shortcut works globally, it should be advertised globally; if it is panel-scoped, the handler should be gated on the correct panel focus state.
+      source: ['copilot:PR#378', 'copilot:PR#488']
       added: "2026-03-21"
     - id: help-keybinding-view-accuracy
       category: ui
@@ -2996,3 +2996,50 @@ rules:
         Verify that no blocking operations (clipboard.WriteAll, exec.Command, HTTP calls, file I/O) run synchronously in Update. They should be wrapped in a tea.Cmd function that returns a tea.Msg, so the event loop stays responsive and the UI does not freeze.
       source: copilot:PR#475
       added: "2026-03-30"
+    - id: ipc-command-test-coverage
+      category: testing
+      pattern: A new IPC command type is added to the daemon's handleIPC function
+      check: >-
+        Verify that the appropriate internal/daemon/*_test.go file(s) or the package's existing IPC test suite include tests for the new IPC command, covering both the error/unavailable path and the success/ok path to maintain consistent test coverage across the IPC surface
+      source: copilot:PR#488
+      added: "2026-03-31"
+    - id: deterministic-query-result-selection
+      category: other
+      pattern: >-
+        Code that uses the first result from a database query or list command to select a single record (e.g., iterating and returning early from bd sql/bd list output)
+      check: >-
+        When selecting a single record from a query that could return multiple matches, verify the selection is deterministic. If ordering is not guaranteed by the query, sort by a stable key (e.g., updated_at, created_at, or ID) and explicitly handle the multiple-match case with logging. Returning an arbitrary match can cause silent data inconsistencies.
+      source: copilot:PR#490
+      added: "2026-03-31"
+    - id: tracked-goroutine-consistency
+      category: concurrency
+      pattern: >-
+        A goroutine is added to a sync.WaitGroup in one call site but not others for the same function
+      check: >-
+        When a goroutine is tracked via WaitGroup for shutdown/test synchronization, verify that ALL call sites launching that same goroutine are tracked consistently, otherwise WaitGroup.Wait behavior will differ depending on which code path triggered the goroutine
+      source: copilot:PR#490
+      added: "2026-03-31"
+    - id: stale-cached-fields
+      category: other
+      pattern: >-
+        Code that backfills or caches a field from an external source but only writes it when the stored value is empty/nil
+      check: >-
+        Verify that cached or backfilled fields are updated whenever the upstream value changes, not only when the local value is empty. A write-once guard can cause stale data if the source value is later renamed, corrected, or updated.
+      source: copilot:PR#491
+      added: "2026-03-31"
+    - id: timestamp-string-comparison
+      category: other
+      pattern: >-
+        Sorting or comparing timestamp strings using lexicographic/raw string comparison instead of parsed time values
+      check: >-
+        Verify that timestamp comparisons parse strings into time.Time (or equivalent) before comparing, rather than relying on raw string ordering which breaks with varying formats or timezones
+      source: copilot:PR#491
+      added: "2026-03-31"
+    - id: unbounded-event-scan
+      category: performance
+      pattern: >-
+        SQL queries that scan an entire table and de-duplicate or aggregate results client-side instead of using SQL-level grouping
+      check: >-
+        Verify that queries needing the latest (or aggregated) row per group use window functions (ROW_NUMBER() OVER PARTITION BY) or GROUP BY with MAX/MIN in SQL rather than fetching all rows and filtering in application code, especially for tables that grow unboundedly or are queried on a recurring timer
+      source: copilot:PR#492
+      added: "2026-03-31"
