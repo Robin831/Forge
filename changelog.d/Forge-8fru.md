@@ -1,2 +1,0 @@
-category: Fixed
-- **Copilot quota exhaustion now returns rate-limit error** - When the GitHub Copilot CLI's premium request quota is exhausted it may output plain-text (non-JSON) error messages to stdout instead of structured stream events. These lines are now scanned for rate-limit indicators so the provider fallback chain triggers correctly instead of treating the session as a generic failure. The `IsRateLimitError` phrase list also gains Copilot-specific patterns (`"premium request"`, `"request quota"`) to handle Copilot's quota error wording. (Forge-8fru)

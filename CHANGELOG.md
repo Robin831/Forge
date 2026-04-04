@@ -8,6 +8,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.12.0] - 2026-04-04
+
+### Added
+
+- **Hearth 'w' shortcut for manual Wicket scan** - Press `w` in the Hearth TUI to immediately trigger a Wicket issue triage scan instead of waiting for the next scheduled interval. A 30-second cooldown prevents accidental double-triggers. (Forge-gkdl)
+- **Ledger external_ref display** - Show the GitHub issue link (external_ref) in the Ledger detail panel as a clickable OSC 8 hyperlink (e.g. "#42") and in the beads table as a compact "Ext" column. The column and link are populated automatically when beads are synced from GitHub via `bd github sync` or Wicket. (Forge-mopo)
+- **Ledger update panel: dispatch to pipeline** - Added a "Dispatch to pipeline (via Forge daemon)" option to the Ledger dependency update overlay. When selected, Forge finds or creates today's consolidated dep bead for each anvil (using `depcheck.FindOrCreateBeadID`) and dispatches it through the full Smith → Temper → Warden pipeline via IPC, rather than applying updates directly. Shows a clear error when the daemon is not running. (Forge-lr1w)
+
+### Changed
+
+- **Consolidated depcheck bead per anvil** - Replaced per-package bead creation in `depcheck.Scanner` (specifically in `Scanner.scanAnvil`) with a find-or-create pattern that produces one date-stamped bead per anvil (`Package updates starting DD.MM.YYYY`). All npm, NuGet, and Go packages for the same anvil are grouped into this single bead. If the bead already exists the description is updated with any new packages; if not, a new bead is created and tagged with the anvil's configured `auto_dispatch_tag` for auto-dispatch. (Forge-8y9k)
+- **Dependency update: modernc.org/sqlite v1.48.0** - Updated modernc.org/sqlite from v1.47.0 to v1.48.0. (Forge-zzup)
+- **Ledger bead ID column shows short suffix** - The ID column now displays only the suffix part of a bead ID (e.g. `jxl2` instead of `Forge-jxl2`) so long prefixes like `Fhi.Metadata` no longer cause truncation. Press `y` on any selected bead to copy the full ID to the clipboard. (Forge-jxl2)
+- **Lifecycle worker stale detection** - Lifecycle workers (CI fix, review fix, rebase) are now registered with a per-worker stale timeout (half of `smith_timeout`) so they can be detected as stalled even though they are excluded from the global background-phase stale check. Adds `stale_timeout` column to the workers table and `StaleTimeout` field on `state.Worker`. (Forge-erze)
+- **Smelter startup-skip pattern** - The Smelter now skips its startup flush if a full cycle completed within the configured `smelter_interval`, preventing redundant PRs on daemon restarts. Logs `smelter_cycle_done` events after each flush cycle to track recency. For low-volume setups, `smelter_interval: 48h` or `72h` is a reasonable alternative to the default `8h`. (Forge-w9kj)
+
+### Removed
+
+- **Legacy update-deps command and raw command flow removed** - Deleted the `forge update-deps` CLI command, the `internal/depupdate` package (which ran raw `npm install`, `dotnet add package`, and `go get` commands directly), and the Hearth/Ledger TUI update overlay. Dependency updates are now handled exclusively through the bead-based flow created by the depcheck scanner. (Forge-8dy9)
+
+### Fixed
+
+- **Bellows PR merge no longer fails on active worktree branch** - Pass `--delete-branch=false` to `gh pr merge` so local branch cleanup is left to the worktree teardown, preventing a false failure when the branch is still in use. (Forge-x8g6)
+- **Bellows: PR title not stored in prs table** - Bellows now persists the PR title fetched from the VCS API on each status check, backfilling any empty titles from previous runs. The `CreatePR` path in the GitHub provider also now stores the title at insert time so ready-to-merge notifications show the actual PR title instead of "PR #N". (Forge-p9nu)
+- **Burnish worker no longer stalls on slow Smith exit** - Added `WaitWithExitTimeout` to `smith.Process` that signals I/O completion independently of process exit, then kills the subprocess after a 30-second grace period if it hasn't exited. The burnish (reviewfix) worker now uses this so thread resolution and the completion event are never blocked by a subprocess that is slow to terminate after pushing fixes. (Forge-m2es)
+- **Copilot quota exhaustion now returns rate-limit error** - When the GitHub Copilot CLI's premium request quota is exhausted it may output plain-text (non-JSON) error messages to stdout instead of structured stream events. These lines are now scanned for rate-limit indicators so the provider fallback chain triggers correctly instead of treating the session as a generic failure. The `IsRateLimitError` phrase list also gains Copilot-specific patterns (`"premium request"`, `"request quota"`) to handle Copilot's quota error wording. (Forge-8fru)
+- **Decrypt enc: webhook URLs from config** - Forge now decrypts AES-256-GCM encrypted webhook URLs (enc: prefix written by Hytte) when loading config, eliminating 'unsupported protocol scheme "enc"' errors on every webhook delivery. (Forge-t7qu)
+- **Depcheck consolidated bead no longer auto-tagged with the configured auto-dispatch label (for example, forgeReady)** - Consolidated dependency update beads are now created without the auto-dispatch label. The user must manually apply the configured auto-dispatch label (for example, forgeReady) when ready to dispatch, matching the pattern used by feature bead chains. (Forge-pq0a)
+- **Depcheck duplicate bead creation** - Fixed an issue where depcheck created a new "Package updates" bead each day instead of reusing the existing open one. The bead lookup now matches any open bead with the "Package updates" title prefix rather than requiring an exact date-specific title match. (Forge-sgi4)
+- **Hearth poll health badges missing when config not in working directory** - When `forge hearth` is run from a directory without `forge.yaml` (e.g. SSH sessions on remote hosts), the anvil list was empty so poll health badges were never shown. Hearth now falls back to querying all known anvils from the events table when no config-derived anvil list is available. (Forge-h0sw)
+- **Ledger Ext column compact display** - Parse full GitHub issue URLs (e.g. `https://github.com/org/repo/issues/42`) and display only the issue number (`#42`) in the Ext column instead of the full URL. (Forge-saxr)
+- **Ledger bd close false error** - `bd close --json` sometimes exits with status 1 even when the close succeeded. Ledger now inspects the JSON output and treats the operation as a success when the returned bead has `status=closed` with a valid `closed_at` timestamp, preventing spurious error messages in the activity log. (Forge-hbxz)
+- **Lifecycle worker timeout** - Burnish (review fix), quench (CI fix), and rebase workers now run under a deadline derived from `smith_timeout`, preventing indefinite hangs when a worker stalls. (Forge-hvta)
+- **PR Ready to Merge notification includes PR title** - The push notification body now shows the PR title instead of the URL, making it readable at a glance on mobile (e.g. "PR #481 — Fix crucible branch targeting (Forge-t6y9, forge)"). (Forge-hdn1)
+- **Pipeline PR base branch for dependency chains** - Regular blocked-by dependencies (task A blocks task B) no longer incorrectly route A's PR to `feature/B`. The epic branch lookup now only returns a feature branch for beads that are explicitly typed as `epic` or have an `epic-branch:` label; having "blocks"-type dependents alone is not sufficient. (Forge-t6y9)
+- **Worktree cleanup no longer deletes remote branch** - Removed `git push origin --delete` from `(*worktree.Manager).Remove` which was running after PR creation and deleting the remote branch the new PR depended on, causing all PRs to fail with "Head sha can't be blank". Remote branch cleanup is now delegated to GitHub's auto-delete-branch setting or Bellows after merge. (Forge-0mmb)
+
 ## [0.11.2] - 2026-03-27
 
 ### Fixed
