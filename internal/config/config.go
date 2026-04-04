@@ -739,6 +739,9 @@ func Load(configFile string) (*Config, error) {
 		cfg.Settings.WicketInterval = d
 	}
 
+	// Decrypt any enc:-prefixed webhook URLs written by Hytte.
+	decryptWebhookURLs(&cfg)
+
 	return &cfg, nil
 }
 
