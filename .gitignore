@@ -3,6 +3,7 @@
 .dolt/
 
 # Go build output
+/forge
 /forge.exe
 *.dll
 *.dll
