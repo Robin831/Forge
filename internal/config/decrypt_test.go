@@ -120,7 +120,11 @@ func TestDecryptURL_Success(t *testing.T) {
 
 func TestDecryptURL_FailureReturnsEmpty(t *testing.T) {
 	// No ENCRYPTION_KEY set and no key file — decryption must fail gracefully.
+	// Redirect the user config dir to an empty temp directory so any real
+	// ~/.config/hytte/.encryption_key on the developer/CI machine is not found.
 	t.Setenv("ENCRYPTION_KEY", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("APPDATA", t.TempDir())
 
 	got := decryptURL("enc:bm90dmFsaWQ=")
 	if got != "" {
