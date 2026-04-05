@@ -1216,10 +1216,10 @@ rules:
     - id: deduplicate-warden-rules
       category: other
       pattern: >-
-        Adding a new warden rule entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
+        Adding a new warden rule, lint rule, or checklist entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
-        Before inserting a new warden rule, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#425', 'copilot:PR#430']
+        Before inserting a new rule or checklist entry, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#425', 'copilot:PR#430', 'copilot:PR#493']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -3043,14 +3043,6 @@ rules:
         Verify that queries needing the latest (or aggregated) row per group use window functions (ROW_NUMBER() OVER PARTITION BY) or GROUP BY with MAX/MIN in SQL rather than fetching all rows and filtering in application code, especially for tables that grow unboundedly or are queried on a recurring timer
       source: copilot:PR#492
       added: "2026-03-31"
-    - id: deduplicate-overlapping-rules
-      category: other
-      pattern: >-
-        Adding a new review rule, lint rule, or checklist entry whose intent overlaps with an existing one
-      check: >-
-        Before adding a new rule, check whether an existing rule already covers the same intent. If so, extend or refine the existing rule (e.g., broaden its wording, append the new source) instead of creating a duplicate entry.
-      source: copilot:PR#493
-      added: "2026-04-02"
     - id: test-env-isolation
       category: testing
       pattern: >-
