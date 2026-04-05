@@ -21,6 +21,8 @@ type BeadContext struct {
 	Title string
 	// Description is the full bead description.
 	Description string
+	// Notes contains additional implementation details or instructions.
+	Notes string
 	// IssueType is the bead type (bug, feature, task, etc.).
 	IssueType string
 	// Priority is the bead priority (0-4).
@@ -193,6 +195,12 @@ implementation is correct. Focus only on fixing the specific issues above.
 ### Description
 
 {{.Bead.Description}}
+{{- if .Bead.Notes}}
+
+### Notes
+
+{{.Bead.Notes}}
+{{- end}}
 
 ## Working Directory
 
