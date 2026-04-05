@@ -3043,3 +3043,19 @@ rules:
         Verify that queries needing the latest (or aggregated) row per group use window functions (ROW_NUMBER() OVER PARTITION BY) or GROUP BY with MAX/MIN in SQL rather than fetching all rows and filtering in application code, especially for tables that grow unboundedly or are queried on a recurring timer
       source: copilot:PR#492
       added: "2026-03-31"
+    - id: deduplicate-overlapping-rules
+      category: other
+      pattern: >-
+        Adding a new review rule, lint rule, or checklist entry whose intent overlaps with an existing one
+      check: >-
+        Before adding a new rule, check whether an existing rule already covers the same intent. If so, extend or refine the existing rule (e.g., broaden its wording, append the new source) instead of creating a duplicate entry.
+      source: copilot:PR#493
+      added: "2026-04-02"
+    - id: test-env-isolation
+      category: testing
+      pattern: >-
+        Tests that rely on user-specific paths like os.UserConfigDir(), os.UserHomeDir(), or XDG directories for expected failure/success conditions
+      check: >-
+        Verify the test is deterministic by redirecting environment-dependent paths (HOME, USERPROFILE, XDG_CONFIG_HOME, APPDATA) to a temp directory or by injecting/mocking the dependency, so results don't vary based on the machine's real filesystem state
+      source: copilot:PR#494
+      added: "2026-04-04"
