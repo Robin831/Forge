@@ -5010,9 +5010,10 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 
 	// Build the smith prompt with warden feedback context.
 	title := d.db.BeadTitle(beadID, anvil)
-	var description string
+	var description, notes string
 	if bead, err := crucible.FetchBead(ctx, beadID, anvilCfg.Path); err == nil {
 		description = bead.Description
+		notes = bead.Notes
 	}
 
 	// Build prior feedback from the retry reason (which contains warden feedback).
@@ -5036,6 +5037,7 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 		BeadID:              beadID,
 		Title:               title,
 		Description:         description,
+		Notes:               notes,
 		AnvilName:           anvil,
 		AnvilPath:           anvilCfg.Path,
 		WorktreePath:        wt.Path,

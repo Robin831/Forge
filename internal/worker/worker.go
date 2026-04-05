@@ -128,6 +128,7 @@ func (w *Worker) Run(ctx context.Context, extraFlags []string) (*smith.Result, e
 		BeadID:       w.Bead.ID,
 		Title:        w.Bead.Title,
 		Description:  w.Bead.Description,
+		Notes:        w.Bead.Notes,
 		IssueType:    w.Bead.IssueType,
 		Priority:     w.Bead.Priority,
 		Parent:       w.Bead.Parent,

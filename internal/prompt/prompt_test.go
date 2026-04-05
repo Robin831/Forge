@@ -11,6 +11,49 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestBuild_NotesRenderedWhenPresent(t *testing.T) {
+	b := NewBuilder()
+	ctx := BeadContext{
+		BeadID:       "test-notes",
+		Title:        "Test bead with notes",
+		Description:  "Do the thing",
+		Notes:        "Use the new API endpoint, not the legacy one.",
+		IssueType:    "task",
+		Priority:     3,
+		Branch:       "forge/test-notes",
+		AnvilName:    "test-anvil",
+		AnvilPath:    t.TempDir(),
+		WorktreePath: t.TempDir(),
+	}
+
+	result, err := b.Build(ctx)
+	require.NoError(t, err)
+
+	assert.Contains(t, result, "### Notes")
+	assert.Contains(t, result, "Use the new API endpoint, not the legacy one.")
+}
+
+func TestBuild_NotesOmittedWhenEmpty(t *testing.T) {
+	b := NewBuilder()
+	ctx := BeadContext{
+		BeadID:       "test-no-notes",
+		Title:        "Test bead without notes",
+		Description:  "Do the thing",
+		Notes:        "",
+		IssueType:    "task",
+		Priority:     3,
+		Branch:       "forge/test-no-notes",
+		AnvilName:    "test-anvil",
+		AnvilPath:    t.TempDir(),
+		WorktreePath: t.TempDir(),
+	}
+
+	result, err := b.Build(ctx)
+	require.NoError(t, err)
+
+	assert.NotContains(t, result, "### Notes")
+}
+
 func TestBuild_CombinedModeAppendsChecklist(t *testing.T) {
 	b := NewBuilder()
 	ctx := BeadContext{

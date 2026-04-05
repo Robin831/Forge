@@ -625,6 +625,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		BeadID:              p.Bead.ID,
 		Title:               p.Bead.Title,
 		Description:         p.Bead.Description,
+		Notes:               p.Bead.Notes,
 		IssueType:           p.Bead.IssueType,
 		Priority:            p.Bead.Priority,
 		Parent:              p.Bead.Parent,
