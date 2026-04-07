@@ -2602,6 +2602,50 @@ func (d *Daemon) closeBead(ctx context.Context, beadID, anvilPath, reason string
 	return nil
 }
 
+// killWorkerProcess performs a 2-phase kill (SIGINT → wait → SIGKILL) targeting
+// the process group so that child processes (git, node, etc.) are also terminated.
+func (d *Daemon) killWorkerProcess(pid int, workerID string) {
+	const gracePeriod = 5 * time.Second
+	const pollInterval = 100 * time.Millisecond
+
+	if runtime.GOOS == "windows" {
+		// Windows does not support SIGINT via syscall.Kill; use process.Kill.
+		proc, err := os.FindProcess(pid)
+		if err == nil {
+			_ = proc.Kill()
+		}
+		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+		return
+	}
+
+	// Phase 1: Send SIGINT to the process group (negative PID).
+	if err := syscall.Kill(-pid, syscall.SIGINT); err != nil {
+		// Process may already be dead. Try the PID directly as a fallback.
+		_ = syscall.Kill(pid, syscall.SIGINT)
+	}
+
+	// Phase 2: Wait up to gracePeriod for the process to exit.
+	deadline := time.Now().Add(gracePeriod)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			// Process is gone.
+			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			return
+		}
+		time.Sleep(pollInterval)
+	}
+
+	// Phase 3: Still alive — send SIGKILL to the process group.
+	d.logger.Warn("worker did not exit after SIGINT, sending SIGKILL", "pid", pid, "worker", workerID)
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+
+	// Brief wait to let the kernel reap.
+	time.Sleep(200 * time.Millisecond)
+	_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+}
+
 // handleIPC processes incoming IPC commands from CLI/TUI clients.
 func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	switch cmd.Type {
@@ -2754,17 +2798,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 		if kp.PID > 0 {
-			proc, err := os.FindProcess(kp.PID)
-			if err == nil {
-				if runtime.GOOS == "windows" {
-					// Windows does not support SIGINT via Signal; use Kill instead.
-					_ = proc.Kill()
-				} else {
-					_ = proc.Signal(syscall.SIGINT)
-				}
-			}
+			// 2-phase kill: SIGINT → wait → SIGKILL, targeting the process group.
+			// Run in a goroutine so the IPC handler returns immediately.
+			go d.killWorkerProcess(kp.PID, kp.WorkerID)
+		} else {
+			_ = d.db.UpdateWorkerStatus(kp.WorkerID, state.WorkerFailed)
 		}
-		_ = d.db.UpdateWorkerStatus(kp.WorkerID, state.WorkerFailed)
 		data, _ := json.Marshal(map[string]string{"killed": kp.WorkerID})
 		return ipc.Response{Type: "ok", Payload: data}
 
