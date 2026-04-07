@@ -687,6 +687,20 @@ func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 		ORDER BY started_at`, anvil)
 }
 
+// GetWorker returns the worker record for the given worker ID, regardless of status.
+// Returns an error if no worker with that ID exists.
+func (db *DB) GetWorker(id string) (*Worker, error) {
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+		FROM workers WHERE id = ? LIMIT 1`, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(workers) == 0 {
+		return nil, fmt.Errorf("worker %s not found", id)
+	}
+	return &workers[0], nil
+}
+
 // ActiveWorkerByBead returns the non-terminal worker for a given bead ID.
 func (db *DB) ActiveWorkerByBead(beadID string) (*Worker, error) {
 	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
