@@ -2614,7 +2614,9 @@ func (d *Daemon) killWorkerProcess(pid int, workerID string) {
 		if err == nil {
 			_ = proc.Kill()
 		}
-		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+		if err := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); err != nil {
+			d.logger.Error("failed to update worker status after kill", "worker", workerID, "error", err)
+		}
 		return
 	}
 
@@ -2629,7 +2631,9 @@ func (d *Daemon) killWorkerProcess(pid int, workerID string) {
 	for time.Now().Before(deadline) {
 		if err := syscall.Kill(pid, 0); err != nil {
 			// Process is gone.
-			_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); dbErr != nil {
+				d.logger.Error("failed to update worker status after kill", "worker", workerID, "error", dbErr)
+			}
 			return
 		}
 		time.Sleep(pollInterval)
@@ -2643,7 +2647,9 @@ func (d *Daemon) killWorkerProcess(pid int, workerID string) {
 
 	// Brief wait to let the kernel reap.
 	time.Sleep(200 * time.Millisecond)
-	_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+	if err := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); err != nil {
+		d.logger.Error("failed to update worker status after kill", "worker", workerID, "error", err)
+	}
 }
 
 // handleIPC processes incoming IPC commands from CLI/TUI clients.
@@ -2799,10 +2805,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		if kp.PID > 0 {
 			// 2-phase kill: SIGINT → wait → SIGKILL, targeting the process group.
-			// Run in a goroutine so the IPC handler returns immediately.
-			go d.killWorkerProcess(kp.PID, kp.WorkerID)
+			// Runs synchronously so the response reflects the actual outcome.
+			d.killWorkerProcess(kp.PID, kp.WorkerID)
 		} else {
-			_ = d.db.UpdateWorkerStatus(kp.WorkerID, state.WorkerFailed)
+			if err := d.db.UpdateWorkerStatus(kp.WorkerID, state.WorkerFailed); err != nil {
+				d.logger.Error("failed to update worker status", "worker", kp.WorkerID, "error", err)
+			}
 		}
 		data, _ := json.Marshal(map[string]string{"killed": kp.WorkerID})
 		return ipc.Response{Type: "ok", Payload: data}
