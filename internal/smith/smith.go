@@ -207,6 +207,7 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 	}
 	cmd.Env = filtered
 	executil.HideWindow(cmd)
+	executil.SetProcessGroup(cmd)
 
 	// Set up log file
 	if err := os.MkdirAll(logDir, 0o755); err != nil {

@@ -2602,6 +2602,105 @@ func (d *Daemon) closeBead(ctx context.Context, beadID, anvilPath, reason string
 	return nil
 }
 
+// killWorkerProcess performs a 2-phase kill (SIGINT → wait → SIGKILL) for the
+// worker identified by workerID. The PID is looked up from state.db — the
+// client-supplied PID is never trusted. On Unix the entire process group is
+// signaled so child processes (git, node, etc.) are also terminated.
+//
+// On Windows, process-group signaling is not supported; CTRL_BREAK is sent to
+// the direct process only. Child processes may survive — full process-tree
+// termination requires job objects, which are not currently implemented.
+func (d *Daemon) killWorkerProcess(workerID string) error {
+	const gracePeriod = 5 * time.Second
+	const pollInterval = 100 * time.Millisecond
+
+	worker, err := d.db.GetWorker(workerID)
+	if err != nil {
+		return fmt.Errorf("kill_worker: %w", err)
+	}
+	pid := worker.PID
+	if pid <= 0 {
+		// No live PID recorded; just mark the worker as failed.
+		return d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+	}
+
+	if runtime.GOOS == "windows" {
+		// Phase 1: request graceful exit via CTRL_BREAK.
+		proc, findErr := os.FindProcess(pid)
+		if findErr != nil {
+			// Process not found; mark as failed.
+			return d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+		}
+		_ = proc.Signal(os.Interrupt)
+		time.Sleep(gracePeriod)
+		// Phase 2: force kill.
+		d.logger.Warn("worker did not exit after interrupt, sending Kill", "pid", pid, "worker", workerID)
+		_ = proc.Kill()
+		time.Sleep(200 * time.Millisecond)
+		return d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+	}
+
+	// Resolve the process group ID. If the worker was started with Setpgid,
+	// pgid == pid. For older workers or recycled PIDs, Getpgid may return a
+	// different value; we verify pgid == pid before using group signaling.
+	pgid, pgidKnown := processGroup(pid)
+
+	// Phase 1: Send SIGINT to the process group (if known) or the PID directly.
+	if pgidKnown {
+		if err := syscall.Kill(-pgid, syscall.SIGINT); err != nil {
+			_ = syscall.Kill(pid, syscall.SIGINT)
+		}
+	} else {
+		_ = syscall.Kill(pid, syscall.SIGINT)
+	}
+
+	// Phase 2: Wait up to gracePeriod for the process to exit.
+	deadline := time.Now().Add(gracePeriod)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			// Process is gone.
+			if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); dbErr != nil {
+				d.logger.Error("failed to update worker status after kill", "worker", workerID, "error", dbErr)
+				return dbErr
+			}
+			return nil
+		}
+		time.Sleep(pollInterval)
+	}
+
+	// Phase 3: Still alive — send SIGKILL to the process group.
+	d.logger.Warn("worker did not exit after SIGINT, sending SIGKILL", "pid", pid, "worker", workerID)
+	if pgidKnown {
+		if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	} else {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+
+	// Poll to verify the process actually exited after SIGKILL.
+	const killVerifyTimeout = 2 * time.Second
+	killDeadline := time.Now().Add(killVerifyTimeout)
+	for time.Now().Before(killDeadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			break // Process is gone.
+		}
+		time.Sleep(pollInterval)
+	}
+	if err := syscall.Kill(pid, 0); err == nil {
+		d.logger.Error("worker process still alive after SIGKILL", "pid", pid, "worker", workerID)
+		if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); dbErr != nil {
+			d.logger.Error("failed to update worker status after kill", "worker", workerID, "error", dbErr)
+		}
+		return fmt.Errorf("worker process %d still alive after SIGKILL", pid)
+	}
+	if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); dbErr != nil {
+		d.logger.Error("failed to update worker status after kill", "worker", workerID, "error", dbErr)
+		return dbErr
+	}
+	return nil
+}
+
 // handleIPC processes incoming IPC commands from CLI/TUI clients.
 func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	switch cmd.Type {
@@ -2753,18 +2852,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "invalid kill payload"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if kp.PID > 0 {
-			proc, err := os.FindProcess(kp.PID)
-			if err == nil {
-				if runtime.GOOS == "windows" {
-					// Windows does not support SIGINT via Signal; use Kill instead.
-					_ = proc.Kill()
-				} else {
-					_ = proc.Signal(syscall.SIGINT)
-				}
-			}
+		// PID is always looked up from state.db inside killWorkerProcess;
+		// the client-supplied kp.PID is intentionally ignored.
+		// Runs synchronously so the response reflects the actual outcome.
+		if err := d.killWorkerProcess(kp.WorkerID); err != nil {
+			d.logger.Error("kill_worker failed", "worker", kp.WorkerID, "error", err)
+			msg, _ := json.Marshal(map[string]string{"message": err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
 		}
-		_ = d.db.UpdateWorkerStatus(kp.WorkerID, state.WorkerFailed)
 		data, _ := json.Marshal(map[string]string{"killed": kp.WorkerID})
 		return ipc.Response{Type: "ok", Payload: data}
 

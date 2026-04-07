@@ -15,8 +15,20 @@ import (
 const createNoWindow = 0x08000000
 
 func hideWindow(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: createNoWindow,
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
+	cmd.SysProcAttr.HideWindow = true
+	cmd.SysProcAttr.CreationFlags |= createNoWindow
+}
+
+func setProcessGroup(cmd *exec.Cmd) {
+	// On Windows, process groups are handled by CreateProcess flags.
+	// CREATE_NEW_PROCESS_GROUP lets us target the group with
+	// GenerateConsoleCtrlEvent later. Merge with existing flags set by
+	// HideWindow if already applied.
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= syscall.CREATE_NEW_PROCESS_GROUP
 }

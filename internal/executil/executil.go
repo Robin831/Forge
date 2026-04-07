@@ -9,3 +9,11 @@ func HideWindow(cmd *exec.Cmd) *exec.Cmd {
 	hideWindow(cmd)
 	return cmd
 }
+
+// SetProcessGroup configures cmd to start in its own process group.
+// On Unix this sets Setpgid so signals can be sent to the entire group
+// via kill(-pid, sig). On Windows this sets CREATE_NEW_PROCESS_GROUP.
+func SetProcessGroup(cmd *exec.Cmd) *exec.Cmd {
+	setProcessGroup(cmd)
+	return cmd
+}
