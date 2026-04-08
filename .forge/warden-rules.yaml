@@ -3051,3 +3051,66 @@ rules:
         Verify the test is deterministic by redirecting environment-dependent paths (HOME, USERPROFILE, XDG_CONFIG_HOME, APPDATA) to a temp directory or by injecting/mocking the dependency, so results don't vary based on the machine's real filesystem state
       source: copilot:PR#494
       added: "2026-04-04"
+    - id: consistent-struct-field-propagation
+      category: other
+      pattern: >-
+        Adding or modifying a field in a struct literal that is constructed in multiple places
+      check: >-
+        When a struct field is added or changed in one construction site, verify that all other construction sites for the same struct type also include the field so behavior is consistent across all code paths
+      source: copilot:PR#496
+      added: "2026-04-05"
+    - id: test-new-template-branches
+      category: testing
+      pattern: >-
+        A template or prompt gains a new conditional section (e.g. an {{if}} block rendering optional content)
+      check: >-
+        Verify that unit tests cover both the present and absent cases for the new conditional section, especially when the surrounding package already has tests
+      source: copilot:PR#496
+      added: "2026-04-05"
+    - id: validate-worker-pid-from-state
+      category: security
+      pattern: >-
+        Code that uses a client-supplied PID or process identifier to signal, kill, or otherwise interact with OS processes
+      check: >-
+        Verify that process IDs are looked up from trusted internal state (e.g. state.db worker rows) rather than accepted directly from client input. Client-supplied PIDs must be validated against the recorded PID for the corresponding worker, and the request must be rejected if the worker is not found or the PID mismatches, to prevent signaling arbitrary processes.
+      source: copilot:PR#497
+      added: "2026-04-07"
+    - id: process-group-signal-safety
+      category: security
+      pattern: Sending signals to negated PID (-pid) to target a process group
+      check: >-
+        Verify that the process group ID matches the PID before signaling -pid. Call syscall.Getpgid(pid) to confirm pgid==pid, and fall back to signaling the single PID when the PGID cannot be determined or does not match, to avoid killing unrelated processes after PID reuse.
+      source: copilot:PR#497
+      added: "2026-04-07"
+    - id: kill-error-propagation
+      category: error-handling
+      pattern: >-
+        IPC command handler that performs a fallible operation (e.g., process signaling, file I/O) but always returns a success response without checking the operation's result
+      check: >-
+        Verify that IPC/RPC handlers propagate errors from underlying operations back to the caller. Functions that can fail (process kill, file ops, network calls) should return errors, and the handler should map failures to error responses so CLI/TUI consumers can surface real outcomes instead of reporting unconditional success.
+      source: copilot:PR#497
+      added: "2026-04-07"
+    - id: verify-process-exit-after-kill
+      category: concurrency
+      pattern: >-
+        Code that sends a kill signal (SIGKILL, SIGTERM, SIGINT) to a process and then updates state (e.g., marking a worker as failed/stopped in a database) without confirming the process actually exited
+      check: >-
+        After escalating to a forceful kill signal, verify the process has actually exited (e.g., poll kill(pid,0) or waitpid for a short window) before updating persistent state to reflect termination. Log or return an error if the process remains alive to avoid zombie processes with stale DB status.
+      source: copilot:PR#497
+      added: "2026-04-07"
+    - id: windows-process-group-kill
+      category: other
+      pattern: >-
+        Process termination code that uses process groups or signals (SIGINT, SIGKILL) with platform-specific behavior
+      check: >-
+        Verify that process/process-group termination logic works correctly on Windows (no SIGINT, no Unix process groups). Either implement Windows-specific termination (job objects, GenerateConsoleCtrlEvent) or clearly document and handle the platform gap — do not imply cross-platform process-tree kill support that only works on Unix.
+      source: copilot:PR#497
+      added: "2026-04-07"
+    - id: sysprocattr-merge
+      category: other
+      pattern: >-
+        Functions that set or modify cmd.SysProcAttr or syscall.SysProcAttr on an exec.Cmd
+      check: >-
+        Verify that helpers which modify SysProcAttr merge into any existing SysProcAttr rather than overwriting it, so that flags set by earlier callers (e.g. CreationFlags, HideWindow, CREATE_NEW_PROCESS_GROUP) are preserved
+      source: copilot:PR#497
+      added: "2026-04-07"
