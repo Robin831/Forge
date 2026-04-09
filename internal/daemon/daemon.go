@@ -932,8 +932,8 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				StartedAt:    time.Now(),
 				StaleTimeout: workerTimeout / 2,
 			})
-			cifixProviders := d.filterCopilotIfLimited(provider.FromConfig(d.config().Settings.Providers))
 			cfg := d.config()
+			cifixProviders := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(cfg.Settings, &anvilCfg, "cifix")))
 			// Use batch mode when copilot_batch_ci_fixes is enabled and the primary provider is Copilot.
 			var res *cifix.FixResult
 			useBatch := cfg.Settings.CopilotBatchCIFixes && len(cifixProviders) > 0 && cifixProviders[0].Kind == provider.Copilot
@@ -1023,8 +1023,8 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				StartedAt:    time.Now(),
 				StaleTimeout: workerTimeout / 2,
 			})
-			reviewProviders := d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers))
 			reviewCfg := d.cfg.Load()
+			reviewProviders := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(reviewCfg.Settings, &anvilCfg, "reviewfix")))
 			// Use batch mode when copilot_batch_review_fixes is enabled and the primary provider is Copilot.
 			var res *reviewfix.FixResult
 			useReviewBatch := reviewCfg.Settings.CopilotBatchReviewFixes && len(reviewProviders) > 0 && reviewProviders[0].Kind == provider.Copilot
@@ -1931,11 +1931,21 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 				}
 			}
 
-			smithProviders := d.cfg.Load().Settings.SmithProviders
-			if len(smithProviders) == 0 {
-				smithProviders = d.cfg.Load().Settings.Providers
+			schematicProviderSpecs := config.ProvidersForStageWithAnvil(d.cfg.Load().Settings, &anvilCfg, "schematic")
+			providers := d.filterCopilotIfLimited(provider.FromConfig(schematicProviderSpecs))
+			if len(providers) == 0 {
+				d.logger.Warn("schematic provider chain exhausted after Copilot quota filtering; falling back to defaults",
+					"bead", bead.ID, "anvil", bead.Anvil)
+				providers = provider.Defaults()
 			}
-			providers := d.filterCopilotIfLimited(provider.FromConfig(smithProviders))
+			if len(providers) == 0 {
+				d.logger.Warn("crucible check skipped: no providers available for schematic",
+					"bead", bead.ID, "anvil", bead.Anvil)
+				_ = d.db.LogEvent(state.EventSchematicDone,
+					fmt.Sprintf("Crucible check skipped for %s: no providers available after Copilot quota filtering", bead.ID),
+					bead.ID, bead.Anvil)
+				goto normalPipeline
+			}
 
 			// Fetch child details for the prompt
 			var children []schematic.ChildBead
@@ -1979,10 +1989,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		_ = d.db.UpdateWorkerStatus(claimWorkerID, state.WorkerRunning)
 		d.logger.Info("dispatching crucible", "bead", bead.ID, "children", len(bead.Blocks))
 
-		smithProviderSpecs := d.cfg.Load().Settings.SmithProviders
-		if len(smithProviderSpecs) == 0 {
-			smithProviderSpecs = d.cfg.Load().Settings.Providers
-		}
+		smithProviderSpecs := config.ProvidersForStageWithAnvil(d.cfg.Load().Settings, &anvilCfg, "smith")
 		crucibleParams := crucible.Params{
 			DB:                        d.db,
 			VCS:                       d.vcsForAnvil(bead.Anvil),
@@ -2087,13 +2094,8 @@ normalPipeline:
 	defer cancel()
 
 	// Build pipeline params, optionally enabling Schematic pre-worker.
-	// Use smith_providers for the dispatch pipeline when configured; fall back
-	// to the main providers list. This lets smiths run a more capable model
-	// while lifecycle workers (cifix, reviewfix) use a lighter model.
-	smithProviderSpecs := d.cfg.Load().Settings.SmithProviders
-	if len(smithProviderSpecs) == 0 {
-		smithProviderSpecs = d.cfg.Load().Settings.Providers
-	}
+	// Resolve per-stage providers via stage_providers → smith_providers → providers fallback.
+	cfg := d.cfg.Load()
 	pipelineParams := pipeline.Params{
 		DB:              d.db,
 		WorktreeManager: d.worktreeMgr,
@@ -2101,21 +2103,30 @@ normalPipeline:
 		AnvilName:       bead.Anvil,
 		AnvilConfig:     anvilCfg,
 		Bead:            bead,
-		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
+		ExtraFlags:      cfg.Settings.ClaudeFlags,
 		TemperConfig:    d.resolveTemperConfig(anvilCfg),
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
-		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
-		Notifier:        d.notifier.Load(),
+		Providers: d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(cfg.Settings, &anvilCfg, "smith"))),
+		Notifier:  d.notifier.Load(),
 		BaseBranch:      bead.EpicBranch,
 		WorkerID:        claimWorkerID,
-		MaxIterations:   d.cfg.Load().Settings.MaxPipelineIterations,
+		MaxIterations:   cfg.Settings.MaxPipelineIterations,
 
-		WardenModelOverride:         d.cfg.Load().Settings.WardenModelOverride,
-		SchematicModelOverride:      d.cfg.Load().Settings.SchematicModelOverride,
-		CopilotSkipWardenSmallDiffs: d.cfg.Load().Settings.CopilotSkipWardenSmallDiffs,
-		WardenFullRereview:          d.cfg.Load().Settings.WardenFullRereview,
-		CopilotCombinedSmithWarden:  d.cfg.Load().Settings.CopilotCombinedSmithWarden,
-		CopilotWardenSampleRate:     d.cfg.Load().Settings.CopilotWardenSampleRate,
+		WardenModelOverride:         cfg.Settings.WardenModelOverride,
+		SchematicModelOverride:      cfg.Settings.SchematicModelOverride,
+		CopilotSkipWardenSmallDiffs: cfg.Settings.CopilotSkipWardenSmallDiffs,
+		WardenFullRereview:          cfg.Settings.WardenFullRereview,
+		CopilotCombinedSmithWarden:  cfg.Settings.CopilotCombinedSmithWarden,
+		CopilotWardenSampleRate:     cfg.Settings.CopilotWardenSampleRate,
+	}
+
+	// Only set WardenProviders/SchematicProviders when explicitly configured in
+	// stage_providers; otherwise leave empty so the legacy model-override path runs.
+	if wardenSpecs := config.ExplicitStageProvidersWithAnvil(cfg.Settings, &anvilCfg, "warden"); len(wardenSpecs) > 0 {
+		pipelineParams.WardenProviders = d.filterCopilotIfLimited(provider.FromConfig(wardenSpecs))
+	}
+	if schematicSpecs := config.ExplicitStageProvidersWithAnvil(cfg.Settings, &anvilCfg, "schematic"); len(schematicSpecs) > 0 {
+		pipelineParams.SchematicProviders = d.filterCopilotIfLimited(provider.FromConfig(schematicSpecs))
 	}
 
 	// If this bead has had previous dispatch failures, reset the worktree
@@ -4938,10 +4949,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		StartedAt: time.Now(),
 	})
 
-	providers := d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers))
-	if smithProviders := d.cfg.Load().Settings.SmithProviders; len(smithProviders) > 0 {
-		providers = d.filterCopilotIfLimited(provider.FromConfig(smithProviders))
-	}
+	providers := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(d.cfg.Load().Settings, &anvilCfg, "warden")))
 
 	title := d.db.BeadTitle(beadID, anvil)
 	var description string
@@ -5161,10 +5169,7 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 	}
 
 	logDir := wt.Path + "/.forge-logs"
-	providers := d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers))
-	if smithProviders := d.cfg.Load().Settings.SmithProviders; len(smithProviders) > 0 {
-		providers = d.filterCopilotIfLimited(provider.FromConfig(smithProviders))
-	}
+	providers := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(d.cfg.Load().Settings, &anvilCfg, "smith")))
 
 	var lastExitCode int
 	for _, pv := range providers {
@@ -5230,10 +5235,7 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 	poller.ResolveEpicBranches(ctx, beads, map[string]string{anvil: anvilCfg.Path})
 	bead.EpicBranch = beads[0].EpicBranch
 
-	smithProviderSpecs := d.cfg.Load().Settings.SmithProviders
-	if len(smithProviderSpecs) == 0 {
-		smithProviderSpecs = d.cfg.Load().Settings.Providers
-	}
+	smithProviderSpecs := config.ProvidersForStageWithAnvil(d.cfg.Load().Settings, &anvilCfg, "smith")
 
 	// Derive from context.Background() (not d.runCtx) so that a graceful
 	// shutdown does not cancel Temper/Warden/PR creation mid-flight — matching
@@ -5241,7 +5243,7 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 	pipelineCtx, cancel := context.WithTimeout(context.Background(), d.cfg.Load().Settings.SmithTimeout)
 	defer cancel()
 
-	outcome := pipeline.Run(pipelineCtx, pipeline.Params{
+	postPipelineParams := pipeline.Params{
 		DB:              d.db,
 		WorktreeManager: d.worktreeMgr,
 		PromptBuilder:   d.promptBuilder,
@@ -5263,7 +5265,16 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 		WardenFullRereview:          d.cfg.Load().Settings.WardenFullRereview,
 		CopilotCombinedSmithWarden:  d.cfg.Load().Settings.CopilotCombinedSmithWarden,
 		CopilotWardenSampleRate:     d.cfg.Load().Settings.CopilotWardenSampleRate,
-	})
+	}
+	// Only set WardenProviders/SchematicProviders when explicitly configured in
+	// stage_providers; otherwise leave empty so the legacy model-override path runs.
+	if wardenSpecs := config.ExplicitStageProvidersWithAnvil(d.cfg.Load().Settings, &anvilCfg, "warden"); len(wardenSpecs) > 0 {
+		postPipelineParams.WardenProviders = d.filterCopilotIfLimited(provider.FromConfig(wardenSpecs))
+	}
+	if schematicSpecs := config.ExplicitStageProvidersWithAnvil(d.cfg.Load().Settings, &anvilCfg, "schematic"); len(schematicSpecs) > 0 {
+		postPipelineParams.SchematicProviders = d.filterCopilotIfLimited(provider.FromConfig(schematicSpecs))
+	}
+	outcome := pipeline.Run(pipelineCtx, postPipelineParams)
 
 	if outcome.Error != nil {
 		reason := fmt.Sprintf("Force smith post-pipeline failed: %v", outcome.Error)

@@ -1423,6 +1423,41 @@ func TestWardenProviders_DoesNotMutateOriginal(t *testing.T) {
 	assert.Equal(t, "claude-sonnet-4-6", original[0].Model, "original slice must not be mutated")
 }
 
+// TestWardenProviders_ExplicitWardenProviders verifies that when WardenProviders
+// is set (via stage_providers), it is returned directly regardless of base providers
+// or WardenModelOverride.
+func TestWardenProviders_ExplicitWardenProviders(t *testing.T) {
+	explicit := []provider.Provider{
+		{Kind: provider.Claude, Model: "claude-sonnet-4-6"},
+	}
+	p := &Params{
+		WardenProviders:     explicit,
+		WardenModelOverride: "claude-haiku-4-5", // should be ignored
+	}
+	base := []provider.Provider{
+		{Kind: provider.Copilot, Model: "claude-opus-4-6"},
+	}
+	got := p.wardenProviders(base)
+	assert.Equal(t, explicit, got, "explicit WardenProviders must take precedence")
+}
+
+// TestSchematicProviders_ExplicitSchematicProviders verifies that when
+// SchematicProviders is set (via stage_providers), it is returned directly.
+func TestSchematicProviders_ExplicitSchematicProviders(t *testing.T) {
+	explicit := []provider.Provider{
+		{Kind: provider.Gemini, Model: "gemini-2.5-flash"},
+	}
+	p := &Params{
+		SchematicProviders:     explicit,
+		SchematicModelOverride: "claude-haiku-4-5", // should be ignored
+	}
+	base := []provider.Provider{
+		{Kind: provider.Copilot, Model: "claude-opus-4-6"},
+	}
+	got := p.schematicProviders(base)
+	assert.Equal(t, explicit, got, "explicit SchematicProviders must take precedence")
+}
+
 // --- shouldSkipWarden tests ---
 
 func TestShouldSkipWarden_AllCriteriaMet(t *testing.T) {

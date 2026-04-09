@@ -112,6 +112,11 @@ type AnvilConfig struct {
 	// always ignored. Comparison is case-insensitive.
 	WicketIgnoreUsers []string `mapstructure:"wicket_ignore_users" yaml:"wicket_ignore_users,omitempty"`
 
+	// StageProviders is a per-anvil override for stage_providers. When set,
+	// these take precedence over the global stage_providers for beads in this
+	// anvil. Same keys/format as settings.stage_providers.
+	StageProviders map[string][]string `mapstructure:"stage_providers" yaml:"stage_providers,omitempty"`
+
 	// Smith holds optional Smith configuration for this anvil, including
 	// deny patterns for files and commands.
 	Smith *SmithConfig `mapstructure:"smith" yaml:"smith,omitempty"`
@@ -181,7 +186,17 @@ type SettingsConfig struct {
 	// used as fallback. This lets smiths run a more capable model (e.g.
 	// claude/claude-opus-4-6) while lifecycle workers (cifix, reviewfix) use a
 	// lighter model. Accepts the same "kind/model" format as Providers.
+	//
+	// Deprecated: Use StageProviders for per-stage configuration. SmithProviders
+	// is still honoured as a fallback for smith/warden/schematic when the
+	// corresponding StageProviders key is not set.
 	SmithProviders []string `mapstructure:"smith_providers" yaml:"smith_providers,omitempty"`
+	// StageProviders maps pipeline stage names to their own provider chains.
+	// Supported keys: "smith", "warden", "schematic", "cifix", "reviewfix".
+	// Each value uses the same "kind/model" format as Providers. When a stage
+	// key is missing, the fallback chain is:
+	//   stage_providers[stage] → smith_providers (smith/warden/schematic only) → providers → defaults
+	StageProviders map[string][]string `mapstructure:"stage_providers" yaml:"stage_providers,omitempty"`
 	// SchematicEnabled enables the Schematic pre-worker globally. When true,
 	// beads that exceed the word threshold or carry the "decompose" tag are
 	// analysed before Smith starts. Default: false.
@@ -359,8 +374,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		ClaudeFlags               []string `yaml:"claude_flags"`
 		Providers                 []string `yaml:"providers,omitempty"`
 		RateLimitBackoff          string   `yaml:"rate_limit_backoff"`
-		SmithProviders            []string `yaml:"smith_providers,omitempty"`
-		SchematicEnabled          bool     `yaml:"schematic_enabled"`
+		SmithProviders            []string            `yaml:"smith_providers,omitempty"`
+		StageProviders            map[string][]string `yaml:"stage_providers,omitempty"`
+		SchematicEnabled          bool                `yaml:"schematic_enabled"`
 		SchematicWordThreshold    int      `yaml:"schematic_word_threshold,omitempty"`
 		BellowsInterval           string   `yaml:"bellows_interval"`
 		DailyCostLimit            float64  `yaml:"daily_cost_limit,omitempty"`
@@ -415,6 +431,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		Providers:                 s.Providers,
 		RateLimitBackoff:          durationString(s.RateLimitBackoff),
 		SmithProviders:            s.SmithProviders,
+		StageProviders:            s.StageProviders,
 		SchematicEnabled:          s.SchematicEnabled,
 		SchematicWordThreshold:    s.SchematicWordThreshold,
 		BellowsInterval:           durationString(s.BellowsInterval),
@@ -479,6 +496,57 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	sh.WicketInterval = durationString(s.WicketInterval)
 
 	return sh, nil
+}
+
+// ProvidersForStage returns the provider spec list for the given pipeline stage.
+// Resolution order: stage_providers[stage] → smith_providers (for smith, warden,
+// schematic only) → providers. Returns nil when all levels are empty (caller
+// should apply provider.Defaults).
+func (s SettingsConfig) ProvidersForStage(stage string) []string {
+	return ProvidersForStageWithAnvil(s, nil, stage)
+}
+
+// ProvidersForStageWithAnvil returns the provider spec list for a pipeline stage,
+// checking the per-anvil stage_providers first. Resolution order:
+//
+//	anvil.stage_providers[stage] → settings.stage_providers[stage] →
+//	settings.smith_providers (smith/warden/schematic only) → settings.providers →
+//	nil (caller applies provider.Defaults).
+func ProvidersForStageWithAnvil(s SettingsConfig, anvil *AnvilConfig, stage string) []string {
+	// Per-anvil stage_providers takes highest priority.
+	if anvil != nil {
+		if sp, ok := anvil.StageProviders[stage]; ok && len(sp) > 0 {
+			return sp
+		}
+	}
+	if sp, ok := s.StageProviders[stage]; ok && len(sp) > 0 {
+		return sp
+	}
+	// SmithProviders is the legacy fallback for dispatch-pipeline stages.
+	switch stage {
+	case "smith", "warden", "schematic":
+		if len(s.SmithProviders) > 0 {
+			return s.SmithProviders
+		}
+	}
+	return s.Providers
+}
+
+// ExplicitStageProvidersWithAnvil returns the provider spec for a stage only if
+// it is explicitly configured in stage_providers (per-anvil or global). Unlike
+// ProvidersForStageWithAnvil it does NOT fall back to smith_providers or
+// providers, so callers can distinguish "explicitly overridden" from "inherited".
+// Returns nil when the stage has no explicit override.
+func ExplicitStageProvidersWithAnvil(s SettingsConfig, anvil *AnvilConfig, stage string) []string {
+	if anvil != nil {
+		if sp, ok := anvil.StageProviders[stage]; ok && len(sp) > 0 {
+			return sp
+		}
+	}
+	if sp, ok := s.StageProviders[stage]; ok && len(sp) > 0 {
+		return sp
+	}
+	return nil
 }
 
 // IsVulncheckEnabled returns true unless vulncheck_enabled is explicitly false.
