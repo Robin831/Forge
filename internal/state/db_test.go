@@ -897,18 +897,18 @@ func TestDB_StalledWorkers_ExcludesLongRunningPhases(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Cifix worker — should be excluded
+	// Quench worker — should be excluded
 	if err := db.InsertWorker(&Worker{
-		ID: "w-cifix", BeadID: "BD-3", Anvil: "anvil-1",
+		ID: "w-quench", BeadID: "BD-3", Anvil: "anvil-1",
 		Status: WorkerRunning, Phase: "quench",
 		StartedAt: time.Now().Add(-25 * time.Minute),
 		LogPath:   makeStaleLog("quench.log"),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Reviewfix worker — should be excluded
+	// Burnish worker — should be excluded
 	if err := db.InsertWorker(&Worker{
-		ID: "w-reviewfix", BeadID: "BD-4", Anvil: "anvil-1",
+		ID: "w-burnish", BeadID: "BD-4", Anvil: "anvil-1",
 		Status: WorkerRunning, Phase: "burnish",
 		StartedAt: time.Now().Add(-25 * time.Minute),
 		LogPath:   makeStaleLog("burnish.log"),

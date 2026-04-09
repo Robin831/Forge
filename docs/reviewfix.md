@@ -1,4 +1,4 @@
-# Reviewfix Loop and Re-Review Mechanism
+# Burnish (Review Fix) Loop and Re-Review Mechanism
 
 The Forge automatically responds to PR review comments from GitHub Copilot (and
 other reviewers) by spawning a Smith agent to address them, then requesting a
@@ -9,7 +9,7 @@ fresh review once the fixes are pushed.
 ```
 Bellows detects "changes requested" or unresolved threads
     ↓
-reviewfix.Fix() fetches review comments via GraphQL
+burnish.Fix() fetches review comments via GraphQL
     ↓
 Smith spawned with targeted fix prompt
     ↓
@@ -33,7 +33,7 @@ Bellows (`internal/bellows`) polls all open PRs on a configurable interval
 - A review transitions to `CHANGES_REQUESTED`, or
 - The count of unresolved review threads increases from zero.
 
-The daemon's event handler for `EventReviewChanges` calls `reviewfix.Fix()`.
+The daemon's event handler for `EventReviewChanges` calls `burnish.Fix()`.
 
 ## Re-Review Request
 
@@ -74,7 +74,7 @@ settings:
 ```
 
 To use a different reviewer (e.g. a human or another bot), supply
-`FixParams.Reviewer` directly when calling `reviewfix.Fix()`.
+`FixParams.Reviewer` directly when calling `burnish.Fix()`.
 
 ## State Events
 

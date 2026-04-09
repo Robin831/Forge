@@ -146,8 +146,8 @@ type PRActionMenuChoice int
 const (
 	PRActionOpenBrowser      PRActionMenuChoice = iota // Open in GitHub
 	PRActionMerge                                      // Merge the PR
-	PRActionFixCI                                      // Trigger cifix worker
-	PRActionFixComments                                // Trigger reviewfix worker
+	PRActionFixCI                                      // Trigger quench worker
+	PRActionFixComments                                // Trigger burnish worker
 	PRActionResolveConflicts                           // Trigger rebase worker
 	PRActionClosePR                                    // Close the PR
 	PRActionAssignBellows                              // Assign bellows to monitor & autofix
@@ -2834,13 +2834,13 @@ func (m *Model) buildPRActionForm(item *PRItem, choice *PRActionMenuChoice) *huh
 	if !item.IsConflicting {
 		opts = append(opts, huh.NewOption("Merge            — Merge this pull request", PRActionMerge))
 	}
-	// Lifecycle actions (cifix, reviewfix, rebase) only for forge-managed or bellows-assigned PRs
+	// Lifecycle actions (quench, burnish, rebase) only for forge-managed or bellows-assigned PRs
 	if item.BellowsManaged {
 		if !item.CIPassing {
-			opts = append(opts, huh.NewOption("Fix CI           — Run cifix worker", PRActionFixCI))
+			opts = append(opts, huh.NewOption("Fix CI           — Run quench worker", PRActionFixCI))
 		}
 		if item.HasUnresolvedThreads {
-			opts = append(opts, huh.NewOption("Fix comments     — Run reviewfix worker", PRActionFixComments))
+			opts = append(opts, huh.NewOption("Fix comments     — Run burnish worker", PRActionFixComments))
 		}
 		if item.IsConflicting {
 			opts = append(opts, huh.NewOption("Fix conflict     — Run rebase worker", PRActionResolveConflicts))

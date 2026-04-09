@@ -1,11 +1,11 @@
-// Package cifix spawns a Smith worker to fix CI failures on a PR branch.
+// Package quench spawns a Smith worker to fix CI failures on a PR branch.
 //
-// When Bellows detects CI failures, cifix checks out the existing PR branch,
+// When Bellows detects CI failures, quench checks out the existing PR branch,
 // fetches failing check details via the VCS provider, runs Temper to reproduce
 // local failures, then spawns Smith with a targeted fix prompt. For CI checks
 // that Temper cannot reproduce (e.g. changelog-check), Smith receives the
 // failing check names and CI logs directly.
-package cifix
+package quench
 
 import (
 	"context"
@@ -55,7 +55,7 @@ type FixParams struct {
 	// DetectOptions controls optional steps during Temper auto-detection.
 	// When TemperConfig is nil, these options are forwarded to
 	// temper.DefaultConfig so that per-anvil settings (e.g. DisableGolangciLint)
-	// are respected by the cifix worker.
+	// are respected by the quench worker.
 	DetectOptions *temper.DetectOptions
 	// GoRaceDetection enables a separate 'go test -race' step in Temper.
 	// Only used during auto-detection (when TemperConfig is nil).
@@ -131,7 +131,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	prompt := buildBatchCIPrompt(p)
 
 	if p.DB != nil {
-		_ = p.DB.LogEvent(state.EventCIFixStarted,
+		_ = p.DB.LogEvent(state.EventQuenchStarted,
 			fmt.Sprintf("PR #%d: batch fix for %d failing checks", p.PRNumber, len(p.FailingChecks)),
 			p.BeadID, p.AnvilName)
 	}
@@ -179,7 +179,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	if smithResult == nil {
 		result.Error = fmt.Errorf("batch CI fix: no smith result (no providers available)")
 		if p.DB != nil {
-			_ = p.DB.LogEvent(state.EventCIFixFailed,
+			_ = p.DB.LogEvent(state.EventQuenchFailed,
 				fmt.Sprintf("PR #%d batch fix: no smith result", p.PRNumber),
 				p.BeadID, p.AnvilName)
 		}
@@ -190,7 +190,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	if smithResult.RateLimited {
 		result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 		if p.DB != nil {
-			_ = p.DB.LogEvent(state.EventCIFixFailed,
+			_ = p.DB.LogEvent(state.EventQuenchFailed,
 				fmt.Sprintf("PR #%d batch fix: all providers rate limited", p.PRNumber),
 				p.BeadID, p.AnvilName)
 		}
@@ -201,7 +201,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	if smithResult.ExitCode != 0 {
 		result.Error = fmt.Errorf("batch CI fix failed (exit %d)", smithResult.ExitCode)
 		if p.DB != nil {
-			_ = p.DB.LogEvent(state.EventCIFixFailed,
+			_ = p.DB.LogEvent(state.EventQuenchFailed,
 				fmt.Sprintf("PR #%d: batch Smith exit %d", p.PRNumber, smithResult.ExitCode),
 				p.BeadID, p.AnvilName)
 		}
@@ -212,7 +212,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	log.Printf("[quench] PR #%d: batch CI fix applied for %d checks", p.PRNumber, len(p.FailingChecks))
 	result.Fixed = true
 	if p.DB != nil {
-		_ = p.DB.LogEvent(state.EventCIFixSuccess,
+		_ = p.DB.LogEvent(state.EventQuenchSuccess,
 			fmt.Sprintf("PR #%d: batch fix applied for %d checks", p.PRNumber, len(p.FailingChecks)),
 			p.BeadID, p.AnvilName)
 	}
@@ -257,7 +257,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	result := &FixResult{}
 
 	if p.VCS == nil {
-		result.Error = fmt.Errorf("cifix: VCS provider is required but was not set")
+		result.Error = fmt.Errorf("quench: VCS provider is required but was not set")
 		result.Duration = time.Since(start)
 		return result
 	}
@@ -333,7 +333,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		if failedStep == "" && len(failingChecks) > 0 {
 			failedStep = "github:" + failingChecks[0].Name
 		}
-		_ = p.DB.LogEvent(state.EventCIFixStarted,
+		_ = p.DB.LogEvent(state.EventQuenchStarted,
 			fmt.Sprintf("PR #%d: attempt %d, failed step: %s", p.PRNumber, attempt, failedStep),
 			p.BeadID, p.AnvilName)
 
@@ -392,7 +392,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 		if smithResult.RateLimited {
 			log.Printf("[quench] PR #%d: All providers rate limited on attempt %d", p.PRNumber, attempt)
-			_ = p.DB.LogEvent(state.EventCIFixFailed,
+			_ = p.DB.LogEvent(state.EventQuenchFailed,
 				fmt.Sprintf("PR #%d attempt %d: all providers rate limited", p.PRNumber, attempt),
 				p.BeadID, p.AnvilName)
 			result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
@@ -402,7 +402,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 		if smithResult.ExitCode != 0 {
 			log.Printf("[quench] PR #%d: Smith fix attempt %d failed (exit %d)", p.PRNumber, attempt, smithResult.ExitCode)
-			_ = p.DB.LogEvent(state.EventCIFixFailed,
+			_ = p.DB.LogEvent(state.EventQuenchFailed,
 				fmt.Sprintf("PR #%d: Smith exit %d on attempt %d", p.PRNumber, smithResult.ExitCode, attempt),
 				p.BeadID, p.AnvilName)
 			continue
@@ -415,7 +415,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		if verifyResult.Passed {
 			log.Printf("[quench] PR #%d: Fixed on attempt %d (local verification passed)", p.PRNumber, attempt)
 			result.Fixed = true
-			_ = p.DB.LogEvent(state.EventCIFixSuccess,
+			_ = p.DB.LogEvent(state.EventQuenchSuccess,
 				fmt.Sprintf("PR #%d: Fixed on attempt %d", p.PRNumber, attempt),
 				p.BeadID, p.AnvilName)
 			result.Duration = time.Since(start)
@@ -451,7 +451,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	}
 
 	result.Error = fmt.Errorf("could not fix CI after %d attempts", MaxAttempts)
-	_ = p.DB.LogEvent(state.EventCIFixFailed,
+	_ = p.DB.LogEvent(state.EventQuenchFailed,
 		fmt.Sprintf("PR #%d: Exhausted %d fix attempts", p.PRNumber, MaxAttempts),
 		p.BeadID, p.AnvilName)
 	result.Duration = time.Since(start)

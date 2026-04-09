@@ -1,9 +1,9 @@
-// Package reviewfix spawns a Smith worker to address PR review comments.
+// Package burnish spawns a Smith worker to address PR review comments.
 //
-// When Bellows detects "changes requested" on a PR, reviewfix fetches the
+// When Bellows detects "changes requested" on a PR, burnish fetches the
 // review comments via the VCS provider, constructs a targeted fix prompt,
 // and spawns Smith to address them. It then pushes the fixes to the PR branch.
-package reviewfix
+package burnish
 
 import (
 	"context"
@@ -116,7 +116,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	prompt := buildBatchReviewPrompt(p.PRNumber, p.Branch, p.BeadID, actionable)
 
 	if p.DB != nil {
-		_ = p.DB.LogEvent(state.EventReviewFixStarted,
+		_ = p.DB.LogEvent(state.EventBurnishStarted,
 			fmt.Sprintf("PR #%d: batch fix for %d comments", p.PRNumber, len(actionable)),
 			p.BeadID, p.AnvilName)
 	}
@@ -164,7 +164,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	if smithResult == nil {
 		result.Error = fmt.Errorf("batch review fix: no smith result (no providers available)")
 		if p.DB != nil {
-			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+			_ = p.DB.LogEvent(state.EventBurnishFailed,
 				fmt.Sprintf("PR #%d batch fix: no smith result", p.PRNumber),
 				p.BeadID, p.AnvilName)
 		}
@@ -175,7 +175,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	if smithResult.RateLimited {
 		result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 		if p.DB != nil {
-			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+			_ = p.DB.LogEvent(state.EventBurnishFailed,
 				fmt.Sprintf("PR #%d batch fix: all providers rate limited", p.PRNumber),
 				p.BeadID, p.AnvilName)
 		}
@@ -186,7 +186,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	if smithResult.ExitCode != 0 {
 		result.Error = fmt.Errorf("batch review fix failed (exit %d)", smithResult.ExitCode)
 		if p.DB != nil {
-			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+			_ = p.DB.LogEvent(state.EventBurnishFailed,
 				fmt.Sprintf("PR #%d: batch Smith exit %d", p.PRNumber, smithResult.ExitCode),
 				p.BeadID, p.AnvilName)
 		}
@@ -218,7 +218,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	}
 
 	if p.DB != nil {
-		_ = p.DB.LogEvent(state.EventReviewFixSuccess,
+		_ = p.DB.LogEvent(state.EventBurnishSuccess,
 			fmt.Sprintf("PR #%d: batch addressed %d comments", p.PRNumber, len(actionable)),
 			p.BeadID, p.AnvilName)
 	}
@@ -327,7 +327,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		prompt := buildReviewFixPrompt(p, actionable)
 
 		// Step 3: Spawn Smith (with provider fallback on rate limit)
-		_ = p.DB.LogEvent(state.EventReviewFixStarted,
+		_ = p.DB.LogEvent(state.EventBurnishStarted,
 			fmt.Sprintf("PR #%d: attempt %d, %d comments (provider: %s)", p.PRNumber, attempt, len(actionable), providers[activeProviderIdx].Label()),
 			p.BeadID, p.AnvilName)
 
@@ -338,7 +338,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			if pi > activeProviderIdx {
 				log.Printf("[burnish] PR #%d: Provider %s rate limited, retrying with %s",
 					p.PRNumber, providers[pi-1].Label(), pv.Label())
-				_ = p.DB.LogEvent(state.EventReviewFixSmithError,
+				_ = p.DB.LogEvent(state.EventBurnishSmithError,
 					fmt.Sprintf("PR #%d attempt %d: %s rate limited, falling back to %s",
 						p.PRNumber, attempt, providers[pi-1].Label(), pv.Label()),
 					p.BeadID, p.AnvilName)
@@ -346,7 +346,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
 			if err != nil {
 				result.Error = fmt.Errorf("spawning smith (%s) for review fix: %w", pv.Label(), err)
-				_ = p.DB.LogEvent(state.EventReviewFixFailed, result.Error.Error(), p.BeadID, p.AnvilName)
+				_ = p.DB.LogEvent(state.EventBurnishFailed, result.Error.Error(), p.BeadID, p.AnvilName)
 				result.Duration = time.Since(start)
 				return result
 			}
@@ -385,10 +385,10 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		// If all providers are rate-limited, abort rather than burning more attempts.
 		if smithResult.RateLimited {
 			log.Printf("[burnish] PR #%d: All providers rate limited on attempt %d", p.PRNumber, attempt)
-			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+			_ = p.DB.LogEvent(state.EventBurnishFailed,
 				fmt.Sprintf("PR #%d attempt %d: all providers rate limited", p.PRNumber, attempt),
 				p.BeadID, p.AnvilName)
-			_ = p.DB.LogEvent(state.EventReviewFixSmithError,
+			_ = p.DB.LogEvent(state.EventBurnishSmithError,
 				fmt.Sprintf("PR #%d attempt %d: rate_limited (all %d providers exhausted)", p.PRNumber, attempt, len(providers)),
 				p.BeadID, p.AnvilName)
 			result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
@@ -399,7 +399,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		if smithResult.ExitCode != 0 {
 			log.Printf("[burnish] PR #%d: Smith fix attempt %d failed (exit %d, subtype=%s)",
 				p.PRNumber, attempt, smithResult.ExitCode, smithResult.ResultSubtype)
-			_ = p.DB.LogEvent(state.EventReviewFixFailed,
+			_ = p.DB.LogEvent(state.EventBurnishFailed,
 				fmt.Sprintf("PR #%d: Smith exit %d on attempt %d", p.PRNumber, smithResult.ExitCode, attempt),
 				p.BeadID, p.AnvilName)
 			// Log error detail for root-cause debugging.
@@ -411,7 +411,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				}
 			}
 			if errDetail != "" {
-				_ = p.DB.LogEvent(state.EventReviewFixSmithError,
+				_ = p.DB.LogEvent(state.EventBurnishSmithError,
 					fmt.Sprintf("PR #%d attempt %d: %s", p.PRNumber, attempt, errDetail),
 					p.BeadID, p.AnvilName)
 			}
@@ -432,7 +432,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			}
 			if err := p.VCS.ResolveThread(ctx, p.WorktreePath, comment.ThreadID); err != nil {
 				log.Printf("[burnish] PR #%d: Warning: failed to resolve thread %s: %v", p.PRNumber, comment.ThreadID, err)
-				_ = p.DB.LogEvent(state.EventReviewFixFailed,
+				_ = p.DB.LogEvent(state.EventBurnishFailed,
 					fmt.Sprintf("PR #%d: resolve thread %s failed: %v", p.PRNumber, comment.ThreadID, err),
 					p.BeadID, p.AnvilName)
 			} else {
@@ -452,7 +452,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			log.Printf("[burnish] PR #%d: Resolved %d/%d threads on GitHub", p.PRNumber, resolvedCount, len(actionable))
 		}
 
-		_ = p.DB.LogEvent(state.EventReviewFixSuccess,
+		_ = p.DB.LogEvent(state.EventBurnishSuccess,
 			fmt.Sprintf("PR #%d: Addressed %d comments on attempt %d", p.PRNumber, len(actionable), attempt),
 			p.BeadID, p.AnvilName)
 
@@ -461,7 +461,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	}
 
 	result.Error = fmt.Errorf("could not address review comments after %d attempts", p.MaxAttempts)
-	_ = p.DB.LogEvent(state.EventReviewFixFailed,
+	_ = p.DB.LogEvent(state.EventBurnishFailed,
 		fmt.Sprintf("PR #%d: Exhausted %d fix attempts for %d comments", p.PRNumber, p.MaxAttempts, len(actionable)),
 		p.BeadID, p.AnvilName)
 	result.Duration = time.Since(start)

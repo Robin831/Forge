@@ -240,7 +240,7 @@ Forge/
 ├── internal/
 │   ├── bellows/          # PR monitoring (CI fix, review fix, rebase)
 │   ├── changelog/        # Changelog fragment parsing & assembly
-│   ├── cifix/            # CI failure fix worker
+│   ├── quench/           # CI failure fix worker (quench)
 │   ├── config/           # Viper-based configuration
 │   ├── cost/             # Token usage & USD cost tracking
 │   ├── crucible/         # Parent-child bead orchestration (epic branches)
@@ -259,7 +259,7 @@ Forge/
 │   ├── provider/         # AI provider fallback chain
 │   ├── rebase/           # Conflict rebase handling
 │   ├── retry/            # Exponential backoff & retry logic
-│   ├── reviewfix/        # Review comment fix worker
+│   ├── burnish/          # Review comment fix worker (burnish)
 │   ├── schematic/        # Pre-analysis worker (decompose complex beads)
 │   ├── shutdown/         # Graceful shutdown & orphan cleanup
 │   ├── smith/            # Claude Code worker spawning & lifecycle

@@ -101,7 +101,7 @@ func TestLearnFromCIFix_SkipExisting(t *testing.T) {
 				Category: "ui",
 				Pattern:  "calling setState inside useEffect",
 				Check:    "don't call setState unconditionally in useEffect",
-				Source:   SourceList{"cifix:PR#1"},
+				Source:   SourceList{"quench:PR#1"},
 				Added:    "2025-01-01",
 			},
 		},
@@ -166,7 +166,7 @@ func TestLearnFromCIFix_DistillsNewRule(t *testing.T) {
 	if r.ID != "react-hooks-exhaustive-deps" {
 		t.Errorf("unexpected rule ID %q", r.ID)
 	}
-	wantSource := fmt.Sprintf("cifix:PR#%d", 99)
+	wantSource := fmt.Sprintf("quench:PR#%d", 99)
 	if r.Source.String() != wantSource {
 		t.Errorf("expected source %q, got %q", wantSource, r.Source)
 	}
@@ -273,7 +273,7 @@ func TestLearnFromCIFix_SmelterEnabled(t *testing.T) {
 	if insertedAnvil != "test-anvil" {
 		t.Errorf("expected insertedAnvil %q, got %q", "test-anvil", insertedAnvil)
 	}
-	wantSource := "cifix:PR#77"
+	wantSource := "quench:PR#77"
 	if insertedSource != wantSource {
 		t.Errorf("expected insertedSource %q, got %q", wantSource, insertedSource)
 	}

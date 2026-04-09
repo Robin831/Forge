@@ -1,4 +1,4 @@
-package reviewfix
+package burnish
 
 import (
 	"context"

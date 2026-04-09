@@ -372,7 +372,7 @@ func LearnFromCIFix(ctx context.Context, anvilPath, repoDir string, failingLogs 
 		lc = cfg[0]
 	}
 
-	source := fmt.Sprintf("cifix:PR#%d", prNumber)
+	source := fmt.Sprintf("quench:PR#%d", prNumber)
 	changed := false
 	var pendingRules []Rule
 
