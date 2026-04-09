@@ -144,6 +144,9 @@ func LoadAnvilConfig(anvilPath string) (*TemperYAML, error) {
 // If all commands are empty, it returns nil so callers can fall back to
 // auto-detection.
 func ConfigFromCommands(build, test, lint string) *Config {
+	build = strings.TrimSpace(build)
+	test = strings.TrimSpace(test)
+	lint = strings.TrimSpace(lint)
 	if build == "" && test == "" && lint == "" {
 		return nil
 	}
@@ -180,8 +183,10 @@ func ConfigFromCommands(build, test, lint string) *Config {
 }
 
 // splitCommand splits a command string into the executable and arguments.
-// It splits on whitespace. For commands requiring shell features (pipes,
-// redirections, etc.), use the per-anvil .forge/temper.yaml instead.
+// It splits on whitespace only and does not perform shell expansion. For
+// commands requiring shell features (pipes, redirections, etc.), wrap that
+// logic in a repository script/wrapper command, or invoke a shell explicitly
+// as the command.
 func splitCommand(cmd string) (string, []string) {
 	parts := strings.Fields(cmd)
 	if len(parts) == 0 {

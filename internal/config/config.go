@@ -76,11 +76,12 @@ type AnvilConfig struct {
 	QuestgiverTeardownCmd string `mapstructure:"questgiver_teardown_cmd" yaml:"questgiver_teardown_cmd,omitempty"`
 
 	// Temper holds optional custom build/test/lint commands for this anvil.
-	// When any field is set, it replaces the corresponding auto-detected
-	// Temper step. This enables support for Python, Rust, or repos with
-	// non-standard build tooling. Each value is a shell command string
-	// (e.g. "make build", "cargo test"). Commands are split on whitespace;
-	// use the per-anvil .forge/temper.yaml for commands requiring shell features.
+	// When any field is set, Forge disables the auto-detected Temper steps
+	// for this anvil and runs only the commands explicitly configured here.
+	// This enables support for Python, Rust, or repos with non-standard
+	// build tooling. Each value is a command string (e.g. "make build",
+	// "cargo test"). Commands are split on whitespace; for shell features,
+	// invoke a checked-in wrapper script from the configured command.
 	Temper *TemperCommandsConfig `mapstructure:"temper" yaml:"temper,omitempty"`
 
 	// WicketEnabled controls whether the Wicket issue triage monitor scans

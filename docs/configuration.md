@@ -163,7 +163,7 @@ By default, Temper auto-detects the project type (Go, .NET, Node) and runs appro
 
 When any `temper` field is set, **all** auto-detected steps are replaced — only the explicitly configured commands run. Omit a field to skip that step entirely.
 
-Commands are split on whitespace into executable + arguments. For commands requiring shell features (pipes, redirections, environment variables), use the per-anvil `.forge/temper.yaml` file instead.
+Commands are split on whitespace into executable + arguments. For commands requiring shell features (pipes, redirections, command chaining, or inline environment variables), use a wrapper script committed in the repo, or invoke a shell explicitly (for example, `sh -c 'FOO=bar pytest -q | tee test.log'`). Per-anvil `.forge/temper.yaml` does not currently support custom build/test/lint commands.
 
 **Example:**
 
