@@ -1055,7 +1055,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 			if smithResult != nil {
 				smithRawOutput = smithResult.Output
 			}
-			violations := checkDenyPatterns(wt.Path, preSmithSHA, smithRawOutput, p.AnvilConfig.Smith.DenyPatterns)
+			violations, denyErr := checkDenyPatterns(wt.Path, preSmithSHA, smithRawOutput, p.AnvilConfig.Smith.DenyPatterns)
+			if denyErr != nil {
+				log.Printf("[pipeline:%s] Deny pattern check failed: %v", workerID, denyErr)
+			}
 			if len(violations) > 0 {
 				summary := formatDenyViolations(violations)
 				log.Printf("[pipeline:%s] Deny pattern violations: %s", workerID, summary)

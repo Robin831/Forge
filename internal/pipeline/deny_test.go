@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/config"
@@ -94,7 +95,10 @@ func TestCheckCommandDenyPatterns(t *testing.T) {
 }
 
 func TestCheckDenyPatterns_NilConfig(t *testing.T) {
-	violations := checkDenyPatterns("/tmp", "abc123", "", nil)
+	violations, err := checkDenyPatterns("/tmp", "abc123", "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(violations) != 0 {
 		t.Fatalf("expected 0 violations for nil config, got %d", len(violations))
 	}
@@ -102,7 +106,10 @@ func TestCheckDenyPatterns_NilConfig(t *testing.T) {
 
 func TestCheckDenyPatterns_EmptyPatterns(t *testing.T) {
 	cfg := &config.DenyPatternsConfig{}
-	violations := checkDenyPatterns("/tmp", "abc123", "", cfg)
+	violations, err := checkDenyPatterns("/tmp", "abc123", "", cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(violations) != 0 {
 		t.Fatalf("expected 0 violations for empty patterns, got %d", len(violations))
 	}
@@ -117,25 +124,12 @@ func TestFormatDenyViolations(t *testing.T) {
 	if result == "" {
 		t.Error("expected non-empty result")
 	}
-	if !contains(result, "*.env") || !contains(result, ".env") {
+	if !strings.Contains(result, "*.env") || !strings.Contains(result, ".env") {
 		t.Errorf("missing file violation in output: %s", result)
 	}
-	if !contains(result, "rm -rf /") {
+	if !strings.Contains(result, "rm -rf /") {
 		t.Errorf("missing command violation in output: %s", result)
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 func TestIsBashTool(t *testing.T) {

@@ -26,30 +26,37 @@ func (v DenyViolation) String() string {
 // It checks changed files in the diff against file deny patterns, and bash
 // commands in the Smith output against command deny patterns.
 // Returns a list of violations (empty if none).
-func checkDenyPatterns(worktreePath, preSmithSHA, smithOutput string, cfg *config.DenyPatternsConfig) []DenyViolation {
+func checkDenyPatterns(worktreePath, preSmithSHA, smithOutput string, cfg *config.DenyPatternsConfig) ([]DenyViolation, error) {
 	if cfg == nil {
-		return nil
+		return nil, nil
 	}
 
 	var violations []DenyViolation
 
 	if len(cfg.Files) > 0 {
-		violations = append(violations, checkFileDenyPatterns(worktreePath, preSmithSHA, cfg.Files)...)
+		fileViolations, err := checkFileDenyPatterns(worktreePath, preSmithSHA, cfg.Files)
+		if err != nil {
+			return nil, err
+		}
+		violations = append(violations, fileViolations...)
 	}
 
 	if len(cfg.Commands) > 0 {
 		violations = append(violations, checkCommandDenyPatterns(smithOutput, cfg.Commands)...)
 	}
 
-	return violations
+	return violations, nil
 }
 
 // checkFileDenyPatterns gets changed file paths from the diff and matches
 // them against the deny glob patterns.
-func checkFileDenyPatterns(worktreePath, preSmithSHA string, patterns []string) []DenyViolation {
-	files := gitDiffNameOnly(worktreePath, preSmithSHA)
+func checkFileDenyPatterns(worktreePath, preSmithSHA string, patterns []string) ([]DenyViolation, error) {
+	files, err := gitDiffNameOnly(worktreePath, preSmithSHA)
+	if err != nil {
+		return nil, err
+	}
 	if len(files) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var violations []DenyViolation
@@ -65,7 +72,7 @@ func checkFileDenyPatterns(worktreePath, preSmithSHA string, patterns []string) 
 			}
 		}
 	}
-	return violations
+	return violations, nil
 }
 
 // checkCommandDenyPatterns scans the raw Smith output (stream JSON lines)
@@ -99,14 +106,14 @@ func checkCommandDenyPatterns(smithOutput string, patterns []string) []DenyViola
 
 // gitDiffNameOnly returns the list of changed file paths between preSmithSHA
 // and the current worktree state.
-func gitDiffNameOnly(worktreePath, preSmithSHA string) []string {
+func gitDiffNameOnly(worktreePath, preSmithSHA string) ([]string, error) {
 	if preSmithSHA == "" {
-		return nil
+		return nil, nil
 	}
 	cmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "diff", "--name-only", preSmithSHA))
 	out, err := cmd.Output()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("git diff --name-only: %w", err)
 	}
 	var files []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -114,7 +121,7 @@ func gitDiffNameOnly(worktreePath, preSmithSHA string) []string {
 			files = append(files, line)
 		}
 	}
-	return files
+	return files, nil
 }
 
 // matchDenyPattern matches a value against a deny glob pattern.
