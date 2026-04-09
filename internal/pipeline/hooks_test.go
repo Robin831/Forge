@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
+	"os/exec"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/config"
@@ -17,10 +17,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func skipIfNoSh(t *testing.T) {
+func skipIfNoShell(t *testing.T) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("hooks require sh -c which is not available on Windows")
+	shell, _ := shellArgs()
+	if _, err := exec.LookPath(shell); err != nil {
+		t.Skipf("hooks require %s which is not available", shell)
 	}
 }
 
@@ -30,7 +31,7 @@ func TestRunHook_Empty_NoOp(t *testing.T) {
 }
 
 func TestRunHook_Success(t *testing.T) {
-	skipIfNoSh(t)
+	skipIfNoShell(t)
 	dir := t.TempDir()
 	env := hookEnv{
 		BeadID:       "bead-1",
@@ -52,7 +53,7 @@ func TestRunHook_Success(t *testing.T) {
 }
 
 func TestRunHook_Failure(t *testing.T) {
-	skipIfNoSh(t)
+	skipIfNoShell(t)
 	env := hookEnv{WorktreePath: t.TempDir()}
 	err := runHook(context.Background(), "w1", "before_temper", "exit 1", env)
 	assert.Error(t, err)
@@ -105,10 +106,28 @@ func TestHookEnv_Environ(t *testing.T) {
 	assert.Contains(t, vars, "FORGE_ITERATION=3")
 }
 
+func TestFilterForgeEnv(t *testing.T) {
+	input := []string{
+		"HOME=/home/user",
+		"FORGE_BEAD_ID=old-bead",
+		"PATH=/usr/bin",
+		"FORGE_STAGE=smith",
+		"GOPATH=/go",
+	}
+	got := filterForgeEnv(input)
+	assert.Equal(t, []string{"HOME=/home/user", "PATH=/usr/bin", "GOPATH=/go"}, got)
+}
+
+func TestShellArgs(t *testing.T) {
+	shell, flag := shellArgs()
+	assert.NotEmpty(t, shell)
+	assert.NotEmpty(t, flag)
+}
+
 // TestBeforeSmithHook_Abort verifies that a failing before_smith hook aborts
 // the pipeline with an error.
 func TestBeforeSmithHook_Abort(t *testing.T) {
-	skipIfNoSh(t)
+	skipIfNoShell(t)
 	db := newTestDB(t)
 	params, _, _ := baseParams(t, db)
 	params.AnvilConfig.Hooks = &config.HooksConfig{
@@ -127,7 +146,7 @@ func TestBeforeSmithHook_Abort(t *testing.T) {
 // TestAfterSmithHook_NoAbort verifies that a failing after_smith hook does not
 // abort the pipeline (after hooks are best-effort).
 func TestAfterSmithHook_NoAbort(t *testing.T) {
-	skipIfNoSh(t)
+	skipIfNoShell(t)
 	db := newTestDB(t)
 	params, _, _ := baseParams(t, db)
 	params.AnvilConfig.Hooks = &config.HooksConfig{
@@ -144,7 +163,7 @@ func TestAfterSmithHook_NoAbort(t *testing.T) {
 // TestBeforeTemperHook_ReceivesEnv verifies that a before_temper hook receives
 // the correct environment variables and can create files in the worktree.
 func TestBeforeTemperHook_ReceivesEnv(t *testing.T) {
-	skipIfNoSh(t)
+	skipIfNoShell(t)
 	db := newTestDB(t)
 	params, _, _ := baseParams(t, db)
 
@@ -174,7 +193,7 @@ func TestBeforeTemperHook_ReceivesEnv(t *testing.T) {
 // TestHooks_SuccessfulPipeline verifies that all hooks run during a successful
 // pipeline pass without interfering.
 func TestHooks_SuccessfulPipeline(t *testing.T) {
-	skipIfNoSh(t)
+	skipIfNoShell(t)
 	db := newTestDB(t)
 	params, _, _ := baseParams(t, db)
 

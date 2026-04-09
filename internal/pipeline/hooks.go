@@ -4,12 +4,19 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 )
+
+// hookTimeout is the maximum time a single hook command is allowed to run.
+const hookTimeout = 60 * time.Second
 
 // hookEnv holds the environment variables passed to pipeline hook commands.
 type hookEnv struct {
@@ -36,17 +43,44 @@ func (h hookEnv) environ() []string {
 	}
 }
 
+// filterForgeEnv returns a copy of environ with any existing FORGE_* variables
+// removed so that hook-specific values are not shadowed or duplicated.
+func filterForgeEnv(environ []string) []string {
+	filtered := make([]string, 0, len(environ))
+	for _, e := range environ {
+		if !strings.HasPrefix(e, "FORGE_") {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered
+}
+
+// shellArgs returns the platform-appropriate shell and flag for executing a
+// command string. On Windows it uses "cmd /c"; elsewhere "sh -c".
+func shellArgs() (string, string) {
+	if runtime.GOOS == "windows" {
+		return "cmd", "/c"
+	}
+	return "sh", "-c"
+}
+
 // runHook executes a shell command with the given hook environment. It returns
-// nil when cmd is empty (no hook configured). The command is run via "sh -c"
-// with the worktree as the working directory.
+// nil when cmd is empty (no hook configured). The command is run via a
+// platform-appropriate shell (sh -c on Unix, cmd /c on Windows) with the
+// worktree as the working directory. A dedicated timeout of hookTimeout is
+// applied to prevent hooks from blocking the pipeline indefinitely.
 func runHook(ctx context.Context, workerID, hookName, cmd string, env hookEnv) error {
 	if cmd == "" {
 		return nil
 	}
+	hookCtx, cancel := context.WithTimeout(ctx, hookTimeout)
+	defer cancel()
+
 	log.Printf("[pipeline:%s] Running hook %s: %s", workerID, hookName, cmd)
-	c := executil.HideWindow(exec.CommandContext(ctx, "sh", "-c", cmd))
+	shell, flag := shellArgs()
+	c := executil.HideWindow(exec.CommandContext(hookCtx, shell, flag, cmd))
 	c.Dir = env.WorktreePath
-	c.Env = append(c.Environ(), env.environ()...)
+	c.Env = append(filterForgeEnv(os.Environ()), env.environ()...)
 	out, err := c.CombinedOutput()
 	if err != nil {
 		log.Printf("[pipeline:%s] Hook %s failed: %v\n%s", workerID, hookName, err, out)

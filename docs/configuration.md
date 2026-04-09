@@ -168,7 +168,7 @@ anvils:
 
 ### Pipeline Hooks
 
-Configure shell commands that run before or after each pipeline stage. Hooks are executed via `sh -c` with the worktree as the working directory and receive pipeline context as environment variables.
+Configure shell commands that run before or after each pipeline stage. Hooks are executed via a platform-appropriate shell (`sh -c` on Unix, `cmd /c` on Windows) with the worktree as the working directory and receive pipeline context as environment variables. Each hook has a 60-second timeout.
 
 ```yaml
 anvils:

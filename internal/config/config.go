@@ -152,7 +152,8 @@ type DenyPatternsConfig struct {
 }
 
 // HooksConfig defines optional shell commands that run before/after each
-// pipeline stage. Each field is a shell command string executed via "sh -c".
+// pipeline stage. Each field is a shell command string executed via a
+// platform-appropriate shell (sh -c on Unix, cmd /c on Windows).
 // Commands receive pipeline context as environment variables.
 type HooksConfig struct {
 	BeforeSchematic string `mapstructure:"before_schematic" yaml:"before_schematic,omitempty"`

@@ -824,7 +824,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 			// after_schematic hook (best-effort — failures are logged but do not abort)
 			if err := runHook(ctx, workerID, "after_schematic", hookCmd(p.AnvilConfig.Hooks, "after_schematic"), hEnv); err != nil {
-				_ = p.DB.LogEvent(state.EventSchematicDone, fmt.Sprintf("after_schematic hook failed: %v", err), p.Bead.ID, p.AnvilName)
+				_ = p.DB.LogEvent(state.EventHookFailed, fmt.Sprintf("after_schematic hook failed: %v", err), p.Bead.ID, p.AnvilName)
 			}
 		} else {
 			log.Printf("[pipeline:%s] %s", workerID, skipReason)
@@ -1105,7 +1105,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		// after_smith hook (best-effort — failures are logged but do not abort)
 		if err := runHook(ctx, workerID, "after_smith", hookCmd(p.AnvilConfig.Hooks, "after_smith"), hEnv); err != nil {
-			_ = p.DB.LogEvent(state.EventSmithDone, fmt.Sprintf("after_smith hook failed: %v", err), p.Bead.ID, p.AnvilName)
+			_ = p.DB.LogEvent(state.EventHookFailed, fmt.Sprintf("after_smith hook failed: %v", err), p.Bead.ID, p.AnvilName)
 		}
 
 		// Step 2.5: Check deny patterns (post-Smith diff validation)
@@ -1226,7 +1226,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		// after_temper hook (best-effort)
 		if err := runHook(ctx, workerID, "after_temper", hookCmd(p.AnvilConfig.Hooks, "after_temper"), hEnv); err != nil {
-			_ = p.DB.LogEvent(state.EventSmithDone, fmt.Sprintf("after_temper hook failed: %v", err), p.Bead.ID, p.AnvilName)
+			_ = p.DB.LogEvent(state.EventHookFailed, fmt.Sprintf("after_temper hook failed: %v", err), p.Bead.ID, p.AnvilName)
 		}
 
 		if !temperResult.Passed {
@@ -1371,7 +1371,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		// after_warden hook (best-effort)
 		if err := runHook(ctx, workerID, "after_warden", hookCmd(p.AnvilConfig.Hooks, "after_warden"), hEnv); err != nil {
-			_ = p.DB.LogEvent(state.EventWardenPass, fmt.Sprintf("after_warden hook failed: %v", err), p.Bead.ID, p.AnvilName)
+			_ = p.DB.LogEvent(state.EventHookFailed, fmt.Sprintf("after_warden hook failed: %v", err), p.Bead.ID, p.AnvilName)
 		}
 
 		switch reviewResult.Verdict {
