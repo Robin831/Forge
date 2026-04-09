@@ -8,6 +8,7 @@
 //   - settings.claude_flags
 //   - settings.providers
 //   - settings.smith_providers
+//   - settings.stage_providers
 //   - settings.max_ci_fix_attempts (applied immediately to lifecycle manager)
 //   - settings.max_review_fix_attempts (applied immediately to lifecycle manager)
 //   - settings.max_rebase_attempts (applied immediately to lifecycle manager)
@@ -200,6 +201,10 @@ func applyChanges(old, new *config.Config) []string {
 		changes = append(changes, "smith_providers changed")
 	}
 
+	if !stageProvidersEqual(old.Settings.StageProviders, new.Settings.StageProviders) {
+		changes = append(changes, "stage_providers changed")
+	}
+
 	if old.Notifications.ResolvedTeamsURL() != new.Notifications.ResolvedTeamsURL() {
 		changes = append(changes, "teams_webhook_url changed")
 	}
@@ -299,6 +304,20 @@ func sliceEqual(a, b []string) bool {
 	}
 	for i := range a {
 		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// stageProvidersEqual compares two stage-provider maps.
+func stageProvidersEqual(a, b map[string][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok || !sliceEqual(av, bv) {
 			return false
 		}
 	}

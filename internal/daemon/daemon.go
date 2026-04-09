@@ -933,7 +933,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				StaleTimeout: workerTimeout / 2,
 			})
 			cfg := d.config()
-			cifixProviders := d.filterCopilotIfLimited(provider.FromConfig(cfg.Settings.ProvidersForStage("cifix")))
+			cifixProviders := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(cfg.Settings, &anvilCfg, "cifix")))
 			// Use batch mode when copilot_batch_ci_fixes is enabled and the primary provider is Copilot.
 			var res *cifix.FixResult
 			useBatch := cfg.Settings.CopilotBatchCIFixes && len(cifixProviders) > 0 && cifixProviders[0].Kind == provider.Copilot
@@ -1024,7 +1024,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				StaleTimeout: workerTimeout / 2,
 			})
 			reviewCfg := d.cfg.Load()
-			reviewProviders := d.filterCopilotIfLimited(provider.FromConfig(reviewCfg.Settings.ProvidersForStage("reviewfix")))
+			reviewProviders := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(reviewCfg.Settings, &anvilCfg, "reviewfix")))
 			// Use batch mode when copilot_batch_review_fixes is enabled and the primary provider is Copilot.
 			var res *reviewfix.FixResult
 			useReviewBatch := reviewCfg.Settings.CopilotBatchReviewFixes && len(reviewProviders) > 0 && reviewProviders[0].Kind == provider.Copilot
@@ -1931,10 +1931,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 				}
 			}
 
-			smithProviders := d.cfg.Load().Settings.SmithProviders
-			if len(smithProviders) == 0 {
-				smithProviders = d.cfg.Load().Settings.Providers
-			}
+			smithProviders := config.ProvidersForStageWithAnvil(d.cfg.Load().Settings, &anvilCfg, "schematic")
 			providers := d.filterCopilotIfLimited(provider.FromConfig(smithProviders))
 
 			// Fetch child details for the prompt
@@ -1979,10 +1976,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		_ = d.db.UpdateWorkerStatus(claimWorkerID, state.WorkerRunning)
 		d.logger.Info("dispatching crucible", "bead", bead.ID, "children", len(bead.Blocks))
 
-		smithProviderSpecs := d.cfg.Load().Settings.SmithProviders
-		if len(smithProviderSpecs) == 0 {
-			smithProviderSpecs = d.cfg.Load().Settings.Providers
-		}
+		smithProviderSpecs := config.ProvidersForStageWithAnvil(d.cfg.Load().Settings, &anvilCfg, "smith")
 		crucibleParams := crucible.Params{
 			DB:                        d.db,
 			VCS:                       d.vcsForAnvil(bead.Anvil),
@@ -2099,9 +2093,9 @@ normalPipeline:
 		ExtraFlags:      cfg.Settings.ClaudeFlags,
 		TemperConfig:    d.resolveTemperConfig(anvilCfg),
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
-		Providers:       d.filterCopilotIfLimited(provider.FromConfig(cfg.Settings.ProvidersForStage("smith"))),
-		WardenProviders: d.filterCopilotIfLimited(provider.FromConfig(cfg.Settings.ProvidersForStage("warden"))),
-		SchematicProviders: d.filterCopilotIfLimited(provider.FromConfig(cfg.Settings.ProvidersForStage("schematic"))),
+		Providers:       d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(cfg.Settings, &anvilCfg, "smith"))),
+		WardenProviders: d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(cfg.Settings, &anvilCfg, "warden"))),
+		SchematicProviders: d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(cfg.Settings, &anvilCfg, "schematic"))),
 		Notifier:        d.notifier.Load(),
 		BaseBranch:      bead.EpicBranch,
 		WorkerID:        claimWorkerID,
@@ -4935,7 +4929,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		StartedAt: time.Now(),
 	})
 
-	providers := d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.ProvidersForStage("warden")))
+	providers := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(d.cfg.Load().Settings, &anvilCfg, "warden")))
 
 	title := d.db.BeadTitle(beadID, anvil)
 	var description string
@@ -5155,7 +5149,7 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 	}
 
 	logDir := wt.Path + "/.forge-logs"
-	providers := d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.ProvidersForStage("smith")))
+	providers := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(d.cfg.Load().Settings, &anvilCfg, "smith")))
 
 	var lastExitCode int
 	for _, pv := range providers {
@@ -5221,10 +5215,7 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 	poller.ResolveEpicBranches(ctx, beads, map[string]string{anvil: anvilCfg.Path})
 	bead.EpicBranch = beads[0].EpicBranch
 
-	smithProviderSpecs := d.cfg.Load().Settings.SmithProviders
-	if len(smithProviderSpecs) == 0 {
-		smithProviderSpecs = d.cfg.Load().Settings.Providers
-	}
+	smithProviderSpecs := config.ProvidersForStageWithAnvil(d.cfg.Load().Settings, &anvilCfg, "smith")
 
 	// Derive from context.Background() (not d.runCtx) so that a graceful
 	// shutdown does not cancel Temper/Warden/PR creation mid-flight — matching
@@ -5243,10 +5234,12 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
 		TemperConfig:    d.resolveTemperConfig(anvilCfg),
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
-		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
-		Notifier:        d.notifier.Load(),
-		MaxIterations:   d.cfg.Load().Settings.MaxPipelineIterations,
-		SkipSmith:       true,
+		Providers:          d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
+		WardenProviders:    d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(d.cfg.Load().Settings, &anvilCfg, "warden"))),
+		SchematicProviders: d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(d.cfg.Load().Settings, &anvilCfg, "schematic"))),
+		Notifier:           d.notifier.Load(),
+		MaxIterations:      d.cfg.Load().Settings.MaxPipelineIterations,
+		SkipSmith:          true,
 
 		WardenModelOverride:         d.cfg.Load().Settings.WardenModelOverride,
 		SchematicModelOverride:      d.cfg.Load().Settings.SchematicModelOverride,

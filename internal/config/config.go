@@ -112,6 +112,11 @@ type AnvilConfig struct {
 	// always ignored. Comparison is case-insensitive.
 	WicketIgnoreUsers []string `mapstructure:"wicket_ignore_users" yaml:"wicket_ignore_users,omitempty"`
 
+	// StageProviders is a per-anvil override for stage_providers. When set,
+	// these take precedence over the global stage_providers for beads in this
+	// anvil. Same keys/format as settings.stage_providers.
+	StageProviders map[string][]string `mapstructure:"stage_providers" yaml:"stage_providers,omitempty"`
+
 	// Smith holds optional Smith configuration for this anvil, including
 	// deny patterns for files and commands.
 	Smith *SmithConfig `mapstructure:"smith" yaml:"smith,omitempty"`
@@ -498,6 +503,22 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 // schematic only) → providers. Returns nil when all levels are empty (caller
 // should apply provider.Defaults).
 func (s SettingsConfig) ProvidersForStage(stage string) []string {
+	return ProvidersForStageWithAnvil(s, nil, stage)
+}
+
+// ProvidersForStageWithAnvil returns the provider spec list for a pipeline stage,
+// checking the per-anvil stage_providers first. Resolution order:
+//
+//	anvil.stage_providers[stage] → settings.stage_providers[stage] →
+//	settings.smith_providers (smith/warden/schematic only) → settings.providers →
+//	nil (caller applies provider.Defaults).
+func ProvidersForStageWithAnvil(s SettingsConfig, anvil *AnvilConfig, stage string) []string {
+	// Per-anvil stage_providers takes highest priority.
+	if anvil != nil {
+		if sp, ok := anvil.StageProviders[stage]; ok && len(sp) > 0 {
+			return sp
+		}
+	}
 	if sp, ok := s.StageProviders[stage]; ok && len(sp) > 0 {
 		return sp
 	}

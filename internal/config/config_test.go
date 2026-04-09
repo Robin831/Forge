@@ -654,3 +654,152 @@ settings:
 	_, err := Load(cfgPath)
 	assert.ErrorContains(t, err, "wicket_interval")
 }
+
+// --- ProvidersForStage tests ---
+
+func TestProvidersForStage_StageProvidersTakesPrecedence(t *testing.T) {
+	s := SettingsConfig{
+		Providers:      []string{"claude", "gemini"},
+		SmithProviders: []string{"claude/claude-opus-4-6"},
+		StageProviders: map[string][]string{
+			"smith": {"gemini/gemini-2.5-pro"},
+		},
+	}
+	got := s.ProvidersForStage("smith")
+	assert.Equal(t, []string{"gemini/gemini-2.5-pro"}, got)
+}
+
+func TestProvidersForStage_FallsBackToSmithProviders(t *testing.T) {
+	s := SettingsConfig{
+		Providers:      []string{"claude", "gemini"},
+		SmithProviders: []string{"claude/claude-opus-4-6"},
+	}
+	for _, stage := range []string{"smith", "warden", "schematic"} {
+		got := s.ProvidersForStage(stage)
+		assert.Equal(t, []string{"claude/claude-opus-4-6"}, got, "stage %s", stage)
+	}
+}
+
+func TestProvidersForStage_SmithProvidersFallbackNotForCIFixReviewFix(t *testing.T) {
+	s := SettingsConfig{
+		Providers:      []string{"claude", "gemini"},
+		SmithProviders: []string{"claude/claude-opus-4-6"},
+	}
+	for _, stage := range []string{"cifix", "reviewfix"} {
+		got := s.ProvidersForStage(stage)
+		assert.Equal(t, []string{"claude", "gemini"}, got,
+			"stage %s should fall back to providers, not smith_providers", stage)
+	}
+}
+
+func TestProvidersForStage_FallsBackToProviders(t *testing.T) {
+	s := SettingsConfig{
+		Providers: []string{"claude", "gemini"},
+	}
+	got := s.ProvidersForStage("smith")
+	assert.Equal(t, []string{"claude", "gemini"}, got)
+}
+
+func TestProvidersForStage_ReturnsNilWhenAllEmpty(t *testing.T) {
+	s := SettingsConfig{}
+	got := s.ProvidersForStage("smith")
+	assert.Nil(t, got)
+}
+
+func TestProvidersForStage_EmptyStageProvidersEntryFallsBack(t *testing.T) {
+	s := SettingsConfig{
+		Providers: []string{"claude"},
+		StageProviders: map[string][]string{
+			"smith": {}, // empty slice should be treated as unset
+		},
+	}
+	got := s.ProvidersForStage("smith")
+	assert.Equal(t, []string{"claude"}, got)
+}
+
+func TestProvidersForStage_EachStageIndependent(t *testing.T) {
+	s := SettingsConfig{
+		Providers: []string{"claude"},
+		StageProviders: map[string][]string{
+			"smith":     {"claude/claude-opus-4-6"},
+			"warden":    {"claude/claude-sonnet-4-6"},
+			"schematic": {"gemini/gemini-2.5-flash"},
+			"cifix":     {"claude/claude-sonnet-4-6"},
+			"reviewfix": {"gemini/gemini-2.5-pro"},
+		},
+	}
+	assert.Equal(t, []string{"claude/claude-opus-4-6"}, s.ProvidersForStage("smith"))
+	assert.Equal(t, []string{"claude/claude-sonnet-4-6"}, s.ProvidersForStage("warden"))
+	assert.Equal(t, []string{"gemini/gemini-2.5-flash"}, s.ProvidersForStage("schematic"))
+	assert.Equal(t, []string{"claude/claude-sonnet-4-6"}, s.ProvidersForStage("cifix"))
+	assert.Equal(t, []string{"gemini/gemini-2.5-pro"}, s.ProvidersForStage("reviewfix"))
+}
+
+// --- ProvidersForStageWithAnvil tests ---
+
+func TestProvidersForStageWithAnvil_AnvilOverrideTakesPrecedence(t *testing.T) {
+	s := SettingsConfig{
+		Providers: []string{"claude", "gemini"},
+		StageProviders: map[string][]string{
+			"smith": {"claude/claude-opus-4-6"},
+		},
+	}
+	anvil := &AnvilConfig{
+		StageProviders: map[string][]string{
+			"smith": {"gemini/gemini-2.5-flash"},
+		},
+	}
+	got := ProvidersForStageWithAnvil(s, anvil, "smith")
+	assert.Equal(t, []string{"gemini/gemini-2.5-flash"}, got)
+}
+
+func TestProvidersForStageWithAnvil_FallsBackToGlobalStageProviders(t *testing.T) {
+	s := SettingsConfig{
+		Providers: []string{"claude", "gemini"},
+		StageProviders: map[string][]string{
+			"warden": {"claude/claude-sonnet-4-6"},
+		},
+	}
+	anvil := &AnvilConfig{
+		StageProviders: map[string][]string{
+			"smith": {"gemini/gemini-2.5-pro"},
+		},
+	}
+	got := ProvidersForStageWithAnvil(s, anvil, "warden")
+	assert.Equal(t, []string{"claude/claude-sonnet-4-6"}, got)
+}
+
+func TestProvidersForStageWithAnvil_NilAnvilUsesGlobal(t *testing.T) {
+	s := SettingsConfig{
+		StageProviders: map[string][]string{
+			"smith": {"claude/claude-opus-4-6"},
+		},
+	}
+	got := ProvidersForStageWithAnvil(s, nil, "smith")
+	assert.Equal(t, []string{"claude/claude-opus-4-6"}, got)
+}
+
+func TestProvidersForStageWithAnvil_EmptyAnvilEntryFallsBack(t *testing.T) {
+	s := SettingsConfig{
+		Providers: []string{"claude"},
+		StageProviders: map[string][]string{
+			"cifix": {"gemini/gemini-2.5-pro"},
+		},
+	}
+	anvil := &AnvilConfig{
+		StageProviders: map[string][]string{
+			"cifix": {}, // empty should fall through
+		},
+	}
+	got := ProvidersForStageWithAnvil(s, anvil, "cifix")
+	assert.Equal(t, []string{"gemini/gemini-2.5-pro"}, got)
+}
+
+func TestProvidersForStageWithAnvil_AnvilNoStageProviders(t *testing.T) {
+	s := SettingsConfig{
+		Providers: []string{"claude"},
+	}
+	anvil := &AnvilConfig{}
+	got := ProvidersForStageWithAnvil(s, anvil, "smith")
+	assert.Equal(t, []string{"claude"}, got)
+}
