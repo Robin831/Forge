@@ -1049,6 +1049,95 @@ func Run(ctx context.Context, p Params) *Outcome {
 		}
 		} // end else (smith phase)
 
+		// Step 2.5: Check deny patterns (post-Smith diff validation)
+		if p.AnvilConfig.Smith != nil && p.AnvilConfig.Smith.DenyPatterns != nil {
+			smithRawOutput := ""
+			if smithResult != nil {
+				smithRawOutput = smithResult.Output
+			}
+			violations, denyErr := checkDenyPatterns(wt.Path, preSmithSHA, smithRawOutput, p.AnvilConfig.Smith.DenyPatterns)
+			if denyErr != nil {
+				summary := fmt.Sprintf("deny pattern validation failed: %v", denyErr)
+				log.Printf("[pipeline:%s] %s", workerID, summary)
+				_ = p.DB.LogEvent(state.EventSmithFailed, summary, p.Bead.ID, p.AnvilName)
+
+				if iteration < maxIter {
+					// Reset to pre-Smith state and retry with feedback.
+					resetCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "reset", "--hard", preSmithSHA))
+					if resetErr := resetCmd.Run(); resetErr != nil {
+						log.Printf("[pipeline:%s] Failed to reset after deny validation error: %v", workerID, resetErr)
+					}
+					// Clean any untracked files Smith may have added.
+					cleanCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "clean", "-fd"))
+					_ = cleanCmd.Run()
+					// Rewind the remote branch so the denied commits are not
+					// left on origin (where a non-fast-forward on retry would
+					// otherwise fail or leave stale state).
+					forcePushCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "push", "--force-with-lease", "origin", wt.Branch))
+					if fpErr := forcePushCmd.Run(); fpErr != nil {
+						log.Printf("[pipeline:%s] Warning: force-push after deny validation error reset failed (branch may not exist on remote yet): %v", workerID, fpErr)
+					}
+
+					beadCtx.Iteration = iteration + 1
+					beadCtx.PriorFeedbackSource = "deny pattern validation"
+					beadCtx.PriorFeedback = summary + "\nDeny-pattern enforcement is a hard requirement. Reimplement and ensure the changes can be validated without modifying denied files or using denied commands."
+					if rebuilt, err := p.PromptBuilder.Build(beadCtx); err == nil {
+						currentPrompt = rebuilt
+					} else {
+						log.Printf("[pipeline:%s] Failed to rebuild prompt, using fallback: %v", workerID, err)
+						currentPrompt = buildFixPrompt(beadCtx, "deny pattern validation", summary, nil)
+					}
+					continue
+				}
+
+				outcome.Error = fmt.Errorf("deny pattern validation failed after %d iterations: %w", iteration, denyErr)
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+				markIngotFailed()
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
+			if len(violations) > 0 {
+				summary := formatDenyViolations(violations)
+				log.Printf("[pipeline:%s] Deny pattern violations: %s", workerID, summary)
+				_ = p.DB.LogEvent(state.EventSmithFailed, summary, p.Bead.ID, p.AnvilName)
+
+				if iteration < maxIter {
+					// Reset to pre-Smith state and retry with feedback.
+					resetCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "reset", "--hard", preSmithSHA))
+					if resetErr := resetCmd.Run(); resetErr != nil {
+						log.Printf("[pipeline:%s] Failed to reset after deny violation: %v", workerID, resetErr)
+					}
+					// Clean any untracked files Smith may have added.
+					cleanCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "clean", "-fd"))
+					_ = cleanCmd.Run()
+					// Rewind the remote branch so the denied commits are not
+					// left on origin (where a non-fast-forward on retry would
+					// otherwise fail or leave stale state).
+					forcePushCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "push", "--force-with-lease", "origin", wt.Branch))
+					if fpErr := forcePushCmd.Run(); fpErr != nil {
+						log.Printf("[pipeline:%s] Warning: force-push after deny violation reset failed (branch may not exist on remote yet): %v", workerID, fpErr)
+					}
+
+					beadCtx.Iteration = iteration + 1
+					beadCtx.PriorFeedbackSource = "deny pattern validation"
+					beadCtx.PriorFeedback = summary + "\nYou MUST NOT modify denied files or run denied commands. Reimplement without violating these constraints."
+					if rebuilt, err := p.PromptBuilder.Build(beadCtx); err == nil {
+						currentPrompt = rebuilt
+					} else {
+						log.Printf("[pipeline:%s] Failed to rebuild prompt, using fallback: %v", workerID, err)
+						currentPrompt = buildFixPrompt(beadCtx, "deny pattern validation", summary, nil)
+					}
+					continue
+				}
+
+				outcome.Error = fmt.Errorf("deny pattern violations after %d iterations: %s", iteration, summary)
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+				markIngotFailed()
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
+		}
+
 		// Step 3: Run Temper (build/test)
 		log.Printf("[pipeline:%s] Running Temper verification", workerID)
 		_ = p.DB.UpdateWorkerPhase(workerID, "temper")

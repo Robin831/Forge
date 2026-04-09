@@ -111,6 +111,31 @@ type AnvilConfig struct {
 	// well-known bot accounts (dependabot[bot], renovate[bot], etc.) is
 	// always ignored. Comparison is case-insensitive.
 	WicketIgnoreUsers []string `mapstructure:"wicket_ignore_users" yaml:"wicket_ignore_users,omitempty"`
+
+	// Smith holds optional Smith configuration for this anvil, including
+	// deny patterns for files and commands.
+	Smith *SmithConfig `mapstructure:"smith" yaml:"smith,omitempty"`
+}
+
+// SmithConfig holds per-anvil Smith configuration.
+type SmithConfig struct {
+	// DenyPatterns defines file and command patterns that Smith is not
+	// allowed to modify or execute. Violations are detected post-Smith
+	// via diff validation and cause the pipeline to fail the iteration.
+	DenyPatterns *DenyPatternsConfig `mapstructure:"deny_patterns" yaml:"deny_patterns,omitempty"`
+}
+
+// DenyPatternsConfig holds glob patterns for files and commands that Smith
+// must not touch. File patterns are matched against changed file paths in
+// the diff (using filepath.Match semantics). Command patterns are matched
+// against bash commands found in Smith's output log.
+type DenyPatternsConfig struct {
+	// Files is a list of glob patterns matched against file paths in the
+	// diff output. Examples: "*.env", ".forge/*", "*.key", "*.pem".
+	Files []string `mapstructure:"files" yaml:"files,omitempty"`
+	// Commands is a list of glob patterns matched against bash commands
+	// executed by Smith. Examples: "rm -rf /", "git push --force*".
+	Commands []string `mapstructure:"commands" yaml:"commands,omitempty"`
 }
 
 // TemperCommandsConfig holds custom build/test/lint commands for an anvil.

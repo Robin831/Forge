@@ -129,6 +129,32 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `wicket_repos` | []string | `[]` | `"owner/repo"` strings Wicket scans for this anvil. When empty, the anvil's primary repository is derived from its git remote. |
 | `wicket_triage_prompt` | string | | Optional prompt suffix appended to the default Wicket triage system prompt, allowing project-specific context or constraints to be injected. |
 | `wicket_ignore_users` | []string | `[]` | GitHub logins to skip entirely when triaging issues for this anvil. In addition to this list, a built-in set of well-known bot accounts (dependabot[bot], renovate[bot], github-actions[bot], etc.) is always ignored. Comparison is case-insensitive. |
+| `smith` | object\|null | null | Smith configuration for this anvil. Currently supports `deny_patterns` for file and command restrictions. See [Smith Deny Patterns](#smith-deny-patterns) below. |
+
+### Smith Deny Patterns
+
+Detect and reject Smith runs that modify sensitive files or use dangerous commands. Deny patterns are enforced after each Smith iteration via pipeline validation (for example, diff validation and command/log inspection). When violations are detected, the worktree is reset, any forbidden file changes are discarded, and Smith retries with feedback about the violation. This does not provide a pre-execution safety guarantee for commands within that iteration; it detects the violation afterward and prevents the resulting worktree state from being accepted. If violations persist after all iterations, the pipeline fails.
+
+```yaml
+anvils:
+  myrepo:
+    path: /path/to/repo
+    smith:
+      deny_patterns:
+        files:
+          - "*.env"
+          - ".forge/*"
+          - "*.key"
+          - "*.pem"
+        commands:
+          - "rm -rf /"
+          - "git push --force*"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `smith.deny_patterns.files` | []string | `[]` | Glob patterns matched against file paths in the Smith diff. Patterns without `/` also match the basename (e.g. `*.env` matches `config/.env`). Patterns with `/` match path suffixes (e.g. `.forge/*` matches `src/.forge/config.yaml`). Uses `path.Match` syntax (platform-independent, always forward-slash). |
+| `smith.deny_patterns.commands` | []string | `[]` | Glob patterns matched against bash commands executed by Smith. Extracted from stream-json tool_use events. `*` matches any sequence of characters including `/`, so patterns like `rm -rf /*` and `git push --force*` work as expected. |
 
 ### Auto-Dispatch Modes
 
