@@ -1,0 +1,2 @@
+category: Added
+- **Pipeline hooks** - Configurable shell commands that run before/after each pipeline stage (schematic, smith, temper, warden). Hooks receive context via environment variables (FORGE_BEAD_ID, FORGE_WORKTREE_PATH, FORGE_BRANCH, FORGE_ANVIL_NAME, FORGE_ANVIL_PATH, FORGE_STAGE, FORGE_ITERATION). Before-hooks abort the pipeline on failure; after-hooks are best-effort. Configure per-anvil under `hooks` in forge.yaml. (Forge-esii)
