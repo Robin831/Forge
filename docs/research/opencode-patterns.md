@@ -166,7 +166,7 @@ Copilot). Several OpenCode patterns would improve this:
 
 ### What Forge Already Has
 
-- `smith_providers` config for separate Smith/Warden provider chains
+- `smith_providers` config — a single provider chain shared by Smith, Warden, and Schematic (falls back to `providers` when empty)
 - Provider fallback on rate limits
 - Cost tracking per bead and per day
 
@@ -324,7 +324,9 @@ integrates naturally with the existing Warden review step.
 
 ## Follow-Up Beads
 
-- **Per-stage provider configuration**: Allow separate model/provider chains for Smith, Warden, Schematic, and CI fix stages.
-- **Pipeline hooks**: Add configurable shell command hooks at each pipeline stage (before/after Smith, Temper, Warden).
-- **Custom Temper commands**: Allow per-anvil override of build/test/lint commands in forge.yaml.
-- **Smith deny patterns**: Per-anvil file and command deny lists enforced in the pipeline.
+The following beads were created for the recommended work items:
+
+- **Forge-4nto** — Per-stage provider configuration: Allow separate model/provider chains for Smith, Warden, Schematic, and CI fix stages.
+- **Forge-e179** — Pipeline hooks: Add configurable shell command hooks at each pipeline stage (before/after Smith, Temper, Warden).
+- **Forge-81rq** — Custom Temper commands: Allow per-anvil override of build/test/lint commands in forge.yaml.
+- **Forge-do9k** — Smith deny patterns: Per-anvil file and command deny lists enforced in the pipeline.
