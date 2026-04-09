@@ -133,7 +133,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 
 ### Smith Deny Patterns
 
-Prevent Smith from modifying sensitive files or executing dangerous commands. Deny patterns are enforced post-Smith via diff validation in the pipeline. When violations are detected, the worktree is reset and Smith retries with feedback about the violation. If violations persist after all iterations, the pipeline fails.
+Detect and reject Smith runs that modify sensitive files or use dangerous commands. Deny patterns are enforced after each Smith iteration via pipeline validation (for example, diff validation and command/log inspection). When violations are detected, the worktree is reset, any forbidden file changes are discarded, and Smith retries with feedback about the violation. This does not provide a pre-execution safety guarantee for commands within that iteration; it detects the violation afterward and prevents the resulting worktree state from being accepted. If violations persist after all iterations, the pipeline fails.
 
 ```yaml
 anvils:
@@ -153,8 +153,8 @@ anvils:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `smith.deny_patterns.files` | []string | `[]` | Glob patterns matched against file paths in the Smith diff. Patterns without `/` also match the basename (e.g. `*.env` matches `config/.env`). Patterns with `/` match path suffixes (e.g. `.forge/*` matches `src/.forge/config.yaml`). Uses `filepath.Match` syntax. |
-| `smith.deny_patterns.commands` | []string | `[]` | Glob patterns matched against bash commands executed by Smith. Extracted from stream-json tool_use events. Supports wildcards (e.g. `git push --force*` matches `git push --force-with-lease`). |
+| `smith.deny_patterns.files` | []string | `[]` | Glob patterns matched against file paths in the Smith diff. Patterns without `/` also match the basename (e.g. `*.env` matches `config/.env`). Patterns with `/` match path suffixes (e.g. `.forge/*` matches `src/.forge/config.yaml`). Uses `path.Match` syntax (platform-independent, always forward-slash). |
+| `smith.deny_patterns.commands` | []string | `[]` | Glob patterns matched against bash commands executed by Smith. Extracted from stream-json tool_use events. `*` matches any sequence of characters including `/`, so patterns like `rm -rf /*` and `git push --force*` work as expected. |
 
 ### Auto-Dispatch Modes
 

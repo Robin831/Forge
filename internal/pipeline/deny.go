@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/config"
@@ -62,7 +62,7 @@ func checkFileDenyPatterns(worktreePath, preSmithSHA string, patterns []string) 
 	var violations []DenyViolation
 	for _, file := range files {
 		for _, pattern := range patterns {
-			if matchDenyPattern(file, pattern) {
+			if matchFileDenyPattern(file, pattern) {
 				violations = append(violations, DenyViolation{
 					Kind:    "file",
 					Pattern: pattern,
@@ -87,7 +87,7 @@ func checkCommandDenyPatterns(smithOutput string, patterns []string) []DenyViola
 	var violations []DenyViolation
 	for _, cmd := range commands {
 		for _, pattern := range patterns {
-			if matchDenyPattern(cmd, pattern) {
+			if matchCommandPattern(cmd, pattern) {
 				key := pattern + "\x00" + cmd
 				if !seen[key] {
 					seen[key] = true
@@ -124,40 +124,88 @@ func gitDiffNameOnly(worktreePath, preSmithSHA string) ([]string, error) {
 	return files, nil
 }
 
-// matchDenyPattern matches a value against a deny glob pattern.
-// The pattern is matched against both the full path and the basename to
-// support patterns like "*.env" matching "config/.env" as well as ".env".
-// Patterns containing "/" are matched only against the full path.
-// A trailing "*" acts as a prefix match (e.g. "git push --force*" matches
-// "git push --force-with-lease").
-func matchDenyPattern(value, pattern string) bool {
-	// Try direct filepath.Match against the full value.
-	if matched, _ := filepath.Match(pattern, value); matched {
+// matchFileDenyPattern matches a git file path (always slash-separated) against
+// a deny glob pattern. Uses path.Match (not filepath.Match) so behaviour is
+// consistent across platforms regardless of the OS path separator.
+//
+//   - Patterns without "/" are also matched against the basename so that
+//     "*.env" matches "config/.env".
+//   - Patterns with "/" are additionally matched against each suffix of the
+//     path so that ".forge/*" matches "src/.forge/config.yaml".
+func matchFileDenyPattern(value, pattern string) bool {
+	// git always uses forward slashes; normalise just in case.
+	value = strings.ReplaceAll(value, "\\", "/")
+
+	// Direct match against the full path.
+	if matched, _ := path.Match(pattern, value); matched {
 		return true
 	}
 
-	// For file patterns without a directory separator, also try matching
-	// against just the basename so "*.env" matches "config/.env".
+	// For patterns without a directory separator, also match the basename.
 	if !strings.Contains(pattern, "/") {
-		base := filepath.Base(value)
-		if matched, _ := filepath.Match(pattern, base); matched {
+		base := path.Base(value)
+		if matched, _ := path.Match(pattern, base); matched {
 			return true
 		}
 	}
 
-	// For patterns with a directory separator, try matching against each
-	// suffix of the path so ".forge/*" matches "src/.forge/config.yaml".
+	// For patterns with a directory separator, match against each suffix.
 	if strings.Contains(pattern, "/") {
 		parts := strings.Split(value, "/")
 		for i := range parts {
 			subpath := strings.Join(parts[i:], "/")
-			if matched, _ := filepath.Match(pattern, subpath); matched {
+			if matched, _ := path.Match(pattern, subpath); matched {
 				return true
 			}
 		}
 	}
 
 	return false
+}
+
+// matchCommandPattern matches a shell command string against a deny glob
+// pattern. Unlike file patterns, '/' has no special meaning here — '*' matches
+// any sequence of characters including '/'. This lets patterns like
+// "rm -rf /*" or "/usr/bin/*" work as users would expect.
+func matchCommandPattern(cmd, pattern string) bool {
+	return matchFlatGlob(pattern, cmd)
+}
+
+// matchFlatGlob is a simple glob where '?' matches one character and '*'
+// matches any sequence of characters (including '/'). It does NOT treat '/'
+// as a path separator, making it suitable for matching arbitrary strings such
+// as shell command lines.
+func matchFlatGlob(pattern, s string) bool {
+	for {
+		if len(pattern) == 0 {
+			return len(s) == 0
+		}
+		if pattern[0] == '*' {
+			// Consume consecutive stars.
+			for len(pattern) > 0 && pattern[0] == '*' {
+				pattern = pattern[1:]
+			}
+			if len(pattern) == 0 {
+				return true
+			}
+			// Try to match the rest of the pattern at every position in s.
+			for i := 0; i <= len(s); i++ {
+				if matchFlatGlob(pattern, s[i:]) {
+					return true
+				}
+			}
+			return false
+		}
+		if len(s) == 0 {
+			return false
+		}
+		if pattern[0] == '?' || pattern[0] == s[0] {
+			pattern = pattern[1:]
+			s = s[1:]
+		} else {
+			return false
+		}
+	}
 }
 
 // extractBashCommands parses Smith's stream-json output for bash tool_use

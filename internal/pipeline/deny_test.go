@@ -7,7 +7,7 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 )
 
-func TestMatchDenyPattern(t *testing.T) {
+func TestMatchFileDenyPattern(t *testing.T) {
 	tests := []struct {
 		value   string
 		pattern string
@@ -29,11 +29,6 @@ func TestMatchDenyPattern(t *testing.T) {
 		{"main.go", "*.env", false},
 		{"README.md", "*.key", false},
 		{"forge/config.yaml", ".forge/*", false},
-		// Command-style patterns
-		{"rm -rf /", "rm -rf /", true},
-		{"git push --force", "git push --force*", true},
-		{"git push --force-with-lease", "git push --force*", true},
-		{"git push origin main", "git push --force*", false},
 		// Pattern with no wildcard, no match
 		{"other.txt", "secret.txt", false},
 		{"secret.txt", "secret.txt", true},
@@ -41,9 +36,41 @@ func TestMatchDenyPattern(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.pattern+"_vs_"+tt.value, func(t *testing.T) {
-			got := matchDenyPattern(tt.value, tt.pattern)
+			got := matchFileDenyPattern(tt.value, tt.pattern)
 			if got != tt.want {
-				t.Errorf("matchDenyPattern(%q, %q) = %v, want %v", tt.value, tt.pattern, got, tt.want)
+				t.Errorf("matchFileDenyPattern(%q, %q) = %v, want %v", tt.value, tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchCommandPattern(t *testing.T) {
+	tests := []struct {
+		cmd     string
+		pattern string
+		want    bool
+	}{
+		// Exact match
+		{"rm -rf /", "rm -rf /", true},
+		// Trailing wildcard
+		{"git push --force", "git push --force*", true},
+		{"git push --force-with-lease", "git push --force*", true},
+		{"git push origin main", "git push --force*", false},
+		// Wildcard matches across '/' (unlike filepath.Match)
+		{"rm -rf /home/user", "rm -rf /*", true},
+		{"rm -rf /usr/local/bin", "rm -rf /*", true},
+		{"/usr/bin/python3", "/usr/bin/*", true},
+		{"/usr/bin/python3", "/bin/*", false},
+		// No wildcard
+		{"other", "secret", false},
+		{"secret", "secret", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern+"_vs_"+tt.cmd, func(t *testing.T) {
+			got := matchCommandPattern(tt.cmd, tt.pattern)
+			if got != tt.want {
+				t.Errorf("matchCommandPattern(%q, %q) = %v, want %v", tt.cmd, tt.pattern, got, tt.want)
 			}
 		})
 	}
