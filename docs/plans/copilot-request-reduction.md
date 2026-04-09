@@ -174,7 +174,7 @@ settings:
 
 **Impact: Save 1-3 requests per failed PR**
 
-When a PR has multiple CI failures or review comments, batch them into a single Smith invocation instead of spawning separate cifix/reviewfix workers per issue.
+When a PR has multiple CI failures or review comments, batch them into a single Smith invocation instead of spawning separate quench/burnish workers per issue.
 
 **Implementation** in `internal/quench/quench.go` and `internal/burnish/burnish.go`:
 
