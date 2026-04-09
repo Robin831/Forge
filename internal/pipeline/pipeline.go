@@ -1104,6 +1104,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 		} // end else (smith phase)
 
 		// after_smith hook (best-effort — failures are logged but do not abort)
+		// Ensure Smith-stage hook metadata is populated even when Smith was
+		// intentionally skipped on the first iteration.
+		hEnv.Stage = "smith"
+		hEnv.Iteration = iteration
 		if err := runHook(ctx, workerID, "after_smith", hookCmd(p.AnvilConfig.Hooks, "after_smith"), hEnv); err != nil {
 			_ = p.DB.LogEvent(state.EventHookFailed, fmt.Sprintf("after_smith hook failed: %v", err), p.Bead.ID, p.AnvilName)
 		}

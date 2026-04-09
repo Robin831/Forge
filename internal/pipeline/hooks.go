@@ -76,19 +76,19 @@ func runHook(ctx context.Context, workerID, hookName, cmd string, env hookEnv) e
 	hookCtx, cancel := context.WithTimeout(ctx, hookTimeout)
 	defer cancel()
 
-	log.Printf("[pipeline:%s] Running hook %s: %s", workerID, hookName, cmd)
+	log.Printf("[pipeline:%s] Running hook %s", workerID, hookName)
 	shell, flag := shellArgs()
 	c := executil.HideWindow(exec.CommandContext(hookCtx, shell, flag, cmd))
 	c.Dir = env.WorktreePath
 	c.Env = append(filterForgeEnv(os.Environ()), env.environ()...)
 	out, err := c.CombinedOutput()
 	if err != nil {
-		log.Printf("[pipeline:%s] Hook %s failed: %v\n%s", workerID, hookName, err, out)
+		// Log only the exit status, not the command or raw output, to avoid
+		// leaking secrets that may be embedded in hook commands or output.
+		log.Printf("[pipeline:%s] Hook %s failed: %v (output omitted)", workerID, hookName, err)
 		return fmt.Errorf("hook %s failed: %w", hookName, err)
 	}
-	if len(out) > 0 {
-		log.Printf("[pipeline:%s] Hook %s output: %s", workerID, hookName, out)
-	}
+	log.Printf("[pipeline:%s] Hook %s completed (%d bytes output)", workerID, hookName, len(out))
 	return nil
 }
 

@@ -211,7 +211,7 @@ anvils:
 | `FORGE_ANVIL_NAME` | Repository label |
 | `FORGE_ANVIL_PATH` | Absolute path to the main repository |
 | `FORGE_STAGE` | Current pipeline stage (`schematic`, `smith`, `temper`, `warden`) |
-| `FORGE_ITERATION` | Current Smith-Warden cycle number (1-based) |
+| `FORGE_ITERATION` | Current Smith-Warden cycle number (1-based) for `smith`/`warden` stages; `schematic` hooks currently receive `1` even though they run outside the Smith-Warden loop |
 
 **Use cases:** custom linters, Slack/Teams notifications, prompt context injection, metrics collection, pre-flight checks.
 

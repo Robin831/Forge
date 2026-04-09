@@ -3,8 +3,9 @@ package pipeline
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/config"
@@ -25,6 +26,15 @@ func skipIfNoShell(t *testing.T) {
 	}
 }
 
+// skipIfWindows skips tests that use POSIX shell syntax ($VAR, >>, redirection)
+// which is not compatible with cmd /c on Windows.
+func skipIfWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses POSIX shell syntax not supported by cmd /c on Windows")
+	}
+}
+
 func TestRunHook_Empty_NoOp(t *testing.T) {
 	err := runHook(context.Background(), "w1", "before_smith", "", hookEnv{})
 	assert.NoError(t, err)
@@ -32,6 +42,7 @@ func TestRunHook_Empty_NoOp(t *testing.T) {
 
 func TestRunHook_Success(t *testing.T) {
 	skipIfNoShell(t)
+	skipIfWindows(t) // uses POSIX $VAR expansion and > redirection
 	dir := t.TempDir()
 	env := hookEnv{
 		BeadID:       "bead-1",
@@ -164,6 +175,7 @@ func TestAfterSmithHook_NoAbort(t *testing.T) {
 // the correct environment variables and can create files in the worktree.
 func TestBeforeTemperHook_ReceivesEnv(t *testing.T) {
 	skipIfNoShell(t)
+	skipIfWindows(t) // uses POSIX $VAR expansion and > redirection
 	db := newTestDB(t)
 	params, _, _ := baseParams(t, db)
 
@@ -194,6 +206,7 @@ func TestBeforeTemperHook_ReceivesEnv(t *testing.T) {
 // pipeline pass without interfering.
 func TestHooks_SuccessfulPipeline(t *testing.T) {
 	skipIfNoShell(t)
+	skipIfWindows(t) // uses POSIX >> append redirection
 	db := newTestDB(t)
 	params, _, _ := baseParams(t, db)
 
