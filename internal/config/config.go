@@ -120,6 +120,14 @@ type AnvilConfig struct {
 	// Smith holds optional Smith configuration for this anvil, including
 	// deny patterns for files and commands.
 	Smith *SmithConfig `mapstructure:"smith" yaml:"smith,omitempty"`
+
+	// Hooks defines optional shell commands to run before/after each
+	// pipeline stage. Commands receive context as environment variables
+	// (FORGE_BEAD_ID, FORGE_WORKTREE_PATH, FORGE_BRANCH, FORGE_ANVIL_NAME,
+	// FORGE_ANVIL_PATH, FORGE_STAGE, FORGE_ITERATION). A non-zero exit
+	// from a "before" hook aborts the stage; "after" hook failures are
+	// logged but do not abort the pipeline.
+	Hooks *HooksConfig `mapstructure:"hooks" yaml:"hooks,omitempty"`
 }
 
 // SmithConfig holds per-anvil Smith configuration.
@@ -141,6 +149,21 @@ type DenyPatternsConfig struct {
 	// Commands is a list of glob patterns matched against bash commands
 	// executed by Smith. Examples: "rm -rf /", "git push --force*".
 	Commands []string `mapstructure:"commands" yaml:"commands,omitempty"`
+}
+
+// HooksConfig defines optional shell commands that run before/after each
+// pipeline stage. Each field is a shell command string executed via a
+// platform-appropriate shell (sh -c on Unix, cmd /c on Windows).
+// Commands receive pipeline context as environment variables.
+type HooksConfig struct {
+	BeforeSchematic string `mapstructure:"before_schematic" yaml:"before_schematic,omitempty"`
+	AfterSchematic  string `mapstructure:"after_schematic" yaml:"after_schematic,omitempty"`
+	BeforeSmith     string `mapstructure:"before_smith" yaml:"before_smith,omitempty"`
+	AfterSmith      string `mapstructure:"after_smith" yaml:"after_smith,omitempty"`
+	BeforeTemper    string `mapstructure:"before_temper" yaml:"before_temper,omitempty"`
+	AfterTemper     string `mapstructure:"after_temper" yaml:"after_temper,omitempty"`
+	BeforeWarden    string `mapstructure:"before_warden" yaml:"before_warden,omitempty"`
+	AfterWarden     string `mapstructure:"after_warden" yaml:"after_warden,omitempty"`
 }
 
 // TemperCommandsConfig holds custom build/test/lint commands for an anvil.

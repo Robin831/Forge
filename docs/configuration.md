@@ -22,6 +22,9 @@ anvils:
     golangci_lint: null            # null/omit = auto-detect (runs only if binary found on PATH); false = disable
     go_race_detection: false       # Per-anvil race detector override
     depcheck_enabled: true         # Set to false to skip depcheck for this anvil
+    hooks:                         # Pipeline stage hooks (optional)
+      after_smith: './scripts/post-smith.sh'
+      before_temper: './scripts/pre-temper.sh'
 
   my-frontend:
     path: /path/to/repos/my-frontend
@@ -136,6 +139,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `wicket_triage_prompt` | string | | Optional prompt suffix appended to the default Wicket triage system prompt, allowing project-specific context or constraints to be injected. |
 | `wicket_ignore_users` | []string | `[]` | GitHub logins to skip entirely when triaging issues for this anvil. In addition to this list, a built-in set of well-known bot accounts (dependabot[bot], renovate[bot], github-actions[bot], etc.) is always ignored. Comparison is case-insensitive. |
 | `smith` | object\|null | null | Smith configuration for this anvil. Currently supports `deny_patterns` for file and command restrictions. See [Smith Deny Patterns](#smith-deny-patterns) below. |
+| `hooks` | object\|null | null | Shell commands to run before/after each pipeline stage. See [Pipeline Hooks](#pipeline-hooks) below. |
 
 ### Smith Deny Patterns
 
@@ -161,6 +165,55 @@ anvils:
 |-------|------|---------|-------------|
 | `smith.deny_patterns.files` | []string | `[]` | Glob patterns matched against file paths in the Smith diff. Patterns without `/` also match the basename (e.g. `*.env` matches `config/.env`). Patterns with `/` match path suffixes (e.g. `.forge/*` matches `src/.forge/config.yaml`). Uses `path.Match` syntax (platform-independent, always forward-slash). |
 | `smith.deny_patterns.commands` | []string | `[]` | Glob patterns matched against bash commands executed by Smith. Extracted from stream-json tool_use events. `*` matches any sequence of characters including `/`, so patterns like `rm -rf /*` and `git push --force*` work as expected. |
+
+### Pipeline Hooks
+
+Configure shell commands that run before or after each pipeline stage. Hooks are executed via a platform-appropriate shell (`sh -c` on Unix, `cmd /c` on Windows) with the worktree as the working directory and receive pipeline context as environment variables. Each hook has a 60-second timeout.
+
+```yaml
+anvils:
+  myrepo:
+    path: /path/to/repo
+    hooks:
+      before_smith: './scripts/pre-smith.sh'
+      after_smith: './scripts/post-smith.sh'
+      before_temper: './scripts/pre-temper.sh'
+      after_temper: './scripts/notify.sh'
+      before_warden: './scripts/pre-warden.sh'
+      after_warden: './scripts/post-warden.sh'
+      before_schematic: 'echo "Starting schematic"'
+      after_schematic: 'echo "Schematic done"'
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `hooks.before_schematic` | string | | Runs before the Schematic pre-analysis stage. |
+| `hooks.after_schematic` | string | | Runs after the Schematic pre-analysis stage. |
+| `hooks.before_smith` | string | | Runs before each Smith iteration. |
+| `hooks.after_smith` | string | | Runs after each Smith iteration. |
+| `hooks.before_temper` | string | | Runs before each Temper verification. |
+| `hooks.after_temper` | string | | Runs after each Temper verification. |
+| `hooks.before_warden` | string | | Runs before each Warden review. |
+| `hooks.after_warden` | string | | Runs after each Warden review. |
+
+**Hook behavior:**
+- **Before hooks** abort the pipeline on non-zero exit. Use them to enforce preconditions (e.g., required files, environment validation).
+- **After hooks** are best-effort — failures are logged but do not abort the pipeline. Use them for notifications, metrics, or cleanup.
+- Hooks run in the worktree directory, so relative paths resolve against the worktree.
+
+**Environment variables** available to all hooks:
+
+| Variable | Description |
+|----------|-------------|
+| `FORGE_BEAD_ID` | Unique bead identifier |
+| `FORGE_WORKTREE_PATH` | Absolute path to the worker's worktree |
+| `FORGE_BRANCH` | Git branch name |
+| `FORGE_ANVIL_NAME` | Repository label |
+| `FORGE_ANVIL_PATH` | Absolute path to the main repository |
+| `FORGE_STAGE` | Current pipeline stage (`schematic`, `smith`, `temper`, `warden`) |
+| `FORGE_ITERATION` | Current Smith-Warden cycle number (1-based) for `smith`/`warden` stages; `schematic` hooks currently receive `1` even though they run outside the Smith-Warden loop |
+
+**Use cases:** custom linters, Slack/Teams notifications, prompt context injection, metrics collection, pre-flight checks.
 
 ### Auto-Dispatch Modes
 

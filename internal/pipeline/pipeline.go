@@ -662,6 +662,16 @@ func Run(ctx context.Context, p Params) *Outcome {
 		}
 	}
 
+	// Build hook environment for pipeline stage hooks.
+	hEnv := hookEnv{
+		BeadID:       p.Bead.ID,
+		WorktreePath: wt.Path,
+		Branch:       wt.Branch,
+		AnvilName:    p.AnvilName,
+		AnvilPath:    p.AnvilConfig.Path,
+		Iteration:    1,
+	}
+
 	// Run Schematic pre-worker (optional — skipped when SkipSmith is set)
 	if !p.SkipSmith && p.SchematicConfig != nil {
 		runSchematic := p.SchematicRunner
@@ -688,6 +698,16 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		runSchemBool, skipReason := shouldRunSchematic(schemCfg, p.Bead, providers)
 		if runSchemBool {
+			// before_schematic hook
+			hEnv.Stage = "schematic"
+			if err := runHook(ctx, workerID, "before_schematic", hookCmd(p.AnvilConfig.Hooks, "before_schematic"), hEnv); err != nil {
+				outcome.Error = fmt.Errorf("before_schematic hook: %w", err)
+				outcome.Duration = time.Since(start)
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+				markIngotFailed()
+				return outcome
+			}
+
 			log.Printf("[pipeline:%s] Running Schematic pre-analysis", workerID)
 			_ = p.DB.UpdateWorkerPhase(workerID, "schematic")
 			_ = p.DB.LogEvent(state.EventSchematicStarted, "Analysing bead scope", p.Bead.ID, p.AnvilName)
@@ -801,6 +821,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 				log.Printf("[pipeline:%s] Schematic skipped: %s", workerID, sResult.Reason)
 				_ = p.DB.LogEvent(state.EventSchematicSkipped, sResult.Reason, p.Bead.ID, p.AnvilName)
 			}
+
+			// after_schematic hook (best-effort — failures are logged but do not abort)
+			if err := runHook(ctx, workerID, "after_schematic", hookCmd(p.AnvilConfig.Hooks, "after_schematic"), hEnv); err != nil {
+				_ = p.DB.LogEvent(state.EventHookFailed, fmt.Sprintf("after_schematic hook failed: %v", err), p.Bead.ID, p.AnvilName)
+			}
 		} else {
 			log.Printf("[pipeline:%s] %s", workerID, skipReason)
 		}
@@ -861,6 +886,17 @@ func Run(ctx context.Context, p Params) *Outcome {
 			log.Printf("[pipeline:%s] Skipping smith (already completed externally)", workerID)
 			_ = p.DB.UpdateWorkerPhase(workerID, "temper")
 		} else {
+
+		// before_smith hook
+		hEnv.Stage = "smith"
+		hEnv.Iteration = iteration
+		if err := runHook(ctx, workerID, "before_smith", hookCmd(p.AnvilConfig.Hooks, "before_smith"), hEnv); err != nil {
+			outcome.Error = fmt.Errorf("before_smith hook: %w", err)
+			outcome.Duration = time.Since(start)
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			markIngotFailed()
+			return outcome
+		}
 
 		// Run Smith (with provider fallback on rate limit)
 		log.Printf("[pipeline:%s] Running Smith (provider: %s)", workerID, providers[activeProviderIdx].Label())
@@ -1067,6 +1103,15 @@ func Run(ctx context.Context, p Params) *Outcome {
 		}
 		} // end else (smith phase)
 
+		// after_smith hook (best-effort — failures are logged but do not abort)
+		// Ensure Smith-stage hook metadata is populated even when Smith was
+		// intentionally skipped on the first iteration.
+		hEnv.Stage = "smith"
+		hEnv.Iteration = iteration
+		if err := runHook(ctx, workerID, "after_smith", hookCmd(p.AnvilConfig.Hooks, "after_smith"), hEnv); err != nil {
+			_ = p.DB.LogEvent(state.EventHookFailed, fmt.Sprintf("after_smith hook failed: %v", err), p.Bead.ID, p.AnvilName)
+		}
+
 		// Step 2.5: Check deny patterns (post-Smith diff validation)
 		if p.AnvilConfig.Smith != nil && p.AnvilConfig.Smith.DenyPatterns != nil {
 			smithRawOutput := ""
@@ -1156,6 +1201,17 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 		}
 
+		// before_temper hook
+		hEnv.Stage = "temper"
+		hEnv.Iteration = iteration
+		if err := runHook(ctx, workerID, "before_temper", hookCmd(p.AnvilConfig.Hooks, "before_temper"), hEnv); err != nil {
+			outcome.Error = fmt.Errorf("before_temper hook: %w", err)
+			outcome.Duration = time.Since(start)
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			markIngotFailed()
+			return outcome
+		}
+
 		// Step 3: Run Temper (build/test)
 		log.Printf("[pipeline:%s] Running Temper verification", workerID)
 		_ = p.DB.UpdateWorkerPhase(workerID, "temper")
@@ -1171,6 +1227,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 		temperResult := runTemper(ctx, wt.Path, *temperCfg, p.DB, p.Bead.ID, p.AnvilName)
 		outcome.TemperResult = temperResult
 		recordIngotTemperResults(p.DB, workerID, p.Bead.ID, p.AnvilName, temperResult, ingotRec)
+
+		// after_temper hook (best-effort)
+		if err := runHook(ctx, workerID, "after_temper", hookCmd(p.AnvilConfig.Hooks, "after_temper"), hEnv); err != nil {
+			_ = p.DB.LogEvent(state.EventHookFailed, fmt.Sprintf("after_temper hook failed: %v", err), p.Bead.ID, p.AnvilName)
+		}
 
 		if !temperResult.Passed {
 			log.Printf("[pipeline:%s] Temper failed at step: %s", workerID, temperResult.FailedStep)
@@ -1198,6 +1259,17 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
 			markIngotFailed()
 			outcome.Duration = time.Since(start)
+			return outcome
+		}
+
+		// before_warden hook
+		hEnv.Stage = "warden"
+		hEnv.Iteration = iteration
+		if err := runHook(ctx, workerID, "before_warden", hookCmd(p.AnvilConfig.Hooks, "before_warden"), hEnv); err != nil {
+			outcome.Error = fmt.Errorf("before_warden hook: %w", err)
+			outcome.Duration = time.Since(start)
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			markIngotFailed()
 			return outcome
 		}
 
@@ -1300,6 +1372,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 		}
 		outcome.ReviewResult = reviewResult
+
+		// after_warden hook (best-effort)
+		if err := runHook(ctx, workerID, "after_warden", hookCmd(p.AnvilConfig.Hooks, "after_warden"), hEnv); err != nil {
+			_ = p.DB.LogEvent(state.EventHookFailed, fmt.Sprintf("after_warden hook failed: %v", err), p.Bead.ID, p.AnvilName)
+		}
 
 		switch reviewResult.Verdict {
 		case warden.VerdictApprove:

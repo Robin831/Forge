@@ -1439,6 +1439,9 @@ const (
 	EventWicketPRLinked         EventType = "wicket_pr_linked"
 	EventWicketIssueClosed      EventType = "wicket_issue_closed"
 	EventWicketIssueStaleClose  EventType = "wicket_issue_stale_close"
+
+	// Pipeline hook events.
+	EventHookFailed EventType = "hook_failed"
 )
 
 // Event represents a logged event.
