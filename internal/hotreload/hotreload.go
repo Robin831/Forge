@@ -284,6 +284,9 @@ func applyChanges(old, new *config.Config) []string {
 				changes = append(changes, fmt.Sprintf("anvil %s auto_merge: %v → %v",
 					name, oldAnvil.AutoMerge, newAnvil.AutoMerge))
 			}
+			if !stageProvidersEqual(oldAnvil.StageProviders, newAnvil.StageProviders) {
+				changes = append(changes, fmt.Sprintf("anvil %s stage_providers changed", name))
+			}
 		} else {
 			changes = append(changes, fmt.Sprintf("anvil %s added", name))
 		}

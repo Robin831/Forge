@@ -317,7 +317,7 @@ These settings are placed under the anvil's key in `anvils`.
 | `wicket_issue_labels` | `[]` | Label filter — an issue must carry all of these labels to be eligible. Empty means all issues are eligible. |
 | `wicket_ignore_users` | `[]` | GitHub logins to skip entirely. Known bot accounts (dependabot, renovate, etc.) are always ignored regardless of this list. |
 | `wicket_triage_prompt` | `""` | Optional text appended to the default triage system prompt, for project-specific context or constraints. |
-| `stage_providers` | `{}` | Per-anvil stage provider overrides. Same keys/format as global `stage_providers`. Resolution: anvil `stage_providers[stage]` → global `stage_providers[stage]` → `smith_providers` → `providers`. |
+| `stage_providers` | `{}` | Per-anvil stage provider overrides. Same keys/format as global `stage_providers`. Resolution: anvil `stage_providers[stage]` → global `stage_providers[stage]` → `smith_providers` → `providers` for `smith`/`warden`/`schematic`; anvil `stage_providers[stage]` → global `stage_providers[stage]` → `providers` for `cifix`/`reviewfix`. |
 
 ### `wicket_repos` — Multi-Repo Scanning
 

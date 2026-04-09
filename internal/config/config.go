@@ -532,6 +532,23 @@ func ProvidersForStageWithAnvil(s SettingsConfig, anvil *AnvilConfig, stage stri
 	return s.Providers
 }
 
+// ExplicitStageProvidersWithAnvil returns the provider spec for a stage only if
+// it is explicitly configured in stage_providers (per-anvil or global). Unlike
+// ProvidersForStageWithAnvil it does NOT fall back to smith_providers or
+// providers, so callers can distinguish "explicitly overridden" from "inherited".
+// Returns nil when the stage has no explicit override.
+func ExplicitStageProvidersWithAnvil(s SettingsConfig, anvil *AnvilConfig, stage string) []string {
+	if anvil != nil {
+		if sp, ok := anvil.StageProviders[stage]; ok && len(sp) > 0 {
+			return sp
+		}
+	}
+	if sp, ok := s.StageProviders[stage]; ok && len(sp) > 0 {
+		return sp
+	}
+	return nil
+}
+
 // IsVulncheckEnabled returns true unless vulncheck_enabled is explicitly false.
 func (s SettingsConfig) IsVulncheckEnabled() bool {
 	if s.VulncheckEnabled == nil {

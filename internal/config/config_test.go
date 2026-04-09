@@ -480,6 +480,50 @@ func TestSave_RoundTrip_PreservesAllFields(t *testing.T) {
 	assert.Equal(t, original.Settings.SmithTimeout, loaded.Settings.SmithTimeout)
 }
 
+func TestSave_RoundTrip_StageProviders(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+
+	original := Defaults()
+	original.Settings.StageProviders = map[string][]string{
+		"smith":    {"claude/claude-opus-4-6"},
+		"warden":   {"claude/claude-sonnet-4-6"},
+		"schematic": {"gemini/gemini-2.5-flash"},
+	}
+
+	require.NoError(t, Save(&original, cfgPath))
+
+	loaded, err := Load(cfgPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, original.Settings.StageProviders, loaded.Settings.StageProviders,
+		"stage_providers must survive Save→Load round-trip")
+}
+
+func TestSave_RoundTrip_PerAnvilStageProviders(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+
+	original := Defaults()
+	original.Anvils["myrepo"] = AnvilConfig{
+		Path: "/some/path",
+		StageProviders: map[string][]string{
+			"warden":   {"gemini/gemini-2.5-pro"},
+			"cifix":    {"claude/claude-sonnet-4-6"},
+		},
+	}
+
+	require.NoError(t, Save(&original, cfgPath))
+
+	loaded, err := Load(cfgPath)
+	require.NoError(t, err)
+
+	anvilLoaded, ok := loaded.Anvils["myrepo"]
+	require.True(t, ok, "anvil myrepo must survive Save→Load round-trip")
+	assert.Equal(t, original.Anvils["myrepo"].StageProviders, anvilLoaded.StageProviders,
+		"per-anvil stage_providers must survive Save→Load round-trip")
+}
+
 func TestIsQuestgiverEnabled(t *testing.T) {
 	// nil (not set) → default false
 	s := SettingsConfig{}
