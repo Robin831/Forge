@@ -60,10 +60,16 @@ settings:
     - claude
     - gemini/gemini-2.5-pro
     - gemini/gemini-2.5-flash
-  smith_providers:
+  smith_providers:                           # deprecated — use stage_providers instead
     - claude/claude-opus-4-6
+  stage_providers:                           # per-stage provider overrides
+    smith: [claude/claude-opus-4-6]
+    warden: [claude/claude-sonnet-4-6]
+    schematic: [claude/claude-sonnet-4-6]
+    cifix: [claude/claude-sonnet-4-6]
+    reviewfix: [claude/claude-sonnet-4-6]
   # Note: warden_model_override and schematic_model_override only affect Copilot
-  # provider entries. They have no effect when no Copilot provider is configured.
+  # provider entries. They are ignored when stage_providers.warden/schematic is set.
   warden_model_override: claude-haiku-4-5    # 0.33x premium for review
   schematic_model_override: claude-haiku-4-5 # 0.33x premium for analysis
   copilot_skip_warden_small_diffs: false     # opt-in: skip Warden for small Copilot diffs
@@ -226,9 +232,10 @@ anvils:
 | `max_review_attempts` | int | `2` | `1` | Maximum review-fix cycles Bellows will attempt on a PR when reviewers request changes after the PR is created. |
 | `claude_flags` | []string | `[]` | | Additional flags passed to the Claude CLI (or translated for other providers). |
 | `providers` | []string | `["claude", "gemini"]` | | Ordered provider fallback chain. See [Providers](providers.md). |
-| `smith_providers` | []string | `[]` (uses `providers`) | | Provider chain for Smith/Warden/Schematic only. Lets dispatch use a more capable model while lifecycle workers (cifix, reviewfix) use `providers`. Same syntax as `providers`. |
-| `warden_model_override` | string | `""` | | When set, overrides the model used by Copilot provider entries for the Warden review stage only. Non-Copilot providers are unaffected. E.g. `claude-haiku-4-5` (0.33× premium) reduces review cost compared to `claude-sonnet-4-6` (1×). |
-| `schematic_model_override` | string | `""` | | When set, overrides the model used by Copilot provider entries for the Schematic pre-analysis stage only. Non-Copilot providers are unaffected. |
+| `smith_providers` | []string | `[]` (uses `providers`) | | **Deprecated** — use `stage_providers` instead. Provider chain for Smith/Warden/Schematic only. Still honoured as fallback when the corresponding `stage_providers` key is not set. Same syntax as `providers`. |
+| `stage_providers` | map[string][]string | `{}` | | Per-stage provider overrides. Keys: `smith`, `warden`, `schematic`, `cifix`, `reviewfix`. Each value is a provider chain in the same syntax as `providers`. Fallback: `stage_providers[stage]` → `smith_providers` (smith/warden/schematic) → `providers` → defaults. |
+| `warden_model_override` | string | `""` | | When set, overrides the model used by Copilot provider entries for the Warden review stage only. **Ignored when `stage_providers.warden` is set.** Non-Copilot providers are unaffected. E.g. `claude-haiku-4-5` (0.33× premium) reduces review cost compared to `claude-sonnet-4-6` (1×). |
+| `schematic_model_override` | string | `""` | | When set, overrides the model used by Copilot provider entries for the Schematic pre-analysis stage only. **Ignored when `stage_providers.schematic` is set.** Non-Copilot providers are unaffected. |
 | `copilot_skip_warden_small_diffs` | bool | `false` | | When true, auto-approves small low-risk diffs (≤100 lines, docs/tests/config or ≤2 files, no security-sensitive paths, P3+) without running Warden when the primary provider is Copilot. Saves one premium request per skipped review. |
 | `copilot_batch_ci_fixes` | bool | `false` | | When true and the primary provider is Copilot, batches all CI failures into a single Smith invocation instead of the default per-attempt loop. Saves premium requests when a PR has multiple failing checks. |
 | `copilot_batch_review_fixes` | bool | `false` | | When true and the primary provider is Copilot, batches all review comments into a single Smith invocation instead of the default per-attempt loop. Saves premium requests when a PR has multiple review comments. |
@@ -541,7 +548,7 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `smith_timeout` is re-read and used for newly started smiths
 - `max_total_smiths` is re-read and applied to subsequent scheduling decisions
 - `claude_flags` are re-read and used for newly started smiths
-- `smith_providers` are re-read and used for newly dispatched beads
+- `smith_providers` and `stage_providers` are re-read and used for newly dispatched beads
 - `copilot_combined_smith_warden` toggles combined Smith+Warden mode at runtime
 - `copilot_warden_sample_rate` adjusts the sampling rate at runtime
 - `smelter_enabled` enables or disables the Smelter background process at runtime

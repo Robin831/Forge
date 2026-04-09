@@ -181,7 +181,17 @@ type SettingsConfig struct {
 	// used as fallback. This lets smiths run a more capable model (e.g.
 	// claude/claude-opus-4-6) while lifecycle workers (cifix, reviewfix) use a
 	// lighter model. Accepts the same "kind/model" format as Providers.
+	//
+	// Deprecated: Use StageProviders for per-stage configuration. SmithProviders
+	// is still honoured as a fallback for smith/warden/schematic when the
+	// corresponding StageProviders key is not set.
 	SmithProviders []string `mapstructure:"smith_providers" yaml:"smith_providers,omitempty"`
+	// StageProviders maps pipeline stage names to their own provider chains.
+	// Supported keys: "smith", "warden", "schematic", "cifix", "reviewfix".
+	// Each value uses the same "kind/model" format as Providers. When a stage
+	// key is missing, the fallback chain is:
+	//   stage_providers[stage] → smith_providers (smith/warden/schematic only) → providers → defaults
+	StageProviders map[string][]string `mapstructure:"stage_providers" yaml:"stage_providers,omitempty"`
 	// SchematicEnabled enables the Schematic pre-worker globally. When true,
 	// beads that exceed the word threshold or carry the "decompose" tag are
 	// analysed before Smith starts. Default: false.
@@ -359,8 +369,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		ClaudeFlags               []string `yaml:"claude_flags"`
 		Providers                 []string `yaml:"providers,omitempty"`
 		RateLimitBackoff          string   `yaml:"rate_limit_backoff"`
-		SmithProviders            []string `yaml:"smith_providers,omitempty"`
-		SchematicEnabled          bool     `yaml:"schematic_enabled"`
+		SmithProviders            []string            `yaml:"smith_providers,omitempty"`
+		StageProviders            map[string][]string `yaml:"stage_providers,omitempty"`
+		SchematicEnabled          bool                `yaml:"schematic_enabled"`
 		SchematicWordThreshold    int      `yaml:"schematic_word_threshold,omitempty"`
 		BellowsInterval           string   `yaml:"bellows_interval"`
 		DailyCostLimit            float64  `yaml:"daily_cost_limit,omitempty"`
@@ -415,6 +426,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		Providers:                 s.Providers,
 		RateLimitBackoff:          durationString(s.RateLimitBackoff),
 		SmithProviders:            s.SmithProviders,
+		StageProviders:            s.StageProviders,
 		SchematicEnabled:          s.SchematicEnabled,
 		SchematicWordThreshold:    s.SchematicWordThreshold,
 		BellowsInterval:           durationString(s.BellowsInterval),
@@ -479,6 +491,24 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	sh.WicketInterval = durationString(s.WicketInterval)
 
 	return sh, nil
+}
+
+// ProvidersForStage returns the provider spec list for the given pipeline stage.
+// Resolution order: stage_providers[stage] → smith_providers (for smith, warden,
+// schematic only) → providers. Returns nil when all levels are empty (caller
+// should apply provider.Defaults).
+func (s SettingsConfig) ProvidersForStage(stage string) []string {
+	if sp, ok := s.StageProviders[stage]; ok && len(sp) > 0 {
+		return sp
+	}
+	// SmithProviders is the legacy fallback for dispatch-pipeline stages.
+	switch stage {
+	case "smith", "warden", "schematic":
+		if len(s.SmithProviders) > 0 {
+			return s.SmithProviders
+		}
+	}
+	return s.Providers
 }
 
 // IsVulncheckEnabled returns true unless vulncheck_enabled is explicitly false.

@@ -118,8 +118,14 @@ settings:
   providers:
     - claude
     - gemini
-  smith_providers:             # Optional: separate chain for Smith/Warden
+  smith_providers:             # Deprecated: use stage_providers instead
     - claude/claude-opus-4-6
+  stage_providers:             # Per-stage provider overrides
+    smith: [claude/claude-opus-4-6]
+    warden: [claude/claude-sonnet-4-6]
+    schematic: [claude/claude-sonnet-4-6]
+    cifix: [claude/claude-sonnet-4-6]
+    reviewfix: [claude/claude-sonnet-4-6]
   schematic_enabled: false     # Pre-analysis for complex beads
   schematic_word_threshold: 100
   crucible_enabled: false      # Epic orchestration for parent-child beads

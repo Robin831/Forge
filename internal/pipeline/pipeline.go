@@ -239,9 +239,19 @@ type Params struct {
 	// GoRaceDetection enables a separate 'go test -race' step in Temper.
 	// Only used during auto-detection (when TemperConfig is nil).
 	GoRaceDetection bool
-	// Providers is the ordered list of AI providers to try.
+	// Providers is the ordered list of AI providers to try for the Smith stage.
 	// If empty, provider.Defaults() is used (Claude → Gemini).
 	Providers []provider.Provider
+
+	// WardenProviders is the provider chain for the Warden review stage.
+	// When empty, Providers is used (with WardenModelOverride applied to
+	// Copilot entries). When set, WardenModelOverride is ignored.
+	WardenProviders []provider.Provider
+
+	// SchematicProviders is the provider chain for the Schematic pre-analysis stage.
+	// When empty, Providers is used (with SchematicModelOverride applied to
+	// Copilot entries). When set, SchematicModelOverride is ignored.
+	SchematicProviders []provider.Provider
 
 	// BaseBranch overrides the base ref for worktree creation and PR
 	// targeting. When set (e.g. for epic child beads), the worktree branches
@@ -335,10 +345,14 @@ type Params struct {
 	SkipSmith bool
 }
 
-// wardenProviders returns the provider list with the Model field overridden for
-// Copilot entries when WardenModelOverride is set. Non-Copilot providers are
-// returned unchanged. When the override is empty, providers is returned as-is.
+// wardenProviders returns the provider list for the Warden stage. When
+// WardenProviders is explicitly set, it is returned directly. Otherwise the
+// base providers are returned with WardenModelOverride applied to Copilot
+// entries (legacy behavior).
 func (p *Params) wardenProviders(providers []provider.Provider) []provider.Provider {
+	if len(p.WardenProviders) > 0 {
+		return p.WardenProviders
+	}
 	if p.WardenModelOverride == "" {
 		return providers
 	}
@@ -352,10 +366,14 @@ func (p *Params) wardenProviders(providers []provider.Provider) []provider.Provi
 	return cloned
 }
 
-// schematicProviders returns the provider list with the Model field overridden
-// for Copilot entries when SchematicModelOverride is set. Non-Copilot providers
-// are returned unchanged. When the override is empty, providers is returned as-is.
+// schematicProviders returns the provider list for the Schematic stage. When
+// SchematicProviders is explicitly set, it is returned directly. Otherwise the
+// base providers are returned with SchematicModelOverride applied to Copilot
+// entries (legacy behavior).
 func (p *Params) schematicProviders(providers []provider.Provider) []provider.Provider {
+	if len(p.SchematicProviders) > 0 {
+		return p.SchematicProviders
+	}
 	if p.SchematicModelOverride == "" {
 		return providers
 	}
