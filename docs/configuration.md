@@ -117,6 +117,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `schematic_enabled` | bool\|null | null (use global) | Per-anvil override for `settings.schematic_enabled`. When set, takes precedence over the global setting. |
 | `golangci_lint` | bool\|null | null (auto-detect) | Per-anvil override for golangci-lint in Temper. When null, golangci-lint runs if the binary is found on PATH. Set to `false` to disable. |
 | `go_race_detection` | bool\|null | null (use global) | Per-anvil override for Go race detection in Temper. When set, takes precedence over the global setting. |
+| `temper` | object\|null | null (auto-detect) | Custom Temper commands for this anvil. When set, replaces auto-detected build/test/lint steps. See [Custom Temper Commands](#custom-temper-commands) below. |
 | `depcheck_enabled` | bool\|null | null (enabled) | Per-anvil toggle for depcheck scanning. When null, depcheck runs as normal. Set to `false` to skip this anvil entirely. |
 | `auto_merge` | bool | `false` | When enabled, PRs that reach the ready-to-merge state (CI passing, no conflicts, no unresolved threads, no pending reviews) are automatically merged using the configured `merge_strategy`. External PRs (`ext-*`) are never auto-merged. |
 | `questgiver_setup_cmd` | string | | Shell command to run before executing quests for this anvil (e.g. `"podman compose up -d"`). Runs in the anvil's root directory. If the command fails, quest execution is aborted. Used by `forge quest run` and the QuestGiver monitor. |
@@ -149,6 +150,44 @@ Each platform requires specific CLI tools or environment variables to be availab
 | Gitea / Forgejo | `gitea` | `GITEA_TOKEN` (or `FORGEJO_TOKEN`) environment variable set to a personal access token with repo scope. `GITEA_URL` (or `FORGEJO_URL`) should be set to the instance base URL (e.g. `https://gitea.example.com`); if omitted, the URL is inferred from the git remote. |
 
 Omitting `platform` or setting it to an empty string defaults to `github`. Existing configurations that don't specify a platform require no changes.
+
+### Custom Temper Commands
+
+By default, Temper auto-detects the project type (Go, .NET, Node) and runs appropriate build/test/lint steps. The `temper` object lets you override these with custom commands, enabling support for Python, Rust, or repos with non-standard build tooling.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `temper.build` | string | | Custom build command (e.g. `"make build"`, `"cargo build"`). Replaces the auto-detected build step. |
+| `temper.test` | string | | Custom test command (e.g. `"make test"`, `"pytest"`). Replaces the auto-detected test step. |
+| `temper.lint` | string | | Custom lint command (e.g. `"make lint"`, `"ruff check ."`). Runs as an optional step (failure warns but doesn't block). |
+
+When any `temper` field is set, **all** auto-detected steps are replaced — only the explicitly configured commands run. Omit a field to skip that step entirely.
+
+Commands are split on whitespace into executable + arguments. For commands requiring shell features (pipes, redirections, environment variables), use the per-anvil `.forge/temper.yaml` file instead.
+
+**Example:**
+
+```yaml
+anvils:
+  my-python-repo:
+    path: /home/user/source/my-python-repo
+    temper:
+      build: "pip install -e ."
+      test: "pytest"
+      lint: "ruff check ."
+  my-rust-repo:
+    path: /home/user/source/my-rust-repo
+    temper:
+      build: "cargo build"
+      test: "cargo test"
+      lint: "cargo clippy"
+  custom-makefile:
+    path: /home/user/source/custom-project
+    temper:
+      build: "make build"
+      test: "make test"
+      lint: "make lint"
+```
 
 ## Settings
 

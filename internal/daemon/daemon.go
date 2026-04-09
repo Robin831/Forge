@@ -978,6 +978,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					DB:              d.db,
 					WorkerID:        workerID,
 					ExtraFlags:      cfg.Settings.ClaudeFlags,
+					TemperConfig:    d.resolveTemperConfig(anvilCfg),
 					DetectOptions:   cifixDetectOpts,
 					GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 					Providers:       cifixProviders,
@@ -1993,6 +1994,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			AnvilConfig:               anvilCfg,
 			ExtraFlags:                d.cfg.Load().Settings.ClaudeFlags,
 			Providers:                 d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
+			TemperConfig:              d.resolveTemperConfig(anvilCfg),
 			GoRaceDetection:           d.resolveGoRaceDetection(anvilCfg),
 			SmithTimeout:              d.cfg.Load().Settings.SmithTimeout,
 			AutoMergeCrucibleChildren: d.cfg.Load().Settings.IsAutoMergeCrucibleChildren(),
@@ -2100,6 +2102,7 @@ normalPipeline:
 		AnvilConfig:     anvilCfg,
 		Bead:            bead,
 		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
+		TemperConfig:    d.resolveTemperConfig(anvilCfg),
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
 		Notifier:        d.notifier.Load(),
@@ -4516,6 +4519,16 @@ func (d *Daemon) loadAnvilTemperCached(anvilPath string) *temper.TemperYAML {
 	return cfg
 }
 
+// resolveTemperConfig returns a *temper.Config built from per-anvil custom
+// commands (AnvilConfig.Temper), or nil when no custom commands are set so that
+// callers fall back to auto-detection.
+func (d *Daemon) resolveTemperConfig(anvilCfg config.AnvilConfig) *temper.Config {
+	if anvilCfg.Temper == nil || anvilCfg.Temper.IsEmpty() {
+		return nil
+	}
+	return temper.ConfigFromCommands(anvilCfg.Temper.Build, anvilCfg.Temper.Test, anvilCfg.Temper.Lint)
+}
+
 // resolveGoRaceDetection resolves the effective Go race detection setting.
 // Priority: per-anvil .forge/temper.yaml > per-anvil forge.yaml config > global setting.
 // The .forge/temper.yaml is cached by mtime to avoid repeated filesystem I/O.
@@ -5237,6 +5250,7 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 		Bead:            bead,
 		BaseBranch:      bead.EpicBranch, // empty for non-Crucible beads; set for children
 		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
+		TemperConfig:    d.resolveTemperConfig(anvilCfg),
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
 		Notifier:        d.notifier.Load(),

@@ -138,6 +138,58 @@ func LoadAnvilConfig(anvilPath string) (*TemperYAML, error) {
 	return &cfg, nil
 }
 
+// ConfigFromCommands builds a Config from explicit command strings.
+// Each non-empty command becomes a Step. The command string is split on
+// whitespace into the executable and arguments (no shell expansion).
+// If all commands are empty, it returns nil so callers can fall back to
+// auto-detection.
+func ConfigFromCommands(build, test, lint string) *Config {
+	if build == "" && test == "" && lint == "" {
+		return nil
+	}
+	var steps []Step
+	if build != "" {
+		cmd, args := splitCommand(build)
+		steps = append(steps, Step{
+			Name:    "build",
+			Command: cmd,
+			Args:    args,
+			Timeout: 3 * time.Minute,
+		})
+	}
+	if lint != "" {
+		cmd, args := splitCommand(lint)
+		steps = append(steps, Step{
+			Name:     "lint",
+			Command:  cmd,
+			Args:     args,
+			Timeout:  3 * time.Minute,
+			Optional: true,
+		})
+	}
+	if test != "" {
+		cmd, args := splitCommand(test)
+		steps = append(steps, Step{
+			Name:    "test",
+			Command: cmd,
+			Args:    args,
+			Timeout: 5 * time.Minute,
+		})
+	}
+	return &Config{Steps: steps}
+}
+
+// splitCommand splits a command string into the executable and arguments.
+// It splits on whitespace. For commands requiring shell features (pipes,
+// redirections, etc.), use the per-anvil .forge/temper.yaml instead.
+func splitCommand(cmd string) (string, []string) {
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return cmd, nil
+	}
+	return parts[0], parts[1:]
+}
+
 // DefaultConfigWithRace returns a default config with race detection support.
 func DefaultConfigWithRace(worktreePath string, opts *DetectOptions, raceEnabled bool) Config {
 	return Config{
