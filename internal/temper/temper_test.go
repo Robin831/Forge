@@ -243,6 +243,74 @@ func TestDetectSteps_NodeRootAndSubdir(t *testing.T) {
 	assert.Contains(t, names, "frontend:lint")
 }
 
+func TestConfigFromCommands_AllCommands(t *testing.T) {
+	cfg := ConfigFromCommands("make build", "make test", "make lint")
+	require.NotNil(t, cfg)
+	assert.Len(t, cfg.Steps, 3)
+
+	names := stepNames(cfg.Steps)
+	assert.Equal(t, []string{"build", "lint", "test"}, names)
+
+	// Verify command splitting
+	assert.Equal(t, "make", cfg.Steps[0].Command)
+	assert.Equal(t, []string{"build"}, cfg.Steps[0].Args)
+	assert.Equal(t, "make", cfg.Steps[1].Command)
+	assert.Equal(t, []string{"lint"}, cfg.Steps[1].Args)
+	assert.Equal(t, "make", cfg.Steps[2].Command)
+	assert.Equal(t, []string{"test"}, cfg.Steps[2].Args)
+
+	// Lint should be optional
+	assert.False(t, cfg.Steps[0].Optional, "build should not be optional")
+	assert.True(t, cfg.Steps[1].Optional, "lint should be optional")
+	assert.False(t, cfg.Steps[2].Optional, "test should not be optional")
+}
+
+func TestConfigFromCommands_OnlyBuild(t *testing.T) {
+	cfg := ConfigFromCommands("cargo build", "", "")
+	require.NotNil(t, cfg)
+	assert.Len(t, cfg.Steps, 1)
+	assert.Equal(t, "build", cfg.Steps[0].Name)
+	assert.Equal(t, "cargo", cfg.Steps[0].Command)
+	assert.Equal(t, []string{"build"}, cfg.Steps[0].Args)
+}
+
+func TestConfigFromCommands_OnlyTest(t *testing.T) {
+	cfg := ConfigFromCommands("", "pytest -v", "")
+	require.NotNil(t, cfg)
+	assert.Len(t, cfg.Steps, 1)
+	assert.Equal(t, "test", cfg.Steps[0].Name)
+	assert.Equal(t, "pytest", cfg.Steps[0].Command)
+	assert.Equal(t, []string{"-v"}, cfg.Steps[0].Args)
+}
+
+func TestConfigFromCommands_AllEmpty(t *testing.T) {
+	cfg := ConfigFromCommands("", "", "")
+	assert.Nil(t, cfg, "all empty commands should return nil")
+}
+
+func TestConfigFromCommands_SingleWordCommand(t *testing.T) {
+	cfg := ConfigFromCommands("", "pytest", "")
+	require.NotNil(t, cfg)
+	assert.Equal(t, "pytest", cfg.Steps[0].Command)
+	assert.Empty(t, cfg.Steps[0].Args)
+}
+
+func TestConfigFromCommands_Timeouts(t *testing.T) {
+	cfg := ConfigFromCommands("make build", "make test", "make lint")
+	require.NotNil(t, cfg)
+
+	for _, s := range cfg.Steps {
+		switch s.Name {
+		case "build":
+			assert.Equal(t, 3*time.Minute, s.Timeout)
+		case "lint":
+			assert.Equal(t, 3*time.Minute, s.Timeout)
+		case "test":
+			assert.Equal(t, 5*time.Minute, s.Timeout)
+		}
+	}
+}
+
 func TestDefaultConfigWithRace_ExcludesRaceStepWhenDisabled(t *testing.T) {
 	dir := goModDir(t)
 	opts := &DetectOptions{DisableGolangciLint: true}

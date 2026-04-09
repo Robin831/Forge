@@ -75,6 +75,15 @@ type AnvilConfig struct {
 	// for this anvil (e.g. "podman compose down").
 	QuestgiverTeardownCmd string `mapstructure:"questgiver_teardown_cmd" yaml:"questgiver_teardown_cmd,omitempty"`
 
+	// Temper holds optional custom build/test/lint commands for this anvil.
+	// When any field is set, Forge disables the auto-detected Temper steps
+	// for this anvil and runs only the commands explicitly configured here.
+	// This enables support for Python, Rust, or repos with non-standard
+	// build tooling. Each value is a command string (e.g. "make build",
+	// "cargo test"). Commands are split on whitespace; for shell features,
+	// invoke a checked-in wrapper script from the configured command.
+	Temper *TemperCommandsConfig `mapstructure:"temper" yaml:"temper,omitempty"`
+
 	// WicketEnabled controls whether the Wicket issue triage monitor scans
 	// this anvil. When nil (default), the global WicketEnabled setting is
 	// used. Set to false to opt this anvil out entirely.
@@ -102,6 +111,22 @@ type AnvilConfig struct {
 	// well-known bot accounts (dependabot[bot], renovate[bot], etc.) is
 	// always ignored. Comparison is case-insensitive.
 	WicketIgnoreUsers []string `mapstructure:"wicket_ignore_users" yaml:"wicket_ignore_users,omitempty"`
+}
+
+// TemperCommandsConfig holds custom build/test/lint commands for an anvil.
+// When set on an AnvilConfig, these commands replace auto-detected Temper steps.
+type TemperCommandsConfig struct {
+	// Build is the build command (e.g. "make build", "cargo build").
+	Build string `mapstructure:"build" yaml:"build,omitempty"`
+	// Test is the test command (e.g. "make test", "pytest").
+	Test string `mapstructure:"test" yaml:"test,omitempty"`
+	// Lint is the lint command (e.g. "make lint", "ruff check .").
+	Lint string `mapstructure:"lint" yaml:"lint,omitempty"`
+}
+
+// IsEmpty returns true if no custom commands are configured.
+func (t *TemperCommandsConfig) IsEmpty() bool {
+	return t == nil || (t.Build == "" && t.Test == "" && t.Lint == "")
 }
 
 // SettingsConfig holds global operational settings.

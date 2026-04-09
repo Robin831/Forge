@@ -12,13 +12,14 @@ import (
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
-	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/temper"
+	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/worktree"
 )
 
@@ -45,6 +46,7 @@ type Params struct {
 	ExtraFlags            []string
 	Providers             []provider.Provider
 	SchematicConfig       *schematic.Config
+	TemperConfig          *temper.Config // nil = auto-detect
 	GoRaceDetection       bool
 	SmithTimeout          time.Duration
 	MaxPipelineIterations int
@@ -550,6 +552,7 @@ func (p *Params) runChildPipeline(ctx context.Context, child poller.Bead, baseBr
 		AnvilConfig:     p.AnvilConfig,
 		Bead:            child,
 		ExtraFlags:      p.ExtraFlags,
+		TemperConfig:    p.TemperConfig,
 		GoRaceDetection: p.GoRaceDetection,
 		Providers:       p.Providers,
 		BaseBranch:      baseBranch,
