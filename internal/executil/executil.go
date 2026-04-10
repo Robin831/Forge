@@ -13,7 +13,7 @@ import (
 // bd operations on anvils with remote Dolt (e.g. via kubectl port-forward)
 // and GitHub auto-sync can routinely take 20-30 seconds per write, so the
 // timeout must be generous enough to accommodate that latency.
-const DefaultBdTimeout = 60 * time.Second
+const DefaultBdTimeout = 5 * time.Minute
 
 // DecodeJSON decodes one JSON value from subprocess output that may contain
 // leading or trailing non-JSON noise (log lines, diagnostics, etc.).
