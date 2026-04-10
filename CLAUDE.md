@@ -85,8 +85,8 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/vulncheck` | Vulnerability scanning via `govulncheck` — creates prioritized beads |
 | `internal/wicket` | GitHub issue triage monitor — polls repos for new issues, AI-classifies them, and creates beads or requests clarification |
 | `internal/schematic` | Pre-analysis worker — decomposes complex beads or produces implementation plans |
-| `internal/cifix` | CI failure fix worker — spawns Smith with targeted fix prompt |
-| `internal/reviewfix` | Review comment fix worker — addresses PR review feedback |
+| `internal/quench` | CI failure fix worker — spawns Smith with targeted fix prompt |
+| `internal/burnish` | Review comment fix worker — addresses PR review feedback |
 | `internal/rebase` | Conflict rebase handling for merge conflicts |
 | `internal/poller` | Calls `bd ready` to get available beads from an anvil; detects Crucible candidates |
 | `internal/worktree` | Creates/removes `git worktree` branches for each bead |

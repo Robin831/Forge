@@ -25,11 +25,11 @@ func main() {
 	defer rows.Close()
 	found := false
 	for rows.Next() {
-		var id, number, cifix, revfix, cipassing int
+		var id, number, quenchCount, burnishCount, cipassing int
 		var anvil, beadID, branch, status string
-		_ = rows.Scan(&id, &number, &anvil, &beadID, &branch, &status, &cifix, &revfix, &cipassing)
+		_ = rows.Scan(&id, &number, &anvil, &beadID, &branch, &status, &quenchCount, &burnishCount, &cipassing)
 		fmt.Printf("PR #%-4d  dbid=%-4d  anvil=%-14s  bead=%-12s  status=%-12s  ci_fix=%-2d  rev_fix=%-2d  ci_passing=%d\n",
-			number, id, anvil, beadID, status, cifix, revfix, cipassing)
+			number, id, anvil, beadID, status, quenchCount, burnishCount, cipassing)
 		found = true
 	}
 	if !found {

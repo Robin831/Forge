@@ -174,9 +174,9 @@ settings:
 
 **Impact: Save 1-3 requests per failed PR**
 
-When a PR has multiple CI failures or review comments, batch them into a single Smith invocation instead of spawning separate cifix/reviewfix workers per issue.
+When a PR has multiple CI failures or review comments, batch them into a single Smith invocation instead of spawning separate quench/burnish workers per issue.
 
-**Implementation** in `internal/cifix/cifix.go` and `internal/reviewfix/reviewfix.go`:
+**Implementation** in `internal/quench/quench.go` and `internal/burnish/burnish.go`:
 
 ```go
 // Instead of one Fix() call per failed check:
@@ -274,7 +274,7 @@ settings:
 | `internal/prompt/prompt.go` | Self-review checklist injection for combined mode |
 | `internal/warden/warden.go` | Accept model override parameter |
 | `internal/schematic/schematic.go` | Accept model override parameter |
-| `internal/cifix/cifix.go` | Batch fix mode |
-| `internal/reviewfix/reviewfix.go` | Batch fix mode |
+| `internal/quench/quench.go` | Batch fix mode |
+| `internal/burnish/burnish.go` | Batch fix mode |
 | `internal/cost/premium.go` | No changes needed (multipliers already correct) |
 | `docs/configuration.md` | Document new settings |

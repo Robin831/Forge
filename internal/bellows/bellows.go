@@ -330,7 +330,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		}
 		// Seed unresolved threads/conflicts as false when no fix has been
 		// attempted yet, so the first poll detects a false→true transition
-		// and triggers a reviewfix/rebase worker. Without this, PRs that
+		// and triggers a burnish/rebase worker. Without this, PRs that
 		// already had issues when assigned to bellows would never fire.
 		threadsSeed := pr.HasUnresolvedThreads
 		if threadsSeed && pr.Status != state.PRNeedsFix && pr.ReviewFixCount == 0 {
@@ -377,7 +377,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 
 	// External PRs (not created by Forge) are tracked for display in the
 	// Hearth PR panel. Unless explicitly assigned to bellows, they must not
-	// trigger lifecycle workers (cifix, reviewfix, rebase). Persist their
+	// trigger lifecycle workers (quench, burnish, rebase). Persist their
 	// mergeability state and return early.
 	if strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged {
 		m.wasUnmanaged[key] = true
@@ -477,7 +477,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.LogEvent(state.EventCIFailed, fmt.Sprintf("PR #%d CI checks failed", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d CI failed", pr.Number), pr.BeadID, pr.Anvil)
 	} else if !newSnap.CIPassing && !newSnap.CIInProgress && !lastSnap.CIPassing {
-		// CI is still failing with no transition. Check if a previous cifix
+		// CI is still failing with no transition. Check if a previous quench
 		// attempt completed (PR status reset to open) and retries remain.
 		// This catches the gap where NotifyCIFixCompleted() clears the fix
 		// state but bellows never re-emits EventCIFailed because it only

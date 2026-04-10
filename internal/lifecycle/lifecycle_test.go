@@ -580,7 +580,7 @@ func TestManager_AnvilCollision(t *testing.T) {
 // fix cycle" guard.
 //
 // This covers the real-world scenario where:
-//  1. First wave: reviewer requests changes → reviewfix dispatched (ReviewNeedsFix=true)
+//  1. First wave: reviewer requests changes → burnish dispatched (ReviewNeedsFix=true)
 //  2. Second wave arrives WHILE fix is running → "already in fix cycle" (expected)
 //  3. Fix worker pushes changes → NotifyReviewFixCompleted clears ReviewNeedsFix
 //  4. Reviewer re-examines the push, still requests changes → new EventReviewChanges
@@ -951,7 +951,7 @@ func TestCIFixRetryFlowToExhaustion(t *testing.T) {
 		if st.CIFixCount != i {
 			t.Fatalf("cycle %d: expected CIFixCount=%d, got %d", i, i, st.CIFixCount)
 		}
-		// Simulate cifix worker completing (CI still broken).
+		// Simulate quench worker completing (CI still broken).
 		m.NotifyCIFixCompleted("test-anvil", 700)
 	}
 

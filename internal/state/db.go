@@ -450,7 +450,7 @@ type Worker struct {
 	Status      WorkerStatus
 	Phase       string // active component: smith|temper|warden|bellows|idle
 	Title       string // bead title for display in hearth
-	PRNumber    int    // PR number for bellows-triggered workers (cifix/reviewfix/rebase)
+	PRNumber    int    // PR number for bellows-triggered workers (quench/burnish/rebase)
 	StartedAt   time.Time
 	CompletedAt *time.Time
 	LogPath     string
@@ -596,7 +596,7 @@ func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 		}
 	}
 
-	// Check lifecycle workers (quench/cifix/burnish/reviewfix/rebase) that carry a
+	// Check lifecycle workers (quench/burnish/rebase) that carry a
 	// per-worker stale timeout. These phases are excluded from the global check
 	// above but should still surface as stalled when they stop producing log output
 	// within their own per-worker threshold (set at worker registration time).
@@ -666,7 +666,7 @@ func (db *DB) MarkWorkerStalled(id string) error {
 
 // ActiveDispatchWorkers returns active workers that are running primary dispatch
 // pipeline phases (smith, temper, warden). Bellows (PR monitoring) and lifecycle
-// workers (cifix, reviewfix, rebase) are excluded so they don't consume dispatch capacity slots.
+// workers (quench, burnish, rebase) are excluded so they don't consume dispatch capacity slots.
 // Stalled workers are included so they continue to count against capacity and
 // prevent the daemon from over-subscribing while stalled processes are still running.
 func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
@@ -677,7 +677,7 @@ func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 }
 
 // ActiveDispatchWorkersByAnvil returns active dispatch workers for a given anvil,
-// excluding bellows and lifecycle workers (cifix, reviewfix, rebase).
+// excluding bellows and lifecycle workers (quench, burnish, rebase).
 // Stalled workers are included so they continue to count against per-anvil capacity.
 func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
@@ -877,7 +877,7 @@ type PR struct {
 	HasPendingReviews    bool
 	HasApproval          bool
 	Title                string
-	BellowsManaged       bool // true = bellows runs lifecycle workers (cifix, reviewfix, rebase)
+	BellowsManaged       bool // true = bellows runs lifecycle workers (quench, burnish, rebase)
 }
 
 // IsExternal returns true if this PR was discovered via GitHub reconciliation
@@ -1148,7 +1148,7 @@ func (db *DB) UpdatePRMergeability(id int, ciPassing, isConflicting, hasUnresolv
 }
 
 // UpdatePRBellowsManaged sets the bellows_managed flag for a PR.
-// When true, bellows will run lifecycle workers (cifix, reviewfix, rebase) for this PR.
+// When true, bellows will run lifecycle workers (quench, burnish, rebase) for this PR.
 func (db *DB) UpdatePRBellowsManaged(id int, managed bool) error {
 	_, err := db.conn.Exec(`UPDATE prs SET bellows_managed = ? WHERE id = ?`, boolToInt(managed), id)
 	return err
@@ -1341,15 +1341,15 @@ const (
 	EventTemperFailed         EventType = "temper_failed"
 	EventBellowsStarted       EventType = "bellows_started"
 	EventCIFailed             EventType = "ci_failed"
-	EventCIFixStarted         EventType = "ci_fix_started"
-	EventCIFixSuccess         EventType = "ci_fix_success"
-	EventCIFixFailed          EventType = "ci_fix_failed"
+	EventQuenchStarted        EventType = "ci_fix_started"
+	EventQuenchSuccess        EventType = "ci_fix_success"
+	EventQuenchFailed         EventType = "ci_fix_failed"
 	EventReviewChanges        EventType = "review_changes"
-	EventReviewFixStarted     EventType = "review_fix_started"
-	EventReviewFixSuccess     EventType = "review_fix_success"
-	EventReviewFixFailed      EventType = "review_fix_failed"
+	EventBurnishStarted       EventType = "review_fix_started"
+	EventBurnishSuccess       EventType = "review_fix_success"
+	EventBurnishFailed        EventType = "review_fix_failed"
 	EventReviewThreadResolved EventType = "review_thread_resolved"
-	EventReviewFixSmithError  EventType = "review_fix_smith_error"
+	EventBurnishSmithError    EventType = "review_fix_smith_error"
 	EventPRCreated            EventType = "pr_created"
 	EventPRMerged             EventType = "pr_merged"
 	EventPRClosed             EventType = "pr_closed"

@@ -32,7 +32,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/adventurer"
 	"github.com/Robin831/Forge/internal/bellows"
-	"github.com/Robin831/Forge/internal/cifix"
+	"github.com/Robin831/Forge/internal/quench"
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
@@ -50,7 +50,7 @@ import (
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/rebase"
-	"github.com/Robin831/Forge/internal/reviewfix"
+	"github.com/Robin831/Forge/internal/burnish"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/shutdown"
@@ -389,9 +389,9 @@ func (d *Daemon) vcsForAnvil(anvil string) vcs.Provider {
 	return github.New(d.db)
 }
 
-// cifixLearnConfig builds a warden.LearnConfig for the CI-fix path that routes
-// learned rules into the pending_warden_rules table when smelter is enabled.
-func (d *Daemon) cifixLearnConfig(anvilName string) *warden.LearnConfig {
+// quenchLearnConfig builds a warden.LearnConfig for the quench (CI-fix) path
+// that routes learned rules into the pending_warden_rules table when smelter is enabled.
+func (d *Daemon) quenchLearnConfig(anvilName string) *warden.LearnConfig {
 	return &warden.LearnConfig{
 		SmelterEnabled: d.cfg.Load().Settings.IsSmelterEnabled(),
 		AnvilName:      anvilName,
@@ -894,8 +894,8 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		workerID := fmt.Sprintf("%s-%s-%d", req.Anvil, req.BeadID, time.Now().UnixNano())
 
 		// Derive a timeout context for the lifecycle worker so it cannot hang
-		// indefinitely. Use SmithTimeout as the budget since these workers (cifix,
-		// reviewfix, rebase) each spawn a Claude session of comparable length.
+		// indefinitely. Use SmithTimeout as the budget since these workers (quench,
+		// burnish, rebase) each spawn a Claude session of comparable length.
 		// Mirror the pipeline defaulting: treat SmithTimeout <= 0 as "use 30m"
 		// so lifecycle workers always have a deadline unless explicitly configured.
 		workerTimeout := d.cfg.Load().Settings.SmithTimeout
@@ -933,10 +933,10 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				StaleTimeout: workerTimeout / 2,
 			})
 			cfg := d.config()
-			cifixProviders := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(cfg.Settings, &anvilCfg, "cifix")))
+			quenchProviders := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(cfg.Settings, &anvilCfg, "cifix")))
 			// Use batch mode when copilot_batch_ci_fixes is enabled and the primary provider is Copilot.
-			var res *cifix.FixResult
-			useBatch := cfg.Settings.CopilotBatchCIFixes && len(cifixProviders) > 0 && cifixProviders[0].Kind == provider.Copilot
+			var res *quench.FixResult
+			useBatch := cfg.Settings.CopilotBatchCIFixes && len(quenchProviders) > 0 && quenchProviders[0].Kind == provider.Copilot
 			if useBatch {
 				anvilVCS := d.vcsForAnvil(req.Anvil)
 				_, failingChecks, fetchErr := anvilVCS.FetchPRChecks(workerCtx, wt.Path, req.PRNumber)
@@ -950,7 +950,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 						useBatch = false
 					}
 					if useBatch {
-						res = cifix.BatchFix(workerCtx, cifix.BatchFixParams{
+						res = quench.BatchFix(workerCtx, quench.BatchFixParams{
 						WorktreePath:  wt.Path,
 						BeadID:        req.BeadID,
 						AnvilName:     req.Anvil,
@@ -959,7 +959,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 						DB:            d.db,
 						WorkerID:      workerID,
 						ExtraFlags:    cfg.Settings.ClaudeFlags,
-						Providers:     cifixProviders,
+						Providers:     quenchProviders,
 						FailingChecks: failingChecks,
 						CILogs:        ciLogs,
 						})
@@ -967,8 +967,8 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				}
 			}
 			if !useBatch {
-				cifixDetectOpts := temper.DetectOptionsFromAnvilFlag(anvilCfg.GolangciLint)
-				res = cifix.Fix(workerCtx, cifix.FixParams{
+				quenchDetectOpts := temper.DetectOptionsFromAnvilFlag(anvilCfg.GolangciLint)
+				res = quench.Fix(workerCtx, quench.FixParams{
 					WorktreePath:    wt.Path,
 					BeadID:          req.BeadID,
 					AnvilName:       req.Anvil,
@@ -979,11 +979,11 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					WorkerID:        workerID,
 					ExtraFlags:      cfg.Settings.ClaudeFlags,
 					TemperConfig:    d.resolveTemperConfig(anvilCfg),
-					DetectOptions:   cifixDetectOpts,
+					DetectOptions:   quenchDetectOpts,
 					GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
-					Providers:       cifixProviders,
+					Providers:       quenchProviders,
 					VCS:             d.vcsForAnvil(req.Anvil),
-					LearnConfig:     d.cifixLearnConfig(req.Anvil),
+					LearnConfig:     d.quenchLearnConfig(req.Anvil),
 				})
 			}
 			status := state.WorkerDone
@@ -1003,7 +1003,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				// Reset the snapshot only; do not trigger an immediate Refresh()
 				// here because CI checks may still be pending. An immediate poll
 				// would see "not yet passing" and could emit EventCIFailed while
-				// checks are still running, burning through cifix retries before
+				// checks are still running, burning through quench retries before
 				// CI has a chance to complete. The regular poll interval is
 				// sufficient to re-detect failure once CI settles.
 				d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
@@ -1023,19 +1023,19 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				StartedAt:    time.Now(),
 				StaleTimeout: workerTimeout / 2,
 			})
-			reviewCfg := d.cfg.Load()
-			reviewProviders := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(reviewCfg.Settings, &anvilCfg, "reviewfix")))
+			burnishCfg := d.cfg.Load()
+			burnishProviders := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(burnishCfg.Settings, &anvilCfg, "reviewfix")))
 			// Use batch mode when copilot_batch_review_fixes is enabled and the primary provider is Copilot.
-			var res *reviewfix.FixResult
-			useReviewBatch := reviewCfg.Settings.CopilotBatchReviewFixes && len(reviewProviders) > 0 && reviewProviders[0].Kind == provider.Copilot
-			if useReviewBatch {
+			var res *burnish.FixResult
+			useBurnishBatch := burnishCfg.Settings.CopilotBatchReviewFixes && len(burnishProviders) > 0 && burnishProviders[0].Kind == provider.Copilot
+			if useBurnishBatch {
 				anvilVCS := d.vcsForAnvil(req.Anvil)
 				comments, fetchErr := anvilVCS.FetchReviewComments(workerCtx, wt.Path, req.PRNumber)
 				if fetchErr != nil {
 					d.logger.Warn("failed to fetch review comments for batch fix, falling back to single fix", "pr", req.PRNumber, "error", fetchErr)
-					useReviewBatch = false
+					useBurnishBatch = false
 				} else {
-					res = reviewfix.BatchFix(workerCtx, reviewfix.BatchFixParams{
+					res = burnish.BatchFix(workerCtx, burnish.BatchFixParams{
 						WorktreePath: wt.Path,
 						BeadID:       req.BeadID,
 						AnvilName:    req.Anvil,
@@ -1043,15 +1043,15 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 						Branch:       req.Branch,
 						DB:           d.db,
 						WorkerID:     workerID,
-						ExtraFlags:   reviewCfg.Settings.ClaudeFlags,
-						Providers:    reviewProviders,
+						ExtraFlags:   burnishCfg.Settings.ClaudeFlags,
+						Providers:    burnishProviders,
 						Comments:     comments,
 						VCS:          anvilVCS,
 					})
 				}
 			}
-			if !useReviewBatch {
-				res = reviewfix.Fix(workerCtx, reviewfix.FixParams{
+			if !useBurnishBatch {
+				res = burnish.Fix(workerCtx, burnish.FixParams{
 					WorktreePath: wt.Path,
 					BeadID:       req.BeadID,
 					AnvilName:    req.Anvil,
@@ -1060,9 +1060,9 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					Branch:       req.Branch,
 					DB:           d.db,
 					WorkerID:     workerID,
-					MaxAttempts:  reviewCfg.Settings.MaxReviewAttempts,
-					ExtraFlags:   reviewCfg.Settings.ClaudeFlags,
-					Providers:    reviewProviders,
+					MaxAttempts:  burnishCfg.Settings.MaxReviewAttempts,
+					ExtraFlags:   burnishCfg.Settings.ClaudeFlags,
+					Providers:    burnishProviders,
 					VCS:          d.vcsForAnvil(req.Anvil),
 				})
 			}
@@ -1081,7 +1081,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				// fresh CI state. The review fix pushed new commits which
 				// trigger a new CI run — without resetting, bellows sees
 				// CIPassing false→false (no transition) and never emits
-				// EventCIFailed, preventing a cifix worker from spawning.
+				// EventCIFailed, preventing a quench worker from spawning.
 				if d.bellowsMonitor != nil {
 					d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
 				}
@@ -3933,7 +3933,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				IsManual: true,
 			}
 			go d.handleLifecycleAction(d.runCtx, req)
-			_ = d.db.LogEvent(state.EventCIFixStarted, fmt.Sprintf("PR #%d CI fix triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
+			_ = d.db.LogEvent(state.EventQuenchStarted, fmt.Sprintf("PR #%d CI fix triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
 			d.logger.Info("CI fix triggered by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
 		case "burnish", "reviewfix":
@@ -3950,7 +3950,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				IsManual: true,
 			}
 			go d.handleLifecycleAction(d.runCtx, req)
-			_ = d.db.LogEvent(state.EventReviewFixStarted, fmt.Sprintf("PR #%d review fix triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
+			_ = d.db.LogEvent(state.EventBurnishStarted, fmt.Sprintf("PR #%d review fix triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
 			d.logger.Info("review fix triggered by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
 		case "rebase":

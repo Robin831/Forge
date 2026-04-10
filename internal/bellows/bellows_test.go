@@ -420,7 +420,7 @@ func TestCheckAll_WorkerRowNotDuplicatedOnRepeatPolls(t *testing.T) {
 }
 
 // TestCIFixRetryLogic verifies the secondary CI failure detection that
-// re-emits EventCIFailed when a previous cifix attempt completed but CI
+// re-emits EventCIFailed when a previous quench attempt completed but CI
 // is still failing. This is the core fix for the retry gap.
 func TestCIFixRetryLogic(t *testing.T) {
 	tests := []struct {

@@ -207,7 +207,7 @@ type SettingsConfig struct {
 	// SmithProviders is the ordered list of AI providers used specifically for
 	// dispatch pipeline (Smith + Warden + Schematic). When empty, Providers is
 	// used as fallback. This lets smiths run a more capable model (e.g.
-	// claude/claude-opus-4-6) while lifecycle workers (cifix, reviewfix) use a
+	// claude/claude-opus-4-6) while lifecycle workers (quench, burnish) use a
 	// lighter model. Accepts the same "kind/model" format as Providers.
 	//
 	// Deprecated: Use StageProviders for per-stage configuration. SmithProviders
@@ -215,7 +215,7 @@ type SettingsConfig struct {
 	// corresponding StageProviders key is not set.
 	SmithProviders []string `mapstructure:"smith_providers" yaml:"smith_providers,omitempty"`
 	// StageProviders maps pipeline stage names to their own provider chains.
-	// Supported keys: "smith", "warden", "schematic", "cifix", "reviewfix".
+	// Supported keys: "smith", "warden", "schematic", "cifix" (quench), "reviewfix" (burnish).
 	// Each value uses the same "kind/model" format as Providers. When a stage
 	// key is missing, the fallback chain is:
 	//   stage_providers[stage] → smith_providers (smith/warden/schematic only) → providers → defaults
