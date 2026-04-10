@@ -484,13 +484,26 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 			prev := subBeads[len(subBeads)-2]
 			depCtx, depCancel := context.WithTimeout(ctx, 15*time.Second)
 			depOut, depErr := run(depCtx, anvilPath, "dep", "add", created.ID, prev.ID)
+			depCtxErr := depCtx.Err() // capture before Cancel clears it
 			depCancel()
 			if depErr != nil {
-				log.Printf("[schematic:%s] Failed to add sequential dep %s -> %s: %v: %s",
-					parent.ID, created.ID, prev.ID, depErr, depOut)
-				resetParent()
-				return subBeads, fmt.Errorf("adding sequential dependency %s -> %s: %w: %s",
-					created.ID, prev.ID, depErr, depOut)
+				// bd dep add can exit non-zero even when the dependency was
+				// successfully added (stdout contains "✓ Added dependency").
+				// Only treat it as success for exit-status-1 failures when the
+				// context had not been canceled/expired at call time (to avoid
+				// masking timeouts or other execution failures).
+				exitErr, isExitErr := depErr.(*exec.ExitError)
+				if isExitErr && exitErr.ExitCode() == 1 && depCtxErr == nil &&
+					strings.Contains(string(depOut), "Added dependency") {
+					log.Printf("[schematic:%s] bd dep add exited non-zero but dependency was added (%s -> %s), ignoring exit code: %v",
+						parent.ID, created.ID, prev.ID, depErr)
+				} else {
+					log.Printf("[schematic:%s] Failed to add sequential dep %s -> %s: %v: %s",
+						parent.ID, created.ID, prev.ID, depErr, depOut)
+					resetParent()
+					return subBeads, fmt.Errorf("adding sequential dependency %s -> %s: %w: %s",
+						created.ID, prev.ID, depErr, depOut)
+				}
 			}
 		}
 	}
