@@ -97,7 +97,7 @@ type parentBeadResponse struct {
 // (e.g. task blocks task) never generate a feature branch — only intentional
 // epic parents do.
 func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer cancel()
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "show", parentID, "--json"))

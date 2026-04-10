@@ -417,7 +417,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 	}
 
 	resetParent := func() {
-		rCtx, rCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		rCtx, rCancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
 		defer rCancel()
 		if out, err := run(rCtx, anvilPath, "update", parent.ID, "--status=open", "--json"); err != nil {
 			log.Printf("[schematic:%s] Warning: failed to reset parent to open: %v: %s", parent.ID, err, out)
@@ -435,7 +435,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 
 		// Create sub-bead with blocks dependency so the parent is blocked
 		// until all sub-beads are closed.
-		createCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		createCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 		out, err := run(createCtx, anvilPath,
 			"create",
 			"--title="+task.Title,
@@ -480,7 +480,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		// can surface the issue to operators via ActionClarify.
 		if len(subBeads) >= 2 {
 			prev := subBeads[len(subBeads)-2]
-			depCtx, depCancel := context.WithTimeout(ctx, 15*time.Second)
+			depCtx, depCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 			depOut, depErr := run(depCtx, anvilPath, "dep", "add", created.ID, prev.ID)
 			depCtxErr := depCtx.Err() // capture before Cancel clears it
 			depCancel()
@@ -523,7 +523,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 
 		// Re-fetch parent to get accurate dependency data from bd.
 		var upstreamIDs, downstreamIDs []string
-		showCtx, showCancel := context.WithTimeout(ctx, 30*time.Second)
+		showCtx, showCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 		showOut, showErr := run(showCtx, anvilPath, "show", parent.ID, "--json")
 		showCancel()
 		if showErr == nil {
@@ -537,7 +537,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 
 		// Transfer parent's upstream dependencies to B1 (first sub-bead).
 		for _, depID := range upstreamIDs {
-			xCtx, xCancel := context.WithTimeout(ctx, 15*time.Second)
+			xCtx, xCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 			xOut, xErr := run(xCtx, anvilPath, "dep", "add", first.ID, depID)
 			xCancel()
 			if xErr != nil {
@@ -548,7 +548,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 
 		// Transfer parent's downstream blocks to B3 (last sub-bead).
 		for _, blockedID := range downstreamIDs {
-			xCtx, xCancel := context.WithTimeout(ctx, 15*time.Second)
+			xCtx, xCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 			xOut, xErr := run(xCtx, anvilPath, "dep", "add", blockedID, last.ID)
 			xCancel()
 			if xErr != nil {
@@ -571,7 +571,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		subIDs[i] = sb.ID
 	}
 	closeReason := fmt.Sprintf("Decomposed into %d sub-beads: %s", len(subBeads), strings.Join(subIDs, ", "))
-	closeCtx, closeCancel := context.WithTimeout(ctx, 15*time.Second)
+	closeCtx, closeCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer closeCancel()
 	closeOut, closeErr := run(closeCtx, anvilPath, "close", parent.ID, "--force", "--reason", closeReason)
 	if closeErr != nil {

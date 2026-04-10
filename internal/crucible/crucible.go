@@ -646,7 +646,7 @@ type bdShowBead struct {
 // bd show returns dependents as an array of objects with dependency_type,
 // not a flat "blocks" array, so we extract blocks from the dependents.
 func FetchBead(ctx context.Context, beadID, dir string) (poller.Bead, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer cancel()
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "show", beadID, "--json"))
@@ -764,7 +764,7 @@ func (p *Params) claimBead(ctx context.Context, beadID, dir string) error {
 	if p.BeadClaimer != nil {
 		return p.BeadClaimer(ctx, beadID, dir)
 	}
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer cancel()
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "update", beadID, "--status=in_progress", "--json"))
@@ -781,7 +781,7 @@ func (p *Params) closeBead(ctx context.Context, beadID, dir string) error {
 	if p.BeadCloser != nil {
 		return p.BeadCloser(ctx, beadID, dir)
 	}
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer cancel()
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "close", beadID, "--force", "--reason=Crucible child completed", "--json"))
@@ -798,7 +798,7 @@ func (p *Params) resetBead(ctx context.Context, beadID, dir string) error {
 	if p.BeadResetter != nil {
 		return p.BeadResetter(ctx, beadID, dir)
 	}
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer cancel()
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "update", beadID, "--status=open", "--json"))

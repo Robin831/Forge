@@ -396,7 +396,7 @@ func (p *Params) schematicProviders(providers []provider.Provider) []provider.Pr
 // versa). A future cleanup could factor this into a shared executil helper used
 // by both call sites.
 func releaseBead(beadID, anvilPath string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
 	defer cancel()
 	// Clear both status and assignee so the poller can re-dispatch the bead.
 	// The poller filters out any bead with a non-empty assignee (poller.go),

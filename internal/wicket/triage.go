@@ -58,7 +58,7 @@ func defaultBDListRunner(ctx context.Context, args []string, anvilPath string) (
 // A 30-second timeout is applied to prevent a hung beads DB from stalling the
 // scan loop indefinitely.
 func fetchBeadSummaries(ctx context.Context, status string, limit int, anvilPath string) []BeadSummary {
-	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	tctx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer cancel()
 
 	args := []string{"--status", status, "--json"}
@@ -578,7 +578,7 @@ func RunTriageWithComments(ctx context.Context, issue Issue, comments []Comment,
 
 		// Fetch all paths in parallel with a shared 30-second deadline so
 		// slow paths cannot stall the triage loop indefinitely.
-		fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		fetchCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 		defer cancel()
 
 		type pathResult struct {
