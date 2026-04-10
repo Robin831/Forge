@@ -8,7 +8,6 @@ package depcheck
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os/exec"
