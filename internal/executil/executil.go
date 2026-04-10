@@ -15,7 +15,8 @@ import (
 func DecodeJSON(data []byte, v any) error {
 	// Fast path: output starts with JSON (tolerates trailing noise).
 	dec := json.NewDecoder(bytes.NewReader(data))
-	if err := dec.Decode(v); err == nil {
+	fastErr := dec.Decode(v)
+	if fastErr == nil {
 		return nil
 	}
 
@@ -24,10 +25,12 @@ func DecodeJSON(data []byte, v any) error {
 		dec = json.NewDecoder(bytes.NewReader(data[idx:]))
 		if err := dec.Decode(v); err == nil {
 			return nil
+		} else {
+			return fmt.Errorf("decoding JSON from subprocess output: %w", err)
 		}
 	}
 
-	return fmt.Errorf("no valid JSON value found in %d bytes of output", len(data))
+	return fmt.Errorf("decoding JSON from subprocess output: %w", fastErr)
 }
 
 // HideWindow configures cmd to not create a visible console window.

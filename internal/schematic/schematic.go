@@ -458,10 +458,15 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		var created struct {
 			ID string `json:"id"`
 		}
-		if err := executil.DecodeJSON(out, &created); err != nil || created.ID == "" {
+		if err := executil.DecodeJSON(out, &created); err != nil {
 			log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: could not parse ID", parent.ID, len(subBeads))
 			resetParent()
 			return subBeads, fmt.Errorf("parsing sub-bead ID from output: %w: %s", err, out)
+		}
+		if created.ID == "" {
+			log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: could not parse ID", parent.ID, len(subBeads))
+			resetParent()
+			return subBeads, fmt.Errorf("parsing sub-bead ID from output: missing id in bd create JSON: %s", out)
 		}
 
 		subBeads = append(subBeads, SubBead{ID: created.ID, Title: task.Title})
