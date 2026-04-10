@@ -51,9 +51,9 @@ func TestDecodeJSON(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:   "JSON array",
-			input:  "[{\"id\":\"xyz\"}]\ntrailing stuff\n",
-			wantID: "",
+			name:    "JSON array into struct",
+			input:   "[{\"id\":\"xyz\"}]\ntrailing stuff\n",
+			wantErr: true,
 		},
 	}
 
