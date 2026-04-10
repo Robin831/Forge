@@ -169,7 +169,7 @@ func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 // pollAnvil runs 'bd ready --json' in an anvil directory and parses the output.
 func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Bead, error) {
 	// Build command with timeout
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer cancel()
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "ready", "--json"))
@@ -339,7 +339,7 @@ func (p *BeadPoller) PollInProgress(ctx context.Context) ([]Bead, []AnvilResult)
 
 // pollInProgressAnvil runs 'bd list --status=in_progress --json' in one anvil directory.
 func pollInProgressAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Bead, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer cancel()
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "list", "--status=in_progress", "--json"))

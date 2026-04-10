@@ -370,7 +370,7 @@ func (s *Scanner) CreateBeads(ctx context.Context, results []ScanResult) (int, e
 // It restricts the search to open beads so that a resolved vulnerability whose bead
 // was closed does not suppress a new bead if the vulnerability reappears.
 func (s *Scanner) beadExists(ctx context.Context, anvilPath, vulnID string) (bool, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, "bd", "list", "--status=open", "--json")
@@ -391,7 +391,9 @@ func (s *Scanner) beadExists(ctx context.Context, anvilPath, vulnID string) (boo
 
 // createBead calls `bd create` to make a new issue.
 func (s *Scanner) createBead(ctx context.Context, anvilPath, title, description string, priority int) error {
-	cmd := exec.CommandContext(ctx, "bd", "create",
+	tctx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(tctx, "bd", "create",
 		"--title", title,
 		"--description", description,
 		"--type", "bug",

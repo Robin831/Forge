@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
@@ -55,10 +54,10 @@ func defaultBDListRunner(ctx context.Context, args []string, anvilPath string) (
 // fetchBeadSummaries calls bd list with the given status filter and returns
 // parsed bead summaries. A limit of 0 means no limit. anvilPath sets the
 // working directory for the bd command so the correct .beads/ config is used.
-// A 30-second timeout is applied to prevent a hung beads DB from stalling the
+// A 60-second timeout is applied to prevent a hung beads DB from stalling the
 // scan loop indefinitely.
 func fetchBeadSummaries(ctx context.Context, status string, limit int, anvilPath string) []BeadSummary {
-	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	tctx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer cancel()
 
 	args := []string{"--status", status, "--json"}
@@ -576,9 +575,10 @@ func RunTriageWithComments(ctx context.Context, issue Issue, comments []Comment,
 			closedQuota = 1
 		}
 
-		// Fetch all paths in parallel with a shared 30-second deadline so
-		// slow paths cannot stall the triage loop indefinitely.
-		fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		// Fetch all paths in parallel with a shared timeout derived from
+		// executil.DefaultBdTimeout so slow paths cannot stall the triage loop
+		// indefinitely.
+		fetchCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 		defer cancel()
 
 		type pathResult struct {

@@ -326,7 +326,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 	d.costLimitLoggedDate.Store("")
 	d.cfg.Store(cfg)
 	d.labelAdder = func(anvilPath, beadID, tag string) error {
-		ctx, cancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		ctx, cancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 		defer cancel()
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--add-label", tag))
 		cmd.Dir = anvilPath
@@ -339,7 +339,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 	d.beadShower = func(anvilPath, beadID string) ([]byte, string, error) {
 		// Use context.Background() so the bd show call succeeds even during
 		// graceful shutdown (d.runCtx may already be cancelled at that point).
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
 		defer cancel()
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "show", beadID, "--json"))
 		cmd.Dir = anvilPath
@@ -351,7 +351,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 	d.parentCloser = func(anvilPath, beadID, reason string) error {
 		// Use context.Background() so the bd close call succeeds even during
 		// graceful shutdown (d.runCtx may already be cancelled at that point).
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
 		defer cancel()
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "close", beadID,
 			"--force", "--reason="+reason, "--json"))
@@ -1192,7 +1192,7 @@ func (d *Daemon) handleBeadCloseOnMerge(ctx context.Context, event bellows.PREve
 	if !ok || anvilCfg.Path == "" {
 		return
 	}
-	closeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	closeCtx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
 	defer cancel()
 	if err := d.closeBead(closeCtx, event.BeadID, anvilCfg.Path, fmt.Sprintf("PR #%d merged", event.PRNumber)); err != nil {
 		d.logger.Warn("failed to close bead after PR merge", "bead", event.BeadID, "pr", event.PRNumber, "error", err)
@@ -1270,7 +1270,7 @@ func (d *Daemon) reconcileMergedBeads(ctx context.Context) {
 			continue
 		}
 
-		closeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		closeCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 		err := d.closeBead(closeCtx, pr.BeadID, anvilCfg.Path,
 			fmt.Sprintf("PR #%d merged (startup reconciliation)", pr.Number))
 		cancel()
@@ -2200,7 +2200,7 @@ normalPipeline:
 			// Smith determined no changes are needed — close the bead with the
 			// reason instead of marking it as failed or needs_human.
 			d.logger.Info("no changes needed — closing bead", "bead", bead.ID, "reason", outcome.NoChangesReason)
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
 			defer closeCancel()
 			d.applyNoChangesNeededOutcome(closeCtx, bead, anvilCfg.Path, outcome.NoChangesReason)
 			return
@@ -2390,7 +2390,9 @@ func (d *Daemon) insertPendingWorker(beadID, anvilName, title string) string {
 
 // claimBead marks a bead as in_progress via bd update --claim.
 func (d *Daemon) claimBead(ctx context.Context, beadID, anvilPath string) error {
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=in_progress", "--json"))
+	tctx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(tctx, "bd", "update", beadID, "--status=in_progress", "--json"))
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -2807,7 +2809,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 			// Reset bead status to open and clear assignee so the poller
 			// can rediscover it as a crucible candidate.
-			resetCtx, resetCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+			resetCtx, resetCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 			defer resetCancel()
 			statusCmd := executil.HideWindow(exec.CommandContext(resetCtx, "bd", "update", ca.ParentID, "--status=open", "--assignee=", "--json"))
 			statusCmd.Dir = anvilCfg.Path
@@ -2837,7 +2839,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				return ipc.Response{Type: "error", Payload: msg}
 			}
 
-			closeCtx, closeCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+			closeCtx, closeCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 			defer closeCancel()
 			closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", ca.ParentID, "--reason=stopped from Hearth", "--json"))
 			closeCmd.Dir = anvilCfg.Path
@@ -3140,7 +3142,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
-		notesCtx, notesCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		notesCtx, notesCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 		defer notesCancel()
 
 		// bd update does not support reading notes from a file or stdin, so we must
@@ -3184,7 +3186,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no auto_dispatch_tag configured", tp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		tagCtx, tagCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		tagCtx, tagCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 		defer tagCancel()
 		tagCmd := executil.HideWindow(exec.CommandContext(tagCtx, "bd", "update", tp.BeadID, "--add-label", tag))
 		tagCmd.Dir = anvilCfg.Path
@@ -3224,7 +3226,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", cp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		closeCtx, closeCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		closeCtx, closeCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 		defer closeCancel()
 		closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", cp.BeadID))
 		closeCmd.Dir = anvilCfg.Path
@@ -3302,7 +3304,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		d.activeBeads.Delete(sp.BeadID)
 
 		// Release bead back to open so it's visible but not dispatched.
-		releaseCtx, releaseCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		releaseCtx, releaseCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 		defer releaseCancel()
 		releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", sp.BeadID, "--status=open", "--assignee=", "--json"))
 		releaseCmd.Dir = anvilCfg.Path
@@ -3403,7 +3405,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			// re-dispatch it. The pipeline sets status=in_progress on claim,
 			// and bd ready only returns open beads.
 			if anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]; ok && anvilCfg.Path != "" {
-				resetCtx, resetCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+				resetCtx, resetCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 				defer resetCancel()
 				statusCmd := executil.HideWindow(exec.CommandContext(resetCtx, "bd", "update", rp.BeadID, "--status=open", "--assignee=", "--json"))
 				statusCmd.Dir = anvilCfg.Path
@@ -3432,7 +3434,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// re-dispatch it. The pipeline sets status=in_progress on claim,
 		// and bd ready only returns open beads.
 		if anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]; ok && anvilCfg.Path != "" {
-			resetCtx, resetCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+			resetCtx, resetCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 			defer resetCancel()
 			statusCmd := executil.HideWindow(exec.CommandContext(resetCtx, "bd", "update", rp.BeadID, "--status=open", "--assignee=", "--json"))
 			statusCmd.Dir = anvilCfg.Path
@@ -3781,7 +3783,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// Refresh() fires, so we call closeBead directly here instead.
 		if beadID != "" && !strings.HasPrefix(beadID, "ext-") {
 			go func() {
-				closeCtx, closeCancel := context.WithTimeout(d.runCtx, 15*time.Second)
+				closeCtx, closeCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 				defer closeCancel()
 				if err := d.closeBead(closeCtx, beadID, anvilCfg.Path, fmt.Sprintf("PR #%d merged", mergeNumber)); err != nil {
 					d.logger.Warn("failed to close bead after merge", "bead", beadID, "pr", mergeNumber, "error", err)
@@ -3826,7 +3828,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			// Use context.Background() so this bd close call is not interrupted
 			// if the daemon is concurrently shutting down. The user explicitly
 			// chose to close this orphan, and the operation must complete.
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
 			defer closeCancel()
 			closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", rp.BeadID))
 			closeCmd.Dir = anvilCfg.Path
@@ -3843,7 +3845,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			// Use context.Background() so this bd close call is not interrupted
 			// if the daemon is concurrently shutting down. The user explicitly
 			// chose to discard this orphan, and the operation must complete.
-			discardCtx, discardCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			discardCtx, discardCancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
 			defer discardCancel()
 			discardCmd := executil.HideWindow(exec.CommandContext(discardCtx, "bd", "close", rp.BeadID, `--reason=Discarded by user during orphan recovery`))
 			discardCmd.Dir = anvilCfg.Path

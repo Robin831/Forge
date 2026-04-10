@@ -7,7 +7,6 @@ import (
 	"log"
 	"os/exec"
 	"sync"
-	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
 )
@@ -82,7 +81,7 @@ type bdShowResponse struct {
 
 // lookupBlocks fetches a bead's details and extracts the IDs of beads it blocks.
 func lookupBlocks(ctx context.Context, beadID, anvilPath string) []string {
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer cancel()
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "show", beadID, "--json"))

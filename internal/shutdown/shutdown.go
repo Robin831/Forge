@@ -413,7 +413,7 @@ type inProgressBead struct {
 // last-updated timestamps and most-recent worker branch so callers can filter
 // by age and display the branch in dialogs.
 func (m *Manager) listInProgressBeads(anvilName, anvilPath string) ([]inProgressBead, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
 	defer cancel()
 
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "list", "--status=in_progress", "--json"))
