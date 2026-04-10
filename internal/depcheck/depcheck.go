@@ -8,7 +8,6 @@ package depcheck
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os/exec"
@@ -348,22 +347,12 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 	}
 
 	// Extract the bead ID from the JSON output for logging.
-	// bd create --json may emit extra lines (e.g. progress messages) before the JSON
-	// object, so fall back to scanning each line if a whole-output unmarshal fails.
+	// bd create --json may emit trailing diagnostics (e.g. orphan detection
+	// warnings) after the JSON object; use DecodeJSON to tolerate the noise.
 	var created struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(output, &created); err != nil || created.ID == "" {
-		for _, line := range strings.Split(string(output), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			if err2 := json.Unmarshal([]byte(line), &created); err2 == nil && created.ID != "" {
-				break
-			}
-		}
-	}
+	_ = executil.DecodeJSON(output, &created)
 	if created.ID != "" {
 		log.Printf("[depcheck] %s: created consolidated bead %s", anvilName, created.ID)
 		_ = s.db.LogEvent(state.EventDepcheckBeadCreated,
