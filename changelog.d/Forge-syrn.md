@@ -1,0 +1,2 @@
+category: Fixed
+- **Burnish temper verification gate** - Burnish now runs Temper verification before pushing review-fix commits, breaking the burnish-quench infinite loop on PRs with automated review comments. Previously, burnish trusted Smith to only push working code, but Smith often pushed broken builds which triggered quench, which then triggered another Copilot review, restarting the cycle. (Forge-syrn)

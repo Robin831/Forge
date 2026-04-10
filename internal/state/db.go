@@ -1350,6 +1350,7 @@ const (
 	EventBurnishFailed        EventType = "review_fix_failed"
 	EventReviewThreadResolved EventType = "review_thread_resolved"
 	EventBurnishSmithError    EventType = "review_fix_smith_error"
+	EventBurnishTemperFailed  EventType = "review_fix_temper_failed"
 	EventPRCreated            EventType = "pr_created"
 	EventPRMerged             EventType = "pr_merged"
 	EventPRClosed             EventType = "pr_closed"
