@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
@@ -680,6 +679,3 @@ func TestTruncateOutput(t *testing.T) {
 		}
 	})
 }
-
-// Suppress unused import warnings for time — used in test setup.
-var _ = time.Second
