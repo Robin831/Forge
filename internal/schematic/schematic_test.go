@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"sync"
 	"testing"
 
@@ -11,6 +12,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// exitError1 returns a real *exec.ExitError with exit code 1 by running "false".
+func exitError1(t *testing.T) *exec.ExitError {
+	t.Helper()
+	err := exec.Command("false").Run()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected *exec.ExitError, got %T: %v", err, err)
+	}
+	return exitErr
+}
 
 func TestShouldRun_DisabledConfig(t *testing.T) {
 	cfg := Config{Enabled: false, WordThreshold: 10}
@@ -311,6 +323,7 @@ func TestCreateSubBeads_DepAddFailureIsFatal(t *testing.T) {
 }
 
 func TestCreateSubBeads_DepAddNonZeroButAdded(t *testing.T) {
+	depErr := exitError1(t) // real *exec.ExitError with exit code 1
 	var idCounter int
 	var mu sync.Mutex
 	fake := &fakeRunner{
@@ -324,7 +337,7 @@ func TestCreateSubBeads_DepAddNonZeroButAdded(t *testing.T) {
 			}
 			if len(args) > 0 && args[0] == "dep" {
 				// bd dep add exits non-zero but stdout confirms the dep was added.
-				return []byte("✓ Added dependency: test-2 depends on test-1 (blocks)"), fmt.Errorf("exit status 1")
+				return []byte("✓ Added dependency: test-2 depends on test-1 (blocks)"), depErr
 			}
 			return []byte("ok"), nil
 		},
