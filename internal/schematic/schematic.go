@@ -486,11 +486,19 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 			depOut, depErr := run(depCtx, anvilPath, "dep", "add", created.ID, prev.ID)
 			depCancel()
 			if depErr != nil {
-				log.Printf("[schematic:%s] Failed to add sequential dep %s -> %s: %v: %s",
-					parent.ID, created.ID, prev.ID, depErr, depOut)
-				resetParent()
-				return subBeads, fmt.Errorf("adding sequential dependency %s -> %s: %w: %s",
-					created.ID, prev.ID, depErr, depOut)
+				// bd dep add can exit non-zero even when the dependency was
+				// successfully added (stdout contains "✓ Added dependency").
+				// Treat that as success to avoid torpedoing a good decomposition.
+				if strings.Contains(string(depOut), "Added dependency") {
+					log.Printf("[schematic:%s] bd dep add exited non-zero but dependency was added (%s -> %s), ignoring exit code: %v",
+						parent.ID, created.ID, prev.ID, depErr)
+				} else {
+					log.Printf("[schematic:%s] Failed to add sequential dep %s -> %s: %v: %s",
+						parent.ID, created.ID, prev.ID, depErr, depOut)
+					resetParent()
+					return subBeads, fmt.Errorf("adding sequential dependency %s -> %s: %w: %s",
+						created.ID, prev.ID, depErr, depOut)
+				}
 			}
 		}
 	}

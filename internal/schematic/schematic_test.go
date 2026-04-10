@@ -310,6 +310,38 @@ func TestCreateSubBeads_DepAddFailureIsFatal(t *testing.T) {
 	assert.NotEmpty(t, subs, "partial sub-beads should be returned even on dep add failure")
 }
 
+func TestCreateSubBeads_DepAddNonZeroButAdded(t *testing.T) {
+	var idCounter int
+	var mu sync.Mutex
+	fake := &fakeRunner{
+		response: func(args []string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "create" {
+				mu.Lock()
+				idCounter++
+				id := fmt.Sprintf("test-%d", idCounter)
+				mu.Unlock()
+				return []byte(fmt.Sprintf(`{"id":%q}`, id)), nil
+			}
+			if len(args) > 0 && args[0] == "dep" {
+				// bd dep add exits non-zero but stdout confirms the dep was added.
+				return []byte("✓ Added dependency: test-2 depends on test-1 (blocks)"), fmt.Errorf("exit status 1")
+			}
+			return []byte("ok"), nil
+		},
+	}
+
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2}
+	tasks := []subTaskVerdict{
+		{Title: "Task A", Description: "Desc A"},
+		{Title: "Task B", Description: "Desc B"},
+	}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	// Should succeed because the output confirms the dependency was added.
+	require.NoError(t, err, "dep add with success marker in output should not be fatal")
+	assert.Len(t, subs, 2)
+}
+
 func TestCreateSubBeads_SingleTaskNoDep(t *testing.T) {
 	fake := newFakeRunner()
 	parent := poller.Bead{ID: "parent-1", Title: "Simple task", Priority: 1}
