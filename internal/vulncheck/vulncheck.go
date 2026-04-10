@@ -391,7 +391,9 @@ func (s *Scanner) beadExists(ctx context.Context, anvilPath, vulnID string) (boo
 
 // createBead calls `bd create` to make a new issue.
 func (s *Scanner) createBead(ctx context.Context, anvilPath, title, description string, priority int) error {
-	cmd := exec.CommandContext(ctx, "bd", "create",
+	tctx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(tctx, "bd", "create",
 		"--title", title,
 		"--description", description,
 		"--type", "bug",

@@ -2390,7 +2390,9 @@ func (d *Daemon) insertPendingWorker(beadID, anvilName, title string) string {
 
 // claimBead marks a bead as in_progress via bd update --claim.
 func (d *Daemon) claimBead(ctx context.Context, beadID, anvilPath string) error {
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=in_progress", "--json"))
+	tctx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(tctx, "bd", "update", beadID, "--status=in_progress", "--json"))
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
