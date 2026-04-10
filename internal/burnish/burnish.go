@@ -9,13 +9,16 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/cost"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/temper"
 	"github.com/Robin831/Forge/internal/vcs"
 )
 
@@ -54,6 +57,12 @@ type FixParams struct {
 	// VCS is the VCS provider for repository operations. When set,
 	// it is used for GetRepoOwnerAndName instead of creating a throwaway instance.
 	VCS vcs.Provider
+	// TemperConfig is the per-anvil temper configuration. Nil means auto-detect.
+	TemperConfig *temper.Config
+	// DetectOptions controls temper auto-detection behavior (e.g. golangci-lint).
+	DetectOptions *temper.DetectOptions
+	// GoRaceDetection enables Go race detection in temper steps.
+	GoRaceDetection bool
 }
 
 // FixResult captures the outcome of addressing review comments.
@@ -94,6 +103,12 @@ type BatchFixParams struct {
 	Comments []vcs.ReviewComment
 	// VCS is the VCS provider for thread resolution.
 	VCS vcs.Provider
+	// TemperConfig is the per-anvil temper configuration. Nil means auto-detect.
+	TemperConfig *temper.Config
+	// DetectOptions controls temper auto-detection behavior (e.g. golangci-lint).
+	DetectOptions *temper.DetectOptions
+	// GoRaceDetection enables Go race detection in temper steps.
+	GoRaceDetection bool
 }
 
 // BatchFix combines multiple review comments into one Smith prompt.
@@ -131,7 +146,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 			log.Printf("[burnish] PR #%d: Provider %s rate limited, retrying with %s",
 				p.PRNumber, providers[pi-1].Label(), pv.Label())
 		}
-		process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
+		process, err := smithSpawnFn(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
 		if err != nil {
 			result.Error = fmt.Errorf("spawning smith (%s) for batch review fix: %w", pv.Label(), err)
 			result.Duration = time.Since(start)
@@ -194,7 +209,42 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		return result
 	}
 
-	log.Printf("[burnish] PR #%d: batch review fix applied for %d comments", p.PRNumber, len(actionable))
+	// Verify locally before pushing.
+	temperCfg := resolveTemperConfig(p.WorktreePath, p.TemperConfig, p.DetectOptions, p.GoRaceDetection)
+	verifyResult := temperRunFn(ctx, p.WorktreePath, temperCfg, p.DB, p.BeadID, p.AnvilName)
+	if !verifyResult.Passed {
+		log.Printf("[burnish] PR #%d: batch Temper failed (failed step: %s) — not pushing",
+			p.PRNumber, verifyResult.FailedStep)
+		if p.DB != nil {
+			_ = p.DB.LogEvent(state.EventBurnishTemperFailed,
+				fmt.Sprintf("PR #%d: batch temper failed at step %s", p.PRNumber, verifyResult.FailedStep),
+				p.BeadID, p.AnvilName)
+		}
+		result.Error = fmt.Errorf("batch review fix: temper verification failed at step %s", verifyResult.FailedStep)
+		result.Duration = time.Since(start)
+		return result
+	}
+
+	// Temper passed — push the verified commits (unless Smith already pushed).
+	localHead, _ := gitRevParseFn(ctx, p.WorktreePath, "HEAD")
+	remoteHead, _ := gitRevParseFn(ctx, p.WorktreePath, "origin/"+p.Branch)
+	if localHead == "" || localHead != remoteHead {
+		if err := gitPushFn(ctx, p.WorktreePath, p.Branch); err != nil {
+			log.Printf("[burnish] PR #%d: push failed after temper-verified batch fix: %v", p.PRNumber, err)
+			if p.DB != nil {
+				_ = p.DB.LogEvent(state.EventBurnishFailed,
+					fmt.Sprintf("PR #%d: push failed after temper-verified batch fix: %v", p.PRNumber, err),
+					p.BeadID, p.AnvilName)
+			}
+			result.Error = fmt.Errorf("push after temper verification: %w", err)
+			result.Duration = time.Since(start)
+			return result
+		}
+	} else {
+		log.Printf("[burnish] PR #%d: Smith already pushed (HEAD matches origin/%s), skipping explicit push", p.PRNumber, p.Branch)
+	}
+
+	log.Printf("[burnish] PR #%d: batch review fix verified and pushed for %d comments", p.PRNumber, len(actionable))
 	result.Addressed = true
 
 	// Resolve threads after successful fix.
@@ -261,9 +311,9 @@ func buildBatchReviewPrompt(prNumber int, branch, beadID string, comments []vcs.
 2. Make the requested changes — follow each reviewer's guidance
 3. **Run the test suite** and fix any failures before continuing
 4. Commit with message: "fix: address review comments for %s"
-5. Push to branch: %s
+5. Do NOT push — Forge will run verification and push for you. Exit cleanly after committing.
 
-`, len(comments), beadID, branch)
+`, len(comments), beadID)
 
 	return b.String()
 }
@@ -320,11 +370,16 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	}
 	activeProviderIdx := 0
 
+	var lastTemperFailure *temper.Result
+
 	for attempt := 1; attempt <= p.MaxAttempts; attempt++ {
 		result.Attempts = attempt
 
-		// Step 2: Build fix prompt
+		// Step 2: Build fix prompt, including previous temper failure if any.
 		prompt := buildReviewFixPrompt(p, actionable)
+		if lastTemperFailure != nil {
+			prompt = formatTemperFailureForPrompt(lastTemperFailure) + prompt
+		}
 
 		// Step 3: Spawn Smith (with provider fallback on rate limit)
 		_ = p.DB.LogEvent(state.EventBurnishStarted,
@@ -343,7 +398,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 						p.PRNumber, attempt, providers[pi-1].Label(), pv.Label()),
 					p.BeadID, p.AnvilName)
 			}
-			process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
+			process, err := smithSpawnFn(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
 			if err != nil {
 				result.Error = fmt.Errorf("spawning smith (%s) for review fix: %w", pv.Label(), err)
 				_ = p.DB.LogEvent(state.EventBurnishFailed, result.Error.Error(), p.BeadID, p.AnvilName)
@@ -418,8 +473,43 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			continue
 		}
 
-		// Smith succeeded — assume fixes were committed and pushed
-		log.Printf("[burnish] PR #%d: Review fixes applied on attempt %d", p.PRNumber, attempt)
+		// Smith succeeded — verify locally before pushing.
+		temperCfg := resolveTemperConfig(p.WorktreePath, p.TemperConfig, p.DetectOptions, p.GoRaceDetection)
+		verifyResult := temperRunFn(ctx, p.WorktreePath, temperCfg, p.DB, p.BeadID, p.AnvilName)
+
+		// Defensive check: did Smith push despite being told not to?
+		smithAlreadyPushed := false
+		localHead, _ := gitRevParseFn(ctx, p.WorktreePath, "HEAD")
+		remoteHead, _ := gitRevParseFn(ctx, p.WorktreePath, "origin/"+p.Branch)
+		if localHead != "" && localHead == remoteHead {
+			smithAlreadyPushed = true
+			log.Printf("[burnish] PR #%d: Smith already pushed (HEAD matches origin/%s)", p.PRNumber, p.Branch)
+		}
+
+		if !verifyResult.Passed {
+			log.Printf("[burnish] PR #%d: Temper failed on attempt %d (failed step: %s) — looping with feedback",
+				p.PRNumber, attempt, verifyResult.FailedStep)
+			_ = p.DB.LogEvent(state.EventBurnishTemperFailed,
+				fmt.Sprintf("PR #%d: temper failed on attempt %d at step %s", p.PRNumber, attempt, verifyResult.FailedStep),
+				p.BeadID, p.AnvilName)
+			lastTemperFailure = verifyResult
+			continue
+		}
+
+		// Temper passed — push the verified commits.
+		if !smithAlreadyPushed {
+			if err := gitPushFn(ctx, p.WorktreePath, p.Branch); err != nil {
+				log.Printf("[burnish] PR #%d: push failed after temper-verified fix: %v", p.PRNumber, err)
+				_ = p.DB.LogEvent(state.EventBurnishFailed,
+					fmt.Sprintf("PR #%d: push failed after temper-verified fix: %v", p.PRNumber, err),
+					p.BeadID, p.AnvilName)
+				result.Error = fmt.Errorf("push after temper verification: %w", err)
+				result.Duration = time.Since(start)
+				return result
+			}
+		}
+
+		log.Printf("[burnish] PR #%d: Review fixes verified and pushed on attempt %d", p.PRNumber, attempt)
 		result.Addressed = true
 
 		// Resolve threads after successful fix.
@@ -516,11 +606,86 @@ func buildReviewFixPrompt(p FixParams, comments []vcs.ReviewComment) string {
 
 1. Address ALL review comments above
 2. Make the requested changes — follow the reviewer's guidance
-3. **Run the test suite** (e.g. "go test ./..." for Go, "dotnet test" for .NET, "npm test" or "npx vitest run" for Node/frontend) and fix any failures before continuing — do NOT commit or push if tests are failing
+3. **Run the test suite** (e.g. "go test ./..." for Go, "dotnet test" for .NET, "npm test" or "npx vitest run" for Node/frontend) and fix any failures before continuing — do NOT commit if tests are failing
 4. Commit with message: "fix: address review comments for %s"
-5. Push to branch: %s
+5. Do NOT push — Forge will run verification and push for you. Exit cleanly after committing.
 
-`, p.BeadID, p.Branch)
+`, p.BeadID)
 
 	return b.String()
+}
+
+// smithSpawnFn is the function used to spawn Smith. Package-level variable for test stubbing.
+var smithSpawnFn = smith.SpawnWithProvider
+
+// temperRunFn is the function used to run temper verification.
+// It is a package-level variable so tests can substitute a stub.
+var temperRunFn = temper.Run
+
+// gitPushFn is the function used to push commits to the remote.
+// It is a package-level variable so tests can substitute a stub.
+var gitPushFn = gitPush
+
+// gitRevParseFn is the function used to resolve git refs. Package-level for test stubbing.
+var gitRevParseFn = gitRevParse
+
+// gitPush pushes the current branch to origin.
+func gitPush(ctx context.Context, worktreePath, branch string) error {
+	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "push", "origin", branch)
+	executil.HideWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git push origin %s: %w (output: %s)", branch, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// gitRevParse resolves a git ref to its commit hash.
+func gitRevParse(ctx context.Context, dir, ref string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", ref)
+	executil.HideWindow(cmd)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse %s: %s (%w)", ref, strings.TrimSpace(string(out)), err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// resolveTemperConfig returns the temper config to use, falling back to auto-detection.
+func resolveTemperConfig(worktreePath string, cfg *temper.Config, opts *temper.DetectOptions, raceEnabled bool) temper.Config {
+	if cfg != nil {
+		return *cfg
+	}
+	return temper.DefaultConfigWithRace(worktreePath, opts, raceEnabled)
+}
+
+// formatTemperFailureForPrompt renders a temper failure as a prompt section
+// that can be prepended to the next Smith attempt.
+func formatTemperFailureForPrompt(r *temper.Result) string {
+	if r == nil || r.Passed {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Previous Verification Failure\n\n")
+	b.WriteString("Your previous attempt addressed the review comments but Temper failed when verifying:\n\n")
+	for _, step := range r.Steps {
+		if step.Passed {
+			continue
+		}
+		fmt.Fprintf(&b, "Failed step: %s\nCommand: %s\nOutput:\n```\n%s\n```\n\n",
+			step.Name, step.Command, truncateOutput(step.Output, 4000))
+		break // Only show the first failed step.
+	}
+	b.WriteString("You must address BOTH the original review comments AND fix this verification failure before committing.\n\n")
+	return b.String()
+}
+
+// truncateOutput returns the last maxLen characters of output, prepending
+// a truncation marker if it was shortened.
+func truncateOutput(output string, maxLen int) string {
+	if len(output) <= maxLen {
+		return output
+	}
+	return "... (truncated)\n" + output[len(output)-maxLen:]
 }

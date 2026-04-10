@@ -1035,35 +1035,43 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					d.logger.Warn("failed to fetch review comments for batch fix, falling back to single fix", "pr", req.PRNumber, "error", fetchErr)
 					useBurnishBatch = false
 				} else {
+					burnishDetectOpts := temper.DetectOptionsFromAnvilFlag(anvilCfg.GolangciLint)
 					res = burnish.BatchFix(workerCtx, burnish.BatchFixParams{
-						WorktreePath: wt.Path,
-						BeadID:       req.BeadID,
-						AnvilName:    req.Anvil,
-						PRNumber:     req.PRNumber,
-						Branch:       req.Branch,
-						DB:           d.db,
-						WorkerID:     workerID,
-						ExtraFlags:   burnishCfg.Settings.ClaudeFlags,
-						Providers:    burnishProviders,
-						Comments:     comments,
-						VCS:          anvilVCS,
+						WorktreePath:    wt.Path,
+						BeadID:          req.BeadID,
+						AnvilName:       req.Anvil,
+						PRNumber:        req.PRNumber,
+						Branch:          req.Branch,
+						DB:              d.db,
+						WorkerID:        workerID,
+						ExtraFlags:      burnishCfg.Settings.ClaudeFlags,
+						Providers:       burnishProviders,
+						Comments:        comments,
+						VCS:             anvilVCS,
+						TemperConfig:    d.resolveTemperConfig(anvilCfg),
+						DetectOptions:   burnishDetectOpts,
+						GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 					})
 				}
 			}
 			if !useBurnishBatch {
+				burnishDetectOpts := temper.DetectOptionsFromAnvilFlag(anvilCfg.GolangciLint)
 				res = burnish.Fix(workerCtx, burnish.FixParams{
-					WorktreePath: wt.Path,
-					BeadID:       req.BeadID,
-					AnvilName:    req.Anvil,
-					AnvilPath:    anvilCfg.Path,
-					PRNumber:     req.PRNumber,
-					Branch:       req.Branch,
-					DB:           d.db,
-					WorkerID:     workerID,
-					MaxAttempts:  burnishCfg.Settings.MaxReviewAttempts,
-					ExtraFlags:   burnishCfg.Settings.ClaudeFlags,
-					Providers:    burnishProviders,
-					VCS:          d.vcsForAnvil(req.Anvil),
+					WorktreePath:    wt.Path,
+					BeadID:          req.BeadID,
+					AnvilName:       req.Anvil,
+					AnvilPath:       anvilCfg.Path,
+					PRNumber:        req.PRNumber,
+					Branch:          req.Branch,
+					DB:              d.db,
+					WorkerID:        workerID,
+					MaxAttempts:     burnishCfg.Settings.MaxReviewAttempts,
+					ExtraFlags:      burnishCfg.Settings.ClaudeFlags,
+					Providers:       burnishProviders,
+					VCS:             d.vcsForAnvil(req.Anvil),
+					TemperConfig:    d.resolveTemperConfig(anvilCfg),
+					DetectOptions:   burnishDetectOpts,
+					GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 				})
 			}
 			status := state.WorkerDone
