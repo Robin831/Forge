@@ -2659,21 +2659,18 @@ func (d *Daemon) killWorkerProcess(workerID string) error {
 	// Resolve the process group ID. If the worker was started with Setpgid,
 	// pgid == pid. For older workers or recycled PIDs, Getpgid may return a
 	// different value; we verify pgid == pid before using group signaling.
+	// On Windows, pgidKnown is always false — see killgroup_windows.go.
 	pgid, pgidKnown := processGroup(pid)
 
-	// Phase 1: Send SIGINT to the process group (if known) or the PID directly.
-	if pgidKnown {
-		if err := syscall.Kill(-pgid, syscall.SIGINT); err != nil {
-			_ = syscall.Kill(pid, syscall.SIGINT)
-		}
-	} else {
-		_ = syscall.Kill(pid, syscall.SIGINT)
-	}
+	// Phase 1: Send an interrupt to the process group (if known) or the PID
+	// directly. signalInterrupt is platform-specific: SIGINT on Unix,
+	// CTRL_BREAK_EVENT via os.Process.Signal(os.Interrupt) on Windows.
+	signalInterrupt(pid, pgid, pgidKnown)
 
 	// Phase 2: Wait up to gracePeriod for the process to exit.
 	deadline := time.Now().Add(gracePeriod)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); err != nil {
+		if !processAlive(pid) {
 			// Process is gone.
 			if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); dbErr != nil {
 				d.logger.Error("failed to update worker status after kill", "worker", workerID, "error", dbErr)
@@ -2684,31 +2681,26 @@ func (d *Daemon) killWorkerProcess(workerID string) error {
 		time.Sleep(pollInterval)
 	}
 
-	// Phase 3: Still alive — send SIGKILL to the process group.
-	d.logger.Warn("worker did not exit after SIGINT, sending SIGKILL", "pid", pid, "worker", workerID)
-	if pgidKnown {
-		if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		}
-	} else {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-	}
+	// Phase 3: Still alive — force-kill. On Unix this is SIGKILL to the
+	// process group; on Windows it is TerminateProcess on the individual PID.
+	d.logger.Warn("worker did not exit after interrupt, force-killing", "pid", pid, "worker", workerID)
+	signalKill(pid, pgid, pgidKnown)
 
-	// Poll to verify the process actually exited after SIGKILL.
+	// Poll to verify the process actually exited after the kill.
 	const killVerifyTimeout = 2 * time.Second
 	killDeadline := time.Now().Add(killVerifyTimeout)
 	for time.Now().Before(killDeadline) {
-		if err := syscall.Kill(pid, 0); err != nil {
+		if !processAlive(pid) {
 			break // Process is gone.
 		}
 		time.Sleep(pollInterval)
 	}
-	if err := syscall.Kill(pid, 0); err == nil {
-		d.logger.Error("worker process still alive after SIGKILL", "pid", pid, "worker", workerID)
+	if processAlive(pid) {
+		d.logger.Error("worker process still alive after force-kill", "pid", pid, "worker", workerID)
 		if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); dbErr != nil {
 			d.logger.Error("failed to update worker status after kill", "worker", workerID, "error", dbErr)
 		}
-		return fmt.Errorf("worker process %d still alive after SIGKILL", pid)
+		return fmt.Errorf("worker process %d still alive after force-kill", pid)
 	}
 	if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); dbErr != nil {
 		d.logger.Error("failed to update worker status after kill", "worker", workerID, "error", dbErr)
