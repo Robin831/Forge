@@ -2,11 +2,12 @@ package ledger
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/Robin831/Forge/internal/executil"
 )
 
 // Action result messages returned by bead CRUD commands.
@@ -222,16 +223,17 @@ func RemoveDepCmd(anvilPath, beadID, depID string) tea.Cmd {
 
 // extractIDFromJSON does a best-effort extraction of the "id" field from
 // bd create --json output. The output may be a JSON array (e.g. [{"id":...}])
-// or a plain object. Returns empty string on failure.
+// or a plain object, and may contain trailing diagnostics (e.g. orphan
+// detection warnings). Returns empty string on failure.
 func extractIDFromJSON(data []byte) string {
 	// Try as array first — bd --json typically wraps results in an array.
 	var arr []Bead
-	if err := json.Unmarshal(data, &arr); err == nil && len(arr) > 0 {
+	if err := executil.DecodeJSON(data, &arr); err == nil && len(arr) > 0 {
 		return arr[0].ID
 	}
 	// Fall back to single object.
 	var b Bead
-	if err := json.Unmarshal(data, &b); err != nil {
+	if err := executil.DecodeJSON(data, &b); err != nil {
 		return ""
 	}
 	return b.ID

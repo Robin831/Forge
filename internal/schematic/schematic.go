@@ -452,23 +452,16 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 			return subBeads, fmt.Errorf("creating sub-bead %q: %w: %s", task.Title, err, out)
 		}
 
-		// Extract ID from JSON output
+		// Extract ID from JSON output. bd may emit trailing diagnostics
+		// (e.g. orphan detection warnings) after the JSON object, so use a
+		// streaming decoder that tolerates trailing data.
 		var created struct {
 			ID string `json:"id"`
 		}
-		if err := json.Unmarshal(out, &created); err != nil {
-			// Try to find the ID in the output
-			lines := strings.Split(string(out), "\n")
-			for _, line := range lines {
-				if err2 := json.Unmarshal([]byte(line), &created); err2 == nil && created.ID != "" {
-					break
-				}
-			}
-			if created.ID == "" {
-				log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: could not parse ID", parent.ID, len(subBeads))
-				resetParent()
-				return subBeads, fmt.Errorf("parsing sub-bead ID from output: %w: %s", err, out)
-			}
+		if err := executil.DecodeJSON(out, &created); err != nil || created.ID == "" {
+			log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: could not parse ID", parent.ID, len(subBeads))
+			resetParent()
+			return subBeads, fmt.Errorf("parsing sub-bead ID from output: %w: %s", err, out)
 		}
 
 		subBeads = append(subBeads, SubBead{ID: created.ID, Title: task.Title})
@@ -592,7 +585,8 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 func parseDepsFromShow(jsonOutput string) (upstreamIDs, downstreamIDs []string) {
 	// bd show --json returns an array with one element.
 	var items []json.RawMessage
-	if err := json.Unmarshal([]byte(jsonOutput), &items); err != nil || len(items) == 0 {
+	// bd show --json may emit trailing diagnostics; use DecodeJSON to tolerate noise.
+	if err := executil.DecodeJSON([]byte(jsonOutput), &items); err != nil || len(items) == 0 {
 		// Try parsing as a single object.
 		items = []json.RawMessage{json.RawMessage(jsonOutput)}
 	}
@@ -605,7 +599,7 @@ func parseDepsFromShow(jsonOutput string) (upstreamIDs, downstreamIDs []string) 
 			ID string `json:"id"`
 		} `json:"dependents"`
 	}
-	if err := json.Unmarshal(items[0], &parsed); err != nil {
+	if err := executil.DecodeJSON(items[0], &parsed); err != nil {
 		return nil, nil
 	}
 
