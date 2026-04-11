@@ -175,6 +175,9 @@ type TemperCommandsConfig struct {
 	Test string `mapstructure:"test" yaml:"test,omitempty"`
 	// Lint is the lint command (e.g. "make lint", "ruff check .").
 	Lint string `mapstructure:"lint" yaml:"lint,omitempty"`
+	// LintRequired makes lint failures fail the temper run instead of warning.
+	// Default false preserves legacy behavior where lint is advisory-only.
+	LintRequired bool `mapstructure:"lint_required" yaml:"lint_required,omitempty"`
 }
 
 // IsEmpty returns true if no custom commands are configured.

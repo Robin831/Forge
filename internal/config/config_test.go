@@ -847,3 +847,25 @@ func TestProvidersForStageWithAnvil_AnvilNoStageProviders(t *testing.T) {
 	got := ProvidersForStageWithAnvil(s, anvil, "smith")
 	assert.Equal(t, []string{"claude"}, got)
 }
+
+func TestLoad_TemperLintRequired(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+anvils:
+  myrepo:
+    path: /some/path
+    temper:
+      build: "make build"
+      lint: "make lint"
+      lint_required: true
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Anvils["myrepo"].Temper)
+	assert.True(t, cfg.Anvils["myrepo"].Temper.LintRequired)
+	assert.Equal(t, "make lint", cfg.Anvils["myrepo"].Temper.Lint)
+	assert.Equal(t, "make build", cfg.Anvils["myrepo"].Temper.Build)
+}

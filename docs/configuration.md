@@ -255,7 +255,8 @@ By default, Temper auto-detects the project type (Go, .NET, Node) and runs appro
 |-------|------|---------|-------------|
 | `temper.build` | string | | Custom build command (e.g. `"make build"`, `"cargo build"`). Replaces the auto-detected build step. |
 | `temper.test` | string | | Custom test command (e.g. `"make test"`, `"pytest"`). Replaces the auto-detected test step. |
-| `temper.lint` | string | | Custom lint command (e.g. `"make lint"`, `"ruff check ."`). Runs as an optional step (failure warns but doesn't block). |
+| `temper.lint` | string | | Custom lint command (e.g. `"make lint"`, `"ruff check ."`). Runs as an optional step by default (failure warns but doesn't block). Set `lint_required: true` to make lint failures fail the temper run. |
+| `temper.lint_required` | bool | `false` | When `true`, failures in `temper.lint` fail the temper run instead of warning. Default matches legacy behavior where lint is an advisory-only step. |
 
 When any `temper` field is set, **all** auto-detected steps are replaced — only the explicitly configured commands run. Omit a field to skip that step entirely.
 
@@ -283,6 +284,13 @@ anvils:
       build: "make build"
       test: "make test"
       lint: "make lint"
+  strict-node-app:
+    path: /home/user/source/strict-node-app
+    temper:
+      build: "npm run build"
+      test: "npm run test:run"
+      lint: "npm run lint"
+      lint_required: true   # make lint failures fail the temper run, matching CI
 ```
 
 ## Settings

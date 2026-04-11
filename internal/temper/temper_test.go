@@ -244,7 +244,7 @@ func TestDetectSteps_NodeRootAndSubdir(t *testing.T) {
 }
 
 func TestConfigFromCommands_AllCommands(t *testing.T) {
-	cfg := ConfigFromCommands("make build", "make test", "make lint")
+	cfg := ConfigFromCommands("make build", "make test", "make lint", false)
 	require.NotNil(t, cfg)
 	assert.Len(t, cfg.Steps, 3)
 
@@ -266,7 +266,7 @@ func TestConfigFromCommands_AllCommands(t *testing.T) {
 }
 
 func TestConfigFromCommands_OnlyBuild(t *testing.T) {
-	cfg := ConfigFromCommands("cargo build", "", "")
+	cfg := ConfigFromCommands("cargo build", "", "", false)
 	require.NotNil(t, cfg)
 	assert.Len(t, cfg.Steps, 1)
 	assert.Equal(t, "build", cfg.Steps[0].Name)
@@ -275,7 +275,7 @@ func TestConfigFromCommands_OnlyBuild(t *testing.T) {
 }
 
 func TestConfigFromCommands_OnlyTest(t *testing.T) {
-	cfg := ConfigFromCommands("", "pytest -v", "")
+	cfg := ConfigFromCommands("", "pytest -v", "", false)
 	require.NotNil(t, cfg)
 	assert.Len(t, cfg.Steps, 1)
 	assert.Equal(t, "test", cfg.Steps[0].Name)
@@ -284,19 +284,19 @@ func TestConfigFromCommands_OnlyTest(t *testing.T) {
 }
 
 func TestConfigFromCommands_AllEmpty(t *testing.T) {
-	cfg := ConfigFromCommands("", "", "")
+	cfg := ConfigFromCommands("", "", "", false)
 	assert.Nil(t, cfg, "all empty commands should return nil")
 }
 
 func TestConfigFromCommands_SingleWordCommand(t *testing.T) {
-	cfg := ConfigFromCommands("", "pytest", "")
+	cfg := ConfigFromCommands("", "pytest", "", false)
 	require.NotNil(t, cfg)
 	assert.Equal(t, "pytest", cfg.Steps[0].Command)
 	assert.Empty(t, cfg.Steps[0].Args)
 }
 
 func TestConfigFromCommands_Timeouts(t *testing.T) {
-	cfg := ConfigFromCommands("make build", "make test", "make lint")
+	cfg := ConfigFromCommands("make build", "make test", "make lint", false)
 	require.NotNil(t, cfg)
 
 	for _, s := range cfg.Steps {
@@ -324,4 +324,28 @@ func TestDefaultConfigWithRace_ExcludesRaceStepWhenDisabled(t *testing.T) {
 	assert.Contains(t, names, "build")
 	assert.Contains(t, names, "vet")
 	assert.Contains(t, names, "test")
+}
+
+func TestConfigFromCommands_LintRequired_True(t *testing.T) {
+	cfg := ConfigFromCommands("", "", "make lint", true)
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.Steps, 1)
+	assert.Equal(t, "lint", cfg.Steps[0].Name)
+	assert.False(t, cfg.Steps[0].Optional, "lint should not be optional when lintRequired is true")
+}
+
+func TestConfigFromCommands_LintRequired_False_PreservesDefault(t *testing.T) {
+	cfg := ConfigFromCommands("", "", "make lint", false)
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.Steps, 1)
+	assert.Equal(t, "lint", cfg.Steps[0].Name)
+	assert.True(t, cfg.Steps[0].Optional, "lint should be optional when lintRequired is false")
+}
+
+func TestConfigFromCommands_LintRequired_EmptyLint_NoStep(t *testing.T) {
+	cfg := ConfigFromCommands("make build", "", "", true)
+	require.NotNil(t, cfg)
+	for _, s := range cfg.Steps {
+		assert.NotEqual(t, "lint", s.Name, "no lint step should be added when lint command is empty")
+	}
 }
