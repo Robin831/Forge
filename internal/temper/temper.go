@@ -201,10 +201,10 @@ func ConfigFromSteps(steps []config.TemperStepConfig) *Config {
 			optional = true
 		}
 		out[i] = Step{
-			Name:     s.Name,
-			Command:  s.Command,
+			Name:     strings.TrimSpace(s.Name),
+			Command:  strings.TrimSpace(s.Command),
 			Args:     s.Args,
-			Dir:      s.Dir,
+			Dir:      strings.TrimSpace(s.Dir),
 			Timeout:  timeout,
 			Optional: optional,
 		}

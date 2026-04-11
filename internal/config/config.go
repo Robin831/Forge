@@ -1038,16 +1038,24 @@ func (c *Config) Validate() []string {
 		if anvil.Temper != nil {
 			seen := make(map[string]bool)
 			for i, step := range anvil.Temper.Steps {
-				if step.Name == "" {
+				trimmedName := strings.TrimSpace(step.Name)
+				trimmedCommand := strings.TrimSpace(step.Command)
+
+				if trimmedName == "" {
 					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps[%d].name must be non-empty", name, i))
 				}
-				if step.Command == "" {
+				if trimmedCommand == "" {
 					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps[%d].command must be non-empty", name, i))
 				}
-				if step.Name != "" && seen[step.Name] {
-					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps has duplicate name %q", name, step.Name))
+				if trimmedName != "" {
+					if seen[trimmedName] {
+						errs = append(errs, fmt.Sprintf("anvil %q: temper.steps has duplicate name %q", name, trimmedName))
+					}
+					seen[trimmedName] = true
 				}
-				seen[step.Name] = true
+				if step.Timeout < 0 {
+					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps[%d].timeout must be non-negative", name, i))
+				}
 			}
 		}
 	}

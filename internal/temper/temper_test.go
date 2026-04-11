@@ -422,9 +422,9 @@ func TestConfigFromSteps_EmptyList_ReturnsNil(t *testing.T) {
 	assert.Nil(t, cfg, "nil steps slice should return nil")
 }
 
-func TestConfigFromSteps_StopsOnRequiredFailure(t *testing.T) {
-	// This tests that the existing Run loop stops on required step failure.
-	// We build a Config with three steps where the middle one will fail.
+func TestConfigFromSteps_RequiredByDefault(t *testing.T) {
+	// This test verifies that ConfigFromSteps marks steps as required by default.
+	// It does not execute Temper's Run loop.
 	cfg := ConfigFromSteps([]config.TemperStepConfig{
 		{Name: "pass", Command: "true"},
 		{Name: "fail", Command: "false"},
