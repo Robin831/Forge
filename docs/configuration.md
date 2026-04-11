@@ -258,7 +258,7 @@ By default, Temper auto-detects the project type (Go, .NET, Node) and runs appro
 | `temper.lint` | string | | Custom lint command (e.g. `"make lint"`, `"ruff check ."`). Runs as an optional step by default (failure warns but doesn't block). Set `lint_required: true` to make lint failures fail the temper run. |
 | `temper.lint_required` | bool | `false` | When `true`, failures in `temper.lint` fail the temper run instead of warning. Default matches legacy behavior where lint is an advisory-only step. |
 
-When any `temper` field is set, **all** auto-detected steps are replaced — only the explicitly configured commands run. Omit a field to skip that step entirely.
+When any `temper.build`, `temper.test`, or `temper.lint` command is set, **all** auto-detected steps are replaced — only the explicitly configured commands run. Omit a command field to skip that step entirely. Setting `temper.lint_required` by itself does not replace auto-detected steps; it only changes how a configured `temper.lint` command is handled.
 
 Commands are split on whitespace into executable + arguments. For commands requiring shell features (pipes, redirections, command chaining, or inline environment variables), use a wrapper script committed in the repo, or invoke a shell explicitly (for example, `sh -c 'FOO=bar pytest -q | tee test.log'`). Per-anvil `.forge/temper.yaml` does not currently support custom build/test/lint commands.
 

@@ -1008,6 +1008,10 @@ func (c *Config) Validate() []string {
 		if anvil.AutoDispatch == "priority" && (anvil.AutoDispatchMinPriority < 0 || anvil.AutoDispatchMinPriority > 4) {
 			errs = append(errs, fmt.Sprintf("anvil %q: auto_dispatch_min_priority must be 0-4 (0 = critical-only) when auto_dispatch is \"priority\"", name))
 		}
+
+		if anvil.Temper != nil && anvil.Temper.LintRequired && anvil.Temper.Lint == "" {
+			errs = append(errs, fmt.Sprintf("anvil %q: temper.lint_required is true but temper.lint is not set", name))
+		}
 	}
 
 	return errs
