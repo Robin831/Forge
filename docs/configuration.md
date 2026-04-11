@@ -24,7 +24,7 @@ anvils:
     depcheck_enabled: true         # Set to false to skip depcheck for this anvil
     hooks:                         # Pipeline stage hooks (optional)
       after_smith: './scripts/post-smith.sh'
-      before_temper: './scripts/pre-temper.sh'
+      before_temper: './scripts/pre-temper.sh'  # runs for every temper invocation (pipeline, burnish, quench)
 
   my-frontend:
     path: /path/to/repos/my-frontend
@@ -168,7 +168,7 @@ anvils:
 
 ### Pipeline Hooks
 
-Configure shell commands that run before or after each pipeline stage. Hooks are executed via a platform-appropriate shell (`sh -c` on Unix, `cmd /c` on Windows) with the worktree as the working directory and receive pipeline context as environment variables. Each hook has a 60-second timeout.
+Configure shell commands that run before or after each pipeline stage. Hooks fire before/after every temper invocation — initial pipeline, burnish review-fix, and quench CI-fix — so setup commands like `npm ci` or container startup work uniformly across all temper runs. Hooks are executed via a platform-appropriate shell (`sh -c` on Unix, `cmd /c` on Windows) with the worktree as the working directory and receive pipeline context as environment variables. Each hook has a 60-second timeout.
 
 ```yaml
 anvils:
@@ -197,9 +197,10 @@ anvils:
 | `hooks.after_warden` | string | | Runs after each Warden review. |
 
 **Hook behavior:**
-- **Before hooks** abort the pipeline on non-zero exit. Use them to enforce preconditions (e.g., required files, environment validation).
-- **After hooks** are best-effort — failures are logged but do not abort the pipeline. Use them for notifications, metrics, or cleanup.
+- **Before hooks** abort the current stage on non-zero exit. Use them to enforce preconditions (e.g., required files, environment validation).
+- **After hooks** are best-effort — failures are logged but do not abort the stage. Use them for notifications, metrics, or cleanup.
 - Hooks run in the worktree directory, so relative paths resolve against the worktree.
+- Temper hooks (`before_temper`, `after_temper`) fire for every temper invocation: initial pipeline, burnish (review-fix), and quench (CI-fix). This ensures setup commands (e.g. `npm ci`) apply uniformly.
 
 **Environment variables** available to all hooks:
 
@@ -214,6 +215,16 @@ anvils:
 | `FORGE_ITERATION` | Current Smith-Warden cycle number (1-based) for `smith`/`warden` stages; `schematic` hooks currently receive `1` even though they run outside the Smith-Warden loop |
 
 **Use cases:** custom linters, Slack/Teams notifications, prompt context injection, metrics collection, pre-flight checks.
+
+**Node.js example** — install dependencies before every temper run so that build/lint/test steps always have fresh `node_modules`:
+
+```yaml
+anvils:
+  my-node-app:
+    path: /home/user/source/my-node-app
+    hooks:
+      before_temper: 'cd web && npm ci'
+```
 
 ### Auto-Dispatch Modes
 

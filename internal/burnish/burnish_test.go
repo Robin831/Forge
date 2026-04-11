@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/hooks"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
@@ -22,6 +24,7 @@ type testHarness struct {
 	origTemperRun   func(ctx context.Context, worktreePath string, cfg temper.Config, db *state.DB, beadID, anvil string) *temper.Result
 	origGitPush     func(ctx context.Context, worktreePath, branch string) error
 	origGitRevParse func(ctx context.Context, dir, ref string) (string, error)
+	origHookRun     func(ctx context.Context, workerID, hookName, cmd string, env hooks.HookEnv) error
 }
 
 func newTestHarness() *testHarness {
@@ -30,6 +33,7 @@ func newTestHarness() *testHarness {
 		origTemperRun:   temperRunFn,
 		origGitPush:     gitPushFn,
 		origGitRevParse: gitRevParseFn,
+		origHookRun:     hookRunFn,
 	}
 }
 
@@ -38,6 +42,7 @@ func (h *testHarness) restore() {
 	temperRunFn = h.origTemperRun
 	gitPushFn = h.origGitPush
 	gitRevParseFn = h.origGitRevParse
+	hookRunFn = h.origHookRun
 }
 
 // fakeVCS implements vcs.Provider for testing.
@@ -678,4 +683,180 @@ func TestTruncateOutput(t *testing.T) {
 			t.Error("should have truncation marker")
 		}
 	})
+}
+
+// --- Hook tests ---
+
+func TestFix_BeforeTemperHook_Invoked(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	smithSpawnFn = makeSmithStub(0)
+	temperRunFn = makeTemperStub(true, "")
+	gitPushFn = noPush
+	gitRevParseFn = noRevParse
+
+	var hooksCalled []string
+	hookRunFn = func(_ context.Context, _, hookName, cmd string, env hooks.HookEnv) error {
+		if cmd != "" {
+			hooksCalled = append(hooksCalled, hookName)
+		}
+		return nil
+	}
+
+	v := &fakeVCS{comments: []vcs.ReviewComment{
+		{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED"},
+	}}
+
+	params := defaultFixParams(db, v)
+	params.Hooks = &config.HooksConfig{
+		BeforeTemper: "echo before",
+		AfterTemper:  "echo after",
+	}
+
+	result := Fix(context.Background(), params)
+
+	if !result.Addressed {
+		t.Error("expected Addressed=true")
+	}
+	if len(hooksCalled) < 2 {
+		t.Fatalf("expected at least 2 hook calls, got %d: %v", len(hooksCalled), hooksCalled)
+	}
+	if hooksCalled[0] != "before_temper" {
+		t.Errorf("expected first hook to be before_temper, got %s", hooksCalled[0])
+	}
+	if hooksCalled[1] != "after_temper" {
+		t.Errorf("expected second hook to be after_temper, got %s", hooksCalled[1])
+	}
+}
+
+func TestFix_AfterTemperHook_Invoked(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	smithSpawnFn = makeSmithStub(0)
+	temperRunFn = makeTemperStub(true, "")
+	gitPushFn = noPush
+	gitRevParseFn = noRevParse
+
+	afterCalled := false
+	hookRunFn = func(_ context.Context, _, hookName, cmd string, env hooks.HookEnv) error {
+		if hookName == "after_temper" && cmd != "" {
+			afterCalled = true
+		}
+		return nil
+	}
+
+	v := &fakeVCS{comments: []vcs.ReviewComment{
+		{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED"},
+	}}
+
+	params := defaultFixParams(db, v)
+	params.Hooks = &config.HooksConfig{AfterTemper: "echo done"}
+
+	result := Fix(context.Background(), params)
+
+	if !result.Addressed {
+		t.Error("expected Addressed=true")
+	}
+	if !afterCalled {
+		t.Error("expected after_temper hook to be called")
+	}
+}
+
+func TestFix_BeforeTemperHook_Fails_AbortsBurnish(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	smithSpawnFn = makeSmithStub(0)
+
+	temperCalled := false
+	temperRunFn = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		temperCalled = true
+		return &temper.Result{Passed: true}
+	}
+
+	pushCalled := false
+	gitPushFn = func(_ context.Context, _, _ string) error {
+		pushCalled = true
+		return nil
+	}
+	gitRevParseFn = noRevParse
+
+	hookRunFn = func(_ context.Context, _, hookName, cmd string, _ hooks.HookEnv) error {
+		if hookName == "before_temper" && cmd != "" {
+			return fmt.Errorf("hook before_temper failed: exit status 1")
+		}
+		return nil
+	}
+
+	v := &fakeVCS{comments: []vcs.ReviewComment{
+		{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED"},
+	}}
+
+	params := defaultFixParams(db, v)
+	params.Hooks = &config.HooksConfig{BeforeTemper: "exit 1"}
+
+	result := Fix(context.Background(), params)
+
+	if result.Addressed {
+		t.Error("expected Addressed=false when before_temper hook fails")
+	}
+	if result.Error == nil {
+		t.Fatal("expected error when before_temper hook fails")
+	}
+	if !strings.Contains(result.Error.Error(), "before_temper hook") {
+		t.Errorf("expected error to mention before_temper hook, got: %v", result.Error)
+	}
+	if temperCalled {
+		t.Error("temper.Run should NOT have been called after before_temper hook failure")
+	}
+	if pushCalled {
+		t.Error("push should NOT have been called after before_temper hook failure")
+	}
+}
+
+func TestFix_AfterTemperHook_Fails_Logged_Only(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	smithSpawnFn = makeSmithStub(0)
+	temperRunFn = makeTemperStub(true, "")
+	gitRevParseFn = noRevParse
+
+	pushCalled := false
+	gitPushFn = func(_ context.Context, _, _ string) error {
+		pushCalled = true
+		return nil
+	}
+
+	hookRunFn = func(_ context.Context, _, hookName, cmd string, _ hooks.HookEnv) error {
+		if hookName == "after_temper" && cmd != "" {
+			return fmt.Errorf("after_temper hook failed")
+		}
+		return nil
+	}
+
+	v := &fakeVCS{comments: []vcs.ReviewComment{
+		{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED"},
+	}}
+
+	params := defaultFixParams(db, v)
+	params.Hooks = &config.HooksConfig{AfterTemper: "exit 1"}
+
+	result := Fix(context.Background(), params)
+
+	if !result.Addressed {
+		t.Error("expected Addressed=true even when after_temper hook fails")
+	}
+	if result.Error != nil {
+		t.Errorf("expected no error (after_temper is best-effort), got: %v", result.Error)
+	}
+	if !pushCalled {
+		t.Error("push should still happen after after_temper hook failure")
+	}
 }
