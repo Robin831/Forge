@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.13.0] - 2026-04-11
+
+### Added
+
+- **Custom Temper commands per anvil** - Allow per-anvil override of build/test/lint commands in forge.yaml via the `temper` config block, enabling support for Python, Rust, and repos with non-standard build tooling without modifying Forge internals. (Forge-pjnr)
+- **Per-stage provider configuration** - New `stage_providers` config map allows separate model/provider chains for each pipeline stage (smith, warden, schematic, cifix, reviewfix), enabling cost optimization by using cheaper models for simpler stages. Falls back to `smith_providers` then `providers` when a stage key is not set. (Forge-tq8g)
+- **Pipeline hooks** - Configurable shell commands that run before/after each pipeline stage (schematic, smith, temper, warden). Hooks receive context via environment variables (FORGE_BEAD_ID, FORGE_WORKTREE_PATH, FORGE_BRANCH, FORGE_ANVIL_NAME, FORGE_ANVIL_PATH, FORGE_STAGE, FORGE_ITERATION). Before-hooks abort the pipeline on failure; after-hooks are best-effort. Configure per-anvil under `hooks` in forge.yaml. (Forge-esii)
+- **Smith deny patterns** - Per-anvil file and command deny lists prevent Smith from modifying sensitive files or running dangerous commands, enforced via post-Smith diff validation in the pipeline. (Forge-21j8)
+
+### Changed
+
+- **Dependency updates** - Updated go-runewidth v0.0.21→v0.0.22 and modernc.org/sqlite v1.48.0→v1.48.1. (Forge-yjcn)
+- **Rename cifix/reviewfix packages to quench/burnish** - Renamed internal/cifix to internal/quench and internal/reviewfix to internal/burnish, aligning package names with the blacksmith metaphor used throughout the codebase. Config keys and DB columns remain unchanged for backward compatibility. (Forge-8tex)
+
+### Fixed
+
+- **Bump bd subprocess timeout to 5 minutes** - Increase `executil.DefaultBdTimeout` from 60 seconds to 5 minutes to prevent premature kills on anvils with remote Dolt, kubectl port-forward, or GitHub auto-sync under concurrent load. (Forge-apqe)
+- **Bump bd subprocess timeouts to 60s** - All bd subprocess invocations now use a centralized 60-second timeout (up from 10-30s) via `executil.DefaultBdTimeout`, preventing premature kills on anvils with remote Dolt or GitHub auto-sync where bd writes routinely take 20-30 seconds. (Forge-u21i)
+- **Burnish temper verification gate** - Burnish now runs Temper verification before pushing review-fix commits, breaking the burnish-quench infinite loop on PRs with automated review comments. Previously, burnish trusted Smith to only push working code, but Smith often pushed broken builds which triggered quench, which then triggered another Copilot review, restarting the cycle. (Forge-syrn)
+- **Include bead notes in Smith prompt** - The poller's `Bead` struct now captures the `notes` field from `bd ready --json`, and the prompt template renders it as a "Notes" section after the description so detailed implementation instructions are visible to the Smith. (Forge-wr3d)
+- **Schematic tolerates bd dep add non-zero exit** - When `bd dep add` exits non-zero but stdout confirms the dependency was added, treat it as success instead of marking the bead as needing clarification. (Forge-30a5)
+- **Schematic tolerates trailing noise in bd output** - Use streaming JSON decoder instead of strict `json.Unmarshal` so that trailing diagnostics from `bd create --json` (e.g. orphan detection warnings) no longer break sub-bead ID parsing. Applied the same fix to depcheck and ledger packages. (Forge-byca)
+- **Windows build restored** - `internal/daemon/daemon.go` was calling the Unix-only `syscall.Kill` directly in `killWorkerProcess`, breaking every Windows build since Forge#497. The 2-phase interrupt → grace → kill logic is now routed through `signalInterrupt` / `signalKill` / `processAlive` helpers defined in the existing `killgroup_unix.go` / `killgroup_windows.go` platform split. No behavior change on Unix; Windows gains a best-effort `os.Interrupt` phase (CTRL_BREAK_EVENT for processes started with CREATE_NEW_PROCESS_GROUP) with `TerminateProcess` as the force-kill fallback. (Forge-81ks)
+- **Worker kill: 2-phase SIGINT→SIGKILL with process group support** - Kill worker via IPC now sends SIGINT to the entire process group, waits up to 5 seconds, then escalates to SIGKILL. This ensures child processes (git, node, etc.) are also terminated. (Forge-yx7k)
+
 ## [0.12.0] - 2026-04-04
 
 ### Added
