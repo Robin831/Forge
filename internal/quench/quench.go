@@ -16,8 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/hooks"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
@@ -71,6 +73,9 @@ type FixParams struct {
 	// true, learned rules are inserted into the pending_warden_rules table
 	// instead of being written directly to the rules file.
 	LearnConfig *warden.LearnConfig
+	// Hooks is the per-anvil hook configuration. When set, before_temper and
+	// after_temper hooks fire around every temper invocation.
+	Hooks *config.HooksConfig
 }
 
 // FixResult captures the outcome of a CI fix attempt.
@@ -251,6 +256,9 @@ func buildBatchCIPrompt(p BatchFixParams) string {
 	return b.String()
 }
 
+// hookRunFn is the function used to run hooks. Package-level variable for test stubbing.
+var hookRunFn = hooks.RunHook
+
 // Fix attempts to resolve CI failures on a PR branch.
 func Fix(ctx context.Context, p FixParams) *FixResult {
 	start := time.Now()
@@ -294,7 +302,24 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			temperCfg = &detected
 		}
 
+		hEnv := hooks.HookEnv{
+			BeadID:       p.BeadID,
+			WorktreePath: p.WorktreePath,
+			Branch:       p.Branch,
+			AnvilName:    p.AnvilName,
+			AnvilPath:    p.AnvilPath,
+			Stage:        "temper",
+			Iteration:    attempt,
+		}
+		if err := hookRunFn(ctx, p.WorkerID, "before_temper", hooks.HookCmd(p.Hooks, "before_temper"), hEnv); err != nil {
+			result.Error = fmt.Errorf("before_temper hook: %w", err)
+			result.Duration = time.Since(start)
+			return result
+		}
 		temperResult := temper.Run(ctx, p.WorktreePath, *temperCfg, p.DB, p.BeadID, p.AnvilName)
+		if err := hookRunFn(ctx, p.WorkerID, "after_temper", hooks.HookCmd(p.Hooks, "after_temper"), hEnv); err != nil {
+			log.Printf("[quench] PR #%d: after_temper hook failed (non-fatal): %v", p.PRNumber, err)
+		}
 		result.LastTemperResult = temperResult
 
 		if temperResult.Passed {
@@ -409,7 +434,24 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		}
 
 		// Step 6: Verify the fix.
+		verifyEnv := hooks.HookEnv{
+			BeadID:       p.BeadID,
+			WorktreePath: p.WorktreePath,
+			Branch:       p.Branch,
+			AnvilName:    p.AnvilName,
+			AnvilPath:    p.AnvilPath,
+			Stage:        "temper",
+			Iteration:    attempt,
+		}
+		if err := hookRunFn(ctx, p.WorkerID, "before_temper", hooks.HookCmd(p.Hooks, "before_temper"), verifyEnv); err != nil {
+			result.Error = fmt.Errorf("before_temper hook: %w", err)
+			result.Duration = time.Since(start)
+			return result
+		}
 		verifyResult := temper.Run(ctx, p.WorktreePath, *temperCfg, p.DB, p.BeadID, p.AnvilName)
+		if err := hookRunFn(ctx, p.WorkerID, "after_temper", hooks.HookCmd(p.Hooks, "after_temper"), verifyEnv); err != nil {
+			log.Printf("[quench] PR #%d: after_temper hook failed (non-fatal): %v", p.PRNumber, err)
+		}
 		result.LastTemperResult = verifyResult
 
 		if verifyResult.Passed {

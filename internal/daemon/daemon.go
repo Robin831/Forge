@@ -984,6 +984,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					Providers:       quenchProviders,
 					VCS:             d.vcsForAnvil(req.Anvil),
 					LearnConfig:     d.quenchLearnConfig(req.Anvil),
+					Hooks:           anvilCfg.Hooks,
 				})
 			}
 			status := state.WorkerDone
@@ -1051,6 +1052,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 						TemperConfig:    d.resolveTemperConfig(anvilCfg),
 						DetectOptions:   burnishDetectOpts,
 						GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
+						Hooks:           anvilCfg.Hooks,
 					})
 				}
 			}
@@ -1072,6 +1074,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					TemperConfig:    d.resolveTemperConfig(anvilCfg),
 					DetectOptions:   burnishDetectOpts,
 					GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
+					Hooks:           anvilCfg.Hooks,
 				})
 			}
 			status := state.WorkerDone
