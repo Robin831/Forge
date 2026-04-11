@@ -2844,3 +2844,71 @@ func TestHandleIPC_WicketScan(t *testing.T) {
 		assert.Contains(t, msg["message"], "wicket scan triggered")
 	})
 }
+
+func TestResolveTemperConfig_StepsOverridesSlots(t *testing.T) {
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	d := &Daemon{logger: logger}
+
+	t.Run("steps only", func(t *testing.T) {
+		logBuf.Reset()
+		anvilCfg := config.AnvilConfig{
+			Path: "/tmp/test-anvil",
+			Temper: &config.TemperCommandsConfig{
+				Steps: []config.TemperStepConfig{
+					{Name: "build", Command: "make", Args: []string{"build"}},
+					{Name: "test", Command: "make", Args: []string{"test"}},
+				},
+			},
+		}
+		cfg := d.resolveTemperConfig(anvilCfg)
+		require.NotNil(t, cfg)
+		assert.Len(t, cfg.Steps, 2)
+		assert.Equal(t, "build", cfg.Steps[0].Name)
+		assert.Equal(t, "test", cfg.Steps[1].Name)
+		assert.NotContains(t, logBuf.String(), "overrides")
+	})
+
+	t.Run("steps with build also set logs warning", func(t *testing.T) {
+		logBuf.Reset()
+		anvilCfg := config.AnvilConfig{
+			Path: "/tmp/test-anvil",
+			Temper: &config.TemperCommandsConfig{
+				Build: "make build",
+				Steps: []config.TemperStepConfig{
+					{Name: "custom-build", Command: "cargo", Args: []string{"build"}},
+				},
+			},
+		}
+		cfg := d.resolveTemperConfig(anvilCfg)
+		require.NotNil(t, cfg)
+		assert.Len(t, cfg.Steps, 1)
+		assert.Equal(t, "custom-build", cfg.Steps[0].Name)
+		assert.Contains(t, logBuf.String(), "overrides")
+	})
+
+	t.Run("legacy slots without steps", func(t *testing.T) {
+		logBuf.Reset()
+		anvilCfg := config.AnvilConfig{
+			Path: "/tmp/test-anvil",
+			Temper: &config.TemperCommandsConfig{
+				Build: "make build",
+				Test:  "make test",
+			},
+		}
+		cfg := d.resolveTemperConfig(anvilCfg)
+		require.NotNil(t, cfg)
+		assert.Len(t, cfg.Steps, 2)
+		assert.Equal(t, "build", cfg.Steps[0].Name)
+		assert.Equal(t, "test", cfg.Steps[1].Name)
+	})
+
+	t.Run("empty temper returns nil", func(t *testing.T) {
+		anvilCfg := config.AnvilConfig{
+			Path:   "/tmp/test-anvil",
+			Temper: &config.TemperCommandsConfig{},
+		}
+		cfg := d.resolveTemperConfig(anvilCfg)
+		assert.Nil(t, cfg)
+	})
+}

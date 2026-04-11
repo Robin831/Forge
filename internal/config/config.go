@@ -178,11 +178,33 @@ type TemperCommandsConfig struct {
 	// LintRequired makes lint failures fail the temper run instead of warning.
 	// Default false preserves legacy behavior where lint is advisory-only.
 	LintRequired bool `mapstructure:"lint_required" yaml:"lint_required,omitempty"`
+	// Steps is an ordered list of named verification steps. When non-empty,
+	// it takes precedence over Build/Test/Lint. Each step runs in input order;
+	// a required step failure stops the run.
+	Steps []TemperStepConfig `mapstructure:"steps" yaml:"steps,omitempty"`
+}
+
+// TemperStepConfig defines a single named step in the temper.steps list.
+type TemperStepConfig struct {
+	// Name identifies the step in logs, summaries, and failure events.
+	Name string `mapstructure:"name" yaml:"name"`
+	// Command is the executable to run (not shell-interpreted).
+	Command string `mapstructure:"command" yaml:"command"`
+	// Args are the command arguments.
+	Args []string `mapstructure:"args" yaml:"args,omitempty"`
+	// Dir is the working directory for the step. Relative paths resolve
+	// against the worktree root; absolute paths are used as-is.
+	Dir string `mapstructure:"dir" yaml:"dir,omitempty"`
+	// Timeout is the per-step timeout. Defaults to 5m when zero.
+	Timeout time.Duration `mapstructure:"timeout" yaml:"timeout,omitempty"`
+	// Required controls whether failure fails the whole temper run.
+	// Pointer so we can distinguish unset (defaults to true) from explicit false.
+	Required *bool `mapstructure:"required" yaml:"required,omitempty"`
 }
 
 // IsEmpty returns true if no custom commands are configured.
 func (t *TemperCommandsConfig) IsEmpty() bool {
-	return t == nil || (t.Build == "" && t.Test == "" && t.Lint == "")
+	return t == nil || (t.Build == "" && t.Test == "" && t.Lint == "" && len(t.Steps) == 0)
 }
 
 // SettingsConfig holds global operational settings.
@@ -1009,8 +1031,24 @@ func (c *Config) Validate() []string {
 			errs = append(errs, fmt.Sprintf("anvil %q: auto_dispatch_min_priority must be 0-4 (0 = critical-only) when auto_dispatch is \"priority\"", name))
 		}
 
-		if anvil.Temper != nil && anvil.Temper.LintRequired && anvil.Temper.Lint == "" {
+		if anvil.Temper != nil && anvil.Temper.LintRequired && anvil.Temper.Lint == "" && len(anvil.Temper.Steps) == 0 {
 			errs = append(errs, fmt.Sprintf("anvil %q: temper.lint_required is true but temper.lint is not set", name))
+		}
+
+		if anvil.Temper != nil {
+			seen := make(map[string]bool)
+			for i, step := range anvil.Temper.Steps {
+				if step.Name == "" {
+					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps[%d].name must be non-empty", name, i))
+				}
+				if step.Command == "" {
+					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps[%d].command must be non-empty", name, i))
+				}
+				if step.Name != "" && seen[step.Name] {
+					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps has duplicate name %q", name, step.Name))
+				}
+				seen[step.Name] = true
+			}
 		}
 	}
 

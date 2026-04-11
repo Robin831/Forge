@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestConfig_Validate(t *testing.T) {
@@ -909,4 +910,130 @@ func TestConfig_Validate_LintRequired(t *testing.T) {
 		errs := cfg.Validate()
 		assert.Contains(t, errs, `anvil "myrepo": temper.lint_required is true but temper.lint is not set`)
 	})
+
+	t.Run("lint_required with steps is valid", func(t *testing.T) {
+		cfg := base()
+		a := cfg.Anvils["myrepo"]
+		a.Temper = &TemperCommandsConfig{
+			LintRequired: true,
+			Steps: []TemperStepConfig{
+				{Name: "lint", Command: "make", Args: []string{"lint"}},
+			},
+		}
+		cfg.Anvils["myrepo"] = a
+		errs := cfg.Validate()
+		for _, e := range errs {
+			assert.NotContains(t, e, "lint_required")
+		}
+	})
+
+	t.Run("steps missing name is invalid", func(t *testing.T) {
+		cfg := base()
+		a := cfg.Anvils["myrepo"]
+		a.Temper = &TemperCommandsConfig{
+			Steps: []TemperStepConfig{
+				{Name: "", Command: "make"},
+			},
+		}
+		cfg.Anvils["myrepo"] = a
+		errs := cfg.Validate()
+		assert.Contains(t, errs, `anvil "myrepo": temper.steps[0].name must be non-empty`)
+	})
+
+	t.Run("steps missing command is invalid", func(t *testing.T) {
+		cfg := base()
+		a := cfg.Anvils["myrepo"]
+		a.Temper = &TemperCommandsConfig{
+			Steps: []TemperStepConfig{
+				{Name: "build", Command: ""},
+			},
+		}
+		cfg.Anvils["myrepo"] = a
+		errs := cfg.Validate()
+		assert.Contains(t, errs, `anvil "myrepo": temper.steps[0].command must be non-empty`)
+	})
+
+	t.Run("steps duplicate names is invalid", func(t *testing.T) {
+		cfg := base()
+		a := cfg.Anvils["myrepo"]
+		a.Temper = &TemperCommandsConfig{
+			Steps: []TemperStepConfig{
+				{Name: "build", Command: "make"},
+				{Name: "build", Command: "cargo"},
+			},
+		}
+		cfg.Anvils["myrepo"] = a
+		errs := cfg.Validate()
+		assert.Contains(t, errs, `anvil "myrepo": temper.steps has duplicate name "build"`)
+	})
+
+	t.Run("valid steps pass validation", func(t *testing.T) {
+		cfg := base()
+		a := cfg.Anvils["myrepo"]
+		a.Temper = &TemperCommandsConfig{
+			Steps: []TemperStepConfig{
+				{Name: "build", Command: "make", Args: []string{"build"}},
+				{Name: "test", Command: "make", Args: []string{"test"}},
+			},
+		}
+		cfg.Anvils["myrepo"] = a
+		errs := cfg.Validate()
+		for _, e := range errs {
+			assert.NotContains(t, e, "temper.steps")
+		}
+	})
+}
+
+func TestTemperStepConfig_YAMLRoundTrip(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	original := &TemperCommandsConfig{
+		Steps: []TemperStepConfig{
+			{
+				Name:     "install",
+				Command:  "npm",
+				Args:     []string{"ci"},
+				Dir:      "web",
+				Timeout:  5 * time.Minute,
+				Required: boolPtr(true),
+			},
+			{
+				Name:    "lint",
+				Command: "npm",
+				Args:    []string{"run", "lint"},
+			},
+			{
+				Name:     "mypy",
+				Command:  "mypy",
+				Args:     []string{"src"},
+				Required: boolPtr(false),
+			},
+		},
+	}
+
+	data, err := yaml.Marshal(original)
+	require.NoError(t, err)
+
+	var roundTripped TemperCommandsConfig
+	err = yaml.Unmarshal(data, &roundTripped)
+	require.NoError(t, err)
+
+	require.Len(t, roundTripped.Steps, 3)
+	assert.Equal(t, "install", roundTripped.Steps[0].Name)
+	assert.Equal(t, "npm", roundTripped.Steps[0].Command)
+	assert.Equal(t, []string{"ci"}, roundTripped.Steps[0].Args)
+	assert.Equal(t, "web", roundTripped.Steps[0].Dir)
+	assert.Equal(t, 5*time.Minute, roundTripped.Steps[0].Timeout)
+	require.NotNil(t, roundTripped.Steps[0].Required)
+	assert.True(t, *roundTripped.Steps[0].Required)
+
+	// Step without optional fields
+	assert.Equal(t, "lint", roundTripped.Steps[1].Name)
+	assert.Nil(t, roundTripped.Steps[1].Required)
+	assert.Empty(t, roundTripped.Steps[1].Dir)
+	assert.Equal(t, time.Duration(0), roundTripped.Steps[1].Timeout)
+
+	// Step with required: false
+	require.NotNil(t, roundTripped.Steps[2].Required)
+	assert.False(t, *roundTripped.Steps[2].Required)
 }

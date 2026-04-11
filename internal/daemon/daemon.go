@@ -4543,6 +4543,12 @@ func (d *Daemon) resolveTemperConfig(anvilCfg config.AnvilConfig) *temper.Config
 	if anvilCfg.Temper == nil || anvilCfg.Temper.IsEmpty() {
 		return nil
 	}
+	if len(anvilCfg.Temper.Steps) > 0 {
+		if anvilCfg.Temper.Build != "" || anvilCfg.Temper.Test != "" || anvilCfg.Temper.Lint != "" {
+			d.logger.Warn("temper.steps overrides temper.build/test/lint", "path", anvilCfg.Path)
+		}
+		return temper.ConfigFromSteps(anvilCfg.Temper.Steps)
+	}
 	return temper.ConfigFromCommands(anvilCfg.Temper.Build, anvilCfg.Temper.Test, anvilCfg.Temper.Lint, anvilCfg.Temper.LintRequired)
 }
 

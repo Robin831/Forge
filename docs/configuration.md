@@ -32,6 +32,13 @@ anvils:
     max_smiths: 3
     auto_dispatch: tagged
     auto_dispatch_tag: forge-auto
+    temper:
+      steps:
+        - { name: install,   command: npm, args: [ci],             dir: web, timeout: 5m }
+        - { name: lint,      command: npm, args: [run, lint],      dir: web }
+        - { name: typecheck, command: npm, args: [run, typecheck], dir: web }
+        - { name: build,     command: npm, args: [run, build],     dir: web }
+        - { name: test,      command: npm, args: [run, test:run],  dir: web }
 
   legacy-repo:
     path: /path/to/repos/legacy
@@ -251,6 +258,10 @@ Omitting `platform` or setting it to an empty string defaults to `github`. Exist
 
 By default, Temper auto-detects the project type (Go, .NET, Node) and runs appropriate build/test/lint steps. The `temper` object lets you override these with custom commands, enabling support for Python, Rust, or repos with non-standard build tooling.
 
+Use the shorthand when your project has a straightforward build/test/lint shape. For more complex pipelines, use the `steps` list described in [Custom Temper Steps](#custom-temper-steps-advanced) below.
+
+#### Shorthand (build/test/lint)
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `temper.build` | string | | Custom build command (e.g. `"make build"`, `"cargo build"`). Replaces the auto-detected build step. |
@@ -291,6 +302,137 @@ anvils:
       test: "npm run test:run"
       lint: "npm run lint"
       lint_required: true   # make lint failures fail the temper run, matching CI
+```
+
+#### Custom Temper Steps (advanced)
+
+For pipelines that need more than three steps, per-step working directories, or per-step timeout/required control, use `temper.steps`. Steps run in the order listed; a required step failure stops the run.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | **required** | Step identifier; appears in logs, summaries, and failure events. Must be non-empty and unique within the list. |
+| `command` | string | **required** | Executable to run (not shell-interpreted). For shell features, wrap in a checked-in script. |
+| `args` | `[]string` | `[]` | Arguments to the command. Use list form; avoid embedding in `command`. |
+| `dir` | string | worktree root | Working directory for the step. Relative paths resolve against the worktree; absolute paths used as-is. |
+| `timeout` | duration | `5m` | Per-step timeout. Same parsing as elsewhere in Forge config (`5m`, `30s`, `1h`). |
+| `required` | bool | `true` | When `true`, failure fails the whole temper run. When `false`, failure is reported as a warning. |
+
+**Precedence:** If `temper.steps` is set and non-empty, it takes precedence over `temper.build`/`test`/`lint`. A warning is logged if both are present. If neither `steps` nor the shorthand fields are set, auto-detection applies as usual.
+
+Both `temper.steps` and the shorthand form can be used on different anvils in the same config file.
+
+If your steps need one-shot setup (e.g. `npm ci`) that should persist across all temper invocations (initial pipeline, burnish, quench), consider using a `before_temper` hook instead of a step. See [Pipeline Hooks](#pipeline-hooks).
+
+##### Examples
+
+**Node.js matching CI exactly:**
+
+```yaml
+anvils:
+  my-node-app:
+    path: /home/user/source/my-node-app
+    temper:
+      steps:
+        - name: install
+          command: npm
+          args: [ci]
+          dir: web
+          timeout: 5m
+        - name: lint
+          command: npm
+          args: [run, lint]
+          dir: web
+        - name: typecheck
+          command: npm
+          args: [run, typecheck]
+          dir: web
+        - name: build
+          command: npm
+          args: [run, build]
+          dir: web
+        - name: test
+          command: npm
+          args: [run, test:run]
+          dir: web
+```
+
+**Go + Node mixed monorepo:**
+
+```yaml
+anvils:
+  hytte:
+    path: /home/user/source/Hytte
+    temper:
+      steps:
+        - name: go-build
+          command: go
+          args: [build, ./...]
+        - name: go-vet
+          command: go
+          args: [vet, ./...]
+        - name: go-test
+          command: go
+          args: [test, -short, ./...]
+        - name: npm-install
+          command: npm
+          args: [ci]
+          dir: web
+          timeout: 5m
+        - name: npm-lint
+          command: npm
+          args: [run, lint]
+          dir: web
+        - name: npm-build
+          command: npm
+          args: [run, build]
+          dir: web
+```
+
+**.NET with analyzers and format check:**
+
+```yaml
+anvils:
+  my-dotnet-app:
+    path: C:\src\my-dotnet-app
+    temper:
+      steps:
+        - name: restore
+          command: dotnet
+          args: [restore]
+        - name: format
+          command: dotnet
+          args: [format, --verify-no-changes, --no-restore]
+        - name: build
+          command: dotnet
+          args: [build, --configuration, Release, --no-restore]
+          timeout: 10m
+        - name: test
+          command: dotnet
+          args: [test, --configuration, Release, --no-build, --logger, "trx;LogFileName=test.trx"]
+          timeout: 15m
+```
+
+**Python with advisory step:**
+
+```yaml
+anvils:
+  my-python-lib:
+    path: /home/user/source/my-python-lib
+    temper:
+      steps:
+        - name: install
+          command: pip
+          args: [install, -e, ".[dev]"]
+        - name: ruff
+          command: ruff
+          args: [check, .]
+        - name: mypy
+          command: mypy
+          args: [src]
+          required: false   # advisory — warn but don't block
+        - name: test
+          command: pytest
+          args: [-q]
 ```
 
 ## Settings
