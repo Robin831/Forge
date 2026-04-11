@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -347,5 +348,92 @@ func TestConfigFromCommands_LintRequired_EmptyLint_NoStep(t *testing.T) {
 	require.NotNil(t, cfg)
 	for _, s := range cfg.Steps {
 		assert.NotEqual(t, "lint", s.Name, "no lint step should be added when lint command is empty")
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestConfigFromSteps_BasicOrdering(t *testing.T) {
+	steps := []config.TemperStepConfig{
+		{Name: "install", Command: "npm", Args: []string{"ci"}},
+		{Name: "lint", Command: "npm", Args: []string{"run", "lint"}},
+		{Name: "test", Command: "npm", Args: []string{"run", "test:run"}},
+	}
+	cfg := ConfigFromSteps(steps)
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.Steps, 3)
+	assert.Equal(t, "install", cfg.Steps[0].Name)
+	assert.Equal(t, "lint", cfg.Steps[1].Name)
+	assert.Equal(t, "test", cfg.Steps[2].Name)
+	assert.Equal(t, "npm", cfg.Steps[0].Command)
+	assert.Equal(t, []string{"ci"}, cfg.Steps[0].Args)
+}
+
+func TestConfigFromSteps_RequiredDefault_True(t *testing.T) {
+	steps := []config.TemperStepConfig{
+		{Name: "build", Command: "make", Args: []string{"build"}},
+	}
+	cfg := ConfigFromSteps(steps)
+	require.NotNil(t, cfg)
+	assert.False(t, cfg.Steps[0].Optional, "step without required field should not be optional")
+}
+
+func TestConfigFromSteps_RequiredFalse_Optional(t *testing.T) {
+	steps := []config.TemperStepConfig{
+		{Name: "mypy", Command: "mypy", Args: []string{"src"}, Required: boolPtr(false)},
+	}
+	cfg := ConfigFromSteps(steps)
+	require.NotNil(t, cfg)
+	assert.True(t, cfg.Steps[0].Optional, "step with required: false should be optional")
+}
+
+func TestConfigFromSteps_RespectsDir(t *testing.T) {
+	steps := []config.TemperStepConfig{
+		{Name: "lint", Command: "npm", Args: []string{"run", "lint"}, Dir: "web"},
+	}
+	cfg := ConfigFromSteps(steps)
+	require.NotNil(t, cfg)
+	assert.Equal(t, "web", cfg.Steps[0].Dir)
+}
+
+func TestConfigFromSteps_RespectsTimeout(t *testing.T) {
+	steps := []config.TemperStepConfig{
+		{Name: "test", Command: "pytest", Timeout: 10 * time.Minute},
+	}
+	cfg := ConfigFromSteps(steps)
+	require.NotNil(t, cfg)
+	assert.Equal(t, 10*time.Minute, cfg.Steps[0].Timeout)
+}
+
+func TestConfigFromSteps_DefaultTimeout(t *testing.T) {
+	steps := []config.TemperStepConfig{
+		{Name: "build", Command: "make"},
+	}
+	cfg := ConfigFromSteps(steps)
+	require.NotNil(t, cfg)
+	assert.Equal(t, 5*time.Minute, cfg.Steps[0].Timeout)
+}
+
+func TestConfigFromSteps_EmptyList_ReturnsNil(t *testing.T) {
+	cfg := ConfigFromSteps([]config.TemperStepConfig{})
+	assert.Nil(t, cfg, "empty steps slice should return nil")
+
+	cfg = ConfigFromSteps(nil)
+	assert.Nil(t, cfg, "nil steps slice should return nil")
+}
+
+func TestConfigFromSteps_RequiredByDefault(t *testing.T) {
+	// This test verifies that ConfigFromSteps marks steps as required by default.
+	// It does not execute Temper's Run loop.
+	cfg := ConfigFromSteps([]config.TemperStepConfig{
+		{Name: "pass", Command: "true"},
+		{Name: "fail", Command: "false"},
+		{Name: "should-not-run", Command: "true"},
+	})
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.Steps, 3)
+	// All steps are required (default) — verify Optional is false.
+	for _, s := range cfg.Steps {
+		assert.False(t, s.Optional, "all steps should be required by default")
 	}
 }

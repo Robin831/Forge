@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
 	"gopkg.in/yaml.v3"
@@ -180,6 +181,35 @@ func ConfigFromCommands(build, test, lint string, lintRequired bool) *Config {
 		})
 	}
 	return &Config{Steps: steps}
+}
+
+// ConfigFromSteps builds a Config from an ordered list of TemperStepConfig
+// entries. Returns nil if the slice is empty so callers can fall back to
+// auto-detection.
+func ConfigFromSteps(steps []config.TemperStepConfig) *Config {
+	if len(steps) == 0 {
+		return nil
+	}
+	out := make([]Step, len(steps))
+	for i, s := range steps {
+		timeout := s.Timeout
+		if timeout == 0 {
+			timeout = 5 * time.Minute
+		}
+		optional := false
+		if s.Required != nil && !*s.Required {
+			optional = true
+		}
+		out[i] = Step{
+			Name:     strings.TrimSpace(s.Name),
+			Command:  strings.TrimSpace(s.Command),
+			Args:     s.Args,
+			Dir:      strings.TrimSpace(s.Dir),
+			Timeout:  timeout,
+			Optional: optional,
+		}
+	}
+	return &Config{Steps: out}
 }
 
 // splitCommand splits a command string into the executable and arguments.
