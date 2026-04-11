@@ -3098,3 +3098,281 @@ rules:
         Verify that helpers which modify SysProcAttr merge into any existing SysProcAttr rather than overwriting it, so that flags set by earlier callers (e.g. CreationFlags, HideWindow, CREATE_NEW_PROCESS_GROUP) are preserved
       source: copilot:PR#497
       added: "2026-04-07"
+    - id: doc-accuracy-config-semantics
+      category: other
+      pattern: >-
+        Documentation or comments describing configuration options like provider chains, fallback behavior, or feature semantics
+      check: >-
+        Verify that documentation accurately reflects the actual implementation semantics — e.g. whether a config field is shared across components or scoped to one, and what its fallback behavior is. Cross-reference with the source code or canonical docs (like docs/providers.md) rather than assuming.
+      source: copilot:PR#500
+      added: "2026-04-09"
+    - id: follow-up-tracking
+      category: other
+      pattern: >-
+        Research or analysis documents that list recommended work items, action items, or follow-up tasks
+      check: >-
+        Verify that listed follow-up items have corresponding bead IDs from `bd create`, or if beads were not created, that the document includes the exact `bd create` commands to run
+      source: copilot:PR#500
+      added: "2026-04-09"
+    - id: trim-whitespace-inputs
+      category: error-handling
+      pattern: >-
+        String parameters used to configure commands or shell executions without trimming whitespace first
+      check: >-
+        Verify that string inputs destined for command execution are trimmed with strings.TrimSpace (or equivalent) and that whitespace-only values are treated as empty/unset, not passed through as valid commands
+      source: copilot:PR#501
+      added: "2026-04-09"
+    - id: temper-yaml-scope-accuracy
+      category: other
+      pattern: >-
+        Comments or docs referencing .forge/temper.yaml capabilities for custom commands, shell features, or build/test/lint configuration
+      check: >-
+        Verify that references to .forge/temper.yaml accurately reflect its supported features (currently only go_race_detection). Do not suggest it as a solution for custom commands, shell features, or environment variables. Instead, recommend wrapper scripts or explicit shell invocation (e.g., sh -c '...').
+      source: copilot:PR#501
+      added: "2026-04-09"
+    - id: docstring-matches-behavior
+      category: other
+      pattern: >-
+        Docstrings or comments describing how a configuration struct or its fields behave
+      check: >-
+        Verify that docstrings accurately describe the actual implementation behavior — e.g., if setting any field disables all defaults, don't say each field independently replaces its corresponding step. Also verify that any referenced files or escape hatches actually exist and support the described usage.
+      source: copilot:PR#501
+      added: "2026-04-09"
+    - id: safety-check-errors-must-fail
+      category: error-handling
+      pattern: >-
+        A safety or validation check (e.g., deny patterns, security gates) returns an error but the code logs it and continues execution instead of failing
+      check: >-
+        When a safety-critical validation step returns an error, verify the pipeline treats it as a hard failure (retry or abort) rather than logging and proceeding, which would silently bypass the safety guarantee
+      source: copilot:PR#502
+      added: "2026-04-09"
+    - id: reset-must-include-remote
+      category: error-handling
+      pattern: >-
+        Local branch reset (e.g. git reset to a prior SHA) after detecting a violation or error, in a workflow where commits may have already been pushed to a remote branch
+      check: >-
+        Verify that when a local branch is reset to undo unwanted commits, the corresponding remote branch is also rewound or deleted. Otherwise the remote retains the violating commits, causing non-fast-forward errors on subsequent pushes and potentially leaking denied changes.
+      source: copilot:PR#502
+      added: "2026-04-09"
+    - id: use-path-not-filepath-for-git-paths
+      category: security
+      pattern: >-
+        Code using filepath.Match, filepath.Base, or filepath.Dir on paths from git output (diff, ls-files, etc.)
+      check: >-
+        Git always produces forward-slash paths. Using filepath.Match/filepath.Base will silently fail on Windows because filepath uses OS-native separators. Use path.Match/path.Base (package "path") or manual slash splitting for git-originated paths to ensure consistent cross-platform behavior.
+      source: copilot:PR#502
+      added: "2026-04-09"
+    - id: filepath-match-non-path-strings
+      category: security
+      pattern: >-
+        Using filepath.Match or path matching functions to match non-path strings such as shell commands
+      check: >-
+        Verify that filepath.Match is only used for actual file paths. For non-path strings (e.g. command lines), use a matcher that does not special-case '/' as a separator, since '*' in filepath.Match won't match across '/' on Unix, leading to surprising behavior with patterns like 'rm -rf /*'
+      source: copilot:PR#502
+      added: "2026-04-09"
+    - id: post-execution-safety-docs
+      category: security
+      pattern: >-
+        Documentation or comments describing deny patterns, safety checks, or validation that runs after execution (e.g., log scanning, diff inspection post-Smith)
+      check: >-
+        Verify that documentation and naming do not imply pre-execution prevention when the mechanism actually detects violations after the fact. Terms like 'prevent' or 'block' should be replaced with 'detect and reject' or similar language that accurately describes post-execution enforcement.
+      source: copilot:PR#502
+      added: "2026-04-09"
+    - id: explicit-config-gating
+      category: other
+      pattern: >-
+        Setting provider/config fields from resolved defaults that include fallbacks, where downstream logic branches on empty vs non-empty to decide whether to apply legacy overrides
+      check: >-
+        Verify that optional override fields (e.g. stage-specific provider chains) are only populated when the corresponding configuration key is explicitly set by the user; do not fill them with resolved defaults/fallbacks, as this silently disables legacy fallback paths that check for empty values
+      source: copilot:PR#503
+      added: "2026-04-09"
+    - id: empty-provider-slice-guard
+      category: error-handling
+      pattern: >-
+        Calling filterCopilotIfLimited or similar filtering on a provider slice, then indexing into the result (e.g. providers[0]) without a length check
+      check: >-
+        After filtering a provider chain (especially Copilot quota filtering), verify the resulting slice is non-empty before indexing into it. If it can be empty, add a fallback to provider.Defaults() or treat it as a dispatch failure with a clear log/event rather than risking a panic on an empty slice index.
+      source: copilot:PR#503
+      added: "2026-04-09"
+    - id: stage-specific-variable-naming
+      category: style
+      pattern: >-
+        Variables holding provider configurations or stage-specific resources are named after a different stage (e.g. using 'smith' prefix for schematic stage providers)
+      check: >-
+        Verify that variable names accurately reflect the pipeline stage they belong to — e.g. provider chains resolved for the schematic stage should not be named with a smith prefix, and vice versa
+      source: copilot:PR#503
+      added: "2026-04-09"
+    - id: hotreload-per-anvil-field-comparison
+      category: other
+      pattern: Adding a new per-anvil configuration field
+      check: >-
+        Verify that the hot-reload per-anvil comparison loop includes the new field so that changes to it trigger a config reload
+      source: copilot:PR#503
+      added: "2026-04-09"
+    - id: stage-config-round-trip-tests
+      category: testing
+      pattern: Adding new fields to config structs that use custom MarshalYAML/UnmarshalYAML
+      check: >-
+        Verify that Save→Load round-trip tests cover the new fields, especially when the struct has custom YAML marshaling that could silently drop or mangle new fields
+      source: copilot:PR#503
+      added: "2026-04-09"
+    - id: hook-env-on-skip-path
+      category: error-handling
+      pattern: A lifecycle hook is executed after a stage that can be conditionally skipped
+      check: >-
+        Verify that hook environment variables (stage name, iteration, etc.) are explicitly populated even when the associated stage is skipped, so hooks always receive correct metadata
+      source: copilot:PR#504
+      added: "2026-04-09"
+    - id: no-secrets-in-logs
+      category: security
+      pattern: Logging command strings, raw subprocess output, or environment variables
+      check: >-
+        Verify that log output does not include full command strings (which may contain embedded secrets like tokens or webhook URLs) or unsanitized subprocess stdout/stderr. Log only identifiers (e.g. hook name, exit status) and gate verbose output behind a debug flag.
+      source: copilot:PR#504
+      added: "2026-04-09"
+    - id: cross-platform-shell-tests
+      category: testing
+      pattern: >-
+        Test code that uses POSIX shell syntax ($VAR expansion, quoting, redirection like >, >>) in command strings executed via shell
+      check: >-
+        Verify that tests using shell command strings are cross-platform: if shellArgs() or similar uses cmd /c on Windows, POSIX syntax ($VAR, >, >>) won't work. Either make command strings conditional on runtime.GOOS (e.g. %VAR% for cmd) or skip shell-dependent assertions on Windows.
+      source: copilot:PR#504
+      added: "2026-04-09"
+    - id: go-import-sort-order
+      category: style
+      pattern: Go import blocks where standard library packages are not in gofmt-sorted order
+      check: >-
+        Verify that all Go import blocks are sorted according to gofmt conventions (alphabetical within each group)
+      source: copilot:PR#504
+      added: "2026-04-09"
+    - id: iteration-env-var-accuracy
+      category: other
+      pattern: >-
+        Setting or documenting FORGE_ITERATION for pipeline stages outside the Smith-Warden loop
+      check: >-
+        Verify that FORGE_ITERATION reflects the actual iteration context: stages outside the Smith-Warden loop (e.g., schematic) should either use a sentinel value (0) or the docs should clearly state what value they receive
+      source: copilot:PR#504
+      added: "2026-04-09"
+    - id: terminology-consistency
+      category: style
+      pattern: >-
+        Documentation or comments referencing renamed packages, workers, or concepts by their old names
+      check: >-
+        Verify that all references to renamed packages use the new names consistently throughout docs and comments (e.g. use 'quench/burnish' not 'cifix/reviewfix' when referring to worker names)
+      source: copilot:PR#505
+      added: "2026-04-10"
+    - id: narrow-error-tolerance
+      category: error-handling
+      pattern: >-
+        Code that ignores or tolerates errors from external command execution based on output content
+      check: >-
+        Verify that error tolerance is narrowed to specific exit-status errors (e.g., *exec.ExitError) and not broadly ignoring all errors, which could mask timeouts, context cancellations, or other execution failures. Check that context errors (ctx.Err()) are not suppressed.
+      source: copilot:PR#507
+      added: "2026-04-10"
+    - id: nil-error-wrap
+      category: error-handling
+      pattern: Using fmt.Errorf with %w to wrap an error variable that may be nil
+      check: >-
+        Verify that when using %w in fmt.Errorf, the wrapped error is guaranteed to be non-nil. Wrapping a nil error with %w returns nil, silently discarding the intended error message and any side effects. If the error may be nil, either guard with a nil check, use a concrete error value, or use a non-wrapping format verb.
+      source: copilot:PR#509
+      added: "2026-04-10"
+    - id: decode-json-preserve-underlying-error
+      category: error-handling
+      pattern: >-
+        JSON decoding helper that discards the original decode error and returns only a generic fallback message
+      check: >-
+        When a JSON decoding utility fails, verify it returns or wraps the underlying decode error from the best attempt rather than a generic message. Only use a generic 'no valid JSON found' error when the input truly contains no plausible JSON start.
+      source: copilot:PR#509
+      added: "2026-04-10"
+    - id: comment-timeout-sync
+      category: style
+      pattern: >-
+        Code comments that mention specific timeout durations, limits, or numeric constants
+      check: >-
+        Verify that comments referencing specific numeric values (timeouts, limits, thresholds) match the actual values used in the code, especially after constants or defaults have been changed
+      source: copilot:PR#511
+      added: "2026-04-10"
+    - id: comment-matches-code
+      category: style
+      pattern: Code comments that reference specific values, constants, or timeouts
+      check: >-
+        Verify that comments accurately reflect the actual values or constants used in the code. When a constant or timeout value is changed, ensure all nearby comments referencing the old value are updated to match.
+      source: copilot:PR#511
+      added: "2026-04-10"
+    - id: consistent-timeout-coverage
+      category: concurrency
+      pattern: >-
+        Adding a shared timeout constant or helper for subprocess/external calls but only applying it to some call sites
+      check: >-
+        When introducing a standardized timeout (or any uniform policy) for external subprocess invocations, verify that ALL call sites are updated—not just the ones touched by the current change. Audit the codebase for remaining callers that still use a raw context or ad-hoc timeout, and either migrate them or explicitly document why they are excluded.
+      source: copilot:PR#511
+      added: "2026-04-10"
+    - id: no-dummy-import-suppressor
+      category: style
+      pattern: >-
+        A variable declaration like `var _ = <pkg>.<symbol>` used solely to keep an otherwise-unused import alive
+      check: >-
+        Verify that every import is actually used in meaningful code. If an import is only kept alive by a dummy reference (e.g. `var _ = time.Second`), remove both the unused import and the suppressor variable.
+      source: copilot:PR#514
+      added: "2026-04-10"
+    - id: hook-env-anvil-path
+      category: other
+      pattern: HookEnv struct literal or hook invocation where AnvilPath may be unset
+      check: >-
+        Verify that HookEnv always populates AnvilPath so FORGE_ANVIL_PATH is available to hook scripts. When adding new call sites that construct HookEnv (especially in batched or alternative code paths like BatchFix), ensure AnvilPath is threaded through from the caller and set consistently with the primary pipeline path.
+      source: copilot:PR#515
+      added: "2026-04-11"
+    - id: test-hook-integration-in-fix-functions
+      category: testing
+      pattern: >-
+        Adding hook wrapper logic (before_*/after_*) around existing operations in Fix/Run functions
+      check: >-
+        When adding hook callbacks around core operations, verify that tests actually invoke the outer function (e.g. Fix/Run) end-to-end—not just stub the hook and assert its fields. Tests should confirm: (1) the before_* hook runs before the operation and aborts on error, (2) the after_* hook error is non-fatal, and (3) ordering is correct across all invocations of the wrapped operation within the function. Consider introducing a package-level function variable (e.g. temperRunFn) to make the inner operation stubbable for unit tests.
+      source: copilot:PR#515
+      added: "2026-04-11"
+    - id: guard-flag-without-feature
+      category: error-handling
+      pattern: >-
+        A boolean config field (e.g. XRequired, EnableX) that only takes effect when a companion field (e.g. X command/path) is non-empty
+      check: >-
+        When a boolean flag enables/requires a feature, verify the config validates that the corresponding feature is actually configured — otherwise the flag is silently ignored, masking misconfiguration
+      source: copilot:PR#516
+      added: "2026-04-11"
+    - id: temper-config-doc-accuracy
+      category: other
+      pattern: >-
+        Documentation describing temper configuration behavior or how temper fields interact
+      check: >-
+        Verify that documentation about temper configuration accurately reflects implementation behavior. Specifically, ensure docs clarify that only temper.build, temper.test, and temper.lint commands trigger replacement of auto-detected steps — modifier-only fields like lint_required do not replace auto-detection by themselves and only affect their corresponding command when it is explicitly configured.
+      source: copilot:PR#516
+      added: "2026-04-11"
+    - id: trim-whitespace-validation
+      category: error-handling
+      pattern: Validation that checks for empty strings on user-provided configuration values
+      check: >-
+        Verify that string validation uses strings.TrimSpace before checking emptiness, so whitespace-only values are rejected. Also use the trimmed value for any uniqueness/duplicate checks.
+      source: copilot:PR#517
+      added: "2026-04-11"
+    - id: reject-negative-timeout
+      category: error-handling
+      pattern: Parsing or accepting duration/timeout values from configuration
+      check: >-
+        Verify that negative durations are rejected during config validation. Negative durations parse successfully but cause context.WithTimeout to fire immediately, which is surprising at runtime. Zero should be allowed as a sentinel for 'use default'.
+      source: copilot:PR#517
+      added: "2026-04-11"
+    - id: trim-config-strings
+      category: error-handling
+      pattern: >-
+        Building structs from user-provided configuration values (YAML, TOML, env) without normalizing whitespace
+      check: >-
+        Verify that string fields parsed from configuration (names, commands, paths, directories) are trimmed with strings.TrimSpace before use, to prevent confusing runtime failures from leading/trailing whitespace
+      source: copilot:PR#517
+      added: "2026-04-11"
+    - id: test-name-matches-behavior
+      category: testing
+      pattern: >-
+        Test function name implies behavior (e.g. stops, skips, fails) that the test body does not actually exercise
+      check: >-
+        Verify that test names accurately describe what the test asserts. If a test is named after a behavioral scenario (e.g. 'StopsOnRequiredFailure'), it should exercise that behavior end-to-end, not just check a precondition. Either rename the test to match what it actually checks or extend it to verify the claimed behavior.
+      source: copilot:PR#517
+      added: "2026-04-11"
