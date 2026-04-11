@@ -143,7 +143,7 @@ func LoadAnvilConfig(anvilPath string) (*TemperYAML, error) {
 // whitespace into the executable and arguments (no shell expansion).
 // If all commands are empty, it returns nil so callers can fall back to
 // auto-detection.
-func ConfigFromCommands(build, test, lint string) *Config {
+func ConfigFromCommands(build, test, lint string, lintRequired bool) *Config {
 	build = strings.TrimSpace(build)
 	test = strings.TrimSpace(test)
 	lint = strings.TrimSpace(lint)
@@ -167,7 +167,7 @@ func ConfigFromCommands(build, test, lint string) *Config {
 			Command:  cmd,
 			Args:     args,
 			Timeout:  3 * time.Minute,
-			Optional: true,
+			Optional: !lintRequired,
 		})
 	}
 	if test != "" {

@@ -847,3 +847,66 @@ func TestProvidersForStageWithAnvil_AnvilNoStageProviders(t *testing.T) {
 	got := ProvidersForStageWithAnvil(s, anvil, "smith")
 	assert.Equal(t, []string{"claude"}, got)
 }
+
+func TestLoad_TemperLintRequired(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+anvils:
+  myrepo:
+    path: /some/path
+    temper:
+      build: "make build"
+      lint: "make lint"
+      lint_required: true
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Anvils["myrepo"].Temper)
+	assert.True(t, cfg.Anvils["myrepo"].Temper.LintRequired)
+	assert.Equal(t, "make lint", cfg.Anvils["myrepo"].Temper.Lint)
+	assert.Equal(t, "make build", cfg.Anvils["myrepo"].Temper.Build)
+}
+
+func TestConfig_Validate_LintRequired(t *testing.T) {
+	base := func() Config {
+		return Config{
+			Settings: SettingsConfig{
+				MaxTotalSmiths:        4,
+				MaxReviewAttempts:     5,
+				MaxPipelineIterations: 5,
+				PollInterval:          1 * time.Minute,
+				SmithTimeout:          30 * time.Minute,
+				BellowsInterval:       2 * time.Minute,
+				MaxCIFixAttempts:      5,
+				MaxReviewFixAttempts:  5,
+				MaxRebaseAttempts:     3,
+			},
+			Anvils: map[string]AnvilConfig{
+				"myrepo": {Path: "/some/path"},
+			},
+		}
+	}
+
+	t.Run("lint_required with lint set is valid", func(t *testing.T) {
+		cfg := base()
+		temper := cfg.Anvils["myrepo"]
+		temper.Temper = &TemperCommandsConfig{Lint: "make lint", LintRequired: true}
+		cfg.Anvils["myrepo"] = temper
+		errs := cfg.Validate()
+		for _, e := range errs {
+			assert.NotContains(t, e, "lint_required")
+		}
+	})
+
+	t.Run("lint_required without lint is invalid", func(t *testing.T) {
+		cfg := base()
+		temper := cfg.Anvils["myrepo"]
+		temper.Temper = &TemperCommandsConfig{LintRequired: true}
+		cfg.Anvils["myrepo"] = temper
+		errs := cfg.Validate()
+		assert.Contains(t, errs, `anvil "myrepo": temper.lint_required is true but temper.lint is not set`)
+	})
+}

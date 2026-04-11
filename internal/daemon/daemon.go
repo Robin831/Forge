@@ -4543,7 +4543,7 @@ func (d *Daemon) resolveTemperConfig(anvilCfg config.AnvilConfig) *temper.Config
 	if anvilCfg.Temper == nil || anvilCfg.Temper.IsEmpty() {
 		return nil
 	}
-	return temper.ConfigFromCommands(anvilCfg.Temper.Build, anvilCfg.Temper.Test, anvilCfg.Temper.Lint)
+	return temper.ConfigFromCommands(anvilCfg.Temper.Build, anvilCfg.Temper.Test, anvilCfg.Temper.Lint, anvilCfg.Temper.LintRequired)
 }
 
 // resolveGoRaceDetection resolves the effective Go race detection setting.
