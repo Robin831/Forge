@@ -259,6 +259,16 @@ func buildBatchCIPrompt(p BatchFixParams) string {
 // hookRunFn is the function used to run hooks. Package-level variable for test stubbing.
 var hookRunFn = hooks.RunHook
 
+// temperRunFn is the function used to run temper checks. Package-level variable for test stubbing.
+var temperRunFn = func(ctx context.Context, worktreePath string, cfg temper.Config, db *state.DB, beadID, anvil string) *temper.Result {
+	return temper.Run(ctx, worktreePath, cfg, db, beadID, anvil)
+}
+
+// smithSpawnFn is the function used to spawn Smith. Package-level variable for test stubbing.
+var smithSpawnFn = func(ctx context.Context, worktreePath, prompt, logDir string, pv provider.Provider, extraFlags []string) (*smith.Process, error) {
+	return smith.SpawnWithProvider(ctx, worktreePath, prompt, logDir, pv, extraFlags)
+}
+
 // Fix attempts to resolve CI failures on a PR branch.
 func Fix(ctx context.Context, p FixParams) *FixResult {
 	start := time.Now()
@@ -316,7 +326,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			result.Duration = time.Since(start)
 			return result
 		}
-		temperResult := temper.Run(ctx, p.WorktreePath, *temperCfg, p.DB, p.BeadID, p.AnvilName)
+		temperResult := temperRunFn(ctx, p.WorktreePath, *temperCfg, p.DB, p.BeadID, p.AnvilName)
 		if err := hookRunFn(ctx, p.WorkerID, "after_temper", hooks.HookCmd(p.Hooks, "after_temper"), hEnv); err != nil {
 			log.Printf("[quench] PR #%d: after_temper hook failed (non-fatal): %v", p.PRNumber, err)
 		}
@@ -377,7 +387,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				log.Printf("[quench] PR #%d: Provider %s rate limited, retrying with %s",
 					p.PRNumber, providers[pi-1].Label(), pv.Label())
 			}
-			process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
+			process, err := smithSpawnFn(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
 			if err != nil {
 				result.Error = fmt.Errorf("spawning smith (%s) for CI fix: %w", pv.Kind, err)
 				result.Duration = time.Since(start)
@@ -448,7 +458,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			result.Duration = time.Since(start)
 			return result
 		}
-		verifyResult := temper.Run(ctx, p.WorktreePath, *temperCfg, p.DB, p.BeadID, p.AnvilName)
+		verifyResult := temperRunFn(ctx, p.WorktreePath, *temperCfg, p.DB, p.BeadID, p.AnvilName)
 		if err := hookRunFn(ctx, p.WorkerID, "after_temper", hooks.HookCmd(p.Hooks, "after_temper"), verifyEnv); err != nil {
 			log.Printf("[quench] PR #%d: after_temper hook failed (non-fatal): %v", p.PRNumber, err)
 		}

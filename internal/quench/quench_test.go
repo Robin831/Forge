@@ -3,12 +3,16 @@ package quench
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/hooks"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/smith"
+	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/temper"
 	"github.com/Robin831/Forge/internal/vcs"
 )
 
@@ -255,5 +259,235 @@ func TestHookRunFn_NilHooks_NoOp(t *testing.T) {
 	_ = hookRunFn(context.Background(), "w1", "before_temper", cmd, env)
 	if called {
 		t.Error("hook should not have been called with empty cmd")
+	}
+}
+
+// --- Fix-level hook ordering / abort tests ---
+
+// fakeVCS is a minimal vcs.Provider stub for quench Fix tests.
+type fakeVCS struct {
+	failingChecks []vcs.CICheck
+}
+
+func (f *fakeVCS) CreatePR(_ context.Context, _ vcs.CreateParams) (*vcs.PR, error) {
+	return nil, nil
+}
+func (f *fakeVCS) MergePR(_ context.Context, _ string, _ int, _ string) error { return nil }
+func (f *fakeVCS) CheckStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
+	return nil, nil
+}
+func (f *fakeVCS) CheckStatusLight(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
+	return nil, nil
+}
+func (f *fakeVCS) ListOpenPRs(_ context.Context, _ string) ([]vcs.OpenPR, error) {
+	return nil, nil
+}
+func (f *fakeVCS) GetRepoOwnerAndName(_ context.Context, _ string) (string, string, error) {
+	return "owner", "repo", nil
+}
+func (f *fakeVCS) FetchUnresolvedThreadCount(_ context.Context, _ string, _ int) (int, error) {
+	return 0, nil
+}
+func (f *fakeVCS) FetchPendingReviewRequests(_ context.Context, _ string, _ int) ([]vcs.ReviewRequest, error) {
+	return nil, nil
+}
+func (f *fakeVCS) FetchPRChecks(_ context.Context, _ string, _ int) (string, []vcs.CICheck, error) {
+	return "", f.failingChecks, nil
+}
+func (f *fakeVCS) FetchCILogs(_ context.Context, _ string, _ []vcs.CICheck) (map[string]string, error) {
+	return nil, nil
+}
+func (f *fakeVCS) FetchReviewComments(_ context.Context, _ string, _ int) ([]vcs.ReviewComment, error) {
+	return nil, nil
+}
+func (f *fakeVCS) ResolveThread(_ context.Context, _ string, _ string) error { return nil }
+func (f *fakeVCS) Platform() vcs.Platform                                     { return vcs.GitHub }
+
+// openTestDB opens a temporary SQLite state database for use in tests.
+func openTestDB(t *testing.T) *state.DB {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := state.Open(dbPath)
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+// quenchTestHarness saves and restores the package-level function stubs.
+type quenchTestHarness struct {
+	origHookRun    func(ctx context.Context, workerID, hookName, cmd string, env hooks.HookEnv) error
+	origTemperRun  func(ctx context.Context, worktreePath string, cfg temper.Config, db *state.DB, beadID, anvil string) *temper.Result
+	origSmithSpawn func(ctx context.Context, worktreePath, prompt, logDir string, pv provider.Provider, extraFlags []string) (*smith.Process, error)
+}
+
+func newQuenchTestHarness() *quenchTestHarness {
+	return &quenchTestHarness{
+		origHookRun:    hookRunFn,
+		origTemperRun:  temperRunFn,
+		origSmithSpawn: smithSpawnFn,
+	}
+}
+
+func (h *quenchTestHarness) restore() {
+	hookRunFn = h.origHookRun
+	temperRunFn = h.origTemperRun
+	smithSpawnFn = h.origSmithSpawn
+}
+
+// TestFix_BeforeTemper_AbortsOnError verifies that a before_temper hook failure
+// prevents temper from running and causes Fix to return an error.
+func TestFix_BeforeTemper_AbortsOnError(t *testing.T) {
+	h := newQuenchTestHarness()
+	defer h.restore()
+
+	temperCalled := false
+	temperRunFn = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		temperCalled = true
+		return &temper.Result{Passed: true}
+	}
+
+	hookRunFn = func(_ context.Context, _, hookName, cmd string, _ hooks.HookEnv) error {
+		if hookName == "before_temper" && cmd != "" {
+			return fmt.Errorf("before_temper hook failed")
+		}
+		return nil
+	}
+
+	cfg := temper.Config{}
+	result := Fix(context.Background(), FixParams{
+		PRNumber:     42,
+		Branch:       "forge/test",
+		BeadID:       "test-bead",
+		WorktreePath: t.TempDir(),
+		VCS:          &fakeVCS{},
+		Providers:    []provider.Provider{{Kind: provider.Claude}},
+		TemperConfig: &cfg,
+		Hooks:        &config.HooksConfig{BeforeTemper: "exit 1"},
+	})
+
+	if result.Fixed {
+		t.Error("Fix should not be Fixed=true when before_temper hook aborts")
+	}
+	if result.Error == nil {
+		t.Fatal("Fix should return an error when before_temper hook fails")
+	}
+	if !strings.Contains(result.Error.Error(), "before_temper") {
+		t.Errorf("error should mention before_temper, got: %v", result.Error)
+	}
+	if temperCalled {
+		t.Error("temperRunFn should not be called when before_temper hook aborts")
+	}
+}
+
+// TestFix_AfterTemper_NonFatal_ReproRun verifies that an after_temper hook
+// failure during the repro temper run is non-fatal: Fix continues and returns
+// Fixed=true when temper passes and no CI checks are failing.
+func TestFix_AfterTemper_NonFatal_ReproRun(t *testing.T) {
+	h := newQuenchTestHarness()
+	defer h.restore()
+
+	temperRunFn = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		return &temper.Result{Passed: true}
+	}
+
+	afterTemperCalled := false
+	hookRunFn = func(_ context.Context, _, hookName, cmd string, _ hooks.HookEnv) error {
+		if hookName == "after_temper" && cmd != "" {
+			afterTemperCalled = true
+			return fmt.Errorf("after_temper hook failed")
+		}
+		return nil
+	}
+
+	cfg := temper.Config{}
+	// VCS returns no failing checks — so temper passing means we're fixed.
+	result := Fix(context.Background(), FixParams{
+		PRNumber:     42,
+		Branch:       "forge/test",
+		BeadID:       "test-bead",
+		WorktreePath: t.TempDir(),
+		VCS:          &fakeVCS{},
+		Providers:    []provider.Provider{{Kind: provider.Claude}},
+		TemperConfig: &cfg,
+		Hooks:        &config.HooksConfig{AfterTemper: "exit 1"},
+	})
+
+	if !afterTemperCalled {
+		t.Error("after_temper hook should have been called")
+	}
+	if !result.Fixed {
+		t.Errorf("Fix should return Fixed=true even when after_temper hook fails (non-fatal); error: %v", result.Error)
+	}
+	if result.Error != nil {
+		t.Errorf("Fix should not return an error when after_temper hook fails (non-fatal), got: %v", result.Error)
+	}
+}
+
+// TestFix_AfterTemper_NonFatal_VerifyRun verifies that an after_temper hook
+// failure during the verify temper run (after Smith) is also non-fatal: Fix
+// continues and returns Fixed=true when the verify temper passes.
+func TestFix_AfterTemper_NonFatal_VerifyRun(t *testing.T) {
+	h := newQuenchTestHarness()
+	defer h.restore()
+
+	// First temper call (repro) fails so we proceed to smith.
+	// Second temper call (verify) passes.
+	callCount := 0
+	temperRunFn = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		callCount++
+		if callCount == 1 {
+			return &temper.Result{Passed: false, FailedStep: "build"}
+		}
+		return &temper.Result{Passed: true}
+	}
+
+	// Smith succeeds.
+	smithSpawnFn = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		return smith.NewProcessForTest(&smith.Result{
+			ExitCode:      0,
+			ResultSubtype: "success",
+			IsError:       false,
+		}), nil
+	}
+
+	afterTemperCallCount := 0
+	hookRunFn = func(_ context.Context, _, hookName, cmd string, _ hooks.HookEnv) error {
+		if hookName == "after_temper" && cmd != "" {
+			afterTemperCallCount++
+			return fmt.Errorf("after_temper hook failed")
+		}
+		return nil
+	}
+
+	cfg := temper.Config{}
+	db := openTestDB(t)
+	// VCS returns one failing check so Fix doesn't short-circuit on the repro pass.
+	result := Fix(context.Background(), FixParams{
+		PRNumber:     42,
+		Branch:       "forge/test",
+		BeadID:       "test-bead",
+		WorktreePath: t.TempDir(),
+		VCS: &fakeVCS{
+			failingChecks: []vcs.CICheck{{Name: "build", Status: "failure"}},
+		},
+		Providers:    []provider.Provider{{Kind: provider.Claude}},
+		TemperConfig: &cfg,
+		Hooks:        &config.HooksConfig{AfterTemper: "exit 1"},
+		DB:           db,
+	})
+
+	if callCount != 2 {
+		t.Errorf("expected 2 temperRunFn calls (repro + verify), got %d", callCount)
+	}
+	if afterTemperCallCount < 1 {
+		t.Error("after_temper hook should have been called at least once (on the verify run)")
+	}
+	if !result.Fixed {
+		t.Errorf("Fix should return Fixed=true even when after_temper hook fails (non-fatal); error: %v", result.Error)
+	}
+	if result.Error != nil {
+		t.Errorf("Fix should not return an error when after_temper hook fails (non-fatal), got: %v", result.Error)
 	}
 }

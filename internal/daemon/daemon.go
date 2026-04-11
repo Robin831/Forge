@@ -1041,6 +1041,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 						WorktreePath:    wt.Path,
 						BeadID:          req.BeadID,
 						AnvilName:       req.Anvil,
+						AnvilPath:       anvilCfg.Path,
 						PRNumber:        req.PRNumber,
 						Branch:          req.Branch,
 						DB:              d.db,

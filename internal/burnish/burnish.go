@@ -92,6 +92,8 @@ type BatchFixParams struct {
 	BeadID string
 	// AnvilName for tracking.
 	AnvilName string
+	// AnvilPath is the repo root (used to populate FORGE_ANVIL_PATH in hook env).
+	AnvilPath string
 	// PRNumber being fixed.
 	PRNumber int
 	// Branch name for the PR.
@@ -222,6 +224,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		WorktreePath: p.WorktreePath,
 		Branch:       p.Branch,
 		AnvilName:    p.AnvilName,
+		AnvilPath:    p.AnvilPath,
 		Stage:        "temper",
 		Iteration:    1,
 	}
