@@ -36,7 +36,7 @@ forge anvil list                      # List registered anvils
 forge anvil remove <name>             # Deregister an anvil
 forge queue list                      # Show queued beads
 forge queue run <id>                  # Manually dispatch a bead
-forge queue stop <id>                 # Kill worker, prevent re-dispatch
+forge queue stop <id> --anvil <name>  # Kill worker, prevent re-dispatch
 forge queue clarify <id>              # Mark bead as needing clarification
 forge queue unclarify <id>            # Clear clarification flag
 forge queue retry <id>                # Reset dispatch circuit breaker
@@ -46,7 +46,7 @@ forge ingots list                     # List ingot records (bead lifecycle)
 forge ingots show <id>                # Show ingot details with test results
 forge ledger                          # Open interactive bead management TUI
 forge quest list                      # List discovered E2E quests
-forge quest run <quest>               # Execute a quest and report results
+forge quest run <quest> --anvil <name>  # Execute a quest and report results
 forge wicket status                   # Show Wicket issue triage status
 forge scan                            # Run govulncheck on Go anvils
 forge scan --anvil <name>             # Scan a specific anvil
@@ -157,8 +157,8 @@ category: Fixed
 bd ready (poller) → pipeline.Run()
   → worktree.Create (git worktree add)
   → [before_schematic hook] → schematic.Analyze (optional) → [after_schematic hook]
-  → deny_patterns validation (file globs + command globs, resets on violation)
   → [before_smith hook] → smith.Spawn (claude CLI) → [after_smith hook]
+  → deny_patterns validation (file globs + command globs, resets on violation)
   → [before_temper hook] → temper.Run (build/test/lint) → [after_temper hook]
   → [before_warden hook] → warden.Review (second claude session) → [after_warden hook]
   → if request_changes: loop back to Smith (max max_review_attempts iterations)

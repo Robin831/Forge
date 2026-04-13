@@ -188,8 +188,8 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ```
 bd ready → Claim bead → Create worktree → [Schematic (optional pre-analysis)]
-    → [hooks: before/after each stage] → deny_patterns validation
-    → Smith (Claude) → Temper (build/test) → Warden (review)
+    → [hooks: before/after each stage] → Smith (Claude)
+    → deny_patterns validation → Temper (build/test) → Warden (review)
     → PR creation → bd close → Bellows (monitor PR, CI fix, review fix, rebase)
 ```
 
@@ -244,7 +244,7 @@ Override auto-detected build/test/lint with custom commands via the `temper` per
 
 ### Per-Stage Providers
 
-Use `stage_providers` (global or per-anvil) to assign different AI providers to each pipeline stage: `smith`, `warden`, `schematic`, `cifix`, `reviewfix`. Fallback chain: anvil `stage_providers` → global `stage_providers` → `smith_providers` (deprecated) → `providers`.
+Use `stage_providers` (global or per-anvil) to assign different AI providers to each pipeline stage: `smith`, `warden`, `schematic`, `cifix`, `reviewfix`. Fallback chain for `smith`, `warden`, and `schematic`: anvil `stage_providers` → global `stage_providers` → `smith_providers` (deprecated) → `providers`. For `cifix` and `reviewfix`: anvil `stage_providers` → global `stage_providers` → `providers`.
 
 ### Cost Tracking
 
