@@ -17,6 +17,10 @@ The Forge uses a blacksmith metaphor throughout:
 | **Crucible** | Epic orchestrator (parent-child beads on feature branches) |
 | **Depcheck** | Multi-language dependency update scanner (Go, .NET, Node) |
 | **Wicket**   | GitHub issue triage monitor — classifies issues and creates beads |
+| **Quench**   | CI failure fix worker — spawns Smith with targeted fix prompt |
+| **Burnish**  | Review comment fix worker — addresses PR review feedback |
+| **Smelter**  | Batches pending warden rules into PRs                    |
+| **QuestGiver** | E2E quest discovery and execution                      |
 | **Anvil**    | Repository workspace                                    |
 | **Heat**     | Work batch / session                                    |
 
@@ -32,6 +36,10 @@ The Forge uses a blacksmith metaphor throughout:
 │  ┌──────────┐ ┌──────────┐  ┌───────────┐           │
 │  │ Depcheck │ │ Crucible │  │ Watchdog  │           │
 │  │(dep scan)│ │(epics)   │  │(stale det)│           │
+│  └──────────┘ └──────────┘  └───────────┘           │
+│  ┌──────────┐ ┌──────────┐  ┌───────────┐           │
+│  │ Wicket  │ │ Smelter  │  │QuestGiver │           │
+│  │(triage) │ │(rules PR)│  │(E2E tests)│           │
 │  └──────────┘ └──────────┘  └───────────┘           │
 │        │            │              │                 │
 │        ▼            ▼              ▼                 │
@@ -101,6 +109,18 @@ anvils:
     path: C:\source\fhigit\Legacy
     auto_dispatch: priority
     auto_dispatch_min_priority: 1  # Only P0 and P1
+    smith:
+      deny_patterns:
+        files: ["*.env", "*.key"]       # Reject changes to sensitive files
+        commands: ["rm -rf /*"]         # Block dangerous commands
+    hooks:
+      before_temper: 'npm ci'           # Run before each temper invocation
+    temper:
+      steps:                            # Custom build/test/lint steps
+        - { name: build, command: npm, args: [run, build] }
+        - { name: test,  command: npm, args: [run, test] }
+    stage_providers:                    # Per-anvil provider overrides
+      smith: [claude/claude-opus-4-6]
 
 settings:
   poll_interval: 5m
@@ -168,6 +188,7 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ```
 bd ready → Claim bead → Create worktree → [Schematic (optional pre-analysis)]
+    → [hooks: before/after each stage] → deny_patterns validation
     → Smith (Claude) → Temper (build/test) → Warden (review)
     → PR creation → bd close → Bellows (monitor PR, CI fix, review fix, rebase)
 ```
@@ -209,6 +230,22 @@ forge warden list --anvil heimdall     # List learned rules
 forge warden forget <rule-id> --anvil heimdall  # Remove a rule
 ```
 
+### Pipeline Hooks
+
+Shell commands can run before or after each pipeline stage (Schematic, Smith, Temper, Warden). "Before" hooks abort on non-zero exit; "after" hooks are best-effort. Hooks receive pipeline context via environment variables (`FORGE_BEAD_ID`, `FORGE_WORKTREE_PATH`, `FORGE_BRANCH`, etc.). Configure per-anvil under `hooks`.
+
+### Smith Deny Patterns
+
+Restrict what files Smith can modify and what commands it can execute. File patterns are matched against the git diff; command patterns are matched against bash commands in Smith's output. Violations reset the worktree and retry with feedback. Configure per-anvil under `smith.deny_patterns`.
+
+### Custom Temper Commands
+
+Override auto-detected build/test/lint with custom commands via the `temper` per-anvil config. Use the shorthand (`build`/`test`/`lint`) for simple cases, or `temper.steps` for ordered multi-step pipelines with per-step timeouts and required/optional control.
+
+### Per-Stage Providers
+
+Use `stage_providers` (global or per-anvil) to assign different AI providers to each pipeline stage: `smith`, `warden`, `schematic`, `cifix`, `reviewfix`. Fallback chain: anvil `stage_providers` → global `stage_providers` → `smith_providers` (deprecated) → `providers`.
+
 ### Cost Tracking
 
 Token usage and USD cost estimates are tracked per-bead and per-day. Set `daily_cost_limit` to automatically pause auto-dispatch when the daily budget is exceeded. View current costs via `forge status`.
@@ -238,6 +275,7 @@ Forge/
 ├── cmd/forge/            # CLI entry point (Cobra commands)
 │   └── main.go
 ├── internal/
+│   ├── adventurer/       # Headless browser quest executor
 │   ├── bellows/          # PR monitoring (CI fix, review fix, rebase)
 │   ├── changelog/        # Changelog fragment parsing & assembly
 │   ├── quench/           # CI failure fix worker (quench)
@@ -247,27 +285,34 @@ Forge/
 │   ├── daemon/           # Main background process, poll loop, IPC server
 │   ├── depcheck/         # Multi-language dependency update scanner
 │   ├── executil/         # Platform-specific process execution
+│   ├── forge/            # Core types and constants (version info)
 │   ├── vcs/              # VCS provider interface & GitHub implementation
 │   ├── hearth/           # Bubbletea TUI dashboard
+│   ├── hooks/            # Pipeline hook execution (before/after each stage)
 │   ├── hotreload/        # fsnotify config watcher
+│   ├── ingot/            # Ingot data model & persistence (bead lifecycle)
 │   ├── ipc/              # Named pipe / Unix socket protocol
+│   ├── ledger/           # Interactive bead management TUI
 │   ├── lifecycle/        # Worker lifecycle management
 │   ├── notify/           # MS Teams webhook notifications
 │   ├── pipeline/         # Smith → Temper → Warden orchestration
 │   ├── poller/           # bd ready integration & Crucible detection
 │   ├── prompt/           # Smith prompt builder
 │   ├── provider/         # AI provider fallback chain
+│   ├── questgiver/       # E2E quest discovery & execution
 │   ├── rebase/           # Conflict rebase handling
 │   ├── retry/            # Exponential backoff & retry logic
 │   ├── burnish/          # Review comment fix worker (burnish)
 │   ├── schematic/        # Pre-analysis worker (decompose complex beads)
 │   ├── shutdown/         # Graceful shutdown & orphan cleanup
+│   ├── smelter/          # Batches pending warden rules into PRs
 │   ├── smith/            # Claude Code worker spawning & lifecycle
 │   ├── state/            # SQLite state management (WAL mode)
 │   ├── temper/           # Build/lint/test verification (Go, .NET, Node)
 │   ├── vulncheck/        # Vulnerability scanning (govulncheck)
 │   ├── warden/           # Code review agent & rule learning
 │   ├── watchdog/         # Stale worker detection
+│   ├── wicket/           # GitHub issue triage monitor
 │   ├── worker/           # Worker process abstraction
 │   └── worktree/         # Git worktree creation/removal
 ├── docs/                 # Reference documentation

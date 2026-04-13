@@ -97,6 +97,8 @@ settings:
   auto_learn_rules: true
   smelter_enabled: true
   smelter_interval: 8h
+  questgiver_enabled: false
+  questgiver_interval: 24h
   crucible_enabled: true
   auto_merge_crucible_children: true
 
@@ -136,6 +138,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `temper` | object\|null | null (auto-detect) | Custom Temper commands for this anvil. When set, replaces auto-detected build/test/lint steps. See [Custom Temper Commands](#custom-temper-commands) below. |
 | `depcheck_enabled` | bool\|null | null (enabled) | Per-anvil toggle for depcheck scanning. When null, depcheck runs as normal. Set to `false` to skip this anvil entirely. |
 | `auto_merge` | bool | `false` | When enabled, PRs that reach the ready-to-merge state (CI passing, no conflicts, no unresolved threads, no pending reviews) are automatically merged using the configured `merge_strategy`. External PRs (`ext-*`) are never auto-merged. |
+| `questgiver_enabled` | bool\|null | null (use global) | Per-anvil override for QuestGiver E2E quest scanning. When null, uses `settings.questgiver_enabled`. Set to `false` to opt this anvil out entirely. |
 | `questgiver_setup_cmd` | string | | Shell command to run before executing quests for this anvil (e.g. `"podman compose up -d"`). Runs in the anvil's root directory. If the command fails, quest execution is aborted. Used by `forge quest run` and the QuestGiver monitor. |
 | `questgiver_teardown_cmd` | string | | Shell command to run after executing quests for this anvil (e.g. `"podman compose down"`). Runs in the anvil's root directory. Always runs even if quests fail; teardown failures are logged as warnings rather than errors. |
 | `wicket_enabled` | bool\|null | null (use global) | Per-anvil override for Wicket issue triage scanning. When null, uses `settings.wicket_enabled`. Set to `false` to opt this anvil out entirely. |
@@ -478,6 +481,8 @@ anvils:
 | `smelter_interval` | duration | `8h` | `1h` or `0` | How often the Smelter runs its background processing. `0` disables scheduled runs. The Smelter skips the startup run if it already flushed within this interval, so daemon restarts don't produce redundant PRs. For low-volume setups where warden rules accumulate slowly, `48h` or `72h` is a reasonable value. |
 | `crucible_enabled` | bool | `false` | | Enable Crucible auto-orchestration for parent beads with children. When a ready bead blocks other beads, the Crucible creates a feature branch, dispatches children in topological order, merges each child PR, then creates a final PR to main. |
 | `auto_merge_crucible_children` | bool | `true` | | Auto-merge child PRs targeting a Crucible feature branch after the pipeline succeeds. Set to `false` to require manual merge of child PRs. |
+| `questgiver_enabled` | bool | `false` | | Enable the QuestGiver E2E quest monitor globally. When false, no quest scanning occurs. |
+| `questgiver_interval` | duration | `24h` | `0` | How often the QuestGiver polls anvils for quests. `0` disables. |
 | `wicket_enabled` | bool | `false` | | Enable the Wicket GitHub issue triage monitor globally. When false, no issue scanning occurs. |
 | `wicket_interval` | duration | `15m` | `1m` or `0` | How often Wicket polls repositories for new issues. `0` disables. |
 | `wicket_provider` | string | `""` (uses `providers`) | | AI provider used for triage decisions. When empty, the global `providers` chain is used. |
@@ -715,6 +720,8 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_GO_RACE_DETECTION` | `settings.go_race_detection` |
 | `FORGE_SETTINGS_CRUCIBLE_ENABLED` | `settings.crucible_enabled` |
 | `FORGE_SETTINGS_AUTO_MERGE_CRUCIBLE_CHILDREN` | `settings.auto_merge_crucible_children` |
+| `FORGE_SETTINGS_QUESTGIVER_ENABLED` | `settings.questgiver_enabled` |
+| `FORGE_SETTINGS_QUESTGIVER_INTERVAL` | `settings.questgiver_interval` |
 | `FORGE_SETTINGS_WICKET_ENABLED` | `settings.wicket_enabled` |
 | `FORGE_SETTINGS_WICKET_INTERVAL` | `settings.wicket_interval` |
 | `FORGE_SETTINGS_WICKET_PROVIDER` | `settings.wicket_provider` |
@@ -746,6 +753,7 @@ The config is validated at load time. Errors are reported as a list:
 - `daily_cost_limit` must be a non-negative finite number
 - `stale_interval` must be >= 30s when enabled, or 0 to disable
 - `smelter_interval` must be >= 1h when enabled, or 0 to disable
+- `questgiver_interval` must be > 0 when questgiver is enabled, or 0 to disable
 - `depcheck_interval` must be >= 1h when enabled, or 0 to disable
 - `depcheck_timeout` must not be negative
 - Each anvil `path` must be non-empty
