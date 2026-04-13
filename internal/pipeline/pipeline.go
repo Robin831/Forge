@@ -1218,24 +1218,30 @@ func Run(ctx context.Context, p Params) *Outcome {
 		if p.DB != nil {
 			logIngotErr(workerID, "temper", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusTemper))
 		}
-		temperCfg := p.TemperConfig
-		if temperCfg == nil {
-			detected := temper.DefaultConfigWithRace(wt.Path, temper.DetectOptionsFromAnvilFlag(p.AnvilConfig.GolangciLint), p.GoRaceDetection)
-			temperCfg = &detected
+		// Build a per-iteration copy of the temper config so we never mutate
+		// the shared p.TemperConfig and always have a fresh changed-file list.
+		var iterTemperCfg temper.Config
+		if p.TemperConfig != nil {
+			iterTemperCfg = *p.TemperConfig
+		} else {
+			iterTemperCfg = temper.DefaultConfigWithRace(wt.Path, temper.DetectOptionsFromAnvilFlag(p.AnvilConfig.GolangciLint), p.GoRaceDetection)
 		}
 
-		// Populate changed-file list for path-based step filtering.
-		// Use the worktree's base branch as the comparison ref so that
-		// all files in the PR are considered, not just the latest iteration.
-		if temperCfg.ChangedFiles == nil {
-			baseBranch := wt.BaseBranch
-			if baseBranch == "" {
-				baseBranch = "main"
+		// Recompute the changed-file list every iteration so that files added
+		// by Smith in later iterations are not silently missed by path filters.
+		// Resolve the base ref the same way as the worktree manager: try
+		// origin/main first, then fall back to origin/master.
+		baseRef := resolveTemperBaseRef(ctx, wt.Path, wt.BaseBranch)
+		if baseRef != "" {
+			changed, err := temper.ChangedFilesFromGit(ctx, wt.Path, baseRef)
+			if err != nil {
+				log.Printf("[pipeline:%s] Warning: could not compute changed files for path filtering: %v", workerID, err)
+			} else {
+				iterTemperCfg.ChangedFiles = changed
 			}
-			temperCfg.ChangedFiles = temper.ChangedFilesFromGit(wt.Path, "origin/"+baseBranch)
 		}
 
-		temperResult := runTemper(ctx, wt.Path, *temperCfg, p.DB, p.Bead.ID, p.AnvilName)
+		temperResult := runTemper(ctx, wt.Path, iterTemperCfg, p.DB, p.Bead.ID, p.AnvilName)
 		outcome.TemperResult = temperResult
 		recordIngotTemperResults(p.DB, workerID, p.Bead.ID, p.AnvilName, temperResult, ingotRec)
 
@@ -1501,6 +1507,24 @@ func gitRevParseHEAD(worktreePath string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// resolveTemperBaseRef returns the git ref to use as the base for computing
+// changed files for Temper path filtering. When baseBranch is set explicitly
+// it is used directly (as "origin/<baseBranch>"). Otherwise it mirrors the
+// worktree manager's auto-detection: try origin/main, then origin/master.
+// Returns an empty string if no valid ref is found.
+func resolveTemperBaseRef(ctx context.Context, worktreePath, baseBranch string) string {
+	if baseBranch != "" {
+		return "origin/" + baseBranch
+	}
+	for _, candidate := range []string{"origin/main", "origin/master"} {
+		cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "--verify", candidate))
+		if err := cmd.Run(); err == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // hasEmptyDiff reports whether the worktree has no uncommitted changes and no

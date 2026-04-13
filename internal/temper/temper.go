@@ -250,14 +250,20 @@ func DefaultConfigWithRace(worktreePath string, opts *DetectOptions, raceEnabled
 // matchesChangedFiles returns true if any file in changedFiles matches any of
 // the given glob patterns (doublestar syntax). Returns true when patterns is
 // empty or nil (step always runs). Returns false when changedFiles is empty and
-// patterns is non-empty (nothing to match).
+// patterns is non-empty (nothing to match). An invalid glob pattern is logged
+// and treated as a match so the step runs rather than being silently skipped.
 func matchesChangedFiles(patterns, changedFiles []string) bool {
 	if len(patterns) == 0 {
 		return true
 	}
 	for _, f := range changedFiles {
 		for _, p := range patterns {
-			if ok, _ := doublestar.Match(p, f); ok {
+			ok, err := doublestar.Match(p, f)
+			if err != nil {
+				log.Printf("[temper] invalid glob pattern %q: %v — treating as match", p, err)
+				return true
+			}
+			if ok {
 				return true
 			}
 		}
@@ -267,14 +273,16 @@ func matchesChangedFiles(patterns, changedFiles []string) bool {
 
 // ChangedFilesFromGit returns the list of changed file paths (relative to the
 // repo root) by running "git diff --name-only <base>..HEAD" in the worktree.
-func ChangedFilesFromGit(worktreePath, baseBranch string) []string {
+// It returns an error if git fails or times out, so callers can log a warning
+// and distinguish "no changes" from "couldn't compute changes".
+func ChangedFilesFromGit(ctx context.Context, worktreePath, baseBranch string) ([]string, error) {
 	if baseBranch == "" {
-		return nil
+		return nil, nil
 	}
-	cmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "diff", "--name-only", baseBranch+"..HEAD"))
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "diff", "--name-only", baseBranch+"..HEAD"))
 	out, err := cmd.Output()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("git diff --name-only %s..HEAD: %w", baseBranch, err)
 	}
 	var files []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -282,7 +290,7 @@ func ChangedFilesFromGit(worktreePath, baseBranch string) []string {
 			files = append(files, line)
 		}
 	}
-	return files
+	return files, nil
 }
 
 // Run executes all verification steps in sequence.
