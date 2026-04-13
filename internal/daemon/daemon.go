@@ -4426,22 +4426,22 @@ func (d *Daemon) fetchExternalRef(anvilPath, beadID string) string {
 		return ""
 	}
 
-	// bd show --json may return [{...}]; unwrap.
-	output = bytes.TrimSpace(output)
-	if len(output) > 1 && output[0] == '[' {
-		start := bytes.IndexByte(output, '{')
-		end := bytes.LastIndexByte(output, '}')
-		if start >= 0 && end > start {
-			output = output[start : end+1]
-		}
-	}
-
-	var resp struct {
+	type beadShowResponse struct {
 		ExternalRef string `json:"external_ref"`
 	}
-	if err := json.Unmarshal(output, &resp); err != nil {
-		d.logger.Debug("failed to parse external_ref from bd show", "bead", beadID, "error", err)
-		return ""
+
+	// Try object form first (tolerates leading/trailing diagnostic noise).
+	var resp beadShowResponse
+	if err := executil.DecodeJSON(output, &resp); err != nil {
+		// Fall back to array form.
+		var resps []beadShowResponse
+		if arrayErr := executil.DecodeJSON(output, &resps); arrayErr != nil {
+			d.logger.Debug("failed to parse external_ref from bd show", "bead", beadID, "error", err)
+			return ""
+		}
+		if len(resps) > 0 {
+			resp = resps[0]
+		}
 	}
 
 	if resp.ExternalRef != "" {

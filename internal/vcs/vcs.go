@@ -20,17 +20,17 @@ import (
 // the given branch. Callers should use errors.Is to check for this sentinel.
 var ErrPRAlreadyExists = errors.New("pull request already exists for branch")
 
-// ghIssueURLPattern matches GitHub issue URLs like
-// https://github.com/org/repo/issues/42
-var ghIssueURLPattern = regexp.MustCompile(`/issues/(\d+)\b`)
+// ghIssuePathPattern matches the path portion of a GitHub issue URL like
+// /org/repo/issues/42
+var ghIssuePathPattern = regexp.MustCompile(`^/.+/.+/issues/(\d+)$`)
 
 // GitHubIssueNumber extracts a GitHub issue number from an external_ref value.
 // Recognised formats:
 //   - "gh-42"                                     → "42"
 //   - "https://github.com/org/repo/issues/42"     → "42"
 //
-// Returns "" for non-GitHub references (e.g. "jira-123"), empty strings, or
-// malformed values.
+// Returns "" for non-GitHub references (e.g. "jira-123", GitLab URLs, or any
+// URL whose host is not github.com), empty strings, or malformed values.
 func GitHubIssueNumber(externalRef string) string {
 	if externalRef == "" {
 		return ""
@@ -45,8 +45,12 @@ func GitHubIssueNumber(externalRef string) string {
 		}
 		return num
 	}
-	// Full URL: .../issues/<number>
-	if m := ghIssueURLPattern.FindStringSubmatch(externalRef); len(m) == 2 {
+	// Full URL: must be a github.com URL with path /org/repo/issues/<number>.
+	u, err := url.Parse(externalRef)
+	if err != nil || u.Hostname() != "github.com" {
+		return ""
+	}
+	if m := ghIssuePathPattern.FindStringSubmatch(u.Path); len(m) == 2 {
 		return m[1]
 	}
 	return ""

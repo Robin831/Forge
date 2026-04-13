@@ -306,7 +306,8 @@ func TestGitHubIssueNumber(t *testing.T) {
 		{"https://github.com/org/repo/issues/7", "7"},
 		{"https://github.com/org/repo/pull/42", ""},
 		{"gh-abc", ""},
-		{"https://example.com/issues/42", "42"}, // generic /issues/ URL
+		{"https://example.com/issues/42", ""},
+		{"https://gitlab.com/org/repo/issues/42", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
