@@ -53,6 +53,12 @@ type BeadContext struct {
 	// Included in the prompt on iteration 2+ so Smith can see what it
 	// already implemented without re-exploring the codebase.
 	PriorDiff string
+	// ExternalRef is an optional external issue/tracker reference for the bead.
+	// Accepted formats may include GitHub shorthand like "gh-42", a full issue URL
+	// such as "https://github.com/org/repo/issues/42", or non-GitHub references
+	// like "jira-123". Prompt/template guidance should only use GitHub closing
+	// keywords when the reference is explicitly a GitHub issue.
+	ExternalRef string
 	// CopilotCombinedMode, when true, appends a self-review checklist to
 	// the prompt so Smith reviews its own diff against Warden criteria.
 	CopilotCombinedMode bool
@@ -190,6 +196,9 @@ implementation is correct. Focus only on fixing the specific issues above.
 **Type**: {{.Bead.IssueType}} | **Priority**: {{.Bead.Priority}}
 {{- if .Bead.Parent}}
 **Parent**: {{.Bead.Parent}}
+{{- end}}
+{{- if .Bead.ExternalRef}}
+**External Reference**: {{.Bead.ExternalRef}} — if this is a GitHub issue (e.g. a URL like https://github.com/org/repo/issues/42 or a shorthand like "gh-42"), include ` + "`" + `Closes #N` + "`" + ` in your PR body with the issue number. For non-GitHub references (e.g. "jira-123"), omit the closing keyword.
 {{- end}}
 
 ### Description

@@ -241,3 +241,68 @@ func TestBuild_CombinedModeWithLoadedWardenRules(t *testing.T) {
 	assert.Contains(t, result, "No unresolved TODOs in production code")
 	assert.Contains(t, result, "pattern: password|secret")
 }
+
+func TestBuild_ExternalRefRenderedWhenSet(t *testing.T) {
+	b := NewBuilder()
+	ctx := BeadContext{
+		BeadID:       "test-extref",
+		Title:        "Test bead with external ref",
+		Description:  "Do the thing",
+		IssueType:    "task",
+		Priority:     3,
+		Branch:       "forge/test-extref",
+		AnvilName:    "test-anvil",
+		AnvilPath:    t.TempDir(),
+		WorktreePath: t.TempDir(),
+		ExternalRef:  "https://github.com/org/repo/issues/42",
+	}
+
+	result, err := b.Build(ctx)
+	require.NoError(t, err)
+
+	assert.Contains(t, result, "**External Reference**")
+	assert.Contains(t, result, "https://github.com/org/repo/issues/42")
+}
+
+func TestBuild_ExternalRefGhShorthandRendered(t *testing.T) {
+	b := NewBuilder()
+	ctx := BeadContext{
+		BeadID:       "test-extref-gh",
+		Title:        "Test bead with gh shorthand",
+		Description:  "Do the thing",
+		IssueType:    "task",
+		Priority:     3,
+		Branch:       "forge/test-extref-gh",
+		AnvilName:    "test-anvil",
+		AnvilPath:    t.TempDir(),
+		WorktreePath: t.TempDir(),
+		ExternalRef:  "gh-42",
+	}
+
+	result, err := b.Build(ctx)
+	require.NoError(t, err)
+
+	assert.Contains(t, result, "**External Reference**")
+	assert.Contains(t, result, "gh-42")
+}
+
+func TestBuild_ExternalRefOmittedWhenEmpty(t *testing.T) {
+	b := NewBuilder()
+	ctx := BeadContext{
+		BeadID:       "test-no-extref",
+		Title:        "Test bead without external ref",
+		Description:  "Do the thing",
+		IssueType:    "task",
+		Priority:     3,
+		Branch:       "forge/test-no-extref",
+		AnvilName:    "test-anvil",
+		AnvilPath:    t.TempDir(),
+		WorktreePath: t.TempDir(),
+		ExternalRef:  "",
+	}
+
+	result, err := b.Build(ctx)
+	require.NoError(t, err)
+
+	assert.NotContains(t, result, "**External Reference**")
+}

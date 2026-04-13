@@ -34,6 +34,7 @@ type Bead struct {
 	DependsOn      []string  `json:"depends_on"`     // Bead IDs that this bead depends on
 	Dependencies   []BeadDep `json:"dependencies"`   // Detailed dependency info from bd
 	DependentCount int       `json:"dependent_count"` // Number of beads that depend on this bead
+	ExternalRef    string    `json:"external_ref"`    // External tracker reference from bd (for example "gh-42", a full URL, or another non-GitHub ref)
 
 	// Forge-injected: which anvil this bead belongs to
 	Anvil string `json:"-"`
