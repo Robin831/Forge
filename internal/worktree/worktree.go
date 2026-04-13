@@ -234,7 +234,8 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 	// the anvil path IS the worktree and linking would be circular.
 	if !opts.LocalHead {
 		if err := linkNodeModules(anvilPath, worktreePath); err != nil {
-			// Non-fatal: temper will fall back to npm ci if needed
+			// Non-fatal: later temper Node steps may fail if dependencies are not
+			// already present or installed by another component/user.
 			fmt.Fprintf(os.Stderr, "Warning: failed to link node_modules: %v\n", err)
 		}
 	}

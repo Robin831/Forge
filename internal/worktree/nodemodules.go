@@ -34,6 +34,8 @@ func linkNodeModules(anvilPath, worktreePath string) error {
 		// If the destination already exists (dir, symlink, or junction), skip.
 		if _, err := os.Lstat(dstNM); err == nil {
 			continue
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("checking existing node_modules destination %s: %w", sub, err)
 		}
 
 		// Ensure the parent directory exists in the worktree. For root-level

@@ -5,6 +5,8 @@ package worktree
 import (
 	"fmt"
 	"os/exec"
+
+	"github.com/Robin831/Forge/internal/executil"
 )
 
 // createJunction creates an NTFS junction from dst pointing to src.
@@ -12,7 +14,7 @@ import (
 // and are transparent to all file I/O.
 func createJunction(src, dst string) error {
 	// mklink /J creates a directory junction — no admin rights needed.
-	cmd := exec.Command("cmd", "/C", "mklink", "/J", dst, src)
+	cmd := executil.HideWindow(exec.Command("cmd", "/C", "mklink", "/J", dst, src))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("mklink /J %s %s: %s: %w", dst, src, out, err)
 	}
