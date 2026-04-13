@@ -647,6 +647,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		IssueType:           p.Bead.IssueType,
 		Priority:            p.Bead.Priority,
 		Parent:              p.Bead.Parent,
+		ExternalRef:         p.Bead.ExternalRef,
 		Branch:              wt.Branch,
 		AnvilName:           p.AnvilName,
 		AnvilPath:           p.AnvilConfig.Path,

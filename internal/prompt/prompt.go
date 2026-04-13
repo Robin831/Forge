@@ -53,6 +53,9 @@ type BeadContext struct {
 	// Included in the prompt on iteration 2+ so Smith can see what it
 	// already implemented without re-exploring the codebase.
 	PriorDiff string
+	// ExternalRef is the GitHub issue URL (e.g. https://github.com/org/repo/issues/42).
+	// When set, Smith is instructed to include "Closes #N" in the PR body.
+	ExternalRef string
 	// CopilotCombinedMode, when true, appends a self-review checklist to
 	// the prompt so Smith reviews its own diff against Warden criteria.
 	CopilotCombinedMode bool
@@ -190,6 +193,9 @@ implementation is correct. Focus only on fixing the specific issues above.
 **Type**: {{.Bead.IssueType}} | **Priority**: {{.Bead.Priority}}
 {{- if .Bead.Parent}}
 **Parent**: {{.Bead.Parent}}
+{{- end}}
+{{- if .Bead.ExternalRef}}
+**GitHub Issue**: {{.Bead.ExternalRef}} — include ` + "`" + `Closes #N` + "`" + ` in your PR body (where N is the issue number from this URL)
 {{- end}}
 
 ### Description

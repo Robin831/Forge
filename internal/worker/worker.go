@@ -132,6 +132,7 @@ func (w *Worker) Run(ctx context.Context, extraFlags []string) (*smith.Result, e
 		IssueType:    w.Bead.IssueType,
 		Priority:     w.Bead.Priority,
 		Parent:       w.Bead.Parent,
+		ExternalRef:  w.Bead.ExternalRef,
 		Branch:       wt.Branch,
 		AnvilName:    w.AnvilName,
 		AnvilPath:    w.AnvilConfig.Path,
