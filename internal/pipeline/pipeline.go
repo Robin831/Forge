@@ -1224,6 +1224,17 @@ func Run(ctx context.Context, p Params) *Outcome {
 			temperCfg = &detected
 		}
 
+		// Populate changed-file list for path-based step filtering.
+		// Use the worktree's base branch as the comparison ref so that
+		// all files in the PR are considered, not just the latest iteration.
+		if temperCfg.ChangedFiles == nil {
+			baseBranch := wt.BaseBranch
+			if baseBranch == "" {
+				baseBranch = "main"
+			}
+			temperCfg.ChangedFiles = temper.ChangedFilesFromGit(wt.Path, "origin/"+baseBranch)
+		}
+
 		temperResult := runTemper(ctx, wt.Path, *temperCfg, p.DB, p.Bead.ID, p.AnvilName)
 		outcome.TemperResult = temperResult
 		recordIngotTemperResults(p.DB, workerID, p.Bead.ID, p.AnvilName, temperResult, ingotRec)

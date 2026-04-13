@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/bmatcuk/doublestar/v4"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,6 +40,9 @@ type StepResult struct {
 	// Optional mirrors the Step.Optional flag — failure here does not fail
 	// the overall check. Surfaced so summaries can render it distinctly.
 	Optional bool
+	// Skipped is true when the step was skipped because no changed files
+	// matched its Paths globs.
+	Skipped bool
 }
 
 // Result is the overall Temper verification result.
@@ -70,6 +75,9 @@ type Step struct {
 	Timeout time.Duration
 	// Optional means failure here doesn't fail the overall check.
 	Optional bool
+	// Paths is a list of glob patterns (doublestar syntax). When non-empty,
+	// the step is skipped if no changed files match any pattern.
+	Paths []string
 }
 
 // Config holds per-anvil verification configuration.
@@ -83,6 +91,11 @@ type Config struct {
 	// accordingly (e.g., via DefaultConfigWithRace). Default is false since
 	// -race slows tests and increases memory usage.
 	GoRaceDetection bool
+	// ChangedFiles is the list of file paths changed in the current diff
+	// (relative to the repository root). When non-nil, steps with Paths
+	// globs are checked against this list and skipped when no files match.
+	// A nil value means "unknown" and disables path-based filtering.
+	ChangedFiles []string
 }
 
 // DetectOptions controls optional steps during auto-detection.
@@ -207,6 +220,7 @@ func ConfigFromSteps(steps []config.TemperStepConfig) *Config {
 			Dir:      strings.TrimSpace(s.Dir),
 			Timeout:  timeout,
 			Optional: optional,
+			Paths:    s.Paths,
 		}
 	}
 	return &Config{Steps: out}
@@ -233,6 +247,44 @@ func DefaultConfigWithRace(worktreePath string, opts *DetectOptions, raceEnabled
 	}
 }
 
+// matchesChangedFiles returns true if any file in changedFiles matches any of
+// the given glob patterns (doublestar syntax). Returns true when patterns is
+// empty or nil (step always runs). Returns false when changedFiles is empty and
+// patterns is non-empty (nothing to match).
+func matchesChangedFiles(patterns, changedFiles []string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, f := range changedFiles {
+		for _, p := range patterns {
+			if ok, _ := doublestar.Match(p, f); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ChangedFilesFromGit returns the list of changed file paths (relative to the
+// repo root) by running "git diff --name-only <base>..HEAD" in the worktree.
+func ChangedFilesFromGit(worktreePath, baseBranch string) []string {
+	if baseBranch == "" {
+		return nil
+	}
+	cmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "diff", "--name-only", baseBranch+"..HEAD"))
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files
+}
+
 // Run executes all verification steps in sequence.
 // It stops on the first non-optional failure.
 // db, beadID, and anvil are used to log lifecycle events; db may be nil to skip logging.
@@ -245,6 +297,19 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 	}
 
 	for _, step := range cfg.Steps {
+		// Skip steps whose path filters don't match any changed files.
+		if len(step.Paths) > 0 && cfg.ChangedFiles != nil && !matchesChangedFiles(step.Paths, cfg.ChangedFiles) {
+			log.Printf("[temper] Skipping step %q: no changed files match paths %v", step.Name, step.Paths)
+			result.Steps = append(result.Steps, StepResult{
+				Name:     step.Name,
+				Command:  fmt.Sprintf("%s %s", step.Command, strings.Join(step.Args, " ")),
+				Passed:   true,
+				Skipped:  true,
+				Optional: step.Optional,
+			})
+			continue
+		}
+
 		stepResult := runStep(ctx, worktreePath, step)
 		result.Steps = append(result.Steps, stepResult)
 
@@ -452,6 +517,8 @@ func buildSummary(r *Result) string {
 	for _, s := range r.Steps {
 		var status string
 		switch {
+		case s.Skipped:
+			status = "SKIP"
 		case s.Passed:
 			status = "PASS"
 		case s.Optional:

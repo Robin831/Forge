@@ -200,6 +200,11 @@ type TemperStepConfig struct {
 	// Required controls whether failure fails the whole temper run.
 	// Pointer so we can distinguish unset (defaults to true) from explicit false.
 	Required *bool `mapstructure:"required" yaml:"required,omitempty"`
+	// Paths is an optional list of glob patterns (doublestar syntax, e.g.
+	// "client/**", "*.cs"). When set, the step is skipped if none of the
+	// changed files in the diff match any pattern. When empty or nil the
+	// step always runs (backward compatible).
+	Paths []string `mapstructure:"paths" yaml:"paths,omitempty"`
 }
 
 // IsEmpty returns true if no custom commands are configured.

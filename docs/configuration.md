@@ -316,6 +316,7 @@ For pipelines that need more than three steps, per-step working directories, or 
 | `dir` | string | worktree root | Working directory for the step. Relative paths resolve against the worktree; absolute paths used as-is. |
 | `timeout` | duration | `5m` | Per-step timeout. Same parsing as elsewhere in Forge config (`5m`, `30s`, `1h`). |
 | `required` | bool | `true` | When `true`, failure fails the whole temper run. When `false`, failure is reported as a warning. |
+| `paths` | `[]string` | `[]` (always run) | Glob patterns (doublestar syntax, e.g. `client/**`, `**/*.go`). When set, the step is skipped if no changed files in the PR diff match any pattern. When empty or omitted, the step always runs. |
 
 **Precedence:** If `temper.steps` is set and non-empty, it takes precedence over `temper.build`/`test`/`lint`. A warning is logged if both are present. If neither `steps` nor the shorthand fields are set, auto-detection applies as usual.
 
@@ -367,26 +368,34 @@ anvils:
         - name: go-build
           command: go
           args: [build, ./...]
+          paths: ["**/*.go", "go.mod", "go.sum"]
         - name: go-vet
           command: go
           args: [vet, ./...]
+          paths: ["**/*.go"]
         - name: go-test
           command: go
           args: [test, -short, ./...]
+          paths: ["**/*.go", "go.mod", "go.sum"]
         - name: npm-install
           command: npm
           args: [ci]
           dir: web
           timeout: 5m
+          paths: ["web/**"]
         - name: npm-lint
           command: npm
           args: [run, lint]
           dir: web
+          paths: ["web/**"]
         - name: npm-build
           command: npm
           args: [run, build]
           dir: web
+          paths: ["web/**"]
 ```
+
+When a PR only changes Go files, the npm steps are automatically skipped (and vice versa). Steps without `paths` always run.
 
 **.NET with analyzers and format check:**
 

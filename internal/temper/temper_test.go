@@ -1,6 +1,7 @@
 package temper
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -436,4 +437,110 @@ func TestConfigFromSteps_RequiredByDefault(t *testing.T) {
 	for _, s := range cfg.Steps {
 		assert.False(t, s.Optional, "all steps should be required by default")
 	}
+}
+
+func TestConfigFromSteps_PropagatesPaths(t *testing.T) {
+	cfg := ConfigFromSteps([]config.TemperStepConfig{
+		{Name: "lint", Command: "npm", Args: []string{"run", "lint"}, Paths: []string{"client/**"}},
+		{Name: "build", Command: "dotnet", Args: []string{"build"}},
+	})
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.Steps, 2)
+	assert.Equal(t, []string{"client/**"}, cfg.Steps[0].Paths)
+	assert.Nil(t, cfg.Steps[1].Paths)
+}
+
+func TestMatchesChangedFiles_EmptyPatterns_AlwaysMatches(t *testing.T) {
+	assert.True(t, matchesChangedFiles(nil, []string{"foo.go"}))
+	assert.True(t, matchesChangedFiles([]string{}, []string{"foo.go"}))
+}
+
+func TestMatchesChangedFiles_NoFiles_NoMatch(t *testing.T) {
+	assert.False(t, matchesChangedFiles([]string{"**/*.go"}, nil))
+	assert.False(t, matchesChangedFiles([]string{"**/*.go"}, []string{}))
+}
+
+func TestMatchesChangedFiles_DoublestarGlob(t *testing.T) {
+	files := []string{"client/src/app.tsx", "client/package.json", "README.md"}
+
+	assert.True(t, matchesChangedFiles([]string{"client/**"}, files))
+	assert.False(t, matchesChangedFiles([]string{"api/**"}, files))
+}
+
+func TestMatchesChangedFiles_ExtensionGlob(t *testing.T) {
+	files := []string{"internal/temper/temper.go", "internal/config/config.go"}
+
+	assert.True(t, matchesChangedFiles([]string{"**/*.go"}, files))
+	assert.False(t, matchesChangedFiles([]string{"**/*.cs"}, files))
+}
+
+func TestMatchesChangedFiles_MultiplePatterns(t *testing.T) {
+	files := []string{"docs/README.md"}
+
+	// Second pattern matches
+	assert.True(t, matchesChangedFiles([]string{"api/**", "docs/**"}, files))
+	// Neither matches
+	assert.False(t, matchesChangedFiles([]string{"api/**", "client/**"}, files))
+}
+
+func TestMatchesChangedFiles_ExactFile(t *testing.T) {
+	files := []string{"go.mod", "internal/temper/temper.go"}
+	assert.True(t, matchesChangedFiles([]string{"go.mod"}, files))
+	assert.False(t, matchesChangedFiles([]string{"go.sum"}, files))
+}
+
+func TestBuildSummary_SkippedStep(t *testing.T) {
+	r := &Result{
+		Steps: []StepResult{
+			{Name: "client-lint", Passed: true, Skipped: true},
+			{Name: "api-build", Passed: true, Duration: 2_000_000_000},
+		},
+		Passed: true,
+	}
+	summary := buildSummary(r)
+
+	assert.Contains(t, summary, "[SKIP] client-lint")
+	assert.Contains(t, summary, "[PASS] api-build")
+	assert.Contains(t, summary, "All required checks passed")
+}
+
+func TestRun_SkipsStepWhenPathsDontMatch(t *testing.T) {
+	cfg := Config{
+		Steps: []Step{
+			{Name: "always-run", Command: "echo", Args: []string{"hello"}, Timeout: 5 * time.Second},
+			{Name: "client-only", Command: "echo", Args: []string{"client"}, Timeout: 5 * time.Second, Paths: []string{"client/**"}},
+			{Name: "api-only", Command: "echo", Args: []string{"api"}, Timeout: 5 * time.Second, Paths: []string{"api/**"}},
+		},
+		ChangedFiles: []string{"api/main.go", "api/handler.go"},
+	}
+
+	result := Run(context.Background(), t.TempDir(), cfg, nil, "test-bead", "test-anvil")
+
+	require.Len(t, result.Steps, 3)
+	// "always-run" has no paths — runs normally
+	assert.False(t, result.Steps[0].Skipped)
+	assert.True(t, result.Steps[0].Passed)
+	// "client-only" has paths that don't match — skipped
+	assert.True(t, result.Steps[1].Skipped)
+	assert.True(t, result.Steps[1].Passed)
+	// "api-only" has paths that match — runs normally
+	assert.False(t, result.Steps[2].Skipped)
+	assert.True(t, result.Steps[2].Passed)
+
+	assert.True(t, result.Passed)
+}
+
+func TestRun_NilChangedFiles_NeverSkips(t *testing.T) {
+	cfg := Config{
+		Steps: []Step{
+			{Name: "with-paths", Command: "echo", Args: []string{"ok"}, Timeout: 5 * time.Second, Paths: []string{"nonexistent/**"}},
+		},
+		ChangedFiles: nil, // unknown — should not skip
+	}
+
+	result := Run(context.Background(), t.TempDir(), cfg, nil, "test-bead", "test-anvil")
+
+	require.Len(t, result.Steps, 1)
+	assert.False(t, result.Steps[0].Skipped, "step should not be skipped when ChangedFiles is nil")
+	assert.True(t, result.Steps[0].Passed)
 }
