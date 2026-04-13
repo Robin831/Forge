@@ -50,6 +50,10 @@ func (p *Provider) CreatePR(ctx context.Context, params vcs.CreateParams) (*vcs.
 
 	if params.Body == "" {
 		params.Body = buildDefaultBody(params)
+	} else {
+		// When a body is already set (e.g. from Smith), inject Closes #N
+		// if external_ref identifies a GitHub issue and it's not already present.
+		params.Body = vcs.InjectClosesLine(params.Body, params.ExternalRef)
 	}
 
 	args := []string{
@@ -836,6 +840,12 @@ func buildDefaultBody(p vcs.CreateParams) string {
 		}
 		b.WriteString(p.BeadDescription)
 		b.WriteString("\n\n")
+	}
+
+	// Inject Closes #N for GitHub issue references before the footer,
+	// but only if the body doesn't already contain one.
+	if num := vcs.GitHubIssueNumber(p.ExternalRef); num != "" && !vcs.ClosesPattern().MatchString(b.String()) {
+		fmt.Fprintf(&b, "Closes #%s\n\n", num)
 	}
 
 	b.WriteString("---\n")

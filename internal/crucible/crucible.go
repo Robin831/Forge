@@ -215,6 +215,7 @@ func Run(ctx context.Context, p Params) *Result {
 					BeadDescription: p.ParentBead.Description,
 					BeadType:        p.ParentBead.IssueType,
 					ChangeSummary:   changeSummary,
+					ExternalRef:     p.ParentBead.ExternalRef,
 				})
 				if err != nil {
 					log.Error("failed to create parent PR", "error", err)
@@ -429,6 +430,7 @@ func Run(ctx context.Context, p Params) *Result {
 			BeadDescription: child.Description,
 			BeadType:        child.IssueType,
 			ChangeSummary:   childChangeSummary,
+			ExternalRef:     child.ExternalRef,
 		})
 		if err != nil {
 			log.Error("failed to create child PR", "child", child.ID, "error", err)
@@ -499,6 +501,7 @@ func Run(ctx context.Context, p Params) *Result {
 		BeadTitle:       p.ParentBead.Title,
 		BeadDescription: p.ParentBead.Description,
 		BeadType:        p.ParentBead.IssueType,
+		ExternalRef:     p.ParentBead.ExternalRef,
 	})
 	if err != nil {
 		return &Result{

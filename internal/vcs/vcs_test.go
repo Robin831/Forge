@@ -292,6 +292,108 @@ func TestErrPRAlreadyExists(t *testing.T) {
 	})
 }
 
+func TestGitHubIssueNumber(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"gh-42", "42"},
+		{"gh-1", "1"},
+		{"gh-", ""},
+		{"", ""},
+		{"jira-123", ""},
+		{"https://github.com/org/repo/issues/42", "42"},
+		{"https://github.com/org/repo/issues/7", "7"},
+		{"https://github.com/org/repo/pull/42", ""},
+		{"gh-abc", ""},
+		{"https://example.com/issues/42", "42"}, // generic /issues/ URL
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.want, GitHubIssueNumber(tt.input))
+		})
+	}
+}
+
+func TestInjectClosesLine(t *testing.T) {
+	t.Run("injects when external_ref is gh shorthand", func(t *testing.T) {
+		body := "Some PR body"
+		got := InjectClosesLine(body, "gh-42")
+		assert.Contains(t, got, "Closes #42")
+	})
+
+	t.Run("injects when external_ref is GitHub URL", func(t *testing.T) {
+		body := "Some PR body"
+		got := InjectClosesLine(body, "https://github.com/org/repo/issues/7")
+		assert.Contains(t, got, "Closes #7")
+	})
+
+	t.Run("no injection for non-GitHub ref", func(t *testing.T) {
+		body := "Some PR body"
+		got := InjectClosesLine(body, "jira-123")
+		assert.Equal(t, body, got)
+	})
+
+	t.Run("no injection for empty ref", func(t *testing.T) {
+		body := "Some PR body"
+		got := InjectClosesLine(body, "")
+		assert.Equal(t, body, got)
+	})
+
+	t.Run("no duplicate when body already has Closes", func(t *testing.T) {
+		body := "Some PR body\n\nCloses #42"
+		got := InjectClosesLine(body, "gh-42")
+		assert.Equal(t, body, got)
+	})
+
+	t.Run("no duplicate case insensitive", func(t *testing.T) {
+		body := "Some PR body\n\ncloses #42"
+		got := InjectClosesLine(body, "gh-42")
+		assert.Equal(t, body, got)
+	})
+}
+
+func TestBuildPRBody_ExternalRef(t *testing.T) {
+	t.Run("includes Closes line when external_ref is set", func(t *testing.T) {
+		body := buildPRBody(CreateParams{
+			BeadID:      "Forge-test",
+			Branch:      "forge/test",
+			ExternalRef: "gh-42",
+		})
+		assert.Contains(t, body, "Closes #42")
+	})
+
+	t.Run("no Closes line for non-GitHub ref", func(t *testing.T) {
+		body := buildPRBody(CreateParams{
+			BeadID:      "Forge-test",
+			Branch:      "forge/test",
+			ExternalRef: "jira-123",
+		})
+		assert.NotContains(t, body, "Closes #")
+	})
+
+	t.Run("no Closes line when external_ref empty", func(t *testing.T) {
+		body := buildPRBody(CreateParams{
+			BeadID:      "Forge-test",
+			Branch:      "forge/test",
+			ExternalRef: "",
+		})
+		assert.NotContains(t, body, "Closes #")
+	})
+
+	t.Run("no duplicate Closes when already in change summary", func(t *testing.T) {
+		body := buildPRBody(CreateParams{
+			BeadID:        "Forge-test",
+			Branch:        "forge/test",
+			ExternalRef:   "gh-42",
+			ChangeSummary: "Fixed the bug.\n\nCloses #42",
+		})
+		// Count occurrences — should be exactly 1
+		count := len(ClosesPattern().FindAllString(body, -1))
+		assert.Equal(t, 1, count, "should not duplicate Closes #42")
+	})
+}
+
 func TestMergeabilityFromStatus(t *testing.T) {
 	s := &PRStatus{
 		Mergeable:         "CONFLICTING",
