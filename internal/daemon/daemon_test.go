@@ -2912,3 +2912,49 @@ func TestResolveTemperConfig_StepsOverridesSlots(t *testing.T) {
 		assert.Nil(t, cfg)
 	})
 }
+
+func TestFetchExternalRef(t *testing.T) {
+	t.Run("returns external_ref from bd show", func(t *testing.T) {
+		d := &Daemon{
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.beadShower = func(anvilPath, beadID string) ([]byte, string, error) {
+			return []byte(`{"id":"Forge-test","external_ref":"gh-42"}`), "", nil
+		}
+		got := d.fetchExternalRef("/tmp/anvil", "Forge-test")
+		assert.Equal(t, "gh-42", got)
+	})
+
+	t.Run("returns empty when external_ref absent", func(t *testing.T) {
+		d := &Daemon{
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.beadShower = func(anvilPath, beadID string) ([]byte, string, error) {
+			return []byte(`{"id":"Forge-test"}`), "", nil
+		}
+		got := d.fetchExternalRef("/tmp/anvil", "Forge-test")
+		assert.Equal(t, "", got)
+	})
+
+	t.Run("returns empty when bd show fails", func(t *testing.T) {
+		d := &Daemon{
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.beadShower = func(anvilPath, beadID string) ([]byte, string, error) {
+			return nil, "command not found", fmt.Errorf("exec: bd: not found")
+		}
+		got := d.fetchExternalRef("/tmp/anvil", "Forge-test")
+		assert.Equal(t, "", got)
+	})
+
+	t.Run("unwraps JSON array", func(t *testing.T) {
+		d := &Daemon{
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.beadShower = func(anvilPath, beadID string) ([]byte, string, error) {
+			return []byte(`[{"id":"Forge-test","external_ref":"gh-99"}]`), "", nil
+		}
+		got := d.fetchExternalRef("/tmp/anvil", "Forge-test")
+		assert.Equal(t, "gh-99", got)
+	})
+}

@@ -41,6 +41,8 @@ func (g *GitLabProvider) CreatePR(ctx context.Context, params CreateParams) (*PR
 
 	if params.Body == "" {
 		params.Body = buildPRBody(params)
+	} else {
+		params.Body = InjectClosesLine(params.Body, params.ExternalRef)
 	}
 
 	args := []string{

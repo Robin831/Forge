@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -18,6 +19,63 @@ import (
 // ErrPRAlreadyExists is returned by CreatePR when a PR already exists for
 // the given branch. Callers should use errors.Is to check for this sentinel.
 var ErrPRAlreadyExists = errors.New("pull request already exists for branch")
+
+// ghIssuePathPattern matches the path portion of a GitHub issue URL like
+// /org/repo/issues/42
+var ghIssuePathPattern = regexp.MustCompile(`^/.+/.+/issues/(\d+)$`)
+
+// GitHubIssueNumber extracts a GitHub issue number from an external_ref value.
+// Recognised formats:
+//   - "gh-42"                                     → "42"
+//   - "https://github.com/org/repo/issues/42"     → "42"
+//
+// Returns "" for non-GitHub references (e.g. "jira-123", GitLab URLs, or any
+// URL whose host is not github.com), empty strings, or malformed values.
+func GitHubIssueNumber(externalRef string) string {
+	if externalRef == "" {
+		return ""
+	}
+	// Shorthand: gh-<number>
+	if num, ok := strings.CutPrefix(externalRef, "gh-"); ok && num != "" {
+		// Validate it's all digits.
+		for _, c := range num {
+			if c < '0' || c > '9' {
+				return ""
+			}
+		}
+		return num
+	}
+	// Full URL: must be a github.com URL with path /org/repo/issues/<number>.
+	u, err := url.Parse(externalRef)
+	if err != nil || u.Hostname() != "github.com" {
+		return ""
+	}
+	if m := ghIssuePathPattern.FindStringSubmatch(u.Path); len(m) == 2 {
+		return m[1]
+	}
+	return ""
+}
+
+// closesRe matches existing "Closes #N" lines (case-insensitive) to
+// avoid injecting duplicates.
+var closesRe = regexp.MustCompile(`(?i)\bCloses\s+#\d+`)
+
+// ClosesPattern returns the compiled regexp for matching "Closes #N" lines.
+func ClosesPattern() *regexp.Regexp { return closesRe }
+
+// InjectClosesLine appends a "Closes #N" line to body if the externalRef
+// identifies a GitHub issue and the body does not already contain one.
+// Returns the (possibly modified) body.
+func InjectClosesLine(body, externalRef string) string {
+	num := GitHubIssueNumber(externalRef)
+	if num == "" {
+		return body
+	}
+	if closesRe.MatchString(body) {
+		return body
+	}
+	return body + "\n\nCloses #" + num
+}
 
 // buildPRBody creates a structured PR/MR description from bead metadata.
 // This is the canonical body builder for all vcs providers; it mirrors the
@@ -46,6 +104,13 @@ func buildPRBody(p CreateParams) string {
 		}
 		b.WriteString(p.BeadDescription)
 		b.WriteString("\n\n")
+	}
+
+	// Inject Closes #N for GitHub issue references before the footer,
+	// but only if the body doesn't already contain one (e.g. from Smith's
+	// change summary).
+	if num := GitHubIssueNumber(p.ExternalRef); num != "" && !closesRe.MatchString(b.String()) {
+		fmt.Fprintf(&b, "Closes #%s\n\n", num)
 	}
 
 	// Footer
@@ -175,6 +240,10 @@ type CreateParams struct {
 	BeadType string
 	// ChangeSummary is a summary of what changed (from warden review or diff stat).
 	ChangeSummary string
+	// ExternalRef is an optional external tracker reference (e.g. "gh-42" or a
+	// GitHub issue URL). When it identifies a GitHub issue, buildPRBody injects
+	// a "Closes #N" line so the PR auto-closes the issue on merge.
+	ExternalRef string
 }
 
 // PRStatus represents the platform-agnostic state of a pull/merge request.

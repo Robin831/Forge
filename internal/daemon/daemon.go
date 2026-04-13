@@ -2291,6 +2291,13 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		changeSummary = outcome.ReviewResult.Summary
 	}
 
+	// Last-chance lookup: fetch the latest external_ref from bd in case it
+	// was empty at dispatch time (e.g. GitHub auto-sync hadn't run yet).
+	externalRef := bead.ExternalRef
+	if externalRef == "" {
+		externalRef = d.fetchExternalRef(anvilPath, bead.ID)
+	}
+
 	pr, err := d.vcsForAnvil(bead.Anvil).CreatePR(ctx, vcs.CreateParams{
 		WorktreePath:    anvilPath,
 		BeadID:          bead.ID,
@@ -2302,6 +2309,7 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		BeadDescription: bead.Description,
 		BeadType:        bead.IssueType,
 		ChangeSummary:   changeSummary,
+		ExternalRef:     externalRef,
 	})
 	if err != nil {
 		// If a PR already exists for this branch (duplicate run), log a warning
@@ -2453,6 +2461,11 @@ func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Be
 		// causes of the orphaned-branch scenario in the first place.
 		prCtx, prCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer prCancel()
+		// Last-chance external_ref lookup for orphaned branch PR creation.
+		orphanExtRef := bead.ExternalRef
+		if orphanExtRef == "" {
+			orphanExtRef = d.fetchExternalRef(anvilPath, bead.ID)
+		}
 		pr, prErr := d.vcsForAnvil(bead.Anvil).CreatePR(prCtx, vcs.CreateParams{
 			WorktreePath:    anvilPath,
 			BeadID:          bead.ID,
@@ -2463,6 +2476,7 @@ func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Be
 			BeadTitle:       bead.Title,
 			BeadDescription: bead.Description,
 			BeadType:        bead.IssueType,
+			ExternalRef:     orphanExtRef,
 		})
 		if prErr != nil {
 			if errors.Is(prErr, vcs.ErrPRAlreadyExists) {
@@ -4400,6 +4414,42 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 	d.recordDispatchFailure(beadID, anvil, reason)
 }
 
+// fetchExternalRef does a one-shot bd show lookup for the bead's external_ref.
+// Returns the external_ref value, or "" if the lookup fails or the field is empty.
+func (d *Daemon) fetchExternalRef(anvilPath, beadID string) string {
+	if d.beadShower == nil {
+		return ""
+	}
+	output, stderrStr, err := d.beadShower(anvilPath, beadID)
+	if err != nil {
+		d.logger.Debug("last-chance external_ref lookup failed", "bead", beadID, "error", err, "stderr", stderrStr)
+		return ""
+	}
+
+	type beadShowResponse struct {
+		ExternalRef string `json:"external_ref"`
+	}
+
+	// Try object form first (tolerates leading/trailing diagnostic noise).
+	var resp beadShowResponse
+	if err := executil.DecodeJSON(output, &resp); err != nil {
+		// Fall back to array form.
+		var resps []beadShowResponse
+		if arrayErr := executil.DecodeJSON(output, &resps); arrayErr != nil {
+			d.logger.Debug("failed to parse external_ref from bd show", "bead", beadID, "error", err)
+			return ""
+		}
+		if len(resps) > 0 {
+			resp = resps[0]
+		}
+	}
+
+	if resp.ExternalRef != "" {
+		d.logger.Info("last-chance lookup found external_ref", "bead", beadID, "external_ref", resp.ExternalRef)
+	}
+	return resp.ExternalRef
+}
+
 // maybeCloseDecomposedParent auto-closes a decomposed parent bead when it has
 // no dependents (nothing has depends_on pointing to it). If the parent has
 // dependents those beads stay blocked until someone closes the parent manually.
@@ -4966,8 +5016,10 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 	title := d.db.BeadTitle(beadID, anvil)
 	var description string
 	var baseBranch string
+	var rerunExternalRef string
 	if bead, err := crucible.FetchBead(ctx, beadID, anvilCfg.Path); err == nil {
 		description = bead.Description
+		rerunExternalRef = bead.ExternalRef
 		// Resolve epic branch so PRs target the correct base for crucible children.
 		beads := []poller.Bead{bead}
 		poller.ResolveEpicBranches(ctx, beads, map[string]string{anvil: anvilCfg.Path})
@@ -5007,6 +5059,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 			BeadTitle:       title,
 			BeadDescription: description,
 			ChangeSummary:   changeSummary,
+			ExternalRef:     rerunExternalRef,
 		})
 		if err != nil {
 			d.logger.Error("warden_rerun: PR creation failed", "bead", beadID, "error", err)
@@ -5066,8 +5119,10 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 	title := d.db.BeadTitle(beadID, anvil)
 	var description string
 	var baseBranch string
+	var approveExtRef string
 	if bead, err := crucible.FetchBead(ctx, beadID, anvilCfg.Path); err == nil {
 		description = bead.Description
+		approveExtRef = bead.ExternalRef
 		// Resolve epic branch so PRs target the correct base for crucible children.
 		beads := []poller.Bead{bead}
 		poller.ResolveEpicBranches(ctx, beads, map[string]string{anvil: anvilCfg.Path})
@@ -5084,6 +5139,7 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 		BeadTitle:       title,
 		BeadDescription: description,
 		ChangeSummary:   "Approved as-is (manual bypass)",
+		ExternalRef:     approveExtRef,
 	})
 	if err != nil {
 		d.logger.Error("approve_as_is: PR creation failed", "bead", beadID, "error", err)
