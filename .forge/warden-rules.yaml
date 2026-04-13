@@ -3099,7 +3099,7 @@ rules:
       source: copilot:PR#497
       added: "2026-04-07"
     - id: doc-accuracy-config-semantics
-      category: other
+      category: documentation
       pattern: >-
         Documentation or comments describing configuration options like provider chains, fallback behavior, or feature semantics
       check: >-
@@ -3107,7 +3107,7 @@ rules:
       source: copilot:PR#500
       added: "2026-04-09"
     - id: follow-up-tracking
-      category: other
+      category: documentation
       pattern: >-
         Research or analysis documents that list recommended work items, action items, or follow-up tasks
       check: >-
@@ -3123,7 +3123,7 @@ rules:
       source: copilot:PR#501
       added: "2026-04-09"
     - id: temper-yaml-scope-accuracy
-      category: other
+      category: documentation
       pattern: >-
         Comments or docs referencing .forge/temper.yaml capabilities for custom commands, shell features, or build/test/lint configuration
       check: >-
@@ -3131,7 +3131,7 @@ rules:
       source: copilot:PR#501
       added: "2026-04-09"
     - id: docstring-matches-behavior
-      category: other
+      category: documentation
       pattern: >-
         Docstrings or comments describing how a configuration struct or its fields behave
       check: >-
@@ -3284,19 +3284,12 @@ rules:
         When a JSON decoding utility fails, verify it returns or wraps the underlying decode error from the best attempt rather than a generic message. Only use a generic 'no valid JSON found' error when the input truly contains no plausible JSON start.
       source: copilot:PR#509
       added: "2026-04-10"
-    - id: comment-timeout-sync
-      category: style
-      pattern: >-
-        Code comments that mention specific timeout durations, limits, or numeric constants
-      check: >-
-        Verify that comments referencing specific numeric values (timeouts, limits, thresholds) match the actual values used in the code, especially after constants or defaults have been changed
-      source: copilot:PR#511
-      added: "2026-04-10"
     - id: comment-matches-code
       category: style
-      pattern: Code comments that reference specific values, constants, or timeouts
+      pattern: >-
+        Code comments that reference specific values, constants, timeouts, limits, or numeric thresholds
       check: >-
-        Verify that comments accurately reflect the actual values or constants used in the code. When a constant or timeout value is changed, ensure all nearby comments referencing the old value are updated to match.
+        Verify that comments accurately reflect the actual values or constants used in the code. When a constant, timeout, or numeric value is changed, ensure all nearby comments referencing the old value are updated to match. This applies to all numeric literals — timeouts, limits, thresholds, iteration counts, and similar quantities.
       source: copilot:PR#511
       added: "2026-04-10"
     - id: consistent-timeout-coverage
@@ -3339,7 +3332,7 @@ rules:
       source: copilot:PR#516
       added: "2026-04-11"
     - id: temper-config-doc-accuracy
-      category: other
+      category: documentation
       pattern: >-
         Documentation describing temper configuration behavior or how temper fields interact
       check: >-
