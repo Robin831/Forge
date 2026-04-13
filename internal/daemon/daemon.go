@@ -4417,6 +4417,9 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 // fetchExternalRef does a one-shot bd show lookup for the bead's external_ref.
 // Returns the external_ref value, or "" if the lookup fails or the field is empty.
 func (d *Daemon) fetchExternalRef(anvilPath, beadID string) string {
+	if d.beadShower == nil {
+		return ""
+	}
 	output, stderrStr, err := d.beadShower(anvilPath, beadID)
 	if err != nil {
 		d.logger.Debug("last-chance external_ref lookup failed", "bead", beadID, "error", err, "stderr", stderrStr)
