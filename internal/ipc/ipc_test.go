@@ -23,9 +23,6 @@ func TestNewQueuedResponse(t *testing.T) {
 	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if payload.RequestID != "req-123" {
-		t.Fatalf("payload request_id mismatch: %s", payload.RequestID)
-	}
 	if payload.Message != "accepted" {
 		t.Fatalf("payload message mismatch: %s", payload.Message)
 	}
@@ -135,12 +132,23 @@ func TestRequestTracker_Concurrent(t *testing.T) {
 			go func() {
 				rt.Complete(id, CompletionResult{Response: Response{Type: "ok"}})
 			}()
-			<-ch
+			select {
+			case <-ch:
+			case <-time.After(5 * time.Second):
+				t.Errorf("timed out waiting for completion of request %s", id)
+			}
 		}()
 	}
 	wg.Wait()
 	if rt.Pending() != 0 {
 		t.Fatalf("expected 0 pending, got %d", rt.Pending())
+	}
+}
+
+func TestQueuedResponse_EmptyID(t *testing.T) {
+	_, err := NewQueuedResponse("", "msg")
+	if err == nil {
+		t.Fatal("expected error for empty requestID, got nil")
 	}
 }
 

@@ -260,10 +260,11 @@ type WicketStatusPayload struct {
 }
 
 // QueuedPayload is the payload for a "queued" response, indicating the
-// command was accepted and will be processed asynchronously.
+// command was accepted and will be processed asynchronously. The request ID is
+// carried only at the top-level Response.RequestID field; it is not duplicated
+// here to avoid diverging sources of truth.
 type QueuedPayload struct {
-	RequestID string `json:"request_id"`
-	Message   string `json:"message,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // CompletionResult is the outcome delivered when an async request finishes.
@@ -273,8 +274,12 @@ type CompletionResult struct {
 }
 
 // NewQueuedResponse builds a Response of type "queued" for the given request ID.
+// Returns an error if requestID is empty, since an empty ID breaks correlation.
 func NewQueuedResponse(requestID string, message string) (Response, error) {
-	payload := QueuedPayload{RequestID: requestID, Message: message}
+	if requestID == "" {
+		return Response{}, fmt.Errorf("requestID must not be empty")
+	}
+	payload := QueuedPayload{Message: message}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return Response{}, fmt.Errorf("marshal queued payload: %w", err)
