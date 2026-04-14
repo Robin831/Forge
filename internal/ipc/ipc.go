@@ -37,8 +37,9 @@ type Command struct {
 
 // Response is a message sent from the daemon to a client.
 type Response struct {
-	Type    string          `json:"type"`    // "ok", "error", "status", "event"
-	Payload json.RawMessage `json:"payload"` // Type-specific data
+	Type      string          `json:"type"`                 // "ok", "error", "status", "event", "queued"
+	Payload   json.RawMessage `json:"payload"`              // Type-specific data
+	RequestID string          `json:"request_id,omitempty"` // Set when Type is "queued"; correlates async completion
 }
 
 // Event is a push notification from daemon to subscribed clients.
@@ -256,6 +257,106 @@ type WicketStatusPayload struct {
 	DerivedAnvils  int            `json:"derived_anvils"`   // anvil count deriving repo from git remote at runtime
 	IssueCounts    map[string]int `json:"issue_counts"`     // state -> count
 	LastScanAt     *time.Time     `json:"last_scan_at,omitempty"`
+}
+
+// QueuedPayload is the payload for a "queued" response, indicating the
+// command was accepted and will be processed asynchronously. The request ID is
+// carried only at the top-level Response.RequestID field; it is not duplicated
+// here to avoid diverging sources of truth.
+type QueuedPayload struct {
+	Message string `json:"message,omitempty"`
+}
+
+// CompletionResult is the outcome delivered when an async request finishes.
+type CompletionResult struct {
+	Response Response
+	Err      error
+}
+
+// NewQueuedResponse builds a Response of type "queued" for the given request ID.
+// Returns an error if requestID is empty, since an empty ID breaks correlation.
+func NewQueuedResponse(requestID string, message string) (Response, error) {
+	if requestID == "" {
+		return Response{}, fmt.Errorf("requestID must not be empty")
+	}
+	payload := QueuedPayload{Message: message}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return Response{}, fmt.Errorf("marshal queued payload: %w", err)
+	}
+	return Response{
+		Type:      "queued",
+		Payload:   data,
+		RequestID: requestID,
+	}, nil
+}
+
+// RequestTracker maps request IDs to completion channels so the daemon can
+// deliver results for asynchronously queued commands.
+type RequestTracker struct {
+	mu       sync.Mutex
+	pending  map[string]chan CompletionResult
+	idSeq    uint64
+	idPrefix string
+}
+
+// NewRequestTracker creates a tracker. The prefix is prepended to generated
+// request IDs (e.g. "forge-") for easy identification in logs.
+func NewRequestTracker(prefix string) *RequestTracker {
+	return &RequestTracker{
+		pending:  make(map[string]chan CompletionResult),
+		idPrefix: prefix,
+	}
+}
+
+// Track registers a new async request and returns its ID and a channel that
+// will receive exactly one CompletionResult when the work finishes.
+func (rt *RequestTracker) Track() (string, <-chan CompletionResult) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.idSeq++
+	id := fmt.Sprintf("%s%d-%d", rt.idPrefix, time.Now().UnixMilli(), rt.idSeq)
+	ch := make(chan CompletionResult, 1)
+	rt.pending[id] = ch
+	return id, ch
+}
+
+// Complete delivers a result for the given request ID and removes it from the
+// tracker. Returns false if the ID is not found (already completed or unknown).
+func (rt *RequestTracker) Complete(requestID string, result CompletionResult) bool {
+	rt.mu.Lock()
+	ch, ok := rt.pending[requestID]
+	if ok {
+		delete(rt.pending, requestID)
+	}
+	rt.mu.Unlock()
+	if !ok {
+		return false
+	}
+	ch <- result
+	close(ch)
+	return true
+}
+
+// Cancel removes a pending request without delivering a result, closing its
+// channel so any waiter unblocks.
+func (rt *RequestTracker) Cancel(requestID string) {
+	rt.mu.Lock()
+	ch, ok := rt.pending[requestID]
+	if ok {
+		delete(rt.pending, requestID)
+	}
+	rt.mu.Unlock()
+	if ok {
+		close(ch)
+	}
+}
+
+// Pending returns the number of in-flight requests.
+func (rt *RequestTracker) Pending() int {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return len(rt.pending)
 }
 
 // CommandHandler is called by the server for each incoming command.
@@ -483,6 +584,13 @@ func (c *Client) Subscribe(ctx context.Context) <-chan Event {
 		}
 	}()
 	return ch
+}
+
+// IsQueued reports whether the response indicates the command was accepted
+// for asynchronous processing. Callers can use resp.RequestID to correlate
+// the eventual completion.
+func (r *Response) IsQueued() bool {
+	return r != nil && r.Type == "queued"
 }
 
 // Close closes the client connection.
