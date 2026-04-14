@@ -8,7 +8,10 @@ import (
 )
 
 func TestNewQueuedResponse(t *testing.T) {
-	resp := NewQueuedResponse("req-123", "accepted")
+	resp, err := NewQueuedResponse("req-123", "accepted")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if resp.Type != "queued" {
 		t.Fatalf("expected type queued, got %s", resp.Type)
 	}

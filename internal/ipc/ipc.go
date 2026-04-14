@@ -273,14 +273,17 @@ type CompletionResult struct {
 }
 
 // NewQueuedResponse builds a Response of type "queued" for the given request ID.
-func NewQueuedResponse(requestID string, message string) Response {
+func NewQueuedResponse(requestID string, message string) (Response, error) {
 	payload := QueuedPayload{RequestID: requestID, Message: message}
-	data, _ := json.Marshal(payload)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return Response{}, fmt.Errorf("marshal queued payload: %w", err)
+	}
 	return Response{
 		Type:      "queued",
 		Payload:   data,
 		RequestID: requestID,
-	}
+	}, nil
 }
 
 // RequestTracker maps request IDs to completion channels so the daemon can
