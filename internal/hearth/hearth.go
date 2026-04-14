@@ -16,6 +16,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -318,6 +319,7 @@ type AsyncCompletionMsg struct {
 type asyncSubscriptionStartedMsg struct {
 	events <-chan ipc.Event
 	cancel context.CancelFunc
+	client *ipc.Client
 }
 
 // Model is the Bubbletea model for the Hearth TUI.
@@ -481,6 +483,7 @@ type Model struct {
 	pendingAsync    map[string]pendingOp
 	asyncEvents     <-chan ipc.Event
 	asyncCancelFunc context.CancelFunc
+	asyncClient     *ipc.Client
 
 	// Cooldown for manual Wicket scans — prevents rapid repeated triggers.
 	wicketScanCooldownUntil time.Time
@@ -1738,6 +1741,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case asyncSubscriptionStartedMsg:
 		m.asyncEvents = msg.events
 		m.asyncCancelFunc = msg.cancel
+		m.asyncClient = msg.client
 		return m, waitForAsyncEvent(msg.events)
 
 	case AsyncCompletionMsg:
@@ -1895,8 +1899,15 @@ func (m *Model) View() string {
 			footerText = statusMsgStyle.Render(m.statusMsg)
 		}
 	} else if len(m.pendingAsync) > 0 {
-		var parts []string
+		ops := make([]pendingOp, 0, len(m.pendingAsync))
 		for _, op := range m.pendingAsync {
+			ops = append(ops, op)
+		}
+		slices.SortFunc(ops, func(a, b pendingOp) int {
+			return a.StartedAt.Compare(b.StartedAt)
+		})
+		var parts []string
+		for _, op := range ops {
 			parts = append(parts, op.Description+"…")
 		}
 		footerText = statusMsgStyle.Render(strings.Join(parts, " | "))
@@ -5219,7 +5230,7 @@ func startAsyncSubscription() tea.Cmd {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		events := client.Subscribe(ctx)
-		return asyncSubscriptionStartedMsg{events: events, cancel: cancel}
+		return asyncSubscriptionStartedMsg{events: events, cancel: cancel, client: client}
 	}
 }
 
@@ -5287,5 +5298,9 @@ func (m *Model) cleanupAsyncSubscription() {
 	if m.asyncCancelFunc != nil {
 		m.asyncCancelFunc()
 		m.asyncCancelFunc = nil
+	}
+	if m.asyncClient != nil {
+		m.asyncClient.Close()
+		m.asyncClient = nil
 	}
 }

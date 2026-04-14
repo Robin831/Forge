@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/state"
@@ -3581,5 +3582,121 @@ func TestRenderUsagePanelHidesIngotsWhenZero(t *testing.T) {
 	rendered := m.renderUsagePanel(80, 15)
 	if strings.Contains(rendered, "Ingots") {
 		t.Errorf("expected usage panel to hide ingots when total is 0, got: %s", rendered)
+	}
+}
+
+func TestTrackPending(t *testing.T) {
+	m := NewModel(nil)
+
+	m.trackPending("", "should be ignored")
+	if m.pendingAsync != nil {
+		t.Fatal("empty requestID should not create map")
+	}
+
+	m.trackPending("req-1", "Tagging bead")
+	if len(m.pendingAsync) != 1 {
+		t.Fatalf("expected 1 pending op, got %d", len(m.pendingAsync))
+	}
+	op := m.pendingAsync["req-1"]
+	if op.Description != "Tagging bead" {
+		t.Errorf("expected description 'Tagging bead', got %q", op.Description)
+	}
+	if op.StartedAt.IsZero() {
+		t.Error("expected non-zero StartedAt")
+	}
+}
+
+func TestExpirePendingOps(t *testing.T) {
+	m := NewModel(nil)
+	m.pendingAsync = map[string]pendingOp{
+		"old": {Description: "Stale op", StartedAt: time.Now().Add(-2 * asyncTimeout)},
+		"new": {Description: "Fresh op", StartedAt: time.Now()},
+	}
+
+	m.expirePendingOps()
+
+	if _, ok := m.pendingAsync["old"]; ok {
+		t.Error("expected stale op to be expired")
+	}
+	if _, ok := m.pendingAsync["new"]; !ok {
+		t.Error("expected fresh op to remain")
+	}
+	if m.statusMsg == "" {
+		t.Error("expected status message for expired op")
+	}
+}
+
+func TestAsyncCompletionMsgSuccess(t *testing.T) {
+	m := NewModel(nil)
+	m.pendingAsync = map[string]pendingOp{
+		"req-1": {Description: "Tagging bead", StartedAt: time.Now()},
+	}
+
+	msg := AsyncCompletionMsg{RequestID: "req-1", Success: true, Message: "tagged"}
+	mTmp, _ := m.Update(msg)
+	m = *mTmp.(*Model)
+
+	if len(m.pendingAsync) != 0 {
+		t.Error("expected pending op to be removed after completion")
+	}
+	if !strings.Contains(m.statusMsg, "Tagging bead") || !strings.Contains(m.statusMsg, "tagged") {
+		t.Errorf("expected status to contain op description and message, got %q", m.statusMsg)
+	}
+	if m.statusMsgIsError {
+		t.Error("expected non-error status for success")
+	}
+}
+
+func TestAsyncCompletionMsgError(t *testing.T) {
+	m := NewModel(nil)
+	m.pendingAsync = map[string]pendingOp{
+		"req-2": {Description: "Closing bead", StartedAt: time.Now()},
+	}
+
+	msg := AsyncCompletionMsg{RequestID: "req-2", Success: false, Message: "permission denied"}
+	mTmp, _ := m.Update(msg)
+	m = *mTmp.(*Model)
+
+	if len(m.pendingAsync) != 0 {
+		t.Error("expected pending op to be removed after error completion")
+	}
+	if !strings.Contains(m.statusMsg, "failed") {
+		t.Errorf("expected 'failed' in status, got %q", m.statusMsg)
+	}
+	if !m.statusMsgIsError {
+		t.Error("expected error status for failure")
+	}
+}
+
+func TestAsyncCompletionMsgUnknownRequestID(t *testing.T) {
+	m := NewModel(nil)
+	m.pendingAsync = map[string]pendingOp{
+		"req-1": {Description: "Tagging bead", StartedAt: time.Now()},
+	}
+
+	msg := AsyncCompletionMsg{RequestID: "unknown", Success: true}
+	mTmp, _ := m.Update(msg)
+	m = *mTmp.(*Model)
+
+	if len(m.pendingAsync) != 1 {
+		t.Error("expected unrelated pending op to remain")
+	}
+}
+
+func TestCleanupAsyncSubscription(t *testing.T) {
+	m := NewModel(nil)
+	cancelled := false
+	m.asyncCancelFunc = func() { cancelled = true }
+
+	m.cleanupAsyncSubscription()
+
+	if !cancelled {
+		t.Error("expected cancel func to be called")
+	}
+	if m.asyncCancelFunc != nil {
+		t.Error("expected cancel func to be nil after cleanup")
+	}
+	if m.asyncClient != nil {
+		t.Error("expected client to be nil after cleanup")
 	}
 }
