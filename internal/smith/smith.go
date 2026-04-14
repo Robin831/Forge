@@ -20,6 +20,7 @@ import (
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/worktree"
 )
 
 // Result captures the outcome of a Smith session.
@@ -170,6 +171,10 @@ func Spawn(ctx context.Context, worktreePath, promptText, logDir string, extraFl
 //
 // logDir is where the session log file is written.
 func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*Process, error) {
+	if err := worktree.ValidateWorktreeDir(worktreePath); err != nil {
+		return nil, fmt.Errorf("smith pre-flight: working directory is not a valid worktree — refusing to run to prevent editing the main checkout: %w", err)
+	}
+
 	args := pv.BuildArgs(extraFlags)
 
 	cmd := exec.CommandContext(ctx, pv.Cmd(), args...)

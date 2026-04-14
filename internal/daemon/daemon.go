@@ -4997,6 +4997,22 @@ func verifyAnvilOnMain(ctx context.Context, logger *slog.Logger, anvilPath strin
 	if recovered {
 		logger.Warn("anvil repo was not on main/master — performed recovery checkout",
 			"anvil", anvilPath, "original_branch", originalBranch)
+
+		// Invalidate any stale worktree directory that matches the recovered
+		// branch. If the previous run left a .workers/<bead-id>/ directory
+		// without a valid .git file, it must be removed so the next dispatch
+		// doesn't reuse it and accidentally edit the main checkout.
+		if strings.HasPrefix(originalBranch, "forge/") {
+			beadDir := strings.TrimPrefix(originalBranch, "forge/")
+			stalePath := filepath.Join(anvilPath, ".workers", beadDir)
+			if err := worktree.ValidateWorktreeDir(stalePath); err != nil {
+				if _, statErr := os.Stat(stalePath); statErr == nil {
+					logger.Warn("removing stale worktree directory after branch recovery",
+						"path", stalePath, "validation_error", err)
+					_ = os.RemoveAll(stalePath)
+				}
+			}
+		}
 	}
 
 	return nil

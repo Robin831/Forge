@@ -342,6 +342,171 @@ func TestRemove_DoesNotDeleteRemoteBranch(t *testing.T) {
 	}
 }
 
+func TestIsValidWorktree_MissingGitFile(t *testing.T) {
+	dir := t.TempDir()
+	// Empty directory — no .git file at all.
+	if isValidWorktree(context.Background(), dir) {
+		t.Error("isValidWorktree should return false for directory without .git file")
+	}
+}
+
+func TestIsValidWorktree_GitDirectory(t *testing.T) {
+	dir := t.TempDir()
+	// Create a .git directory (like a full repo clone, not a worktree).
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if isValidWorktree(context.Background(), dir) {
+		t.Error("isValidWorktree should return false when .git is a directory")
+	}
+}
+
+func TestIsValidWorktree_BadGitFileContent(t *testing.T) {
+	dir := t.TempDir()
+	// Create a .git file with invalid content.
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("not a gitdir pointer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if isValidWorktree(context.Background(), dir) {
+		t.Error("isValidWorktree should return false when .git file has bad content")
+	}
+}
+
+func TestIsValidWorktree_GitFilePointsToNonexistent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /nonexistent/path"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if isValidWorktree(context.Background(), dir) {
+		t.Error("isValidWorktree should return false when .git file points to nonexistent gitdir")
+	}
+}
+
+func TestIsValidWorktree_RealWorktree(t *testing.T) {
+	// Set up a repo with a real worktree.
+	remoteDir := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+		}
+	}
+	run(remoteDir, "init", "--bare", "--initial-branch=main")
+
+	anvilDir := t.TempDir()
+	run(anvilDir, "clone", remoteDir, ".")
+	run(anvilDir, "config", "user.email", "test@example.com")
+	run(anvilDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(anvilDir, "README"), []byte("test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(anvilDir, "add", "README")
+	run(anvilDir, "commit", "-m", "init")
+	run(anvilDir, "push", "origin", "main")
+
+	mgr := NewManager()
+	wt, err := mgr.CreateWithOptions(context.Background(), anvilDir, "valid-test", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+
+	if !isValidWorktree(context.Background(), wt.Path) {
+		t.Error("isValidWorktree should return true for a real worktree")
+	}
+}
+
+func TestValidateWorktreeDir_MissingGitFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := ValidateWorktreeDir(dir); err == nil {
+		t.Error("ValidateWorktreeDir should return error for directory without .git file")
+	}
+}
+
+func TestVerifyWorktreeGitFile_ValidWorktree(t *testing.T) {
+	remoteDir := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+		}
+	}
+	run(remoteDir, "init", "--bare", "--initial-branch=main")
+
+	anvilDir := t.TempDir()
+	run(anvilDir, "clone", remoteDir, ".")
+	run(anvilDir, "config", "user.email", "test@example.com")
+	run(anvilDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(anvilDir, "README"), []byte("test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(anvilDir, "add", "README")
+	run(anvilDir, "commit", "-m", "init")
+	run(anvilDir, "push", "origin", "main")
+
+	mgr := NewManager()
+	wt, err := mgr.CreateWithOptions(context.Background(), anvilDir, "verify-test", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+
+	if err := ValidateWorktreeDir(wt.Path); err != nil {
+		t.Errorf("ValidateWorktreeDir should succeed for a real worktree, got: %v", err)
+	}
+}
+
+func TestCreateWithOptions_StaleDirectoryRemoved(t *testing.T) {
+	// Set up a repo with a remote.
+	remoteDir := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+		}
+	}
+	run(remoteDir, "init", "--bare", "--initial-branch=main")
+
+	anvilDir := t.TempDir()
+	run(anvilDir, "clone", remoteDir, ".")
+	run(anvilDir, "config", "user.email", "test@example.com")
+	run(anvilDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(anvilDir, "README"), []byte("test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(anvilDir, "add", "README")
+	run(anvilDir, "commit", "-m", "init")
+	run(anvilDir, "push", "origin", "main")
+
+	// Create a stale .workers/stale-test/ directory without a .git file.
+	staleDir := filepath.Join(anvilDir, ".workers", "stale-test")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Add some junk files to simulate the bug scenario.
+	if err := os.MkdirAll(filepath.Join(staleDir, ".forge-logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager()
+	wt, err := mgr.CreateWithOptions(context.Background(), anvilDir, "stale-test", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions should succeed after removing stale dir: %v", err)
+	}
+
+	// Verify the new worktree is valid.
+	if err := ValidateWorktreeDir(wt.Path); err != nil {
+		t.Errorf("new worktree should be valid after stale directory removal: %v", err)
+	}
+}
+
 // gitOutput runs a git command and returns trimmed stdout.
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
