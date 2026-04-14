@@ -9,7 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -558,14 +558,16 @@ func removeWithRetry(path string) error {
 	var lastErr error
 	for i, delay := range delays {
 		if delay > 0 {
-			log.Printf("[worktree] retrying removal of %s (attempt %d/%d, waiting %v)", path, i+1, len(delays), delay)
+			slog.Warn("retrying worktree directory removal",
+				"path", path, "attempt", i+1, "total_attempts", len(delays), "backoff", delay)
 			time.Sleep(delay)
 		}
 		lastErr = os.RemoveAll(path)
 		if lastErr == nil {
 			return nil
 		}
-		log.Printf("[worktree] os.RemoveAll(%s) failed (attempt %d/%d): %v", path, i+1, len(delays), lastErr)
+		slog.Warn("worktree directory removal failed",
+			"path", path, "attempt", i+1, "total_attempts", len(delays), "error", lastErr)
 	}
 	return fmt.Errorf("failed after %d attempts: %w", len(delays), lastErr)
 }

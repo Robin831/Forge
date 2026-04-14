@@ -5009,7 +5009,10 @@ func verifyAnvilOnMain(ctx context.Context, logger *slog.Logger, anvilPath strin
 				if _, statErr := os.Stat(stalePath); statErr == nil {
 					logger.Warn("removing stale worktree directory after branch recovery",
 						"path", stalePath, "validation_error", err)
-					_ = os.RemoveAll(stalePath)
+					if rmErr := os.RemoveAll(stalePath); rmErr != nil {
+						logger.Error("failed to remove stale worktree directory",
+							"path", stalePath, "error", rmErr)
+					}
 				}
 			}
 		}
