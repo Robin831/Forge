@@ -192,6 +192,10 @@ type Daemon struct {
 	vcsProviders   map[string]vcs.Provider
 	vcsProvidersMu sync.RWMutex
 
+	// reqTracker tracks async IPC requests so completions can be correlated
+	// back to the original command.
+	reqTracker *ipc.RequestTracker
+
 	// labelAdder adds a label to a bead via the bd CLI. Defaults to the real
 	// bd-update implementation; may be replaced in tests to avoid exec.Command.
 	labelAdder func(anvilPath, beadID, tag string) error
@@ -287,6 +291,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
 		vcsProviders:  vcsProviders,
+		reqTracker:    ipc.NewRequestTracker("forge-"),
 	}
 	d.notifier.Store(notifier)
 	d.dispatcher.Store(dispatcher)
@@ -3160,22 +3165,22 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
-		notesCtx, notesCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
-		defer notesCancel()
-
-		// bd update does not support reading notes from a file or stdin, so we must
-		// pass them as an argument. Routing through the daemon IPC still ensures
-		// the notes are not visible on the long-lived Hearth CLI process command line.
-		notesCmd := executil.HideWindow(exec.CommandContext(notesCtx, "bd", "update", np.BeadID, "--append-notes", np.Notes))
-		notesCmd.Dir = anvilCfg.Path
-		out, err := notesCmd.CombinedOutput()
-		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update %s --notes-file: %v: %s", np.BeadID, err, string(out))})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-
-		data, _ := json.Marshal(map[string]string{"message": "notes appended"})
-		return ipc.Response{Type: "ok", Payload: data}
+		reqID, _ := d.reqTracker.Track()
+		go func() {
+			notesCtx, notesCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
+			defer notesCancel()
+			notesCmd := executil.HideWindow(exec.CommandContext(notesCtx, "bd", "update", np.BeadID, "--append-notes", np.Notes))
+			notesCmd.Dir = anvilCfg.Path
+			if out, err := notesCmd.CombinedOutput(); err != nil {
+				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update %s --notes-file: %v: %s", np.BeadID, err, string(out))})
+				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+				return
+			}
+			data, _ := json.Marshal(map[string]string{"message": "notes appended"})
+			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+		}()
+		resp, _ := ipc.NewQueuedResponse(reqID, "appending notes")
+		return resp
 
 	case "tag_bead":
 		var tp ipc.TagBeadPayload
@@ -3197,32 +3202,32 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", tp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		// Derive the tag from the daemon's authoritative config so the client
-		// cannot inject arbitrary labels and hot-reload is respected.
 		tag := anvilCfg.AutoDispatchTag
 		if tag == "" {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no auto_dispatch_tag configured", tp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		tagCtx, tagCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
-		defer tagCancel()
-		tagCmd := executil.HideWindow(exec.CommandContext(tagCtx, "bd", "update", tp.BeadID, "--add-label", tag))
-		tagCmd.Dir = anvilCfg.Path
-		if out, err := tagCmd.CombinedOutput(); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update failed: %v: %s", err, string(out))})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		d.logger.Info("label added to bead", "bead", tp.BeadID, "anvil", tp.Anvil, "tag", tag)
-		_ = d.db.LogEvent(state.EventBeadTagged, fmt.Sprintf("Label %q added to bead %s", tag, tp.BeadID), tp.BeadID, tp.Anvil)
-		// Trigger a refresh so the queue cache updates promptly, but bound the
-		// context so the refresh participates in graceful shutdown.
-		refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		reqID, _ := d.reqTracker.Track()
 		go func() {
+			tagCtx, tagCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
+			defer tagCancel()
+			tagCmd := executil.HideWindow(exec.CommandContext(tagCtx, "bd", "update", tp.BeadID, "--add-label", tag))
+			tagCmd.Dir = anvilCfg.Path
+			if out, err := tagCmd.CombinedOutput(); err != nil {
+				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update failed: %v: %s", err, string(out))})
+				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+				return
+			}
+			d.logger.Info("label added to bead", "bead", tp.BeadID, "anvil", tp.Anvil, "tag", tag)
+			_ = d.db.LogEvent(state.EventBeadTagged, fmt.Sprintf("Label %q added to bead %s", tag, tp.BeadID), tp.BeadID, tp.Anvil)
+			refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
 			defer refreshCancel()
 			d.pollAndDispatch(refreshCtx)
+			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q added", tag)})
+			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
 		}()
-		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q added", tag)})
-		return ipc.Response{Type: "ok", Payload: data}
+		resp, _ := ipc.NewQueuedResponse(reqID, "tagging bead")
+		return resp
 
 	case "close_bead":
 		var cp ipc.CloseBeadPayload
@@ -3244,23 +3249,27 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", cp.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		closeCtx, closeCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
-		defer closeCancel()
-		closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", cp.BeadID))
-		closeCmd.Dir = anvilCfg.Path
-		if out, err := closeCmd.CombinedOutput(); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd close failed: %v: %s", err, string(out))})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		d.logger.Info("bead closed via TUI", "bead", cp.BeadID, "anvil", cp.Anvil)
-		_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Bead %s closed via TUI", cp.BeadID), cp.BeadID, cp.Anvil)
-		refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+		reqID, _ := d.reqTracker.Track()
 		go func() {
+			closeCtx, closeCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
+			defer closeCancel()
+			closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", cp.BeadID))
+			closeCmd.Dir = anvilCfg.Path
+			if out, err := closeCmd.CombinedOutput(); err != nil {
+				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd close failed: %v: %s", err, string(out))})
+				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+				return
+			}
+			d.logger.Info("bead closed via TUI", "bead", cp.BeadID, "anvil", cp.Anvil)
+			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Bead %s closed via TUI", cp.BeadID), cp.BeadID, cp.Anvil)
+			refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
 			defer refreshCancel()
 			d.pollAndDispatch(refreshCtx)
+			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s closed", cp.BeadID)})
+			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
 		}()
-		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s closed", cp.BeadID)})
-		return ipc.Response{Type: "ok", Payload: data}
+		resp, _ := ipc.NewQueuedResponse(reqID, "closing bead")
+		return resp
 
 	case "stop_bead":
 		var sp ipc.StopBeadPayload
@@ -3276,7 +3285,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if reason == "" {
 			reason = "manually stopped"
 		}
-		// Sanitize reason to prevent terminal escape injection in event log.
 		reason = strings.Map(func(r rune) rune {
 			if r < 32 && r != '\n' {
 				return -1
@@ -3284,7 +3292,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return r
 		}, reason)
 
-		// Validate the anvil exists and has a path, matching tag_bead/close_bead.
 		anvilCfg, ok := d.cfg.Load().Anvils[sp.Anvil]
 		if !ok {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", sp.Anvil)})
@@ -3295,7 +3302,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
-		// Kill any running worker for this bead.
+		// Kill worker and update DB synchronously — these are fast local ops.
 		if w, err := d.db.ActiveWorkerByBeadAndAnvil(sp.BeadID, sp.Anvil); err == nil && w != nil {
 			if w.PID > 0 {
 				if proc, err := os.FindProcess(w.PID); err == nil {
@@ -3310,32 +3317,32 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Info("killed worker for stopped bead", "worker", w.ID, "bead", sp.BeadID)
 		}
 
-		// Mark clarification_needed first so the poller will skip this bead
-		// before we free the active slot; prevents a run_bead race between
-		// the Delete and the DB write.
 		if err := d.db.SetClarificationNeeded(sp.BeadID, sp.Anvil, true, reason); err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to set clarification: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
-		// Remove from active beads so the slot is freed.
 		d.activeBeads.Delete(sp.BeadID)
 
-		// Release bead back to open so it's visible but not dispatched.
-		releaseCtx, releaseCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
-		defer releaseCancel()
-		releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", sp.BeadID, "--status=open", "--assignee=", "--json"))
-		releaseCmd.Dir = anvilCfg.Path
-		if out, err := releaseCmd.CombinedOutput(); err != nil {
-			d.logger.Warn("bd update failed when releasing stopped bead", "bead", sp.BeadID, "error", err, "output", strings.TrimSpace(string(out)))
-			errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead stopped but bd release failed: %v", err)})
-			return ipc.Response{Type: "error", Payload: errMsg}
-		}
-
-		_ = d.db.LogEvent(state.EventBeadStopped, fmt.Sprintf("Bead %s stopped: %s", sp.BeadID, reason), sp.BeadID, sp.Anvil)
-		d.logger.Info("bead stopped", "bead", sp.BeadID, "anvil", sp.Anvil, "reason", reason)
-		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s stopped", sp.BeadID)})
-		return ipc.Response{Type: "ok", Payload: data}
+		reqID, _ := d.reqTracker.Track()
+		go func() {
+			releaseCtx, releaseCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
+			defer releaseCancel()
+			releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", sp.BeadID, "--status=open", "--assignee=", "--json"))
+			releaseCmd.Dir = anvilCfg.Path
+			if out, err := releaseCmd.CombinedOutput(); err != nil {
+				d.logger.Warn("bd update failed when releasing stopped bead", "bead", sp.BeadID, "error", err, "output", strings.TrimSpace(string(out)))
+				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead stopped but bd release failed: %v", err)})
+				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+				return
+			}
+			_ = d.db.LogEvent(state.EventBeadStopped, fmt.Sprintf("Bead %s stopped: %s", sp.BeadID, reason), sp.BeadID, sp.Anvil)
+			d.logger.Info("bead stopped", "bead", sp.BeadID, "anvil", sp.Anvil, "reason", reason)
+			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s stopped", sp.BeadID)})
+			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+		}()
+		resp, _ := ipc.NewQueuedResponse(reqID, "stopping bead")
+		return resp
 
 	case "clear_clarification":
 		var cp ipc.ClarificationPayload
@@ -3362,14 +3369,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "invalid retry_bead payload"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		// When targeting an exhausted PR (PRID > 0), bead_id is optional — non-bead
-		// PRs (e.g. warden-learn PRs) have no associated bead. The PR record itself
-		// provides the anvil and bead_id needed for downstream logging.
 		if rp.PRID == 0 && (rp.BeadID == "" || rp.Anvil == "") {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		// Exhausted PR retry: reset fix counters and status back to open
+		// Exhausted PR retry: DB-only, no bd shelling required.
 		if rp.PRID > 0 {
 			pr, err := d.db.GetPRByID(rp.PRID)
 			if err != nil || pr == nil {
@@ -3380,9 +3384,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset PR fix counts: %v", err)})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
-			// Reset the lifecycle manager's in-memory state so new Bellows
-			// events dispatch fresh fix/rebase workers instead of being
-			// silently dropped as "already exhausted".
 			if d.lifecycleMgr == nil {
 				d.logger.Error("lifecycle manager not ready for retry_bead PR reset", "pr_id", rp.PRID, "bead", pr.BeadID, "anvil", pr.Anvil)
 				msg, _ := json.Marshal(map[string]string{"message": "lifecycle manager not ready"})
@@ -3393,7 +3394,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				d.bellowsMonitor.ResetPRState(pr.Anvil, pr.Number)
 				d.bellowsMonitor.Refresh()
 			}
-			// Trigger a poll as well to catch any other ready work or updates.
 			go d.pollAndDispatch(d.runCtx)
 
 			_ = d.db.LogEvent(
@@ -3406,66 +3406,48 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			data, _ := json.Marshal(map[string]string{"message": "PR fix counts reset, status set to open"})
 			return ipc.Response{Type: "ok", Payload: data}
 		}
+		// Bead retry: validate DB state synchronously, then shell out async.
 		retry, err := d.db.GetRetry(rp.BeadID, rp.Anvil)
 		if err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to get retry state: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if retry != nil && retry.DispatchFailures > 0 {
+		hasCircuitBreaker := retry != nil && retry.DispatchFailures > 0
+		if hasCircuitBreaker {
 			if err := d.db.ResetRetry(rp.BeadID, rp.Anvil); err != nil {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset retry state: %v", err)})
 				return ipc.Response{Type: "error", Payload: msg}
 			}
 			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Retry state reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
 			d.logger.Info("retry state reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
-
-			// Reset bead status to open and clear assignee so the poller can
-			// re-dispatch it. The pipeline sets status=in_progress on claim,
-			// and bd ready only returns open beads.
+		} else {
+			if err := d.db.ResetRetry(rp.BeadID, rp.Anvil); err != nil {
+				d.logger.Warn("ResetRetry failed (might not have a retry record)", "bead", rp.BeadID, "anvil", rp.Anvil, "error", err)
+			}
+			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Retry reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
+			d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
+		}
+		reqID, _ := d.reqTracker.Track()
+		go func() {
 			if anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]; ok && anvilCfg.Path != "" {
 				resetCtx, resetCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 				defer resetCancel()
 				statusCmd := executil.HideWindow(exec.CommandContext(resetCtx, "bd", "update", rp.BeadID, "--status=open", "--assignee=", "--json"))
 				statusCmd.Dir = anvilCfg.Path
 				if output, err := statusCmd.CombinedOutput(); err != nil {
-					d.logger.Warn("failed to reset bead status after circuit breaker reset", "bead", rp.BeadID, "error", err, "output", string(output))
+					d.logger.Warn("failed to reset bead status after retry reset", "bead", rp.BeadID, "error", err, "output", string(output))
 				}
 			}
-
-			// Trigger a poll immediately after resetting retry state.
-			go d.pollAndDispatch(d.runCtx)
-
-			data, _ := json.Marshal(map[string]string{"message": "retry state reset"})
-			return ipc.Response{Type: "ok", Payload: data}
-		}
-		// Regular retry: clear needs_human and clarification_needed flags
-		if err := d.db.ResetRetry(rp.BeadID, rp.Anvil); err != nil {
-			// If no retry record exists, it might be a stalled worker being
-			// retried. We don't return an error here so the TUI can still
-			// show success and the user can proceed.
-			d.logger.Warn("ResetRetry failed (might not have a retry record)", "bead", rp.BeadID, "anvil", rp.Anvil, "error", err)
-		}
-		_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Retry reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
-		d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
-
-		// Reset bead status to open and clear assignee so the poller can
-		// re-dispatch it. The pipeline sets status=in_progress on claim,
-		// and bd ready only returns open beads.
-		if anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]; ok && anvilCfg.Path != "" {
-			resetCtx, resetCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
-			defer resetCancel()
-			statusCmd := executil.HideWindow(exec.CommandContext(resetCtx, "bd", "update", rp.BeadID, "--status=open", "--assignee=", "--json"))
-			statusCmd.Dir = anvilCfg.Path
-			if output, resetErr := statusCmd.CombinedOutput(); resetErr != nil {
-				d.logger.Warn("failed to reset bead status after retry reset", "bead", rp.BeadID, "error", resetErr, "output", string(output))
+			d.pollAndDispatch(d.runCtx)
+			msg := "retry reset"
+			if hasCircuitBreaker {
+				msg = "retry state reset"
 			}
-		}
-
-		// Trigger a poll immediately after resetting retry state.
-		go d.pollAndDispatch(d.runCtx)
-
-		data, _ := json.Marshal(map[string]string{"message": "retry reset"})
-		return ipc.Response{Type: "ok", Payload: data}
+			data, _ := json.Marshal(map[string]string{"message": msg})
+			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+		}()
+		resp, _ := ipc.NewQueuedResponse(reqID, "retrying bead")
+		return resp
 
 	case "dismiss_bead":
 		var dp ipc.DismissBeadPayload
@@ -3901,19 +3883,27 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 		switch pa.Action {
 		case "close":
-			closeCtx, closeCancel := context.WithTimeout(d.runCtx, 30*time.Second)
-			defer closeCancel()
-			closeCmd := exec.CommandContext(closeCtx, "gh", "pr", "close", strconv.Itoa(pa.PRNumber))
-			closeCmd.Dir = anvilCfg.Path
-			if out, err := closeCmd.CombinedOutput(); err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr close failed: %v: %s", err, strings.TrimSpace(string(out)))})
-				return ipc.Response{Type: "error", Payload: msg}
-			}
-			if pa.PRID > 0 {
-				_ = d.db.UpdatePRStatus(pa.PRID, state.PRClosed)
-			}
-			_ = d.db.LogEvent(state.EventPRClosed, fmt.Sprintf("PR #%d closed by user", pa.PRNumber), pa.BeadID, pa.Anvil)
-			d.logger.Info("PR closed by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+			reqID, _ := d.reqTracker.Track()
+			go func() {
+				closeCtx, closeCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+				defer closeCancel()
+				closeCmd := exec.CommandContext(closeCtx, "gh", "pr", "close", strconv.Itoa(pa.PRNumber))
+				closeCmd.Dir = anvilCfg.Path
+				if out, err := closeCmd.CombinedOutput(); err != nil {
+					errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr close failed: %v: %s", err, strings.TrimSpace(string(out)))})
+					d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+					return
+				}
+				if pa.PRID > 0 {
+					_ = d.db.UpdatePRStatus(pa.PRID, state.PRClosed)
+				}
+				_ = d.db.LogEvent(state.EventPRClosed, fmt.Sprintf("PR #%d closed by user", pa.PRNumber), pa.BeadID, pa.Anvil)
+				d.logger.Info("PR closed by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+				data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d closed", pa.PRNumber)})
+				d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+			}()
+			resp, _ := ipc.NewQueuedResponse(reqID, "closing PR")
+			return resp
 
 		case "open_browser":
 			openCtx, openCancel := context.WithTimeout(d.runCtx, 15*time.Second)
@@ -3926,18 +3916,26 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			}
 
 		case "merge":
-			mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
-			defer mergeCancel()
-			strategy := d.cfg.Load().Settings.MergeStrategy
-			if err := d.vcsForAnvil(pa.Anvil).MergePR(mergeCtx, anvilCfg.Path, pa.PRNumber, strategy); err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("merge failed: %v", err)})
-				return ipc.Response{Type: "error", Payload: msg}
-			}
-			if pa.PRID > 0 {
-				_ = d.db.UpdatePRStatus(pa.PRID, state.PRMerged)
-			}
-			_ = d.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged by user", pa.PRNumber), pa.BeadID, pa.Anvil)
-			d.logger.Info("PR merged by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+			reqID, _ := d.reqTracker.Track()
+			go func() {
+				mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
+				defer mergeCancel()
+				strategy := d.cfg.Load().Settings.MergeStrategy
+				if err := d.vcsForAnvil(pa.Anvil).MergePR(mergeCtx, anvilCfg.Path, pa.PRNumber, strategy); err != nil {
+					errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("merge failed: %v", err)})
+					d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+					return
+				}
+				if pa.PRID > 0 {
+					_ = d.db.UpdatePRStatus(pa.PRID, state.PRMerged)
+				}
+				_ = d.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged by user", pa.PRNumber), pa.BeadID, pa.Anvil)
+				d.logger.Info("PR merged by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+				data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d merged", pa.PRNumber)})
+				d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+			}()
+			resp, _ := ipc.NewQueuedResponse(reqID, "merging PR")
+			return resp
 
 		case "quench", "cifix":
 			if pa.Branch == "" {
@@ -4180,6 +4178,16 @@ func (d *Daemon) BroadcastEvent(eventType string, data any) {
 		Type:      eventType,
 		Timestamp: time.Now(),
 		Data:      raw,
+	})
+}
+
+// completeAsync records a result in the RequestTracker and broadcasts a
+// daemon event so IPC subscribers (Hearth TUI) can react to the outcome.
+func (d *Daemon) completeAsync(requestID string, resp ipc.Response) {
+	d.reqTracker.Complete(requestID, ipc.CompletionResult{Response: resp})
+	d.BroadcastEvent("async_complete", map[string]string{
+		"request_id": requestID,
+		"type":       resp.Type,
 	})
 }
 
