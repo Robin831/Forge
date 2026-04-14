@@ -146,7 +146,7 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 			return &Worktree{Path: worktreePath, Branch: targetBranch}, nil
 		}
 		// Not a valid worktree — remove the stale directory.
-		if err := removeWithRetry(worktreePath); err != nil {
+		if err := removeWithRetry(ctx, worktreePath); err != nil {
 			return nil, fmt.Errorf("removing stale worktree directory %s: %w", worktreePath, err)
 		}
 	}
@@ -231,7 +231,7 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 	// pointing to a real gitdir. Without this, a silent git failure could
 	// leave a directory that git operations resolve to the parent repo.
 	if err := verifyWorktreeGitFile(worktreePath); err != nil {
-		_ = os.RemoveAll(worktreePath)
+		_ = removeWithRetry(ctx, worktreePath)
 		return nil, fmt.Errorf("post-creation worktree verification failed: %w", err)
 	}
 
@@ -400,6 +400,38 @@ func resolveBaseRef(ctx context.Context, repoPath string) (string, error) {
 	return "", fmt.Errorf("neither origin/main nor origin/master found")
 }
 
+// resolveValidatedGitDir reads and validates the .git file pointer in dir.
+// Worktrees have a .git *file* (not directory) containing "gitdir: <path>".
+// Returns the resolved, absolute gitdir path, or an error if the pointer is
+// missing, malformed, or points to a nonexistent directory.
+func resolveValidatedGitDir(dir string) (string, error) {
+	gitPath := filepath.Join(dir, ".git")
+	info, err := os.Lstat(gitPath)
+	if err != nil {
+		return "", err
+	}
+	// A .git directory means this is a full repo clone, not a worktree.
+	if info.IsDir() {
+		return "", fmt.Errorf("%s is a directory", gitPath)
+	}
+	content, err := os.ReadFile(gitPath)
+	if err != nil {
+		return "", err
+	}
+	line := strings.TrimSpace(string(content))
+	if !strings.HasPrefix(line, "gitdir: ") {
+		return "", fmt.Errorf("%s does not contain a gitdir pointer", gitPath)
+	}
+	gitdir := strings.TrimPrefix(line, "gitdir: ")
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(dir, gitdir)
+	}
+	if _, err := os.Stat(gitdir); err != nil {
+		return "", err
+	}
+	return gitdir, nil
+}
+
 // isValidWorktree checks whether a directory is a valid git worktree.
 // It verifies: (1) a .git file (not directory) exists — worktrees use a .git
 // file pointing to the main repo, (2) the .git file content references a valid
@@ -408,29 +440,7 @@ func resolveBaseRef(ctx context.Context, repoPath string) (string, error) {
 // due to locked-file cleanup failure on Windows) would pass git rev-parse by
 // walking up to the parent repo, causing Smith to edit the main checkout.
 func isValidWorktree(ctx context.Context, dir string) bool {
-	gitPath := filepath.Join(dir, ".git")
-	info, err := os.Lstat(gitPath)
-	if err != nil {
-		return false
-	}
-	// Worktrees have a .git *file* (not directory) containing "gitdir: <path>".
-	// A .git directory means this is a full repo clone, not a worktree.
-	if info.IsDir() {
-		return false
-	}
-	content, err := os.ReadFile(gitPath)
-	if err != nil {
-		return false
-	}
-	line := strings.TrimSpace(string(content))
-	if !strings.HasPrefix(line, "gitdir: ") {
-		return false
-	}
-	gitdir := strings.TrimPrefix(line, "gitdir: ")
-	if !filepath.IsAbs(gitdir) {
-		gitdir = filepath.Join(dir, gitdir)
-	}
-	if _, err := os.Stat(gitdir); err != nil {
+	if _, err := resolveValidatedGitDir(dir); err != nil {
 		return false
 	}
 	return gitCmd(ctx, dir, "rev-parse", "--is-inside-work-tree") == nil
@@ -547,20 +557,37 @@ func (m *Manager) FetchBranch(ctx context.Context, anvilPath, branchName string)
 	return gitCmd(ctx, anvilPath, "fetch", "origin", "--", branchName)
 }
 
-// removeWithRetry attempts os.RemoveAll with exponential backoff to handle
-// Windows file-locking and antivirus delays. On non-Windows platforms it
-// makes a single attempt.
-func removeWithRetry(path string) error {
+// removeWithRetry attempts os.RemoveAll with exponential backoff and context
+// cancellation support to handle Windows file-locking and antivirus delays.
+// On non-Windows platforms it makes a single attempt.
+func removeWithRetry(ctx context.Context, path string) error {
 	delays := []time.Duration{0}
 	if runtime.GOOS == "windows" {
 		delays = []time.Duration{0, 1 * time.Second, 2 * time.Second, 4 * time.Second}
 	}
 	var lastErr error
 	for i, delay := range delays {
+		if err := ctx.Err(); err != nil {
+			if lastErr != nil {
+				return fmt.Errorf("remove worktree %s canceled after %d attempts: %w", path, i, err)
+			}
+			return fmt.Errorf("remove worktree %s canceled: %w", path, err)
+		}
 		if delay > 0 {
 			slog.Warn("retrying worktree directory removal",
 				"path", path, "attempt", i+1, "total_attempts", len(delays), "backoff", delay)
-			time.Sleep(delay)
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				if lastErr != nil {
+					return fmt.Errorf("remove worktree %s canceled after %d attempts: %w", path, i, ctx.Err())
+				}
+				return fmt.Errorf("remove worktree %s canceled: %w", path, ctx.Err())
+			}
 		}
 		lastErr = os.RemoveAll(path)
 		if lastErr == nil {
@@ -572,40 +599,46 @@ func removeWithRetry(path string) error {
 	return fmt.Errorf("failed after %d attempts: %w", len(delays), lastErr)
 }
 
+// RemoveWithRetry is the exported form of removeWithRetry for use by daemon-level
+// stale directory cleanup.
+func RemoveWithRetry(ctx context.Context, path string) error {
+	return removeWithRetry(ctx, path)
+}
+
 // verifyWorktreeGitFile checks that a worktree directory contains a valid .git
 // file (not directory) whose gitdir target exists on disk.
 func verifyWorktreeGitFile(worktreePath string) error {
-	gitPath := filepath.Join(worktreePath, ".git")
-	info, err := os.Lstat(gitPath)
-	if err != nil {
-		return fmt.Errorf(".git file missing in worktree %s: %w", worktreePath, err)
-	}
-	if info.IsDir() {
-		return fmt.Errorf(".git is a directory (expected file) in worktree %s", worktreePath)
-	}
-	content, err := os.ReadFile(gitPath)
-	if err != nil {
-		return fmt.Errorf("reading .git file in worktree %s: %w", worktreePath, err)
-	}
-	line := strings.TrimSpace(string(content))
-	if !strings.HasPrefix(line, "gitdir: ") {
-		return fmt.Errorf(".git file in worktree %s has unexpected content: %q", worktreePath, line)
-	}
-	gitdir := strings.TrimPrefix(line, "gitdir: ")
-	if !filepath.IsAbs(gitdir) {
-		gitdir = filepath.Join(worktreePath, gitdir)
-	}
-	if _, err := os.Stat(gitdir); err != nil {
-		return fmt.Errorf(".git file points to nonexistent gitdir %s: %w", gitdir, err)
+	if _, err := resolveValidatedGitDir(worktreePath); err != nil {
+		return fmt.Errorf("worktree %s has invalid .git file: %w", worktreePath, err)
 	}
 	return nil
 }
 
-// ValidateWorktreeDir checks that the given directory is a valid git worktree
-// (has a .git file, not directory, pointing to a valid gitdir). This is
-// exported for use as a pre-flight check before starting Smith.
+// ValidateWorktreeDir checks that the given directory is safe to run Smith in.
+// If the directory is not inside any git repository (e.g. an os.MkdirTemp dir
+// used by schematic or wicket), the check passes — there is no parent checkout
+// to accidentally inherit. If the directory is inside a git repo, it must have
+// a valid worktree .git file pointer to ensure isolation from the main checkout.
 func ValidateWorktreeDir(worktreePath string) error {
-	return verifyWorktreeGitFile(worktreePath)
+	_, gitFileErr := resolveValidatedGitDir(worktreePath)
+	if gitFileErr == nil {
+		// Has a valid .git file pointer — this is a proper worktree.
+		return nil
+	}
+	// No valid .git file. Check whether the directory is nonetheless inside a
+	// git repository (which would mean git commands resolve to the parent repo).
+	// If it is not inside any repo (e.g. an os.MkdirTemp dir), there is nothing
+	// to protect against and we allow the run.
+	cmdCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "rev-parse", "--git-dir"))
+	cmd.Dir = worktreePath
+	if err := cmd.Run(); err != nil {
+		// Not inside any git repository — safe to proceed.
+		return nil
+	}
+	// Inside a git repo without proper worktree isolation — refuse.
+	return fmt.Errorf("directory %s is inside a git repository but lacks a valid worktree .git file: %w", worktreePath, gitFileErr)
 }
 
 // sanitizePath converts a bead ID to a safe directory/branch name.
