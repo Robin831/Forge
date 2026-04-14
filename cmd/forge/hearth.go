@@ -86,10 +86,10 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 		}
-		model.OnRetryBead = func(beadID, anvil string, prID int) error {
+		model.OnRetryBead = func(beadID, anvil string, prID int) (string, error) {
 			client, err := ipc.NewClient()
 			if err != nil {
-				return err
+				return "", err
 			}
 			defer client.Close()
 			payload, _ := json.Marshal(ipc.RetryBeadPayload{
@@ -102,12 +102,15 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 			if err != nil {
-				return err
+				return "", err
+			}
+			if resp.IsQueued() {
+				return resp.RequestID, nil
 			}
 			if resp.Type != "ok" {
-				return ipcError(resp)
+				return "", ipcError(resp)
 			}
-			return nil
+			return "", nil
 		}
 		model.OnDismissBead = func(beadID, anvil string, prID int) error {
 			client, err := ipc.NewClient()
@@ -209,10 +212,10 @@ var hearthCmd = &cobra.Command{
 				return nil
 			}
 		}
-		model.OnPRAction = func(prID, prNumber int, anvil, beadID, branch, action string) error {
+		model.OnPRAction = func(prID, prNumber int, anvil, beadID, branch, action string) (string, error) {
 			client, err := ipc.NewClient()
 			if err != nil {
-				return err
+				return "", err
 			}
 			defer client.Close()
 			payload, _ := json.Marshal(ipc.PRActionPayload{
@@ -228,22 +231,23 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 			if err != nil {
-				return err
+				return "", err
+			}
+			if resp.IsQueued() {
+				return resp.RequestID, nil
 			}
 			if resp.Type != "ok" {
-				return ipcError(resp)
+				return "", ipcError(resp)
 			}
-			return nil
+			return "", nil
 		}
-		model.OnTagBead = func(beadID, anvil string) error {
+		model.OnTagBead = func(beadID, anvil string) (string, error) {
 			client, err := ipc.NewClient()
 			if err != nil {
-				return err
+				return "", err
 			}
 			defer client.Close()
 
-			// The daemon derives the tag from its own (hot-reloaded) config, so
-			// the client only needs to send the bead identity.
 			payload, _ := json.Marshal(ipc.TagBeadPayload{
 				BeadID: beadID,
 				Anvil:  anvil,
@@ -253,18 +257,21 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 			if err != nil {
-				return err
+				return "", err
+			}
+			if resp.IsQueued() {
+				return resp.RequestID, nil
 			}
 			if resp.Type != "ok" {
-				return ipcError(resp)
+				return "", ipcError(resp)
 			}
-			return nil
+			return "", nil
 		}
 
-		model.OnCloseBead = func(beadID, anvil string) error {
+		model.OnCloseBead = func(beadID, anvil string) (string, error) {
 			client, err := ipc.NewClient()
 			if err != nil {
-				return err
+				return "", err
 			}
 			defer client.Close()
 
@@ -277,12 +284,15 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 			if err != nil {
-				return err
+				return "", err
+			}
+			if resp.IsQueued() {
+				return resp.RequestID, nil
 			}
 			if resp.Type != "ok" {
-				return ipcError(resp)
+				return "", ipcError(resp)
 			}
-			return nil
+			return "", nil
 		}
 
 		model.OnForceRunBead = func(beadID, anvil string) error {
@@ -310,10 +320,10 @@ var hearthCmd = &cobra.Command{
 			return nil
 		}
 
-		model.OnStopBead = func(beadID, anvil string) error {
+		model.OnStopBead = func(beadID, anvil string) (string, error) {
 			client, err := ipc.NewClient()
 			if err != nil {
-				return err
+				return "", err
 			}
 			defer client.Close()
 
@@ -326,12 +336,15 @@ var hearthCmd = &cobra.Command{
 				Payload: json.RawMessage(payload),
 			})
 			if err != nil {
-				return err
+				return "", err
+			}
+			if resp.IsQueued() {
+				return resp.RequestID, nil
 			}
 			if resp.Type != "ok" {
-				return ipcError(resp)
+				return "", ipcError(resp)
 			}
-			return nil
+			return "", nil
 		}
 
 		model.OnCrucibleAction = func(parentID, anvil, action string) error {
@@ -463,10 +476,10 @@ var hearthCmd = &cobra.Command{
 			return nil
 		}
 
-		model.OnAppendNotes = func(beadID, anvil, notes string) error {
+		model.OnAppendNotes = func(beadID, anvil, notes string) (string, error) {
 			client, err := ipc.NewClient()
 			if err != nil {
-				return fmt.Errorf("connecting to daemon: %w", err)
+				return "", fmt.Errorf("connecting to daemon: %w", err)
 			}
 			defer client.Close()
 
@@ -480,14 +493,17 @@ var hearthCmd = &cobra.Command{
 				Payload: payload,
 			})
 			if err != nil {
-				return fmt.Errorf("sending append_notes command: %w", err)
+				return "", fmt.Errorf("sending append_notes command: %w", err)
+			}
+			if resp.IsQueued() {
+				return resp.RequestID, nil
 			}
 			if resp.Type == "error" {
 				var msg map[string]string
 				_ = json.Unmarshal(resp.Payload, &msg)
-				return fmt.Errorf("daemon error: %s", msg["message"])
+				return "", fmt.Errorf("daemon error: %s", msg["message"])
 			}
-			return nil
+			return "", nil
 		}
 
 		noMouse, _ := cmd.Flags().GetBool("no-mouse")

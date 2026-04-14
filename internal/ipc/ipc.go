@@ -529,7 +529,7 @@ func (c *Client) Send(cmd Command) (*Response, error) {
 		return nil, fmt.Errorf("sending command: %w", err)
 	}
 
-	_ = c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = c.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	scanner := bufio.NewScanner(c.conn)
 	scanner.Buffer(make([]byte, 64*1024), 64*1024)
 	if !scanner.Scan() {
@@ -555,6 +555,18 @@ func (c *Client) Subscribe(ctx context.Context) <-chan Event {
 
 		// Send subscribe command
 		_, _ = c.Send(Command{Type: "subscribe"})
+
+		// Clear the read deadline set by Send so the event stream can
+		// block indefinitely waiting for the next pushed event.
+		_ = c.conn.SetReadDeadline(time.Time{})
+
+		// When ctx is cancelled, close the connection to unblock scanner.Scan().
+		// Without this, the goroutine would only check ctx.Done() after a line
+		// is read, which may never happen if no events arrive.
+		go func() {
+			<-ctx.Done()
+			c.conn.Close()
+		}()
 
 		scanner := bufio.NewScanner(c.conn)
 		scanner.Buffer(make([]byte, 64*1024), 64*1024)
