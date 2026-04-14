@@ -3369,3 +3369,311 @@ rules:
         Verify that test names accurately describe what the test asserts. If a test is named after a behavioral scenario (e.g. 'StopsOnRequiredFailure'), it should exercise that behavior end-to-end, not just check a precondition. Either rename the test to match what it actually checks or extend it to verify the claimed behavior.
       source: copilot:PR#517
       added: "2026-04-11"
+    - id: stale-changed-files-across-iterations
+      category: concurrency
+      pattern: >-
+        A mutable config or computed field (e.g. changed-file list) is populated once and reused across multiple loop iterations where the underlying state can change between iterations
+      check: >-
+        Verify that any derived/computed data used inside a retry or iteration loop is recomputed each iteration rather than cached from the first pass. In particular, when a pipeline re-runs Smith and then Temper, the changed-file list must be refreshed so that step-skip decisions reflect all commits, not just the initial diff.
+      source: copilot:PR#519
+      added: "2026-04-13"
+    - id: base-branch-fallback-consistency
+      category: error-handling
+      pattern: >-
+        Code that assumes a default branch name (e.g. hardcoding 'main') when constructing git ref ranges or comparisons
+      check: >-
+        Verify that the base branch resolution logic matches how the worktree or VCS layer detects the default branch (e.g. checking origin/main then origin/master), rather than hardcoding a fallback that may silently fail on repos with a different default branch
+      source: copilot:PR#519
+      added: "2026-04-13"
+    - id: handle-glob-match-errors
+      category: error-handling
+      pattern: >-
+        Calling glob or pattern matching functions (e.g. doublestar.Match, filepath.Match) and discarding or ignoring the error return value
+      check: >-
+        Verify that pattern matching errors are not silently ignored. Invalid patterns should either be validated upfront and surfaced as configuration errors, or the error should be logged and the match treated as true (fail-open) so that the guarded action still runs rather than being silently skipped.
+      source: copilot:PR#519
+      added: "2026-04-13"
+    - id: git-commands-need-context-and-error-propagation
+      category: error-handling
+      pattern: >-
+        Functions that shell out to git (e.g. git diff, git log) without accepting a context.Context or returning errors
+      check: >-
+        Verify that git subprocess calls accept a context.Context (or enforce a bounded timeout) and propagate errors to the caller instead of swallowing them, so pipelines cannot hang and callers can distinguish 'no results' from 'command failed'
+      source: copilot:PR#519
+      added: "2026-04-13"
+    - id: cli-doc-required-flags
+      category: other
+      pattern: CLI quick-reference or usage documentation that shows command syntax
+      check: >-
+        Verify that all required flags (especially --anvil) are included in documented command examples so that copy-paste usage works without runtime errors
+      source: copilot:PR#520
+      added: "2026-04-13"
+    - id: doc-provider-fallback-accuracy
+      category: other
+      pattern: >-
+        Documentation or comments describing the stage_providers fallback chain for pipeline stages (smith, warden, schematic, cifix, reviewfix)
+      check: >-
+        Verify that documented provider fallback chains match the actual resolution order in ProvidersForStageWithAnvil: smith/warden/schematic fall back through anvil stage_providers → global stage_providers → smith_providers → providers, while cifix/reviewfix skip smith_providers and fall back through anvil stage_providers → global stage_providers → providers
+      source: copilot:PR#520
+      added: "2026-04-13"
+    - id: deny-patterns-flow-position
+      category: other
+      pattern: >-
+        Documentation or diagrams describing the pipeline/data flow that mention deny_patterns validation ordering
+      check: >-
+        Verify that deny_patterns validation is shown AFTER the Smith stage (post-Smith output/diff) and BEFORE Temper, not before Smith. The actual implementation in internal/pipeline/pipeline.go runs deny-pattern checks as Step 2.5 between Smith and Temper.
+      source: copilot:PR#520
+      added: "2026-04-13"
+    - id: lstat-non-existence-check
+      category: error-handling
+      pattern: >-
+        os.Lstat or os.Stat result checked only for err == nil or os.IsNotExist, ignoring other possible errors
+      check: >-
+        When checking if a path exists with os.Lstat/os.Stat, verify that errors other than IsNotExist are handled explicitly and returned early, rather than falling through to creation logic that would produce misleading errors or inconsistent state
+      source: copilot:PR#521
+      added: "2026-04-13"
+    - id: hide-subprocess-windows
+      category: ui
+      pattern: >-
+        Creating exec.Command or exec.CommandContext calls on Windows without executil.HideWindow
+      check: >-
+        Verify that all subprocess invocations (exec.Command / exec.CommandContext) on Windows apply executil.HideWindow to prevent console window flashing, and include a context/timeout where feasible, consistent with existing subprocess patterns in the repo
+      source: copilot:PR#521
+      added: "2026-04-13"
+    - id: comment-accuracy
+      category: other
+      pattern: Code comments describing fallback behavior or error handling of other components
+      check: >-
+        Verify that comments accurately describe the actual behavior of the referenced component. Do not claim a specific fallback exists (e.g., 'temper will fall back to npm ci') unless the referenced code actually implements that fallback. Use neutral language like 'steps may fail/skip' when the outcome depends on external state.
+      source: copilot:PR#521
+      added: "2026-04-13"
+    - id: external-ref-format-assumption
+      category: other
+      pattern: >-
+        Code or comments that assume an external reference field contains a specific format (e.g. always a full GitHub URL)
+      check: >-
+        Verify that code handling external references (like issue tracker IDs) accounts for multiple formats (shorthand like gh-42, full URLs, non-GitHub references like jira-123) rather than assuming a single format. Prompt guidance should only use GitHub-specific closing keywords when the reference is confirmed to be a GitHub issue.
+      source: copilot:PR#522
+      added: "2026-04-13"
+    - id: test-new-prompt-fields
+      category: testing
+      pattern: >-
+        Adding a new field or conditional block to the Smith prompt builder in internal/prompt
+      check: >-
+        Verify that new prompt fields have corresponding tests asserting the output appears when the field is set and is omitted when empty or unset
+      source: copilot:PR#522
+      added: "2026-04-13"
+    - id: accurate-field-comments
+      category: style
+      pattern: >-
+        Struct field comments that describe the format or semantics of a value received from an external source
+      check: >-
+        Verify that comments describing field formats accurately reflect all possible values passed through from the upstream source, not just one common case. Avoid narrowing the description to a single format (e.g. 'GitHub issue URL') when the field can carry multiple formats (e.g. shorthand like 'gh-42', full URLs, or non-GitHub references).
+      source: copilot:PR#522
+      added: "2026-04-13"
+    - id: changelog-avoid-format-assumptions
+      category: style
+      pattern: >-
+        Changelog entries or documentation that describe the format of a field value (e.g. URL, number, identifier)
+      check: >-
+        Verify that descriptions of field values do not over-specify or assume a particular format. Use generic terms (e.g. 'external reference') instead of format-specific ones (e.g. 'GitHub issue URL') unless the format is guaranteed by the schema.
+      source: copilot:PR#522
+      added: "2026-04-13"
+    - id: use-specific-rule-categories
+      category: style
+      pattern: "Adding or modifying warden rules with category: other"
+      check: >-
+        Verify that the rule category is as specific as possible rather than defaulting to 'other'. Documentation-focused rules should use 'documentation', concurrency rules should use 'concurrency', etc. Generic categories reduce the value of triage and search filtering.
+      source: copilot:PR#518
+      added: "2026-04-13"
+    - id: deduplicate-overlapping-warden-rules
+      category: other
+      pattern: >-
+        Adding or modifying warden rules in .forge/warden-rules.yaml where the new rule's check overlaps with an existing rule
+      check: >-
+        Before adding a new warden rule, verify it does not substantially overlap with existing rules. If overlap exists, consolidate into a single rule and append the new source PR(s) to the existing rule's source list, rather than creating a redundant checklist entry.
+      source: copilot:PR#518
+      added: "2026-04-13"
+    - id: github-issue-url-host-validation
+      category: security
+      pattern: Extracting issue numbers from URLs using regex without validating the hostname
+      check: >-
+        When parsing an external_ref or URL to extract a GitHub issue number, verify the hostname belongs to github.com before using the number. A bare regex like `/issues/(\d+)` matches any host (GitLab, example.com, etc.) and could inject incorrect 'Closes #N' directives that close the wrong issue.
+      source: copilot:PR#523
+      added: "2026-04-13"
+    - id: use-decodejson-for-bd-output
+      category: error-handling
+      pattern: >-
+        Parsing JSON output from bd CLI subprocess calls using json.Unmarshal or manual JSON manipulation
+      check: >-
+        Verify that executil.DecodeJSON is used instead of json.Unmarshal when parsing bd subprocess output, as bd may emit leading/trailing diagnostic noise that raw json.Unmarshal cannot tolerate. Also ensure both array and object JSON forms are handled.
+      source: copilot:PR#523
+      added: "2026-04-13"
+    - id: single-source-of-truth-for-ids
+      category: style
+      pattern: >-
+        A field (especially an identifier like request_id) is duplicated in both a wrapper struct and a nested payload struct
+      check: >-
+        Verify that identifiers and metadata are not duplicated across nesting levels. Keep canonical fields at one level only (prefer the outer/top-level struct) to avoid divergence between two sources of truth.
+      source: copilot:PR#524
+      added: "2026-04-14"
+    - id: validate-correlation-ids
+      category: error-handling
+      pattern: >-
+        Functions that accept request/correlation IDs and construct response objects with omitempty JSON tags
+      check: >-
+        Verify that request/correlation ID parameters are validated as non-empty before use, especially when the struct field is tagged with omitempty which would silently drop the field from serialized output and break request-response correlation
+      source: copilot:PR#524
+      added: "2026-04-14"
+    - id: test-channel-receive-timeout
+      category: testing
+      pattern: >-
+        Test code that blocks on channel receive (<-ch) without a timeout or select wrapper
+      check: >-
+        Verify that channel receives in tests use a select with time.After (or context deadline) so a regression causes a bounded, debuggable failure instead of hanging until the global test timeout
+      source: copilot:PR#524
+      added: "2026-04-14"
+    - id: error-msg-matches-command
+      category: error-handling
+      pattern: Error messages that reference CLI commands or flags
+      check: >-
+        Verify that error messages exactly match the actual CLI command and flags being invoked, so that troubleshooting output is accurate and consistent with the code
+      source: copilot:PR#525
+      added: "2026-04-14"
+    - id: validate-anvil-path-before-use
+      category: error-handling
+      pattern: >-
+        Handler or function resolves an anvil config and uses its Path field to set a working directory
+      check: >-
+        Verify that the anvil's Path field is validated as non-empty before use. If other similar handlers return an error for a missing path, this one must too, to avoid running commands in an unexpected working directory.
+      source: copilot:PR#525
+      added: "2026-04-14"
+    - id: nil-field-panic-on-struct-literal
+      category: error-handling
+      pattern: >-
+        A struct gains a new pointer or interface field that is initialized in the constructor but not in direct struct literals used elsewhere
+      check: >-
+        Verify that new required fields are either defensively nil-checked before use, lazily initialized on first access, or stored by value so that direct struct-literal construction does not panic
+      source: copilot:PR#525
+      added: "2026-04-14"
+    - id: log-failed-async-completion
+      category: error-handling
+      pattern: Calling RequestTracker.Complete or similar boolean-returning completion methods
+      check: >-
+        Verify that the boolean result of async completion calls is checked and that a warning is logged when it returns false, so silent drops of unknown/duplicate request IDs are surfaced for debugging
+      source: copilot:PR#525
+      added: "2026-04-14"
+    - id: async-event-include-response-payload
+      category: ui
+      pattern: Broadcasting async completion events after background IPC operations finish
+      check: >-
+        Verify that async completion events include the full response payload (or at least a user-facing message and error context), not just the request_id and type. Clients like Hearth need actionable details to display success/error outcomes to the user.
+      source: copilot:PR#525
+      added: "2026-04-14"
+    - id: gh-hidewindow-wrap
+      category: ui
+      pattern: "exec.Command or exec.CommandContext calling \"gh\" without executil.HideWindow"
+      check: >-
+        All gh subprocess invocations must be wrapped with executil.HideWindow(...) to prevent flashing a console window on Windows
+      source: copilot:PR#525
+      added: "2026-04-14"
+    - id: assert-correlation-fields
+      category: testing
+      pattern: >-
+        Test assertions that check response type but not correlation/tracking fields like RequestID
+      check: >-
+        When testing async or queued responses, verify that correlation fields (e.g. RequestID) are non-empty, not just the response type. A queued response without a usable request ID is a regression that type-only assertions won't catch.
+      source: copilot:PR#525
+      added: "2026-04-14"
+    - id: async-queued-response-request-id
+      category: testing
+      pattern: "Test assertions on IPC responses that return type \"queued\""
+      check: >-
+        Verify that tests for queued IPC responses assert RequestID is non-empty, ensuring clients can correlate the eventual async completion
+      source: copilot:PR#525
+      added: "2026-04-14"
+    - id: ctx-cancel-blocked-read
+      category: concurrency
+      pattern: >-
+        Clearing or extending a connection read deadline before blocking on a read loop that checks ctx.Done() only after data is received
+      check: >-
+        Verify that context cancellation can actually unblock a pending read. If the read has no deadline (or a very long one), a cancelled context will not be observed until the next successful read, leaking the goroutine/connection. Ensure a mechanism exists to unblock the read on ctx.Done() — e.g., a helper goroutine that closes the connection or sets an immediate read deadline when the context is cancelled.
+      source: copilot:PR#526
+      added: "2026-04-14"
+    - id: centralize-quit-cleanup
+      category: concurrency
+      pattern: Multiple code paths return tea.Quit or terminate the application
+      check: >-
+        Verify that all quit/exit paths perform the same cleanup (closing subscriptions, IPC connections, goroutines) rather than only the main quit handler. Centralize shutdown logic so early-return quit paths do not skip resource cleanup.
+      source: copilot:PR#526
+      added: "2026-04-14"
+    - id: no-duplicate-git-pointer-parsing
+      category: style
+      pattern: >-
+        Multiple functions that read a .git file, parse the gitdir: prefix, resolve relative paths, or stat the target directory
+      check: >-
+        Extract a shared helper for parsing and validating .git file gitdir pointers instead of duplicating the read-parse-resolve-stat logic in multiple functions
+      source: copilot:PR#527
+      added: "2026-04-14"
+    - id: retry-directory-removal
+      category: error-handling
+      pattern: os.RemoveAll used to delete worktree or temporary directories
+      check: >-
+        Verify that directory removal uses retry-with-backoff rather than a single os.RemoveAll call, especially on Windows where file locking can cause transient deletion failures. If cleanup fails after retries, the operation should fail rather than proceeding with a stale directory.
+      source: copilot:PR#527
+      added: "2026-04-14"
+    - id: factor-shared-test-setup
+      category: testing
+      pattern: >-
+        Multiple test functions in the same file repeat similar repository or environment initialization sequences (e.g., creating temp dirs, running git init, configuring git, writing files, committing)
+      check: >-
+        Verify that repeated test setup logic is extracted into a shared test helper function (with t.Helper()) rather than duplicated inline across test cases, to reduce duplication and make future test additions less error-prone
+      source: copilot:PR#527
+      added: "2026-04-14"
+    - id: smith-spawn-assumes-worktree
+      category: error-handling
+      pattern: >-
+        Adding precondition checks or guards to smith.SpawnWithProvider or similar shared entrypoints
+      check: >-
+        Verify that new guards on Smith spawn paths account for all callers, including non-repo contexts (schematic temp dirs, triage temp dirs) where no .git worktree linkage exists. Guards should distinguish 'inside a repo but wrong directory' from 'intentionally not a repo'.
+      source: copilot:PR#527
+      added: "2026-04-14"
+    - id: context-aware-backoff-sleep
+      category: concurrency
+      pattern: >-
+        Functions using time.Sleep for retry backoff that receive or could receive a context.Context
+      check: >-
+        Verify that retry/backoff loops honor context cancellation by using a timer with select on ctx.Done() instead of bare time.Sleep, so the operation can abort promptly when the caller's context is cancelled (e.g. during shutdown)
+      source: copilot:PR#527
+      added: "2026-04-14"
+    - id: cleanup-retry-consistency
+      category: error-handling
+      pattern: >-
+        Cleanup or removal logic that uses a single os.RemoveAll without retry when the codebase already has retry/backoff removal helpers
+      check: >-
+        Verify that cleanup paths reuse existing retry/backoff removal logic instead of single-shot os.RemoveAll, especially on Windows where file locking can cause transient deletion failures
+      source: copilot:PR#527
+      added: "2026-04-14"
+    - id: windows-junction-detection
+      category: other
+      pattern: Code that checks for symlinks using os.ModeSymlink on file mode bits
+      check: >-
+        Verify that Windows junctions (reparse points) are also detected, not just os.ModeSymlink. On Windows, junctions created with mklink /J do not set ModeSymlink. Use FILE_ATTRIBUTE_REPARSE_POINT via golang.org/x/sys/windows or equivalent platform-specific detection.
+      source: copilot:PR#528
+      added: "2026-04-14"
+    - id: windows-junction-not-symlink
+      category: testing
+      pattern: >-
+        Test code using os.Symlink for node_modules or directory links that should work cross-platform
+      check: >-
+        On Windows, os.Symlink for directories requires elevated privileges or Developer Mode. Use junctions (mklink /J) instead to match production behavior. Either create a junction on Windows or skip the test with a clear message explaining why.
+      source: copilot:PR#528
+      added: "2026-04-14"
+    - id: test-platform-fidelity
+      category: testing
+      pattern: >-
+        Test creates symlinks or filesystem structures to simulate platform-specific behavior (e.g., os.Symlink for Windows junctions)
+      check: >-
+        Verify that tests for platform-specific behavior use the actual platform primitive (e.g., junctions on Windows via mklink /J) rather than a cross-platform approximation (e.g., os.Symlink), or clearly document that the test only covers the approximation
+      source: copilot:PR#528
+      added: "2026-04-14"
