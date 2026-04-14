@@ -29,30 +29,55 @@ func TestSanitizePath(t *testing.T) {
 	}
 }
 
+// runGit runs a git command in dir and fails the test on error.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+	}
+}
+
+// initBareRemoteCloneWithInitialCommit creates a bare remote repository and a
+// clone of it with an initial commit pushed to origin/main. Returns the paths
+// of the bare remote and the clone (anvil) directory.
+func initBareRemoteCloneWithInitialCommit(t *testing.T) (remoteDir, cloneDir string) {
+	t.Helper()
+
+	remoteDir = t.TempDir()
+	runGit(t, remoteDir, "init", "--bare", "--initial-branch=main")
+
+	cloneDir = t.TempDir()
+	runGit(t, cloneDir, "clone", remoteDir, ".")
+	runGit(t, cloneDir, "config", "user.email", "test@example.com")
+	runGit(t, cloneDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(cloneDir, "README"), []byte("test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, cloneDir, "add", "README")
+	runGit(t, cloneDir, "commit", "-m", "init")
+	runGit(t, cloneDir, "push", "origin", "main")
+
+	return remoteDir, cloneDir
+}
+
 // initTestRepo creates a minimal git repository in dir with one commit on
 // the given branch. It configures a local user identity to avoid relying on
 // global git config (which may be absent in CI).
 func initTestRepo(t *testing.T, dir, branch string) {
 	t.Helper()
-	run := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	run("init", "--initial-branch="+branch)
-	run("config", "user.email", "test@example.com")
-	run("config", "user.name", "Test")
+	runGit(t, dir, "init", "--initial-branch="+branch)
+	runGit(t, dir, "config", "user.email", "test@example.com")
+	runGit(t, dir, "config", "user.name", "Test")
 	// Create an initial commit so HEAD is resolvable.
 	readme := filepath.Join(dir, "README")
 	if err := os.WriteFile(readme, []byte("test\n"), 0o644); err != nil {
 		t.Fatalf("writing README: %v", err)
 	}
-	run("add", "README")
-	run("commit", "-m", "init")
+	runGit(t, dir, "add", "README")
+	runGit(t, dir, "commit", "-m", "init")
 }
 
 func TestCurrentBranch_OnMain(t *testing.T) {
@@ -203,31 +228,7 @@ func TestVerifyAndRecoverMain_RecoveryFails(t *testing.T) {
 // commits made by a previous pipeline run and resets the branch back to the
 // base ref (origin/main).
 func TestCreateWithOptions_ResetBranch(t *testing.T) {
-	// Set up a "remote" bare repo with one commit on main.
-	remoteDir := t.TempDir()
-	run := func(dir string, args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
-		}
-	}
-	run(remoteDir, "init", "--bare", "--initial-branch=main")
-
-	// Clone the bare repo to serve as our "anvil".
-	anvilDir := t.TempDir()
-	run(anvilDir, "clone", remoteDir, ".")
-	run(anvilDir, "config", "user.email", "test@example.com")
-	run(anvilDir, "config", "user.name", "Test")
-	readme := filepath.Join(anvilDir, "README")
-	if err := os.WriteFile(readme, []byte("initial\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	run(anvilDir, "add", "README")
-	run(anvilDir, "commit", "-m", "init")
-	run(anvilDir, "push", "origin", "main")
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
 
 	// Record the base commit hash (this is origin/main).
 	baseHash := gitOutput(t, anvilDir, "rev-parse", "origin/main")
@@ -245,9 +246,9 @@ func TestCreateWithOptions_ResetBranch(t *testing.T) {
 	if err := os.WriteFile(badFile, []byte("junk\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run(wt.Path, "add", "bad-change.txt")
-	run(wt.Path, "commit", "-m", "bad commit from failed smith")
-	run(wt.Path, "push", "origin", wt.Branch)
+	runGit(t, wt.Path, "add", "bad-change.txt")
+	runGit(t, wt.Path, "commit", "-m", "bad commit from failed smith")
+	runGit(t, wt.Path, "push", "origin", wt.Branch)
 
 	badHash := gitOutput(t, wt.Path, "rev-parse", "HEAD")
 	if badHash == baseHash {
@@ -287,31 +288,7 @@ func TestCreateWithOptions_ResetBranch(t *testing.T) {
 // the PR that was just created. Remote branch cleanup is handled by GitHub's
 // auto-delete setting or Bellows after merge.
 func TestRemove_DoesNotDeleteRemoteBranch(t *testing.T) {
-	// Set up a bare "remote" repo.
-	remoteDir := t.TempDir()
-	run := func(dir string, args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
-		}
-	}
-	run(remoteDir, "init", "--bare", "--initial-branch=main")
-
-	// Clone the bare repo as our anvil.
-	anvilDir := t.TempDir()
-	run(anvilDir, "clone", remoteDir, ".")
-	run(anvilDir, "config", "user.email", "test@example.com")
-	run(anvilDir, "config", "user.name", "Test")
-	readme := filepath.Join(anvilDir, "README")
-	if err := os.WriteFile(readme, []byte("initial\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	run(anvilDir, "add", "README")
-	run(anvilDir, "commit", "-m", "init")
-	run(anvilDir, "push", "origin", "main")
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
 
 	// Create a worktree (simulates the pipeline creating the bead branch).
 	mgr := NewManager()
@@ -322,7 +299,7 @@ func TestRemove_DoesNotDeleteRemoteBranch(t *testing.T) {
 	}
 
 	// Push the branch to origin (simulates Smith pushing the implementation).
-	run(wt.Path, "push", "-u", "origin", wt.Branch)
+	runGit(t, wt.Path, "push", "-u", "origin", wt.Branch)
 
 	// Verify the remote branch exists before Remove().
 	remotesBefore := gitOutput(t, anvilDir, "ls-remote", "--heads", "origin", wt.Branch)
@@ -339,6 +316,123 @@ func TestRemove_DoesNotDeleteRemoteBranch(t *testing.T) {
 	remotesAfter := gitOutput(t, anvilDir, "ls-remote", "--heads", "origin", wt.Branch)
 	if remotesAfter == "" {
 		t.Errorf("Remove() deleted remote branch %q — this breaks PR creation (regression: Forge-0mmb)", wt.Branch)
+	}
+}
+
+func TestIsValidWorktree_MissingGitFile(t *testing.T) {
+	dir := t.TempDir()
+	// Empty directory — no .git file at all.
+	if isValidWorktree(context.Background(), dir) {
+		t.Error("isValidWorktree should return false for directory without .git file")
+	}
+}
+
+func TestIsValidWorktree_GitDirectory(t *testing.T) {
+	dir := t.TempDir()
+	// Create a .git directory (like a full repo clone, not a worktree).
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if isValidWorktree(context.Background(), dir) {
+		t.Error("isValidWorktree should return false when .git is a directory")
+	}
+}
+
+func TestIsValidWorktree_BadGitFileContent(t *testing.T) {
+	dir := t.TempDir()
+	// Create a .git file with invalid content.
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("not a gitdir pointer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if isValidWorktree(context.Background(), dir) {
+		t.Error("isValidWorktree should return false when .git file has bad content")
+	}
+}
+
+func TestIsValidWorktree_GitFilePointsToNonexistent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /nonexistent/path"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if isValidWorktree(context.Background(), dir) {
+		t.Error("isValidWorktree should return false when .git file points to nonexistent gitdir")
+	}
+}
+
+func TestIsValidWorktree_RealWorktree(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	mgr := NewManager()
+	wt, err := mgr.CreateWithOptions(context.Background(), anvilDir, "valid-test", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+
+	if !isValidWorktree(context.Background(), wt.Path) {
+		t.Error("isValidWorktree should return true for a real worktree")
+	}
+}
+
+func TestValidateWorktreeDir_NonRepoTempDir(t *testing.T) {
+	// A temp dir outside any git repo should be allowed — schematic/wicket use
+	// os.MkdirTemp dirs for non-repo Smith runs.
+	dir := t.TempDir()
+	if err := ValidateWorktreeDir(dir); err != nil {
+		t.Errorf("ValidateWorktreeDir should pass for a temp dir outside any repo, got: %v", err)
+	}
+}
+
+func TestValidateWorktreeDir_InsideRepoMissingGitFile(t *testing.T) {
+	// A subdirectory inside a git repo (but without its own .git file) must be
+	// rejected — git commands would resolve to the parent repo's checkout.
+	repoDir := t.TempDir()
+	initTestRepo(t, repoDir, "main")
+
+	subDir := filepath.Join(repoDir, "subdir")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorktreeDir(subDir); err == nil {
+		t.Error("ValidateWorktreeDir should return error for a subdir inside a repo without a worktree .git file")
+	}
+}
+
+func TestVerifyWorktreeGitFile_ValidWorktree(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	mgr := NewManager()
+	wt, err := mgr.CreateWithOptions(context.Background(), anvilDir, "verify-test", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+
+	if err := ValidateWorktreeDir(wt.Path); err != nil {
+		t.Errorf("ValidateWorktreeDir should succeed for a real worktree, got: %v", err)
+	}
+}
+
+func TestCreateWithOptions_StaleDirectoryRemoved(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	// Create a stale .workers/stale-test/ directory without a .git file.
+	staleDir := filepath.Join(anvilDir, ".workers", "stale-test")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Add some junk files to simulate the bug scenario.
+	if err := os.MkdirAll(filepath.Join(staleDir, ".forge-logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager()
+	wt, err := mgr.CreateWithOptions(context.Background(), anvilDir, "stale-test", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions should succeed after removing stale dir: %v", err)
+	}
+
+	// Verify the new worktree is valid.
+	if err := ValidateWorktreeDir(wt.Path); err != nil {
+		t.Errorf("new worktree should be valid after stale directory removal: %v", err)
 	}
 }
 
