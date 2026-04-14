@@ -560,6 +560,14 @@ func (c *Client) Subscribe(ctx context.Context) <-chan Event {
 		// block indefinitely waiting for the next pushed event.
 		_ = c.conn.SetReadDeadline(time.Time{})
 
+		// When ctx is cancelled, close the connection to unblock scanner.Scan().
+		// Without this, the goroutine would only check ctx.Done() after a line
+		// is read, which may never happen if no events arrive.
+		go func() {
+			<-ctx.Done()
+			c.conn.Close()
+		}()
+
 		scanner := bufio.NewScanner(c.conn)
 		scanner.Buffer(make([]byte, 64*1024), 64*1024)
 

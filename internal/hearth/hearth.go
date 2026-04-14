@@ -617,6 +617,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.orphanDialogForm != nil {
 		if k, ok := msg.(tea.KeyMsg); ok {
 			if k.Type == tea.KeyCtrlC || k.String() == "ctrl+c" {
+				m.cleanupAsyncSubscription()
 				return m, tea.Quit
 			}
 			if k.Type == tea.KeyEsc {
@@ -783,6 +784,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showLogViewer {
 			switch msg.String() {
 			case "ctrl+c":
+				m.cleanupAsyncSubscription()
 				return m, tea.Quit
 			case "q", "esc":
 				m.showLogViewer = false
@@ -798,6 +800,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showDescriptionViewer {
 			switch msg.String() {
 			case "ctrl+c":
+				m.cleanupAsyncSubscription()
 				return m, tea.Quit
 			case "q", "esc":
 				m.showDescriptionViewer = false
@@ -813,6 +816,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showNotesOverlay {
 			switch msg.String() {
 			case "ctrl+c":
+				m.cleanupAsyncSubscription()
 				return m, tea.Quit
 			case "esc":
 				m.showNotesOverlay = false
@@ -856,6 +860,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			switch msg.String() {
 			case "ctrl+c":
+				m.cleanupAsyncSubscription()
 				return m, tea.Quit
 			case "p", "q", "esc":
 				m.showPRPanel = false
@@ -887,6 +892,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.eventFilterActive {
 			switch msg.String() {
 			case "ctrl+c":
+				m.cleanupAsyncSubscription()
 				return m, tea.Quit
 			case "esc":
 				m.eventFilterActive = false
