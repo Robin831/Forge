@@ -629,12 +629,12 @@ func isNodeModulesLinked(dir string) bool {
 	if err != nil {
 		return false
 	}
-	return info.Mode()&os.ModeSymlink != 0
+	return info.Mode()&os.ModeSymlink != 0 || isReparsePoint(info)
 }
 
-// isDestructiveNpmInstall returns true if the step would run a command that
-// wipes node_modules before installing (npm ci, npm clean-install, pnpm setup
-// with --force, etc.). These are dangerous when node_modules is a junction.
+// isDestructiveNpmInstall returns true if the step would run an npm command
+// that wipes node_modules before installing (currently npm ci and
+// npm clean-install). These are dangerous when node_modules is a junction.
 func isDestructiveNpmInstall(step Step) bool {
 	base := filepath.Base(step.Command)
 	base = strings.TrimSuffix(base, ".cmd")

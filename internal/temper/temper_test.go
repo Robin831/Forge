@@ -562,13 +562,13 @@ func TestIsNodeModulesLinked_RealDir(t *testing.T) {
 	assert.False(t, isNodeModulesLinked(dir), "real directory should not be detected as linked")
 }
 
-func TestIsNodeModulesLinked_Symlink(t *testing.T) {
+func TestIsNodeModulesLinked_Linked(t *testing.T) {
 	dir := t.TempDir()
 	target := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(target, "node_modules"), 0o755))
-	require.NoError(t, os.Symlink(filepath.Join(target, "node_modules"), filepath.Join(dir, "node_modules")))
+	createTestDirLink(t, filepath.Join(target, "node_modules"), filepath.Join(dir, "node_modules"))
 
-	assert.True(t, isNodeModulesLinked(dir), "symlink should be detected as linked")
+	assert.True(t, isNodeModulesLinked(dir), "symlink/junction should be detected as linked")
 }
 
 func TestIsNodeModulesLinked_Missing(t *testing.T) {
@@ -586,7 +586,7 @@ func TestRun_BlocksDestructiveNpmWithJunction(t *testing.T) {
 	dir := t.TempDir()
 	target := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(target, "node_modules"), 0o755))
-	require.NoError(t, os.Symlink(filepath.Join(target, "node_modules"), filepath.Join(dir, "node_modules")))
+	createTestDirLink(t, filepath.Join(target, "node_modules"), filepath.Join(dir, "node_modules"))
 
 	cfg := Config{
 		Steps: []Step{
