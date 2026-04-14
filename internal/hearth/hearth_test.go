@@ -1176,10 +1176,10 @@ func TestQueueActionMenuLabelCallsOnTagBead(t *testing.T) {
 		{BeadID: "bd-3", Anvil: "forge", Section: "unlabeled"},
 	}
 	m.queueVP = scrollViewport{cursor: 0}
-	m.OnTagBead = func(beadID, anvil string) error {
+	m.OnTagBead = func(beadID, anvil string) (string, error) {
 		taggedBead = beadID
 		taggedAnvil = anvil
-		return nil
+		return "", nil
 	}
 	m.rebuildQueueNav()
 	// Open the menu
@@ -1218,8 +1218,8 @@ func TestQueueActionMenuLabelOnTagBeadError(t *testing.T) {
 		{BeadID: "bd-4", Anvil: "forge", Section: "unlabeled"},
 	}
 	m.queueVP = scrollViewport{cursor: 0}
-	m.OnTagBead = func(beadID, anvil string) error {
-		return errors.New("network error")
+	m.OnTagBead = func(beadID, anvil string) (string, error) {
+		return "", errors.New("network error")
 	}
 	m.rebuildQueueNav()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1245,10 +1245,10 @@ func TestQueueActionMenuCloseCallsOnCloseBead(t *testing.T) {
 		{BeadID: "bd-close-1", Anvil: "forge", Section: "unlabeled"},
 	}
 	m.queueVP = scrollViewport{cursor: 0}
-	m.OnCloseBead = func(beadID, anvil string) error {
+	m.OnCloseBead = func(beadID, anvil string) (string, error) {
 		closedBead = beadID
 		closedAnvil = anvil
-		return nil
+		return "", nil
 	}
 	m.rebuildQueueNav()
 	// Open the menu
@@ -1288,8 +1288,8 @@ func TestQueueActionMenuCloseOnCloseBeadError(t *testing.T) {
 		{BeadID: "bd-close-2", Anvil: "forge", Section: "unlabeled"},
 	}
 	m.queueVP = scrollViewport{cursor: 0}
-	m.OnCloseBead = func(beadID, anvil string) error {
-		return errors.New("bd close failed")
+	m.OnCloseBead = func(beadID, anvil string) (string, error) {
+		return "", errors.New("bd close failed")
 	}
 	m.rebuildQueueNav()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1551,7 +1551,7 @@ func TestExecuteAction_RetrySuccess_DataNil_ReturnsNil(t *testing.T) {
 	target := NeedsAttentionItem{BeadID: "forge-1", Anvil: "test"}
 	m.actionTarget = &target
 	m.needsAttention = []NeedsAttentionItem{target}
-	m.OnRetryBead = func(_, _ string, _ int) error { return nil }
+	m.OnRetryBead = func(_, _ string, _ int) (string, error) { return "", nil }
 
 	cmd := m.executeAction(ActionRetry)
 	if cmd != nil {
@@ -1583,7 +1583,7 @@ func TestExecuteAction_RetryError_ItemNotRemoved(t *testing.T) {
 	target := NeedsAttentionItem{BeadID: "forge-3", Anvil: "test"}
 	m.actionTarget = &target
 	m.needsAttention = []NeedsAttentionItem{target}
-	m.OnRetryBead = func(_, _ string, _ int) error { return errors.New("retry failed") }
+	m.OnRetryBead = func(_, _ string, _ int) (string, error) { return "", errors.New("retry failed") }
 
 	m.executeAction(ActionRetry)
 	if len(m.needsAttention) != 1 {
@@ -1612,7 +1612,7 @@ func TestExecuteAction_NonBeadPR_RetryStatusUsesTitle(t *testing.T) {
 	target := NeedsAttentionItem{BeadID: "", Anvil: "test", PRID: 5, Title: "warden-learn/forge"}
 	m.actionTarget = &target
 	m.needsAttention = []NeedsAttentionItem{target}
-	m.OnRetryBead = func(_, _ string, _ int) error { return nil }
+	m.OnRetryBead = func(_, _ string, _ int) (string, error) { return "", nil }
 
 	m.executeAction(ActionRetry)
 
@@ -1647,7 +1647,7 @@ func TestExecuteAction_NonBeadPR_RetryErrorStatusUsesTitle(t *testing.T) {
 	target := NeedsAttentionItem{BeadID: "", Anvil: "test", PRID: 7, Title: "warden-learn/forge"}
 	m.actionTarget = &target
 	m.needsAttention = []NeedsAttentionItem{target}
-	m.OnRetryBead = func(_, _ string, _ int) error { return errors.New("reset failed") }
+	m.OnRetryBead = func(_, _ string, _ int) (string, error) { return "", errors.New("reset failed") }
 
 	m.executeAction(ActionRetry)
 
@@ -3099,11 +3099,11 @@ func TestOpenNotesOverlayFromNeedsAttention(t *testing.T) {
 func TestSubmitNotes(t *testing.T) {
 	var capturedID, capturedAnvil, capturedNotes string
 	m := NewModel(nil)
-	m.OnAppendNotes = func(beadID, anvil, notes string) error {
+	m.OnAppendNotes = func(beadID, anvil, notes string) (string, error) {
 		capturedID = beadID
 		capturedAnvil = anvil
 		capturedNotes = notes
-		return nil
+		return "", nil
 	}
 	m.openNotesOverlay("Forge-1", "test-anvil", "Title")
 	m.notesTA.SetValue("These are my notes")

@@ -10,6 +10,8 @@
 package hearth
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -30,6 +32,7 @@ import (
 	"github.com/mattn/go-runewidth"
 
 	"github.com/Robin831/Forge/internal/ingot"
+	"github.com/Robin831/Forge/internal/ipc"
 )
 
 // Panel identifies a TUI panel.
@@ -298,6 +301,25 @@ type OrphanResolveResultMsg struct {
 	Err    error
 }
 
+// pendingOp describes an in-flight async IPC operation awaiting completion.
+type pendingOp struct {
+	Description string    // e.g. "Tagging Forge-abc1"
+	StartedAt   time.Time // for timeout detection
+}
+
+// AsyncCompletionMsg is delivered when a daemon async_complete event is received.
+type AsyncCompletionMsg struct {
+	RequestID string
+	Success   bool
+	Message   string
+}
+
+// asyncSubscriptionStartedMsg signals that the event subscription is ready.
+type asyncSubscriptionStartedMsg struct {
+	events <-chan ipc.Event
+	cancel context.CancelFunc
+}
+
 // Model is the Bubbletea model for the Hearth TUI.
 type Model struct {
 	// Panels
@@ -320,10 +342,12 @@ type Model struct {
 
 	// Callback for stopping a bead entirely: kills worker, sets clarification,
 	// releases to open (set by the caller).
-	OnStopBead func(beadID, anvil string) error
+	// Returns (requestID, error) — requestID is non-empty when the daemon queued
+	// the operation for async processing.
+	OnStopBead func(beadID, anvil string) (string, error)
 
 	// Callbacks for Needs Attention actions (set by the caller)
-	OnRetryBead     func(beadID, anvil string, prID int) error
+	OnRetryBead     func(beadID, anvil string, prID int) (string, error)
 	OnDismissBead   func(beadID, anvil string, prID int) error
 	OnViewLogs      func(beadID string) (logPath string, lines []string)
 	OnWardenRerun   func(beadID, anvil string) error
@@ -332,10 +356,10 @@ type Model struct {
 
 	// Callback for tagging a bead (set by the caller).
 	// Called with (beadID, anvil) when user presses 'l' on an unlabeled bead.
-	OnTagBead func(beadID, anvil string) error
+	OnTagBead func(beadID, anvil string) (string, error)
 
 	// Callback for closing a bead (set by the caller).
-	OnCloseBead func(beadID, anvil string) error
+	OnCloseBead func(beadID, anvil string) (string, error)
 
 	// Callback for force-running a bead independently (set by the caller).
 	// Dispatches via bd show, bypassing bd ready and crucible/parent checks.
@@ -346,7 +370,7 @@ type Model struct {
 
 	// Callback for PR panel actions (set by the caller).
 	// Called with (prID, prNumber, anvil, beadID, branch, action).
-	OnPRAction func(prID, prNumber int, anvil, beadID, branch, action string) error
+	OnPRAction func(prID, prNumber int, anvil, beadID, branch, action string) (string, error)
 
 	// Callback for triggering PR reconciliation with GitHub (set by the caller).
 	OnReconcilePRs func() error
@@ -365,7 +389,7 @@ type Model struct {
 
 	// Callback for appending notes to a bead via bd update --append-notes (set by caller).
 	// Called with (beadID, anvil, notes).
-	OnAppendNotes func(beadID, anvil, notes string) error
+	OnAppendNotes func(beadID, anvil, notes string) (string, error)
 
 	// State
 	focused          Panel
@@ -451,6 +475,12 @@ type Model struct {
 	statusMsg        string
 	statusMsgTime    time.Time
 	statusMsgIsError bool
+
+	// Async IPC tracking — maps request IDs to pending operation descriptions
+	// so completion events can update the status line.
+	pendingAsync    map[string]pendingOp
+	asyncEvents     <-chan ipc.Event
+	asyncCancelFunc context.CancelFunc
 
 	// Cooldown for manual Wicket scans — prevents rapid repeated triggers.
 	wicketScanCooldownUntil time.Time
@@ -572,6 +602,7 @@ func (m *Model) Init() tea.Cmd {
 		cmds = append(cmds, Tick())
 		cmds = append(cmds, FetchAll(m.data, m.logCache))
 		cmds = append(cmds, FetchDaemonHealth())
+		cmds = append(cmds, startAsyncSubscription())
 	}
 
 	return tea.Batch(cmds...)
@@ -888,6 +919,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "q", "ctrl+c":
+			m.cleanupAsyncSubscription()
 			return m, tea.Quit
 
 		case "tab":
@@ -959,8 +991,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.workerTable.Cursor() < len(m.workers) {
 				w := m.workers[m.workerTable.Cursor()]
 				if m.OnStopBead != nil {
-					if err := m.OnStopBead(w.BeadID, w.Anvil); err != nil {
+					reqID, err := m.OnStopBead(w.BeadID, w.Anvil)
+					if err != nil {
 						m.setStatus(fmt.Sprintf("Stop failed: %v", err), true)
+					} else if reqID != "" {
+						m.setStatus(fmt.Sprintf("Stopping %s…", w.BeadID), false)
+						m.trackPending(reqID, fmt.Sprintf("Stopping %s", w.BeadID))
 					} else {
 						m.setStatus(fmt.Sprintf("Stopped bead %s", w.BeadID), false)
 					}
@@ -1612,6 +1648,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				m.setStatus(fmt.Sprintf("Failed to close %s: %v", msg.BeadID, msg.Err), true)
 			}
+		} else if msg.RequestID != "" {
+			var desc string
+			switch msg.Action {
+			case "tag":
+				desc = fmt.Sprintf("Tagging %s", msg.BeadID)
+			case "stop":
+				desc = fmt.Sprintf("Stopping %s", msg.BeadID)
+			case "close":
+				desc = fmt.Sprintf("Closing %s", msg.BeadID)
+			default:
+				desc = fmt.Sprintf("%s %s", msg.Action, msg.BeadID)
+			}
+			m.trackPending(msg.RequestID, desc)
 		} else {
 			switch msg.Action {
 			case "tag":
@@ -1661,6 +1710,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			errSummary := strings.SplitN(msg.Err.Error(), "\n", 2)[0]
 			m.setStatus(fmt.Sprintf("PR #%d %s failed: %s", msg.PRNumber, msg.Action, errSummary), true)
+		} else if msg.RequestID != "" {
+			m.trackPending(msg.RequestID, fmt.Sprintf("PR #%d: %s", msg.PRNumber, msg.Action))
 		} else {
 			m.setStatus(fmt.Sprintf("PR #%d: %s dispatched", msg.PRNumber, msg.Action), false)
 		}
@@ -1668,14 +1719,46 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case NotesResultMsg:
 		if msg.Err != nil {
 			m.setStatus(fmt.Sprintf("Failed to save notes for %s: %v", msg.BeadID, msg.Err), true)
-		} else {
-			m.setStatus(fmt.Sprintf("Notes saved for %s", msg.BeadID), false)
-			// Success: hide and clear the notes overlay ONLY if it matches the current target.
+		} else if msg.RequestID != "" {
+			m.trackPending(msg.RequestID, fmt.Sprintf("Saving notes for %s", msg.BeadID))
 			if m.notesTarget != nil && m.notesTarget.BeadID == msg.BeadID && m.notesTarget.Anvil == msg.Anvil {
 				m.showNotesOverlay = false
 				m.notesTarget = nil
 				m.notesTA = textarea.Model{}
 			}
+		} else {
+			m.setStatus(fmt.Sprintf("Notes saved for %s", msg.BeadID), false)
+			if m.notesTarget != nil && m.notesTarget.BeadID == msg.BeadID && m.notesTarget.Anvil == msg.Anvil {
+				m.showNotesOverlay = false
+				m.notesTarget = nil
+				m.notesTA = textarea.Model{}
+			}
+		}
+
+	case asyncSubscriptionStartedMsg:
+		m.asyncEvents = msg.events
+		m.asyncCancelFunc = msg.cancel
+		return m, waitForAsyncEvent(msg.events)
+
+	case AsyncCompletionMsg:
+		if op, ok := m.pendingAsync[msg.RequestID]; ok {
+			delete(m.pendingAsync, msg.RequestID)
+			if msg.Success {
+				detail := msg.Message
+				if detail == "" {
+					detail = "done"
+				}
+				m.setStatus(fmt.Sprintf("%s: %s", op.Description, detail), false)
+			} else {
+				detail := msg.Message
+				if detail == "" {
+					detail = "unknown error"
+				}
+				m.setStatus(fmt.Sprintf("%s failed: %s", op.Description, detail), true)
+			}
+		}
+		if m.asyncEvents != nil {
+			return m, waitForAsyncEvent(m.asyncEvents)
 		}
 
 	case TickMsg:
@@ -1686,6 +1769,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// previous refresh is still in flight.
 		if m.data != nil {
 			m.healthTickCount++
+			m.expirePendingOps()
 			cmds := []tea.Cmd{Tick()}
 			if !m.refreshing {
 				m.refreshing = true
@@ -1810,6 +1894,12 @@ func (m *Model) View() string {
 		} else {
 			footerText = statusMsgStyle.Render(m.statusMsg)
 		}
+	} else if len(m.pendingAsync) > 0 {
+		var parts []string
+		for _, op := range m.pendingAsync {
+			parts = append(parts, op.Description+"…")
+		}
+		footerText = statusMsgStyle.Render(strings.Join(parts, " | "))
 	}
 	footer := footerStyle.Width(m.width).Render(footerText)
 	footerH := lipgloss.Height(footer)
@@ -2249,8 +2339,16 @@ func (m *Model) executeAction(choice ActionMenuChoice) tea.Cmd {
 	switch choice {
 	case ActionRetry:
 		if m.OnRetryBead != nil {
-			if err := m.OnRetryBead(bead.BeadID, bead.Anvil, bead.PRID); err != nil {
+			reqID, err := m.OnRetryBead(bead.BeadID, bead.Anvil, bead.PRID)
+			if err != nil {
 				m.setStatus(fmt.Sprintf("Failed to retry %s: %v", label, err), true)
+			} else if reqID != "" {
+				m.trackPending(reqID, fmt.Sprintf("Retrying %s", label))
+				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil, bead.PRID)
+				if m.data != nil {
+					return FetchNeedsAttention(m.data)
+				}
+				return nil
 			} else {
 				m.setStatus(fmt.Sprintf("Retry queued for %s", label), false)
 				m.removeNeedsAttentionItem(bead.BeadID, bead.Anvil, bead.PRID)
@@ -2491,9 +2589,10 @@ type notesTarget struct {
 
 // NotesResultMsg is delivered asynchronously when an append-notes action completes.
 type NotesResultMsg struct {
-	BeadID string
-	Anvil  string
-	Err    error
+	BeadID    string
+	Anvil     string
+	Err       error
+	RequestID string
 }
 
 // CrucibleActionResultMsg is delivered asynchronously when a crucible action completes.
@@ -2579,9 +2678,10 @@ func (m *Model) executeCrucibleAction(choice CrucibleActionMenuChoice) tea.Cmd {
 
 // QueueActionResultMsg is delivered asynchronously when a queue action completes.
 type QueueActionResultMsg struct {
-	BeadID string
-	Action string // "tag", "force_run", "close", or "stop"
-	Err    error
+	BeadID    string
+	Action    string // "tag", "force_run", "close", or "stop"
+	Err       error
+	RequestID string // non-empty when the action was queued for async processing
 }
 
 // executeQueueAction returns a tea.Cmd that runs the queue action asynchronously,
@@ -2618,7 +2718,8 @@ func (m *Model) tagSelectedQueueItem() tea.Cmd {
 	beadID, anvil := item.BeadID, item.Anvil
 	cb := m.OnTagBead
 	return func() tea.Msg {
-		return QueueActionResultMsg{BeadID: beadID, Action: "tag", Err: cb(beadID, anvil)}
+		reqID, err := cb(beadID, anvil)
+		return QueueActionResultMsg{BeadID: beadID, Action: "tag", Err: err, RequestID: reqID}
 	}
 }
 
@@ -2636,7 +2737,8 @@ func (m *Model) closeSelectedQueueItem() tea.Cmd {
 	beadID, anvil := item.BeadID, item.Anvil
 	cb := m.OnCloseBead
 	return func() tea.Msg {
-		return QueueActionResultMsg{BeadID: beadID, Action: "close", Err: cb(beadID, anvil)}
+		reqID, err := cb(beadID, anvil)
+		return QueueActionResultMsg{BeadID: beadID, Action: "close", Err: err, RequestID: reqID}
 	}
 }
 // stopSelectedQueueItem stops all processing of the bead stored in queueActionTarget.
@@ -2653,7 +2755,8 @@ func (m *Model) stopSelectedQueueItem() tea.Cmd {
 	beadID, anvil := item.BeadID, item.Anvil
 	cb := m.OnStopBead
 	return func() tea.Msg {
-		return QueueActionResultMsg{BeadID: beadID, Action: "stop", Err: cb(beadID, anvil)}
+		reqID, err := cb(beadID, anvil)
+		return QueueActionResultMsg{BeadID: beadID, Action: "stop", Err: err, RequestID: reqID}
 	}
 }
 
@@ -2864,9 +2967,10 @@ func (m *Model) buildPRActionForm(item *PRItem, choice *PRActionMenuChoice) *huh
 
 // PRActionResultMsg is delivered asynchronously when a PR action IPC call completes.
 type PRActionResultMsg struct {
-	PRNumber int
-	Action   string
-	Err      error
+	PRNumber  int
+	Action    string
+	Err       error
+	RequestID string
 }
 
 // executePRAction dispatches the selected PR action.
@@ -2904,8 +3008,8 @@ func (m *Model) executePRAction(choice PRActionMenuChoice) tea.Cmd {
 	m.setStatus(fmt.Sprintf("PR #%d: %s...", item.PRNumber, action), false)
 
 	return func() tea.Msg {
-		err := m.OnPRAction(item.PRID, item.PRNumber, item.Anvil, item.BeadID, item.Branch, action)
-		return PRActionResultMsg{PRNumber: item.PRNumber, Action: action, Err: err}
+		reqID, err := m.OnPRAction(item.PRID, item.PRNumber, item.Anvil, item.BeadID, item.Branch, action)
+		return PRActionResultMsg{PRNumber: item.PRNumber, Action: action, Err: err, RequestID: reqID}
 	}
 }
 // The choice pointer is bound to the form's value so huh updates it on selection.
@@ -3134,7 +3238,8 @@ func (m *Model) submitNotes() tea.Cmd {
 	cb := m.OnAppendNotes
 	// We do NOT clear showNotesOverlay/notesTA here; we wait for success in Update.
 	return func() tea.Msg {
-		return NotesResultMsg{BeadID: target.BeadID, Anvil: target.Anvil, Err: cb(target.BeadID, target.Anvil, notes)}
+		reqID, err := cb(target.BeadID, target.Anvil, notes)
+		return NotesResultMsg{BeadID: target.BeadID, Anvil: target.Anvil, Err: err, RequestID: reqID}
 	}
 }
 
@@ -5102,4 +5207,85 @@ func isTerminalMsg(msg tea.Msg) bool {
 		return true
 	}
 	return false
+}
+
+// startAsyncSubscription returns a Cmd that connects to the daemon's event
+// stream. On success it delivers an asyncSubscriptionStartedMsg.
+func startAsyncSubscription() tea.Cmd {
+	return func() tea.Msg {
+		client, err := ipc.NewClient()
+		if err != nil {
+			return nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		events := client.Subscribe(ctx)
+		return asyncSubscriptionStartedMsg{events: events, cancel: cancel}
+	}
+}
+
+// waitForAsyncEvent blocks until the next async_complete event arrives on the
+// subscription channel and returns it as an AsyncCompletionMsg.
+func waitForAsyncEvent(events <-chan ipc.Event) tea.Cmd {
+	return func() tea.Msg {
+		for evt := range events {
+			if evt.Type != "async_complete" {
+				continue
+			}
+			var data struct {
+				RequestID string `json:"request_id"`
+				Type      string `json:"type"`
+				Response  struct {
+					Type    string          `json:"type"`
+					Payload json.RawMessage `json:"payload"`
+				} `json:"response"`
+			}
+			if json.Unmarshal(evt.Data, &data) != nil {
+				continue
+			}
+			msg := AsyncCompletionMsg{
+				RequestID: data.RequestID,
+				Success:   data.Response.Type == "ok",
+			}
+			var payload struct{ Message string }
+			if json.Unmarshal(data.Response.Payload, &payload) == nil && payload.Message != "" {
+				msg.Message = payload.Message
+			}
+			return msg
+		}
+		return nil
+	}
+}
+
+// trackPending registers an async operation for status-line correlation.
+func (m *Model) trackPending(requestID, description string) {
+	if requestID == "" {
+		return
+	}
+	if m.pendingAsync == nil {
+		m.pendingAsync = make(map[string]pendingOp)
+	}
+	m.pendingAsync[requestID] = pendingOp{
+		Description: description,
+		StartedAt:   time.Now(),
+	}
+}
+
+const asyncTimeout = 60 * time.Second
+
+// expirePendingOps removes stale pending operations older than asyncTimeout.
+func (m *Model) expirePendingOps() {
+	for id, op := range m.pendingAsync {
+		if time.Since(op.StartedAt) > asyncTimeout {
+			m.setStatus(fmt.Sprintf("%s: timed out", op.Description), true)
+			delete(m.pendingAsync, id)
+		}
+	}
+}
+
+// cleanupAsyncSubscription cancels the event subscription if active.
+func (m *Model) cleanupAsyncSubscription() {
+	if m.asyncCancelFunc != nil {
+		m.asyncCancelFunc()
+		m.asyncCancelFunc = nil
+	}
 }
