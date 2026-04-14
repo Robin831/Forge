@@ -530,6 +530,97 @@ func TestRun_SkipsStepWhenPathsDontMatch(t *testing.T) {
 	assert.True(t, result.Passed)
 }
 
+func TestIsDestructiveNpmInstall_Matches(t *testing.T) {
+	tests := []struct {
+		command string
+		args    []string
+		want    bool
+	}{
+		{"npm", []string{"ci"}, true},
+		{"npm", []string{"clean-install"}, true},
+		{"npm.cmd", []string{"ci"}, true},
+		{"npm.exe", []string{"ci"}, true},
+		{"/usr/bin/npm", []string{"ci"}, true},
+		{"npm", []string{"install"}, false},
+		{"npm", []string{"run", "build"}, false},
+		{"npm", []string{}, false},
+		{"node", []string{"ci"}, false},
+		{"yarn", []string{"install"}, false},
+		{"npx", []string{"ci"}, false},
+	}
+	for _, tt := range tests {
+		step := Step{Command: tt.command, Args: tt.args}
+		got := isDestructiveNpmInstall(step)
+		assert.Equal(t, tt.want, got, "isDestructiveNpmInstall(%q, %v)", tt.command, tt.args)
+	}
+}
+
+func TestIsNodeModulesLinked_RealDir(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "node_modules"), 0o755))
+
+	assert.False(t, isNodeModulesLinked(dir), "real directory should not be detected as linked")
+}
+
+func TestIsNodeModulesLinked_Linked(t *testing.T) {
+	dir := t.TempDir()
+	target := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(target, "node_modules"), 0o755))
+	createTestDirLink(t, filepath.Join(target, "node_modules"), filepath.Join(dir, "node_modules"))
+
+	assert.True(t, isNodeModulesLinked(dir), "symlink/junction should be detected as linked")
+}
+
+func TestIsNodeModulesLinked_Missing(t *testing.T) {
+	dir := t.TempDir()
+	assert.False(t, isNodeModulesLinked(dir), "missing node_modules should return false")
+}
+
+func TestResolveStepDir(t *testing.T) {
+	assert.Equal(t, "/work", resolveStepDir("/work", ""))
+	assert.Equal(t, filepath.Join("/work", "web"), resolveStepDir("/work", "web"))
+	assert.Equal(t, "/absolute/path", resolveStepDir("/work", "/absolute/path"))
+}
+
+func TestRun_BlocksDestructiveNpmWithJunction(t *testing.T) {
+	dir := t.TempDir()
+	target := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(target, "node_modules"), 0o755))
+	createTestDirLink(t, filepath.Join(target, "node_modules"), filepath.Join(dir, "node_modules"))
+
+	cfg := Config{
+		Steps: []Step{
+			{Name: "install", Command: "npm", Args: []string{"ci"}, Timeout: 5 * time.Second},
+			{Name: "build", Command: "echo", Args: []string{"ok"}, Timeout: 5 * time.Second},
+		},
+	}
+
+	result := Run(context.Background(), dir, cfg, nil, "test-bead", "test-anvil")
+
+	require.Len(t, result.Steps, 2)
+	assert.True(t, result.Steps[0].Skipped, "npm ci should be skipped when node_modules is a symlink")
+	assert.True(t, result.Steps[0].Passed, "skipped step should count as passed")
+	assert.Contains(t, result.Steps[0].Output, "Blocked")
+	assert.False(t, result.Steps[1].Skipped, "subsequent steps should still run")
+	assert.True(t, result.Passed)
+}
+
+func TestRun_AllowsNpmCiWithRealNodeModules(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "node_modules"), 0o755))
+
+	cfg := Config{
+		Steps: []Step{
+			{Name: "install", Command: "npm", Args: []string{"ci"}, Timeout: 5 * time.Second},
+		},
+	}
+
+	result := Run(context.Background(), dir, cfg, nil, "test-bead", "test-anvil")
+
+	require.Len(t, result.Steps, 1)
+	assert.False(t, result.Steps[0].Skipped, "npm ci should not be skipped with real node_modules")
+}
+
 func TestRun_NilChangedFiles_NeverSkips(t *testing.T) {
 	cfg := Config{
 		Steps: []Step{

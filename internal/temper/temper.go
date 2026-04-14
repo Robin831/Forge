@@ -318,6 +318,26 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 			continue
 		}
 
+		// Block destructive npm install commands when node_modules is a
+		// junction/symlink — npm ci does rm -rf node_modules which would
+		// destroy the main checkout's dependencies or fail with EPERM.
+		if isDestructiveNpmInstall(step) {
+			stepDir := resolveStepDir(worktreePath, step.Dir)
+			if isNodeModulesLinked(stepDir) {
+				log.Printf("[temper] Blocking step %q: node_modules is a symlink/junction and %s %s would destroy the linked target", step.Name, step.Command, strings.Join(step.Args, " "))
+				result.Steps = append(result.Steps, StepResult{
+					Name:     step.Name,
+					Command:  fmt.Sprintf("%s %s", step.Command, strings.Join(step.Args, " ")),
+					ExitCode: -1,
+					Output:   fmt.Sprintf("Blocked: node_modules in %s is a symlink or junction pointing to the main checkout. Running %q would destroy the shared node_modules. Remove this step from your temper configuration — dependencies are already available via the junction.", stepDir, step.Command+" "+strings.Join(step.Args, " ")),
+					Passed:   true,
+					Skipped:  true,
+					Optional: step.Optional,
+				})
+				continue
+			}
+		}
+
 		stepResult := runStep(ctx, worktreePath, step)
 		result.Steps = append(result.Steps, stepResult)
 
@@ -589,4 +609,46 @@ func fileExists(dir, name string) bool {
 func hasGlob(dir, pattern string) bool {
 	matches, _ := filepath.Glob(filepath.Join(dir, pattern))
 	return len(matches) > 0
+}
+
+// resolveStepDir returns the absolute working directory for a step.
+func resolveStepDir(worktreePath, stepDir string) string {
+	if stepDir == "" {
+		return worktreePath
+	}
+	if strings.HasPrefix(stepDir, "/") || strings.HasPrefix(stepDir, "\\") || (len(stepDir) >= 2 && stepDir[1] == ':') {
+		return stepDir
+	}
+	return filepath.Join(worktreePath, stepDir)
+}
+
+// isNodeModulesLinked returns true if the node_modules directory in dir is a
+// symlink or junction rather than a real directory.
+func isNodeModulesLinked(dir string) bool {
+	info, err := os.Lstat(filepath.Join(dir, "node_modules"))
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeSymlink != 0 || isReparsePoint(info)
+}
+
+// isDestructiveNpmInstall returns true if the step would run an npm command
+// that wipes node_modules before installing (currently npm ci and
+// npm clean-install). These are dangerous when node_modules is a junction.
+func isDestructiveNpmInstall(step Step) bool {
+	base := filepath.Base(step.Command)
+	base = strings.TrimSuffix(base, ".cmd")
+	base = strings.TrimSuffix(base, ".exe")
+
+	if base != "npm" {
+		return false
+	}
+	if len(step.Args) == 0 {
+		return false
+	}
+	switch step.Args[0] {
+	case "ci", "clean-install":
+		return true
+	}
+	return false
 }
