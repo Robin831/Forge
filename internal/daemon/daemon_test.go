@@ -63,6 +63,7 @@ func TestHandleIPC_RunBead_Errors(t *testing.T) {
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
+		reqTracker:    ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(cfg)
 
@@ -167,6 +168,7 @@ exit 1
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 		runCtx:        context.Background(),
+		reqTracker:    ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(cfg)
 
@@ -320,18 +322,15 @@ exit 1
 		require.NoError(t, err)
 		require.True(t, r.NeedsHuman)
 
-		// Reset via IPC.
+		// Reset via IPC — DB reset is synchronous, bd shelling is async.
 		payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: beadID, Anvil: anvil})
 		resp := d.handleIPC(ipc.Command{
 			Type:    "retry_bead",
 			Payload: payload,
 		})
-		assert.Equal(t, "ok", resp.Type)
-		var msg map[string]string
-		_ = json.Unmarshal(resp.Payload, &msg)
-		assert.Equal(t, "retry state reset", msg["message"])
+		assert.Equal(t, "queued", resp.Type)
 
-		// Verify circuit breaker is cleared.
+		// Verify circuit breaker is cleared (DB reset is synchronous).
 		r, err = db.GetRetry(beadID, anvil)
 		require.NoError(t, err)
 		assert.False(t, r.NeedsHuman)
@@ -365,10 +364,7 @@ exit 1
 			Type:    "retry_bead",
 			Payload: payload,
 		})
-		assert.Equal(t, "ok", resp.Type)
-		var msg map[string]string
-		_ = json.Unmarshal(resp.Payload, &msg)
-		assert.Equal(t, "retry state reset", msg["message"])
+		assert.Equal(t, "queued", resp.Type)
 
 		r, err = db.GetRetry(beadID, anvil)
 		require.NoError(t, err)
@@ -400,7 +396,7 @@ exit 1
 			Type:    "retry_bead",
 			Payload: payload,
 		})
-		assert.Equal(t, "ok", resp.Type)
+		assert.Equal(t, "queued", resp.Type)
 
 		r, err = db.GetRetry(beadID, anvil)
 		require.NoError(t, err)
@@ -565,6 +561,7 @@ func TestHandleIPC_RetryBead(t *testing.T) {
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 		runCtx:        context.Background(),
+		reqTracker:    ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(&config.Config{})
 
@@ -593,10 +590,7 @@ func TestHandleIPC_RetryBead(t *testing.T) {
 
 		payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: "BD-RETRY", Anvil: "anvil-1"})
 		resp := d.handleIPC(ipc.Command{Type: "retry_bead", Payload: payload})
-		assert.Equal(t, "ok", resp.Type)
-		var msg map[string]string
-		_ = json.Unmarshal(resp.Payload, &msg)
-		assert.Equal(t, "retry state reset", msg["message"])
+		assert.Equal(t, "queued", resp.Type)
 
 		r, err := db.GetRetry("BD-RETRY", "anvil-1")
 		require.NoError(t, err)
@@ -1027,6 +1021,7 @@ func TestHandleIPC_TagBead(t *testing.T) {
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 		runCtx:        context.Background(),
+		reqTracker:    ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(&config.Config{
 		Anvils: map[string]config.AnvilConfig{
@@ -1114,10 +1109,7 @@ func TestHandleIPC_TagBead(t *testing.T) {
 
 		payload, _ := json.Marshal(ipc.TagBeadPayload{BeadID: "BEAD-1", Anvil: "test-anvil"})
 		resp := d.handleIPC(ipc.Command{Type: "tag_bead", Payload: payload})
-		assert.Equal(t, "ok", resp.Type)
-		var msg map[string]string
-		_ = json.Unmarshal(resp.Payload, &msg)
-		assert.Contains(t, msg["message"], "forge-ready")
+		assert.Equal(t, "queued", resp.Type)
 	})
 }
 
@@ -1137,6 +1129,7 @@ func TestHandleIPC_CloseBead(t *testing.T) {
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 		runCtx:        context.Background(),
+		reqTracker:    ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(&config.Config{
 		Anvils: map[string]config.AnvilConfig{
@@ -1578,6 +1571,7 @@ func TestHandleIPC_StopBead(t *testing.T) {
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 		runCtx:        context.Background(),
+		reqTracker:    ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(&config.Config{
 		Anvils: map[string]config.AnvilConfig{
@@ -1633,14 +1627,8 @@ func TestHandleIPC_StopBead(t *testing.T) {
 			Reason: "manually stopped by user",
 		})
 		resp := d.handleIPC(ipc.Command{Type: "stop_bead", Payload: payload})
-		// bd is not available in test env, so the release step fails and
-		// returns an error. The important invariants are the DB write and
-		// the active-bead cleanup.
-		var msg map[string]string
-		_ = json.Unmarshal(resp.Payload, &msg)
-		if resp.Type == "error" {
-			assert.Contains(t, msg["message"], "bd release failed", "error should mention bd release")
-		}
+		// bd shelling is now async — the synchronous response is "queued".
+		assert.Equal(t, "queued", resp.Type)
 
 		// Verify clarification_needed was persisted in DB.
 		retry, err := db.GetRetry(beadID, anvil)
