@@ -145,7 +145,10 @@ func TestRequestTracker_Concurrent(t *testing.T) {
 }
 
 func TestQueuedResponseJSON(t *testing.T) {
-	resp := NewQueuedResponse("abc", "queued for processing")
+	resp, err := NewQueuedResponse("abc", "queued for processing")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	data, err := json.Marshal(resp)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
