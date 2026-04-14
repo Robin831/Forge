@@ -454,19 +454,16 @@ func TestUnlinkReparsePoints(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a symlink inside root pointing to target (proxy for a junction).
+	// Create a directory link inside root pointing to target.
+	// On Windows this should use a junction/reparse point; on other platforms, a symlink.
 	symlinkPath := filepath.Join(root, "node_modules")
-	if err := os.Symlink(target, symlinkPath); err != nil {
-		t.Skipf("cannot create symlink (permissions?): %v", err)
+	if err := createDirLink(target, symlinkPath); err != nil {
+		t.Skipf("cannot create directory link: %v", err)
 	}
 
-	// Verify symlink exists.
-	fi, err := os.Lstat(symlinkPath)
-	if err != nil {
+	// Verify the directory link entry exists.
+	if _, err := os.Lstat(symlinkPath); err != nil {
 		t.Fatal(err)
-	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("expected symlink")
 	}
 
 	// Run unlinkReparsePoints.

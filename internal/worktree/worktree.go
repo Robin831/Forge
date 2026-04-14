@@ -565,9 +565,7 @@ func removeWithRetry(ctx context.Context, path string) error {
 	if runtime.GOOS == "windows" {
 		delays = []time.Duration{0, 1 * time.Second, 2 * time.Second, 4 * time.Second}
 	}
-	if err := unlinkReparsePoints(path); err != nil {
-		slog.Warn("unlinking reparse points before removal", "path", path, "error", err)
-	}
+	unlinkReparsePoints(path)
 
 	var lastErr error
 	for i, delay := range delays {
