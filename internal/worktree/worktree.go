@@ -565,6 +565,8 @@ func removeWithRetry(ctx context.Context, path string) error {
 	if runtime.GOOS == "windows" {
 		delays = []time.Duration{0, 1 * time.Second, 2 * time.Second, 4 * time.Second}
 	}
+	unlinkReparsePoints(path)
+
 	var lastErr error
 	for i, delay := range delays {
 		if err := ctx.Err(); err != nil {

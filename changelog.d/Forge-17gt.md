@@ -1,0 +1,2 @@
+category: Fixed
+- **Worktree removal unlinks junctions before recursive delete** - On Windows, os.RemoveAll follows reparse points (junctions/symlinks) into the target directory, causing failures when locked files are encountered. Worktree removal now walks the tree and unlinks all reparse points first, preventing recursive deletion from entering junctioned directories like node_modules. (Forge-17gt)
