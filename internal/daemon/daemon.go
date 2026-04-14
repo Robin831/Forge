@@ -193,8 +193,9 @@ type Daemon struct {
 	vcsProvidersMu sync.RWMutex
 
 	// reqTracker tracks async IPC requests so completions can be correlated
-	// back to the original command.
-	reqTracker *ipc.RequestTracker
+	// back to the original command. Store it by value so Daemon instances
+	// created via direct struct literals still have a usable tracker.
+	reqTracker ipc.RequestTracker
 
 	// labelAdder adds a label to a bead via the bd CLI. Defaults to the real
 	// bd-update implementation; may be replaced in tests to avoid exec.Command.
@@ -291,7 +292,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
 		vcsProviders:  vcsProviders,
-		reqTracker:    ipc.NewRequestTracker("forge-"),
+		reqTracker:    *ipc.NewRequestTracker("forge-"),
 	}
 	d.notifier.Store(notifier)
 	d.dispatcher.Store(dispatcher)
@@ -3164,6 +3165,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", np.Anvil)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
+		if anvilCfg.Path == "" {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", np.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
 
 		reqID, _ := d.reqTracker.Track()
 		go func() {
@@ -3172,7 +3177,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			notesCmd := executil.HideWindow(exec.CommandContext(notesCtx, "bd", "update", np.BeadID, "--append-notes", np.Notes))
 			notesCmd.Dir = anvilCfg.Path
 			if out, err := notesCmd.CombinedOutput(); err != nil {
-				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update %s --notes-file: %v: %s", np.BeadID, err, string(out))})
+				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update %s --append-notes: %v: %s", np.BeadID, err, string(out))})
 				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
 				return
 			}
@@ -3887,7 +3892,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			go func() {
 				closeCtx, closeCancel := context.WithTimeout(d.runCtx, 30*time.Second)
 				defer closeCancel()
-				closeCmd := exec.CommandContext(closeCtx, "gh", "pr", "close", strconv.Itoa(pa.PRNumber))
+				closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "gh", "pr", "close", strconv.Itoa(pa.PRNumber)))
 				closeCmd.Dir = anvilCfg.Path
 				if out, err := closeCmd.CombinedOutput(); err != nil {
 					errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr close failed: %v: %s", err, strings.TrimSpace(string(out)))})
@@ -4184,10 +4189,13 @@ func (d *Daemon) BroadcastEvent(eventType string, data any) {
 // completeAsync records a result in the RequestTracker and broadcasts a
 // daemon event so IPC subscribers (Hearth TUI) can react to the outcome.
 func (d *Daemon) completeAsync(requestID string, resp ipc.Response) {
-	d.reqTracker.Complete(requestID, ipc.CompletionResult{Response: resp})
-	d.BroadcastEvent("async_complete", map[string]string{
+	if !d.reqTracker.Complete(requestID, ipc.CompletionResult{Response: resp}) {
+		slog.Warn("async completion for unknown request id", "request_id", requestID, "response_type", resp.Type)
+	}
+	d.BroadcastEvent("async_complete", map[string]any{
 		"request_id": requestID,
 		"type":       resp.Type,
+		"response":   resp,
 	})
 }
 

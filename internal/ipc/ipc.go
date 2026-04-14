@@ -314,6 +314,9 @@ func NewRequestTracker(prefix string) *RequestTracker {
 func (rt *RequestTracker) Track() (string, <-chan CompletionResult) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	if rt.pending == nil {
+		rt.pending = make(map[string]chan CompletionResult)
+	}
 	rt.idSeq++
 	id := fmt.Sprintf("%s%d-%d", rt.idPrefix, time.Now().UnixMilli(), rt.idSeq)
 	ch := make(chan CompletionResult, 1)

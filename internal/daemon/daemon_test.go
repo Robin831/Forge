@@ -63,7 +63,7 @@ func TestHandleIPC_RunBead_Errors(t *testing.T) {
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
-		reqTracker:    ipc.NewRequestTracker("test-"),
+		reqTracker:    *ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(cfg)
 
@@ -168,7 +168,7 @@ exit 1
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 		runCtx:        context.Background(),
-		reqTracker:    ipc.NewRequestTracker("test-"),
+		reqTracker:    *ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(cfg)
 
@@ -329,6 +329,7 @@ exit 1
 			Payload: payload,
 		})
 		assert.Equal(t, "queued", resp.Type)
+		assert.NotEmpty(t, resp.RequestID, "queued retry_bead response should include a request_id")
 
 		// Verify circuit breaker is cleared (DB reset is synchronous).
 		r, err = db.GetRetry(beadID, anvil)
@@ -561,7 +562,7 @@ func TestHandleIPC_RetryBead(t *testing.T) {
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 		runCtx:        context.Background(),
-		reqTracker:    ipc.NewRequestTracker("test-"),
+		reqTracker:    *ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(&config.Config{})
 
@@ -1021,7 +1022,7 @@ func TestHandleIPC_TagBead(t *testing.T) {
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 		runCtx:        context.Background(),
-		reqTracker:    ipc.NewRequestTracker("test-"),
+		reqTracker:    *ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(&config.Config{
 		Anvils: map[string]config.AnvilConfig{
@@ -1129,7 +1130,7 @@ func TestHandleIPC_CloseBead(t *testing.T) {
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 		runCtx:        context.Background(),
-		reqTracker:    ipc.NewRequestTracker("test-"),
+		reqTracker:    *ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(&config.Config{
 		Anvils: map[string]config.AnvilConfig{
@@ -1571,7 +1572,7 @@ func TestHandleIPC_StopBead(t *testing.T) {
 		worktreeMgr:   worktree.NewManager(),
 		promptBuilder: prompt.NewBuilder(),
 		runCtx:        context.Background(),
-		reqTracker:    ipc.NewRequestTracker("test-"),
+		reqTracker:    *ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(&config.Config{
 		Anvils: map[string]config.AnvilConfig{
@@ -1629,6 +1630,7 @@ func TestHandleIPC_StopBead(t *testing.T) {
 		resp := d.handleIPC(ipc.Command{Type: "stop_bead", Payload: payload})
 		// bd shelling is now async — the synchronous response is "queued".
 		assert.Equal(t, "queued", resp.Type)
+		assert.NotEmpty(t, resp.RequestID, "queued stop_bead response should include a request_id")
 
 		// Verify clarification_needed was persisted in DB.
 		retry, err := db.GetRetry(beadID, anvil)
