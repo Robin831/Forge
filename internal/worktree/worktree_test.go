@@ -436,6 +436,65 @@ func TestCreateWithOptions_StaleDirectoryRemoved(t *testing.T) {
 	}
 }
 
+func TestUnlinkReparsePoints(t *testing.T) {
+	root := t.TempDir()
+
+	// Create regular files and directories.
+	regularDir := filepath.Join(root, "src")
+	if err := os.MkdirAll(regularDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(regularDir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a target directory that should NOT be deleted.
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "keep.txt"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a symlink inside root pointing to target (proxy for a junction).
+	symlinkPath := filepath.Join(root, "node_modules")
+	if err := os.Symlink(target, symlinkPath); err != nil {
+		t.Skipf("cannot create symlink (permissions?): %v", err)
+	}
+
+	// Verify symlink exists.
+	fi, err := os.Lstat(symlinkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("expected symlink")
+	}
+
+	// Run unlinkReparsePoints.
+	if err := unlinkReparsePoints(root); err != nil {
+		t.Fatalf("unlinkReparsePoints: %v", err)
+	}
+
+	// Symlink should be removed.
+	if _, err := os.Lstat(symlinkPath); !os.IsNotExist(err) {
+		t.Error("symlink should have been removed")
+	}
+
+	// Regular files should still exist.
+	if _, err := os.Stat(filepath.Join(regularDir, "main.go")); err != nil {
+		t.Errorf("regular file should still exist: %v", err)
+	}
+
+	// Target directory should be untouched.
+	if _, err := os.Stat(filepath.Join(target, "keep.txt")); err != nil {
+		t.Errorf("target directory should be untouched: %v", err)
+	}
+
+	// os.RemoveAll should now succeed on root.
+	if err := os.RemoveAll(root); err != nil {
+		t.Errorf("os.RemoveAll should succeed after unlinking: %v", err)
+	}
+}
+
 // gitOutput runs a git command and returns trimmed stdout.
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
