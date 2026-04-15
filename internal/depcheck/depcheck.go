@@ -20,6 +20,11 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
+// DepsUpdateLabel is the label applied to dependency-update beads so that
+// downstream consumers (e.g. worktree setup) can identify them and skip
+// behaviours that conflict with npm install (such as node_modules junctions).
+const DepsUpdateLabel = "deps-update"
+
 // ModuleUpdate describes a single outdated dependency.
 type ModuleUpdate struct {
 	Path      string // module/package path
@@ -332,6 +337,7 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 		fmt.Sprintf("--description=%s", desc),
 		"--type=chore",
 		fmt.Sprintf("--priority=%s", priority),
+		fmt.Sprintf("--labels=%s", DepsUpdateLabel),
 		"--json",
 	))
 	cmd.Dir = anvilPath
@@ -371,8 +377,17 @@ func (s *Scanner) updateConsolidatedBead(ctx context.Context, existing *bdBead, 
 	mergedAuto, mergedMajor := mergeConsolidatedPackages(existingAuto, existingMajor, allResults)
 	newDesc := buildDescriptionFromMaps(anvilName, mergedAuto, mergedMajor)
 
-	// Skip update if description is unchanged.
-	if newDesc == existing.Description {
+	// Check whether the label is already present on the bead.
+	hasLabel := false
+	for _, l := range existing.Labels {
+		if strings.EqualFold(l, DepsUpdateLabel) {
+			hasLabel = true
+			break
+		}
+	}
+
+	// Skip update if both description and label are already correct.
+	if newDesc == existing.Description && hasLabel {
 		log.Printf("[depcheck] %s: consolidated bead %s already up to date", anvilName, existing.ID)
 		return
 	}
@@ -380,11 +395,11 @@ func (s *Scanner) updateConsolidatedBead(ctx context.Context, existing *bdBead, 
 	cmdCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "update", existing.ID,
-		fmt.Sprintf("--description=%s", newDesc),
-		"--json",
-	))
+	args := []string{"update", existing.ID, "--add-label", DepsUpdateLabel, "--json"}
+	if newDesc != existing.Description {
+		args = append(args, fmt.Sprintf("--description=%s", newDesc))
+	}
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", args...))
 	cmd.Dir = anvilPath
 
 	var stderr bytes.Buffer

@@ -22,12 +22,13 @@ func BeadTitle(ecosystem, packageName, oldVersion, newVersion string) string {
 
 // bdBead is a minimal struct for parsing bd list --json output.
 type bdBead struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Status      string `json:"status"`
-	ClosedAt    string `json:"closed_at"`
-	UpdatedAt   string `json:"updated_at"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Status      string   `json:"status"`
+	Labels      []string `json:"labels"`
+	ClosedAt    string   `json:"closed_at"`
+	UpdatedAt   string   `json:"updated_at"`
 }
 
 // DedupCheck returns true if a bead for the given package already exists

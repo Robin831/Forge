@@ -58,6 +58,11 @@ type CreateOptions struct {
 	// working tree as-is" semantics are required and remote state should not
 	// be fetched.
 	LocalHead bool
+	// SkipNodeModulesJunction, when true, skips linking node_modules from
+	// the main checkout. Used for dependency-update beads where npm install
+	// must write to a local node_modules to avoid corrupting the main
+	// checkout's dependencies.
+	SkipNodeModulesJunction bool
 }
 
 // Manager handles creating and tearing down worktrees.
@@ -138,7 +143,7 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 			_ = git(worktreePath, "checkout", "--force", "HEAD")
 			_ = git(worktreePath, "clean", "-fd")
 			// Re-link node_modules — git clean -fd removes untracked symlinks.
-			if !opts.LocalHead {
+			if !opts.LocalHead && !opts.SkipNodeModulesJunction {
 				if err := linkNodeModules(anvilPath, worktreePath); err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to link node_modules: %v\n", err)
 				}
@@ -243,8 +248,9 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 
 	// Link node_modules from the main checkout so Smiths can run npm scripts
 	// without a fresh npm ci. Skip for LocalHead (scan-only) worktrees where
-	// the anvil path IS the worktree and linking would be circular.
-	if !opts.LocalHead {
+	// the anvil path IS the worktree and linking would be circular. Also skip
+	// for dependency-update beads that need a fresh local node_modules.
+	if !opts.LocalHead && !opts.SkipNodeModulesJunction {
 		if err := linkNodeModules(anvilPath, worktreePath); err != nil {
 			// Non-fatal: later temper Node steps may fail if dependencies are not
 			// already present or installed by another component/user.

@@ -492,6 +492,76 @@ func TestUnlinkReparsePoints(t *testing.T) {
 	}
 }
 
+// TestCreateWithOptions_SkipNodeModulesJunction_FreshCreate verifies that when
+// SkipNodeModulesJunction is true, node_modules is NOT linked into the worktree
+// on a fresh creation even when the anvil has a node_modules directory.
+func TestCreateWithOptions_SkipNodeModulesJunction_FreshCreate(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	// Place a node_modules directory in the anvil to simulate a real repo.
+	anvilNM := filepath.Join(anvilDir, "node_modules")
+	if err := os.Mkdir(anvilNM, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(anvilNM, "marker.txt"), []byte("anvil"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager()
+	wt, err := mgr.CreateWithOptions(context.Background(), anvilDir, "skip-nm-fresh", CreateOptions{
+		SkipNodeModulesJunction: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+
+	// node_modules must NOT be linked (or created) in the worktree.
+	if _, err := os.Lstat(filepath.Join(wt.Path, "node_modules")); !os.IsNotExist(err) {
+		t.Error("node_modules should not exist in worktree when SkipNodeModulesJunction=true (fresh create)")
+	}
+}
+
+// TestCreateWithOptions_SkipNodeModulesJunction_ReuseClean verifies that when
+// SkipNodeModulesJunction is true, node_modules is NOT re-linked on the
+// reuse/clean path (when the worktree already exists and is valid).
+func TestCreateWithOptions_SkipNodeModulesJunction_ReuseClean(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	// Place a node_modules directory in the anvil.
+	anvilNM := filepath.Join(anvilDir, "node_modules")
+	if err := os.Mkdir(anvilNM, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(anvilNM, "marker.txt"), []byte("anvil"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager()
+	ctx := context.Background()
+
+	// First call without SkipNodeModulesJunction — link should be created.
+	wt, err := mgr.CreateWithOptions(ctx, anvilDir, "skip-nm-reuse", CreateOptions{})
+	if err != nil {
+		t.Fatalf("first CreateWithOptions: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(wt.Path, "node_modules")); err != nil {
+		t.Skipf("node_modules link was not created (platform may not support it): %v", err)
+	}
+
+	// Second call with SkipNodeModulesJunction=true on the reuse path.
+	// git clean -fd removes the symlink; it must not be re-linked.
+	wt2, err := mgr.CreateWithOptions(ctx, anvilDir, "skip-nm-reuse", CreateOptions{
+		SkipNodeModulesJunction: true,
+	})
+	if err != nil {
+		t.Fatalf("second CreateWithOptions: %v", err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(wt2.Path, "node_modules")); !os.IsNotExist(err) {
+		t.Error("node_modules should not exist in worktree when SkipNodeModulesJunction=true (reuse/clean path)")
+	}
+}
+
 // gitOutput runs a git command and returns trimmed stdout.
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()

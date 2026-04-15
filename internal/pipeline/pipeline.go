@@ -24,6 +24,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/changelog"
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ingot"
@@ -410,6 +411,15 @@ func releaseBead(beadID, anvilPath string) error {
 	return nil
 }
 
+func hasDepsUpdateLabel(labels []string) bool {
+	for _, l := range labels {
+		if strings.EqualFold(l, depcheck.DepsUpdateLabel) {
+			return true
+		}
+	}
+	return false
+}
+
 // shouldRunSchematic determines whether the Schematic pre-worker should run
 // for the given bead and provider chain.
 //
@@ -527,8 +537,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 	if createWorktree == nil {
 		createWorktree = func(ctx context.Context, anvilPath, beadID string) (*worktree.Worktree, error) {
 			return p.WorktreeManager.CreateWithOptions(ctx, anvilPath, beadID, worktree.CreateOptions{
-				BaseBranch:  p.BaseBranch,
-				ResetBranch: p.ResetBranch,
+				BaseBranch:              p.BaseBranch,
+				ResetBranch:             p.ResetBranch,
+				SkipNodeModulesJunction: hasDepsUpdateLabel(p.Bead.Labels),
 			})
 		}
 	}
