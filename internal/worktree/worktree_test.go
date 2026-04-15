@@ -562,6 +562,48 @@ func TestCreateWithOptions_SkipNodeModulesJunction_ReuseClean(t *testing.T) {
 	}
 }
 
+// TestRemove_PreservesSymlinkTarget verifies that Manager.Remove unlinks
+// junctions/symlinks before removal so that the target content (e.g. the main
+// checkout's node_modules) is not destroyed.
+func TestRemove_PreservesSymlinkTarget(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	// Create a target directory simulating the main checkout's node_modules.
+	targetDir := filepath.Join(anvilDir, "node_modules")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	markerFile := filepath.Join(targetDir, "eslint")
+	if err := os.WriteFile(markerFile, []byte("package\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager()
+	ctx := context.Background()
+	wt, err := mgr.CreateWithOptions(ctx, anvilDir, "symlink-test", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+
+	// Create a symlink inside the worktree pointing to the main node_modules.
+	wtNodeModules := filepath.Join(wt.Path, "node_modules")
+	// Remove any existing link from CreateWithOptions so we can create our own.
+	_ = os.Remove(wtNodeModules)
+	if err := createDirLink(targetDir, wtNodeModules); err != nil {
+		t.Skipf("cannot create directory link: %v", err)
+	}
+
+	// Remove the worktree.
+	if err := mgr.Remove(ctx, anvilDir, wt); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// The target directory's contents must be preserved.
+	if _, err := os.Stat(markerFile); err != nil {
+		t.Errorf("Remove destroyed symlink target content — main checkout's node_modules/eslint is missing: %v", err)
+	}
+}
+
 // gitOutput runs a git command and returns trimmed stdout.
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
