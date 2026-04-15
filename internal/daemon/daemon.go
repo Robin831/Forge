@@ -336,7 +336,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 			notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			if n := d.notifier.Load(); n != nil {
-				n.BeadFailed(notifCtx, anvil, beadID, failures, reason)
+				n.OrphanRecoveryFailed(notifCtx, anvil, beadID, title, failures, reason)
 			}
 			if disp != nil {
 				disp.Dispatch(notifCtx, notify.EventOrphanRecoveryFailed, beadID, anvil, msg)
