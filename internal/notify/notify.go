@@ -48,6 +48,11 @@ const (
 	// receive Adaptive Cards; generic webhooks use EventRelease and receive a
 	// simple GenericPayload.
 	EventRelease EventType = "release"
+	// EventOrphanRecoveryFailed is emitted when repeated orphan recovery
+	// failures escalate a bead to needs-human. Teams webhooks use this event
+	// via the OrphanRecoveryFailed notifier method; generic webhooks also
+	// receive it via the WebhookDispatcher.
+	EventOrphanRecoveryFailed EventType = "orphan_recovery_failed"
 )
 
 // Notifier sends notifications to Teams.
@@ -137,6 +142,38 @@ func (n *Notifier) BeadFailed(ctx context.Context, anvil, beadID string, retries
 			{Title: "Bead", Value: beadID},
 			{Title: "Retries", Value: fmt.Sprintf("%d", retries)},
 			{Title: "Error", Value: lastError},
+		},
+	)
+
+	n.send(ctx, card)
+}
+
+// OrphanRecoveryFailed sends a Teams notification when repeated orphan recovery
+// failures escalate a bead to needs-human status. It is keyed off
+// EventOrphanRecoveryFailed so Teams event filters can target this event
+// independently of generic bead failures.
+func (n *Notifier) OrphanRecoveryFailed(ctx context.Context, anvil, beadID, title string, failures int, reason string) {
+	if !n.ShouldNotify(EventOrphanRecoveryFailed) {
+		return
+	}
+
+	if len(reason) > 200 {
+		reason = reason[:200] + "..."
+	}
+
+	beadLabel := beadID
+	if title != "" {
+		beadLabel = fmt.Sprintf("%s (%s)", beadID, title)
+	}
+
+	card := adaptiveCard(
+		"🚨 Orphan Recovery Escalated (needs human)",
+		"attention",
+		[]cardFact{
+			{Title: "Anvil", Value: anvil},
+			{Title: "Bead", Value: beadLabel},
+			{Title: "Failures", Value: fmt.Sprintf("%d", failures)},
+			{Title: "Reason", Value: reason},
 		},
 	)
 

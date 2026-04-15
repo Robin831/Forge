@@ -1445,6 +1445,9 @@ const (
 
 	// Pipeline hook events.
 	EventHookFailed EventType = "hook_failed"
+
+	// Recovery circuit breaker — orphan bead recovery exhausted retries.
+	EventRecoveryCircuitBreak EventType = "recovery_circuit_break"
 )
 
 // Event represents a logged event.
