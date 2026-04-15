@@ -407,6 +407,9 @@ type SettingsConfig struct {
 	// Wicket issue awaiting clarification is marked as stale. After a further 7
 	// days, the issue is closed automatically. Defaults to 14.
 	WicketStaleDays int `mapstructure:"wicket_stale_days" yaml:"wicket_stale_days,omitempty"`
+	// BdReadyLimit is the --limit passed to 'bd ready --json'. bd defaults to
+	// 10 which can hide labeled lower-priority beads. Default: 100.
+	BdReadyLimit int `mapstructure:"bd_ready_limit" yaml:"bd_ready_limit,omitempty"`
 }
 
 // durationString returns the duration string, or omits zero values.
@@ -472,6 +475,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WicketBeadCreatedLabel string `yaml:"wicket_bead_created_label,omitempty"`
 		WicketTriggerLabel     string `yaml:"wicket_trigger_label,omitempty"`
 		WicketStaleDays        int    `yaml:"wicket_stale_days,omitempty"`
+		BdReadyLimit           int    `yaml:"bd_ready_limit,omitempty"`
 	}
 
 	sh := shadow{
@@ -520,6 +524,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WicketBeadCreatedLabel: s.WicketBeadCreatedLabel,
 		WicketTriggerLabel:     s.WicketTriggerLabel,
 		WicketStaleDays:        s.WicketStaleDays,
+		BdReadyLimit:           s.BdReadyLimit,
 	}
 
 	// Only include non-zero optional durations.
@@ -732,6 +737,7 @@ func Defaults() Config {
 			WicketNeedsHumanLabel:  "forge-needs-human",
 			WicketBeadCreatedLabel: "forge-bead-created",
 			WicketTriggerLabel:     "",
+			BdReadyLimit:          100,
 		},
 	}
 }
@@ -772,6 +778,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.wicket_needs_human_label", "forge-needs-human")
 	v.SetDefault("settings.wicket_bead_created_label", "forge-bead-created")
 	v.SetDefault("settings.wicket_trigger_label", "")
+	v.SetDefault("settings.bd_ready_limit", 100)
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	// SetEnvKeyReplacer maps dotted config keys (settings.auto_learn_rules) to

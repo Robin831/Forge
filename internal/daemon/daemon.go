@@ -1558,6 +1558,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		}
 	}
 	p := poller.NewStaggered(cfg.Anvils, pollInterval)
+	p.BdReadyLimit = cfg.Settings.BdReadyLimit
 	// Log each anvil's poll event as soon as it finishes so Hearth shows
 	// per-anvil timestamps that reflect the actual stagger, not a single
 	// shared timestamp logged after wg.Wait().
@@ -3009,7 +3010,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			// If not in cache, poll as fallback
 			if targetBead == nil {
 				d.logger.Info("bead not in cache, polling anvils", "bead", rp.BeadID)
-				p := poller.New(d.cfg.Load().Anvils)
+				currentCfg := d.cfg.Load()
+				p := poller.New(currentCfg.Anvils)
+				p.BdReadyLimit = currentCfg.Settings.BdReadyLimit
 				var beads []poller.Bead
 				var pollErrors []string
 
