@@ -1219,7 +1219,7 @@ rules:
         Adding a new warden rule, lint rule, or checklist entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
         Before inserting a new rule or checklist entry, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#425', 'copilot:PR#430', 'copilot:PR#493']
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#425', 'copilot:PR#430', 'copilot:PR#493', 'copilot:PR#518']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -2882,10 +2882,10 @@ rules:
       added: "2026-03-27"
     - id: hide-window-subprocess
       category: ui
-      pattern: exec.Command or exec.CommandContext calls for git/gh/bd subprocesses
+      pattern: exec.Command or exec.CommandContext calls for git/gh/bd subprocesses or any other subprocess invocations on Windows
       check: >-
-        Verify that all exec.Command/exec.CommandContext calls for git, gh, and bd subprocesses use executil.HideWindow (or equivalent) to prevent flashing a console window on Windows
-      source: copilot:PR#464
+        Verify that all exec.Command/exec.CommandContext calls for git, gh, bd, and other subprocesses use executil.HideWindow (or equivalent) to prevent flashing a console window on Windows, and include a context/timeout where feasible
+      source: ['copilot:PR#464', 'copilot:PR#521', 'copilot:PR#525']
       added: "2026-03-27"
     - id: validate-external-ref-url-construction
       category: security
@@ -3402,14 +3402,14 @@ rules:
       source: copilot:PR#519
       added: "2026-04-13"
     - id: cli-doc-required-flags
-      category: other
+      category: documentation
       pattern: CLI quick-reference or usage documentation that shows command syntax
       check: >-
         Verify that all required flags (especially --anvil) are included in documented command examples so that copy-paste usage works without runtime errors
       source: copilot:PR#520
       added: "2026-04-13"
     - id: doc-provider-fallback-accuracy
-      category: other
+      category: documentation
       pattern: >-
         Documentation or comments describing the stage_providers fallback chain for pipeline stages (smith, warden, schematic, cifix, reviewfix)
       check: >-
@@ -3417,7 +3417,7 @@ rules:
       source: copilot:PR#520
       added: "2026-04-13"
     - id: deny-patterns-flow-position
-      category: other
+      category: documentation
       pattern: >-
         Documentation or diagrams describing the pipeline/data flow that mention deny_patterns validation ordering
       check: >-
@@ -3432,23 +3432,15 @@ rules:
         When checking if a path exists with os.Lstat/os.Stat, verify that errors other than IsNotExist are handled explicitly and returned early, rather than falling through to creation logic that would produce misleading errors or inconsistent state
       source: copilot:PR#521
       added: "2026-04-13"
-    - id: hide-subprocess-windows
-      category: ui
-      pattern: >-
-        Creating exec.Command or exec.CommandContext calls on Windows without executil.HideWindow
-      check: >-
-        Verify that all subprocess invocations (exec.Command / exec.CommandContext) on Windows apply executil.HideWindow to prevent console window flashing, and include a context/timeout where feasible, consistent with existing subprocess patterns in the repo
-      source: copilot:PR#521
-      added: "2026-04-13"
     - id: comment-accuracy
-      category: other
+      category: style
       pattern: Code comments describing fallback behavior or error handling of other components
       check: >-
         Verify that comments accurately describe the actual behavior of the referenced component. Do not claim a specific fallback exists (e.g., 'temper will fall back to npm ci') unless the referenced code actually implements that fallback. Use neutral language like 'steps may fail/skip' when the outcome depends on external state.
       source: copilot:PR#521
       added: "2026-04-13"
     - id: external-ref-format-assumption
-      category: other
+      category: style
       pattern: >-
         Code or comments that assume an external reference field contains a specific format (e.g. always a full GitHub URL)
       check: >-
@@ -3484,14 +3476,6 @@ rules:
       pattern: "Adding or modifying warden rules with category: other"
       check: >-
         Verify that the rule category is as specific as possible rather than defaulting to 'other'. Documentation-focused rules should use 'documentation', concurrency rules should use 'concurrency', etc. Generic categories reduce the value of triage and search filtering.
-      source: copilot:PR#518
-      added: "2026-04-13"
-    - id: deduplicate-overlapping-warden-rules
-      category: other
-      pattern: >-
-        Adding or modifying warden rules in .forge/warden-rules.yaml where the new rule's check overlaps with an existing rule
-      check: >-
-        Before adding a new warden rule, verify it does not substantially overlap with existing rules. If overlap exists, consolidate into a single rule and append the new source PR(s) to the existing rule's source list, rather than creating a redundant checklist entry.
       source: copilot:PR#518
       added: "2026-04-13"
     - id: github-issue-url-host-validation
@@ -3568,13 +3552,6 @@ rules:
       pattern: Broadcasting async completion events after background IPC operations finish
       check: >-
         Verify that async completion events include the full response payload (or at least a user-facing message and error context), not just the request_id and type. Clients like Hearth need actionable details to display success/error outcomes to the user.
-      source: copilot:PR#525
-      added: "2026-04-14"
-    - id: gh-hidewindow-wrap
-      category: ui
-      pattern: "exec.Command or exec.CommandContext calling \"gh\" without executil.HideWindow"
-      check: >-
-        All gh subprocess invocations must be wrapped with executil.HideWindow(...) to prevent flashing a console window on Windows
       source: copilot:PR#525
       added: "2026-04-14"
     - id: assert-correlation-fields
