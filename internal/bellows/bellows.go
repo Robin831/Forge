@@ -22,6 +22,7 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/warden"
+	"github.com/Robin831/Forge/internal/worktree"
 )
 
 // Event types emitted by the Bellows monitor.
@@ -663,6 +664,8 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, be
 
 	defer func() {
 		// Clean up worktree and local branch (best effort).
+		// Unlink junctions/symlinks first so removal doesn't destroy target content.
+		worktree.UnlinkReparsePoints(wtPath)
 		_ = bellowsGit(ctx, anvilPath, "worktree", "remove", "--force", wtPath)
 		_ = bellowsGit(ctx, anvilPath, "worktree", "prune")
 		_ = bellowsGit(ctx, anvilPath, "branch", "-D", branchName)

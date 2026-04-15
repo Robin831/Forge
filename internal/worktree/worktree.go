@@ -334,6 +334,11 @@ func branchExists(ctx context.Context, repoPath, branch string) bool {
 
 // Remove tears down a worktree and cleans up its branch.
 func (m *Manager) Remove(ctx context.Context, anvilPath string, wt *Worktree) error {
+	// Unlink junctions/symlinks (e.g. node_modules) before removal so that
+	// git worktree remove and os.RemoveAll don't walk into and destroy the
+	// target content in the main checkout.
+	unlinkReparsePoints(wt.Path)
+
 	// Remove the git worktree
 	if err := gitCmd(ctx, anvilPath, "worktree", "remove", "--force", wt.Path); err != nil {
 		// If worktree removal fails, try manual cleanup
@@ -611,6 +616,12 @@ func removeWithRetry(ctx context.Context, path string) error {
 // stale directory cleanup.
 func RemoveWithRetry(ctx context.Context, path string) error {
 	return removeWithRetry(ctx, path)
+}
+
+// UnlinkReparsePoints is the exported form of unlinkReparsePoints for use by
+// other packages that need to safely remove worktree directories.
+func UnlinkReparsePoints(path string) {
+	unlinkReparsePoints(path)
 }
 
 // verifyWorktreeGitFile checks that a worktree directory contains a valid .git
