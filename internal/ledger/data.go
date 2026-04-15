@@ -50,6 +50,7 @@ type beadJSON struct {
 	IssueType   string          `json:"issue_type"`
 	Assignee    string          `json:"assignee"`
 	Labels      []string        `json:"labels"`
+	LabelsCSV   string          `json:"_labels_csv"`
 	Blocks      []string        `json:"blocks"`
 	DependsOn   []string        `json:"depends_on"`
 	ClosedAt    json.RawMessage `json:"closed_at"`
@@ -74,6 +75,9 @@ func (b *Bead) UnmarshalJSON(data []byte) error {
 	b.IssueType = raw.IssueType
 	b.Assignee = raw.Assignee
 	b.Labels = raw.Labels
+	if len(b.Labels) == 0 && raw.LabelsCSV != "" {
+		b.Labels = strings.Split(raw.LabelsCSV, ",")
+	}
 	b.Blocks = raw.Blocks
 	b.DependsOn = raw.DependsOn
 	b.ClosedAt = parseTimeSafe(raw.ClosedAt)
@@ -245,7 +249,7 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 			func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer cancel()
-				query := fmt.Sprintf(`SELECT * FROM issues WHERE status = '%s'`, status)
+				query := fmt.Sprintf(`SELECT i.*, IFNULL(GROUP_CONCAT(l.label ORDER BY l.label SEPARATOR ','), '') AS _labels_csv FROM issues i LEFT JOIN labels l ON l.issue_id = i.id WHERE i.status = '%s' GROUP BY i.id`, status)
 				out, err := execFn(ctx, anvilPath, "sql", "--json", query)
 				if err != nil {
 					// Fall back to bd list if bd sql is not supported.
@@ -276,7 +280,7 @@ func fetchAnvilBeadsWithExec(execFn bdExecFunc, anvilName, anvilPath string, db 
 		{
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
-			query := `SELECT * FROM issues WHERE status = 'closed' ORDER BY updated_at DESC LIMIT 50`
+			query := `SELECT i.*, IFNULL(GROUP_CONCAT(l.label ORDER BY l.label SEPARATOR ','), '') AS _labels_csv FROM issues i LEFT JOIN labels l ON l.issue_id = i.id WHERE i.status = 'closed' GROUP BY i.id ORDER BY i.updated_at DESC LIMIT 50`
 			out, err := execFn(ctx, anvilPath, "sql", "--json", query)
 			if err != nil {
 				out, err = execFn(ctx, anvilPath, "list", "--status=closed", "--limit", "50", "--json")
@@ -361,7 +365,7 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 				defer openCancel()
 				for _, status := range []string{"open", "in_progress"} {
 					func() {
-						query := fmt.Sprintf(`SELECT * FROM issues WHERE status = '%s'`, status)
+						query := fmt.Sprintf(`SELECT i.*, IFNULL(GROUP_CONCAT(l.label ORDER BY l.label SEPARATOR ','), '') AS _labels_csv FROM issues i LEFT JOIN labels l ON l.issue_id = i.id WHERE i.status = '%s' GROUP BY i.id`, status)
 						out, err := execFn(openCtx, path, "sql", "--json", query)
 						if err != nil {
 							out, err = execFn(openCtx, path, "list", "--status="+status, "--limit", "0", "--json")
@@ -404,7 +408,7 @@ func fetchAllBeadsWithExec(execFn bdExecFunc, anvils map[string]string, db *stat
 				defer wg.Done()
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer cancel()
-				query := `SELECT * FROM issues WHERE status = 'closed' ORDER BY updated_at DESC LIMIT 50`
+				query := `SELECT i.*, IFNULL(GROUP_CONCAT(l.label ORDER BY l.label SEPARATOR ','), '') AS _labels_csv FROM issues i LEFT JOIN labels l ON l.issue_id = i.id WHERE i.status = 'closed' GROUP BY i.id ORDER BY i.updated_at DESC LIMIT 50`
 				out, err := execFn(ctx, path, "sql", "--json", query)
 				if err != nil {
 					out, err = execFn(ctx, path, "list", "--status=closed", "--limit", "50", "--json")

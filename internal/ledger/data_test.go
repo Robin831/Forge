@@ -292,6 +292,126 @@ func TestFetchAnvilBeadsWithExecAnvilNameSet(t *testing.T) {
 	assert.Equal(t, "anvil-name", update.Beads[0].Anvil, "Anvil must be the registry name, not the filesystem path")
 }
 
+// ---- Labels via bd sql (_labels_csv) tests ----
+
+// mockSQLExec returns a bdExecFunc that succeeds for "bd sql" calls (returning
+// sqlResp) and returns the given fallback for "bd list" calls.
+func mockSQLExec(sqlResp []byte) bdExecFunc {
+	return func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "sql" {
+			return sqlResp, nil
+		}
+		return []byte("[]"), nil
+	}
+}
+
+func TestFetchAnvilBeads_IncludesLabels(t *testing.T) {
+	resp := []byte(`[{"id":"b-1","title":"Bug","status":"open","priority":2,"_labels_csv":"bug,forgeReady"}]`)
+	execFn := mockSQLExec(resp)
+
+	cmd := fetchAnvilBeadsWithExec(execFn, "myAnvil", "/tmp/anvil", nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	require.NoError(t, update.Err)
+	require.NotEmpty(t, update.Beads)
+
+	var found *Bead
+	for i := range update.Beads {
+		if update.Beads[i].ID == "b-1" {
+			found = &update.Beads[i]
+			break
+		}
+	}
+	require.NotNil(t, found, "bead b-1 must be in results")
+	assert.Equal(t, []string{"bug", "forgeReady"}, found.Labels)
+}
+
+func TestFetchAnvilBeads_NoLabels(t *testing.T) {
+	resp := []byte(`[{"id":"b-2","title":"No labels","status":"open","priority":3,"_labels_csv":""}]`)
+	execFn := mockSQLExec(resp)
+
+	cmd := fetchAnvilBeadsWithExec(execFn, "myAnvil", "/tmp/anvil", nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	require.NoError(t, update.Err)
+	var found *Bead
+	for i := range update.Beads {
+		if update.Beads[i].ID == "b-2" {
+			found = &update.Beads[i]
+			break
+		}
+	}
+	require.NotNil(t, found, "bead b-2 must be in results")
+	assert.Empty(t, found.Labels, "empty _labels_csv must produce nil/empty Labels slice")
+}
+
+func TestFetchAnvilBeads_MultipleLabels(t *testing.T) {
+	resp := []byte(`[{"id":"b-3","title":"Many labels","status":"open","priority":1,"_labels_csv":"bug,enhancement,forgeReady,urgent"}]`)
+	execFn := mockSQLExec(resp)
+
+	cmd := fetchAnvilBeadsWithExec(execFn, "myAnvil", "/tmp/anvil", nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	require.NoError(t, update.Err)
+	var found *Bead
+	for i := range update.Beads {
+		if update.Beads[i].ID == "b-3" {
+			found = &update.Beads[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	assert.Equal(t, []string{"bug", "enhancement", "forgeReady", "urgent"}, found.Labels)
+}
+
+func TestBead_UnmarshalLabelsCSV(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		expected []string
+	}{
+		{
+			name:     "empty csv",
+			json:     `{"id":"x","title":"t","status":"open","priority":1,"_labels_csv":""}`,
+			expected: nil,
+		},
+		{
+			name:     "single label",
+			json:     `{"id":"x","title":"t","status":"open","priority":1,"_labels_csv":"bug"}`,
+			expected: []string{"bug"},
+		},
+		{
+			name:     "multiple labels",
+			json:     `{"id":"x","title":"t","status":"open","priority":1,"_labels_csv":"a,b,c"}`,
+			expected: []string{"a", "b", "c"},
+		},
+		{
+			name:     "labels array takes precedence",
+			json:     `{"id":"x","title":"t","status":"open","priority":1,"labels":["from-array"],"_labels_csv":"from-csv"}`,
+			expected: []string{"from-array"},
+		},
+		{
+			name:     "no labels field at all",
+			json:     `{"id":"x","title":"t","status":"open","priority":1}`,
+			expected: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var b Bead
+			require.NoError(t, json.Unmarshal([]byte(tt.json), &b))
+			if tt.expected == nil {
+				assert.Empty(t, b.Labels)
+			} else {
+				assert.Equal(t, tt.expected, b.Labels)
+			}
+		})
+	}
+}
+
 // ---- End of fetchAnvilBeadsWithExec tests ----
 
 func TestParseTimeSafeOutOfRangeYear(t *testing.T) {
