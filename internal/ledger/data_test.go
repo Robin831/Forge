@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -290,6 +291,120 @@ func TestFetchAnvilBeadsWithExecAnvilNameSet(t *testing.T) {
 
 	require.Len(t, update.Beads, 1)
 	assert.Equal(t, "anvil-name", update.Beads[0].Anvil, "Anvil must be the registry name, not the filesystem path")
+}
+
+// ---- Labels via bd sql (_labels_csv) tests ----
+
+// mockSQLExec returns a bdExecFunc for testing the "bd sql" fast-path.
+// For "bd sql" calls it returns sqlResp only when the SQL query contains the
+// substring "status = '<matchStatus>'" (preventing the same bead from being
+// returned by every status-specific query and appearing as duplicates). For all
+// other calls (e.g. "bd list" fallbacks and non-matching status queries) it
+// returns an empty JSON array.
+func mockSQLExec(sqlResp []byte, matchStatus string) bdExecFunc {
+	return func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "sql" {
+			// args layout from fetchAnvilBeadsWithExec: ["sql", "--json", <query>]
+			if len(args) > 2 && strings.Contains(args[2], "status = '"+matchStatus+"'") {
+				return sqlResp, nil
+			}
+			return []byte("[]"), nil
+		}
+		return []byte("[]"), nil
+	}
+}
+
+func TestFetchAnvilBeads_IncludesLabels(t *testing.T) {
+	resp := []byte(`[{"id":"b-1","title":"Bug","status":"open","priority":2,"_labels_csv":"bug,forgeReady"}]`)
+	execFn := mockSQLExec(resp, "open")
+
+	cmd := fetchAnvilBeadsWithExec(execFn, "myAnvil", "/tmp/anvil", nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	require.NoError(t, update.Err)
+	require.Len(t, update.Beads, 1, "each bead must appear exactly once (no duplicates across status queries)")
+
+	found := &update.Beads[0]
+	assert.Equal(t, "b-1", found.ID)
+	assert.Equal(t, []string{"bug", "forgeReady"}, found.Labels)
+}
+
+func TestFetchAnvilBeads_NoLabels(t *testing.T) {
+	resp := []byte(`[{"id":"b-2","title":"No labels","status":"open","priority":3,"_labels_csv":""}]`)
+	execFn := mockSQLExec(resp, "open")
+
+	cmd := fetchAnvilBeadsWithExec(execFn, "myAnvil", "/tmp/anvil", nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	require.NoError(t, update.Err)
+	require.Len(t, update.Beads, 1, "each bead must appear exactly once (no duplicates across status queries)")
+
+	found := &update.Beads[0]
+	assert.Equal(t, "b-2", found.ID)
+	assert.Empty(t, found.Labels, "empty _labels_csv must produce nil/empty Labels slice")
+}
+
+func TestFetchAnvilBeads_MultipleLabels(t *testing.T) {
+	resp := []byte(`[{"id":"b-3","title":"Many labels","status":"open","priority":1,"_labels_csv":"bug,enhancement,forgeReady,urgent"}]`)
+	execFn := mockSQLExec(resp, "open")
+
+	cmd := fetchAnvilBeadsWithExec(execFn, "myAnvil", "/tmp/anvil", nil)
+	msg := cmd()
+	update := msg.(UpdateBeadsMsg)
+
+	require.NoError(t, update.Err)
+	require.Len(t, update.Beads, 1, "each bead must appear exactly once (no duplicates across status queries)")
+
+	found := &update.Beads[0]
+	assert.Equal(t, "b-3", found.ID)
+	assert.Equal(t, []string{"bug", "enhancement", "forgeReady", "urgent"}, found.Labels)
+}
+
+func TestBead_UnmarshalLabelsCSV(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		expected []string
+	}{
+		{
+			name:     "empty csv",
+			json:     `{"id":"x","title":"t","status":"open","priority":1,"_labels_csv":""}`,
+			expected: nil,
+		},
+		{
+			name:     "single label",
+			json:     `{"id":"x","title":"t","status":"open","priority":1,"_labels_csv":"bug"}`,
+			expected: []string{"bug"},
+		},
+		{
+			name:     "multiple labels",
+			json:     `{"id":"x","title":"t","status":"open","priority":1,"_labels_csv":"a,b,c"}`,
+			expected: []string{"a", "b", "c"},
+		},
+		{
+			name:     "labels array takes precedence",
+			json:     `{"id":"x","title":"t","status":"open","priority":1,"labels":["from-array"],"_labels_csv":"from-csv"}`,
+			expected: []string{"from-array"},
+		},
+		{
+			name:     "no labels field at all",
+			json:     `{"id":"x","title":"t","status":"open","priority":1}`,
+			expected: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var b Bead
+			require.NoError(t, json.Unmarshal([]byte(tt.json), &b))
+			if tt.expected == nil {
+				assert.Empty(t, b.Labels)
+			} else {
+				assert.Equal(t, tt.expected, b.Labels)
+			}
+		})
+	}
 }
 
 // ---- End of fetchAnvilBeadsWithExec tests ----
