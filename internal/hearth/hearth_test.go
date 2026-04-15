@@ -408,6 +408,7 @@ func TestRenderNeedsAttentionReasonCategories(t *testing.T) {
 		wantText string
 	}{
 		{"dispatch exhausted", AttentionDispatchExhausted, "DISPATCH"},
+		{"recovery exhausted", AttentionRecoveryExhausted, "RECOVERY"},
 		{"CI fix exhausted", AttentionCIFixExhausted, "CI FIX"},
 		{"review fix exhausted", AttentionReviewFixExhausted, "REVIEW"},
 		{"rebase exhausted", AttentionRebaseExhausted, "REBASE"},
@@ -558,6 +559,11 @@ func TestClassifyAttentionReason(t *testing.T) {
 			name: "circuit breaker prefix",
 			bead: state.NeedsAttentionBead{NeedsHuman: true, Reason: "circuit breaker: dispatch failed 5 times"},
 			want: AttentionDispatchExhausted,
+		},
+		{
+			name: "recovery failed",
+			bead: state.NeedsAttentionBead{NeedsHuman: true, Reason: "recovery failed: bd stderr output"},
+			want: AttentionRecoveryExhausted,
 		},
 		{
 			name: "CI fix exhausted",
