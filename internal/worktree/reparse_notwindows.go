@@ -25,7 +25,7 @@ func unlinkReparsePoints(root string) error {
 			return nil
 		}
 
-		slog.Debug("unlinking symlink before worktree removal", "path", path)
+		slog.Info("unlinking symlink before worktree removal", "path", path)
 		if rmErr := os.Remove(path); rmErr != nil {
 			slog.Warn("failed to unlink symlink", "path", path, "error", rmErr)
 			return nil

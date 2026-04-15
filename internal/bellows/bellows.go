@@ -666,10 +666,18 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, be
 		// Clean up worktree and local branch (best effort).
 		// Unlink junctions/symlinks first so removal doesn't destroy target content.
 		worktree.UnlinkReparsePoints(wtPath)
+		worktree.ProbeNodeModules("bellows-before-worktree-remove", anvilPath)
 		_ = bellowsGit(ctx, anvilPath, "worktree", "remove", "--force", wtPath)
+		worktree.ProbeNodeModules("bellows-after-worktree-remove", anvilPath)
+		worktree.ProbeNodeModules("bellows-before-worktree-prune", anvilPath)
 		_ = bellowsGit(ctx, anvilPath, "worktree", "prune")
+		worktree.ProbeNodeModules("bellows-after-worktree-prune", anvilPath)
+		worktree.ProbeNodeModules("bellows-before-branch-delete", anvilPath)
 		_ = bellowsGit(ctx, anvilPath, "branch", "-D", branchName)
+		worktree.ProbeNodeModules("bellows-after-branch-delete", anvilPath)
+		worktree.ProbeNodeModules("bellows-before-removeall", anvilPath)
 		_ = os.RemoveAll(wtPath)
+		worktree.ProbeNodeModules("bellows-after-removeall", anvilPath)
 	}()
 
 	// Fetch and resolve base ref.

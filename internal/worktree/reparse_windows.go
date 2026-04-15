@@ -34,7 +34,7 @@ func unlinkReparsePoints(root string) error {
 			return nil
 		}
 
-		slog.Debug("unlinking reparse point before worktree removal", "path", path)
+		slog.Info("unlinking reparse point before worktree removal", "path", path)
 		if rmErr := os.Remove(path); rmErr != nil {
 			slog.Warn("failed to unlink reparse point", "path", path, "error", rmErr)
 			return nil // best-effort

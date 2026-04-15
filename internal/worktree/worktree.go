@@ -346,16 +346,26 @@ func (m *Manager) Remove(ctx context.Context, anvilPath string, wt *Worktree) er
 	unlinkReparsePoints(wt.Path)
 
 	// Remove the git worktree
+	ProbeNodeModules("before-worktree-remove", anvilPath)
 	if err := gitCmd(ctx, anvilPath, "worktree", "remove", "--force", wt.Path); err != nil {
+		ProbeNodeModules("after-worktree-remove-failed", anvilPath)
 		// If worktree removal fails, try manual cleanup
+		ProbeNodeModules("before-removeall-fallback", anvilPath)
 		_ = os.RemoveAll(wt.Path)
+		ProbeNodeModules("after-removeall-fallback", anvilPath)
+	} else {
+		ProbeNodeModules("after-worktree-remove", anvilPath)
 	}
 
 	// Prune stale worktree references
+	ProbeNodeModules("before-worktree-prune", anvilPath)
 	_ = gitCmd(ctx, anvilPath, "worktree", "prune")
+	ProbeNodeModules("after-worktree-prune", anvilPath)
 
 	// Delete the local branch (best effort — might have been pushed)
+	ProbeNodeModules("before-branch-delete", anvilPath)
 	_ = gitCmd(ctx, anvilPath, "branch", "-D", wt.Branch)
+	ProbeNodeModules("after-branch-delete", anvilPath)
 
 	// NOTE: Do NOT delete the remote branch here. Worktree cleanup runs after
 	// pipeline completion, and the remote branch is still needed by the PR that
@@ -584,6 +594,7 @@ func removeWithRetry(ctx context.Context, path string) error {
 	}
 	unlinkReparsePoints(path)
 
+	anvilPath := inferAnvilPath(path)
 	var lastErr error
 	for i, delay := range delays {
 		if err := ctx.Err(); err != nil {
@@ -608,7 +619,13 @@ func removeWithRetry(ctx context.Context, path string) error {
 				return fmt.Errorf("remove worktree %s canceled: %w", path, ctx.Err())
 			}
 		}
+		if anvilPath != "" {
+			ProbeNodeModules(fmt.Sprintf("before-removeall-retry-%d", i), anvilPath)
+		}
 		lastErr = os.RemoveAll(path)
+		if anvilPath != "" {
+			ProbeNodeModules(fmt.Sprintf("after-removeall-retry-%d", i), anvilPath)
+		}
 		if lastErr == nil {
 			return nil
 		}
