@@ -9,10 +9,18 @@ import (
 // ProbeNodeModules logs the mtime and entry count of node_modules in
 // the given anvil directory. This is purely diagnostic and never fails.
 func ProbeNodeModules(label, anvilPath string) {
+	if anvilPath == "" {
+		slog.Info("probeNodeModules", "label", label, "status", "skipped_empty_anvil_path")
+		return
+	}
 	nmPath := filepath.Join(anvilPath, "node_modules")
 	info, err := os.Stat(nmPath)
 	if err != nil {
-		slog.Info("probeNodeModules", "label", label, "path", nmPath, "status", "not_found")
+		if os.IsNotExist(err) {
+			slog.Info("probeNodeModules", "label", label, "path", nmPath, "status", "not_found")
+		} else {
+			slog.Info("probeNodeModules", "label", label, "path", nmPath, "status", "stat_error", "error", err)
+		}
 		return
 	}
 	entries, readErr := os.ReadDir(nmPath)
@@ -20,12 +28,16 @@ func ProbeNodeModules(label, anvilPath string) {
 	if readErr == nil {
 		count = len(entries)
 	}
-	slog.Info("probeNodeModules",
+	args := []any{
 		"label", label,
 		"path", nmPath,
 		"mtime", info.ModTime().UTC(),
 		"entryCount", count,
-	)
+	}
+	if readErr != nil {
+		args = append(args, "read_error", readErr)
+	}
+	slog.Info("probeNodeModules", args...)
 }
 
 // inferAnvilPath attempts to derive the anvil root from a worktree path
