@@ -47,7 +47,8 @@ const (
 	// release notifications. Teams webhooks use EventReleasePublished and
 	// receive Adaptive Cards; generic webhooks use EventRelease and receive a
 	// simple GenericPayload.
-	EventRelease EventType = "release"
+	EventRelease               EventType = "release"
+	EventOrphanRecoveryFailed  EventType = "orphan_recovery_failed"
 )
 
 // Notifier sends notifications to Teams.

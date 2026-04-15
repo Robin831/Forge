@@ -326,6 +326,24 @@ func New(cfg *config.Config) (*Daemon, error) {
 		return true
 	}
 
+	d.shutdownMgr.OnNeedsHuman = func(beadID, anvil, title string, failures int, reason string) {
+		msg := fmt.Sprintf("Bead %s flagged needs-human after %d recovery failures: %s", beadID, failures, reason)
+		if title != "" {
+			msg = fmt.Sprintf("Bead %s (%s) flagged needs-human after %d recovery failures: %s", beadID, title, failures, reason)
+		}
+		disp := d.dispatcher.Load()
+		go func(beadID, anvil, msg string, failures int, reason string) {
+			notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if n := d.notifier.Load(); n != nil {
+				n.BeadFailed(notifCtx, anvil, beadID, failures, reason)
+			}
+			if disp != nil {
+				disp.Dispatch(notifCtx, notify.EventOrphanRecoveryFailed, beadID, anvil, msg)
+			}
+		}(beadID, anvil, msg, failures, reason)
+	}
+
 	// Initialize costLimitLoggedDate so Load() is always safe (zero atomic.Value
 	// returns nil on Load, which is fine for type assertion, but Store("")
 	// makes the intent explicit and avoids any future ambiguity).

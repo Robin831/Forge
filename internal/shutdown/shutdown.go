@@ -66,6 +66,12 @@ type Manager struct {
 	// auto-recovered. If nil or returns false, auto-recovery proceeds as
 	// before. Set by the daemon after construction.
 	OnOrphanFound func(beadID, anvil, title, branch string) bool
+
+	// OnNeedsHuman, when set, is called when a bead is flagged as
+	// needs-human due to repeated recovery failures. The daemon uses this
+	// to fire webhook notifications. Parameters: beadID, anvil, title
+	// (may be empty if unknown), failure count, and the underlying error.
+	OnNeedsHuman func(beadID, anvil, title string, failures int, reason string)
 }
 
 // NewManager creates a new shutdown manager.
@@ -192,8 +198,17 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 				} else {
 					if err := m.resetBead(w.BeadID, anvilPath); err != nil {
 						m.logger.Warn("failed to reset bead status", "bead", w.BeadID, "error", err)
-						if _, _, dbErr := m.db.IncrementRecoveryFailures(w.BeadID, w.Anvil, err.Error()); dbErr != nil {
+						failures, tripped, dbErr := m.db.IncrementRecoveryFailures(w.BeadID, w.Anvil, err.Error())
+						if dbErr != nil {
 							m.logger.Warn("failed to track recovery failure", "bead", w.BeadID, "error", dbErr)
+						} else if tripped {
+							m.logger.Warn("orphan worker recovery flagged as needs-human after repeated failures", "bead", w.BeadID, "anvil", w.Anvil, "failures", failures)
+							m.db.LogEvent(state.EventRecoveryCircuitBreak,
+								fmt.Sprintf("Orphaned worker bead %s flagged needs-human after %d recovery failures: %s", w.BeadID, failures, err.Error()),
+								w.BeadID, w.Anvil)
+							if m.OnNeedsHuman != nil {
+								m.OnNeedsHuman(w.BeadID, w.Anvil, "", failures, err.Error())
+							}
 						}
 					} else {
 						_ = m.db.ResetRecoveryFailures(w.BeadID, w.Anvil)
@@ -392,9 +407,12 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 					m.logger.Warn("failed to track recovery failure", "bead", beadID, "error", dbErr)
 				} else if tripped {
 					m.logger.Warn("orphan recovery flagged as needs-human after repeated failures", "bead", beadID, "anvil", anvilName, "failures", failures)
-					m.db.LogEvent(state.EventError,
-						fmt.Sprintf("Orphaned bead %s flagged needs-human after %d recovery failures", beadID, failures),
+					m.db.LogEvent(state.EventRecoveryCircuitBreak,
+						fmt.Sprintf("Orphaned bead %s flagged needs-human after %d recovery failures: %s", beadID, failures, err.Error()),
 						beadID, anvilName)
+					if m.OnNeedsHuman != nil {
+						m.OnNeedsHuman(beadID, anvilName, bead.Title, failures, err.Error())
+					}
 				}
 				continue
 			}
