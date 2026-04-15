@@ -1148,9 +1148,13 @@ func Run(ctx context.Context, p Params) *Outcome {
 					// Clean any untracked files Smith may have added.
 					cleanCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "clean", "-fd", "-e", "node_modules"))
 					_ = cleanCmd.Run()
-					// Re-link node_modules after clean.
-					if linkErr := worktree.LinkNodeModules(p.AnvilConfig.Path, wt.Path); linkErr != nil {
-						log.Printf("[pipeline:%s] Warning: failed to re-link node_modules after deny reset: %v", workerID, linkErr)
+					// Re-link node_modules after clean, but only when not in
+					// SkipNodeModulesJunction mode (deps-update beads must not
+					// have junctions re-created into the main checkout).
+					if !hasDepsUpdateLabel(p.Bead.Labels) {
+						if linkErr := worktree.LinkNodeModules(p.AnvilConfig.Path, wt.Path); linkErr != nil {
+							log.Printf("[pipeline:%s] Warning: failed to re-link node_modules after deny reset: %v", workerID, linkErr)
+						}
 					}
 					// Rewind the remote branch so the denied commits are not
 					// left on origin (where a non-fast-forward on retry would
@@ -1195,9 +1199,13 @@ func Run(ctx context.Context, p Params) *Outcome {
 					// Clean any untracked files Smith may have added.
 					cleanCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "clean", "-fd", "-e", "node_modules"))
 					_ = cleanCmd.Run()
-					// Re-link node_modules after clean.
-					if linkErr := worktree.LinkNodeModules(p.AnvilConfig.Path, wt.Path); linkErr != nil {
-						log.Printf("[pipeline:%s] Warning: failed to re-link node_modules after deny reset: %v", workerID, linkErr)
+					// Re-link node_modules after clean, but only when not in
+					// SkipNodeModulesJunction mode (deps-update beads must not
+					// have junctions re-created into the main checkout).
+					if !hasDepsUpdateLabel(p.Bead.Labels) {
+						if linkErr := worktree.LinkNodeModules(p.AnvilConfig.Path, wt.Path); linkErr != nil {
+							log.Printf("[pipeline:%s] Warning: failed to re-link node_modules after deny reset: %v", workerID, linkErr)
+						}
 					}
 					// Rewind the remote branch so the denied commits are not
 					// left on origin (where a non-fast-forward on retry would
