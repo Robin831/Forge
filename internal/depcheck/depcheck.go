@@ -20,6 +20,11 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
+// DepsUpdateLabel is the label applied to dependency-update beads so that
+// downstream consumers (e.g. worktree setup) can identify them and skip
+// behaviours that conflict with npm install (such as node_modules junctions).
+const DepsUpdateLabel = "deps-update"
+
 // ModuleUpdate describes a single outdated dependency.
 type ModuleUpdate struct {
 	Path      string // module/package path
@@ -332,6 +337,7 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 		fmt.Sprintf("--description=%s", desc),
 		"--type=chore",
 		fmt.Sprintf("--priority=%s", priority),
+		fmt.Sprintf("--labels=%s", DepsUpdateLabel),
 		"--json",
 	))
 	cmd.Dir = anvilPath
@@ -383,6 +389,7 @@ func (s *Scanner) updateConsolidatedBead(ctx context.Context, existing *bdBead, 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
 		"bd", "update", existing.ID,
 		fmt.Sprintf("--description=%s", newDesc),
+		"--add-label", DepsUpdateLabel,
 		"--json",
 	))
 	cmd.Dir = anvilPath
