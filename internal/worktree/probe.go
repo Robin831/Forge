@@ -10,16 +10,16 @@ import (
 // the given anvil directory. This is purely diagnostic and never fails.
 func ProbeNodeModules(label, anvilPath string) {
 	if anvilPath == "" {
-		slog.Info("probeNodeModules", "label", label, "status", "skipped_empty_anvil_path")
+		slog.Debug("probeNodeModules", "label", label, "status", "skipped_empty_anvil_path")
 		return
 	}
 	nmPath := filepath.Join(anvilPath, "node_modules")
 	info, err := os.Stat(nmPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			slog.Info("probeNodeModules", "label", label, "path", nmPath, "status", "not_found")
+			slog.Debug("probeNodeModules", "label", label, "path", nmPath, "status", "not_found")
 		} else {
-			slog.Info("probeNodeModules", "label", label, "path", nmPath, "status", "stat_error", "error", err)
+			slog.Debug("probeNodeModules", "label", label, "path", nmPath, "status", "stat_error", "error", err)
 		}
 		return
 	}
@@ -37,7 +37,7 @@ func ProbeNodeModules(label, anvilPath string) {
 	if readErr != nil {
 		args = append(args, "read_error", readErr)
 	}
-	slog.Info("probeNodeModules", args...)
+	slog.Debug("probeNodeModules", args...)
 }
 
 // inferAnvilPath attempts to derive the anvil root from a worktree path
