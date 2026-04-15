@@ -19,7 +19,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -502,18 +501,25 @@ func (m *Manager) resetBead(beadID, anvilPath string) error {
 	cmd.Stderr = &stderrBuf
 	out, err := cmd.Output()
 	if err != nil {
-		exitCode := -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
+		stdoutText := strings.TrimSpace(string(out))
+		stderrText := strings.TrimSpace(stderrBuf.String())
+
+		var details []string
+		if stdoutText != "" {
+			details = append(details, "stdout:\n"+stdoutText)
 		}
-		m.logger.Warn("orphan recovery bd update failed",
-			"bead", beadID,
-			"exit_status", exitCode,
-			"stderr", strings.TrimSpace(stderrBuf.String()),
-			"stdout", strings.TrimSpace(string(out)),
-		)
-		return fmt.Errorf("bd update %s --status=open --assignee= --remove-label=forgeReady --json: %w\n%s", beadID, err, stderrBuf.String())
+		if stderrText != "" {
+			details = append(details, "stderr:\n"+stderrText)
+		}
+		if len(details) > 0 {
+			return fmt.Errorf(
+				"bd update %s --status=open --assignee= --remove-label=forgeReady --json: %w\n%s",
+				beadID,
+				err,
+				strings.Join(details, "\n"),
+			)
+		}
+		return fmt.Errorf("bd update %s --status=open --assignee= --remove-label=forgeReady --json: %w", beadID, err)
 	}
 	return nil
 }
