@@ -80,7 +80,7 @@ type BeadPoller struct {
 
 // New creates a BeadPoller for the given anvil configurations.
 func New(anvils map[string]config.AnvilConfig) *BeadPoller {
-	return &BeadPoller{anvils: anvils}
+	return &BeadPoller{anvils: anvils, BdReadyLimit: 100}
 }
 
 // NewStaggered creates a BeadPoller that staggers anvil polls across the
@@ -92,7 +92,7 @@ func NewStaggered(anvils map[string]config.AnvilConfig, pollInterval time.Durati
 	if len(anvils) > 1 {
 		stagger = pollInterval / time.Duration(len(anvils))
 	}
-	return &BeadPoller{anvils: anvils, StaggerInterval: stagger}
+	return &BeadPoller{anvils: anvils, StaggerInterval: stagger, BdReadyLimit: 100}
 }
 
 // Poll runs 'bd ready --json' in each anvil directory, merges results,
@@ -170,7 +170,8 @@ func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 	return all, results
 }
 
-// pollAnvil runs 'bd ready --json' in an anvil directory and parses the output.
+// pollAnvil runs 'bd ready --json --limit <n>' in an anvil directory and parses the output.
+// The limit is taken from BdReadyLimit (default 100 when unset/non-positive).
 func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Bead, error) {
 	// Build command with timeout
 	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
