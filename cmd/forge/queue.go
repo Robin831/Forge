@@ -53,6 +53,7 @@ var queueCmd = &cobra.Command{
 		}
 
 		p := poller.New(cfg.Anvils)
+		p.BdReadyLimit = cfg.Settings.BdReadyLimit
 		beads, results := p.Poll(rootCtx)
 
 		// Report per-anvil errors

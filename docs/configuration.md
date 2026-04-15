@@ -532,6 +532,14 @@ These settings live under the top-level `settings` key.
 | `wicket_trigger_label` | `""` | When non-empty, only issues carrying this label are processed (pull model). |
 | `wicket_stale_days` | `14` | Days without an author reply before a clarification request is marked stale. After a further 7 days the issue is closed automatically. |
 
+### Poller / Queue Settings
+
+These settings live under the top-level `settings` key.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `bd_ready_limit` | `100` | Maximum number of beads returned by `bd ready --limit`. Increase if an anvil has more than 100 ready beads. |
+
 ### Per-Anvil Settings
 
 These settings are placed under the anvil's key in `anvils`.

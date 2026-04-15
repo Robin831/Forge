@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,11 +74,13 @@ type BeadPoller struct {
 	// timestamps immediately (rather than after wg.Wait), so that staggered
 	// polls produce distinct timestamps in monitoring/event logs.
 	OnAnvilDone func(AnvilResult)
+	// BdReadyLimit is the --limit passed to 'bd ready'. Default: 100.
+	BdReadyLimit int
 }
 
 // New creates a BeadPoller for the given anvil configurations.
 func New(anvils map[string]config.AnvilConfig) *BeadPoller {
-	return &BeadPoller{anvils: anvils}
+	return &BeadPoller{anvils: anvils, BdReadyLimit: 100}
 }
 
 // NewStaggered creates a BeadPoller that staggers anvil polls across the
@@ -89,7 +92,7 @@ func NewStaggered(anvils map[string]config.AnvilConfig, pollInterval time.Durati
 	if len(anvils) > 1 {
 		stagger = pollInterval / time.Duration(len(anvils))
 	}
-	return &BeadPoller{anvils: anvils, StaggerInterval: stagger}
+	return &BeadPoller{anvils: anvils, StaggerInterval: stagger, BdReadyLimit: 100}
 }
 
 // Poll runs 'bd ready --json' in each anvil directory, merges results,
@@ -138,7 +141,7 @@ func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 					return
 				}
 			}
-			beads, err := pollAnvil(ctx, name, anvil)
+			beads, err := p.pollAnvil(ctx, name, anvil)
 			r := AnvilResult{Name: name, Beads: beads, Err: err}
 			if p.OnAnvilDone != nil {
 				p.OnAnvilDone(r)
@@ -167,13 +170,18 @@ func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 	return all, results
 }
 
-// pollAnvil runs 'bd ready --json' in an anvil directory and parses the output.
-func pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Bead, error) {
+// pollAnvil runs 'bd ready --json --limit <n>' in an anvil directory and parses the output.
+// The limit is taken from BdReadyLimit (default 100 when unset/non-positive).
+func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Bead, error) {
 	// Build command with timeout
 	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 	defer cancel()
 
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "ready", "--json"))
+	limit := p.BdReadyLimit
+	if limit <= 0 {
+		limit = 100
+	}
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "ready", "--json", "--limit", strconv.Itoa(limit)))
 	cmd.Dir = anvil.Path
 
 	var stderr bytes.Buffer
@@ -299,7 +307,7 @@ func (p *BeadPoller) PollSingle(ctx context.Context, name string) ([]Bead, error
 	if !ok {
 		return nil, fmt.Errorf("anvil %q not found", name)
 	}
-	return pollAnvil(ctx, name, anvil)
+	return p.pollAnvil(ctx, name, anvil)
 }
 
 // PollInProgress runs 'bd list --status=in_progress --json' in each anvil directory
