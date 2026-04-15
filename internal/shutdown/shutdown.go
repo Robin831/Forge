@@ -392,7 +392,7 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 					m.logger.Warn("failed to track recovery failure", "bead", beadID, "error", dbErr)
 				} else if tripped {
 					m.logger.Warn("orphan recovery flagged as needs-human after repeated failures", "bead", beadID, "anvil", anvilName, "failures", failures)
-					m.db.LogEvent(state.EventBeadRecovered,
+					m.db.LogEvent(state.EventError,
 						fmt.Sprintf("Orphaned bead %s flagged needs-human after %d recovery failures", beadID, failures),
 						beadID, anvilName)
 				}

@@ -1910,7 +1910,8 @@ func (db *DB) ClarificationNeededBeadIDSet() (map[string]struct{}, error) {
 
 // scanRetryRows scans rows from a retries query into RetryRecords.
 // The SELECT must include: bead_id, anvil, retry_count, next_retry,
-// needs_human, clarification_needed, dispatch_failures, last_error, updated_at.
+// needs_human, clarification_needed, dispatch_failures, recovery_failures,
+// first_recovery_failure_at, last_error, updated_at.
 func scanRetryRows(rows *sql.Rows) ([]RetryRecord, error) {
 	var records []RetryRecord
 	for rows.Next() {
@@ -2060,12 +2061,15 @@ func (db *DB) IncrementRecoveryFailures(beadID, anvil, reason string) (int, bool
 	}
 
 	tripped := false
+	tripReason := ""
 	if failures >= maxRecoveryFailures {
 		tripped = true
+		tripReason = fmt.Sprintf("%d consecutive failures", failures)
 	} else if firstFailureStr.Valid {
 		firstFailure := parseTime(firstFailureStr.String)
-		if now.Sub(firstFailure) >= recoveryFailureWindow {
+		if age := now.Sub(firstFailure); age >= recoveryFailureWindow {
 			tripped = true
+			tripReason = fmt.Sprintf("%d failures over %s", failures, age.Round(time.Minute))
 		}
 	}
 
@@ -2073,7 +2077,7 @@ func (db *DB) IncrementRecoveryFailures(beadID, anvil, reason string) (int, bool
 		_, err = tx.Exec(
 			`UPDATE retries SET needs_human = 1, last_error = ?, updated_at = ?
 			 WHERE bead_id = ? AND anvil = ?`,
-			fmt.Sprintf("recovery failed: %d consecutive failures (%s)", failures, reason),
+			fmt.Sprintf("recovery failed: %s (%s)", tripReason, reason),
 			nowStr, beadID, anvil,
 		)
 		if err != nil {
@@ -2088,19 +2092,25 @@ func (db *DB) IncrementRecoveryFailures(beadID, anvil, reason string) (int, bool
 }
 
 // ResetRecoveryFailures clears the recovery failure counter and timestamp for
-// a bead after a successful recovery. Only resets rows that were tripped by
-// recovery failures, preserving unrelated needs_human states.
+// a bead after a successful recovery. If the row was marked needs_human by a
+// tripped recovery circuit breaker, it also clears that recovery-specific
+// state while preserving unrelated needs_human reasons.
 func (db *DB) ResetRecoveryFailures(beadID, anvil string) error {
 	_, err := db.conn.Exec(
 		`UPDATE retries
 		 SET recovery_failures = 0,
 		     first_recovery_failure_at = NULL,
-		     needs_human = 0,
-		     last_error = '',
+		     needs_human = CASE
+		     	WHEN last_error LIKE 'recovery failed:%' THEN 0
+		     	ELSE needs_human
+		     END,
+		     last_error = CASE
+		     	WHEN last_error LIKE 'recovery failed:%' THEN ''
+		     	ELSE last_error
+		     END,
 		     updated_at = ?
 		 WHERE bead_id = ? AND anvil = ?
-		   AND recovery_failures > 0
-		   AND last_error LIKE 'recovery failed:%'`,
+		   AND recovery_failures > 0`,
 		time.Now().Format(dbTimeLayout), beadID, anvil,
 	)
 	return err

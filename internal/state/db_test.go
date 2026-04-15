@@ -2540,9 +2540,14 @@ func TestDB_ResetRecoveryFailures_ClearsOnSuccess(t *testing.T) {
 
 	// Trip the recovery failure circuit breaker.
 	for i := 0; i < 3; i++ {
-		_, _, _ = db.IncrementRecoveryFailures(bead, anvil, "bd timeout")
+		if _, _, err := db.IncrementRecoveryFailures(bead, anvil, "bd timeout"); err != nil {
+			t.Fatalf("IncrementRecoveryFailures iteration %d: %v", i, err)
+		}
 	}
-	r, _ := db.GetRetry(bead, anvil)
+	r, err := db.GetRetry(bead, anvil)
+	if err != nil {
+		t.Fatalf("GetRetry: %v", err)
+	}
 	if !r.NeedsHuman {
 		t.Fatal("expected NeedsHuman=true after 3 failures")
 	}
@@ -2552,7 +2557,10 @@ func TestDB_ResetRecoveryFailures_ClearsOnSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, _ = db.GetRetry(bead, anvil)
+	r, err = db.GetRetry(bead, anvil)
+	if err != nil {
+		t.Fatalf("GetRetry after reset: %v", err)
+	}
 	if r.NeedsHuman {
 		t.Error("expected NeedsHuman=false after reset")
 	}
@@ -2588,9 +2596,69 @@ func TestDB_ResetRecoveryFailures_PreservesUnrelatedNeedsHuman(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, _ := db.GetRetry(bead, anvil)
+	r, err := db.GetRetry(bead, anvil)
+	if err != nil {
+		t.Fatalf("GetRetry: %v", err)
+	}
 	if !r.NeedsHuman {
 		t.Error("expected NeedsHuman=true to be preserved (unrelated to recovery)")
+	}
+}
+
+func TestDB_ResetRecoveryFailures_ClearsBeforeCircuitTrips(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	bead, anvil := "BD-REC7", "anvil-1"
+
+	// Record 2 failures — not enough to trip the circuit.
+	for i := 0; i < 2; i++ {
+		_, tripped, err := db.IncrementRecoveryFailures(bead, anvil, "bd timeout")
+		if err != nil {
+			t.Fatalf("IncrementRecoveryFailures iteration %d: %v", i, err)
+		}
+		if tripped {
+			t.Fatalf("circuit should not trip after %d failures", i+1)
+		}
+	}
+
+	r, err := db.GetRetry(bead, anvil)
+	if err != nil {
+		t.Fatalf("GetRetry: %v", err)
+	}
+	if r.RecoveryFailures != 2 {
+		t.Errorf("expected RecoveryFailures=2, got %d", r.RecoveryFailures)
+	}
+	if r.FirstRecoveryFailure == nil {
+		t.Error("expected FirstRecoveryFailure to be set")
+	}
+
+	// A successful recovery should clear the counter and timestamp even though
+	// needs_human was never set.
+	if err := db.ResetRecoveryFailures(bead, anvil); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err = db.GetRetry(bead, anvil)
+	if err != nil {
+		t.Fatalf("GetRetry after reset: %v", err)
+	}
+	if r.RecoveryFailures != 0 {
+		t.Errorf("expected RecoveryFailures=0 after reset, got %d", r.RecoveryFailures)
+	}
+	if r.FirstRecoveryFailure != nil {
+		t.Error("expected FirstRecoveryFailure=nil after reset")
+	}
+	if r.NeedsHuman {
+		t.Error("expected NeedsHuman=false (was never set)")
 	}
 }
 
@@ -2610,7 +2678,9 @@ func TestDB_ResetRetry_ClearsRecoveryFailures(t *testing.T) {
 
 	// Trip recovery failures.
 	for i := 0; i < 3; i++ {
-		_, _, _ = db.IncrementRecoveryFailures(bead, anvil, "bd timeout")
+		if _, _, err := db.IncrementRecoveryFailures(bead, anvil, "bd timeout"); err != nil {
+			t.Fatalf("IncrementRecoveryFailures iteration %d: %v", i, err)
+		}
 	}
 
 	// Full reset should clear everything.
@@ -2618,7 +2688,10 @@ func TestDB_ResetRetry_ClearsRecoveryFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, _ := db.GetRetry(bead, anvil)
+	r, err := db.GetRetry(bead, anvil)
+	if err != nil {
+		t.Fatalf("GetRetry: %v", err)
+	}
 	if r.RecoveryFailures != 0 {
 		t.Errorf("expected RecoveryFailures=0 after full reset, got %d", r.RecoveryFailures)
 	}
