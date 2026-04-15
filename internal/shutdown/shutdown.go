@@ -192,7 +192,11 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 				} else {
 					if err := m.resetBead(w.BeadID, anvilPath); err != nil {
 						m.logger.Warn("failed to reset bead status", "bead", w.BeadID, "error", err)
+						if _, _, dbErr := m.db.IncrementRecoveryFailures(w.BeadID, w.Anvil, err.Error()); dbErr != nil {
+							m.logger.Warn("failed to track recovery failure", "bead", w.BeadID, "error", dbErr)
+						}
 					} else {
+						_ = m.db.ResetRecoveryFailures(w.BeadID, w.Anvil)
 						m.logger.Info("reset bead status to open", "bead", w.BeadID, "anvil", w.Anvil)
 					}
 				}
@@ -383,8 +387,18 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 			// Fall through to auto-recovery (headless/CI mode or no Hearth client).
 			if err := m.resetBead(beadID, anvilPath); err != nil {
 				m.logger.Warn("failed to reset orphaned bead", "bead", beadID, "error", err)
+				failures, tripped, dbErr := m.db.IncrementRecoveryFailures(beadID, anvilName, err.Error())
+				if dbErr != nil {
+					m.logger.Warn("failed to track recovery failure", "bead", beadID, "error", dbErr)
+				} else if tripped {
+					m.logger.Warn("orphan recovery flagged as needs-human after repeated failures", "bead", beadID, "anvil", anvilName, "failures", failures)
+					m.db.LogEvent(state.EventError,
+						fmt.Sprintf("Orphaned bead %s flagged needs-human after %d recovery failures", beadID, failures),
+						beadID, anvilName)
+				}
 				continue
 			}
+			_ = m.db.ResetRecoveryFailures(beadID, anvilName)
 			m.logger.Info("recovered orphaned bead to open", "bead", beadID, "anvil", anvilName)
 			m.db.LogEvent(state.EventBeadRecovered,
 				fmt.Sprintf("Orphaned in-progress bead %s recovered to open", beadID),
