@@ -16,8 +16,10 @@
 package shutdown
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -494,11 +496,24 @@ func (m *Manager) resetBead(beadID, anvilPath string) error {
 	// before a human reviews it. Without this, orphaned beads with the
 	// auto_dispatch_tag would immediately be re-claimed on the next poll,
 	// creating a zombie loop.
+	var stderrBuf bytes.Buffer
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open", "--assignee=", "--remove-label=forgeReady", "--json"))
 	cmd.Dir = anvilPath
-	out, err := cmd.CombinedOutput()
+	cmd.Stderr = &stderrBuf
+	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("bd update %s --status=open --assignee= --remove-label=forgeReady --json: %w\n%s", beadID, err, out)
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		m.logger.Warn("orphan recovery bd update failed",
+			"bead", beadID,
+			"exit_status", exitCode,
+			"stderr", strings.TrimSpace(stderrBuf.String()),
+			"stdout", strings.TrimSpace(string(out)),
+		)
+		return fmt.Errorf("bd update %s --status=open --assignee= --remove-label=forgeReady --json: %w\n%s", beadID, err, stderrBuf.String())
 	}
 	return nil
 }
