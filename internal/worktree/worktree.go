@@ -121,6 +121,12 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 	// leftover directory from a failed run), remove it so we can create fresh.
 	if _, err := os.Stat(worktreePath); err == nil {
 		if isValidWorktree(ctx, worktreePath) {
+			// Unlink junctions/symlinks (e.g. node_modules) BEFORE any git
+			// operations that might follow them into the main checkout and
+			// destroy content there. On Windows, git clean -fd traverses
+			// junctions as regular directories and deletes the target's files.
+			unlinkReparsePoints(worktreePath)
+
 			if opts.ResetBranch {
 				// Hard-reset the branch back to the base ref, discarding all
 				// previous commits. This prevents inheriting junk from a
@@ -141,8 +147,8 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 				}
 			}
 			_ = git(worktreePath, "checkout", "--force", "HEAD")
-			_ = git(worktreePath, "clean", "-fd")
-			// Re-link node_modules — git clean -fd removes untracked symlinks.
+			_ = git(worktreePath, "clean", "-fd", "-e", "node_modules")
+			// Re-link node_modules for the worktree.
 			if !opts.LocalHead && !opts.SkipNodeModulesJunction {
 				if err := linkNodeModules(anvilPath, worktreePath); err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to link node_modules: %v\n", err)

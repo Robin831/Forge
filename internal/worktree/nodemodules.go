@@ -52,6 +52,12 @@ func linkNodeModules(anvilPath, worktreePath string) error {
 	return nil
 }
 
+// LinkNodeModules is the exported form of linkNodeModules for use by packages
+// that need to re-establish node_modules links after git operations.
+func LinkNodeModules(anvilPath, worktreePath string) error {
+	return linkNodeModules(anvilPath, worktreePath)
+}
+
 // createDirLink creates a directory symlink (Unix) or junction (Windows)
 // pointing from dst to src.
 func createDirLink(src, dst string) error {

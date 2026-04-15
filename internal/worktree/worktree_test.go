@@ -549,7 +549,7 @@ func TestCreateWithOptions_SkipNodeModulesJunction_ReuseClean(t *testing.T) {
 	}
 
 	// Second call with SkipNodeModulesJunction=true on the reuse path.
-	// git clean -fd removes the symlink; it must not be re-linked.
+	// unlinkReparsePoints removes the symlink; it must not be re-linked.
 	wt2, err := mgr.CreateWithOptions(ctx, anvilDir, "skip-nm-reuse", CreateOptions{
 		SkipNodeModulesJunction: true,
 	})
