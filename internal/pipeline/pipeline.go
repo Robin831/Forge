@@ -411,6 +411,15 @@ func releaseBead(beadID, anvilPath string) error {
 	return nil
 }
 
+func hasDepsUpdateLabel(labels []string) bool {
+	for _, l := range labels {
+		if strings.EqualFold(l, depcheck.DepsUpdateLabel) {
+			return true
+		}
+	}
+	return false
+}
+
 // shouldRunSchematic determines whether the Schematic pre-worker should run
 // for the given bead and provider chain.
 //
@@ -421,15 +430,6 @@ func releaseBead(beadID, anvilPath string) error {
 //
 // It returns (run, reason) so the caller can log a single accurate message
 // with its workerID context prefix.
-func hasDepsUpdateLabel(labels []string) bool {
-	for _, l := range labels {
-		if strings.EqualFold(l, depcheck.DepsUpdateLabel) {
-			return true
-		}
-	}
-	return false
-}
-
 func shouldRunSchematic(cfg schematic.Config, bead poller.Bead, providers []provider.Provider) (bool, string) {
 	if !cfg.Enabled {
 		return false, "schematic disabled in config"

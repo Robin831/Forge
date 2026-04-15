@@ -377,8 +377,17 @@ func (s *Scanner) updateConsolidatedBead(ctx context.Context, existing *bdBead, 
 	mergedAuto, mergedMajor := mergeConsolidatedPackages(existingAuto, existingMajor, allResults)
 	newDesc := buildDescriptionFromMaps(anvilName, mergedAuto, mergedMajor)
 
-	// Skip update if description is unchanged.
-	if newDesc == existing.Description {
+	// Check whether the label is already present on the bead.
+	hasLabel := false
+	for _, l := range existing.Labels {
+		if strings.EqualFold(l, DepsUpdateLabel) {
+			hasLabel = true
+			break
+		}
+	}
+
+	// Skip update if both description and label are already correct.
+	if newDesc == existing.Description && hasLabel {
 		log.Printf("[depcheck] %s: consolidated bead %s already up to date", anvilName, existing.ID)
 		return
 	}
@@ -386,12 +395,11 @@ func (s *Scanner) updateConsolidatedBead(ctx context.Context, existing *bdBead, 
 	cmdCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "update", existing.ID,
-		fmt.Sprintf("--description=%s", newDesc),
-		"--add-label", DepsUpdateLabel,
-		"--json",
-	))
+	args := []string{"update", existing.ID, "--add-label", DepsUpdateLabel, "--json"}
+	if newDesc != existing.Description {
+		args = append(args, fmt.Sprintf("--description=%s", newDesc))
+	}
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", args...))
 	cmd.Dir = anvilPath
 
 	var stderr bytes.Buffer
