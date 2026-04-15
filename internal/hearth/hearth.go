@@ -3721,8 +3721,7 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 			label := item.BeadID
 			if item.PRNumber > 0 {
 				label = fmt.Sprintf("PR #%d %s", item.PRNumber, item.BeadID)
-			}
-			if item.Title != "" {
+			} else if item.Title != "" {
 				label += " " + item.Title
 			}
 			if item.FailureCount > 0 {
