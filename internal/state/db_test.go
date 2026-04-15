@@ -2389,3 +2389,243 @@ func TestDB_GetWicketSummary(t *testing.T) {
 		t.Errorf("repo-b: expected 0 needs_human, got %d", summaries[1].NeedsHumanCount)
 	}
 }
+
+func TestDB_IncrementRecoveryFailures_TripsAfterThree(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	bead, anvil := "BD-REC1", "anvil-1"
+
+	// First two failures should not trip.
+	for i := 1; i <= 2; i++ {
+		failures, tripped, err := db.IncrementRecoveryFailures(bead, anvil, "bd timeout")
+		if err != nil {
+			t.Fatalf("failure %d: %v", i, err)
+		}
+		if failures != i {
+			t.Errorf("failure %d: expected count=%d, got %d", i, i, failures)
+		}
+		if tripped {
+			t.Errorf("failure %d: should not trip yet", i)
+		}
+	}
+
+	// Third failure should trip.
+	failures, tripped, err := db.IncrementRecoveryFailures(bead, anvil, "bd timeout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failures != 3 {
+		t.Errorf("expected 3 failures, got %d", failures)
+	}
+	if !tripped {
+		t.Error("expected needs_human to be set after 3 failures")
+	}
+
+	// Verify via GetRetry.
+	r, err := db.GetRetry(bead, anvil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.NeedsHuman {
+		t.Error("expected NeedsHuman=true")
+	}
+	if r.RecoveryFailures != 3 {
+		t.Errorf("expected RecoveryFailures=3, got %d", r.RecoveryFailures)
+	}
+	if r.FirstRecoveryFailure == nil {
+		t.Error("expected FirstRecoveryFailure to be set")
+	}
+}
+
+func TestDB_IncrementRecoveryFailures_TripsAfterTimeWindow(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	bead, anvil := "BD-REC2", "anvil-1"
+
+	// Insert a record with first_recovery_failure_at 31 minutes ago.
+	oldTime := time.Now().Add(-31 * time.Minute).Format(dbTimeLayout)
+	now := time.Now().Format(dbTimeLayout)
+	_, err = db.conn.Exec(
+		`INSERT INTO retries (bead_id, anvil, retry_count, needs_human, clarification_needed, dispatch_failures, recovery_failures, first_recovery_failure_at, last_error, updated_at)
+		 VALUES (?, ?, 0, 0, 0, 0, 1, ?, '', ?)`,
+		bead, anvil, oldTime, now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second failure should trip due to time window (>30 min since first).
+	failures, tripped, err := db.IncrementRecoveryFailures(bead, anvil, "bd timeout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failures != 2 {
+		t.Errorf("expected 2 failures, got %d", failures)
+	}
+	if !tripped {
+		t.Error("expected needs_human to be set due to time window")
+	}
+}
+
+func TestDB_IncrementRecoveryFailures_NoTripUnder30Min(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	bead, anvil := "BD-REC3", "anvil-1"
+
+	// Insert with first_recovery_failure_at 29 minutes ago (just under threshold).
+	recentTime := time.Now().Add(-29 * time.Minute).Format(dbTimeLayout)
+	now := time.Now().Format(dbTimeLayout)
+	_, err = db.conn.Exec(
+		`INSERT INTO retries (bead_id, anvil, retry_count, needs_human, clarification_needed, dispatch_failures, recovery_failures, first_recovery_failure_at, last_error, updated_at)
+		 VALUES (?, ?, 0, 0, 0, 0, 1, ?, '', ?)`,
+		bead, anvil, recentTime, now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second failure should NOT trip (only 2 failures, under 30 min).
+	failures, tripped, err := db.IncrementRecoveryFailures(bead, anvil, "bd timeout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failures != 2 {
+		t.Errorf("expected 2 failures, got %d", failures)
+	}
+	if tripped {
+		t.Error("should not trip with 2 failures under 30 min")
+	}
+}
+
+func TestDB_ResetRecoveryFailures_ClearsOnSuccess(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	bead, anvil := "BD-REC4", "anvil-1"
+
+	// Trip the recovery failure circuit breaker.
+	for i := 0; i < 3; i++ {
+		_, _, _ = db.IncrementRecoveryFailures(bead, anvil, "bd timeout")
+	}
+	r, _ := db.GetRetry(bead, anvil)
+	if !r.NeedsHuman {
+		t.Fatal("expected NeedsHuman=true after 3 failures")
+	}
+
+	// Reset should clear recovery fields and needs_human.
+	if err := db.ResetRecoveryFailures(bead, anvil); err != nil {
+		t.Fatal(err)
+	}
+
+	r, _ = db.GetRetry(bead, anvil)
+	if r.NeedsHuman {
+		t.Error("expected NeedsHuman=false after reset")
+	}
+	if r.RecoveryFailures != 0 {
+		t.Errorf("expected RecoveryFailures=0, got %d", r.RecoveryFailures)
+	}
+	if r.FirstRecoveryFailure != nil {
+		t.Error("expected FirstRecoveryFailure=nil after reset")
+	}
+}
+
+func TestDB_ResetRecoveryFailures_PreservesUnrelatedNeedsHuman(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	bead, anvil := "BD-REC5", "anvil-1"
+
+	// Set needs_human via MarkNeedsHuman (not recovery failures).
+	if err := db.MarkNeedsHuman(bead, anvil, "no-diff hard reject"); err != nil {
+		t.Fatal(err)
+	}
+
+	// ResetRecoveryFailures should NOT clear this needs_human.
+	if err := db.ResetRecoveryFailures(bead, anvil); err != nil {
+		t.Fatal(err)
+	}
+
+	r, _ := db.GetRetry(bead, anvil)
+	if !r.NeedsHuman {
+		t.Error("expected NeedsHuman=true to be preserved (unrelated to recovery)")
+	}
+}
+
+func TestDB_ResetRetry_ClearsRecoveryFailures(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	bead, anvil := "BD-REC6", "anvil-1"
+
+	// Trip recovery failures.
+	for i := 0; i < 3; i++ {
+		_, _, _ = db.IncrementRecoveryFailures(bead, anvil, "bd timeout")
+	}
+
+	// Full reset should clear everything.
+	if err := db.ResetRetry(bead, anvil); err != nil {
+		t.Fatal(err)
+	}
+
+	r, _ := db.GetRetry(bead, anvil)
+	if r.RecoveryFailures != 0 {
+		t.Errorf("expected RecoveryFailures=0 after full reset, got %d", r.RecoveryFailures)
+	}
+	if r.FirstRecoveryFailure != nil {
+		t.Error("expected FirstRecoveryFailure=nil after full reset")
+	}
+	if r.NeedsHuman {
+		t.Error("expected NeedsHuman=false after full reset")
+	}
+}
