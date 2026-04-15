@@ -207,7 +207,7 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 								fmt.Sprintf("Orphaned worker bead %s flagged needs-human after %d recovery failures: %s", w.BeadID, failures, err.Error()),
 								w.BeadID, w.Anvil)
 							if m.OnNeedsHuman != nil {
-								m.OnNeedsHuman(w.BeadID, w.Anvil, "", failures, err.Error())
+								m.OnNeedsHuman(w.BeadID, w.Anvil, w.Title, failures, err.Error())
 							}
 						}
 					} else {
