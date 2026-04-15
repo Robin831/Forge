@@ -401,6 +401,35 @@ func TestRenderNeedsAttentionShowsItems(t *testing.T) {
 	}
 }
 
+func TestRenderNeedsAttentionTitleAndFailureCount(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "bd-7", Anvil: "forge", Title: "My bead title", FailureCount: 3, ReasonCategory: AttentionDispatchExhausted},
+	}
+	m.focused = PanelNeedsAttention
+	rendered := m.renderNeedsAttention(80, 20)
+	if !strings.Contains(rendered, "My bead title") {
+		t.Errorf("expected title 'My bead title' in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "3 failures") {
+		t.Errorf("expected failure count '3 failures' in rendered output:\n%s", rendered)
+	}
+}
+
+func TestRenderNeedsAttentionPRItemNoDuplicateLabel(t *testing.T) {
+	m := NewModel(nil)
+	m.needsAttention = []NeedsAttentionItem{
+		{BeadID: "bd-12", Anvil: "forge", PRNumber: 42, Title: "PR #42", ReasonCategory: AttentionCIFixExhausted},
+	}
+	m.focused = PanelNeedsAttention
+	rendered := m.renderNeedsAttention(80, 20)
+	// "PR #42" should appear exactly once in the bead label, not twice
+	count := strings.Count(rendered, "PR #42")
+	if count != 1 {
+		t.Errorf("expected 'PR #42' to appear exactly once, got %d occurrences:\n%s", count, rendered)
+	}
+}
+
 func TestRenderNeedsAttentionReasonCategories(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -408,6 +437,7 @@ func TestRenderNeedsAttentionReasonCategories(t *testing.T) {
 		wantText string
 	}{
 		{"dispatch exhausted", AttentionDispatchExhausted, "DISPATCH"},
+		{"recovery exhausted", AttentionRecoveryExhausted, "RECOVERY"},
 		{"CI fix exhausted", AttentionCIFixExhausted, "CI FIX"},
 		{"review fix exhausted", AttentionReviewFixExhausted, "REVIEW"},
 		{"rebase exhausted", AttentionRebaseExhausted, "REBASE"},
@@ -558,6 +588,11 @@ func TestClassifyAttentionReason(t *testing.T) {
 			name: "circuit breaker prefix",
 			bead: state.NeedsAttentionBead{NeedsHuman: true, Reason: "circuit breaker: dispatch failed 5 times"},
 			want: AttentionDispatchExhausted,
+		},
+		{
+			name: "recovery failed",
+			bead: state.NeedsAttentionBead{NeedsHuman: true, Reason: "recovery failed: bd stderr output"},
+			want: AttentionRecoveryExhausted,
 		},
 		{
 			name: "CI fix exhausted",

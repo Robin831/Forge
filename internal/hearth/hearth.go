@@ -90,13 +90,14 @@ type activityNavItem struct {
 type AttentionReason int
 
 const (
-	AttentionUnknown            AttentionReason = iota
-	AttentionDispatchExhausted                  // Circuit breaker tripped after repeated dispatch failures
-	AttentionCIFixExhausted                     // CI fix attempts exhausted
-	AttentionReviewFixExhausted                 // Review fix attempts exhausted
-	AttentionRebaseExhausted                    // Rebase attempts exhausted
-	AttentionClarification                      // Bead flagged as needing clarification
-	AttentionStalled                            // Worker stalled (no log activity)
+	AttentionUnknown             AttentionReason = iota
+	AttentionDispatchExhausted                   // Circuit breaker tripped after repeated dispatch failures
+	AttentionRecoveryExhausted                   // Recovery failed after repeated attempts
+	AttentionCIFixExhausted                      // CI fix attempts exhausted
+	AttentionReviewFixExhausted                  // Review fix attempts exhausted
+	AttentionRebaseExhausted                     // Rebase attempts exhausted
+	AttentionClarification                       // Bead flagged as needing clarification
+	AttentionStalled                             // Worker stalled (no log activity)
 )
 
 // NeedsAttentionItem represents a bead requiring human attention.
@@ -107,6 +108,7 @@ type NeedsAttentionItem struct {
 	Anvil            string
 	Reason           string
 	ReasonCategory   AttentionReason
+	FailureCount     int
 	PRID             int // Non-zero when item originates from an exhausted PR
 	PRNumber         int
 	LastWardenReject string // Most recent warden_reject message, if any
@@ -3668,6 +3670,8 @@ func attentionReasonIcon(cat AttentionReason) string {
 	switch cat {
 	case AttentionDispatchExhausted:
 		return lipgloss.NewStyle().Foreground(colorDanger).Render("⊘ DISPATCH")
+	case AttentionRecoveryExhausted:
+		return lipgloss.NewStyle().Foreground(colorDanger).Render("⊘ RECOVERY")
 	case AttentionCIFixExhausted:
 		return lipgloss.NewStyle().Foreground(colorAccent).Render("🔧 CI FIX")
 	case AttentionReviewFixExhausted:
@@ -3717,6 +3721,11 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 			label := item.BeadID
 			if item.PRNumber > 0 {
 				label = fmt.Sprintf("PR #%d %s", item.PRNumber, item.BeadID)
+			} else if item.Title != "" {
+				label += " " + item.Title
+			}
+			if item.FailureCount > 0 {
+				label += dimStyle.Render(fmt.Sprintf(" [%d failures]", item.FailureCount))
 			}
 			icon := attentionReasonIcon(item.ReasonCategory)
 			beadLine := fmt.Sprintf("%s %s %s", icon, label, anvil)

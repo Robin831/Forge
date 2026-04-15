@@ -26,6 +26,9 @@ func classifyAttentionReason(b state.NeedsAttentionBead) AttentionReason {
 	if strings.HasPrefix(reason, "circuit breaker:") {
 		return AttentionDispatchExhausted
 	}
+	if strings.HasPrefix(reason, "recovery failed:") {
+		return AttentionRecoveryExhausted
+	}
 	if strings.Contains(reason, "ci fix exhausted") {
 		return AttentionCIFixExhausted
 	}
@@ -759,6 +762,7 @@ func FetchNeedsAttention(ds *DataSource) tea.Cmd {
 				Anvil:            b.Anvil,
 				Reason:           b.Reason,
 				ReasonCategory:   classifyAttentionReason(b),
+				FailureCount:     b.FailureCount,
 				PRID:             b.PRID,
 				PRNumber:         b.PRNumber,
 				LastWardenReject: ds.DB.LatestWardenRejectMessage(b.BeadID),
