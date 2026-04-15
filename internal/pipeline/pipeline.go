@@ -1137,14 +1137,21 @@ func Run(ctx context.Context, p Params) *Outcome {
 				_ = p.DB.LogEvent(state.EventSmithFailed, summary, p.Bead.ID, p.AnvilName)
 
 				if iteration < maxIter {
+					// Unlink junctions/symlinks before reset+clean to prevent
+					// git from following them into the main checkout.
+					worktree.UnlinkReparsePoints(wt.Path)
 					// Reset to pre-Smith state and retry with feedback.
 					resetCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "reset", "--hard", preSmithSHA))
 					if resetErr := resetCmd.Run(); resetErr != nil {
 						log.Printf("[pipeline:%s] Failed to reset after deny validation error: %v", workerID, resetErr)
 					}
 					// Clean any untracked files Smith may have added.
-					cleanCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "clean", "-fd"))
+					cleanCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "clean", "-fd", "-e", "node_modules"))
 					_ = cleanCmd.Run()
+					// Re-link node_modules after clean.
+					if linkErr := worktree.LinkNodeModules(p.AnvilConfig.Path, wt.Path); linkErr != nil {
+						log.Printf("[pipeline:%s] Warning: failed to re-link node_modules after deny reset: %v", workerID, linkErr)
+					}
 					// Rewind the remote branch so the denied commits are not
 					// left on origin (where a non-fast-forward on retry would
 					// otherwise fail or leave stale state).
@@ -1177,14 +1184,21 @@ func Run(ctx context.Context, p Params) *Outcome {
 				_ = p.DB.LogEvent(state.EventSmithFailed, summary, p.Bead.ID, p.AnvilName)
 
 				if iteration < maxIter {
+					// Unlink junctions/symlinks before reset+clean to prevent
+					// git from following them into the main checkout.
+					worktree.UnlinkReparsePoints(wt.Path)
 					// Reset to pre-Smith state and retry with feedback.
 					resetCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "reset", "--hard", preSmithSHA))
 					if resetErr := resetCmd.Run(); resetErr != nil {
 						log.Printf("[pipeline:%s] Failed to reset after deny violation: %v", workerID, resetErr)
 					}
 					// Clean any untracked files Smith may have added.
-					cleanCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "clean", "-fd"))
+					cleanCmd := executil.HideWindow(exec.Command("git", "-C", wt.Path, "clean", "-fd", "-e", "node_modules"))
 					_ = cleanCmd.Run()
+					// Re-link node_modules after clean.
+					if linkErr := worktree.LinkNodeModules(p.AnvilConfig.Path, wt.Path); linkErr != nil {
+						log.Printf("[pipeline:%s] Warning: failed to re-link node_modules after deny reset: %v", workerID, linkErr)
+					}
 					// Rewind the remote branch so the denied commits are not
 					// left on origin (where a non-fast-forward on retry would
 					// otherwise fail or leave stale state).
