@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.14.0] - 2026-04-15
+
+### Added
+
+- **Async ack IPC protocol** - Added "queued" response type with request_id correlation and RequestTracker for async command handling in the IPC layer. (Forge-7v4u)
+- **Auto-link node_modules in worktrees** - After creating a git worktree, Forge now automatically symlinks (or creates junctions on Windows) node_modules directories from the main checkout into the worktree. This eliminates the need for npm ci during temper for Node.js projects. (Forge-jqyw)
+- **Configurable lint step severity** - Added `temper.lint_required` option to make the lint step fail the temper run instead of only warning. Default preserves existing advisory-only behavior. (Forge-lsj4)
+- **Custom temper steps** - Support arbitrary named steps in per-anvil temper config via `temper.steps`, enabling pipelines with more than three steps, per-step working directories, timeouts, and required/optional control. The existing `build`/`test`/`lint` shorthand remains supported. (Forge-mycv)
+- **Last-chance external_ref lookup before PR creation** - Pipeline now fetches the latest external_ref from bd right before creating a PR, ensuring Closes #N is included even when the reference was unavailable at dispatch time. (Forge-xz3d)
+- **Needs Attention shows title, failure count, and recovery errors** - The TUI Needs Attention panel now displays bead titles, failure counts from dispatch and recovery circuit breakers, and properly classifies recovery failures as a distinct attention category. (Forge-idle)
+- **Orphan recovery failure notifications** - Emit webhook notifications when a bead is flagged as needs-human due to repeated orphan recovery failures, including bead ID, title, failure count, and error details. (Forge-z2i9)
+- **Recovery failure tracking** - Track consecutive orphan recovery failures and flag beads as needs-human after 3 consecutive failures or 30 minutes of failing, preventing infinite recovery loops. (Forge-y04i)
+- **Temper path-based step filtering** - Temper steps can now include an optional `paths` glob filter. When set, the step is skipped if no changed files in the diff match the patterns, saving time on multi-stack repos where not all steps are relevant to every change. (Forge-p0sa)
+
+### Changed
+
+- **Async IPC command handling** - Daemon handlers that shell out to bd or gh (tag_bead, close_bead, stop_bead, retry_bead, pr_action close/merge, append_notes) now return a queued response immediately and execute the subprocess in a background goroutine, preventing IPC blocking during slow remote operations. (Forge-r3ks)
+- **TUI async IPC correlation** - Hearth TUI now handles async "queued" IPC responses by subscribing to daemon completion events, correlating by request_id, and updating the status line with success or error messages. IPC read deadline reduced from 10s to 3s since only the fast initial ack needs to arrive. (Forge-pkkq)
+
+### Fixed
+
+- **Include external_ref in Smith prompt** - Pass the external reference (`external_ref`) from bead metadata through to the Smith prompt so generated PRs can include closing references without Smith needing to run extra commands. (Forge-pqrw)
+- **Ledger labels column populated** - Join the labels table in bd sql queries so the Labels column in the Ledger list and kanban views displays bead labels instead of always being empty. (Forge-myij)
+- **Orphan recovery bd stderr logging** - Capture and log bd stderr and exit status separately at WARN level when orphan recovery fails, aiding diagnosis of bd command failures. (Forge-jul4)
+- **Poller bd ready limit** - Pass --limit=100 (configurable via settings.bd_ready_limit) to 'bd ready' so labeled lower-priority beads beyond the default top 10 are visible to the poller and dispatched. (Forge-4kx4)
+- **Skip node_modules junction for dependency-update beads** - Depcheck beads now get a `deps-update` label, and worktree setup skips the node_modules junction for these beads so npm install writes to a fresh local directory instead of corrupting the main checkout. (Forge-0e0v)
+- **Temper blocks npm ci when node_modules is a junction** - Detect when node_modules is a symlink/junction (from worktree linking) and skip destructive install commands like `npm ci` that would wipe the shared main checkout's dependencies. The step is skipped with a clear explanation instead of failing with EPERM. (Forge-bdqz)
+- **Temper hooks fire in burnish and quench** - Pipeline stage hooks (`before_temper`, `after_temper`) now fire during burnish (review-fix) and quench (CI-fix) temper runs, not just during the initial pipeline. Setup commands like `npm ci` now apply uniformly across all temper invocations. (Forge-w8rb)
+- **Worktree corruption guard** - Hardened worktree validation to check for .git file presence and gitdir integrity, preventing Smith from accidentally editing the main checkout when a worktree directory exists but lacks proper git linkage. Added retry-with-backoff for directory removal on Windows, post-creation verification, and a Smith-side pre-flight check that refuses to run in an invalid worktree. (Forge-cn6x)
+- **Worktree removal unlinks junctions before recursive delete** - On Windows, os.RemoveAll follows reparse points (junctions/symlinks) into the target directory, causing failures when locked files are encountered. Worktree removal now walks the tree and unlinks all reparse points first, preventing recursive deletion from entering junctioned directories like node_modules. (Forge-17gt)
+
 ## [0.13.0] - 2026-04-11
 
 ### Added

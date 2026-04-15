@@ -1,2 +1,0 @@
-category: Fixed
-- **Worktree corruption guard** - Hardened worktree validation to check for .git file presence and gitdir integrity, preventing Smith from accidentally editing the main checkout when a worktree directory exists but lacks proper git linkage. Added retry-with-backoff for directory removal on Windows, post-creation verification, and a Smith-side pre-flight check that refuses to run in an invalid worktree. (Forge-cn6x)
