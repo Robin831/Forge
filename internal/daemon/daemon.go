@@ -233,6 +233,10 @@ func New(cfg *config.Config) (*Daemon, error) {
 	logger := slog.New(slog.NewTextHandler(multiWriter, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
+	// Make package-level slog.Info/Warn/Error calls (e.g. from worktree.ProbeNodeModules
+	// and worktree.unlinkReparsePoints) route through the same handler so their
+	// output reaches ~/.forge/logs/daemon.log alongside d.logger.* calls.
+	slog.SetDefault(logger)
 
 	db, err := state.Open("")
 	if err != nil {
