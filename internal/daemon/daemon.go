@@ -63,7 +63,6 @@ import (
 	"github.com/Robin831/Forge/internal/worker"
 	"github.com/Robin831/Forge/internal/worktree"
 
-	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -4481,10 +4480,14 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 					var mu sync.Mutex
 					var failures []tagFailure
 
-					g := new(errgroup.Group)
-					g.SetLimit(4)
+					sem := make(chan struct{}, 4)
+					var wg sync.WaitGroup
 					for _, sub := range sr.SubBeads {
-						g.Go(func() error {
+						wg.Add(1)
+						sem <- struct{}{}
+						go func() {
+							defer wg.Done()
+							defer func() { <-sem }()
 							if err := d.labelAdder(anvilCfg.Path, sub.ID, anvilCfg.AutoDispatchTag); err != nil {
 								d.logger.Warn("failed to copy auto_dispatch tag to child bead",
 									"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag, "error", err)
@@ -4498,10 +4501,9 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 									fmt.Sprintf("Label %q propagated to child bead %s from decomposed parent %s", anvilCfg.AutoDispatchTag, sub.ID, beadID),
 									sub.ID, anvil)
 							}
-							return nil
-						})
+						}()
 					}
-					g.Wait()
+					wg.Wait()
 					for _, f := range failures {
 						reason := fmt.Sprintf("failed to propagate auto_dispatch tag %q to child bead %s: %v",
 							anvilCfg.AutoDispatchTag, f.childID, f.err)
