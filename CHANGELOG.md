@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.15.0] - 2026-04-17
+
+### Added
+
+- **Two-tier polling for faster bead discovery** - The poller now uses a fast label-filtered path every poll interval and a slow unfiltered path on a separate cadence (configurable via `crucible_poll_interval`, default 3m) to rebuild the Crucible parent-child graph. This reduces no-op poll cycle time by ~3.6x while preserving Crucible candidate detection. (Forge-fbyh)
+- **Worktree cleanup diagnostic logging** - Added probeNodeModules instrumentation around all git subprocess and os.RemoveAll calls in worktree cleanup paths, and bumped junction unlink log level from Debug to Info, to diagnose node_modules wipe issues. (Forge-bk0q)
+
+### Fixed
+
+- **Immediate bead release on dispatch failure** - Pipeline dispatch failures (temper exhaustion, warden rejection, etc.) now release the bead claim immediately via bd update instead of deferring to orphan recovery, reducing latency before the bead becomes available again. (Forge-s9pe)
+- **Parallelize auto_dispatch tag propagation** - Child bead tag propagation in applyDecomposedOutcome now runs concurrently instead of sequentially, reducing wall-clock time from ~100s to ~25s for a 4-child decompose. (Forge-n50j)
+- **Probe logging now reaches daemon.log** - `daemon.go` now calls `slog.SetDefault` on its configured logger, so package-level `slog.Info` calls (notably `worktree.ProbeNodeModules` and `worktree.unlinkReparsePoints`) land in `~/.forge/logs/daemon.log` instead of being swallowed by Go's default stderr-only handler. Also rewrote `ProbeNodeModules` to iterate the same `nodeModulesDirs` (`""`, `web`, `frontend`, `client`, `app`, `ui`) that `linkNodeModules` targets, so it actually inspects `<anvil>/client/node_modules` etc. instead of only checking an empty `<anvil>/node_modules` root. (Forge-8q6m)
+- **Protect node_modules junction from git clean in worktree reuse and deny-pattern reset** - Unlink junctions/symlinks before git checkout --force, git clean -fd, and git reset --hard so git cannot traverse into the main checkout's node_modules and destroy its contents. Also exclude node_modules from git clean and re-link after pipeline deny-pattern resets. (Forge-0imm)
+- **Worktree Remove unlinks junctions before removal** - Manager.Remove now calls unlinkReparsePoints before git worktree remove, preventing node_modules junction targets from being destroyed during worker cleanup. (Forge-9145)
+- **`unlinkReparsePoints` now actually unlinks the node_modules junction on Windows** - `filepath.WalkDir` descends into NTFS directory junctions on Windows as if they were regular directories, so the walk-only implementation silently traversed the target without ever invoking its callback on the junction node itself. `git worktree remove --force` would then follow the still-present junction and delete the contents of the main checkout's `client/node_modules` (observed as a 565 → 0 drop on every pipeline completion). Fixed by first checking each known junction location directly (`<root>/<sub>/node_modules` for each `sub` in `""`, `web`, `frontend`, `client`, `app`, `ui`) with `Lstat` + `isReparsePoint` and unlinking if matched, with the `WalkDir` pass retained as a safety net for ad-hoc reparse points. (Forge-omk3)
+- **resetBead timeout too short for slow Dolt connections** - Bumped resetBead timeout from 10s to 5min (matching other bd write sites), surface "context deadline exceeded" in error messages, and skip incrementing the recovery failure counter on transient timeouts so they don't trip the circuit breaker. (Forge-4omg)
+
 ## [0.14.0] - 2026-04-15
 
 ### Added
