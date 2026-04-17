@@ -62,6 +62,7 @@ import (
 	"github.com/Robin831/Forge/internal/wicket"
 	"github.com/Robin831/Forge/internal/worker"
 	"github.com/Robin831/Forge/internal/worktree"
+
 )
 
 const (
@@ -4472,20 +4473,41 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 					}
 				}
 				if parentHasTag {
+					type tagFailure struct {
+						childID string
+						err     error
+					}
+					var mu sync.Mutex
+					var failures []tagFailure
+
+					sem := make(chan struct{}, 4)
+					var wg sync.WaitGroup
 					for _, sub := range sr.SubBeads {
-						if err := d.labelAdder(anvilCfg.Path, sub.ID, anvilCfg.AutoDispatchTag); err != nil {
-							d.logger.Warn("failed to copy auto_dispatch tag to child bead",
-								"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag, "error", err)
-							reason := fmt.Sprintf("failed to propagate auto_dispatch tag %q to child bead %s: %v",
-								anvilCfg.AutoDispatchTag, sub.ID, err)
-							d.recordDispatchFailure(beadID, anvil, reason, true)
-						} else {
-							d.logger.Info("copied auto_dispatch tag to child bead",
-								"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag)
-							_ = d.db.LogEvent(state.EventBeadTagged,
-								fmt.Sprintf("Label %q propagated to child bead %s from decomposed parent %s", anvilCfg.AutoDispatchTag, sub.ID, beadID),
-								sub.ID, anvil)
-						}
+						wg.Add(1)
+						sem <- struct{}{}
+						go func() {
+							defer wg.Done()
+							defer func() { <-sem }()
+							if err := d.labelAdder(anvilCfg.Path, sub.ID, anvilCfg.AutoDispatchTag); err != nil {
+								d.logger.Warn("failed to copy auto_dispatch tag to child bead",
+									"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag, "error", err)
+								mu.Lock()
+								failures = append(failures, tagFailure{childID: sub.ID, err: err})
+								mu.Unlock()
+							} else {
+								d.logger.Info("copied auto_dispatch tag to child bead",
+									"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag)
+								_ = d.db.LogEvent(state.EventBeadTagged,
+									fmt.Sprintf("Label %q propagated to child bead %s from decomposed parent %s", anvilCfg.AutoDispatchTag, sub.ID, beadID),
+									sub.ID, anvil)
+							}
+						}()
+					}
+					wg.Wait()
+					for _, f := range failures {
+						reason := fmt.Sprintf("failed to propagate auto_dispatch tag %q to child bead %s: %v",
+							anvilCfg.AutoDispatchTag, f.childID, f.err)
+						d.recordDispatchFailure(beadID, anvil, reason, true)
 					}
 				}
 			}
