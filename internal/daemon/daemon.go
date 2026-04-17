@@ -4395,9 +4395,10 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 }
 
 // releaseBeadClaim releases a claimed bead back to open status and strips the
-// forgeReady label so it is not immediately re-dispatched. The anvil path is
-// resolved from the current config. If the release fails (bd error, missing
-// anvil config), a warning is logged — orphan recovery acts as the fallback.
+// anvil's auto_dispatch_tag so it is not immediately re-dispatched. The anvil
+// path is resolved from the current config. If the release fails (bd error,
+// missing anvil config), a warning is logged — orphan recovery acts as the
+// fallback.
 func (d *Daemon) releaseBeadClaim(beadID, anvil string) {
 	anvilCfg, ok := d.cfg.Load().Anvils[anvil]
 	if !ok || anvilCfg.Path == "" {
@@ -4408,9 +4409,14 @@ func (d *Daemon) releaseBeadClaim(beadID, anvil string) {
 	ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
 	defer cancel()
 
+	args := []string{"update", beadID, "--status=open", "--assignee="}
+	if anvilCfg.AutoDispatchTag != "" {
+		args = append(args, "--remove-label="+anvilCfg.AutoDispatchTag)
+	}
+	args = append(args, "--json")
+
 	var stderrBuf bytes.Buffer
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID,
-		"--status=open", "--assignee=", "--remove-label=forgeReady", "--json"))
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", args...))
 	cmd.Dir = anvilCfg.Path
 	cmd.Stderr = &stderrBuf
 	out, err := cmd.Output()
