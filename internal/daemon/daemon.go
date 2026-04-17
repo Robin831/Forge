@@ -62,6 +62,8 @@ import (
 	"github.com/Robin831/Forge/internal/wicket"
 	"github.com/Robin831/Forge/internal/worker"
 	"github.com/Robin831/Forge/internal/worktree"
+
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -4472,17 +4474,23 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 					}
 				}
 				if parentHasTag {
-					var wg sync.WaitGroup
+					type tagFailure struct {
+						childID string
+						err     error
+					}
+					var mu sync.Mutex
+					var failures []tagFailure
+
+					g := new(errgroup.Group)
+					g.SetLimit(4)
 					for _, sub := range sr.SubBeads {
-						wg.Add(1)
-						go func(sub schematic.SubBead) {
-							defer wg.Done()
+						g.Go(func() error {
 							if err := d.labelAdder(anvilCfg.Path, sub.ID, anvilCfg.AutoDispatchTag); err != nil {
 								d.logger.Warn("failed to copy auto_dispatch tag to child bead",
 									"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag, "error", err)
-								reason := fmt.Sprintf("failed to propagate auto_dispatch tag %q to child bead %s: %v",
-									anvilCfg.AutoDispatchTag, sub.ID, err)
-								d.recordDispatchFailure(beadID, anvil, reason, true)
+								mu.Lock()
+								failures = append(failures, tagFailure{childID: sub.ID, err: err})
+								mu.Unlock()
 							} else {
 								d.logger.Info("copied auto_dispatch tag to child bead",
 									"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag)
@@ -4490,9 +4498,15 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 									fmt.Sprintf("Label %q propagated to child bead %s from decomposed parent %s", anvilCfg.AutoDispatchTag, sub.ID, beadID),
 									sub.ID, anvil)
 							}
-						}(sub)
+							return nil
+						})
 					}
-					wg.Wait()
+					g.Wait()
+					for _, f := range failures {
+						reason := fmt.Sprintf("failed to propagate auto_dispatch tag %q to child bead %s: %v",
+							anvilCfg.AutoDispatchTag, f.childID, f.err)
+						d.recordDispatchFailure(beadID, anvil, reason, true)
+					}
 				}
 			}
 		}
