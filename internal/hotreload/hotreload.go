@@ -12,6 +12,7 @@
 //   - settings.max_ci_fix_attempts (applied immediately to lifecycle manager)
 //   - settings.max_review_fix_attempts (applied immediately to lifecycle manager)
 //   - settings.max_rebase_attempts (applied immediately to lifecycle manager)
+//   - settings.crucible_poll_interval (change the slow-path Crucible poll cadence)
 //   - settings.copilot_combined_smith_warden (toggle combined mode at runtime)
 //   - settings.copilot_warden_sample_rate (adjust sampling rate at runtime)
 //   - settings.smelter_enabled (enable/disable Smelter at runtime)
@@ -262,6 +263,11 @@ func applyChanges(old, new *config.Config) []string {
 	if oldSmelterEnabled != newSmelterEnabled {
 		changes = append(changes, fmt.Sprintf("smelter_enabled: %v → %v",
 			oldSmelterEnabled, newSmelterEnabled))
+	}
+
+	if old.Settings.CruciblePollInterval != new.Settings.CruciblePollInterval {
+		changes = append(changes, fmt.Sprintf("crucible_poll_interval: %v → %v",
+			old.Settings.CruciblePollInterval, new.Settings.CruciblePollInterval))
 	}
 
 	if old.Settings.SmelterInterval != new.Settings.SmelterInterval {

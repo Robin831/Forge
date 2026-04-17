@@ -170,6 +170,11 @@ type Daemon struct {
 	lastBeads   []poller.Bead
 	lastBeadsMu sync.RWMutex
 
+	// Cached Blocks graph from the last slow (unfiltered) poll. Used by
+	// fast (label-filtered) polls to detect Crucible parent beads.
+	cachedBlocks   poller.BlocksGraph
+	cachedBlocksMu sync.RWMutex
+
 	// Per-anvil temper.yaml cache keyed by anvil path.
 	// Avoids repeated filesystem I/O on every dispatch and de-duplicates
 	// log spam when the file is invalid or unreadable.
@@ -660,8 +665,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	// Initial poll
-	d.pollAndDispatch(ctx)
+	// Initial poll (full/unfiltered to populate the Blocks cache)
+	d.pollAndDispatch(ctx, true)
 
 	// Start PR Monitor (Bellows)
 	monitorAnvils := make(map[string]string)
@@ -819,6 +824,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}
 
+	// Two-tier polling: fast ticker uses label-filtered polls for dispatch;
+	// slow ticker runs unfiltered polls to rebuild the Crucible Blocks graph.
+	// When CruciblePollInterval is 0, all polls are unfiltered (legacy mode).
+	crucibleInterval := d.cfg.Load().Settings.CruciblePollInterval
+	var crucibleTicker *time.Ticker
+	var crucibleC <-chan time.Time
+	if crucibleInterval > 0 {
+		crucibleTicker = time.NewTicker(crucibleInterval)
+		crucibleC = crucibleTicker.C
+		defer crucibleTicker.Stop()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -841,7 +858,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 
 		case <-ticker.C:
-			d.pollAndDispatch(ctx)
+			// Fast path when two-tier is active; full poll when disabled.
+			d.pollAndDispatch(ctx, crucibleInterval == 0)
+
+		case <-crucibleC:
+			// Slow path: unfiltered poll to rebuild the Blocks graph.
+			d.pollAndDispatch(ctx, true)
 		}
 	}
 }
@@ -1495,11 +1517,15 @@ func (d *Daemon) runStaleDetection(ctx context.Context) {
 }
 
 // pollAndDispatch polls all anvils for ready beads and dispatches workers.
+// When fullPoll is true, an unfiltered poll is performed and the cached Blocks
+// graph is rebuilt (slow path). When false, a label-filtered poll is performed
+// and the cached Blocks graph is merged into the results (fast path).
+//
 // It is serialized via a try-lock: if a poll is already running (e.g. an IPC
 // "refresh" overlapping with the ticker), the second caller returns immediately.
 // The in-progress poll already holds a consistent capacity snapshot, so
 // skipping the duplicate avoids double-dispatching past max_total_smiths.
-func (d *Daemon) pollAndDispatch(ctx context.Context) {
+func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 	if !d.pollRunning.CompareAndSwap(false, true) {
 		d.logger.Debug("pollAndDispatch already running, skipping concurrent invocation")
 		return
@@ -1510,7 +1536,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	// if hot-reload swaps the pointer concurrently.
 	cfg := d.cfg.Load()
 
-	d.logger.Info("polling anvils", "count", len(cfg.Anvils))
+	if fullPoll {
+		d.logger.Info("polling anvils (full)", "count", len(cfg.Anvils))
+	} else {
+		d.logger.Info("polling anvils (fast)", "count", len(cfg.Anvils))
+	}
 
 	// Periodically recover orphaned in-progress beads (every 10 poll cycles).
 	// Recovery also runs once at startup (see Start). Running it here catches
@@ -1563,6 +1593,13 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 	}
 	p := poller.NewStaggered(cfg.Anvils, pollInterval)
 	p.BdReadyLimit = cfg.Settings.BdReadyLimit
+	if !fullPoll {
+		p.UseLabelFilter = true
+	}
+	pollKind := "full"
+	if !fullPoll {
+		pollKind = "fast"
+	}
 	// Log each anvil's poll event as soon as it finishes so Hearth shows
 	// per-anvil timestamps that reflect the actual stagger, not a single
 	// shared timestamp logged after wg.Wait().
@@ -1570,10 +1607,25 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		if r.Err != nil {
 			_ = d.db.LogEvent(state.EventPollError, r.Err.Error(), "", r.Name)
 		} else {
-			_ = d.db.LogEvent(state.EventPoll, fmt.Sprintf("Polled anvil: %s (%d ready)", r.Name, len(r.Beads)), "", r.Name)
+			_ = d.db.LogEvent(state.EventPoll, fmt.Sprintf("Polled anvil [%s]: %s (%d ready)", pollKind, r.Name, len(r.Beads)), "", r.Name)
 		}
 	}
 	beads, results := p.Poll(ctx)
+
+	if fullPoll {
+		// Slow path: rebuild the cached Blocks graph from the unfiltered results.
+		graph := poller.BuildBlocksGraph(beads)
+		d.cachedBlocksMu.Lock()
+		d.cachedBlocks = graph
+		d.cachedBlocksMu.Unlock()
+	} else {
+		// Fast path: merge cached Blocks into label-filtered results so
+		// IsCrucibleCandidate still detects parent beads.
+		d.cachedBlocksMu.RLock()
+		cached := d.cachedBlocks
+		d.cachedBlocksMu.RUnlock()
+		poller.MergeBlocksFromCache(beads, cached)
+	}
 
 	anvilPaths := make(map[string]string, len(cfg.Anvils))
 	for name, anvil := range cfg.Anvils {
@@ -2873,7 +2925,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Info("crucible resumed", "parent", ca.ParentID, "anvil", ca.Anvil)
 
 			// Trigger poll to rediscover the parent and re-enter crucible loop.
-			go d.pollAndDispatch(d.runCtx)
+			go d.pollAndDispatch(d.runCtx, false)
 
 			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("crucible %s resumed", ca.ParentID)})
 			return ipc.Response{Type: "ok", Payload: data}
@@ -2937,7 +2989,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 	case "refresh":
 		go func() {
-			d.pollAndDispatch(d.runCtx)
+			d.pollAndDispatch(d.runCtx, false)
 			if d.bellowsMonitor != nil {
 				d.bellowsMonitor.Refresh()
 			}
@@ -3252,7 +3304,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.LogEvent(state.EventBeadTagged, fmt.Sprintf("Label %q added to bead %s", tag, tp.BeadID), tp.BeadID, tp.Anvil)
 			refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
 			defer refreshCancel()
-			d.pollAndDispatch(refreshCtx)
+			d.pollAndDispatch(refreshCtx, false)
 			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q added", tag)})
 			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
 		}()
@@ -3294,7 +3346,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Bead %s closed via TUI", cp.BeadID), cp.BeadID, cp.Anvil)
 			refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
 			defer refreshCancel()
-			d.pollAndDispatch(refreshCtx)
+			d.pollAndDispatch(refreshCtx, false)
 			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s closed", cp.BeadID)})
 			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
 		}()
@@ -3424,7 +3476,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				d.bellowsMonitor.ResetPRState(pr.Anvil, pr.Number)
 				d.bellowsMonitor.Refresh()
 			}
-			go d.pollAndDispatch(d.runCtx)
+			go d.pollAndDispatch(d.runCtx, false)
 
 			_ = d.db.LogEvent(
 				state.EventRetryReset,
@@ -3468,7 +3520,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 					d.logger.Warn("failed to reset bead status after retry reset", "bead", rp.BeadID, "error", err, "output", string(output))
 				}
 			}
-			d.pollAndDispatch(d.runCtx)
+			d.pollAndDispatch(d.runCtx, false)
 			msg := "retry reset"
 			if hasCircuitBreaker {
 				msg = "retry state reset"
@@ -3853,7 +3905,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.RemovePendingOrphan(rp.BeadID, rp.Anvil)
 			_ = d.db.LogEvent(state.EventBeadRecovered, fmt.Sprintf("Orphan %s recovered by user via Hearth", rp.BeadID), rp.BeadID, rp.Anvil)
 			d.logger.Info("orphan recovered by user", "bead", rp.BeadID, "anvil", rp.Anvil)
-			go d.pollAndDispatch(d.runCtx)
+			go d.pollAndDispatch(d.runCtx, false)
 		case "close":
 			// Use context.Background() so this bd close call is not interrupted
 			// if the daemon is concurrently shutting down. The user explicitly
@@ -3870,7 +3922,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Orphan %s closed by user (work completed)", rp.BeadID), rp.BeadID, rp.Anvil)
 			d.logger.Info("orphan closed by user (completed)", "bead", rp.BeadID, "anvil", rp.Anvil)
 			// Refresh queue state so Hearth reflects the closed orphan immediately.
-			go d.pollAndDispatch(d.runCtx)
+			go d.pollAndDispatch(d.runCtx, false)
 		case "discard":
 			// Use context.Background() so this bd close call is not interrupted
 			// if the daemon is concurrently shutting down. The user explicitly
@@ -3887,7 +3939,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Orphan %s discarded by user", rp.BeadID), rp.BeadID, rp.Anvil)
 			d.logger.Info("orphan discarded by user", "bead", rp.BeadID, "anvil", rp.Anvil)
 			// Refresh queue state so Hearth reflects the discarded orphan immediately.
-			go d.pollAndDispatch(d.runCtx)
+			go d.pollAndDispatch(d.runCtx, false)
 		default:
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("unknown orphan action: %q", rp.Action)})
 			return ipc.Response{Type: "error", Payload: msg}
