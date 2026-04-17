@@ -193,7 +193,15 @@ try {
 
     Copy-Item -Path $ExtractedBinary.FullName -Destination $BinaryPath -Force
 
-    if ($OS -ne "windows") {
+    if ($OS -eq "windows") {
+        # Strip the Zone.Identifier NTFS stream so Defender doesn't treat the
+        # binary as downloaded-from-internet on every launch. Best-effort.
+        try {
+            Unblock-File -Path $BinaryPath -ErrorAction Stop
+        } catch {
+            Write-Host "   Warning: Unblock-File failed — $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    } else {
         # Ensure the forge binary is executable on Unix-like systems.
         & chmod +x -- $BinaryPath
     }
