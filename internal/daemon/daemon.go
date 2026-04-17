@@ -171,6 +171,20 @@ type Daemon struct {
 	lastBeads   []poller.Bead
 	lastBeadsMu sync.RWMutex
 
+	// Two-tier bead snapshot, keyed by anvil then bead ID.
+	//   labeledSnapshot   — beads matching the anvil's auto_dispatch_tag.
+	//                       Refreshed by every poll (fast and slow).
+	//   unlabeledSnapshot — beads that do NOT match the anvil's tag but are
+	//                       still ready. Refreshed only by unfiltered (slow)
+	//                       polls, so they remain visible to Hearth between
+	//                       fast polls instead of flickering in and out.
+	// For anvils without an auto_dispatch_tag every poll is unfiltered, so
+	// all of their beads land in the labeled map and the unlabeled map stays
+	// empty.
+	snapshotMu        sync.RWMutex
+	labeledSnapshot   map[string]map[string]poller.Bead
+	unlabeledSnapshot map[string]map[string]poller.Bead
+
 	// Cached Blocks graph from the last slow (unfiltered) poll. Used by
 	// fast (label-filtered) polls to detect Crucible parent beads.
 	cachedBlocks   poller.BlocksGraph
@@ -1688,11 +1702,6 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 	// or via the blocks/blocked_by dependency graph (preferred).
 	poller.ResolveEpicBranches(ctx, beads, anvilPaths)
 
-	// Update cache
-	d.lastBeadsMu.Lock()
-	d.lastBeads = beads
-	d.lastBeadsMu.Unlock()
-
 	for _, r := range results {
 		if r.Err != nil {
 			d.logger.Warn("poll error", "anvil", r.Name, "error", r.Err)
@@ -1700,6 +1709,20 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 			d.logger.Info("poll complete", "anvil", r.Name, "ready", len(r.Beads))
 		}
 	}
+
+	// Update the two-tier snapshot. Fast (label-filtered) polls only refresh
+	// the labeled map for filtered anvils; slow polls refresh both. The merged
+	// view feeds lastBeads (used by IPC and title lookups) and the queue_cache
+	// rows so unlabeled beads stay visible to Hearth between slow polls.
+	d.updateBeadSnapshot(cfg, beads, results, !effectiveFullPoll)
+
+	// Refresh lastBeads with the merged view across all anvils so IPC consumers
+	// (run_bead cache lookup, crucibleParentTitle) see unlabeled beads even
+	// after a fast poll.
+	merged := d.mergedBeadSnapshot()
+	d.lastBeadsMu.Lock()
+	d.lastBeads = merged
+	d.lastBeadsMu.Unlock()
 
 	// Cache queue in SQLite so the Hearth TUI can read it without polling independently.
 	// Only update cache rows for anvils that polled successfully, so failed anvils
@@ -1717,8 +1740,13 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 			succeededSet[a] = struct{}{}
 		}
 
+		// Build queue_cache rows from the merged snapshot, restricted to the
+		// anvils we just polled successfully. This preserves unlabeled beads
+		// from a previous slow poll across intervening fast polls — the bug
+		// fix for Forge-1soq.
+		mergedForCache := d.mergedBeadSnapshotForAnvils(succeededAnvils)
 		var cacheItems []state.QueueItem
-		for _, b := range beads {
+		for _, b := range mergedForCache {
 			if b.Labels == nil {
 				b.Labels = []string{}
 			}
@@ -4724,6 +4752,141 @@ func (d *Daemon) maybeCloseDecomposedParent(bead poller.Bead, anvilCfg config.An
 	_ = d.db.LogEvent(state.EventBeadAutoClosed,
 		fmt.Sprintf("Parent auto-closed after decomposition into %d children (no dependents)", childCount),
 		beadID, anvil)
+}
+
+// updateBeadSnapshot refreshes the daemon's two-tier bead snapshot from a poll
+// result. The fast (label-filtered) path may only refresh the labeled map for
+// anvils that effectively used the label filter; the unlabeled map stays put
+// so beads picked up by a previous slow poll remain visible to Hearth.
+//
+// fastPoll mirrors pollAndDispatch's effectiveFullPoll inversion: when
+// fastPoll is true, the cycle requested label filtering. Per-anvil filtering
+// is enabled only when the anvil also has a non-empty AutoDispatchTag — anvils
+// without a tag are polled unfiltered even on the fast path, so we treat them
+// as a slow refresh and update both maps.
+//
+// Anvils whose poll returned an error are left untouched so a transient bd
+// failure does not wipe the cached snapshot.
+func (d *Daemon) updateBeadSnapshot(cfg *config.Config, beads []poller.Bead, results []poller.AnvilResult, fastPoll bool) {
+	if cfg == nil {
+		return
+	}
+
+	beadsByAnvil := make(map[string][]poller.Bead, len(results))
+	for _, b := range beads {
+		beadsByAnvil[b.Anvil] = append(beadsByAnvil[b.Anvil], b)
+	}
+
+	d.snapshotMu.Lock()
+	defer d.snapshotMu.Unlock()
+	if d.labeledSnapshot == nil {
+		d.labeledSnapshot = map[string]map[string]poller.Bead{}
+	}
+	if d.unlabeledSnapshot == nil {
+		d.unlabeledSnapshot = map[string]map[string]poller.Bead{}
+	}
+
+	for _, r := range results {
+		if r.Err != nil {
+			continue
+		}
+		anvilCfg, ok := cfg.Anvils[r.Name]
+		if !ok {
+			continue
+		}
+		tag := anvilCfg.AutoDispatchTag
+		// Was this anvil's poll filtered? Only when the global cycle ran in
+		// fast mode AND this anvil had a tag for the poller to filter on.
+		filtered := fastPoll && tag != ""
+
+		labeled := make(map[string]poller.Bead, len(beadsByAnvil[r.Name]))
+		unlabeled := make(map[string]poller.Bead)
+		for _, b := range beadsByAnvil[r.Name] {
+			if tag == "" || beadHasLabel(b, tag) {
+				labeled[b.ID] = b
+			} else {
+				unlabeled[b.ID] = b
+			}
+		}
+		d.labeledSnapshot[r.Name] = labeled
+		if !filtered {
+			// Slow (or effectively slow) refresh: replace the unlabeled map
+			// wholesale so beads that have transitioned out of ready (closed,
+			// claimed, lost a dependency) are evicted.
+			d.unlabeledSnapshot[r.Name] = unlabeled
+		}
+	}
+}
+
+// beadHasLabel reports whether the bead carries the given label (case-insensitive).
+func beadHasLabel(b poller.Bead, label string) bool {
+	for _, l := range b.Labels {
+		if strings.EqualFold(l, label) {
+			return true
+		}
+	}
+	return false
+}
+
+// mergedBeadSnapshot returns the union of labeled and unlabeled snapshots
+// across all anvils, sorted by priority (ascending) then bead ID. Labeled
+// entries take precedence on collision because they reflect the freshest poll.
+func (d *Daemon) mergedBeadSnapshot() []poller.Bead {
+	d.snapshotMu.RLock()
+	defer d.snapshotMu.RUnlock()
+	anvils := make(map[string]struct{}, len(d.labeledSnapshot)+len(d.unlabeledSnapshot))
+	for a := range d.labeledSnapshot {
+		anvils[a] = struct{}{}
+	}
+	for a := range d.unlabeledSnapshot {
+		anvils[a] = struct{}{}
+	}
+	names := make([]string, 0, len(anvils))
+	for a := range anvils {
+		names = append(names, a)
+	}
+	return d.mergedBeadSnapshotLocked(names)
+}
+
+// mergedBeadSnapshotForAnvils returns the union of labeled and unlabeled
+// snapshots restricted to the given anvil names.
+func (d *Daemon) mergedBeadSnapshotForAnvils(anvils []string) []poller.Bead {
+	d.snapshotMu.RLock()
+	defer d.snapshotMu.RUnlock()
+	return d.mergedBeadSnapshotLocked(anvils)
+}
+
+// mergedBeadSnapshotLocked is the lock-free merge implementation. The caller
+// must hold snapshotMu (read or write).
+func (d *Daemon) mergedBeadSnapshotLocked(anvils []string) []poller.Bead {
+	var out []poller.Bead
+	for _, a := range anvils {
+		seen := make(map[string]struct{})
+		if labeled, ok := d.labeledSnapshot[a]; ok {
+			for id, b := range labeled {
+				seen[id] = struct{}{}
+				out = append(out, b)
+			}
+		}
+		if unlabeled, ok := d.unlabeledSnapshot[a]; ok {
+			for id, b := range unlabeled {
+				if _, dup := seen[id]; dup {
+					continue
+				}
+				out = append(out, b)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Priority != out[j].Priority {
+			return out[i].Priority < out[j].Priority
+		}
+		if out[i].ID != out[j].ID {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Anvil < out[j].Anvil
+	})
+	return out
 }
 
 // classifyBeadSection determines which queue section a bead belongs to based
