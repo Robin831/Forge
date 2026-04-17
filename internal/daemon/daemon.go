@@ -1860,7 +1860,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context) {
 		// Claim the bead atomically before dispatching
 		if err := d.claimBead(ctx, bead.ID, anvilCfg.Path); err != nil {
 			d.logger.Warn("failed to claim bead", "bead", bead.ID, "error", err)
-			d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("claim failed: %v", err))
+			d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("claim failed: %v", err), false)
 			d.activeBeads.Delete(bead.ID)
 			continue
 		}
@@ -1908,7 +1908,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		d.logger.Error("anvil branch check failed at dispatch time, aborting bead",
 			"bead", bead.ID, "anvil", bead.Anvil, "error", err)
 		d.recordDispatchFailure(bead.ID, bead.Anvil,
-			fmt.Sprintf("anvil branch check failed: %v", err))
+			fmt.Sprintf("anvil branch check failed: %v", err), true)
 		return
 	}
 
@@ -1929,7 +1929,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			d.logger.Info("creating epic branch", "bead", bead.ID, "branch", epicBranch)
 			if err := d.worktreeMgr.CreateEpicBranch(ctx, anvilCfg.Path, epicBranch); err != nil {
 				d.logger.Error("failed to create epic branch", "bead", bead.ID, "branch", epicBranch, "error", err)
-				d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("epic branch creation failed: %v", err))
+				d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("epic branch creation failed: %v", err), true)
 				return
 			}
 			_ = d.db.LogEvent(state.EventBeadClaimed,
@@ -2093,10 +2093,10 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			d.logger.Error("crucible failed", "bead", bead.ID, "error", result.Error)
 			if result.PausedChildID != "" {
 				d.recordDispatchFailure(bead.ID, bead.Anvil,
-					fmt.Sprintf("crucible paused: child %s failed", result.PausedChildID))
+					fmt.Sprintf("crucible paused: child %s failed", result.PausedChildID), true)
 			} else {
 				d.recordDispatchFailure(bead.ID, bead.Anvil,
-					fmt.Sprintf("crucible error: %v", result.Error))
+					fmt.Sprintf("crucible error: %v", result.Error), true)
 			}
 			return
 		}
@@ -2219,7 +2219,7 @@ normalPipeline:
 			if err := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); err != nil {
 				d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", err)
 			}
-			d.recordDispatchFailure(bead.ID, bead.Anvil, reason)
+			d.recordDispatchFailure(bead.ID, bead.Anvil, reason, true)
 			holdOff := d.cfg.Load().Settings.PollInterval
 			if holdOff <= 0 {
 				holdOff = DefaultPollInterval
@@ -2232,7 +2232,7 @@ normalPipeline:
 			return
 		}
 		d.logger.Error("pipeline error", "bead", bead.ID, "error", outcome.Error)
-		d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("pipeline error: %v", outcome.Error))
+		d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("pipeline error: %v", outcome.Error), true)
 		return
 	}
 
@@ -2281,7 +2281,7 @@ normalPipeline:
 			if err := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); err != nil {
 				d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", err)
 			}
-			d.recordDispatchFailure(bead.ID, bead.Anvil, reason)
+			d.recordDispatchFailure(bead.ID, bead.Anvil, reason, true)
 			// Hold the activeBeads slot for a full poll interval so the bead is not
 			// immediately re-dispatched before a human can investigate.
 			holdOff := d.cfg.Load().Settings.PollInterval
@@ -2296,7 +2296,7 @@ normalPipeline:
 			}
 		} else {
 			d.logger.Warn("pipeline did not succeed", "bead", bead.ID, "verdict", outcome.Verdict)
-			d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("pipeline failed: %s", outcome.Verdict))
+			d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("pipeline failed: %s", outcome.Verdict), true)
 		}
 		return
 	}
@@ -2558,7 +2558,7 @@ func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Be
 		if markErr := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, closeErr); markErr != nil {
 			d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", markErr)
 		}
-		d.recordDispatchFailure(bead.ID, bead.Anvil, closeErr)
+		d.recordDispatchFailure(bead.ID, bead.Anvil, closeErr, true)
 	} else {
 		_ = d.db.ClearRetry(bead.ID, bead.Anvil)
 		_ = d.db.LogEvent(state.EventNoChangesNeeded,
@@ -4357,11 +4357,14 @@ func (d *Daemon) isBeadClarificationNeeded(beadID, anvil string) (bool, error) {
 // logs a circuit-break event if the threshold is reached. When the circuit
 // breaker trips, a bead_failed notification is sent to configured webhooks.
 //
-// After recording the failure, the bead claim is released immediately via
-// bd update so the bead becomes available again without waiting for orphan
-// recovery. If the release fails, a warning is logged and orphan recovery
-// serves as the fallback.
-func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
+// When releaseClaim is true, the bead claim is released immediately via bd
+// update so the bead becomes available again without waiting for orphan
+// recovery. Pass releaseClaim=false for pre-claim failures (e.g. claimBead
+// error) where Forge does not own the bead in bd — releasing in those cases
+// risks unassigning a bead legitimately held by another instance or a human.
+// If the release fails, a warning is logged and orphan recovery is the
+// fallback.
+func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string, releaseClaim bool) {
 	count, broken, err := d.db.IncrementDispatchFailures(beadID, anvil, MaxDispatchFailures, reason)
 	if err != nil {
 		d.logger.Error("failed to record dispatch failure", "bead", beadID, "error", err)
@@ -4371,7 +4374,9 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 		fmt.Sprintf("Dispatch attempt %d failed for %s: %s", count, beadID, reason),
 		beadID, anvil)
 
-	d.releaseBeadClaim(beadID, anvil)
+	if releaseClaim {
+		d.releaseBeadClaim(beadID, anvil)
+	}
 
 	if broken {
 		msg := fmt.Sprintf("Bead %s circuit-broken after %d consecutive dispatch failures: %s", beadID, count, reason)
@@ -4406,7 +4411,11 @@ func (d *Daemon) releaseBeadClaim(beadID, anvil string) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+	baseCtx := d.runCtx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, executil.DefaultBdTimeout)
 	defer cancel()
 
 	args := []string{"update", beadID, "--status=open", "--assignee="}
@@ -4469,7 +4478,7 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 								"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag, "error", err)
 							reason := fmt.Sprintf("failed to propagate auto_dispatch tag %q to child bead %s: %v",
 								anvilCfg.AutoDispatchTag, sub.ID, err)
-							d.recordDispatchFailure(beadID, anvil, reason)
+							d.recordDispatchFailure(beadID, anvil, reason, true)
 						} else {
 							d.logger.Info("copied auto_dispatch tag to child bead",
 								"parent", beadID, "child", sub.ID, "tag", anvilCfg.AutoDispatchTag)
@@ -4495,7 +4504,7 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 		reason = reason + ": " + sr.Reason
 	}
 	d.logger.Warn("bead decomposition produced no children; recording as dispatch failure", "bead", beadID, "reason", reason)
-	d.recordDispatchFailure(beadID, anvil, reason)
+	d.recordDispatchFailure(beadID, anvil, reason, true)
 }
 
 // fetchExternalRef does a one-shot bd show lookup for the bead's external_ref.
@@ -5183,7 +5192,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		_ = d.db.LogEvent(state.EventWardenReject, fmt.Sprintf("Warden re-review: %s — %s", result.Verdict, result.Summary), beadID, anvil)
 		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
 		// Bead stays in needs attention — record the updated feedback.
-		d.recordDispatchFailure(beadID, anvil, fmt.Sprintf("warden re-review: %s", result.Summary))
+		d.recordDispatchFailure(beadID, anvil, fmt.Sprintf("warden re-review: %s", result.Summary), true)
 	}
 }
 
