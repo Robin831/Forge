@@ -1740,11 +1740,14 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 			succeededSet[a] = struct{}{}
 		}
 
-		// Build queue_cache rows from the merged snapshot, restricted to the
-		// anvils we just polled successfully. This preserves unlabeled beads
-		// from a previous slow poll across intervening fast polls — the bug
-		// fix for Forge-1soq.
-		mergedForCache := d.mergedBeadSnapshotForAnvils(succeededAnvils)
+		// Filter the already-merged+sorted slice to succeeded anvils to avoid a
+		// second merge/sort and extra snapshotMu acquisitions.
+		mergedForCache := make([]poller.Bead, 0, len(merged))
+		for _, b := range merged {
+			if _, ok := succeededSet[b.Anvil]; ok {
+				mergedForCache = append(mergedForCache, b)
+			}
+		}
 		var cacheItems []state.QueueItem
 		for _, b := range mergedForCache {
 			if b.Labels == nil {
@@ -4829,22 +4832,19 @@ func beadHasLabel(b poller.Bead, label string) bool {
 }
 
 // mergedBeadSnapshot returns the union of labeled and unlabeled snapshots
-// across all anvils, sorted by priority (ascending) then bead ID. Labeled
-// entries take precedence on collision because they reflect the freshest poll.
+// across all currently configured anvils, sorted by priority (ascending)
+// then bead ID. Labeled entries take precedence on collision because they
+// reflect the freshest poll.
 func (d *Daemon) mergedBeadSnapshot() []poller.Bead {
+	cfg := d.cfg.Load()
+	names := make([]string, 0, len(cfg.Anvils))
+	for name := range cfg.Anvils {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	d.snapshotMu.RLock()
 	defer d.snapshotMu.RUnlock()
-	anvils := make(map[string]struct{}, len(d.labeledSnapshot)+len(d.unlabeledSnapshot))
-	for a := range d.labeledSnapshot {
-		anvils[a] = struct{}{}
-	}
-	for a := range d.unlabeledSnapshot {
-		anvils[a] = struct{}{}
-	}
-	names := make([]string, 0, len(anvils))
-	for a := range anvils {
-		names = append(names, a)
-	}
 	return d.mergedBeadSnapshotLocked(names)
 }
 

@@ -189,6 +189,7 @@ func TestSnapshot_MergeAcrossAnvils(t *testing.T) {
 		},
 	}
 	d := &Daemon{}
+	d.cfg.Store(cfg)
 
 	all := []poller.Bead{
 		{ID: "A-1", Anvil: "anvil-a", Priority: 1, Labels: []string{"forgeReady"}},
