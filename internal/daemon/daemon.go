@@ -175,6 +175,10 @@ type Daemon struct {
 	cachedBlocks   poller.BlocksGraph
 	cachedBlocksMu sync.RWMutex
 
+	// crucibleTickerResetCh signals the poll loop to reset the crucible
+	// ticker when hot-reload detects a crucible_poll_interval change.
+	crucibleTickerResetCh chan struct{}
+
 	// Per-anvil temper.yaml cache keyed by anvil path.
 	// Avoids repeated filesystem I/O on every dispatch and de-duplicates
 	// log spam when the file is invalid or unreadable.
@@ -300,8 +304,9 @@ func New(cfg *config.Config) (*Daemon, error) {
 		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:   wtMgr,
 		promptBuilder: prompt.NewBuilder(),
-		vcsProviders:  vcsProviders,
-		reqTracker:    *ipc.NewRequestTracker("forge-"),
+		vcsProviders:          vcsProviders,
+		reqTracker:            *ipc.NewRequestTracker("forge-"),
+		crucibleTickerResetCh: make(chan struct{}, 1),
 	}
 	d.notifier.Store(notifier)
 	d.dispatcher.Store(dispatcher)
@@ -648,6 +653,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.updateSmelterSettings(old, new)
 			// Propagate config changes to Wicket monitor (interval, labels, etc.)
 			d.updateWicketConfig(new)
+			// Signal the poll loop to reset the crucible ticker when the interval changes.
+			if old.Settings.CruciblePollInterval != new.Settings.CruciblePollInterval {
+				select {
+				case d.crucibleTickerResetCh <- struct{}{}:
+				default:
+				}
+			}
 			d.db.LogEvent(state.EventConfigReload, "Configuration reloaded", "", "")
 		})
 		go func() {
@@ -833,8 +845,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if crucibleInterval > 0 {
 		crucibleTicker = time.NewTicker(crucibleInterval)
 		crucibleC = crucibleTicker.C
-		defer crucibleTicker.Stop()
 	}
+	defer func() {
+		if crucibleTicker != nil {
+			crucibleTicker.Stop()
+		}
+	}()
 
 	for {
 		select {
@@ -859,11 +875,30 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 		case <-ticker.C:
 			// Fast path when two-tier is active; full poll when disabled.
-			d.pollAndDispatch(ctx, crucibleInterval == 0)
+			d.pollAndDispatch(ctx, crucibleTicker == nil)
 
 		case <-crucibleC:
 			// Slow path: unfiltered poll to rebuild the Blocks graph.
 			d.pollAndDispatch(ctx, true)
+
+		case <-d.crucibleTickerResetCh:
+			newInterval := d.cfg.Load().Settings.CruciblePollInterval
+			if newInterval > 0 {
+				if crucibleTicker != nil {
+					crucibleTicker.Reset(newInterval)
+				} else {
+					crucibleTicker = time.NewTicker(newInterval)
+					crucibleC = crucibleTicker.C
+				}
+				d.logger.Info("crucible poll interval updated", "interval", newInterval)
+			} else {
+				if crucibleTicker != nil {
+					crucibleTicker.Stop()
+					crucibleTicker = nil
+					crucibleC = nil
+				}
+				d.logger.Info("two-tier polling disabled, all polls now unfiltered")
+			}
 		}
 	}
 }
