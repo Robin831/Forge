@@ -4356,6 +4356,11 @@ func (d *Daemon) isBeadClarificationNeeded(beadID, anvil string) (bool, error) {
 // recordDispatchFailure increments the dispatch failure counter for a bead and
 // logs a circuit-break event if the threshold is reached. When the circuit
 // breaker trips, a bead_failed notification is sent to configured webhooks.
+//
+// After recording the failure, the bead claim is released immediately via
+// bd update so the bead becomes available again without waiting for orphan
+// recovery. If the release fails, a warning is logged and orphan recovery
+// serves as the fallback.
 func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 	count, broken, err := d.db.IncrementDispatchFailures(beadID, anvil, MaxDispatchFailures, reason)
 	if err != nil {
@@ -4365,6 +4370,9 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 	_ = d.db.LogEvent(state.EventDispatchFailed,
 		fmt.Sprintf("Dispatch attempt %d failed for %s: %s", count, beadID, reason),
 		beadID, anvil)
+
+	d.releaseBeadClaim(beadID, anvil)
+
 	if broken {
 		msg := fmt.Sprintf("Bead %s circuit-broken after %d consecutive dispatch failures: %s", beadID, count, reason)
 		d.logger.Warn(msg, "bead", beadID, "anvil", anvil)
@@ -4383,6 +4391,35 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string) {
 				disp.Dispatch(notifCtx, notify.EventBeadFailed, beadID, anvil, failMsg)
 			}
 		}(beadID, anvil, reason, count)
+	}
+}
+
+// releaseBeadClaim releases a claimed bead back to open status and strips the
+// forgeReady label so it is not immediately re-dispatched. The anvil path is
+// resolved from the current config. If the release fails (bd error, missing
+// anvil config), a warning is logged — orphan recovery acts as the fallback.
+func (d *Daemon) releaseBeadClaim(beadID, anvil string) {
+	anvilCfg, ok := d.cfg.Load().Anvils[anvil]
+	if !ok || anvilCfg.Path == "" {
+		d.logger.Warn("cannot release bead claim: anvil not found in config", "bead", beadID, "anvil", anvil)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+	defer cancel()
+
+	var stderrBuf bytes.Buffer
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID,
+		"--status=open", "--assignee=", "--remove-label=forgeReady", "--json"))
+	cmd.Dir = anvilCfg.Path
+	cmd.Stderr = &stderrBuf
+	out, err := cmd.Output()
+	if err != nil {
+		d.logger.Warn("failed to release bead claim, orphan recovery will handle it",
+			"bead", beadID, "anvil", anvil,
+			"error", err,
+			"stdout", strings.TrimSpace(string(out)),
+			"stderr", strings.TrimSpace(stderrBuf.String()))
 	}
 }
 
