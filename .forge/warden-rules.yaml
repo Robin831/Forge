@@ -1219,7 +1219,7 @@ rules:
         Adding a new warden rule, lint rule, or checklist entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
         Before inserting a new rule or checklist entry, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#425', 'copilot:PR#430', 'copilot:PR#493', 'copilot:PR#518']
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#425', 'copilot:PR#430', 'copilot:PR#493', 'copilot:PR#518', 'copilot:PR#529']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -1359,7 +1359,7 @@ rules:
       pattern: Warden rule definitions in warden-rules.yaml
       check: >-
         Verify that a specific, descriptive category is assigned when an appropriate one exists (for example, `style`, `testing`, or `concurrency`). The generic `category: other` should only be used when no more precise category applies, to keep triage, search, and reporting meaningful.
-      source: ['copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424']
+      source: ['copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#529']
       added: "2026-03-20"
     - id: warden-source-field-wording
       category: style
@@ -3431,7 +3431,7 @@ rules:
         os.Lstat or os.Stat result checked only for err == nil or os.IsNotExist, ignoring other possible errors
       check: >-
         When checking if a path exists with os.Lstat/os.Stat, verify that errors other than IsNotExist are handled explicitly and returned early, rather than falling through to creation logic that would produce misleading errors or inconsistent state
-      source: copilot:PR#521
+      source: ['copilot:PR#521', 'copilot:PR#540']
       added: "2026-04-13"
     - id: comment-accuracy
       category: style
@@ -3477,7 +3477,7 @@ rules:
       pattern: "Adding or modifying warden rules with category: other"
       check: >-
         Verify that the rule category is as specific as possible rather than defaulting to 'other'. Documentation-focused rules should use 'documentation', concurrency rules should use 'concurrency', etc. Generic categories reduce the value of triage and search filtering.
-      source: copilot:PR#518
+      source: ['copilot:PR#518', 'copilot:PR#529']
       added: "2026-04-13"
     - id: github-issue-url-host-validation
       category: security
@@ -3679,28 +3679,6 @@ rules:
         Verify that new warden rules use a category consistent with existing rules that cover the same concern area. Comment-correctness and code-comment alignment rules should use the 'style' category.
       source: copilot:PR#529
       added: "2026-04-15"
-    - id: warden-rule-category-precision
-      category: style
-      pattern: Warden rules or configuration entries assigned to the 'other' category
-      check: >-
-        Verify that the 'other' category is only used for truly uncategorizable items. If a more specific category (e.g. style, security, performance) fits, use it instead to keep 'other' reserved for edge cases.
-      source: copilot:PR#529
-      added: "2026-04-15"
-    - id: deduplicate-overlapping-warden-rules
-      category: other
-      pattern: Adding a new warden rule to .forge/warden-rules.yaml
-      check: >-
-        Verify the new rule does not duplicate the intent of an existing rule. If it overlaps, append the new source to the existing rule's source list and merge any unique wording instead of adding a separate entry.
-      source: copilot:PR#529
-      added: "2026-04-15"
-    - id: rule-category-specificity
-      category: style
-      pattern: >-
-        Warden rule definitions with category fields that use generic values like 'other' when a more specific category exists
-      check: >-
-        Verify that warden rule categories use the most specific applicable value (e.g. 'documentation' for doc/comment rules) rather than defaulting to 'other', so that category filtering remains meaningful
-      source: copilot:PR#529
-      added: "2026-04-15"
     - id: behavior-flag-needs-test
       category: testing
       pattern: >-
@@ -3844,7 +3822,7 @@ rules:
       source: copilot:PR#537
       added: "2026-04-15"
     - id: docs-setting-correct-section
-      category: other
+      category: documentation
       pattern: >-
         A configuration setting is documented in a section or table that does not match the setting's functional area (e.g., a poller setting listed under Wicket settings)
       check: >-
@@ -3867,14 +3845,7 @@ rules:
         Verify that node_modules junction/symlink operations are conditional on SkipNodeModulesJunction being false, so that depcheck/deps-update beads do not reintroduce junctions that corrupt the main checkout's dependencies
       source: copilot:PR#539
       added: "2026-04-15"
-    - id: stat-error-conflation
-      category: error-handling
-      pattern: os.Stat error handled without distinguishing os.IsNotExist from other errors
-      check: >-
-        Verify that os.Stat/os.Lstat error handling distinguishes not-exist errors from permission, I/O, or other failures rather than treating all errors as not-found
-      source: copilot:PR#540
-      added: "2026-04-15"
-    - id: log-readddir-errors
+    - id: log-readdir-errors
       category: error-handling
       pattern: >-
         When a function ignores or swallows an os.ReadDir (or similar directory/file read) error and falls through to a default/sentinel value
