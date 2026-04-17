@@ -1571,7 +1571,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 	// if hot-reload swaps the pointer concurrently.
 	cfg := d.cfg.Load()
 
-	if fullPoll {
+	// Legacy mode (Crucible polling disabled) must remain unfiltered even when
+	// individual callers request a fast poll.
+	effectiveFullPoll := fullPoll || cfg.Settings.CruciblePollInterval <= 0
+
+	if effectiveFullPoll {
 		d.logger.Info("polling anvils (full)", "count", len(cfg.Anvils))
 	} else {
 		d.logger.Info("polling anvils (fast)", "count", len(cfg.Anvils))
@@ -1628,11 +1632,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 	}
 	p := poller.NewStaggered(cfg.Anvils, pollInterval)
 	p.BdReadyLimit = cfg.Settings.BdReadyLimit
-	if !fullPoll {
+	if !effectiveFullPoll {
 		p.UseLabelFilter = true
 	}
 	pollKind := "full"
-	if !fullPoll {
+	if !effectiveFullPoll {
 		pollKind = "fast"
 	}
 	// Log each anvil's poll event as soon as it finishes so Hearth shows
@@ -1647,7 +1651,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 	}
 	beads, results := p.Poll(ctx)
 
-	if fullPoll {
+	if effectiveFullPoll {
 		// Slow path: rebuild the cached Blocks graph from the unfiltered results.
 		graph := poller.BuildBlocksGraph(beads)
 		d.cachedBlocksMu.Lock()
