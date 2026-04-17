@@ -410,6 +410,12 @@ type SettingsConfig struct {
 	// BdReadyLimit is the --limit passed to 'bd ready --json'. bd defaults to
 	// 10 which can hide labeled lower-priority beads. Default: 100.
 	BdReadyLimit int `mapstructure:"bd_ready_limit" yaml:"bd_ready_limit,omitempty"`
+	// CruciblePollInterval is the interval for the slow unfiltered poll that
+	// rebuilds the Crucible Blocks graph. The fast path polls with a label
+	// filter every PollInterval; the slow path runs every CruciblePollInterval
+	// to discover parent-child relationships for Crucible detection.
+	// Default: 3m. Set to 0 to disable two-tier polling (all polls unfiltered).
+	CruciblePollInterval time.Duration `mapstructure:"crucible_poll_interval" yaml:"crucible_poll_interval,omitempty"`
 }
 
 // durationString returns the duration string, or omits zero values.
@@ -474,8 +480,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WicketNeedsHumanLabel  string `yaml:"wicket_needs_human_label,omitempty"`
 		WicketBeadCreatedLabel string `yaml:"wicket_bead_created_label,omitempty"`
 		WicketTriggerLabel     string `yaml:"wicket_trigger_label,omitempty"`
-		WicketStaleDays        int    `yaml:"wicket_stale_days,omitempty"`
-		BdReadyLimit           int    `yaml:"bd_ready_limit,omitempty"`
+		WicketStaleDays          int    `yaml:"wicket_stale_days,omitempty"`
+		BdReadyLimit             int    `yaml:"bd_ready_limit,omitempty"`
+		CruciblePollInterval     string `yaml:"crucible_poll_interval,omitempty"`
 	}
 
 	sh := shadow{
@@ -525,6 +532,10 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WicketTriggerLabel:     s.WicketTriggerLabel,
 		WicketStaleDays:        s.WicketStaleDays,
 		BdReadyLimit:           s.BdReadyLimit,
+	}
+
+	if s.CruciblePollInterval > 0 {
+		sh.CruciblePollInterval = durationString(s.CruciblePollInterval)
 	}
 
 	// Only include non-zero optional durations.
@@ -737,7 +748,8 @@ func Defaults() Config {
 			WicketNeedsHumanLabel:  "forge-needs-human",
 			WicketBeadCreatedLabel: "forge-bead-created",
 			WicketTriggerLabel:     "",
-			BdReadyLimit:          100,
+			BdReadyLimit:           100,
+			CruciblePollInterval:   3 * time.Minute,
 		},
 	}
 }
@@ -779,6 +791,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.wicket_bead_created_label", "forge-bead-created")
 	v.SetDefault("settings.wicket_trigger_label", "")
 	v.SetDefault("settings.bd_ready_limit", 100)
+	v.SetDefault("settings.crucible_poll_interval", "3m")
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	// SetEnvKeyReplacer maps dotted config keys (settings.auto_learn_rules) to
@@ -916,6 +929,13 @@ func Load(configFile string) (*Config, error) {
 		}
 		cfg.Settings.WicketInterval = d
 	}
+	if raw := v.GetString("settings.crucible_poll_interval"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid crucible_poll_interval %q: %w", raw, err)
+		}
+		cfg.Settings.CruciblePollInterval = d
+	}
 
 	// Decrypt any enc:-prefixed webhook URLs written by Hytte.
 	decryptWebhookURLs(&cfg)
@@ -1015,6 +1035,12 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.AdventurerTimeout < 0 {
 		errs = append(errs, "settings.adventurer_timeout must not be negative")
+	}
+
+	if c.Settings.CruciblePollInterval < 0 {
+		errs = append(errs, "settings.crucible_poll_interval must not be negative (set to 0 to disable two-tier polling)")
+	} else if c.Settings.CruciblePollInterval > 0 && c.Settings.CruciblePollInterval < 30*time.Second {
+		errs = append(errs, "settings.crucible_poll_interval must be >= 30s when enabled (or 0 to disable)")
 	}
 
 	for name, anvil := range c.Anvils {

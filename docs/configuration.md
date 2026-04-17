@@ -100,6 +100,7 @@ settings:
   questgiver_enabled: false
   questgiver_interval: 24h
   crucible_enabled: true
+  crucible_poll_interval: 3m
   auto_merge_crucible_children: true
 
 notifications:
@@ -489,6 +490,7 @@ anvils:
 | `smelter_enabled` | bool | `true` | | Enable/disable the Smelter background process. When `false`, scheduled smelter runs are disabled. |
 | `smelter_interval` | duration | `8h` | `1h` or `0` | How often the Smelter runs its background processing. `0` disables scheduled runs. The Smelter skips the startup run if it already flushed within this interval, so daemon restarts don't produce redundant PRs. For low-volume setups where warden rules accumulate slowly, `48h` or `72h` is a reasonable value. |
 | `crucible_enabled` | bool | `false` | | Enable Crucible auto-orchestration for parent beads with children. When a ready bead blocks other beads, the Crucible creates a feature branch, dispatches children in topological order, merges each child PR, then creates a final PR to main. |
+| `crucible_poll_interval` | duration | `3m` | `30s` or `0` | Interval for the slow unfiltered poll that rebuilds the Crucible parent-child (Blocks) graph. The fast path polls with a label filter every `poll_interval`; the slow path runs every `crucible_poll_interval` to discover parent-child relationships. `0` disables two-tier polling (all polls are unfiltered). |
 | `auto_merge_crucible_children` | bool | `true` | | Auto-merge child PRs targeting a Crucible feature branch after the pipeline succeeds. Set to `false` to require manual merge of child PRs. |
 | `questgiver_enabled` | bool | `false` | | Enable the QuestGiver E2E quest monitor globally. When false, no quest scanning occurs. |
 | `questgiver_interval` | duration | `24h` | `0` | How often the QuestGiver polls anvils for quests. `0` disables. |
@@ -736,6 +738,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_SMELTER_INTERVAL` | `settings.smelter_interval` |
 | `FORGE_SETTINGS_GO_RACE_DETECTION` | `settings.go_race_detection` |
 | `FORGE_SETTINGS_CRUCIBLE_ENABLED` | `settings.crucible_enabled` |
+| `FORGE_SETTINGS_CRUCIBLE_POLL_INTERVAL` | `settings.crucible_poll_interval` |
 | `FORGE_SETTINGS_AUTO_MERGE_CRUCIBLE_CHILDREN` | `settings.auto_merge_crucible_children` |
 | `FORGE_SETTINGS_QUESTGIVER_ENABLED` | `settings.questgiver_enabled` |
 | `FORGE_SETTINGS_QUESTGIVER_INTERVAL` | `settings.questgiver_interval` |

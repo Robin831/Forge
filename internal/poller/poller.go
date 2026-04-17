@@ -60,6 +60,50 @@ type AnvilResult struct {
 	Err   error
 }
 
+// BlocksGraph maps parent bead IDs to their child bead IDs. It is used to
+// cache parent-child relationships discovered during a slow (unfiltered) poll
+// so that fast (label-filtered) polls can still detect Crucible candidates.
+type BlocksGraph map[string][]string
+
+// BuildBlocksGraph extracts the Blocks mapping from a slice of beads.
+func BuildBlocksGraph(beads []Bead) BlocksGraph {
+	g := make(BlocksGraph)
+	for _, b := range beads {
+		if len(b.Blocks) > 0 {
+			children := make([]string, len(b.Blocks))
+			copy(children, b.Blocks)
+			g[b.ID] = children
+		}
+	}
+	return g
+}
+
+// MergeBlocksFromCache enriches beads with cached parent-child relationships
+// from a previous slow-path poll. For each bead that appears as a parent in
+// the cache, its Blocks field is augmented with cached children not already
+// present. Unlike the per-poll Blocks filter, cached children are NOT filtered
+// to the current poll batch — the Crucible fetches actual children via bd show.
+func MergeBlocksFromCache(beads []Bead, cached BlocksGraph) {
+	if len(cached) == 0 {
+		return
+	}
+	for i := range beads {
+		children, ok := cached[beads[i].ID]
+		if !ok {
+			continue
+		}
+		existing := make(map[string]bool, len(beads[i].Blocks))
+		for _, id := range beads[i].Blocks {
+			existing[id] = true
+		}
+		for _, childID := range children {
+			if !existing[childID] {
+				beads[i].Blocks = append(beads[i].Blocks, childID)
+			}
+		}
+	}
+}
+
 // BeadPoller polls registered anvils for ready beads.
 type BeadPoller struct {
 	anvils map[string]config.AnvilConfig
@@ -76,6 +120,10 @@ type BeadPoller struct {
 	OnAnvilDone func(AnvilResult)
 	// BdReadyLimit is the --limit passed to 'bd ready'. Default: 100.
 	BdReadyLimit int
+	// UseLabelFilter, when true, causes pollAnvil to add '--label <tag>' to
+	// the 'bd ready' command using each anvil's AutoDispatchTag. Anvils
+	// without a tag configured are polled unfiltered.
+	UseLabelFilter bool
 }
 
 // New creates a BeadPoller for the given anvil configurations.
@@ -181,7 +229,11 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 	if limit <= 0 {
 		limit = 100
 	}
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "ready", "--json", "--limit", strconv.Itoa(limit)))
+	args := []string{"ready", "--json", "--limit", strconv.Itoa(limit)}
+	if p.UseLabelFilter && anvil.AutoDispatchTag != "" {
+		args = append(args, "--label", anvil.AutoDispatchTag)
+	}
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", args...))
 	cmd.Dir = anvil.Path
 
 	var stderr bytes.Buffer

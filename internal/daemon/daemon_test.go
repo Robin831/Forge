@@ -528,7 +528,7 @@ exit 0
 
 	// First poll: the fake bd script returns a ready bead but dispatch should be
 	// skipped because today's cost exceeds the limit.
-	d.pollAndDispatch(context.Background())
+	d.pollAndDispatch(context.Background(), true)
 	assert.GreaterOrEqual(t, len(d.lastBeads), 1, "poll should surface the ready bead")
 	// No worker should have been dispatched.
 	_, inFlight := d.activeBeads.Load("COST-1")
@@ -536,13 +536,13 @@ exit 0
 	assert.Equal(t, 1, countCostLimitEvents(), "cost_limit_hit event should be logged once")
 
 	// Second poll: event must NOT be logged again (same calendar day).
-	d.pollAndDispatch(context.Background())
+	d.pollAndDispatch(context.Background(), true)
 	assert.Equal(t, 1, countCostLimitEvents(), "cost_limit_hit must not be logged again on same day")
 
 	// Simulate a daemon restart: reset the in-memory guard but keep the DB event.
 	// The DB-backed deduplication must prevent the notification from firing again.
 	d.costLimitLoggedDate.Store("")
-	d.pollAndDispatch(context.Background())
+	d.pollAndDispatch(context.Background(), true)
 	assert.Equal(t, 1, countCostLimitEvents(), "cost_limit_hit must not be logged after simulated restart when already notified today")
 }
 

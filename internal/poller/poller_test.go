@@ -330,6 +330,89 @@ func TestNewStaggered_CalculatesInterval(t *testing.T) {
 	}
 }
 
+func TestBuildBlocksGraph(t *testing.T) {
+	beads := []Bead{
+		{ID: "parent-1", Blocks: []string{"child-a", "child-b"}},
+		{ID: "child-a"},
+		{ID: "child-b"},
+		{ID: "parent-2", Blocks: []string{"child-c"}},
+	}
+
+	graph := BuildBlocksGraph(beads)
+
+	assert.Len(t, graph, 2)
+	assert.ElementsMatch(t, []string{"child-a", "child-b"}, graph["parent-1"])
+	assert.Equal(t, []string{"child-c"}, graph["parent-2"])
+	_, hasChildA := graph["child-a"]
+	assert.False(t, hasChildA, "child-a should not be a key in the graph")
+}
+
+func TestMergeBlocksFromCache(t *testing.T) {
+	t.Run("enriches parent with cached children", func(t *testing.T) {
+		beads := []Bead{
+			{ID: "parent-1"},
+			{ID: "child-a"},
+		}
+		cached := BlocksGraph{
+			"parent-1": {"child-a", "child-b", "child-c"},
+		}
+
+		MergeBlocksFromCache(beads, cached)
+
+		assert.ElementsMatch(t, []string{"child-a", "child-b", "child-c"}, beads[0].Blocks)
+	})
+
+	t.Run("deduplicates existing blocks", func(t *testing.T) {
+		beads := []Bead{
+			{ID: "parent-1", Blocks: []string{"child-a"}},
+		}
+		cached := BlocksGraph{
+			"parent-1": {"child-a", "child-b"},
+		}
+
+		MergeBlocksFromCache(beads, cached)
+
+		assert.ElementsMatch(t, []string{"child-a", "child-b"}, beads[0].Blocks)
+	})
+
+	t.Run("no-op with empty cache", func(t *testing.T) {
+		beads := []Bead{
+			{ID: "parent-1"},
+		}
+
+		MergeBlocksFromCache(beads, nil)
+
+		assert.Empty(t, beads[0].Blocks)
+	})
+
+	t.Run("no-op for beads not in cache", func(t *testing.T) {
+		beads := []Bead{
+			{ID: "standalone"},
+		}
+		cached := BlocksGraph{
+			"parent-1": {"child-a"},
+		}
+
+		MergeBlocksFromCache(beads, cached)
+
+		assert.Empty(t, beads[0].Blocks)
+	})
+}
+
+func TestUseLabelFilter(t *testing.T) {
+	// Verify that UseLabelFilter field is plumbed correctly on the struct.
+	anvils := map[string]config.AnvilConfig{
+		"tagged-anvil": {Path: t.TempDir(), AutoDispatchTag: "forgeReady"},
+		"all-anvil":    {Path: t.TempDir()},
+	}
+
+	p := New(anvils)
+	assert.False(t, p.UseLabelFilter)
+
+	p.UseLabelFilter = true
+	assert.True(t, p.UseLabelFilter)
+}
+
 func TestPoll_StaggerRespectsContextCancellation(t *testing.T) {
 	anvils := map[string]config.AnvilConfig{
 		"anvil-a": {Path: t.TempDir()},
