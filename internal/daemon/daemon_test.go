@@ -2948,3 +2948,140 @@ func TestFetchExternalRef(t *testing.T) {
 		assert.Equal(t, "gh-99", got)
 	})
 }
+
+// TestReleaseBeadClaim verifies that releaseBeadClaim invokes bd with the
+// correct arguments (--status=open --assignee= and --remove-label for the
+// auto_dispatch_tag), and that it does NOT invoke bd when the anvil is absent
+// from config (covering the claim-race / pre-claim safety condition).
+func TestReleaseBeadClaim(t *testing.T) {
+	t.Run("calls bd update with correct args and removes auto_dispatch_tag", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "forge-release-bead-*")
+		require.NoError(t, err)
+		defer os.RemoveAll(tmpDir)
+
+		argsFile := filepath.Join(tmpDir, "bd-args.txt")
+		var bdScript, bdContent string
+		if runtime.GOOS == "windows" {
+			bdScript = filepath.Join(tmpDir, "bd.bat")
+			bdContent = "@echo off\necho %* > \"" + argsFile + "\"\nexit /b 0\n"
+		} else {
+			bdScript = filepath.Join(tmpDir, "bd")
+			bdContent = "#!/bin/sh\necho \"$@\" > '" + argsFile + "'\nexit 0\n"
+		}
+		require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+		oldPath := os.Getenv("PATH")
+		os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+		defer os.Setenv("PATH", oldPath)
+
+		dbPath := filepath.Join(tmpDir, "state.db")
+		db, err := state.Open(dbPath)
+		require.NoError(t, err)
+		defer db.Close()
+
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			runCtx: context.Background(),
+		}
+		d.cfg.Store(&config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"test-anvil": {Path: tmpDir, AutoDispatchTag: "forgeReady"},
+			},
+		})
+
+		d.releaseBeadClaim("TEST-1", "test-anvil")
+
+		require.FileExists(t, argsFile)
+		argsBytes, err := os.ReadFile(argsFile)
+		require.NoError(t, err)
+		args := strings.TrimSpace(string(argsBytes))
+		assert.Contains(t, args, "update")
+		assert.Contains(t, args, "TEST-1")
+		assert.Contains(t, args, "--status=open")
+		assert.Contains(t, args, "--assignee=")
+		assert.Contains(t, args, "--remove-label=forgeReady")
+	})
+
+	t.Run("does not call bd when anvil is missing from config (claim-race safety)", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "forge-release-bead-noanvil-*")
+		require.NoError(t, err)
+		defer os.RemoveAll(tmpDir)
+
+		calledFile := filepath.Join(tmpDir, "bd-called.txt")
+		var bdScript, bdContent string
+		if runtime.GOOS == "windows" {
+			bdScript = filepath.Join(tmpDir, "bd.bat")
+			bdContent = "@echo off\necho called > \"" + calledFile + "\"\nexit /b 0\n"
+		} else {
+			bdScript = filepath.Join(tmpDir, "bd")
+			bdContent = "#!/bin/sh\ntouch '" + calledFile + "'\nexit 0\n"
+		}
+		require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+		oldPath := os.Getenv("PATH")
+		os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+		defer os.Setenv("PATH", oldPath)
+
+		dbPath := filepath.Join(tmpDir, "state.db")
+		db, err := state.Open(dbPath)
+		require.NoError(t, err)
+		defer db.Close()
+
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			runCtx: context.Background(),
+		}
+		// Anvil "unknown-anvil" is not in config — simulates pre-claim or race condition.
+		d.cfg.Store(&config.Config{
+			Anvils: map[string]config.AnvilConfig{},
+		})
+
+		d.releaseBeadClaim("TEST-2", "unknown-anvil")
+
+		assert.NoFileExists(t, calledFile, "bd must not be called when anvil is absent from config")
+	})
+
+	t.Run("recordDispatchFailure skips bd release when releaseClaim is false", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "forge-release-bead-skip-*")
+		require.NoError(t, err)
+		defer os.RemoveAll(tmpDir)
+
+		calledFile := filepath.Join(tmpDir, "bd-called.txt")
+		var bdScript, bdContent string
+		if runtime.GOOS == "windows" {
+			bdScript = filepath.Join(tmpDir, "bd.bat")
+			bdContent = "@echo off\necho called > \"" + calledFile + "\"\nexit /b 0\n"
+		} else {
+			bdScript = filepath.Join(tmpDir, "bd")
+			bdContent = "#!/bin/sh\ntouch '" + calledFile + "'\nexit 0\n"
+		}
+		require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+		oldPath := os.Getenv("PATH")
+		os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+		defer os.Setenv("PATH", oldPath)
+
+		dbPath := filepath.Join(tmpDir, "state.db")
+		db, err := state.Open(dbPath)
+		require.NoError(t, err)
+		defer db.Close()
+
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			runCtx: context.Background(),
+		}
+		d.cfg.Store(&config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"test-anvil": {Path: tmpDir},
+			},
+		})
+
+		// releaseClaim=false simulates a claim failure — bd must not be invoked.
+		d.recordDispatchFailure("TEST-3", "test-anvil", "claim failed: connection refused", false)
+
+		assert.NoFileExists(t, calledFile, "bd must not be called when releaseClaim is false")
+	})
+}
