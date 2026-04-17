@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -198,16 +199,18 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 				} else {
 					if err := m.resetBead(w.BeadID, anvilPath); err != nil {
 						m.logger.Warn("failed to reset bead status", "bead", w.BeadID, "error", err)
-						failures, tripped, dbErr := m.db.IncrementRecoveryFailures(w.BeadID, w.Anvil, err.Error())
-						if dbErr != nil {
-							m.logger.Warn("failed to track recovery failure", "bead", w.BeadID, "error", dbErr)
-						} else if tripped {
-							m.logger.Warn("orphan worker recovery flagged as needs-human after repeated failures", "bead", w.BeadID, "anvil", w.Anvil, "failures", failures)
-							m.db.LogEvent(state.EventRecoveryCircuitBreak,
-								fmt.Sprintf("Orphaned worker bead %s flagged needs-human after %d recovery failures: %s", w.BeadID, failures, err.Error()),
-								w.BeadID, w.Anvil)
-							if m.OnNeedsHuman != nil {
-								m.OnNeedsHuman(w.BeadID, w.Anvil, w.Title, failures, err.Error())
+						if !errors.Is(err, context.DeadlineExceeded) {
+							failures, tripped, dbErr := m.db.IncrementRecoveryFailures(w.BeadID, w.Anvil, err.Error())
+							if dbErr != nil {
+								m.logger.Warn("failed to track recovery failure", "bead", w.BeadID, "error", dbErr)
+							} else if tripped {
+								m.logger.Warn("orphan worker recovery flagged as needs-human after repeated failures", "bead", w.BeadID, "anvil", w.Anvil, "failures", failures)
+								m.db.LogEvent(state.EventRecoveryCircuitBreak,
+									fmt.Sprintf("Orphaned worker bead %s flagged needs-human after %d recovery failures: %s", w.BeadID, failures, err.Error()),
+									w.BeadID, w.Anvil)
+								if m.OnNeedsHuman != nil {
+									m.OnNeedsHuman(w.BeadID, w.Anvil, w.Title, failures, err.Error())
+								}
 							}
 						}
 					} else {
@@ -402,16 +405,18 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 			// Fall through to auto-recovery (headless/CI mode or no Hearth client).
 			if err := m.resetBead(beadID, anvilPath); err != nil {
 				m.logger.Warn("failed to reset orphaned bead", "bead", beadID, "error", err)
-				failures, tripped, dbErr := m.db.IncrementRecoveryFailures(beadID, anvilName, err.Error())
-				if dbErr != nil {
-					m.logger.Warn("failed to track recovery failure", "bead", beadID, "error", dbErr)
-				} else if tripped {
-					m.logger.Warn("orphan recovery flagged as needs-human after repeated failures", "bead", beadID, "anvil", anvilName, "failures", failures)
-					m.db.LogEvent(state.EventRecoveryCircuitBreak,
-						fmt.Sprintf("Orphaned bead %s flagged needs-human after %d recovery failures: %s", beadID, failures, err.Error()),
-						beadID, anvilName)
-					if m.OnNeedsHuman != nil {
-						m.OnNeedsHuman(beadID, anvilName, bead.Title, failures, err.Error())
+				if !errors.Is(err, context.DeadlineExceeded) {
+					failures, tripped, dbErr := m.db.IncrementRecoveryFailures(beadID, anvilName, err.Error())
+					if dbErr != nil {
+						m.logger.Warn("failed to track recovery failure", "bead", beadID, "error", dbErr)
+					} else if tripped {
+						m.logger.Warn("orphan recovery flagged as needs-human after repeated failures", "bead", beadID, "anvil", anvilName, "failures", failures)
+						m.db.LogEvent(state.EventRecoveryCircuitBreak,
+							fmt.Sprintf("Orphaned bead %s flagged needs-human after %d recovery failures: %s", beadID, failures, err.Error()),
+							beadID, anvilName)
+						if m.OnNeedsHuman != nil {
+							m.OnNeedsHuman(beadID, anvilName, bead.Title, failures, err.Error())
+						}
 					}
 				}
 				continue
@@ -520,7 +525,7 @@ func (m *Manager) CleanupWorktrees() {
 // Clearing the assignee is required so the poller can re-dispatch the bead —
 // the poller filters out any bead with a non-empty assignee.
 func (m *Manager) resetBead(beadID, anvilPath string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
 	defer cancel()
 
 	// Clear labels so the poller does not auto-dispatch the recovered bead
@@ -533,6 +538,10 @@ func (m *Manager) resetBead(beadID, anvilPath string) error {
 	cmd.Stderr = &stderrBuf
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("bd update %s timed out: %w", beadID, context.DeadlineExceeded)
+		}
+
 		stdoutText := strings.TrimSpace(string(out))
 		stderrText := strings.TrimSpace(stderrBuf.String())
 
