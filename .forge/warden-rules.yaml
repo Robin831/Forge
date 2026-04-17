@@ -1219,7 +1219,7 @@ rules:
         Adding a new warden rule, lint rule, or checklist entry that shares the same category, pattern intent, or check guidance as an existing rule (including semantic overlap in pattern or check wording)
       check: >-
         Before inserting a new rule or checklist entry, scan existing rules for semantic overlap. If a match exists, consolidate by appending the new source (e.g. PR number) to the existing rule's source list and merging any unique wording into the existing rule's pattern/check instead of creating a separate entry.
-      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#425', 'copilot:PR#430', 'copilot:PR#493', 'copilot:PR#518']
+      source: ['copilot:PR#349', 'copilot:PR#359', 'copilot:PR#360', 'copilot:PR#361', 'copilot:PR#364', 'copilot:PR#365', 'copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#425', 'copilot:PR#430', 'copilot:PR#493', 'copilot:PR#518', 'copilot:PR#529']
       added: "2026-03-20"
     - id: sourcelist-yaml-flow-sequence
       category: style
@@ -1359,7 +1359,7 @@ rules:
       pattern: Warden rule definitions in warden-rules.yaml
       check: >-
         Verify that a specific, descriptive category is assigned when an appropriate one exists (for example, `style`, `testing`, or `concurrency`). The generic `category: other` should only be used when no more precise category applies, to keep triage, search, and reporting meaningful.
-      source: ['copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424']
+      source: ['copilot:PR#348', 'copilot:PR#353', 'copilot:PR#424', 'copilot:PR#529']
       added: "2026-03-20"
     - id: warden-source-field-wording
       category: style
@@ -2882,7 +2882,8 @@ rules:
       added: "2026-03-27"
     - id: hide-window-subprocess
       category: ui
-      pattern: exec.Command or exec.CommandContext calls for git/gh/bd subprocesses or any other subprocess invocations on Windows
+      pattern: >-
+        exec.Command or exec.CommandContext calls for git/gh/bd subprocesses or any other subprocess invocations on Windows
       check: >-
         Verify that all exec.Command/exec.CommandContext calls for git, gh, bd, and other subprocesses use executil.HideWindow (or equivalent) to prevent flashing a console window on Windows, and include a context/timeout where feasible
       source: ['copilot:PR#464', 'copilot:PR#521', 'copilot:PR#525']
@@ -3430,7 +3431,7 @@ rules:
         os.Lstat or os.Stat result checked only for err == nil or os.IsNotExist, ignoring other possible errors
       check: >-
         When checking if a path exists with os.Lstat/os.Stat, verify that errors other than IsNotExist are handled explicitly and returned early, rather than falling through to creation logic that would produce misleading errors or inconsistent state
-      source: copilot:PR#521
+      source: ['copilot:PR#521', 'copilot:PR#540']
       added: "2026-04-13"
     - id: comment-accuracy
       category: style
@@ -3476,7 +3477,7 @@ rules:
       pattern: "Adding or modifying warden rules with category: other"
       check: >-
         Verify that the rule category is as specific as possible rather than defaulting to 'other'. Documentation-focused rules should use 'documentation', concurrency rules should use 'concurrency', etc. Generic categories reduce the value of triage and search filtering.
-      source: copilot:PR#518
+      source: ['copilot:PR#518', 'copilot:PR#529']
       added: "2026-04-13"
     - id: github-issue-url-host-validation
       category: security
@@ -3654,3 +3655,233 @@ rules:
         Verify that tests for platform-specific behavior use the actual platform primitive (e.g., junctions on Windows via mklink /J) rather than a cross-platform approximation (e.g., os.Symlink), or clearly document that the test only covers the approximation
       source: copilot:PR#528
       added: "2026-04-14"
+    - id: use-platform-helpers-for-dir-links
+      category: testing
+      pattern: >-
+        Test code that creates symlinks or directory links using os.Symlink directly, especially for node_modules or junction/reparse-point scenarios
+      check: >-
+        Verify that tests use platform-appropriate helpers (e.g. createDirLink) instead of os.Symlink directly, so that on Windows the test exercises junction/reparse-point behavior rather than being skipped due to missing symlink privileges
+      source: copilot:PR#530
+      added: "2026-04-14"
+    - id: swallowed-errors-misleading-handling
+      category: error-handling
+      pattern: >-
+        A function's return error is checked/logged by the caller, but the function internally swallows all errors and never actually returns a non-nil error
+      check: >-
+        Verify that if a caller checks or logs a function's returned error, the function can actually return a meaningful error. Either simplify the call site to ignore the return value, or fix the callee to propagate errors so the handling is actionable.
+      source: copilot:PR#530
+      added: "2026-04-14"
+    - id: comment-rule-category-consistency
+      category: style
+      pattern: >-
+        A warden rule has a category that differs from existing rules covering similar concerns (e.g., a comment-correctness rule categorized as 'other' when similar rules use 'style')
+      check: >-
+        Verify that new warden rules use a category consistent with existing rules that cover the same concern area. Comment-correctness and code-comment alignment rules should use the 'style' category.
+      source: copilot:PR#529
+      added: "2026-04-15"
+    - id: behavior-flag-needs-test
+      category: testing
+      pattern: >-
+        A new boolean flag or option is added to a function that alters its core behavior (e.g., skipping a step, changing output)
+      check: >-
+        Verify that a focused regression test exists asserting the altered behavior when the flag is enabled, covering both the primary path and any reuse/cleanup paths
+      source: copilot:PR#531
+      added: "2026-04-15"
+    - id: label-update-early-return
+      category: other
+      pattern: >-
+        Functions that update existing records with an early return when primary content is unchanged, but also need to ensure metadata (labels, tags, flags) is applied independently
+      check: >-
+        Verify that early-return optimizations for unchanged content do not skip applying metadata (labels, tags, status flags) that may not yet be present on the existing record
+      source: copilot:PR#531
+      added: "2026-04-15"
+    - id: comment-association
+      category: style
+      pattern: >-
+        Multi-line comment block separated from the function or variable it documents by intervening declarations
+      check: >-
+        Verify that multi-line comments and doc comments are placed directly above the symbol they describe, with no unrelated declarations between the comment and its target
+      source: copilot:PR#531
+      added: "2026-04-15"
+    - id: no-duplicate-warn-logging
+      category: error-handling
+      pattern: >-
+        A helper function logs a warning or error internally and also returns an error that callers log
+      check: >-
+        Verify that internal helper functions do not log warnings/errors themselves when callers already log the returned error. Prefer returning structured detail (exit status, stderr, stdout) so the caller can log once with full context, avoiding duplicate log entries that create operational noise.
+      source: copilot:PR#532
+      added: "2026-04-15"
+    - id: log-underlying-error
+      category: error-handling
+      pattern: >-
+        Logging a warning or error about a failed command/operation where stderr or stdout is captured but the Go error value is not included in the log fields
+      check: >-
+        When logging command or operation failures, verify that the underlying Go error is included as a structured field (e.g., slog.String("error", err.Error())) alongside any captured stderr/stdout/exit status, so diagnostics are complete even when the streams are empty
+      source: copilot:PR#532
+      added: "2026-04-15"
+    - id: preserve-combined-output-in-errors
+      category: error-handling
+      pattern: >-
+        Switching exec.Command from CombinedOutput to separate stdout/stderr handling while constructing error messages
+      check: >-
+        When changing command execution from CombinedOutput to separate stdout/stderr capture, verify that error messages returned to callers still include both stdout and stderr content, not just stderr, so diagnostics are not lost
+      source: copilot:PR#532
+      added: "2026-04-15"
+    - id: doc-comment-column-sync
+      category: style
+      pattern: >-
+        A function's doc comment lists specific database columns, SELECT fields, or Scan parameters
+      check: >-
+        Verify that the doc comment accurately reflects the current SELECT column list and Scan order — update it whenever columns are added, removed, or reordered
+      source: copilot:PR#533
+      added: "2026-04-15"
+    - id: accurate-event-types
+      category: error-handling
+      pattern: >-
+        LogEvent calls where the event type may not accurately reflect the outcome being logged
+      check: >-
+        Verify that the event type passed to LogEvent accurately describes what actually happened. If the code path represents a failure or escalation (e.g. flagging as needs-human), do not reuse a success-oriented event type (e.g. EventBeadRecovered). Use an appropriate error/failure event type or introduce a dedicated one.
+      source: copilot:PR#533
+      added: "2026-04-15"
+    - id: assert-test-errors
+      category: testing
+      pattern: >-
+        Test functions that call methods returning an error but assign to _ or omit the error check
+      check: >-
+        Every error returned by a function under test must be asserted with require.NoError or similar; do not silently ignore returned errors as this masks failures and can cause nil-pointer dereferences.
+      source: copilot:PR#533
+      added: "2026-04-15"
+    - id: recovery-reset-partial-failure-test
+      category: testing
+      pattern: >-
+        A function resets a failure counter or recovery state (e.g., ResetRecoveryFailures) and tests only cover the fully-tripped case
+      check: >-
+        When adding a failure counter with a reset path, verify there is a test for resetting after partial failures (not just after the circuit fully trips). Ensure the reset is not a no-op when the counter is nonzero but below the threshold.
+      source: copilot:PR#533
+      added: "2026-04-15"
+    - id: recovery-failure-reset-scope
+      category: error-handling
+      pattern: >-
+        A function resets failure/retry counters after a successful operation but uses a conditional filter (e.g. matching a specific error string) that may skip rows with intermediate failure states
+      check: >-
+        When clearing failure counters on success, ensure ALL accumulated failure state (counts, timestamps) is unconditionally reset, while only conditionally clearing flags (like needs_human or last_error) that may have been set by unrelated code paths. Avoid coupling the reset of counters to a WHERE clause that matches a specific error message, as intermediate failures may store a different error string.
+      source: copilot:PR#533
+      added: "2026-04-15"
+    - id: circuit-breaker-trip-reason
+      category: error-handling
+      pattern: Code that records or logs a circuit-breaker trip with a generic failure message
+      check: >-
+        Verify that the error message distinguishes the trip reason (e.g., consecutive-failure count vs time-window expiry) and includes relevant context such as the failure count or elapsed time since the first failure
+      source: copilot:PR#533
+      added: "2026-04-15"
+    - id: no-redundant-pr-title-suffix
+      category: ui
+      pattern: >-
+        Appending a Title field to a display label where the Title may already be embedded in other displayed fields (e.g. PR number)
+      check: >-
+        When rendering list items that combine multiple fields into a label, verify that derived or auto-populated fields like Title do not duplicate information already shown (e.g. a PR number). Either suppress the suffix when the title is redundant, or populate Title with genuinely new information.
+      source: copilot:PR#534
+      added: "2026-04-15"
+    - id: test-new-rendering-behavior
+      category: testing
+      pattern: >-
+        Modifying how UI labels or display strings are constructed by combining multiple fields
+      check: >-
+        When adding or changing rendering logic (e.g. label formatting, display text composition), verify that existing tests cover the new behavior and edge cases like duplicated or malformed output
+      source: copilot:PR#534
+      added: "2026-04-15"
+    - id: mock-exec-distinct-responses
+      category: testing
+      pattern: >-
+        Test helper or mock returns the same canned response for multiple sequential calls that should produce different results
+      check: >-
+        Verify that when a function under test makes multiple calls to the same dependency (e.g., multiple SQL queries), the mock/stub returns distinct responses per call and the test asserts the expected result count, so duplicate or conflated results cannot mask regressions
+      source: copilot:PR#535
+      added: "2026-04-15"
+    - id: notify-event-type-has-handler
+      category: other
+      pattern: A new EventType constant is added to the notify package
+      check: >-
+        Verify that every new EventType has either a corresponding notifier method that calls ShouldNotify and emits a notification (e.g. a Teams Adaptive Card), or is explicitly documented as intended for generic webhooks only
+      source: copilot:PR#536
+      added: "2026-04-15"
+    - id: notification-event-consistency
+      category: other
+      pattern: >-
+        Code that emits a new event type through one notification channel (e.g. generic webhooks) but reuses an existing method for another channel (e.g. Teams notifier)
+      check: >-
+        Verify that every new event type has dedicated handling in all notification targets so that event filtering and payload semantics are consistent across channels. Reusing an existing notifier method (e.g. BeadFailed for a new orphan_recovery_failed event) can cause the event to be silently dropped if the target filters by event type.
+      source: copilot:PR#536
+      added: "2026-04-15"
+    - id: func-comment-matches-impl
+      category: style
+      pattern: >-
+        Function or method comment describes specific CLI invocation, flags, or behavior details
+      check: >-
+        Verify that the function/method comment accurately reflects the actual implementation, including any flags, parameters, or configurable values. Update comments when the underlying invocation changes.
+      source: copilot:PR#537
+      added: "2026-04-15"
+    - id: docs-setting-correct-section
+      category: documentation
+      pattern: >-
+        A configuration setting is documented in a section or table that does not match the setting's functional area (e.g., a poller setting listed under Wicket settings)
+      check: >-
+        Verify that each documented configuration setting is placed in the section/table corresponding to its functional area, not grouped with unrelated features just because it was added nearby
+      source: copilot:PR#537
+      added: "2026-04-15"
+    - id: node-modules-junction-skip-consistency
+      category: other
+      pattern: >-
+        Code that calls worktree.LinkNodeModules or re-creates node_modules junctions after a reset, retry, or git clean operation
+      check: >-
+        Verify that node_modules junction/symlink creation respects the SkipNodeModulesJunction flag consistently across all code paths, including retry and deny-pattern reset paths, not just the initial worktree creation. If a bead opts out of junctions (e.g., deps-update beads), no subsequent path should silently re-create them.
+      source: copilot:PR#539
+      added: "2026-04-15"
+    - id: skip-node-modules-junction-conditional
+      category: error-handling
+      pattern: >-
+        Code that calls worktree.LinkNodeModules or re-links node_modules junctions in retry/reset paths
+      check: >-
+        Verify that node_modules junction/symlink operations are conditional on SkipNodeModulesJunction being false, so that depcheck/deps-update beads do not reintroduce junctions that corrupt the main checkout's dependencies
+      source: copilot:PR#539
+      added: "2026-04-15"
+    - id: log-readdir-errors
+      category: error-handling
+      pattern: >-
+        When a function ignores or swallows an os.ReadDir (or similar directory/file read) error and falls through to a default/sentinel value
+      check: >-
+        Verify that the error is included in any associated log message (e.g. as an "error" or "read_error" field) so that the resulting default/sentinel state is actionable for debugging
+      source: copilot:PR#540
+      added: "2026-04-15"
+    - id: empty-path-guard
+      category: error-handling
+      pattern: >-
+        Function accepts a file/directory path parameter and uses it to construct or probe filesystem paths
+      check: >-
+        Verify that empty or zero-value path parameters are handled explicitly (early return or clear log message) rather than silently falling through to operate on the current working directory
+      source: copilot:PR#540
+      added: "2026-04-15"
+    - id: use-daemon-ctx-for-bd-subprocesses
+      category: concurrency
+      pattern: >-
+        bd subprocess calls in the daemon using context.WithTimeout derived from context.Background()
+      check: >-
+        Verify bd subprocess calls derive their context from the daemon-scoped context (e.g. d.runCtx) so they cancel promptly on shutdown instead of hanging for the full timeout
+      source: copilot:PR#542
+      added: "2026-04-17"
+    - id: test-coverage-for-bd-state-changes
+      category: testing
+      pattern: >-
+        New or modified code that invokes `bd` subcommands to mutate bead state (e.g., `bd update` to release claims, clear labels, or change status), especially with conditional safety guards
+      check: >-
+        Verify there is a focused test that exercises the new bd invocation path, asserts the exact bd arguments passed, and covers the safety conditions that should prevent the bd call (e.g., claim-race failures, error paths where state must not be mutated). Reuse existing fake-bd-on-PATH test harnesses in daemon tests.
+      source: copilot:PR#542
+      added: "2026-04-17"
+    - id: scoped-bead-claim-release
+      category: concurrency
+      pattern: >-
+        A shared failure/cleanup helper unconditionally releases a bd claim (e.g. `bd update --status=open --assignee=`) on every error path, including pre-claim or claim-failure paths.
+      check: >-
+        Verify the bd claim is only released from call sites where Forge is known to own the claim. Pre-claim failures, claim races, or already-claimed-by-another errors must not trigger release, since that can reopen/unassign a bead legitimately held by another Forge instance or a human. Prefer an explicit release-safe flag or a separate variant of the helper over an unconditional release.
+      source: copilot:PR#542
+      added: "2026-04-17"
