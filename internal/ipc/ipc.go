@@ -56,16 +56,8 @@ const (
 
 // defaultReadTimeout is the value applied when Command.ReadTimeout is zero.
 // It mirrors DefaultReadTimeout at runtime but lives in a var so tests can
-// shrink it (see testOverrideDefaultReadTimeout) to keep suite runtime bounded.
+// override it directly to keep suite runtime bounded.
 var defaultReadTimeout = DefaultReadTimeout
-
-// testOverrideDefaultReadTimeout swaps the default read timeout, returning the
-// previous value so tests can restore it with defer.
-func testOverrideDefaultReadTimeout(d time.Duration) time.Duration {
-	prev := defaultReadTimeout
-	defaultReadTimeout = d
-	return prev
-}
 
 // Response is a message sent from the daemon to a client.
 type Response struct {

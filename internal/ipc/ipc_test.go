@@ -185,8 +185,9 @@ func drainOne(conn net.Conn, timeout time.Duration) <-chan error {
 func TestClientSend_CustomReadTimeoutSucceedsAfterSlowResponse(t *testing.T) {
 	// Shrink the default so this test fails correctly if Client.Send forgets
 	// to honor the per-command ReadTimeout override.
-	prev := testOverrideDefaultReadTimeout(50 * time.Millisecond)
-	defer testOverrideDefaultReadTimeout(prev)
+	prev := defaultReadTimeout
+	defaultReadTimeout = 50 * time.Millisecond
+	defer func() { defaultReadTimeout = prev }()
 
 	client, server := newPipeClient()
 	defer client.Close()
@@ -232,8 +233,9 @@ func TestClientSend_CustomReadTimeoutSucceedsAfterSlowResponse(t *testing.T) {
 // rather than waiting for the bd-backed timeout.
 func TestClientSend_DefaultReadTimeoutFiresOnSlowResponse(t *testing.T) {
 	// Shrink the default just for this test so we don't wait 3 real seconds.
-	prev := testOverrideDefaultReadTimeout(150 * time.Millisecond)
-	defer testOverrideDefaultReadTimeout(prev)
+	prev := defaultReadTimeout
+	defaultReadTimeout = 150 * time.Millisecond
+	defer func() { defaultReadTimeout = prev }()
 
 	client, server := newPipeClient()
 	defer client.Close()
