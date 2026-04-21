@@ -7,11 +7,22 @@ import (
 	"os/exec"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// disableDepRetrySleep replaces the real sleep between dep-add retries with a
+// no-op for the duration of the test. It returns a restore function suitable
+// for t.Cleanup / defer.
+func disableDepRetrySleep(t *testing.T) {
+	t.Helper()
+	orig := depRetrySleep
+	depRetrySleep = func(time.Duration) {}
+	t.Cleanup(func() { depRetrySleep = orig })
+}
 
 // exitError1 returns a real *exec.ExitError with exit code 1 by running "false".
 func exitError1(t *testing.T) *exec.ExitError {
@@ -317,7 +328,7 @@ func TestCreateSubBeads_DepAddFailureIsFatal(t *testing.T) {
 	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
 	// Must return an error so the caller can escalate to ActionClarify.
 	require.Error(t, err, "dep add failure must be fatal")
-	assert.Contains(t, err.Error(), "adding sequential dependency")
+	assert.Contains(t, err.Error(), "sequential dependency chaining failed")
 	// Partial sub-beads should be returned for operator visibility.
 	assert.NotEmpty(t, subs, "partial sub-beads should be returned even on dep add failure")
 }
@@ -596,4 +607,159 @@ func TestCreateSubBeads_SingleSubBeadInheritsChain(t *testing.T) {
 
 	assert.True(t, foundDependsOn, "single sub-bead should inherit parent DependsOn")
 	assert.True(t, foundBlocks, "single sub-bead should inherit parent Blocks")
+}
+
+// runnerWithDepScript returns a fakeRunner that drives bd create / dep / show
+// through a scripted sequence of dep-add responses (one per dep-add attempt).
+// Extra calls return the final scripted response.
+func runnerWithDepScript(script []struct {
+	out []byte
+	err error
+}) (*fakeRunner, func() int) {
+	var idCounter int
+	var idMu sync.Mutex
+	var depCount int
+	var depMu sync.Mutex
+	fake := &fakeRunner{
+		response: func(args []string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "create" {
+				idMu.Lock()
+				idCounter++
+				id := fmt.Sprintf("test-%d", idCounter)
+				idMu.Unlock()
+				return []byte(fmt.Sprintf(`{"id":%q}`, id)), nil
+			}
+			if len(args) > 0 && args[0] == "dep" {
+				depMu.Lock()
+				depCount++
+				idx := depCount - 1
+				depMu.Unlock()
+				if idx >= len(script) {
+					idx = len(script) - 1
+				}
+				return script[idx].out, script[idx].err
+			}
+			return []byte("ok"), nil
+		},
+	}
+	return fake, func() int {
+		depMu.Lock()
+		defer depMu.Unlock()
+		return depCount
+	}
+}
+
+func TestCreateSubBeads_TransientRetryThenSuccess(t *testing.T) {
+	disableDepRetrySleep(t)
+
+	fake, depCount := runnerWithDepScript([]struct {
+		out []byte
+		err error
+	}{
+		{nil, errors.New("[mysql] dial tcp 10.0.0.1:3306: i/o timeout")},
+		{[]byte("ok"), nil},
+	})
+
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2}
+	tasks := []subTaskVerdict{
+		{Title: "Task A", Description: "Desc A"},
+		{Title: "Task B", Description: "Desc B"},
+	}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err, "transient mysql i/o timeout should be retried and succeed on second attempt")
+	require.Len(t, subs, 2)
+	assert.Equal(t, 2, depCount(), "expected exactly one retry before success")
+}
+
+func TestCreateSubBeads_TransientExhaustionClarifies(t *testing.T) {
+	disableDepRetrySleep(t)
+
+	fake, depCount := runnerWithDepScript([]struct {
+		out []byte
+		err error
+	}{
+		{nil, errors.New("[mysql] invalid connection")},
+		{nil, errors.New("[mysql] invalid connection")},
+		{nil, errors.New("[mysql] invalid connection")},
+	})
+
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2}
+	tasks := []subTaskVerdict{
+		{Title: "Task A", Description: "Desc A"},
+		{Title: "Task B", Description: "Desc B"},
+	}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.Error(t, err, "exhausting the transient retry budget must surface the error so the caller clarifies")
+	assert.Contains(t, err.Error(), "sequential dependency chaining failed")
+	assert.NotEmpty(t, subs, "partial sub-beads should still be returned")
+	assert.Equal(t, depRetryAttempts, depCount(), "should have used the full retry budget")
+}
+
+func TestCreateSubBeads_PermanentDepErrorNoRetry(t *testing.T) {
+	disableDepRetrySleep(t)
+
+	fake, depCount := runnerWithDepScript([]struct {
+		out []byte
+		err error
+	}{
+		{[]byte("error: cycle detected between test-2 and test-1"), errors.New("bd dep add: cycle detected")},
+	})
+
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2}
+	tasks := []subTaskVerdict{
+		{Title: "Task A", Description: "Desc A"},
+		{Title: "Task B", Description: "Desc B"},
+	}
+
+	_, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.Error(t, err, "permanent errors (cycle detection) must still surface as failure")
+	assert.Equal(t, 1, depCount(), "permanent errors must NOT trigger retries — operators need to see them immediately")
+}
+
+func TestCreateSubBeads_ExitOneWithAddedDependencyNoRetry(t *testing.T) {
+	disableDepRetrySleep(t)
+
+	exitErr := exitError1(t)
+	fake, depCount := runnerWithDepScript([]struct {
+		out []byte
+		err error
+	}{
+		{[]byte("✓ Added dependency: test-2 depends on test-1 (blocks)"), exitErr},
+	})
+
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2}
+	tasks := []subTaskVerdict{
+		{Title: "Task A", Description: "Desc A"},
+		{Title: "Task B", Description: "Desc B"},
+	}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err, "exit 1 with success marker in stdout should be treated as success on the first attempt")
+	require.Len(t, subs, 2)
+	assert.Equal(t, 1, depCount(), "the bd exit-1 quirk must not cause a retry")
+}
+
+func TestIsTransientDepErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		out  []byte
+		want bool
+	}{
+		{"nil error", nil, nil, false},
+		{"mysql i/o timeout", errors.New("[mysql] 10.0.0.1:3306: i/o timeout"), nil, true},
+		{"invalid connection", errors.New("[mysql] invalid connection"), nil, true},
+		{"transient marker in stdout", errors.New("bd dep add failed"), []byte("[mysql] i/o timeout"), true},
+		{"cycle detection", errors.New("cycle detected"), nil, false},
+		{"missing parent", errors.New("parent not found"), nil, false},
+		{"mixed case", errors.New("MySQL I/O Timeout"), nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isTransientDepErr(tc.err, tc.out)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

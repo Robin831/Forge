@@ -404,6 +404,97 @@ func defaultRunCmd(ctx context.Context, dir string, args ...string) ([]byte, err
 	return cmd.CombinedOutput()
 }
 
+// depRetryAttempts is the maximum number of times addSequentialDepWithRetry
+// will invoke bd dep add (initial try + retries) before surfacing an error.
+// It is a var so tests can tighten the budget when exercising retry paths.
+var depRetryAttempts = 3
+
+// depRetryBackoffs is the sleep schedule applied between attempts. There is
+// no sleep before the first attempt. It is a var so tests can override it to
+// avoid real delays.
+var depRetryBackoffs = []time.Duration{
+	500 * time.Millisecond,
+	1 * time.Second,
+	2 * time.Second,
+}
+
+// depRetrySleep is the sleep implementation used between dep-add retries.
+// Tests override this to avoid real waits.
+var depRetrySleep = time.Sleep
+
+// isTransientDepErr reports whether a bd dep add failure looks like a
+// transient Dolt/MySQL connectivity blip that should be retried. Permanent
+// errors (cycle detection, missing parent, validation failures) must NOT
+// match — those need to fail fast so operators see them immediately.
+func isTransientDepErr(err error, output []byte) bool {
+	if err == nil {
+		return false
+	}
+	combined := strings.ToLower(err.Error() + "\n" + string(output))
+	// Markers observed in production: the MySQL driver surfaces connection
+	// drops as "invalid connection" and network timeouts as "i/o timeout"
+	// (often prefixed with "[mysql]"). Match broadly on those substrings.
+	for _, marker := range []string{
+		"i/o timeout",
+		"invalid connection",
+	} {
+		if strings.Contains(combined, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// addSequentialDepWithRetry invokes `bd dep add child prev` with short
+// exponential-backoff retries on transient Dolt/MySQL connectivity failures.
+// Each attempt applies the existing tolerance for bd's quirk of exiting 1
+// while stdout confirms the dependency was actually added. Permanent errors
+// (see isTransientDepErr) fail fast. Returns the last command output, the
+// number of attempts actually made, and the terminal error (nil on success).
+func addSequentialDepWithRetry(ctx context.Context, anvilPath, parentID, childID, prevID string, run bdRunner) ([]byte, int, error) {
+	var lastOut []byte
+	var lastErr error
+	for attempt := 1; attempt <= depRetryAttempts; attempt++ {
+		depCtx, depCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+		out, err := run(depCtx, anvilPath, "dep", "add", childID, prevID)
+		depCtxErr := depCtx.Err() // capture before cancel clears it
+		depCancel()
+
+		if err == nil {
+			return out, attempt, nil
+		}
+
+		// Tolerate bd's quirk: exit code 1 with "Added dependency" in stdout
+		// means the dependency was actually added. Only accept this when the
+		// context was not canceled/expired (to avoid masking real timeouts).
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 && depCtxErr == nil &&
+			strings.Contains(string(out), "Added dependency") {
+			log.Printf("[schematic:%s] bd dep add exited non-zero but dependency was added (%s -> %s), ignoring exit code: %v",
+				parentID, childID, prevID, err)
+			return out, attempt, nil
+		}
+
+		lastOut, lastErr = out, err
+
+		// Permanent errors must not be retried — surface them immediately so
+		// operators can act.
+		if !isTransientDepErr(err, out) {
+			return out, attempt, err
+		}
+
+		if attempt < depRetryAttempts {
+			backoff := depRetryBackoffs[attempt-1]
+			log.Printf("[schematic:%s] Transient bd dep add error on attempt %d/%d (%s -> %s): %v — retrying in %s",
+				parentID, attempt, depRetryAttempts, childID, prevID, err, backoff)
+			depRetrySleep(backoff)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return out, attempt, ctxErr
+			}
+		}
+	}
+	return lastOut, depRetryAttempts, lastErr
+}
+
 // createSubBeads creates sub-beads via bd CLI with blocking dependency links.
 // Each sub-bead blocks the parent so that bd ready excludes the parent until
 // all sub-beads are closed. Children are chained sequentially (child N+1
@@ -447,9 +538,9 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		)
 		cancel()
 		if err != nil {
-			log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: %v", parent.ID, len(subBeads), err)
+			log.Printf("[schematic:%s] Sub-bead creation failed after %d/%d sub-beads (task %q): %v", parent.ID, len(subBeads), len(tasks), task.Title, err)
 			resetParent()
-			return subBeads, fmt.Errorf("creating sub-bead %q: %w: %s", task.Title, err, out)
+			return subBeads, fmt.Errorf("sub-bead creation failed %q: %w: %s", task.Title, err, out)
 		}
 
 		// Extract ID from JSON output. bd may emit trailing diagnostics
@@ -459,14 +550,14 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 			ID string `json:"id"`
 		}
 		if err := executil.DecodeJSON(out, &created); err != nil {
-			log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: could not parse ID", parent.ID, len(subBeads))
+			log.Printf("[schematic:%s] Sub-bead creation failed after %d/%d sub-beads: could not parse ID from bd output", parent.ID, len(subBeads), len(tasks))
 			resetParent()
-			return subBeads, fmt.Errorf("parsing sub-bead ID from output: %w: %s", err, out)
+			return subBeads, fmt.Errorf("sub-bead creation failed parsing ID: %w: %s", err, out)
 		}
 		if created.ID == "" {
-			log.Printf("[schematic:%s] Partial decomposition failure after creating %d sub-beads: could not parse ID", parent.ID, len(subBeads))
+			log.Printf("[schematic:%s] Sub-bead creation failed after %d/%d sub-beads: missing id in bd create JSON", parent.ID, len(subBeads), len(tasks))
 			resetParent()
-			return subBeads, fmt.Errorf("parsing sub-bead ID from output: missing id in bd create JSON: %s", out)
+			return subBeads, fmt.Errorf("sub-bead creation failed: missing id in bd create JSON: %s", out)
 		}
 
 		subBeads = append(subBeads, SubBead{ID: created.ID, Title: task.Title})
@@ -480,28 +571,13 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		// can surface the issue to operators via ActionClarify.
 		if len(subBeads) >= 2 {
 			prev := subBeads[len(subBeads)-2]
-			depCtx, depCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
-			depOut, depErr := run(depCtx, anvilPath, "dep", "add", created.ID, prev.ID)
-			depCtxErr := depCtx.Err() // capture before Cancel clears it
-			depCancel()
+			depOut, attempts, depErr := addSequentialDepWithRetry(ctx, anvilPath, parent.ID, created.ID, prev.ID, run)
 			if depErr != nil {
-				// bd dep add can exit non-zero even when the dependency was
-				// successfully added (stdout contains "✓ Added dependency").
-				// Only treat it as success for exit-status-1 failures when the
-				// context had not been canceled/expired at call time (to avoid
-				// masking timeouts or other execution failures).
-				exitErr, isExitErr := depErr.(*exec.ExitError)
-				if isExitErr && exitErr.ExitCode() == 1 && depCtxErr == nil &&
-					strings.Contains(string(depOut), "Added dependency") {
-					log.Printf("[schematic:%s] bd dep add exited non-zero but dependency was added (%s -> %s), ignoring exit code: %v",
-						parent.ID, created.ID, prev.ID, depErr)
-				} else {
-					log.Printf("[schematic:%s] Failed to add sequential dep %s -> %s: %v: %s",
-						parent.ID, created.ID, prev.ID, depErr, depOut)
-					resetParent()
-					return subBeads, fmt.Errorf("adding sequential dependency %s -> %s: %w: %s",
-						created.ID, prev.ID, depErr, depOut)
-				}
+				log.Printf("[schematic:%s] Sequential dependency chaining failed %s -> %s after %d attempt(s): %v: %s",
+					parent.ID, created.ID, prev.ID, attempts, depErr, depOut)
+				resetParent()
+				return subBeads, fmt.Errorf("sequential dependency chaining failed %s -> %s after %d attempt(s): %w: %s",
+					created.ID, prev.ID, attempts, depErr, depOut)
 			}
 		}
 	}

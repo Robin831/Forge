@@ -1,0 +1,2 @@
+category: Fixed
+- **Schematic sequential dep-add resilience** - Retry `bd dep add` up to 3 times with 500ms/1s/2s backoff on transient Dolt/MySQL errors (`i/o timeout`, `invalid connection`) during decomposition, so a single connection blip no longer aborts an otherwise-valid decomposition and leaves orphan sub-beads. Permanent errors still fail fast, and the log now clearly distinguishes sub-bead creation failures from sequential dependency chaining failures. (Forge-suox)
