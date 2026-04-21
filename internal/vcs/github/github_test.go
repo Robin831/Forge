@@ -117,6 +117,38 @@ func TestBuildDefaultBody(t *testing.T) {
 			absent: []string{
 				"## Changes",
 				"## Original Issue",
+				"## Reviewer's approval notes",
+			},
+		},
+		{
+			name: "reviewer notes render under separate heading, never under ## Changes",
+			params: vcs.CreateParams{
+				BeadID:        "Forge-abc4",
+				Branch:        "forge/Forge-abc4",
+				ReviewerNotes: "Clean documentation-only lift of Dieter Rams design principles.",
+			},
+			contains: []string{
+				"## Reviewer's approval notes",
+				"Clean documentation-only lift",
+				"Bead: Forge-abc4 | Branch: forge/Forge-abc4",
+			},
+			absent: []string{
+				"## Changes",
+			},
+		},
+		{
+			name: "both change summary and reviewer notes render in their own sections",
+			params: vcs.CreateParams{
+				BeadID:        "Forge-abc5",
+				Branch:        "forge/Forge-abc5",
+				ChangeSummary: "- **Widget** - Added widget.",
+				ReviewerNotes: "LGTM with minor nits.",
+			},
+			contains: []string{
+				"## Changes",
+				"- **Widget** - Added widget.",
+				"## Reviewer's approval notes",
+				"LGTM with minor nits.",
 			},
 		},
 	}
@@ -132,6 +164,26 @@ func TestBuildDefaultBody(t *testing.T) {
 			}
 		})
 	}
+
+	// Regression: a warden verdict passed as ReviewerNotes must never appear
+	// inside the '## Changes' section. This is the root of the bug the bead
+	// was filed for — review-speak leaking under Changes when no changelog
+	// fragment is available.
+	t.Run("warden verdict never leaks into ## Changes", func(t *testing.T) {
+		body := buildDefaultBody(vcs.CreateParams{
+			BeadID:        "Forge-leak",
+			Branch:        "forge/Forge-leak",
+			ReviewerNotes: "Clean documentation-only lift of Dieter Rams design principles.",
+		})
+		changesIdx := strings.Index(body, "## Changes")
+		assert.Equal(t, -1, changesIdx, "no '## Changes' section should be emitted when only ReviewerNotes is set")
+		notesIdx := strings.Index(body, "## Reviewer's approval notes")
+		assert.NotEqual(t, -1, notesIdx, "reviewer notes heading must be present")
+		// The verdict text must live under the reviewer-notes heading, not
+		// anywhere above a '## Changes' heading that doesn't exist.
+		verdictIdx := strings.Index(body, "Clean documentation-only lift")
+		assert.Greater(t, verdictIdx, notesIdx, "verdict text must follow reviewer notes heading")
+	})
 }
 
 // makeTestRepo creates a temporary git repository with a single commit using

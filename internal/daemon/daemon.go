@@ -2434,13 +2434,15 @@ normalPipeline:
 func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome, bead poller.Bead, anvilPath, workerID string) {
 	d.logger.Info("pipeline succeeded", "bead", bead.ID, "branch", outcome.Branch, "iterations", outcome.Iterations)
 
-	// Build a change summary for the PR description.
-	// Priority: ChangelogSummary > ReviewResult.Summary.
-	var changeSummary string
+	// Build the PR body's summary sections.
+	// ChangeSummary is reserved for the author-written changelog fragment;
+	// the warden verdict is routed to ReviewerNotes so it never leaks into
+	// the '## Changes' section when no fragment exists.
+	var changelogSummary, reviewerNotes string
 	if outcome.ChangelogSummary != "" {
-		changeSummary = outcome.ChangelogSummary
+		changelogSummary = outcome.ChangelogSummary
 	} else if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" {
-		changeSummary = outcome.ReviewResult.Summary
+		reviewerNotes = outcome.ReviewResult.Summary
 	}
 
 	// Last-chance lookup: fetch the latest external_ref from bd in case it
@@ -2460,7 +2462,8 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		BeadTitle:       bead.Title,
 		BeadDescription: bead.Description,
 		BeadType:        bead.IssueType,
-		ChangeSummary:   changeSummary,
+		ChangeSummary:   changelogSummary,
+		ReviewerNotes:   reviewerNotes,
 		ExternalRef:     externalRef,
 	})
 	if err != nil {
@@ -5432,9 +5435,15 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 			d.logger.Warn("warden_rerun: push failed (may already be up-to-date)", "error", pushErr)
 		}
 
-		var changeSummary string
-		if result.Summary != "" {
-			changeSummary = result.Summary
+		// Prefer a changelog fragment (if the rerun worktree has one) for the
+		// '## Changes' section and keep the warden verdict in ReviewerNotes so
+		// review-speak never appears under '## Changes'.
+		var changelogSummary, reviewerNotes string
+		if wt != nil {
+			changelogSummary = pipeline.ExtractChangelogSummary(wt.Path, beadID)
+		}
+		if changelogSummary == "" && result.Summary != "" {
+			reviewerNotes = result.Summary
 		}
 
 		pr, err := d.vcsForAnvil(anvil).CreatePR(ctx, vcs.CreateParams{
@@ -5446,7 +5455,8 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 			AnvilName:       anvil,
 			BeadTitle:       title,
 			BeadDescription: description,
-			ChangeSummary:   changeSummary,
+			ChangeSummary:   changelogSummary,
+			ReviewerNotes:   reviewerNotes,
 			ExternalRef:     rerunExternalRef,
 		})
 		if err != nil {
@@ -5517,6 +5527,14 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 		baseBranch = beads[0].EpicBranch
 	}
 
+	// Prefer a changelog fragment for '## Changes' when the worktree has one;
+	// otherwise leave the section empty and record the manual-bypass note as
+	// a reviewer note instead of polluting the changelog section.
+	var approveChangelogSummary, approveReviewerNotes string
+	if approveChangelogSummary = pipeline.ExtractChangelogSummary(wt.Path, beadID); approveChangelogSummary == "" {
+		approveReviewerNotes = "Approved as-is (manual bypass)"
+	}
+
 	pr, err := d.vcsForAnvil(anvil).CreatePR(ctx, vcs.CreateParams{
 		WorktreePath:    anvilCfg.Path,
 		BeadID:          beadID,
@@ -5526,7 +5544,8 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 		AnvilName:       anvil,
 		BeadTitle:       title,
 		BeadDescription: description,
-		ChangeSummary:   "Approved as-is (manual bypass)",
+		ChangeSummary:   approveChangelogSummary,
+		ReviewerNotes:   approveReviewerNotes,
 		ExternalRef:     approveExtRef,
 	})
 	if err != nil {

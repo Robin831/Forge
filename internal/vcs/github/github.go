@@ -822,9 +822,18 @@ func commitSubject(ctx context.Context, worktreePath, branch string) string {
 func buildDefaultBody(p vcs.CreateParams) string {
 	var b strings.Builder
 
+	// The '## Changes' section is reserved for the author-written changelog
+	// fragment. Warden/reviewer notes are rendered below under a distinct
+	// heading to avoid making review-speak look like a changelog bullet.
 	if p.ChangeSummary != "" {
 		b.WriteString("## Changes\n\n")
 		b.WriteString(p.ChangeSummary)
+		b.WriteString("\n\n")
+	}
+
+	if p.ReviewerNotes != "" {
+		b.WriteString("## Reviewer's approval notes\n\n")
+		b.WriteString(p.ReviewerNotes)
 		b.WriteString("\n\n")
 	}
 
