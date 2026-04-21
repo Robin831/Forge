@@ -410,12 +410,12 @@ func defaultRunCmd(ctx context.Context, dir string, args ...string) ([]byte, err
 var depRetryAttempts = 3
 
 // depRetryBackoffs is the sleep schedule applied between attempts. There is
-// no sleep before the first attempt. It is a var so tests can override it to
-// avoid real delays.
+// no sleep before the first attempt and no sleep after the last attempt, so
+// this slice holds depRetryAttempts-1 entries. It is a var so tests can
+// override it to avoid real delays.
 var depRetryBackoffs = []time.Duration{
 	500 * time.Millisecond,
 	1 * time.Second,
-	2 * time.Second,
 }
 
 // depRetrySleep is the sleep implementation used between dep-add retries.
