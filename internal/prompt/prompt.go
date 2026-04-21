@@ -96,10 +96,11 @@ func (b *Builder) Build(ctx BeadContext) (string, error) {
 
 	// Gather repo context files
 	data := templateData{
-		Bead:     ctx,
-		AgentsMD: readFileSafe(filepath.Join(ctx.AnvilPath, "AGENTS.md")),
-		ClaudeMD: readFileSafe(filepath.Join(ctx.AnvilPath, "CLAUDE.md")),
-		ReadmeMD: readFileSafe(filepath.Join(ctx.AnvilPath, "README.md")),
+		Bead:          ctx,
+		AgentsMD:      readFileSafe(filepath.Join(ctx.AnvilPath, "AGENTS.md")),
+		ClaudeMD:      readFileSafe(filepath.Join(ctx.AnvilPath, "CLAUDE.md")),
+		ReadmeMD:      readFileSafe(filepath.Join(ctx.AnvilPath, "README.md")),
+		ConventionsMD: readFileSafe(filepath.Join(ctx.AnvilPath, ".forge", "conventions.md")),
 	}
 
 	var buf bytes.Buffer
@@ -140,10 +141,11 @@ func LoadCustomTemplate(anvilPath string) string {
 
 // templateData is the full set of data available to the prompt template.
 type templateData struct {
-	Bead     BeadContext
-	AgentsMD string
-	ClaudeMD string
-	ReadmeMD string
+	Bead          BeadContext
+	AgentsMD      string
+	ClaudeMD      string
+	ReadmeMD      string
+	ConventionsMD string
 }
 
 // wardenRulesPlaceholder is a sentinel string that is never valid prompt
@@ -236,6 +238,12 @@ environment for other workers.
 6. **Push your branch** to the remote: git push -u origin {{.Bead.Branch}}
 7. **Do not create a PR** — that will be handled by the orchestrator
 8. **Do not close the bead** — the orchestrator closes it automatically after the PR merges
+{{- if .ConventionsMD}}
+
+## Project Rules (Non-Negotiable)
+
+{{.ConventionsMD}}
+{{- end}}
 
 ## Escalation — When to Ask for Human Help
 

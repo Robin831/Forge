@@ -286,6 +286,126 @@ func TestBuild_ExternalRefGhShorthandRendered(t *testing.T) {
 	assert.Contains(t, result, "gh-42")
 }
 
+func TestBuild_ConventionsRenderedWhenFilePresent(t *testing.T) {
+	anvilDir := t.TempDir()
+	forgeDir := filepath.Join(anvilDir, ".forge")
+	require.NoError(t, os.MkdirAll(forgeDir, 0o755))
+
+	conventions := "- Bilingual changelog fragments required (en + nb).\n- All stories must have a Storybook file.\n"
+	require.NoError(t, os.WriteFile(filepath.Join(forgeDir, "conventions.md"), []byte(conventions), 0o644))
+
+	b := NewBuilder()
+	ctx := BeadContext{
+		BeadID:       "test-conv-present",
+		Title:        "Test with conventions",
+		Description:  "Do the thing",
+		IssueType:    "task",
+		Priority:     3,
+		Branch:       "forge/test-conv-present",
+		AnvilName:    "test-anvil",
+		AnvilPath:    anvilDir,
+		WorktreePath: t.TempDir(),
+	}
+
+	result, err := b.Build(ctx)
+	require.NoError(t, err)
+
+	assert.Contains(t, result, "## Project Rules (Non-Negotiable)")
+	assert.Contains(t, result, "Bilingual changelog fragments required")
+	assert.Contains(t, result, "All stories must have a Storybook file.")
+}
+
+func TestBuild_ConventionsPositionedBetweenInstructionsAndEscalation(t *testing.T) {
+	anvilDir := t.TempDir()
+	forgeDir := filepath.Join(anvilDir, ".forge")
+	require.NoError(t, os.MkdirAll(forgeDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(forgeDir, "conventions.md"), []byte("- rule one\n"), 0o644))
+
+	b := NewBuilder()
+	ctx := BeadContext{
+		BeadID:       "test-conv-pos",
+		Title:        "Test conventions position",
+		Description:  "Do the thing",
+		IssueType:    "task",
+		Priority:     3,
+		Branch:       "forge/test-conv-pos",
+		AnvilName:    "test-anvil",
+		AnvilPath:    anvilDir,
+		WorktreePath: t.TempDir(),
+	}
+
+	result, err := b.Build(ctx)
+	require.NoError(t, err)
+
+	instructionsIdx := strings.Index(result, "## Instructions")
+	conventionsIdx := strings.Index(result, "## Project Rules (Non-Negotiable)")
+	escalationIdx := strings.Index(result, "## Escalation")
+
+	require.GreaterOrEqual(t, instructionsIdx, 0, "## Instructions section must be present")
+	require.GreaterOrEqual(t, conventionsIdx, 0, "## Project Rules section must be present")
+	require.GreaterOrEqual(t, escalationIdx, 0, "## Escalation section must be present")
+
+	assert.Greater(t, conventionsIdx, instructionsIdx,
+		"Project Rules should appear after Instructions")
+	assert.Less(t, conventionsIdx, escalationIdx,
+		"Project Rules should appear before Escalation")
+}
+
+func TestBuild_ConventionsOmittedWhenFileAbsent(t *testing.T) {
+	// Anvil directory exists but has no .forge/conventions.md file.
+	anvilDir := t.TempDir()
+
+	b := NewBuilder()
+	ctx := BeadContext{
+		BeadID:       "test-conv-absent",
+		Title:        "Test without conventions",
+		Description:  "Do the thing",
+		IssueType:    "task",
+		Priority:     3,
+		Branch:       "forge/test-conv-absent",
+		AnvilName:    "test-anvil",
+		AnvilPath:    anvilDir,
+		WorktreePath: t.TempDir(),
+	}
+
+	result, err := b.Build(ctx)
+	require.NoError(t, err)
+
+	assert.NotContains(t, result, "## Project Rules (Non-Negotiable)")
+}
+
+func TestBuild_ConventionsContentNotTemplateExpanded(t *testing.T) {
+	// Conventions content containing Go template directives must appear
+	// literally in the rendered prompt — Go's text/template does not
+	// re-process substituted values, but we assert the behavior explicitly
+	// so future refactors cannot silently break this invariant.
+	anvilDir := t.TempDir()
+	forgeDir := filepath.Join(anvilDir, ".forge")
+	require.NoError(t, os.MkdirAll(forgeDir, 0o755))
+
+	conventions := "Use the placeholder {{.SomeField}} and the directive {{if foo}}bar{{end}} verbatim.\n"
+	require.NoError(t, os.WriteFile(filepath.Join(forgeDir, "conventions.md"), []byte(conventions), 0o644))
+
+	b := NewBuilder()
+	ctx := BeadContext{
+		BeadID:       "test-conv-no-expand",
+		Title:        "Test conventions template injection",
+		Description:  "Verify template directives are not expanded",
+		IssueType:    "task",
+		Priority:     3,
+		Branch:       "forge/test-conv-no-expand",
+		AnvilName:    "test-anvil",
+		AnvilPath:    anvilDir,
+		WorktreePath: t.TempDir(),
+	}
+
+	result, err := b.Build(ctx)
+	require.NoError(t, err)
+
+	assert.Contains(t, result, "{{.SomeField}}")
+	assert.Contains(t, result, "{{if foo}}bar{{end}}")
+}
+
 func TestBuild_ExternalRefOmittedWhenEmpty(t *testing.T) {
 	b := NewBuilder()
 	ctx := BeadContext{
