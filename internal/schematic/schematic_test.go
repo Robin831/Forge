@@ -15,8 +15,8 @@ import (
 )
 
 // disableDepRetrySleep replaces the real sleep between dep-add retries with a
-// no-op for the duration of the test. It returns a restore function suitable
-// for t.Cleanup / defer.
+// no-op for the duration of the test and restores the original function via
+// t.Cleanup.
 func disableDepRetrySleep(t *testing.T) {
 	t.Helper()
 	orig := depRetrySleep
@@ -609,9 +609,9 @@ func TestCreateSubBeads_SingleSubBeadInheritsChain(t *testing.T) {
 	assert.True(t, foundBlocks, "single sub-bead should inherit parent Blocks")
 }
 
-// runnerWithDepScript returns a fakeRunner that drives bd create / dep / show
-// through a scripted sequence of dep-add responses (one per dep-add attempt).
-// Extra calls return the final scripted response.
+// runnerWithDepScript returns a fakeRunner that synthesizes create responses
+// and scripts dep responses (one per dep-add attempt). Other commands return
+// "ok" and are not validated through the script.
 func runnerWithDepScript(script []struct {
 	out []byte
 	err error

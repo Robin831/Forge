@@ -483,7 +483,11 @@ func addSequentialDepWithRetry(ctx context.Context, anvilPath, parentID, childID
 		}
 
 		if attempt < depRetryAttempts {
-			backoff := depRetryBackoffs[attempt-1]
+			idx := attempt - 1
+			if idx >= len(depRetryBackoffs) {
+				idx = len(depRetryBackoffs) - 1
+			}
+			backoff := depRetryBackoffs[idx]
 			log.Printf("[schematic:%s] Transient bd dep add error on attempt %d/%d (%s -> %s): %v — retrying in %s",
 				parentID, attempt, depRetryAttempts, childID, prevID, err, backoff)
 			depRetrySleep(backoff)
