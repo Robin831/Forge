@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1441,7 +1442,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 				logIngotErr(workerID, "approved", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusApproved))
 			}
 
-			outcome.ChangelogSummary = extractChangelogSummary(wt.Path, p.Bead.ID)
+			outcome.ChangelogSummary = ExtractChangelogSummary(wt.Path, p.Bead.ID)
 
 			// Ensure the branch is pushed to the remote before the worktree
 			// is cleaned up. Smith is instructed to push, but as a safety net
@@ -1881,16 +1882,30 @@ func copyFile(src, dst string) (err error) {
 	return nil
 }
 
-// extractChangelogSummary attempts to parse a Smith changelog fragment from the worktree
-// and returns the bullet points as a single string. It falls back to .en.md if necessary.
-func extractChangelogSummary(wtPath, beadID string) string {
-	// Try the primary fragment.
-	if frag, err := changelog.ParseFragment(filepath.Join(wtPath, "changelog.d", beadID+".md")); err == nil {
-		return strings.Join(frag.Bullets, "\n")
+// ExtractChangelogSummary attempts to parse a Smith changelog fragment from the
+// worktree and returns the bullet points as a single string. It searches a
+// prioritized set of filename patterns so repositories that use suffixed
+// fragment names (e.g. <beadID>-technical.en.md) are covered in addition to the
+// canonical <beadID>.md / <beadID>.en.md variants. English fragments win over
+// Norwegian when both are present.
+func ExtractChangelogSummary(wtPath, beadID string) string {
+	dir := filepath.Join(wtPath, "changelog.d")
+	patterns := []string{
+		beadID + ".en.md",
+		beadID + ".md",
+		beadID + "-*.en.md",
+		beadID + "-*.md",
+		beadID + ".nb.md",
+		beadID + "-*.nb.md",
 	}
-	// Fallback to the legacy .en.md extension if the primary fragment is missing or invalid.
-	if frag, err := changelog.ParseFragment(filepath.Join(wtPath, "changelog.d", beadID+".en.md")); err == nil {
-		return strings.Join(frag.Bullets, "\n")
+	for _, p := range patterns {
+		matches, _ := filepath.Glob(filepath.Join(dir, p))
+		sort.Strings(matches) // deterministic pick when multiple files match
+		for _, path := range matches {
+			if frag, err := changelog.ParseFragment(path); err == nil && len(frag.Bullets) > 0 {
+				return strings.Join(frag.Bullets, "\n")
+			}
+		}
 	}
 	return ""
 }

@@ -395,6 +395,33 @@ func TestBuildPRBody_ExternalRef(t *testing.T) {
 	})
 }
 
+func TestBuildPRBody_ReviewerNotes(t *testing.T) {
+	t.Run("reviewer notes render under dedicated heading, not under Changes", func(t *testing.T) {
+		body := buildPRBody(CreateParams{
+			BeadID:        "Forge-test",
+			Branch:        "forge/test",
+			ReviewerNotes: "LGTM — clean refactor.",
+		})
+		assert.NotContains(t, body, "## Changes",
+			"reviewer notes alone must not cause a '## Changes' section to appear")
+		assert.Contains(t, body, "## Reviewer's approval notes")
+		assert.Contains(t, body, "LGTM — clean refactor.")
+	})
+
+	t.Run("change summary and reviewer notes both render in their own sections", func(t *testing.T) {
+		body := buildPRBody(CreateParams{
+			BeadID:        "Forge-test",
+			Branch:        "forge/test",
+			ChangeSummary: "- **Widget** - Added widget.",
+			ReviewerNotes: "Approved.",
+		})
+		assert.Contains(t, body, "## Changes")
+		assert.Contains(t, body, "- **Widget** - Added widget.")
+		assert.Contains(t, body, "## Reviewer's approval notes")
+		assert.Contains(t, body, "Approved.")
+	})
+}
+
 func TestMergeabilityFromStatus(t *testing.T) {
 	s := &PRStatus{
 		Mergeable:         "CONFLICTING",

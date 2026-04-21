@@ -197,11 +197,13 @@ func Run(ctx context.Context, p Params) *Result {
 
 			// If parent produced changes, create a PR and merge into the feature branch.
 			if parentHasWork && parentOutcome.Branch != "" {
-				var changeSummary string
+				// Keep the warden verdict out of '## Changes' — route it to the
+				// reviewer-notes section when no changelog fragment exists.
+				var parentChangelogSummary, parentReviewerNotes string
 				if parentOutcome.ChangelogSummary != "" {
-					changeSummary = parentOutcome.ChangelogSummary
+					parentChangelogSummary = parentOutcome.ChangelogSummary
 				} else if parentOutcome.ReviewResult != nil && parentOutcome.ReviewResult.Summary != "" {
-					changeSummary = parentOutcome.ReviewResult.Summary
+					parentReviewerNotes = parentOutcome.ReviewResult.Summary
 				}
 
 				pr, err := p.createPR(ctx, vcs.CreateParams{
@@ -214,7 +216,8 @@ func Run(ctx context.Context, p Params) *Result {
 					BeadTitle:       p.ParentBead.Title,
 					BeadDescription: p.ParentBead.Description,
 					BeadType:        p.ParentBead.IssueType,
-					ChangeSummary:   changeSummary,
+					ChangeSummary:   parentChangelogSummary,
+					ReviewerNotes:   parentReviewerNotes,
 					ExternalRef:     p.ParentBead.ExternalRef,
 				})
 				if err != nil {
@@ -410,12 +413,14 @@ func Run(ctx context.Context, p Params) *Result {
 			}
 		}
 
-		// Build change summary preferring the changelog fragment, falling back to Warden review.
-		var childChangeSummary string
+		// Prefer the author-written changelog fragment for '## Changes'; fall
+		// back to the warden verdict under a distinct reviewer-notes section
+		// so review-speak does not masquerade as a changelog bullet.
+		var childChangelogSummary, childReviewerNotes string
 		if childResult.ChangelogSummary != "" {
-			childChangeSummary = childResult.ChangelogSummary
+			childChangelogSummary = childResult.ChangelogSummary
 		} else if childResult.ReviewResult != nil && childResult.ReviewResult.Summary != "" {
-			childChangeSummary = childResult.ReviewResult.Summary
+			childReviewerNotes = childResult.ReviewResult.Summary
 		}
 
 		// Create PR from child branch → feature branch.
@@ -429,7 +434,8 @@ func Run(ctx context.Context, p Params) *Result {
 			BeadTitle:       child.Title,
 			BeadDescription: child.Description,
 			BeadType:        child.IssueType,
-			ChangeSummary:   childChangeSummary,
+			ChangeSummary:   childChangelogSummary,
+			ReviewerNotes:   childReviewerNotes,
 			ExternalRef:     child.ExternalRef,
 		})
 		if err != nil {

@@ -1750,3 +1750,91 @@ func TestCombinedMode_FallbackProvider_RunsNormalWarden(t *testing.T) {
 	assert.True(t, outcome.Success)
 	assert.True(t, wardenCalled, "real Warden must run when Smith fell back to a non-Copilot provider")
 }
+
+// writeFragment writes a changelog fragment with the given filename in the
+// worktree's changelog.d directory.
+func writeFragment(t *testing.T, wtPath, filename, content string) {
+	t.Helper()
+	dir := filepath.Join(wtPath, "changelog.d")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, filename), []byte(content), 0o644))
+}
+
+// TestExtractChangelogSummary covers the full matrix of fragment filename
+// variants that real anvils produce, including the Munin-style suffixed names
+// that used to fall through to the warden verdict fallback.
+func TestExtractChangelogSummary(t *testing.T) {
+	const bead = "Forge-abcd"
+	const enBullet = "- **Plain EN bullet** - detail. (Forge-abcd)"
+	const plainBullet = "- **Plain bullet** - detail. (Forge-abcd)"
+	const techEnBullet = "- **Technical EN bullet** - detail. (Forge-abcd)"
+	const techNbBullet = "- **Technical NB bullet** - detalj. (Forge-abcd)"
+	const nbBullet = "- **Plain NB bullet** - detalj. (Forge-abcd)"
+	const header = "category: Added\n"
+
+	t.Run("plain .md fragment", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFragment(t, dir, bead+".md", header+plainBullet+"\n")
+		got := ExtractChangelogSummary(dir, bead)
+		assert.Contains(t, got, "Plain bullet")
+	})
+
+	t.Run("plain .en.md fragment", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFragment(t, dir, bead+".en.md", header+enBullet+"\n")
+		got := ExtractChangelogSummary(dir, bead)
+		assert.Contains(t, got, "Plain EN bullet")
+	})
+
+	t.Run("suffixed -technical.en.md fragment (Munin convention)", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFragment(t, dir, bead+"-technical.en.md", header+techEnBullet+"\n")
+		got := ExtractChangelogSummary(dir, bead)
+		assert.Contains(t, got, "Technical EN bullet",
+			"Munin-style -technical.en.md fragment must be picked up (was previously leaking warden verdict)")
+	})
+
+	t.Run("English preferred over Norwegian for plain fragments", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFragment(t, dir, bead+".en.md", header+enBullet+"\n")
+		writeFragment(t, dir, bead+".nb.md", header+nbBullet+"\n")
+		got := ExtractChangelogSummary(dir, bead)
+		assert.Contains(t, got, "Plain EN bullet")
+		assert.NotContains(t, got, "Plain NB bullet")
+	})
+
+	t.Run("English preferred over Norwegian for suffixed fragments", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFragment(t, dir, bead+"-technical.en.md", header+techEnBullet+"\n")
+		writeFragment(t, dir, bead+"-technical.nb.md", header+techNbBullet+"\n")
+		got := ExtractChangelogSummary(dir, bead)
+		assert.Contains(t, got, "Technical EN bullet")
+		assert.NotContains(t, got, "Technical NB bullet")
+	})
+
+	t.Run("no fragment returns empty", func(t *testing.T) {
+		dir := t.TempDir()
+		got := ExtractChangelogSummary(dir, bead)
+		assert.Equal(t, "", got)
+	})
+
+	t.Run("fragment with zero bullets falls through", func(t *testing.T) {
+		dir := t.TempDir()
+		// A category-only fragment with no bullets must not masquerade as a
+		// successful match; the next pattern should win instead.
+		writeFragment(t, dir, bead+".en.md", "category: Added\n")
+		writeFragment(t, dir, bead+"-technical.en.md", header+techEnBullet+"\n")
+		got := ExtractChangelogSummary(dir, bead)
+		assert.Contains(t, got, "Technical EN bullet",
+			"zero-bullet fragment must not short-circuit the pattern search")
+	})
+
+	t.Run("plain .md preferred over suffixed variant", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFragment(t, dir, bead+".md", header+plainBullet+"\n")
+		writeFragment(t, dir, bead+"-technical.en.md", header+techEnBullet+"\n")
+		got := ExtractChangelogSummary(dir, bead)
+		assert.Contains(t, got, "Plain bullet")
+		assert.NotContains(t, got, "Technical EN bullet")
+	})
+}

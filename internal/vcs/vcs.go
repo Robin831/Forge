@@ -84,10 +84,18 @@ func InjectClosesLine(body, externalRef string) string {
 func buildPRBody(p CreateParams) string {
 	var b strings.Builder
 
-	// Lead with change summary (English, from Warden review) when available.
+	// Lead with the author-written change summary (changelog fragment) when
+	// available. The warden verdict is intentionally NOT rendered here — it
+	// lives in a separate section below so reviewers can tell the two apart.
 	if p.ChangeSummary != "" {
 		b.WriteString("## Changes\n\n")
 		b.WriteString(p.ChangeSummary)
+		b.WriteString("\n\n")
+	}
+
+	if p.ReviewerNotes != "" {
+		b.WriteString("## Reviewer's approval notes\n\n")
+		b.WriteString(p.ReviewerNotes)
 		b.WriteString("\n\n")
 	}
 
@@ -238,8 +246,15 @@ type CreateParams struct {
 	BeadDescription string
 	// BeadType is the bead's issue type (bug, feature, task, etc.).
 	BeadType string
-	// ChangeSummary is a summary of what changed (from warden review or diff stat).
+	// ChangeSummary is the author-written summary of what changed. It is
+	// rendered under the '## Changes' heading in the PR body and is sourced
+	// from a parsed changelog fragment — never from the warden review verdict.
 	ChangeSummary string
+	// ReviewerNotes is an approval/review-speak summary produced by the Warden
+	// (or any other reviewer) to be rendered under a separate heading. It is
+	// intentionally kept distinct from ChangeSummary so warden verdicts do not
+	// leak into the '## Changes' section when a changelog fragment is missing.
+	ReviewerNotes string
 	// ExternalRef is an optional external tracker reference (e.g. "gh-42" or a
 	// GitHub issue URL). When it identifies a GitHub issue, buildPRBody injects
 	// a "Closes #N" line so the PR auto-closes the issue on merge.
