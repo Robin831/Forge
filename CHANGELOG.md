@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.15.1] - 2026-04-21
+
+### Changed
+
+- **Dependency updates** - Bumped golang.org/x/sys v0.42.0→v0.43.0, modernc.org/sqlite v1.48.1→v1.49.1, github.com/mattn/go-runewidth v0.0.22→v0.0.23. (Forge-5qjp)
+- **install.ps1 unblocks downloaded binary on Windows** - Call `Unblock-File` after extracting `forge.exe` to strip the Zone.Identifier NTFS stream that triggers repeated Windows Defender scans. Wrapped in try/catch so installation continues if the call fails. (Forge-9u3j)
+
+### Fixed
+
+- **DecodeJSON tolerates leading bracket noise from bd** - `executil.DecodeJSON` now scans every `{` (then every `[`) candidate position and decodes the first one that succeeds, so output like `[mysql] ... i/o timeout` followed by valid JSON no longer breaks schematic decomposition. Errors when no JSON is found include a bounded snippet of the raw output. (Forge-6wzl)
+- **Hearth queue snapshot retains unlabeled ready beads between fast polls** - The two-tier poller now keeps a separate labeled and unlabeled snapshot per anvil so a fast (label-filtered) poll no longer evicts beads that the slow (unfiltered) poll surfaced. Hearth's Queue panel now shows unlabeled ready beads continuously between slow polls; only beads that genuinely transition out of ready disappear, and only after the next slow poll confirms it. (Forge-1soq)
+- **IPC client per-command read deadlines** - Replaced the hardcoded 3s response timeout with a per-command `ReadTimeout` so bd-backed handlers (run_bead, force-run, merge_pr, resolve_orphan, crucible_action, pr_action) no longer fail with `reading response: i/o timeout` when bd against remote Dolt takes 10-30s. Trivial commands (status, view_logs) still use the 3s default; long-running commands opt into the 2-minute `BdBackedReadTimeout`. (Forge-14t7)
+- **Schematic sequential dep-add resilience** - Retry `bd dep add` up to 3 times with 500ms/1s backoff on transient Dolt/MySQL errors (`i/o timeout`, `invalid connection`) during decomposition, so a single connection blip no longer aborts an otherwise-valid decomposition and leaves orphan sub-beads. Permanent errors still fail fast, and the log now clearly distinguishes sub-bead creation failures from sequential dependency chaining failures. (Forge-suox)
+
 ## [0.15.0] - 2026-04-17
 
 ### Added

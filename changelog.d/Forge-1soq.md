@@ -1,2 +1,0 @@
-category: Fixed
-- **Hearth queue snapshot retains unlabeled ready beads between fast polls** - The two-tier poller now keeps a separate labeled and unlabeled snapshot per anvil so a fast (label-filtered) poll no longer evicts beads that the slow (unfiltered) poll surfaced. Hearth's Queue panel now shows unlabeled ready beads continuously between slow polls; only beads that genuinely transition out of ready disappear, and only after the next slow poll confirms it. (Forge-1soq)
