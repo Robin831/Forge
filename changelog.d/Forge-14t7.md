@@ -1,0 +1,2 @@
+category: Fixed
+- **IPC client per-command read deadlines** - Replaced the hardcoded 3s response timeout with a per-command `ReadTimeout` so bd-backed handlers (run_bead, force-run, merge_pr, resolve_orphan, crucible_action, pr_action) no longer fail with `reading response: i/o timeout` when bd against remote Dolt takes 10-30s. Trivial commands (status, view_logs) still use the 3s default; long-running commands opt into the 2-minute `BdBackedReadTimeout`. (Forge-14t7)

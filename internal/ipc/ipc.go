@@ -33,6 +33,38 @@ import (
 type Command struct {
 	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "set_clarification", "clear_clarification"
 	Payload json.RawMessage `json:"payload"` // Type-specific data
+	// ReadTimeout is an optional client-side timeout for reading the response.
+	// Zero uses DefaultReadTimeout. Long-running commands that go through bd or
+	// gh (e.g. run_bead) should set BdBackedReadTimeout. This field is not sent
+	// on the wire — it only influences Client.Send's read deadline.
+	ReadTimeout time.Duration `json:"-"`
+}
+
+// Per-command read-deadline presets applied by Client.Send.
+const (
+	// DefaultReadTimeout is used when a Command leaves ReadTimeout unset. It is
+	// tuned for fast daemon-local handlers (status, view_logs, DB-only ops).
+	DefaultReadTimeout = 3 * time.Second
+
+	// BdBackedReadTimeout covers handlers that synchronously shell out to bd
+	// (bd show / bd ready) before replying. bd against remote Dolt plus
+	// GitHub auto-sync can take 20-30s per call; run_bead may chain multiple
+	// such calls. Two minutes leaves headroom while still bounding a hung
+	// daemon well under executil.DefaultBdTimeout (5 min).
+	BdBackedReadTimeout = 2 * time.Minute
+)
+
+// defaultReadTimeout is the value applied when Command.ReadTimeout is zero.
+// It mirrors DefaultReadTimeout at runtime but lives in a var so tests can
+// shrink it (see testOverrideDefaultReadTimeout) to keep suite runtime bounded.
+var defaultReadTimeout = DefaultReadTimeout
+
+// testOverrideDefaultReadTimeout swaps the default read timeout, returning the
+// previous value so tests can restore it with defer.
+func testOverrideDefaultReadTimeout(d time.Duration) time.Duration {
+	prev := defaultReadTimeout
+	defaultReadTimeout = d
+	return prev
 }
 
 // Response is a message sent from the daemon to a client.
@@ -529,7 +561,11 @@ func (c *Client) Send(cmd Command) (*Response, error) {
 		return nil, fmt.Errorf("sending command: %w", err)
 	}
 
-	_ = c.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	readTimeout := cmd.ReadTimeout
+	if readTimeout <= 0 {
+		readTimeout = defaultReadTimeout
+	}
+	_ = c.conn.SetReadDeadline(time.Now().Add(readTimeout))
 	scanner := bufio.NewScanner(c.conn)
 	scanner.Buffer(make([]byte, 64*1024), 64*1024)
 	if !scanner.Scan() {

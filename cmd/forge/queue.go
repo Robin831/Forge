@@ -109,8 +109,9 @@ var queueRunCmd = &cobra.Command{
 		})
 
 		resp, err := client.Send(ipc.Command{
-			Type:    "run_bead",
-			Payload: payload,
+			Type:        "run_bead",
+			Payload:     payload,
+			ReadTimeout: ipc.BdBackedReadTimeout,
 		})
 		if err != nil {
 			return fmt.Errorf("sending command: %w", err)
