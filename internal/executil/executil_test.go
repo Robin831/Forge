@@ -73,11 +73,11 @@ func TestDecodeJSON(t *testing.T) {
 			wantID: "real",
 		},
 		{
-			// Caller asked for an object but bd returned an array. The scanner
-			// walks past the leading '[' and finds the inner object.
-			name:   "JSON array into struct extracts first object",
-			input:  "[{\"id\":\"xyz\"}]\ntrailing stuff\n",
-			wantID: "xyz",
+			// Caller asked for an object but bd returned an array. Treat this as
+			// a contract error rather than extracting a nested object.
+			name:    "JSON array into struct returns error",
+			input:   "[{\"id\":\"xyz\"}]\ntrailing stuff\n",
+			wantErr: true,
 		},
 	}
 

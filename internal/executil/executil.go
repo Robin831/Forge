@@ -19,50 +19,85 @@ const DefaultBdTimeout = 5 * time.Minute
 // so a misbehaving subprocess can't blow up logs or downstream UIs.
 const jsonSnippetLimit = 200
 
+// maxJSONCandidates bounds the number of decode attempts in the slow path to
+// avoid O(n*m) work on outputs with many braces/brackets.
+const maxJSONCandidates = 16
+
+// maxJSONScanBytes bounds how many bytes are scanned for JSON candidates so a
+// misbehaving subprocess can't cause unbounded memory/CPU use.
+const maxJSONScanBytes = 64 * 1024
+
 // DecodeJSON decodes one JSON value from subprocess output that may contain
 // leading or trailing non-JSON noise (log lines, diagnostics, etc.).
 //
-// It first tries to decode the whole output. On failure it walks every '{'
-// position (then every '[' position) and attempts to decode starting there,
-// returning the first candidate that succeeds. This handles cases where bd
-// emits diagnostic lines like "[mysql] ... i/o timeout" or Go map prints
-// such as "debug: map[key:{inner}]" before the real JSON payload.
+// It first tries to decode the whole output. On failure it walks top-level
+// '{' positions (then top-level '[' positions) using bytes.IndexByte in a
+// streaming loop, returning the first candidate that succeeds. Only positions
+// at start-of-input or preceded by whitespace are considered, so nested
+// objects inside arrays are not treated as standalone top-level values.
+// The scan is bounded to maxJSONScanBytes bytes and maxJSONCandidates attempts.
 func DecodeJSON(data []byte, v any) error {
 	// Fast path: output is well-formed JSON (json.Decoder tolerates trailing
 	// data after a complete value, so trailing log lines are fine).
-	if err := tryDecodeJSON(data, v); err == nil {
+	fastErr := tryDecodeJSON(data, v)
+	if fastErr == nil {
 		return nil
 	}
 
-	// Slow path: scan for candidate JSON start positions. Prefer '{' over '['
-	// because bd emits JSON objects for create/update/show operations; arrays
+	// Slow path: scan for candidate top-level JSON start positions. Prefer
+	// '{' over '[' because bd emits JSON objects for most operations; arrays
 	// are only used by a handful of list endpoints.
-	for _, idx := range jsonCandidateOffsets(data, '{') {
-		if err := tryDecodeJSON(data[idx:], v); err == nil {
-			return nil
-		}
-	}
-	for _, idx := range jsonCandidateOffsets(data, '[') {
-		if err := tryDecodeJSON(data[idx:], v); err == nil {
-			return nil
-		}
+	if scanForJSON(data, '{', v) || scanForJSON(data, '[', v) {
+		return nil
 	}
 
-	return fmt.Errorf("decoding JSON from subprocess output: no valid JSON found; output snippet: %q", jsonSnippet(data, jsonSnippetLimit))
+	return fmt.Errorf("decoding JSON from subprocess output: no valid JSON found (%w); output snippet: %q",
+		fastErr, jsonSnippet(data, jsonSnippetLimit))
+}
+
+// scanForJSON iterates over top-level occurrences of byte b in data using
+// bytes.IndexByte, attempting to decode each as JSON into v. Returns true on
+// first success. Bounded by maxJSONScanBytes and maxJSONCandidates.
+func scanForJSON(data []byte, b byte, v any) bool {
+	scan := data
+	if len(scan) > maxJSONScanBytes {
+		scan = scan[:maxJSONScanBytes]
+	}
+	attempts := 0
+	for off := 0; off < len(scan); {
+		rel := bytes.IndexByte(scan[off:], b)
+		if rel < 0 {
+			break
+		}
+		abs := off + rel
+		if isTopLevelCandidate(scan, abs) {
+			if tryDecodeJSON(scan[abs:], v) == nil {
+				return true
+			}
+			attempts++
+			if attempts >= maxJSONCandidates {
+				break
+			}
+		}
+		off = abs + 1
+	}
+	return false
+}
+
+// isTopLevelCandidate reports whether the byte at idx could be the start of a
+// top-level JSON value: position 0 or preceded by whitespace. This prevents
+// nested objects (e.g. '{' inside '[{...}]') from being decoded as standalone
+// top-level values, which would mask upstream contract regressions.
+func isTopLevelCandidate(data []byte, idx int) bool {
+	if idx == 0 {
+		return true
+	}
+	prev := data[idx-1]
+	return prev == ' ' || prev == '\t' || prev == '\n' || prev == '\r'
 }
 
 func tryDecodeJSON(data []byte, v any) error {
 	return json.NewDecoder(bytes.NewReader(data)).Decode(v)
-}
-
-func jsonCandidateOffsets(data []byte, b byte) []int {
-	var out []int
-	for i := 0; i < len(data); i++ {
-		if data[i] == b {
-			out = append(out, i)
-		}
-	}
-	return out
 }
 
 func jsonSnippet(data []byte, max int) string {
