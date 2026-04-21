@@ -1886,16 +1886,17 @@ func copyFile(src, dst string) (err error) {
 // worktree and returns the bullet points as a single string. It searches a
 // prioritized set of filename patterns so repositories that use suffixed
 // fragment names (e.g. <beadID>-technical.en.md) are covered in addition to the
-// canonical <beadID>.md / <beadID>.en.md variants. English fragments win over
-// Norwegian when both are present.
+// canonical exact-name variants. The canonical <beadID>.md is preferred over
+// the legacy <beadID>.en.md fallback, plain <beadID>.nb.md remains lower
+// priority, and suffixed variants are checked last.
 func ExtractChangelogSummary(wtPath, beadID string) string {
 	dir := filepath.Join(wtPath, "changelog.d")
 	patterns := []string{
-		beadID + ".en.md",
 		beadID + ".md",
-		beadID + "-*.en.md",
-		beadID + "-*.md",
+		beadID + ".en.md",
 		beadID + ".nb.md",
+		beadID + "-*.md",
+		beadID + "-*.en.md",
 		beadID + "-*.nb.md",
 	}
 	for _, p := range patterns {
