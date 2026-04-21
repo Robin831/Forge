@@ -3885,3 +3885,42 @@ rules:
         Verify the bd claim is only released from call sites where Forge is known to own the claim. Pre-claim failures, claim races, or already-claimed-by-another errors must not trigger release, since that can reopen/unassign a bead legitimately held by another Forge instance or a human. Prefer an explicit release-safe flag or a separate variant of the helper over an unconditional release.
       source: copilot:PR#542
       added: "2026-04-17"
+    - id: errgroup-error-handling
+      category: concurrency
+      pattern: Code uses errgroup.Group for concurrent goroutines
+      check: >-
+        Verify goroutines actually return meaningful errors and that errgroup.Wait()'s returned error is checked and handled. If goroutines always return nil and Wait()'s error is ignored, switch to sync.WaitGroup + semaphore instead, since errgroup is only providing concurrency limiting and risks silently dropping future errors.
+      source: copilot:PR#544
+      added: "2026-04-17"
+    - id: go-mod-tidy-direct-deps
+      category: other
+      pattern: >-
+        A Go file imports a package (e.g. golang.org/x/sync/errgroup) whose module is listed as `// indirect` in go.mod
+      check: >-
+        Verify `go mod tidy` has been run and committed so directly-imported modules are promoted to direct requirements in go.mod/go.sum, preventing CI tidy-check failures
+      source: copilot:PR#544
+      added: "2026-04-17"
+    - id: poll-mode-gating-config
+      category: other
+      pattern: >-
+        Boolean arguments (e.g. fullPoll) toggling behavior like label filters that interact with legacy/disabled config modes
+      check: >-
+        Verify the flag is combined with the relevant config setting inside the function (e.g. force full/unfiltered when the feature interval is <=0) so callers passing the flag unconditionally cannot break legacy mode
+      source: copilot:PR#545
+      added: "2026-04-17"
+    - id: prune-stale-snapshots-on-config-reload
+      category: concurrency
+      pattern: >-
+        Code that merges or aggregates per-anvil (or per-tenant/per-resource) state from a snapshot/cache map keyed by name, where the set of valid names can change at runtime via hot-reload or config updates
+      check: >-
+        Verify the merged view is driven by the currently configured names (e.g., from cfg.Load()) rather than the snapshot map's keys, and/or that snapshot entries for removed anvils are pruned on config reload, so stale entries for deregistered anvils don't leak into Queue/IPC output indefinitely
+      source: copilot:PR#546
+      added: "2026-04-17"
+    - id: reuse-sorted-merged-slice
+      category: performance
+      pattern: >-
+        Code computes a merged and sorted snapshot, then later recomputes another merged/sorted snapshot over a subset of the same data (possibly acquiring the same lock again)
+      check: >-
+        Verify the already-sorted merged slice is reused and filtered to the needed subset instead of performing a second merge/sort and re-acquiring locks, when the sort key is independent of the subset
+      source: copilot:PR#546
+      added: "2026-04-17"
