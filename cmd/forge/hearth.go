@@ -169,8 +169,9 @@ var hearthCmd = &cobra.Command{
 				Anvil:    anvil,
 			})
 			resp, err := client.Send(ipc.Command{
-				Type:    "merge_pr",
-				Payload: json.RawMessage(payload),
+				Type:        "merge_pr",
+				Payload:     json.RawMessage(payload),
+				ReadTimeout: ipc.BdBackedReadTimeout,
 			})
 			if err != nil {
 				return err
@@ -227,8 +228,9 @@ var hearthCmd = &cobra.Command{
 				Action:   action,
 			})
 			resp, err := client.Send(ipc.Command{
-				Type:    "pr_action",
-				Payload: json.RawMessage(payload),
+				Type:        "pr_action",
+				Payload:     json.RawMessage(payload),
+				ReadTimeout: ipc.BdBackedReadTimeout,
 			})
 			if err != nil {
 				return "", err
@@ -308,8 +310,9 @@ var hearthCmd = &cobra.Command{
 				ForceRun: true,
 			})
 			resp, err := client.Send(ipc.Command{
-				Type:    "run_bead",
-				Payload: json.RawMessage(payload),
+				Type:        "run_bead",
+				Payload:     json.RawMessage(payload),
+				ReadTimeout: ipc.BdBackedReadTimeout,
 			})
 			if err != nil {
 				return err
@@ -360,8 +363,9 @@ var hearthCmd = &cobra.Command{
 				Action:   action,
 			})
 			resp, err := client.Send(ipc.Command{
-				Type:    "crucible_action",
-				Payload: json.RawMessage(payload),
+				Type:        "crucible_action",
+				Payload:     json.RawMessage(payload),
+				ReadTimeout: ipc.BdBackedReadTimeout,
 			})
 			if err != nil {
 				return err
@@ -464,8 +468,9 @@ var hearthCmd = &cobra.Command{
 				Action: action,
 			})
 			resp, err := client.Send(ipc.Command{
-				Type:    "resolve_orphan",
-				Payload: json.RawMessage(payload),
+				Type:        "resolve_orphan",
+				Payload:     json.RawMessage(payload),
+				ReadTimeout: ipc.BdBackedReadTimeout,
 			})
 			if err != nil {
 				return err
