@@ -16,20 +16,27 @@ func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
-// killProcessTree sends SIGKILL to the process group whose leader is pid,
-// falling back to a single-PID kill if the group cannot be resolved. When pid
-// was started with Setpgid=true the group contains every descendant that did
-// not explicitly call setsid, so this reaps orphaned background processes.
-// ESRCH (process/group already gone) is treated as success.
+// killProcessTree sends SIGKILL to the process group whose leader is pid. When
+// cmd was started with SetProcessGroup (Setpgid=true) the kernel creates a new
+// process group whose pgid equals pid, containing every descendant that did not
+// explicitly call setsid. A process group outlives its leader: the group is
+// reaped only once every member has exited, so signalling -pid still reaches
+// orphaned background descendants even after the parent has returned from
+// cmd.Wait() and had its PID reaped. This is the real-world failure mode the
+// caller cares about — a build script spawns `npx http-server &` and exits
+// without waiting, leaving the server running and holding worktree files open.
+//
+// Getpgid is deliberately NOT called here: once the leader PID has been reaped
+// it returns ESRCH, which would previously cause this function to fall back to
+// a single-PID kill of the already-dead leader and do nothing. We instead rely
+// on the Setpgid=true contract (pgid == pid) and signal -pid directly. ESRCH
+// from the group kill (nobody left in the group) is treated as success.
 func killProcessTree(pid int) error {
-	pgid, err := syscall.Getpgid(pid)
-	if err == nil && pgid > 0 {
-		if killErr := syscall.Kill(-pgid, syscall.SIGKILL); killErr == nil || killErr == syscall.ESRCH {
-			return nil
-		}
+	if pid <= 0 {
+		return nil
 	}
-	if killErr := syscall.Kill(pid, syscall.SIGKILL); killErr != nil && killErr != syscall.ESRCH {
-		return killErr
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+		return err
 	}
 	return nil
 }
