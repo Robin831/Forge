@@ -224,10 +224,11 @@ var questRunCmd = &cobra.Command{
 
 // runShellCmd executes a shell command string in the given directory. The
 // command runs in its own process group so any descendants it spawns (most
-// notably background servers started by quest setup, e.g.
-// `npx http-server storybook-static`) can be reaped on teardown. Without this
-// those children outlive the quest and hold worktree files open on Windows,
-// blocking the next worktree recreation for the same bead.
+// notably background servers started by the shell command, e.g.
+// `npx http-server storybook-static &`) can be reaped as soon as the command
+// exits. Without this, those children can outlive the shell command and hold
+// worktree files open on Windows, blocking the next worktree recreation for
+// the same bead.
 func runShellCmd(ctx context.Context, command, dir string) error {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {

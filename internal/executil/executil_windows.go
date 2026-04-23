@@ -35,17 +35,23 @@ func setProcessGroup(cmd *exec.Cmd) {
 }
 
 // killProcessTree terminates pid and every descendant via
-// `taskkill /T /F /PID <pid>`. Windows does not re-parent orphans, so even
-// after the root process has exited, taskkill can still walk the tree by
-// ParentProcessID and reap lingering background children (e.g. detached
-// http-server processes spawned by a build script). The exec.Cmd keeps a
-// process handle open until Wait completes, which prevents PID reuse from
-// racing with teardown in the common case.
+// `taskkill /T /F /PID <pid>`. This is effective while the root process still
+// exists. After the root has fully exited, taskkill may not be able to walk the
+// process tree by PID alone, so reaping orphaned descendants is best-effort and
+// not guaranteed in that case.
 //
-// Output is discarded; callers can rely on the return value (any non-nil
-// error from taskkill is propagated) but it is safe to ignore in defers.
+// A "process not found" error (exit code 128) is treated as success, analogous
+// to Unix ESRCH handling, since the target is already gone. Other errors are
+// propagated; it is safe to ignore the return value in defer/teardown paths.
 func killProcessTree(pid int) error {
 	cmd := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid))
 	hideWindow(cmd)
-	return cmd.Run()
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 128 {
+		return nil
+	}
+	return err
 }
