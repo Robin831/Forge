@@ -14,6 +14,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/adventurer"
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/questgiver"
 	"github.com/spf13/cobra"
 )
@@ -221,7 +222,12 @@ var questRunCmd = &cobra.Command{
 	},
 }
 
-// runShellCmd executes a shell command string in the given directory.
+// runShellCmd executes a shell command string in the given directory. The
+// command runs in its own process group so any descendants it spawns (most
+// notably background servers started by quest setup, e.g.
+// `npx http-server storybook-static`) can be reaped on teardown. Without this
+// those children outlive the quest and hold worktree files open on Windows,
+// blocking the next worktree recreation for the same bead.
 func runShellCmd(ctx context.Context, command, dir string) error {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
@@ -229,8 +235,11 @@ func runShellCmd(ctx context.Context, command, dir string) error {
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
+	executil.SetProcessGroup(cmd)
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	err := cmd.Run()
+	_ = executil.KillProcessTree(cmd)
+	return err
 }

@@ -82,9 +82,16 @@ func RunHook(ctx context.Context, workerID, hookName, cmd string, env HookEnv) e
 	log.Printf("[hooks:%s] Running hook %s", workerID, hookName)
 	shell, flag := ShellArgs()
 	c := executil.HideWindow(exec.CommandContext(hookCtx, shell, flag, cmd))
+	// Put the hook in its own process group / Windows process group so any
+	// background servers it starts (e.g. storybook static file servers used
+	// by a smoke-test hook) can be reaped when the hook returns. Without this
+	// those descendants survive the pipeline and hold worktree files open.
+	executil.SetProcessGroup(c)
 	c.Dir = env.WorktreePath
 	c.Env = append(FilterForgeEnv(os.Environ()), env.Environ()...)
 	out, err := c.CombinedOutput()
+	// Best-effort tree kill so any lingering children do not outlive the hook.
+	_ = executil.KillProcessTree(c)
 	if err != nil {
 		log.Printf("[hooks:%s] Hook %s failed: %v (output omitted)", workerID, hookName, err)
 		return fmt.Errorf("hook %s failed: %w", hookName, err)
