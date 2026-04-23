@@ -396,6 +396,13 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 	start := time.Now()
 
 	cmd := executil.HideWindow(exec.CommandContext(stepCtx, step.Command, step.Args...))
+	// Put the step in its own process group / Windows process group so we can
+	// terminate any background descendants it spawned. Build scripts (e.g. a
+	// storybook smoke test) may launch long-running servers like
+	// `npx http-server storybook-static` that would otherwise outlive the
+	// parent and hold worktree files open on Windows, blocking the next
+	// worktree recreation for the same bead.
+	executil.SetProcessGroup(cmd)
 	cmd.Dir = dir
 
 	var output bytes.Buffer
@@ -403,6 +410,10 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 	cmd.Stderr = &output
 
 	err := cmd.Run()
+	// Reap the tree even on success — a step may exit cleanly while leaving
+	// background children alive (e.g. a test runner that spawns an
+	// http-server as a side effect).
+	_ = executil.KillProcessTree(cmd)
 	duration := time.Since(start)
 
 	exitCode := 0

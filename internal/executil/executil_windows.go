@@ -4,6 +4,7 @@ package executil
 
 import (
 	"os/exec"
+	"strconv"
 	"syscall"
 )
 
@@ -31,4 +32,26 @@ func setProcessGroup(cmd *exec.Cmd) {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.CreationFlags |= syscall.CREATE_NEW_PROCESS_GROUP
+}
+
+// killProcessTree terminates pid and every descendant via
+// `taskkill /T /F /PID <pid>`. This is effective while the root process still
+// exists. After the root has fully exited, taskkill may not be able to walk the
+// process tree by PID alone, so reaping orphaned descendants is best-effort and
+// not guaranteed in that case.
+//
+// A "process not found" error (exit code 128) is treated as success, analogous
+// to Unix ESRCH handling, since the target is already gone. Other errors are
+// propagated; it is safe to ignore the return value in defer/teardown paths.
+func killProcessTree(pid int) error {
+	cmd := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid))
+	hideWindow(cmd)
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 128 {
+		return nil
+	}
+	return err
 }

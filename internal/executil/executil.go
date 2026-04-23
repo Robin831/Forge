@@ -121,3 +121,28 @@ func SetProcessGroup(cmd *exec.Cmd) *exec.Cmd {
 	setProcessGroup(cmd)
 	return cmd
 }
+
+// KillProcessTree forcibly terminates cmd's root process and every descendant.
+// It is best-effort: callers should not rely on complete cleanup in all
+// scenarios, but it covers the common cases that cause worktree lock issues.
+//
+// On Unix it requires cmd to have been started with SetProcessGroup so the
+// descendants share a process group that can be signalled via kill(-pgid, sig).
+// In that configuration it is safe to call after cmd has already exited, and it
+// can still reap background children that remained in the process group (for
+// example `npx http-server` started in the background by a build script).
+//
+// On Windows it shells out to `taskkill /T /F /PID <pid>`, which is effective
+// while the root PID still exists. If the root process has already fully exited,
+// Windows does not reliably support targeting the former process tree by that
+// PID alone, so reaping leftover descendants is best-effort and not guaranteed.
+//
+// Returns nil when there is nothing to kill (cmd or cmd.Process is nil).
+// Errors from the underlying signal/taskkill invocation are returned so callers
+// can log them, but it is generally safe to ignore the error in teardown paths.
+func KillProcessTree(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	return killProcessTree(cmd.Process.Pid)
+}
