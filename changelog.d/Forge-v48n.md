@@ -1,0 +1,2 @@
+category: Fixed
+- **Smith cwd-escape protection** - Pin every AI agent subprocess to its worktree via GIT_DIR, GIT_WORK_TREE, and GIT_CEILING_DIRECTORIES so that a stray `cd ..` in a tool_use bash command can no longer escape into the parent anvil and commit to its main branch. Inherited git env vars are also stripped so a stale value cannot leak into non-worktree spawns (schematic, wicket, warden-learn). (Forge-v48n)

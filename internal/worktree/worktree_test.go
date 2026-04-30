@@ -604,6 +604,175 @@ func TestRemove_PreservesSymlinkTarget(t *testing.T) {
 	}
 }
 
+// TestGitEnv_NonWorktreeReturnsNil ensures we don't inject GIT_DIR/GIT_WORK_TREE
+// into a child process whose cwd is not a real worktree (e.g. an os.MkdirTemp
+// dir used by schematic/wicket/warden-learn). Doing so would shape the env
+// for a non-repo run, which we want to leave untouched.
+func TestGitEnv_NonWorktreeReturnsNil(t *testing.T) {
+	if env := GitEnv(t.TempDir()); env != nil {
+		t.Errorf("GitEnv on non-worktree dir: expected nil, got %v", env)
+	}
+}
+
+// TestGitEnv_RealWorktreeSetsAllVars verifies that GitEnv on a real worktree
+// returns GIT_DIR, GIT_WORK_TREE, and GIT_CEILING_DIRECTORIES with values that
+// confine a child git invocation to the worktree.
+func TestGitEnv_RealWorktreeSetsAllVars(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	mgr := NewManager()
+	wt, err := mgr.CreateWithOptions(context.Background(), anvilDir, "git-env-test", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+
+	env := GitEnv(wt.Path)
+	if len(env) == 0 {
+		t.Fatal("GitEnv on real worktree returned empty slice")
+	}
+
+	got := map[string]string{}
+	for _, e := range env {
+		i := strings.IndexByte(e, '=')
+		if i < 0 {
+			t.Fatalf("malformed env entry %q", e)
+		}
+		got[e[:i]] = e[i+1:]
+	}
+
+	// GIT_WORK_TREE must equal the absolute worktree path.
+	absWt, err := filepath.Abs(wt.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["GIT_WORK_TREE"] != absWt {
+		t.Errorf("GIT_WORK_TREE = %q; want %q", got["GIT_WORK_TREE"], absWt)
+	}
+
+	// GIT_DIR must be a valid directory (the worktree's gitdir under
+	// <anvil>/.git/worktrees/<name>) — never the worktree's own .git file.
+	gitdir := got["GIT_DIR"]
+	if gitdir == "" {
+		t.Fatal("GIT_DIR not set")
+	}
+	info, err := os.Stat(gitdir)
+	if err != nil {
+		t.Errorf("GIT_DIR points to missing path %q: %v", gitdir, err)
+	} else if !info.IsDir() {
+		t.Errorf("GIT_DIR %q is not a directory", gitdir)
+	}
+
+	// GIT_CEILING_DIRECTORIES must point to the parent of the worktree root
+	// (i.e. .workers/), so that ascending repo discovery cannot reach the
+	// anvil's .git directory above it.
+	if got["GIT_CEILING_DIRECTORIES"] != filepath.Dir(absWt) {
+		t.Errorf("GIT_CEILING_DIRECTORIES = %q; want %q",
+			got["GIT_CEILING_DIRECTORIES"], filepath.Dir(absWt))
+	}
+}
+
+// TestGitEnv_ConfinesGitFromOutsideWorktree is the regression test for the
+// Fhi.Metadata-k41dx incident: a Smith escaped its worktree via "cd .." and
+// committed 5 stray files on the parent anvil's main branch. With GitEnv
+// applied to a child process, running git from a directory outside the
+// worktree must still target the worktree's gitdir/work-tree, not the
+// parent repo.
+func TestGitEnv_ConfinesGitFromOutsideWorktree(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	mgr := NewManager()
+	ctx := context.Background()
+	wt, err := mgr.CreateWithOptions(ctx, anvilDir, "escape-test", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+
+	// Sanity: without our env vars, running git from the anvil resolves to
+	// the anvil's checkout (the dangerous default we're protecting against).
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = anvilDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("baseline git rev-parse: %v\n%s", err, out)
+	}
+	baselineTop, err := filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedAnvil, err := filepath.EvalSymlinks(anvilDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baselineTop != resolvedAnvil {
+		t.Fatalf("baseline rev-parse: expected anvil %q, got %q", resolvedAnvil, baselineTop)
+	}
+
+	// With GitEnv, running git from the anvil dir (i.e. one level above the
+	// worktree, equivalent to a "cd ../.." escape from a worktree subdir)
+	// must resolve --show-toplevel back to the worktree.
+	env := GitEnv(wt.Path)
+	if env == nil {
+		t.Fatal("GitEnv returned nil for valid worktree")
+	}
+	cmd = exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = anvilDir
+	cmd.Env = append(envWithoutGitVars(), env...)
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("confined git rev-parse: %v\n%s", err, out)
+	}
+	confinedTop, err := filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedWt, err := filepath.EvalSymlinks(wt.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confinedTop != resolvedWt {
+		t.Errorf("git --show-toplevel with GitEnv from anvil dir = %q; want worktree %q "+
+			"(regression: Smith escape from worktree subdir would commit to anvil main)",
+			confinedTop, resolvedWt)
+	}
+
+	// Running git rev-parse --abbrev-ref HEAD from the anvil dir with GitEnv
+	// must report the worktree's branch, not the anvil's main. This is the
+	// invariant that prevents the Fhi.Metadata-k41dx scenario where commits
+	// landed on the parent repo's checked-out branch.
+	cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = anvilDir
+	cmd.Env = append(envWithoutGitVars(), env...)
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("confined git rev-parse --abbrev-ref HEAD: %v\n%s", err, out)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch != wt.Branch {
+		t.Errorf("git --abbrev-ref HEAD with GitEnv from anvil dir = %q; want worktree branch %q",
+			branch, wt.Branch)
+	}
+}
+
+// envWithoutGitVars returns os.Environ() with GIT_DIR, GIT_WORK_TREE, and
+// GIT_CEILING_DIRECTORIES removed, so that appending our own values is
+// deterministic even when the host shell has those vars set.
+func envWithoutGitVars() []string {
+	skip := map[string]bool{
+		"GIT_DIR":               true,
+		"GIT_WORK_TREE":         true,
+		"GIT_CEILING_DIRECTORIES": true,
+	}
+	base := os.Environ()
+	out := make([]string, 0, len(base))
+	for _, e := range base {
+		key, _, _ := strings.Cut(e, "=")
+		if !skip[key] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // gitOutput runs a git command and returns trimmed stdout.
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()

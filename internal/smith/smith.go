@@ -185,32 +185,7 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 	// is omitted (detects piped input and runs non-interactively).
 	cmd.Stdin = strings.NewReader(promptText)
 
-	// Strip CLAUDECODE so claude doesn't refuse to run inside another session.
-	// Also strip any keys that will be overridden by per-provider env vars so
-	// we don't end up with duplicate entries (behavior for duplicates is not
-	// guaranteed across platforms, notably Windows).
-	env := os.Environ()
-	filtered := env[:0:0]
-	for _, e := range env {
-		if strings.HasPrefix(e, "CLAUDECODE=") {
-			continue
-		}
-		skip := false
-		for k := range pv.Env {
-			if strings.HasPrefix(e, k+"=") {
-				skip = true
-				break
-			}
-		}
-		if !skip {
-			filtered = append(filtered, e)
-		}
-	}
-	// Apply per-provider environment variable overrides (e.g. for Ollama backend).
-	for k, v := range pv.Env {
-		filtered = append(filtered, k+"="+v)
-	}
-	cmd.Env = filtered
+	cmd.Env = buildChildEnv(os.Environ(), pv.Env, worktree.GitEnv(worktreePath))
 	executil.HideWindow(cmd)
 	executil.SetProcessGroup(cmd)
 
@@ -648,6 +623,53 @@ func readAll(r io.Reader, buf *strings.Builder, logFile *os.File) {
 		buf.WriteString("\n")
 		fmt.Fprintln(logFile, "[stderr] ", line)
 	}
+}
+
+// buildChildEnv assembles the environment for an AI agent subprocess.
+//
+// It strips CLAUDECODE (so claude does not refuse to run inside another
+// session), strips any keys that the provider will set (avoiding cross-platform
+// duplicate-entry ambiguity), and unconditionally strips GIT_DIR /
+// GIT_WORK_TREE / GIT_CEILING_DIRECTORIES so an inherited value cannot leak
+// into the child:
+//   - Worktree spawns: gitEnv re-injects values pinning git to the worktree.
+//     A stray "cd .." in a tool_use bash command cannot escape into the parent
+//     anvil and commit to its main branch.
+//   - Non-worktree spawns (schematic/wicket tempdirs): gitEnv is nil, so no
+//     git env is set. An inherited GIT_DIR pointing to the parent process's
+//     repo must not survive — otherwise an escaped Smith could still target
+//     the anvil's checkout.
+//
+// providerEnv overrides go in last so they take precedence over inherited
+// values, and worktree gitEnv goes after provider env so that providers cannot
+// shadow our git confinement.
+func buildChildEnv(parentEnv []string, providerEnv map[string]string, gitEnv []string) []string {
+	out := make([]string, 0, len(parentEnv)+len(providerEnv)+len(gitEnv))
+	for _, e := range parentEnv {
+		if strings.HasPrefix(e, "CLAUDECODE=") {
+			continue
+		}
+		if strings.HasPrefix(e, "GIT_DIR=") ||
+			strings.HasPrefix(e, "GIT_WORK_TREE=") ||
+			strings.HasPrefix(e, "GIT_CEILING_DIRECTORIES=") {
+			continue
+		}
+		skip := false
+		for k := range providerEnv {
+			if strings.HasPrefix(e, k+"=") {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			out = append(out, e)
+		}
+	}
+	for k, v := range providerEnv {
+		out = append(out, k+"="+v)
+	}
+	out = append(out, gitEnv...)
+	return out
 }
 
 // truncate shortens a string to maxLen, adding "..." if truncated.
