@@ -1290,8 +1290,8 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 }
 
 // handleBeadCloseOnMerge closes the bead when its PR is merged.
-// The pipeline defers bead close when DependentCount > 0, expecting
-// bellows to close it after merge. This handler fulfils that contract.
+// The pipeline always defers bead close until the PR merges, expecting
+// bellows to close it. This handler fulfils that contract.
 // External PRs (ext-*) are skipped — they don't have real beads to close.
 func (d *Daemon) handleBeadCloseOnMerge(ctx context.Context, event bellows.PREvent) {
 	if event.EventType != bellows.EventPRMerged {
@@ -2530,11 +2530,7 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		}
 	}(bead.Anvil, bead.ID, pr.URL, bead.Title, pr.Number, outcome.Duration)
 
-	if len(bead.Blocks) > 0 || bead.DependentCount > 0 {
-		d.logger.Info("bead has dependents, deferring close until PR merges", "bead", bead.ID, "blocks", len(bead.Blocks), "dependent_count", bead.DependentCount)
-	} else if err := d.closeBead(ctx, bead.ID, anvilPath, "Implemented by Forge"); err != nil {
-		d.logger.Warn("failed to close bead", "bead", bead.ID, "error", err)
-	}
+	d.logger.Info("deferring close until PR merges", "bead", bead.ID, "pr", pr.Number, "pr_url", pr.URL)
 }
 
 // insertPendingWorker writes a minimal WorkerPending row to state.db immediately
