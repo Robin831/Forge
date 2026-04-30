@@ -286,6 +286,106 @@ func TestWaitWithExitTimeout_TimeoutKillError(t *testing.T) {
 	assert.Equal(t, 1, got.ExitCode, "exit code must not be normalized for a non-success session")
 }
 
+// TestBuildChildEnv_StripsInheritedGitVars is the core regression assertion
+// for Forge-v48n: GIT_DIR / GIT_WORK_TREE / GIT_CEILING_DIRECTORIES from the
+// daemon's own environment must NEVER reach the AI agent subprocess. If they
+// did, a child running git from any cwd could resolve back to whatever repo
+// the daemon was started in (or a stale worktree) instead of the worktree we
+// just bound it to.
+func TestBuildChildEnv_StripsInheritedGitVars(t *testing.T) {
+	parent := []string{
+		"PATH=/usr/bin",
+		"GIT_DIR=/some/stale/.git",
+		"GIT_WORK_TREE=/some/stale",
+		"GIT_CEILING_DIRECTORIES=/",
+		"CLAUDECODE=1",
+		"HOME=/home/user",
+	}
+	got := buildChildEnv(parent, nil, nil)
+
+	for _, e := range got {
+		if strings.HasPrefix(e, "GIT_DIR=") ||
+			strings.HasPrefix(e, "GIT_WORK_TREE=") ||
+			strings.HasPrefix(e, "GIT_CEILING_DIRECTORIES=") ||
+			strings.HasPrefix(e, "CLAUDECODE=") {
+			t.Errorf("inherited variable %q must be stripped", e)
+		}
+	}
+
+	want := map[string]bool{"PATH=/usr/bin": false, "HOME=/home/user": false}
+	for _, e := range got {
+		if _, ok := want[e]; ok {
+			want[e] = true
+		}
+	}
+	for k, found := range want {
+		if !found {
+			t.Errorf("expected %q to survive, but it was filtered out", k)
+		}
+	}
+}
+
+// TestBuildChildEnv_WorktreeGitEnvWins verifies that when the parent process
+// has a stale GIT_DIR but a worktree gitEnv is provided, the child sees ONLY
+// the worktree's git env — not the parent's stale value.
+func TestBuildChildEnv_WorktreeGitEnvWins(t *testing.T) {
+	parent := []string{
+		"GIT_DIR=/parent/repo/.git",
+		"GIT_WORK_TREE=/parent/repo",
+	}
+	gitEnv := []string{
+		"GIT_DIR=/anvil/.git/worktrees/bead",
+		"GIT_WORK_TREE=/anvil/.workers/bead",
+		"GIT_CEILING_DIRECTORIES=/anvil/.workers",
+	}
+	got := buildChildEnv(parent, nil, gitEnv)
+
+	gitDirCount := 0
+	gitWorkTreeCount := 0
+	for _, e := range got {
+		if strings.HasPrefix(e, "GIT_DIR=") {
+			gitDirCount++
+			if e != "GIT_DIR=/anvil/.git/worktrees/bead" {
+				t.Errorf("unexpected GIT_DIR value: %q", e)
+			}
+		}
+		if strings.HasPrefix(e, "GIT_WORK_TREE=") {
+			gitWorkTreeCount++
+			if e != "GIT_WORK_TREE=/anvil/.workers/bead" {
+				t.Errorf("unexpected GIT_WORK_TREE value: %q", e)
+			}
+		}
+	}
+	if gitDirCount != 1 {
+		t.Errorf("expected exactly one GIT_DIR entry, got %d", gitDirCount)
+	}
+	if gitWorkTreeCount != 1 {
+		t.Errorf("expected exactly one GIT_WORK_TREE entry, got %d", gitWorkTreeCount)
+	}
+}
+
+// TestBuildChildEnv_ProviderEnvOverrides verifies that provider-supplied env
+// values replace any inherited entry with the same key, ensuring per-provider
+// overrides (e.g. Ollama backend host) reach the child cleanly.
+func TestBuildChildEnv_ProviderEnvOverrides(t *testing.T) {
+	parent := []string{"OLLAMA_HOST=stale", "PATH=/usr/bin"}
+	providerEnv := map[string]string{"OLLAMA_HOST": "http://localhost:11434"}
+	got := buildChildEnv(parent, providerEnv, nil)
+
+	hostCount := 0
+	for _, e := range got {
+		if strings.HasPrefix(e, "OLLAMA_HOST=") {
+			hostCount++
+			if e != "OLLAMA_HOST=http://localhost:11434" {
+				t.Errorf("unexpected OLLAMA_HOST value: %q", e)
+			}
+		}
+	}
+	if hostCount != 1 {
+		t.Errorf("expected exactly one OLLAMA_HOST entry, got %d", hostCount)
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	tests := []struct {
 		name   string

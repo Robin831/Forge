@@ -683,6 +683,46 @@ func ValidateWorktreeDir(worktreePath string) error {
 	return fmt.Errorf("directory %s is inside a git repository but lacks a valid worktree .git file: %w", worktreePath, gitFileErr)
 }
 
+// GitEnv returns the git environment variables that confine git operations to
+// the given worktree even when the child process changes directory away from
+// it. Smith runs claude inside <anvil>/.workers/<bead-id>/, which is a
+// subdirectory of the anvil repo; without these variables, a stray "cd .." in
+// a tool_use bash command can walk cwd into the anvil and have git apply add /
+// commit / push to the parent repo's currently-checked-out branch (typically
+// main). Setting GIT_DIR + GIT_WORK_TREE binds every child git invocation to
+// the worktree regardless of cwd. GIT_CEILING_DIRECTORIES is added as belt-
+// and-suspenders so that even if a nested shell unsets GIT_DIR, git's repo
+// discovery cannot walk up past .workers/ into the parent repo.
+//
+// The returned slice is suitable for appending directly to a Cmd.Env. If
+// worktreePath is not a valid git worktree (e.g. an os.MkdirTemp dir used by
+// schematic / wicket / warden-learn) the function returns nil so that those
+// non-repo runs are unaffected.
+func GitEnv(worktreePath string) []string {
+	gitdir, err := resolveValidatedGitDir(worktreePath)
+	if err != nil {
+		return nil
+	}
+	abs, err := filepath.Abs(worktreePath)
+	if err != nil {
+		abs = worktreePath
+	}
+	env := []string{
+		"GIT_DIR=" + gitdir,
+		"GIT_WORK_TREE=" + abs,
+	}
+	// GIT_CEILING_DIRECTORIES is best-effort defense-in-depth: if a nested
+	// shell unsets GIT_DIR and the cwd is somewhere inside the worktree
+	// subtree, the ceiling stops git's upward walk at .workers/ before it
+	// can reach the anvil's .git directory. It does NOT protect when cwd
+	// itself escapes to the anvil root (git checks cwd before ascending),
+	// but in that case the explicit GIT_DIR above is what wins.
+	if parent := filepath.Dir(abs); parent != "" && parent != abs {
+		env = append(env, "GIT_CEILING_DIRECTORIES="+parent)
+	}
+	return env
+}
+
 // sanitizePath converts a bead ID to a safe directory/branch name.
 // E.g., "Forge-n1g.4.1" → "Forge-n1g.4.1" (dots are fine in git branches).
 // Slashes and other problematic chars are replaced.
