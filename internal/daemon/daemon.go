@@ -1803,7 +1803,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 			})
 		}
 
-		if err := d.db.ReplaceQueueCacheForAnvils(succeededAnvils, cacheItems); err != nil {
+		if err := d.db.ReplaceQueueCacheForAnvils(succeededAnvils, dedupeCacheItems(cacheItems)); err != nil {
 			d.logger.Warn("failed to cache queue", "error", err)
 		}
 	}
@@ -4758,6 +4758,41 @@ func (d *Daemon) maybeCloseDecomposedParent(bead poller.Bead, anvilCfg config.An
 	_ = d.db.LogEvent(state.EventBeadAutoClosed,
 		fmt.Sprintf("Parent auto-closed after decomposition into %d children (no dependents)", childCount),
 		beadID, anvil)
+}
+
+// dedupeCacheItems collapses duplicate (BeadID, Anvil) pairs into a single
+// row, preferring the entry that appears later in the slice. The cache writer
+// concatenates ready beads (from the merged snapshot) with in-progress beads
+// (from a fresh PollInProgress) and a bead can briefly appear in both during
+// bd's claim/release transitions. Without this dedupe, the second INSERT
+// inside ReplaceQueueCacheForAnvils violates the (bead_id, anvil) UNIQUE
+// constraint, the surrounding transaction rolls back, and queue_cache stays
+// frozen on stale rows until the race resolves on its own.
+//
+// Callers append in-progress entries after ready entries, so "last write
+// wins" naturally preserves the in-progress section when both exist for the
+// same bead — that's the more current state.
+func dedupeCacheItems(items []state.QueueItem) []state.QueueItem {
+	if len(items) == 0 {
+		return items
+	}
+	type key struct {
+		beadID, anvil string
+	}
+	seen := make(map[key]int, len(items))
+	for i, it := range items {
+		seen[key{it.BeadID, it.Anvil}] = i
+	}
+	if len(seen) == len(items) {
+		return items
+	}
+	out := make([]state.QueueItem, 0, len(seen))
+	for i, it := range items {
+		if seen[key{it.BeadID, it.Anvil}] == i {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // updateBeadSnapshot refreshes the daemon's two-tier bead snapshot from a poll

@@ -3085,3 +3085,64 @@ func TestReleaseBeadClaim(t *testing.T) {
 		assert.NoFileExists(t, calledFile, "bd must not be called when releaseClaim is false")
 	})
 }
+
+func TestDedupeCacheItems(t *testing.T) {
+	t.Run("no duplicates returns input unchanged", func(t *testing.T) {
+		in := []state.QueueItem{
+			{BeadID: "Forge-1", Anvil: "forge", Section: state.QueueSectionUnlabeled},
+			{BeadID: "Forge-2", Anvil: "forge", Section: state.QueueSectionReady},
+			{BeadID: "Hytte-1", Anvil: "hytte", Section: state.QueueSectionUnlabeled},
+		}
+		out := dedupeCacheItems(in)
+		assert.Len(t, out, 3)
+		assert.Equal(t, in, out)
+	})
+
+	t.Run("ready+in_progress collision keeps in_progress", func(t *testing.T) {
+		// Caller appends in_progress entries after ready entries, so
+		// last-write-wins must preserve the in_progress row.
+		in := []state.QueueItem{
+			{BeadID: "Forge-1", Anvil: "forge", Section: state.QueueSectionReady, Title: "ready-row"},
+			{BeadID: "Forge-2", Anvil: "forge", Section: state.QueueSectionReady},
+			{BeadID: "Forge-1", Anvil: "forge", Section: state.QueueSectionInProgress, Title: "in-progress-row"},
+		}
+		out := dedupeCacheItems(in)
+		assert.Len(t, out, 2)
+		// Find the Forge-1 entry and verify it's the in-progress one.
+		var found *state.QueueItem
+		for i := range out {
+			if out[i].BeadID == "Forge-1" {
+				found = &out[i]
+			}
+		}
+		if assert.NotNil(t, found, "Forge-1 must survive dedupe") {
+			assert.Equal(t, state.QueueSectionInProgress, found.Section)
+			assert.Equal(t, "in-progress-row", found.Title)
+		}
+	})
+
+	t.Run("same bead id on different anvils kept separately", func(t *testing.T) {
+		in := []state.QueueItem{
+			{BeadID: "shared-1", Anvil: "forge", Section: state.QueueSectionReady},
+			{BeadID: "shared-1", Anvil: "hytte", Section: state.QueueSectionReady},
+		}
+		out := dedupeCacheItems(in)
+		assert.Len(t, out, 2)
+	})
+
+	t.Run("empty input returns empty", func(t *testing.T) {
+		assert.Empty(t, dedupeCacheItems(nil))
+		assert.Empty(t, dedupeCacheItems([]state.QueueItem{}))
+	})
+
+	t.Run("multiple duplicates collapse to last occurrence", func(t *testing.T) {
+		in := []state.QueueItem{
+			{BeadID: "Forge-1", Anvil: "forge", Title: "first"},
+			{BeadID: "Forge-1", Anvil: "forge", Title: "second"},
+			{BeadID: "Forge-1", Anvil: "forge", Title: "third"},
+		}
+		out := dedupeCacheItems(in)
+		assert.Len(t, out, 1)
+		assert.Equal(t, "third", out[0].Title)
+	})
+}
