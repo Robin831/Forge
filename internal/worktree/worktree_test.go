@@ -716,7 +716,7 @@ func TestGitEnv_ConfinesGitFromOutsideWorktree(t *testing.T) {
 	}
 	cmd = exec.Command("git", "rev-parse", "--show-toplevel")
 	cmd.Dir = anvilDir
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(envWithoutGitVars(), env...)
 	out, err = cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("confined git rev-parse: %v\n%s", err, out)
@@ -741,7 +741,7 @@ func TestGitEnv_ConfinesGitFromOutsideWorktree(t *testing.T) {
 	// landed on the parent repo's checked-out branch.
 	cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = anvilDir
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(envWithoutGitVars(), env...)
 	out, err = cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("confined git rev-parse --abbrev-ref HEAD: %v\n%s", err, out)
@@ -751,6 +751,26 @@ func TestGitEnv_ConfinesGitFromOutsideWorktree(t *testing.T) {
 		t.Errorf("git --abbrev-ref HEAD with GitEnv from anvil dir = %q; want worktree branch %q",
 			branch, wt.Branch)
 	}
+}
+
+// envWithoutGitVars returns os.Environ() with GIT_DIR, GIT_WORK_TREE, and
+// GIT_CEILING_DIRECTORIES removed, so that appending our own values is
+// deterministic even when the host shell has those vars set.
+func envWithoutGitVars() []string {
+	skip := map[string]bool{
+		"GIT_DIR":               true,
+		"GIT_WORK_TREE":         true,
+		"GIT_CEILING_DIRECTORIES": true,
+	}
+	base := os.Environ()
+	out := make([]string, 0, len(base))
+	for _, e := range base {
+		key, _, _ := strings.Cut(e, "=")
+		if !skip[key] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // gitOutput runs a git command and returns trimmed stdout.

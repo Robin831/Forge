@@ -453,8 +453,12 @@ func resolveValidatedGitDir(dir string) (string, error) {
 	if !filepath.IsAbs(gitdir) {
 		gitdir = filepath.Join(dir, gitdir)
 	}
-	if _, err := os.Stat(gitdir); err != nil {
-		return "", err
+	info, statErr := os.Stat(gitdir)
+	if statErr != nil {
+		return "", statErr
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("gitdir %q is not a directory", gitdir)
 	}
 	return gitdir, nil
 }
@@ -705,7 +709,7 @@ func GitEnv(worktreePath string) []string {
 	}
 	abs, err := filepath.Abs(worktreePath)
 	if err != nil {
-		abs = worktreePath
+		return nil
 	}
 	env := []string{
 		"GIT_DIR=" + gitdir,
