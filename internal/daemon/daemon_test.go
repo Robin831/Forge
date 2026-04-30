@@ -826,6 +826,256 @@ func TestHandleIPC_RetryBead_NonBeadPR(t *testing.T) {
 	assert.Equal(t, 0, pr2.RebaseCount)
 }
 
+// TestResolveAnvilConfig verifies the case-insensitive anvil lookup helper.
+// Users typing the anvil name on the CLI may not match the configured key
+// exactly (e.g. "Munin" vs "munin"); the helper resolves these to the
+// canonical config key so DB queries and crucibleStatuses keys line up.
+func TestResolveAnvilConfig(t *testing.T) {
+	d := &Daemon{}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"munin":   {Path: "/tmp/munin"},
+			"Heimdall": {Path: "/tmp/heimdall"},
+		},
+	})
+
+	t.Run("exact match wins", func(t *testing.T) {
+		name, cfg, ok := d.resolveAnvilConfig("munin")
+		require.True(t, ok)
+		assert.Equal(t, "munin", name)
+		assert.Equal(t, "/tmp/munin", cfg.Path)
+	})
+
+	t.Run("case-insensitive match", func(t *testing.T) {
+		name, cfg, ok := d.resolveAnvilConfig("Munin")
+		require.True(t, ok)
+		assert.Equal(t, "munin", name, "should canonicalise to lowercase configured key")
+		assert.Equal(t, "/tmp/munin", cfg.Path)
+	})
+
+	t.Run("case-insensitive match preserves configured case", func(t *testing.T) {
+		name, _, ok := d.resolveAnvilConfig("heimdall")
+		require.True(t, ok)
+		assert.Equal(t, "Heimdall", name, "should canonicalise to the configured (mixed-case) key")
+	})
+
+	t.Run("unknown anvil returns false", func(t *testing.T) {
+		_, _, ok := d.resolveAnvilConfig("unknown")
+		assert.False(t, ok)
+	})
+
+	t.Run("empty name returns false", func(t *testing.T) {
+		_, _, ok := d.resolveAnvilConfig("")
+		assert.False(t, ok)
+	})
+}
+
+// TestHandleIPC_RetryBead_ClearsCrucibleStatusOnSuccess verifies that the
+// retry_bead handler clears the in-memory crucibleStatuses entry after the
+// bd update succeeds, so a paused crucible re-enters the loop without a
+// daemon restart. Uses a mixed-case anvil name on the payload to also
+// exercise the case-insensitive lookup so the DB retry record (stored
+// under the canonical configured key) is reset, the crucibleStatuses key
+// matches, and the bd update is dispatched against the canonical path.
+func TestHandleIPC_RetryBead_ClearsCrucibleStatusOnSuccess(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// Fake bd script that records its arguments and exits 0 on `update`.
+	bdLog := filepath.Join(tmpDir, "bd-args.log")
+	var bdScript, bdContent string
+	if runtime.GOOS == "windows" {
+		bdScript = filepath.Join(tmpDir, "bd.bat")
+		bdContent = "@echo off\r\necho %*>>\"" + bdLog + "\"\r\nif \"%1\"==\"update\" (\r\n  echo {\"id\":\"%2\",\"status\":\"open\"}\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n"
+	} else {
+		bdScript = filepath.Join(tmpDir, "bd")
+		bdContent = "#!/bin/sh\necho \"$@\" >> \"" + bdLog + "\"\nif [ \"$1\" = \"update\" ]; then\n  echo '{\"id\":\"'\"$2\"'\",\"status\":\"open\"}'\n  exit 0\nfi\nexit 1\n"
+	}
+	require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+	defer os.Setenv("PATH", oldPath)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+		reqTracker:    *ipc.NewRequestTracker("test-"),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"munin": {Path: tmpDir, AutoDispatchTag: "forgeReady"},
+		},
+	})
+
+	const beadID = "BD-CRUCIBLE"
+	_, broke, err := db.IncrementDispatchFailures(beadID, "munin", 1, "test failure")
+	require.NoError(t, err)
+	require.True(t, broke)
+
+	// Seed the in-memory paused crucible status — this is what `forge queue
+	// retry` previously failed to clear, leaving the daemon stuck.
+	d.crucibleStatuses.Store("munin/"+beadID, "paused")
+
+	// Mixed-case anvil name on the payload — exercises both the
+	// case-insensitive lookup and the canonical key threading.
+	payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: beadID, Anvil: "Munin"})
+	resp := d.handleIPC(ipc.Command{Type: "retry_bead", Payload: payload})
+	assert.Equal(t, "queued", resp.Type)
+
+	// The DB ResetRetry runs synchronously before the goroutine starts —
+	// confirms the case-insensitive canonicalisation matched the configured
+	// "munin" key. Without canonicalisation, ResetRetry would have used
+	// "Munin" and matched zero rows.
+	r, err := db.GetRetry(beadID, "munin")
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.False(t, r.NeedsHuman, "needs_human should be cleared synchronously")
+	assert.Equal(t, 0, r.DispatchFailures)
+
+	// Wait for the async goroutine to finish (it calls completeAsync at the
+	// end, which removes the request from the tracker).
+	require.Eventually(t, func() bool {
+		return d.reqTracker.Pending() == 0
+	}, 5*time.Second, 10*time.Millisecond, "async goroutine never completed")
+
+	// crucibleStatuses entry must have been deleted on bd success — keyed by
+	// the canonical "munin", not the user-typed "Munin".
+	_, stillPresent := d.crucibleStatuses.Load("munin/" + beadID)
+	assert.False(t, stillPresent, "crucibleStatuses entry should be cleared after retry_bead succeeds")
+
+	// And the bd update must have re-applied the auto_dispatch_tag.
+	logBytes, err := os.ReadFile(bdLog)
+	require.NoError(t, err)
+	logged := string(logBytes)
+	assert.Contains(t, logged, "update "+beadID, "bd update should target the bead")
+	assert.Contains(t, logged, "--add-label=forgeReady",
+		"bd update should re-apply the auto_dispatch_tag that releaseBeadClaim strips")
+}
+
+// TestHandleIPC_RetryBead_PreservesCrucibleStatusOnBdFailure verifies that
+// when the bd update fails (e.g. anvil missing from config), the in-memory
+// crucibleStatuses entry is left alone so the UI doesn't drop paused state
+// on a transient shell error.
+func TestHandleIPC_RetryBead_PreservesCrucibleStatusOnBdFailure(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+		reqTracker:    *ipc.NewRequestTracker("test-"),
+	}
+	// Empty anvil config — the goroutine will skip the bd update entirely.
+	d.cfg.Store(&config.Config{})
+
+	const beadID = "BD-NOBD"
+	const anvil = "missing-anvil"
+	_, broke, err := db.IncrementDispatchFailures(beadID, anvil, 1, "test failure")
+	require.NoError(t, err)
+	require.True(t, broke)
+
+	d.crucibleStatuses.Store(anvil+"/"+beadID, "paused")
+
+	payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: beadID, Anvil: anvil})
+	resp := d.handleIPC(ipc.Command{Type: "retry_bead", Payload: payload})
+	assert.Equal(t, "queued", resp.Type)
+
+	require.Eventually(t, func() bool {
+		return d.reqTracker.Pending() == 0
+	}, 5*time.Second, 10*time.Millisecond)
+
+	_, stillPresent := d.crucibleStatuses.Load(anvil + "/" + beadID)
+	assert.True(t, stillPresent, "crucibleStatuses entry should be preserved when bd update did not succeed")
+}
+
+// TestHandleIPC_CrucibleAction_Resume_RestoresAutoDispatchTag verifies that
+// the crucible_action resume path re-applies the anvil's auto_dispatch_tag
+// (which releaseBeadClaim strips when a pipeline fails). Without this, the
+// bead returns to status=open but stays invisible to bd ready on
+// tagged-dispatch anvils.
+func TestHandleIPC_CrucibleAction_Resume_RestoresAutoDispatchTag(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	bdLog := filepath.Join(tmpDir, "bd-args.log")
+	var bdScript, bdContent string
+	if runtime.GOOS == "windows" {
+		bdScript = filepath.Join(tmpDir, "bd.bat")
+		bdContent = "@echo off\r\necho %*>>\"" + bdLog + "\"\r\nif \"%1\"==\"update\" (\r\n  echo {\"id\":\"%2\",\"status\":\"open\"}\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n"
+	} else {
+		bdScript = filepath.Join(tmpDir, "bd")
+		bdContent = "#!/bin/sh\necho \"$@\" >> \"" + bdLog + "\"\nif [ \"$1\" = \"update\" ]; then\n  echo '{\"id\":\"'\"$2\"'\",\"status\":\"open\"}'\n  exit 0\nfi\nexit 1\n"
+	}
+	require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+	defer os.Setenv("PATH", oldPath)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+		reqTracker:    *ipc.NewRequestTracker("test-"),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"munin": {Path: tmpDir, AutoDispatchTag: "forgeReady"},
+		},
+	})
+
+	const parentID = "BD-PARENT"
+	d.crucibleStatuses.Store("munin/"+parentID, "paused")
+
+	// Resume via Hearth using a mixed-case anvil name to also exercise
+	// the canonicalisation path.
+	payload, _ := json.Marshal(ipc.CrucibleActionPayload{
+		ParentID: parentID,
+		Anvil:    "Munin",
+		Action:   "resume",
+	})
+	resp := d.handleIPC(ipc.Command{Type: "crucible_action", Payload: payload})
+	assert.Equal(t, "ok", resp.Type)
+
+	logBytes, err := os.ReadFile(bdLog)
+	require.NoError(t, err)
+	logged := string(logBytes)
+	assert.Contains(t, logged, "update "+parentID)
+	assert.Contains(t, logged, "--add-label=forgeReady",
+		"crucible resume must re-apply the auto_dispatch_tag")
+
+	// The paused entry should be cleared after a successful resume.
+	_, stillPresent := d.crucibleStatuses.Load("munin/" + parentID)
+	assert.False(t, stillPresent)
+}
+
 func TestHandleIPC_DismissBead(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-test-*")
 	require.NoError(t, err)

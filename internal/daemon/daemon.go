@@ -2958,6 +2958,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "parent_id and anvil are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
+		// Canonicalise the user-provided anvil name (case-insensitive) so DB
+		// queries and crucibleStatuses keys match the configured form.
+		if canonical, _, ok := d.resolveAnvilConfig(ca.Anvil); ok {
+			ca.Anvil = canonical
+		}
 
 		switch ca.Action {
 		case "resume":
@@ -2976,13 +2981,15 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				d.logger.Warn("failed to reset dispatch failures for crucible parent", "bead", ca.ParentID, "error", err)
 			}
 
-			// Reset bead status to open and clear assignee so the poller
-			// can rediscover it as a crucible candidate.
+			// Reset bead status to open and clear assignee so the poller can
+			// rediscover it as a crucible candidate. Re-applies the
+			// auto_dispatch_tag that releaseBeadClaim strips on pipeline
+			// failure, otherwise tagged-dispatch anvils never see the bead
+			// again via bd ready.
 			resetCtx, resetCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 			defer resetCancel()
-			statusCmd := executil.HideWindow(exec.CommandContext(resetCtx, "bd", "update", ca.ParentID, "--status=open", "--assignee=", "--json"))
-			statusCmd.Dir = anvilCfg.Path
-			if output, err := statusCmd.CombinedOutput(); err != nil {
+			output, err := d.restoreBeadAfterPause(resetCtx, ca.ParentID, anvilCfg)
+			if err != nil {
 				d.logger.Warn("failed to reset crucible parent status", "bead", ca.ParentID, "error", err, "output", string(output))
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset crucible parent status: %v (%s)", err, string(output))})
 				return ipc.Response{Type: "error", Payload: msg}
@@ -3525,6 +3532,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
+		// Canonicalise the user-provided anvil name (case-insensitive) so DB
+		// queries below match records that were stored under the configured
+		// key, regardless of how the user typed it on the CLI.
+		if rp.Anvil != "" {
+			if canonical, _, ok := d.resolveAnvilConfig(rp.Anvil); ok {
+				rp.Anvil = canonical
+			}
+		}
 		// Exhausted PR retry: DB-only, no bd shelling required.
 		if rp.PRID > 0 {
 			pr, err := d.db.GetPRByID(rp.PRID)
@@ -3581,14 +3596,27 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		reqID, _ := d.reqTracker.Track()
 		go func() {
+			bdUpdateOK := false
 			if anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]; ok && anvilCfg.Path != "" {
 				resetCtx, resetCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 				defer resetCancel()
-				statusCmd := executil.HideWindow(exec.CommandContext(resetCtx, "bd", "update", rp.BeadID, "--status=open", "--assignee=", "--json"))
-				statusCmd.Dir = anvilCfg.Path
-				if output, err := statusCmd.CombinedOutput(); err != nil {
+				// Mirrors the crucible_action resume path: re-apply the
+				// auto_dispatch_tag that releaseBeadClaim strips on pipeline
+				// failure, otherwise tagged-dispatch anvils never see the bead
+				// again via bd ready.
+				output, err := d.restoreBeadAfterPause(resetCtx, rp.BeadID, anvilCfg)
+				if err != nil {
 					d.logger.Warn("failed to reset bead status after retry reset", "bead", rp.BeadID, "error", err, "output", string(output))
+				} else {
+					bdUpdateOK = true
 				}
+			}
+			// Clear the in-memory paused crucible status so the parent can
+			// re-enter the crucible loop without a daemon restart. Mirrors
+			// the crucible_action resume path. Only do this once bd update
+			// succeeded so we don't drop UI state on a transient bd failure.
+			if bdUpdateOK {
+				d.crucibleStatuses.Delete(rp.Anvil + "/" + rp.BeadID)
 			}
 			d.pollAndDispatch(d.runCtx, false)
 			msg := "retry reset"
@@ -4519,6 +4547,44 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string, releaseClai
 			}
 		}(beadID, anvil, reason, count)
 	}
+}
+
+// resolveAnvilConfig performs a case-insensitive lookup of an anvil by name
+// against the current config and returns the canonical key, its config, and
+// whether a match was found. Handlers that accept a user-provided anvil name
+// (e.g. from the CLI) should canonicalise the name before any DB query so a
+// caller passing "Munin" still matches the configured "munin".
+func (d *Daemon) resolveAnvilConfig(name string) (string, config.AnvilConfig, bool) {
+	if name == "" {
+		return "", config.AnvilConfig{}, false
+	}
+	anvils := d.cfg.Load().Anvils
+	if cfg, ok := anvils[name]; ok {
+		return name, cfg, true
+	}
+	lower := strings.ToLower(name)
+	for k, v := range anvils {
+		if strings.ToLower(k) == lower {
+			return k, v, true
+		}
+	}
+	return "", config.AnvilConfig{}, false
+}
+
+// restoreBeadAfterPause sets a bead back to status=open with no assignee and,
+// if the anvil uses an auto_dispatch_tag, re-applies that label. This is the
+// inverse of releaseBeadClaim and is used by the manual retry/resume paths
+// (forge queue retry, Hearth crucible resume) so beads on tagged anvils
+// become visible to bd ready again instead of sitting silently un-tagged.
+func (d *Daemon) restoreBeadAfterPause(ctx context.Context, beadID string, anvilCfg config.AnvilConfig) ([]byte, error) {
+	args := []string{"update", beadID, "--status=open", "--assignee="}
+	if anvilCfg.AutoDispatchTag != "" {
+		args = append(args, "--add-label="+anvilCfg.AutoDispatchTag)
+	}
+	args = append(args, "--json")
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", args...))
+	cmd.Dir = anvilCfg.Path
+	return cmd.CombinedOutput()
 }
 
 // releaseBeadClaim releases a claimed bead back to open status and strips the
