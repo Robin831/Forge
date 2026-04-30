@@ -4563,10 +4563,24 @@ func (d *Daemon) resolveAnvilConfig(name string) (string, config.AnvilConfig, bo
 		return name, cfg, true
 	}
 	lower := strings.ToLower(name)
+	var (
+		matchedKey string
+		matchedCfg config.AnvilConfig
+		found      bool
+	)
 	for k, v := range anvils {
-		if strings.ToLower(k) == lower {
-			return k, v, true
+		if strings.ToLower(k) != lower {
+			continue
 		}
+		if found {
+			return "", config.AnvilConfig{}, false
+		}
+		matchedKey = k
+		matchedCfg = v
+		found = true
+	}
+	if found {
+		return matchedKey, matchedCfg, true
 	}
 	return "", config.AnvilConfig{}, false
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
 	"github.com/Robin831/Forge/internal/poller"
@@ -924,7 +925,7 @@ func TestHandleIPC_RetryBead_ClearsCrucibleStatusOnSuccess(t *testing.T) {
 
 	// Seed the in-memory paused crucible status — this is what `forge queue
 	// retry` previously failed to clear, leaving the daemon stuck.
-	d.crucibleStatuses.Store("munin/"+beadID, "paused")
+	d.crucibleStatuses.Store("munin/"+beadID, crucible.Status{Phase: "paused"})
 
 	// Mixed-case anvil name on the payload — exercises both the
 	// case-insensitive lookup and the canonical key threading.
@@ -993,7 +994,7 @@ func TestHandleIPC_RetryBead_PreservesCrucibleStatusOnBdFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, broke)
 
-	d.crucibleStatuses.Store(anvil+"/"+beadID, "paused")
+	d.crucibleStatuses.Store(anvil+"/"+beadID, crucible.Status{Phase: "paused"})
 
 	payload, _ := json.Marshal(ipc.RetryBeadPayload{BeadID: beadID, Anvil: anvil})
 	resp := d.handleIPC(ipc.Command{Type: "retry_bead", Payload: payload})
@@ -1052,7 +1053,7 @@ func TestHandleIPC_CrucibleAction_Resume_RestoresAutoDispatchTag(t *testing.T) {
 	})
 
 	const parentID = "BD-PARENT"
-	d.crucibleStatuses.Store("munin/"+parentID, "paused")
+	d.crucibleStatuses.Store("munin/"+parentID, crucible.Status{Phase: "paused"})
 
 	// Resume via Hearth using a mixed-case anvil name to also exercise
 	// the canonicalisation path.
