@@ -11,7 +11,7 @@ require (
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.0
 	github.com/go-rod/rod v0.116.2
 	github.com/mattn/go-runewidth v0.0.23
 	github.com/spf13/cobra v1.10.2
@@ -19,7 +19,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/sys v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.49.1
+	modernc.org/sqlite v1.50.0
 )
 
 require (
