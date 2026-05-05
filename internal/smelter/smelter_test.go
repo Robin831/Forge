@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,21 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// filteredEnv returns os.Environ() with GIT_DIR, GIT_WORK_TREE, and
+// GIT_CEILING_DIRECTORIES removed so that git subprocesses spawned in tests
+// are not accidentally confined to the worktree environment Forge runs in.
+func filteredEnv() []string {
+	env := os.Environ()
+	out := env[:0:0]
+	for _, e := range env {
+		if strings.HasPrefix(e, "GIT_DIR=") || strings.HasPrefix(e, "GIT_WORK_TREE=") || strings.HasPrefix(e, "GIT_CEILING_DIRECTORIES=") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
 
 func openTestDB(t *testing.T) *state.DB {
 	t.Helper()
@@ -263,6 +279,7 @@ func TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
+		cmd.Env = filteredEnv()
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -309,6 +326,7 @@ func TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch(t *testing.T) {
 	// This is the exact condition that caused --force-with-lease to reject the push.
 	delRef := exec.Command("git", "update-ref", "-d", "refs/remotes/origin/"+branch)
 	delRef.Dir = localDir
+	delRef.Env = filteredEnv()
 	require.NoError(t, delRef.Run(), "should be able to delete remote-tracking ref")
 
 	// Assert the remote-tracking ref is now absent — without the pre-push fetch,
@@ -316,6 +334,7 @@ func TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch(t *testing.T) {
 	// even though the branch exists on origin.
 	checkRef := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+branch)
 	checkRef.Dir = localDir
+	checkRef.Env = filteredEnv()
 	err := checkRef.Run()
 	require.Error(t, err, "remote-tracking ref should be absent before commitAndPush")
 
