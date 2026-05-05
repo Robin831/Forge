@@ -1382,6 +1382,18 @@ func (d *Daemon) reconcileMergedBeads(ctx context.Context) {
 			continue
 		}
 
+		// Skip beads that bd already shows as closed. bd's `close` command is
+		// not a true no-op on already-closed beads — it still updates
+		// closed_at and writes an event row, generating Dolt commits for no
+		// semantic change. Across many restarts this produces hundreds of
+		// spurious commits per anvil per day. Pre-checking via `bd show` is
+		// cheap (auto-pull/auto-push are no-ops on reads) and idempotent.
+		if status := d.fetchBeadStatus(anvilCfg.Path, pr.BeadID); status == "closed" {
+			d.logger.Debug("reconcileMergedBeads: bead already closed, skipping",
+				"bead", pr.BeadID, "pr", pr.Number)
+			continue
+		}
+
 		closeCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 		err := d.closeBead(closeCtx, pr.BeadID, anvilCfg.Path,
 			fmt.Sprintf("PR #%d merged (startup reconciliation)", pr.Number))
@@ -1389,7 +1401,8 @@ func (d *Daemon) reconcileMergedBeads(ctx context.Context) {
 		if err != nil {
 			errStr := err.Error()
 			if strings.Contains(errStr, "already closed") || strings.Contains(errStr, "already_closed") {
-				// Bead was closed by another path — nothing to do.
+				// Bead was closed by another path between our status check
+				// and the close attempt — nothing to do.
 				d.logger.Debug("reconcileMergedBeads: bead already closed",
 					"bead", pr.BeadID, "pr", pr.Number)
 			} else {
@@ -4728,6 +4741,39 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 	}
 	d.logger.Warn("bead decomposition produced no children; recording as dispatch failure", "bead", beadID, "reason", reason)
 	d.recordDispatchFailure(beadID, anvil, reason, true)
+}
+
+// fetchBeadStatus does a one-shot bd show lookup for the bead's status field.
+// Returns the status string ("open", "in_progress", "closed", etc.) or "" if
+// the lookup fails. Used by reconcileMergedBeads to skip already-closed beads
+// before invoking `bd close`, which would otherwise generate spurious Dolt
+// commits on every daemon restart.
+func (d *Daemon) fetchBeadStatus(anvilPath, beadID string) string {
+	if d.beadShower == nil {
+		return ""
+	}
+	output, stderrStr, err := d.beadShower(anvilPath, beadID)
+	if err != nil {
+		d.logger.Debug("fetchBeadStatus: bd show failed", "bead", beadID, "error", err, "stderr", stderrStr)
+		return ""
+	}
+
+	type beadShowResponse struct {
+		Status string `json:"status"`
+	}
+
+	var resp beadShowResponse
+	if err := executil.DecodeJSON(output, &resp); err != nil {
+		var resps []beadShowResponse
+		if arrayErr := executil.DecodeJSON(output, &resps); arrayErr != nil {
+			d.logger.Debug("fetchBeadStatus: failed to parse status from bd show", "bead", beadID, "error", err)
+			return ""
+		}
+		if len(resps) > 0 {
+			resp = resps[0]
+		}
+	}
+	return resp.Status
 }
 
 // fetchExternalRef does a one-shot bd show lookup for the bead's external_ref.
