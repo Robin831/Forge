@@ -3924,3 +3924,51 @@ rules:
         Verify the already-sorted merged slice is reused and filtered to the needed subset instead of performing a second merge/sort and re-acquiring locks, when the sort key is independent of the subset
       source: copilot:PR#546
       added: "2026-04-17"
+    - id: gitenv-fail-closed-absolute-paths
+      category: error-handling
+      pattern: >-
+        Functions that build environment variables or arguments meant to confine git (or any subprocess) to a specific directory, e.g. setting GIT_DIR / GIT_WORK_TREE from a computed worktree path, with fallbacks when filepath.Abs or os.Stat fails.
+      check: >-
+        Verify the function fails closed (returns nil/error) when it cannot produce a guaranteed-absolute path: filepath.Abs failures must not fall back to a possibly-relative input, and resolved gitdir paths must be checked with os.Stat AND verified via IsDir() (not just existence) before being used. Any non-absolute or non-directory result should abort rather than silently weaken the confinement guarantee.
+      source: copilot:PR#560
+      added: "2026-04-30"
+    - id: filter-git-env-vars-in-tests
+      category: testing
+      pattern: >-
+        Test sets cmd.Env = append(os.Environ(), env...) where env contains GIT_DIR, GIT_WORK_TREE, or GIT_CEILING_DIRECTORIES
+      check: >-
+        Verify os.Environ() is filtered to remove any existing GIT_DIR/GIT_WORK_TREE/GIT_CEILING_DIRECTORIES entries before appending the test's env, so duplicate entries don't make git's behavior platform-dependent and the test flaky
+      source: copilot:PR#560
+      added: "2026-04-30"
+    - id: deterministic-case-insensitive-map-lookup
+      category: concurrency
+      pattern: >-
+        Case-insensitive lookup over a Go map by iterating entries and comparing lowercased keys
+      check: >-
+        Verify the loop detects multiple case-insensitive matches and returns a deterministic result (e.g. error/not-found) instead of relying on randomized map iteration order
+      source: copilot:PR#561
+      added: "2026-04-30"
+    - id: test-fixtures-use-production-types
+      category: testing
+      pattern: >-
+        Test setup seeds a map or struct with ad-hoc placeholder values (e.g. raw strings) instead of the production types that the code under test stores and type-asserts on
+      check: >-
+        Verify test fixtures use the same concrete types as production code (e.g. construct a minimal real struct with the relevant field set) so tests exercise the actual type contract and don't mask regressions when code depends on the full type's fields
+      source: copilot:PR#561
+      added: "2026-04-30"
+    - id: test-uses-production-types
+      category: testing
+      pattern: >-
+        Test code stores values in maps or fields whose production type is a typed value (e.g., a defined string type or enum), but uses raw primitives (e.g., string literals) instead of the proper type
+      check: >-
+        Verify tests use the same typed values as production code (e.g., crucible.Status constants instead of bare strings) so behavior matches and future type-aware operations like iteration or type assertions don't break
+      source: copilot:PR#561
+      added: "2026-04-30"
+    - id: test-use-real-types-not-strings
+      category: testing
+      pattern: >-
+        Test code seeds or asserts against string literals for values that are typed constants/enums in production code
+      check: >-
+        Verify tests use the actual typed constants (e.g. crucible.Status) rather than raw string literals, so tests reflect real runtime values and catch type/assertion drift
+      source: copilot:PR#561
+      added: "2026-04-30"
