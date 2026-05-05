@@ -29,6 +29,19 @@ var (
 )
 
 func init() {
+	// Disable bd's auto-pull in every bd subprocess we spawn. Forge calls
+	// bd many times per minute (poller, ledger, depcheck, etc.); each call
+	// would otherwise trigger maybeAutoPull and contend with other bd
+	// processes for the embedded Dolt write lock. The 60s pull-state
+	// debounce then masks freshness from the user's interactive shell.
+	// Auto-push (BD_DOLT_AUTO_PUSH) is intentionally NOT disabled — we
+	// still want forge's create/update/close writes to propagate. Set
+	// only if the user hasn't explicitly overridden, so a developer can
+	// re-enable for debugging by exporting BD_DOLT_AUTO_PULL=true.
+	if _, set := os.LookupEnv("BD_DOLT_AUTO_PULL"); !set {
+		_ = os.Setenv("BD_DOLT_AUTO_PULL", "false")
+	}
+
 	// Persistent flags available to all subcommands
 	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "Config file (default: forge.yaml in repo root)")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
