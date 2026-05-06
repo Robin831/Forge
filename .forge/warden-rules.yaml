@@ -3972,3 +3972,11 @@ rules:
         Verify tests use the actual typed constants (e.g. crucible.Status) rather than raw string literals, so tests reflect real runtime values and catch type/assertion drift
       source: copilot:PR#561
       added: "2026-04-30"
+    - id: pr-description-matches-diff
+      category: other
+      pattern: >-
+        PR description states a specific count or list of changes (e.g., 'adds N rules', 'includes X, Y, Z')
+      check: >-
+        Verify the PR description's stated scope (counts, lists, or itemized changes) matches what the diff actually contains; if they diverge, either update the description or add the missing changes
+      source: copilot:PR#557
+      added: "2026-05-05"
