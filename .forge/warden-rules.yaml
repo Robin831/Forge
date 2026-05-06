@@ -1168,10 +1168,10 @@ rules:
       added: "2026-03-20"
     - id: pr-description-matches-actual-changes
       category: other
-      pattern: PR description or title claims a specific count of added/changed/removed items
+      pattern: PR description or title claims a specific count or list of added/changed/removed items
       check: >-
-        Verify that the count stated in the PR description or title matches the actual number of changes in the diff — e.g., if the PR says 'learned 4 rules', confirm exactly 4 new rules appear in the changed files
-      source: ['copilot:PR#332', 'copilot:PR#337']
+        Verify that the count or list stated in the PR description or title matches the actual changes in the diff — e.g., if the PR says 'learned 4 rules' confirm exactly 4 new rules appear, or if it lists specific items confirm each is present; if they diverge, update the description or add the missing changes
+      source: ['copilot:PR#332', 'copilot:PR#337', 'copilot:PR#557']
       added: "2026-03-20"
     - id: preserve-rule-attribution-sources
       category: other
@@ -3972,11 +3972,3 @@ rules:
         Verify tests use the actual typed constants (e.g. crucible.Status) rather than raw string literals, so tests reflect real runtime values and catch type/assertion drift
       source: copilot:PR#561
       added: "2026-04-30"
-    - id: pr-description-matches-diff
-      category: other
-      pattern: >-
-        PR description states a specific count or list of changes (e.g., 'adds N rules', 'includes X, Y, Z')
-      check: >-
-        Verify the PR description's stated scope (counts, lists, or itemized changes) matches what the diff actually contains; if they diverge, either update the description or add the missing changes
-      source: copilot:PR#557
-      added: "2026-05-05"
