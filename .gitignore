@@ -10,6 +10,9 @@
 *.so
 *.dylib
 
+# Container build staging (bd binary copied here by build script)
+/build/
+
 # Test output
 *.test
 *.out

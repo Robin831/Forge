@@ -1,0 +1,2 @@
+category: Added
+- **Linux Dockerfile for skybert deployment** - New multi-stage `Dockerfile` produces a runnable container image bundling the forge daemon plus every CLI its Smith subprocesses need (claude, bd, gh, git, node 24, .NET 10 SDK). Built on `mcr.microsoft.com/dotnet/sdk:10.0`, runs the daemon as PID 1 under tini in foreground mode, expects a pre-built bd binary at `./build/bd`. The legacy minimal alpine image is preserved as `Dockerfile.minimal` and continues to be used by GoReleaser. (Forge-e42a)

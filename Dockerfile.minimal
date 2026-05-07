@@ -1,0 +1,20 @@
+# Minimal Forge image used by GoReleaser to publish a small distribution image
+# to ghcr.io/robin831/forge. It contains just the forge binary and the
+# absolute minimum of OS dependencies — it is NOT suitable for actually
+# running the daemon, since the daemon's Smith subprocesses require claude,
+# bd, gh, node, .NET and other tooling. For deployment use the multi-stage
+# Dockerfile in this repository instead.
+FROM alpine:3.21
+
+RUN apk add --no-cache \
+    ca-certificates \
+    git \
+    openssh-client
+
+RUN addgroup -S forge && adduser -S forge -G forge
+
+COPY --chown=forge:forge forge /usr/local/bin/forge
+
+USER forge
+
+ENTRYPOINT ["forge"]
