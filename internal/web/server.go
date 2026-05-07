@@ -1,0 +1,166 @@
+// Package web implements the Hearth 2.0 web UI backend for the forge daemon.
+//
+// The package serves a small chi-based HTTP server that exposes read-only
+// JSON endpoints mirroring the existing IPC commands (status, queue,
+// workers) plus a bcrypt-validated session login. It is intended to run
+// in-process inside the daemon (no extra socket hop) and is gated by the
+// FORGE_WEB_ENABLED environment variable.
+package web
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"time"
+
+	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/state"
+)
+
+// CommandHandler is the in-process dispatcher used by the web layer to call
+// daemon command handlers without going through the IPC socket. The daemon
+// passes its own handleIPC method here.
+type CommandHandler func(cmd ipc.Command) ipc.Response
+
+// Config holds the runtime configuration for the web server. Most fields are
+// derived from environment variables in NewConfigFromEnv.
+type Config struct {
+	// Addr is the TCP listen address (e.g. ":8080"). Required.
+	Addr string
+
+	// Users maps username -> bcrypt hash. May be empty, in which case the
+	// /login endpoint always rejects.
+	Users map[string]string
+
+	// SessionTTL is the sliding session lifetime. Defaults to 30 days when
+	// zero.
+	SessionTTL time.Duration
+
+	// CookieName is the session cookie name. Defaults to "forge_session".
+	CookieName string
+
+	// CookieSecure forces the Secure cookie attribute. Defaults to false so
+	// local development over plain HTTP works; production deployments behind
+	// HTTPS should set this to true.
+	CookieSecure bool
+
+	// PurgeInterval controls how often expired session rows are purged from
+	// the DB. Defaults to 1 hour. Set to a negative value to disable.
+	PurgeInterval time.Duration
+}
+
+// Server is the chi-based HTTP server. Construct with New and run with
+// Start.
+type Server struct {
+	cfg     Config
+	db      *state.DB
+	handler CommandHandler
+	logger  *slog.Logger
+
+	httpServer *http.Server
+}
+
+// New constructs a Server. The cfg is validated; an error is returned when
+// required fields are missing.
+func New(cfg Config, db *state.DB, handler CommandHandler, logger *slog.Logger) (*Server, error) {
+	if cfg.Addr == "" {
+		return nil, errors.New("web: Addr is required")
+	}
+	if db == nil {
+		return nil, errors.New("web: state.DB is required")
+	}
+	if handler == nil {
+		return nil, errors.New("web: command handler is required")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if cfg.SessionTTL == 0 {
+		cfg.SessionTTL = 30 * 24 * time.Hour
+	}
+	if cfg.CookieName == "" {
+		cfg.CookieName = "forge_session"
+	}
+	if cfg.PurgeInterval == 0 {
+		cfg.PurgeInterval = time.Hour
+	}
+
+	s := &Server{
+		cfg:     cfg,
+		db:      db,
+		handler: handler,
+		logger:  logger,
+	}
+	s.httpServer = &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           s.routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	return s, nil
+}
+
+// Start begins serving HTTP requests. It blocks until ctx is cancelled or
+// the server returns a non-Closed error.
+func (s *Server) Start(ctx context.Context) error {
+	listener, err := net.Listen("tcp", s.cfg.Addr)
+	if err != nil {
+		return fmt.Errorf("web: listen %s: %w", s.cfg.Addr, err)
+	}
+	s.logger.Info("web server listening", "addr", listener.Addr().String())
+
+	if s.cfg.PurgeInterval > 0 {
+		go s.purgeLoop(ctx)
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
+			s.logger.Warn("web server shutdown error", "error", err)
+		}
+	}()
+
+	if err := s.httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("web: serve: %w", err)
+	}
+	return nil
+}
+
+// purgeLoop runs PurgeExpiredWebSessions on a ticker. It is started in a
+// goroutine by Start and exits when ctx is cancelled.
+func (s *Server) purgeLoop(ctx context.Context) {
+	t := time.NewTicker(s.cfg.PurgeInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			n, err := s.db.PurgeExpiredWebSessions()
+			if err != nil {
+				s.logger.Warn("web session purge failed", "error", err)
+				continue
+			}
+			if n > 0 {
+				s.logger.Info("web sessions purged", "count", n)
+			}
+		}
+	}
+}
+
+// writeJSON encodes v as JSON with the given status code.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeError encodes an {error: msg} JSON body with the given status.
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}

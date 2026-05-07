@@ -373,6 +373,16 @@ CREATE TABLE IF NOT EXISTS wicket_issues (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wicket_issues_repo_number ON wicket_issues(repo, issue_number);
 CREATE INDEX IF NOT EXISTS idx_wicket_issues_state ON wicket_issues(state);
+
+CREATE TABLE IF NOT EXISTS web_sessions (
+    token_hash  TEXT PRIMARY KEY,
+    username    TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    last_seen   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
@@ -3256,6 +3266,95 @@ func scanWicketIssue(row *sql.Row) (*WicketIssue, error) {
 		w.AuthorRepliedAt = &t
 	}
 	return &w, nil
+}
+
+// WebSession represents an authenticated web UI session.
+type WebSession struct {
+	TokenHash string
+	Username  string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	LastSeen  time.Time
+}
+
+// CreateWebSession inserts a new web session row.
+func (db *DB) CreateWebSession(s WebSession) error {
+	now := time.Now().UTC()
+	if s.CreatedAt.IsZero() {
+		s.CreatedAt = now
+	}
+	if s.LastSeen.IsZero() {
+		s.LastSeen = now
+	}
+	_, err := db.conn.Exec(
+		`INSERT INTO web_sessions (token_hash, username, created_at, expires_at, last_seen)
+		 VALUES (?, ?, ?, ?, ?)`,
+		s.TokenHash,
+		s.Username,
+		s.CreatedAt.UTC().Format(dbTimeLayout),
+		s.ExpiresAt.UTC().Format(dbTimeLayout),
+		s.LastSeen.UTC().Format(dbTimeLayout),
+	)
+	return err
+}
+
+// GetWebSession looks up a session by its token hash, returning nil if not
+// found or expired.
+func (db *DB) GetWebSession(tokenHash string) (*WebSession, error) {
+	row := db.conn.QueryRow(
+		`SELECT token_hash, username, created_at, expires_at, last_seen
+		 FROM web_sessions
+		 WHERE token_hash = ?`,
+		tokenHash,
+	)
+	var s WebSession
+	var created, expires, lastSeen string
+	if err := row.Scan(&s.TokenHash, &s.Username, &created, &expires, &lastSeen); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	s.CreatedAt = parseTime(created)
+	s.ExpiresAt = parseTime(expires)
+	s.LastSeen = parseTime(lastSeen)
+	if !s.ExpiresAt.IsZero() && time.Now().After(s.ExpiresAt) {
+		return nil, nil
+	}
+	return &s, nil
+}
+
+// TouchWebSession updates the last_seen timestamp and slides the expiry
+// forward by ttl. Returns the new expiry time.
+func (db *DB) TouchWebSession(tokenHash string, ttl time.Duration) (time.Time, error) {
+	now := time.Now().UTC()
+	expires := now.Add(ttl)
+	_, err := db.conn.Exec(
+		`UPDATE web_sessions
+		 SET last_seen = ?, expires_at = ?
+		 WHERE token_hash = ?`,
+		now.Format(dbTimeLayout),
+		expires.Format(dbTimeLayout),
+		tokenHash,
+	)
+	return expires, err
+}
+
+// DeleteWebSession removes a session by token hash.
+func (db *DB) DeleteWebSession(tokenHash string) error {
+	_, err := db.conn.Exec(`DELETE FROM web_sessions WHERE token_hash = ?`, tokenHash)
+	return err
+}
+
+// PurgeExpiredWebSessions removes all sessions whose expires_at is in the
+// past. Returns the number of rows removed.
+func (db *DB) PurgeExpiredWebSessions() (int64, error) {
+	now := time.Now().UTC().Format(dbTimeLayout)
+	res, err := db.conn.Exec(`DELETE FROM web_sessions WHERE expires_at <= ?`, now)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // scanWicketIssueRow scans a *sql.Rows cursor into a WicketIssue.
