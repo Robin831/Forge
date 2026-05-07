@@ -1009,10 +1009,12 @@ func TestHandleIPC_RetryBead_PreservesCrucibleStatusOnBdFailure(t *testing.T) {
 }
 
 // TestHandleIPC_CrucibleAction_Resume_RestoresAutoDispatchTag verifies that
-// the crucible_action resume path re-applies the anvil's auto_dispatch_tag
-// (which releaseBeadClaim strips when a pipeline fails). Without this, the
-// bead returns to status=open but stays invisible to bd ready on
-// tagged-dispatch anvils.
+// the crucible_action resume path re-applies the anvil's auto_dispatch_tag.
+// releaseBeadClaim only strips the tag on circuit-breaker escalation, but the
+// resume path is also exercised after escalations (and the add-label is
+// idempotent), so it must run unconditionally — otherwise an escalated bead
+// returns to status=open but stays invisible to bd ready on tagged-dispatch
+// anvils.
 func TestHandleIPC_CrucibleAction_Resume_RestoresAutoDispatchTag(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-test-*")
 	require.NoError(t, err)
@@ -3201,11 +3203,13 @@ func TestFetchExternalRef(t *testing.T) {
 }
 
 // TestReleaseBeadClaim verifies that releaseBeadClaim invokes bd with the
-// correct arguments (--status=open --assignee= and --remove-label for the
-// auto_dispatch_tag), and that it does NOT invoke bd when the anvil is absent
-// from config (covering the claim-race / pre-claim safety condition).
+// correct arguments (--status=open --assignee= and, when stripTag=true,
+// --remove-label for the auto_dispatch_tag), preserves the tag when
+// stripTag=false (transient failure path — see Forge-dua2), and does NOT
+// invoke bd when the anvil is absent from config (covering the claim-race /
+// pre-claim safety condition).
 func TestReleaseBeadClaim(t *testing.T) {
-	t.Run("calls bd update with correct args and removes auto_dispatch_tag", func(t *testing.T) {
+	t.Run("stripTag=true removes auto_dispatch_tag", func(t *testing.T) {
 		tmpDir, err := os.MkdirTemp("", "forge-release-bead-*")
 		require.NoError(t, err)
 		defer os.RemoveAll(tmpDir)
@@ -3241,7 +3245,7 @@ func TestReleaseBeadClaim(t *testing.T) {
 			},
 		})
 
-		d.releaseBeadClaim("TEST-1", "test-anvil")
+		d.releaseBeadClaim("TEST-1", "test-anvil", true)
 
 		require.FileExists(t, argsFile)
 		argsBytes, err := os.ReadFile(argsFile)
@@ -3252,6 +3256,57 @@ func TestReleaseBeadClaim(t *testing.T) {
 		assert.Contains(t, args, "--status=open")
 		assert.Contains(t, args, "--assignee=")
 		assert.Contains(t, args, "--remove-label=forgeReady")
+	})
+
+	t.Run("stripTag=false preserves auto_dispatch_tag (transient failure)", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "forge-release-bead-keeptag-*")
+		require.NoError(t, err)
+		defer os.RemoveAll(tmpDir)
+
+		argsFile := filepath.Join(tmpDir, "bd-args.txt")
+		var bdScript, bdContent string
+		if runtime.GOOS == "windows" {
+			bdScript = filepath.Join(tmpDir, "bd.bat")
+			bdContent = "@echo off\necho %* > \"" + argsFile + "\"\nexit /b 0\n"
+		} else {
+			bdScript = filepath.Join(tmpDir, "bd")
+			bdContent = "#!/bin/sh\necho \"$@\" > '" + argsFile + "'\nexit 0\n"
+		}
+		require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+		oldPath := os.Getenv("PATH")
+		os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+		defer os.Setenv("PATH", oldPath)
+
+		dbPath := filepath.Join(tmpDir, "state.db")
+		db, err := state.Open(dbPath)
+		require.NoError(t, err)
+		defer db.Close()
+
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			runCtx: context.Background(),
+		}
+		d.cfg.Store(&config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"test-anvil": {Path: tmpDir, AutoDispatchTag: "forgeReady"},
+			},
+		})
+
+		d.releaseBeadClaim("TEST-KEEP", "test-anvil", false)
+
+		require.FileExists(t, argsFile)
+		argsBytes, err := os.ReadFile(argsFile)
+		require.NoError(t, err)
+		args := strings.TrimSpace(string(argsBytes))
+		assert.Contains(t, args, "update")
+		assert.Contains(t, args, "TEST-KEEP")
+		assert.Contains(t, args, "--status=open")
+		assert.Contains(t, args, "--assignee=")
+		assert.NotContains(t, args, "--remove-label",
+			"transient releaseBeadClaim must NOT strip the auto_dispatch_tag — "+
+				"otherwise tagged-dispatch beads are silently stranded (Forge-dua2)")
 	})
 
 	t.Run("does not call bd when anvil is missing from config (claim-race safety)", func(t *testing.T) {
@@ -3289,7 +3344,7 @@ func TestReleaseBeadClaim(t *testing.T) {
 			Anvils: map[string]config.AnvilConfig{},
 		})
 
-		d.releaseBeadClaim("TEST-2", "unknown-anvil")
+		d.releaseBeadClaim("TEST-2", "unknown-anvil", true)
 
 		assert.NoFileExists(t, calledFile, "bd must not be called when anvil is absent from config")
 	})
@@ -3335,6 +3390,95 @@ func TestReleaseBeadClaim(t *testing.T) {
 
 		assert.NoFileExists(t, calledFile, "bd must not be called when releaseClaim is false")
 	})
+}
+
+// TestRecordDispatchFailure_TagPreservation verifies the Forge-dua2 fix: on a
+// tagged-dispatch anvil, a transient pipeline failure (dispatch_failures <
+// MaxDispatchFailures) must NOT strip the auto_dispatch_tag, otherwise the
+// bead becomes invisible to `bd ready` and is silently stranded. Once the
+// circuit breaker trips (dispatch_failures >= MaxDispatchFailures), the bead
+// is escalated to needs_human and the tag is stripped to keep `bd ready` clean.
+func TestRecordDispatchFailure_TagPreservation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-dispatch-tag-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	argsLog := filepath.Join(tmpDir, "bd-args.log")
+	var bdScript, bdContent string
+	if runtime.GOOS == "windows" {
+		bdScript = filepath.Join(tmpDir, "bd.bat")
+		bdContent = "@echo off\necho %* >> \"" + argsLog + "\"\nexit /b 0\n"
+	} else {
+		bdScript = filepath.Join(tmpDir, "bd")
+		bdContent = "#!/bin/sh\necho \"$@\" >> '" + argsLog + "'\nexit 0\n"
+	}
+	require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+	defer os.Setenv("PATH", oldPath)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runCtx: context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"munin": {Path: tmpDir, AutoDispatchTag: "forgeReady"},
+		},
+	})
+
+	const beadID = "Fhi.Metadata-tw59f"
+	const anvil = "munin"
+
+	// Simulate transient failures up to (but not including) the circuit breaker
+	// threshold. Each call must clear the bead claim but preserve the tag.
+	for i := 1; i < MaxDispatchFailures; i++ {
+		d.recordDispatchFailure(beadID, anvil, "temper exhausted", true)
+	}
+
+	logBytes, err := os.ReadFile(argsLog)
+	require.NoError(t, err)
+	transientLog := string(logBytes)
+
+	assert.Contains(t, transientLog, "update "+beadID,
+		"bd update should be invoked to clear the claim on transient failures")
+	assert.Contains(t, transientLog, "--status=open")
+	assert.Contains(t, transientLog, "--assignee=")
+	assert.NotContains(t, transientLog, "--remove-label",
+		"transient dispatch failure must NOT strip the auto_dispatch_tag — "+
+			"otherwise tagged-dispatch beads are silently stranded")
+
+	// Confirm the circuit breaker has not tripped yet — bead is still retryable.
+	r, err := db.GetRetry(beadID, anvil)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.False(t, r.NeedsHuman, "bead must remain retryable below the dispatch threshold")
+	assert.Equal(t, MaxDispatchFailures-1, r.DispatchFailures)
+
+	// One more failure should trip the circuit breaker (needs_human=1) and
+	// strip the tag, since the bead is now in Needs Attention.
+	require.NoError(t, os.Truncate(argsLog, 0))
+	d.recordDispatchFailure(beadID, anvil, "temper exhausted", true)
+
+	logBytes, err = os.ReadFile(argsLog)
+	require.NoError(t, err)
+	brokenLog := string(logBytes)
+
+	assert.Contains(t, brokenLog, "--remove-label=forgeReady",
+		"tag must be stripped when the dispatch circuit breaker trips")
+
+	r, err = db.GetRetry(beadID, anvil)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.True(t, r.NeedsHuman, "needs_human must be set after the circuit breaker trips")
+	assert.GreaterOrEqual(t, r.DispatchFailures, MaxDispatchFailures)
 }
 
 func TestDedupeCacheItems(t *testing.T) {

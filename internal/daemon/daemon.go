@@ -3001,9 +3001,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 			// Reset bead status to open and clear assignee so the poller can
 			// rediscover it as a crucible candidate. Re-applies the
-			// auto_dispatch_tag that releaseBeadClaim strips on pipeline
-			// failure, otherwise tagged-dispatch anvils never see the bead
-			// again via bd ready.
+			// auto_dispatch_tag (idempotent) — releaseBeadClaim only strips it
+			// on circuit-breaker escalation, but the resume path runs after
+			// either a transient or escalated failure, so we add the tag
+			// unconditionally to guarantee tagged-dispatch anvils see the
+			// bead again via bd ready.
 			resetCtx, resetCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 			defer resetCancel()
 			output, err := d.restoreBeadAfterPause(resetCtx, ca.ParentID, anvilCfg)
@@ -3669,9 +3671,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				resetCtx, resetCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 				defer resetCancel()
 				// Mirrors the crucible_action resume path: re-apply the
-				// auto_dispatch_tag that releaseBeadClaim strips on pipeline
-				// failure, otherwise tagged-dispatch anvils never see the bead
-				// again via bd ready.
+				// auto_dispatch_tag (idempotent). releaseBeadClaim only strips
+				// it on circuit-breaker escalation, but the retry path runs
+				// after either a transient or escalated failure, so we add the
+				// tag unconditionally to guarantee tagged-dispatch anvils see
+				// the bead again via bd ready.
 				output, err := d.restoreBeadAfterPause(resetCtx, rp.BeadID, anvilCfg)
 				if err != nil {
 					d.logger.Warn("failed to reset bead status after retry reset", "bead", rp.BeadID, "error", err, "output", string(output))
@@ -4582,6 +4586,13 @@ func (d *Daemon) isBeadClarificationNeeded(beadID, anvil string) (bool, error) {
 // risks unassigning a bead legitimately held by another instance or a human.
 // If the release fails, a warning is logged and orphan recovery is the
 // fallback.
+//
+// On a transient failure (dispatch_failures < MaxDispatchFailures, broken=false),
+// the auto_dispatch_tag is preserved so the bead remains visible to `bd ready`
+// on tagged-dispatch anvils and can be re-dispatched on the next poll. Stripping
+// the tag is reserved for circuit-breaker escalation (broken=true), at which
+// point needs_human=1 has been set and the dispatcher skips the bead anyway —
+// removing the tag in that case keeps `bd ready` clean.
 func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string, releaseClaim bool) {
 	count, broken, err := d.db.IncrementDispatchFailures(beadID, anvil, MaxDispatchFailures, reason)
 	if err != nil {
@@ -4593,7 +4604,7 @@ func (d *Daemon) recordDispatchFailure(beadID, anvil, reason string, releaseClai
 		beadID, anvil)
 
 	if releaseClaim {
-		d.releaseBeadClaim(beadID, anvil)
+		d.releaseBeadClaim(beadID, anvil, broken)
 	}
 
 	if broken {
@@ -4669,12 +4680,19 @@ func (d *Daemon) restoreBeadAfterPause(ctx context.Context, beadID string, anvil
 	return cmd.CombinedOutput()
 }
 
-// releaseBeadClaim releases a claimed bead back to open status and strips the
-// anvil's auto_dispatch_tag so it is not immediately re-dispatched. The anvil
-// path is resolved from the current config. If the release fails (bd error,
-// missing anvil config), a warning is logged — orphan recovery acts as the
-// fallback.
-func (d *Daemon) releaseBeadClaim(beadID, anvil string) {
+// releaseBeadClaim releases a claimed bead back to open status (status=open,
+// assignee=""). The anvil path is resolved from the current config. If the
+// release fails (bd error, missing anvil config), a warning is logged — orphan
+// recovery acts as the fallback.
+//
+// When stripTag is true, the anvil's auto_dispatch_tag is also removed. This
+// is reserved for circuit-breaker escalation (needs_human=1 has been set) where
+// we want the bead out of the `bd ready` queue. On a transient failure
+// (stripTag=false), the tag is preserved so `bd ready` continues to surface the
+// bead on tagged-dispatch anvils and the next poll can re-dispatch it. Stripping
+// the tag on every transient failure caused tagged-dispatch beads to be silently
+// stranded after a single failure (Forge-dua2).
+func (d *Daemon) releaseBeadClaim(beadID, anvil string, stripTag bool) {
 	anvilCfg, ok := d.cfg.Load().Anvils[anvil]
 	if !ok || anvilCfg.Path == "" {
 		d.logger.Warn("cannot release bead claim: anvil not found in config", "bead", beadID, "anvil", anvil)
@@ -4689,7 +4707,7 @@ func (d *Daemon) releaseBeadClaim(beadID, anvil string) {
 	defer cancel()
 
 	args := []string{"update", beadID, "--status=open", "--assignee="}
-	if anvilCfg.AutoDispatchTag != "" {
+	if stripTag && anvilCfg.AutoDispatchTag != "" {
 		args = append(args, "--remove-label="+anvilCfg.AutoDispatchTag)
 	}
 	args = append(args, "--json")
