@@ -926,6 +926,91 @@ func TestSmith_RecheckPrevious_RepeatedUse_StrictCap(t *testing.T) {
 	assert.Equal(t, 1, recheckEvents, "only the first RECHECK should produce a smith_recheck event")
 }
 
+// TestSmith_RecheckPrevious_DirtyWorktree_Escalates verifies that RECHECK_PREVIOUS
+// is ignored and escalated when Smith actually left commits in the worktree while
+// emitting the marker, contradicting its own claim that nothing changed.
+func TestSmith_RecheckPrevious_DirtyWorktree_Escalates(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	// Use a real git repo so gitRevParseHEAD returns a non-empty SHA and
+	// hasEmptyDiff can detect real commits (both use gitCmdCleanEnv internally).
+	wtPath, _ := initGitRepo(t)
+	params.WorktreeCreator = func(_ context.Context, anvilPath, beadID string) (*worktree.Worktree, error) {
+		return &worktree.Worktree{BeadID: beadID, AnvilPath: anvilPath, Path: wtPath, Branch: "forge/" + beadID}, nil
+	}
+
+	env := cleanGitEnv()
+	smithCall := 0
+	params.SmithRunner = func(_ context.Context, worktreePath, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		smithCall++
+		switch smithCall {
+		case 1:
+			return smith.NewProcessForTest(&smith.Result{ExitCode: 0, FullOutput: "Implemented."}), nil
+		case 2:
+			// Smith makes a real commit while emitting RECHECK_PREVIOUS,
+			// contradicting its claim that the worktree is unchanged.
+			require.NoError(t, os.WriteFile(filepath.Join(worktreePath, "sneaky.go"), []byte("package main"), 0o644))
+			addCmd := exec.Command("git", "-C", worktreePath, "add", ".")
+			addCmd.Env = env
+			require.NoError(t, addCmd.Run())
+			commitCmd := exec.Command("git", "-C", worktreePath, "commit", "-m", "sneaky change")
+			commitCmd.Env = env
+			require.NoError(t, commitCmd.Run())
+			return smith.NewProcessForTest(&smith.Result{
+				ExitCode:   0,
+				FullOutput: "RECHECK_PREVIOUS: I believe the failure was environmental.",
+			}), nil
+		default:
+			t.Fatalf("unexpected smith call %d", smithCall)
+			return nil, nil
+		}
+	}
+
+	temperCall := 0
+	params.TemperRunner = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		temperCall++
+		// Iter 1 fails to drive a second Smith iteration.
+		if temperCall == 1 {
+			return &temper.Result{Passed: false, FailedStep: "build", Summary: "build failed: stale config"}
+		}
+		t.Fatal("temper should not run after dirty-worktree escalation")
+		return nil
+	}
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		t.Fatal("warden should not run when RECHECK_PREVIOUS has dirty worktree")
+		return nil, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.False(t, outcome.Success)
+	assert.True(t, outcome.NeedsHuman, "NeedsHuman must be set when RECHECK_PREVIOUS contradicts dirty worktree")
+	require.NotNil(t, outcome.Error)
+	assert.Contains(t, outcome.Error.Error(), "RECHECK_PREVIOUS")
+	assert.Equal(t, 2, smithCall, "Smith should be called twice before escalation")
+	assert.Equal(t, 1, temperCall, "Temper should only be called once (iter 1)")
+
+	// Verify a smith_failed event was logged for the dirty worktree, with no
+	// smith_recheck event (marker was rejected, not honoured).
+	events, err := db.RecentEvents(50)
+	require.NoError(t, err)
+	var sawSmithFailed bool
+	var sawSmithRecheck bool
+	for _, e := range events {
+		switch e.Type {
+		case state.EventSmithFailed:
+			if strings.Contains(e.Message, "RECHECK_PREVIOUS") {
+				sawSmithFailed = true
+			}
+		case state.EventSmithRecheck:
+			sawSmithRecheck = true
+		}
+	}
+	assert.True(t, sawSmithFailed, "expected smith_failed event for dirty-worktree RECHECK_PREVIOUS")
+	assert.False(t, sawSmithRecheck, "expected no smith_recheck event when worktree is dirty")
+}
+
 // TestSmith_NoChangesNeeded_SkipsWardenAndTemper verifies that when Smith outputs
 // the NO_CHANGES_NEEDED: marker, Warden and Temper are skipped and the outcome
 // has NoChangesNeeded=true.
@@ -1420,11 +1505,25 @@ func TestSchematic_OnSpawn_UpdatesWorkerPIDAndLogPath(t *testing.T) {
 	assert.Equal(t, "/fake/smith.log", snapshotLogPath, "worker log_path should be updated via OnSpawn callback")
 }
 
+// cleanGitEnv returns os.Environ() with GIT_DIR and GIT_WORK_TREE removed so
+// that git commands in tests are not redirected to the worktree that hosts the
+// test process.
+func cleanGitEnv() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "GIT_DIR=") && !strings.HasPrefix(e, "GIT_WORK_TREE=") {
+			env = append(env, e)
+		}
+	}
+	return env
+}
+
 // initGitRepo creates a temporary git repo with an initial commit and returns
 // the repo path and the HEAD SHA after that commit.
 func initGitRepo(t *testing.T) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
+	env := cleanGitEnv()
 
 	for _, args := range [][]string{
 		{"init"},
@@ -1432,17 +1531,25 @@ func initGitRepo(t *testing.T) (string, string) {
 		{"config", "user.name", "Test"},
 	} {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = env
 		require.NoError(t, cmd.Run(), "git %v", args)
 	}
 
 	// Create an initial commit so HEAD exists.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644))
-	cmd := exec.Command("git", "-C", dir, "add", ".")
-	require.NoError(t, cmd.Run())
-	cmd = exec.Command("git", "-C", dir, "commit", "-m", "initial")
-	require.NoError(t, cmd.Run())
+	addCmd := exec.Command("git", "-C", dir, "add", ".")
+	addCmd.Env = env
+	require.NoError(t, addCmd.Run())
+	commitCmd := exec.Command("git", "-C", dir, "commit", "-m", "initial")
+	commitCmd.Env = env
+	require.NoError(t, commitCmd.Run())
 
-	sha := gitRevParseHEAD(dir)
+	// Use a clean-env rev-parse since gitRevParseHEAD inherits GIT_DIR.
+	shaCmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
+	shaCmd.Env = env
+	shaOut, err := shaCmd.Output()
+	require.NoError(t, err)
+	sha := strings.TrimSpace(string(shaOut))
 	require.NotEmpty(t, sha)
 	return dir, sha
 }
@@ -1451,13 +1558,16 @@ func initGitRepo(t *testing.T) (string, string) {
 // smith adds commits after the saved pre-smith SHA (the core fix for Forge-z9h6).
 func TestHasEmptyDiff_NewCommits(t *testing.T) {
 	dir, preSHA := initGitRepo(t)
+	env := cleanGitEnv()
 
 	// Simulate smith adding a commit.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main"), 0o644))
-	cmd := exec.Command("git", "-C", dir, "add", ".")
-	require.NoError(t, cmd.Run())
-	cmd = exec.Command("git", "-C", dir, "commit", "-m", "fix: smith did work")
-	require.NoError(t, cmd.Run())
+	addCmd := exec.Command("git", "-C", dir, "add", ".")
+	addCmd.Env = env
+	require.NoError(t, addCmd.Run())
+	commitCmd := exec.Command("git", "-C", dir, "commit", "-m", "fix: smith did work")
+	commitCmd.Env = env
+	require.NoError(t, commitCmd.Run())
 
 	assert.False(t, hasEmptyDiff(dir, preSHA), "hasEmptyDiff should be false when smith added commits")
 }

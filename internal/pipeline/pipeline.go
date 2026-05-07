@@ -291,6 +291,9 @@ type Params struct {
 	BeadReleaser func(beadID, anvilPath string) error
 	// SchematicRunner overrides schematic.Run. Used in tests.
 	SchematicRunner func(ctx context.Context, cfg schematic.Config, bead poller.Bead, anvilPath string, pv provider.Provider) *schematic.Result
+	// EmptyDiffChecker overrides hasEmptyDiff. Used in tests to simulate a
+	// dirty worktree without depending on a real git repository.
+	EmptyDiffChecker func(worktreePath, preSmithSHA string) bool
 
 	// WorkerID is the pre-generated worker ID to use for the state.db record.
 	// When set (e.g. because the daemon inserted a pending worker row at claim
@@ -565,6 +568,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 	doRelease := p.BeadReleaser
 	if doRelease == nil {
 		doRelease = releaseBead
+	}
+	checkEmptyDiff := p.EmptyDiffChecker
+	if checkEmptyDiff == nil {
+		checkEmptyDiff = hasEmptyDiff
 	}
 
 	// Step 1: Create worktree
@@ -1096,6 +1103,26 @@ func Run(ctx context.Context, p Params) *Outcome {
 					outcome.Duration = time.Since(start)
 					return outcome
 				}
+				// Verify the worktree is actually unchanged before honouring
+				// RECHECK_PREVIOUS. If Smith left commits or uncommitted changes
+				// while emitting the marker, its claim that the previous
+				// iteration's code is correct is contradicted by its own
+				// actions — treat as smith_failed so the operator can inspect.
+				// Only checked when preSmithSHA is known; if git failed to
+				// capture the baseline SHA before Smith ran we cannot verify.
+				if preSmithSHA != "" && !checkEmptyDiff(wt.Path, preSmithSHA) {
+					log.Printf("[pipeline:%s] Smith emitted RECHECK_PREVIOUS but made changes — ignoring marker, escalating to needs_human", workerID)
+					_ = p.DB.LogEvent(state.EventSmithFailed,
+						fmt.Sprintf("RECHECK_PREVIOUS emitted in iteration %d but worktree has changes since %s — escalating: %s",
+							iteration, preSmithSHA, rationale),
+						p.Bead.ID, p.AnvilName)
+					outcome.NeedsHuman = true
+					outcome.Error = fmt.Errorf("smith emitted RECHECK_PREVIOUS but left changes in the worktree (iteration %d)", iteration)
+					_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+					markIngotFailed()
+					outcome.Duration = time.Since(start)
+					return outcome
+				}
 				recheckThisIter = true
 				recheckRationale = rationale
 				log.Printf("[pipeline:%s] Smith emitted RECHECK_PREVIOUS in iteration %d: %s", workerID, iteration, rationale)
@@ -1181,7 +1208,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// feedback — escalate to needs_human instead of looping pointlessly.
 		// Skip this check when smith emitted RECHECK_PREVIOUS: an empty diff
 		// is the expected outcome there.
-		if iteration > 1 && !recheckThisIter && hasEmptyDiff(wt.Path, preSmithSHA) {
+		if iteration > 1 && !recheckThisIter && checkEmptyDiff(wt.Path, preSmithSHA) {
 			log.Printf("[pipeline:%s] Smith made no changes in review iteration %d — escalating to needs_human", workerID, iteration)
 			_ = p.DB.LogEvent(state.EventSmithFailed,
 				fmt.Sprintf("Smith made no changes in review iteration %d — warden feedback was not addressed", iteration),
@@ -1631,10 +1658,27 @@ func Run(ctx context.Context, p Params) *Outcome {
 	return outcome
 }
 
+// gitCmdCleanEnv returns os.Environ() with GIT_DIR and GIT_WORK_TREE removed.
+// Git uses GIT_DIR/GIT_WORK_TREE to override the repository location.
+// When the daemon (or tests) run inside a git worktree those variables point at
+// the parent repo, which would cause git commands that target a child worktree
+// path to operate on the wrong repository. Stripping them lets git discover the
+// correct repo via the .git file in the worktree directory instead.
+func gitCmdCleanEnv() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "GIT_DIR=") && !strings.HasPrefix(e, "GIT_WORK_TREE=") {
+			env = append(env, e)
+		}
+	}
+	return env
+}
+
 // gitRevParseHEAD returns the current HEAD commit SHA for the given worktree.
 // Returns an empty string on error.
 func gitRevParseHEAD(worktreePath string) string {
 	cmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD"))
+	cmd.Env = gitCmdCleanEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -1665,8 +1709,10 @@ func resolveTemperBaseRef(ctx context.Context, worktreePath, baseBranch string) 
 // so that post-push state (where @{upstream} == HEAD) doesn't falsely indicate
 // an empty diff.
 func hasEmptyDiff(worktreePath, preSmithSHA string) bool {
+	env := gitCmdCleanEnv()
 	// Check for uncommitted changes (staged or unstaged).
 	statusCmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "status", "--porcelain"))
+	statusCmd.Env = env
 	statusOut, err := statusCmd.Output()
 	if err != nil {
 		return false // assume changes on error
@@ -1688,6 +1734,7 @@ func hasEmptyDiff(worktreePath, preSmithSHA string) bool {
 	}
 	// Fallback: diff against parent commit.
 	diffCmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "diff", "HEAD~1"))
+	diffCmd.Env = env
 	diffOut, err := diffCmd.Output()
 	if err != nil {
 		return false
