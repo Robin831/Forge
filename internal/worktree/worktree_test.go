@@ -34,6 +34,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = envWithoutGitVars()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
@@ -100,6 +101,7 @@ func TestCurrentBranch_OnFeatureBranch(t *testing.T) {
 	// Create and switch to a feature branch.
 	cmd := exec.Command("git", "checkout", "-b", "forge/test-bead")
 	cmd.Dir = dir
+	cmd.Env = envWithoutGitVars()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git checkout -b: %v\n%s", err, out)
 	}
@@ -138,6 +140,7 @@ func TestAssertOnMainBranch_OnFeatureBranch(t *testing.T) {
 	// Simulate environment corruption: checkout a feature branch.
 	cmd := exec.Command("git", "checkout", "-b", "forge/Forge-x1bs")
 	cmd.Dir = dir
+	cmd.Env = envWithoutGitVars()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git checkout -b: %v\n%s", err, out)
 	}
@@ -185,6 +188,7 @@ func TestVerifyAndRecoverMain_OnFeatureBranch(t *testing.T) {
 	// Simulate environment corruption: checkout a feature branch.
 	cmd := exec.Command("git", "checkout", "-b", "forge/Forge-x1bs")
 	cmd.Dir = dir
+	cmd.Env = envWithoutGitVars()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git checkout -b: %v\n%s", err, out)
 	}
@@ -691,6 +695,7 @@ func TestGitEnv_ConfinesGitFromOutsideWorktree(t *testing.T) {
 	// the anvil's checkout (the dangerous default we're protecting against).
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 	cmd.Dir = anvilDir
+	cmd.Env = envWithoutGitVars()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("baseline git rev-parse: %v\n%s", err, out)
@@ -773,11 +778,232 @@ func envWithoutGitVars() []string {
 	return out
 }
 
+// TestCleanStaleCoreWorktree_UnsetsMissingPath verifies that
+// CleanStaleCoreWorktree removes a core.worktree setting that points to a
+// path which no longer exists on disk.
+func TestCleanStaleCoreWorktree_UnsetsMissingPath(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "main")
+
+	// Seed a stale core.worktree pointing at a path that doesn't exist.
+	stale := filepath.Join(t.TempDir(), "removed-worker")
+	runGit(t, dir, "config", "core.worktree", stale)
+
+	if err := CleanStaleCoreWorktree(context.Background(), dir); err != nil {
+		t.Fatalf("CleanStaleCoreWorktree: %v", err)
+	}
+
+	cmd := exec.Command("git", "config", "--local", "--get", "core.worktree")
+	cmd.Dir = dir
+	cmd.Env = envWithoutGitVars()
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Errorf("core.worktree should be unset, but got %q", strings.TrimSpace(string(out)))
+	}
+}
+
+// TestCleanStaleCoreWorktree_UnsetsEmptyDir verifies that
+// CleanStaleCoreWorktree removes a core.worktree setting that points to an
+// existing-but-empty directory. An empty directory triggers the same
+// `git status --porcelain` exit-128 failure as a missing path.
+func TestCleanStaleCoreWorktree_UnsetsEmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "main")
+
+	emptyDir := t.TempDir() // exists but contains nothing
+	runGit(t, dir, "config", "core.worktree", emptyDir)
+
+	if err := CleanStaleCoreWorktree(context.Background(), dir); err != nil {
+		t.Fatalf("CleanStaleCoreWorktree: %v", err)
+	}
+
+	cmd := exec.Command("git", "config", "--local", "--get", "core.worktree")
+	cmd.Dir = dir
+	cmd.Env = envWithoutGitVars()
+	if err := cmd.Run(); err == nil {
+		t.Error("core.worktree should be unset when value points to an empty directory")
+	}
+}
+
+// TestCleanStaleCoreWorktree_PreservesValidPath verifies that
+// CleanStaleCoreWorktree leaves a core.worktree value alone when it points to
+// a directory that exists and is non-empty. We treat such a value as
+// potentially intentional and only self-heal the clearly-broken cases.
+func TestCleanStaleCoreWorktree_PreservesValidPath(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "main")
+
+	validDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(validDir, "marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "config", "core.worktree", validDir)
+
+	if err := CleanStaleCoreWorktree(context.Background(), dir); err != nil {
+		t.Fatalf("CleanStaleCoreWorktree: %v", err)
+	}
+
+	got := gitOutput(t, dir, "config", "--local", "--get", "core.worktree")
+	if got != validDir {
+		t.Errorf("core.worktree was modified: got %q, want %q", got, validDir)
+	}
+}
+
+// TestCleanStaleCoreWorktree_NoOpWhenUnset verifies that
+// CleanStaleCoreWorktree returns nil and makes no change when core.worktree
+// is not set at all (the common case).
+func TestCleanStaleCoreWorktree_NoOpWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "main")
+
+	if err := CleanStaleCoreWorktree(context.Background(), dir); err != nil {
+		t.Errorf("CleanStaleCoreWorktree on repo with no core.worktree: unexpected error: %v", err)
+	}
+}
+
+// TestCleanStaleCoreWorktree_RelativePathMissing verifies that a relative
+// core.worktree value that resolves (via gitdir) to a non-existent path is
+// treated as stale and unset.
+func TestCleanStaleCoreWorktree_RelativePathMissing(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "main")
+
+	// Set core.worktree to a relative path. Git resolves relative values
+	// relative to the gitdir (<dir>/.git), so "../nonexistent-worker" resolves
+	// to <dir>/nonexistent-worker, which does not exist.
+	runGit(t, dir, "config", "core.worktree", "../nonexistent-worker")
+
+	if err := CleanStaleCoreWorktree(context.Background(), dir); err != nil {
+		t.Fatalf("CleanStaleCoreWorktree: %v", err)
+	}
+
+	cmd := exec.Command("git", "config", "--local", "--get", "core.worktree")
+	cmd.Dir = dir
+	cmd.Env = envWithoutGitVars()
+	if err := cmd.Run(); err == nil {
+		t.Error("core.worktree should have been unset for a relative path resolving to a missing directory")
+	}
+}
+
+// TestCleanStaleCoreWorktree_RelativePathValid verifies that a relative
+// core.worktree value that resolves to a non-empty directory is preserved.
+func TestCleanStaleCoreWorktree_RelativePathValid(t *testing.T) {
+	dir := t.TempDir()
+	initTestRepo(t, dir, "main")
+
+	// Create <dir>/valid-wt with content. With gitdir = <dir>/.git, the
+	// relative value "../valid-wt" resolves to <dir>/valid-wt.
+	validWt := filepath.Join(dir, "valid-wt")
+	if err := os.MkdirAll(validWt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(validWt, "marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "config", "core.worktree", "../valid-wt")
+
+	if err := CleanStaleCoreWorktree(context.Background(), dir); err != nil {
+		t.Fatalf("CleanStaleCoreWorktree: %v", err)
+	}
+
+	got := gitOutput(t, dir, "config", "--local", "--get", "core.worktree")
+	if got != "../valid-wt" {
+		t.Errorf("core.worktree was modified: got %q, want %q", got, "../valid-wt")
+	}
+}
+
+// TestCreateWithOptions_DoesNotSetCoreWorktree verifies that creating a
+// worktree does not write core.worktree to the main repo's .git/config.
+// Per-worktree values belong in .git/worktrees/<name>/config.worktree, which
+// `git worktree add` manages on its own.
+func TestCreateWithOptions_DoesNotSetCoreWorktree(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	mgr := NewManager()
+	if _, err := mgr.CreateWithOptions(context.Background(), anvilDir, "no-cw-test", CreateOptions{}); err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+
+	cmd := exec.Command("git", "config", "--local", "--get", "core.worktree")
+	cmd.Dir = anvilDir
+	cmd.Env = envWithoutGitVars()
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Errorf("main repo should not have core.worktree set after worktree creation, got %q",
+			strings.TrimSpace(string(out)))
+	}
+}
+
+// TestCreateWithOptions_SelfHealsStaleCoreWorktree verifies that
+// CreateWithOptions clears a pre-existing stale core.worktree before
+// proceeding. This guards against state left by older Forge versions or
+// manual git invocations.
+func TestCreateWithOptions_SelfHealsStaleCoreWorktree(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	// Seed a stale core.worktree pointing at a non-existent path.
+	stale := filepath.Join(t.TempDir(), "ghost-worker")
+	runGit(t, anvilDir, "config", "core.worktree", stale)
+
+	mgr := NewManager()
+	if _, err := mgr.CreateWithOptions(context.Background(), anvilDir, "self-heal-test", CreateOptions{}); err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+
+	cmd := exec.Command("git", "config", "--local", "--get", "core.worktree")
+	cmd.Dir = anvilDir
+	cmd.Env = envWithoutGitVars()
+	if err := cmd.Run(); err == nil {
+		t.Error("CreateWithOptions should have unset stale core.worktree on the main repo")
+	}
+}
+
+// TestRemove_UnsetsStaleCoreWorktree verifies that Manager.Remove clears any
+// stale core.worktree setting on the main repo. This is the regression test
+// for the originally reported bug: after a worker was cleaned up, a leftover
+// core.worktree caused `git status --porcelain` against the main repo to
+// fail with exit 128, breaking `go build` for any subsequent worker.
+func TestRemove_UnsetsStaleCoreWorktree(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	mgr := NewManager()
+	ctx := context.Background()
+	wt, err := mgr.CreateWithOptions(ctx, anvilDir, "remove-cw-test", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+
+	// Simulate the stale state described in the bug report: core.worktree
+	// pointing at the worker that's about to be removed.
+	runGit(t, anvilDir, "config", "core.worktree", wt.Path)
+
+	if err := mgr.Remove(ctx, anvilDir, wt); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// After remove, core.worktree must be unset (the path it pointed to no
+	// longer exists, so the self-heal triggers).
+	cmd := exec.Command("git", "config", "--local", "--get", "core.worktree")
+	cmd.Dir = anvilDir
+	cmd.Env = envWithoutGitVars()
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Errorf("Remove should clear stale core.worktree, got %q", strings.TrimSpace(string(out)))
+	}
+
+	// Regression assertion from the bug report: `git status --porcelain`
+	// against the main repo must succeed (exit 0) after a worker round-trip.
+	cmd = exec.Command("git", "status", "--porcelain")
+	cmd.Dir = anvilDir
+	cmd.Env = envWithoutGitVars()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("git status --porcelain on main repo failed after worker remove: %v\n%s", err, out)
+	}
+}
+
 // gitOutput runs a git command and returns trimmed stdout.
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = envWithoutGitVars()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)

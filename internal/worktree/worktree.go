@@ -116,6 +116,17 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		return nil, fmt.Errorf("creating workers directory: %w", err)
 	}
 
+	// Self-heal any pre-existing stale core.worktree setting on the main repo
+	// before we run any git commands that would touch it. A stale value
+	// pointing to a removed worker path breaks `git status --porcelain`
+	// (exit 128 "must be run in a work tree"), which in turn breaks Go's
+	// VCS stamping during `go build` from this worktree.
+	if err := CleanStaleCoreWorktree(ctx, anvilPath); err != nil {
+		// Non-fatal: log and continue. If the unset truly fails, downstream
+		// git commands will surface a clearer error.
+		slog.Warn("worktree: failed to clean stale core.worktree", "anvil", anvilPath, "error", err)
+	}
+
 	// If worktree directory already exists, check whether it is a valid git
 	// worktree. If so, reset it to a clean state and reuse it. If not (e.g.
 	// leftover directory from a failed run), remove it so we can create fresh.
@@ -372,6 +383,15 @@ func (m *Manager) Remove(ctx context.Context, anvilPath string, wt *Worktree) er
 	// was just created. Remote branch cleanup is handled by GitHub's auto-delete
 	// setting or by Bellows after PR merge.
 
+	// Belt-and-braces: ensure no stale core.worktree setting is left on the
+	// main repo pointing at the path we just removed. `git worktree remove`
+	// does not write core.worktree, but older Forge versions or external
+	// tooling may have done so; this keeps the main repo healthy regardless.
+	if err := CleanStaleCoreWorktree(ctx, anvilPath); err != nil {
+		slog.Warn("worktree: failed to clean stale core.worktree after remove",
+			"anvil", anvilPath, "error", err)
+	}
+
 	return nil
 }
 
@@ -410,6 +430,162 @@ func installBeadsRedirect(anvilPath, worktreePath string) error {
 
 	redirectFile := filepath.Join(worktreeBeadsDir, "redirect")
 	return os.WriteFile(redirectFile, []byte(mainBeadsDir+"\n"), 0o644)
+}
+
+// CleanStaleCoreWorktree removes a stale core.worktree setting from the main
+// repository's .git/config when it points to a path that no longer exists or
+// is empty. Such a stale setting breaks tooling that resolves the main repo's
+// gitdir — notably Go's VCS stamping, which cd's into the main repo via the
+// worktree's .git pointer and runs `git status --porcelain`. When core.worktree
+// points to a missing/empty path, that command fails with exit 128
+// ("fatal: this operation must be run in a work tree"), which in turn breaks
+// `go build` for any worker. Forge itself does not set core.worktree on the
+// main repo (per-worktree values live in .git/worktrees/<name>/config.worktree
+// and are managed by `git worktree add`), but older Forge versions, manual git
+// invocations, or third-party tools may have written one. This helper is the
+// idempotent self-heal.
+//
+// The check is conservative: it only unsets when the configured path is
+// missing or empty. A path that exists with content is left alone, in case it
+// was set deliberately by the user. Errors are non-fatal — callers should log
+// and continue.
+func CleanStaleCoreWorktree(ctx context.Context, anvilPath string) error {
+	value, err := readCoreWorktree(ctx, anvilPath)
+	if err != nil {
+		return fmt.Errorf("reading core.worktree: %w", err)
+	}
+	if value == "" {
+		return nil
+	}
+	resolved := resolveWorktreePath(anvilPath, value)
+	if !isStaleWorktreePath(resolved) {
+		return nil
+	}
+	if err := unsetCoreWorktree(ctx, anvilPath); err != nil {
+		return fmt.Errorf("unsetting stale core.worktree=%q: %w", value, err)
+	}
+	slog.Info("worktree: unset stale core.worktree on main repo",
+		"anvil", anvilPath, "stale_value", value)
+	return nil
+}
+
+// localGitEnv returns the process environment with Forge-set git overrides
+// stripped so that git commands discover the repo from cmd.Dir rather than
+// from inherited GIT_DIR / GIT_WORK_TREE values.
+func localGitEnv() []string {
+	skip := map[string]bool{
+		"GIT_DIR":                 true,
+		"GIT_WORK_TREE":           true,
+		"GIT_CEILING_DIRECTORIES": true,
+	}
+	base := os.Environ()
+	out := make([]string, 0, len(base))
+	for _, e := range base {
+		key, _, _ := strings.Cut(e, "=")
+		if !skip[key] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// anvilGitEnv returns an environment suitable for git commands that should
+// operate on anvilPath. It strips any inherited GIT_DIR / GIT_WORK_TREE /
+// GIT_CEILING_DIRECTORIES overrides (Forge sets these in worktree subprocesses)
+// and then pins GIT_WORK_TREE to anvilPath. The pinned GIT_WORK_TREE overrides
+// any core.worktree value in .git/config so git does not try to chdir to a
+// possibly-missing path before the command even runs.
+func anvilGitEnv(anvilPath string) []string {
+	out := localGitEnv()
+	out = append(out, "GIT_WORK_TREE="+anvilPath)
+	return out
+}
+
+// anvilGitConfigFile returns the path to the main repo's .git/config file.
+// For a standard (non-bare) repository, this is always <anvilPath>/.git/config.
+// We locate it directly from the filesystem to avoid running git commands that
+// would fail when core.worktree is set to a missing path.
+func anvilGitConfigFile(anvilPath string) string {
+	return filepath.Join(anvilPath, ".git", "config")
+}
+
+// resolveWorktreePath resolves a core.worktree config value to an absolute
+// filesystem path. Git interprets relative values relative to the repo's
+// gitdir (the .git directory), not the process working directory. We resolve
+// the gitdir from the filesystem rather than via git to avoid failures when
+// core.worktree itself is already broken.
+func resolveWorktreePath(anvilPath, value string) string {
+	if filepath.IsAbs(value) {
+		return value
+	}
+	// For a standard repo the gitdir is <anvilPath>/.git. We check directly
+	// rather than running `git rev-parse --git-dir` because git may refuse to
+	// start when core.worktree points to a missing directory.
+	gitDir := filepath.Join(anvilPath, ".git")
+	if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
+		// Non-standard layout — fall back to resolving relative to anvilPath.
+		return filepath.Join(anvilPath, value)
+	}
+	return filepath.Join(gitDir, value)
+}
+
+// readCoreWorktree returns the value of core.worktree from the main repo's
+// .git/config, or "" if the key is unset. It uses `git config --file` to
+// read the config file directly, bypassing git's working-tree validation so
+// the function succeeds even when core.worktree already points to a missing
+// path (which would cause `git config --local` to exit 128).
+func readCoreWorktree(ctx context.Context, anvilPath string) (string, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "config", "--file", anvilGitConfigFile(anvilPath), "--get", "core.worktree"))
+	cmd.Dir = anvilPath
+	cmd.Env = anvilGitEnv(anvilPath)
+	out, err := cmd.Output()
+	if err != nil {
+		// Exit code 1 from `git config --get` means the key is unset; treat as no value.
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// unsetCoreWorktree removes the core.worktree key from the main repo's
+// .git/config. Uses `git config --file` to write the config file directly,
+// bypassing git's working-tree validation. Tolerates "key not set" (exit
+// code 5) — the result we want is already true.
+func unsetCoreWorktree(ctx context.Context, anvilPath string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "config", "--file", anvilGitConfigFile(anvilPath), "--unset", "core.worktree"))
+	cmd.Dir = anvilPath
+	cmd.Env = anvilGitEnv(anvilPath)
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 5 {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// isStaleWorktreePath reports whether path is missing on disk or is an empty
+// directory. Both conditions break `git status --porcelain` against the main
+// repo when configured as core.worktree.
+func isStaleWorktreePath(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	if !info.IsDir() {
+		return true
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	return len(entries) == 0
 }
 
 // resolveBaseRef determines whether the repo uses origin/main or origin/master.
@@ -486,6 +662,7 @@ func CurrentBranch(ctx context.Context, repoPath string) (string, error) {
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "rev-parse", "--abbrev-ref", "HEAD"))
 	cmd.Dir = repoPath
+	cmd.Env = localGitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -561,6 +738,7 @@ func gitCmdOut(ctx context.Context, dir string, out io.Writer, args ...string) e
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
 	cmd.Dir = dir
+	cmd.Env = localGitEnv()
 	cmd.Stdout = out
 	cmd.Stderr = out
 
@@ -679,6 +857,7 @@ func ValidateWorktreeDir(worktreePath string) error {
 	defer cancel()
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "rev-parse", "--git-dir"))
 	cmd.Dir = worktreePath
+	cmd.Env = localGitEnv()
 	if err := cmd.Run(); err != nil {
 		// Not inside any git repository — safe to proceed.
 		return nil
