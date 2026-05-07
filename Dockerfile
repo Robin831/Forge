@@ -61,8 +61,9 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install OS-level dependencies, Node.js 24 (NodeSource), and the GitHub CLI
-# (cli.github.com). Both third-party apt repos are pinned via keyring files
-# in /etc/apt/keyrings as recommended by current Debian best practice.
+# (cli.github.com). Both third-party apt repos are added via signed-by=
+# keyring entries in /etc/apt/keyrings as recommended by current Debian best
+# practice — no remote scripts are piped into bash.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -73,19 +74,21 @@ RUN set -eux; \
         openssh-client \
         tini; \
     \
-    # Node.js 24 LTS via NodeSource setup script
-    curl -fsSL https://deb.nodesource.com/setup_24.x | bash -; \
-    apt-get install -y --no-install-recommends nodejs; \
+    # Node.js 24 LTS via NodeSource keyring + sources.list entry (no curl|bash)
+    install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list; \
     \
     # GitHub CLI via the official stable apt repo
-    install -d -m 0755 /etc/apt/keyrings; \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null; \
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list; \
     apt-get update; \
-    apt-get install -y --no-install-recommends gh; \
+    apt-get install -y --no-install-recommends nodejs gh; \
     \
     # Trim apt caches so the runtime layer stays small
     apt-get clean; \
@@ -93,13 +96,16 @@ RUN set -eux; \
 
 # Anthropic Claude Code CLI. Installed globally so it lands on the system
 # PATH and is invokable from Smith subprocesses regardless of cwd.
-RUN npm install -g @anthropic-ai/claude-code \
+# Pin the version via build ARG for reproducible builds; override at build
+# time with --build-arg CLAUDE_CODE_VERSION=x.y.z to upgrade intentionally.
+ARG CLAUDE_CODE_VERSION=@latest
+RUN npm install -g @anthropic-ai/claude-code${CLAUDE_CODE_VERSION} \
     && npm cache clean --force
 
 # Copy the bd binary from the host-staged build directory. The build script
 # is responsible for compiling bd (Linux target, matching this image's arch)
-# from the FHI fork at C:\source\fhigit\beads and depositing the artifact
-# at ./build/bd in the docker build context.
+# from the FHI beads fork and depositing the artifact at ./build/bd in the
+# docker build context before invoking `docker build`.
 COPY --chmod=0755 build/bd /usr/local/bin/bd
 
 # Copy the freshly-built forge binary from the Go builder stage.
