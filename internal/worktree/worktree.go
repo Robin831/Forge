@@ -451,11 +451,14 @@ func installBeadsRedirect(anvilPath, worktreePath string) error {
 // and continue.
 func CleanStaleCoreWorktree(ctx context.Context, anvilPath string) error {
 	value, err := readCoreWorktree(ctx, anvilPath)
-	if err != nil || value == "" {
-		// Not set, or git could not read the config — nothing to do.
+	if err != nil {
+		return fmt.Errorf("reading core.worktree: %w", err)
+	}
+	if value == "" {
 		return nil
 	}
-	if !isStaleWorktreePath(value) {
+	resolved := resolveWorktreePath(anvilPath, value)
+	if !isStaleWorktreePath(resolved) {
 		return nil
 	}
 	if err := unsetCoreWorktree(ctx, anvilPath); err != nil {
@@ -466,14 +469,77 @@ func CleanStaleCoreWorktree(ctx context.Context, anvilPath string) error {
 	return nil
 }
 
+// localGitEnv returns the process environment with Forge-set git overrides
+// stripped so that git commands discover the repo from cmd.Dir rather than
+// from inherited GIT_DIR / GIT_WORK_TREE values.
+func localGitEnv() []string {
+	skip := map[string]bool{
+		"GIT_DIR":                 true,
+		"GIT_WORK_TREE":           true,
+		"GIT_CEILING_DIRECTORIES": true,
+	}
+	base := os.Environ()
+	out := make([]string, 0, len(base))
+	for _, e := range base {
+		key, _, _ := strings.Cut(e, "=")
+		if !skip[key] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// anvilGitEnv returns an environment suitable for git commands that should
+// operate on anvilPath. It strips any inherited GIT_DIR / GIT_WORK_TREE /
+// GIT_CEILING_DIRECTORIES overrides (Forge sets these in worktree subprocesses)
+// and then pins GIT_WORK_TREE to anvilPath. The pinned GIT_WORK_TREE overrides
+// any core.worktree value in .git/config so git does not try to chdir to a
+// possibly-missing path before the command even runs.
+func anvilGitEnv(anvilPath string) []string {
+	out := localGitEnv()
+	out = append(out, "GIT_WORK_TREE="+anvilPath)
+	return out
+}
+
+// anvilGitConfigFile returns the path to the main repo's .git/config file.
+// For a standard (non-bare) repository, this is always <anvilPath>/.git/config.
+// We locate it directly from the filesystem to avoid running git commands that
+// would fail when core.worktree is set to a missing path.
+func anvilGitConfigFile(anvilPath string) string {
+	return filepath.Join(anvilPath, ".git", "config")
+}
+
+// resolveWorktreePath resolves a core.worktree config value to an absolute
+// filesystem path. Git interprets relative values relative to the repo's
+// gitdir (the .git directory), not the process working directory. We resolve
+// the gitdir from the filesystem rather than via git to avoid failures when
+// core.worktree itself is already broken.
+func resolveWorktreePath(anvilPath, value string) string {
+	if filepath.IsAbs(value) {
+		return value
+	}
+	// For a standard repo the gitdir is <anvilPath>/.git. We check directly
+	// rather than running `git rev-parse --git-dir` because git may refuse to
+	// start when core.worktree points to a missing directory.
+	gitDir := filepath.Join(anvilPath, ".git")
+	if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
+		// Non-standard layout — fall back to resolving relative to anvilPath.
+		return filepath.Join(anvilPath, value)
+	}
+	return filepath.Join(gitDir, value)
+}
+
 // readCoreWorktree returns the value of core.worktree from the main repo's
-// .git/config, or "" if the key is unset. It uses `git config --local` so
-// it reads only the main repo's config, not any per-worktree overlay.
+// .git/config, or "" if the key is unset. It uses `git config --file` to
+// read the config file directly, bypassing git's working-tree validation so
+// the function succeeds even when core.worktree already points to a missing
+// path (which would cause `git config --local` to exit 128).
 func readCoreWorktree(ctx context.Context, anvilPath string) (string, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "config", "--local", "--get", "core.worktree"))
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "config", "--file", anvilGitConfigFile(anvilPath), "--get", "core.worktree"))
 	cmd.Dir = anvilPath
+	cmd.Env = anvilGitEnv(anvilPath)
 	out, err := cmd.Output()
 	if err != nil {
 		// Exit code 1 from `git config --get` means the key is unset; treat as no value.
@@ -486,13 +552,15 @@ func readCoreWorktree(ctx context.Context, anvilPath string) (string, error) {
 }
 
 // unsetCoreWorktree removes the core.worktree key from the main repo's
-// .git/config. Tolerates "key not set" (exit code 5) — the result we want is
-// already true.
+// .git/config. Uses `git config --file` to write the config file directly,
+// bypassing git's working-tree validation. Tolerates "key not set" (exit
+// code 5) — the result we want is already true.
 func unsetCoreWorktree(ctx context.Context, anvilPath string) error {
 	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "config", "--local", "--unset", "core.worktree"))
+	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "config", "--file", anvilGitConfigFile(anvilPath), "--unset", "core.worktree"))
 	cmd.Dir = anvilPath
+	cmd.Env = anvilGitEnv(anvilPath)
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 5 {
 			return nil
@@ -594,6 +662,7 @@ func CurrentBranch(ctx context.Context, repoPath string) (string, error) {
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "rev-parse", "--abbrev-ref", "HEAD"))
 	cmd.Dir = repoPath
+	cmd.Env = localGitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -669,6 +738,7 @@ func gitCmdOut(ctx context.Context, dir string, out io.Writer, args ...string) e
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
 	cmd.Dir = dir
+	cmd.Env = localGitEnv()
 	cmd.Stdout = out
 	cmd.Stderr = out
 
@@ -787,6 +857,7 @@ func ValidateWorktreeDir(worktreePath string) error {
 	defer cancel()
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", "rev-parse", "--git-dir"))
 	cmd.Dir = worktreePath
+	cmd.Env = localGitEnv()
 	if err := cmd.Run(); err != nil {
 		// Not inside any git repository — safe to proceed.
 		return nil
