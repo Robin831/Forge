@@ -68,6 +68,24 @@ func (s *Server) touchSession(sess *state.WebSession) {
 	sess.ExpiresAt = expires
 }
 
+// refreshSessionCookie re-issues the session cookie with the updated ExpiresAt
+// from a just-touched session, so the browser tracks the slid expiry.
+func (s *Server) refreshSessionCookie(w http.ResponseWriter, r *http.Request, sess *state.WebSession) {
+	cookie, err := r.Cookie(s.cfg.CookieName)
+	if err != nil || cookie.Value == "" {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     s.cfg.CookieName,
+		Value:    cookie.Value,
+		Path:     "/",
+		Expires:  sess.ExpiresAt,
+		HttpOnly: true,
+		Secure:   s.cfg.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
 // clearSessionCookie deletes the session cookie on the client.
 func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{

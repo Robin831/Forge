@@ -50,7 +50,8 @@ func (s *Server) routes() http.Handler {
 func (s *Server) staticHandler() http.HandlerFunc {
 	dist, err := distFS()
 	if err != nil {
-		// No embedded UI — return the placeholder for any path.
+		// No embedded UI — return the placeholder handler, which serves
+		// a minimal page for / and /index.html and 404s everything else.
 		return s.placeholderHandler
 	}
 	fileServer := http.FileServer(http.FS(dist))

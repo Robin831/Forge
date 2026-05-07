@@ -17,6 +17,8 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		}
 		// Slide the expiry forward so active users keep their session.
 		s.touchSession(sess)
+		// Refresh the cookie so the browser sees the updated expiry.
+		s.refreshSessionCookie(w, r, sess)
 		next.ServeHTTP(w, r.WithContext(withSession(r.Context(), sess)))
 	})
 }

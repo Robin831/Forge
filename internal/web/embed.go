@@ -22,8 +22,9 @@ func distFS() (fs.FS, error) {
 	if err != nil {
 		return nil, err
 	}
-	// If the dist directory only contains the .gitkeep file, treat it as
-	// empty so the placeholder takes over.
+	// If the dist directory does not contain index.html (i.e. the frontend
+	// bundle has not been embedded yet), treat it as empty so the placeholder
+	// takes over.
 	entries, err := fs.ReadDir(sub, ".")
 	if err != nil {
 		return nil, err

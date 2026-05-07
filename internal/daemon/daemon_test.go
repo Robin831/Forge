@@ -3397,3 +3397,130 @@ func TestDedupeCacheItems(t *testing.T) {
 		assert.Equal(t, "third", out[0].Title)
 	})
 }
+
+func TestHandleIPC_Queue(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-ipc-queue-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	db, err := state.Open(filepath.Join(tmpDir, "state.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	d.cfg.Store(&config.Config{})
+
+	t.Run("empty queue returns empty items array", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "queue"})
+		require.Equal(t, "ok", resp.Type)
+
+		var payload ipc.QueueResponse
+		require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+		assert.NotNil(t, payload.Items)
+		assert.Empty(t, payload.Items)
+	})
+
+	t.Run("seeded queue items are returned", func(t *testing.T) {
+		seed := []state.QueueItem{
+			{
+				BeadID:   "Forge-abc1",
+				Anvil:    "forge",
+				Title:    "Add feature X",
+				Priority: 2,
+				Status:   "ready",
+				Labels:   `["forgeReady"]`,
+				Section:  state.QueueSectionReady,
+			},
+			{
+				BeadID:   "Forge-def2",
+				Anvil:    "forge",
+				Title:    "Fix bug Y",
+				Priority: 1,
+				Status:   "ready",
+				Labels:   `[]`,
+				Section:  state.QueueSectionReady,
+			},
+		}
+		require.NoError(t, db.ReplaceQueueCacheForAnvils([]string{"forge"}, seed))
+
+		resp := d.handleIPC(ipc.Command{Type: "queue"})
+		require.Equal(t, "ok", resp.Type)
+
+		var payload ipc.QueueResponse
+		require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+		require.Len(t, payload.Items, 2)
+
+		ids := []string{payload.Items[0].BeadID, payload.Items[1].BeadID}
+		assert.Contains(t, ids, "Forge-abc1")
+		assert.Contains(t, ids, "Forge-def2")
+
+		// Verify label parsing: "forgeReady" label should be a slice element.
+		for _, item := range payload.Items {
+			if item.BeadID == "Forge-abc1" {
+				assert.Equal(t, []string{"forgeReady"}, item.Labels)
+			}
+		}
+	})
+}
+
+func TestHandleIPC_Workers(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-ipc-workers-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	db, err := state.Open(filepath.Join(tmpDir, "state.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	d.cfg.Store(&config.Config{})
+
+	t.Run("no active workers returns empty array", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "workers"})
+		require.Equal(t, "ok", resp.Type)
+
+		var payload ipc.WorkersResponse
+		require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+		assert.NotNil(t, payload.Workers)
+		assert.Empty(t, payload.Workers)
+	})
+
+	t.Run("active workers are returned with correct schema", func(t *testing.T) {
+		w := &state.Worker{
+			ID:        "worker-1",
+			BeadID:    "Forge-abc1",
+			Anvil:     "forge",
+			Branch:    "forge/Forge-abc1",
+			Title:     "Add feature X",
+			Status:    state.WorkerRunning,
+			Phase:     "smith",
+			PID:       12345,
+			StartedAt: time.Now().UTC().Truncate(time.Second),
+		}
+		require.NoError(t, db.InsertWorker(w))
+
+		resp := d.handleIPC(ipc.Command{Type: "workers"})
+		require.Equal(t, "ok", resp.Type)
+
+		var payload ipc.WorkersResponse
+		require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+		require.Len(t, payload.Workers, 1)
+
+		got := payload.Workers[0]
+		assert.Equal(t, "worker-1", got.ID)
+		assert.Equal(t, "Forge-abc1", got.BeadID)
+		assert.Equal(t, "forge", got.Anvil)
+		assert.Equal(t, "forge/Forge-abc1", got.Branch)
+		assert.Equal(t, "running", got.Status)
+		assert.Equal(t, "smith", got.Phase)
+		assert.Equal(t, 12345, got.PID)
+		assert.NotEmpty(t, got.StartedAt)
+		assert.Empty(t, got.CompletedAt)
+	})
+}
