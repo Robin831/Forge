@@ -26,7 +26,7 @@ func TestHealthz_NoAuth(t *testing.T) {
 
 func TestAPI_RequiresAuth(t *testing.T) {
 	srv := newServerWithDefaults(t, nil)
-	for _, path := range []string{"/api/status", "/api/queue", "/api/workers", "/api/me"} {
+	for _, path := range []string{"/api/status", "/api/queue", "/api/workers", "/api/me", "/api/events"} {
 		rec := httptest.NewRecorder()
 		srv.routes().ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
 		if rec.Code != http.StatusUnauthorized {
@@ -144,6 +144,47 @@ func TestLogout_ClearsSession(t *testing.T) {
 	srv.routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 after logout, got %d", rec.Code)
+	}
+}
+
+func TestEventsEndpointForwardsIPC(t *testing.T) {
+	eventsPayload := `{"events":[{"id":1,"timestamp":"2026-05-07T12:00:00Z","type":"bead_claimed","message":"alice claimed bd-1","bead_id":"bd-1","anvil":"forge"}]}`
+	var seenLimit int
+	handler := func(cmd ipc.Command) ipc.Response {
+		if cmd.Type != "events" {
+			return ipc.Response{Type: "error", Payload: []byte(`{"message":"unexpected"}`)}
+		}
+		if len(cmd.Payload) > 0 {
+			var p struct {
+				Limit int `json:"limit"`
+			}
+			if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+				t.Errorf("unmarshal events payload: %v", err)
+			}
+			seenLimit = p.Limit
+		}
+		return ipc.Response{Type: "ok", Payload: []byte(eventsPayload)}
+	}
+	srv := newServerWithDefaults(t, handler)
+	cookie := loginAndGetCookie(t, srv)
+
+	req := httptest.NewRequest("GET", "/api/events?limit=25", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("events: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if seenLimit != 25 {
+		t.Errorf("expected daemon to receive limit=25, got %d", seenLimit)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	events, ok := got["events"].([]any)
+	if !ok || len(events) != 1 {
+		t.Errorf("expected 1 event, got %v", got)
 	}
 }
 

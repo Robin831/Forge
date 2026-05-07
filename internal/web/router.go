@@ -35,6 +35,7 @@ func (s *Server) routes() http.Handler {
 		r.Get("/status", s.handleStatus)
 		r.Get("/queue", s.handleQueue)
 		r.Get("/workers", s.handleWorkers)
+		r.Get("/events", s.handleEvents)
 	})
 
 	// Static UI fallback. The next bead replaces this with the embedded
