@@ -49,12 +49,14 @@ var upCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// Start daemon in background by re-executing ourselves with a hidden flag.
+		// Start daemon in background by re-executing ourselves with --foreground.
 		// FORGE_FOREGROUND=1 forces foreground mode without re-execution — required
 		// when running as PID 1 in a container, where detaching would orphan the
 		// daemon goroutines and exit PID 1, killing the container.
+		// CLI flags take precedence: only consult FORGE_FOREGROUND when --foreground
+		// was not explicitly set, so --foreground=false provides an escape hatch.
 		foreground, _ := cmd.Flags().GetBool("foreground")
-		if !foreground && isForegroundEnv() {
+		if !cmd.Flags().Changed("foreground") && isForegroundEnv() {
 			foreground = true
 		}
 		if foreground {
