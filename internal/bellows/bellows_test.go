@@ -917,15 +917,16 @@ func TestCheckPR_NeedsFixToMergedTransition(t *testing.T) {
 	db, cleanup := openTempDB(t)
 	defer cleanup()
 
-	// Insert a PR that is already in needs_fix locally (review_fix_count>0
+	// Insert a PR that is already in needs_fix locally (ReviewFixCount>0
 	// to mirror the "bounced by review" production case).
 	pr := &state.PR{
-		Number:    672,
-		Anvil:     "test-anvil",
-		BeadID:    "forge-bouncedmerge",
-		Branch:    "forge/forge-bouncedmerge",
-		Status:    state.PRNeedsFix,
-		CreatedAt: time.Now(),
+		Number:         672,
+		Anvil:          "test-anvil",
+		BeadID:         "forge-bouncedmerge",
+		Branch:         "forge/forge-bouncedmerge",
+		Status:         state.PRNeedsFix,
+		ReviewFixCount: 1,
+		CreatedAt:      time.Now(),
 	}
 	require.NoError(t, db.InsertPR(pr))
 	// Move the row directly into needs_fix to mimic the production state.
@@ -1019,10 +1020,11 @@ func TestCheckPR_OpenWithCIFailureStillTransitionsToNeedsFix(t *testing.T) {
 	assert.Equal(t, state.PRNeedsFix, updated.Status, "open + failing CI must still transition to needs_fix")
 }
 
-// TestReconcileTerminalStates verifies the startup backfill: any PR whose
-// GitHub state is MERGED or CLOSED but whose local row is non-terminal gets
-// corrected, even before the normal poll loop has a chance to detect a
-// snapshot transition.
+// TestReconcileTerminalStates verifies the startup backfill: needs_fix PR rows
+// whose GitHub state is MERGED or CLOSED get corrected before the normal poll
+// loop runs. Only needs_fix rows are reconciled here; open/approved PRs are
+// covered by the checkAll that immediately follows, avoiding a double GitHub
+// API call for every open PR on startup.
 func TestReconcileTerminalStates(t *testing.T) {
 	db, cleanup := openTempDB(t)
 	defer cleanup()
@@ -1049,16 +1051,17 @@ func TestReconcileTerminalStates(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, state.PRMerged, updated.Status, "reconcile must correct needs_fix → merged for GitHub-merged PRs")
 
-	// PR 2: local open, GitHub closed.
+	// PR 2: local needs_fix, GitHub closed (closed without merging).
 	closedPR := &state.PR{
 		Number:    702,
 		Anvil:     "test-anvil",
 		BeadID:    "forge-reconcile-closed",
 		Branch:    "forge/forge-reconcile-closed",
-		Status:    state.PROpen,
+		Status:    state.PRNeedsFix,
 		CreatedAt: time.Now(),
 	}
 	require.NoError(t, db.InsertPR(closedPR))
+	require.NoError(t, db.UpdatePRStatus(closedPR.ID, state.PRNeedsFix))
 	seedIngot(t, db.Conn(), closedPR.BeadID, closedPR.Anvil)
 
 	fake.status = &vcs.PRStatus{State: "CLOSED"}
@@ -1066,5 +1069,23 @@ func TestReconcileTerminalStates(t *testing.T) {
 
 	updated, err = db.GetPRByID(closedPR.ID)
 	require.NoError(t, err)
-	assert.Equal(t, state.PRClosed, updated.Status, "reconcile must correct open → closed for GitHub-closed PRs")
+	assert.Equal(t, state.PRClosed, updated.Status, "reconcile must correct needs_fix → closed for GitHub-closed PRs")
+
+	// PR 3: local open, GitHub closed — NOT reconciled here, handled by checkAll.
+	openPR := &state.PR{
+		Number:    703,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-reconcile-open",
+		Branch:    "forge/forge-reconcile-open",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(openPR))
+
+	fake.status = &vcs.PRStatus{State: "CLOSED"}
+	m.reconcileTerminalStates(context.Background())
+
+	updated, err = db.GetPRByID(openPR.ID)
+	require.NoError(t, err)
+	assert.Equal(t, state.PROpen, updated.Status, "reconcile must not touch open rows (checkAll handles those)")
 }

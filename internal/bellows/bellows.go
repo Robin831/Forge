@@ -204,14 +204,18 @@ func (m *Monitor) Run(ctx context.Context) error {
 	}
 }
 
-// reconcileTerminalStates does a one-shot pass over every non-terminal PR in
+// reconcileTerminalStates does a one-shot pass over every needs_fix PR in
 // state.db, asks GitHub for its current state, and corrects the local row to
 // merged or closed when GitHub disagrees. It is a deliberately minimal
-// belt-and-braces backfill: it does not emit transition events or touch the
-// in-memory snapshot map, so it cannot regress the snapshot-based flow in
-// checkPR. The motivating case is a needs_fix PR that a human merged as-is
-// on GitHub — without this pass, the row could remain stuck in needs_fix
-// indefinitely if the transition path ever fails to fire.
+// belt-and-braces backfill: it does not emit PREvents to in-process OnEvent
+// handlers (only the DB event log and ingot status are updated), and it does
+// not touch the in-memory snapshot map, so it cannot regress the
+// snapshot-based flow in checkPR. Only needs_fix rows are checked here
+// because open/approved PRs are covered by the normal checkAll poll that
+// immediately follows; limiting scope avoids a double GitHub API call for
+// every open PR on startup. The motivating case is a needs_fix PR that a
+// human merged as-is on GitHub — without this pass, the row could remain
+// stuck in needs_fix indefinitely if the transition path ever fails to fire.
 func (m *Monitor) reconcileTerminalStates(ctx context.Context) {
 	if m.vcsLookup == nil {
 		return
@@ -222,6 +226,9 @@ func (m *Monitor) reconcileTerminalStates(ctx context.Context) {
 		return
 	}
 	for i := range prs {
+		if prs[i].Status != state.PRNeedsFix {
+			continue
+		}
 		if ctx.Err() != nil {
 			return
 		}
