@@ -1,0 +1,27 @@
+# Exclude sensitive credential files
+.beads/
+.forge-logs/
+.worktrees/
+forge.yaml
+*.db
+*.db-shm
+*.db-wal
+
+# Exclude build artifacts and local staging (bd binary is staged via build/)
+# but keep build/ itself so COPY build/bd works
+**/*.exe
+**/*.dll
+
+# Exclude git history (reduces build context size significantly)
+.git/
+
+# Exclude local editor/tool state
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Exclude test coverage and profiling output
+*.out
+*.prof
+coverage.html
