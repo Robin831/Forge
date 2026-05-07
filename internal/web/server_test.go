@@ -147,6 +147,45 @@ func TestLogout_ClearsSession(t *testing.T) {
 	}
 }
 
+func TestEventsEndpointForwardsIPC(t *testing.T) {
+	eventsPayload := `{"events":[{"id":1,"timestamp":"2026-05-07T12:00:00Z","type":"bead_claimed","message":"alice claimed bd-1","bead_id":"bd-1","anvil":"forge"}]}`
+	var seenLimit int
+	handler := func(cmd ipc.Command) ipc.Response {
+		if cmd.Type != "events" {
+			return ipc.Response{Type: "error", Payload: []byte(`{"message":"unexpected"}`)}
+		}
+		if len(cmd.Payload) > 0 {
+			var p struct {
+				Limit int `json:"limit"`
+			}
+			_ = json.Unmarshal(cmd.Payload, &p)
+			seenLimit = p.Limit
+		}
+		return ipc.Response{Type: "ok", Payload: []byte(eventsPayload)}
+	}
+	srv := newServerWithDefaults(t, handler)
+	cookie := loginAndGetCookie(t, srv)
+
+	req := httptest.NewRequest("GET", "/api/events?limit=25", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("events: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if seenLimit != 25 {
+		t.Errorf("expected daemon to receive limit=25, got %d", seenLimit)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	events, ok := got["events"].([]any)
+	if !ok || len(events) != 1 {
+		t.Errorf("expected 1 event, got %v", got)
+	}
+}
+
 func TestQueueEndpointForwardsIPC(t *testing.T) {
 	queuePayload := `{"items":[{"bead_id":"X","anvil":"Y","title":"T","priority":2,"status":"open","labels":[],"section":"ready"}]}`
 	handler := func(cmd ipc.Command) ipc.Response {

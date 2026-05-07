@@ -1,0 +1,8 @@
+node_modules/
+.vite/
+*.local
+*.tsbuildinfo
+
+# We deliberately commit the build output one level up (../dist) so it can be
+# embedded via go:embed. Anything generated inside the frontend directory
+# itself is throwaway.

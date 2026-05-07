@@ -332,6 +332,21 @@ type WorkersResponse struct {
 	Workers []WorkerInfo `json:"workers"`
 }
 
+// EventInfo is the IPC representation of a single event log entry.
+type EventInfo struct {
+	ID        int    `json:"id"`
+	Timestamp string `json:"timestamp"`
+	Type      string `json:"type"`
+	Message   string `json:"message"`
+	BeadID    string `json:"bead_id,omitempty"`
+	Anvil     string `json:"anvil,omitempty"`
+}
+
+// EventsResponse is the response payload for an "events" command.
+type EventsResponse struct {
+	Events []EventInfo `json:"events"`
+}
+
 // CompletionResult is the outcome delivered when an async request finishes.
 type CompletionResult struct {
 	Response Response

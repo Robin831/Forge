@@ -1,0 +1,3 @@
+category: Added
+- **Hearth 2.0 dashboard frontend** - React 19 + Vite 7 + Tailwind 4 single-page app embedded into the forge binary via `//go:embed dist`. Lives at `internal/web/frontend/` with build output committed to `internal/web/dist/`. Delivers a login page (form posts to `/login`), a protected dashboard at `/` with three panes (queue, active workers, recent events) polling every 5s, and SPA fallback so client-side routing works behind the embedded file server. (Forge-4r9o)
+- **GET /api/events endpoint** - New authenticated endpoint that mirrors a new `events` IPC command, returning the most recent event-log rows from `state.db`. Powers the dashboard's events pane. Accepts an optional `?limit=N` query parameter (clamped 1–500). (Forge-4r9o)

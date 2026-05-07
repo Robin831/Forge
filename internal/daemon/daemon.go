@@ -3167,6 +3167,35 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(ipc.WorkersResponse{Workers: out})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "events":
+		limit := 50
+		if len(cmd.Payload) > 0 {
+			var p struct {
+				Limit int `json:"limit"`
+			}
+			if err := json.Unmarshal(cmd.Payload, &p); err == nil && p.Limit > 0 && p.Limit <= 500 {
+				limit = p.Limit
+			}
+		}
+		events, err := d.db.RecentEvents(limit)
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("recent events: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		out := make([]ipc.EventInfo, 0, len(events))
+		for _, e := range events {
+			out = append(out, ipc.EventInfo{
+				ID:        e.ID,
+				Timestamp: e.Timestamp.Format(time.RFC3339),
+				Type:      string(e.Type),
+				Message:   e.Message,
+				BeadID:    e.BeadID,
+				Anvil:     e.Anvil,
+			})
+		}
+		data, _ := json.Marshal(ipc.EventsResponse{Events: out})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	case "run_bead":
 		var rp ipc.RunBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {

@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -105,6 +106,21 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	resp := s.dispatchIPC("workers")
 	s.writeIPCResponse(w, resp)
+}
+
+// handleEvents mirrors the IPC "events" command. It optionally accepts a
+// ?limit= query parameter (1-500) to control how many recent events are
+// returned; the daemon clamps anything outside that range to its default.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	cmd := ipc.Command{Type: "events"}
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		var n int
+		if _, err := fmt.Sscanf(raw, "%d", &n); err == nil && n > 0 {
+			payload, _ := json.Marshal(map[string]int{"limit": n})
+			cmd.Payload = payload
+		}
+	}
+	s.writeIPCResponse(w, s.handler(cmd))
 }
 
 // writeIPCResponse forwards an ipc.Response to the HTTP client. Successful
