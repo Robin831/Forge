@@ -189,6 +189,26 @@ Do NOT re-read unrelated files, do NOT re-explore the codebase — the rest of t
 implementation is correct. Focus only on fixing the specific issues above.
 {{- end}}
 
+### Environmental-failure escape hatch (use sparingly)
+
+If — and ONLY if — you have verified that the previous iteration's code is
+correct and the reported failure was an **environmental issue you have now
+fixed (or that has resolved itself)** (e.g. a stale ` + "`core.worktree`" + ` setting,
+a transient toolchain bug, a flaky network call), you may emit a single line
+of the form:
+
+` + "`RECHECK_PREVIOUS: <one-paragraph rationale>`" + `
+
+Instead of producing a code diff. The pipeline will re-run the build/test
+checks against the previous iteration's commit; if they pass, review proceeds
+as normal. If they fail again, the bead is escalated to a human along with
+your rationale.
+
+**Default to making code changes.** This marker is the exception, not the
+rule. It may be used at most once per bead — a second use will be treated as
+a pathological loop and escalated regardless of rationale. Do NOT use it to
+avoid addressing legitimate review feedback.
+
 {{- end}}
 
 ## Task
