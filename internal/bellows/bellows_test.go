@@ -906,3 +906,165 @@ func TestCheckPR_MissingIngotIsNoOp(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, state.PRMerged, updated.Status)
 }
+
+// TestCheckPR_NeedsFixToMergedTransition simulates a PR that has been bounced
+// into needs_fix locally (e.g. by review comments) and is then merged as-is on
+// GitHub by a human. The poller must recognise the GitHub merge regardless of
+// the local needs_fix flag — GitHub is the source of truth. This is a
+// regression test for a bug where a stuck needs_fix row stayed in needs_fix
+// for days after its underlying PR was merged.
+func TestCheckPR_NeedsFixToMergedTransition(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	// Insert a PR that is already in needs_fix locally (review_fix_count>0
+	// to mirror the "bounced by review" production case).
+	pr := &state.PR{
+		Number:    672,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-bouncedmerge",
+		Branch:    "forge/forge-bouncedmerge",
+		Status:    state.PRNeedsFix,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	// Move the row directly into needs_fix to mimic the production state.
+	require.NoError(t, db.UpdatePRStatus(pr.ID, state.PRNeedsFix))
+	seedIngot(t, db.Conn(), pr.BeadID, pr.Anvil)
+
+	// GitHub now reports the PR as MERGED (mergedAt non-null translates to
+	// state="MERGED" in gh's PRStatus output).
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "MERGED"}}
+
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	assert.Equal(t, state.PRMerged, updated.Status, "needs_fix → merged transition must fire when GitHub reports MERGED")
+	assert.Contains(t, events, EventPRMerged, "EventPRMerged must be emitted")
+}
+
+// TestCheckPR_NeedsFixToClosedTransition mirrors the merged case for the
+// closed-without-merge path: a needs_fix PR that the operator (or a bot)
+// closes on GitHub without merging must transition the local row to closed.
+func TestCheckPR_NeedsFixToClosedTransition(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    673,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-bouncedclose",
+		Branch:    "forge/forge-bouncedclose",
+		Status:    state.PRNeedsFix,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRStatus(pr.ID, state.PRNeedsFix))
+	seedIngot(t, db.Conn(), pr.BeadID, pr.Anvil)
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "CLOSED"}}
+
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	assert.Equal(t, state.PRClosed, updated.Status, "needs_fix → closed transition must fire when GitHub reports CLOSED")
+	assert.Contains(t, events, EventPRClosed, "EventPRClosed must be emitted")
+}
+
+// TestCheckPR_OpenWithCIFailureStillTransitionsToNeedsFix is a regression test
+// guarding the original needs_fix path. Tightening the merged/closed gate
+// must not affect the open → needs_fix transition when CI fails.
+func TestCheckPR_OpenWithCIFailureStillTransitionsToNeedsFix(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    674,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-cifailregression",
+		Branch:    "forge/forge-cifailregression",
+		Status:    state.PROpen,
+		CIPassing: true,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State: "OPEN",
+		StatusCheckRollup: []vcs.CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{Name: "test", Status: "COMPLETED", Conclusion: "FAILURE"},
+		},
+	}}
+
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+	m.checkAll(context.Background())
+
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	assert.Equal(t, state.PRNeedsFix, updated.Status, "open + failing CI must still transition to needs_fix")
+}
+
+// TestReconcileTerminalStates verifies the startup backfill: any PR whose
+// GitHub state is MERGED or CLOSED but whose local row is non-terminal gets
+// corrected, even before the normal poll loop has a chance to detect a
+// snapshot transition.
+func TestReconcileTerminalStates(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	// PR 1: local needs_fix, GitHub merged.
+	mergedPR := &state.PR{
+		Number:    701,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-reconcile-merged",
+		Branch:    "forge/forge-reconcile-merged",
+		Status:    state.PRNeedsFix,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(mergedPR))
+	require.NoError(t, db.UpdatePRStatus(mergedPR.ID, state.PRNeedsFix))
+	seedIngot(t, db.Conn(), mergedPR.BeadID, mergedPR.Anvil)
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "MERGED"}}
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil)
+
+	m.reconcileTerminalStates(context.Background())
+
+	updated, err := db.GetPRByID(mergedPR.ID)
+	require.NoError(t, err)
+	assert.Equal(t, state.PRMerged, updated.Status, "reconcile must correct needs_fix → merged for GitHub-merged PRs")
+
+	// PR 2: local open, GitHub closed.
+	closedPR := &state.PR{
+		Number:    702,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-reconcile-closed",
+		Branch:    "forge/forge-reconcile-closed",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(closedPR))
+	seedIngot(t, db.Conn(), closedPR.BeadID, closedPR.Anvil)
+
+	fake.status = &vcs.PRStatus{State: "CLOSED"}
+	m.reconcileTerminalStates(context.Background())
+
+	updated, err = db.GetPRByID(closedPR.ID)
+	require.NoError(t, err)
+	assert.Equal(t, state.PRClosed, updated.Status, "reconcile must correct open → closed for GitHub-closed PRs")
+}

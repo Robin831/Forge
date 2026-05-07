@@ -1,0 +1,2 @@
+category: Fixed
+- **PR poller now recognises GitHub merges on needs_fix PRs** - The bellows poller used the in-memory snapshot to gate the merged/closed transition, which could leave a row stuck in `needs_fix` after a human merged the PR as-is on GitHub (e.g. via approve-as-is in Mezzanine). Terminal-state detection now treats GitHub as the source of truth and gates on the persisted DB status, and a startup backfill reconciles any stale rows on daemon start. The same fix also covers the `needs_fix → closed` path. (Forge-zyi1)
