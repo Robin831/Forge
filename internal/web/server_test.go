@@ -26,7 +26,7 @@ func TestHealthz_NoAuth(t *testing.T) {
 
 func TestAPI_RequiresAuth(t *testing.T) {
 	srv := newServerWithDefaults(t, nil)
-	for _, path := range []string{"/api/status", "/api/queue", "/api/workers", "/api/me"} {
+	for _, path := range []string{"/api/status", "/api/queue", "/api/workers", "/api/me", "/api/events"} {
 		rec := httptest.NewRecorder()
 		srv.routes().ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
 		if rec.Code != http.StatusUnauthorized {
@@ -158,7 +158,9 @@ func TestEventsEndpointForwardsIPC(t *testing.T) {
 			var p struct {
 				Limit int `json:"limit"`
 			}
-			_ = json.Unmarshal(cmd.Payload, &p)
+			if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+				t.Errorf("unmarshal events payload: %v", err)
+			}
 			seenLimit = p.Limit
 		}
 		return ipc.Response{Type: "ok", Payload: []byte(eventsPayload)}

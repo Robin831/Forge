@@ -2,8 +2,8 @@ package web
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/ipc"
@@ -114,11 +114,18 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	cmd := ipc.Command{Type: "events"}
 	if raw := r.URL.Query().Get("limit"); raw != "" {
-		var n int
-		if _, err := fmt.Sscanf(raw, "%d", &n); err == nil && n > 0 {
-			payload, _ := json.Marshal(map[string]int{"limit": n})
-			cmd.Payload = payload
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "limit must be an integer")
+			return
 		}
+		if n < 1 {
+			n = 1
+		} else if n > 500 {
+			n = 500
+		}
+		payload, _ := json.Marshal(map[string]int{"limit": n})
+		cmd.Payload = payload
 	}
 	s.writeIPCResponse(w, s.handler(cmd))
 }

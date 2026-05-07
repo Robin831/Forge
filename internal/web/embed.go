@@ -12,9 +12,11 @@ import (
 // is compiled, and this directive bakes those files into the binary so a
 // single artifact ships the full Hearth 2.0 stack.
 //
-// When the bundle is missing (typical in fresh checkouts before the first
-// frontend build), distFS returns an error and the router falls back to a
-// minimal placeholder HTML page so the daemon is still useful.
+// When the dist directory is present but lacks index.html (e.g. the built
+// assets were deleted during development), distFS returns an error and the
+// router falls back to a minimal placeholder HTML page so the daemon is still
+// useful. The dist/ directory is committed, so a normal checkout includes valid
+// built assets and no separate build step is required.
 //
 //go:embed dist
 var embeddedDist embed.FS
