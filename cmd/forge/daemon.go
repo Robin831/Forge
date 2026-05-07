@@ -5,15 +5,27 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
+
 	"github.com/Robin831/Forge/internal/daemon"
 	"github.com/spf13/cobra"
 )
 
 func init() {
-	upCmd.Flags().Bool("foreground", false, "Run daemon in foreground (for debugging)")
+	upCmd.Flags().Bool("foreground", false, "Run daemon in foreground (for debugging or containers)")
 
 	rootCmd.AddCommand(upCmd)
 	rootCmd.AddCommand(downCmd)
+}
+
+// isForegroundEnv reports whether FORGE_FOREGROUND requests foreground mode.
+// Accepts "1", "true", "yes", "on" (case-insensitive); empty or anything else is false.
+func isForegroundEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("FORGE_FOREGROUND"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 var upCmd = &cobra.Command{
@@ -37,8 +49,14 @@ var upCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// Start daemon in background by re-executing ourselves with a hidden flag
+		// Start daemon in background by re-executing ourselves with a hidden flag.
+		// FORGE_FOREGROUND=1 forces foreground mode without re-execution — required
+		// when running as PID 1 in a container, where detaching would orphan the
+		// daemon goroutines and exit PID 1, killing the container.
 		foreground, _ := cmd.Flags().GetBool("foreground")
+		if !foreground && isForegroundEnv() {
+			foreground = true
+		}
 		if foreground {
 			// Run in foreground (used by the background spawn and for debugging)
 			d, err := daemon.New(cfg)
