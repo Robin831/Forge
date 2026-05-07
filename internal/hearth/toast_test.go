@@ -241,6 +241,37 @@ func TestToastForEvent_SmithFailed(t *testing.T) {
 	}
 }
 
+// TestToastForEvent_SmithRecheck verifies smith_recheck event produces a
+// non-error toast with the expected prefix and message content.
+func TestToastForEvent_SmithRecheck(t *testing.T) {
+	t.Run("with message", func(t *testing.T) {
+		ev := EventItem{Type: "smith_recheck", Message: "Iteration 2: test runner flaked"}
+		msg, isError, ok := toastForEvent(ev)
+		if !ok {
+			t.Fatal("expected ok=true for smith_recheck")
+		}
+		if isError {
+			t.Error("expected isError=false for smith_recheck")
+		}
+		if !strings.Contains(msg, "test runner flaked") {
+			t.Errorf("unexpected message: %q", msg)
+		}
+	})
+	t.Run("fallback message", func(t *testing.T) {
+		ev := EventItem{Type: "smith_recheck", Message: ""}
+		msg, isError, ok := toastForEvent(ev)
+		if !ok {
+			t.Fatal("expected ok=true for smith_recheck with empty message")
+		}
+		if isError {
+			t.Error("expected isError=false for smith_recheck with empty message")
+		}
+		if !strings.Contains(msg, "RECHECK_PREVIOUS") {
+			t.Errorf("expected fallback containing 'RECHECK_PREVIOUS', got %q", msg)
+		}
+	})
+}
+
 // TestToastForEvent_LifecycleExhausted verifies lifecycle_exhausted is an error toast
 // with synthesized fallback "bd-7 needs attention" (not just the raw BeadID).
 func TestToastForEvent_LifecycleExhausted(t *testing.T) {

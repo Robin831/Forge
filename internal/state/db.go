@@ -1344,6 +1344,7 @@ const (
 	EventSmithDone            EventType = "smith_done"
 	EventSmithStats           EventType = "smith_stats"
 	EventSmithFailed          EventType = "smith_failed"
+	EventSmithRecheck         EventType = "smith_recheck"
 	EventWardenStarted        EventType = "warden_started"
 	EventWardenPass           EventType = "warden_pass"
 	EventWardenReject         EventType = "warden_reject"

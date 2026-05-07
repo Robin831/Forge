@@ -291,6 +291,9 @@ type Params struct {
 	BeadReleaser func(beadID, anvilPath string) error
 	// SchematicRunner overrides schematic.Run. Used in tests.
 	SchematicRunner func(ctx context.Context, cfg schematic.Config, bead poller.Bead, anvilPath string, pv provider.Provider) *schematic.Result
+	// EmptyDiffChecker overrides hasEmptyDiff. Used in tests to simulate a
+	// dirty worktree without depending on a real git repository.
+	EmptyDiffChecker func(worktreePath, preSmithSHA string) bool
 
 	// WorkerID is the pre-generated worker ID to use for the state.db record.
 	// When set (e.g. because the daemon inserted a pending worker row at claim
@@ -565,6 +568,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 	doRelease := p.BeadReleaser
 	if doRelease == nil {
 		doRelease = releaseBead
+	}
+	checkEmptyDiff := p.EmptyDiffChecker
+	if checkEmptyDiff == nil {
+		checkEmptyDiff = hasEmptyDiff
 	}
 
 	// Step 1: Create worktree
@@ -880,6 +887,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 	// Track prior warden feedback for focused re-review.
 	var priorWardenFeedback string
 
+	// Track RECHECK_PREVIOUS usage across iterations. Smith may emit it at
+	// most once per bead — a second use means smith keeps insisting nothing
+	// is wrong, which we treat as a pathological loop and escalate.
+	recheckUseCount := 0
+
 	// Feedback loop
 	for iteration := 1; iteration <= maxIter; iteration++ {
 		outcome.Iterations = iteration
@@ -892,6 +904,14 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// smithResult is declared at loop scope so the combined-mode
 		// Warden logic can inspect Smith's output.
 		var smithResult *smith.Result
+
+		// Per-iteration recheck state. Set when smith emits RECHECK_PREVIOUS:
+		// in iter > 1 to signal the previous iteration's code is correct and
+		// the failure was environmental. When set, the empty-diff escalation
+		// is skipped and a temper failure is treated as needs_human (not a
+		// retry-with-feedback).
+		var recheckThisIter bool
+		var recheckRationale string
 
 		// When SkipSmith is set on the first iteration, smith already
 		// completed externally — skip directly to temper verification.
@@ -941,15 +961,19 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerLogPath(workerID, process.LogPath)
 			smithResult = process.Wait()
 
-			// A process that exits 0, or produces a genuine success result event
-			// (subtype:"success" with is_error:false), completed successfully. The
-			// Claude CLI handles internal retries for rate limits and resumes
-			// automatically. Any rate_limit_event or non-zero exit code we saw was
+			// A process that produces a genuine success result event
+			// (subtype:"success" with is_error:false) AND exits 0 completed
+			// successfully. The Claude CLI handles internal retries for rate
+			// limits and resumes automatically. Any rate_limit_event we saw was
 			// either a warning or a transient block that resolved.
 			// IMPORTANT: subtype:"success" + is_error:true is a hard rate-limit
 			// rejection — Claude returns this when it couldn't start the session.
 			// Do NOT clear RateLimited in that case; fall back to another provider.
-			if smithResult.ExitCode == 0 || (smithResult.ResultSubtype == "success" && !smithResult.IsError) {
+			// IMPORTANT: ExitCode == 0 alone is NOT enough. The Claude CLI exits
+			// 0 when killed mid-tool ("Request interrupted by user") with
+			// subtype:"error_during_execution". Treating that as success would
+			// let an empty diff slip through to Warden, which hard-rejects.
+			if smithResult.ResultSubtype == "success" && !smithResult.IsError && smithResult.ExitCode == 0 {
 				smithResult.RateLimited = false
 			}
 
@@ -1035,10 +1059,85 @@ func Run(ctx context.Context, p Params) *Outcome {
 			return outcome
 		}
 
+		// A non-empty result subtype that is not "success" indicates an
+		// incomplete session even when ExitCode is 0. The Claude CLI exits 0
+		// when killed mid-tool and reports subtype:"error_during_execution";
+		// without this guard the pipeline would proceed to temper/warden,
+		// which would hard-reject on the empty diff and surface a misleading
+		// "no diff" rejection instead of the real cause.
+		if smithResult.ResultSubtype != "" && smithResult.ResultSubtype != "success" {
+			log.Printf("[pipeline:%s] Smith reported non-success subtype=%q (exit=%d) — failing iteration",
+				workerID, smithResult.ResultSubtype, smithResult.ExitCode)
+			_ = p.DB.LogEvent(state.EventSmithFailed,
+				fmt.Sprintf("Smith subtype=%s after %.1fs (exit %d, is_error=%v): %s",
+					smithResult.ResultSubtype, smithResult.Duration.Seconds(),
+					smithResult.ExitCode, smithResult.IsError, smithResult.ErrorOutput),
+				p.Bead.ID, p.AnvilName)
+			outcome.Error = fmt.Errorf("smith subtype %q indicates incomplete session", smithResult.ResultSubtype)
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			markIngotFailed()
+			outcome.Duration = time.Since(start)
+			return outcome
+		}
+
+		// In review iterations (iteration > 1), Smith may use RECHECK_PREVIOUS:
+		// to signal that the previous iteration's code is correct and the
+		// failure was environmental (which it has now fixed or which has
+		// resolved itself). Re-run temper against the same SHA as iter 1; if
+		// it passes proceed to warden, if it fails escalate to needs_human.
+		// Capped at one use per bead — a second use is treated as a
+		// pathological loop and escalated.
+		if iteration > 1 {
+			if rationale := ExtractRecheckPrevious(smithResult.FullOutput); rationale != "" {
+				recheckUseCount++
+				if recheckUseCount > 1 {
+					log.Printf("[pipeline:%s] Smith emitted RECHECK_PREVIOUS twice on bead %s — escalating to needs_human", workerID, p.Bead.ID)
+					_ = p.DB.LogEvent(state.EventSmithFailed,
+						fmt.Sprintf("RECHECK_PREVIOUS used %d times on bead %s (max 1) — escalating: %s",
+							recheckUseCount, p.Bead.ID, rationale),
+						p.Bead.ID, p.AnvilName)
+					outcome.NeedsHuman = true
+					outcome.Error = fmt.Errorf("smith emitted RECHECK_PREVIOUS more than once on bead %s", p.Bead.ID)
+					_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+					markIngotFailed()
+					outcome.Duration = time.Since(start)
+					return outcome
+				}
+				// Verify the worktree is actually unchanged before honouring
+				// RECHECK_PREVIOUS. If Smith left commits or uncommitted changes
+				// while emitting the marker, its claim that the previous
+				// iteration's code is correct is contradicted by its own
+				// actions — treat as smith_failed so the operator can inspect.
+				// Only checked when preSmithSHA is known; if git failed to
+				// capture the baseline SHA before Smith ran we cannot verify.
+				if preSmithSHA != "" && !checkEmptyDiff(wt.Path, preSmithSHA) {
+					log.Printf("[pipeline:%s] Smith emitted RECHECK_PREVIOUS but made changes — ignoring marker, escalating to needs_human", workerID)
+					_ = p.DB.LogEvent(state.EventSmithFailed,
+						fmt.Sprintf("RECHECK_PREVIOUS emitted in iteration %d but worktree has changes since %s — escalating: %s",
+							iteration, preSmithSHA, rationale),
+						p.Bead.ID, p.AnvilName)
+					outcome.NeedsHuman = true
+					outcome.Error = fmt.Errorf("smith emitted RECHECK_PREVIOUS but left changes in the worktree (iteration %d)", iteration)
+					_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+					markIngotFailed()
+					outcome.Duration = time.Since(start)
+					return outcome
+				}
+				recheckThisIter = true
+				recheckRationale = rationale
+				log.Printf("[pipeline:%s] Smith emitted RECHECK_PREVIOUS in iteration %d: %s", workerID, iteration, rationale)
+				_ = p.DB.LogEvent(state.EventSmithRecheck,
+					fmt.Sprintf("Iteration %d: %s", iteration, rationale),
+					p.Bead.ID, p.AnvilName)
+			}
+		}
+
 		// In review iterations (iteration > 1), NO_CHANGES_NEEDED is not a valid
 		// signal — the warden just raised specific issues that need to be fixed.
-		// Treat it as needs_human so the user can decide how to proceed.
-		if iteration > 1 {
+		// Treat it as needs_human so the user can decide how to proceed. The
+		// supported alternative is RECHECK_PREVIOUS: (handled above), which
+		// requires a clear environmental rationale.
+		if iteration > 1 && !recheckThisIter {
 			if reason := ExtractNoChangesNeeded(smithResult.FullOutput); reason != "" {
 				log.Printf("[pipeline:%s] Smith emitted NO_CHANGES_NEEDED in review iteration %d — escalating to needs_human", workerID, iteration)
 				_ = p.DB.LogEvent(state.EventSmithFailed,
@@ -1053,23 +1152,28 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 		}
 
-		// Check if Smith determined no changes are needed.
-		if reason := ExtractNoChangesNeeded(smithResult.FullOutput); reason != "" {
-			log.Printf("[pipeline:%s] Smith says no changes needed: %s", workerID, reason)
-			outcome.NoChangesNeeded = true
-			outcome.NoChangesReason = reason
-			_ = p.DB.LogEvent(state.EventSmithDone,
-				fmt.Sprintf("Completed in %.1fs ($%.4f) \u2014 NO_CHANGES_NEEDED: %s", smithResult.Duration.Seconds(), smithResult.CostUSD, reason),
-				p.Bead.ID, p.AnvilName)
-			if s := smithResult.GeminiStats; s != nil {
-				_ = p.DB.LogEvent(state.EventSmithStats,
-					fmt.Sprintf("tokens_in=%d tokens_out=%d total=%d cached=%d input=%d tool_calls=%d duration_ms=%d",
-						s.InputTokens, s.OutputTokens, s.TotalTokens, s.Cached, s.Input, s.ToolCalls, s.DurationMs),
+		// Check if Smith determined no changes are needed (iter 1 only — iter
+		// > 1 NO_CHANGES_NEEDED has already been handled above as either an
+		// escalation or, when paired with RECHECK_PREVIOUS, deliberately
+		// ignored here in favor of the recheck flow).
+		if iteration == 1 {
+			if reason := ExtractNoChangesNeeded(smithResult.FullOutput); reason != "" {
+				log.Printf("[pipeline:%s] Smith says no changes needed: %s", workerID, reason)
+				outcome.NoChangesNeeded = true
+				outcome.NoChangesReason = reason
+				_ = p.DB.LogEvent(state.EventSmithDone,
+					fmt.Sprintf("Completed in %.1fs ($%.4f) \u2014 NO_CHANGES_NEEDED: %s", smithResult.Duration.Seconds(), smithResult.CostUSD, reason),
 					p.Bead.ID, p.AnvilName)
+				if s := smithResult.GeminiStats; s != nil {
+					_ = p.DB.LogEvent(state.EventSmithStats,
+						fmt.Sprintf("tokens_in=%d tokens_out=%d total=%d cached=%d input=%d tool_calls=%d duration_ms=%d",
+							s.InputTokens, s.OutputTokens, s.TotalTokens, s.Cached, s.Input, s.ToolCalls, s.DurationMs),
+						p.Bead.ID, p.AnvilName)
+				}
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+				outcome.Duration = time.Since(start)
+				return outcome
 			}
-			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
-			outcome.Duration = time.Since(start)
-			return outcome
 		}
 
 		// Check if Smith explicitly escalated for human help.
@@ -1102,7 +1206,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// In review iterations, check whether smith actually made any changes.
 		// If the diff is empty, warden would just reject again with the same
 		// feedback — escalate to needs_human instead of looping pointlessly.
-		if iteration > 1 && hasEmptyDiff(wt.Path, preSmithSHA) {
+		// Skip this check when smith emitted RECHECK_PREVIOUS: an empty diff
+		// is the expected outcome there.
+		if iteration > 1 && !recheckThisIter && checkEmptyDiff(wt.Path, preSmithSHA) {
 			log.Printf("[pipeline:%s] Smith made no changes in review iteration %d — escalating to needs_human", workerID, iteration)
 			_ = p.DB.LogEvent(state.EventSmithFailed,
 				fmt.Sprintf("Smith made no changes in review iteration %d — warden feedback was not addressed", iteration),
@@ -1287,6 +1393,25 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		if !temperResult.Passed {
 			log.Printf("[pipeline:%s] Temper failed at step: %s", workerID, temperResult.FailedStep)
+
+			// When smith asserted RECHECK_PREVIOUS this iteration, a temper
+			// failure means the rationale was wrong — the previous iteration's
+			// code is still broken. Don't loop back to smith with feedback;
+			// escalate to needs_human and preserve both the rationale and the
+			// temper failure in the failure event so the operator sees both.
+			if recheckThisIter {
+				log.Printf("[pipeline:%s] Temper failed after RECHECK_PREVIOUS in iteration %d — escalating to needs_human", workerID, iteration)
+				_ = p.DB.LogEvent(state.EventSmithFailed,
+					fmt.Sprintf("Temper failed after RECHECK_PREVIOUS (iteration %d). Smith rationale: %s. Temper failure: %s",
+						iteration, recheckRationale, temperResult.Summary),
+					p.Bead.ID, p.AnvilName)
+				outcome.NeedsHuman = true
+				outcome.Error = fmt.Errorf("temper failed after RECHECK_PREVIOUS at step %s: %s", temperResult.FailedStep, recheckRationale)
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+				markIngotFailed()
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
 
 			if iteration < maxIter {
 				// Capture the diff from this iteration so the next smith
@@ -1533,10 +1658,27 @@ func Run(ctx context.Context, p Params) *Outcome {
 	return outcome
 }
 
+// gitCmdCleanEnv returns os.Environ() with GIT_DIR and GIT_WORK_TREE removed.
+// Git uses GIT_DIR/GIT_WORK_TREE to override the repository location.
+// When the daemon (or tests) run inside a git worktree those variables point at
+// the parent repo, which would cause git commands that target a child worktree
+// path to operate on the wrong repository. Stripping them lets git discover the
+// correct repo via the .git file in the worktree directory instead.
+func gitCmdCleanEnv() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "GIT_DIR=") && !strings.HasPrefix(e, "GIT_WORK_TREE=") {
+			env = append(env, e)
+		}
+	}
+	return env
+}
+
 // gitRevParseHEAD returns the current HEAD commit SHA for the given worktree.
 // Returns an empty string on error.
 func gitRevParseHEAD(worktreePath string) string {
 	cmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD"))
+	cmd.Env = gitCmdCleanEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -1567,8 +1709,10 @@ func resolveTemperBaseRef(ctx context.Context, worktreePath, baseBranch string) 
 // so that post-push state (where @{upstream} == HEAD) doesn't falsely indicate
 // an empty diff.
 func hasEmptyDiff(worktreePath, preSmithSHA string) bool {
+	env := gitCmdCleanEnv()
 	// Check for uncommitted changes (staged or unstaged).
 	statusCmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "status", "--porcelain"))
+	statusCmd.Env = env
 	statusOut, err := statusCmd.Output()
 	if err != nil {
 		return false // assume changes on error
@@ -1590,6 +1734,7 @@ func hasEmptyDiff(worktreePath, preSmithSHA string) bool {
 	}
 	// Fallback: diff against parent commit.
 	diffCmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "diff", "HEAD~1"))
+	diffCmd.Env = env
 	diffOut, err := diffCmd.Output()
 	if err != nil {
 		return false
@@ -1666,6 +1811,25 @@ func ExtractNoChangesNeeded(output string) string {
 // the reason string. Returns empty string if not found.
 func ExtractNeedsHuman(output string) string {
 	const marker = "NEEDS_HUMAN:"
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, marker) {
+			reason := strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
+			if reason != "" {
+				return reason
+			}
+		}
+	}
+	return ""
+}
+
+// ExtractRecheckPrevious scans Smith output for the RECHECK_PREVIOUS: marker
+// and returns the rationale string. Smith uses this on review iterations to
+// signal that the previous iteration's code is correct and the failure was
+// environmental (already fixed or self-resolved). Returns empty string if not
+// found.
+func ExtractRecheckPrevious(output string) string {
+	const marker = "RECHECK_PREVIOUS:"
 	for _, line := range strings.Split(output, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, marker) {

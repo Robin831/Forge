@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -649,6 +650,367 @@ func TestExtractNoChangesNeeded(t *testing.T) {
 	}
 }
 
+// TestExtractRecheckPrevious verifies the RECHECK_PREVIOUS marker extraction logic.
+func TestExtractRecheckPrevious(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"marker with rationale", "RECHECK_PREVIOUS: Stale core.worktree caused build failure; unset and verified", "Stale core.worktree caused build failure; unset and verified"},
+		{"marker mid-output", "Investigated.\nRECHECK_PREVIOUS: Transient toolchain failure resolved on rerun.\nDone.", "Transient toolchain failure resolved on rerun."},
+		{"marker with leading spaces", "  RECHECK_PREVIOUS: Indented rationale", "Indented rationale"},
+		{"no marker", "Normal output", ""},
+		{"marker without rationale", "RECHECK_PREVIOUS:", ""},
+		{"partial marker", "RECHECK_PREVIOUSLY: not a real marker", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractRecheckPrevious(tt.input)
+			assert.Equal(t, tt.expect, got)
+		})
+	}
+}
+
+// TestSmith_ErrorDuringExecution_TreatedAsFailure verifies that when the Claude
+// CLI exits 0 but reports subtype="error_during_execution" (kill mid-tool), the
+// pipeline marks the iteration as failed and does NOT proceed to Temper or
+// Warden — preventing a misleading empty-diff hard-reject downstream.
+func TestSmith_ErrorDuringExecution_TreatedAsFailure(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	params.SmithRunner = immediateSmith(&smith.Result{
+		ExitCode:      0,
+		ResultSubtype: "error_during_execution",
+		IsError:       false,
+		FullOutput:    "Request interrupted by user",
+	})
+	params.TemperRunner = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		t.Fatal("Temper should not run when smith subtype indicates incomplete session")
+		return nil
+	}
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		t.Fatal("Warden should not run when smith subtype indicates incomplete session")
+		return nil, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.False(t, outcome.Success)
+	assert.False(t, outcome.NeedsHuman)
+	require.NotNil(t, outcome.Error)
+	assert.Contains(t, outcome.Error.Error(), "error_during_execution")
+
+	// Verify a smith_failed event was logged with the actual subtype string.
+	events, err := db.RecentEvents(20)
+	require.NoError(t, err)
+	var failedEvents []state.Event
+	for _, e := range events {
+		if e.Type == state.EventSmithFailed {
+			failedEvents = append(failedEvents, e)
+		}
+	}
+	require.NotEmpty(t, failedEvents, "expected at least one smith_failed event")
+	var sawSubtype bool
+	for _, e := range failedEvents {
+		if e.BeadID == "test-bead" && strings.Contains(e.Message, "error_during_execution") {
+			sawSubtype = true
+			break
+		}
+	}
+	assert.True(t, sawSubtype, "expected smith_failed event to mention subtype=error_during_execution")
+}
+
+// TestSmith_RecheckPrevious_HappyPath verifies the RECHECK_PREVIOUS escape
+// hatch: on iteration 2, smith emits the marker; the empty-diff escalation is
+// skipped, temper is re-run against the same SHA, and the pipeline proceeds to
+// warden as normal. A smith_recheck event is logged.
+func TestSmith_RecheckPrevious_HappyPath(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	smithCall := 0
+	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		smithCall++
+		switch smithCall {
+		case 1:
+			return smith.NewProcessForTest(&smith.Result{ExitCode: 0, FullOutput: "Implemented."}), nil
+		case 2:
+			return smith.NewProcessForTest(&smith.Result{
+				ExitCode:   0,
+				FullOutput: "Verified previous iteration is correct.\nRECHECK_PREVIOUS: Stale core.worktree config caused the build to fail; unset it and reverified `go build ./...` passes against the iter-1 commit.",
+			}), nil
+		default:
+			t.Fatalf("unexpected smith call %d", smithCall)
+			return nil, nil
+		}
+	}
+
+	temperCall := 0
+	params.TemperRunner = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		temperCall++
+		if temperCall == 1 {
+			return &temper.Result{Passed: false, FailedStep: "build", Summary: "go build failed: stale core.worktree"}
+		}
+		return &temper.Result{Passed: true}
+	}
+
+	wardenCall := 0
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		wardenCall++
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.True(t, outcome.Success)
+	assert.False(t, outcome.NeedsHuman)
+	assert.Equal(t, 2, smithCall, "Smith should be called twice")
+	assert.Equal(t, 2, temperCall, "Temper should be called twice (initial fail + recheck pass)")
+	assert.Equal(t, 1, wardenCall, "Warden should run once after the recheck pass")
+	assert.Nil(t, outcome.Error)
+
+	// Verify a smith_recheck event was recorded.
+	events, err := db.RecentEvents(50)
+	require.NoError(t, err)
+	var recheckEvents []state.Event
+	for _, e := range events {
+		if e.Type == state.EventSmithRecheck {
+			recheckEvents = append(recheckEvents, e)
+		}
+	}
+	require.Len(t, recheckEvents, 1, "exactly one smith_recheck event expected")
+	assert.Contains(t, recheckEvents[0].Message, "Stale core.worktree config")
+}
+
+// TestSmith_RecheckPrevious_TemperFailsAfterMarker_EscalatesToNeedsHuman
+// verifies that when smith asserts RECHECK_PREVIOUS but temper fails again,
+// the bead is escalated with both the rationale and the temper failure
+// preserved on the failure event.
+func TestSmith_RecheckPrevious_TemperFailsAfterMarker_EscalatesToNeedsHuman(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	smithCall := 0
+	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		smithCall++
+		switch smithCall {
+		case 1:
+			return smith.NewProcessForTest(&smith.Result{ExitCode: 0, FullOutput: "Implemented."}), nil
+		case 2:
+			return smith.NewProcessForTest(&smith.Result{
+				ExitCode:   0,
+				FullOutput: "RECHECK_PREVIOUS: I believe the failure was a flake.",
+			}), nil
+		default:
+			t.Fatalf("unexpected smith call %d", smithCall)
+			return nil, nil
+		}
+	}
+
+	temperCall := 0
+	params.TemperRunner = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		temperCall++
+		// Temper keeps failing — flake hypothesis was wrong.
+		return &temper.Result{Passed: false, FailedStep: "test", Summary: "TestFoo failed: real bug, not a flake"}
+	}
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		t.Fatal("Warden should not run when temper fails after RECHECK_PREVIOUS")
+		return nil, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.False(t, outcome.Success)
+	assert.True(t, outcome.NeedsHuman, "NeedsHuman must be set when RECHECK_PREVIOUS is followed by a temper fail")
+	require.NotNil(t, outcome.Error)
+	assert.Contains(t, outcome.Error.Error(), "RECHECK_PREVIOUS")
+	assert.Equal(t, 2, smithCall, "Smith should be called twice")
+	assert.Equal(t, 2, temperCall, "Temper should be called twice (iter1 + recheck rerun)")
+
+	// Verify the failure event preserves both rationale and temper info.
+	events, err := db.RecentEvents(50)
+	require.NoError(t, err)
+	var sawCombined bool
+	for _, e := range events {
+		if e.Type == state.EventSmithFailed &&
+			strings.Contains(e.Message, "RECHECK_PREVIOUS") &&
+			strings.Contains(e.Message, "flake") &&
+			strings.Contains(e.Message, "real bug") {
+			sawCombined = true
+			break
+		}
+	}
+	assert.True(t, sawCombined, "expected smith_failed event combining rationale and temper failure")
+
+	// Also verify a smith_recheck event was recorded before the escalation.
+	var recheckCount int
+	for _, e := range events {
+		if e.Type == state.EventSmithRecheck {
+			recheckCount++
+		}
+	}
+	assert.Equal(t, 1, recheckCount, "exactly one smith_recheck event expected")
+}
+
+// TestSmith_RecheckPrevious_RepeatedUse_StrictCap verifies the strict cap when
+// the recheck path is chained: a second RECHECK_PREVIOUS use on the same bead
+// is rejected as a pathological loop. We force this by having the first
+// recheck pass temper (so the pipeline survives) but warden requesting changes,
+// driving a second iteration where smith again emits RECHECK_PREVIOUS.
+func TestSmith_RecheckPrevious_RepeatedUse_StrictCap(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	smithCall := 0
+	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		smithCall++
+		switch smithCall {
+		case 1:
+			return smith.NewProcessForTest(&smith.Result{ExitCode: 0, FullOutput: "Implemented."}), nil
+		case 2:
+			return smith.NewProcessForTest(&smith.Result{
+				ExitCode:   0,
+				FullOutput: "RECHECK_PREVIOUS: First env fix; verified.",
+			}), nil
+		case 3:
+			return smith.NewProcessForTest(&smith.Result{
+				ExitCode:   0,
+				FullOutput: "RECHECK_PREVIOUS: Second env claim — should be rejected.",
+			}), nil
+		default:
+			t.Fatalf("unexpected smith call %d", smithCall)
+			return nil, nil
+		}
+	}
+	params.TemperRunner = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		// Always pass temper so the pipeline reaches Warden.
+		return &temper.Result{Passed: true}
+	}
+	wardenCall := 0
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		wardenCall++
+		// Iteration 1: request changes to drive iteration 2.
+		// Iteration 2: also request changes (after first recheck) to drive iteration 3.
+		// On iteration 3 the second RECHECK should be rejected before warden runs.
+		if wardenCall <= 2 {
+			return &warden.ReviewResult{
+				Verdict: warden.VerdictRequestChanges,
+				Summary: "Please address X",
+			}, nil
+		}
+		t.Fatalf("Warden should not be called more than twice; got call %d", wardenCall)
+		return nil, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.False(t, outcome.Success)
+	assert.True(t, outcome.NeedsHuman)
+	require.NotNil(t, outcome.Error)
+	assert.Contains(t, outcome.Error.Error(), "RECHECK_PREVIOUS more than once")
+	assert.Equal(t, 3, smithCall, "Smith should be called three times before the cap kicks in")
+
+	// Exactly one smith_recheck event should have been recorded (the second
+	// RECHECK is rejected as smith_failed, not smith_recheck).
+	events, err := db.RecentEvents(50)
+	require.NoError(t, err)
+	var recheckEvents int
+	for _, e := range events {
+		if e.Type == state.EventSmithRecheck {
+			recheckEvents++
+		}
+	}
+	assert.Equal(t, 1, recheckEvents, "only the first RECHECK should produce a smith_recheck event")
+}
+
+// TestSmith_RecheckPrevious_DirtyWorktree_Escalates verifies that RECHECK_PREVIOUS
+// is ignored and escalated when Smith actually left commits in the worktree while
+// emitting the marker, contradicting its own claim that nothing changed.
+func TestSmith_RecheckPrevious_DirtyWorktree_Escalates(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	// Use a real git repo so gitRevParseHEAD returns a non-empty SHA and
+	// hasEmptyDiff can detect real commits (both use gitCmdCleanEnv internally).
+	wtPath, _ := initGitRepo(t)
+	params.WorktreeCreator = func(_ context.Context, anvilPath, beadID string) (*worktree.Worktree, error) {
+		return &worktree.Worktree{BeadID: beadID, AnvilPath: anvilPath, Path: wtPath, Branch: "forge/" + beadID}, nil
+	}
+
+	env := cleanGitEnv()
+	smithCall := 0
+	params.SmithRunner = func(_ context.Context, worktreePath, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		smithCall++
+		switch smithCall {
+		case 1:
+			return smith.NewProcessForTest(&smith.Result{ExitCode: 0, FullOutput: "Implemented."}), nil
+		case 2:
+			// Smith makes a real commit while emitting RECHECK_PREVIOUS,
+			// contradicting its claim that the worktree is unchanged.
+			require.NoError(t, os.WriteFile(filepath.Join(worktreePath, "sneaky.go"), []byte("package main"), 0o644))
+			addCmd := exec.Command("git", "-C", worktreePath, "add", ".")
+			addCmd.Env = env
+			require.NoError(t, addCmd.Run())
+			commitCmd := exec.Command("git", "-C", worktreePath, "commit", "-m", "sneaky change")
+			commitCmd.Env = env
+			require.NoError(t, commitCmd.Run())
+			return smith.NewProcessForTest(&smith.Result{
+				ExitCode:   0,
+				FullOutput: "RECHECK_PREVIOUS: I believe the failure was environmental.",
+			}), nil
+		default:
+			t.Fatalf("unexpected smith call %d", smithCall)
+			return nil, nil
+		}
+	}
+
+	temperCall := 0
+	params.TemperRunner = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		temperCall++
+		// Iter 1 fails to drive a second Smith iteration.
+		if temperCall == 1 {
+			return &temper.Result{Passed: false, FailedStep: "build", Summary: "build failed: stale config"}
+		}
+		t.Fatal("temper should not run after dirty-worktree escalation")
+		return nil
+	}
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		t.Fatal("warden should not run when RECHECK_PREVIOUS has dirty worktree")
+		return nil, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.False(t, outcome.Success)
+	assert.True(t, outcome.NeedsHuman, "NeedsHuman must be set when RECHECK_PREVIOUS contradicts dirty worktree")
+	require.NotNil(t, outcome.Error)
+	assert.Contains(t, outcome.Error.Error(), "RECHECK_PREVIOUS")
+	assert.Equal(t, 2, smithCall, "Smith should be called twice before escalation")
+	assert.Equal(t, 1, temperCall, "Temper should only be called once (iter 1)")
+
+	// Verify a smith_failed event was logged for the dirty worktree, with no
+	// smith_recheck event (marker was rejected, not honoured).
+	events, err := db.RecentEvents(50)
+	require.NoError(t, err)
+	var sawSmithFailed bool
+	var sawSmithRecheck bool
+	for _, e := range events {
+		switch e.Type {
+		case state.EventSmithFailed:
+			if strings.Contains(e.Message, "RECHECK_PREVIOUS") {
+				sawSmithFailed = true
+			}
+		case state.EventSmithRecheck:
+			sawSmithRecheck = true
+		}
+	}
+	assert.True(t, sawSmithFailed, "expected smith_failed event for dirty-worktree RECHECK_PREVIOUS")
+	assert.False(t, sawSmithRecheck, "expected no smith_recheck event when worktree is dirty")
+}
+
 // TestSmith_NoChangesNeeded_SkipsWardenAndTemper verifies that when Smith outputs
 // the NO_CHANGES_NEEDED: marker, Warden and Temper are skipped and the outcome
 // has NoChangesNeeded=true.
@@ -1143,11 +1505,25 @@ func TestSchematic_OnSpawn_UpdatesWorkerPIDAndLogPath(t *testing.T) {
 	assert.Equal(t, "/fake/smith.log", snapshotLogPath, "worker log_path should be updated via OnSpawn callback")
 }
 
+// cleanGitEnv returns os.Environ() with GIT_DIR and GIT_WORK_TREE removed so
+// that git commands in tests are not redirected to the worktree that hosts the
+// test process.
+func cleanGitEnv() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "GIT_DIR=") && !strings.HasPrefix(e, "GIT_WORK_TREE=") {
+			env = append(env, e)
+		}
+	}
+	return env
+}
+
 // initGitRepo creates a temporary git repo with an initial commit and returns
 // the repo path and the HEAD SHA after that commit.
 func initGitRepo(t *testing.T) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
+	env := cleanGitEnv()
 
 	for _, args := range [][]string{
 		{"init"},
@@ -1155,17 +1531,25 @@ func initGitRepo(t *testing.T) (string, string) {
 		{"config", "user.name", "Test"},
 	} {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = env
 		require.NoError(t, cmd.Run(), "git %v", args)
 	}
 
 	// Create an initial commit so HEAD exists.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644))
-	cmd := exec.Command("git", "-C", dir, "add", ".")
-	require.NoError(t, cmd.Run())
-	cmd = exec.Command("git", "-C", dir, "commit", "-m", "initial")
-	require.NoError(t, cmd.Run())
+	addCmd := exec.Command("git", "-C", dir, "add", ".")
+	addCmd.Env = env
+	require.NoError(t, addCmd.Run())
+	commitCmd := exec.Command("git", "-C", dir, "commit", "-m", "initial")
+	commitCmd.Env = env
+	require.NoError(t, commitCmd.Run())
 
-	sha := gitRevParseHEAD(dir)
+	// Use a clean-env rev-parse since gitRevParseHEAD inherits GIT_DIR.
+	shaCmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
+	shaCmd.Env = env
+	shaOut, err := shaCmd.Output()
+	require.NoError(t, err)
+	sha := strings.TrimSpace(string(shaOut))
 	require.NotEmpty(t, sha)
 	return dir, sha
 }
@@ -1174,13 +1558,16 @@ func initGitRepo(t *testing.T) (string, string) {
 // smith adds commits after the saved pre-smith SHA (the core fix for Forge-z9h6).
 func TestHasEmptyDiff_NewCommits(t *testing.T) {
 	dir, preSHA := initGitRepo(t)
+	env := cleanGitEnv()
 
 	// Simulate smith adding a commit.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main"), 0o644))
-	cmd := exec.Command("git", "-C", dir, "add", ".")
-	require.NoError(t, cmd.Run())
-	cmd = exec.Command("git", "-C", dir, "commit", "-m", "fix: smith did work")
-	require.NoError(t, cmd.Run())
+	addCmd := exec.Command("git", "-C", dir, "add", ".")
+	addCmd.Env = env
+	require.NoError(t, addCmd.Run())
+	commitCmd := exec.Command("git", "-C", dir, "commit", "-m", "fix: smith did work")
+	commitCmd.Env = env
+	require.NoError(t, commitCmd.Run())
 
 	assert.False(t, hasEmptyDiff(dir, preSHA), "hasEmptyDiff should be false when smith added commits")
 }

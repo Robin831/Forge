@@ -133,6 +133,9 @@ func toastForEvent(ev EventItem) (message string, isError bool, ok bool) {
 	case "smith_failed":
 		return "✗ " + firstOf(msg, "Smith failed"), true, true
 
+	case "smith_recheck":
+		return "↻ " + firstOf(msg, "Smith RECHECK_PREVIOUS"), false, true
+
 	case "pr_merge_failed":
 		return "✗ " + firstOf(msg, "PR merge failed"), true, true
 
