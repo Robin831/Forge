@@ -291,6 +291,47 @@ type QueuedPayload struct {
 	Message string `json:"message,omitempty"`
 }
 
+// QueueItem is the IPC representation of a single cached queue entry. It
+// mirrors state.QueueItem but uses JSON-friendly tags and a parsed labels
+// slice.
+type QueueItem struct {
+	BeadID      string   `json:"bead_id"`
+	Anvil       string   `json:"anvil"`
+	Title       string   `json:"title"`
+	Description string   `json:"description,omitempty"`
+	Priority    int      `json:"priority"`
+	Status      string   `json:"status"`
+	Labels      []string `json:"labels"`
+	Section     string   `json:"section"`
+	Assignee    string   `json:"assignee,omitempty"`
+}
+
+// QueueResponse is the response payload for a "queue" command.
+type QueueResponse struct {
+	Items []QueueItem `json:"items"`
+}
+
+// WorkerInfo is the IPC representation of a single active worker.
+type WorkerInfo struct {
+	ID          string `json:"id"`
+	BeadID      string `json:"bead_id"`
+	Anvil       string `json:"anvil"`
+	Branch      string `json:"branch,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Status      string `json:"status"`
+	Phase       string `json:"phase,omitempty"`
+	PID         int    `json:"pid,omitempty"`
+	StartedAt   string `json:"started_at"`
+	CompletedAt string `json:"completed_at,omitempty"`
+	LogPath     string `json:"log_path,omitempty"`
+	PRNumber    int    `json:"pr_number,omitempty"`
+}
+
+// WorkersResponse is the response payload for a "workers" command.
+type WorkersResponse struct {
+	Workers []WorkerInfo `json:"workers"`
+}
+
 // CompletionResult is the outcome delivered when an async request finishes.
 type CompletionResult struct {
 	Response Response

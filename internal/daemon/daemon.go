@@ -629,6 +629,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}()
 
+	// Start optional Hearth 2.0 web server (gated by FORGE_WEB_ENABLED).
+	if err := d.startWebServer(ctx); err != nil {
+		d.logger.Error("web server failed to start", "error", err)
+	}
+
 	// Start config hot-reload watcher
 	if d.configFile != "" {
 		d.configWatcher = hotreload.NewWatcher(d.configFile, d.cfg.Load(), d.logger)
@@ -3109,7 +3114,57 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		return ipc.Response{Type: "ok", Payload: data}
 
 	case "queue":
-		data, _ := json.Marshal(map[string]string{"message": "not yet implemented"})
+		items, err := d.db.QueueCache()
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("queue cache: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		out := make([]ipc.QueueItem, 0, len(items))
+		for _, it := range items {
+			labels := parseQueueLabels(it.Labels)
+			out = append(out, ipc.QueueItem{
+				BeadID:      it.BeadID,
+				Anvil:       it.Anvil,
+				Title:       it.Title,
+				Description: it.Description,
+				Priority:    it.Priority,
+				Status:      it.Status,
+				Labels:      labels,
+				Section:     string(it.Section),
+				Assignee:    it.Assignee,
+			})
+		}
+		data, _ := json.Marshal(ipc.QueueResponse{Items: out})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "workers":
+		workers, err := d.db.ActiveWorkers()
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("active workers: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		out := make([]ipc.WorkerInfo, 0, len(workers))
+		for _, w := range workers {
+			completedAt := ""
+			if w.CompletedAt != nil {
+				completedAt = w.CompletedAt.Format(time.RFC3339)
+			}
+			out = append(out, ipc.WorkerInfo{
+				ID:          w.ID,
+				BeadID:      w.BeadID,
+				Anvil:       w.Anvil,
+				Branch:      w.Branch,
+				Title:       w.Title,
+				Status:      string(w.Status),
+				Phase:       w.Phase,
+				PID:         w.PID,
+				StartedAt:   w.StartedAt.Format(time.RFC3339),
+				CompletedAt: completedAt,
+				LogPath:     w.LogPath,
+				PRNumber:    w.PRNumber,
+			})
+		}
+		data, _ := json.Marshal(ipc.WorkersResponse{Workers: out})
 		return ipc.Response{Type: "ok", Payload: data}
 
 	case "run_bead":
@@ -5436,6 +5491,22 @@ func trimStrings(ss []string) []string {
 		}
 	}
 	return res
+}
+
+// parseQueueLabels decodes a JSON-encoded labels string from the queue_cache
+// table. Returns an empty slice (not nil) on any decode error so JSON
+// callers see [] instead of null.
+func parseQueueLabels(raw string) []string {
+	out := []string{}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return out
+	}
+	_ = json.Unmarshal([]byte(raw), &out)
+	if out == nil {
+		out = []string{}
+	}
+	return out
 }
 
 // adventurerExecutorAdapter wraps an adventurer.Executor to implement the
