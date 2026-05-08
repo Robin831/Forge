@@ -127,6 +127,15 @@ type RetryBeadPayload struct {
 	PRID   int    `json:"pr_id,omitempty"`
 }
 
+// ClearBeadPayload is the payload for a "clear_bead" command.
+// Clears the needs-attention flags from a bead's retry row without triggering
+// a re-dispatch. Idempotent — succeeds even when the row is already clean or
+// missing.
+type ClearBeadPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`
+}
+
 // DismissBeadPayload is the payload for a "dismiss_bead" command.
 // Removes the bead from the Needs Attention list. When PRID > 0, the dismiss
 // targets an exhausted PR (setting status to closed) rather than the retries table.

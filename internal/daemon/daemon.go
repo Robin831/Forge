@@ -3730,6 +3730,30 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		resp, _ := ipc.NewQueuedResponse(reqID, "retrying bead")
 		return resp
 
+	case "clear_bead":
+		var cp ipc.ClearBeadPayload
+		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid clear_bead payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if cp.BeadID == "" || cp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if cp.Anvil != "" {
+			if canonical, _, ok := d.resolveAnvilConfig(cp.Anvil); ok {
+				cp.Anvil = canonical
+			}
+		}
+		if err := d.db.ClearNeedsAttention(cp.BeadID, cp.Anvil); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to clear needs-attention flags: %v", err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		_ = d.db.LogEvent(state.EventRetryCleared, fmt.Sprintf("Needs-attention flags cleared for bead %s (manual)", cp.BeadID), cp.BeadID, cp.Anvil)
+		d.logger.Info("needs-attention flags cleared", "bead", cp.BeadID, "anvil", cp.Anvil)
+		data, _ := json.Marshal(map[string]string{"message": "needs-attention flags cleared"})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	case "dismiss_bead":
 		var dp ipc.DismissBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &dp); err != nil {

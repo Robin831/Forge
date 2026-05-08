@@ -1376,6 +1376,7 @@ const (
 	EventClarificationNeeded  EventType = "clarification_needed"
 	EventClarificationCleared EventType = "clarification_cleared"
 	EventRetryReset           EventType = "retry_reset"
+	EventRetryCleared         EventType = "retry_cleared"
 	EventBeadDismissed        EventType = "bead_dismissed"
 	EventSchematicStarted     EventType = "schematic_started"
 	EventSchematicDone        EventType = "schematic_done"
@@ -2202,6 +2203,27 @@ func (db *DB) ResetRetry(beadID, anvil string) error {
 		return fmt.Errorf("no retry record found for bead %q on anvil %q", beadID, anvil)
 	}
 	return nil
+}
+
+// ClearNeedsAttention zeroes the needs-attention flags on a bead's retry row
+// without scheduling a re-dispatch. Unlike ResetRetry it leaves
+// clarification_needed, retry_count, and next_retry untouched, and unlike
+// DismissRetry it preserves the row. It is idempotent: running it on an
+// already-clean row (or a bead with no retry row at all) is a no-op success.
+func (db *DB) ClearNeedsAttention(beadID, anvil string) error {
+	now := time.Now().Format(dbTimeLayout)
+	_, err := db.conn.Exec(
+		`UPDATE retries
+		 SET needs_human = 0,
+		     dispatch_failures = 0,
+		     recovery_failures = 0,
+		     first_recovery_failure_at = NULL,
+		     last_error = '',
+		     updated_at = ?
+		 WHERE bead_id = ? AND anvil = ?`,
+		now, beadID, anvil,
+	)
+	return err
 }
 
 // DismissRetry removes the retry record entirely, clearing the bead from the
