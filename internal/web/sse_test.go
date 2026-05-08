@@ -359,20 +359,21 @@ func TestWorkerLogStream_RequiresAuth(t *testing.T) {
 // --- helpers ---
 
 // writeWorkerLog inserts a worker row whose LogPath points at a temp file
-// inside ~/.forge so the resolveWorkerLogPath allowlist accepts it.
+// inside a hermetic home directory so the resolveWorkerLogPath allowlist
+// accepts it without touching the real ~/.forge on the developer's machine.
 func writeWorkerLog(t *testing.T, db *state.DB, workerID string, lines []string) string {
 	t.Helper()
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("UserHomeDir: %v", err)
-	}
-	dir := filepath.Join(home, ".forge", "test-worker-logs")
+	// Point HOME at a per-test temp dir so os.UserHomeDir() returns a path we
+	// fully control; t.Setenv restores the original value after the test.
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	dir := filepath.Join(tempHome, ".forge", "test-worker-logs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	logPath := filepath.Join(dir, workerID+".log")
-	t.Cleanup(func() { _ = os.Remove(logPath) })
 
 	content := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {

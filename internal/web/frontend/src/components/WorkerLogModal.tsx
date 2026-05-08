@@ -31,10 +31,13 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
   const live = useEventSource<LogLine>(liveURL, { maxItems: 1000 })
 
   // For completed workers, fetch the tail once when the modal opens.
+  // Also clears the live buffer when switching workers so stale lines from
+  // the previous session don't persist until new SSE frames arrive.
   useEffect(() => {
     if (!worker || isLive) {
       setTailLines(null)
       setTailError(null)
+      live.clear()
       return
     }
     let cancelled = false
@@ -60,7 +63,7 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
     return () => {
       cancelled = true
     }
-  }, [worker, isLive, logout])
+  }, [worker, isLive, logout, live.clear])
 
   const rawLines: { text: string; key: string }[] = useMemo(() => {
     if (!worker) return []

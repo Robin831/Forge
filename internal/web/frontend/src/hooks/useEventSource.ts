@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 export type SSEStatus = 'connecting' | 'open' | 'error' | 'closed'
 
@@ -40,6 +40,11 @@ export function useEventSource<T>(
   const itemsRef = useRef<T[]>([])
 
   useEffect(() => {
+    // Clear the buffer on every URL/enabled change so stale frames from a
+    // previous connection don't show when the caller switches the target URL.
+    itemsRef.current = []
+    setItems([])
+
     if (!enabled || !url) {
       setStatus('closed')
       return
@@ -87,10 +92,10 @@ export function useEventSource<T>(
     }
   }, [url, enabled, parse, maxItems])
 
-  const clear = () => {
+  const clear = useCallback(() => {
     itemsRef.current = []
     setItems([])
-  }
+  }, [])
 
   return { items, status, error, clear }
 }

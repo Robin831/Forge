@@ -299,7 +299,9 @@ func (s *Server) handleWorkerLogStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 		return
 	}
-	defer f.Close()
+	// Use a closure so the defer always closes the current value of f, even
+	// after truncation/rotation causes f to be reassigned to a new handle.
+	defer func() { f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
@@ -339,11 +341,15 @@ func (s *Server) handleWorkerLogStream(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if fi.Size() < offset {
-				f.Close()
-				f, err = os.Open(logPath) //nolint:gosec
-				if err != nil {
-					continue
+				// File was truncated or rotated — reopen from the beginning.
+				old := f
+				newF, openErr := os.Open(logPath) //nolint:gosec
+				if openErr != nil {
+					// Can't continue streaming; deferred f.Close() will close old.
+					return
 				}
+				old.Close()
+				f = newF
 				offset = 0
 				partial = ""
 				continue
@@ -351,7 +357,12 @@ func (s *Server) handleWorkerLogStream(w http.ResponseWriter, r *http.Request) {
 			if fi.Size() <= offset {
 				continue
 			}
-			buf := make([]byte, fi.Size()-offset)
+			const maxChunkSize int64 = 64 * 1024 // 64 KiB per tick
+			chunkSize := fi.Size() - offset
+			if chunkSize > maxChunkSize {
+				chunkSize = maxChunkSize
+			}
+			buf := make([]byte, int(chunkSize))
 			n, rerr := f.ReadAt(buf, offset)
 			if n == 0 {
 				continue
