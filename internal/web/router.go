@@ -73,10 +73,12 @@ func (s *Server) staticHandler() http.HandlerFunc {
 			path = "/index.html"
 		}
 		// SPA fallback: when the requested file does not exist, serve
-		// index.html so client-side routing can take over.
+		// index.html so client-side routing can take over. Rewrite the
+		// path to "/" rather than "/index.html" because http.FileServer
+		// canonicalises explicit /index.html requests with a 301 to /.
 		if _, err := fs.Stat(dist, trimLeadingSlash(path)); err != nil {
 			r2 := r.Clone(r.Context())
-			r2.URL.Path = "/index.html"
+			r2.URL.Path = "/"
 			fileServer.ServeHTTP(w, r2)
 			return
 		}
