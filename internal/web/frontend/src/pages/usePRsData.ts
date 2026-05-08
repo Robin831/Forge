@@ -1,8 +1,9 @@
-// usePRsData and the per-section convenience hooks (useForgePRs,
-// useExternalPRs, useRecentlyMergedPRs) back the /prs tab. They share a
-// module-level cache so multiple subscribers issue at most one fetch per
-// polling window — the cache is daemon-scoped (a different daemon would
-// be on a different origin), which prevents cross-repo bleed.
+// usePRsData backs the /prs tab. It uses a module-level cache so multiple
+// subscribers issue at most one fetch per polling window — the cache is
+// daemon-scoped (a different daemon would be on a different origin), which
+// prevents cross-repo bleed. Callers that need only one section should
+// destructure the return value rather than wrapping this hook, to avoid
+// duplicate interval and visibilitychange listener registrations.
 //
 // Cache contract (per Forge-9ye8):
 //   - 60-second TTL: stale entries trigger a background refetch on the
@@ -146,51 +147,3 @@ export function usePRsData(): PRsDataState {
   }
 }
 
-interface SectionResult {
-  items: PRItem[]
-  loading: boolean
-  error: string | null
-  fetchedAt: number | null
-  refresh: () => void
-}
-
-// useForgePRs reads forge-managed open PRs from state.db via the shared
-// /api/prs/all backend.
-export function useForgePRs(): SectionResult {
-  const s = usePRsData()
-  return {
-    items: s.forge_prs,
-    loading: s.loading,
-    error: s.error,
-    fetchedAt: s.fetchedAt,
-    refresh: s.refresh,
-  }
-}
-
-// useExternalPRs reads externally-authored open PRs from the same backend.
-// The daemon's reconcileOpenPRs goroutine periodically shells out to
-// `gh pr list` so this view stays current; the 60-second client cache
-// throttles re-renders without losing freshness on visibility changes.
-export function useExternalPRs(): SectionResult {
-  const s = usePRsData()
-  return {
-    items: s.external_prs,
-    loading: s.loading,
-    error: s.error,
-    fetchedAt: s.fetchedAt,
-    refresh: s.refresh,
-  }
-}
-
-// useRecentlyMergedPRs returns PRs (forge or external) merged within the
-// last 7 days, sorted newest-first.
-export function useRecentlyMergedPRs(): SectionResult {
-  const s = usePRsData()
-  return {
-    items: s.recently_merged,
-    loading: s.loading,
-    error: s.error,
-    fetchedAt: s.fetchedAt,
-    refresh: s.refresh,
-  }
-}

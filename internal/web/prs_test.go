@@ -157,6 +157,10 @@ func TestPRsAll_RecentlyMerged_RespectsWindow(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
 
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
 	var resp prsResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse: %v", err)

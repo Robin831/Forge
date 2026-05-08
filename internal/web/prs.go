@@ -58,10 +58,11 @@ type prsResponse struct {
 //   - recently_merged: any PR (forge or external) merged within the last
 //     recentlyMergedWindow.
 //
-// All three are read from state.db. The daemon's reconcileOpenPRs goroutine
-// keeps the table in sync with `gh pr list` so this read-side handler stays
-// fast (single SQL roundtrip) without shelling out per request. Manual
-// refresh is handled by the existing reconcile_prs IPC command.
+// All three are read from state.db via two queries (OpenPRs for open PRs,
+// recentlyMergedPRs for the merged window). The daemon's reconcileOpenPRs
+// goroutine keeps the table in sync with `gh pr list` so this handler never
+// shells out per request. The frontend refresh button re-fetches this
+// endpoint directly; it does not trigger the reconcile_prs IPC command.
 func (s *Server) handlePRs(w http.ResponseWriter, _ *http.Request) {
 	openPRs, err := s.db.OpenPRs()
 	if err != nil {
@@ -125,12 +126,12 @@ func mapPRToJSON(pr state.PR) prItemJSON {
 		BeadID:          pr.BeadID,
 	}
 	if !pr.CreatedAt.IsZero() {
-		item.CreatedAt = pr.CreatedAt.Format(time.RFC3339)
+		item.CreatedAt = pr.CreatedAt.UTC().Format(time.RFC3339Nano)
 	}
 	if pr.LastChecked != nil {
-		item.UpdatedAt = pr.LastChecked.Format(time.RFC3339)
+		item.UpdatedAt = pr.LastChecked.UTC().Format(time.RFC3339Nano)
 		if pr.Status == state.PRMerged {
-			item.MergedAt = pr.LastChecked.Format(time.RFC3339)
+			item.MergedAt = pr.LastChecked.UTC().Format(time.RFC3339Nano)
 		}
 	}
 	return item
@@ -147,7 +148,9 @@ func (s *Server) recentlyMergedPRs(window time.Duration) ([]prItemJSON, error) {
 	}
 	// Match the canonical state.dbTimeLayout (fixed-width nanos with offset)
 	// so lexicographic comparison against last_checked stays correct.
-	cutoff := time.Now().Add(-window).UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
+	// Do NOT force UTC here — UpdatePRStatus writes time.Now() in the local
+	// timezone, so the cutoff must use the same offset to keep comparisons valid.
+	cutoff := time.Now().Add(-window).Format("2006-01-02T15:04:05.000000000Z07:00")
 	rows, err := conn.Query(`SELECT id, number, anvil, bead_id, branch, COALESCE(base_branch,''),
 		status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count,
 		ci_passing, is_conflicting, has_approval, COALESCE(title,''), bellows_managed
@@ -194,11 +197,15 @@ func (s *Server) recentlyMergedPRs(window time.Duration) ([]prItemJSON, error) {
 			ReviewFixCount:  reviewFix,
 			RebaseCount:     rebase,
 			BeadID:          beadID,
-			CreatedAt:       createdAt,
+		}
+		if t := parseAnyTime(createdAt); !t.IsZero() {
+			item.CreatedAt = t.UTC().Format(time.RFC3339Nano)
 		}
 		if lastChecked.Valid {
-			item.UpdatedAt = lastChecked.String
-			item.MergedAt = lastChecked.String
+			if t := parseAnyTime(lastChecked.String); !t.IsZero() {
+				item.UpdatedAt = t.UTC().Format(time.RFC3339Nano)
+				item.MergedAt = t.UTC().Format(time.RFC3339Nano)
+			}
 		}
 		out = append(out, item)
 	}
