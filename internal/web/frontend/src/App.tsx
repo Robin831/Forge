@@ -8,6 +8,7 @@ import HistoryPage from './pages/HistoryPage'
 import PRsPage from './pages/PRsPage'
 import CostsPage from './pages/CostsPage'
 import BeadDetailPage from './pages/BeadDetailPage'
+import ForgePage from './pages/ForgePage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { authenticated, loading } = useAuth()
@@ -78,6 +79,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <CostsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/forge"
+        element={
+          <ProtectedRoute>
+            <ForgePage />
           </ProtectedRoute>
         }
       />
