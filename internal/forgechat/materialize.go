@@ -132,10 +132,24 @@ func MaterializeEmission(
 	for _, propID := range order {
 		bead := byID[propID]
 		anvilPath, ok := lookup(bead.Anvil)
-		if !ok {
-			res.Err = fmt.Errorf("forgechat: anvil %q not registered", bead.Anvil)
+		if !ok || strings.TrimSpace(anvilPath) == "" {
+			// Empty path is treated as "not registered" — running bd in the
+			// daemon's cwd would silently target the wrong database, which is
+			// far worse than failing fast.
+			res.Err = fmt.Errorf("forgechat: anvil %q not registered or has no path", bead.Anvil)
 			rollback(ctx, logger, &res, runner)
 			return res
+		}
+
+		// Defensive: validation should have caught unresolved deps, but if
+		// it was skipped (or a future caller forgets) we'd otherwise create
+		// a bead without its declared edges. Refuse instead.
+		for _, dep := range bead.DependsOn {
+			if _, resolved := proposalToBead[dep]; !resolved {
+				res.Err = fmt.Errorf("forgechat: bead %q depends on unresolved sibling %q (validate before materialising)", bead.ProposalID, dep)
+				rollback(ctx, logger, &res, runner)
+				return res
+			}
 		}
 
 		args := buildCreateArgs(bead, proposalToBead)
@@ -175,11 +189,18 @@ func MaterializeEmission(
 // buildCreateArgs assembles the bd create flags for a proposal. Sibling deps
 // resolve to real bd IDs because we materialise in topological order.
 func buildCreateArgs(b BeadProposal, resolved map[string]string) []string {
+	// Defensive default: ValidateEmission normalises blank types to "task",
+	// but if a caller skips validation we'd otherwise pass `--type ""` to bd
+	// and get an opaque CLI error. Mirror the validator's choice here.
+	typ := strings.TrimSpace(b.Type)
+	if typ == "" {
+		typ = "task"
+	}
 	args := []string{
 		"create",
 		"--title", b.Title,
 		"--description", b.Description,
-		"--type", b.Type,
+		"--type", typ,
 		"--priority", fmt.Sprintf("%d", b.Priority),
 		"--json",
 	}
@@ -199,6 +220,14 @@ func buildCreateArgs(b BeadProposal, resolved map[string]string) []string {
 // parseCreatedID pulls the bead id from `bd create --json` output. bd may
 // emit trailing diagnostics (orphan detection, etc.) after the JSON object,
 // so we use a streaming decoder that tolerates trailing data.
+//
+// Two output shapes are accepted:
+//   - {"id":"forge-aaa", ...}                — the common case
+//   - [{"id":"forge-aaa", ...}]              — emitted by some bd builds
+//     when the create flows through the multi-bead graph form
+//
+// An empty/missing id from either shape is treated as a parse failure rather
+// than silently materialising a bead we cannot later roll back.
 func parseCreatedID(out []byte) (string, error) {
 	var created struct {
 		ID string `json:"id"`
@@ -214,7 +243,11 @@ func parseCreatedID(out []byte) (string, error) {
 	if err := json.Unmarshal(bytes.TrimSpace(out), &arr); err == nil && len(arr) > 0 && arr[0].ID != "" {
 		return arr[0].ID, nil
 	}
-	return "", fmt.Errorf("missing id in bd create output: %s", strings.TrimSpace(string(out)))
+	snippet := strings.TrimSpace(string(out))
+	if len(snippet) > 240 {
+		snippet = snippet[:240] + "…"
+	}
+	return "", fmt.Errorf("missing id in bd create output: %s", snippet)
 }
 
 // rollback closes every bead in res.Created with a rollback reason, in
@@ -222,6 +255,13 @@ func parseCreatedID(out []byte) (string, error) {
 // depend on. Failures during rollback are logged and aggregated into
 // res.RollbackError but do not change res.Err — the original failure is the
 // one operators need to act on.
+//
+// The caller's ctx is detached via context.WithoutCancel because the most
+// common reason rollback runs is that ctx itself was cancelled (an HTTP
+// client disconnect, or the failing `bd create` was aborted by a timeout).
+// Inheriting that cancellation would make every `bd close` return
+// context.Canceled immediately, leaving orphan beads in the database. The
+// per-op timeout below caps each close so we still bound total work.
 func rollback(ctx context.Context, logger *slog.Logger, res *MaterializeResult, runner BdRunner) {
 	res.RolledBack = true
 	if len(res.Created) == 0 {
@@ -234,10 +274,11 @@ func rollback(ctx context.Context, logger *slog.Logger, res *MaterializeResult, 
 		short := truncateRunes(res.Err.Error(), 160)
 		reason = "rollback: " + short
 	}
+	rollbackCtx := context.WithoutCancel(ctx)
 	var failures []string
 	for i := len(res.Created) - 1; i >= 0; i-- {
 		b := res.Created[i]
-		opCtx, cancel := context.WithTimeout(ctx, bdCreatePerOp)
+		opCtx, cancel := context.WithTimeout(rollbackCtx, bdCreatePerOp)
 		_, err := runner(opCtx, b.AnvilPath, "close", b.BeadID, "--reason", reason)
 		cancel()
 		if err != nil {
