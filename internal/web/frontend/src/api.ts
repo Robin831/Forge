@@ -50,6 +50,17 @@ export interface EventsResponse {
   events: EventInfo[]
 }
 
+// LogLine matches the SSE payload emitted by /api/worker/{id}/stream.
+export interface LogLine {
+  line: string
+  timestamp: string
+}
+
+// LogTailResponse matches GET /api/worker/{id}/log?tail=N.
+export interface LogTailResponse {
+  lines: string[]
+}
+
 export interface StatusResponse {
   running: boolean
   pid: number

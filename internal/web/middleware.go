@@ -67,6 +67,16 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
+// Flush delegates to the underlying ResponseWriter when it implements
+// http.Flusher so SSE handlers under the requestLogger middleware can still
+// flush the response body. Without this delegation the type assertion in
+// the SSE handlers fails and they return 500.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // clientIP returns the request's client IP, preferring X-Forwarded-For when
 // present (the daemon is expected to run behind a reverse proxy in
 // Kubernetes).
