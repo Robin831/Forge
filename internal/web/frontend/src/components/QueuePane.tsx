@@ -1,4 +1,5 @@
 import { List } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import type { QueueItem } from '../api'
 import { priorityClasses, priorityLabel } from '../lib/format'
 import Pane, { EmptyState } from './Pane'
@@ -35,7 +36,12 @@ export default function QueuePane({ items, loading, error }: QueuePaneProps) {
                     {item.title || item.bead_id}
                   </p>
                   <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
-                    <span className="font-mono text-slate-400">{item.bead_id}</span>
+                    <Link
+                      to={`/bead/${item.bead_id}?anvil=${encodeURIComponent(item.anvil)}`}
+                      className="font-mono text-slate-400 hover:text-amber-300"
+                    >
+                      {item.bead_id}
+                    </Link>
                     <span aria-hidden>·</span>
                     <span>{item.anvil}</span>
                     {item.section && (

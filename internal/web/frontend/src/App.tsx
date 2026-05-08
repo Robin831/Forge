@@ -2,6 +2,11 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth } from './auth'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
+import IngotsPage from './pages/IngotsPage'
+import CruciblesPage from './pages/CruciblesPage'
+import HistoryPage from './pages/HistoryPage'
+import CostsPage from './pages/CostsPage'
+import BeadDetailPage from './pages/BeadDetailPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { authenticated, loading } = useAuth()
@@ -32,6 +37,46 @@ export default function App() {
         element={
           <ProtectedRoute>
             <DashboardPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/ingots"
+        element={
+          <ProtectedRoute>
+            <IngotsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/crucibles"
+        element={
+          <ProtectedRoute>
+            <CruciblesPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/history"
+        element={
+          <ProtectedRoute>
+            <HistoryPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/costs"
+        element={
+          <ProtectedRoute>
+            <CostsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/bead/:bead_id"
+        element={
+          <ProtectedRoute>
+            <BeadDetailPage />
           </ProtectedRoute>
         }
       />

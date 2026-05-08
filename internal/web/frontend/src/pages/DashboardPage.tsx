@@ -1,33 +1,27 @@
 import { useMemo, useState } from 'react'
-import {
-  Activity,
-  AlertTriangle,
-  Circle,
-  Hammer,
-  List,
-  LogOut,
-  Users,
-} from 'lucide-react'
-import { useAuth } from '../auth'
+import { Activity, AlertTriangle, FlaskConical, List, Users } from 'lucide-react'
 import { useApiPoll } from '../hooks/useApiPoll'
 import type {
+  CruciblesResponse,
   QueueResponse,
   StatusResponse,
   WorkerInfo,
   WorkersResponse,
 } from '../api'
+import AppHeader from '../components/AppHeader'
 import QueuePane from '../components/QueuePane'
 import WorkersPane from '../components/WorkersPane'
 import LiveActivity from '../components/LiveActivity'
 import WorkerLogModal from '../components/WorkerLogModal'
+import CruciblesPane from '../components/CruciblesPane'
 
 const POLL_INTERVAL_MS = 5000
 
 export default function DashboardPage() {
-  const { user, logout } = useAuth()
   const status = useApiPoll<StatusResponse>('/api/status', POLL_INTERVAL_MS)
   const queue = useApiPoll<QueueResponse>('/api/queue', POLL_INTERVAL_MS)
   const workers = useApiPoll<WorkersResponse>('/api/workers', POLL_INTERVAL_MS)
+  const crucibles = useApiPoll<CruciblesResponse>('/api/crucibles', POLL_INTERVAL_MS)
   const [logWorker, setLogWorker] = useState<WorkerInfo | null>(null)
 
   const activeWorkers = useMemo(
@@ -39,54 +33,16 @@ export default function DashboardPage() {
   )
 
   const queueCount = queue.data?.items.length ?? 0
+  const crucibleCount = crucibles.data?.crucibles.length ?? 0
   const daemonHealthy = status.data?.running
 
   return (
     <div className="mx-auto flex min-h-full max-w-7xl flex-col gap-6 p-4 sm:p-6">
-      <header className="flex flex-wrap items-center gap-3">
-        <Hammer size={24} className="text-amber-400" aria-hidden />
-        <div>
-          <h1 className="text-xl font-semibold text-slate-100 sm:text-2xl">Hearth</h1>
-          <p className="text-xs text-slate-400">Forge orchestrator dashboard</p>
-        </div>
-
-        <span
-          className={`ml-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
-            daemonHealthy
-              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-              : status.loading
-                ? 'border-slate-700 bg-slate-800/60 text-slate-400'
-                : 'border-red-500/40 bg-red-500/10 text-red-300'
-          }`}
-          aria-live="polite"
-        >
-          <Circle size={8} fill="currentColor" />
-          {status.loading
-            ? 'connecting…'
-            : daemonHealthy
-              ? 'daemon online'
-              : 'daemon offline'}
-        </span>
-
-        {user && (
-          <span className="hidden items-center text-sm text-slate-400 sm:inline-flex">
-            {user}
-          </span>
-        )}
-
-        <button
-          type="button"
-          onClick={() => void logout()}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-300 transition-colors hover:border-slate-600 hover:bg-slate-700"
-        >
-          <LogOut size={14} aria-hidden />
-          <span>Sign out</span>
-        </button>
-      </header>
+      <AppHeader daemonOnline={daemonHealthy} daemonLoading={status.loading} />
 
       <section
         aria-label="Summary"
-        className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4"
+        className="grid grid-cols-2 gap-3 sm:grid-cols-5 sm:gap-4"
       >
         <StatCard
           icon={<Users size={18} className="text-sky-400" aria-hidden />}
@@ -97,6 +53,11 @@ export default function DashboardPage() {
           icon={<List size={18} className="text-cyan-400" aria-hidden />}
           label="Queued beads"
           value={queueCount}
+        />
+        <StatCard
+          icon={<FlaskConical size={18} className="text-fuchsia-400" aria-hidden />}
+          label="Crucibles"
+          value={crucibleCount}
         />
         <StatCard
           icon={<Activity size={18} className="text-purple-400" aria-hidden />}
@@ -116,6 +77,15 @@ export default function DashboardPage() {
           highlight={!!status.error}
         />
       </section>
+
+      {crucibleCount > 0 && (
+        <CruciblesPane
+          crucibles={crucibles.data?.crucibles ?? []}
+          loading={crucibles.loading}
+          error={crucibles.error}
+          compact
+        />
+      )}
 
       <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-3">
         <QueuePane
