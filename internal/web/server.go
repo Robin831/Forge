@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Robin831/Forge/internal/forgechat"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -63,10 +64,23 @@ type Server struct {
 
 	httpServer *http.Server
 
+	// chatRunner backs the Beads-Forge per-turn AI loop. Optional: when nil
+	// the /api/forge/sessions/{id}/turn endpoint reports 503 so operators
+	// know they need to configure a provider before relying on the page.
+	chatRunner forgechat.Runner
+
 	// staticH serves the embedded SPA bundle. Built once in routes() so
 	// handleLoginPage can fall back to it without re-walking the embedded
 	// filesystem on every request.
 	staticH http.HandlerFunc
+}
+
+// SetChatRunner installs the AI runner used by the Beads-Forge page. The
+// daemon constructs the runner from its provider chain after web.New
+// returns, so this is wired in via a setter rather than the Config struct.
+// nil clears the runner.
+func (s *Server) SetChatRunner(r forgechat.Runner) {
+	s.chatRunner = r
 }
 
 // New constructs a Server. The cfg is validated; an error is returned when

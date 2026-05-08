@@ -6,6 +6,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/forgechat"
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/web"
 )
 
@@ -44,6 +47,13 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 		return fmt.Errorf("constructing web server: %w", err)
 	}
 
+	// Plug in the Beads-Forge AI runner using the daemon's configured
+	// providers. We pick the head of the resolved list — fallbacks are not
+	// needed here because a turn is interactive and should fail fast.
+	if runner := d.buildForgeChatRunner(); runner != nil {
+		srv.SetChatRunner(runner)
+	}
+
 	go func() {
 		if err := srv.Start(ctx); err != nil && ctx.Err() == nil {
 			d.logger.Error("web server stopped with error", "error", err)
@@ -51,6 +61,26 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 	}()
 	d.logger.Info("hearth 2.0 web server started", "addr", addr, "users", len(users))
 	return nil
+}
+
+// buildForgeChatRunner resolves the provider for the "forgechat" stage and
+// returns a ClaudeRunner. Returns nil when no provider can be resolved (e.g.
+// the daemon shipped without a provider chain) so the web layer falls back
+// to a 503 response on /turn.
+func (d *Daemon) buildForgeChatRunner() forgechat.Runner {
+	cfg := d.cfg.Load()
+	specs := config.ProvidersForStageWithAnvil(cfg.Settings, nil, "forgechat")
+	if len(specs) == 0 {
+		specs = cfg.Settings.Providers
+	}
+	providers := provider.FromConfig(specs)
+	if len(providers) == 0 {
+		providers = provider.Defaults()
+	}
+	if len(providers) == 0 {
+		return nil
+	}
+	return forgechat.NewClaudeRunner(providers[0], cfg.Settings.ClaudeFlags)
 }
 
 // webEnabled reports whether FORGE_WEB_ENABLED requests the web UI.

@@ -3,11 +3,16 @@ import {
   Archive,
   ArchiveRestore,
   ArrowLeft,
+  CheckCircle2,
+  ClipboardList,
   Hammer,
+  Lightbulb,
+  Loader2,
   MessageSquarePlus,
   Pencil,
   Plus,
   Send,
+  Sparkles,
   Trash2,
 } from 'lucide-react'
 import { useApiPoll } from '../hooks/useApiPoll'
@@ -16,7 +21,9 @@ import {
   ApiError,
   forgeSessions,
   type ForgeMessage,
+  type ForgeQuestionPayload,
   type ForgeSession,
+  type ForgeTurnRequest,
   type StatusResponse,
 } from '../api'
 import AppHeader from '../components/AppHeader'
@@ -25,9 +32,10 @@ import { relativeTime } from '../lib/format'
 const STATUS_POLL_INTERVAL_MS = 10_000
 
 // ForgePage is the Hearth 2.0 "Beads-Forge" page: an iterative, chat-style
-// surface for designing beads through conversation. The foundation bead
-// delivers persistence + draft input only — later beads add the claude
-// integration and the grilling/plan stages.
+// surface for designing beads through conversation. The page steps through
+// three AI stages — drafting (open chat), grilling (structured Q&A), ready
+// (settled plan). Each stage has its own UI affordances; the actual bead
+// emission lives in a follow-on bead.
 export default function ForgePage() {
   const status = useApiPoll<StatusResponse>('/api/status', STATUS_POLL_INTERVAL_MS)
   const toast = useToast()
@@ -55,7 +63,6 @@ export default function ForgePage() {
     [toast],
   )
 
-  // Load the session list once on mount and refresh after mutations.
   const refreshSessions = useCallback(async () => {
     setLoadingSessions(true)
     try {
@@ -72,7 +79,6 @@ export default function ForgePage() {
     void refreshSessions()
   }, [refreshSessions])
 
-  // Load messages when the active session changes.
   useEffect(() => {
     if (activeId === null) {
       setMessages([])
@@ -97,21 +103,16 @@ export default function ForgePage() {
     }
   }, [activeId, handleApiError])
 
-  // Auto-scroll to the bottom when new messages arrive.
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Focus the draft textarea when switching to new-session mode. The effect
-  // runs after the render so NewSessionView is mounted and composerRef points
-  // at the draft input (not the old conversation textarea).
   useEffect(() => {
     if (activeId === null) {
       composerRef.current?.focus()
     }
   }, [activeId])
 
-  // Focus the rename input when entering rename mode.
   useEffect(() => {
     if (renamingId !== null) {
       renameInputRef.current?.focus()
@@ -124,6 +125,33 @@ export default function ForgePage() {
     [sessions, activeId],
   )
 
+  // applyTurnResponse merges a /turn response into local state. It replaces
+  // any optimistic placeholder messages with the canonical server records,
+  // updates the session row in the sidebar, and bumps the active session
+  // pointer if the stage changed.
+  const applyTurnResponse = useCallback(
+    (data: { session: ForgeSession; messages: ForgeMessage[] }, optimisticId?: number) => {
+      setMessages((prev) => {
+        let base = prev
+        if (optimisticId !== undefined) {
+          base = base.filter((m) => m.id !== optimisticId)
+        }
+        // Avoid duplicates if the server echoes a message we already have.
+        const existing = new Set(base.map((m) => m.id))
+        const additions = (data.messages ?? []).filter((m) => !existing.has(m.id))
+        return [...base, ...additions]
+      })
+      setSessions((prev) => {
+        const idx = prev.findIndex((s) => s.id === data.session.id)
+        if (idx === -1) return [data.session, ...prev]
+        const next = prev.slice()
+        next[idx] = data.session
+        return next
+      })
+    },
+    [],
+  )
+
   const startNewSession = useCallback(async () => {
     const text = draft.trim()
     setBusy(true)
@@ -134,20 +162,27 @@ export default function ForgePage() {
       setSessions((prev) => [data.session, ...prev])
       setActiveId(data.session.id)
       setDraft('')
-      if (data.message) {
-        setMessages([data.message])
-      } else {
-        setMessages([])
+      const initial = data.message ? [data.message] : []
+      setMessages(initial)
+
+      // If the user supplied an initial message, kick off the first AI turn
+      // immediately so the conversation actually advances. Otherwise leave
+      // the page idle so the user can compose.
+      if (text) {
+        try {
+          const turn = await forgeSessions.turn(data.session.id, {})
+          applyTurnResponse(turn)
+        } catch (err) {
+          handleApiError(err, 'Failed to run first AI turn')
+        }
       }
-      // Re-fetch the list so the message_count is fresh for sidebar items
-      // we already had in memory.
       void refreshSessions()
     } catch (err) {
       handleApiError(err, 'Failed to start session')
     } finally {
       setBusy(false)
     }
-  }, [draft, handleApiError, refreshSessions])
+  }, [applyTurnResponse, draft, handleApiError, refreshSessions])
 
   const sendMessage = useCallback(async () => {
     if (activeId === null) return
@@ -159,16 +194,14 @@ export default function ForgePage() {
       role: 'user',
       content: text,
       created_at: new Date().toISOString(),
+      kind: 'text',
     }
     setComposer('')
     setMessages((prev) => [...prev, optimistic])
     setBusy(true)
     try {
-      const data = await forgeSessions.appendMessage(activeId, text)
-      setMessages((prev) => prev.map((m) => (m.id === optimistic.id ? data.message : m)))
-      setSessions((prev) =>
-        prev.map((s) => (s.id === activeId ? data.session : s)),
-      )
+      const data = await forgeSessions.turn(activeId, { content: text })
+      applyTurnResponse(data, optimistic.id)
     } catch (err) {
       // Roll back the optimistic insert and restore the draft.
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id))
@@ -178,7 +211,49 @@ export default function ForgePage() {
       setBusy(false)
       composerRef.current?.focus()
     }
-  }, [activeId, composer, handleApiError])
+  }, [activeId, applyTurnResponse, composer, handleApiError])
+
+  const runTurn = useCallback(
+    async (req: ForgeTurnRequest) => {
+      if (activeId === null) return
+      setBusy(true)
+      try {
+        const data = await forgeSessions.turn(activeId, req)
+        applyTurnResponse(data)
+      } catch (err) {
+        handleApiError(err, 'Failed to run AI turn')
+      } finally {
+        setBusy(false)
+      }
+    },
+    [activeId, applyTurnResponse, handleApiError],
+  )
+
+  const requestPlan = useCallback(() => {
+    void runTurn({ request_plan: true })
+  }, [runTurn])
+
+  const startGrilling = useCallback(() => {
+    void runTurn({ start_grilling: true })
+  }, [runTurn])
+
+  const markReady = useCallback(() => {
+    void runTurn({ mark_ready: true })
+  }, [runTurn])
+
+  const submitAnswer = useCallback(
+    (questionId: number, optionId: string | null, freeText: string) => {
+      if (activeId === null) return
+      const trimmed = freeText.trim()
+      if (!optionId && !trimmed) return
+      void runTurn({
+        answer_question_id: questionId,
+        answer_option_id: optionId ?? '',
+        content: trimmed || undefined,
+      })
+    },
+    [activeId, runTurn],
+  )
 
   const renameSession = useCallback(
     async (id: number, title: string) => {
@@ -228,6 +303,31 @@ export default function ForgePage() {
     [activeId, handleApiError, toast],
   )
 
+  // Find the latest open question (one without a subsequent answer in the
+  // chat history). The grilling-stage UI only allows answering this one.
+  const latestOpenQuestion = useMemo(() => {
+    if (!activeSession || activeSession.stage !== 'grilling') return null
+    let last: ForgeMessage | null = null
+    const answeredIds = new Set<number>()
+    for (const m of messages) {
+      if (m.kind === 'answer' && m.metadata) {
+        try {
+          const meta = JSON.parse(m.metadata) as { question_id?: number }
+          if (typeof meta.question_id === 'number') {
+            answeredIds.add(meta.question_id)
+          }
+        } catch {
+          // ignore malformed metadata
+        }
+      }
+      if (m.kind === 'question') {
+        last = m
+      }
+    }
+    if (last && !answeredIds.has(last.id)) return last
+    return null
+  }, [activeSession, messages])
+
   return (
     <div className="mx-auto flex min-h-full max-w-7xl flex-col gap-4 p-4 sm:p-6">
       <AppHeader daemonOnline={status.data?.running} daemonLoading={status.loading} />
@@ -259,38 +359,31 @@ export default function ForgePage() {
         <main className="flex min-h-[36rem] flex-col rounded-xl border border-slate-800 bg-slate-900/60">
           {activeSession ? (
             <>
-              <header className="flex items-center gap-3 border-b border-slate-800 px-4 py-3">
-                <button
-                  type="button"
-                  onClick={() => setActiveId(null)}
-                  className="rounded-md p-1 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 md:hidden"
-                  aria-label="Back to sessions"
-                >
-                  <ArrowLeft size={16} />
-                </button>
-                <Hammer size={16} className="text-amber-400" aria-hidden />
-                <div className="min-w-0 flex-1">
-                  <h2 className="truncate text-sm font-semibold text-slate-100">
-                    {activeSession.title || 'Untitled session'}
-                  </h2>
-                  <p className="truncate text-xs text-slate-500">
-                    {activeSession.status} · updated {relativeTime(activeSession.updated_at)}
-                  </p>
-                </div>
-              </header>
+              <SessionHeader
+                session={activeSession}
+                onBack={() => setActiveId(null)}
+                busy={busy}
+                onRequestPlan={requestPlan}
+                onStartGrilling={startGrilling}
+                onMarkReady={markReady}
+              />
 
               <ConversationView
                 messages={messages}
                 loading={loadingMessages}
                 endRef={messagesEndRef}
+                openQuestionId={latestOpenQuestion?.id ?? null}
+                stage={activeSession.stage}
+                busy={busy}
+                onAnswer={submitAnswer}
               />
 
               <Composer
                 value={composer}
                 onChange={setComposer}
                 onSend={sendMessage}
-                disabled={busy}
-                placeholder="Reply… (no AI yet — your message is just persisted for now)"
+                disabled={busy || activeSession.stage === 'ready'}
+                placeholder={composerPlaceholder(activeSession.stage, busy)}
                 inputRef={composerRef}
               />
             </>
@@ -307,9 +400,164 @@ export default function ForgePage() {
       </div>
 
       <footer className="text-center text-xs text-slate-500">
-        Beads-Forge · foundation bead — persistence only, AI integration arrives in the next bead.
+        Beads-Forge · drafting → grilling → ready. Bead emission lives in the next bead.
       </footer>
     </div>
+  )
+}
+
+function composerPlaceholder(stage: ForgeSession['stage'], busy: boolean): string {
+  if (busy) return 'Claude is working…'
+  switch (stage) {
+    case 'drafting':
+      return 'Reply, push back, or ask claude to clarify…'
+    case 'grilling':
+      return 'Type a free-form answer (or pick an option above)…'
+    case 'ready':
+      return 'Session is ready — bead emission lands in the next bead.'
+    default:
+      return 'Type a message…'
+  }
+}
+
+interface SessionHeaderProps {
+  session: ForgeSession
+  busy: boolean
+  onBack: () => void
+  onRequestPlan: () => void
+  onStartGrilling: () => void
+  onMarkReady: () => void
+}
+
+function SessionHeader({
+  session,
+  busy,
+  onBack,
+  onRequestPlan,
+  onStartGrilling,
+  onMarkReady,
+}: SessionHeaderProps) {
+  const stage = session.stage ?? 'drafting'
+  const hasPlan = (session.plan ?? '').trim().length > 0
+  return (
+    <header className="flex flex-col gap-2 border-b border-slate-800 px-4 py-3">
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onBack}
+          className="rounded-md p-1 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 md:hidden"
+          aria-label="Back to sessions"
+        >
+          <ArrowLeft size={16} />
+        </button>
+        <Hammer size={16} className="text-amber-400" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-sm font-semibold text-slate-100">
+            {session.title || 'Untitled session'}
+          </h2>
+          <p className="truncate text-xs text-slate-500">
+            updated {relativeTime(session.updated_at)}
+            {session.status === 'archived' ? ' · archived' : ''}
+          </p>
+        </div>
+        <StageBadge stage={stage} />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {stage === 'drafting' && (
+          <StageButton
+            onClick={onRequestPlan}
+            disabled={busy}
+            tone="amber"
+            icon={<ClipboardList size={12} aria-hidden />}
+          >
+            {hasPlan ? 'Refresh plan' : 'Request plan'}
+          </StageButton>
+        )}
+        {stage === 'drafting' && hasPlan && (
+          <StageButton
+            onClick={onStartGrilling}
+            disabled={busy}
+            tone="violet"
+            icon={<Sparkles size={12} aria-hidden />}
+          >
+            Start grilling
+          </StageButton>
+        )}
+        {stage === 'grilling' && (
+          <StageButton
+            onClick={onMarkReady}
+            disabled={busy}
+            tone="emerald"
+            icon={<CheckCircle2 size={12} aria-hidden />}
+          >
+            Mark ready
+          </StageButton>
+        )}
+        {busy && (
+          <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+            <Loader2 size={12} className="animate-spin" aria-hidden />
+            claude is thinking…
+          </span>
+        )}
+      </div>
+      {hasPlan && <PlanPanel plan={session.plan ?? ''} />}
+    </header>
+  )
+}
+
+function PlanPanel({ plan }: { plan: string }) {
+  return (
+    <details className="rounded-md border border-amber-500/30 bg-amber-500/5">
+      <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-amber-200">
+        <Lightbulb size={12} className="mr-1 inline" aria-hidden />
+        Current plan ({plan.length} chars) — click to expand
+      </summary>
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words border-t border-amber-500/20 px-3 py-2 text-xs text-amber-50">
+        {plan}
+      </pre>
+    </details>
+  )
+}
+
+function StageBadge({ stage }: { stage: ForgeSession['stage'] }) {
+  const config = {
+    drafting: { label: 'Drafting', tone: 'border-sky-500/40 bg-sky-500/10 text-sky-200' },
+    grilling: { label: 'Grilling', tone: 'border-violet-500/40 bg-violet-500/10 text-violet-200' },
+    ready: { label: 'Ready', tone: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' },
+  }[stage] ?? { label: stage, tone: 'border-slate-500/40 bg-slate-500/10 text-slate-200' }
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${config.tone}`}
+    >
+      {config.label}
+    </span>
+  )
+}
+
+interface StageButtonProps {
+  onClick: () => void
+  disabled: boolean
+  tone: 'amber' | 'violet' | 'emerald'
+  icon: React.ReactNode
+  children: React.ReactNode
+}
+
+function StageButton({ onClick, disabled, tone, icon, children }: StageButtonProps) {
+  const tones = {
+    amber: 'border-amber-500/40 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25',
+    violet: 'border-violet-500/40 bg-violet-500/15 text-violet-200 hover:bg-violet-500/25',
+    emerald: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25',
+  }[tone]
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${tones}`}
+    >
+      {icon}
+      {children}
+    </button>
   )
 }
 
@@ -410,7 +658,7 @@ function SessionSidebar({
                       {s.title || 'Untitled session'}
                     </span>
                     <span className="truncate text-[11px] text-slate-500">
-                      {s.message_count} msg · {relativeTime(s.updated_at)}
+                      {s.message_count} msg · {s.stage ?? 'drafting'} · {relativeTime(s.updated_at)}
                       {s.status === 'archived' ? ' · archived' : ''}
                     </span>
                   </button>
@@ -504,19 +752,36 @@ interface ConversationViewProps {
   messages: ForgeMessage[]
   loading: boolean
   endRef: React.RefObject<HTMLDivElement | null>
+  openQuestionId: number | null
+  stage: ForgeSession['stage']
+  busy: boolean
+  onAnswer: (questionId: number, optionId: string | null, freeText: string) => void
 }
 
-function ConversationView({ messages, loading, endRef }: ConversationViewProps) {
+function ConversationView({
+  messages,
+  loading,
+  endRef,
+  openQuestionId,
+  stage,
+  busy,
+  onAnswer,
+}: ConversationViewProps) {
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4" data-testid="forge-conversation">
       {loading && messages.length === 0 ? (
         <p className="text-center text-sm text-slate-500">Loading messages…</p>
       ) : messages.length === 0 ? (
-        <EmptyConversation />
+        <EmptyConversation stage={stage} />
       ) : (
         <ul className="space-y-3">
           {messages.map((m) => (
-            <MessageBubble key={m.id} message={m} />
+            <MessageBubble
+              key={m.id}
+              message={m}
+              isOpenQuestion={openQuestionId === m.id && !busy}
+              onAnswer={onAnswer}
+            />
           ))}
         </ul>
       )}
@@ -525,24 +790,45 @@ function ConversationView({ messages, loading, endRef }: ConversationViewProps) 
   )
 }
 
-function EmptyConversation() {
+function EmptyConversation({ stage }: { stage: ForgeSession['stage'] }) {
+  const stageHint =
+    stage === 'grilling'
+      ? 'Grilling started — claude will surface its first question on the next turn.'
+      : stage === 'ready'
+        ? 'Session is settled — bead emission lands in the next bead.'
+        : 'No messages yet — send the first one to get started.'
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-slate-500">
       <MessageSquarePlus size={28} className="text-slate-600" aria-hidden />
-      <p>No messages yet — send the first one to get started.</p>
+      <p>{stageHint}</p>
     </div>
   )
 }
 
-function MessageBubble({ message }: { message: ForgeMessage }) {
+interface MessageBubbleProps {
+  message: ForgeMessage
+  isOpenQuestion: boolean
+  onAnswer: (questionId: number, optionId: string | null, freeText: string) => void
+}
+
+function MessageBubble({ message, isOpenQuestion, onAnswer }: MessageBubbleProps) {
+  if (message.kind === 'question') {
+    return <QuestionBubble message={message} isOpen={isOpenQuestion} onAnswer={onAnswer} />
+  }
+  if (message.kind === 'plan') {
+    return <PlanBubble message={message} />
+  }
+  if (message.kind === 'status' || message.role === 'system') {
+    return <StatusBubble message={message} />
+  }
+  if (message.kind === 'answer') {
+    return <AnswerBubble message={message} />
+  }
   const isUser = message.role === 'user'
-  const isSystem = message.role === 'system'
   const align = isUser ? 'items-end' : 'items-start'
   const bubble = isUser
     ? 'bg-amber-500/15 border-amber-500/30 text-amber-100'
-    : isSystem
-      ? 'bg-slate-800/40 border-slate-700 text-slate-400 italic'
-      : 'bg-slate-800/60 border-slate-700 text-slate-100'
+    : 'bg-slate-800/60 border-slate-700 text-slate-100'
   return (
     <li className={`flex flex-col ${align}`}>
       <div
@@ -552,6 +838,152 @@ function MessageBubble({ message }: { message: ForgeMessage }) {
       </div>
       <span className="mt-1 text-[10px] text-slate-500">
         {message.role} · {relativeTime(message.created_at)}
+      </span>
+    </li>
+  )
+}
+
+function PlanBubble({ message }: { message: ForgeMessage }) {
+  return (
+    <li className="flex flex-col items-start">
+      <div className="max-w-[95%] rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-100">
+        <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
+          <ClipboardList size={11} aria-hidden />
+          Plan
+        </div>
+        <pre className="whitespace-pre-wrap break-words text-sm leading-relaxed">{message.content}</pre>
+      </div>
+      <span className="mt-1 text-[10px] text-slate-500">
+        assistant · {relativeTime(message.created_at)}
+      </span>
+    </li>
+  )
+}
+
+function StatusBubble({ message }: { message: ForgeMessage }) {
+  return (
+    <li className="flex flex-col items-center">
+      <div className="rounded-md border border-slate-700 bg-slate-800/40 px-3 py-1.5 text-xs italic text-slate-400">
+        {message.content}
+      </div>
+    </li>
+  )
+}
+
+function AnswerBubble({ message }: { message: ForgeMessage }) {
+  return (
+    <li className="flex flex-col items-end">
+      <div className="max-w-[85%] rounded-lg border border-amber-500/30 bg-amber-500/15 px-3 py-2 text-sm text-amber-100">
+        <span className="mr-2 inline-block rounded bg-amber-600/30 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">
+          Answer
+        </span>
+        {message.content}
+      </div>
+      <span className="mt-1 text-[10px] text-slate-500">
+        you · {relativeTime(message.created_at)}
+      </span>
+    </li>
+  )
+}
+
+interface QuestionBubbleProps {
+  message: ForgeMessage
+  isOpen: boolean
+  onAnswer: (questionId: number, optionId: string | null, freeText: string) => void
+}
+
+function QuestionBubble({ message, isOpen, onAnswer }: QuestionBubbleProps) {
+  const [freeText, setFreeText] = useState('')
+  let payload: ForgeQuestionPayload | null = null
+  try {
+    if (message.metadata) payload = JSON.parse(message.metadata) as ForgeQuestionPayload
+  } catch {
+    payload = null
+  }
+  const options = payload?.options ?? []
+  const recommendation = payload?.recommendation ?? ''
+
+  return (
+    <li className="flex flex-col items-start">
+      <div className="w-full max-w-[95%] rounded-lg border border-violet-500/40 bg-violet-500/5 px-3 py-3 text-sm text-violet-50">
+        <div className="mb-2 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-violet-300">
+          <Sparkles size={11} aria-hidden />
+          Question
+        </div>
+        <p className="mb-3 whitespace-pre-wrap break-words text-sm">{message.content}</p>
+
+        {options.length > 0 && (
+          <ul className="mb-3 space-y-1.5">
+            {options.map((opt) => {
+              const isRecommended = opt.id === recommendation
+              return (
+                <li key={opt.id}>
+                  <button
+                    type="button"
+                    disabled={!isOpen}
+                    onClick={() => onAnswer(message.id, opt.id, '')}
+                    className={`flex w-full items-start gap-2 rounded border px-3 py-2 text-left text-sm transition-colors ${
+                      isOpen
+                        ? 'border-violet-500/40 bg-violet-500/10 text-violet-100 hover:bg-violet-500/20'
+                        : 'border-slate-700 bg-slate-800/40 text-slate-400'
+                    } disabled:cursor-not-allowed disabled:opacity-70`}
+                  >
+                    <span className="flex-1">
+                      <span className="font-medium">{opt.label}</span>
+                      {isRecommended && (
+                        <span className="ml-2 rounded bg-violet-500/30 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-violet-100">
+                          Recommended
+                        </span>
+                      )}
+                      {opt.description && (
+                        <span className="mt-0.5 block text-xs text-violet-200/80">
+                          {opt.description}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+
+        {payload?.rationale && (
+          <p className="mb-3 rounded border border-violet-500/20 bg-violet-500/5 px-2 py-1 text-xs italic text-violet-200/80">
+            Rationale: {payload.rationale}
+          </p>
+        )}
+
+        {isOpen && (
+          <form
+            className="flex items-end gap-2"
+            onSubmit={(e) => {
+              e.preventDefault()
+              const trimmed = freeText.trim()
+              if (!trimmed) return
+              onAnswer(message.id, null, trimmed)
+              setFreeText('')
+            }}
+          >
+            <input
+              value={freeText}
+              onChange={(e) => setFreeText(e.target.value)}
+              placeholder="…or write a free-form answer"
+              className="flex-1 rounded border border-violet-500/40 bg-slate-950/40 px-2 py-1.5 text-xs text-violet-50 placeholder:text-violet-300/40 focus:border-violet-300 focus:outline-none"
+              aria-label="Free-form answer"
+            />
+            <button
+              type="submit"
+              disabled={freeText.trim().length === 0}
+              className="rounded border border-violet-500/40 bg-violet-500/20 px-2 py-1.5 text-xs font-medium text-violet-100 transition-colors hover:bg-violet-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Answer
+            </button>
+          </form>
+        )}
+      </div>
+      <span className="mt-1 text-[10px] text-slate-500">
+        assistant · {relativeTime(message.created_at)}
       </span>
     </li>
   )
@@ -622,8 +1054,8 @@ function NewSessionView({ draft, onDraftChange, onStart, busy, composerRef }: Ne
       <div>
         <h2 className="text-lg font-semibold text-slate-100">Start a design session</h2>
         <p className="mx-auto mt-1 max-w-md text-sm text-slate-400">
-          Describe a bead idea in your own words. Foundation bead: your input is just persisted
-          today — claude grilling and bead emission arrive in the next two beads.
+          Describe an idea — claude will discuss it with you, draft a plan, then grill the design
+          decisions until everything is settled.
         </p>
       </div>
       <textarea
