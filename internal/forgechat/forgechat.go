@@ -72,6 +72,10 @@ type TurnRequest struct {
 	Plan     string
 	History  []HistoryMessage
 	UserText string
+	// Anvils is the set of registered anvils the AI may target when emitting
+	// beads (ModeEmit). Keys are anvil names; values are short hints. Unused
+	// for chat / plan / grill modes.
+	Anvils AnvilContext
 }
 
 // EmittedMessage is one assistant message produced by a turn. The kind
@@ -93,6 +97,11 @@ type TurnResponse struct {
 	// CostUSD is the cumulative cost of this turn (best-effort — real
 	// runners read it from the claude stream, mocks may set 0).
 	CostUSD float64
+	// Emission is set when Mode == ModeEmit and parsing succeeded. Callers
+	// inspect this to materialise beads via bd; the returned Messages slice
+	// is empty in that case (the handler decides what to persist after
+	// materialisation).
+	Emission *EmissionEnvelope
 }
 
 // Runner abstracts the AI session driver. The daemon supplies a real
@@ -144,14 +153,14 @@ type grillingVerdict struct {
 func BuildPrompt(req TurnRequest) string {
 	var b strings.Builder
 
-	switch req.Stage {
-	case StageDrafting:
-		if req.Mode == ModePlan {
-			b.WriteString(systemPromptPlan)
-		} else {
-			b.WriteString(systemPromptDrafting)
-		}
-	case StageGrilling:
+	switch {
+	case req.Mode == ModeEmit:
+		b.WriteString(systemPromptEmit)
+	case req.Stage == StageDrafting && req.Mode == ModePlan:
+		b.WriteString(systemPromptPlan)
+	case req.Stage == StageDrafting:
+		b.WriteString(systemPromptDrafting)
+	case req.Stage == StageGrilling:
 		b.WriteString(systemPromptGrilling)
 	default:
 		b.WriteString(systemPromptDrafting)
@@ -165,6 +174,10 @@ func BuildPrompt(req TurnRequest) string {
 	if p := strings.TrimSpace(req.Plan); p != "" {
 		b.WriteString("\n\n## Current plan\n\n")
 		b.WriteString(p)
+	}
+
+	if req.Mode == ModeEmit {
+		b.WriteString(formatAnvilContext(req.Anvils))
 	}
 
 	if len(req.History) > 0 {
@@ -190,14 +203,14 @@ func BuildPrompt(req TurnRequest) string {
 		b.WriteString(u)
 	}
 
-	switch req.Stage {
-	case StageDrafting:
-		if req.Mode == ModePlan {
-			b.WriteString("\n\n" + tailPlan)
-		} else {
-			b.WriteString("\n\n" + tailDrafting)
-		}
-	case StageGrilling:
+	switch {
+	case req.Mode == ModeEmit:
+		b.WriteString("\n\n" + tailEmit)
+	case req.Stage == StageDrafting && req.Mode == ModePlan:
+		b.WriteString("\n\n" + tailPlan)
+	case req.Stage == StageDrafting:
+		b.WriteString("\n\n" + tailDrafting)
+	case req.Stage == StageGrilling:
 		b.WriteString("\n\n" + tailGrilling)
 	}
 

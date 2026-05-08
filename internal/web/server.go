@@ -54,6 +54,19 @@ type Config struct {
 	PurgeInterval time.Duration
 }
 
+// AnvilLister returns the registered anvils as a map of name -> on-disk
+// path. Callers use this for the Beads-Forge bead-emission flow: the web
+// layer passes the names to claude (so it knows which anvils to target) and
+// resolves names to paths when shelling out to bd. Implementations must be
+// safe to call concurrently — the daemon's hot-reload may swap the config
+// underneath.
+type AnvilLister func() map[string]string
+
+// BdRunnerFn is a process-spawning function compatible with the materializer
+// in package forgechat. The daemon supplies forgechat.DefaultBdRunner; tests
+// inject a fake to avoid spawning real bd subprocesses.
+type BdRunnerFn = forgechat.BdRunner
+
 // Server is the chi-based HTTP server. Construct with New and run with
 // Start.
 type Server struct {
@@ -69,6 +82,15 @@ type Server struct {
 	// know they need to configure a provider before relying on the page.
 	chatRunner forgechat.Runner
 
+	// anvils returns the live anvil registry. Optional: when nil the
+	// /api/forge/sessions/{id}/create-beads endpoint reports 503 because
+	// emission cannot proceed without anvil routing.
+	anvils AnvilLister
+
+	// bdRunner runs `bd` subprocesses for bead materialisation. Optional:
+	// nil falls back to forgechat.DefaultBdRunner. Tests inject a fake.
+	bdRunner BdRunnerFn
+
 	// staticH serves the embedded SPA bundle. Built once in routes() so
 	// handleLoginPage can fall back to it without re-walking the embedded
 	// filesystem on every request.
@@ -81,6 +103,19 @@ type Server struct {
 // nil clears the runner.
 func (s *Server) SetChatRunner(r forgechat.Runner) {
 	s.chatRunner = r
+}
+
+// SetAnvilLister installs the registry callback used by the Beads-Forge
+// bead-emission flow. The daemon snapshots its current config on each call
+// so hot-reloads are picked up automatically.
+func (s *Server) SetAnvilLister(a AnvilLister) {
+	s.anvils = a
+}
+
+// SetBdRunner installs the bd subprocess shim used for bead materialisation.
+// nil restores the default (forgechat.DefaultBdRunner).
+func (s *Server) SetBdRunner(r BdRunnerFn) {
+	s.bdRunner = r
 }
 
 // New constructs a Server. The cfg is validated; an error is returned when

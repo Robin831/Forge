@@ -11,6 +11,7 @@ import {
   MessageSquarePlus,
   Pencil,
   Plus,
+  Rocket,
   Send,
   Sparkles,
   Trash2,
@@ -20,6 +21,7 @@ import { useToast } from '../hooks/useToast'
 import {
   ApiError,
   forgeSessions,
+  type ForgeBeadsCreatedPayload,
   type ForgeMessage,
   type ForgeQuestionPayload,
   type ForgeSession,
@@ -241,6 +243,42 @@ export default function ForgePage() {
     void runTurn({ mark_ready: true })
   }, [runTurn])
 
+  // createBeads is the final step of the Beads-Forge flow. It POSTs to a
+  // dedicated endpoint (not /turn) that runs claude in emit mode, validates
+  // the JSON envelope, and shells out to bd. We surface the resulting bead
+  // IDs both as a structured chat bubble and as a toast for visibility.
+  const createBeads = useCallback(async () => {
+    if (activeId === null) return
+    setBusy(true)
+    try {
+      const data = await forgeSessions.createBeads(activeId)
+      // Append the new messages and refresh the session row in the sidebar.
+      setMessages((prev) => {
+        const existing = new Set(prev.map((m) => m.id))
+        const additions = (data.messages ?? []).filter((m) => !existing.has(m.id))
+        return [...prev, ...additions]
+      })
+      setSessions((prev) => {
+        const idx = prev.findIndex((s) => s.id === data.session.id)
+        if (idx === -1) return [data.session, ...prev]
+        const next = prev.slice()
+        next[idx] = data.session
+        return next
+      })
+      const count = data.beads?.length ?? 0
+      toast.push(
+        count === 1
+          ? `Created bead ${data.beads[0].bead_id}`
+          : `Created ${count} beads from this session`,
+        'success',
+      )
+    } catch (err) {
+      handleApiError(err, 'Failed to create beads')
+    } finally {
+      setBusy(false)
+    }
+  }, [activeId, handleApiError, toast])
+
   const submitAnswer = useCallback(
     (questionId: number, optionId: string | null, freeText: string) => {
       if (activeId === null) return
@@ -366,6 +404,7 @@ export default function ForgePage() {
                 onRequestPlan={requestPlan}
                 onStartGrilling={startGrilling}
                 onMarkReady={markReady}
+                onCreateBeads={createBeads}
               />
 
               <ConversationView
@@ -400,7 +439,7 @@ export default function ForgePage() {
       </div>
 
       <footer className="text-center text-xs text-slate-500">
-        Beads-Forge · drafting → grilling → ready. Bead emission lives in the next bead.
+        Beads-Forge · drafting → grilling → ready → create beads.
       </footer>
     </div>
   )
@@ -414,7 +453,7 @@ function composerPlaceholder(stage: ForgeSession['stage'], busy: boolean): strin
     case 'grilling':
       return 'Type a free-form answer (or pick an option above)…'
     case 'ready':
-      return 'Session is ready — bead emission lands in the next bead.'
+      return 'Click "Create bead(s)" to emit the plan as one or more beads.'
     default:
       return 'Type a message…'
   }
@@ -427,6 +466,7 @@ interface SessionHeaderProps {
   onRequestPlan: () => void
   onStartGrilling: () => void
   onMarkReady: () => void
+  onCreateBeads: () => void
 }
 
 function SessionHeader({
@@ -436,6 +476,7 @@ function SessionHeader({
   onRequestPlan,
   onStartGrilling,
   onMarkReady,
+  onCreateBeads,
 }: SessionHeaderProps) {
   const stage = session.stage ?? 'drafting'
   const hasPlan = (session.plan ?? '').trim().length > 0
@@ -491,6 +532,16 @@ function SessionHeader({
             icon={<CheckCircle2 size={12} aria-hidden />}
           >
             Mark ready
+          </StageButton>
+        )}
+        {stage === 'ready' && (
+          <StageButton
+            onClick={onCreateBeads}
+            disabled={busy || !hasPlan}
+            tone="emerald"
+            icon={<Rocket size={12} aria-hidden />}
+          >
+            Create bead(s)
           </StageButton>
         )}
         {busy && (
@@ -795,7 +846,7 @@ function EmptyConversation({ stage }: { stage: ForgeSession['stage'] }) {
     stage === 'grilling'
       ? 'Grilling started — claude will surface its first question on the next turn.'
       : stage === 'ready'
-        ? 'Session is settled — bead emission lands in the next bead.'
+        ? 'Session is settled — click "Create bead(s)" to emit beads from the plan.'
         : 'No messages yet — send the first one to get started.'
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-slate-500">
@@ -817,6 +868,9 @@ function MessageBubble({ message, isOpenQuestion, onAnswer }: MessageBubbleProps
   }
   if (message.kind === 'plan') {
     return <PlanBubble message={message} />
+  }
+  if (message.kind === 'beads_created') {
+    return <BeadsCreatedBubble message={message} />
   }
   if (message.kind === 'status' || message.role === 'system') {
     return <StatusBubble message={message} />
@@ -852,6 +906,55 @@ function PlanBubble({ message }: { message: ForgeMessage }) {
           Plan
         </div>
         <pre className="whitespace-pre-wrap break-words text-sm leading-relaxed">{message.content}</pre>
+      </div>
+      <span className="mt-1 text-[10px] text-slate-500">
+        assistant · {relativeTime(message.created_at)}
+      </span>
+    </li>
+  )
+}
+
+function BeadsCreatedBubble({ message }: { message: ForgeMessage }) {
+  let payload: ForgeBeadsCreatedPayload | null = null
+  try {
+    if (message.metadata) payload = JSON.parse(message.metadata) as ForgeBeadsCreatedPayload
+  } catch {
+    payload = null
+  }
+  const beads = payload?.beads ?? []
+  const summary = payload?.summary?.trim() ?? ''
+  return (
+    <li className="flex flex-col items-start">
+      <div className="w-full max-w-[95%] rounded-lg border border-emerald-500/40 bg-emerald-500/5 px-3 py-3 text-sm text-emerald-50">
+        <div className="mb-2 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
+          <Rocket size={11} aria-hidden />
+          Beads created
+        </div>
+        {summary && (
+          <p className="mb-3 whitespace-pre-wrap break-words text-sm">{summary}</p>
+        )}
+        {beads.length === 0 ? (
+          <pre className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+            {message.content}
+          </pre>
+        ) : (
+          <ul className="space-y-1.5" data-testid="forge-beads-created">
+            {beads.map((b) => (
+              <li
+                key={b.bead_id}
+                className="flex items-center gap-2 rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm"
+              >
+                <code className="rounded bg-emerald-600/30 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-100">
+                  {b.bead_id}
+                </code>
+                <span className="text-[11px] uppercase tracking-wide text-emerald-300/80">
+                  {b.anvil}
+                </span>
+                <span className="flex-1 truncate text-emerald-50">{b.title}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
       <span className="mt-1 text-[10px] text-slate-500">
         assistant · {relativeTime(message.created_at)}

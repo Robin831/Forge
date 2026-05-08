@@ -107,6 +107,11 @@ const (
 	// ForgeMessageKindStatus is a system-emitted status note (e.g. "Stage
 	// changed to grilling"). Rendered as italic in the chat view.
 	ForgeMessageKindStatus = "status"
+	// ForgeMessageKindBeadsCreated is the receipt for a successful
+	// bead-emission turn. Content holds a chat-friendly recap; metadata
+	// holds the JSON list of created beads (bead_id, anvil, title) so the
+	// UI can render clickable links and replays survive page reloads.
+	ForgeMessageKindBeadsCreated = "beads_created"
 )
 
 // CreateForgeSession inserts a new session row, returning the assigned ID

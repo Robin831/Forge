@@ -96,6 +96,7 @@ func (s *Server) routes() http.Handler {
 		r.Delete("/forge/sessions/{id}", s.handleForgeSessionDelete)
 		r.Post("/forge/sessions/{id}/messages", s.handleForgeSessionAppend)
 		r.Post("/forge/sessions/{id}/turn", s.handleForgeSessionTurn)
+		r.Post("/forge/sessions/{id}/create-beads", s.handleForgeSessionCreateBeads)
 	})
 
 	// Static UI fallback. The next bead replaces this with the embedded
