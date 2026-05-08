@@ -643,9 +643,23 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 	}
 }
 
-// extractBeadID parses a bead ID from a Forge PR body (e.g. "**Bead**: Forge-abc").
+// extractBeadID parses a bead ID from a PR body. It recognises both the
+// PR footer Forge emits ("Bead: Forge-abc | Branch: forge/Forge-abc", see
+// vcs.BuildPRBody) and the bold markdown form ("**Bead**: Forge-abc") that
+// can appear in Smith-authored sections or contributor PRs that mention a
+// bead. The bold form is checked first so it wins when both appear.
+//
+// Note: a successful extraction does NOT imply Forge created the PR — only
+// vcs.IsForgeManagedPRBody answers that. extractBeadID is used for routing
+// and display.
 func extractBeadID(body string) string {
-	const marker = "**Bead**: "
+	if id := extractBeadIDWithMarker(body, "**Bead**: "); id != "" {
+		return id
+	}
+	return extractBeadIDWithMarker(body, "Bead: ")
+}
+
+func extractBeadIDWithMarker(body, marker string) string {
 	idx := strings.Index(body, marker)
 	if idx < 0 {
 		return ""
