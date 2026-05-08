@@ -32,8 +32,8 @@ export default function DashboardPage() {
     [workers.data],
   )
 
-  const queueCount = queue.data?.items.length ?? 0
-  const crucibleCount = crucibles.data?.crucibles.length ?? 0
+  const queueCount = queue.data?.items?.length ?? 0
+  const crucibleCount = crucibles.data?.crucibles?.length ?? 0
   const daemonHealthy = status.data?.running
 
   return (
