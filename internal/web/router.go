@@ -50,6 +50,12 @@ func (s *Server) routes() http.Handler {
 		r.Get("/activity/stream", s.handleActivityStream)
 		r.Get("/worker/{id}/log", s.handleWorkerLogTail)
 		r.Get("/worker/{id}/stream", s.handleWorkerLogStream)
+		r.Get("/crucibles", s.handleCrucibles)
+		r.Get("/ingots", s.handleIngots)
+		r.Get("/ingots/{bead_id}", s.handleIngot)
+		r.Get("/history/workers", s.handleHistoryWorkers)
+		r.Get("/costs", s.handleCosts)
+		r.Get("/bead/{bead_id}", s.handleBeadDetail)
 	})
 
 	// Static UI fallback. The next bead replaces this with the embedded
