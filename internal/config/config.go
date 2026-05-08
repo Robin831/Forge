@@ -423,6 +423,15 @@ type SettingsConfig struct {
 	// to discover parent-child relationships for Crucible detection.
 	// Default: 3m. Set to 0 to disable two-tier polling (all polls unfiltered).
 	CruciblePollInterval time.Duration `mapstructure:"crucible_poll_interval" yaml:"crucible_poll_interval,omitempty"`
+	// ForgeID is the per-instance identifier embedded in the forge-managed
+	// marker on every PR Forge creates (`<!-- forge-managed: <id> -->`). When
+	// multiple Forge instances point at the same anvil, this id is what lets
+	// each instance recognise its own PRs during bellows reconciliation
+	// instead of racing for ownership of any forge-authored PR.
+	// When empty, ResolvedForgeID() falls back to os.Hostname(), then to a
+	// fixed default. Override this in deployments where the host name is not
+	// stable (e.g. ephemeral pods that may share a hostname).
+	ForgeID string `mapstructure:"forge_id" yaml:"forge_id,omitempty"`
 }
 
 // durationString returns the duration string, or omits zero values.
@@ -490,6 +499,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WicketStaleDays          int    `yaml:"wicket_stale_days,omitempty"`
 		BdReadyLimit             int    `yaml:"bd_ready_limit,omitempty"`
 		CruciblePollInterval     string `yaml:"crucible_poll_interval,omitempty"`
+		ForgeID                  string `yaml:"forge_id,omitempty"`
 	}
 
 	sh := shadow{
@@ -539,6 +549,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WicketTriggerLabel:     s.WicketTriggerLabel,
 		WicketStaleDays:        s.WicketStaleDays,
 		BdReadyLimit:           s.BdReadyLimit,
+		ForgeID:                s.ForgeID,
 	}
 
 	if s.CruciblePollInterval > 0 {
@@ -658,6 +669,28 @@ func (s SettingsConfig) IsQuestgiverEnabled() bool {
 		return false
 	}
 	return *s.QuestgiverEnabled
+}
+
+// ResolvedForgeID returns the forge instance identifier used to mark PRs Forge
+// creates (`<!-- forge-managed: <id> -->`). Resolution order:
+//
+//  1. settings.forge_id, if set
+//  2. os.Hostname()
+//  3. "default"
+//
+// In deployments running multiple Forge instances against the same anvil,
+// each instance MUST have a distinct value here (or distinct hostnames) so
+// reconcileOpenPRs only adopts PRs the current instance created.
+func (s SettingsConfig) ResolvedForgeID() string {
+	if id := strings.TrimSpace(s.ForgeID); id != "" {
+		return id
+	}
+	if hn, err := os.Hostname(); err == nil {
+		if hn = strings.TrimSpace(hn); hn != "" {
+			return hn
+		}
+	}
+	return "default"
 }
 
 // TeamsNotificationConfig holds configuration for the MS Teams webhook.

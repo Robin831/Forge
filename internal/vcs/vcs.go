@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,40 +21,101 @@ import (
 // the given branch. Callers should use errors.Is to check for this sentinel.
 var ErrPRAlreadyExists = errors.New("pull request already exists for branch")
 
-// ForgeManagedMarker is an HTML comment embedded in PR bodies that Forge
-// creates. It is the opt-in adoption signal used during reconciliation: only
-// PRs whose body contains this marker are eligible to be adopted as
-// bellows-managed. A bare "**Bead**: <id>" reference is NOT sufficient — PR
-// templates, "Closes" lines, and manual mentions of bead IDs must not cause
-// Forge to start pushing commits, requesting reviews, or auto-merging.
-// Note: PR bodies are user-controlled, so this marker is a convention rather
-// than a cryptographic guarantee. It prevents accidental adoption; it is not
-// a security boundary.
-const ForgeManagedMarker = "<!-- forge-managed: true -->"
+// forgeManagedMarkerPrefix and forgeManagedMarkerSuffix bracket the per-instance
+// identifier inside the HTML comment that Forge embeds in every PR body it
+// creates. The full marker is `<!-- forge-managed: <id> -->`. The id is the
+// forge instance identifier so that, in deployments running multiple Forge
+// instances against the same anvil, each instance only adopts PRs it created
+// itself instead of racing for ownership of any forge-authored PR.
+const (
+	forgeManagedMarkerPrefix = "<!-- forge-managed: "
+	forgeManagedMarkerSuffix = " -->"
+)
 
-// EnsureForgeManagedMarker appends ForgeManagedMarker to body if not already
-// present. Bodies authored by Forge must always include the marker so that
-// reconcileOpenPRs can distinguish them from external PRs that happen to
-// reference a bead ID.
+// legacyForgeManagedMarker is the pre-instance-id marker emitted by Forge
+// versions that shipped before Forge-i1g7. It is intentionally NOT recognised
+// as ours by IsForgeManagedBy: in multi-forge setups any instance could have
+// created the PR, and the ambiguous marker is exactly what caused the bug we
+// are fixing. Detection is only useful for migration logging.
+const legacyForgeManagedMarker = "<!-- forge-managed: true -->"
+
+// defaultForgeID is used when no instance id has been configured. It keeps
+// the marker well-formed (never `<!-- forge-managed:  -->`) for code paths
+// that build PR bodies without first calling SetForgeID — for example tests
+// or one-shot CLI invocations.
+const defaultForgeID = "default"
+
+// currentForgeID holds the active instance id used by EnsureForgeManagedMarker
+// and the PR-body builders. It is atomic.Value so the daemon can update it
+// from the hot-reload watcher without racing in-flight CreatePR calls.
+var currentForgeID atomic.Value
+
+// SetForgeID stores the active forge instance id. The daemon calls this once
+// at startup from settings.forge_id (falling back to the host name) and again
+// from the config hot-reload watcher when the value changes.
+func SetForgeID(id string) {
+	if id == "" {
+		id = defaultForgeID
+	}
+	currentForgeID.Store(id)
+}
+
+// ForgeID returns the active forge instance id, or defaultForgeID if SetForgeID
+// has not been called.
+func ForgeID() string {
+	if v := currentForgeID.Load(); v != nil {
+		if s, ok := v.(string); ok && s != "" {
+			return s
+		}
+	}
+	return defaultForgeID
+}
+
+// MarkerForID returns the forge-managed marker that identifies PRs created by
+// the given forge instance. Use this in tests and in PR-body builders that
+// want to emit a marker for a specific instance instead of the daemon-wide one.
+func MarkerForID(id string) string {
+	if id == "" {
+		id = defaultForgeID
+	}
+	return forgeManagedMarkerPrefix + id + forgeManagedMarkerSuffix
+}
+
+// EnsureForgeManagedMarker appends the forge-managed marker for the active
+// instance to body if no marker for this instance is already present. Bodies
+// authored by Forge must always include the marker so that reconcileOpenPRs
+// can distinguish them from external PRs that happen to reference a bead ID
+// AND from PRs authored by other Forge instances pointing at the same anvil.
 func EnsureForgeManagedMarker(body string) string {
-	if strings.Contains(body, ForgeManagedMarker) {
+	marker := MarkerForID(ForgeID())
+	if strings.Contains(body, marker) {
 		return body
 	}
 	if body == "" {
-		return ForgeManagedMarker
+		return marker
 	}
 	if strings.HasSuffix(body, "\n") {
-		return body + ForgeManagedMarker
+		return body + marker
 	}
-	return body + "\n" + ForgeManagedMarker
+	return body + "\n" + marker
 }
 
-// IsForgeManagedPRBody reports whether a PR body contains the forge-managed
-// marker, indicating the PR was created by Forge. This is the opt-in adoption
-// signal used by reconcileOpenPRs; callers must not infer ownership from a
-// "**Bead**: <id>" reference alone.
-func IsForgeManagedPRBody(body string) bool {
-	return strings.Contains(body, ForgeManagedMarker)
+// IsForgeManagedBy reports whether a PR body carries the forge-managed marker
+// for the given forge instance id. Returns false for the legacy generic marker
+// (`<!-- forge-managed: true -->`) — under the new multi-instance scheme there
+// is no way to tell which instance authored a legacy-marked PR, so the safe
+// default is "not mine". Callers must NOT infer ownership from a
+// "**Bead**: <id>" reference alone — that path is what Forge-m1ui closed.
+func IsForgeManagedBy(body, id string) bool {
+	return strings.Contains(body, MarkerForID(id))
+}
+
+// IsLegacyForgeManaged reports whether a PR body carries the legacy
+// pre-instance-id forge-managed marker. Useful for migration logging only —
+// reconciliation must NOT adopt legacy-marked PRs as bellows-managed because
+// in a multi-forge deployment we cannot tell which instance authored them.
+func IsLegacyForgeManaged(body string) bool {
+	return strings.Contains(body, legacyForgeManagedMarker)
 }
 
 // ghIssuePathPattern matches the path portion of a GitHub issue URL like
@@ -161,7 +223,7 @@ func buildPRBody(p CreateParams) string {
 	b.WriteString("---\n")
 	fmt.Fprintf(&b, "Bead: %s | Branch: %s\n", p.BeadID, p.Branch)
 	b.WriteString("Generated by [The Forge](https://github.com/Robin831/Forge) (Smith → Temper → Warden)\n")
-	b.WriteString(ForgeManagedMarker)
+	b.WriteString(MarkerForID(ForgeID()))
 
 	return b.String()
 }

@@ -423,61 +423,122 @@ func TestBuildPRBody_ReviewerNotes(t *testing.T) {
 	})
 }
 
-func TestIsForgeManagedPRBody(t *testing.T) {
+// withForgeID temporarily overrides the package-level forge id used by
+// EnsureForgeManagedMarker and the PR body builders, restoring the previous
+// value when the test ends. SetForgeID uses atomic.Value so calls are
+// data-race-free, but the value is still a shared global — tests using
+// this helper must not run in parallel with each other.
+func withForgeID(t *testing.T, id string) {
+	t.Helper()
+	prev := ForgeID()
+	SetForgeID(id)
+	t.Cleanup(func() { SetForgeID(prev) })
+}
+
+func TestIsForgeManagedBy(t *testing.T) {
 	t.Run("body with only **Bead**: reference is not forge-managed", func(t *testing.T) {
 		// Mirrors the PR #3030 scenario: a contributor manually opened a PR
 		// referencing a real bead in the description. Forge must not adopt it.
 		body := "Fixes the thing.\n\n**Bead**: Fhi.Metadata-tpc00\n"
-		assert.False(t, IsForgeManagedPRBody(body))
+		assert.False(t, IsForgeManagedBy(body, "local-forge"))
 	})
 
-	t.Run("body with marker + bead is forge-managed", func(t *testing.T) {
-		body := "## Changes\n\nDid the work.\n\n---\nBead: Forge-abc1 | Branch: forge/abc1\n" + ForgeManagedMarker
-		assert.True(t, IsForgeManagedPRBody(body))
+	t.Run("body with marker for this instance is forge-managed by this instance", func(t *testing.T) {
+		body := "## Changes\n\nDid the work.\n\n---\nBead: Forge-abc1 | Branch: forge/abc1\n" + MarkerForID("local-forge")
+		assert.True(t, IsForgeManagedBy(body, "local-forge"))
+	})
+
+	t.Run("body with marker for another instance is NOT forge-managed by this instance", func(t *testing.T) {
+		// This is the multi-forge race fix: skybert-forge must not adopt PRs
+		// authored by local-forge, even though both contain a forge-managed
+		// marker.
+		body := "## Changes\n\nDid the work.\n\n---\nBead: Forge-abc1 | Branch: forge/abc1\n" + MarkerForID("local-forge")
+		assert.False(t, IsForgeManagedBy(body, "skybert-forge"))
+	})
+
+	t.Run("legacy generic marker is NOT adopted by any instance", func(t *testing.T) {
+		// Pre-i1g7 PRs carry `<!-- forge-managed: true -->`. In a multi-forge
+		// deployment any instance could have authored them, so the safe
+		// default is "not mine" for everyone. The PR will be tracked as
+		// external until a forge instance creates a fresh PR with its own
+		// per-instance marker.
+		body := "## Changes\n\nDid the work.\n\n---\n" + legacyForgeManagedMarker
+		assert.False(t, IsForgeManagedBy(body, "local-forge"))
+		assert.False(t, IsForgeManagedBy(body, "skybert-forge"))
+		assert.True(t, IsLegacyForgeManaged(body), "legacy detection still recognises it for migration logging")
 	})
 
 	t.Run("empty body is not forge-managed", func(t *testing.T) {
-		assert.False(t, IsForgeManagedPRBody(""))
+		assert.False(t, IsForgeManagedBy("", "local-forge"))
 	})
 
 	t.Run("body containing only Closes #N is not forge-managed", func(t *testing.T) {
 		body := "Closes #42"
-		assert.False(t, IsForgeManagedPRBody(body))
+		assert.False(t, IsForgeManagedBy(body, "local-forge"))
 	})
 
 	t.Run("body with PR-template Bead heading but no marker is not forge-managed", func(t *testing.T) {
 		body := "## What\n\nFixes a bug.\n\n## Why\n\n**Bead**: Forge-zzzz (referenced)"
-		assert.False(t, IsForgeManagedPRBody(body))
+		assert.False(t, IsForgeManagedBy(body, "local-forge"))
+	})
+}
+
+func TestMarkerForID(t *testing.T) {
+	t.Run("includes the instance id between the prefix and suffix", func(t *testing.T) {
+		assert.Equal(t, "<!-- forge-managed: local-forge -->", MarkerForID("local-forge"))
+	})
+
+	t.Run("blank id falls back to the package default so the marker stays well-formed", func(t *testing.T) {
+		// Building "<!-- forge-managed:  -->" would still parse but is uglier
+		// than a stable "default" placeholder.
+		assert.Equal(t, MarkerForID("default"), MarkerForID(""))
 	})
 }
 
 func TestEnsureForgeManagedMarker(t *testing.T) {
-	t.Run("appends to body without marker", func(t *testing.T) {
+	t.Run("appends marker for the active instance to body without marker", func(t *testing.T) {
+		withForgeID(t, "alpha-forge")
 		got := EnsureForgeManagedMarker("Hello")
-		assert.True(t, IsForgeManagedPRBody(got))
-		assert.Contains(t, got, ForgeManagedMarker)
+		assert.True(t, IsForgeManagedBy(got, "alpha-forge"))
+		assert.Contains(t, got, MarkerForID("alpha-forge"))
+		assert.False(t, IsForgeManagedBy(got, "beta-forge"))
 	})
 
-	t.Run("idempotent when marker already present", func(t *testing.T) {
-		body := "Hello\n" + ForgeManagedMarker
+	t.Run("idempotent when active instance's marker is already present", func(t *testing.T) {
+		withForgeID(t, "alpha-forge")
+		body := "Hello\n" + MarkerForID("alpha-forge")
 		got := EnsureForgeManagedMarker(body)
 		assert.Equal(t, body, got)
-		// Exactly one marker, not two.
-		assert.Equal(t, 1, strings.Count(got, ForgeManagedMarker))
+		assert.Equal(t, 1, strings.Count(got, MarkerForID("alpha-forge")))
+	})
+
+	t.Run("appends own marker when only another instance's marker is present", func(t *testing.T) {
+		// Cross-instance scenario: a PR body generated elsewhere already
+		// carries a sibling marker, but we still want our own ownership claim
+		// embedded so reconcileOpenPRs on this instance recognises it.
+		withForgeID(t, "alpha-forge")
+		body := "Hello\n" + MarkerForID("beta-forge")
+		got := EnsureForgeManagedMarker(body)
+		assert.Contains(t, got, MarkerForID("alpha-forge"))
+		assert.Contains(t, got, MarkerForID("beta-forge"))
 	})
 
 	t.Run("returns marker for empty body", func(t *testing.T) {
-		assert.Equal(t, ForgeManagedMarker, EnsureForgeManagedMarker(""))
+		withForgeID(t, "alpha-forge")
+		assert.Equal(t, MarkerForID("alpha-forge"), EnsureForgeManagedMarker(""))
 	})
 }
 
-func TestBuildPRBody_IncludesForgeManagedMarker(t *testing.T) {
+func TestBuildPRBody_IncludesForgeManagedMarkerForActiveInstance(t *testing.T) {
+	withForgeID(t, "alpha-forge")
 	body := buildPRBody(CreateParams{
 		BeadID: "Forge-test",
 		Branch: "forge/test",
 	})
-	assert.True(t, IsForgeManagedPRBody(body),
-		"buildPRBody must always emit the forge-managed marker so reconcileOpenPRs can identify Forge's own PRs")
+	assert.True(t, IsForgeManagedBy(body, "alpha-forge"),
+		"buildPRBody must emit the forge-managed marker for the active instance so reconcileOpenPRs identifies our own PRs")
+	assert.False(t, IsForgeManagedBy(body, "beta-forge"),
+		"buildPRBody must NOT emit a marker for a sibling instance — that would re-introduce the multi-forge race")
 }
 
 func TestMergeabilityFromStatus(t *testing.T) {

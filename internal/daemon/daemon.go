@@ -577,14 +577,25 @@ func anvilPathMap(cfg *config.Config) map[string]string {
 // monitors PRs even after a DB reset or if the PR was created outside a
 // recorded Forge pipeline session.
 //
-// Ownership is established by the explicit forge-managed marker (see
-// vcs.ForgeManagedMarker) embedded by Forge when it creates a PR. A bare
-// "**Bead**: <id>" reference in the body is NOT sufficient — PR templates,
-// "Closes" lines, and manual bead mentions must not cause Forge to start
-// pushing review-fix commits or auto-merging unrelated contributors' PRs.
-// PRs without the marker are still tracked (so Hearth can display them) but
-// are stored as `ext-<number>` with bellows_managed=false.
+// Ownership is established by the per-instance forge-managed marker (see
+// vcs.MarkerForID and vcs.ForgeID) embedded by Forge when it creates a PR.
+// A bare "**Bead**: <id>" reference in the body is NOT sufficient — PR
+// templates, "Closes" lines, and manual bead mentions must not cause Forge
+// to start pushing review-fix commits or auto-merging unrelated contributors'
+// PRs. The legacy generic marker emitted by pre-Forge-i1g7 versions
+// (`<!-- forge-managed: true -->`) is also NOT sufficient: in multi-forge
+// deployments any instance could have authored such a PR. PRs without the
+// current instance's marker are still tracked (so Hearth can display them)
+// but are stored with bellows_managed=false.
+//
+// Already-tracked PRs are also re-checked on every reconcile so that PRs
+// adopted under the legacy logic (Forge versions before m1ui) automatically
+// have bellows_managed flipped off the next time this runs, without manual
+// state.db edits or pod resets. Going the other way (false → true) is also
+// supported so an external PR that gains the marker mid-flight gets adopted
+// on the next reconcile.
 func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
+	myForgeID := d.cfg.Load().Settings.ResolvedForgeID()
 	for anvilName, anvilCfg := range d.cfg.Load().Anvils {
 		if anvilCfg.Path == "" {
 			continue
@@ -595,21 +606,28 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 			continue
 		}
 		for _, pr := range prs {
+			forgeManaged := vcs.IsForgeManagedBy(pr.Body, myForgeID)
 			existing, _ := d.db.GetPRByNumber(anvilName, pr.Number)
 			if existing != nil {
-				continue // already tracked
+				d.reevaluateTrackedPR(existing, pr, anvilName, forgeManaged, myForgeID)
+				continue
 			}
-			forgeManaged := vcs.IsForgeManagedPRBody(pr.Body)
 			beadID := extractBeadID(pr.Body)
 			if !forgeManaged {
-				// External PR (not created by THIS Forge instance). The body may
-				// still reference a bead ID — e.g. a contributor's manual PR that
-				// closes a tracked issue, or a PR template hint — but without the
-				// forge-managed marker we have no proof Forge created it. Track
-				// it as an external PR so Bellows leaves it alone.
+				// PR is not created by THIS Forge instance. The body may still
+				// reference a bead ID — e.g. a contributor's manual PR, a PR
+				// template hint, or a PR authored by a sibling Forge instance
+				// pointed at the same anvil. Without OUR marker we have no
+				// proof we created it. Track it as external so Bellows leaves
+				// it alone.
 				if beadID != "" {
-					d.logger.Info("reconcile: PR references a bead but is not forge-managed; tracking as external",
-						"pr", pr.Number, "anvil", anvilName, "referenced_bead", beadID)
+					reason := "no forge-managed marker"
+					if vcs.IsLegacyForgeManaged(pr.Body) {
+						reason = "legacy generic forge-managed marker; ambiguous in multi-forge deployments"
+					}
+					d.logger.Info("reconcile: PR references a bead but is not managed by this forge; tracking as external",
+						"pr", pr.Number, "anvil", anvilName, "referenced_bead", beadID,
+						"forge_id", myForgeID, "reason", reason)
 				}
 				beadID = "ext-" + strconv.Itoa(pr.Number)
 			} else if beadID == "" {
@@ -627,7 +645,8 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 			}
 			if err := d.db.InsertPR(dbPR); err == nil {
 				d.logger.Info("reconcile: registered untracked PR",
-					"pr", pr.Number, "bead", beadID, "anvil", anvilName, "forge_managed", forgeManaged)
+					"pr", pr.Number, "bead", beadID, "anvil", anvilName,
+					"forge_managed", forgeManaged, "forge_id", myForgeID)
 				// Persist title from upstream
 				if pr.Title != "" {
 					_ = d.db.UpdatePRTitle(dbPR.ID, pr.Title)
@@ -644,6 +663,46 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 	}
 }
 
+// reevaluateTrackedPR adjusts the bellows_managed flag on an already-tracked
+// PR so it stays in sync with the current ownership rule. This is the second
+// half of the Forge-i1g7 fix: PRs that were adopted under the legacy logic
+// (anything mentioning a bead) keep bellows_managed=true forever otherwise,
+// so disabling bellows on a sibling forge never frees the PR even after the
+// per-instance marker rolls out. Re-evaluating on every reconcile makes the
+// transition automatic — no manual state.db edits or pod resets required.
+//
+// Synthetic ext-* PRs are never bellows-managed regardless of marker state.
+func (d *Daemon) reevaluateTrackedPR(existing *state.PR, pr vcs.OpenPR, anvilName string, forgeManaged bool, myForgeID string) {
+	// ext-* rows are synthetic identifiers for PRs Forge did not create.
+	// They are never eligible for bellows management regardless of marker state;
+	// defensively clear bellows_managed if it somehow got set.
+	if strings.HasPrefix(existing.BeadID, "ext-") {
+		if existing.BellowsManaged {
+			// ext-* must never be bellows-managed; defensive correction.
+			_ = d.db.UpdatePRBellowsManaged(existing.ID, false)
+			d.logger.Info("reconcile: cleared bellows_managed on ext-* PR",
+				"pr", pr.Number, "anvil", anvilName, "bead", existing.BeadID)
+		}
+		return
+	}
+	if forgeManaged && !existing.BellowsManaged {
+		_ = d.db.UpdatePRBellowsManaged(existing.ID, true)
+		d.logger.Info("reconcile: adopted previously-external PR as bellows-managed",
+			"pr", pr.Number, "anvil", anvilName, "bead", existing.BeadID, "forge_id", myForgeID)
+		return
+	}
+	if !forgeManaged && existing.BellowsManaged {
+		reason := "no forge-managed marker"
+		if vcs.IsLegacyForgeManaged(pr.Body) {
+			reason = "legacy generic forge-managed marker; ambiguous in multi-forge deployments"
+		}
+		_ = d.db.UpdatePRBellowsManaged(existing.ID, false)
+		d.logger.Info("reconcile: released tracked PR (no longer managed by this forge)",
+			"pr", pr.Number, "anvil", anvilName, "bead", existing.BeadID,
+			"forge_id", myForgeID, "reason", reason)
+	}
+}
+
 // extractBeadID parses a bead ID from a PR body. It recognises both the
 // PR footer Forge emits ("Bead: Forge-abc | Branch: forge/Forge-abc", see
 // vcs.buildPRBody) and the bold markdown form ("**Bead**: Forge-abc") that
@@ -651,8 +710,8 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 // bead. The bold form is checked first so it wins when both appear.
 //
 // Note: a successful extraction does NOT imply Forge created the PR — only
-// vcs.IsForgeManagedPRBody answers that. extractBeadID is used for routing
-// and display.
+// vcs.IsForgeManagedBy answers that for a given instance. extractBeadID is
+// used for routing and display.
 func extractBeadID(body string) string {
 	if id := extractBeadIDWithMarker(body, "**Bead**: "); id != "" {
 		return id
@@ -685,10 +744,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	d.startTime = time.Now()
 
+	// Establish the forge instance id used in the per-instance forge-managed
+	// marker on every PR Forge creates. This must run before any CreatePR
+	// call and before reconcileOpenPRs so PR bodies and ownership checks all
+	// agree on the same id.
+	forgeID := d.cfg.Load().Settings.ResolvedForgeID()
+	vcs.SetForgeID(forgeID)
+
 	d.logger.Info("daemon started",
 		"pid", os.Getpid(),
 		"anvils", len(d.cfg.Load().Anvils),
 		"poll_interval", d.cfg.Load().Settings.PollInterval,
+		"forge_id", forgeID,
 	)
 	d.db.LogEvent(state.EventDaemonStarted, "Forge daemon started", "", "")
 
@@ -731,6 +798,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.configWatcher = hotreload.NewWatcher(d.configFile, d.cfg.Load(), d.logger)
 		d.configWatcher.OnChange(func(old, new *config.Config) {
 			d.cfg.Store(new)
+			// Re-publish the resolved forge id so PR-body builders and the
+			// reconciler use the new value immediately. Resolution falls back
+			// to os.Hostname() so this normally only changes when the operator
+			// edits settings.forge_id explicitly.
+			oldID := old.Settings.ResolvedForgeID()
+			newID := new.Settings.ResolvedForgeID()
+			if oldID != newID {
+				vcs.SetForgeID(newID)
+				d.logger.Info("forge_id changed via config reload", "old", oldID, "new", newID)
+			}
 			if d.lifecycleMgr != nil {
 				d.lifecycleMgr.SetThresholds(
 					new.Settings.MaxCIFixAttempts,
