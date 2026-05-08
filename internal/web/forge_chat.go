@@ -84,12 +84,12 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 
 	// Mark-ready is a manual escape hatch: skip claude, just transition.
 	if req.MarkReady {
-		updated, err := s.transitionStage(id, state.ForgeStageReady, "Session marked ready by user")
+		updated, statusMsg, err := s.transitionStage(id, state.ForgeStageReady, "Session marked ready by user")
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to mark ready: "+err.Error())
 			return
 		}
-		s.respondTurn(w, http.StatusOK, updated, nil, nil)
+		s.respondTurn(w, http.StatusOK, updated, nil, optMsg(statusMsg))
 		return
 	}
 
@@ -103,6 +103,16 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		metadata := ""
 
 		if row.Stage == state.ForgeStageGrilling && (req.AnswerOptionID != "" || req.AnswerQuestionID != 0) {
+			// Require answer_question_id whenever answer_option_id is provided.
+			if req.AnswerOptionID != "" && req.AnswerQuestionID == 0 {
+				writeError(w, http.StatusBadRequest, "answer_question_id is required when answer_option_id is set")
+				return
+			}
+			// Verify the referenced question belongs to this session and is kind=question.
+			if req.AnswerQuestionID != 0 && !s.sessionHasQuestion(id, req.AnswerQuestionID) {
+				writeError(w, http.StatusBadRequest, "answer_question_id not found in this session")
+				return
+			}
 			kind = state.ForgeMessageKindAnswer
 			payload := forgechat.AnswerPayload{
 				QuestionID: req.AnswerQuestionID,
@@ -117,7 +127,7 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		// When an option is picked without free-form text, use the option
 		// label as the persisted content so the chat reads naturally.
 		if content == "" && req.AnswerOptionID != "" && req.AnswerQuestionID != 0 {
-			if label, ok := s.optionLabel(req.AnswerQuestionID, req.AnswerOptionID); ok {
+			if label, ok := s.optionLabel(id, req.AnswerQuestionID, req.AnswerOptionID); ok {
 				content = label
 			}
 		}
@@ -142,6 +152,7 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 
 	// Stage transition: starting grilling requires a plan to grill against.
 	stage := row.Stage
+	var transitionMsg *state.ForgeSessionMessage
 	if req.StartGrilling {
 		reload, err := s.db.GetForgeSession(id)
 		if err != nil || reload == nil {
@@ -152,13 +163,14 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "request a plan before starting the grilling stage")
 			return
 		}
-		updated, err := s.transitionStage(id, state.ForgeStageGrilling, "Stage changed to grilling — claude will now interrogate the plan")
+		updated, msg, err := s.transitionStage(id, state.ForgeStageGrilling, "Stage changed to grilling — claude will now interrogate the plan")
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to transition stage: "+err.Error())
 			return
 		}
 		row = updated
 		stage = updated.Stage
+		transitionMsg = msg
 	}
 
 	// Decide the mode for the AI turn from the (possibly transitioned) stage.
@@ -252,6 +264,10 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 	}
 	if stagePtr != nil || planPtr != nil {
 		if _, err := s.db.UpdateForgeSessionStageAndPlan(id, stagePtr, planPtr); err != nil {
+			if errors.Is(err, state.ErrForgeSessionNotFound) {
+				writeError(w, http.StatusNotFound, "session not found")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "failed to update session: "+err.Error())
 			return
 		}
@@ -263,11 +279,14 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Compose the response: the user's freshly-appended message (if any)
-	// followed by all assistant messages, plus the updated session row.
+	// Compose the response: user message → stage-transition status (if any) →
+	// all assistant messages, ordered to match their DB insertion order.
 	out := []state.ForgeSessionMessage{}
 	if newUserMsg != nil {
 		out = append(out, *newUserMsg)
+	}
+	if transitionMsg != nil {
+		out = append(out, *transitionMsg)
 	}
 	out = append(out, emitted...)
 	s.respondTurn(w, http.StatusOK, final, nil, out)
@@ -300,18 +319,18 @@ func (s *Server) respondTurn(w http.ResponseWriter, status int, sess *state.Forg
 	})
 }
 
-// optionLabel resolves a (questionID, optionID) pair to the human-readable
-// label stored in the question's metadata. Returns ok=false when the
-// question doesn't exist or the option id is unknown so the caller can
-// surface a meaningful error.
-func (s *Server) optionLabel(questionID int64, optionID string) (string, bool) {
-	if questionID == 0 || optionID == "" {
+// optionLabel resolves a (sessionID, questionID, optionID) triple to the
+// human-readable label stored in the question's metadata. The query is scoped
+// to sessionID so a client cannot reference a question from another session.
+// Returns ok=false when the question doesn't exist or the option id is unknown.
+func (s *Server) optionLabel(sessionID, questionID int64, optionID string) (string, bool) {
+	if sessionID == 0 || questionID == 0 || optionID == "" {
 		return "", false
 	}
 	conn := s.db.Conn()
 	row := conn.QueryRow(
-		`SELECT metadata FROM forge_session_messages WHERE id = ? AND kind = ?`,
-		questionID, state.ForgeMessageKindQuestion,
+		`SELECT metadata FROM forge_session_messages WHERE id = ? AND session_id = ? AND kind = ?`,
+		questionID, sessionID, state.ForgeMessageKindQuestion,
 	)
 	var metadata string
 	if err := row.Scan(&metadata); err != nil {
@@ -332,36 +351,62 @@ func (s *Server) optionLabel(questionID int64, optionID string) (string, bool) {
 	return "", false
 }
 
+// sessionHasQuestion reports whether the message with the given ID exists in
+// this session and has kind=question. Used to validate answer_question_id
+// before persisting an answer to prevent referencing questions from other
+// sessions or messages that are not questions.
+func (s *Server) sessionHasQuestion(sessionID, questionID int64) bool {
+	if sessionID == 0 || questionID == 0 {
+		return false
+	}
+	conn := s.db.Conn()
+	row := conn.QueryRow(
+		`SELECT 1 FROM forge_session_messages WHERE id = ? AND session_id = ? AND kind = ?`,
+		questionID, sessionID, state.ForgeMessageKindQuestion,
+	)
+	var dummy int
+	return row.Scan(&dummy) == nil
+}
+
 // transitionStage updates the session's stage, appends a system status
-// message describing the transition, and returns the refreshed row. The
-// status message is what the SPA renders as the in-line "Stage changed to X"
-// note in the chat view.
-func (s *Server) transitionStage(id int64, newStage, statusContent string) (*state.ForgeSession, error) {
+// message describing the transition, and returns the refreshed row plus the
+// persisted status message. The status message is what the SPA renders as the
+// in-line "Stage changed to X" note in the chat view.
+// Returns (updatedSession, statusMsg, error). statusMsg is nil when the
+// stage was already the target (no-op) or when statusContent is empty.
+func (s *Server) transitionStage(id int64, newStage, statusContent string) (*state.ForgeSession, *state.ForgeSessionMessage, error) {
 	row, err := s.db.GetForgeSession(id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if row == nil {
-		return nil, errors.New("session not found")
+		return nil, nil, errors.New("session not found")
 	}
 	if row.Stage == newStage {
-		return row, nil
+		return row, nil, nil
 	}
 	stageStr := newStage
 	updated, err := s.db.UpdateForgeSessionStageAndPlan(id, &stageStr, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var statusMsg *state.ForgeSessionMessage
 	if statusContent != "" {
-		_, _ = s.db.AppendForgeSessionMessage(state.ForgeSessionMessage{
+		m, merr := s.db.AppendForgeSessionMessage(state.ForgeSessionMessage{
 			SessionID: id,
 			Role:      state.ForgeMessageRoleSystem,
 			Kind:      state.ForgeMessageKindStatus,
 			Content:   statusContent,
 		})
+		if merr == nil {
+			statusMsg = &m
+		}
 	}
 	if updated == nil {
-		return s.db.GetForgeSession(id)
+		updated, err = s.db.GetForgeSession(id)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
-	return updated, nil
+	return updated, statusMsg, nil
 }

@@ -61,6 +61,10 @@ func (r *ClaudeRunner) Turn(ctx context.Context, req TurnRequest) (*TurnResponse
 	turnCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// os.MkdirTemp("", ...) creates the directory under os.TempDir() (/tmp on
+	// Linux), which is outside any git repository. smith.SpawnWithProvider calls
+	// worktree.ValidateWorktreeDir, which allows directories that are not inside
+	// any git repo — so this temp dir is safe without requiring a real worktree.
 	workDir, err := os.MkdirTemp("", "forge-chat-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating temp dir: %w", err)
