@@ -1132,6 +1132,88 @@ func TestHandleIPC_DismissBead(t *testing.T) {
 	})
 }
 
+func TestHandleIPC_ClearBead(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+	}
+	d.cfg.Store(&config.Config{})
+
+	t.Run("invalid payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "clear_bead", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid clear_bead payload")
+	})
+
+	t.Run("missing fields", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ClearBeadPayload{BeadID: "X"})
+		resp := d.handleIPC(ipc.Command{Type: "clear_bead", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id and anvil are required")
+	})
+
+	t.Run("success clears flags but preserves row", func(t *testing.T) {
+		require.NoError(t, db.UpsertRetry(&state.RetryRecord{
+			BeadID:              "BD-CLEAR",
+			Anvil:               "anvil-1",
+			NeedsHuman:          true,
+			DispatchFailures:    3,
+			RecoveryFailures:    1,
+			ClarificationNeeded: true,
+			RetryCount:          5,
+			LastError:           "boom",
+		}))
+
+		payload, _ := json.Marshal(ipc.ClearBeadPayload{BeadID: "BD-CLEAR", Anvil: "anvil-1"})
+		resp := d.handleIPC(ipc.Command{Type: "clear_bead", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+
+		r, err := db.GetRetry("BD-CLEAR", "anvil-1")
+		require.NoError(t, err)
+		require.NotNil(t, r)
+		assert.False(t, r.NeedsHuman)
+		assert.Equal(t, 0, r.DispatchFailures)
+		assert.Equal(t, 0, r.RecoveryFailures)
+		assert.Empty(t, r.LastError)
+		// Untouched fields.
+		assert.True(t, r.ClarificationNeeded)
+		assert.Equal(t, 5, r.RetryCount)
+
+		// retry_cleared event should be logged.
+		events, err := db.RecentEvents(50)
+		require.NoError(t, err)
+		var found bool
+		for _, e := range events {
+			if e.Type == state.EventRetryCleared && e.BeadID == "BD-CLEAR" && e.Anvil == "anvil-1" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "expected retry_cleared event for BD-CLEAR")
+	})
+
+	t.Run("idempotent on missing row", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.ClearBeadPayload{BeadID: "BD-NONE", Anvil: "anvil-1"})
+		resp := d.handleIPC(ipc.Command{Type: "clear_bead", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+	})
+}
+
 func TestResolveGoRaceDetection(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-race-*")
 	require.NoError(t, err)

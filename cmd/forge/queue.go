@@ -26,11 +26,14 @@ func init() {
 	queueStopCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
 	_ = queueStopCmd.MarkFlagRequired("anvil")
 	queueStopCmd.Flags().StringP("reason", "r", "", "Why the bead is being stopped (optional)")
+	queueClearCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
+	_ = queueClearCmd.MarkFlagRequired("anvil")
 	queueCmd.AddCommand(queueRunCmd)
 	queueCmd.AddCommand(queueClarifyCmd)
 	queueCmd.AddCommand(queueUnclarifyCmd)
 	queueCmd.AddCommand(queueRetryCmd)
 	queueCmd.AddCommand(queueStopCmd)
+	queueCmd.AddCommand(queueClearCmd)
 	rootCmd.AddCommand(queueCmd)
 }
 
@@ -184,7 +187,7 @@ var queueClarifyCmd = &cobra.Command{
 
 var queueRetryCmd = &cobra.Command{
 	Use:     "retry <id>",
-	Short:   "Reset dispatch circuit breaker for a bead (clears needs_human from dispatch failures)",
+	Short:   "Reset the circuit breaker and re-dispatch the bead on the next poll",
 	Args:    cobra.ExactArgs(1),
 	Example: "  forge queue retry BD-42 --anvil heimdall",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -324,6 +327,60 @@ The bead will not be dispatched again until you run 'forge queue unclarify'.`,
 		}
 
 		fmt.Printf("Bead %s stopped — use 'forge queue unclarify --anvil %s %s' to resume\n", beadID, anvil, beadID)
+		return nil
+	},
+}
+
+var queueClearCmd = &cobra.Command{
+	Use:   "clear <id>",
+	Short: "Clear the needs-attention flags without re-dispatching",
+	Long: `Clear the needs-attention flags from a bead's retry state without
+triggering a re-dispatch. Use this when the underlying work is already done
+(e.g. PR merged, bead closed) and you only want the bead to stop showing up
+in the needs-attention list.
+
+Unlike 'forge queue retry', this does NOT schedule the bead for the next
+poll. Unlike 'forge queue stop', this does NOT mark the bead as needing
+clarification. Idempotent — safe to run on an already-clean bead.`,
+	Args:    cobra.ExactArgs(1),
+	Example: "  forge queue clear BD-42 --anvil heimdall",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		beadID := args[0]
+		anvil, _ := cmd.Flags().GetString("anvil")
+
+		client, err := ipc.NewClient()
+		if err != nil {
+			return fmt.Errorf("connecting to daemon: %w (is 'forge up' running?)", err)
+		}
+		defer client.Close()
+
+		payload, _ := json.Marshal(ipc.ClearBeadPayload{
+			BeadID: beadID,
+			Anvil:  anvil,
+		})
+
+		resp, err := client.Send(ipc.Command{
+			Type:    "clear_bead",
+			Payload: payload,
+		})
+		if err != nil {
+			return fmt.Errorf("sending command: %w", err)
+		}
+
+		if resp.Type == "error" {
+			var msg map[string]string
+			var errMsg string
+			if err := json.Unmarshal(resp.Payload, &msg); err == nil && msg["message"] != "" {
+				errMsg = msg["message"]
+			} else if len(resp.Payload) > 0 {
+				errMsg = string(resp.Payload)
+			} else {
+				errMsg = "unknown error from daemon"
+			}
+			return fmt.Errorf("daemon error: %s", errMsg)
+		}
+
+		fmt.Printf("Needs-attention flags cleared for bead %s (no re-dispatch)\n", beadID)
 		return nil
 	},
 }

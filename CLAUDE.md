@@ -39,7 +39,8 @@ forge queue run <id>                  # Manually dispatch a bead
 forge queue stop <id> --anvil <name>  # Kill worker, prevent re-dispatch
 forge queue clarify <id>              # Mark bead as needing clarification
 forge queue unclarify <id>            # Clear clarification flag
-forge queue retry <id>                # Reset dispatch circuit breaker
+forge queue retry <id>                # Reset circuit breaker AND re-dispatch on next poll
+forge queue clear <id>                # Clear needs-attention flags WITHOUT re-dispatching
 forge history                         # Show recent worker history
 forge history events                  # Show event log
 forge ingots list                     # List ingot records (bead lifecycle)

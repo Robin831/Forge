@@ -171,10 +171,29 @@ forge queue unclarify BD-42 --anvil my-api
 
 ### `forge queue retry <id>`
 
-Reset the dispatch circuit breaker for a bead so it can be retried.
+Reset the circuit breaker and re-dispatch the bead on the next poll. Use this
+when the previous attempt failed for a transient reason and you want Forge to
+try again.
 
 ```bash
 forge queue retry BD-42 --anvil my-api
+```
+
+| Flag | Description |
+|------|-------------|
+| `-a, --anvil` | Anvil name (required) |
+
+### `forge queue clear <id>`
+
+Clear the needs-attention flags from a bead without triggering a re-dispatch.
+Use this when the underlying work is already done (PR merged, bead closed) and
+you only want the bead to stop showing up in the needs-attention list. Unlike
+`retry`, it does not schedule the bead for the next poll. Unlike `stop`, it
+does not mark the bead as needing clarification. Idempotent — safe to run on
+an already-clean bead.
+
+```bash
+forge queue clear BD-42 --anvil my-api
 ```
 
 | Flag | Description |

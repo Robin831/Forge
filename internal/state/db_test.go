@@ -553,6 +553,238 @@ func TestDB_DismissRetry(t *testing.T) {
 	}
 }
 
+func TestDB_ClearNeedsAttention_ZeroesColumns(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	past := time.Now().Add(-1 * time.Hour)
+	firstFailure := time.Now().Add(-30 * time.Minute)
+	if err := db.UpsertRetry(&RetryRecord{
+		BeadID:               "BD-1",
+		Anvil:                "anvil-1",
+		RetryCount:           4,
+		NextRetry:            &past,
+		NeedsHuman:           true,
+		ClarificationNeeded:  true,
+		DispatchFailures:     3,
+		RecoveryFailures:     2,
+		FirstRecoveryFailure: &firstFailure,
+		LastError:            "boom",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	pre, err := db.GetRetry("BD-1", "anvil-1")
+	if err != nil || pre == nil {
+		t.Fatalf("seed record missing: %v", err)
+	}
+	preUpdatedAt := pre.UpdatedAt
+	time.Sleep(5 * time.Millisecond)
+
+	if err := db.ClearNeedsAttention("BD-1", "anvil-1"); err != nil {
+		t.Fatalf("ClearNeedsAttention returned error: %v", err)
+	}
+
+	r, err := db.GetRetry("BD-1", "anvil-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r == nil {
+		t.Fatal("expected record to still exist after clear")
+	}
+	if r.NeedsHuman {
+		t.Error("expected NeedsHuman=false after clear")
+	}
+	if r.DispatchFailures != 0 {
+		t.Errorf("expected DispatchFailures=0 after clear, got %d", r.DispatchFailures)
+	}
+	if r.RecoveryFailures != 0 {
+		t.Errorf("expected RecoveryFailures=0 after clear, got %d", r.RecoveryFailures)
+	}
+	if r.FirstRecoveryFailure != nil {
+		t.Errorf("expected FirstRecoveryFailure=nil after clear, got %v", r.FirstRecoveryFailure)
+	}
+	if r.LastError != "" {
+		t.Errorf("expected LastError empty after clear, got %q", r.LastError)
+	}
+	// Fields the bead spec says must NOT be touched.
+	if !r.ClarificationNeeded {
+		t.Error("expected ClarificationNeeded to be preserved (true) after clear")
+	}
+	if r.RetryCount != 4 {
+		t.Errorf("expected RetryCount preserved (=4) after clear, got %d", r.RetryCount)
+	}
+	if r.NextRetry == nil {
+		t.Error("expected NextRetry preserved (non-nil) after clear")
+	}
+	if !r.UpdatedAt.After(preUpdatedAt) {
+		t.Errorf("expected UpdatedAt to advance, before=%v after=%v", preUpdatedAt, r.UpdatedAt)
+	}
+}
+
+func TestDB_ClearNeedsAttention_Idempotent(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// No-op success when no row exists at all.
+	if err := db.ClearNeedsAttention("BD-NONE", "anvil-1"); err != nil {
+		t.Fatalf("ClearNeedsAttention on missing row should be no-op success, got: %v", err)
+	}
+
+	// Seed a clean row, clear twice, both should succeed without error.
+	if err := db.UpsertRetry(&RetryRecord{
+		BeadID: "BD-CLEAN",
+		Anvil:  "anvil-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ClearNeedsAttention("BD-CLEAN", "anvil-1"); err != nil {
+		t.Fatalf("first clear failed: %v", err)
+	}
+	if err := db.ClearNeedsAttention("BD-CLEAN", "anvil-1"); err != nil {
+		t.Fatalf("second clear failed: %v", err)
+	}
+
+	r, err := db.GetRetry("BD-CLEAN", "anvil-1")
+	if err != nil || r == nil {
+		t.Fatalf("expected row to still exist, err=%v", err)
+	}
+	if r.NeedsHuman || r.DispatchFailures != 0 || r.RecoveryFailures != 0 || r.LastError != "" {
+		t.Errorf("expected fully clean row after two clears, got %+v", r)
+	}
+}
+
+func TestDB_ClearNeedsAttention_OtherRowsUntouched(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := db.UpsertRetry(&RetryRecord{
+		BeadID:           "BD-TARGET",
+		Anvil:            "anvil-1",
+		NeedsHuman:       true,
+		DispatchFailures: 2,
+		LastError:        "target",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertRetry(&RetryRecord{
+		BeadID:           "BD-SIBLING",
+		Anvil:            "anvil-1",
+		NeedsHuman:       true,
+		DispatchFailures: 5,
+		LastError:        "untouched",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Cross-anvil row with the same bead ID — must also stay untouched.
+	if err := db.UpsertRetry(&RetryRecord{
+		BeadID:           "BD-TARGET",
+		Anvil:            "anvil-2",
+		NeedsHuman:       true,
+		DispatchFailures: 7,
+		LastError:        "other-anvil",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.ClearNeedsAttention("BD-TARGET", "anvil-1"); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+
+	target, err := db.GetRetry("BD-TARGET", "anvil-1")
+	if err != nil || target == nil {
+		t.Fatalf("target row missing: %v", err)
+	}
+	if target.NeedsHuman || target.DispatchFailures != 0 || target.LastError != "" {
+		t.Errorf("target row not cleared: %+v", target)
+	}
+
+	sibling, err := db.GetRetry("BD-SIBLING", "anvil-1")
+	if err != nil || sibling == nil {
+		t.Fatalf("sibling row missing: %v", err)
+	}
+	if !sibling.NeedsHuman || sibling.DispatchFailures != 5 || sibling.LastError != "untouched" {
+		t.Errorf("sibling row was modified: %+v", sibling)
+	}
+
+	otherAnvil, err := db.GetRetry("BD-TARGET", "anvil-2")
+	if err != nil || otherAnvil == nil {
+		t.Fatalf("cross-anvil row missing: %v", err)
+	}
+	if !otherAnvil.NeedsHuman || otherAnvil.DispatchFailures != 7 || otherAnvil.LastError != "other-anvil" {
+		t.Errorf("cross-anvil row was modified: %+v", otherAnvil)
+	}
+}
+
+func TestDB_ClearNeedsAttention_DoesNotScheduleRetry(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Seed a row with no scheduled retry; after clear, NextRetry must
+	// remain unset and the bead must drop out of the needs-human set.
+	if err := db.UpsertRetry(&RetryRecord{
+		BeadID:           "BD-NOENQ",
+		Anvil:            "anvil-1",
+		NeedsHuman:       true,
+		DispatchFailures: 3,
+		LastError:        "boom",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.ClearNeedsAttention("BD-NOENQ", "anvil-1"); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+
+	r, err := db.GetRetry("BD-NOENQ", "anvil-1")
+	if err != nil || r == nil {
+		t.Fatalf("expected row to exist, err=%v", err)
+	}
+	if r.NextRetry != nil {
+		t.Errorf("ClearNeedsAttention must not schedule a retry; got NextRetry=%v", r.NextRetry)
+	}
+
+	needsHuman, err := db.NeedsHumanBeadIDSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := needsHuman["BD-NOENQ\x00anvil-1"]; ok {
+		t.Error("expected BD-NOENQ to no longer be in needs-human set after clear")
+	}
+}
+
 func TestDB_LastWorkerLogPath(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {
