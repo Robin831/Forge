@@ -21,11 +21,14 @@ import (
 var ErrPRAlreadyExists = errors.New("pull request already exists for branch")
 
 // ForgeManagedMarker is an HTML comment embedded in PR bodies that Forge
-// creates. It is the authoritative ownership signal: only PRs whose body
-// contains this marker are eligible to be adopted as bellows-managed during
-// reconciliation. A bare "**Bead**: <id>" reference is NOT sufficient — PR
+// creates. It is the opt-in adoption signal used during reconciliation: only
+// PRs whose body contains this marker are eligible to be adopted as
+// bellows-managed. A bare "**Bead**: <id>" reference is NOT sufficient — PR
 // templates, "Closes" lines, and manual mentions of bead IDs must not cause
 // Forge to start pushing commits, requesting reviews, or auto-merging.
+// Note: PR bodies are user-controlled, so this marker is a convention rather
+// than a cryptographic guarantee. It prevents accidental adoption; it is not
+// a security boundary.
 const ForgeManagedMarker = "<!-- forge-managed: true -->"
 
 // EnsureForgeManagedMarker appends ForgeManagedMarker to body if not already
@@ -45,10 +48,10 @@ func EnsureForgeManagedMarker(body string) string {
 	return body + "\n" + ForgeManagedMarker
 }
 
-// IsForgeManagedPRBody reports whether a PR body was authored by Forge,
-// based on the presence of ForgeManagedMarker. This is the authoritative
-// ownership signal used by reconcileOpenPRs; callers must not infer
-// ownership from a "**Bead**: <id>" reference alone.
+// IsForgeManagedPRBody reports whether a PR body contains the forge-managed
+// marker, indicating the PR was created by Forge. This is the opt-in adoption
+// signal used by reconcileOpenPRs; callers must not infer ownership from a
+// "**Bead**: <id>" reference alone.
 func IsForgeManagedPRBody(body string) bool {
 	return strings.Contains(body, ForgeManagedMarker)
 }

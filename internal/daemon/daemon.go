@@ -632,10 +632,11 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 				if pr.Title != "" {
 					_ = d.db.UpdatePRTitle(dbPR.ID, pr.Title)
 				}
-				// Only PRs Forge created (forge-managed marker present) are
-				// eligible for bellows lifecycle management. Everything else
-				// is display-only, so reset the column default to 0.
-				if !forgeManaged {
+				// Only PRs Forge created (forge-managed marker present) and
+				// with a parseable bead ID are eligible for bellows lifecycle
+				// management. External PRs and forge-managed-but-unparseable
+				// PRs (synthetic ext-* IDs) are display-only.
+				if !forgeManaged || strings.HasPrefix(beadID, "ext-") {
 					_ = d.db.UpdatePRBellowsManaged(dbPR.ID, false)
 				}
 			}
@@ -645,7 +646,7 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 
 // extractBeadID parses a bead ID from a PR body. It recognises both the
 // PR footer Forge emits ("Bead: Forge-abc | Branch: forge/Forge-abc", see
-// vcs.BuildPRBody) and the bold markdown form ("**Bead**: Forge-abc") that
+// vcs.buildPRBody) and the bold markdown form ("**Bead**: Forge-abc") that
 // can appear in Smith-authored sections or contributor PRs that mention a
 // bead. The bold form is checked first so it wins when both appear.
 //
