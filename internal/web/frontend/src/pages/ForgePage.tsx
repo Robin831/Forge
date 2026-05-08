@@ -102,6 +102,15 @@ export default function ForgePage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // Focus the draft textarea when switching to new-session mode. The effect
+  // runs after the render so NewSessionView is mounted and composerRef points
+  // at the draft input (not the old conversation textarea).
+  useEffect(() => {
+    if (activeId === null) {
+      composerRef.current?.focus()
+    }
+  }, [activeId])
+
   // Focus the rename input when entering rename mode.
   useEffect(() => {
     if (renamingId !== null) {
@@ -235,7 +244,6 @@ export default function ForgePage() {
           onNew={() => {
             setActiveId(null)
             setDraft('')
-            composerRef.current?.focus()
           }}
           onStartRename={(s) => {
             setRenamingId(s.id)

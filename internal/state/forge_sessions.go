@@ -253,6 +253,57 @@ func (db *DB) ListForgeSessionMessages(sessionID int64) ([]ForgeSessionMessage, 
 	return out, rows.Err()
 }
 
+// ForgeSessionWithCount pairs a session with its pre-computed message count.
+// Returned by ListForgeSessionsWithCounts to avoid a separate COUNT per row.
+type ForgeSessionWithCount struct {
+	ForgeSession
+	MessageCount int
+}
+
+// ListForgeSessionsWithCounts returns sessions with their message counts using
+// a single LEFT JOIN query, eliminating the N+1 pattern of a per-row COUNT.
+// When createdBy is non-empty, rows owned by that user plus unattributed rows
+// (created_by="") are returned, consistent with forgeSessionVisibleTo.
+func (db *DB) ListForgeSessionsWithCounts(createdBy string, limit int) ([]ForgeSessionWithCount, error) {
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	q := `SELECT s.id, s.title, s.status, s.anvil, s.created_by, s.created_at, s.updated_at,
+	             COUNT(m.id) AS message_count
+	      FROM forge_sessions s
+	      LEFT JOIN forge_session_messages m ON m.session_id = s.id`
+	args := []any{}
+	if createdBy != "" {
+		q += ` WHERE (s.created_by = ? OR s.created_by = '')`
+		args = append(args, createdBy)
+	}
+	q += ` GROUP BY s.id ORDER BY s.updated_at DESC, s.id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := db.conn.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ForgeSessionWithCount{}
+	for rows.Next() {
+		var sc ForgeSessionWithCount
+		var createdAt, updatedAt string
+		if err := rows.Scan(
+			&sc.ID, &sc.Title, &sc.Status, &sc.Anvil, &sc.CreatedBy,
+			&createdAt, &updatedAt, &sc.MessageCount,
+		); err != nil {
+			return nil, err
+		}
+		sc.CreatedAt = parseTime(createdAt)
+		sc.UpdatedAt = parseTime(updatedAt)
+		out = append(out, sc)
+	}
+	return out, rows.Err()
+}
+
 // CountForgeSessionMessages returns the number of persisted messages for a
 // session. Used by the API to populate the sidebar preview without sending
 // the full message list.

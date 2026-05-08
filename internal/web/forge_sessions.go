@@ -97,19 +97,14 @@ func (s *Server) handleForgeSessionsList(w http.ResponseWriter, r *http.Request)
 		}
 		limit = n
 	}
-	rows, err := s.db.ListForgeSessions(sess.Username, limit)
+	rows, err := s.db.ListForgeSessionsWithCounts(sess.Username, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list sessions: "+err.Error())
 		return
 	}
 	out := make([]forgeSessionDTO, 0, len(rows))
 	for _, row := range rows {
-		count, err := s.db.CountForgeSessionMessages(row.ID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to count messages: "+err.Error())
-			return
-		}
-		out = append(out, toForgeSessionDTO(row, count))
+		out = append(out, toForgeSessionDTO(row.ForgeSession, row.MessageCount))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
 }
@@ -176,6 +171,8 @@ func (s *Server) handleForgeSessionsCreate(w http.ResponseWriter, r *http.Reques
 			Content:   req.InitialMessage,
 		})
 		if err != nil {
+			// Delete the orphaned session so a retry starts clean.
+			_ = s.db.DeleteForgeSession(row.ID)
 			writeError(w, http.StatusInternalServerError, "failed to append message: "+err.Error())
 			return
 		}
@@ -187,7 +184,11 @@ func (s *Server) handleForgeSessionsCreate(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	count, _ := s.db.CountForgeSessionMessages(row.ID)
+	count, err := s.db.CountForgeSessionMessages(row.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to count messages: "+err.Error())
+		return
+	}
 	resp := map[string]any{"session": toForgeSessionDTO(row, count)}
 	if firstMessage != nil {
 		resp["message"] = *firstMessage
@@ -276,6 +277,10 @@ func (s *Server) handleForgeSessionUpdate(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	if req.Title == nil && req.Status == nil {
+		writeError(w, http.StatusBadRequest, "request must include title or status")
+		return
+	}
 	if req.Title != nil {
 		t := truncateTitle(*req.Title)
 		req.Title = &t
@@ -297,7 +302,11 @@ func (s *Server) handleForgeSessionUpdate(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to reload session")
 		return
 	}
-	count, _ := s.db.CountForgeSessionMessages(id)
+	count, err := s.db.CountForgeSessionMessages(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to count messages: "+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"session": toForgeSessionDTO(*row, count)})
 }
 
@@ -421,7 +430,11 @@ func (s *Server) handleForgeSessionAppend(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to reload session")
 		return
 	}
-	count, _ := s.db.CountForgeSessionMessages(id)
+	count, err := s.db.CountForgeSessionMessages(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to count messages: "+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"message": toForgeMessageDTO(m),
 		"session": toForgeSessionDTO(*updated, count),
