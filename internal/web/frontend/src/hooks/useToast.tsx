@@ -34,27 +34,31 @@ const AUTO_DISMISS_MS = 4500
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
   const idRef = useRef(1)
+  const timersRef = useRef<Map<number, ReturnType<typeof window.setTimeout>>>(new Map())
 
   const dismiss = useCallback((id: number) => {
+    const timer = timersRef.current.get(id)
+    if (timer !== undefined) {
+      window.clearTimeout(timer)
+      timersRef.current.delete(id)
+    }
     setToasts((current) => current.filter((t) => t.id !== id))
   }, [])
 
   const push = useCallback((message: string, variant: ToastVariant = 'info') => {
     const id = idRef.current++
     setToasts((current) => [...current, { id, message, variant }])
-  }, [])
+    const timer = window.setTimeout(() => dismiss(id), AUTO_DISMISS_MS)
+    timersRef.current.set(id, timer)
+  }, [dismiss])
 
-  // Auto-dismiss each toast after a fixed delay. We register one timer per
-  // toast and clean up on unmount or when the toast is removed early.
   useEffect(() => {
-    if (toasts.length === 0) return
-    const timers = toasts.map((t) =>
-      window.setTimeout(() => dismiss(t.id), AUTO_DISMISS_MS),
-    )
+    const timers = timersRef.current
     return () => {
       timers.forEach((t) => window.clearTimeout(t))
+      timers.clear()
     }
-  }, [toasts, dismiss])
+  }, [])
 
   const value = useMemo(() => ({ toasts, push, dismiss }), [toasts, push, dismiss])
   return <ToastContext.Provider value={value}>{children}</ToastContext.Provider>

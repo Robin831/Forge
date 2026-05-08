@@ -3589,12 +3589,16 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id, anvil, and label are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		var bdFlag string
+		var bdFlag, pastTense, gerund string
 		switch up.Action {
 		case "add":
 			bdFlag = "--add-label"
+			pastTense = "added"
+			gerund = "adding"
 		case "remove":
 			bdFlag = "--remove-label"
+			pastTense = "removed"
+			gerund = "removing"
 		default:
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("invalid action %q (want add|remove)", up.Action)})
 			return ipc.Response{Type: "error", Payload: msg}
@@ -3621,13 +3625,16 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				return
 			}
 			d.logger.Info("label updated", "bead", up.BeadID, "anvil", up.Anvil, "label", up.Label, "action", up.Action)
-			if logErr := d.db.LogEvent(state.EventBeadTagged, fmt.Sprintf("Label %q %sed on bead %s", up.Label, up.Action, up.BeadID), up.BeadID, up.Anvil); logErr != nil {
+			if logErr := d.db.LogEvent(state.EventBeadTagged, fmt.Sprintf("Label %q %s on bead %s", up.Label, pastTense, up.BeadID), up.BeadID, up.Anvil); logErr != nil {
 				d.logger.Warn("failed to log label update event", "bead", up.BeadID, "anvil", up.Anvil, "error", logErr)
 			}
-			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q %sed", up.Label, up.Action)})
+			refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+			defer refreshCancel()
+			d.pollAndDispatch(refreshCtx, false)
+			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q %s", up.Label, pastTense)})
 			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
 		}()
-		resp, _ := ipc.NewQueuedResponse(reqID, fmt.Sprintf("%sing label", up.Action))
+		resp, _ := ipc.NewQueuedResponse(reqID, fmt.Sprintf("%s label", gerund))
 		return resp
 
 	case "close_bead":

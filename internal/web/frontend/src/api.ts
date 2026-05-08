@@ -268,10 +268,12 @@ export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> 
 // the daemon runs queued shellouts in the background. A 4xx/5xx response is
 // surfaced as ApiError with the daemon's error message when available.
 export async function apiPost<T = unknown>(path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { 'X-Forge-Action': '1' }
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
   const res = await fetch(path, {
     method: 'POST',
     credentials: 'include',
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   if (res.status === 401) {

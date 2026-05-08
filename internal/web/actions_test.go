@@ -55,10 +55,26 @@ func postAction(t *testing.T, srv *Server, cookie, path string, body any) *httpt
 	}
 	req := httptest.NewRequest("POST", path, reader)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forge-Action", "1")
 	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
 	return rec
+}
+
+func TestActions_RequireCSRFHeader(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	// POST without X-Forge-Action header should be rejected with 403.
+	req := httptest.NewRequest("POST", "/api/bead/Forge-abc1/close", strings.NewReader(`{"anvil":"forge"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 without CSRF header, got %d", rec.Code)
+	}
 }
 
 func TestActions_RequireAuth(t *testing.T) {

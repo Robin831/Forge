@@ -42,6 +42,7 @@ func (s *Server) routes() http.Handler {
 	})
 	r.Route("/api", func(r chi.Router) {
 		r.Use(s.requireAuth)
+		r.Use(s.csrfCheck)
 		r.Get("/me", s.handleMe)
 		r.Get("/status", s.handleStatus)
 		r.Get("/queue", s.handleQueue)

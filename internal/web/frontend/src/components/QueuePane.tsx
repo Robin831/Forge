@@ -133,9 +133,9 @@ export default function QueuePane({
                   <QueueActions
                     item={item}
                     busy={busy}
-                    open={openMenu === item.bead_id}
+                    open={openMenu === `${item.anvil}:${item.bead_id}`}
                     onToggle={() =>
-                      setOpenMenu(openMenu === item.bead_id ? null : item.bead_id)
+                      setOpenMenu(openMenu === `${item.anvil}:${item.bead_id}` ? null : `${item.anvil}:${item.bead_id}`)
                     }
                     onDispatch={() => {
                       setOpenMenu(null)

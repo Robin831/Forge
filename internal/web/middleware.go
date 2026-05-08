@@ -77,6 +77,25 @@ func (s *statusRecorder) Flush() {
 	}
 }
 
+// csrfCheck rejects state-changing requests (POST/PUT/DELETE/PATCH) that lack
+// the X-Forge-Action header. The SPA sets this header on every action fetch;
+// cross-origin scripts cannot set custom headers, so this provides explicit
+// CSRF defence for the new destructive endpoints introduced in Hearth 2.0.
+func (s *Server) csrfCheck(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			// Safe methods — no CSRF risk.
+		default:
+			if r.Header.Get("X-Forge-Action") == "" {
+				writeError(w, http.StatusForbidden, "CSRF check failed: X-Forge-Action header required")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // clientIP returns the request's client IP, preferring X-Forwarded-For when
 // present (the daemon is expected to run behind a reverse proxy in
 // Kubernetes).
