@@ -242,6 +242,41 @@ export interface BeadDetailResponse {
   prs: BeadDetailPR[]
 }
 
+export interface PRItem {
+  id?: number
+  number: number
+  anvil: string
+  repo?: string
+  branch?: string
+  base_branch?: string
+  title?: string
+  url?: string
+  author?: string
+  status: string
+  is_external: boolean
+  is_conflicting?: boolean
+  ci_passing?: boolean
+  ci_failing?: boolean
+  reviews_approved?: boolean
+  bellows_assigned?: boolean
+  ci_fix_count?: number
+  review_fix_count?: number
+  rebase_count?: number
+  bead_id?: string
+  created_at?: string
+  updated_at?: string
+  merged_at?: string
+  closed_at?: string
+}
+
+// PRsResponse is the shape served by GET /api/prs/all. Keys align with
+// PRSectionKind so callers can index directly without a mapping layer.
+export interface PRsResponse {
+  forge_prs: PRItem[]
+  external_prs: PRItem[]
+  recently_merged: PRItem[]
+}
+
 export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {

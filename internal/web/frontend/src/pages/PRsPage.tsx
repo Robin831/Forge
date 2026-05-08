@@ -1,13 +1,12 @@
 import { GitPullRequest } from 'lucide-react'
 import { useApiPoll } from '../hooks/useApiPoll'
-import type { StatusResponse } from '../api'
+import type { PRItem, StatusResponse } from '../api'
 import AppHeader from '../components/AppHeader'
 import Pane, { EmptyState } from '../components/Pane'
 import {
   PR_SECTION_DESCRIPTIONS,
   PR_SECTION_EMPTY_MESSAGES,
   PR_SECTION_TITLES,
-  type PRItem,
   type PRSectionKind,
 } from './prsTypes'
 
@@ -78,7 +77,7 @@ function PRSectionContainer({ kind, items, loading, error }: PRSectionContainerP
         <ul className="divide-y divide-slate-800" data-testid={`prs-${kind}`}>
           {items.map((pr) => (
             <li key={pr.id ?? `${pr.repo ?? pr.anvil}#${pr.number}`} className="px-4 py-3">
-              <p className="text-sm text-slate-100">{pr.title}</p>
+              <p className="text-sm text-slate-100">{pr.title || '(no title)'}</p>
               <p className="mt-0.5 text-xs text-slate-500">
                 {pr.anvil} · #{pr.number}
               </p>
