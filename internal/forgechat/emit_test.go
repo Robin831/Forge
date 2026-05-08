@@ -129,6 +129,52 @@ func TestValidateEmission_DuplicateProposalIDs(t *testing.T) {
 	}
 }
 
+func TestParseEmissionResponse_FencedWithCodeInDescription(t *testing.T) {
+	// Description contains its own ```json block — the parser must not treat
+	// the inner fence as the closing fence of the outer block.
+	inner := "```json\n{\"key\":\"value\"}\n```"
+	bead := `{"id":"p1","anvil":"forge","title":"Foo","description":"` + "see code: \\n\\n```json\\n{\\\"key\\\":\\\"value\\\"}\\n```" + `","type":"task","priority":2}`
+	out := "```json\n" +
+		`{"beads":[` + bead + `]}` +
+		"\n```"
+	env, err := ParseEmissionResponse(out)
+	if err != nil {
+		t.Fatalf("parse: %v (inner fence was: %q)", err, inner)
+	}
+	if len(env.Beads) != 1 {
+		t.Fatalf("expected 1 bead, got %d", len(env.Beads))
+	}
+}
+
+func TestParseEmissionResponse_BareJSONWithBracesInStrings(t *testing.T) {
+	// Description field contains unbalanced braces — the json.Decoder fallback
+	// must handle this correctly (unlike a brace-counting scanner).
+	out := `some preamble {"beads":[{"id":"p1","anvil":"forge","title":"X","description":"use { and } freely","type":"task","priority":2}]} trailing`
+	env, err := ParseEmissionResponse(out)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(env.Beads) != 1 {
+		t.Fatalf("expected 1 bead, got %d", len(env.Beads))
+	}
+}
+
+func TestValidateEmission_CaseInsensitiveAnvilMatch(t *testing.T) {
+	// Emission uses "Forge" (capital F) but the registered key is "forge".
+	// ValidateEmission must accept the match and normalise the bead's Anvil
+	// to the canonical casing so downstream routing works.
+	env := &EmissionEnvelope{Beads: []BeadProposal{
+		{ProposalID: "p1", Anvil: "Forge", Title: "1", Type: "task", Priority: 2},
+	}}
+	problems := ValidateEmission(env, map[string]bool{"forge": true})
+	if len(problems) > 0 {
+		t.Fatalf("expected case-insensitive anvil match to pass, got %v", problems)
+	}
+	if env.Beads[0].Anvil != "forge" {
+		t.Errorf("expected anvil to be normalised to canonical key %q, got %q", "forge", env.Beads[0].Anvil)
+	}
+}
+
 func TestValidateEmission_AllValidPasses(t *testing.T) {
 	env := &EmissionEnvelope{Beads: []BeadProposal{
 		{ProposalID: "p1", Anvil: "a", Title: "Foo", Type: "feature", Priority: 1},

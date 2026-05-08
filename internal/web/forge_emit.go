@@ -73,9 +73,8 @@ func (s *Server) handleForgeSessionCreateBeads(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "session has no plan to emit beads from")
 		return
 	}
-	// Reject empty bodies up front but tolerate any client payload (we don't
-	// take options today). Read with a small limit so we don't hang on a
-	// pathological client.
+	// Drain and discard the request body so the connection can be reused
+	// (we take no parameters today, so any payload is ignored).
 	_, _ = io.ReadAll(io.LimitReader(r.Body, 8*1024))
 
 	if s.chatRunner == nil {

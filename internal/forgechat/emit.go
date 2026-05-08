@@ -57,40 +57,48 @@ func ParseEmissionResponse(output string) (*EmissionEnvelope, error) {
 	if env, err := tryParseEmissionFenced(output); err == nil {
 		return env, nil
 	}
+	// Fallback: find the first JSON object that decodes as an EmissionEnvelope.
+	// json.Decoder handles braces and fences inside string values correctly,
+	// unlike a hand-rolled brace counter.
 	for i := 0; i < len(output); i++ {
 		if output[i] != '{' {
 			continue
 		}
-		depth := 0
-		for j := i; j < len(output); j++ {
-			switch output[j] {
-			case '{':
-				depth++
-			case '}':
-				depth--
-				if depth == 0 {
-					block := output[i : j+1]
-					if strings.Contains(block, `"beads"`) {
-						var env EmissionEnvelope
-						if err := json.Unmarshal([]byte(block), &env); err == nil {
-							return &env, nil
-						}
-					}
-					i = j
-				}
-			}
-			if depth == 0 {
-				break
-			}
+		var env EmissionEnvelope
+		dec := json.NewDecoder(strings.NewReader(output[i:]))
+		if err := dec.Decode(&env); err == nil && len(env.Beads) > 0 {
+			return &env, nil
 		}
 	}
 	return nil, errors.New("no valid emission envelope JSON found in output")
 }
 
+// findClosingFence returns the index within s where a line-starting closing
+// fence (```) begins — i.e. "```" immediately after a '\n'. Returns -1 if
+// no such fence is found. Requiring the fence to start at column 0 prevents
+// "```" appearing inside a JSON string value (which is encoded on a single
+// line in the output) from being mistaken for the end of the fenced block.
+func findClosingFence(s string) int {
+	search := s
+	offset := 0
+	for {
+		idx := strings.Index(search, "\n```")
+		if idx < 0 {
+			return -1
+		}
+		after := search[idx+4:]
+		if len(after) == 0 || after[0] == '\n' || after[0] == '\r' {
+			return offset + idx + 1
+		}
+		search = search[idx+1:]
+		offset += idx + 1
+	}
+}
+
 func tryParseEmissionFenced(output string) (*EmissionEnvelope, error) {
 	if idx := strings.Index(output, "```json"); idx >= 0 {
 		start := idx + len("```json")
-		if end := strings.Index(output[start:], "```"); end >= 0 {
+		if end := findClosingFence(output[start:]); end >= 0 {
 			var env EmissionEnvelope
 			if err := json.Unmarshal([]byte(strings.TrimSpace(output[start:start+end])), &env); err == nil {
 				return &env, nil
@@ -102,7 +110,7 @@ func tryParseEmissionFenced(output string) (*EmissionEnvelope, error) {
 		if nl := strings.Index(output[start:], "\n"); nl >= 0 {
 			start += nl + 1
 		}
-		if end := strings.Index(output[start:], "```"); end >= 0 {
+		if end := findClosingFence(output[start:]); end >= 0 {
 			var env EmissionEnvelope
 			if err := json.Unmarshal([]byte(strings.TrimSpace(output[start:start+end])), &env); err == nil {
 				return &env, nil
@@ -134,6 +142,20 @@ func ValidateEmission(env *EmissionEnvelope, knownAnvils map[string]bool) []stri
 		return []string{"emission contains no beads"}
 	}
 
+	// Build a case-folded map so anvil lookups match the daemon's
+	// case-insensitive resolveAnvilConfig behaviour (e.g. "Munin" matches the
+	// configured key "munin"). We also rewrite env.Beads[i].Anvil to the
+	// canonical key so downstream routing uses the correct casing.
+	var canonicalAnvil map[string]string
+	if knownAnvils != nil {
+		canonicalAnvil = make(map[string]string, len(knownAnvils))
+		for name := range knownAnvils {
+			if knownAnvils[name] {
+				canonicalAnvil[strings.ToLower(name)] = name
+			}
+		}
+	}
+
 	idIndex := make(map[string]int, len(env.Beads))
 	for i, b := range env.Beads {
 		id := strings.TrimSpace(b.ProposalID)
@@ -154,8 +176,12 @@ func ValidateEmission(env *EmissionEnvelope, knownAnvils map[string]bool) []stri
 		}
 		if strings.TrimSpace(b.Anvil) == "" {
 			problems = append(problems, fmt.Sprintf("bead %q: missing anvil", b.ProposalID))
-		} else if knownAnvils != nil && !knownAnvils[b.Anvil] {
-			problems = append(problems, fmt.Sprintf("bead %q: anvil %q is not registered with this forge", b.ProposalID, b.Anvil))
+		} else if canonicalAnvil != nil {
+			if canonical, ok := canonicalAnvil[strings.ToLower(b.Anvil)]; ok {
+				env.Beads[i].Anvil = canonical
+			} else {
+				problems = append(problems, fmt.Sprintf("bead %q: anvil %q is not registered with this forge", b.ProposalID, b.Anvil))
+			}
 		}
 		typ := strings.ToLower(strings.TrimSpace(b.Type))
 		if typ == "" {
