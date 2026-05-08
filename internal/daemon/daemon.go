@@ -483,6 +483,64 @@ func (d *Daemon) ingotRecordPR(beadID, anvil string, prNumber int, prURL string)
 	}
 }
 
+// registerExistingPRByBranch handles the ErrPRAlreadyExists case from CreatePR
+// by looking up the open PR matching the given branch via the VCS provider and
+// registering it in state.db when it is not already tracked. Without this
+// step, HasOpenPRForBead returns false on the next orphan-recovery sweep and
+// the bead is reset to open and re-dispatched, producing a redispatch loop
+// that burns Smith tokens to declare "no changes needed" each iteration.
+// Returns the PR number on success (0 if the PR could not be located or
+// registration failed).
+func (d *Daemon) registerExistingPRByBranch(ctx context.Context, anvilName, anvilPath, beadID, branch string) int {
+	if branch == "" {
+		return 0
+	}
+	prs, err := d.vcsForAnvil(anvilName).ListOpenPRs(ctx, anvilPath)
+	if err != nil {
+		d.logger.Warn("could not list open PRs to register existing PR after ErrPRAlreadyExists",
+			"anvil", anvilName, "branch", branch, "bead", beadID, "error", err)
+		return 0
+	}
+	var match *vcs.OpenPR
+	for i := range prs {
+		if prs[i].Branch == branch {
+			match = &prs[i]
+			break
+		}
+	}
+	if match == nil {
+		d.logger.Warn("ErrPRAlreadyExists but no open PR found by branch — orphan recovery may re-dispatch this bead",
+			"anvil", anvilName, "branch", branch, "bead", beadID)
+		return 0
+	}
+	if existing, _ := d.db.GetPRByNumber(anvilName, match.Number); existing != nil {
+		// Already tracked — nothing to do, HasOpenPRForBead will return true.
+		return match.Number
+	}
+	dbPR := &state.PR{
+		Number:    match.Number,
+		Anvil:     anvilName,
+		BeadID:    beadID,
+		Branch:    match.Branch,
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+		Title:     match.Title,
+	}
+	if err := d.db.InsertPR(dbPR); err != nil {
+		d.logger.Warn("failed to insert existing PR record after ErrPRAlreadyExists",
+			"anvil", anvilName, "pr", match.Number, "bead", beadID, "error", err)
+		return 0
+	}
+	d.logger.Info("registered existing PR for already-exists branch",
+		"bead", beadID, "anvil", anvilName, "pr", match.Number, "branch", branch)
+	if logErr := d.db.LogEvent(state.EventPRCreated,
+		fmt.Sprintf("Registered existing PR #%d for branch %s (recovered from ErrPRAlreadyExists)", match.Number, branch),
+		beadID, anvilName); logErr != nil {
+		d.logger.Warn("failed to log PR registration event", "bead", beadID, "error", logErr)
+	}
+	return match.Number
+}
+
 // buildVCSProviders creates a VCS provider for each configured anvil based on
 // its platform setting. Anvils without a platform default to GitHub.
 // The state DB is passed to the GitHub provider so it can record PR metadata.
@@ -2492,6 +2550,10 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 			if logErr := d.db.LogEvent(state.EventPRAlreadyExists, fmt.Sprintf("PR already exists for branch %s (duplicate run)", outcome.Branch), bead.ID, bead.Anvil); logErr != nil {
 				d.logger.Error("failed to log duplicate PR event", "bead", bead.ID, "error", logErr)
 			}
+			// Register the existing PR in state.db so HasOpenPRForBead returns
+			// true on the next orphan-recovery sweep. Without this, the bead
+			// is reset to open and re-dispatched in a loop.
+			d.registerExistingPRByBranch(ctx, bead.Anvil, anvilPath, bead.ID, outcome.Branch)
 			// Update worker state so it doesn't hang in WorkerMonitoring
 			// with no PR record for bellows to track.
 			if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerDone); dbErr != nil {
@@ -2654,6 +2716,11 @@ func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Be
 				_ = d.db.LogEvent(state.EventPRAlreadyExists,
 					fmt.Sprintf("PR already exists for orphaned branch %s (prior run)", branch),
 					bead.ID, bead.Anvil)
+				// Register the existing PR in state.db so HasOpenPRForBead
+				// returns true on the next orphan-recovery sweep. Without
+				// this, the bead is reset to open and re-dispatched, with
+				// Smith repeatedly declaring NO_CHANGES_NEEDED in a loop.
+				d.registerExistingPRByBranch(prCtx, bead.Anvil, anvilPath, bead.ID, branch)
 				if clearErr := d.db.ClearRetry(bead.ID, bead.Anvil); clearErr != nil {
 					d.logger.Error("failed to clear retry record after ErrPRAlreadyExists", "bead", bead.ID, "error", clearErr)
 				}

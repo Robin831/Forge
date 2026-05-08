@@ -1,0 +1,2 @@
+category: Fixed
+- **Orphan-recovery loop on closed bead with open PR** - When `gh pr create` returns "already exists", Forge now looks up the existing PR via `ListOpenPRs` and registers it in `state.db`. Previously the duplicate handler cleared retry state but skipped PR registration, so `HasOpenPRForBead` returned false on the next orphan-recovery sweep and the bead was reset to open and re-dispatched in a loop with Smith repeatedly declaring NO_CHANGES_NEEDED. (Forge-oinq)
