@@ -3621,7 +3621,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				return
 			}
 			d.logger.Info("label updated", "bead", up.BeadID, "anvil", up.Anvil, "label", up.Label, "action", up.Action)
-			_ = d.db.LogEvent(state.EventBeadTagged, fmt.Sprintf("Label %q %sed on bead %s", up.Label, up.Action, up.BeadID), up.BeadID, up.Anvil)
+			if logErr := d.db.LogEvent(state.EventBeadTagged, fmt.Sprintf("Label %q %sed on bead %s", up.Label, up.Action, up.BeadID), up.BeadID, up.Anvil); logErr != nil {
+				d.logger.Warn("failed to log label update event", "bead", up.BeadID, "anvil", up.Anvil, "error", logErr)
+			}
 			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q %sed", up.Label, up.Action)})
 			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
 		}()

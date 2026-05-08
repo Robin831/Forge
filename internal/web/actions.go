@@ -11,9 +11,10 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// validLabel restricts label characters to a safe alphanumeric+dash+underscore
-// shape so the value can be passed through to bd update --add-label / --remove-label
-// without surprising the shell. The 64-char ceiling matches what GitHub allows.
+// validLabel restricts labels to GitHub's accepted character set so a typo or
+// stray punctuation can't slip into bd update. The daemon execs bd directly
+// (no shell), so this is a format check, not shell escaping. 64 chars matches
+// the GitHub limit.
 var validLabel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$`)
 
 // actionRequest is the common JSON body shape for action endpoints. Every
