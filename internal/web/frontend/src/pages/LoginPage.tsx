@@ -17,6 +17,21 @@ export default function LoginPage() {
     }
   }, [authenticated, loading, navigate])
 
+  // Don't flash the login form while the auth probe is in flight or while
+  // a redirect to the dashboard is pending — show a spinner instead.
+  if (loading || authenticated) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div
+          className="h-8 w-8 animate-spin rounded-full border-2 border-slate-700 border-t-amber-400"
+          role="status"
+          aria-live="polite"
+          aria-label="Loading"
+        />
+      </div>
+    )
+  }
+
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     if (submitting) return

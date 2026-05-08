@@ -12,6 +12,11 @@ func (s *Server) routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(s.requestLogger)
 
+	// Build the SPA static handler once so both the catch-all route and
+	// handleLoginStatus (which may fall back to it for unauthenticated
+	// browser navigations) can share a single instance.
+	s.staticH = s.staticHandler()
+
 	// Public endpoints — no authentication.
 	r.Get("/healthz", s.handleHealthz)
 
@@ -19,7 +24,7 @@ func (s *Server) routes() http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(s.optionalAuth)
 		r.Post("/login", s.handleLogin)
-		r.Get("/login", s.handleLoginStatus)
+		r.Get("/login", s.handleLoginPage)
 	})
 
 	// Logout requires a valid session — otherwise it is a no-op.
@@ -28,7 +33,13 @@ func (s *Server) routes() http.Handler {
 		r.Post("/logout", s.handleLogout)
 	})
 
-	// All /api/* endpoints require auth.
+	// All /api/* endpoints require auth except the auth status probe,
+	// which uses optional auth so an unauthenticated client can also
+	// learn that they are unauthenticated.
+	r.Group(func(r chi.Router) {
+		r.Use(s.optionalAuth)
+		r.Get("/api/auth/status", s.handleAuthStatus)
+	})
 	r.Route("/api", func(r chi.Router) {
 		r.Use(s.requireAuth)
 		r.Get("/me", s.handleMe)
@@ -41,7 +52,7 @@ func (s *Server) routes() http.Handler {
 	// Static UI fallback. The next bead replaces this with the embedded
 	// React build; for now we serve the placeholder index.html out of the
 	// embedded dist directory so the deployment works end-to-end.
-	r.Handle("/*", s.staticHandler())
+	r.Handle("/*", s.staticH)
 	return r
 }
 
@@ -62,10 +73,12 @@ func (s *Server) staticHandler() http.HandlerFunc {
 			path = "/index.html"
 		}
 		// SPA fallback: when the requested file does not exist, serve
-		// index.html so client-side routing can take over.
+		// index.html so client-side routing can take over. Rewrite the
+		// path to "/" rather than "/index.html" because http.FileServer
+		// canonicalises explicit /index.html requests with a 301 to /.
 		if _, err := fs.Stat(dist, trimLeadingSlash(path)); err != nil {
 			r2 := r.Clone(r.Context())
-			r2.URL.Path = "/index.html"
+			r2.URL.Path = "/"
 			fileServer.ServeHTTP(w, r2)
 			return
 		}
@@ -73,14 +86,10 @@ func (s *Server) staticHandler() http.HandlerFunc {
 	}
 }
 
-// placeholderHandler is used when no embedded UI is present. It returns a
-// minimal HTML page acknowledging the daemon is up so operators have
-// something to point a browser at while the frontend bead is in flight.
+// placeholderHandler is used when no embedded UI is present. It serves
+// the minimal placeholder HTML for all paths so that SPA routes like
+// /login work in the documented "no embedded UI" fallback mode.
 func (s *Server) placeholderHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" && r.URL.Path != "/index.html" {
-		http.NotFound(w, r)
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(placeholderHTML))

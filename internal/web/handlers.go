@@ -14,9 +14,36 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// handleLoginStatus reports whether a session is already attached. Frontend
-// uses this to decide whether to show the login form.
-func (s *Server) handleLoginStatus(w http.ResponseWriter, r *http.Request) {
+// handleLoginPage handles GET /login.
+//
+// Top-level browser navigations redirect authenticated users to the
+// dashboard and serve the SPA for unauthenticated users so the
+// LoginPage can render. Non-browser fetch clients (Accept: */*)
+// receive a JSON auth-status payload instead.
+func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
+	if isBrowserNavigation(r) {
+		if sess != nil {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		s.staticH(w, r)
+		return
+	}
+	if sess == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"user":          sess.Username,
+	})
+}
+
+// handleAuthStatus is the strict JSON auth probe for GET /api/auth/status.
+// It never redirects or serves HTML — the response is always JSON so
+// fetch clients can reliably parse it regardless of Accept header.
+func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	if sess == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
@@ -26,6 +53,14 @@ func (s *Server) handleLoginStatus(w http.ResponseWriter, r *http.Request) {
 		"authenticated": true,
 		"user":          sess.Username,
 	})
+}
+
+// isBrowserNavigation reports whether the request looks like a top-level
+// HTML page load rather than a fetch/XHR JSON call. Browsers include
+// text/html in the Accept header for navigation requests; fetch defaults
+// to */* and explicit JSON callers send application/json.
+func isBrowserNavigation(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 // handleLogin validates form-encoded credentials and issues a session

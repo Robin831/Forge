@@ -21,7 +21,20 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': 'http://localhost:8080',
-      '/login': 'http://localhost:8080',
+      // POST /login submits credentials to the daemon; GET /login is a
+      // top-level browser navigation and should be handled by Vite's
+      // SPA fallback so React Router can render the LoginPage. The
+      // daemon-side GET /login redirects authenticated users to / —
+      // a behaviour mirrored client-side by LoginPage's auth-status
+      // probe.
+      '/login': {
+        target: 'http://localhost:8080',
+        bypass: (req) => {
+          if (req.method === 'GET') {
+            return req.url
+          }
+        },
+      },
       '/logout': 'http://localhost:8080',
       '/healthz': 'http://localhost:8080',
     },
