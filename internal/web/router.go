@@ -84,6 +84,16 @@ func (s *Server) routes() http.Handler {
 		r.Post("/prs/{id}/fix-comments", s.handlePRFixComments)
 		r.Post("/prs/{id}/fix-conflicts", s.handlePRFixConflicts)
 		r.Post("/prs/{id}/reset-counters", s.handlePRResetCounters)
+
+		// Beads-Forge sessions (Hearth 2.0). Foundation bead: persistence
+		// + draft input only — the AI integration and grilling stage land
+		// in follow-on beads. Sessions are scoped per-signed-in user.
+		r.Get("/forge/sessions", s.handleForgeSessionsList)
+		r.Post("/forge/sessions", s.handleForgeSessionsCreate)
+		r.Get("/forge/sessions/{id}", s.handleForgeSessionGet)
+		r.Patch("/forge/sessions/{id}", s.handleForgeSessionUpdate)
+		r.Delete("/forge/sessions/{id}", s.handleForgeSessionDelete)
+		r.Post("/forge/sessions/{id}/messages", s.handleForgeSessionAppend)
 	})
 
 	// Static UI fallback. The next bead replaces this with the embedded

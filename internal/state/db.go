@@ -383,6 +383,35 @@ CREATE TABLE IF NOT EXISTS web_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
+
+-- forge_sessions backs the "Beads-Forge" page in Hearth 2.0: each row is one
+-- conversation that designs a bead through dialogue. Foundation schema only —
+-- the AI integration and grilling stage live in follow-on beads, so for now
+-- a session is just a titled container for an ordered list of messages.
+CREATE TABLE IF NOT EXISTS forge_sessions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'draft',
+    anvil       TEXT NOT NULL DEFAULT '',
+    created_by  TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_forge_sessions_updated_at ON forge_sessions(updated_at);
+CREATE INDEX IF NOT EXISTS idx_forge_sessions_created_by ON forge_sessions(created_by);
+
+CREATE TABLE IF NOT EXISTS forge_session_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL,
+    role        TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES forge_sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_forge_session_messages_session_id
+    ON forge_session_messages(session_id, id);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps

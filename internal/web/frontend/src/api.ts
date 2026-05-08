@@ -364,6 +364,114 @@ export const actions = {
     apiPost(`/api/bead/${encodeURIComponent(beadID)}/note`, { anvil, note }),
 }
 
+// ForgeSession is one design conversation persisted on the server. The
+// foundation bead surfaces the metadata used by the sidebar; the message
+// list comes from the per-session GET endpoint.
+export interface ForgeSession {
+  id: number
+  title: string
+  status: string
+  anvil?: string
+  created_by?: string
+  created_at: string
+  updated_at: string
+  message_count: number
+}
+
+// ForgeMessage is one entry in a forge session conversation. The foundation
+// bead only writes "user" messages; later beads will add "assistant" once
+// claude is wired up.
+export interface ForgeMessage {
+  id: number
+  session_id: number
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  created_at: string
+}
+
+export interface ForgeSessionsListResponse {
+  sessions: ForgeSession[]
+}
+
+export interface ForgeSessionDetailResponse {
+  session: ForgeSession
+  messages: ForgeMessage[]
+}
+
+// forgeSessions wraps the /api/forge/sessions endpoints. All mutating calls
+// route through apiPost / apiSend which set the X-Forge-Action header that
+// the daemon's CSRF middleware requires.
+export const forgeSessions = {
+  list: (signal?: AbortSignal) =>
+    apiGet<ForgeSessionsListResponse>('/api/forge/sessions', signal),
+  get: (id: number, signal?: AbortSignal) =>
+    apiGet<ForgeSessionDetailResponse>(
+      `/api/forge/sessions/${id}`,
+      signal,
+    ),
+  create: (input: { title?: string; anvil?: string; initial_message?: string }) =>
+    apiPost<{ session: ForgeSession; message?: ForgeMessage }>(
+      '/api/forge/sessions',
+      input,
+    ),
+  appendMessage: (id: number, content: string) =>
+    apiPost<{ session: ForgeSession; message: ForgeMessage }>(
+      `/api/forge/sessions/${id}/messages`,
+      { content },
+    ),
+  rename: (id: number, title: string) =>
+    apiSend<{ session: ForgeSession }>(
+      'PATCH',
+      `/api/forge/sessions/${id}`,
+      { title },
+    ),
+  setStatus: (id: number, status: string) =>
+    apiSend<{ session: ForgeSession }>(
+      'PATCH',
+      `/api/forge/sessions/${id}`,
+      { status },
+    ),
+  delete: (id: number) =>
+    apiSend<{ status: string }>('DELETE', `/api/forge/sessions/${id}`),
+}
+
+// apiSend is a generic helper for non-POST mutating verbs (PATCH, DELETE,
+// PUT). The CSRF middleware accepts any non-safe method as long as the
+// X-Forge-Action header is present. apiPost remains the friendlier name for
+// the common case.
+export async function apiSend<T = unknown>(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const headers: Record<string, string> = { 'X-Forge-Action': '1' }
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  const res = await fetch(path, {
+    method,
+    credentials: 'include',
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  if (res.status === 401) {
+    throw new ApiError(401, 'unauthorized')
+  }
+  const text = await res.text()
+  let parsed: unknown = null
+  if (text) {
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      parsed = null
+    }
+  }
+  if (!res.ok) {
+    const msg =
+      (parsed as { error?: string })?.error ?? `HTTP ${res.status}`
+    throw new ApiError(res.status, msg)
+  }
+  return (parsed ?? {}) as T
+}
+
 // PRActionKind enumerates the per-row actions exposed on the /prs tab. The
 // backend resolves the PR row from state.db using the numeric id, so the
 // frontend only sends the path — no body is required.
