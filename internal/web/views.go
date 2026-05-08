@@ -433,15 +433,10 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Workers for this bead.
-	if workers, err := s.db.AllWorkers(0); err == nil {
+	// Workers for this bead — queried directly by bead_id so the load is
+	// proportional to this bead's history, not the entire workers table.
+	if workers, err := s.db.WorkersByBead(beadID, resp.Anvil, 200); err == nil {
 		for _, ww := range workers {
-			if ww.BeadID != beadID {
-				continue
-			}
-			if resp.Anvil != "" && !strings.EqualFold(ww.Anvil, resp.Anvil) {
-				continue
-			}
 			row := beadDetailWorker{
 				ID:        ww.ID,
 				Status:    string(ww.Status),
@@ -457,8 +452,6 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 			}
 			resp.Workers = append(resp.Workers, row)
 		}
-		// AllWorkers returns most-recent first, which is the natural display
-		// order — keep it.
 	}
 
 	// Events for this bead. We pull a generous chunk and filter rather than
@@ -497,8 +490,8 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 
 // getBeadCost returns the cumulative bead_costs row for (beadID, anvil), or
 // nil when no row exists. We inline the SQL here rather than threading a
-// new helper through the state package since the costs view is the only
-// caller and the schema is stable.
+// new helper through the state package since the schema is stable. Called
+// by handleBeadDetail and the costs view.
 func getBeadCost(db *state.DB, beadID, anvil string) (*beadDetailCost, error) {
 	conn := db.Conn()
 	if conn == nil {
@@ -519,13 +512,12 @@ func getBeadCost(db *state.DB, beadID, anvil string) (*beadDetailCost, error) {
 	return &c, nil
 }
 
-// collectBeadPRs returns PR summaries for a bead. It scans both OpenPRs and
-// the prs table directly (via state.DB.Conn) so closed/merged PRs are also
-// represented in the bead detail timeline.
+// collectBeadPRs returns PR summaries for a bead by querying the prs table
+// directly via state.DB.Conn, which includes open, closed, and merged PRs.
 func collectBeadPRs(db *state.DB, beadID, anvil string) []beadDetailPR {
 	conn := db.Conn()
 	if conn == nil {
-		return nil
+		return []beadDetailPR{}
 	}
 	q := `SELECT id, number, anvil, branch, COALESCE(base_branch,''), status, COALESCE(title,''), created_at, last_checked
 		FROM prs WHERE bead_id = ?`
@@ -537,7 +529,7 @@ func collectBeadPRs(db *state.DB, beadID, anvil string) []beadDetailPR {
 	q += ` ORDER BY created_at DESC LIMIT 50`
 	rows, err := conn.Query(q, args...)
 	if err != nil {
-		return nil
+		return []beadDetailPR{}
 	}
 	defer rows.Close()
 	out := []beadDetailPR{}

@@ -318,6 +318,152 @@ func TestQueueEndpointForwardsIPC(t *testing.T) {
 	}
 }
 
+func TestNewRoutes_RequireAuth(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	newRoutes := []string{
+		"/api/crucibles",
+		"/api/ingots",
+		"/api/history/workers",
+		"/api/costs",
+		"/api/bead/Forge-abc1",
+	}
+	for _, path := range newRoutes {
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s: expected 401 without auth, got %d", path, rec.Code)
+		}
+	}
+}
+
+func TestHistoryWorkers_LimitValidation(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	// Non-integer limit must be rejected.
+	req := httptest.NewRequest("GET", "/api/history/workers?limit=notanumber", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("limit=notanumber: expected 400, got %d", rec.Code)
+	}
+
+	// Valid limit should return 200 with a workers array.
+	req2 := httptest.NewRequest("GET", "/api/history/workers?limit=10", nil)
+	req2.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec2 := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("valid limit: expected 200, got %d body=%s", rec2.Code, rec2.Body.String())
+	}
+	var body struct {
+		Workers []any `json:"workers"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if body.Workers == nil {
+		t.Errorf("expected workers to be an array, got null")
+	}
+}
+
+func TestCosts_DaysValidation(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	for _, tc := range []struct {
+		param string
+		want  int
+	}{
+		{"notanumber", http.StatusBadRequest},
+		{"0", http.StatusBadRequest},
+		{"-1", http.StatusBadRequest},
+	} {
+		req := httptest.NewRequest("GET", "/api/costs?days="+tc.param, nil)
+		req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("days=%s: expected %d, got %d", tc.param, tc.want, rec.Code)
+		}
+	}
+
+	// Default (no days param) should return 200.
+	req := httptest.NewRequest("GET", "/api/costs", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("costs default: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Recent         []any `json:"recent"`
+		TodayProviders []any `json:"today_providers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse costs: %v", err)
+	}
+	if body.Recent == nil {
+		t.Errorf("expected recent to be an array, got null")
+	}
+	if body.TodayProviders == nil {
+		t.Errorf("expected today_providers to be an array, got null")
+	}
+}
+
+func TestBeadDetail_InvalidID(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	for _, tc := range []struct {
+		id   string
+		want int
+	}{
+		// Chi's path-traversal sanitization converts ../ so the handler
+		// still receives an invalid ID and must return 400.
+		{"..%2Fetc%2Fpasswd", http.StatusBadRequest},
+		// Chi does not match /api/bead/ (empty segment) — it returns 404.
+		// We skip the empty case; it's covered by the router not matching.
+	} {
+		req := httptest.NewRequest("GET", "/api/bead/"+tc.id, nil)
+		req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("id=%q: expected %d, got %d body=%s", tc.id, tc.want, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestBeadDetail_ResponseShapeIsArrayNotNull(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	req := httptest.NewRequest("GET", "/api/bead/Forge-notexist", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	// Parse as raw map so we can distinguish null from [].
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, field := range []string{"workers", "events", "prs"} {
+		raw, ok := body[field]
+		if !ok {
+			t.Errorf("field %q missing from response", field)
+			continue
+		}
+		if string(raw) == "null" {
+			t.Errorf("field %q is null; want an empty array []", field)
+		}
+	}
+}
+
 // --- helpers ---
 
 func newServerWithDefaults(t *testing.T, handler CommandHandler) *Server {

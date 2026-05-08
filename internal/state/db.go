@@ -788,6 +788,23 @@ func (db *DB) CompletedWorkers(limit int) ([]Worker, error) {
 	return db.queryWorkers(query)
 }
 
+// WorkersByBead returns workers for a specific bead, optionally filtered by
+// anvil, ordered most recent first. Limit 0 means no limit.
+func (db *DB) WorkersByBead(beadID, anvil string, limit int) ([]Worker, error) {
+	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+		FROM workers WHERE bead_id = ?`
+	args := []any{beadID}
+	if anvil != "" {
+		query += ` AND anvil = ?`
+		args = append(args, anvil)
+	}
+	query += ` ORDER BY started_at DESC`
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	return db.queryWorkers(query, args...)
+}
+
 // AllWorkers returns all workers ordered by most recent first.
 func (db *DB) AllWorkers(limit int) ([]Worker, error) {
 	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
