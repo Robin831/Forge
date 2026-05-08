@@ -158,7 +158,9 @@ func TestForgeSessions_GetReturnsMessages(t *testing.T) {
 		t.Fatalf("get: %d", rec.Code)
 	}
 	var got struct {
-		Session  struct{ MessageCount int } `json:"session"`
+		Session struct {
+			MessageCount int `json:"message_count"`
+		} `json:"session"`
 		Messages []struct {
 			Content string `json:"content"`
 			Role    string `json:"role"`
