@@ -1607,6 +1607,36 @@ func (db *DB) RecentEventsExcluding(n int, excludeTypes []EventType) ([]Event, e
 	return events, rows.Err()
 }
 
+// EventsSince returns events with ID greater than lastID, ordered oldest-first.
+// Used by the web SSE activity stream to deliver new events to connected
+// clients; the oldest-first ordering and id > lastID predicate make it trivial
+// to drive an EventSource Last-Event-ID resume.
+func (db *DB) EventsSince(lastID, limit int) ([]Event, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := db.conn.Query(
+		`SELECT id, timestamp, type, message, bead_id, anvil
+		 FROM events WHERE id > ? ORDER BY id ASC LIMIT ?`, lastID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := []Event{}
+	for rows.Next() {
+		var e Event
+		var typ, ts string
+		if err := rows.Scan(&e.ID, &ts, &typ, &e.Message, &e.BeadID, &e.Anvil); err != nil {
+			return nil, err
+		}
+		e.Type = EventType(typ)
+		e.Timestamp = parseTime(ts)
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
 // LatestWardenRejectMessage returns the message from the most recent
 // warden_reject event for the given bead, or "" if none exists.
 func (db *DB) LatestWardenRejectMessage(beadID string) string {

@@ -47,6 +47,9 @@ func (s *Server) routes() http.Handler {
 		r.Get("/queue", s.handleQueue)
 		r.Get("/workers", s.handleWorkers)
 		r.Get("/events", s.handleEvents)
+		r.Get("/activity/stream", s.handleActivityStream)
+		r.Get("/worker/{id}/log", s.handleWorkerLogTail)
+		r.Get("/worker/{id}/stream", s.handleWorkerLogStream)
 	})
 
 	// Static UI fallback. The next bead replaces this with the embedded

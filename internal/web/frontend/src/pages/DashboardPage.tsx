@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
@@ -11,14 +11,15 @@ import {
 import { useAuth } from '../auth'
 import { useApiPoll } from '../hooks/useApiPoll'
 import type {
-  EventsResponse,
   QueueResponse,
   StatusResponse,
+  WorkerInfo,
   WorkersResponse,
 } from '../api'
 import QueuePane from '../components/QueuePane'
 import WorkersPane from '../components/WorkersPane'
-import EventsPane from '../components/EventsPane'
+import LiveActivity from '../components/LiveActivity'
+import WorkerLogModal from '../components/WorkerLogModal'
 
 const POLL_INTERVAL_MS = 5000
 
@@ -27,7 +28,7 @@ export default function DashboardPage() {
   const status = useApiPoll<StatusResponse>('/api/status', POLL_INTERVAL_MS)
   const queue = useApiPoll<QueueResponse>('/api/queue', POLL_INTERVAL_MS)
   const workers = useApiPoll<WorkersResponse>('/api/workers', POLL_INTERVAL_MS)
-  const events = useApiPoll<EventsResponse>('/api/events?limit=50', POLL_INTERVAL_MS)
+  const [logWorker, setLogWorker] = useState<WorkerInfo | null>(null)
 
   const activeWorkers = useMemo(
     () =>
@@ -38,7 +39,6 @@ export default function DashboardPage() {
   )
 
   const queueCount = queue.data?.items.length ?? 0
-  const eventCount = events.data?.events.length ?? 0
   const daemonHealthy = status.data?.running
 
   return (
@@ -100,8 +100,8 @@ export default function DashboardPage() {
         />
         <StatCard
           icon={<Activity size={18} className="text-purple-400" aria-hidden />}
-          label="Recent events"
-          value={eventCount}
+          label="Stream"
+          value="live"
         />
         <StatCard
           icon={
@@ -127,17 +127,16 @@ export default function DashboardPage() {
           loading={workers.loading}
           error={workers.error}
           workers={workers.data?.workers ?? []}
+          onSelectWorker={setLogWorker}
         />
-        <EventsPane
-          loading={events.loading}
-          error={events.error}
-          events={events.data?.events ?? []}
-        />
+        <LiveActivity />
       </main>
 
       <footer className="text-center text-xs text-slate-500">
-        Polling every {POLL_INTERVAL_MS / 1000}s · Hearth 2.0 MVP
+        Live activity via SSE · daemon polled every {POLL_INTERVAL_MS / 1000}s · Hearth 2.0
       </footer>
+
+      <WorkerLogModal worker={logWorker} onClose={() => setLogWorker(null)} />
     </div>
   )
 }
