@@ -284,6 +284,39 @@ func (p *Provider) ListOpenPRs(ctx context.Context, worktreePath string) ([]vcs.
 	return out, nil
 }
 
+// GetPRByHeadBranch returns the open PR whose head branch matches the given
+// branch name, or nil if no matching PR is found. Uses --head filtering so
+// only the matching PR is returned regardless of how many open PRs exist.
+func (p *Provider) GetPRByHeadBranch(ctx context.Context, worktreePath, branch string) (*vcs.OpenPR, error) {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", "pr", "list",
+		"--head", branch,
+		"--state", "open",
+		"--json", "number,title,headRefName,body",
+		"--limit", "1",
+	))
+	cmd.Dir = worktreePath
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh pr list --head failed: %w\nstderr: %s", err, stderr.String())
+	}
+	var raw []struct {
+		Number      int    `json:"number"`
+		Title       string `json:"title"`
+		HeadRefName string `json:"headRefName"`
+		Body        string `json:"body"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		return nil, fmt.Errorf("parsing pr list: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	r := raw[0]
+	return &vcs.OpenPR{Number: r.Number, Title: r.Title, Branch: r.HeadRefName, Body: r.Body}, nil
+}
+
 // GetRepoOwnerAndName extracts the owner and repository name from git remote origin.
 func (p *Provider) GetRepoOwnerAndName(ctx context.Context, worktreePath string) (owner, repo string, err error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "remote", "get-url", "origin"))

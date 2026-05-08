@@ -63,6 +63,9 @@ func (f *fakeVCS) CheckStatusLight(_ context.Context, _ string, _ int) (*vcs.PRS
 	return nil, nil
 }
 func (f *fakeVCS) ListOpenPRs(_ context.Context, _ string) ([]vcs.OpenPR, error) { return nil, nil }
+func (f *fakeVCS) GetPRByHeadBranch(_ context.Context, _ string, _ string) (*vcs.OpenPR, error) {
+	return nil, nil
+}
 func (f *fakeVCS) GetRepoOwnerAndName(_ context.Context, _ string) (string, string, error) {
 	return "owner", "repo", nil
 }

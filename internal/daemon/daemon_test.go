@@ -2276,10 +2276,9 @@ type mockVCSProvider struct {
 	// when the caller will dereference the return value.
 	createPRResult *vcs.PR
 	createPRErr    error
-	// listOpenPRsResult controls what ListOpenPRs returns. Used by tests that
-	// exercise the ErrPRAlreadyExists recovery path which looks up the
-	// existing PR by branch.
-	listOpenPRsResult []vcs.OpenPR
+	// openPRs controls what ListOpenPRs and GetPRByHeadBranch return. Used by
+	// tests that exercise the ErrPRAlreadyExists recovery path.
+	openPRs []vcs.OpenPR
 }
 
 func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error {
@@ -2296,7 +2295,15 @@ func (m *mockVCSProvider) CheckStatusLight(_ context.Context, _ string, _ int) (
 	return nil, nil
 }
 func (m *mockVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.OpenPR, error) {
-	return m.listOpenPRsResult, nil
+	return m.openPRs, nil
+}
+func (m *mockVCSProvider) GetPRByHeadBranch(_ context.Context, _ string, branch string) (*vcs.OpenPR, error) {
+	for i := range m.openPRs {
+		if m.openPRs[i].Branch == branch {
+			return &m.openPRs[i], nil
+		}
+	}
+	return nil, nil
 }
 func (m *mockVCSProvider) GetRepoOwnerAndName(_ context.Context, _ string) (string, string, error) {
 	return "", "", nil
@@ -2552,6 +2559,7 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 			t.Helper()
 			cmd := exec.Command("git", args...)
 			cmd.Dir = orphanAnvilPath
+			cmd.Env = cleanGitTestEnv()
 			out, runErr := cmd.CombinedOutput()
 			require.NoError(t, runErr, "git %v: %s", args, out)
 		}
@@ -2614,6 +2622,7 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 			t.Helper()
 			cmd := exec.Command("git", args...)
 			cmd.Dir = orphanAnvilPath
+			cmd.Env = cleanGitTestEnv()
 			out, runErr := cmd.CombinedOutput()
 			require.NoError(t, runErr, "git %v: %s", args, out)
 		}
@@ -2664,6 +2673,7 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 			t.Helper()
 			cmd := exec.Command("git", args...)
 			cmd.Dir = orphanAnvilPath
+			cmd.Env = cleanGitTestEnv()
 			out, runErr := cmd.CombinedOutput()
 			require.NoError(t, runErr, "git %v: %s", args, out)
 		}
@@ -2674,11 +2684,11 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 		gitLocal("push", "origin", branchName)
 		gitLocal("checkout", "main")
 
-		// Mock VCS: CreatePR fails with ErrPRAlreadyExists, ListOpenPRs returns
-		// the matching open PR so registerExistingPRByBranch can find it.
+		// Mock VCS: CreatePR fails with ErrPRAlreadyExists, GetPRByHeadBranch
+		// returns the matching open PR so registerExistingPRByBranch can find it.
 		mockVCS := &mockVCSProvider{
 			createPRErr: fmt.Errorf("gh pr create: %w: already exists", vcs.ErrPRAlreadyExists),
-			listOpenPRsResult: []vcs.OpenPR{
+			openPRs: []vcs.OpenPR{
 				{Number: 255, Title: "Existing PR", Branch: branchName},
 			},
 		}
@@ -3091,6 +3101,21 @@ func TestReconcileMergedBeads(t *testing.T) {
 	assert.Equal(t, "REC-1", lines[0], "bd close should have been called with REC-1")
 }
 
+// cleanGitTestEnv returns os.Environ with git worktree vars stripped. Used by
+// test git commands so they operate on the test repo (via cmd.Dir) rather than
+// the outer Forge worker process's repo (set via GIT_DIR / GIT_WORK_TREE).
+func cleanGitTestEnv() []string {
+	skip := map[string]bool{"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_INDEX_FILE": true, "GIT_CEILING_DIRECTORIES": true}
+	var out []string
+	for _, e := range os.Environ() {
+		k, _, _ := strings.Cut(e, "=")
+		if !skip[k] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // initTestGitRepo sets up a bare "remote" repo and a local clone that serves
 // as the anvilPath for forgeBranchAheadOfMain tests. It returns the local path.
 func initTestGitRepo(t *testing.T) (anvilPath string) {
@@ -3106,6 +3131,9 @@ func initTestGitRepo(t *testing.T) (anvilPath string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
+		// Strip git worktree env vars so setup commands run against the test
+		// repo rather than inheriting the outer Forge worker process's context.
+		cmd.Env = cleanGitTestEnv()
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "git %v: %s", args, out)
 	}
@@ -3157,6 +3185,7 @@ func TestForgeBranchAheadOfMain(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = anvilPath
+		cmd.Env = cleanGitTestEnv()
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "git %v: %s", args, out)
 	}
