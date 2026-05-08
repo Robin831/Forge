@@ -14,26 +14,37 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// handleLoginStatus reports whether a session is already attached.
+// handleLoginPage handles GET /login.
 //
-// For JSON clients (typically the frontend's auth-refresh fetch), the
-// session state is returned as a JSON payload. Top-level browser
-// navigations to /login are handled differently: an authenticated
-// browser is redirected to the dashboard so the user does not land on a
-// redundant login form, and an unauthenticated browser is served the
-// SPA bundle so the LoginPage can render and accept credentials.
-func (s *Server) handleLoginStatus(w http.ResponseWriter, r *http.Request) {
+// Top-level browser navigations redirect authenticated users to the
+// dashboard and serve the SPA for unauthenticated users so the
+// LoginPage can render. Non-browser fetch clients (Accept: */*)
+// receive a JSON auth-status payload instead.
+func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	if isBrowserNavigation(r) {
 		if sess != nil {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
-		if s.staticH != nil {
-			s.staticH(w, r)
-			return
-		}
+		s.staticH(w, r)
+		return
 	}
+	if sess == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"user":          sess.Username,
+	})
+}
+
+// handleAuthStatus is the strict JSON auth probe for GET /api/auth/status.
+// It never redirects or serves HTML — the response is always JSON so
+// fetch clients can reliably parse it regardless of Accept header.
+func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
 	if sess == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
 		return

@@ -64,8 +64,8 @@ type Server struct {
 	httpServer *http.Server
 
 	// staticH serves the embedded SPA bundle. Built once in routes() so
-	// handlers like handleLoginStatus can fall back to it without
-	// re-walking the embedded filesystem on every request.
+	// handleLoginPage can fall back to it without re-walking the embedded
+	// filesystem on every request.
 	staticH http.HandlerFunc
 }
 

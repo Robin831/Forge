@@ -24,7 +24,7 @@ func (s *Server) routes() http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(s.optionalAuth)
 		r.Post("/login", s.handleLogin)
-		r.Get("/login", s.handleLoginStatus)
+		r.Get("/login", s.handleLoginPage)
 	})
 
 	// Logout requires a valid session — otherwise it is a no-op.
@@ -38,7 +38,7 @@ func (s *Server) routes() http.Handler {
 	// learn that they are unauthenticated.
 	r.Group(func(r chi.Router) {
 		r.Use(s.optionalAuth)
-		r.Get("/api/auth/status", s.handleLoginStatus)
+		r.Get("/api/auth/status", s.handleAuthStatus)
 	})
 	r.Route("/api", func(r chi.Router) {
 		r.Use(s.requireAuth)
@@ -86,14 +86,10 @@ func (s *Server) staticHandler() http.HandlerFunc {
 	}
 }
 
-// placeholderHandler is used when no embedded UI is present. It returns a
-// minimal HTML page acknowledging the daemon is up so operators have
-// something to point a browser at while the frontend bead is in flight.
+// placeholderHandler is used when no embedded UI is present. It serves
+// the minimal placeholder HTML for all paths so that SPA routes like
+// /login work in the documented "no embedded UI" fallback mode.
 func (s *Server) placeholderHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" && r.URL.Path != "/index.html" {
-		http.NotFound(w, r)
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(placeholderHTML))
