@@ -364,9 +364,9 @@ export const actions = {
     apiPost(`/api/bead/${encodeURIComponent(beadID)}/note`, { anvil, note }),
 }
 
-// ForgeSession is one design conversation persisted on the server. The
-// foundation bead surfaces the metadata used by the sidebar; the message
-// list comes from the per-session GET endpoint.
+// ForgeSession is one design conversation persisted on the server.
+// stage tracks the AI loop's current phase (drafting | grilling | ready);
+// plan holds the latest implementation plan emitted by claude.
 export interface ForgeSession {
   id: number
   title: string
@@ -376,17 +376,33 @@ export interface ForgeSession {
   created_at: string
   updated_at: string
   message_count: number
+  stage: 'drafting' | 'grilling' | 'ready'
+  plan?: string
 }
 
-// ForgeMessage is one entry in a forge session conversation. The foundation
-// bead only writes "user" messages; later beads will add "assistant" once
-// claude is wired up.
+// ForgeMessage is one entry in a forge session conversation.
+// kind extends role with a structured payload type used by the AI loop:
+//   - text:     plain conversational turn (user or assistant).
+//   - plan:     markdown plan emitted by claude in drafting stage.
+//   - question: structured grilling-stage question; metadata holds options.
+//   - answer:   user's answer to a question; metadata pins question_id+option_id.
+//   - status:   system-emitted status note (stage transitions, "grilling done").
 export interface ForgeMessage {
   id: number
   session_id: number
   role: 'user' | 'assistant' | 'system'
   content: string
   created_at: string
+  kind?: 'text' | 'plan' | 'question' | 'answer' | 'status'
+  metadata?: string
+}
+
+// ForgeQuestionPayload is the JSON-decoded shape stored in
+// ForgeMessage.metadata when kind === "question".
+export interface ForgeQuestionPayload {
+  options: Array<{ id: string; label: string; description?: string }>
+  recommendation?: string
+  rationale?: string
 }
 
 export interface ForgeSessionsListResponse {
@@ -394,6 +410,24 @@ export interface ForgeSessionsListResponse {
 }
 
 export interface ForgeSessionDetailResponse {
+  session: ForgeSession
+  messages: ForgeMessage[]
+}
+
+// ForgeTurnRequest is the body shape for POST /api/forge/sessions/{id}/turn.
+// All fields are optional and combinable, mirroring the server.
+export interface ForgeTurnRequest {
+  content?: string
+  answer_option_id?: string
+  answer_question_id?: number
+  request_plan?: boolean
+  start_grilling?: boolean
+  mark_ready?: boolean
+}
+
+// ForgeTurnResponse is the unified response for /turn. messages includes
+// any newly-appended user message followed by the assistant emissions.
+export interface ForgeTurnResponse {
   session: ForgeSession
   messages: ForgeMessage[]
 }
@@ -433,6 +467,8 @@ export const forgeSessions = {
     ),
   delete: (id: number) =>
     apiSend<{ status: string }>('DELETE', `/api/forge/sessions/${id}`),
+  turn: (id: number, req: ForgeTurnRequest) =>
+    apiPost<ForgeTurnResponse>(`/api/forge/sessions/${id}/turn`, req),
 }
 
 // apiSend is a generic helper for non-POST mutating verbs (PATCH, DELETE,

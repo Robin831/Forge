@@ -41,6 +41,8 @@ type forgeSessionDTO struct {
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
 	MessageCount int    `json:"message_count"`
+	Stage        string `json:"stage"`
+	Plan         string `json:"plan,omitempty"`
 }
 
 // forgeMessageDTO is the JSON shape for a single message.
@@ -50,12 +52,18 @@ type forgeMessageDTO struct {
 	Role      string `json:"role"`
 	Content   string `json:"content"`
 	CreatedAt string `json:"created_at"`
+	Kind      string `json:"kind,omitempty"`
+	Metadata  string `json:"metadata,omitempty"`
 }
 
 // toForgeSessionDTO converts a state row into the API DTO. The caller is
 // responsible for supplying the message count — most listings already need
 // the count, and computing it inline keeps the helper free of *DB.
 func toForgeSessionDTO(s state.ForgeSession, messageCount int) forgeSessionDTO {
+	stage := s.Stage
+	if stage == "" {
+		stage = state.ForgeStageDrafting
+	}
 	return forgeSessionDTO{
 		ID:           s.ID,
 		Title:        s.Title,
@@ -65,17 +73,25 @@ func toForgeSessionDTO(s state.ForgeSession, messageCount int) forgeSessionDTO {
 		CreatedAt:    s.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:    s.UpdatedAt.Format(time.RFC3339),
 		MessageCount: messageCount,
+		Stage:        stage,
+		Plan:         s.Plan,
 	}
 }
 
 // toForgeMessageDTO converts a state row into the API DTO.
 func toForgeMessageDTO(m state.ForgeSessionMessage) forgeMessageDTO {
+	kind := m.Kind
+	if kind == "" {
+		kind = state.ForgeMessageKindText
+	}
 	return forgeMessageDTO{
 		ID:        m.ID,
 		SessionID: m.SessionID,
 		Role:      m.Role,
 		Content:   m.Content,
 		CreatedAt: m.CreatedAt.Format(time.RFC3339),
+		Kind:      kind,
+		Metadata:  m.Metadata,
 	}
 }
 

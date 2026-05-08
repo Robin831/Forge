@@ -85,15 +85,17 @@ func (s *Server) routes() http.Handler {
 		r.Post("/prs/{id}/fix-conflicts", s.handlePRFixConflicts)
 		r.Post("/prs/{id}/reset-counters", s.handlePRResetCounters)
 
-		// Beads-Forge sessions (Hearth 2.0). Foundation bead: persistence
-		// + draft input only — the AI integration and grilling stage land
-		// in follow-on beads. Sessions are scoped per-signed-in user.
+		// Beads-Forge sessions (Hearth 2.0). Sessions are scoped per
+		// signed-in user. The /turn endpoint drives the AI loop —
+		// running claude per-turn, requesting plans, and stepping
+		// through the grilling stage.
 		r.Get("/forge/sessions", s.handleForgeSessionsList)
 		r.Post("/forge/sessions", s.handleForgeSessionsCreate)
 		r.Get("/forge/sessions/{id}", s.handleForgeSessionGet)
 		r.Patch("/forge/sessions/{id}", s.handleForgeSessionUpdate)
 		r.Delete("/forge/sessions/{id}", s.handleForgeSessionDelete)
 		r.Post("/forge/sessions/{id}/messages", s.handleForgeSessionAppend)
+		r.Post("/forge/sessions/{id}/turn", s.handleForgeSessionTurn)
 	})
 
 	// Static UI fallback. The next bead replaces this with the embedded

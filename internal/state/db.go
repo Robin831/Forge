@@ -125,6 +125,10 @@ func (db *DB) migrate() error {
 		{"wicket_issues", "author_replied_at", `ALTER TABLE wicket_issues ADD COLUMN author_replied_at TEXT`},
 		{"retries", "recovery_failures", `ALTER TABLE retries ADD COLUMN recovery_failures INTEGER NOT NULL DEFAULT 0`},
 		{"retries", "first_recovery_failure_at", `ALTER TABLE retries ADD COLUMN first_recovery_failure_at TEXT`},
+		{"forge_sessions", "stage", `ALTER TABLE forge_sessions ADD COLUMN stage TEXT NOT NULL DEFAULT 'drafting'`},
+		{"forge_sessions", "plan", `ALTER TABLE forge_sessions ADD COLUMN plan TEXT NOT NULL DEFAULT ''`},
+		{"forge_session_messages", "kind", `ALTER TABLE forge_session_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'`},
+		{"forge_session_messages", "metadata", `ALTER TABLE forge_session_messages ADD COLUMN metadata TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -395,7 +399,9 @@ CREATE TABLE IF NOT EXISTS forge_sessions (
     anvil       TEXT NOT NULL DEFAULT '',
     created_by  TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    updated_at  TEXT NOT NULL,
+    stage       TEXT NOT NULL DEFAULT 'drafting',
+    plan        TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_forge_sessions_updated_at ON forge_sessions(updated_at);
@@ -407,6 +413,8 @@ CREATE TABLE IF NOT EXISTS forge_session_messages (
     role        TEXT NOT NULL,
     content     TEXT NOT NULL,
     created_at  TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'text',
+    metadata    TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (session_id) REFERENCES forge_sessions(id) ON DELETE CASCADE
 );
 
