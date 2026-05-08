@@ -3069,7 +3069,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		return ipc.Response{Type: "status", Payload: data}
 
 	case "crucibles":
-		var items []ipc.CrucibleStatusItem
+		// Initialise as an empty (non-nil) slice so an environment with no
+		// active crucibles serialises as `{"crucibles":[]}` rather than
+		// `{"crucibles":null}` — the Hearth 2.0 SPA dereferences this field
+		// directly and a null value crashes the dashboard.
+		items := []ipc.CrucibleStatusItem{}
 		d.crucibleStatuses.Range(func(key, value any) bool {
 			s := value.(crucible.Status)
 			items = append(items, ipc.CrucibleStatusItem{
