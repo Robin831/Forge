@@ -25,8 +25,8 @@ type ForgeSession struct {
 
 // ForgeSessionMessage is one entry in a forge session conversation. Roles
 // follow the chat-style convention: "user", "assistant", "system". The
-// foundation bead only writes "user" and "system" entries; the AI bead will
-// add "assistant" once claude is wired in.
+// foundation bead only writes "user" entries through its API; the AI bead
+// will add "assistant" (and any "system" framing) once claude is wired in.
 type ForgeSessionMessage struct {
 	ID        int64
 	SessionID int64

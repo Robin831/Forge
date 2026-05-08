@@ -153,9 +153,7 @@ func (s *Server) handleForgeSessionsCreate(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "initial message exceeds size limit")
 		return
 	}
-	if len(req.Title) > maxForgeTitleLen {
-		req.Title = req.Title[:maxForgeTitleLen]
-	}
+	req.Title = truncateTitle(req.Title)
 	if req.Title == "" && req.InitialMessage != "" {
 		req.Title = autoTitleFromMessage(req.InitialMessage)
 	}
@@ -279,10 +277,7 @@ func (s *Server) handleForgeSessionUpdate(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if req.Title != nil {
-		t := strings.TrimSpace(*req.Title)
-		if len(t) > maxForgeTitleLen {
-			t = t[:maxForgeTitleLen]
-		}
+		t := truncateTitle(*req.Title)
 		req.Title = &t
 	}
 	if req.Status != nil {
@@ -449,10 +444,10 @@ func parseForgeSessionID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	return id, true
 }
 
-// forgeSessionVisibleTo enforces the per-user scoping rule. A session
-// without a created_by attribution (legacy rows, scripts) is treated as
-// owned by the daemon and only visible to its creator-of-record; the empty
-// string never matches a real session.
+// forgeSessionVisibleTo enforces the per-user scoping rule. Rows with a
+// non-empty created_by are only visible to that user. Legacy rows that
+// pre-date attribution (created_by == "") fall back to being visible to
+// every signed-in user so they remain readable after the schema change.
 func forgeSessionVisibleTo(row *state.ForgeSession, username string) bool {
 	if row == nil {
 		return false
@@ -475,7 +470,23 @@ func isValidForgeSessionStatus(s string) bool {
 	return false
 }
 
-// autoTitleFromMessage takes the first line (or first ~80 chars) of a
+// truncateTitle trims whitespace from the edges of a title and caps it at
+// maxForgeTitleLen runes. Truncation happens on rune boundaries so multi-byte
+// characters (emoji, non-ASCII text) cannot be sliced in half.
+func truncateTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ""
+	}
+	runes := []rune(title)
+	if len(runes) > maxForgeTitleLen {
+		runes = runes[:maxForgeTitleLen]
+		title = string(runes)
+	}
+	return title
+}
+
+// autoTitleFromMessage takes the first line (or first ~80 runes) of a
 // message body and uses it as the session title. Whitespace at the edges
 // and trailing punctuation are trimmed so the sidebar stays tidy.
 func autoTitleFromMessage(msg string) string {
