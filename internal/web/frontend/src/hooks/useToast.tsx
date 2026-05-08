@@ -34,7 +34,10 @@ const AUTO_DISMISS_MS = 4500
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
   const idRef = useRef(1)
-  const timersRef = useRef<Map<number, ReturnType<typeof window.setTimeout>>>(new Map())
+  // Use number (browser setTimeout return type) directly — `ReturnType<typeof window.setTimeout>`
+  // can resolve to NodeJS.Timeout when @types/node is on the path, which mismatches
+  // the actual runtime number returned by window.setTimeout in the browser.
+  const timersRef = useRef<Map<number, number>>(new Map())
 
   const dismiss = useCallback((id: number) => {
     const timer = timersRef.current.get(id)
