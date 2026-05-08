@@ -205,6 +205,13 @@ type TemperStepConfig struct {
 	// changed files in the diff match any pattern. When empty or nil the
 	// step always runs (backward compatible).
 	Paths []string `mapstructure:"paths" yaml:"paths,omitempty"`
+	// VerifyClean is an optional list of pathspecs (relative to the worktree)
+	// that must remain clean after the step runs. When the step succeeds but
+	// `git status --porcelain -- <pathspecs>` reports any changes, the step
+	// is converted to a failure. Use this to enforce that committed build
+	// artifacts (e.g. an embedded frontend bundle) match a fresh build of
+	// the source.
+	VerifyClean []string `mapstructure:"verify_clean" yaml:"verify_clean,omitempty"`
 }
 
 // IsEmpty returns true if no custom commands are configured.
