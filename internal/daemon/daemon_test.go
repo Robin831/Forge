@@ -2276,6 +2276,9 @@ type mockVCSProvider struct {
 	// when the caller will dereference the return value.
 	createPRResult *vcs.PR
 	createPRErr    error
+	// openPRs controls what ListOpenPRs and GetPRByHeadBranch return. Used by
+	// tests that exercise the ErrPRAlreadyExists recovery path.
+	openPRs []vcs.OpenPR
 }
 
 func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error {
@@ -2292,6 +2295,14 @@ func (m *mockVCSProvider) CheckStatusLight(_ context.Context, _ string, _ int) (
 	return nil, nil
 }
 func (m *mockVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.OpenPR, error) {
+	return m.openPRs, nil
+}
+func (m *mockVCSProvider) GetPRByHeadBranch(_ context.Context, _ string, branch string) (*vcs.OpenPR, error) {
+	for i := range m.openPRs {
+		if m.openPRs[i].Branch == branch {
+			return &m.openPRs[i], nil
+		}
+	}
 	return nil, nil
 }
 func (m *mockVCSProvider) GetRepoOwnerAndName(_ context.Context, _ string) (string, string, error) {
@@ -2548,6 +2559,7 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 			t.Helper()
 			cmd := exec.Command("git", args...)
 			cmd.Dir = orphanAnvilPath
+			cmd.Env = cleanGitTestEnv()
 			out, runErr := cmd.CombinedOutput()
 			require.NoError(t, runErr, "git %v: %s", args, out)
 		}
@@ -2610,6 +2622,7 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 			t.Helper()
 			cmd := exec.Command("git", args...)
 			cmd.Dir = orphanAnvilPath
+			cmd.Env = cleanGitTestEnv()
 			out, runErr := cmd.CombinedOutput()
 			require.NoError(t, runErr, "git %v: %s", args, out)
 		}
@@ -2640,6 +2653,76 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 		require.NotNil(t, r, "retry record should exist after PR creation failure")
 		assert.True(t, r.NeedsHuman, "bead should be needs_human when auto PR creation fails")
 		assert.Contains(t, r.LastError, "GitHub timeout")
+	})
+
+	// Regression for Forge-oinq: when CreatePR returns ErrPRAlreadyExists on
+	// the orphan-branch path, the existing PR must be registered in state.db
+	// so HasOpenPRForBead returns true on the next orphan-recovery sweep.
+	// Without this, the bead is reset to open and re-dispatched in a loop,
+	// with Smith burning tokens to declare NO_CHANGES_NEEDED each iteration.
+	t.Run("orphaned branch: ErrPRAlreadyExists registers existing PR", func(t *testing.T) {
+		const beadID = "NCN-ORPHAN-DUP"
+		orphanAnvilPath := initTestGitRepo(t)
+
+		orphanDB, err := state.Open(filepath.Join(orphanAnvilPath, "state-orphan-dup.db"))
+		require.NoError(t, err)
+		defer orphanDB.Close()
+
+		branchName := worktree.BranchName(beadID)
+		gitLocal := func(args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = orphanAnvilPath
+			cmd.Env = cleanGitTestEnv()
+			out, runErr := cmd.CombinedOutput()
+			require.NoError(t, runErr, "git %v: %s", args, out)
+		}
+		gitLocal("checkout", "-b", branchName)
+		require.NoError(t, os.WriteFile(filepath.Join(orphanAnvilPath, "orphan-dup.txt"), []byte("work\n"), 0o644))
+		gitLocal("add", "orphan-dup.txt")
+		gitLocal("commit", "-m", "orphaned work")
+		gitLocal("push", "origin", branchName)
+		gitLocal("checkout", "main")
+
+		// Mock VCS: CreatePR fails with ErrPRAlreadyExists, GetPRByHeadBranch
+		// returns the matching open PR so registerExistingPRByBranch can find it.
+		mockVCS := &mockVCSProvider{
+			createPRErr: fmt.Errorf("gh pr create: %w: already exists", vcs.ErrPRAlreadyExists),
+			openPRs: []vcs.OpenPR{
+				{Number: 255, Title: "Existing PR", Branch: branchName},
+			},
+		}
+		d := &Daemon{
+			db:           orphanDB,
+			logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr:  worktree.NewManager(),
+			vcsProviders: map[string]vcs.Provider{anvil: mockVCS},
+		}
+		d.cfg.Store(&config.Config{})
+
+		bead := poller.Bead{ID: beadID, Anvil: anvil, Title: "Test bead"}
+		d.applyNoChangesNeededOutcome(context.Background(), bead, orphanAnvilPath, "already done")
+
+		// Retry record must be cleared — bead should not be marked needs_human
+		// because the PR exists; the work is represented and bellows will
+		// eventually merge/close it.
+		r, err := orphanDB.GetRetry(beadID, anvil)
+		require.NoError(t, err)
+		assert.Nil(t, r, "retry record should be cleared when PR already exists")
+
+		// PR must be registered in state.db so HasOpenPRForBead returns true,
+		// breaking the orphan-recovery → re-dispatch loop.
+		hasPR, err := orphanDB.HasOpenPRForBead(beadID, anvil)
+		require.NoError(t, err)
+		assert.True(t, hasPR, "existing PR must be registered to break orphan-recovery loop")
+
+		// PR record fields should match the mocked open PR.
+		dbPR, err := orphanDB.GetPRByNumber(anvil, 255)
+		require.NoError(t, err)
+		require.NotNil(t, dbPR, "PR #255 must be inserted into state.db")
+		assert.Equal(t, beadID, dbPR.BeadID)
+		assert.Equal(t, branchName, dbPR.Branch)
+		assert.Equal(t, state.PROpen, dbPR.Status)
 	})
 }
 
@@ -3018,6 +3101,21 @@ func TestReconcileMergedBeads(t *testing.T) {
 	assert.Equal(t, "REC-1", lines[0], "bd close should have been called with REC-1")
 }
 
+// cleanGitTestEnv returns os.Environ with git worktree vars stripped. Used by
+// test git commands so they operate on the test repo (via cmd.Dir) rather than
+// the outer Forge worker process's repo (set via GIT_DIR / GIT_WORK_TREE).
+func cleanGitTestEnv() []string {
+	skip := map[string]bool{"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_INDEX_FILE": true, "GIT_CEILING_DIRECTORIES": true}
+	var out []string
+	for _, e := range os.Environ() {
+		k, _, _ := strings.Cut(e, "=")
+		if !skip[k] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // initTestGitRepo sets up a bare "remote" repo and a local clone that serves
 // as the anvilPath for forgeBranchAheadOfMain tests. It returns the local path.
 func initTestGitRepo(t *testing.T) (anvilPath string) {
@@ -3033,6 +3131,9 @@ func initTestGitRepo(t *testing.T) (anvilPath string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
+		// Strip git worktree env vars so setup commands run against the test
+		// repo rather than inheriting the outer Forge worker process's context.
+		cmd.Env = cleanGitTestEnv()
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "git %v: %s", args, out)
 	}
@@ -3084,6 +3185,7 @@ func TestForgeBranchAheadOfMain(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = anvilPath
+		cmd.Env = cleanGitTestEnv()
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "git %v: %s", args, out)
 	}

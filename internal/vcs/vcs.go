@@ -472,6 +472,11 @@ type Provider interface {
 	// ListOpenPRs returns all open PRs in the repository.
 	ListOpenPRs(ctx context.Context, worktreePath string) ([]OpenPR, error)
 
+	// GetPRByHeadBranch returns the open PR whose head branch matches the
+	// given branch name, or nil if none exists. Prefer this over ListOpenPRs
+	// when looking up a specific branch to avoid the 100-PR scan limit.
+	GetPRByHeadBranch(ctx context.Context, worktreePath, branch string) (*OpenPR, error)
+
 	// GetRepoOwnerAndName extracts the owner and repository name from the
 	// git remote. The semantics of "owner" vary by platform (org, group,
 	// project namespace, etc.).
