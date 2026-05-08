@@ -673,10 +673,9 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 //
 // Synthetic ext-* PRs are never bellows-managed regardless of marker state.
 func (d *Daemon) reevaluateTrackedPR(existing *state.PR, pr vcs.OpenPR, anvilName string, forgeManaged bool, myForgeID string) {
-	// External PRs (synthetic ext-* IDs) can be promoted to managed once they
-	// gain the per-instance marker. This handles the case where an external
-	// PR's body is later edited to include our marker (rare but supported
-	// for symmetry with the demotion path).
+	// ext-* rows are synthetic identifiers for PRs Forge did not create.
+	// They are never eligible for bellows management regardless of marker state;
+	// defensively clear bellows_managed if it somehow got set.
 	if strings.HasPrefix(existing.BeadID, "ext-") {
 		if existing.BellowsManaged {
 			// ext-* must never be bellows-managed; defensive correction.

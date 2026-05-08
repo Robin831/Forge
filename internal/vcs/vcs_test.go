@@ -425,9 +425,9 @@ func TestBuildPRBody_ReviewerNotes(t *testing.T) {
 
 // withForgeID temporarily overrides the package-level forge id used by
 // EnsureForgeManagedMarker and the PR body builders, restoring the previous
-// value when the test ends. SetForgeID stores via atomic.Value so this is
-// safe to call from parallel tests, but each test still owns its own value
-// while the cleanup is registered.
+// value when the test ends. SetForgeID uses atomic.Value so calls are
+// data-race-free, but the value is still a shared global — tests using
+// this helper must not run in parallel with each other.
 func withForgeID(t *testing.T, id string) {
 	t.Helper()
 	prev := ForgeID()
