@@ -2276,10 +2276,9 @@ type mockVCSProvider struct {
 	// when the caller will dereference the return value.
 	createPRResult *vcs.PR
 	createPRErr    error
-	// listOpenPRsResult controls what ListOpenPRs returns. Used by tests that
-	// exercise the ErrPRAlreadyExists recovery path which looks up the
-	// existing PR by branch.
-	listOpenPRsResult []vcs.OpenPR
+	// openPRs controls what ListOpenPRs and GetPRByHeadBranch return. Used by
+	// tests that exercise the ErrPRAlreadyExists recovery path.
+	openPRs []vcs.OpenPR
 }
 
 func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error {
@@ -2296,7 +2295,15 @@ func (m *mockVCSProvider) CheckStatusLight(_ context.Context, _ string, _ int) (
 	return nil, nil
 }
 func (m *mockVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.OpenPR, error) {
-	return m.listOpenPRsResult, nil
+	return m.openPRs, nil
+}
+func (m *mockVCSProvider) GetPRByHeadBranch(_ context.Context, _ string, branch string) (*vcs.OpenPR, error) {
+	for i := range m.openPRs {
+		if m.openPRs[i].Branch == branch {
+			return &m.openPRs[i], nil
+		}
+	}
+	return nil, nil
 }
 func (m *mockVCSProvider) GetRepoOwnerAndName(_ context.Context, _ string) (string, string, error) {
 	return "", "", nil
@@ -2674,11 +2681,11 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 		gitLocal("push", "origin", branchName)
 		gitLocal("checkout", "main")
 
-		// Mock VCS: CreatePR fails with ErrPRAlreadyExists, ListOpenPRs returns
-		// the matching open PR so registerExistingPRByBranch can find it.
+		// Mock VCS: CreatePR fails with ErrPRAlreadyExists, GetPRByHeadBranch
+		// returns the matching open PR so registerExistingPRByBranch can find it.
 		mockVCS := &mockVCSProvider{
 			createPRErr: fmt.Errorf("gh pr create: %w: already exists", vcs.ErrPRAlreadyExists),
-			listOpenPRsResult: []vcs.OpenPR{
+			openPRs: []vcs.OpenPR{
 				{Number: 255, Title: "Existing PR", Branch: branchName},
 			},
 		}

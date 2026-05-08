@@ -284,6 +284,40 @@ func (g *GitLabProvider) ListOpenPRs(ctx context.Context, worktreePath string) (
 	return out, nil
 }
 
+// GetPRByHeadBranch returns the open MR whose source branch matches the given
+// branch name, or nil if no matching MR is found.
+func (g *GitLabProvider) GetPRByHeadBranch(ctx context.Context, worktreePath, branch string) (*OpenPR, error) {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "glab", "mr", "list",
+		"--source-branch", branch,
+		"--state", "opened",
+		"--output", "json",
+	))
+	cmd.Dir = worktreePath
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("glab mr list --source-branch failed: %w\nstderr: %s", err, stderr.String())
+	}
+
+	var raw []struct {
+		IID          int    `json:"iid"`
+		Title        string `json:"title"`
+		SourceBranch string `json:"source_branch"`
+		Description  string `json:"description"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		return nil, fmt.Errorf("parsing mr list: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	r := raw[0]
+	return &OpenPR{Number: r.IID, Title: r.Title, Branch: r.SourceBranch, Body: r.Description}, nil
+}
+
 // GetRepoOwnerAndName extracts the namespace (group/subgroup) and project name from the git remote.
 func (g *GitLabProvider) GetRepoOwnerAndName(ctx context.Context, worktreePath string) (owner, repo string, err error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "remote", "get-url", "origin"))

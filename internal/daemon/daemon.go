@@ -489,24 +489,20 @@ func (d *Daemon) ingotRecordPR(beadID, anvil string, prNumber int, prURL string)
 // step, HasOpenPRForBead returns false on the next orphan-recovery sweep and
 // the bead is reset to open and re-dispatched, producing a redispatch loop
 // that burns Smith tokens to declare "no changes needed" each iteration.
+// baseBranch is the PR's target branch (bead.EpicBranch or the repo default);
+// storing it prevents rebase/merge actions from defaulting to main for Crucible
+// child beads that target a feature branch.
 // Returns the PR number on success (0 if the PR could not be located or
 // registration failed).
-func (d *Daemon) registerExistingPRByBranch(ctx context.Context, anvilName, anvilPath, beadID, branch string) int {
+func (d *Daemon) registerExistingPRByBranch(ctx context.Context, anvilName, anvilPath, beadID, branch, baseBranch string) int {
 	if branch == "" {
 		return 0
 	}
-	prs, err := d.vcsForAnvil(anvilName).ListOpenPRs(ctx, anvilPath)
+	match, err := d.vcsForAnvil(anvilName).GetPRByHeadBranch(ctx, anvilPath, branch)
 	if err != nil {
-		d.logger.Warn("could not list open PRs to register existing PR after ErrPRAlreadyExists",
+		d.logger.Warn("could not look up open PR by branch to register after ErrPRAlreadyExists",
 			"anvil", anvilName, "branch", branch, "bead", beadID, "error", err)
 		return 0
-	}
-	var match *vcs.OpenPR
-	for i := range prs {
-		if prs[i].Branch == branch {
-			match = &prs[i]
-			break
-		}
 	}
 	if match == nil {
 		d.logger.Warn("ErrPRAlreadyExists but no open PR found by branch — orphan recovery may re-dispatch this bead",
@@ -518,13 +514,14 @@ func (d *Daemon) registerExistingPRByBranch(ctx context.Context, anvilName, anvi
 		return match.Number
 	}
 	dbPR := &state.PR{
-		Number:    match.Number,
-		Anvil:     anvilName,
-		BeadID:    beadID,
-		Branch:    match.Branch,
-		Status:    state.PROpen,
-		CreatedAt: time.Now(),
-		Title:     match.Title,
+		Number:     match.Number,
+		Anvil:      anvilName,
+		BeadID:     beadID,
+		Branch:     match.Branch,
+		BaseBranch: baseBranch,
+		Status:     state.PROpen,
+		CreatedAt:  time.Now(),
+		Title:      match.Title,
 	}
 	if err := d.db.InsertPR(dbPR); err != nil {
 		d.logger.Warn("failed to insert existing PR record after ErrPRAlreadyExists",
@@ -2553,7 +2550,7 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 			// Register the existing PR in state.db so HasOpenPRForBead returns
 			// true on the next orphan-recovery sweep. Without this, the bead
 			// is reset to open and re-dispatched in a loop.
-			d.registerExistingPRByBranch(ctx, bead.Anvil, anvilPath, bead.ID, outcome.Branch)
+			d.registerExistingPRByBranch(ctx, bead.Anvil, anvilPath, bead.ID, outcome.Branch, bead.EpicBranch)
 			// Update worker state so it doesn't hang in WorkerMonitoring
 			// with no PR record for bellows to track.
 			if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerDone); dbErr != nil {
@@ -2720,7 +2717,7 @@ func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Be
 				// returns true on the next orphan-recovery sweep. Without
 				// this, the bead is reset to open and re-dispatched, with
 				// Smith repeatedly declaring NO_CHANGES_NEEDED in a loop.
-				d.registerExistingPRByBranch(prCtx, bead.Anvil, anvilPath, bead.ID, branch)
+				d.registerExistingPRByBranch(prCtx, bead.Anvil, anvilPath, bead.ID, branch, bead.EpicBranch)
 				if clearErr := d.db.ClearRetry(bead.ID, bead.Anvil); clearErr != nil {
 					d.logger.Error("failed to clear retry record after ErrPRAlreadyExists", "bead", bead.ID, "error", clearErr)
 				}

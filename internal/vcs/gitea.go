@@ -273,6 +273,23 @@ func (g *GiteaProvider) ListOpenPRs(ctx context.Context, worktreePath string) ([
 	return out, nil
 }
 
+// GetPRByHeadBranch returns the open PR whose head branch matches the given
+// branch name, or nil if no matching PR is found. Gitea's REST API does not
+// support head-branch filtering, so this uses the paginated ListOpenPRs and
+// scans for the matching branch.
+func (g *GiteaProvider) GetPRByHeadBranch(ctx context.Context, worktreePath, branch string) (*OpenPR, error) {
+	prs, err := g.ListOpenPRs(ctx, worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	for i := range prs {
+		if prs[i].Branch == branch {
+			return &prs[i], nil
+		}
+	}
+	return nil, nil
+}
+
 // GetRepoOwnerAndName extracts the owner and repository name from the git remote.
 func (g *GiteaProvider) GetRepoOwnerAndName(ctx context.Context, worktreePath string) (owner, repo string, err error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "remote", "get-url", "origin"))
