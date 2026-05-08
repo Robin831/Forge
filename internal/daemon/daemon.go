@@ -4581,6 +4581,26 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.LogEvent("bellows_assigned", fmt.Sprintf("PR #%d assigned to bellows for lifecycle management", pa.PRNumber), pa.BeadID, pa.Anvil)
 			d.logger.Info("bellows assigned to external PR via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
+		case "approve":
+			reqID, _ := d.reqTracker.Track()
+			go func() {
+				approveCtx, approveCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+				defer approveCancel()
+				approveCmd := executil.HideWindow(exec.CommandContext(approveCtx, "gh", "pr", "review", strconv.Itoa(pa.PRNumber), "--approve"))
+				approveCmd.Dir = anvilCfg.Path
+				if out, err := approveCmd.CombinedOutput(); err != nil {
+					errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr review --approve failed: %v: %s", err, strings.TrimSpace(string(out)))})
+					d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+					return
+				}
+				_ = d.db.LogEvent("review_approved", fmt.Sprintf("PR #%d approved by user", pa.PRNumber), pa.BeadID, pa.Anvil)
+				d.logger.Info("PR approved by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+				data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d approved", pa.PRNumber)})
+				d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+			}()
+			resp, _ := ipc.NewQueuedResponse(reqID, "approving PR")
+			return resp
+
 		default:
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("unknown pr_action: %q", pa.Action)})
 			return ipc.Response{Type: "error", Payload: msg}
