@@ -44,6 +44,10 @@ func (g *GitLabProvider) CreatePR(ctx context.Context, params CreateParams) (*PR
 	} else {
 		params.Body = InjectClosesLine(params.Body, params.ExternalRef)
 	}
+	// Always include the forge-managed marker on MRs Forge creates so
+	// reconcileOpenPRs can distinguish them from external MRs that merely
+	// reference a bead ID.
+	params.Body = EnsureForgeManagedMarker(params.Body)
 
 	args := []string{
 		"mr", "create",

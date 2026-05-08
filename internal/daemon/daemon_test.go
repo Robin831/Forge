@@ -3167,6 +3167,93 @@ func TestHandleIPC_ForceSmith(t *testing.T) {
 //   - ext-* PRs are skipped (filtered in SQL, so they never arrive)
 //   - PRs whose anvil is not in the config are skipped without error
 //   - A valid merged PR causes a bd close call
+// TestReconcileOpenPRs_RequiresForgeManagedMarker is a regression test for
+// Forge-m1ui. Before the fix, reconcileOpenPRs adopted any PR whose body
+// merely contained "**Bead**: <id>" — including PR templates, "Closes"
+// references, and contributor PRs that mention a bead in the description.
+// Adopted PRs were stored with bellows_managed=true (the column default),
+// causing Bellows to push review-fix commits and attempt auto-merge against
+// PRs Forge had no business touching.
+//
+// After the fix, only PRs that contain the explicit forge-managed marker
+// (vcs.ForgeManagedMarker) are adopted as bellows-managed. PRs that merely
+// reference a bead are tracked as ext-<number> with bellows_managed=false.
+func TestReconcileOpenPRs_RequiresForgeManagedMarker(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-reconcile-open-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock := &mockVCSProvider{
+		openPRs: []vcs.OpenPR{
+			// A contributor's manual PR that references a bead in the body but
+			// was NOT created by Forge — Sophie's PR #3030 in the bug report.
+			{
+				Number: 3030,
+				Title:  "Manual fix for the metadata loader",
+				Branch: "sophie/manual-fix",
+				Body:   "Fixes the loader.\n\n**Bead**: Fhi.Metadata-tpc00\n",
+			},
+			// A PR Forge created — body carries the forge-managed marker.
+			{
+				Number: 4040,
+				Title:  "forge: Forge-real",
+				Branch: "forge/Forge-real",
+				Body:   "## Changes\n\nDid the work.\n\n---\nBead: Forge-real | Branch: forge/Forge-real\n" + vcs.ForgeManagedMarker,
+			},
+			// A purely external PR with no bead reference at all.
+			{
+				Number: 5050,
+				Title:  "Random external work",
+				Branch: "feature/random",
+				Body:   "Just some changes.",
+			},
+		},
+	}
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		vcsProviders: map[string]vcs.Provider{
+			"test-anvil": mock,
+		},
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir},
+		},
+	})
+
+	d.reconcileOpenPRs(context.Background())
+
+	sophie, err := db.GetPRByNumber("test-anvil", 3030)
+	require.NoError(t, err)
+	require.NotNil(t, sophie, "Sophie's manual PR should be tracked")
+	assert.Equal(t, "ext-3030", sophie.BeadID,
+		"PR with only a **Bead**: reference must be tracked as external, not adopted under the referenced bead")
+	assert.False(t, sophie.BellowsManaged,
+		"PR without the forge-managed marker must NOT be bellows-managed (this is the core fix)")
+
+	real, err := db.GetPRByNumber("test-anvil", 4040)
+	require.NoError(t, err)
+	require.NotNil(t, real, "Forge's own PR should be tracked")
+	assert.Equal(t, "Forge-real", real.BeadID,
+		"PR with the forge-managed marker should be tracked under its bead ID")
+	assert.True(t, real.BellowsManaged,
+		"PR with the forge-managed marker must be bellows-managed")
+
+	random, err := db.GetPRByNumber("test-anvil", 5050)
+	require.NoError(t, err)
+	require.NotNil(t, random, "external PR with no bead reference should still be tracked")
+	assert.Equal(t, "ext-5050", random.BeadID)
+	assert.False(t, random.BellowsManaged,
+		"PR with no bead reference must not be bellows-managed")
+}
+
 func TestReconcileMergedBeads(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-reconcile-*")
 	require.NoError(t, err)

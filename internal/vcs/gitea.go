@@ -85,6 +85,10 @@ func (g *GiteaProvider) CreatePR(ctx context.Context, params CreateParams) (*PR,
 	} else {
 		params.Body = InjectClosesLine(params.Body, params.ExternalRef)
 	}
+	// Always include the forge-managed marker on PRs Forge creates so
+	// reconcileOpenPRs can distinguish them from external PRs that merely
+	// reference a bead ID.
+	params.Body = EnsureForgeManagedMarker(params.Body)
 
 	baseURL, owner, repo, err := g.resolveRepo(ctx, params.WorktreePath)
 	if err != nil {
