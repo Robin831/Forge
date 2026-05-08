@@ -576,6 +576,14 @@ func anvilPathMap(cfg *config.Config) map[string]string {
 // registers any that are missing from the state DB. This ensures Bellows
 // monitors PRs even after a DB reset or if the PR was created outside a
 // recorded Forge pipeline session.
+//
+// Ownership is established by the explicit forge-managed marker (see
+// vcs.ForgeManagedMarker) embedded by Forge when it creates a PR. A bare
+// "**Bead**: <id>" reference in the body is NOT sufficient — PR templates,
+// "Closes" lines, and manual bead mentions must not cause Forge to start
+// pushing review-fix commits or auto-merging unrelated contributors' PRs.
+// PRs without the marker are still tracked (so Hearth can display them) but
+// are stored as `ext-<number>` with bellows_managed=false.
 func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 	for anvilName, anvilCfg := range d.cfg.Load().Anvils {
 		if anvilCfg.Path == "" {
@@ -591,10 +599,22 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 			if existing != nil {
 				continue // already tracked
 			}
+			forgeManaged := vcs.IsForgeManagedPRBody(pr.Body)
 			beadID := extractBeadID(pr.Body)
-			if beadID == "" {
-				// External PR (not created by Forge) — track it with a synthetic bead ID
-				// so Bellows can monitor its status and the user can act on it from Hearth.
+			if !forgeManaged {
+				// External PR (not created by THIS Forge instance). The body may
+				// still reference a bead ID — e.g. a contributor's manual PR that
+				// closes a tracked issue, or a PR template hint — but without the
+				// forge-managed marker we have no proof Forge created it. Track
+				// it as an external PR so Bellows leaves it alone.
+				if beadID != "" {
+					d.logger.Info("reconcile: PR references a bead but is not forge-managed; tracking as external",
+						"pr", pr.Number, "anvil", anvilName, "referenced_bead", beadID)
+				}
+				beadID = "ext-" + strconv.Itoa(pr.Number)
+			} else if beadID == "" {
+				// Marker present but no bead reference — unexpected, but keep the
+				// PR tracked under a synthetic ID rather than dropping it.
 				beadID = "ext-" + strconv.Itoa(pr.Number)
 			}
 			dbPR := &state.PR{
@@ -606,14 +626,16 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 				CreatedAt: time.Now(),
 			}
 			if err := d.db.InsertPR(dbPR); err == nil {
-				d.logger.Info("reconcile: registered untracked GitHub PR",
-					"pr", pr.Number, "bead", beadID, "anvil", anvilName)
-				// Persist title from GitHub
+				d.logger.Info("reconcile: registered untracked PR",
+					"pr", pr.Number, "bead", beadID, "anvil", anvilName, "forge_managed", forgeManaged)
+				// Persist title from upstream
 				if pr.Title != "" {
 					_ = d.db.UpdatePRTitle(dbPR.ID, pr.Title)
 				}
-				// External PRs are not bellows-managed by default
-				if strings.HasPrefix(beadID, "ext-") {
+				// Only PRs Forge created (forge-managed marker present) are
+				// eligible for bellows lifecycle management. Everything else
+				// is display-only, so reset the column default to 0.
+				if !forgeManaged {
 					_ = d.db.UpdatePRBellowsManaged(dbPR.ID, false)
 				}
 			}

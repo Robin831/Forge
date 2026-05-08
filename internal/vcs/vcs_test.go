@@ -3,6 +3,7 @@ package vcs
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -420,6 +421,63 @@ func TestBuildPRBody_ReviewerNotes(t *testing.T) {
 		assert.Contains(t, body, "## Reviewer's approval notes")
 		assert.Contains(t, body, "Approved.")
 	})
+}
+
+func TestIsForgeManagedPRBody(t *testing.T) {
+	t.Run("body with only **Bead**: reference is not forge-managed", func(t *testing.T) {
+		// Mirrors the PR #3030 scenario: a contributor manually opened a PR
+		// referencing a real bead in the description. Forge must not adopt it.
+		body := "Fixes the thing.\n\n**Bead**: Fhi.Metadata-tpc00\n"
+		assert.False(t, IsForgeManagedPRBody(body))
+	})
+
+	t.Run("body with marker + bead is forge-managed", func(t *testing.T) {
+		body := "## Changes\n\nDid the work.\n\n---\nBead: Forge-abc1 | Branch: forge/abc1\n" + ForgeManagedMarker
+		assert.True(t, IsForgeManagedPRBody(body))
+	})
+
+	t.Run("empty body is not forge-managed", func(t *testing.T) {
+		assert.False(t, IsForgeManagedPRBody(""))
+	})
+
+	t.Run("body containing only Closes #N is not forge-managed", func(t *testing.T) {
+		body := "Closes #42"
+		assert.False(t, IsForgeManagedPRBody(body))
+	})
+
+	t.Run("body with PR-template Bead heading but no marker is not forge-managed", func(t *testing.T) {
+		body := "## What\n\nFixes a bug.\n\n## Why\n\n**Bead**: Forge-zzzz (referenced)"
+		assert.False(t, IsForgeManagedPRBody(body))
+	})
+}
+
+func TestEnsureForgeManagedMarker(t *testing.T) {
+	t.Run("appends to body without marker", func(t *testing.T) {
+		got := EnsureForgeManagedMarker("Hello")
+		assert.True(t, IsForgeManagedPRBody(got))
+		assert.Contains(t, got, ForgeManagedMarker)
+	})
+
+	t.Run("idempotent when marker already present", func(t *testing.T) {
+		body := "Hello\n" + ForgeManagedMarker
+		got := EnsureForgeManagedMarker(body)
+		assert.Equal(t, body, got)
+		// Exactly one marker, not two.
+		assert.Equal(t, 1, strings.Count(got, ForgeManagedMarker))
+	})
+
+	t.Run("returns marker for empty body", func(t *testing.T) {
+		assert.Equal(t, ForgeManagedMarker, EnsureForgeManagedMarker(""))
+	})
+}
+
+func TestBuildPRBody_IncludesForgeManagedMarker(t *testing.T) {
+	body := buildPRBody(CreateParams{
+		BeadID: "Forge-test",
+		Branch: "forge/test",
+	})
+	assert.True(t, IsForgeManagedPRBody(body),
+		"buildPRBody must always emit the forge-managed marker so reconcileOpenPRs can identify Forge's own PRs")
 }
 
 func TestMergeabilityFromStatus(t *testing.T) {

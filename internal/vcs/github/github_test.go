@@ -165,6 +165,18 @@ func TestBuildDefaultBody(t *testing.T) {
 		})
 	}
 
+	// Regression for Forge-m1ui: every Forge-authored PR body must include the
+	// forge-managed marker so reconcileOpenPRs does not mistake a contributor's
+	// PR (which references a bead but lacks the marker) for one Forge created.
+	t.Run("forge-managed marker is always emitted", func(t *testing.T) {
+		body := buildDefaultBody(vcs.CreateParams{
+			BeadID: "Forge-test",
+			Branch: "forge/Forge-test",
+		})
+		assert.True(t, vcs.IsForgeManagedPRBody(body),
+			"buildDefaultBody must emit the forge-managed marker")
+	})
+
 	// Regression: a warden verdict passed as ReviewerNotes must never appear
 	// inside the '## Changes' section. This is the root of the bug the bead
 	// was filed for — review-speak leaking under Changes when no changelog
