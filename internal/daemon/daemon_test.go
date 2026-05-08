@@ -1525,6 +1525,135 @@ func TestHandleIPC_CloseBead(t *testing.T) {
 	})
 }
 
+func TestHandleIPC_UpdateLabel(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+		reqTracker:    *ipc.NewRequestTracker("test-"),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {
+				Path: tmpDir,
+			},
+			"no-path-anvil": {
+				Path: "",
+			},
+		},
+	})
+
+	t.Run("invalid JSON payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "update_label", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid update_label payload")
+	})
+
+	t.Run("missing bead_id", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.UpdateLabelPayload{Anvil: "test-anvil", Label: "ready", Action: "add"})
+		resp := d.handleIPC(ipc.Command{Type: "update_label", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id, anvil, and label are required")
+	})
+
+	t.Run("missing anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.UpdateLabelPayload{BeadID: "BEAD-1", Label: "ready", Action: "add"})
+		resp := d.handleIPC(ipc.Command{Type: "update_label", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id, anvil, and label are required")
+	})
+
+	t.Run("missing label", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.UpdateLabelPayload{BeadID: "BEAD-1", Anvil: "test-anvil", Action: "add"})
+		resp := d.handleIPC(ipc.Command{Type: "update_label", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "bead_id, anvil, and label are required")
+	})
+
+	t.Run("invalid action", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.UpdateLabelPayload{BeadID: "BEAD-1", Anvil: "test-anvil", Label: "ready", Action: "toggle"})
+		resp := d.handleIPC(ipc.Command{Type: "update_label", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid action")
+	})
+
+	t.Run("missing action", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.UpdateLabelPayload{BeadID: "BEAD-1", Anvil: "test-anvil", Label: "ready"})
+		resp := d.handleIPC(ipc.Command{Type: "update_label", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid action")
+	})
+
+	t.Run("unknown anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.UpdateLabelPayload{BeadID: "BEAD-1", Anvil: "unknown-anvil", Label: "ready", Action: "add"})
+		resp := d.handleIPC(ipc.Command{Type: "update_label", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "not found")
+	})
+
+	t.Run("anvil with empty path", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.UpdateLabelPayload{BeadID: "BEAD-1", Anvil: "no-path-anvil", Label: "ready", Action: "add"})
+		resp := d.handleIPC(ipc.Command{Type: "update_label", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "no path configured")
+	})
+
+	// The queued subtests below dispatch a goroutine that execs `bd`. Install a
+	// fake `bd` on PATH so those goroutines don't pick up a real bead binary
+	// from the host (which would mutate the test tmpDir as a fake repo).
+	if runtime.GOOS == "windows" {
+		bdScript := filepath.Join(tmpDir, "bd.bat")
+		bdContent := "@echo off\r\nexit /b 0\r\n"
+		require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+	} else {
+		bdScript := filepath.Join(tmpDir, "bd")
+		bdContent := "#!/bin/sh\nexit 0\n"
+		require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+	}
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+	defer os.Setenv("PATH", oldPath)
+
+	t.Run("queues add with valid payload", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.UpdateLabelPayload{BeadID: "BEAD-1", Anvil: "test-anvil", Label: "ready", Action: "add"})
+		resp := d.handleIPC(ipc.Command{Type: "update_label", Payload: payload})
+		assert.Equal(t, "queued", resp.Type)
+	})
+
+	t.Run("queues remove with valid payload", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.UpdateLabelPayload{BeadID: "BEAD-1", Anvil: "test-anvil", Label: "ready", Action: "remove"})
+		resp := d.handleIPC(ipc.Command{Type: "update_label", Payload: payload})
+		assert.Equal(t, "queued", resp.Type)
+	})
+}
+
 // TestApplyDecomposedOutcome verifies the retry/circuit-breaker behavior of
 // applyDecomposedOutcome:
 //

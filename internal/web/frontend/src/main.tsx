@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App'
 import { AuthProvider } from './auth'
+import { ToastProvider, ToastViewport } from './hooks/useToast'
 
 const root = document.getElementById('root')
 if (!root) {
@@ -14,7 +15,10 @@ createRoot(root).render(
   <StrictMode>
     <BrowserRouter>
       <AuthProvider>
-        <App />
+        <ToastProvider>
+          <App />
+          <ToastViewport />
+        </ToastProvider>
       </AuthProvider>
     </BrowserRouter>
   </StrictMode>,

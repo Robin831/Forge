@@ -1,16 +1,19 @@
 import { useMemo, useState } from 'react'
-import { ArrowLeft, FileText } from 'lucide-react'
+import { ArrowLeft, FileText, Plus, StickyNote, X, XCircle } from 'lucide-react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useApiPoll } from '../hooks/useApiPoll'
-import type {
-  BeadDetailResponse,
-  BeadDetailWorker,
-  StatusResponse,
-  WorkerInfo,
+import {
+  actions,
+  type BeadDetailResponse,
+  type BeadDetailWorker,
+  type StatusResponse,
+  type WorkerInfo,
 } from '../api'
 import AppHeader from '../components/AppHeader'
+import ConfirmModal from '../components/ConfirmModal'
 import Pane, { EmptyState } from '../components/Pane'
 import WorkerLogModal from '../components/WorkerLogModal'
+import { useAction } from '../hooks/useAction'
 import { eventClasses, priorityClasses, priorityLabel, relativeTime } from '../lib/format'
 
 const POLL_INTERVAL_MS = 5000
@@ -59,6 +62,50 @@ export default function BeadDetailPage() {
   const status = useApiPoll<StatusResponse>('/api/status', POLL_INTERVAL_MS)
   const detail = useApiPoll<BeadDetailResponse>(path, POLL_INTERVAL_MS)
   const data = detail.data
+  const resolvedAnvil = data?.anvil || anvil
+  const { run, busy } = useAction()
+  const [dialog, setDialog] = useState<
+    | null
+    | { kind: 'close' }
+    | { kind: 'add-label' }
+    | { kind: 'remove-label'; label: string }
+    | { kind: 'note' }
+  >(null)
+
+  const closeDialog = () => setDialog(null)
+
+  const handleConfirm = async (input: string) => {
+    if (!dialog || !resolvedAnvil) {
+      closeDialog()
+      return
+    }
+    if (dialog.kind === 'close') {
+      const ok = await run(() => actions.closeBead(beadID, resolvedAnvil), {
+        successMessage: `Closed ${beadID}`,
+      })
+      if (ok) closeDialog()
+    } else if (dialog.kind === 'add-label') {
+      if (!input.trim()) return
+      const ok = await run(
+        () => actions.addLabel(beadID, resolvedAnvil, input.trim()),
+        { successMessage: `Added label "${input.trim()}"` },
+      )
+      if (ok) closeDialog()
+    } else if (dialog.kind === 'remove-label') {
+      const ok = await run(
+        () => actions.removeLabel(beadID, resolvedAnvil, dialog.label),
+        { successMessage: `Removed label "${dialog.label}"` },
+      )
+      if (ok) closeDialog()
+    } else if (dialog.kind === 'note') {
+      if (!input.trim()) return
+      const ok = await run(
+        () => actions.addNote(beadID, resolvedAnvil, input.trim()),
+        { successMessage: 'Note appended' },
+      )
+      if (ok) closeDialog()
+    }
+  }
 
   return (
     <div className="mx-auto flex min-h-full max-w-7xl flex-col gap-6 p-4 sm:p-6">
@@ -109,16 +156,55 @@ export default function BeadDetailPage() {
         {data?.queue?.description && (
           <p className="mt-3 whitespace-pre-wrap text-sm text-slate-300">{data.queue.description}</p>
         )}
-        {data?.queue?.labels && data.queue.labels.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1">
-            {data.queue.labels.map((l) => (
-              <span
-                key={l}
-                className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300"
-              >
-                {l}
-              </span>
-            ))}
+        <div className="mt-3 flex flex-wrap items-center gap-1">
+          {(data?.queue?.labels ?? []).map((l) => (
+            <span
+              key={l}
+              className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300"
+            >
+              {l}
+              {resolvedAnvil && (
+                <button
+                  type="button"
+                  onClick={() => setDialog({ kind: 'remove-label', label: l })}
+                  disabled={busy}
+                  className="text-slate-500 hover:text-red-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-50"
+                  aria-label={`Remove label ${l}`}
+                >
+                  <X size={10} />
+                </button>
+              )}
+            </span>
+          ))}
+          {resolvedAnvil && (
+            <button
+              type="button"
+              onClick={() => setDialog({ kind: 'add-label' })}
+              disabled={busy}
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-700 px-2 py-0.5 text-[10px] text-slate-400 hover:border-amber-400/40 hover:text-amber-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
+            >
+              <Plus size={10} aria-hidden /> add label
+            </button>
+          )}
+        </div>
+        {resolvedAnvil && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setDialog({ kind: 'note' })}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 hover:border-amber-400/40 hover:text-amber-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
+            >
+              <StickyNote size={12} aria-hidden /> Append note
+            </button>
+            <button
+              type="button"
+              onClick={() => setDialog({ kind: 'close' })}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs text-red-200 hover:bg-red-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-50"
+            >
+              <XCircle size={12} aria-hidden /> Close bead
+            </button>
           </div>
         )}
         {detail.error && (
@@ -407,6 +493,55 @@ export default function BeadDetailPage() {
       </Pane>
 
       <WorkerLogModal worker={logWorker} onClose={() => setLogWorker(null)} />
+
+      <ConfirmModal
+        open={dialog?.kind === 'close'}
+        title="Close bead?"
+        message={`This calls bd close on ${beadID} (${resolvedAnvil}). Use this only when the work is genuinely finished.`}
+        confirmLabel="Close bead"
+        tone="danger"
+        busy={busy}
+        onConfirm={handleConfirm}
+        onCancel={closeDialog}
+      />
+      <ConfirmModal
+        open={dialog?.kind === 'add-label'}
+        title="Add label"
+        message={`Add a label to ${beadID}.`}
+        confirmLabel="Add label"
+        tone="primary"
+        inputLabel="Label"
+        inputPlaceholder="forgeReady"
+        busy={busy}
+        onConfirm={handleConfirm}
+        onCancel={closeDialog}
+      />
+      <ConfirmModal
+        open={dialog?.kind === 'remove-label'}
+        title="Remove label?"
+        message={
+          dialog?.kind === 'remove-label'
+            ? `Remove label "${dialog.label}" from ${beadID}.`
+            : ''
+        }
+        confirmLabel="Remove"
+        tone="danger"
+        busy={busy}
+        onConfirm={handleConfirm}
+        onCancel={closeDialog}
+      />
+      <ConfirmModal
+        open={dialog?.kind === 'note'}
+        title="Append note"
+        message={`Add a triage note to ${beadID}.`}
+        confirmLabel="Append"
+        tone="primary"
+        inputLabel="Note"
+        inputPlaceholder="Manual triage step…"
+        busy={busy}
+        onConfirm={handleConfirm}
+        onCancel={closeDialog}
+      />
 
       <footer className="text-center text-xs text-slate-500">
         Polled every {POLL_INTERVAL_MS / 1000}s · Hearth 2.0

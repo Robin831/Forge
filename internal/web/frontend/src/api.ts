@@ -262,3 +262,69 @@ export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> 
   }
   return (await res.json()) as T
 }
+
+// apiPost dispatches a JSON-bodied POST to an action endpoint. Both 200
+// (synchronous "ok") and 202 (async "queued") are treated as success since
+// the daemon runs queued shellouts in the background. A 4xx/5xx response is
+// surfaced as ApiError with the daemon's error message when available.
+export async function apiPost<T = unknown>(path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { 'X-Forge-Action': '1' }
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  const res = await fetch(path, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  if (res.status === 401) {
+    throw new ApiError(401, 'unauthorized')
+  }
+  const text = await res.text()
+  let parsed: unknown = null
+  if (text) {
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      parsed = null
+    }
+  }
+  if (!res.ok) {
+    const msg =
+      (parsed as { error?: string })?.error ?? `HTTP ${res.status}`
+    throw new ApiError(res.status, msg)
+  }
+  return (parsed ?? {}) as T
+}
+
+export interface ActionRequest {
+  anvil: string
+  reason?: string
+  note?: string
+  label?: string
+  force_run?: boolean
+}
+
+export const actions = {
+  killWorker: (workerID: string) => apiPost(`/api/worker/${encodeURIComponent(workerID)}/kill`),
+  retry: (beadID: string, anvil: string) =>
+    apiPost(`/api/queue/${encodeURIComponent(beadID)}/retry`, { anvil }),
+  dispatch: (beadID: string, anvil: string, forceRun = false) =>
+    apiPost(`/api/queue/${encodeURIComponent(beadID)}/dispatch`, {
+      anvil,
+      force_run: forceRun,
+    }),
+  clarify: (beadID: string, anvil: string, reason: string) =>
+    apiPost(`/api/queue/${encodeURIComponent(beadID)}/clarify`, { anvil, reason }),
+  unclarify: (beadID: string, anvil: string) =>
+    apiPost(`/api/queue/${encodeURIComponent(beadID)}/unclarify`, { anvil }),
+  stop: (beadID: string, anvil: string, reason?: string) =>
+    apiPost(`/api/queue/${encodeURIComponent(beadID)}/stop`, { anvil, reason }),
+  closeBead: (beadID: string, anvil: string) =>
+    apiPost(`/api/bead/${encodeURIComponent(beadID)}/close`, { anvil }),
+  addLabel: (beadID: string, anvil: string, label: string) =>
+    apiPost(`/api/bead/${encodeURIComponent(beadID)}/label/add`, { anvil, label }),
+  removeLabel: (beadID: string, anvil: string, label: string) =>
+    apiPost(`/api/bead/${encodeURIComponent(beadID)}/label/remove`, { anvil, label }),
+  addNote: (beadID: string, anvil: string, note: string) =>
+    apiPost(`/api/bead/${encodeURIComponent(beadID)}/note`, { anvil, note }),
+}

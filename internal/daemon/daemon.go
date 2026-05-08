@@ -3579,6 +3579,64 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		resp, _ := ipc.NewQueuedResponse(reqID, "tagging bead")
 		return resp
 
+	case "update_label":
+		var up ipc.UpdateLabelPayload
+		if err := json.Unmarshal(cmd.Payload, &up); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid update_label payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if up.BeadID == "" || up.Anvil == "" || up.Label == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id, anvil, and label are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		var bdFlag, pastTense, gerund string
+		switch up.Action {
+		case "add":
+			bdFlag = "--add-label"
+			pastTense = "added"
+			gerund = "adding"
+		case "remove":
+			bdFlag = "--remove-label"
+			pastTense = "removed"
+			gerund = "removing"
+		default:
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("invalid action %q (want add|remove)", up.Action)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		cfgSnapshot := d.cfg.Load()
+		anvilCfg, ok := cfgSnapshot.Anvils[up.Anvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", up.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if anvilCfg.Path == "" {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", up.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		reqID, _ := d.reqTracker.Track()
+		go func() {
+			labelCtx, labelCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
+			defer labelCancel()
+			labelCmd := executil.HideWindow(exec.CommandContext(labelCtx, "bd", "update", up.BeadID, bdFlag, up.Label))
+			labelCmd.Dir = anvilCfg.Path
+			if out, err := labelCmd.CombinedOutput(); err != nil {
+				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update failed: %v: %s", err, string(out))})
+				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+				return
+			}
+			d.logger.Info("label updated", "bead", up.BeadID, "anvil", up.Anvil, "label", up.Label, "action", up.Action)
+			if logErr := d.db.LogEvent(state.EventBeadTagged, fmt.Sprintf("Label %q %s on bead %s", up.Label, pastTense, up.BeadID), up.BeadID, up.Anvil); logErr != nil {
+				d.logger.Warn("failed to log label update event", "bead", up.BeadID, "anvil", up.Anvil, "error", logErr)
+			}
+			refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
+			defer refreshCancel()
+			d.pollAndDispatch(refreshCtx, false)
+			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q %s", up.Label, pastTense)})
+			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+		}()
+		resp, _ := ipc.NewQueuedResponse(reqID, fmt.Sprintf("%s label", gerund))
+		return resp
+
 	case "close_bead":
 		var cp ipc.CloseBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {

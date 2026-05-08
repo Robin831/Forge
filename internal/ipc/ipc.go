@@ -188,6 +188,16 @@ type CloseBeadPayload struct {
 	Anvil  string `json:"anvil"`
 }
 
+// UpdateLabelPayload is the payload for an "update_label" command that
+// adds or removes an arbitrary label on a bead via bd update --add-label /
+// --remove-label. Used by Hearth 2.0 to manage labels from the web UI.
+type UpdateLabelPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`
+	Label  string `json:"label"`
+	Action string `json:"action"` // "add" | "remove"
+}
+
 // StopBeadPayload is the payload for a "stop_bead" command.
 // Stops all processing of a bead: kills any running worker, marks the bead
 // as needing clarification (so the poller skips it), and releases it back to

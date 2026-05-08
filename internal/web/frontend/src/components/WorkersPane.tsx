@@ -1,6 +1,9 @@
-import { Users } from 'lucide-react'
-import type { WorkerInfo } from '../api'
+import { useState } from 'react'
+import { Skull, Users } from 'lucide-react'
+import { actions, type WorkerInfo } from '../api'
+import { useAction } from '../hooks/useAction'
 import { relativeTime } from '../lib/format'
+import ConfirmModal from './ConfirmModal'
 import Pane, { EmptyState } from './Pane'
 
 interface WorkersPaneProps {
@@ -8,6 +11,7 @@ interface WorkersPaneProps {
   loading: boolean
   error: string | null
   onSelectWorker?: (worker: WorkerInfo) => void
+  onActionSuccess?: () => void
 }
 
 const STATUS_CLASSES: Record<string, string> = {
@@ -21,7 +25,16 @@ function statusClass(status: string): string {
   return STATUS_CLASSES[status] ?? 'bg-slate-800 text-slate-300 border-slate-700'
 }
 
-export default function WorkersPane({ workers, loading, error, onSelectWorker }: WorkersPaneProps) {
+export default function WorkersPane({
+  workers,
+  loading,
+  error,
+  onSelectWorker,
+  onActionSuccess,
+}: WorkersPaneProps) {
+  const { run, busy } = useAction()
+  const [killTarget, setKillTarget] = useState<WorkerInfo | null>(null)
+
   // Sort by started_at descending so newest workers are at the top — matches
   // hearth TUI behaviour and Hytte's WorkersCard.
   const sorted = [...workers].sort((a, b) => {
@@ -30,76 +43,120 @@ export default function WorkersPane({ workers, loading, error, onSelectWorker }:
     return bT - aT
   })
 
+  const handleKill = async () => {
+    if (!killTarget) return
+    const ok = await run(() => actions.killWorker(killTarget.id), {
+      successMessage: `Kill signal sent to worker ${killTarget.id.slice(0, 8)}`,
+      onSuccess: onActionSuccess,
+    })
+    if (ok) setKillTarget(null)
+  }
+
   return (
-    <Pane
-      title="Workers"
-      icon={<Users size={16} className="text-sky-400" aria-hidden />}
-      count={workers.length}
-      loading={loading}
-      error={error}
-    >
-      {sorted.length === 0 && !loading ? (
-        <EmptyState message="No active workers." />
-      ) : (
-        <ul className="divide-y divide-slate-800">
-          {sorted.map((w) => {
-            const hasLog = !!w.log_path
-            const Wrapper = onSelectWorker && hasLog ? 'button' : 'div'
-            const handleClick = () => {
-              if (onSelectWorker && hasLog) onSelectWorker(w)
-            }
-            return (
-              <li key={w.id}>
-                <Wrapper
-                  type={Wrapper === 'button' ? 'button' : undefined}
-                  onClick={Wrapper === 'button' ? handleClick : undefined}
-                  className={`block w-full px-4 py-3 text-left ${
-                    Wrapper === 'button'
-                      ? 'cursor-pointer transition-colors hover:bg-slate-800/40 focus:bg-slate-800/40 focus:outline-none focus:ring-1 focus:ring-amber-400/40'
-                      : ''
-                  }`}
-                  aria-label={
-                    Wrapper === 'button' ? `Open log for ${w.title || w.bead_id}` : undefined
-                  }
-                >
-                  <div className="flex flex-wrap items-start gap-2">
-                    <span
-                      className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass(w.status)}`}
+    <>
+      <Pane
+        title="Workers"
+        icon={<Users size={16} className="text-sky-400" aria-hidden />}
+        count={workers.length}
+        loading={loading}
+        error={error}
+      >
+        {sorted.length === 0 && !loading ? (
+          <EmptyState message="No active workers." />
+        ) : (
+          <ul className="divide-y divide-slate-800">
+            {sorted.map((w) => {
+              const hasLog = !!w.log_path
+              const canKill = w.status === 'pending' || w.status === 'running'
+              return (
+                <li key={w.id} className="flex items-stretch">
+                  <div className="min-w-0 flex-1">
+                    <button
+                      type="button"
+                      disabled={!hasLog || !onSelectWorker}
+                      onClick={() => {
+                        if (onSelectWorker && hasLog) onSelectWorker(w)
+                      }}
+                      className={`block w-full px-4 py-3 text-left ${
+                        hasLog && onSelectWorker
+                          ? 'cursor-pointer transition-colors hover:bg-slate-800/40 focus:bg-slate-800/40 focus:outline-none focus:ring-1 focus:ring-amber-400/40'
+                          : 'opacity-80'
+                      }`}
+                      aria-label={
+                        hasLog && onSelectWorker
+                          ? `Open log for ${w.title || w.bead_id}`
+                          : undefined
+                      }
                     >
-                      {w.status}
-                    </span>
-                    {w.phase && (
-                      <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
-                        {w.phase}
-                      </span>
-                    )}
-                    {w.pr_number ? (
-                      <span className="rounded-md border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-[10px] text-purple-300">
-                        PR #{w.pr_number}
-                      </span>
-                    ) : null}
-                    {hasLog && Wrapper === 'button' && (
-                      <span className="ml-auto text-[10px] uppercase tracking-wide text-slate-500">
-                        view log
-                      </span>
-                    )}
+                      <div className="flex flex-wrap items-start gap-2">
+                        <span
+                          className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass(w.status)}`}
+                        >
+                          {w.status}
+                        </span>
+                        {w.phase && (
+                          <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
+                            {w.phase}
+                          </span>
+                        )}
+                        {w.pr_number ? (
+                          <span className="rounded-md border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-[10px] text-purple-300">
+                            PR #{w.pr_number}
+                          </span>
+                        ) : null}
+                        {hasLog && onSelectWorker && (
+                          <span className="ml-auto text-[10px] uppercase tracking-wide text-slate-500">
+                            view log
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1.5 truncate text-sm font-medium text-slate-100">
+                        {w.title || w.bead_id}
+                      </p>
+                      <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
+                        <span className="font-mono text-slate-400">{w.bead_id}</span>
+                        <span aria-hidden>·</span>
+                        <span>{w.anvil}</span>
+                        <span aria-hidden>·</span>
+                        <span title={w.started_at}>{relativeTime(w.started_at)}</span>
+                      </p>
+                    </button>
                   </div>
-                  <p className="mt-1.5 truncate text-sm font-medium text-slate-100">
-                    {w.title || w.bead_id}
-                  </p>
-                  <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
-                    <span className="font-mono text-slate-400">{w.bead_id}</span>
-                    <span aria-hidden>·</span>
-                    <span>{w.anvil}</span>
-                    <span aria-hidden>·</span>
-                    <span title={w.started_at}>{relativeTime(w.started_at)}</span>
-                  </p>
-                </Wrapper>
-              </li>
-            )
-          })}
-        </ul>
-      )}
-    </Pane>
+                  {canKill && (
+                    <div className="flex items-start p-2">
+                      <button
+                        type="button"
+                        onClick={() => setKillTarget(w)}
+                        disabled={busy}
+                        className="rounded-md border border-red-500/40 bg-red-500/10 p-1.5 text-red-300 hover:bg-red-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-50"
+                        aria-label={`Kill worker ${w.id}`}
+                        title="Kill worker"
+                      >
+                        <Skull size={14} />
+                      </button>
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </Pane>
+
+      <ConfirmModal
+        open={killTarget !== null}
+        title="Kill worker?"
+        message={
+          killTarget
+            ? `This will SIGTERM the Smith process for ${killTarget.bead_id} (${killTarget.anvil}). Any in-progress changes will be lost.`
+            : ''
+        }
+        confirmLabel="Kill worker"
+        tone="danger"
+        busy={busy}
+        onConfirm={handleKill}
+        onCancel={() => setKillTarget(null)}
+      />
+    </>
   )
 }

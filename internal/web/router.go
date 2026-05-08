@@ -42,6 +42,7 @@ func (s *Server) routes() http.Handler {
 	})
 	r.Route("/api", func(r chi.Router) {
 		r.Use(s.requireAuth)
+		r.Use(s.csrfCheck)
 		r.Get("/me", s.handleMe)
 		r.Get("/status", s.handleStatus)
 		r.Get("/queue", s.handleQueue)
@@ -56,6 +57,18 @@ func (s *Server) routes() http.Handler {
 		r.Get("/history/workers", s.handleHistoryWorkers)
 		r.Get("/costs", s.handleCosts)
 		r.Get("/bead/{bead_id}", s.handleBeadDetail)
+
+		// Destructive admin actions (Hearth 2.0).
+		r.Post("/worker/{id}/kill", s.handleKillWorker)
+		r.Post("/queue/{bead_id}/retry", s.handleQueueRetry)
+		r.Post("/queue/{bead_id}/dispatch", s.handleQueueDispatch)
+		r.Post("/queue/{bead_id}/clarify", s.handleQueueClarify)
+		r.Post("/queue/{bead_id}/unclarify", s.handleQueueUnclarify)
+		r.Post("/queue/{bead_id}/stop", s.handleQueueStop)
+		r.Post("/bead/{bead_id}/close", s.handleBeadClose)
+		r.Post("/bead/{bead_id}/label/add", s.handleBeadLabelAdd)
+		r.Post("/bead/{bead_id}/label/remove", s.handleBeadLabelRemove)
+		r.Post("/bead/{bead_id}/note", s.handleBeadNote)
 	})
 
 	// Static UI fallback. The next bead replaces this with the embedded

@@ -169,7 +169,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // responses pass through their JSON payload as-is so the wire format stays
 // 1:1 with the IPC schema. Error responses are converted to a 500 with the
 // embedded message, since the daemon's error payloads are typed as
-// {"message": "..."}.
+// {"message": "..."}. "queued" responses (async commands accepted by the
+// daemon) are returned as 202 Accepted so the SPA can show optimistic UI
+// while the goroutine completes.
 func (s *Server) writeIPCResponse(w http.ResponseWriter, resp ipc.Response) {
 	switch resp.Type {
 	case "ok", "status":
@@ -180,6 +182,17 @@ func (s *Server) writeIPCResponse(w http.ResponseWriter, resp ipc.Response) {
 			return
 		}
 		_, _ = w.Write(resp.Payload)
+	case "queued":
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		body := map[string]any{"queued": true, "request_id": resp.RequestID}
+		if len(resp.Payload) > 0 {
+			var qp ipc.QueuedPayload
+			if err := json.Unmarshal(resp.Payload, &qp); err == nil && qp.Message != "" {
+				body["message"] = qp.Message
+			}
+		}
+		_ = json.NewEncoder(w).Encode(body)
 	case "error":
 		var body struct {
 			Message string `json:"message"`
