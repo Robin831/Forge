@@ -285,9 +285,9 @@ func matchesChangedFiles(patterns, changedFiles []string) bool {
 // in the worktree and returns its trimmed output. Empty output means no
 // modifications, additions, or untracked files exist under those paths.
 //
-// A 30s timeout guards against a stuck git invocation. The check is best-effort
-// — callers log and continue when err is non-nil so a transient git failure
-// does not break the pipeline.
+// A 30s timeout guards against a stuck git invocation. GIT_DIR and
+// GIT_WORK_TREE are stripped from the environment so the -C flag reliably
+// targets the correct repo even when Forge itself runs inside a git worktree.
 func verifyCleanCheck(ctx context.Context, worktreePath string, pathspecs []string) (string, error) {
 	if len(pathspecs) == 0 {
 		return "", nil
@@ -297,11 +297,25 @@ func verifyCleanCheck(ctx context.Context, worktreePath string, pathspecs []stri
 
 	args := []string{"-C", worktreePath, "status", "--porcelain", "--"}
 	args = append(args, pathspecs...)
-	out, err := executil.HideWindow(exec.CommandContext(checkCtx, "git", args...)).Output()
-	if err != nil {
-		return "", fmt.Errorf("git status --porcelain: %w", err)
+	cmd := executil.HideWindow(exec.CommandContext(checkCtx, "git", args...))
+	// Strip git repo-override env vars so -C always targets worktreePath rather
+	// than any ambient GIT_DIR set by a parent process (e.g. a git worktree shell).
+	var filteredEnv []string
+	for _, e := range os.Environ() {
+		key, _, _ := strings.Cut(e, "=")
+		if key == "GIT_DIR" || key == "GIT_WORK_TREE" || key == "GIT_INDEX_FILE" {
+			continue
+		}
+		filteredEnv = append(filteredEnv, e)
 	}
-	return strings.TrimSpace(string(out)), nil
+	cmd.Env = filteredEnv
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git status --porcelain: %w\n%s", err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // ChangedFilesFromGit returns the list of changed file paths (relative to the
@@ -380,7 +394,10 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 		if stepResult.Passed && len(step.VerifyClean) > 0 {
 			dirty, err := verifyCleanCheck(ctx, worktreePath, step.VerifyClean)
 			if err != nil {
-				log.Printf("[temper] VerifyClean check for step %q failed: %v — treating as clean", step.Name, err)
+				log.Printf("[temper] VerifyClean check for step %q failed: %v", step.Name, err)
+				stepResult.Passed = false
+				stepResult.ExitCode = -1
+				stepResult.Output = fmt.Sprintf("VerifyClean check could not be performed for step %q: %v\nCannot confirm that committed artifacts are up to date — treating as failure.", step.Name, err)
 			} else if dirty != "" {
 				stepResult.Passed = false
 				stepResult.ExitCode = -1
