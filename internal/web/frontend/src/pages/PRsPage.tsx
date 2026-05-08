@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
   Bell,
@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { useApiPoll } from '../hooks/useApiPoll'
 import { useAction } from '../hooks/useAction'
+import { useToast } from '../hooks/useToast'
 import { prActions, type PRActionKind, type PRItem, type StatusResponse } from '../api'
 import AppHeader from '../components/AppHeader'
 import ConfirmModal from '../components/ConfirmModal'
@@ -64,6 +65,7 @@ export default function PRsPage() {
   }
 
   const { run, busy } = useAction()
+  const toast = useToast()
   // actingKey tracks which row+action is mid-flight so we can disable just
   // that button rather than every button on the page (the global `busy`
   // flag from useAction would do the latter).
@@ -83,7 +85,8 @@ export default function PRsPage() {
       // Defensive: forge_prs and recently_merged always have IDs in state.db,
       // and external_prs are reconciled into the same table with synthetic
       // ext-* bead IDs (still a real numeric PR ID). If we ever surface a
-      // PR row without an ID, surface the issue rather than silently no-op.
+      // PR row without an ID, report it so the user knows the action didn't run.
+      toast.push('Cannot run action: PR record has no database ID', 'error')
       closeConfirm()
       return
     }
@@ -345,7 +348,7 @@ const TONE_CLASSES: Record<ActionTone, string> = {
 }
 
 interface ActionButtonProps {
-  icon: React.ReactNode
+  icon: ReactNode
   label: string
   tone: ActionTone
   busy: boolean
@@ -401,10 +404,11 @@ function actionMessage(kind: PRActionKind, pr: PRItem): string {
     case 'bellows':
       // Per Forge-i1g7, bellows adoption is scoped per-instance via the
       // <!-- forge-managed: <id> --> body marker. This action manually
-      // attaches lifecycle management to the PR for THIS forge instance,
-      // even when the marker says otherwise — useful for taking over a
-      // sibling instance's PR or adopting a hand-rolled one.
-      return `Assign this Forge instance to manage PR ${ref}? Per Forge-i1g7, this overrides the per-instance forge-managed marker for this PR only.`
+      // attaches lifecycle management to the PR for THIS forge instance —
+      // useful for taking over a sibling instance's Forge-created PR.
+      // NOTE: this has no durable effect on externally-created (ext-*) PRs;
+      // the daemon's reconcile loop will clear the assignment on the next cycle.
+      return `Assign this Forge instance to manage PR ${ref}? This works for Forge-created PRs (e.g. from a sibling instance). For externally-created PRs the daemon reconcile will revert the assignment on the next cycle.`
     case 'fix-ci':
       return `Spawn a quench worker to fix CI on PR ${ref}?`
     case 'fix-comments':

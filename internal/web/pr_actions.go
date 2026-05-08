@@ -85,7 +85,13 @@ func (s *Server) handlePRApprove(w http.ResponseWriter, r *http.Request) {
 // merge). This is intentionally manual-only: per Forge-i1g7, the
 // `<!-- forge-managed: <instance> -->` body marker scopes auto-adoption to
 // the instance that created the PR, so taking over a sibling instance's PR
-// (or a hand-rolled one) requires an explicit user action via this endpoint.
+// requires an explicit user action via this endpoint.
+//
+// NOTE: this action only has a durable effect on PRs that Forge created (i.e.
+// rows with a real bead ID, not a synthetic ext-* one). The daemon's reconcile
+// loop (reevaluateTrackedPR) unconditionally clears bellows_managed on ext-*
+// rows on every cycle, so the assignment would be immediately reverted for
+// truly external (hand-rolled) PRs.
 func (s *Server) handlePRBellows(w http.ResponseWriter, r *http.Request) {
 	s.dispatchPRAction(w, r, "assign_bellows")
 }
