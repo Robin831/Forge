@@ -147,6 +147,107 @@ func TestLogout_ClearsSession(t *testing.T) {
 	}
 }
 
+func TestLoginGet_BrowserAuthenticated_RedirectsToRoot(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	req := httptest.NewRequest("GET", "/login", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); loc != "/" {
+		t.Errorf("expected Location=/, got %q", loc)
+	}
+}
+
+func TestLoginGet_BrowserUnauthenticated_ServesSPA(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+
+	req := httptest.NewRequest("GET", "/login", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "<!doctype html>") && !strings.Contains(body, "<!DOCTYPE html>") {
+		t.Errorf("expected HTML body, got %q", body)
+	}
+}
+
+func TestLoginGet_FetchAuthenticated_ReturnsJSON(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	req := httptest.NewRequest("GET", "/login", nil)
+	// No Accept header — mirrors fetch()'s default of */*.
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var body struct {
+		Authenticated bool   `json:"authenticated"`
+		User          string `json:"user"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !body.Authenticated || body.User != "alice" {
+		t.Errorf("unexpected payload: %+v", body)
+	}
+}
+
+func TestAuthStatus_ReturnsJSON(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+
+	// Unauthenticated probe.
+	req := httptest.NewRequest("GET", "/api/auth/status", nil)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unauth: expected 200, got %d", rec.Code)
+	}
+	var body struct {
+		Authenticated bool `json:"authenticated"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unauth parse: %v", err)
+	}
+	if body.Authenticated {
+		t.Errorf("expected authenticated=false, got %+v", body)
+	}
+
+	// Authenticated probe.
+	cookie := loginAndGetCookie(t, srv)
+	req = httptest.NewRequest("GET", "/api/auth/status", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec = httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("auth: expected 200, got %d", rec.Code)
+	}
+	var ok struct {
+		Authenticated bool   `json:"authenticated"`
+		User          string `json:"user"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &ok); err != nil {
+		t.Fatalf("auth parse: %v", err)
+	}
+	if !ok.Authenticated || ok.User != "alice" {
+		t.Errorf("expected authenticated=true user=alice, got %+v", ok)
+	}
+}
+
 func TestEventsEndpointForwardsIPC(t *testing.T) {
 	eventsPayload := `{"events":[{"id":1,"timestamp":"2026-05-07T12:00:00Z","type":"bead_claimed","message":"alice claimed bd-1","bead_id":"bd-1","anvil":"forge"}]}`
 	var seenLimit int

@@ -14,10 +14,26 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// handleLoginStatus reports whether a session is already attached. Frontend
-// uses this to decide whether to show the login form.
+// handleLoginStatus reports whether a session is already attached.
+//
+// For JSON clients (typically the frontend's auth-refresh fetch), the
+// session state is returned as a JSON payload. Top-level browser
+// navigations to /login are handled differently: an authenticated
+// browser is redirected to the dashboard so the user does not land on a
+// redundant login form, and an unauthenticated browser is served the
+// SPA bundle so the LoginPage can render and accept credentials.
 func (s *Server) handleLoginStatus(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
+	if isBrowserNavigation(r) {
+		if sess != nil {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		if s.staticH != nil {
+			s.staticH(w, r)
+			return
+		}
+	}
 	if sess == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
 		return
@@ -26,6 +42,14 @@ func (s *Server) handleLoginStatus(w http.ResponseWriter, r *http.Request) {
 		"authenticated": true,
 		"user":          sess.Username,
 	})
+}
+
+// isBrowserNavigation reports whether the request looks like a top-level
+// HTML page load rather than a fetch/XHR JSON call. Browsers include
+// text/html in the Accept header for navigation requests; fetch defaults
+// to */* and explicit JSON callers send application/json.
+func isBrowserNavigation(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 // handleLogin validates form-encoded credentials and issues a session

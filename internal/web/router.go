@@ -12,6 +12,11 @@ func (s *Server) routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(s.requestLogger)
 
+	// Build the SPA static handler once so both the catch-all route and
+	// handleLoginStatus (which may fall back to it for unauthenticated
+	// browser navigations) can share a single instance.
+	s.staticH = s.staticHandler()
+
 	// Public endpoints — no authentication.
 	r.Get("/healthz", s.handleHealthz)
 
@@ -28,7 +33,13 @@ func (s *Server) routes() http.Handler {
 		r.Post("/logout", s.handleLogout)
 	})
 
-	// All /api/* endpoints require auth.
+	// All /api/* endpoints require auth except the auth status probe,
+	// which uses optional auth so an unauthenticated client can also
+	// learn that they are unauthenticated.
+	r.Group(func(r chi.Router) {
+		r.Use(s.optionalAuth)
+		r.Get("/api/auth/status", s.handleLoginStatus)
+	})
 	r.Route("/api", func(r chi.Router) {
 		r.Use(s.requireAuth)
 		r.Get("/me", s.handleMe)
@@ -41,7 +52,7 @@ func (s *Server) routes() http.Handler {
 	// Static UI fallback. The next bead replaces this with the embedded
 	// React build; for now we serve the placeholder index.html out of the
 	// embedded dist directory so the deployment works end-to-end.
-	r.Handle("/*", s.staticHandler())
+	r.Handle("/*", s.staticH)
 	return r
 }
 

@@ -62,6 +62,11 @@ type Server struct {
 	logger  *slog.Logger
 
 	httpServer *http.Server
+
+	// staticH serves the embedded SPA bundle. Built once in routes() so
+	// handlers like handleLoginStatus can fall back to it without
+	// re-walking the embedded filesystem on every request.
+	staticH http.HandlerFunc
 }
 
 // New constructs a Server. The cfg is validated; an error is returned when
