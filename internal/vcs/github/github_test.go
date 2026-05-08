@@ -165,16 +165,24 @@ func TestBuildDefaultBody(t *testing.T) {
 		})
 	}
 
-	// Regression for Forge-m1ui: every Forge-authored PR body must include the
-	// forge-managed marker so reconcileOpenPRs does not mistake a contributor's
-	// PR (which references a bead but lacks the marker) for one Forge created.
-	t.Run("forge-managed marker is always emitted", func(t *testing.T) {
+	// Regression for Forge-m1ui + Forge-i1g7: every Forge-authored PR body
+	// must include the per-instance forge-managed marker so reconcileOpenPRs
+	// does not mistake a contributor's PR (which references a bead but lacks
+	// the marker) for one Forge created — and so a sibling Forge instance
+	// pointing at the same anvil does not adopt our PR.
+	t.Run("forge-managed marker for active instance is always emitted", func(t *testing.T) {
+		prev := vcs.ForgeID()
+		vcs.SetForgeID("alpha-forge")
+		t.Cleanup(func() { vcs.SetForgeID(prev) })
+
 		body := buildDefaultBody(vcs.CreateParams{
 			BeadID: "Forge-test",
 			Branch: "forge/Forge-test",
 		})
-		assert.True(t, vcs.IsForgeManagedPRBody(body),
-			"buildDefaultBody must emit the forge-managed marker")
+		assert.True(t, vcs.IsForgeManagedBy(body, "alpha-forge"),
+			"buildDefaultBody must emit the forge-managed marker for the active instance")
+		assert.False(t, vcs.IsForgeManagedBy(body, "beta-forge"),
+			"buildDefaultBody must NOT emit a marker for a sibling instance")
 	})
 
 	// Regression: a warden verdict passed as ReviewerNotes must never appear

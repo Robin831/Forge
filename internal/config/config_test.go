@@ -592,6 +592,29 @@ func TestSave_RoundTrip_QuestgiverDurations(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, loaded.Settings.AdventurerTimeout)
 }
 
+func TestResolvedForgeID(t *testing.T) {
+	t.Run("explicit setting wins over hostname", func(t *testing.T) {
+		s := SettingsConfig{ForgeID: "skybert-forge"}
+		assert.Equal(t, "skybert-forge", s.ResolvedForgeID())
+	})
+
+	t.Run("whitespace is trimmed before fallback", func(t *testing.T) {
+		s := SettingsConfig{ForgeID: "   "}
+		// Falls back to hostname (or "default"); the only invariant we can
+		// assert without depending on the host environment is that it is
+		// non-empty and not literally the whitespace string.
+		got := s.ResolvedForgeID()
+		assert.NotEmpty(t, got)
+		assert.NotEqual(t, "   ", got)
+	})
+
+	t.Run("falls back to a non-empty value when nothing is configured", func(t *testing.T) {
+		s := SettingsConfig{}
+		assert.NotEmpty(t, s.ResolvedForgeID(),
+			"ResolvedForgeID must always return a non-empty value so the forge-managed marker stays well-formed")
+	})
+}
+
 func TestIsSmelterEnabled(t *testing.T) {
 	// nil (not set) → default true
 	s := SettingsConfig{}
