@@ -176,6 +176,14 @@ func (m *Monitor) Run(ctx context.Context) error {
 	log.Printf("[bellows] Starting PR monitor (interval: %s)", m.interval)
 	_ = m.db.LogEvent(state.EventBellowsStarted, fmt.Sprintf("PR monitor started (interval: %s)", m.interval), "", "")
 
+	// Startup backfill: directly reconcile any open PR rows whose GitHub state
+	// is MERGED or CLOSED. This is a cheap belt-and-braces pass that runs once,
+	// independent of the in-memory snapshot machinery in checkPR, so a stuck
+	// needs_fix row whose underlying PR has already been merged on GitHub gets
+	// corrected on the very first daemon tick rather than waiting for (or
+	// hitting bugs in) the normal transition path.
+	m.reconcileTerminalStates(ctx)
+
 	// Initial check
 	m.checkAll(ctx)
 
@@ -192,6 +200,71 @@ func (m *Monitor) Run(ctx context.Context) error {
 		case <-m.refresh:
 			log.Println("[bellows] Immediate poll triggered via refresh")
 			m.checkAll(ctx)
+		}
+	}
+}
+
+// reconcileTerminalStates does a one-shot pass over every needs_fix PR in
+// state.db, asks GitHub for its current state, and corrects the local row to
+// merged or closed when GitHub disagrees. It is a deliberately minimal
+// belt-and-braces backfill: it does not emit PREvents to in-process OnEvent
+// handlers (only the DB event log and ingot status are updated), and it does
+// not touch the in-memory snapshot map, so it cannot regress the
+// snapshot-based flow in checkPR. Only needs_fix rows are checked here
+// because open/approved PRs are covered by the normal checkAll poll that
+// immediately follows; limiting scope avoids a double GitHub API call for
+// every open PR on startup. The motivating case is a needs_fix PR that a
+// human merged as-is on GitHub — without this pass, the row could remain
+// stuck in needs_fix indefinitely if the transition path ever fails to fire.
+func (m *Monitor) reconcileTerminalStates(ctx context.Context) {
+	if m.vcsLookup == nil {
+		return
+	}
+	prs, err := m.db.OpenPRs()
+	if err != nil {
+		log.Printf("[bellows] reconcileTerminalStates: error listing open PRs: %v", err)
+		return
+	}
+	for i := range prs {
+		if prs[i].Status != state.PRNeedsFix {
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		pr := &prs[i]
+		anvilVCS := m.vcsLookup(pr.Anvil)
+		if anvilVCS == nil {
+			continue
+		}
+		m.pathsMu.RLock()
+		anvilPath, ok := m.anvilPaths[pr.Anvil]
+		m.pathsMu.RUnlock()
+		if !ok {
+			continue
+		}
+		status, err := anvilVCS.CheckStatus(ctx, anvilPath, pr.Number)
+		if err != nil {
+			log.Printf("[bellows] reconcileTerminalStates: error checking PR #%d (%s): %v", pr.Number, pr.Anvil, err)
+			continue
+		}
+		switch {
+		case status.IsMerged() && pr.Status != state.PRMerged:
+			log.Printf("[bellows] reconcileTerminalStates: PR #%d (%s) GitHub=MERGED, local=%s — correcting", pr.Number, pr.Anvil, pr.Status)
+			_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
+			_ = m.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged (startup reconciliation)", pr.Number), pr.BeadID, pr.Anvil)
+			_ = m.db.CompleteWorkersByBead(pr.BeadID)
+			if err := ingot.UpdateIngotStatus(m.db.Conn(), pr.BeadID, pr.Anvil, ingot.StatusPRMerged); err != nil {
+				log.Printf("[bellows] reconcileTerminalStates: failed to update ingot status to pr_merged for %s (%s): %v", pr.BeadID, pr.Anvil, err)
+			}
+		case status.IsClosed() && pr.Status != state.PRClosed && pr.Status != state.PRMerged:
+			log.Printf("[bellows] reconcileTerminalStates: PR #%d (%s) GitHub=CLOSED, local=%s — correcting", pr.Number, pr.Anvil, pr.Status)
+			_ = m.db.UpdatePRStatus(pr.ID, state.PRClosed)
+			_ = m.db.LogEvent(state.EventPRClosed, fmt.Sprintf("PR #%d closed (startup reconciliation)", pr.Number), pr.BeadID, pr.Anvil)
+			_ = m.db.CompleteWorkersByBead(pr.BeadID)
+			if err := ingot.UpdateIngotStatus(m.db.Conn(), pr.BeadID, pr.Anvil, ingot.StatusFailed); err != nil {
+				log.Printf("[bellows] reconcileTerminalStates: failed to update ingot status to failed for %s (%s): %v", pr.BeadID, pr.Anvil, err)
+			}
 		}
 	}
 }
@@ -391,7 +464,16 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		return
 	}
 
-	if newSnap.IsMerged && !lastSnap.IsMerged {
+	// Terminal-state detection: GitHub is the source of truth. The persisted
+	// local status (open/needs_fix/approved) is advisory and must NOT block
+	// recognising a real merge — a human can merge a needs_fix PR as-is on
+	// GitHub, and we have to honour that. Gating on pr.Status (the DB value)
+	// rather than the in-memory snapshot also makes the transition robust to
+	// daemon restarts and any prior write that left the snapshot stale.
+	//
+	// We return early after firing so that the subsequent CI/review/conflict
+	// branches below cannot overwrite the terminal status back to needs_fix.
+	if newSnap.IsMerged && pr.Status != state.PRMerged {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
@@ -431,7 +513,8 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 				m.learnRulesFromPR(learnCtx, pr.Anvil, anvilPath, pr.BeadID, prNum)
 			}()
 		}
-	} else if newSnap.IsClosed && !lastSnap.IsClosed {
+		return
+	} else if newSnap.IsClosed && pr.Status != state.PRClosed && pr.Status != state.PRMerged {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
@@ -449,6 +532,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		if err := ingot.UpdateIngotStatus(m.db.Conn(), pr.BeadID, pr.Anvil, ingot.StatusFailed); err != nil {
 			log.Printf("[bellows] Failed to update ingot status to failed for %s (%s): %v", pr.BeadID, pr.Anvil, err)
 		}
+		return
 	}
 
 	if newSnap.CIPassing && !lastSnap.CIPassing {
