@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
@@ -63,7 +65,14 @@ func (r *ClaudeRunner) Turn(ctx context.Context, req TurnRequest) (*TurnResponse
 	if err != nil {
 		return nil, fmt.Errorf("creating temp dir: %w", err)
 	}
-	defer os.RemoveAll(workDir)
+	defer func() {
+		if rmErr := os.RemoveAll(workDir); rmErr != nil {
+			// A leaked temp dir is not fatal to the turn (claude already
+			// produced its output) but it can pile up under heavy use, so
+			// surface it via the default logger rather than swallowing it.
+			slog.Warn("forgechat: failed to remove temp work dir", "dir", workDir, "error", rmErr)
+		}
+	}()
 	logDir := filepath.Join(workDir, "logs")
 
 	prompt := BuildPrompt(req)
@@ -127,11 +136,25 @@ func interpretResponse(req TurnRequest, output string, costUSD float64) (*TurnRe
 	return resp, nil
 }
 
+// truncate returns at most n runes of s, appending an ellipsis when the
+// input was longer. Operates on runes (not bytes) so it never splits a
+// multi-byte UTF-8 sequence — important because s often comes from claude
+// stderr, which can contain non-ASCII content.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if n <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i] + "…"
+		}
+		count++
+	}
+	return s
 }
 
 // stripFences removes a single ```...``` wrapper if claude bracketed its

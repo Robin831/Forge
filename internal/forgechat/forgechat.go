@@ -274,6 +274,14 @@ func tryParse(output string) (*grillingVerdict, error) {
 // returned slice contains a single status message and NewStage is set to
 // ready by the caller. Otherwise each question becomes a kind=question
 // message with the options in metadata.
+//
+// Mixed verdicts (done=true AND questions present) are contradictory — the
+// contract is "either ask more or call it done." We resolve the ambiguity in
+// favour of the questions: an unanswered question is more important to
+// surface than a possibly-premature stage transition, and a follow-up turn
+// can still emit done with no questions if the AI is genuinely exhausted.
+// We also emit a status note so the user sees the AI signalled completion
+// at the same time.
 func VerdictToMessages(v *grillingVerdict) ([]EmittedMessage, bool) {
 	if v == nil {
 		return nil, false
@@ -288,7 +296,14 @@ func VerdictToMessages(v *grillingVerdict) ([]EmittedMessage, bool) {
 			Content: summary,
 		}}, true
 	}
-	out := make([]EmittedMessage, 0, len(v.Questions))
+	out := make([]EmittedMessage, 0, len(v.Questions)+1)
+	if v.Done && len(v.Questions) > 0 {
+		note := "AI signalled done but also emitted questions; staying in grilling and asking the questions first."
+		if s := strings.TrimSpace(v.Summary); s != "" {
+			note = note + " Summary: " + s
+		}
+		out = append(out, EmittedMessage{Kind: "status", Content: note})
+	}
 	for _, q := range v.Questions {
 		payload := QuestionPayload{
 			Options:        q.Options,

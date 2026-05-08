@@ -307,10 +307,19 @@ func (db *DB) AppendForgeSessionMessageRaw(sessionID int64, role, kind, content,
 	})
 }
 
+// ErrForgeSessionNotFound is returned when an UPDATE targets a session row
+// that doesn't exist. Callers can map this to a 404 instead of treating a
+// silent no-op as success.
+var ErrForgeSessionNotFound = errors.New("forge session not found")
+
 // UpdateForgeSessionStageAndPlan sets the stage and/or plan fields on a
 // session and advances updated_at. nil pointers leave the corresponding
 // column untouched. Returns the updated row for callers that want to echo
 // it back to the client without a separate SELECT.
+//
+// Returns ErrForgeSessionNotFound when the UPDATE matched no rows so callers
+// can distinguish "row missing" from "DB unavailable" — without this the
+// handler would silently 200 OK on a vanished session id.
 func (db *DB) UpdateForgeSessionStageAndPlan(id int64, stage, plan *string) (*ForgeSession, error) {
 	now := time.Now().UTC().Format(dbTimeLayout)
 	q := `UPDATE forge_sessions SET updated_at = ?`
@@ -325,8 +334,16 @@ func (db *DB) UpdateForgeSessionStageAndPlan(id int64, stage, plan *string) (*Fo
 	}
 	q += ` WHERE id = ?`
 	args = append(args, id)
-	if _, err := db.conn.Exec(q, args...); err != nil {
+	res, err := db.conn.Exec(q, args...)
+	if err != nil {
 		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, ErrForgeSessionNotFound
 	}
 	return db.GetForgeSession(id)
 }

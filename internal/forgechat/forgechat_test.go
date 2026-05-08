@@ -78,6 +78,34 @@ func TestVerdictToMessages_DoneEmitsStatusAndSignals(t *testing.T) {
 	}
 }
 
+func TestVerdictToMessages_DoneWithQuestionsPrioritizesQuestions(t *testing.T) {
+	v := &grillingVerdict{
+		Done:    true,
+		Summary: "almost there",
+		Questions: []struct {
+			Prompt         string           `json:"prompt"`
+			Options        []QuestionOption `json:"options"`
+			Recommendation string           `json:"recommendation,omitempty"`
+			Rationale      string           `json:"rationale,omitempty"`
+		}{
+			{Prompt: "One last thing?", Options: []QuestionOption{{ID: "y", Label: "Yes"}}},
+		},
+	}
+	msgs, done := VerdictToMessages(v)
+	if done {
+		t.Fatal("done must be false when questions are still pending — questions take priority")
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages (status note + question), got %d", len(msgs))
+	}
+	if msgs[0].Kind != "status" {
+		t.Fatalf("first message should be status note about the contradiction, got %q", msgs[0].Kind)
+	}
+	if msgs[1].Kind != "question" {
+		t.Fatalf("second message should be the question, got %q", msgs[1].Kind)
+	}
+}
+
 func TestVerdictToMessages_QuestionsEmitJSONMetadata(t *testing.T) {
 	v := &grillingVerdict{
 		Questions: []struct {
@@ -168,6 +196,25 @@ func TestInterpretResponse_GrillingProducesQuestions(t *testing.T) {
 	}
 	if len(resp.Messages) != 1 || resp.Messages[0].Kind != "question" {
 		t.Fatalf("expected one question message, got %+v", resp.Messages)
+	}
+}
+
+func TestTruncate_DoesNotSplitMultiByteRunes(t *testing.T) {
+	// Three Japanese chars (each 3 bytes in UTF-8) — naive byte slicing at
+	// n=4 would produce invalid UTF-8.
+	in := "あいう"
+	got := truncate(in, 2)
+	want := "あい…"
+	if got != want {
+		t.Fatalf("truncate(%q, 2) = %q, want %q", in, got, want)
+	}
+	// No-op when input fits within the rune budget.
+	if got := truncate("abc", 5); got != "abc" {
+		t.Fatalf("truncate kept short string unchanged: got %q", got)
+	}
+	// Zero / negative budget returns empty rather than panicking.
+	if got := truncate("abc", 0); got != "" {
+		t.Fatalf("truncate(_, 0) should be empty, got %q", got)
 	}
 }
 
