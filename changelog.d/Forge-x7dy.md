@@ -1,0 +1,2 @@
+category: Added
+- **Per-PR action buttons on the Hearth /prs tab** - Forge PRs and recently merged rows now expose merge / approve / close / bellows / fix-ci / fix-comments / fix-conflicts / reset-counters; external PRs expose merge / approve / close / bellows. All actions dispatch through the daemon's existing pr_action IPC (with a new `approve` case that calls `gh pr review --approve`). Bellows assignment is manual-only per the per-instance ownership rule from Forge-i1g7. (Forge-x7dy)

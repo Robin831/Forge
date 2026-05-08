@@ -70,6 +70,20 @@ func (s *Server) routes() http.Handler {
 		r.Post("/bead/{bead_id}/label/add", s.handleBeadLabelAdd)
 		r.Post("/bead/{bead_id}/label/remove", s.handleBeadLabelRemove)
 		r.Post("/bead/{bead_id}/note", s.handleBeadNote)
+
+		// Per-PR actions on the /prs tab. Each route resolves the PR row
+		// from state.db and dispatches an in-process IPC command. External
+		// PRs (ext-* bead IDs) reach the same merge/approve/close/bellows
+		// handlers; the UI hides bellows-managed actions (fix-ci /
+		// fix-comments / fix-conflicts) for them.
+		r.Post("/prs/{id}/merge", s.handlePRMerge)
+		r.Post("/prs/{id}/close", s.handlePRClose)
+		r.Post("/prs/{id}/approve", s.handlePRApprove)
+		r.Post("/prs/{id}/bellows", s.handlePRBellows)
+		r.Post("/prs/{id}/fix-ci", s.handlePRFixCI)
+		r.Post("/prs/{id}/fix-comments", s.handlePRFixComments)
+		r.Post("/prs/{id}/fix-conflicts", s.handlePRFixConflicts)
+		r.Post("/prs/{id}/reset-counters", s.handlePRResetCounters)
 	})
 
 	// Static UI fallback. The next bead replaces this with the embedded

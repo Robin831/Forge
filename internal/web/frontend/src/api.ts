@@ -363,3 +363,27 @@ export const actions = {
   addNote: (beadID: string, anvil: string, note: string) =>
     apiPost(`/api/bead/${encodeURIComponent(beadID)}/note`, { anvil, note }),
 }
+
+// PRActionKind enumerates the per-row actions exposed on the /prs tab. The
+// backend resolves the PR row from state.db using the numeric id, so the
+// frontend only sends the path — no body is required.
+export type PRActionKind =
+  | 'merge'
+  | 'close'
+  | 'approve'
+  | 'bellows'
+  | 'fix-ci'
+  | 'fix-comments'
+  | 'fix-conflicts'
+  | 'reset-counters'
+
+// prActions wraps the /api/prs/{id}/<action> endpoints. The daemon dispatches
+// these via in-process IPC. For external PRs (ext-* bead IDs), the backend
+// re-uses the same handlers — the daemon's pr_action falls through to gh CLI
+// for merge/close/approve/bellows. The branch-required actions (fix-ci,
+// fix-comments, fix-conflicts) are 400'd by the backend when no branch is on
+// record, and the UI hides them for external PRs anyway.
+export const prActions = {
+  run: (prID: number, action: PRActionKind) =>
+    apiPost(`/api/prs/${prID}/${action}`),
+}
