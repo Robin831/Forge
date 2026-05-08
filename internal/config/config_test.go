@@ -219,6 +219,36 @@ settings:
 	assert.Equal(t, "all", cfg.Anvils["myrepo"].AutoDispatch)
 }
 
+// TestLoad_ResolvesHomeConfigYAML asserts that Load("") finds
+// ~/.forge/config.yaml — the documented default path. Regression for
+// Forge-9mka, where viper's SetConfigName("forge")+AddConfigPath("~/.forge")
+// search forced ~/.forge/forge.yaml and ignored the actual deployed file.
+func TestLoad_ResolvesHomeConfigYAML(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome) // Windows
+	require.NoError(t, os.Mkdir(filepath.Join(tmpHome, ".forge"), 0o755))
+	cfgPath := filepath.Join(tmpHome, ".forge", "config.yaml")
+	content := `
+anvils:
+  myrepo:
+    path: /some/path
+    max_smiths: 3
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	// Run from a directory with no forge.yaml so the home fallback is exercised.
+	t.Chdir(t.TempDir())
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+	require.Contains(t, cfg.Anvils, "myrepo")
+	assert.Equal(t, "/some/path", cfg.Anvils["myrepo"].Path)
+	assert.Equal(t, 3, cfg.Anvils["myrepo"].MaxSmiths)
+
+	assert.Equal(t, cfgPath, ConfigFilePath(""))
+}
+
 func TestLoad_AnvilDefaultAutoDispatch(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "forge.yaml")

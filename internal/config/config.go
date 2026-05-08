@@ -800,20 +800,20 @@ func Load(configFile string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
-	// Config file resolution
+	// Config file resolution — matches the package doc above:
+	//   1. --config flag (explicit path)
+	//   2. ./forge.yaml (working directory)
+	//   3. ~/.forge/config.yaml (user home)
+	//
+	// Probe explicitly rather than rely on viper's SetConfigName/AddConfigPath
+	// search, since that combination forces a single config-name and would
+	// look for ~/.forge/forge.yaml — disagreeing with the documented
+	// ~/.forge/config.yaml. ~/.forge/forge.yaml is probed last for
+	// backward compatibility.
 	if configFile != "" {
 		v.SetConfigFile(configFile)
-	} else {
-		v.SetConfigName("forge")
-		v.SetConfigType("yaml")
-
-		// 1. Working directory
-		v.AddConfigPath(".")
-
-		// 2. ~/.forge/
-		if home, err := os.UserHomeDir(); err == nil {
-			v.AddConfigPath(filepath.Join(home, ".forge"))
-		}
+	} else if path := resolveDefaultConfigPath(); path != "" {
+		v.SetConfigFile(path)
 	}
 
 	// Read config (file not found is OK — we'll use defaults + env)
@@ -946,23 +946,39 @@ func Load(configFile string) (*Config, error) {
 // ConfigFilePath returns the path of the config file that was loaded,
 // or empty string if no file was found.
 func ConfigFilePath(configFile string) string {
-	v := viper.New()
-
 	if configFile != "" {
+		v := viper.New()
 		v.SetConfigFile(configFile)
-	} else {
-		v.SetConfigName("forge")
-		v.SetConfigType("yaml")
-		v.AddConfigPath(".")
-		if home, err := os.UserHomeDir(); err == nil {
-			v.AddConfigPath(filepath.Join(home, ".forge"))
+		if err := v.ReadInConfig(); err != nil {
+			return ""
 		}
+		return v.ConfigFileUsed()
 	}
+	return resolveDefaultConfigPath()
+}
 
-	if err := v.ReadInConfig(); err != nil {
+// resolveDefaultConfigPath probes the documented default locations for a
+// config file when the caller has not set --config. Returns the first match,
+// or "" when nothing is found. Resolution order matches the package doc:
+//
+//  1. ./forge.yaml (working directory)
+//  2. ~/.forge/config.yaml (user home, the documented path)
+//  3. ~/.forge/forge.yaml (backward-compat shim)
+func resolveDefaultConfigPath() string {
+	if _, err := os.Stat("forge.yaml"); err == nil {
+		return "forge.yaml"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
 		return ""
 	}
-	return v.ConfigFileUsed()
+	for _, name := range []string{"config.yaml", "forge.yaml"} {
+		candidate := filepath.Join(home, ".forge", name)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // Validate checks the config for logical errors.
