@@ -5,6 +5,7 @@ import DashboardPage from './pages/DashboardPage'
 import IngotsPage from './pages/IngotsPage'
 import CruciblesPage from './pages/CruciblesPage'
 import HistoryPage from './pages/HistoryPage'
+import PRsPage from './pages/PRsPage'
 import CostsPage from './pages/CostsPage'
 import BeadDetailPage from './pages/BeadDetailPage'
 
@@ -61,6 +62,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <HistoryPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/prs"
+        element={
+          <ProtectedRoute>
+            <PRsPage />
           </ProtectedRoute>
         }
       />
