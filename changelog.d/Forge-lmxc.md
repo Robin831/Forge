@@ -1,0 +1,2 @@
+category: Fixed
+- **Temper detects stale embedded frontend bundles** - Add a `verify_clean` mechanism to temper steps that fails when the step modifies committed files under given pathspecs. Auto-detect the Hearth 2.0 layout (`internal/web/frontend` + `internal/web/dist`) and emit install + build steps that rebuild the bundle and verify the committed `dist/` matches a fresh build of `src/`. Prevents merging PRs whose `go:embed`'d bundle is out of sync with frontend source. (Forge-lmxc)

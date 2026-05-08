@@ -3,7 +3,9 @@ package temper
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -295,6 +297,200 @@ func TestConfigFromCommands_SingleWordCommand(t *testing.T) {
 	require.NotNil(t, cfg)
 	assert.Equal(t, "pytest", cfg.Steps[0].Command)
 	assert.Empty(t, cfg.Steps[0].Args)
+}
+
+func TestConfigFromSteps_PassesVerifyCleanThrough(t *testing.T) {
+	cfg := ConfigFromSteps([]config.TemperStepConfig{
+		{
+			Name:        "build",
+			Command:     "npm",
+			Args:        []string{"run", "build"},
+			VerifyClean: []string{"web/dist", "web/static"},
+		},
+	})
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.Steps, 1)
+	assert.Equal(t, []string{"web/dist", "web/static"}, cfg.Steps[0].VerifyClean,
+		"VerifyClean should be carried from TemperStepConfig into the temper Step")
+}
+
+func TestDetectEmbeddedBundles_DetectsHearthLayout(t *testing.T) {
+	dir := t.TempDir()
+	// Hearth 2.0 layout: frontend source + committed dist with index.html.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "web", "frontend"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "web", "frontend", "package.json"), []byte("{}"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "web", "dist"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "web", "dist", "index.html"), []byte("<html></html>"), 0o644))
+
+	bundles := detectEmbeddedBundles(dir)
+	require.Len(t, bundles, 1)
+	assert.Equal(t, "hearth", bundles[0].Name)
+	assert.Equal(t, "internal/web/frontend", bundles[0].FrontendDir)
+	assert.Equal(t, "internal/web/dist", bundles[0].DistDir)
+}
+
+func TestDetectEmbeddedBundles_RequiresBothPaths(t *testing.T) {
+	// Only frontend exists, no dist — should not match.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "web", "frontend"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "web", "frontend", "package.json"), []byte("{}"), 0o644))
+
+	assert.Empty(t, detectEmbeddedBundles(dir),
+		"detection requires both a frontend package.json and a dist/index.html")
+
+	// Only dist exists, no frontend — also should not match.
+	dir2 := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir2, "internal", "web", "dist"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir2, "internal", "web", "dist", "index.html"), []byte(""), 0o644))
+
+	assert.Empty(t, detectEmbeddedBundles(dir2))
+}
+
+func TestEmbeddedBundle_Steps_Shape(t *testing.T) {
+	eb := embeddedBundle{Name: "hearth", FrontendDir: "internal/web/frontend", DistDir: "internal/web/dist"}
+	steps := eb.Steps()
+	require.Len(t, steps, 2, "expected install + build steps")
+
+	assert.Equal(t, "hearth-frontend-install", steps[0].Name)
+	assert.Equal(t, "npm", steps[0].Command)
+	assert.Equal(t, []string{"install", "--no-audit", "--no-fund"}, steps[0].Args)
+	assert.Equal(t, "internal/web/frontend", steps[0].Dir)
+	assert.Empty(t, steps[0].VerifyClean, "install step does not verify clean (it may touch package-lock or node_modules)")
+
+	assert.Equal(t, "hearth-frontend-build", steps[1].Name)
+	assert.Equal(t, "npm", steps[1].Command)
+	assert.Equal(t, []string{"run", "build"}, steps[1].Args)
+	assert.Equal(t, "internal/web/frontend", steps[1].Dir)
+	assert.Equal(t, []string{"internal/web/dist"}, steps[1].VerifyClean,
+		"build step must verify dist remains clean — that's the whole point of the check")
+
+	// Both steps should share the same Paths filter so they only run when
+	// frontend src or build config actually changed.
+	assert.Equal(t, steps[0].Paths, steps[1].Paths)
+	assert.NotEmpty(t, steps[0].Paths)
+	assert.Contains(t, steps[0].Paths, "internal/web/frontend/src/**")
+}
+
+func TestDetectSteps_IncludesEmbeddedBundleForHearthLayout(t *testing.T) {
+	dir := t.TempDir()
+	// Go at root + Hearth 2.0 frontend pattern.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "web", "frontend"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "web", "frontend", "package.json"), []byte("{}"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "web", "dist"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "web", "dist", "index.html"), []byte("<html></html>"), 0o644))
+
+	opts := &DetectOptions{DisableGolangciLint: true}
+	steps := detectSteps(dir, opts, false)
+	names := stepNames(steps)
+
+	assert.Contains(t, names, "hearth-frontend-install")
+	assert.Contains(t, names, "hearth-frontend-build")
+}
+
+// gitAvailable returns true when a `git` binary is on PATH so tests that
+// shell out to git can be skipped on minimal CI images.
+func gitAvailable() bool {
+	_, err := exec.LookPath("git")
+	return err == nil
+}
+
+// initGitRepo bootstraps a minimal git repo in dir with one initial commit so
+// `git status --porcelain` and `git diff` have a HEAD to compare against.
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "--initial-branch=main"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test"},
+		{"add", "-A"},
+		{"-c", "commit.gpgsign=false", "commit", "-m", "init", "--allow-empty"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		// Strip GIT_* env vars so the parent test environment doesn't leak.
+		var env []string
+		for _, e := range os.Environ() {
+			if strings.HasPrefix(e, "GIT_") {
+				continue
+			}
+			env = append(env, e)
+		}
+		cmd.Env = env
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+func TestRun_VerifyClean_FailsWhenStepDirtiesArtifact(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available on PATH")
+	}
+	dir := t.TempDir()
+	// Commit a "dist" file so git tracks it.
+	distDir := filepath.Join(dir, "dist")
+	require.NoError(t, os.MkdirAll(distDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(distDir, "bundle.js"), []byte("v1"), 0o644))
+	initGitRepo(t, dir)
+
+	// Step "rebuild" simulates a build that overwrites the committed dist
+	// output with different bytes — exactly the stale-bundle scenario.
+	cmdName := "sh"
+	args := []string{"-c", "echo v2 > dist/bundle.js"}
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh; skip on Windows")
+	}
+
+	cfg := Config{Steps: []Step{{
+		Name:        "rebuild",
+		Command:     cmdName,
+		Args:        args,
+		Timeout:     30 * time.Second,
+		VerifyClean: []string{"dist"},
+	}}}
+
+	res := Run(context.Background(), dir, cfg, nil, "Forge-test", "test")
+	require.NotNil(t, res)
+	assert.False(t, res.Passed, "VerifyClean should convert success to failure when dist diverges")
+	assert.Equal(t, "rebuild", res.FailedStep)
+	assert.Contains(t, res.Steps[0].Output, "stale relative to the current source")
+}
+
+func TestRun_VerifyClean_PassesWhenStepLeavesArtifactClean(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available on PATH")
+	}
+	dir := t.TempDir()
+	distDir := filepath.Join(dir, "dist")
+	require.NoError(t, os.MkdirAll(distDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(distDir, "bundle.js"), []byte("v1"), 0o644))
+	initGitRepo(t, dir)
+
+	// "rebuild" is a no-op (true) — it leaves the worktree exactly as
+	// committed, which is the same shape as a successful idempotent rebuild.
+	cmdName := "true"
+	if runtime.GOOS == "windows" {
+		// Windows lacks `true`; use cmd's noop equivalent.
+		cmdName = "cmd"
+	}
+	args := []string(nil)
+	if runtime.GOOS == "windows" {
+		args = []string{"/c", "exit", "0"}
+	}
+
+	cfg := Config{Steps: []Step{{
+		Name:        "rebuild",
+		Command:     cmdName,
+		Args:        args,
+		Timeout:     30 * time.Second,
+		VerifyClean: []string{"dist"},
+	}}}
+
+	res := Run(context.Background(), dir, cfg, nil, "Forge-test", "test")
+	require.NotNil(t, res)
+	assert.True(t, res.Passed, "step should pass when committed artifacts match a fresh build")
+	assert.Empty(t, res.FailedStep)
 }
 
 func TestConfigFromCommands_Timeouts(t *testing.T) {

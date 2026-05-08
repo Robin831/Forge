@@ -1067,3 +1067,26 @@ func TestTemperStepConfig_YAMLRoundTrip(t *testing.T) {
 	require.NotNil(t, roundTripped.Steps[2].Required)
 	assert.False(t, *roundTripped.Steps[2].Required)
 }
+
+func TestTemperStepConfig_VerifyCleanRoundTrip(t *testing.T) {
+	original := &TemperCommandsConfig{
+		Steps: []TemperStepConfig{
+			{
+				Name:        "build-frontend",
+				Command:     "npm",
+				Args:        []string{"run", "build"},
+				Dir:         "web",
+				VerifyClean: []string{"web/dist", "web/static/build"},
+			},
+		},
+	}
+
+	data, err := yaml.Marshal(original)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "verify_clean", "verify_clean must be in marshalled YAML")
+
+	var roundTripped TemperCommandsConfig
+	require.NoError(t, yaml.Unmarshal(data, &roundTripped))
+	require.Len(t, roundTripped.Steps, 1)
+	assert.Equal(t, []string{"web/dist", "web/static/build"}, roundTripped.Steps[0].VerifyClean)
+}

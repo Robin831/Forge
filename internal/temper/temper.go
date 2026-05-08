@@ -78,6 +78,15 @@ type Step struct {
 	// Paths is a list of glob patterns (doublestar syntax). When non-empty,
 	// the step is skipped if no changed files match any pattern.
 	Paths []string
+	// VerifyClean is a list of pathspecs (relative to the worktree) that must
+	// remain clean — meaning unchanged versus HEAD with no untracked files —
+	// after the step completes. When the step itself passes but produces
+	// changes under any of these paths, the step is converted to a failure
+	// with a message explaining that the committed artifacts are stale. Use
+	// this for steps that rebuild committed build output (e.g. an embedded
+	// frontend bundle): if running `npm run build` mutates the committed
+	// dist/ directory, the bundle Smith committed does not match the source.
+	VerifyClean []string
 }
 
 // Config holds per-anvil verification configuration.
@@ -214,13 +223,14 @@ func ConfigFromSteps(steps []config.TemperStepConfig) *Config {
 			optional = true
 		}
 		out[i] = Step{
-			Name:     strings.TrimSpace(s.Name),
-			Command:  strings.TrimSpace(s.Command),
-			Args:     s.Args,
-			Dir:      strings.TrimSpace(s.Dir),
-			Timeout:  timeout,
-			Optional: optional,
-			Paths:    s.Paths,
+			Name:        strings.TrimSpace(s.Name),
+			Command:     strings.TrimSpace(s.Command),
+			Args:        s.Args,
+			Dir:         strings.TrimSpace(s.Dir),
+			Timeout:     timeout,
+			Optional:    optional,
+			Paths:       s.Paths,
+			VerifyClean: s.VerifyClean,
 		}
 	}
 	return &Config{Steps: out}
@@ -269,6 +279,29 @@ func matchesChangedFiles(patterns, changedFiles []string) bool {
 		}
 	}
 	return false
+}
+
+// verifyCleanCheck runs `git status --porcelain` against the given pathspecs
+// in the worktree and returns its trimmed output. Empty output means no
+// modifications, additions, or untracked files exist under those paths.
+//
+// A 30s timeout guards against a stuck git invocation. The check is best-effort
+// — callers log and continue when err is non-nil so a transient git failure
+// does not break the pipeline.
+func verifyCleanCheck(ctx context.Context, worktreePath string, pathspecs []string) (string, error) {
+	if len(pathspecs) == 0 {
+		return "", nil
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	args := []string{"-C", worktreePath, "status", "--porcelain", "--"}
+	args = append(args, pathspecs...)
+	out, err := executil.HideWindow(exec.CommandContext(checkCtx, "git", args...)).Output()
+	if err != nil {
+		return "", fmt.Errorf("git status --porcelain: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // ChangedFilesFromGit returns the list of changed file paths (relative to the
@@ -339,6 +372,34 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 		}
 
 		stepResult := runStep(ctx, worktreePath, step)
+
+		// VerifyClean: if the step succeeded but mutated tracked or untracked
+		// files under one of the VerifyClean pathspecs, the committed artifact
+		// is out of sync with current source — convert the step to a failure
+		// so the pipeline loops back to Smith with actionable feedback.
+		if stepResult.Passed && len(step.VerifyClean) > 0 {
+			dirty, err := verifyCleanCheck(ctx, worktreePath, step.VerifyClean)
+			if err != nil {
+				log.Printf("[temper] VerifyClean check for step %q failed: %v — treating as clean", step.Name, err)
+			} else if dirty != "" {
+				stepResult.Passed = false
+				stepResult.ExitCode = -1
+				msg := fmt.Sprintf(
+					"Step %q ran successfully but modified committed files under %v.\n"+
+						"This means the committed build output is stale relative to the current source.\n"+
+						"Run the same step locally and commit the regenerated artifacts so the\n"+
+						"committed bundle matches a fresh build of the source.\n\n"+
+						"git status --porcelain output:\n%s",
+					step.Name, step.VerifyClean, dirty,
+				)
+				if stepResult.Output == "" {
+					stepResult.Output = msg
+				} else {
+					stepResult.Output = stepResult.Output + "\n\n" + msg
+				}
+			}
+		}
+
 		result.Steps = append(result.Steps, stepResult)
 
 		if !stepResult.Passed && !step.Optional {
@@ -529,6 +590,17 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 		})
 	}
 
+	// Embedded frontend bundle pattern: detect projects that ship a frontend
+	// inside a Go binary via go:embed. The Hearth 2.0 layout puts source at
+	// internal/web/frontend and the committed build output at internal/web/dist.
+	// When a Smith touches frontend src without rebuilding dist, the embedded
+	// bundle in the deployed binary diverges from source — Forge-lmxc was
+	// caused by exactly that. Append steps that rebuild and verify the bundle
+	// when frontend files are present in the diff.
+	for _, eb := range detectEmbeddedBundles(worktreePath) {
+		steps = append(steps, eb.Steps()...)
+	}
+
 	// Fallback: just check if it builds
 	if len(steps) == 0 {
 		steps = append(steps, Step{
@@ -594,6 +666,84 @@ func buildSummary(r *Result) string {
 // nodeSubdirs is the list of common subdirectories where a Node.js project
 // might live in hybrid repositories (e.g., Go at root, Node in web/).
 var nodeSubdirs = []string{"web", "frontend", "client", "app", "ui"}
+
+// embeddedBundle describes a frontend-source/built-output pair embedded into a
+// Go binary via go:embed. The auto-detector emits temper steps that reinstall
+// dependencies, rebuild the bundle, and verify the committed output matches a
+// fresh build of the source.
+type embeddedBundle struct {
+	// Name is a short identifier used as a step-name prefix (e.g. "hearth").
+	Name string
+	// FrontendDir is the relative path to the frontend source directory
+	// (containing package.json) within the worktree.
+	FrontendDir string
+	// DistDir is the relative path to the committed build output directory
+	// within the worktree. This is what gets verified after `npm run build`.
+	DistDir string
+}
+
+// embeddedBundleLayouts lists the known embedded-frontend layouts. Currently
+// the only entry is Forge's own Hearth 2.0 web UI; new entries can be added
+// for other anvils that ship an embedded bundle.
+var embeddedBundleLayouts = []embeddedBundle{
+	{Name: "hearth", FrontendDir: "internal/web/frontend", DistDir: "internal/web/dist"},
+}
+
+// detectEmbeddedBundles returns the embedded-bundle layouts present in the
+// worktree. A layout matches when its FrontendDir contains a package.json and
+// its DistDir contains an index.html (the marker file produced by Vite).
+func detectEmbeddedBundles(worktreePath string) []embeddedBundle {
+	var found []embeddedBundle
+	for _, eb := range embeddedBundleLayouts {
+		if !fileExists(filepath.Join(worktreePath, eb.FrontendDir), "package.json") {
+			continue
+		}
+		if !fileExists(filepath.Join(worktreePath, eb.DistDir), "index.html") {
+			continue
+		}
+		found = append(found, eb)
+	}
+	return found
+}
+
+// Steps returns the temper steps for an embedded-bundle layout: install deps,
+// rebuild the bundle, and verify the committed dist matches a fresh build.
+// The Paths filter ensures the steps only run when files in the frontend
+// source or build config actually changed in the diff.
+func (eb embeddedBundle) Steps() []Step {
+	paths := []string{
+		eb.FrontendDir + "/src/**",
+		eb.FrontendDir + "/package.json",
+		eb.FrontendDir + "/package-lock.json",
+		eb.FrontendDir + "/index.html",
+		eb.FrontendDir + "/vite.config.ts",
+		eb.FrontendDir + "/vite.config.js",
+		eb.FrontendDir + "/tsconfig.json",
+		eb.FrontendDir + "/tsconfig.app.json",
+		eb.FrontendDir + "/tsconfig.node.json",
+	}
+	return []Step{
+		{
+			Name:    eb.Name + "-frontend-install",
+			Command: "npm",
+			Args:    []string{"install", "--no-audit", "--no-fund"},
+			Dir:     eb.FrontendDir,
+			Timeout: 5 * time.Minute,
+			Paths:   paths,
+		},
+		{
+			Name:    eb.Name + "-frontend-build",
+			Command: "npm",
+			Args:    []string{"run", "build"},
+			Dir:     eb.FrontendDir,
+			Timeout: 5 * time.Minute,
+			Paths:   paths,
+			// The committed dist/ must match a fresh build. If `npm run build`
+			// modifies any file under DistDir, Smith committed a stale bundle.
+			VerifyClean: []string{eb.DistDir},
+		},
+	}
+}
 
 // detectNodeDirs returns the relative directories containing a package.json.
 // An empty string entry means the root directory.

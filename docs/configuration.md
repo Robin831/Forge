@@ -321,6 +321,7 @@ For pipelines that need more than three steps, per-step working directories, or 
 | `timeout` | duration | `5m` | Per-step timeout. Same parsing as elsewhere in Forge config (`5m`, `30s`, `1h`). |
 | `required` | bool | `true` | When `true`, failure fails the whole temper run. When `false`, failure is reported as a warning. |
 | `paths` | `[]string` | `[]` (always run) | Glob patterns (doublestar syntax, e.g. `client/**`, `**/*.go`). When set, the step is skipped if no changed files in the PR diff match any pattern. When empty or omitted, the step always runs. |
+| `verify_clean` | `[]string` | `[]` (no check) | Pathspecs (relative to the worktree, e.g. `web/dist`) that must remain clean after the step runs. When the step succeeds but `git status --porcelain -- <pathspecs>` reports changes, the step is converted to a failure. Use this to enforce that committed build artifacts (e.g. an embedded frontend bundle) match a fresh build of the source. |
 
 **Precedence:** If `temper.steps` is set and non-empty, it takes precedence over `temper.build`/`test`/`lint`. A warning is logged if both are present. If neither `steps` nor the shorthand fields are set, auto-detection applies as usual.
 
