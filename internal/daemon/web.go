@@ -53,6 +53,18 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 	if runner := d.buildForgeChatRunner(); runner != nil {
 		srv.SetChatRunner(runner)
 	}
+	// Expose the live anvil registry so the bead-emission handler can
+	// translate anvil names into on-disk paths for `bd create`. The closure
+	// reads d.cfg via Load() each invocation so hot-reloads pick up edits
+	// to forge.yaml without restarting the web server.
+	srv.SetAnvilLister(func() map[string]string {
+		cfg := d.cfg.Load()
+		out := make(map[string]string, len(cfg.Anvils))
+		for name, anvil := range cfg.Anvils {
+			out[name] = anvil.Path
+		}
+		return out
+	})
 
 	go func() {
 		if err := srv.Start(ctx); err != nil && ctx.Err() == nil {

@@ -111,6 +111,18 @@ func (r *ClaudeRunner) Turn(ctx context.Context, req TurnRequest) (*TurnResponse
 func interpretResponse(req TurnRequest, output string, costUSD float64) (*TurnResponse, error) {
 	resp := &TurnResponse{CostUSD: costUSD}
 
+	// ModeEmit overrides the stage switch — emission is a one-shot turn
+	// that runs while the session is in StageReady but does NOT advance any
+	// further. The handler decides what to persist after materialising bd.
+	if req.Mode == ModeEmit {
+		env, err := ParseEmissionResponse(output)
+		if err != nil {
+			return nil, fmt.Errorf("forgechat: could not parse emission output: %w", err)
+		}
+		resp.Emission = env
+		return resp, nil
+	}
+
 	switch req.Stage {
 	case StageDrafting:
 		body := stripFences(output)

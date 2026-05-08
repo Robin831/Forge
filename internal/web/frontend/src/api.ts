@@ -382,19 +382,45 @@ export interface ForgeSession {
 
 // ForgeMessage is one entry in a forge session conversation.
 // kind extends role with a structured payload type used by the AI loop:
-//   - text:     plain conversational turn (user or assistant).
-//   - plan:     markdown plan emitted by claude in drafting stage.
-//   - question: structured grilling-stage question; metadata holds options.
-//   - answer:   user's answer to a question; metadata pins question_id+option_id.
-//   - status:   system-emitted status note (stage transitions, "grilling done").
+//   - text:           plain conversational turn (user or assistant).
+//   - plan:           markdown plan emitted by claude in drafting stage.
+//   - question:       structured grilling-stage question; metadata holds options.
+//   - answer:         user's answer to a question; metadata pins question_id+option_id.
+//   - status:         system-emitted status note (stage transitions, "grilling done").
+//   - beads_created:  receipt for a successful bead-emission turn; metadata holds
+//                     a JSON {summary, beads:[{bead_id, anvil, title}]} payload.
 export interface ForgeMessage {
   id: number
   session_id: number
   role: 'user' | 'assistant' | 'system'
   content: string
   created_at: string
-  kind?: 'text' | 'plan' | 'question' | 'answer' | 'status'
+  kind?: 'text' | 'plan' | 'question' | 'answer' | 'status' | 'beads_created'
   metadata?: string
+}
+
+// ForgeCreatedBead mirrors one entry in the JSON metadata of a
+// kind=beads_created message and the response of POST /create-beads.
+export interface ForgeCreatedBead {
+  bead_id: string
+  anvil: string
+  title: string
+}
+
+// ForgeBeadsCreatedPayload is the JSON-decoded shape stored in
+// ForgeMessage.metadata when kind === "beads_created".
+export interface ForgeBeadsCreatedPayload {
+  summary?: string
+  beads: ForgeCreatedBead[]
+}
+
+// ForgeCreateBeadsResponse is the JSON returned by
+// POST /api/forge/sessions/{id}/create-beads.
+export interface ForgeCreateBeadsResponse {
+  session: ForgeSession
+  messages: ForgeMessage[]
+  beads: ForgeCreatedBead[]
+  summary?: string
 }
 
 // ForgeQuestionPayload is the JSON-decoded shape stored in
@@ -469,6 +495,8 @@ export const forgeSessions = {
     apiSend<{ status: string }>('DELETE', `/api/forge/sessions/${id}`),
   turn: (id: number, req: ForgeTurnRequest) =>
     apiPost<ForgeTurnResponse>(`/api/forge/sessions/${id}/turn`, req),
+  createBeads: (id: number) =>
+    apiPost<ForgeCreateBeadsResponse>(`/api/forge/sessions/${id}/create-beads`),
 }
 
 // apiSend is a generic helper for non-POST mutating verbs (PATCH, DELETE,
