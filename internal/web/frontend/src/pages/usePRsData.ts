@@ -1,18 +1,16 @@
 // usePRsData and the per-section convenience hooks (useForgePRs,
 // useExternalPRs, useRecentlyMergedPRs) back the /prs tab. They share a
-// module-level cache so all three sections of the page issue at most one
-// fetch per polling window — even when rendered as separate hooks.
+// module-level cache so multiple subscribers issue at most one fetch per
+// polling window — the cache is daemon-scoped (a different daemon would
+// be on a different origin), which prevents cross-repo bleed.
 //
-// The cache contract (per Forge-9ye8):
-//   - 60-second TTL: stale entries trigger a background refetch on the next
-//     hook mount or visibility-change.
+// Cache contract (per Forge-9ye8):
+//   - 60-second TTL: stale entries trigger a background refetch on the
+//     next hook mount or visibility-change.
 //   - manual invalidation: refresh() clears the timestamp and forces a
-//     refetch immediately.
-//   - cache key includes repo identity: the underlying API path is
-//     daemon-scoped (a different daemon would be on a different origin), so
-//     cross-repo bleed is prevented by the browser's origin model. We carry
-//     the path as the cache key explicitly so future split endpoints (e.g.
-//     per-anvil routes) can extend this without rewriting the consumers.
+//     refetch immediately, even if the entry is fresh.
+//   - loading reflects an in-flight request, not "data is null". On a
+//     manual refresh, prior data stays visible while loading is true.
 
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError, apiGet, type PRItem, type PRsResponse } from '../api'
@@ -22,7 +20,6 @@ export const PRS_API_PATH = '/api/prs/all'
 export const PRS_CACHE_TTL_MS = 60_000
 
 interface CacheEntry {
-  key: string
   data: PRsResponse | null
   fetchedAt: number
   error: string | null
@@ -35,7 +32,6 @@ const emptyResponse: PRsResponse = {
 }
 
 let cache: CacheEntry = {
-  key: PRS_API_PATH,
   data: null,
   fetchedAt: 0,
   error: null,
@@ -56,10 +52,10 @@ function isStale(): boolean {
 async function performFetch(onUnauthorized: () => void): Promise<void> {
   if (inflight) return inflight
   inflight = (async () => {
+    notify()
     try {
       const data = await apiGet<PRsResponse>(PRS_API_PATH)
       cache = {
-        key: PRS_API_PATH,
         data,
         fetchedAt: Date.now(),
         error: null,
@@ -71,7 +67,6 @@ async function performFetch(onUnauthorized: () => void): Promise<void> {
       }
       const message = err instanceof Error ? err.message : 'request failed'
       cache = {
-        key: PRS_API_PATH,
         data: cache.data,
         fetchedAt: Date.now(),
         error: message,
@@ -82,14 +77,6 @@ async function performFetch(onUnauthorized: () => void): Promise<void> {
     }
   })()
   return inflight
-}
-
-// __resetPRsCacheForTests is exposed so unit tests can simulate a fresh
-// session. Production code should never need it.
-export function __resetPRsCacheForTests() {
-  cache = { key: PRS_API_PATH, data: null, fetchedAt: 0, error: null }
-  inflight = null
-  subscribers.clear()
 }
 
 export interface PRsDataState {
@@ -152,7 +139,7 @@ export function usePRsData(): PRsDataState {
     forge_prs: data.forge_prs,
     external_prs: data.external_prs,
     recently_merged: data.recently_merged,
-    loading: cache.data === null && cache.error === null,
+    loading: inflight !== null,
     error: cache.error,
     fetchedAt: cache.fetchedAt > 0 ? cache.fetchedAt : null,
     refresh,
@@ -168,8 +155,7 @@ interface SectionResult {
 }
 
 // useForgePRs reads forge-managed open PRs from state.db via the shared
-// /api/prs/all backend. Sub-task 1 of Forge-ooiz consumes this hook to
-// render the "Forge PRs" section.
+// /api/prs/all backend.
 export function useForgePRs(): SectionResult {
   const s = usePRsData()
   return {

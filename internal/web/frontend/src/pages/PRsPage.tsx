@@ -9,12 +9,7 @@ import {
   PR_SECTION_TITLES,
   type PRSectionKind,
 } from './prsTypes'
-import {
-  PRS_CACHE_TTL_MS,
-  useExternalPRs,
-  useForgePRs,
-  useRecentlyMergedPRs,
-} from './usePRsData'
+import { PRS_CACHE_TTL_MS, usePRsData } from './usePRsData'
 
 const STATUS_POLL_INTERVAL_MS = 10_000
 
@@ -32,18 +27,12 @@ const SECTION_ICON_CLASSES: Record<PRSectionKind, string> = {
 export default function PRsPage() {
   const status = useApiPoll<StatusResponse>('/api/status', STATUS_POLL_INTERVAL_MS)
 
-  const forge = useForgePRs()
-  const external = useExternalPRs()
-  const merged = useRecentlyMergedPRs()
-
-  // All three section hooks share the same underlying fetch, so loading/
-  // error/refresh state is identical across them. Read once for the page
-  // chrome (footer + refresh button).
-  const { loading, error, refresh, fetchedAt } = forge
+  const { forge_prs, external_prs, recently_merged, loading, error, refresh, fetchedAt } =
+    usePRsData()
   const items: Record<PRSectionKind, PRItem[]> = {
-    forge_prs: forge.items,
-    external_prs: external.items,
-    recently_merged: merged.items,
+    forge_prs,
+    external_prs,
+    recently_merged,
   }
 
   return (

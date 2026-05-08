@@ -83,7 +83,7 @@ func (s *Server) handlePRs(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	merged, err := recentlyMergedPRs(s.db, recentlyMergedWindow)
+	merged, err := s.recentlyMergedPRs(recentlyMergedWindow)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load merged PRs: "+err.Error())
 		return
@@ -140,8 +140,8 @@ func mapPRToJSON(pr state.PR) prItemJSON {
 // timestamp falls within the given window. The state package only exposes a
 // helper that excludes ext-* IDs, so we query directly here to give the /prs
 // tab a complete view. Results are sorted newest-first.
-func recentlyMergedPRs(db *state.DB, window time.Duration) ([]prItemJSON, error) {
-	conn := db.Conn()
+func (s *Server) recentlyMergedPRs(window time.Duration) ([]prItemJSON, error) {
+	conn := s.db.Conn()
 	if conn == nil {
 		return []prItemJSON{}, nil
 	}
@@ -173,6 +173,7 @@ func recentlyMergedPRs(db *state.DB, window time.Duration) ([]prItemJSON, error)
 		if err := rows.Scan(&id, &number, &anvil, &beadID, &branch, &base, &status, &createdAt,
 			&lastChecked, &ciFix, &reviewFix, &rebase, &ciPassing, &conflicting,
 			&approved, &title, &bellowsManaged); err != nil {
+			s.logger.Warn("recently merged PR row scan failed", "error", err)
 			continue
 		}
 		isExt := strings.HasPrefix(beadID, "ext-")
