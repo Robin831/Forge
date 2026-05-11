@@ -54,6 +54,13 @@ function bucketFor(item: QueueItem): BucketKey {
   }
 }
 
+// Encode an arbitrary anvil name into a valid HTML id token.
+// encodeURIComponent is deterministic and collision-free; replacing % with _
+// keeps the result free of characters that are invalid in id tokens.
+function anvilDomId(name: string): string {
+  return `anvil-body-${encodeURIComponent(name).replace(/%/g, '_')}`
+}
+
 export function groupQueueItems(items: QueueItem[]): AnvilGroup[] {
   const byAnvil = new Map<string, AnvilGroup>()
   for (const item of items) {
@@ -186,7 +193,7 @@ export default function QueuePane({
                     type="button"
                     onClick={() => toggle(anvilKey)}
                     aria-expanded={anvilOpen}
-                    aria-controls={`anvil-body-${group.anvil}`}
+                    aria-controls={anvilDomId(group.anvil)}
                     className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm font-semibold text-slate-100 hover:bg-slate-800/40 focus:bg-slate-800/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
                   >
                     {anvilOpen ? (
@@ -200,7 +207,7 @@ export default function QueuePane({
                     </span>
                   </button>
                   {anvilOpen && (
-                    <div id={`anvil-body-${group.anvil}`} className="border-t border-slate-800/60 bg-slate-950/40">
+                    <div id={anvilDomId(group.anvil)} className="border-t border-slate-800/60 bg-slate-950/40">
                       {BUCKET_ORDER.flatMap((bucket) => {
                         const bucketItems = group.buckets[bucket]
                         if (bucketItems.length === 0) return []
