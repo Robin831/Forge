@@ -4240,6 +4240,69 @@ func TestHandleIPC_Workers(t *testing.T) {
 		assert.NotEmpty(t, got.StartedAt)
 		assert.Empty(t, got.CompletedAt)
 	})
+
+	t.Run("phase is populated for every pipeline stage", func(t *testing.T) {
+		// Clear out the row inserted by the previous subtest so we control
+		// the exact set of phases under assertion here.
+		_, err := db.Conn().Exec(`DELETE FROM workers`)
+		require.NoError(t, err)
+
+		phases := []string{"schematic", "smith", "temper", "warden", "bellows", "quench", "burnish", "rebase"}
+		started := time.Now().UTC().Truncate(time.Second)
+		for i, phase := range phases {
+			w := &state.Worker{
+				ID:        fmt.Sprintf("worker-phase-%d", i),
+				BeadID:    fmt.Sprintf("Forge-ph%02d", i),
+				Anvil:     "forge",
+				Status:    state.WorkerRunning,
+				Phase:     phase,
+				StartedAt: started,
+			}
+			require.NoError(t, db.InsertWorker(w))
+		}
+
+		resp := d.handleIPC(ipc.Command{Type: "workers"})
+		require.Equal(t, "ok", resp.Type)
+		var payload ipc.WorkersResponse
+		require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+		require.Len(t, payload.Workers, len(phases))
+
+		seen := map[string]bool{}
+		for _, w := range payload.Workers {
+			assert.NotEmpty(t, w.Phase, "worker %s missing phase", w.ID)
+			seen[w.Phase] = true
+		}
+		for _, phase := range phases {
+			assert.Truef(t, seen[phase], "expected to see phase %q in workers response", phase)
+		}
+	})
+}
+
+// TestHandleIPC_Status_MaxTotalSmiths verifies that the daemon's status
+// response exposes the configured concurrent-Smith cap so the Hearth 2.0
+// SPA can size the Workers pane's "Idle" placeholder slots.
+func TestHandleIPC_Status_MaxTotalSmiths(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-ipc-status-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	db, err := state.Open(filepath.Join(tmpDir, "state.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:        db,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		startTime: time.Now(),
+	}
+	d.cfg.Store(&config.Config{Settings: config.SettingsConfig{MaxTotalSmiths: 7}})
+
+	resp := d.handleIPC(ipc.Command{Type: "status"})
+	require.Equal(t, "status", resp.Type)
+
+	var payload ipc.StatusPayload
+	require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+	assert.Equal(t, 7, payload.MaxTotalSmiths)
 }
 
 // TestDaemon_RecordAnvilPoll verifies that the in-memory last-poll map is

@@ -14,6 +14,7 @@ import WorkersPane from '../components/WorkersPane'
 import LiveActivity from '../components/LiveActivity'
 import WorkerLogModal from '../components/WorkerLogModal'
 import CruciblesPane from '../components/CruciblesPane'
+import PipelineBar from '../components/PipelineBar'
 
 const POLL_INTERVAL_MS = 5000
 
@@ -87,7 +88,9 @@ export default function DashboardPage() {
         />
       )}
 
-      <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[repeat(3,minmax(280px,1fr))]">
+      <PipelineBar workers={workers.data?.workers ?? []} />
+
+      <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-3">
         <QueuePane
           loading={queue.loading}
           error={queue.error}
@@ -97,6 +100,7 @@ export default function DashboardPage() {
           loading={workers.loading}
           error={workers.error}
           workers={workers.data?.workers ?? []}
+          maxTotalSmiths={status.data?.max_total_smiths ?? 0}
           onSelectWorker={setLogWorker}
         />
         <LiveActivity />
