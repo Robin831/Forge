@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ArrowLeft, FileText, GitBranch, Plus, StickyNote, X, XCircle } from 'lucide-react'
+import { ArrowLeft, FileText, GitBranch, Network, Plus, StickyNote, X, XCircle } from 'lucide-react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useApiPoll } from '../hooks/useApiPoll'
 import {
@@ -13,6 +13,7 @@ import {
 import AppHeader from '../components/AppHeader'
 import BeadDepModal from '../components/BeadDepModal'
 import ConfirmModal from '../components/ConfirmModal'
+import DepsGraphView from '../components/DepsGraphView'
 import Pane, { EmptyState } from '../components/Pane'
 import WorkerLogModal from '../components/WorkerLogModal'
 import { useAction } from '../hooks/useAction'
@@ -74,6 +75,7 @@ export default function BeadDetailPage() {
     | { kind: 'note' }
   >(null)
   const [depBrief, setDepBrief] = useState<BeadBrief | null>(null)
+  const [graphOpen, setGraphOpen] = useState(false)
 
   const closeDialog = () => setDialog(null)
 
@@ -506,6 +508,11 @@ export default function BeadDetailPage() {
           blocks={data?.blocks ?? []}
           blockedBy={data?.blocked_by ?? []}
           onSelect={setDepBrief}
+          onViewGraph={
+            (data?.blocks?.length ?? 0) + (data?.blocked_by?.length ?? 0) > 0
+              ? () => setGraphOpen(true)
+              : undefined
+          }
         />
       </Pane>
 
@@ -513,6 +520,22 @@ export default function BeadDetailPage() {
         open={depBrief !== null}
         initialBrief={depBrief}
         onClose={() => setDepBrief(null)}
+      />
+
+      <DepsGraphView
+        open={graphOpen}
+        root={
+          graphOpen
+            ? {
+                bead_id: beadID,
+                anvil: resolvedAnvil || undefined,
+                title: data?.queue?.title || data?.ingot?.title || beadID,
+                status: data?.queue?.status ?? '',
+                priority: data?.queue?.priority ?? 0,
+              }
+            : null
+        }
+        onClose={() => setGraphOpen(false)}
       />
 
       <WorkerLogModal worker={logWorker} onClose={() => setLogWorker(null)} />
@@ -592,16 +615,30 @@ interface DependenciesPanelProps {
   blocks: BeadBrief[]
   blockedBy: BeadBrief[]
   onSelect: (b: BeadBrief) => void
+  onViewGraph?: () => void
 }
 
-function DependenciesPanel({ blocks, blockedBy, onSelect }: DependenciesPanelProps) {
+function DependenciesPanel({ blocks, blockedBy, onSelect, onViewGraph }: DependenciesPanelProps) {
   if (blocks.length === 0 && blockedBy.length === 0) {
     return <EmptyState message="No dependencies for this bead." />
   }
   return (
-    <div className="grid grid-cols-1 gap-4 px-4 py-3 sm:grid-cols-2">
-      <DepList title="Blocks" items={blocks} onSelect={onSelect} />
-      <DepList title="Blocked by" items={blockedBy} onSelect={onSelect} />
+    <div className="px-4 py-3">
+      {onViewGraph && (
+        <div className="mb-3 flex justify-end">
+          <button
+            type="button"
+            onClick={onViewGraph}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs text-slate-200 hover:border-amber-400/40 hover:text-amber-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
+          >
+            <Network size={12} aria-hidden /> View graph
+          </button>
+        </div>
+      )}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <DepList title="Blocks" items={blocks} onSelect={onSelect} />
+        <DepList title="Blocked by" items={blockedBy} onSelect={onSelect} />
+      </div>
     </div>
   )
 }
