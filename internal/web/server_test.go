@@ -437,6 +437,12 @@ func TestBeadDetail_InvalidID(t *testing.T) {
 }
 
 func TestBeadDetail_ResponseShapeIsArrayNotNull(t *testing.T) {
+	// fetchBeadDeps shells out to `bd show` for every detail lookup;
+	// stubbing it keeps the test hermetic on systems where bd is not
+	// installed and avoids paying the 5 s subprocess timeout for an
+	// unknown bead.
+	stubBdShow(t, func(_ string) ([]byte, error) { return []byte("[]"), nil })
+
 	srv := newServerWithDefaults(t, nil)
 	cookie := loginAndGetCookie(t, srv)
 
@@ -452,7 +458,7 @@ func TestBeadDetail_ResponseShapeIsArrayNotNull(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	for _, field := range []string{"workers", "events", "prs"} {
+	for _, field := range []string{"workers", "events", "prs", "blocks", "blocked_by"} {
 		raw, ok := body[field]
 		if !ok {
 			t.Errorf("field %q missing from response", field)
