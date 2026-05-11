@@ -99,6 +99,79 @@ func TestIsForgeProcess_RealTestProcessIsNotForge(t *testing.T) {
 	assert.False(t, ok, "test binary should not be identified as forge")
 }
 
+func TestIsForgeProcess_ExeFallbackForgeProcess(t *testing.T) {
+	// When comm is unreadable (EACCES, e.g. hidepid) but exe points to forge,
+	// the function should fall back to exe and correctly identify the process.
+	if os.Getuid() == 0 {
+		t.Skip("permission-based tests cannot run as root")
+	}
+	root := t.TempDir()
+	withProcFS(t, root)
+	pid := 12345
+	pidDir := filepath.Join(root, strconv.Itoa(pid))
+	require.NoError(t, os.MkdirAll(pidDir, 0o755))
+
+	commPath := filepath.Join(pidDir, "comm")
+	require.NoError(t, os.WriteFile(commPath, []byte("something\n"), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(commPath, 0o644) })
+
+	require.NoError(t, os.Symlink("/usr/local/bin/forge", filepath.Join(pidDir, "exe")))
+
+	ok, err := isForgeProcess(pid)
+	require.NoError(t, err)
+	assert.True(t, ok, "exe fallback should identify forge when comm is unreadable")
+}
+
+func TestIsForgeProcess_ExeFallbackNonForgeProcess(t *testing.T) {
+	// When comm is unreadable but exe points to a non-forge binary, the
+	// function should correctly return false via the exe fallback.
+	if os.Getuid() == 0 {
+		t.Skip("permission-based tests cannot run as root")
+	}
+	root := t.TempDir()
+	withProcFS(t, root)
+	pid := 12346
+	pidDir := filepath.Join(root, strconv.Itoa(pid))
+	require.NoError(t, os.MkdirAll(pidDir, 0o755))
+
+	commPath := filepath.Join(pidDir, "comm")
+	require.NoError(t, os.WriteFile(commPath, []byte("something\n"), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(commPath, 0o644) })
+
+	require.NoError(t, os.Symlink("/usr/bin/python3", filepath.Join(pidDir, "exe")))
+
+	ok, err := isForgeProcess(pid)
+	require.NoError(t, err)
+	assert.False(t, ok, "exe fallback should not identify non-forge binary as forge")
+}
+
+func TestIsForgeProcess_PermissionDeniedOnBothReturnsError(t *testing.T) {
+	// On a hidepid procfs mount, both comm and exe may be inaccessible.
+	// The function must return an error (not false, nil) so IsRunning()
+	// assumes the process is alive rather than deleting the pidfile.
+	if os.Getuid() == 0 {
+		t.Skip("permission-based tests cannot run as root")
+	}
+	root := t.TempDir()
+	withProcFS(t, root)
+	pid := 12347
+	pidDir := filepath.Join(root, strconv.Itoa(pid))
+	require.NoError(t, os.MkdirAll(pidDir, 0o755))
+
+	commPath := filepath.Join(pidDir, "comm")
+	require.NoError(t, os.WriteFile(commPath, []byte("forge\n"), 0o644))
+
+	// Make the directory non-executable so all entries (comm, exe) become
+	// inaccessible — mimicking hidepid=2 behaviour.
+	// Register pidDir cleanup first so it runs LAST (LIFO), after comm cleanup.
+	t.Cleanup(func() { _ = os.Chmod(commPath, 0o644) })
+	t.Cleanup(func() { _ = os.Chmod(pidDir, 0o755) })
+	require.NoError(t, os.Chmod(pidDir, 0o000))
+
+	_, err := isForgeProcess(pid)
+	assert.Error(t, err, "permission denied on both comm and exe should return an error, not (false, nil)")
+}
+
 func TestIsRunning_StalePidfileToNonForgeProcessIsCleanedUp(t *testing.T) {
 	// Reproduces the production scenario: a pidfile left on a PVC after a
 	// kill -9 points at a PID (the test process here) which is alive but

@@ -26,8 +26,10 @@ var procFS = "/proc"
 //     /proc/<pid>/exe and compare the symlink target's basename to "forge".
 //
 // Returns (false, nil) when the process exists but is not forge, or when
-// the process is gone (ENOENT). Returns (false, err) only on unexpected
-// I/O errors that the caller should surface.
+// the process is gone (ENOENT). Returns (false, err) when identity cannot
+// be verified — including permission-denied errors from procfs hidepid
+// mounts — so the caller can treat the process as alive rather than
+// deleting the pidfile.
 func isForgeProcess(pid int) (bool, error) {
 	pidDir := filepath.Join(procFS, strconv.Itoa(pid))
 
@@ -41,9 +43,12 @@ func isForgeProcess(pid int) (bool, error) {
 
 	target, err := os.Readlink(filepath.Join(pidDir, "exe"))
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil
 		}
+		// Permission errors (e.g. hidepid) mean we cannot verify identity;
+		// return the error so IsRunning() assumes alive rather than removing
+		// a potentially valid pidfile.
 		return false, err
 	}
 	return filepath.Base(target) == "forge", nil
