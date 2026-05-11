@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useMemo } from 'react'
 import { Activity, AlertCircle, RefreshCw } from 'lucide-react'
 import type { EventInfo } from '../api'
 import { useEventSource } from '../hooks/useEventSource'
@@ -8,29 +8,16 @@ import Pane, { EmptyState } from './Pane'
 const MAX_EVENTS = 200
 
 // LiveActivity renders the global event stream. It opens an EventSource on
-// /api/activity/stream and auto-scrolls to the latest entry as long as the
-// user has not scrolled away from the bottom.
+// /api/activity/stream and renders the newest event at the top so the user
+// never has to scroll past stale entries to see what just happened. The
+// browser preserves scrollTop when content is prepended, so a user who has
+// scrolled down to read older events stays where they are.
 export default function LiveActivity() {
   const { items, status, error } = useEventSource<EventInfo>('/api/activity/stream', {
     maxItems: MAX_EVENTS,
   })
 
-  const scrollRef = useRef<HTMLDivElement | null>(null)
-  const stickToBottomRef = useRef(true)
-
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    if (stickToBottomRef.current) {
-      el.scrollTop = el.scrollHeight
-    }
-  }, [items])
-
-  function onScroll(e: React.UIEvent<HTMLDivElement>) {
-    const el = e.currentTarget
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    stickToBottomRef.current = distanceFromBottom < 32
-  }
+  const ordered = useMemo(() => [...items].reverse(), [items])
 
   // Surface error state but never block the rendering of buffered events —
   // the browser will reconnect automatically and new events resume flowing.
@@ -51,13 +38,11 @@ export default function LiveActivity() {
     >
       {banner}
       <div
-        ref={scrollRef}
-        onScroll={onScroll}
         className="h-full overflow-y-auto"
         role="log"
         aria-live="polite"
       >
-        {items.length === 0 ? (
+        {ordered.length === 0 ? (
           <EmptyState
             message={
               status === 'connecting' ? 'Connecting to event stream…' : 'No events yet.'
@@ -65,7 +50,7 @@ export default function LiveActivity() {
           />
         ) : (
           <ul className="divide-y divide-slate-800">
-            {items.map((e) => (
+            {ordered.map((e) => (
               <li key={e.id} className="px-4 py-2.5">
                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
                   <span className={`font-mono text-[11px] ${eventClasses(e.type)}`}>{e.type}</span>
