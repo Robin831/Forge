@@ -36,7 +36,7 @@ export default function CostsPage() {
   const limitPct = dailyLimit > 0 && today ? Math.min(100, (today.estimated_cost / dailyLimit) * 100) : 0
 
   return (
-    <div className="mx-auto flex min-h-full max-w-7xl flex-col gap-6 p-4 sm:p-6">
+    <div className="flex min-h-full flex-col gap-6 p-4 sm:p-6">
       <AppHeader daemonOnline={status.data?.running} daemonLoading={status.loading} />
 
       <section

@@ -10,7 +10,7 @@ export default function CruciblesPage() {
   const crucibles = useApiPoll<CruciblesResponse>('/api/crucibles', POLL_INTERVAL_MS)
 
   return (
-    <div className="mx-auto flex min-h-full max-w-7xl flex-col gap-6 p-4 sm:p-6">
+    <div className="flex min-h-full flex-col gap-6 p-4 sm:p-6">
       <AppHeader daemonOnline={status.data?.running} daemonLoading={status.loading} />
 
       <main>
