@@ -109,7 +109,7 @@ export default function QueuePane({
       >
         {items.length === 0 && !loading ? (
           <EmptyState message="No beads in queue." />
-        ) : filtered.length === 0 ? (
+        ) : filtered.length === 0 && filter.trim() ? (
           <EmptyState message="No beads match the filter." />
         ) : (
           <ul className="divide-y divide-slate-800">

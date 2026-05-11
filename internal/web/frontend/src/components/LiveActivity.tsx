@@ -9,9 +9,9 @@ const MAX_EVENTS = 200
 
 // LiveActivity renders the global event stream. It opens an EventSource on
 // /api/activity/stream and renders the newest event at the top so the user
-// never has to scroll past stale entries to see what just happened. The
-// browser preserves scrollTop when content is prepended, so a user who has
-// scrolled down to read older events stays where they are.
+// never has to scroll past stale entries to see what just happened. Browsers
+// use scroll anchoring to preserve the user's visual position when content is
+// prepended, so a reader scrolled down to older events stays where they are.
 export default function LiveActivity() {
   const { items, status, error } = useEventSource<EventInfo>('/api/activity/stream', {
     maxItems: MAX_EVENTS,
