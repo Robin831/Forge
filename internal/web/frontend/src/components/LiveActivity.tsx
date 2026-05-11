@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Activity, AlertCircle, RefreshCw } from 'lucide-react'
 import type { EventInfo } from '../api'
 import { useEventSource } from '../hooks/useEventSource'
@@ -6,6 +6,7 @@ import { eventClasses, relativeTime } from '../lib/format'
 import Pane, { EmptyState } from './Pane'
 
 const MAX_EVENTS = 200
+const PAGE_SIZE = 10
 
 // LiveActivity renders the global event stream. It opens an EventSource on
 // /api/activity/stream and renders the newest event at the top so the user
@@ -18,6 +19,9 @@ export default function LiveActivity() {
   })
 
   const ordered = useMemo(() => [...items].reverse(), [items])
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const visible = ordered.slice(0, visibleCount)
+  const hasMore = visibleCount < ordered.length
 
   // Surface error state but never block the rendering of buffered events —
   // the browser will reconnect automatically and new events resume flowing.
@@ -49,28 +53,41 @@ export default function LiveActivity() {
             }
           />
         ) : (
-          <ul className="divide-y divide-slate-800">
-            {ordered.map((e) => (
-              <li key={e.id} className="px-4 py-2.5">
-                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
-                  <span className={`font-mono text-[11px] ${eventClasses(e.type)}`}>{e.type}</span>
-                  <span className="ml-auto text-slate-500" title={e.timestamp}>
-                    {relativeTime(e.timestamp)}
-                  </span>
-                </div>
-                {e.message && (
-                  <p className="mt-0.5 break-words text-sm text-slate-200">{e.message}</p>
-                )}
-                {(e.bead_id || e.anvil) && (
-                  <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-slate-500">
-                    {e.bead_id && <span className="font-mono text-slate-400">{e.bead_id}</span>}
-                    {e.bead_id && e.anvil && <span aria-hidden>·</span>}
-                    {e.anvil && <span>{e.anvil}</span>}
-                  </p>
-                )}
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="divide-y divide-slate-800">
+              {visible.map((e) => (
+                <li key={e.id} className="px-4 py-2.5">
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+                    <span className={`font-mono text-[11px] ${eventClasses(e.type)}`}>{e.type}</span>
+                    <span className="ml-auto text-slate-500" title={e.timestamp}>
+                      {relativeTime(e.timestamp)}
+                    </span>
+                  </div>
+                  {e.message && (
+                    <p className="mt-0.5 break-words text-sm text-slate-200">{e.message}</p>
+                  )}
+                  {(e.bead_id || e.anvil) && (
+                    <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-slate-500">
+                      {e.bead_id && <span className="font-mono text-slate-400">{e.bead_id}</span>}
+                      {e.bead_id && e.anvil && <span aria-hidden>·</span>}
+                      {e.anvil && <span>{e.anvil}</span>}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {hasMore && (
+              <div className="border-t border-slate-800 px-4 py-2">
+                <button
+                  type="button"
+                  onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                  className="w-full rounded-md border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+                >
+                  Fetch more
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </Pane>
