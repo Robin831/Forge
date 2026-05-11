@@ -2,6 +2,7 @@ package web
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -123,12 +124,95 @@ func toActivityEvent(e state.Event) activityEvent {
 	}
 }
 
+// openLogWaiting polls logPath once a second until either the file appears or
+// budget elapses. Keep-alive comments are flushed to the SSE stream every
+// poll so the connection isn't reaped by an intermediary proxy while we wait
+// for the smith to create its log file.
+//
+// Each time the file materialises the function re-runs the same
+// Lstat → IsRegular → EvalSymlinks → allowlist checks that
+// resolveWorkerLogPath performs when the file is present at resolve time.
+// This prevents a window in which a symlink could be placed at logPath
+// between the initial (file-absent) resolve and the file appearing on disk.
+//
+// Returns an error if the context is cancelled, the budget expires, the path
+// fails validation, or os.Open fails with anything other than ErrNotExist.
+func openLogWaiting(ctx context.Context, logPath string, budget time.Duration, w http.ResponseWriter, flusher http.Flusher) (*os.File, error) {
+	deadline := time.Now().Add(budget)
+
+	// Pre-compute the allowlist once so we can re-validate on each poll
+	// without repeating the UserHomeDir lookup inside the loop.
+	home, herr := os.UserHomeDir()
+	if herr != nil {
+		return nil, herr
+	}
+	forgeDir := filepath.Join(home, ".forge")
+	forgePrefix := forgeDir + string(filepath.Separator)
+	homePrefix := home + string(filepath.Separator)
+	workersComponent := string(filepath.Separator) + ".workers" + string(filepath.Separator)
+	allowed := func(p string) bool {
+		underForge := p == forgeDir || strings.HasPrefix(p, forgePrefix)
+		underWorkers := strings.HasPrefix(p, homePrefix) && strings.Contains(p, workersComponent)
+		return underForge || underWorkers
+	}
+
+	for {
+		lfi, lserr := os.Lstat(logPath)
+		if lserr == nil {
+			// File exists; re-validate before opening.
+			if !lfi.Mode().IsRegular() {
+				return nil, errors.New("log path is not a regular file")
+			}
+			resolved, rerr := filepath.EvalSymlinks(logPath)
+			if rerr != nil {
+				return nil, errors.New("failed to resolve log path")
+			}
+			resolved = filepath.Clean(resolved)
+			if !allowed(resolved) {
+				return nil, errors.New("invalid log path")
+			}
+			f, err := os.Open(resolved) //nolint:gosec
+			if err == nil {
+				return f, nil
+			}
+			if !os.IsNotExist(err) {
+				return nil, err
+			}
+		} else if !os.IsNotExist(lserr) {
+			return nil, lserr
+		}
+		if time.Now().After(deadline) {
+			return nil, os.ErrNotExist
+		}
+		// Emit a keep-alive so the SSE connection stays alive and the client
+		// observes an "open" status instead of falling into the error /
+		// "reconnecting…" branch.
+		fmt.Fprint(w, ": waiting-for-log\n\n")
+		flusher.Flush()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+	}
+}
+
 // resolveWorkerLogPath looks the worker up in state.db and returns the
-// fully-resolved log file path. It enforces the same allowlist as Hytte's
-// WorkerLogHandler so a poisoned workers row cannot leak arbitrary files
-// outside the forge-owned directories. The returned os.FileInfo is the
-// pre-symlink stat for the original path; callers that need fresh size
-// after symlink resolution should re-stat resolvedPath.
+// fully-resolved log file path. It enforces an allowlist so a poisoned
+// workers row cannot leak arbitrary files outside forge-owned directories.
+// The returned os.FileInfo is the pre-symlink stat for the original path;
+// callers that need fresh size after symlink resolution should re-stat
+// resolvedPath.
+//
+// Return values for the two "no log yet" cases differ:
+//   - worker.LogPath == "" (bellows pseudo-workers, etc.): returns ("", nil, 0, nil)
+//   - log path is set but the file is not yet on disk (smith startup race):
+//     returns (logPath, nil, 0, nil) — the non-empty path lets the SSE
+//     stream handler poll until the file appears via openLogWaiting.
+//
+// Callers distinguish the two by checking whether resolvedPath is empty:
+// empty means "this worker has no log"; non-empty with nil FileInfo means
+// "log path is known but the file is not yet present".
 func resolveWorkerLogPath(db *state.DB, workerID string) (resolvedPath string, fi os.FileInfo, status int, err error) {
 	worker, qerr := db.GetWorker(workerID)
 	if qerr != nil {
@@ -141,7 +225,10 @@ func resolveWorkerLogPath(db *state.DB, workerID string) (resolvedPath string, f
 		return "", nil, http.StatusInternalServerError, errors.New("failed to load worker")
 	}
 	if worker.LogPath == "" {
-		return "", nil, http.StatusNotFound, errors.New("worker has no log file")
+		// Bellows pseudo-workers and any other rows that legitimately have no
+		// claude log file land here. Return an empty path so callers can emit
+		// an empty-but-200 response rather than 404.
+		return "", nil, 0, nil
 	}
 
 	home, herr := os.UserHomeDir()
@@ -172,7 +259,11 @@ func resolveWorkerLogPath(db *state.DB, workerID string) (resolvedPath string, f
 	stat, serr := os.Lstat(logPath)
 	if serr != nil {
 		if os.IsNotExist(serr) {
-			return "", nil, http.StatusNotFound, errors.New("log file not found")
+			// The worker row exists but the smith hasn't created its log file
+			// yet (or it was rotated away). Return the would-be path so callers
+			// that want to poll for the file (the SSE stream) can do so, with
+			// a nil FileInfo signalling "not yet present".
+			return logPath, nil, 0, nil
 		}
 		return "", nil, http.StatusInternalServerError, errors.New("failed to stat log file")
 	}
@@ -205,6 +296,13 @@ func (s *Server) handleWorkerLogTail(w http.ResponseWriter, r *http.Request) {
 	logPath, fi, status, err := resolveWorkerLogPath(s.db, workerID)
 	if err != nil {
 		writeError(w, status, err.Error())
+		return
+	}
+	// Worker exists but its log file isn't yet on disk (active worker race
+	// or bellows pseudo-worker). Return 200 with an empty array so the SPA
+	// renders an empty log instead of an error banner.
+	if logPath == "" || fi == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"lines": []string{}})
 		return
 	}
 
@@ -249,7 +347,15 @@ func (s *Server) handleWorkerLogTail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	raw := strings.TrimRight(string(data), "\n")
+	// Trim a trailing partial line (file is still being written to and the
+	// last record may not be complete). Splitting on the rightmost newline
+	// ensures the response only contains fully-written lines.
+	raw := string(data)
+	if idx := strings.LastIndexByte(raw, '\n'); idx >= 0 {
+		raw = raw[:idx]
+	} else {
+		raw = ""
+	}
 	lines := []string{}
 	if raw != "" {
 		lines = strings.Split(raw, "\n")
@@ -279,6 +385,14 @@ func (s *Server) handleWorkerLogStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error())
 		return
 	}
+	if logPath == "" {
+		// Worker has no log file (bellows pseudo-worker, etc.). The SPA gates
+		// these so the modal should never be opened in the first place; if
+		// something else hits this URL anyway, return 404 so EventSource
+		// fails fast instead of spinning on "reconnecting…" forever.
+		writeError(w, http.StatusNotFound, "worker has no log file")
+		return
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -293,7 +407,12 @@ func (s *Server) handleWorkerLogStream(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "retry: 3000\n\n")
 	flusher.Flush()
 
-	f, err := os.Open(logPath) //nolint:gosec
+	// Wait briefly for the log file to appear if the smith hasn't written
+	// anything yet (race between the workers row insert and claude creating
+	// its log on disk). Capped at 30s; the loop also honours client
+	// disconnect and emits keep-alives so the connection isn't reaped by a
+	// reverse proxy. Once the file shows up we proceed to the normal stream.
+	f, err := openLogWaiting(r.Context(), logPath, 30*time.Second, w, flusher)
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: {\"error\":\"log file not accessible\"}\n\n")
 		flusher.Flush()
@@ -303,30 +422,42 @@ func (s *Server) handleWorkerLogStream(w http.ResponseWriter, r *http.Request) {
 	// after truncation/rotation causes f to be reassigned to a new handle.
 	defer func() { f.Close() }()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
+	// Read the existing file contents and emit fully-terminated lines only.
+	// Any trailing partial line (file is mid-write) becomes the initial value
+	// of `partial` so the ticker loop below stitches it onto the next chunk
+	// instead of double-emitting it.
+	var (
+		offset  int64
+		partial string
+	)
+	reader := bufio.NewReaderSize(f, 64*1024)
+	for {
+		line, rerr := reader.ReadString('\n')
+		if line != "" {
+			if strings.HasSuffix(line, "\n") {
+				trimmed := strings.TrimRight(line, "\n")
+				offset += int64(len(line))
+				if trimmed != "" {
+					entry := map[string]string{"line": trimmed, "timestamp": time.Now().UTC().Format(time.RFC3339)}
+					data, _ := json.Marshal(entry)
+					fmt.Fprintf(w, "data: %s\n\n", data)
+				}
+			} else {
+				// Unterminated tail — hold it as the partial buffer.
+				partial = line
+			}
 		}
-		entry := map[string]string{"line": line, "timestamp": time.Now().UTC().Format(time.RFC3339)}
-		data, _ := json.Marshal(entry)
-		fmt.Fprintf(w, "data: %s\n\n", data)
+		if rerr != nil {
+			break
+		}
 	}
 	flusher.Flush()
-
-	var offset int64
-	if fi, err := f.Stat(); err == nil {
-		offset = fi.Size()
-	}
+	offset += int64(len(partial))
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
-
-	var partial string
 
 	for {
 		select {

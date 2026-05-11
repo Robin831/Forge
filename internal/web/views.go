@@ -108,6 +108,7 @@ type historyWorker struct {
 	Title       string  `json:"title,omitempty"`
 	Status      string  `json:"status"`
 	Phase       string  `json:"phase,omitempty"`
+	Kind        string  `json:"kind,omitempty"`
 	PID         int     `json:"pid,omitempty"`
 	StartedAt   string  `json:"started_at"`
 	CompletedAt string  `json:"completed_at,omitempty"`
@@ -148,6 +149,7 @@ func (s *Server) handleHistoryWorkers(w http.ResponseWriter, r *http.Request) {
 			Title:     ww.Title,
 			Status:    string(ww.Status),
 			Phase:     ww.Phase,
+			Kind:      ipc.WorkerKindFromPhase(ww.Phase),
 			PID:       ww.PID,
 			StartedAt: ww.StartedAt.Format(time.RFC3339),
 			LogPath:   ww.LogPath,

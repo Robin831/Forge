@@ -350,6 +350,10 @@ type QueueResponse struct {
 }
 
 // WorkerInfo is the IPC representation of a single active worker.
+// Kind is a coarse worker-class label derived from Phase: "bellows" for the
+// PR-monitor pseudo-workers (no log, no log-modal affordance) and "smith"
+// for everything else — pipeline Smiths plus the lifecycle sub-workers
+// (quench/burnish/rebase) that produce real claude log files.
 type WorkerInfo struct {
 	ID          string `json:"id"`
 	BeadID      string `json:"bead_id"`
@@ -358,11 +362,24 @@ type WorkerInfo struct {
 	Title       string `json:"title,omitempty"`
 	Status      string `json:"status"`
 	Phase       string `json:"phase,omitempty"`
+	Kind        string `json:"kind,omitempty"`
 	PID         int    `json:"pid,omitempty"`
 	StartedAt   string `json:"started_at"`
 	CompletedAt string `json:"completed_at,omitempty"`
 	LogPath     string `json:"log_path,omitempty"`
 	PRNumber    int    `json:"pr_number,omitempty"`
+}
+
+// WorkerKindFromPhase returns the coarse worker-class label used by the
+// Hearth web UI to decide whether a worker card opens a log modal. Bellows
+// PR-monitor rows return "bellows" (no underlying claude log); everything
+// else — pipeline Smiths and the quench/burnish/rebase lifecycle workers —
+// returns "smith".
+func WorkerKindFromPhase(phase string) string {
+	if phase == "bellows" {
+		return "bellows"
+	}
+	return "smith"
 }
 
 // WorkersResponse is the response payload for a "workers" command.

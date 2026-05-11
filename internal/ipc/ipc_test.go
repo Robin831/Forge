@@ -9,6 +9,27 @@ import (
 	"time"
 )
 
+func TestWorkerKindFromPhase(t *testing.T) {
+	cases := []struct {
+		phase string
+		want  string
+	}{
+		{"bellows", "bellows"},
+		{"smith", "smith"},
+		{"quench", "smith"},
+		{"burnish", "smith"},
+		{"rebase", "smith"},
+		{"schematic", "smith"},
+		{"", "smith"},
+		{"warden_rerun", "smith"},
+	}
+	for _, tc := range cases {
+		if got := WorkerKindFromPhase(tc.phase); got != tc.want {
+			t.Errorf("WorkerKindFromPhase(%q) = %q, want %q", tc.phase, got, tc.want)
+		}
+	}
+}
+
 func TestNewQueuedResponse(t *testing.T) {
 	resp, err := NewQueuedResponse("req-123", "accepted")
 	if err != nil {
