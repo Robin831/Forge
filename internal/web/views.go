@@ -1,16 +1,19 @@
 package web
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/cost"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
@@ -322,17 +325,239 @@ type beadDetailWorker struct {
 	PRNumber    int     `json:"pr_number,omitempty"`
 }
 
+// beadDetailDepRef is a lightweight reference to a related bead. It is used
+// both for the immediate Blocks/BlockedBy lists on beadDetailResponse and
+// for the recursive tree returned by /api/bead/{id}/deps. The nested
+// Blocks/BlockedBy fields are populated only when the dep walker recurses
+// past depth 1; at the leaves they are nil and serialise as omitted.
+type beadDetailDepRef struct {
+	BeadID    string             `json:"bead_id"`
+	Anvil     string             `json:"anvil,omitempty"`
+	Title     string             `json:"title"`
+	Status    string             `json:"status"`
+	Priority  int                `json:"priority"`
+	Blocks    []beadDetailDepRef `json:"blocks,omitempty"`
+	BlockedBy []beadDetailDepRef `json:"blocked_by,omitempty"`
+}
+
 // beadDetailResponse is the consolidated JSON shape for /api/bead/{id}.
 type beadDetailResponse struct {
-	BeadID  string             `json:"bead_id"`
-	Anvil   string             `json:"anvil,omitempty"`
-	Queue   *beadDetailQueue   `json:"queue,omitempty"`
-	Ingot   *ingot.Ingot       `json:"ingot,omitempty"`
-	Retry   *beadDetailRetry   `json:"retry,omitempty"`
-	Cost    *beadDetailCost    `json:"cost,omitempty"`
-	Workers []beadDetailWorker `json:"workers"`
-	Events  []beadDetailEvent  `json:"events"`
-	PRs     []beadDetailPR     `json:"prs"`
+	BeadID    string             `json:"bead_id"`
+	Anvil     string             `json:"anvil,omitempty"`
+	Queue     *beadDetailQueue   `json:"queue,omitempty"`
+	Ingot     *ingot.Ingot       `json:"ingot,omitempty"`
+	Retry     *beadDetailRetry   `json:"retry,omitempty"`
+	Cost      *beadDetailCost    `json:"cost,omitempty"`
+	Workers   []beadDetailWorker `json:"workers"`
+	Events    []beadDetailEvent  `json:"events"`
+	PRs       []beadDetailPR     `json:"prs"`
+	Blocks    []beadDetailDepRef `json:"blocks"`
+	BlockedBy []beadDetailDepRef `json:"blocked_by"`
+}
+
+// beadDepsResponse is the JSON shape returned by /api/bead/{id}/deps.
+type beadDepsResponse struct {
+	BeadID    string             `json:"bead_id"`
+	Depth     int                `json:"depth"`
+	Blocks    []beadDetailDepRef `json:"blocks"`
+	BlockedBy []beadDetailDepRef `json:"blocked_by"`
+}
+
+// bdShowEntry mirrors the subset of `bd show <id> --json` we care about.
+// The bd CLI returns a JSON array; each entry exposes outgoing edges as
+// `dependents` (beads blocked by this one) and incoming edges as
+// `dependencies` (beads this one is blocked by). The `dependency_type`
+// field on each edge entry distinguishes "blocks" relations from softer
+// links (e.g. "discovered-from", "related"); only "blocks" is surfaced
+// as Blocks/BlockedBy.
+type bdShowEntry struct {
+	ID             string        `json:"id"`
+	Title          string        `json:"title"`
+	Status         string        `json:"status"`
+	Priority       int           `json:"priority"`
+	DependencyType string        `json:"dependency_type"`
+	Dependencies   []bdShowEntry `json:"dependencies"`
+	Dependents     []bdShowEntry `json:"dependents"`
+}
+
+// isBlockingDep reports whether a dep edge counts as a "blocks" relation.
+// Edges without an explicit dependency_type (e.g. nested arrays in older
+// bd versions) are treated as "blocks" so we don't silently drop them.
+func isBlockingDep(e bdShowEntry) bool {
+	return e.DependencyType == "" || e.DependencyType == "blocks"
+}
+
+// bdShowJSON is the command runner used by the dep helpers to invoke
+// `bd show <id> --json`. The variable is package-level so tests can swap it
+// for a fake without spawning real subprocesses. The dir parameter is the
+// anvil's on-disk path; passing a non-empty value sets cmd.Dir so bd can
+// locate the Dolt database.
+var bdShowJSON = func(ctx context.Context, dir, beadID string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "bd", "show", beadID, "--json")
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	return cmd.Output()
+}
+
+// maxDepDepth caps the recursion depth on /api/bead/{id}/deps. The modal's
+// nested view only needs a couple of levels; 3 is enough for that without
+// pathological fan-out on large graphs.
+const maxDepDepth = 3
+
+// fetchBeadShow runs `bd show <id> --json` and returns the first entry.
+// Empty output, unparseable output, or non-zero exit codes are all reported
+// as errors so callers can degrade to empty dep lists. Both the array form
+// ([{...}]) and bare object form ({...}) are accepted, and leading/trailing
+// diagnostic noise from bd is tolerated via executil.DecodeJSON.
+func fetchBeadShow(ctx context.Context, dir, beadID string) (*bdShowEntry, error) {
+	out, err := bdShowJSON(ctx, dir, beadID)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, errors.New("bd show: empty output")
+	}
+	// Try array form first (most bd versions wrap output in []).
+	var entries []bdShowEntry
+	if executil.DecodeJSON(out, &entries) == nil && len(entries) > 0 {
+		return &entries[0], nil
+	}
+	// Fall back to bare object form.
+	var single bdShowEntry
+	if executil.DecodeJSON(out, &single) == nil && single.ID != "" {
+		return &single, nil
+	}
+	return nil, errors.New("bd show: no entries")
+}
+
+// anvilLookup resolves a bead ID to its anvil name. The default lookup uses
+// the queue cache, which is the only in-process source of bead→anvil
+// associations. When the bead is not cached (e.g. closed beads outside the
+// queue) the lookup returns "".
+type anvilLookup func(beadID string) string
+
+// newAnvilLookup builds a lookup backed by a single queue_cache scan so
+// callers can resolve many bead IDs without re-querying the DB. When the
+// cache cannot be loaded, the returned lookup always returns "". When a bead
+// ID appears in more than one anvil the lookup returns "" to avoid
+// non-deterministically attaching the wrong anvil to a dep ref.
+func newAnvilLookup(db *state.DB) anvilLookup {
+	cache := map[string]string{}
+	ambiguous := map[string]bool{}
+	if db != nil {
+		if items, err := db.QueueCache(); err == nil {
+			for _, it := range items {
+				if ambiguous[it.BeadID] {
+					continue
+				}
+				if _, ok := cache[it.BeadID]; ok {
+					// Bead exists in multiple anvils — omit rather than guess.
+					delete(cache, it.BeadID)
+					ambiguous[it.BeadID] = true
+					continue
+				}
+				cache[it.BeadID] = it.Anvil
+			}
+		}
+	}
+	return func(beadID string) string { return cache[beadID] }
+}
+
+// fetchBeadDeps returns the immediate (depth=1) Blocks and BlockedBy lists
+// for the given bead. dir is the anvil's on-disk path passed to bdShowJSON.
+// Errors yield empty slices so the bead detail handler can degrade gracefully
+// when bd is missing or returns unexpected output.
+func fetchBeadDeps(ctx context.Context, dir, beadID string, lookup anvilLookup) (blocks, blockedBy []beadDetailDepRef) {
+	entry, err := fetchBeadShow(ctx, dir, beadID)
+	if err != nil {
+		return []beadDetailDepRef{}, []beadDetailDepRef{}
+	}
+	blocks = make([]beadDetailDepRef, 0, len(entry.Dependents))
+	for _, d := range entry.Dependents {
+		if !isBlockingDep(d) {
+			continue
+		}
+		blocks = append(blocks, makeDepRef(d, lookup))
+	}
+	blockedBy = make([]beadDetailDepRef, 0, len(entry.Dependencies))
+	for _, d := range entry.Dependencies {
+		if !isBlockingDep(d) {
+			continue
+		}
+		blockedBy = append(blockedBy, makeDepRef(d, lookup))
+	}
+	return blocks, blockedBy
+}
+
+// makeDepRef projects a bd show entry into the web layer's dep ref shape.
+func makeDepRef(e bdShowEntry, lookup anvilLookup) beadDetailDepRef {
+	ref := beadDetailDepRef{
+		BeadID:   e.ID,
+		Title:    e.Title,
+		Status:   e.Status,
+		Priority: e.Priority,
+	}
+	if lookup != nil {
+		ref.Anvil = lookup(e.ID)
+	}
+	return ref
+}
+
+// walkBeadDeps recursively expands a bead's dep graph up to `depth` levels
+// in each direction. dir is the anvil's on-disk path passed to bdShowJSON for
+// every fetch in the walk. The `visited` map both detects cycles and prevents
+// double-walking diamond-shaped graphs (where a bead is reachable through
+// multiple paths). When a bead is encountered that has already been
+// walked, its ref is included but its own Blocks/BlockedBy children are
+// elided so the response stays a tree rather than a DAG.
+func walkBeadDeps(ctx context.Context, dir, beadID string, depth int, lookup anvilLookup, visited map[string]bool) (blocks, blockedBy []beadDetailDepRef) {
+	if depth <= 0 {
+		return nil, nil
+	}
+	entry, err := fetchBeadShow(ctx, dir, beadID)
+	if err != nil {
+		return []beadDetailDepRef{}, []beadDetailDepRef{}
+	}
+	blocks = make([]beadDetailDepRef, 0, len(entry.Dependents))
+	for _, d := range entry.Dependents {
+		if !isBlockingDep(d) {
+			continue
+		}
+		ref := makeDepRef(d, lookup)
+		if !visited[d.ID] {
+			visited[d.ID] = true
+			if depth-1 > 0 {
+				ref.Blocks, ref.BlockedBy = walkBeadDeps(ctx, dir, d.ID, depth-1, lookup, visited)
+			}
+		}
+		blocks = append(blocks, ref)
+	}
+	blockedBy = make([]beadDetailDepRef, 0, len(entry.Dependencies))
+	for _, d := range entry.Dependencies {
+		if !isBlockingDep(d) {
+			continue
+		}
+		ref := makeDepRef(d, lookup)
+		if !visited[d.ID] {
+			visited[d.ID] = true
+			if depth-1 > 0 {
+				ref.Blocks, ref.BlockedBy = walkBeadDeps(ctx, dir, d.ID, depth-1, lookup, visited)
+			}
+		}
+		blockedBy = append(blockedBy, ref)
+	}
+	return blocks, blockedBy
+}
+
+// resolveAnvilPath maps an anvil name to its on-disk path using the live
+// registry. Returns "" when the name is empty, the registry is not
+// configured, or the name is not registered.
+func (s *Server) resolveAnvilPath(name string) string {
+	if name == "" || s.anvils == nil {
+		return ""
+	}
+	return s.anvils()[name]
 }
 
 // handleBeadDetail returns a consolidated view of one bead used by the
@@ -348,11 +573,13 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 	anvilHint := strings.TrimSpace(r.URL.Query().Get("anvil"))
 
 	resp := beadDetailResponse{
-		BeadID:  beadID,
-		Anvil:   anvilHint,
-		Workers: []beadDetailWorker{},
-		Events:  []beadDetailEvent{},
-		PRs:     []beadDetailPR{},
+		BeadID:    beadID,
+		Anvil:     anvilHint,
+		Workers:   []beadDetailWorker{},
+		Events:    []beadDetailEvent{},
+		PRs:       []beadDetailPR{},
+		Blocks:    []beadDetailDepRef{},
+		BlockedBy: []beadDetailDepRef{},
 	}
 
 	// Queue cache lookup. The DB only exposes a list helper, so we filter in
@@ -485,7 +712,60 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 	prs := collectBeadPRs(s.db, beadID, resp.Anvil)
 	resp.PRs = prs
 
+	// Dependency lists. `bd show <id> --json` is the source of truth for
+	// the bead graph and handles cross-anvil deps gracefully. Failures
+	// fall back to empty slices so the response shape stays stable.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	resp.Blocks, resp.BlockedBy = fetchBeadDeps(ctx, s.resolveAnvilPath(resp.Anvil), beadID, newAnvilLookup(s.db))
+
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleBeadDeps walks the dependency graph for the given bead and returns
+// a tree shape that the modal/graph views in the SPA consume. The depth
+// query parameter defaults to 1 and is clamped to [1, maxDepDepth].
+func (s *Server) handleBeadDeps(w http.ResponseWriter, r *http.Request) {
+	beadID := chi.URLParam(r, "bead_id")
+	if !isValidBeadID(beadID) {
+		writeError(w, http.StatusBadRequest, "invalid bead id")
+		return
+	}
+	depth := 1
+	if raw := r.URL.Query().Get("depth"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "depth must be an integer")
+			return
+		}
+		if n < 1 {
+			n = 1
+		} else if n > maxDepDepth {
+			n = maxDepDepth
+		}
+		depth = n
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Seed the visited set with the root bead so it cannot reappear as a
+	// child of itself (e.g. a corrupt or pathological dep graph).
+	lookup := newAnvilLookup(s.db)
+	visited := map[string]bool{beadID: true}
+	blocks, blockedBy := walkBeadDeps(ctx, s.resolveAnvilPath(lookup(beadID)), beadID, depth, lookup, visited)
+	if blocks == nil {
+		blocks = []beadDetailDepRef{}
+	}
+	if blockedBy == nil {
+		blockedBy = []beadDetailDepRef{}
+	}
+	writeJSON(w, http.StatusOK, beadDepsResponse{
+		BeadID:    beadID,
+		Depth:     depth,
+		Blocks:    blocks,
+		BlockedBy: blockedBy,
+	})
 }
 
 // getBeadCost returns the cumulative bead_costs row for (beadID, anvil), or

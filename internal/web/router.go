@@ -58,6 +58,7 @@ func (s *Server) routes() http.Handler {
 		r.Get("/costs", s.handleCosts)
 		r.Get("/prs/all", s.handlePRs)
 		r.Get("/bead/{bead_id}", s.handleBeadDetail)
+		r.Get("/bead/{bead_id}/deps", s.handleBeadDeps)
 
 		// Destructive admin actions (Hearth 2.0).
 		r.Post("/worker/{id}/kill", s.handleKillWorker)
