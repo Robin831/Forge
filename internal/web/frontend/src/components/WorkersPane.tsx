@@ -81,7 +81,7 @@ export default function WorkersPane({
                       type="button"
                       disabled={!clickable}
                       onClick={() => {
-                        if (clickable) onSelectWorker(w)
+                        if (clickable) onSelectWorker?.(w)
                       }}
                       className={`block w-full px-4 py-3 text-left ${
                         clickable

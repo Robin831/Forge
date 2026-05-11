@@ -124,24 +124,65 @@ func toActivityEvent(e state.Event) activityEvent {
 	}
 }
 
-// openLogWaiting opens logPath, polling once a second until either the
-// file appears or budget elapses. Keep-alive comments are flushed to the
-// SSE stream every poll so the connection isn't reaped by an intermediary
-// proxy while we wait for the smith to create its log file. Returns an
-// error if the context is cancelled, the budget expires, or os.Open fails
-// with anything other than ErrNotExist on the final attempt.
+// openLogWaiting polls logPath once a second until either the file appears or
+// budget elapses. Keep-alive comments are flushed to the SSE stream every
+// poll so the connection isn't reaped by an intermediary proxy while we wait
+// for the smith to create its log file.
+//
+// Each time the file materialises the function re-runs the same
+// Lstat → IsRegular → EvalSymlinks → allowlist checks that
+// resolveWorkerLogPath performs when the file is present at resolve time.
+// This prevents a window in which a symlink could be placed at logPath
+// between the initial (file-absent) resolve and the file appearing on disk.
+//
+// Returns an error if the context is cancelled, the budget expires, the path
+// fails validation, or os.Open fails with anything other than ErrNotExist.
 func openLogWaiting(ctx context.Context, logPath string, budget time.Duration, w http.ResponseWriter, flusher http.Flusher) (*os.File, error) {
 	deadline := time.Now().Add(budget)
+
+	// Pre-compute the allowlist once so we can re-validate on each poll
+	// without repeating the UserHomeDir lookup inside the loop.
+	home, herr := os.UserHomeDir()
+	if herr != nil {
+		return nil, herr
+	}
+	forgeDir := filepath.Join(home, ".forge")
+	forgePrefix := forgeDir + string(filepath.Separator)
+	homePrefix := home + string(filepath.Separator)
+	workersComponent := string(filepath.Separator) + ".workers" + string(filepath.Separator)
+	allowed := func(p string) bool {
+		underForge := p == forgeDir || strings.HasPrefix(p, forgePrefix)
+		underWorkers := strings.HasPrefix(p, homePrefix) && strings.Contains(p, workersComponent)
+		return underForge || underWorkers
+	}
+
 	for {
-		f, err := os.Open(logPath) //nolint:gosec
-		if err == nil {
-			return f, nil
-		}
-		if !os.IsNotExist(err) {
-			return nil, err
+		lfi, lserr := os.Lstat(logPath)
+		if lserr == nil {
+			// File exists; re-validate before opening.
+			if !lfi.Mode().IsRegular() {
+				return nil, errors.New("log path is not a regular file")
+			}
+			resolved, rerr := filepath.EvalSymlinks(logPath)
+			if rerr != nil {
+				return nil, errors.New("failed to resolve log path")
+			}
+			resolved = filepath.Clean(resolved)
+			if !allowed(resolved) {
+				return nil, errors.New("invalid log path")
+			}
+			f, err := os.Open(resolved) //nolint:gosec
+			if err == nil {
+				return f, nil
+			}
+			if !os.IsNotExist(err) {
+				return nil, err
+			}
+		} else if !os.IsNotExist(lserr) {
+			return nil, lserr
 		}
 		if time.Now().After(deadline) {
-			return nil, err
+			return nil, os.ErrNotExist
 		}
 		// Emit a keep-alive so the SSE connection stays alive and the client
 		// observes an "open" status instead of falling into the error /
@@ -157,18 +198,21 @@ func openLogWaiting(ctx context.Context, logPath string, budget time.Duration, w
 }
 
 // resolveWorkerLogPath looks the worker up in state.db and returns the
-// fully-resolved log file path. It enforces the same allowlist as Hytte's
-// WorkerLogHandler so a poisoned workers row cannot leak arbitrary files
-// outside the forge-owned directories. The returned os.FileInfo is the
-// pre-symlink stat for the original path; callers that need fresh size
-// after symlink resolution should re-stat resolvedPath.
+// fully-resolved log file path. It enforces an allowlist so a poisoned
+// workers row cannot leak arbitrary files outside forge-owned directories.
+// The returned os.FileInfo is the pre-symlink stat for the original path;
+// callers that need fresh size after symlink resolution should re-stat
+// resolvedPath.
 //
-// When the worker row exists but its log file is not yet on disk (race
-// between the workers row insert and the smith subprocess creating its log)
-// or the worker carries no LogPath at all, this returns ("", nil, 0, nil) —
-// a non-error "no log yet" signal. Callers should treat that as an empty
-// log rather than as 404 so an active worker's modal does not get stuck
-// showing "reconnecting…" while the smith warms up.
+// Return values for the two "no log yet" cases differ:
+//   - worker.LogPath == "" (bellows pseudo-workers, etc.): returns ("", nil, 0, nil)
+//   - log path is set but the file is not yet on disk (smith startup race):
+//     returns (logPath, nil, 0, nil) — the non-empty path lets the SSE
+//     stream handler poll until the file appears via openLogWaiting.
+//
+// Callers distinguish the two by checking whether resolvedPath is empty:
+// empty means "this worker has no log"; non-empty with nil FileInfo means
+// "log path is known but the file is not yet present".
 func resolveWorkerLogPath(db *state.DB, workerID string) (resolvedPath string, fi os.FileInfo, status int, err error) {
 	worker, qerr := db.GetWorker(workerID)
 	if qerr != nil {
