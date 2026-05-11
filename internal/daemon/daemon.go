@@ -109,6 +109,15 @@ type temperCacheEntry struct {
 	statErr string // last non-ENOENT stat error message; empty on success
 }
 
+// anvilPollSnapshot captures the most recent poll outcome for a single anvil.
+// Stored in Daemon.lastPollMap so Hearth and `forge status` can read freshness
+// without scanning the events table.
+type anvilPollSnapshot struct {
+	Timestamp time.Time
+	OK        bool   // true when the last poll completed without error
+	Message   string // human-readable summary, e.g. "5 ready" or the error text
+}
+
 // Daemon is the main Forge orchestration daemon.
 type Daemon struct {
 	cfg           atomic.Pointer[config.Config]
@@ -207,6 +216,14 @@ type Daemon struct {
 
 	// Last successful poll timestamp
 	lastPollTime atomic.Value // stores time.Time
+
+	// Per-anvil last-poll snapshot. Updated on every poll completion (success
+	// or error) by the OnAnvilDone callback. Replaces the historic
+	// EventPoll-row-per-success approach that drowned the events table —
+	// successful polls are no longer persisted as events, so Hearth and
+	// `forge status` read freshness from this in-memory map via IPC.
+	lastPollMu  sync.Mutex
+	lastPollMap map[string]anvilPollSnapshot
 
 	// Cost limit: tracks which date we last logged the cost_limit_hit event
 	// to avoid spamming the event log every poll cycle.
@@ -322,6 +339,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		vcsProviders:          vcsProviders,
 		reqTracker:            *ipc.NewRequestTracker("forge-"),
 		crucibleTickerResetCh: make(chan struct{}, 1),
+		lastPollMap:           make(map[string]anvilPollSnapshot),
 	}
 	d.notifier.Store(notifier)
 	d.dispatcher.Store(dispatcher)
@@ -427,6 +445,41 @@ func New(cfg *config.Config) (*Daemon, error) {
 // the hot-reload goroutine that updates the config pointer.
 func (d *Daemon) config() *config.Config {
 	return d.cfg.Load()
+}
+
+// recordAnvilPoll updates the in-memory last-poll snapshot for the given anvil.
+// Called from the OnAnvilDone callback on every poll completion regardless of
+// outcome. Replaces the EventPoll event-table writes that used to provide this
+// data on the success path.
+func (d *Daemon) recordAnvilPoll(anvil string, ok bool, message string) {
+	if anvil == "" {
+		return
+	}
+	d.lastPollMu.Lock()
+	if d.lastPollMap == nil {
+		d.lastPollMap = make(map[string]anvilPollSnapshot)
+	}
+	d.lastPollMap[anvil] = anvilPollSnapshot{
+		Timestamp: time.Now(),
+		OK:        ok,
+		Message:   message,
+	}
+	d.lastPollMu.Unlock()
+}
+
+// anvilPollSnapshots returns a copy of the per-anvil last-poll map so callers
+// (e.g. the IPC status handler) can safely read it without holding the mutex.
+func (d *Daemon) anvilPollSnapshots() map[string]anvilPollSnapshot {
+	d.lastPollMu.Lock()
+	defer d.lastPollMu.Unlock()
+	if len(d.lastPollMap) == 0 {
+		return nil
+	}
+	out := make(map[string]anvilPollSnapshot, len(d.lastPollMap))
+	for k, v := range d.lastPollMap {
+		out[k] = v
+	}
+	return out
 }
 
 // vcsForAnvil returns the VCS provider for the given anvil name.
@@ -1841,14 +1894,18 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 	if !effectiveFullPoll {
 		pollKind = "fast"
 	}
-	// Log each anvil's poll event as soon as it finishes so Hearth shows
-	// per-anvil timestamps that reflect the actual stagger, not a single
-	// shared timestamp logged after wg.Wait().
+	// Record each anvil's poll completion as soon as it finishes so Hearth and
+	// `forge status` can show per-anvil timestamps that reflect the actual
+	// stagger, not a single shared timestamp logged after wg.Wait(). Successful
+	// polls are tracked in-memory only (see Daemon.lastPollMap); only failures
+	// are persisted to the events table to avoid drowning the event log with
+	// hundreds of rows per hour.
 	p.OnAnvilDone = func(r poller.AnvilResult) {
 		if r.Err != nil {
 			_ = d.db.LogEvent(state.EventPollError, r.Err.Error(), "", r.Name)
+			d.recordAnvilPoll(r.Name, false, r.Err.Error())
 		} else {
-			_ = d.db.LogEvent(state.EventPoll, fmt.Sprintf("Polled anvil [%s]: %s (%d ready)", pollKind, r.Name, len(r.Beads)), "", r.Name)
+			d.recordAnvilPoll(r.Name, true, fmt.Sprintf("[%s] %d ready", pollKind, len(r.Beads)))
 		}
 	}
 	beads, results := p.Poll(ctx)
@@ -3126,6 +3183,27 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if t, ok := d.lastPollTime.Load().(time.Time); ok && !t.IsZero() {
 			lastPoll = time.Since(t).Round(time.Second).String() + " ago"
 		}
+		// Project the in-memory per-anvil last-poll snapshot into the IPC
+		// payload. Sorted by anvil name so the IPC output is deterministic
+		// and easy to consume from Hearth / Mezzanine / scripts.
+		var anvilLastPoll []ipc.AnvilPollItem
+		if snaps := d.anvilPollSnapshots(); len(snaps) > 0 {
+			names := make([]string, 0, len(snaps))
+			for name := range snaps {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			anvilLastPoll = make([]ipc.AnvilPollItem, 0, len(names))
+			for _, name := range names {
+				s := snaps[name]
+				anvilLastPoll = append(anvilLastPoll, ipc.AnvilPollItem{
+					Anvil:     name,
+					Timestamp: s.Timestamp,
+					OK:        s.OK,
+					Message:   s.Message,
+				})
+			}
+		}
 		payload := ipc.StatusPayload{
 			Running:                true,
 			PID:                    os.Getpid(),
@@ -3141,6 +3219,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			CopilotPremiumRequests: copilotReqs,
 			CopilotRequestLimit:    copilotLimit,
 			CopilotLimitReached:    copilotLimit > 0 && copilotReqs >= float64(copilotLimit),
+			AnvilLastPoll:          anvilLastPoll,
 		}
 		data, _ := json.Marshal(payload)
 		return ipc.Response{Type: "status", Payload: data}
@@ -5657,6 +5736,16 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 			paths[name] = a.Path
 		}
 	}
+
+	// Prune poll snapshots for anvils that were removed or renamed so the IPC
+	// status response never reports stale per-anvil data after a hot-reload.
+	d.lastPollMu.Lock()
+	for name := range d.lastPollMap {
+		if _, ok := new.Anvils[name]; !ok {
+			delete(d.lastPollMap, name)
+		}
+	}
+	d.lastPollMu.Unlock()
 
 	// Rebuild per-anvil VCS providers
 	newProviders := buildVCSProviders(new, d.db, d.logger)

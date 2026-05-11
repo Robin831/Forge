@@ -1390,9 +1390,14 @@ const (
 	EventDaemonStarted        EventType = "daemon_started"
 	EventDaemonStopped        EventType = "daemon_stopped"
 	EventConfigReload         EventType = "config_reload"
-	EventOrphanCleanup        EventType = "orphan_cleanup"
-	EventPoll                 EventType = "poll"
-	EventPollError            EventType = "poll_error"
+	EventOrphanCleanup EventType = "orphan_cleanup"
+	// EventPoll is retained as a constant for historical rows already in the
+	// events table (and so referring code does not need to be churned), but it
+	// is no longer written by the daemon: successful polls are tracked only in
+	// the in-memory map on Daemon (see Daemon.lastPollMap). Failed polls
+	// continue to be persisted as EventPollError so they remain visible.
+	EventPoll      EventType = "poll"
+	EventPollError EventType = "poll_error"
 	EventBeadClaimed          EventType = "bead_claimed"
 	EventSmithStarted         EventType = "smith_started"
 	EventSmithDone            EventType = "smith_done"

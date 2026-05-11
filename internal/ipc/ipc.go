@@ -95,6 +95,21 @@ type StatusPayload struct {
 	CopilotRequestLimit int `json:"copilot_request_limit,omitempty"`
 	// CopilotLimitReached is true when the copilot daily request limit has been reached.
 	CopilotLimitReached bool `json:"copilot_limit_reached,omitempty"`
+	// AnvilLastPoll carries the most recent poll outcome per anvil, populated
+	// from the daemon's in-memory snapshot. Successful polls are no longer
+	// persisted as events, so Hearth and `forge status` consume this field for
+	// fresh per-anvil timestamps instead of querying the events table.
+	AnvilLastPoll []AnvilPollItem `json:"anvil_last_poll,omitempty"`
+}
+
+// AnvilPollItem reports the most recent poll outcome for a single anvil.
+// It is carried inside StatusPayload.AnvilLastPoll and is the IPC-facing
+// projection of the daemon's in-memory last-poll map.
+type AnvilPollItem struct {
+	Anvil     string    `json:"anvil"`
+	Timestamp time.Time `json:"timestamp"`
+	OK        bool      `json:"ok"`                // true when the last poll completed without error
+	Message   string    `json:"message,omitempty"` // human-readable summary, e.g. "5 ready" or the error text
 }
 
 // KillWorkerPayload is the payload for a "kill_worker" command.
