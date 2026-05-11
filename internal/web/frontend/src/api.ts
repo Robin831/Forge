@@ -230,6 +230,20 @@ export interface BeadDetailWorker {
   pr_number?: number
 }
 
+// BeadBrief is the lightweight reference shape used by the dep graph
+// (matches Go's beadDetailDepRef). The nested blocks / blocked_by fields
+// are populated only when the deps endpoint is asked to recurse past
+// depth 1; the immediate lists on BeadDetailResponse leave them undefined.
+export interface BeadBrief {
+  bead_id: string
+  anvil?: string
+  title: string
+  status: string
+  priority: number
+  blocks?: BeadBrief[]
+  blocked_by?: BeadBrief[]
+}
+
 export interface BeadDetailResponse {
   bead_id: string
   anvil?: string
@@ -240,6 +254,27 @@ export interface BeadDetailResponse {
   workers: BeadDetailWorker[]
   events: BeadDetailEvent[]
   prs: BeadDetailPR[]
+  blocks: BeadBrief[]
+  blocked_by: BeadBrief[]
+}
+
+export interface BeadDepsResponse {
+  bead_id: string
+  depth: number
+  blocks: BeadBrief[]
+  blocked_by: BeadBrief[]
+}
+
+export function fetchBeadDeps(
+  beadID: string,
+  depth = 1,
+  signal?: AbortSignal,
+): Promise<BeadDepsResponse> {
+  const qs = new URLSearchParams({ depth: String(depth) }).toString()
+  return apiGet<BeadDepsResponse>(
+    `/api/bead/${encodeURIComponent(beadID)}/deps?${qs}`,
+    signal,
+  )
 }
 
 export interface PRItem {

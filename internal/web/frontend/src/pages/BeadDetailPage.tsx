@@ -1,15 +1,17 @@
 import { useMemo, useState } from 'react'
-import { ArrowLeft, FileText, Plus, StickyNote, X, XCircle } from 'lucide-react'
+import { ArrowLeft, FileText, GitBranch, Plus, StickyNote, X, XCircle } from 'lucide-react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useApiPoll } from '../hooks/useApiPoll'
 import {
   actions,
+  type BeadBrief,
   type BeadDetailResponse,
   type BeadDetailWorker,
   type StatusResponse,
   type WorkerInfo,
 } from '../api'
 import AppHeader from '../components/AppHeader'
+import BeadDepModal from '../components/BeadDepModal'
 import ConfirmModal from '../components/ConfirmModal'
 import Pane, { EmptyState } from '../components/Pane'
 import WorkerLogModal from '../components/WorkerLogModal'
@@ -71,6 +73,7 @@ export default function BeadDetailPage() {
     | { kind: 'remove-label'; label: string }
     | { kind: 'note' }
   >(null)
+  const [depBrief, setDepBrief] = useState<BeadBrief | null>(null)
 
   const closeDialog = () => setDialog(null)
 
@@ -492,6 +495,26 @@ export default function BeadDetailPage() {
         )}
       </Pane>
 
+      <Pane
+        title="Dependencies"
+        icon={<GitBranch size={16} className="text-amber-400" aria-hidden />}
+        count={(data?.blocks?.length ?? 0) + (data?.blocked_by?.length ?? 0)}
+        loading={detail.loading && !data}
+        error={null}
+      >
+        <DependenciesPanel
+          blocks={data?.blocks ?? []}
+          blockedBy={data?.blocked_by ?? []}
+          onSelect={setDepBrief}
+        />
+      </Pane>
+
+      <BeadDepModal
+        open={depBrief !== null}
+        initialBrief={depBrief}
+        onClose={() => setDepBrief(null)}
+      />
+
       <WorkerLogModal worker={logWorker} onClose={() => setLogWorker(null)} />
 
       <ConfirmModal
@@ -561,6 +584,71 @@ function DetailItem({ label, value, warn }: DetailItemProps) {
     <div>
       <dt className="text-slate-500">{label}</dt>
       <dd className={`font-mono ${warn ? 'text-amber-300' : 'text-slate-200'}`}>{value}</dd>
+    </div>
+  )
+}
+
+interface DependenciesPanelProps {
+  blocks: BeadBrief[]
+  blockedBy: BeadBrief[]
+  onSelect: (b: BeadBrief) => void
+}
+
+function DependenciesPanel({ blocks, blockedBy, onSelect }: DependenciesPanelProps) {
+  if (blocks.length === 0 && blockedBy.length === 0) {
+    return <EmptyState message="No dependencies for this bead." />
+  }
+  return (
+    <div className="grid grid-cols-1 gap-4 px-4 py-3 sm:grid-cols-2">
+      <DepList title="Blocks" items={blocks} onSelect={onSelect} />
+      <DepList title="Blocked by" items={blockedBy} onSelect={onSelect} />
+    </div>
+  )
+}
+
+interface DepListProps {
+  title: string
+  items: BeadBrief[]
+  onSelect: (b: BeadBrief) => void
+}
+
+function DepList({ title, items, onSelect }: DepListProps) {
+  return (
+    <div>
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+        {title}
+        <span className="ml-1 text-slate-600">({items.length})</span>
+      </h3>
+      {items.length === 0 ? (
+        <p className="mt-2 text-xs text-slate-500">None.</p>
+      ) : (
+        <ul className="mt-2 space-y-1.5">
+          {items.map((b) => (
+            <li key={`${b.bead_id}-${b.anvil ?? ''}`}>
+              <button
+                type="button"
+                onClick={() => onSelect(b)}
+                className="block w-full rounded-md border border-slate-800 bg-slate-950/40 px-2.5 py-2 text-left text-xs hover:border-amber-400/40 hover:bg-slate-800/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
+              >
+                <div className="flex flex-wrap items-baseline gap-1.5">
+                  <span className="font-mono text-slate-300">{b.bead_id}</span>
+                  <span
+                    className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${priorityClasses(b.priority)}`}
+                  >
+                    {priorityLabel(b.priority)}
+                  </span>
+                  <span
+                    className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${badgeClass(b.status)}`}
+                  >
+                    {b.status}
+                  </span>
+                </div>
+                <p className="mt-1 truncate text-slate-200">{b.title}</p>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
