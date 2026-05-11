@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ExternalLink, Loader2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { apiGet, ApiError, type BeadBrief, type BeadDetailResponse } from '../api'
+import { useAuth } from '../auth'
 import { priorityClasses, priorityLabel } from '../lib/format'
 
 const STATUS_BADGE: Record<string, string> = {
@@ -35,28 +36,40 @@ export interface BeadDepModalProps {
 
 // BeadDepModal pops up a graph-walking view for a single bead. The user can
 // click any dep entry to drill into that bead without leaving the page, or hit
-// "Open full page" to navigate to the dedicated /bead route. The modal owns
-// its own focus trap on the close button, ESC-to-dismiss, and click-outside
-// dismiss; the shape mirrors ConfirmModal so it visually fits with the rest of
-// the dashboard.
+// "Open full page" to navigate to the dedicated /bead route. The modal
+// implements a focus trap cycling Tab through all focusable elements within it,
+// ESC-to-dismiss, and click-outside dismiss; the shape mirrors ConfirmModal so
+// it visually fits with the rest of the dashboard.
 export default function BeadDepModal({ open, initialBrief, onClose }: BeadDepModalProps) {
   const [brief, setBrief] = useState<BeadBrief | null>(initialBrief)
   const [data, setData] = useState<BeadDetailResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const closeRef = useRef<HTMLButtonElement | null>(null)
+  const modalRef = useRef<HTMLDivElement | null>(null)
+  const { logout } = useAuth()
 
   // Reset to the initial brief whenever the parent opens the modal with a new
-  // target. Clearing on close avoids leaking stale state into the next open.
+  // target. Clears stale data synchronously to avoid showing wrong content
+  // before the fetch effect fires. Clearing on close avoids leaking state.
   useEffect(() => {
     if (open) {
       setBrief(initialBrief)
+      setData(null)
+      setError(null)
     } else {
       setBrief(null)
       setData(null)
       setError(null)
     }
   }, [open, initialBrief])
+
+  // Clears stale data synchronously then navigates to a dep bead.
+  const drillInto = (b: BeadBrief) => {
+    setData(null)
+    setError(null)
+    setBrief(b)
+  }
 
   useEffect(() => {
     if (!open || !brief) return
@@ -77,13 +90,17 @@ export default function BeadDepModal({ open, initialBrief, onClose }: BeadDepMod
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return
+        if (err instanceof ApiError && err.status === 401) {
+          void logout()
+          return
+        }
         const msg =
           err instanceof ApiError ? err.message : (err as Error)?.message || 'failed to load'
         setError(msg)
         setLoading(false)
       })
     return () => controller.abort()
-  }, [open, brief])
+  }, [open, brief, logout])
 
   useEffect(() => {
     if (!open) return
@@ -96,7 +113,30 @@ export default function BeadDepModal({ open, initialBrief, onClose }: BeadDepMod
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') {
+        onClose()
+        return
+      }
+      if (e.key === 'Tab' && modalRef.current) {
+        const focusable = modalRef.current.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        )
+        const elements = Array.from(focusable)
+        if (elements.length === 0) return
+        const first = elements[0]
+        const last = elements[elements.length - 1]
+        if (e.shiftKey) {
+          if (document.activeElement === first) {
+            e.preventDefault()
+            last.focus()
+          }
+        } else {
+          if (document.activeElement === last) {
+            e.preventDefault()
+            first.focus()
+          }
+        }
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -124,6 +164,7 @@ export default function BeadDepModal({ open, initialBrief, onClose }: BeadDepMod
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
+      ref={modalRef}
     >
       <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl border border-slate-800 bg-slate-900 shadow-xl">
         <header className="flex items-start gap-3 border-b border-slate-800 px-5 py-4">
@@ -190,13 +231,13 @@ export default function BeadDepModal({ open, initialBrief, onClose }: BeadDepMod
             <DepColumn
               title="Blocks"
               items={blocks}
-              onSelect={(b) => setBrief(b)}
+              onSelect={drillInto}
               emptyMessage="Nothing."
             />
             <DepColumn
               title="Blocked by"
               items={blockedBy}
-              onSelect={(b) => setBrief(b)}
+              onSelect={drillInto}
               emptyMessage="Nothing."
             />
           </div>
