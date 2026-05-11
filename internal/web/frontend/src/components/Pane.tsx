@@ -7,6 +7,10 @@ interface PaneProps {
   count?: number
   loading?: boolean
   error?: string | null
+  // headerExtra renders below the title row, inside the same header chrome.
+  // Useful for inline controls such as a filter input that should live with
+  // the pane title rather than the body.
+  headerExtra?: ReactNode
   children: ReactNode
 }
 
@@ -19,6 +23,7 @@ export default function Pane({
   count,
   loading,
   error,
+  headerExtra,
   children,
 }: PaneProps) {
   return (
@@ -26,21 +31,24 @@ export default function Pane({
       aria-label={title}
       className="flex min-h-[20rem] flex-col rounded-xl border border-slate-800 bg-slate-900/60"
     >
-      <header className="flex items-center gap-2 border-b border-slate-800 px-4 py-3">
-        {icon}
-        <h2 className="text-sm font-semibold text-slate-200">{title}</h2>
-        {typeof count === 'number' && (
-          <span className="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-300">
-            {count}
-          </span>
-        )}
-        {loading && (
-          <Loader2
-            size={14}
-            className="ml-auto animate-spin text-slate-500"
-            aria-label="Loading"
-          />
-        )}
+      <header className="flex flex-col gap-2 border-b border-slate-800 px-4 py-3">
+        <div className="flex items-center gap-2">
+          {icon}
+          <h2 className="text-sm font-semibold text-slate-200">{title}</h2>
+          {typeof count === 'number' && (
+            <span className="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-300">
+              {count}
+            </span>
+          )}
+          {loading && (
+            <Loader2
+              size={14}
+              className={`${typeof count === 'number' ? '' : 'ml-auto '}animate-spin text-slate-500`}
+              aria-label="Loading"
+            />
+          )}
+        </div>
+        {headerExtra}
       </header>
 
       <div className="flex-1 overflow-y-auto" role="region">

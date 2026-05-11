@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { List, MoreHorizontal, Play, RotateCcw, Square } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { actions, type QueueItem } from '../api'
@@ -32,6 +32,18 @@ export default function QueuePane({
   const { run, busy } = useAction()
   const [dialog, setDialog] = useState<DialogState | null>(null)
   const [openMenu, setOpenMenu] = useState<string | null>(null)
+  const [filter, setFilter] = useState('')
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase()
+    if (!q) return items
+    return items.filter((item) => {
+      if (item.bead_id.toLowerCase().includes(q)) return true
+      if (item.title && item.title.toLowerCase().includes(q)) return true
+      if (item.labels.some((label) => label.toLowerCase().includes(q))) return true
+      return false
+    })
+  }, [items, filter])
 
   const handleRetry = (item: QueueItem) => {
     setOpenMenu(null)
@@ -81,15 +93,27 @@ export default function QueuePane({
       <Pane
         title="Queue"
         icon={<List size={16} className="text-cyan-400" aria-hidden />}
-        count={items.length}
+        count={filter.trim() ? filtered.length : items.length}
         loading={loading}
         error={error}
+        headerExtra={
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter beads (id, title, label)"
+            aria-label="Filter beads"
+            className="w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
+          />
+        }
       >
         {items.length === 0 && !loading ? (
           <EmptyState message="No beads in queue." />
+        ) : filtered.length === 0 && filter.trim() ? (
+          <EmptyState message="No beads match the filter." />
         ) : (
           <ul className="divide-y divide-slate-800">
-            {items.map((item) => (
+            {filtered.map((item) => (
               <li key={`${item.anvil}:${item.bead_id}`} className="px-4 py-3">
                 <div className="flex items-start gap-2">
                   <span

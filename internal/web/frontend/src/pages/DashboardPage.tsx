@@ -37,7 +37,7 @@ export default function DashboardPage() {
   const daemonHealthy = status.data?.running
 
   return (
-    <div className="mx-auto flex min-h-full max-w-7xl flex-col gap-6 p-4 sm:p-6">
+    <div className="flex min-h-full w-full flex-col gap-6 p-4 sm:p-6">
       <AppHeader daemonOnline={daemonHealthy} daemonLoading={status.loading} />
 
       <section
@@ -87,7 +87,7 @@ export default function DashboardPage() {
         />
       )}
 
-      <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-3">
+      <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[repeat(3,minmax(280px,1fr))]">
         <QueuePane
           loading={queue.loading}
           error={queue.error}
