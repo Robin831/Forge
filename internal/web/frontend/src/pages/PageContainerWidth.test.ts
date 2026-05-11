@@ -22,13 +22,15 @@ const fullWidthPages = [
 
 describe('top-level page wrappers', () => {
   for (const file of fullWidthPages) {
-    it(`${file} outer wrapper does not constrain width with max-w-7xl`, () => {
+    it(`${file} outer wrapper does not constrain width with max-w-* or mx-auto`, () => {
       const source = readFileSync(join(here, file), 'utf8')
-      const outer = source.match(/return \(\s*\n\s*<div className="([^"]+)"/)
+      // Locate the first <div className after return(, allowing any whitespace/newlines.
+      // Handles className="...", className={'...'}, and className={`...`} forms.
+      const outer = source.match(/return\s*\([\s\S]*?<div\s[^>]*className=(?:\{)?["'`]([^"'`]*)["'`](?:\})?/)
       expect(outer, `could not locate outer wrapper className in ${file}`).not.toBeNull()
       const classes = outer![1]
-      expect(classes).not.toMatch(/\bmax-w-7xl\b/)
-      expect(classes).not.toMatch(/\bmx-auto\b/)
+      expect(classes, `${file} outer wrapper must not have any max-w-* class`).not.toMatch(/\bmax-w-\S+/)
+      expect(classes, `${file} outer wrapper must not have mx-auto`).not.toMatch(/\bmx-auto\b/)
     })
   }
 })
