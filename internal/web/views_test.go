@@ -7,21 +7,31 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
 
+// bdShowMu serializes bdShowJSON swaps so that parallel tests cannot race
+// on the package-level variable. Each test that calls stubBdShow holds the
+// lock for its entire lifetime; only one such test can run at a time.
+var bdShowMu sync.Mutex
+
 // stubBdShow installs a temporary bdShowJSON implementation for the test.
-// The returned cleanup restores the original — t.Cleanup() invokes it
-// automatically so tests cannot leak state into each other even when they
-// run with t.Parallel().
+// bdShowMu is locked until t.Cleanup runs, serializing parallel tests that
+// use the global. The fn callback receives only the bead ID; the dir
+// parameter is ignored because tests use fixed in-memory fixtures.
 func stubBdShow(t *testing.T, fn func(beadID string) ([]byte, error)) {
 	t.Helper()
+	bdShowMu.Lock()
 	prev := bdShowJSON
-	bdShowJSON = func(_ context.Context, beadID string) ([]byte, error) {
+	bdShowJSON = func(_ context.Context, _ string, beadID string) ([]byte, error) {
 		return fn(beadID)
 	}
-	t.Cleanup(func() { bdShowJSON = prev })
+	t.Cleanup(func() {
+		bdShowJSON = prev
+		bdShowMu.Unlock()
+	})
 }
 
 // bdShowFixture builds a canned `bd show` JSON envelope for one bead and
@@ -61,7 +71,7 @@ func TestFetchBeadDeps_PopulatesBothDirections(t *testing.T) {
 		), nil
 	})
 
-	blocks, blockedBy := fetchBeadDeps(context.Background(), "Forge-root", nil)
+	blocks, blockedBy := fetchBeadDeps(context.Background(), "", "Forge-root", nil)
 	if len(blocks) != 1 || blocks[0].BeadID != "Forge-child" {
 		t.Fatalf("expected one blocks entry pointing at Forge-child, got %+v", blocks)
 	}
@@ -81,7 +91,7 @@ func TestFetchBeadDeps_IsolatedBead(t *testing.T) {
 		return bdShowFixture("Forge-lonely", "Lonely", "open", 3, nil, nil), nil
 	})
 
-	blocks, blockedBy := fetchBeadDeps(context.Background(), "Forge-lonely", nil)
+	blocks, blockedBy := fetchBeadDeps(context.Background(), "", "Forge-lonely", nil)
 	if blocks == nil || blockedBy == nil {
 		t.Fatalf("expected non-nil slices, got blocks=%v blockedBy=%v", blocks, blockedBy)
 	}
@@ -95,7 +105,7 @@ func TestFetchBeadDeps_BdErrorReturnsEmpty(t *testing.T) {
 		return nil, errors.New("bd missing")
 	})
 
-	blocks, blockedBy := fetchBeadDeps(context.Background(), "Forge-err", nil)
+	blocks, blockedBy := fetchBeadDeps(context.Background(), "", "Forge-err", nil)
 	if blocks == nil || blockedBy == nil {
 		t.Fatalf("expected non-nil slices on error, got nil")
 	}
@@ -436,7 +446,7 @@ func TestFetchBeadDeps_FiltersNonBlockingEdges(t *testing.T) {
 		return raw, nil
 	})
 
-	blocks, blockedBy := fetchBeadDeps(context.Background(), "Forge-mixed", nil)
+	blocks, blockedBy := fetchBeadDeps(context.Background(), "", "Forge-mixed", nil)
 	if len(blocks) != 1 || blocks[0].BeadID != "Forge-blocked-by-me" {
 		t.Errorf("blocks should contain only the blocking downstream, got %+v", blocks)
 	}
