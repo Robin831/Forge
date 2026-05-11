@@ -5737,6 +5737,16 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 		}
 	}
 
+	// Prune poll snapshots for anvils that were removed or renamed so the IPC
+	// status response never reports stale per-anvil data after a hot-reload.
+	d.lastPollMu.Lock()
+	for name := range d.lastPollMap {
+		if _, ok := new.Anvils[name]; !ok {
+			delete(d.lastPollMap, name)
+		}
+	}
+	d.lastPollMu.Unlock()
+
 	// Rebuild per-anvil VCS providers
 	newProviders := buildVCSProviders(new, d.db, d.logger)
 	d.vcsProvidersMu.Lock()

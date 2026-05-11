@@ -750,6 +750,13 @@ func fetchAnvilHealthFromIPC() ([]AnvilHealth, bool) {
 	if err := json.Unmarshal(resp.Payload, &s); err != nil {
 		return nil, false
 	}
+	// nil AnvilLastPoll means the connected daemon is an older version that
+	// does not include this field, or has not yet completed any poll.  In
+	// either case we cannot distinguish "field absent" from "no data yet", so
+	// fall back to the DB so the caller gets the best available information.
+	if s.AnvilLastPoll == nil {
+		return nil, false
+	}
 	now := time.Now()
 	var items []AnvilHealth
 	for _, p := range s.AnvilLastPoll {
