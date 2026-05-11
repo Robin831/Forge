@@ -199,14 +199,30 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		// remote was auto-deleted (which would cause --force-with-lease to fail with
 		// "(stale info)" on the subsequent push).
 		localRef := "refs/heads/" + targetBranch
+		remoteRef := "origin/" + targetBranch
+		remoteExists := git(anvilPath, "show-ref", "--verify", "--quiet", "refs/remotes/"+remoteRef) == nil
 		if err := git(anvilPath, "show-ref", "--verify", "--quiet", localRef); err == nil {
-			// Local branch exists; checkout directly.
-			if err := git(anvilPath, "worktree", "add", "-f", worktreePath, targetBranch); err != nil {
-				return nil, fmt.Errorf("git worktree add (existing local): %w", err)
+			// Local branch exists. When the remote-tracking ref also exists we
+			// force the local branch to the remote tip with `-B` — bellows /
+			// burnish / quench may be assembling a worktree for a branch that
+			// another worker (in this same forge or another) just rebased and
+			// force-pushed, leaving the local ref pointing at the pre-rebase
+			// tip. A plain `worktree add ... <branch>` checks out that stale
+			// ref and any commit produced on top gets rejected as
+			// non-fast-forward at push time. Fall back to a plain checkout
+			// (no `-B`) when no remote-tracking ref exists, so local-only
+			// branches still work and we don't pass an unresolvable revision.
+			if remoteExists {
+				if err := git(anvilPath, "worktree", "add", "-f", "-B", targetBranch, worktreePath, remoteRef); err != nil {
+					return nil, fmt.Errorf("git worktree add (reset local to %s): %w", remoteRef, err)
+				}
+			} else {
+				if err := git(anvilPath, "worktree", "add", "-f", worktreePath, targetBranch); err != nil {
+					return nil, fmt.Errorf("git worktree add (existing local, no remote): %w", err)
+				}
 			}
 		} else {
 			// Only remote branch exists; create a local tracking branch from origin/<branch>.
-			remoteRef := "origin/" + targetBranch
 			if err := git(anvilPath, "worktree", "add", "-f", "-b", targetBranch, worktreePath, remoteRef); err != nil {
 				return nil, fmt.Errorf("git worktree add (from remote): %w", err)
 			}

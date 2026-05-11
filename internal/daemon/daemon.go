@@ -1411,20 +1411,20 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				status = state.WorkerFailed
 			}
 			_ = d.db.UpdateWorkerStatus(workerID, status)
-			// Clear NeedsFix only when the fix cycle completed without error.
-			// If the fix failed (res.Error != nil), leave NeedsFix set so bellows
-			// can detect and dispatch another attempt rather than silently
-			// clearing a state that still needs attention.
-			if res.Error == nil {
-				d.lifecycleMgr.NotifyReviewFixCompleted(req.Anvil, req.PRNumber)
-				// Reset the bellows snapshot cache so the next poll detects
-				// fresh CI state. The review fix pushed new commits which
-				// trigger a new CI run — without resetting, bellows sees
-				// CIPassing false→false (no transition) and never emits
-				// EventCIFailed, preventing a quench worker from spawning.
-				if d.bellowsMonitor != nil {
-					d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
-				}
+			// Always notify lifecycle the review-fix cycle has finished and
+			// clear the bellows snapshot, regardless of outcome. The earlier
+			// guard left both signals untouched on failure, hoping bellows
+			// would redispatch from the still-set NeedsFix state — but
+			// bellows tracks state in two places (the in-memory lifecycle
+			// state and the snapshot cache), and the next 2m poll sees no
+			// transition (NeedsFix false→false from its perspective), so
+			// no fresh EventReviewChangesRequested is ever emitted and the
+			// PR sits stuck. Mirroring the CI-fix path keeps the retry
+			// loop alive; runaway is prevented by review_fix_count / the
+			// MaxReviewFixAttempts cap, not by withholding reset.
+			d.lifecycleMgr.NotifyReviewFixCompleted(req.Anvil, req.PRNumber)
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
 			}
 
 		case lifecycle.ActionRebase:
