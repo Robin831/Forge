@@ -100,6 +100,10 @@ type StatusPayload struct {
 	// persisted as events, so Hearth and `forge status` consume this field for
 	// fresh per-anvil timestamps instead of querying the events table.
 	AnvilLastPoll []AnvilPollItem `json:"anvil_last_poll,omitempty"`
+	// MaxTotalSmiths is the configured global cap on concurrent Smith workers.
+	// Hearth 2.0 uses this to size the "Idle" placeholder slots in the
+	// Workers pane (max_total_smiths - active_workers).
+	MaxTotalSmiths int `json:"max_total_smiths,omitempty"`
 }
 
 // AnvilPollItem reports the most recent poll outcome for a single anvil.

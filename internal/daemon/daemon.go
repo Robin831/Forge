@@ -3220,6 +3220,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			CopilotRequestLimit:    copilotLimit,
 			CopilotLimitReached:    copilotLimit > 0 && copilotReqs >= float64(copilotLimit),
 			AnvilLastPoll:          anvilLastPoll,
+			MaxTotalSmiths:         d.cfg.Load().Settings.MaxTotalSmiths,
 		}
 		data, _ := json.Marshal(payload)
 		return ipc.Response{Type: "status", Payload: data}

@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Skull, Users } from 'lucide-react'
+import { MonitorOff, Skull, Users } from 'lucide-react'
 import { actions, type WorkerInfo } from '../api'
 import { useAction } from '../hooks/useAction'
 import { relativeTime } from '../lib/format'
+import { isBellowsMonitor } from './PipelineBar'
 import ConfirmModal from './ConfirmModal'
 import Pane, { EmptyState } from './Pane'
 
@@ -10,6 +11,12 @@ interface WorkersPaneProps {
   workers: WorkerInfo[]
   loading: boolean
   error: string | null
+  // maxTotalSmiths is the global concurrent-Smith cap reported by /api/status.
+  // The pane renders (maxTotalSmiths - active workers) dimmed Idle slots so
+  // the user can see remaining capacity at a glance. Zero or negative values
+  // disable the placeholders entirely (e.g. when the daemon has not yet
+  // reported a value).
+  maxTotalSmiths?: number
   onSelectWorker?: (worker: WorkerInfo) => void
   onActionSuccess?: () => void
 }
@@ -29,19 +36,35 @@ export default function WorkersPane({
   workers,
   loading,
   error,
+  maxTotalSmiths = 0,
   onSelectWorker,
   onActionSuccess,
 }: WorkersPaneProps) {
   const { run, busy } = useAction()
   const [killTarget, setKillTarget] = useState<WorkerInfo | null>(null)
 
+  // The Bellows PR-monitor row is intentionally filtered out — it produces no
+  // smith log, so a row with no log modal would look broken. Its state is now
+  // surfaced inside the Pipeline bar's PR stage. Bellows-spawned sub-workers
+  // (quench/burnish/rebase) keep their own phase and remain clickable here.
+  const visibleWorkers = workers.filter((w) => !isBellowsMonitor(w))
+
   // Sort by started_at descending so newest workers are at the top — matches
   // hearth TUI behaviour and Hytte's WorkersCard.
-  const sorted = [...workers].sort((a, b) => {
+  const sorted = [...visibleWorkers].sort((a, b) => {
     const aT = Date.parse(a.started_at) || 0
     const bT = Date.parse(b.started_at) || 0
     return bT - aT
   })
+
+  // Idle slot count = (configured cap) - (active Smith-like workers). We only
+  // count workers that occupy a Smith slot (pending/running) and that are not
+  // bellows monitors (already filtered above). When the daemon reports a cap
+  // of 0 we omit the placeholders entirely.
+  const activeSlotWorkers = sorted.filter(
+    (w) => w.status === 'pending' || w.status === 'running',
+  )
+  const idleCount = Math.max(0, maxTotalSmiths - activeSlotWorkers.length)
 
   const handleKill = async () => {
     if (!killTarget) return
@@ -57,11 +80,11 @@ export default function WorkersPane({
       <Pane
         title="Workers"
         icon={<Users size={16} className="text-sky-400" aria-hidden />}
-        count={workers.length}
+        count={visibleWorkers.length}
         loading={loading}
         error={error}
       >
-        {sorted.length === 0 && !loading ? (
+        {sorted.length === 0 && idleCount === 0 && !loading ? (
           <EmptyState message="No active workers." />
         ) : (
           <ul className="divide-y divide-slate-800">
@@ -139,6 +162,18 @@ export default function WorkersPane({
                 </li>
               )
             })}
+            {idleCount > 0 &&
+              Array.from({ length: idleCount }).map((_, i) => (
+                <li
+                  key={`idle-${i}`}
+                  data-testid="workers-idle-slot"
+                  className="flex items-center gap-3 border-t border-dashed border-slate-800/80 px-4 py-3 text-slate-600"
+                  aria-label={`Idle slot ${i + 1}`}
+                >
+                  <MonitorOff size={16} aria-hidden />
+                  <span className="text-xs uppercase tracking-wide">Idle</span>
+                </li>
+              ))}
           </ul>
         )}
       </Pane>

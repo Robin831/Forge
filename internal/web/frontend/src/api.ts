@@ -74,6 +74,7 @@ export interface StatusResponse {
   copilot_premium_requests?: number
   copilot_request_limit?: number
   copilot_limit_reached?: boolean
+  max_total_smiths?: number
 }
 
 export interface CrucibleStatus {
