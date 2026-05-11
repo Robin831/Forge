@@ -367,7 +367,7 @@ export default function ForgePage() {
   }, [activeSession, messages])
 
   return (
-    <div className="mx-auto flex min-h-full max-w-7xl flex-col gap-4 p-4 sm:p-6">
+    <div className="flex min-h-full flex-col gap-4 p-4 sm:p-6">
       <AppHeader daemonOnline={status.data?.running} daemonLoading={status.loading} />
 
       <div className="grid min-h-[36rem] grid-cols-1 gap-4 md:grid-cols-[18rem_minmax(0,1fr)]">
