@@ -244,6 +244,226 @@ func TestWorkerLog_MissingWorker(t *testing.T) {
 	}
 }
 
+func TestWorkerLog_TailMissingLogFile_Returns200Empty(t *testing.T) {
+	// A worker row whose log_path points at a file that hasn't been created
+	// yet should return 200 with [] rather than 404. This is the race
+	// between the workers row insert and the smith subprocess creating its
+	// log file on disk; the modal would otherwise get stuck on
+	// "reconnecting…".
+	srv := newServerWithDefaults(t, nil)
+
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	missingPath := filepath.Join(tempHome, ".forge", "logs", "w-missing.log")
+	if err := os.MkdirAll(filepath.Dir(missingPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := srv.db.InsertWorker(&state.Worker{
+		ID:        "w-missing",
+		BeadID:    "bd-missing",
+		Anvil:     "test",
+		Status:    state.WorkerStatus("running"),
+		Phase:     "smith",
+		StartedAt: time.Now().UTC(),
+		LogPath:   missingPath,
+	}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+
+	cookie := loginAndGetCookie(t, srv)
+	req := httptest.NewRequest("GET", "/api/worker/w-missing/log", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for missing log file, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Lines []string `json:"lines"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if body.Lines == nil {
+		t.Errorf("expected empty array, got nil")
+	}
+	if len(body.Lines) != 0 {
+		t.Errorf("expected 0 lines for missing file, got %d (%v)", len(body.Lines), body.Lines)
+	}
+}
+
+func TestWorkerLog_TailWorkerWithoutLogPath_Returns200Empty(t *testing.T) {
+	// Bellows pseudo-workers carry no LogPath. Hitting the tail endpoint
+	// must return 200+[] rather than 404+"worker has no log file" so the
+	// modal renders an empty state instead of an error banner if a client
+	// somehow bypasses the SPA gating.
+	srv := newServerWithDefaults(t, nil)
+
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	if err := srv.db.InsertWorker(&state.Worker{
+		ID:        "bellows-test-42",
+		BeadID:    "bd-bellows",
+		Anvil:     "test",
+		Status:    state.WorkerMonitoring,
+		Phase:     "bellows",
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+
+	cookie := loginAndGetCookie(t, srv)
+	req := httptest.NewRequest("GET", "/api/worker/bellows-test-42/log", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Lines []string `json:"lines"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(body.Lines) != 0 {
+		t.Errorf("expected 0 lines for bellows worker, got %d", len(body.Lines))
+	}
+}
+
+func TestWorkerLog_TailDropsTrailingPartialLine(t *testing.T) {
+	// When a smith is actively writing, the log file's last record may be
+	// mid-write (no trailing newline). The tail handler must drop it so the
+	// modal doesn't render a half-formed JSON envelope; only the lines
+	// terminated with \n are returned.
+	srv := newServerWithDefaults(t, nil)
+
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	dir := filepath.Join(tempHome, ".forge", "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	logPath := filepath.Join(dir, "w-partial.log")
+	// Two complete lines plus an unterminated tail.
+	if err := os.WriteFile(logPath, []byte("complete-1\ncomplete-2\npartial-no-newline"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := srv.db.InsertWorker(&state.Worker{
+		ID:        "w-partial",
+		BeadID:    "bd-partial",
+		Anvil:     "test",
+		Status:    state.WorkerStatus("running"),
+		Phase:     "smith",
+		StartedAt: time.Now().UTC(),
+		LogPath:   logPath,
+	}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+
+	cookie := loginAndGetCookie(t, srv)
+	req := httptest.NewRequest("GET", "/api/worker/w-partial/log", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Lines []string `json:"lines"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := []string{"complete-1", "complete-2"}
+	if len(body.Lines) != len(want) {
+		t.Fatalf("expected %d complete lines, got %d (%v)", len(want), len(body.Lines), body.Lines)
+	}
+	for i, w := range want {
+		if body.Lines[i] != w {
+			t.Errorf("line[%d]: got %q want %q", i, body.Lines[i], w)
+		}
+	}
+}
+
+func TestWorkerLogStream_ActiveWriterDeliversAppends(t *testing.T) {
+	// Simulates an active smith: open the SSE stream first, then append
+	// new lines and confirm they arrive within the polling cadence. This
+	// is the end-to-end repro for the "stuck on 'No log content yet.'"
+	// bug — the stream must deliver content for an actively-running
+	// worker, not just for a worker that already wrote bytes before the
+	// modal opened.
+	srv := newServerWithDefaults(t, nil)
+	logPath := writeWorkerLog(t, srv.db, "w-active-stream", []string{})
+
+	// Wipe the seeded content so the stream starts on an empty file —
+	// matches the real race where the workers row is inserted before the
+	// smith has written anything.
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	resp, cancel := authedSSEClient(t, srv, "/api/worker/w-active-stream/stream", "")
+	defer resp.Body.Close()
+
+	lines := make(chan string, 16)
+	go func() {
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			ln := scanner.Text()
+			if strings.HasPrefix(ln, "data: ") {
+				lines <- strings.TrimPrefix(ln, "data: ")
+			}
+		}
+	}()
+
+	// Append several lines in two batches to simulate ongoing claude output.
+	appendLog := func(s string) {
+		t.Helper()
+		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatalf("open append: %v", err)
+		}
+		if _, err := f.WriteString(s); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		f.Close()
+	}
+	// Small delay so the stream is actively in its ticker loop.
+	time.Sleep(200 * time.Millisecond)
+	appendLog("first\nsecond\n")
+	time.Sleep(700 * time.Millisecond)
+	appendLog("third\n")
+
+	got := []string{}
+	deadline := time.After(5 * time.Second)
+	for len(got) < 3 {
+		select {
+		case ln := <-lines:
+			got = append(got, ln)
+		case <-deadline:
+			t.Fatalf("expected 3 lines, got %d (%v)", len(got), got)
+		}
+	}
+	cancel()
+
+	want := []string{"first", "second", "third"}
+	for i, w := range want {
+		var entry struct {
+			Line string `json:"line"`
+		}
+		if err := json.Unmarshal([]byte(got[i]), &entry); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if entry.Line != w {
+			t.Errorf("line[%d]: got %q want %q", i, entry.Line, w)
+		}
+	}
+}
+
 func TestWorkerLog_PathOutsideAllowlist(t *testing.T) {
 	srv := newServerWithDefaults(t, nil)
 

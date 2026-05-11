@@ -181,10 +181,16 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
         >
           {entries.length === 0 ? (
             <div className="flex h-40 items-center justify-center gap-2 text-slate-500">
-              {tailLoading || liveStatus === 'connecting' ? (
+              {tailLoading ||
+              liveStatus === 'connecting' ||
+              (isLive && liveStatus === 'open') ? (
                 <>
                   <Loader2 size={14} className="animate-spin" />
-                  <span>Loading log…</span>
+                  <span>
+                    {isLive && liveStatus === 'open'
+                      ? 'Waiting for log output…'
+                      : 'Loading log…'}
+                  </span>
                 </>
               ) : (
                 <span className="text-sm">

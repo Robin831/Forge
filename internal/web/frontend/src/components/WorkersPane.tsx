@@ -66,26 +66,30 @@ export default function WorkersPane({
         ) : (
           <ul className="divide-y divide-slate-800">
             {sorted.map((w) => {
-              const hasLog = !!w.log_path
+              // Bellows pseudo-workers monitor a PR; they have no claude log
+              // so the modal would just render an error. Render their cards
+              // as static info rather than clickable buttons. The phase
+              // fallback is for older API clients that don't yet send `kind`.
+              const isBellows = w.kind === 'bellows' || w.phase === 'bellows'
+              const hasLog = !!w.log_path && !isBellows
+              const clickable = hasLog && !!onSelectWorker
               const canKill = w.status === 'pending' || w.status === 'running'
               return (
                 <li key={w.id} className="flex items-stretch">
                   <div className="min-w-0 flex-1">
                     <button
                       type="button"
-                      disabled={!hasLog || !onSelectWorker}
+                      disabled={!clickable}
                       onClick={() => {
-                        if (onSelectWorker && hasLog) onSelectWorker(w)
+                        if (clickable) onSelectWorker(w)
                       }}
                       className={`block w-full px-4 py-3 text-left ${
-                        hasLog && onSelectWorker
+                        clickable
                           ? 'cursor-pointer transition-colors hover:bg-slate-800/40 focus:bg-slate-800/40 focus:outline-none focus:ring-1 focus:ring-amber-400/40'
                           : 'opacity-80'
                       }`}
                       aria-label={
-                        hasLog && onSelectWorker
-                          ? `Open log for ${w.title || w.bead_id}`
-                          : undefined
+                        clickable ? `Open log for ${w.title || w.bead_id}` : undefined
                       }
                     >
                       <div className="flex flex-wrap items-start gap-2">
@@ -104,7 +108,7 @@ export default function WorkersPane({
                             PR #{w.pr_number}
                           </span>
                         ) : null}
-                        {hasLog && onSelectWorker && (
+                        {clickable && (
                           <span className="ml-auto text-[10px] uppercase tracking-wide text-slate-500">
                             view log
                           </span>

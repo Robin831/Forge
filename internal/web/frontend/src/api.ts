@@ -18,6 +18,13 @@ export interface QueueResponse {
   items: QueueItem[]
 }
 
+// WorkerKind is the coarse worker-class label served by the daemon. Bellows
+// PR-monitor workers expose `kind: 'bellows'` so the UI can render them as
+// non-clickable info cards (they have no claude log to display); pipeline
+// Smiths and the lifecycle sub-workers (quench/burnish/rebase) are tagged
+// as `'smith'`.
+export type WorkerKind = 'smith' | 'bellows'
+
 export interface WorkerInfo {
   id: string
   bead_id: string
@@ -26,6 +33,7 @@ export interface WorkerInfo {
   title?: string
   status: string
   phase?: string
+  kind?: WorkerKind
   pid?: number
   started_at: string
   completed_at?: string
@@ -132,6 +140,7 @@ export interface HistoryWorker {
   title?: string
   status: string
   phase?: string
+  kind?: WorkerKind
   pid?: number
   started_at: string
   completed_at?: string

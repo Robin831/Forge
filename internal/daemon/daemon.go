@@ -3448,6 +3448,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				Title:       w.Title,
 				Status:      string(w.Status),
 				Phase:       w.Phase,
+				Kind:        ipc.WorkerKindFromPhase(w.Phase),
 				PID:         w.PID,
 				StartedAt:   w.StartedAt.Format(time.RFC3339),
 				CompletedAt: completedAt,
