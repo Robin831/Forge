@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { List, MoreHorizontal, Play, RotateCcw, Square } from 'lucide-react'
+import { ChevronDown, ChevronRight, List, MoreHorizontal, Play, RotateCcw, Square } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { actions, type QueueItem } from '../api'
 import { priorityClasses, priorityLabel } from '../lib/format'
@@ -23,6 +23,58 @@ interface DialogState {
   bead: QueueItem
 }
 
+type BucketKey = 'ready' | 'unlabeled' | 'in_progress'
+
+const BUCKET_ORDER: BucketKey[] = ['ready', 'unlabeled', 'in_progress']
+
+const BUCKET_LABEL: Record<BucketKey, string> = {
+  ready: 'Ready',
+  unlabeled: 'Unlabeled',
+  in_progress: 'In progress',
+}
+
+interface AnvilGroup {
+  anvil: string
+  total: number
+  buckets: Record<BucketKey, QueueItem[]>
+}
+
+// bucketFor maps a QueueItem's server-classified `section` to one of the three
+// UI buckets. Anything we don't recognise (older payloads, unexpected values)
+// falls into Ready so it remains visible — losing items silently would be worse
+// than putting them in the wrong bucket.
+function bucketFor(item: QueueItem): BucketKey {
+  switch (item.section) {
+    case 'in_progress':
+      return 'in_progress'
+    case 'unlabeled':
+      return 'unlabeled'
+    default:
+      return 'ready'
+  }
+}
+
+export function groupQueueItems(items: QueueItem[]): AnvilGroup[] {
+  const byAnvil = new Map<string, AnvilGroup>()
+  for (const item of items) {
+    let group = byAnvil.get(item.anvil)
+    if (!group) {
+      group = {
+        anvil: item.anvil,
+        total: 0,
+        buckets: { ready: [], unlabeled: [], in_progress: [] },
+      }
+      byAnvil.set(item.anvil, group)
+    }
+    group.buckets[bucketFor(item)].push(item)
+    group.total += 1
+  }
+  // Preserve the upstream order within each bucket (daemon already sorts by
+  // priority asc, then created_at desc). Anvils are alphabetised so the layout
+  // is stable across polls.
+  return Array.from(byAnvil.values()).sort((a, b) => a.anvil.localeCompare(b.anvil))
+}
+
 export default function QueuePane({
   items,
   loading,
@@ -33,8 +85,13 @@ export default function QueuePane({
   const [dialog, setDialog] = useState<DialogState | null>(null)
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
+  // Expand state is keyed by anvil name (`anvil:<name>`) and bucket
+  // (`bucket:<anvil>:<bucket>`). Missing keys mean collapsed — both anvils and
+  // buckets start closed so the operator sees a compact summary first. State
+  // lives in component-local useState (per the bead spec: no localStorage).
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
-  const filtered = useMemo(() => {
+  const filteredItems = useMemo(() => {
     const q = filter.trim().toLowerCase()
     if (!q) return items
     return items.filter((item) => {
@@ -44,6 +101,11 @@ export default function QueuePane({
       return false
     })
   }, [items, filter])
+
+  const groups = useMemo(() => groupQueueItems(filteredItems), [filteredItems])
+
+  const toggle = (key: string) =>
+    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))
 
   const handleRetry = (item: QueueItem) => {
     setOpenMenu(null)
@@ -88,12 +150,14 @@ export default function QueuePane({
     }
   }
 
+  const totalCount = filter.trim() ? filteredItems.length : items.length
+
   return (
     <>
       <Pane
         title="Queue"
         icon={<List size={16} className="text-cyan-400" aria-hidden />}
-        count={filter.trim() ? filtered.length : items.length}
+        count={totalCount}
         loading={loading}
         error={error}
         headerExtra={
@@ -109,76 +173,61 @@ export default function QueuePane({
       >
         {items.length === 0 && !loading ? (
           <EmptyState message="No beads in queue." />
-        ) : filtered.length === 0 && filter.trim() ? (
+        ) : groups.length === 0 && filter.trim() ? (
           <EmptyState message="No beads match the filter." />
         ) : (
           <ul className="divide-y divide-slate-800">
-            {filtered.map((item) => (
-              <li key={`${item.anvil}:${item.bead_id}`} className="px-4 py-3">
-                <div className="flex items-start gap-2">
-                  <span
-                    className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${priorityClasses(item.priority)}`}
+            {groups.map((group) => {
+              const anvilKey = `anvil:${group.anvil}`
+              const anvilOpen = !!expanded[anvilKey]
+              return (
+                <li key={group.anvil}>
+                  <button
+                    type="button"
+                    onClick={() => toggle(anvilKey)}
+                    aria-expanded={anvilOpen}
+                    aria-controls={`anvil-body-${group.anvil}`}
+                    className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm font-semibold text-slate-100 hover:bg-slate-800/40 focus:bg-slate-800/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
                   >
-                    {priorityLabel(item.priority)}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-slate-100">
-                      {item.title || item.bead_id}
-                    </p>
-                    <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
-                      <Link
-                        to={`/bead/${item.bead_id}?anvil=${encodeURIComponent(item.anvil)}`}
-                        className="font-mono text-slate-400 hover:text-amber-300"
-                      >
-                        {item.bead_id}
-                      </Link>
-                      <span aria-hidden>·</span>
-                      <span>{item.anvil}</span>
-                      {item.section && (
-                        <>
-                          <span aria-hidden>·</span>
-                          <span className="capitalize">{item.section}</span>
-                        </>
-                      )}
-                    </p>
-                    {item.labels.length > 0 && (
-                      <div className="mt-1.5 flex flex-wrap gap-1">
-                        {item.labels.slice(0, 4).map((label) => (
-                          <span
-                            key={label}
-                            className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300"
-                          >
-                            {label}
-                          </span>
-                        ))}
-                      </div>
+                    {anvilOpen ? (
+                      <ChevronDown size={14} className="text-slate-400" aria-hidden />
+                    ) : (
+                      <ChevronRight size={14} className="text-slate-400" aria-hidden />
                     )}
-                  </div>
-                  <QueueActions
-                    item={item}
-                    busy={busy}
-                    open={openMenu === `${item.anvil}:${item.bead_id}`}
-                    onToggle={() =>
-                      setOpenMenu(openMenu === `${item.anvil}:${item.bead_id}` ? null : `${item.anvil}:${item.bead_id}`)
-                    }
-                    onDispatch={() => {
-                      setOpenMenu(null)
-                      setDialog({ kind: 'dispatch', bead: item })
-                    }}
-                    onRetry={() => handleRetry(item)}
-                    onClarify={() => {
-                      setOpenMenu(null)
-                      setDialog({ kind: 'clarify', bead: item })
-                    }}
-                    onUnclarify={() => handleUnclarify(item)}
-                    onStop={() => {
-                      setOpenMenu(null)
-                      setDialog({ kind: 'stop', bead: item })
-                    }}
-                  />
-                </div>
-              </li>
-            ))}
+                    <span className="truncate">{group.anvil}</span>
+                    <span className="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-xs font-normal text-slate-300">
+                      {group.total}
+                    </span>
+                  </button>
+                  {anvilOpen && (
+                    <div id={`anvil-body-${group.anvil}`} className="border-t border-slate-800/60 bg-slate-950/40">
+                      {BUCKET_ORDER.flatMap((bucket) => {
+                        const bucketItems = group.buckets[bucket]
+                        if (bucketItems.length === 0) return []
+                        const bucketKey = `bucket:${group.anvil}:${bucket}`
+                        const bucketOpen = !!expanded[bucketKey]
+                        return [
+                          <BucketSection
+                            key={bucketKey}
+                            label={BUCKET_LABEL[bucket]}
+                            count={bucketItems.length}
+                            open={bucketOpen}
+                            onToggle={() => toggle(bucketKey)}
+                            items={bucketItems}
+                            busy={busy}
+                            openMenu={openMenu}
+                            setOpenMenu={setOpenMenu}
+                            setDialog={setDialog}
+                            onRetry={handleRetry}
+                            onUnclarify={handleUnclarify}
+                          />,
+                        ]
+                      })}
+                    </div>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         )}
       </Pane>
@@ -230,6 +279,123 @@ export default function QueuePane({
         onCancel={closeDialog}
       />
     </>
+  )
+}
+
+interface BucketSectionProps {
+  label: string
+  count: number
+  open: boolean
+  onToggle: () => void
+  items: QueueItem[]
+  busy: boolean
+  openMenu: string | null
+  setOpenMenu: (key: string | null) => void
+  setDialog: (state: DialogState) => void
+  onRetry: (item: QueueItem) => void
+  onUnclarify: (item: QueueItem) => void
+}
+
+function BucketSection({
+  label,
+  count,
+  open,
+  onToggle,
+  items,
+  busy,
+  openMenu,
+  setOpenMenu,
+  setDialog,
+  onRetry,
+  onUnclarify,
+}: BucketSectionProps) {
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-4 py-2 pl-8 text-left text-xs font-semibold uppercase tracking-wide text-slate-300 hover:bg-slate-800/40 focus:bg-slate-800/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
+      >
+        {open ? (
+          <ChevronDown size={12} className="text-slate-500" aria-hidden />
+        ) : (
+          <ChevronRight size={12} className="text-slate-500" aria-hidden />
+        )}
+        <span>{`${label} (${count})`}</span>
+      </button>
+      {open && (
+        <ul className="divide-y divide-slate-800/60 border-t border-slate-800/60">
+          {items.map((item) => {
+            const menuKey = `${item.anvil}:${item.bead_id}`
+            return (
+              <li key={menuKey} className="px-4 py-3 pl-8">
+                <div className="flex items-start gap-2">
+                  <span
+                    className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${priorityClasses(item.priority)}`}
+                  >
+                    {priorityLabel(item.priority)}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-slate-100">
+                      {item.title || item.bead_id}
+                    </p>
+                    <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
+                      <Link
+                        to={`/bead/${item.bead_id}?anvil=${encodeURIComponent(item.anvil)}`}
+                        className="font-mono text-slate-400 hover:text-amber-300"
+                      >
+                        {item.bead_id}
+                      </Link>
+                      {item.assignee && (
+                        <>
+                          <span aria-hidden>·</span>
+                          <span>@{item.assignee}</span>
+                        </>
+                      )}
+                    </p>
+                    {item.labels.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        {item.labels.slice(0, 4).map((label) => (
+                          <span
+                            key={label}
+                            className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300"
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <QueueActions
+                    item={item}
+                    busy={busy}
+                    open={openMenu === menuKey}
+                    onToggle={() =>
+                      setOpenMenu(openMenu === menuKey ? null : menuKey)
+                    }
+                    onDispatch={() => {
+                      setOpenMenu(null)
+                      setDialog({ kind: 'dispatch', bead: item })
+                    }}
+                    onRetry={() => onRetry(item)}
+                    onClarify={() => {
+                      setOpenMenu(null)
+                      setDialog({ kind: 'clarify', bead: item })
+                    }}
+                    onUnclarify={() => onUnclarify(item)}
+                    onStop={() => {
+                      setOpenMenu(null)
+                      setDialog({ kind: 'stop', bead: item })
+                    }}
+                  />
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
   )
 }
 
