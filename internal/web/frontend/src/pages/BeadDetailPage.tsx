@@ -77,6 +77,20 @@ export default function BeadDetailPage() {
   const [depBrief, setDepBrief] = useState<BeadBrief | null>(null)
   const [graphOpen, setGraphOpen] = useState(false)
 
+  const graphRoot = useMemo<BeadBrief | null>(
+    () =>
+      graphOpen
+        ? {
+            bead_id: beadID,
+            anvil: resolvedAnvil || undefined,
+            title: data?.queue?.title || data?.ingot?.title || beadID,
+            status: data?.queue?.status ?? '',
+            priority: data?.queue?.priority ?? 0,
+          }
+        : null,
+    [graphOpen, beadID, resolvedAnvil, data?.queue?.title, data?.ingot?.title, data?.queue?.status, data?.queue?.priority],
+  )
+
   const closeDialog = () => setDialog(null)
 
   const handleConfirm = async (input: string) => {
@@ -524,17 +538,7 @@ export default function BeadDetailPage() {
 
       <DepsGraphView
         open={graphOpen}
-        root={
-          graphOpen
-            ? {
-                bead_id: beadID,
-                anvil: resolvedAnvil || undefined,
-                title: data?.queue?.title || data?.ingot?.title || beadID,
-                status: data?.queue?.status ?? '',
-                priority: data?.queue?.priority ?? 0,
-              }
-            : null
-        }
+        root={graphRoot}
         onClose={() => setGraphOpen(false)}
       />
 

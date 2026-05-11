@@ -32,6 +32,7 @@ export interface DepsGraphViewProps {
 }
 
 interface GraphNode {
+  id: string // unique per-occurrence key for React rendering and DOM refs
   beadID: string
   anvil?: string
   title: string
@@ -58,32 +59,30 @@ interface EdgeCoord {
   y2: number
 }
 
-function nodeKey(beadID: string, anvil?: string): string {
-  return `${beadID}|${anvil ?? ''}`
-}
-
 // buildGraph walks the deps tree from the API into a level-keyed map and a
 // flat edge list. Negative levels are upstream (blocked_by), positive levels
-// are downstream (blocks); level 0 is the root. A seen set deduplicates beads
-// that the backend may surface in multiple branches of the visited tree.
+// are downstream (blocks); level 0 is the root. Nodes are assigned a unique
+// per-occurrence id so that the same bead appearing in multiple branches of a
+// diamond graph renders at its correct hop/level rather than being collapsed
+// to whichever branch was visited first.
 function buildGraph(
   root: BeadBrief,
   deps: BeadDepsResponse | null,
 ): { levels: Map<number, GraphNode[]>; edges: GraphEdge[] } {
   const levels = new Map<number, GraphNode[]>()
   const edges: GraphEdge[] = []
-  const seen = new Set<string>()
+  let seq = 0
 
-  const push = (n: GraphNode) => {
-    const key = nodeKey(n.beadID, n.anvil)
-    if (seen.has(key)) return
-    seen.add(key)
+  const push = (n: Omit<GraphNode, 'id'>): string => {
+    const id = `${n.beadID}|${n.anvil ?? ''}|${seq++}`
+    const node: GraphNode = { ...n, id }
     const arr = levels.get(n.level) ?? []
-    arr.push(n)
+    arr.push(node)
     levels.set(n.level, arr)
+    return id
   }
 
-  const rootNode: GraphNode = {
+  const rootId = push({
     beadID: root.bead_id,
     anvil: root.anvil,
     title: root.title,
@@ -92,15 +91,12 @@ function buildGraph(
     level: 0,
     isRoot: true,
     outermost: false,
-  }
-  push(rootNode)
-  const rootKey = nodeKey(root.bead_id, root.anvil)
+  })
 
-  const walkDown = (parentKey: string, kids: BeadBrief[] | undefined, level: number) => {
+  const walkDown = (parentId: string, kids: BeadBrief[] | undefined, level: number) => {
     if (!kids || level > MAX_DEPTH) return
     for (const k of kids) {
-      const childKey = nodeKey(k.bead_id, k.anvil)
-      push({
+      const childId = push({
         beadID: k.bead_id,
         anvil: k.anvil,
         title: k.title,
@@ -110,16 +106,15 @@ function buildGraph(
         isRoot: false,
         outermost: level === MAX_DEPTH,
       })
-      edges.push({ fromKey: parentKey, toKey: childKey })
-      walkDown(childKey, k.blocks, level + 1)
+      edges.push({ fromKey: parentId, toKey: childId })
+      walkDown(childId, k.blocks, level + 1)
     }
   }
 
-  const walkUp = (parentKey: string, kids: BeadBrief[] | undefined, level: number) => {
+  const walkUp = (parentId: string, kids: BeadBrief[] | undefined, level: number) => {
     if (!kids || level < -MAX_DEPTH) return
     for (const k of kids) {
-      const childKey = nodeKey(k.bead_id, k.anvil)
-      push({
+      const childId = push({
         beadID: k.bead_id,
         anvil: k.anvil,
         title: k.title,
@@ -129,13 +124,13 @@ function buildGraph(
         isRoot: false,
         outermost: level === -MAX_DEPTH,
       })
-      edges.push({ fromKey: parentKey, toKey: childKey })
-      walkUp(childKey, k.blocked_by, level - 1)
+      edges.push({ fromKey: parentId, toKey: childId })
+      walkUp(childId, k.blocked_by, level - 1)
     }
   }
 
-  walkDown(rootKey, deps?.blocks, 1)
-  walkUp(rootKey, deps?.blocked_by, -1)
+  walkDown(rootId, deps?.blocks, 1)
+  walkUp(rootId, deps?.blocked_by, -1)
 
   return { levels, edges }
 }
@@ -171,7 +166,11 @@ export default function DepsGraphView({ open, root, onClose }: DepsGraphViewProp
       setData(null)
       setError(null)
     }
-  }, [open, root])
+    // Depend on bead identity (bead_id/anvil) only — not on the full root
+    // object — so polling-driven metadata updates (title/status/priority) do
+    // not reset graph state or override a user's re-root mid-session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, root?.bead_id, root?.anvil])
 
   useEffect(() => {
     if (!open || !currentRoot) return
@@ -420,15 +419,14 @@ export default function DepsGraphView({ open, root, onClose }: DepsGraphViewProp
                       <div className="flex flex-wrap items-stretch justify-center gap-4">
                         {nodes.map((n) => (
                           <BeadNodeCard
-                            key={nodeKey(n.beadID, n.anvil)}
+                            key={n.id}
                             node={n}
                             onReRoot={reRoot}
                             registerRef={(el) => {
-                              const key = nodeKey(n.beadID, n.anvil)
                               if (el) {
-                                nodeRefs.current.set(key, el)
+                                nodeRefs.current.set(n.id, el)
                               } else {
-                                nodeRefs.current.delete(key)
+                                nodeRefs.current.delete(n.id)
                               }
                             }}
                           />
