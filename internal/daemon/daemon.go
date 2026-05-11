@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -4905,6 +4906,26 @@ func IsRunning() (int, bool) {
 	// On Unix, FindProcess always succeeds; Signal(0) checks liveness.
 	err = proc.Signal(syscall.Signal(0))
 	if err != nil {
+		return 0, false
+	}
+
+	// Liveness alone is not enough. In a container PID namespace, low PIDs
+	// like init or its children are almost always alive, so a stale pidfile
+	// from a killed pod (helm rollout mid-flight, OOM, drain past grace)
+	// would otherwise match an unrelated live process and crashloop every
+	// retry pod. Verify the process is actually a forge binary; if not,
+	// treat the pidfile as stale and remove it so the next writePID
+	// succeeds cleanly.
+	isForge, identErr := isForgeProcess(pid)
+	if identErr != nil {
+		slog.Warn("could not verify forge process identity; assuming alive", "pid", pid, "pidfile", pidPath, "err", identErr)
+		return pid, true
+	}
+	if !isForge {
+		slog.Warn("stale pidfile points to non-forge process; ignoring", "pid", pid, "pidfile", pidPath)
+		if err := os.Remove(pidPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("failed to remove stale pidfile", "pidfile", pidPath, "err", err)
+		}
 		return 0, false
 	}
 
