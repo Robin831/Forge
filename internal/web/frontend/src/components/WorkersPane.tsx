@@ -57,12 +57,13 @@ export default function WorkersPane({
     return bT - aT
   })
 
-  // Idle slot count = (configured cap) - (active Smith-like workers). We only
-  // count workers that occupy a Smith slot (pending/running) and that are not
-  // bellows monitors (already filtered above). When the daemon reports a cap
-  // of 0 we omit the placeholders entirely.
+  // Idle slot count = (configured cap) - (active Smith-like workers). We count
+  // workers that occupy a Smith slot (pending/running/reviewing) and that are
+  // not bellows monitors (already filtered above). "reviewing" covers Warden
+  // phase workers (state.WorkerReviewing) which also hold a slot. When the
+  // daemon reports a cap of 0 we omit the placeholders entirely.
   const activeSlotWorkers = sorted.filter(
-    (w) => w.status === 'pending' || w.status === 'running',
+    (w) => w.status === 'pending' || w.status === 'running' || w.status === 'reviewing',
   )
   const idleCount = Math.max(0, maxTotalSmiths - activeSlotWorkers.length)
 

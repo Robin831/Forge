@@ -60,13 +60,13 @@ export function phaseToStage(phase: string | undefined): StageKey | null {
   }
 }
 
-// isBellowsMonitor reports whether the worker is the PR-monitor row that
-// bellows upserts for each open PR. We treat any worker with phase=bellows
-// AND no log_path AND a synthetic "bellows-<anvil>-<num>" id as the monitor,
-// while quench/burnish/rebase keep their own phase and remain regular
-// clickable rows.
+// isBellowsMonitor reports whether the worker is the synthetic PR-monitor row
+// that bellows upserts for each open PR. The synthetic row has a
+// "bellows-<anvil>-<num>" id prefix and no log_path. Pipeline workers that
+// temporarily enter phase=bellows are NOT synthetic monitors and must remain
+// visible as regular clickable rows.
 export function isBellowsMonitor(w: WorkerInfo): boolean {
-  return w.phase === 'bellows'
+  return w.phase === 'bellows' && !w.log_path && w.id.startsWith('bellows-')
 }
 
 // prSubLabel collapses any active bellows sub-state into a short caption
@@ -93,7 +93,12 @@ function bucket(workers: WorkerInfo[]): Map<StageKey, WorkerInfo[]> {
   const m = new Map<StageKey, WorkerInfo[]>()
   for (const s of STAGES) m.set(s, [])
   for (const w of workers) {
-    if (w.status !== 'pending' && w.status !== 'running' && w.status !== 'monitoring')
+    if (
+      w.status !== 'pending' &&
+      w.status !== 'running' &&
+      w.status !== 'monitoring' &&
+      w.status !== 'reviewing'
+    )
       continue
     const stage = phaseToStage(w.phase)
     if (!stage) continue
@@ -111,9 +116,13 @@ export default function PipelineBar({ workers }: PipelineBarProps) {
     const buckets = bucket(workers)
     return STAGES.map<StageInfo>((key) => {
       const list = buckets.get(key) ?? []
+      // Count unique beads (anvil+bead_id) rather than workers — a single bead
+      // can contribute multiple workers to the same stage (e.g. bellows monitor
+      // + quench), which would otherwise inflate the displayed count.
+      const uniqueBeads = new Set(list.map((w) => `${w.anvil}:${w.bead_id}`))
       return {
         key,
-        count: list.length,
+        count: uniqueBeads.size,
         workers: list,
         subLabel: key === 'pr' ? prSubLabel(list) : null,
       }
@@ -128,7 +137,12 @@ export default function PipelineBar({ workers }: PipelineBarProps) {
   const beadRows = useMemo(() => {
     const seen = new Map<string, { worker: WorkerInfo; stage: StageKey }>()
     for (const w of workers) {
-      if (w.status !== 'pending' && w.status !== 'running' && w.status !== 'monitoring')
+      if (
+        w.status !== 'pending' &&
+        w.status !== 'running' &&
+        w.status !== 'monitoring' &&
+        w.status !== 'reviewing'
+      )
         continue
       const stage = phaseToStage(w.phase)
       if (!stage) continue
