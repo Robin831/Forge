@@ -4,7 +4,9 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { EventInfo } from '../api'
 
-const useEventSourceMock = vi.fn()
+const { useEventSourceMock } = vi.hoisted(() => ({
+  useEventSourceMock: vi.fn(),
+}))
 
 vi.mock('../hooks/useEventSource', () => ({
   useEventSource: (url: string, opts?: unknown) => useEventSourceMock(url, opts),
