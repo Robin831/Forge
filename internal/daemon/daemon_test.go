@@ -4241,3 +4241,220 @@ func TestHandleIPC_Workers(t *testing.T) {
 		assert.Empty(t, got.CompletedAt)
 	})
 }
+
+// TestDaemon_RecordAnvilPoll verifies that the in-memory last-poll map is
+// updated on every poll completion (success and failure) and that
+// anvilPollSnapshots returns a defensive copy so callers cannot mutate the
+// daemon's internal state.
+func TestDaemon_RecordAnvilPoll(t *testing.T) {
+	d := &Daemon{
+		lastPollMap: make(map[string]anvilPollSnapshot),
+	}
+
+	// Empty anvil names must be ignored so callers do not silently overwrite
+	// an empty-string key with timestamps that will never match a real anvil.
+	d.recordAnvilPoll("", true, "should be dropped")
+	assert.Empty(t, d.anvilPollSnapshots(), "empty anvil name must not populate the map")
+
+	before := time.Now()
+	d.recordAnvilPoll("anvil-a", true, "[fast] 3 ready")
+	d.recordAnvilPoll("anvil-b", false, "bd ready failed: boom")
+	after := time.Now()
+
+	snaps := d.anvilPollSnapshots()
+	require.Len(t, snaps, 2)
+
+	a := snaps["anvil-a"]
+	assert.True(t, a.OK)
+	assert.Equal(t, "[fast] 3 ready", a.Message)
+	assert.False(t, a.Timestamp.Before(before))
+	assert.False(t, a.Timestamp.After(after))
+
+	b := snaps["anvil-b"]
+	assert.False(t, b.OK)
+	assert.Equal(t, "bd ready failed: boom", b.Message)
+
+	// The returned map must be a copy; mutating it must not affect the daemon.
+	snaps["anvil-a"] = anvilPollSnapshot{Message: "tampered"}
+	delete(snaps, "anvil-b")
+	again := d.anvilPollSnapshots()
+	assert.Equal(t, "[fast] 3 ready", again["anvil-a"].Message, "internal map must not be mutated by callers")
+	assert.Contains(t, again, "anvil-b", "deleting from the copy must not remove the original entry")
+
+	// A second record for the same anvil must overwrite the previous snapshot.
+	d.recordAnvilPoll("anvil-a", false, "bd ready failed: second")
+	updated := d.anvilPollSnapshots()
+	assert.False(t, updated["anvil-a"].OK)
+	assert.Equal(t, "bd ready failed: second", updated["anvil-a"].Message)
+}
+
+// TestHandleIPC_Status_AnvilLastPoll verifies that the in-memory per-anvil
+// last-poll snapshot is projected into the status IPC response so Hearth /
+// Mezzanine / `forge status` can read freshness without hitting SQLite.
+func TestHandleIPC_Status_AnvilLastPoll(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-status-poll-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	db, err := state.Open(filepath.Join(tmpDir, "state.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:          db,
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		lastPollMap: make(map[string]anvilPollSnapshot),
+		startTime:   time.Now(),
+	}
+	d.cfg.Store(&config.Config{})
+
+	t.Run("empty when no polls have completed", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "status"})
+		require.Equal(t, "status", resp.Type)
+		var payload ipc.StatusPayload
+		require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+		assert.Empty(t, payload.AnvilLastPoll)
+	})
+
+	t.Run("includes per-anvil snapshots after polls", func(t *testing.T) {
+		d.recordAnvilPoll("zeta", true, "[fast] 0 ready")
+		d.recordAnvilPoll("alpha", false, "bd ready failed: boom")
+
+		resp := d.handleIPC(ipc.Command{Type: "status"})
+		require.Equal(t, "status", resp.Type)
+		var payload ipc.StatusPayload
+		require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+
+		require.Len(t, payload.AnvilLastPoll, 2)
+		// Entries must be sorted by anvil name for deterministic IPC output.
+		assert.Equal(t, "alpha", payload.AnvilLastPoll[0].Anvil)
+		assert.False(t, payload.AnvilLastPoll[0].OK)
+		assert.Equal(t, "bd ready failed: boom", payload.AnvilLastPoll[0].Message)
+		assert.False(t, payload.AnvilLastPoll[0].Timestamp.IsZero())
+
+		assert.Equal(t, "zeta", payload.AnvilLastPoll[1].Anvil)
+		assert.True(t, payload.AnvilLastPoll[1].OK)
+		assert.Equal(t, "[fast] 0 ready", payload.AnvilLastPoll[1].Message)
+	})
+}
+
+// TestPollAndDispatch_NoSuccessPollEvent verifies the events table no longer
+// receives a row per successful poll — successful polls are tracked only in
+// the daemon's in-memory map — while failures still appear as poll_error rows
+// so they remain visible in `forge history events` and the Hearth/Mezzanine
+// events panels.
+func TestPollAndDispatch_NoSuccessPollEvent(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-poll-events-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// Two fake bd scripts: one that succeeds (returns an empty ready list) and
+	// one that fails. We run them in two separate daemon instances rather than
+	// flipping PATH mid-test because pollAndDispatch may resolve the script via
+	// exec.LookPath once and cache it.
+	successDir := filepath.Join(tmpDir, "success")
+	failureDir := filepath.Join(tmpDir, "failure")
+	require.NoError(t, os.MkdirAll(successDir, 0o755))
+	require.NoError(t, os.MkdirAll(failureDir, 0o755))
+
+	var successScript, failureScript, successContent, failureContent string
+	if runtime.GOOS == "windows" {
+		successScript = filepath.Join(successDir, "bd.bat")
+		failureScript = filepath.Join(failureDir, "bd.bat")
+		successContent = "@echo off\r\nif \"%1\"==\"ready\" (echo []\r\nexit /b 0)\r\nif \"%1\"==\"list\" (echo []\r\nexit /b 0)\r\nexit /b 0\r\n"
+		failureContent = "@echo off\r\nif \"%1\"==\"ready\" (echo bd failed 1>&2\r\nexit /b 1)\r\nif \"%1\"==\"list\" (echo []\r\nexit /b 0)\r\nexit /b 0\r\n"
+	} else {
+		successScript = filepath.Join(successDir, "bd")
+		failureScript = filepath.Join(failureDir, "bd")
+		successContent = "#!/bin/sh\ncase \"$1\" in ready|list) echo '[]'; exit 0 ;; esac\nexit 0\n"
+		failureContent = "#!/bin/sh\ncase \"$1\" in ready) echo 'bd failed' 1>&2; exit 1 ;; list) echo '[]'; exit 0 ;; esac\nexit 0\n"
+	}
+	require.NoError(t, os.WriteFile(successScript, []byte(successContent), 0o755))
+	require.NoError(t, os.WriteFile(failureScript, []byte(failureContent), 0o755))
+
+	cfg := &config.Config{
+		Settings: config.SettingsConfig{
+			MaxTotalSmiths: 1,
+			PollInterval:   10 * time.Second,
+		},
+		Anvils: map[string]config.AnvilConfig{
+			"poll-anvil": {Path: tmpDir, AutoDispatch: "off"},
+		},
+	}
+
+	countEventsByType := func(db *state.DB, typ state.EventType) int {
+		events, err := db.RecentEvents(100)
+		require.NoError(t, err)
+		n := 0
+		for _, e := range events {
+			if e.Type == typ {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("success path emits no poll event", func(t *testing.T) {
+		dbPath := filepath.Join(tmpDir, "success.db")
+		db, err := state.Open(dbPath)
+		require.NoError(t, err)
+		defer db.Close()
+
+		oldPath := os.Getenv("PATH")
+		os.Setenv("PATH", successDir+string(os.PathListSeparator)+oldPath)
+		defer os.Setenv("PATH", oldPath)
+
+		d := &Daemon{
+			db:            db,
+			logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr:   worktree.NewManager(),
+			promptBuilder: prompt.NewBuilder(),
+			lastPollMap:   make(map[string]anvilPollSnapshot),
+		}
+		d.cfg.Store(cfg)
+
+		d.pollAndDispatch(context.Background(), true)
+
+		assert.Equal(t, 0, countEventsByType(db, state.EventPoll), "successful polls must not write EventPoll rows")
+		assert.Equal(t, 0, countEventsByType(db, state.EventPollError), "successful polls must not write EventPollError rows")
+
+		snaps := d.anvilPollSnapshots()
+		require.Len(t, snaps, 1, "in-memory map must track the poll completion")
+		got, ok := snaps["poll-anvil"]
+		require.True(t, ok, "expected an entry for the configured anvil")
+		assert.True(t, got.OK, "successful poll must mark snapshot OK=true")
+		assert.False(t, got.Timestamp.IsZero(), "snapshot timestamp must be set on success")
+	})
+
+	t.Run("failure path emits exactly one poll_error event", func(t *testing.T) {
+		dbPath := filepath.Join(tmpDir, "failure.db")
+		db, err := state.Open(dbPath)
+		require.NoError(t, err)
+		defer db.Close()
+
+		oldPath := os.Getenv("PATH")
+		os.Setenv("PATH", failureDir+string(os.PathListSeparator)+oldPath)
+		defer os.Setenv("PATH", oldPath)
+
+		d := &Daemon{
+			db:            db,
+			logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr:   worktree.NewManager(),
+			promptBuilder: prompt.NewBuilder(),
+			lastPollMap:   make(map[string]anvilPollSnapshot),
+		}
+		d.cfg.Store(cfg)
+
+		d.pollAndDispatch(context.Background(), true)
+
+		assert.Equal(t, 0, countEventsByType(db, state.EventPoll), "failed polls must not write EventPoll rows")
+		assert.Equal(t, 1, countEventsByType(db, state.EventPollError), "failed polls must write exactly one EventPollError row")
+
+		snaps := d.anvilPollSnapshots()
+		require.Len(t, snaps, 1, "in-memory map must track the failed poll")
+		got, ok := snaps["poll-anvil"]
+		require.True(t, ok, "expected an entry for the configured anvil")
+		assert.False(t, got.OK, "failed poll must mark snapshot OK=false")
+		assert.NotEmpty(t, got.Message, "snapshot message must capture the error text")
+	})
+}

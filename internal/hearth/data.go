@@ -692,14 +692,17 @@ func FetchEvents(db *state.DB, limit int) tea.Cmd {
 	}
 }
 
-// FetchAnvilHealth queries the last poll result per anvil and returns
-// health status items for the Queue panel headers.
-//
-// When ds.AnvilNames is empty (e.g. forge.yaml was not found in the working
-// directory), it falls back to querying all known anvils from the events
-// table so that health badges still appear even when the config is not loaded.
+// FetchAnvilHealth returns per-anvil poll health status for the Queue panel
+// headers. The daemon tracks successful polls only in memory (to keep the
+// events table free of per-poll noise), so the fresh source of truth is the
+// IPC status response. When IPC is unreachable we fall back to the events
+// table, which now only surfaces poll_error rows.
 func FetchAnvilHealth(ds *DataSource) tea.Cmd {
 	return func() tea.Msg {
+		if items, ok := fetchAnvilHealthFromIPC(); ok {
+			return UpdateAnvilHealthMsg{Items: items}
+		}
+
 		var (
 			statuses []state.AnvilPollStatus
 			err      error
@@ -725,6 +728,40 @@ func FetchAnvilHealth(ds *DataSource) tea.Cmd {
 		}
 		return UpdateAnvilHealthMsg{Items: items}
 	}
+}
+
+// fetchAnvilHealthFromIPC reads the daemon's in-memory per-anvil last-poll
+// snapshot via the existing "status" IPC command. Returns (items, true) on
+// success — including the empty-but-connected case — and (nil, false) when
+// the daemon is unreachable or returns malformed data so the caller can fall
+// back to the events table.
+func fetchAnvilHealthFromIPC() ([]AnvilHealth, bool) {
+	client, err := ipc.NewClient()
+	if err != nil {
+		return nil, false
+	}
+	defer client.Close()
+
+	resp, err := client.Send(ipc.Command{Type: "status"})
+	if err != nil || resp.Type != "status" {
+		return nil, false
+	}
+	var s ipc.StatusPayload
+	if err := json.Unmarshal(resp.Payload, &s); err != nil {
+		return nil, false
+	}
+	now := time.Now()
+	var items []AnvilHealth
+	for _, p := range s.AnvilLastPoll {
+		items = append(items, AnvilHealth{
+			Anvil:     p.Anvil,
+			OK:        p.OK,
+			Message:   p.Message,
+			Timestamp: p.Timestamp.Format("15:04:05"),
+			Age:       shortDuration(now.Sub(p.Timestamp)),
+		})
+	}
+	return items, true
 }
 
 // shortDuration formats a duration as a compact human-readable string.
