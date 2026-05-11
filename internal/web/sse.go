@@ -23,7 +23,15 @@ import (
 // validWorkerID accepts the worker IDs forge writes to state.db: alphanumeric
 // strings with hyphens, up to 128 chars. Anchoring the pattern keeps the
 // regex from matching path traversal sequences inside the URL parameter.
-var validWorkerID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9\-_]{0,127}$`)
+// validWorkerID matches worker IDs of the form `<anvil>-<bead-id>-<unix-nano>`.
+// The dot is allowed in non-leading positions so bead prefixes that contain
+// one (e.g. `Fhi.Metadata-2rtrj`) produce IDs that survive the gate. The
+// leading character is still restricted to [A-Za-z0-9] so neither the
+// allowlist-bypassing `.` nor the path-traversal `..` can appear at the
+// start, and the worker ID never hits the filesystem directly anyway —
+// resolveWorkerLogPath always re-checks the on-disk path against its
+// own allowlist.
+var validWorkerID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9\-_.]{0,127}$`)
 
 // activityEvent is the SSE payload shape for /api/activity/stream. It is a
 // transport-friendly subset of state.Event with snake_case field names so the

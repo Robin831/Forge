@@ -219,14 +219,43 @@ func TestWorkerLog_InvalidWorkerID(t *testing.T) {
 	// Path-traversal-style IDs containing "/" can't reach the handler because
 	// chi treats them as multiple path segments — that's still a safe outcome
 	// for the user. The cases below are characters chi accepts as a single
-	// segment but the validWorkerID regex rejects.
-	for _, badID := range []string{"_starts-with-underscore", "-starts-with-dash"} {
+	// segment but the validWorkerID regex rejects. ".starts-with-dot" guards
+	// the leading-character rule: dots are now allowed in trailing positions
+	// (bead prefixes like Fhi.Metadata produce IDs that contain them) but a
+	// leading dot would let `..` slip through and must stay rejected.
+	for _, badID := range []string{"_starts-with-underscore", "-starts-with-dash", ".starts-with-dot"} {
 		req := httptest.NewRequest("GET", "/api/worker/"+badID+"/log", nil)
 		req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
 		rec := httptest.NewRecorder()
 		srv.routes().ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("id=%q: expected 400, got %d body=%s", badID, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestWorkerLog_DottedBeadPrefix_AcceptedByRegex pins the regex fix that
+// unblocks worker logs for beads whose prefix contains a `.` (e.g. the
+// `Fhi.Metadata` anvil). Previously the validWorkerID regex rejected the
+// dot anywhere in the ID and the WorkerLogModal would spin on
+// "reconnecting…" forever because both `/log` and `/stream` returned 400
+// before resolveWorkerLogPath ran. We assert non-400 for both endpoints;
+// the exact downstream status (200 / 404) depends on whether the worker
+// row exists, which is covered by the other tests in this file.
+func TestWorkerLog_DottedBeadPrefix_AcceptedByRegex(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	// Production-realistic worker ID: <anvil>-<bead-prefix>.<suffix>-<unix-nano>.
+	id := "munin-Fhi.Metadata-2rtrj-1778499193"
+
+	for _, suffix := range []string{"/log", "/stream"} {
+		req := httptest.NewRequest("GET", "/api/worker/"+id+suffix, nil)
+		req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		if rec.Code == http.StatusBadRequest {
+			t.Errorf("endpoint=%s: dotted worker ID should bypass the validWorkerID gate, got 400 body=%s", suffix, rec.Body.String())
 		}
 	}
 }
