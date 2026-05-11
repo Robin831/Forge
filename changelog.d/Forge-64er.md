@@ -1,0 +1,2 @@
+category: Added
+- **Bead dependency graph view** - Adds a full-screen "View graph" button on the bead detail Dependencies panel that opens a layered tree centered on the current bead, showing up to three hops of "Blocks" downstream and "Blocked by" upstream with SVG edges between nodes. Outer-ring nodes expose an Expand affordance that re-roots the graph at that bead, with a Reset button to return to the original focus. (Forge-64er)
