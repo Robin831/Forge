@@ -1146,8 +1146,8 @@ func (c *Config) Validate() []string {
 				if trimmedName == "" {
 					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps[%d].name must be non-empty", name, i))
 				}
-				if trimmedCommand == "" {
-					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps[%d].command must be non-empty", name, i))
+				if trimmedCommand == "" && len(step.VerifyNoConflictMarkers) == 0 {
+					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps[%d].command must be non-empty (or set verify_no_conflict_markers for a scan-only step)", name, i))
 				}
 				if trimmedName != "" {
 					if seen[trimmedName] {

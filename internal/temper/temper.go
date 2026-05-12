@@ -371,7 +371,7 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 		// is intentionally bypassed so committed merge markers are caught
 		// even when no source change would trigger the surrounding rebuild.
 		if step.Command == "" && len(step.VerifyNoConflictMarkers) > 0 {
-			stepResult := runConflictMarkerScan(worktreePath, step)
+			stepResult := runConflictMarkerScan(ctx, worktreePath, step)
 			result.Steps = append(result.Steps, stepResult)
 			if !stepResult.Passed && !step.Optional {
 				result.FailedStep = step.Name
@@ -803,12 +803,19 @@ func (eb embeddedBundle) Steps() []Step {
 // runConflictMarkerScan performs an in-process scan for git merge-conflict
 // markers over the configured pathspecs and returns a StepResult. The scan
 // fails the step when any line beginning with 7+ consecutive `<`, `=`, or
-// `>` characters is found in a tracked file under the listed paths, and the
-// failure message names the offending file:line entries so Smith (and a
+// `>` characters is found in any file present under the listed paths, and
+// the failure message names the offending file:line entries so Smith (and a
 // human reader) can locate them immediately.
-func runConflictMarkerScan(worktreePath string, step Step) StepResult {
+func runConflictMarkerScan(ctx context.Context, worktreePath string, step Step) StepResult {
+	timeout := step.Timeout
+	if timeout == 0 {
+		timeout = 5 * time.Minute
+	}
+	scanCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	start := time.Now()
-	hits, err := scanConflictMarkers(worktreePath, step.VerifyNoConflictMarkers)
+	hits, err := scanConflictMarkers(scanCtx, worktreePath, step.VerifyNoConflictMarkers)
 	duration := time.Since(start)
 
 	cmdSummary := "verify-no-conflict-markers " + strings.Join(step.VerifyNoConflictMarkers, " ")
@@ -828,7 +835,7 @@ func runConflictMarkerScan(worktreePath string, step Step) StepResult {
 		result.Passed = false
 		result.ExitCode = -1
 		result.Output = fmt.Sprintf(
-			"Found git merge-conflict markers in committed files under %v.\n"+
+			"Found git merge-conflict markers in files under %v.\n"+
 				"Lines starting with `<<<<<<<`, `=======`, or `>>>>>>>` mean a rebase or\n"+
 				"merge was resolved by committing the conflict markers themselves rather\n"+
 				"than the resolved content. Open each file, remove the markers, regenerate\n"+
@@ -846,10 +853,14 @@ func runConflictMarkerScan(worktreePath string, step Step) StepResult {
 // and returns "<relative-path>:<line>" entries for every line that begins
 // with a git merge-conflict marker. A non-existent pathspec is treated as
 // "nothing to scan" rather than an error so the check is no-op friendly on
-// repos that lack the configured directory.
-func scanConflictMarkers(worktreePath string, pathspecs []string) ([]string, error) {
+// repos that lack the configured directory. The walk is aborted when ctx is
+// cancelled or its deadline is exceeded.
+func scanConflictMarkers(ctx context.Context, worktreePath string, pathspecs []string) ([]string, error) {
 	var hits []string
 	for _, spec := range pathspecs {
+		if err := ctx.Err(); err != nil {
+			return hits, err
+		}
 		base := filepath.Join(worktreePath, spec)
 		info, err := os.Stat(base)
 		if err != nil {
@@ -862,6 +873,9 @@ func scanConflictMarkers(worktreePath string, pathspecs []string) ([]string, err
 			walkErr := filepath.Walk(base, func(path string, fi os.FileInfo, werr error) error {
 				if werr != nil {
 					return werr
+				}
+				if err := ctx.Err(); err != nil {
+					return err
 				}
 				if fi.IsDir() {
 					return nil

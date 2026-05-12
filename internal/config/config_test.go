@@ -1003,7 +1003,7 @@ func TestConfig_Validate_LintRequired(t *testing.T) {
 		}
 		cfg.Anvils["myrepo"] = a
 		errs := cfg.Validate()
-		assert.Contains(t, errs, `anvil "myrepo": temper.steps[0].command must be non-empty`)
+		assert.Contains(t, errs, `anvil "myrepo": temper.steps[0].command must be non-empty (or set verify_no_conflict_markers for a scan-only step)`)
 	})
 
 	t.Run("steps duplicate names is invalid", func(t *testing.T) {
