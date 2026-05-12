@@ -237,12 +237,19 @@ func TestProcStartTime_MissingPidReturnsError(t *testing.T) {
 func TestIsRunning_PidfilePredatesProcessStartIsCleanedUp(t *testing.T) {
 	// The container-recycle scenario: previous incarnation wrote a pidfile
 	// at T1, was killed, the pod restarted, the new forge binary now sits
-	// at the same low PID with a process-start time T2 > T1. comm matches
+	// at the same PID with a process-start time T2 > T1. comm matches
 	// (both are "forge") so isForgeProcess returns true, but the pidfile
 	// is genuinely stale. The mtime-vs-procstart comparison should catch it.
+	//
+	// Use os.Getpid() so Signal(0) reliably succeeds — kernel threads at
+	// low PIDs (e.g. 7) are unsignalable from non-root on real Linux hosts,
+	// which would short-circuit IsRunning() before the staleness branch
+	// under test. The fake procFS still supplies the "forge" comm and the
+	// stale mtime, so the branch we're exercising is identical to the
+	// container-recycle case.
 	root := t.TempDir()
 	withProcFS(t, root)
-	pid := 7
+	pid := os.Getpid()
 	pidDir := filepath.Join(root, strconv.Itoa(pid))
 	require.NoError(t, os.MkdirAll(pidDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(pidDir, "comm"), []byte("forge\n"), 0o644))
@@ -261,18 +268,9 @@ func TestIsRunning_PidfilePredatesProcessStartIsCleanedUp(t *testing.T) {
 	old := time.Now().Add(-2 * time.Hour)
 	require.NoError(t, os.Chtimes(pidPath, old, old))
 
-	// Note: the real /proc/<pid>/ exists for PID 7 on the test host too,
-	// but our withProcFS override redirects procStartTime to the temp
-	// root, so the fake mtime is what counts. Liveness via Signal(0) is
-	// also checked against the real host — since PID 7 may or may not
-	// exist on the test host, this test exercises the staleness branch
-	// only when the liveness check passes; otherwise IsRunning bails
-	// earlier with (0, false), which is also a correct outcome for the
-	// caller. We accept either, and only assert the post-condition: no
-	// pidfile remains.
 	_, _ = IsRunning()
 	_, statErr := os.Stat(pidPath)
 	assert.True(t, os.IsNotExist(statErr),
-		"pidfile predating process start must be removed regardless of which "+
-			"branch IsRunning takes (signal-0 dead or mtime-stale)")
+		"pidfile predating process start must be removed via the "+
+			"mtime-vs-procstart staleness branch")
 }
