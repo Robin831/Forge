@@ -4929,6 +4929,32 @@ func IsRunning() (int, bool) {
 		return 0, false
 	}
 
+	// isForge=true is still ambiguous in a container PID namespace: when
+	// a pod is recycled, the new container starts with an empty PID space
+	// and the new forge daemon almost always reclaims the previous one's
+	// low PID (typically 7). /proc/<pid>/comm equals "forge" because the
+	// process IS forge — just a different incarnation than the one that
+	// wrote the pidfile. Compare the pidfile mtime against the process's
+	// start time (derived from /proc/<pid>/ mtime on Linux); if the
+	// pidfile predates the process, it belongs to a dead earlier
+	// incarnation. A small skew allowance covers the tiny gap between
+	// fork() and the first writePID call.
+	procStart, procErr := procStartTime(pid)
+	pidFileInfo, statErr := os.Stat(pidPath)
+	if procErr == nil && statErr == nil {
+		const skew = 5 * time.Second
+		if pidFileInfo.ModTime().Before(procStart.Add(-skew)) {
+			slog.Warn("stale pidfile predates current PID's process; ignoring",
+				"pid", pid, "pidfile", pidPath,
+				"pidfile_mtime", pidFileInfo.ModTime(),
+				"process_start", procStart)
+			if err := os.Remove(pidPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				slog.Warn("failed to remove stale pidfile", "pidfile", pidPath, "err", err)
+			}
+			return 0, false
+		}
+	}
+
 	return pid, true
 }
 

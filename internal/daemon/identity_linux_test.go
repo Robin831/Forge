@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -204,4 +205,74 @@ func TestIsRunning_PidfileWithDeadPidReturnsNotRunning(t *testing.T) {
 	pid, running := IsRunning()
 	assert.Equal(t, 0, pid)
 	assert.False(t, running)
+}
+
+func TestProcStartTime_ReadsPidDirModTime(t *testing.T) {
+	// procStartTime should return the mtime of /proc/<pid>/ which on real
+	// Linux equals the process creation time. Fake it under a temp procfs
+	// root and assert the stat readback matches.
+	root := t.TempDir()
+	withProcFS(t, root)
+
+	pid := 12345
+	pidDir := filepath.Join(root, strconv.Itoa(pid))
+	require.NoError(t, os.MkdirAll(pidDir, 0o755))
+
+	want := time.Date(2026, 5, 12, 6, 30, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(pidDir, want, want))
+
+	got, err := procStartTime(pid)
+	require.NoError(t, err)
+	assert.True(t, got.Equal(want), "got %v, want %v", got, want)
+}
+
+func TestProcStartTime_MissingPidReturnsError(t *testing.T) {
+	root := t.TempDir()
+	withProcFS(t, root)
+
+	_, err := procStartTime(99999)
+	assert.Error(t, err, "non-existent pid dir must surface an error so IsRunning falls back to other checks")
+}
+
+func TestIsRunning_PidfilePredatesProcessStartIsCleanedUp(t *testing.T) {
+	// The container-recycle scenario: previous incarnation wrote a pidfile
+	// at T1, was killed, the pod restarted, the new forge binary now sits
+	// at the same low PID with a process-start time T2 > T1. comm matches
+	// (both are "forge") so isForgeProcess returns true, but the pidfile
+	// is genuinely stale. The mtime-vs-procstart comparison should catch it.
+	root := t.TempDir()
+	withProcFS(t, root)
+	pid := 7
+	pidDir := filepath.Join(root, strconv.Itoa(pid))
+	require.NoError(t, os.MkdirAll(pidDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(pidDir, "comm"), []byte("forge\n"), 0o644))
+
+	// Process started 1 hour ago.
+	procStart := time.Now().Add(-1 * time.Hour)
+	require.NoError(t, os.Chtimes(pidDir, procStart, procStart))
+
+	// Pidfile predates the process by 2 hours — well outside the 5s skew
+	// allowance.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".forge"), 0o755))
+	pidPath := filepath.Join(home, ".forge", PIDFileName)
+	require.NoError(t, os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o644))
+	old := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(pidPath, old, old))
+
+	// Note: the real /proc/<pid>/ exists for PID 7 on the test host too,
+	// but our withProcFS override redirects procStartTime to the temp
+	// root, so the fake mtime is what counts. Liveness via Signal(0) is
+	// also checked against the real host — since PID 7 may or may not
+	// exist on the test host, this test exercises the staleness branch
+	// only when the liveness check passes; otherwise IsRunning bails
+	// earlier with (0, false), which is also a correct outcome for the
+	// caller. We accept either, and only assert the post-condition: no
+	// pidfile remains.
+	_, _ = IsRunning()
+	_, statErr := os.Stat(pidPath)
+	assert.True(t, os.IsNotExist(statErr),
+		"pidfile predating process start must be removed regardless of which "+
+			"branch IsRunning takes (signal-0 dead or mtime-stale)")
 }
