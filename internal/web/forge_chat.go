@@ -328,12 +328,18 @@ func (s *Server) resolveSessionAnvil(name string) *forgechat.AnvilTarget {
 		return &forgechat.AnvilTarget{Name: name, Path: path}
 	}
 	lower := strings.ToLower(name)
+	var matched *forgechat.AnvilTarget
 	for k, path := range registry {
 		if strings.ToLower(k) == lower && strings.TrimSpace(path) != "" {
-			return &forgechat.AnvilTarget{Name: k, Path: path}
+			if matched != nil {
+				// Multiple keys differ only by case — ambiguous, return nil to
+				// avoid feeding claude a nondeterministically chosen path.
+				return nil
+			}
+			matched = &forgechat.AnvilTarget{Name: k, Path: path}
 		}
 	}
-	return nil
+	return matched
 }
 
 // respondTurn writes a unified response shape for the turn endpoint. The

@@ -366,6 +366,39 @@ func TestForgeTurn_ResolvesAnvilCaseInsensitively(t *testing.T) {
 	}
 }
 
+// When two registry keys differ only by case (e.g. "munin" and "Munin") the
+// case-insensitive fallback scan is ambiguous — map iteration order is random,
+// so picking the first hit would be nondeterministic. resolveSessionAnvil must
+// return nil in that case rather than feeding the runner a randomly-chosen path.
+// The session name "MUNIN" has no exact-match key, so the fallback scan runs
+// and encounters both "munin" and "Munin".
+func TestForgeTurn_AmbiguousCaseAnvilProducesNilTarget(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	runner := &stubRunner{}
+	srv.SetChatRunner(runner)
+	srv.SetAnvilLister(func() map[string]string {
+		return map[string]string{
+			"munin": "/repos/munin-lower",
+			"Munin": "/repos/munin-upper",
+		}
+	})
+	cookie := loginAndGetCookie(t, srv)
+	// "MUNIN" has no exact match; the case-insensitive scan finds two candidates.
+	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start","anvil":"MUNIN"}`)
+
+	rec := forgeRequest(t, srv, http.MethodPost, "/api/forge/sessions/"+itoa(id)+"/turn", `{"content":"hi"}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("turn: %d body=%s", rec.Code, rec.Body.String())
+	}
+	calls := runner.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 runner call, got %d", len(calls))
+	}
+	if calls[0].Anvil != nil {
+		t.Fatalf("ambiguous case-insensitive anvil should resolve to nil, got %+v", calls[0].Anvil)
+	}
+}
+
 // Unknown / unregistered anvil names should produce a nil Anvil rather than a
 // stale half-resolved one — emitting "name: X, path: " would worse than
 // nothing because the AI would fabricate the missing path. Verify the
