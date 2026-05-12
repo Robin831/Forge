@@ -76,6 +76,22 @@ type TurnRequest struct {
 	// beads (ModeEmit). Keys are anvil names; values are short hints. Unused
 	// for chat / plan / grill modes.
 	Anvils AnvilContext
+	// Anvil is the session-scoped target for drafting / plan / grilling turns
+	// — the bead being designed already has an anvil association, so the AI
+	// is told the resolved name + absolute path up-front and uses it to read
+	// the codebase via Read / Grep / Glob. Nil leaves the anvil context out
+	// of the prompt (the AI then has to ask, which is what we're fixing).
+	Anvil *AnvilTarget
+}
+
+// AnvilTarget is the resolved name + on-disk path of the anvil that owns a
+// drafting / grilling session. The path is the absolute filesystem path the
+// daemon would use when launching tools against that anvil — we render it
+// into the prompt so the agent never has to ask the user where the code
+// lives.
+type AnvilTarget struct {
+	Name string
+	Path string
 }
 
 // EmittedMessage is one assistant message produced by a turn. The kind
@@ -178,6 +194,8 @@ func BuildPrompt(req TurnRequest) string {
 
 	if req.Mode == ModeEmit {
 		b.WriteString(formatAnvilContext(req.Anvils))
+	} else if req.Anvil != nil {
+		b.WriteString(formatSingleAnvilContext(*req.Anvil))
 	}
 
 	if len(req.History) > 0 {
@@ -339,6 +357,13 @@ func VerdictToMessages(v *grillingVerdict) ([]EmittedMessage, bool) {
 // System-level prompts. These are deliberately verbose so callers don't need
 // to add boilerplate. The grilling prompt embeds the user's grill-me skill
 // (per the bead description) verbatim.
+//
+// Filesystem access: drafting / plan / grilling turns may use the Read,
+// Grep, and Glob tools against the target anvil (whose absolute path is
+// rendered into the prompt). The agent must not modify files, write code,
+// run destructive commands, or ask the user where the anvil lives — that
+// information is provided up-front. The capability is intentionally read-
+// only: this is a design conversation, not an implementation session.
 const systemPromptDrafting = `You are a senior software architect helping the user shape a new bead (work item) into a clear, actionable engineering plan.
 
 You are in the DRAFTING stage. Respond conversationally:
@@ -346,11 +371,15 @@ You are in the DRAFTING stage. Respond conversationally:
 - propose approaches and trade-offs,
 - identify risks and missing pieces.
 
-Do NOT use any tools. Do NOT explore the filesystem. Respond with prose only — markdown is fine. Keep responses focused; aim for one or two short paragraphs unless the user explicitly asks for more.`
+You have READ-ONLY access to the target anvil's codebase via the Read, Grep, and Glob tools. The anvil's absolute path is rendered below — use it directly; do NOT ask the user where the codebase lives or for filesystem permission. Before grilling the user with design questions, answer the ones you can answer yourself by reading the code (call sites, API shapes, existing tests, conventions). Do NOT modify any files. Do NOT run destructive shell commands. Do NOT create new files.
+
+Respond with prose only — markdown is fine. Keep responses focused; aim for one or two short paragraphs unless the user explicitly asks for more.`
 
 const systemPromptPlan = `You are a senior software architect summarising a Beads-Forge design conversation into a focused implementation plan.
 
-The user has been iterating on an idea with you and now wants a concrete plan they can hand to a coding agent. Output ONLY the plan as markdown. Do NOT include conversational preamble or sign-off. Do NOT use any tools or read files.
+The user has been iterating on an idea with you and now wants a concrete plan they can hand to a coding agent. Output ONLY the plan as markdown. Do NOT include conversational preamble or sign-off.
+
+You may use the Read, Grep, and Glob tools against the target anvil (path rendered below) to ground the plan in the real codebase — concrete file paths and function signatures beat made-up ones. Do NOT modify files, write new code, or run destructive commands.
 
 The plan must include:
 - a one-sentence problem statement,
@@ -365,7 +394,9 @@ const systemPromptGrilling = `Interview me relentlessly about every aspect of th
 
 Questions should have options and recommendation(s); the user responds by either writing or picking an option.
 
-You are in the GRILLING stage. The user has agreed on a high-level plan (above) and now wants you to interrogate every decision until the design tree is exhausted. Each turn, emit ONE structured JSON envelope of the next set of questions — pick the most decision-blocking ones first, do not dump the entire tree at once. When you genuinely cannot find another question worth asking, return done:true.`
+You are in the GRILLING stage. The user has agreed on a high-level plan (above) and now wants you to interrogate every decision until the design tree is exhausted. Each turn, emit ONE structured JSON envelope of the next set of questions — pick the most decision-blocking ones first, do not dump the entire tree at once. When you genuinely cannot find another question worth asking, return done:true.
+
+You have READ-ONLY access to the target anvil via the Read, Grep, and Glob tools (the anvil's absolute path is rendered below). Use those tools to answer your own questions about the code before asking the user — never ask the user where the codebase lives or for filesystem permission. Do NOT modify any files.`
 
 const tailDrafting = `Respond now with your conversational reply. Plain markdown text only.`
 

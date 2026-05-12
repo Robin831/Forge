@@ -32,6 +32,77 @@ func TestBuildPrompt_PlanModeAsksForMarkdownOnly(t *testing.T) {
 	}
 }
 
+func TestBuildPrompt_DraftingPromptsEnableReadOnlyTools(t *testing.T) {
+	for _, mode := range []Mode{ModeChat, ModePlan, ModeGrill} {
+		stage := StageDrafting
+		if mode == ModeGrill {
+			stage = StageGrilling
+		}
+		p := BuildPrompt(TurnRequest{Stage: stage, Mode: mode})
+		if !strings.Contains(p, "Read") || !strings.Contains(p, "Grep") || !strings.Contains(p, "Glob") {
+			t.Fatalf("mode %q prompt should advertise Read/Grep/Glob tools, got:\n%s", mode, p)
+		}
+		if strings.Contains(p, "Do NOT use any tools") {
+			t.Fatalf("mode %q prompt must no longer forbid tool use", mode)
+		}
+	}
+}
+
+func TestBuildPrompt_AnvilContextRendersWhenProvided(t *testing.T) {
+	target := &AnvilTarget{Name: "munin", Path: "/repos/munin"}
+	p := BuildPrompt(TurnRequest{
+		Stage: StageDrafting,
+		Mode:  ModeChat,
+		Anvil: target,
+	})
+	if !strings.Contains(p, "## Target anvil") {
+		t.Fatalf("drafting prompt should include the anvil context block, got:\n%s", p)
+	}
+	if !strings.Contains(p, "`munin`") {
+		t.Fatalf("drafting prompt should name the anvil, got:\n%s", p)
+	}
+	if !strings.Contains(p, "/repos/munin") {
+		t.Fatalf("drafting prompt should embed the anvil absolute path, got:\n%s", p)
+	}
+}
+
+func TestBuildPrompt_NilAnvilOmitsContextBlock(t *testing.T) {
+	p := BuildPrompt(TurnRequest{Stage: StageDrafting, Mode: ModeChat})
+	if strings.Contains(p, "## Target anvil") {
+		t.Fatalf("nil Anvil should not render the target-anvil block, got:\n%s", p)
+	}
+}
+
+func TestBuildPrompt_HalfResolvedAnvilOmitsContextBlock(t *testing.T) {
+	// Path missing — emitting "name: munin / path: " is worse than nothing
+	// because the AI will fabricate the missing piece.
+	p := BuildPrompt(TurnRequest{
+		Stage: StageDrafting,
+		Mode:  ModeChat,
+		Anvil: &AnvilTarget{Name: "munin"},
+	})
+	if strings.Contains(p, "## Target anvil") {
+		t.Fatalf("half-resolved Anvil should be omitted, got:\n%s", p)
+	}
+}
+
+func TestBuildPrompt_EmitModeStillUsesAnvilsListNotTargetAnvil(t *testing.T) {
+	// Emission mode lists every registered anvil; the session-scoped Anvil is
+	// not meaningful there (the AI may target a different anvil per bead).
+	p := BuildPrompt(TurnRequest{
+		Stage:  StageReady,
+		Mode:   ModeEmit,
+		Anvils: AnvilContext{"munin": "/repos/munin", "other": "/repos/other"},
+		Anvil:  &AnvilTarget{Name: "munin", Path: "/repos/munin"},
+	})
+	if !strings.Contains(p, "## Registered anvils") {
+		t.Fatalf("emit prompt should list registered anvils, got:\n%s", p)
+	}
+	if strings.Contains(p, "## Target anvil") {
+		t.Fatalf("emit prompt must not include the single-anvil block (it picks per bead)")
+	}
+}
+
 func TestParseGrillingResponse_FencedJSON(t *testing.T) {
 	out := "Some preamble\n```json\n" +
 		`{"questions":[{"prompt":"Sync or async?","options":[{"id":"sync","label":"Sync"},{"id":"async","label":"Async"}],"recommendation":"async","rationale":"Avoids blocking the daemon"}]}` +

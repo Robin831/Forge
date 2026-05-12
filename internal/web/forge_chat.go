@@ -225,6 +225,7 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		Title:   row.Title,
 		Plan:    row.Plan,
 		History: history,
+		Anvil:   s.resolveSessionAnvil(row.Anvil),
 	}
 	turnResp, err := s.chatRunner.Turn(turnCtx, turnReq)
 	if err != nil {
@@ -298,6 +299,41 @@ func optMsg(m *state.ForgeSessionMessage) []state.ForgeSessionMessage {
 		return nil
 	}
 	return []state.ForgeSessionMessage{*m}
+}
+
+// resolveSessionAnvil maps a session's anvil name to its registered absolute
+// path so the drafting / grilling prompt can tell the AI where the code
+// lives. Returns nil when the registry isn't wired (no daemon-side anvils
+// callback), when the session has no anvil association, or when the named
+// anvil is no longer registered — in those cases we'd rather emit no anvil
+// context than feed claude a wrong or stale path.
+//
+// Name resolution is case-insensitive to match the daemon's anvil routing
+// (e.g. a session created with "Munin" still resolves to the configured
+// "munin" key), and the canonical key + path are returned so the prompt
+// renders the names the daemon actually uses.
+func (s *Server) resolveSessionAnvil(name string) *forgechat.AnvilTarget {
+	if s.anvils == nil {
+		return nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	registry := s.anvils()
+	if len(registry) == 0 {
+		return nil
+	}
+	if path, ok := registry[name]; ok && strings.TrimSpace(path) != "" {
+		return &forgechat.AnvilTarget{Name: name, Path: path}
+	}
+	lower := strings.ToLower(name)
+	for k, path := range registry {
+		if strings.ToLower(k) == lower && strings.TrimSpace(path) != "" {
+			return &forgechat.AnvilTarget{Name: k, Path: path}
+		}
+	}
+	return nil
 }
 
 // respondTurn writes a unified response shape for the turn endpoint. The
