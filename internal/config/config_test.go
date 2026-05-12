@@ -1003,7 +1003,7 @@ func TestConfig_Validate_LintRequired(t *testing.T) {
 		}
 		cfg.Anvils["myrepo"] = a
 		errs := cfg.Validate()
-		assert.Contains(t, errs, `anvil "myrepo": temper.steps[0].command must be non-empty`)
+		assert.Contains(t, errs, `anvil "myrepo": temper.steps[0].command must be non-empty (or set verify_no_conflict_markers for a scan-only step)`)
 	})
 
 	t.Run("steps duplicate names is invalid", func(t *testing.T) {
@@ -1112,4 +1112,27 @@ func TestTemperStepConfig_VerifyCleanRoundTrip(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal(data, &roundTripped))
 	require.Len(t, roundTripped.Steps, 1)
 	assert.Equal(t, []string{"web/dist", "web/static/build"}, roundTripped.Steps[0].VerifyClean)
+}
+
+func TestTemperStepConfig_VerifyNoConflictMarkersRoundTrip(t *testing.T) {
+	original := &TemperCommandsConfig{
+		Steps: []TemperStepConfig{
+			{
+				Name:                    "conflict-markers",
+				VerifyNoConflictMarkers: []string{"internal/web/dist", "internal/web/static"},
+			},
+		},
+	}
+
+	data, err := yaml.Marshal(original)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "verify_no_conflict_markers",
+		"verify_no_conflict_markers must be in marshalled YAML")
+
+	var roundTripped TemperCommandsConfig
+	require.NoError(t, yaml.Unmarshal(data, &roundTripped))
+	require.Len(t, roundTripped.Steps, 1)
+	assert.Equal(t,
+		[]string{"internal/web/dist", "internal/web/static"},
+		roundTripped.Steps[0].VerifyNoConflictMarkers)
 }

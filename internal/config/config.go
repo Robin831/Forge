@@ -212,6 +212,14 @@ type TemperStepConfig struct {
 	// artifacts (e.g. an embedded frontend bundle) match a fresh build of
 	// the source.
 	VerifyClean []string `mapstructure:"verify_clean" yaml:"verify_clean,omitempty"`
+	// VerifyNoConflictMarkers is an optional list of pathspecs (relative to
+	// the worktree) that must not contain git merge-conflict markers
+	// (`<<<<<<<`, `=======`, `>>>>>>>` at line start). When set on a step
+	// with no Command, temper performs a cheap scan-only check that runs
+	// unconditionally (no Paths gating) — complementary to verify_clean,
+	// which depends on a rebuild and can miss markers committed directly
+	// into build output.
+	VerifyNoConflictMarkers []string `mapstructure:"verify_no_conflict_markers" yaml:"verify_no_conflict_markers,omitempty"`
 }
 
 // IsEmpty returns true if no custom commands are configured.
@@ -1138,8 +1146,8 @@ func (c *Config) Validate() []string {
 				if trimmedName == "" {
 					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps[%d].name must be non-empty", name, i))
 				}
-				if trimmedCommand == "" {
-					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps[%d].command must be non-empty", name, i))
+				if trimmedCommand == "" && len(step.VerifyNoConflictMarkers) == 0 {
+					errs = append(errs, fmt.Sprintf("anvil %q: temper.steps[%d].command must be non-empty (or set verify_no_conflict_markers for a scan-only step)", name, i))
 				}
 				if trimmedName != "" {
 					if seen[trimmedName] {

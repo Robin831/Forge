@@ -349,26 +349,30 @@ func TestDetectEmbeddedBundles_RequiresBothPaths(t *testing.T) {
 func TestEmbeddedBundle_Steps_Shape(t *testing.T) {
 	eb := embeddedBundle{Name: "hearth", FrontendDir: "internal/web/frontend", DistDir: "internal/web/dist"}
 	steps := eb.Steps()
-	require.Len(t, steps, 2, "expected install + build steps")
+	require.Len(t, steps, 3, "expected conflict-marker scan + install + build steps")
 
-	assert.Equal(t, "hearth-frontend-install", steps[0].Name)
-	assert.Equal(t, "npm", steps[0].Command)
-	assert.Equal(t, []string{"install", "--no-audit", "--no-fund"}, steps[0].Args)
-	assert.Equal(t, "internal/web/frontend", steps[0].Dir)
-	assert.Empty(t, steps[0].VerifyClean, "install step does not verify clean (it may touch package-lock or node_modules)")
+	assert.Equal(t, "hearth-frontend-conflict-markers", steps[0].Name)
+	assert.Empty(t, steps[0].Command, "scan-only step must have no Command")
+	assert.Equal(t, []string{"internal/web/dist"}, steps[0].VerifyNoConflictMarkers)
 
-	assert.Equal(t, "hearth-frontend-build", steps[1].Name)
+	assert.Equal(t, "hearth-frontend-install", steps[1].Name)
 	assert.Equal(t, "npm", steps[1].Command)
-	assert.Equal(t, []string{"run", "build"}, steps[1].Args)
+	assert.Equal(t, []string{"install", "--no-audit", "--no-fund"}, steps[1].Args)
 	assert.Equal(t, "internal/web/frontend", steps[1].Dir)
-	assert.Equal(t, []string{"internal/web/dist"}, steps[1].VerifyClean,
+	assert.Empty(t, steps[1].VerifyClean, "install step does not verify clean (it may touch package-lock or node_modules)")
+
+	assert.Equal(t, "hearth-frontend-build", steps[2].Name)
+	assert.Equal(t, "npm", steps[2].Command)
+	assert.Equal(t, []string{"run", "build"}, steps[2].Args)
+	assert.Equal(t, "internal/web/frontend", steps[2].Dir)
+	assert.Equal(t, []string{"internal/web/dist"}, steps[2].VerifyClean,
 		"build step must verify dist remains clean — that's the whole point of the check")
 
-	// Both steps should share the same Paths filter so they only run when
-	// frontend src or build config actually changed.
-	assert.Equal(t, steps[0].Paths, steps[1].Paths)
-	assert.NotEmpty(t, steps[0].Paths)
-	assert.Contains(t, steps[0].Paths, "internal/web/frontend/src/**")
+	// Install and build should share the same Paths filter so they only run
+	// when frontend src or build config actually changed in the diff.
+	assert.Equal(t, steps[1].Paths, steps[2].Paths)
+	assert.NotEmpty(t, steps[1].Paths)
+	assert.Contains(t, steps[1].Paths, "internal/web/frontend/src/**")
 }
 
 func TestDetectSteps_IncludesEmbeddedBundleForHearthLayout(t *testing.T) {
@@ -384,6 +388,7 @@ func TestDetectSteps_IncludesEmbeddedBundleForHearthLayout(t *testing.T) {
 	steps := detectSteps(dir, opts, false)
 	names := stepNames(steps)
 
+	assert.Contains(t, names, "hearth-frontend-conflict-markers")
 	assert.Contains(t, names, "hearth-frontend-install")
 	assert.Contains(t, names, "hearth-frontend-build")
 }
@@ -815,6 +820,174 @@ func TestRun_AllowsNpmCiWithRealNodeModules(t *testing.T) {
 
 	require.Len(t, result.Steps, 1)
 	assert.False(t, result.Steps[0].Skipped, "npm ci should not be skipped with real node_modules")
+}
+
+func TestRun_VerifyNoConflictMarkers_FailsWhenMarkerPresent(t *testing.T) {
+	dir := t.TempDir()
+	distDir := filepath.Join(dir, "internal", "web", "dist", "assets")
+	require.NoError(t, os.MkdirAll(distDir, 0o755))
+	// Reproduces the production incident on 2026-05-11: a rebase Smith
+	// committed a JS bundle whose first line was the 8-char conflict marker
+	// emitted by git for some recursive-merge strategies. The freshness
+	// rebuild missed it because the Paths filter skipped npm run build.
+	bundle := "<<<<<<<< HEAD:internal/web/dist/assets/index-BdlG5RPS.js\n" +
+		"(function(){console.log('one');})();\n" +
+		"========\n" +
+		"(function(){console.log('two');})();\n" +
+		">>>>>>>> main:internal/web/dist/assets/index-BdlG5RPS.js\n"
+	require.NoError(t, os.WriteFile(filepath.Join(distDir, "index-BdlG5RPS.js"), []byte(bundle), 0o644))
+
+	cfg := Config{Steps: []Step{{
+		Name:                    "conflict-markers",
+		VerifyNoConflictMarkers: []string{"internal/web/dist"},
+	}}}
+
+	res := Run(context.Background(), dir, cfg, nil, "Forge-x2o9-test", "test-anvil")
+	require.NotNil(t, res)
+	require.Len(t, res.Steps, 1)
+	assert.False(t, res.Passed, "scan must fail when conflict markers are present")
+	assert.Equal(t, "conflict-markers", res.FailedStep)
+	output := res.Steps[0].Output
+	assert.Contains(t, output, "internal/web/dist/assets/index-BdlG5RPS.js:1")
+	assert.Contains(t, output, "internal/web/dist/assets/index-BdlG5RPS.js:3")
+	assert.Contains(t, output, "internal/web/dist/assets/index-BdlG5RPS.js:5")
+}
+
+func TestRun_VerifyNoConflictMarkers_PassesOnCleanDist(t *testing.T) {
+	dir := t.TempDir()
+	distDir := filepath.Join(dir, "internal", "web", "dist", "assets")
+	require.NoError(t, os.MkdirAll(distDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(distDir, "index.js"),
+		[]byte("(function(){console.log('hello');})();\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "web", "dist", "index.html"),
+		[]byte("<!doctype html><html></html>"), 0o644))
+
+	cfg := Config{Steps: []Step{{
+		Name:                    "conflict-markers",
+		VerifyNoConflictMarkers: []string{"internal/web/dist"},
+	}}}
+
+	res := Run(context.Background(), dir, cfg, nil, "Forge-x2o9-test", "test-anvil")
+	require.NotNil(t, res)
+	assert.True(t, res.Passed, "scan must pass on a clean dist")
+	require.Len(t, res.Steps, 1)
+	assert.True(t, res.Steps[0].Passed)
+}
+
+func TestRun_VerifyNoConflictMarkers_RunsRegardlessOfPathsFilter(t *testing.T) {
+	// Critical regression guard: the scan must catch markers in committed
+	// dist even when no source change matches the surrounding Paths filter.
+	// In the production incident the freshness rebuild was skipped because
+	// the rebase Smith only touched files under the dist directory itself —
+	// none of the FrontendDir/src/** paths matched, so install + build
+	// (and their VerifyClean check) silently skipped, and the markers shipped.
+	dir := t.TempDir()
+	distDir := filepath.Join(dir, "internal", "web", "dist", "assets")
+	require.NoError(t, os.MkdirAll(distDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(distDir, "index.js"),
+		[]byte("<<<<<<< HEAD\nalert(1);\n=======\nalert(2);\n>>>>>>> other\n"), 0o644))
+
+	cfg := Config{
+		Steps: []Step{{
+			Name: "conflict-markers",
+			// Path filter that would normally skip a code-driven step
+			// (no source files match this glob). The scan-only branch
+			// must ignore Paths and run anyway.
+			Paths:                   []string{"internal/web/frontend/src/**"},
+			VerifyNoConflictMarkers: []string{"internal/web/dist"},
+		}},
+		// Mimic the production diff: only dist/ assets changed, no source.
+		ChangedFiles: []string{"internal/web/dist/assets/index.js"},
+	}
+
+	res := Run(context.Background(), dir, cfg, nil, "Forge-x2o9-test", "test-anvil")
+	require.NotNil(t, res)
+	require.Len(t, res.Steps, 1)
+	assert.False(t, res.Steps[0].Skipped, "scan-only step must not be gated by Paths filter")
+	assert.False(t, res.Passed, "markers in dist must fail the run even when no source files changed")
+	assert.Equal(t, "conflict-markers", res.FailedStep)
+}
+
+func TestRun_VerifyNoConflictMarkers_HandlesMissingPath(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{Steps: []Step{{
+		Name:                    "conflict-markers",
+		VerifyNoConflictMarkers: []string{"internal/web/dist"},
+	}}}
+	res := Run(context.Background(), dir, cfg, nil, "Forge-x2o9-test", "test-anvil")
+	require.NotNil(t, res)
+	require.Len(t, res.Steps, 1)
+	assert.True(t, res.Steps[0].Passed, "absent pathspec must be treated as nothing-to-scan, not an error")
+}
+
+func TestScanFileForConflictMarkers_HandlesLongMinifiedLine(t *testing.T) {
+	// Realistic minified JS bundles routinely exceed the bufio default
+	// 64 KiB line limit. The bumped buffer must accommodate them so the
+	// scan doesn't error out on perfectly clean files.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bundle.js")
+	// 256 KiB single line — well over the default 64 KiB, well under the
+	// 8 MiB bumped ceiling.
+	long := strings.Repeat("a", 256*1024)
+	require.NoError(t, os.WriteFile(path, []byte("<<<<<<< HEAD\n"+long+"\n"), 0o644))
+
+	hits, err := scanFileForConflictMarkers(path, dir)
+	require.NoError(t, err)
+	require.Len(t, hits, 1, "marker on line 1 must be reported; the long line on line 2 must not error")
+	assert.Equal(t, "bundle.js:1", hits[0])
+}
+
+func TestLineHasConflictMarkerPrefix(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"<<<<<<< HEAD", true},
+		{"<<<<<<<< HEAD:foo.js", true},
+		{"=======", true},
+		{"======== more", true},
+		{">>>>>>> main", true},
+		{">>>>>>>> main:foo.js", true},
+		// Below the 7-char threshold.
+		{"<<<<<< short", false},
+		{"====== short", false},
+		{">>>>>> short", false},
+		// Marker characters not at the start of the line.
+		{" <<<<<<< HEAD", false},
+		{"// =======", false},
+		// Legitimate code with marker chars but not in a run.
+		{"const a = 1; const b = 2;", false},
+		{"a >>> 3", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		got := lineHasConflictMarkerPrefix([]byte(c.line))
+		assert.Equal(t, c.want, got, "line=%q", c.line)
+	}
+}
+
+func TestEmbeddedBundle_Steps_IncludesUnconditionalConflictMarkerScan(t *testing.T) {
+	eb := embeddedBundle{Name: "hearth", FrontendDir: "internal/web/frontend", DistDir: "internal/web/dist"}
+	steps := eb.Steps()
+	require.Len(t, steps, 3, "expected conflict-marker + install + build steps")
+
+	assert.Equal(t, "hearth-frontend-conflict-markers", steps[0].Name)
+	assert.Empty(t, steps[0].Command, "scan-only step must have no Command")
+	assert.Equal(t, []string{"internal/web/dist"}, steps[0].VerifyNoConflictMarkers)
+	assert.Empty(t, steps[0].Paths,
+		"conflict-marker scan must NOT have a Paths filter — it must run even when no source change touches the dist rebuild paths")
+}
+
+func TestConfigFromSteps_PassesVerifyNoConflictMarkersThrough(t *testing.T) {
+	cfg := ConfigFromSteps([]config.TemperStepConfig{
+		{
+			Name:                    "conflict-markers",
+			VerifyNoConflictMarkers: []string{"internal/web/dist"},
+		},
+	})
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.Steps, 1)
+	assert.Equal(t, []string{"internal/web/dist"}, cfg.Steps[0].VerifyNoConflictMarkers)
 }
 
 func TestRun_NilChangedFiles_NeverSkips(t *testing.T) {
