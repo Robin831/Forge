@@ -308,3 +308,122 @@ func TestForgeTurn_RunnerErrorReportsBadGateway(t *testing.T) {
 	}
 }
 
+// Forge-9w62: the drafting agent kept asking the user for the anvil path even
+// though the session was created with an anvil association. The handler now
+// resolves the path from the live registry and feeds it to the runner via
+// TurnRequest.Anvil — verify the wiring end-to-end so a future refactor that
+// drops the lookup fails this test loudly.
+func TestForgeTurn_ResolvesSessionAnvilForRunner(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	runner := &stubRunner{}
+	srv.SetChatRunner(runner)
+	srv.SetAnvilLister(func() map[string]string {
+		return map[string]string{"munin": "/repos/munin"}
+	})
+	cookie := loginAndGetCookie(t, srv)
+	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start","anvil":"munin"}`)
+
+	rec := forgeRequest(t, srv, http.MethodPost, "/api/forge/sessions/"+itoa(id)+"/turn", `{"content":"hi"}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("turn: %d body=%s", rec.Code, rec.Body.String())
+	}
+	calls := runner.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 runner call, got %d", len(calls))
+	}
+	if calls[0].Anvil == nil {
+		t.Fatalf("runner should have received the resolved anvil, got nil")
+	}
+	if calls[0].Anvil.Name != "munin" || calls[0].Anvil.Path != "/repos/munin" {
+		t.Fatalf("unexpected anvil: %+v", calls[0].Anvil)
+	}
+}
+
+// Case-insensitive matching mirrors the daemon's anvil routing: a session
+// stored as "Munin" still resolves against the registered "munin" key so a
+// case-mismatch in the SPA doesn't reintroduce the "where is the codebase?"
+// failure mode.
+func TestForgeTurn_ResolvesAnvilCaseInsensitively(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	runner := &stubRunner{}
+	srv.SetChatRunner(runner)
+	srv.SetAnvilLister(func() map[string]string {
+		return map[string]string{"munin": "/repos/munin"}
+	})
+	cookie := loginAndGetCookie(t, srv)
+	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start","anvil":"Munin"}`)
+
+	rec := forgeRequest(t, srv, http.MethodPost, "/api/forge/sessions/"+itoa(id)+"/turn", `{"content":"hi"}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("turn: %d body=%s", rec.Code, rec.Body.String())
+	}
+	calls := runner.Calls()
+	if len(calls) != 1 || calls[0].Anvil == nil {
+		t.Fatalf("expected resolved anvil, got %+v", calls)
+	}
+	if calls[0].Anvil.Name != "munin" || calls[0].Anvil.Path != "/repos/munin" {
+		t.Fatalf("expected canonical anvil munin → /repos/munin, got %+v", calls[0].Anvil)
+	}
+}
+
+// When two registry keys differ only by case (e.g. "munin" and "Munin") the
+// case-insensitive fallback scan is ambiguous — map iteration order is random,
+// so picking the first hit would be nondeterministic. resolveSessionAnvil must
+// return nil in that case rather than feeding the runner a randomly-chosen path.
+// The session name "MUNIN" has no exact-match key, so the fallback scan runs
+// and encounters both "munin" and "Munin".
+func TestForgeTurn_AmbiguousCaseAnvilProducesNilTarget(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	runner := &stubRunner{}
+	srv.SetChatRunner(runner)
+	srv.SetAnvilLister(func() map[string]string {
+		return map[string]string{
+			"munin": "/repos/munin-lower",
+			"Munin": "/repos/munin-upper",
+		}
+	})
+	cookie := loginAndGetCookie(t, srv)
+	// "MUNIN" has no exact match; the case-insensitive scan finds two candidates.
+	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start","anvil":"MUNIN"}`)
+
+	rec := forgeRequest(t, srv, http.MethodPost, "/api/forge/sessions/"+itoa(id)+"/turn", `{"content":"hi"}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("turn: %d body=%s", rec.Code, rec.Body.String())
+	}
+	calls := runner.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 runner call, got %d", len(calls))
+	}
+	if calls[0].Anvil != nil {
+		t.Fatalf("ambiguous case-insensitive anvil should resolve to nil, got %+v", calls[0].Anvil)
+	}
+}
+
+// Unknown / unregistered anvil names should produce a nil Anvil rather than a
+// stale half-resolved one — emitting "name: X, path: " would worse than
+// nothing because the AI would fabricate the missing path. Verify the
+// handler still succeeds (the AI can ask the user as a fallback) but does
+// not feed the runner a poisoned anvil.
+func TestForgeTurn_UnknownAnvilProducesNilTarget(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	runner := &stubRunner{}
+	srv.SetChatRunner(runner)
+	srv.SetAnvilLister(func() map[string]string {
+		return map[string]string{"other": "/repos/other"}
+	})
+	cookie := loginAndGetCookie(t, srv)
+	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start","anvil":"gone"}`)
+
+	rec := forgeRequest(t, srv, http.MethodPost, "/api/forge/sessions/"+itoa(id)+"/turn", `{"content":"hi"}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("turn: %d body=%s", rec.Code, rec.Body.String())
+	}
+	calls := runner.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 runner call, got %d", len(calls))
+	}
+	if calls[0].Anvil != nil {
+		t.Fatalf("unknown anvil should resolve to nil, got %+v", calls[0].Anvil)
+	}
+}
+

@@ -369,3 +369,22 @@ func formatAnvilContext(anvils AnvilContext) string {
 	}
 	return b.String()
 }
+
+// formatSingleAnvilContext renders the session-scoped anvil for drafting /
+// plan / grilling prompts. The block is structured so the agent reads it
+// once at prompt-time and uses the absolute path in subsequent Read / Grep /
+// Glob tool calls. We emit nothing when the anvil has no name or path —
+// half-resolved context is worse than none (the agent fabricates the rest).
+func formatSingleAnvilContext(a AnvilTarget) string {
+	name := strings.TrimSpace(a.Name)
+	path := strings.TrimSpace(a.Path)
+	if name == "" || path == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## Target anvil\n\n")
+	fmt.Fprintf(&b, "- name: `%s`\n", name)
+	fmt.Fprintf(&b, "- path: `%s`\n", path)
+	b.WriteString("\nUse this path with Read / Grep / Glob to audit the codebase. Pass absolute paths under it; do not ask the user where the code lives.\n")
+	return b.String()
+}
