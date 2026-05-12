@@ -6,6 +6,7 @@
 package temper
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -87,6 +88,18 @@ type Step struct {
 	// frontend bundle): if running `npm run build` mutates the committed
 	// dist/ directory, the bundle Smith committed does not match the source.
 	VerifyClean []string
+	// VerifyNoConflictMarkers is a list of pathspecs (relative to the
+	// worktree) that must not contain git merge-conflict markers
+	// (`<<<<<<<`, `=======`, `>>>>>>>` — 7+ consecutive marker characters at
+	// the start of a line). When set, temper walks the listed paths and
+	// fails the step when any marker is found, naming the offending
+	// file:line. Unlike VerifyClean this scan does NOT depend on a rebuild
+	// — when Command is empty the step becomes a cheap scan-only check that
+	// runs unconditionally (no Paths gating). That independence is the
+	// point: a rebase Smith can commit conflict markers into a built bundle
+	// that the freshness check would miss when the rebuild is skipped or
+	// happens to land the same bytes.
+	VerifyNoConflictMarkers []string
 }
 
 // Config holds per-anvil verification configuration.
@@ -223,14 +236,15 @@ func ConfigFromSteps(steps []config.TemperStepConfig) *Config {
 			optional = true
 		}
 		out[i] = Step{
-			Name:        strings.TrimSpace(s.Name),
-			Command:     strings.TrimSpace(s.Command),
-			Args:        s.Args,
-			Dir:         strings.TrimSpace(s.Dir),
-			Timeout:     timeout,
-			Optional:    optional,
-			Paths:       s.Paths,
-			VerifyClean: s.VerifyClean,
+			Name:                    strings.TrimSpace(s.Name),
+			Command:                 strings.TrimSpace(s.Command),
+			Args:                    s.Args,
+			Dir:                     strings.TrimSpace(s.Dir),
+			Timeout:                 timeout,
+			Optional:                optional,
+			Paths:                   s.Paths,
+			VerifyClean:             s.VerifyClean,
+			VerifyNoConflictMarkers: s.VerifyNoConflictMarkers,
 		}
 	}
 	return &Config{Steps: out}
@@ -352,6 +366,20 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 	}
 
 	for _, step := range cfg.Steps {
+		// Scan-only conflict-marker step: no Command, just a content scan
+		// over VerifyNoConflictMarkers. Runs unconditionally — Paths gating
+		// is intentionally bypassed so committed merge markers are caught
+		// even when no source change would trigger the surrounding rebuild.
+		if step.Command == "" && len(step.VerifyNoConflictMarkers) > 0 {
+			stepResult := runConflictMarkerScan(worktreePath, step)
+			result.Steps = append(result.Steps, stepResult)
+			if !stepResult.Passed && !step.Optional {
+				result.FailedStep = step.Name
+				break
+			}
+			continue
+		}
+
 		// Skip steps whose path filters don't match any changed files.
 		if len(step.Paths) > 0 && cfg.ChangedFiles != nil && !matchesChangedFiles(step.Paths, cfg.ChangedFiles) {
 			log.Printf("[temper] Skipping step %q: no changed files match paths %v", step.Name, step.Paths)
@@ -723,10 +751,15 @@ func detectEmbeddedBundles(worktreePath string) []embeddedBundle {
 	return found
 }
 
-// Steps returns the temper steps for an embedded-bundle layout: install deps,
-// rebuild the bundle, and verify the committed dist matches a fresh build.
-// The Paths filter ensures the steps only run when files in the frontend
-// source or build config actually changed in the diff.
+// Steps returns the temper steps for an embedded-bundle layout: a conflict-
+// marker scan over the committed dist, then install deps, then rebuild and
+// verify the committed dist matches a fresh build. The Paths filter on the
+// install/build steps ensures they only run when files in the frontend source
+// or build config actually changed in the diff. The conflict-marker scan
+// runs unconditionally (no Paths filter) so committed `<<<<<<<` / `=======`
+// / `>>>>>>>` markers — e.g. from a rebase Smith that resolved a bundle
+// conflict by leaving the markers in place — are caught even when the
+// rebuild would otherwise be skipped.
 func (eb embeddedBundle) Steps() []Step {
 	paths := []string{
 		eb.FrontendDir + "/src/**",
@@ -740,6 +773,11 @@ func (eb embeddedBundle) Steps() []Step {
 		eb.FrontendDir + "/tsconfig.node.json",
 	}
 	return []Step{
+		{
+			Name:                    eb.Name + "-frontend-conflict-markers",
+			Timeout:                 30 * time.Second,
+			VerifyNoConflictMarkers: []string{eb.DistDir},
+		},
 		{
 			Name:    eb.Name + "-frontend-install",
 			Command: "npm",
@@ -760,6 +798,153 @@ func (eb embeddedBundle) Steps() []Step {
 			VerifyClean: []string{eb.DistDir},
 		},
 	}
+}
+
+// runConflictMarkerScan performs an in-process scan for git merge-conflict
+// markers over the configured pathspecs and returns a StepResult. The scan
+// fails the step when any line beginning with 7+ consecutive `<`, `=`, or
+// `>` characters is found in a tracked file under the listed paths, and the
+// failure message names the offending file:line entries so Smith (and a
+// human reader) can locate them immediately.
+func runConflictMarkerScan(worktreePath string, step Step) StepResult {
+	start := time.Now()
+	hits, err := scanConflictMarkers(worktreePath, step.VerifyNoConflictMarkers)
+	duration := time.Since(start)
+
+	cmdSummary := "verify-no-conflict-markers " + strings.Join(step.VerifyNoConflictMarkers, " ")
+	result := StepResult{
+		Name:     step.Name,
+		Command:  cmdSummary,
+		Duration: duration,
+		Optional: step.Optional,
+	}
+	if err != nil {
+		result.Passed = false
+		result.ExitCode = -1
+		result.Output = fmt.Sprintf("Conflict-marker scan failed for %v: %v", step.VerifyNoConflictMarkers, err)
+		return result
+	}
+	if len(hits) > 0 {
+		result.Passed = false
+		result.ExitCode = -1
+		result.Output = fmt.Sprintf(
+			"Found git merge-conflict markers in committed files under %v.\n"+
+				"Lines starting with `<<<<<<<`, `=======`, or `>>>>>>>` mean a rebase or\n"+
+				"merge was resolved by committing the conflict markers themselves rather\n"+
+				"than the resolved content. Open each file, remove the markers, regenerate\n"+
+				"the artifact (e.g. `npm run build`) if it is a built bundle, and commit\n"+
+				"the cleaned result.\n\n"+
+				"Offending lines:\n%s",
+			step.VerifyNoConflictMarkers, strings.Join(hits, "\n"))
+		return result
+	}
+	result.Passed = true
+	return result
+}
+
+// scanConflictMarkers walks the given pathspecs (relative to worktreePath)
+// and returns "<relative-path>:<line>" entries for every line that begins
+// with a git merge-conflict marker. A non-existent pathspec is treated as
+// "nothing to scan" rather than an error so the check is no-op friendly on
+// repos that lack the configured directory.
+func scanConflictMarkers(worktreePath string, pathspecs []string) ([]string, error) {
+	var hits []string
+	for _, spec := range pathspecs {
+		base := filepath.Join(worktreePath, spec)
+		info, err := os.Stat(base)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("stat %s: %w", spec, err)
+		}
+		if info.IsDir() {
+			walkErr := filepath.Walk(base, func(path string, fi os.FileInfo, werr error) error {
+				if werr != nil {
+					return werr
+				}
+				if fi.IsDir() {
+					return nil
+				}
+				fileHits, ferr := scanFileForConflictMarkers(path, worktreePath)
+				if ferr != nil {
+					return ferr
+				}
+				hits = append(hits, fileHits...)
+				return nil
+			})
+			if walkErr != nil {
+				return nil, fmt.Errorf("walk %s: %w", spec, walkErr)
+			}
+		} else {
+			fileHits, ferr := scanFileForConflictMarkers(base, worktreePath)
+			if ferr != nil {
+				return nil, ferr
+			}
+			hits = append(hits, fileHits...)
+		}
+	}
+	return hits, nil
+}
+
+// scanFileForConflictMarkers reads a single file and returns "<rel>:<line>"
+// entries for every line that starts with a conflict marker. Reader errors
+// (e.g. a token longer than the scanner buffer in a minified bundle) are
+// tolerated — the scan returns the hits it found so far rather than aborting,
+// because false negatives on the long-line tail are preferable to losing the
+// matches already discovered.
+func scanFileForConflictMarkers(path, worktreePath string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	rel, relErr := filepath.Rel(worktreePath, path)
+	if relErr != nil || rel == "" {
+		rel = path
+	}
+	rel = filepath.ToSlash(rel)
+
+	scanner := bufio.NewScanner(f)
+	// Minified JS bundles routinely contain single lines well past the 64 KiB
+	// default; bump the buffer to 8 MiB to cover realistic dist payloads.
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+
+	var hits []string
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		if lineHasConflictMarkerPrefix(scanner.Bytes()) {
+			hits = append(hits, fmt.Sprintf("%s:%d", rel, lineNum))
+		}
+	}
+	if serr := scanner.Err(); serr != nil {
+		log.Printf("[temper] conflict-marker scan: %s: %v (continuing with %d hit(s) so far)", rel, serr, len(hits))
+	}
+	return hits, nil
+}
+
+// lineHasConflictMarkerPrefix reports whether the line starts with 7+
+// consecutive `<`, `=`, or `>` characters — the shape of standard git
+// conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) including the 8-char
+// variant git emits for some recursive-merge strategies.
+func lineHasConflictMarkerPrefix(line []byte) bool {
+	return hasRunPrefix(line, '<') || hasRunPrefix(line, '=') || hasRunPrefix(line, '>')
+}
+
+// hasRunPrefix returns true when line starts with at least 7 copies of c.
+func hasRunPrefix(line []byte, c byte) bool {
+	const minRun = 7
+	if len(line) < minRun {
+		return false
+	}
+	for i := 0; i < minRun; i++ {
+		if line[i] != c {
+			return false
+		}
+	}
+	return true
 }
 
 // detectNodeDirs returns the relative directories containing a package.json.

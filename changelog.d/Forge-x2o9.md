@@ -1,0 +1,2 @@
+category: Fixed
+- **Temper rejects committed git conflict markers in embedded dist** - The Hearth embedded-bundle freshness check now runs an unconditional scan for `<<<<<<<`/`=======`/`>>>>>>>` markers in `internal/web/dist` before the rebuild step. Catches the case where a rebase Smith resolves a built-bundle conflict by committing the markers themselves — previously the `npm run build` + `git status` freshness check missed this when the Paths filter skipped the rebuild, and the broken bundle shipped to production. (Forge-x2o9)
