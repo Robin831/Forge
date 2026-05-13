@@ -57,16 +57,17 @@ type Handler func(ctx context.Context, event PREvent)
 // Monitor watches open PRs and dispatches events on status changes.
 type Monitor struct {
 	db               *state.DB
-	vcsLookup        func(anvil string) vcs.Provider
-	interval         time.Duration
-	anvilPaths       map[string]string // anvil name → path
-	pathsMu          sync.RWMutex      // protects anvilPaths
-	handlers         []Handler
-	mu               sync.Mutex
-	lastStatuses     map[string]*prSnapshot // anvil/PR number → last known state
-	refresh          chan struct{}          // channel to trigger immediate poll
-	autoLearnRules   func() bool            // auto-learn warden rules from Copilot comments on PR merge
-	maxCIFixAttempts func() int             // returns current max CI fix attempts from config
+	vcsLookup            func(anvil string) vcs.Provider
+	interval             time.Duration
+	anvilPaths           map[string]string // anvil name → path
+	pathsMu              sync.RWMutex      // protects anvilPaths
+	handlers             []Handler
+	mu                   sync.Mutex
+	lastStatuses         map[string]*prSnapshot // anvil/PR number → last known state
+	refresh              chan struct{}          // channel to trigger immediate poll
+	autoLearnRules       func() bool            // auto-learn warden rules from Copilot comments on PR merge
+	maxCIFixAttempts     func() int             // returns current max CI fix attempts from config
+	maxReviewFixAttempts func() int             // returns current max review fix attempts from config
 	learnMuGuard     sync.Mutex             // protects learnMu map
 	learnMu          map[string]*sync.Mutex // per-anvil mutex serializing auto-learn
 	learnSem         chan struct{}          // caps overall concurrent auto-learn goroutines
@@ -92,28 +93,33 @@ type prSnapshot struct {
 // provider for a given anvil name, enabling per-anvil platform support.
 // The autoLearnRules function is called on each PR merge to check whether
 // warden rule learning is enabled, so hot-reloaded config changes take effect
-// without restarting the daemon. The maxCIFixAttempts function returns the
-// current max CI fix attempts from config (may be nil, in which case the
-// state.DefaultMaxCIFixAttempts is used).
-func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.Duration, anvilPaths map[string]string, autoLearnRules func() bool, maxCIFixAttempts func() int) *Monitor {
+// without restarting the daemon. The maxCIFixAttempts and maxReviewFixAttempts
+// functions return the current max fix attempts from config (either may be nil,
+// in which case state.DefaultMaxCIFixAttempts / state.DefaultMaxReviewFixAttempts
+// is used).
+func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.Duration, anvilPaths map[string]string, autoLearnRules func() bool, maxCIFixAttempts func() int, maxReviewFixAttempts func() int) *Monitor {
 	if interval < 30*time.Second {
 		interval = 30 * time.Second
 	}
 	if maxCIFixAttempts == nil {
 		maxCIFixAttempts = func() int { return state.DefaultMaxCIFixAttempts }
 	}
+	if maxReviewFixAttempts == nil {
+		maxReviewFixAttempts = func() int { return state.DefaultMaxReviewFixAttempts }
+	}
 	return &Monitor{
-		db:               db,
-		vcsLookup:        vcsLookup,
-		interval:         interval,
-		anvilPaths:       anvilPaths,
-		lastStatuses:     make(map[string]*prSnapshot),
-		refresh:          make(chan struct{}, 1),
-		autoLearnRules:   autoLearnRules,
-		maxCIFixAttempts: maxCIFixAttempts,
-		learnMu:          make(map[string]*sync.Mutex),
-		learnSem:         make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
-		wasUnmanaged:     make(map[string]bool),
+		db:                   db,
+		vcsLookup:            vcsLookup,
+		interval:             interval,
+		anvilPaths:           anvilPaths,
+		lastStatuses:         make(map[string]*prSnapshot),
+		refresh:              make(chan struct{}, 1),
+		autoLearnRules:       autoLearnRules,
+		maxCIFixAttempts:     maxCIFixAttempts,
+		maxReviewFixAttempts: maxReviewFixAttempts,
+		learnMu:              make(map[string]*sync.Mutex),
+		learnSem:             make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
+		wasUnmanaged:         make(map[string]bool),
 	}
 }
 
@@ -450,6 +456,12 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			HasPendingReviews:    pr.HasPendingReviews,
 			IsConflicting:        conflictSeed,
 			HasUnresolvedThreads: threadsSeed,
+			// PRStatus.NeedsChanges() returns true when unresolved threads exist,
+			// so without seeding this in lockstep with threadsSeed the primary
+			// review-changes branch would re-fire on the first poll for any PR
+			// already in needs_fix or post-fix state — masking the secondary
+			// still-unresolved retry branch and dispatching duplicates.
+			NeedsChanges: threadsSeed,
 		}
 	}
 	// When CI is still in progress, preserve the last *completed* CIPassing value
@@ -663,6 +675,26 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
 		_ = m.db.LogEvent(state.EventReviewChanges, fmt.Sprintf("PR #%d: %s", pr.Number, details), pr.BeadID, pr.Anvil)
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d: review fix needed", pr.Number), pr.BeadID, pr.Anvil)
+	} else if newSnap.HasUnresolvedThreads && lastSnap.HasUnresolvedThreads {
+		// Review still has unresolved threads with no transition. Catches the gap
+		// where NotifyReviewFixCompleted() resets pr.Status to open after a burnish
+		// cycle but bellows never re-emits EventReviewChanges because threads stayed
+		// > 0 across the cycle. Mirrors the CI-fix still-failing branch above.
+		maxR := m.maxReviewFixAttempts()
+		if pr.Status != state.PRNeedsFix && pr.ReviewFixCount > 0 && pr.ReviewFixCount < maxR {
+			m.emit(ctx, PREvent{
+				PRNumber:  pr.Number,
+				BeadID:    pr.BeadID,
+				Anvil:     pr.Anvil,
+				Branch:    status.HeadRefName,
+				EventType: EventReviewChanges,
+				Details:   fmt.Sprintf("PR still has unresolved review threads after fix attempt %d/%d", pr.ReviewFixCount, maxR),
+				Timestamp: time.Now(),
+			})
+			_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
+			_ = m.db.LogEvent(state.EventReviewChanges, fmt.Sprintf("PR #%d review fix retry needed (attempt %d/%d)", pr.Number, pr.ReviewFixCount, maxR), pr.BeadID, pr.Anvil)
+			_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d review fix retry needed", pr.Number), pr.BeadID, pr.Anvil)
+		}
 	}
 
 	// If all merge-readiness conditions are met and the PR was in needs_fix,
