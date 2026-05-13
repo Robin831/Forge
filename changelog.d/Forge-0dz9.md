@@ -1,0 +1,2 @@
+category: Fixed
+- **Beads-Forge over-splitting** - The emit-stage prompt now defaults to ONE bead per cohesive deliverable instead of one bead per verb (audit / migrate / test). It only splits when work crosses meaningful boundaries — different anvils, independent reviewers, or genuine cross-day blockers — using the heuristic "would a single developer do this in one branch, one sitting, one PR?". Adds a concrete few-shot example (a single dependency upgrade) and a counter-example (cross-surface migration) so the model recognises the right granularity. (Forge-0dz9)

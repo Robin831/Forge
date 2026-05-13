@@ -205,6 +205,29 @@ func TestBuildPrompt_EmitMode_IncludesAnvilList(t *testing.T) {
 	}
 }
 
+// TestBuildPrompt_EmitMode_PrefersSingleBead asserts the prompt instructs claude
+// to default to ONE bead instead of splitting per-verb. Regression guard for
+// the over-splitting bug where simple changes (e.g. a dependency upgrade) were
+// fanned out into four sequential beads (audit / bump / migrate / test).
+func TestBuildPrompt_EmitMode_PrefersSingleBead(t *testing.T) {
+	p := BuildPrompt(TurnRequest{
+		Stage:  StageReady,
+		Mode:   ModeEmit,
+		Title:  "Foo",
+		Plan:   "# plan",
+		Anvils: AnvilContext{"forge": "/path/to/forge"},
+	})
+	if !strings.Contains(p, "Default to ONE bead") {
+		t.Errorf("emit prompt must default to one bead, got %q", p)
+	}
+	if !strings.Contains(p, "one branch, one sitting, one PR") {
+		t.Errorf("emit prompt should include the one-developer-one-PR heuristic, got %q", p)
+	}
+	if !strings.Contains(p, "phases") {
+		t.Errorf("emit prompt should explicitly warn against splitting by phase, got %q", p)
+	}
+}
+
 func TestInterpretResponse_EmitParsesEnvelope(t *testing.T) {
 	out := "```json\n" +
 		`{"beads":[{"id":"p1","anvil":"a","title":"X","description":"d","type":"task","priority":2}]}` +
