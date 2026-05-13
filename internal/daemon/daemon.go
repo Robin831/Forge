@@ -2078,10 +2078,10 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 			stamps[b.Anvil+"/"+b.ID] = queueTimestamp{CreatedAt: b.CreatedAt, UpdatedAt: b.UpdatedAt}
 		}
 
-		d.replaceQueueTimestamps(succeededSet, stamps)
-
 		if err := d.db.ReplaceQueueCacheForAnvils(succeededAnvils, dedupeCacheItems(cacheItems)); err != nil {
 			d.logger.Warn("failed to cache queue", "error", err)
+		} else {
+			d.replaceQueueTimestamps(succeededSet, stamps)
 		}
 	}
 
