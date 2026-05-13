@@ -4063,10 +4063,10 @@ rules:
     - id: verification-commands-match-repo
       category: other
       pattern: >-
-        PR description or acceptance text listing verification commands (build/test/lint scripts, Makefile targets, npm scripts)
+        PR description or acceptance text listing verification commands (build/test/lint scripts, Makefile targets, npm scripts) or acceptance criteria referencing specific commands for verification
       check: >-
         Verify the listed commands actually exist in this repo — check package.json scripts, Makefile targets, and conventional Go commands (e.g. `go test ./...`, `npm run build` in `internal/web/frontend`). Either update the description to match real commands or add the missing scripts/targets.
-      source: copilot:PR#592
+      source: ['copilot:PR#592', 'copilot:PR#593']
       added: "2026-05-11"
     - id: empty-state-vs-loading
       category: ui
@@ -4084,20 +4084,12 @@ rules:
         Verify the comment accurately describes the mechanism — browsers use scroll anchoring to preserve visual viewport position, not scrollTop preservation. Reword to mention scroll position/viewport or scroll anchoring explicitly rather than scrollTop.
       source: copilot:PR#593
       added: "2026-05-11"
-    - id: pr-description-matches-repo-scripts
-      category: other
-      pattern: >-
-        PR description or acceptance criteria references npm scripts (e.g. `npm run lint`, `npm test`) or other commands for verification
-      check: >-
-        Verify the referenced scripts/commands actually exist in the relevant package.json or tooling config; if not, either add the missing scripts or update the PR description to match the repo's actual workflow
-      source: copilot:PR#593
-      added: "2026-05-11"
     - id: include-reviewing-status-in-active-filters
       category: ui
       pattern: >-
-        Frontend filters that select 'active' workers/beads by status (e.g., pending/running/monitoring) for display in pipeline/queue UI components
+        Frontend filters or slot counters that select 'active' workers/beads by status (e.g., pending/running/monitoring) for display in pipeline/queue UI components or for Smith capacity calculations
       check: >-
-        Verify the status filter includes 'reviewing' (Warden stage) alongside pending/running/monitoring, so Warden-stage beads are counted and visible; apply consistently across all related filters (e.g., pipeline bar and beadRows)
+        Verify the status filter includes 'reviewing' (Warden stage) alongside pending/running/monitoring, so Warden-stage beads are counted and visible in both UI filters and active Smith slot counts; apply consistently across all related contexts (e.g., pipeline bar, beadRows, and active-slot capacity)
       source: copilot:PR#594
       added: "2026-05-11"
     - id: dedupe-counts-by-entity
@@ -4114,14 +4106,6 @@ rules:
         A predicate/filter function whose name or accompanying comment describes a narrow concept (e.g. a synthetic/sentinel row) but whose implementation matches a broader set of items (e.g. only checks a single field like phase/type/status)
       check: >-
         Verify the predicate's implementation actually identifies the specific entity described in its name/comment. If the distinguishing characteristic is a composite (id prefix, missing field, synthetic marker), the check must include those discriminators — otherwise legitimate items sharing only the broad attribute will be incorrectly filtered. Either tighten the predicate to match the documented intent or update the name/comment to reflect the broader behavior.
-      source: copilot:PR#594
-      added: "2026-05-11"
-    - id: active-slot-status-coverage
-      category: ui
-      pattern: >-
-        Computing active/occupied Smith slots (or remaining capacity) by filtering workers on a subset of status values (e.g., only "pending" and "running")
-      check: >-
-        Verify the status filter includes every status that occupies a slot against max_total_smiths — notably "reviewing" (Warden phase) and any other in-flight pipeline states — so idle capacity isn't over-reported
       source: copilot:PR#594
       added: "2026-05-11"
     - id: validate-path-after-wait
