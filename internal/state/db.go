@@ -813,6 +813,19 @@ func (db *DB) WorkersByAnvil(anvil string) ([]Worker, error) {
 		ORDER BY started_at DESC`, anvil)
 }
 
+// MonitoringBellowsWorkers returns every worker row whose phase is "bellows"
+// and whose status is "monitoring". The bellows poll loop uses this to sweep
+// orphaned monitoring workers whose underlying PR has reached a terminal
+// state (merged/closed) outside the normal transition path — e.g. an external
+// PR that was closed on GitHub before it was assigned to bellows, so its
+// prs.status is already "closed" by the time OpenPRs would have surfaced it,
+// leaving the worker stranded in monitoring.
+func (db *DB) MonitoringBellowsWorkers() ([]Worker, error) {
+	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+		FROM workers WHERE phase = 'bellows' AND status = 'monitoring'
+		ORDER BY started_at`)
+}
+
 // CompletedWorkers returns workers in terminal states (done, failed, timeout),
 // ordered by most recently completed first. Limit 0 means no limit.
 func (db *DB) CompletedWorkers(limit int) ([]Worker, error) {
