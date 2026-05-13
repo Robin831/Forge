@@ -77,7 +77,7 @@ describe('sortItems', () => {
   it('places items with missing created_at first for created-asc', () => {
     const items = [
       item({ bead_id: 'has-ts', created_at: '2024-06-01T00:00:00Z' }),
-      item({ bead_id: 'no-ts', created_at: undefined as unknown as string }),
+      item({ bead_id: 'no-ts', created_at: '' }),
     ]
     const asc = sortItems(items, 'created-asc')
     expect(asc.map((i) => i.bead_id)).toEqual(['no-ts', 'has-ts'])
