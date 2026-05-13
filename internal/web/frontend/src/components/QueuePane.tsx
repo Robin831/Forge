@@ -51,24 +51,24 @@ const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
 ]
 
 // parseTimestamp converts an ISO string to a numeric epoch for comparison.
-// Missing/unparseable values become NaN; callers treat NaN as "oldest" so the
-// timestamp-based options degrade gracefully when the backend hasn't filled in
-// created_at / updated_at yet.
+// Missing/unparseable values become NaN and are treated as "oldest" by
+// compareTimestamps so the timestamp-based options degrade gracefully when the
+// backend hasn't filled in created_at / updated_at yet.
 function parseTimestamp(value: string | undefined): number {
   if (!value) return NaN
   const t = Date.parse(value)
   return Number.isNaN(t) ? NaN : t
 }
 
-// compareTimestamps sorts by parsed epoch. NaN values are pinned to the
-// "oldest" end regardless of direction so they're predictable rather than
-// scattered through the list when timestamps are missing.
+// compareTimestamps sorts by parsed epoch. NaN values are treated as "oldest":
+// they sort first for ascending order (oldest first) and last for descending
+// order (newest first), so UI labels match the actual item ordering.
 function compareTimestamps(a: number, b: number, direction: 'asc' | 'desc'): number {
   const aMissing = Number.isNaN(a)
   const bMissing = Number.isNaN(b)
   if (aMissing && bMissing) return 0
-  if (aMissing) return 1
-  if (bMissing) return -1
+  if (aMissing) return direction === 'asc' ? -1 : 1
+  if (bMissing) return direction === 'asc' ? 1 : -1
   return direction === 'asc' ? a - b : b - a
 }
 

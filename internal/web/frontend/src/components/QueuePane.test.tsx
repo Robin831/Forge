@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import QueuePane, { groupQueueItems } from './QueuePane'
+import QueuePane, { groupQueueItems, sortItems } from './QueuePane'
 import type { QueueItem } from '../api'
 
 function item(overrides: Partial<QueueItem>): QueueItem {
@@ -52,6 +52,35 @@ describe('groupQueueItems', () => {
       item({ bead_id: 'x', anvil: 'forge', section: 'mystery-future-value' }),
     ])
     expect(groups[0].buckets.ready.map((i) => i.bead_id)).toEqual(['x'])
+  })
+})
+
+describe('sortItems', () => {
+  it('places items with missing timestamps first for asc sorts (treated as oldest)', () => {
+    const items = [
+      item({ bead_id: 'has-ts', updated_at: '2024-01-02T00:00:00Z' }),
+      item({ bead_id: 'no-ts', updated_at: '' }),
+    ]
+    const asc = sortItems(items, 'updated-asc')
+    expect(asc.map((i) => i.bead_id)).toEqual(['no-ts', 'has-ts'])
+  })
+
+  it('places items with missing timestamps last for desc sorts (treated as oldest)', () => {
+    const items = [
+      item({ bead_id: 'no-ts', updated_at: '' }),
+      item({ bead_id: 'has-ts', updated_at: '2024-01-02T00:00:00Z' }),
+    ]
+    const desc = sortItems(items, 'updated-desc')
+    expect(desc.map((i) => i.bead_id)).toEqual(['has-ts', 'no-ts'])
+  })
+
+  it('places items with missing created_at first for created-asc', () => {
+    const items = [
+      item({ bead_id: 'has-ts', created_at: '2024-06-01T00:00:00Z' }),
+      item({ bead_id: 'no-ts', created_at: undefined as unknown as string }),
+    ]
+    const asc = sortItems(items, 'created-asc')
+    expect(asc.map((i) => i.bead_id)).toEqual(['no-ts', 'has-ts'])
   })
 })
 
