@@ -1369,7 +1369,7 @@ func TestSweepOrphanedMonitoringWorkers_TerminalPR(t *testing.T) {
 				StartedAt: time.Now(),
 			}))
 
-			m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil)
+			m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil, nil)
 			m.sweepOrphanedMonitoringWorkers()
 
 			workers, err := db.WorkersByBead(pr.BeadID, pr.Anvil, 0)
@@ -1416,7 +1416,7 @@ func TestSweepOrphanedMonitoringWorkers_MissingPR(t *testing.T) {
 		StartedAt: time.Now(),
 	}))
 
-	m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil)
+	m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil, nil)
 	m.sweepOrphanedMonitoringWorkers()
 
 	workers, err := db.WorkersByBead("ext-9999", "munin", 0)
@@ -1457,7 +1457,7 @@ func TestSweepOrphanedMonitoringWorkers_IgnoresNonBellowsWorkers(t *testing.T) {
 		StartedAt: time.Now(),
 	}))
 
-	m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil)
+	m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil, nil)
 	m.sweepOrphanedMonitoringWorkers()
 
 	w, err := db.WorkersByBead(pr.BeadID, pr.Anvil, 0)
