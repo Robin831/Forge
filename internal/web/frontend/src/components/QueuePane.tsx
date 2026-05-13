@@ -79,25 +79,19 @@ export function sortItems(items: QueueItem[], sortKey: SortKey): QueueItem[] {
       copy.sort((a, b) => a.priority - b.priority)
       return copy
     case 'updated-desc':
-      copy.sort((a, b) =>
-        compareTimestamps(parseTimestamp(a.updated_at), parseTimestamp(b.updated_at), 'desc'),
-      )
+    case 'updated-asc': {
+      const dir = sortKey === 'updated-desc' ? 'desc' : 'asc'
+      const ts = new Map(copy.map((item) => [item, parseTimestamp(item.updated_at)]))
+      copy.sort((a, b) => compareTimestamps(ts.get(a)!, ts.get(b)!, dir))
       return copy
-    case 'updated-asc':
-      copy.sort((a, b) =>
-        compareTimestamps(parseTimestamp(a.updated_at), parseTimestamp(b.updated_at), 'asc'),
-      )
-      return copy
+    }
     case 'created-desc':
-      copy.sort((a, b) =>
-        compareTimestamps(parseTimestamp(a.created_at), parseTimestamp(b.created_at), 'desc'),
-      )
+    case 'created-asc': {
+      const dir = sortKey === 'created-desc' ? 'desc' : 'asc'
+      const ts = new Map(copy.map((item) => [item, parseTimestamp(item.created_at)]))
+      copy.sort((a, b) => compareTimestamps(ts.get(a)!, ts.get(b)!, dir))
       return copy
-    case 'created-asc':
-      copy.sort((a, b) =>
-        compareTimestamps(parseTimestamp(a.created_at), parseTimestamp(b.created_at), 'asc'),
-      )
-      return copy
+    }
     case 'title-asc':
       copy.sort((a, b) =>
         (a.title || a.bead_id).localeCompare(b.title || b.bead_id, undefined, {
@@ -189,11 +183,9 @@ export default function QueuePane({
     const grouped = groupQueueItems(filteredItems)
     return grouped.map((group) => ({
       ...group,
-      buckets: {
-        ready: sortItems(group.buckets.ready, sortKey),
-        unlabeled: sortItems(group.buckets.unlabeled, sortKey),
-        in_progress: sortItems(group.buckets.in_progress, sortKey),
-      },
+      buckets: Object.fromEntries(
+        BUCKET_ORDER.map((bucket) => [bucket, sortItems(group.buckets[bucket], sortKey)]),
+      ) as Record<BucketKey, QueueItem[]>,
     }))
   }, [filteredItems, sortKey])
 
