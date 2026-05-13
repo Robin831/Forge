@@ -3377,6 +3377,18 @@ func TestReconcileOpenPRs_ReevaluatesAlreadyTrackedPRs(t *testing.T) {
 	row500, _ := db.GetPRByNumber("test-anvil", 500)
 	require.NoError(t, db.UpdatePRBellowsManaged(row500.ID, true))
 
+	// 600: synthetic ext-* PR that the user explicitly assigned to bellows via
+	//      the assign_bellows IPC action. Both bellows_managed=1 and
+	//      bellows_manually_assigned=1 are set. Reconcile must leave it alone
+	//      (Forge-l125): the previous overly-broad ext-* clobber was reverting
+	//      manual assignments within one poll cycle.
+	require.NoError(t, db.InsertPR(&state.PR{
+		Number: 600, Anvil: "test-anvil", BeadID: "ext-600",
+		Branch: "feature/user-assigned", Status: state.PROpen, CreatedAt: now,
+	}))
+	row600, _ := db.GetPRByNumber("test-anvil", 600)
+	require.NoError(t, db.UpdatePRBellowsAssignment(row600.ID, true, true))
+
 	mock := &mockVCSProvider{
 		openPRs: []vcs.OpenPR{
 			{Number: 100, Branch: "forge/g1a58", Body: "Bead: Fhi.Metadata-g1a58\n" + vcs.MarkerForID(siblingID)},
@@ -3384,6 +3396,7 @@ func TestReconcileOpenPRs_ReevaluatesAlreadyTrackedPRs(t *testing.T) {
 			{Number: 300, Branch: "feature/legacy-ext", Body: "Some external PR with our marker by accident\n" + vcs.MarkerForID(myID)},
 			{Number: 400, Branch: "forge/Forge-promote", Body: "Bead: Forge-promote\n" + vcs.MarkerForID(myID)},
 			{Number: 500, Branch: "forge/Forge-legacy", Body: "Bead: Forge-legacy\n<!-- forge-managed: true -->"},
+			{Number: 600, Branch: "feature/user-assigned", Body: "external PR body, no markers"},
 		},
 	}
 
@@ -3414,7 +3427,7 @@ func TestReconcileOpenPRs_ReevaluatesAlreadyTrackedPRs(t *testing.T) {
 	got300, err := db.GetPRByNumber("test-anvil", 300)
 	require.NoError(t, err)
 	assert.False(t, got300.BellowsManaged,
-		"ext-* PRs must never be bellows-managed regardless of marker state — defensive correction")
+		"legacy auto-adopted ext-* PRs (no manual-assignment flag) must be released by reconcile — defensive correction")
 
 	got400, err := db.GetPRByNumber("test-anvil", 400)
 	require.NoError(t, err)
@@ -3425,6 +3438,13 @@ func TestReconcileOpenPRs_ReevaluatesAlreadyTrackedPRs(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, got500.BellowsManaged,
 		"PR carrying only the legacy generic marker is ambiguous in multi-forge deployments and must be released")
+
+	got600, err := db.GetPRByNumber("test-anvil", 600)
+	require.NoError(t, err)
+	assert.True(t, got600.BellowsManaged,
+		"ext-* PRs that the user manually assigned via assign_bellows must NOT be clobbered by reconcile (Forge-l125)")
+	assert.True(t, got600.BellowsManuallyAssigned,
+		"manual-assignment marker must persist across reconcile cycles")
 }
 
 func TestReconcileMergedBeads(t *testing.T) {

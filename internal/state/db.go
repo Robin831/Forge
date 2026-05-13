@@ -129,6 +129,7 @@ func (db *DB) migrate() error {
 		{"forge_sessions", "plan", `ALTER TABLE forge_sessions ADD COLUMN plan TEXT NOT NULL DEFAULT ''`},
 		{"forge_session_messages", "kind", `ALTER TABLE forge_session_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'`},
 		{"forge_session_messages", "metadata", `ALTER TABLE forge_session_messages ADD COLUMN metadata TEXT NOT NULL DEFAULT ''`},
+		{"prs", "bellows_manually_assigned", `ALTER TABLE prs ADD COLUMN bellows_manually_assigned INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -984,8 +985,9 @@ type PR struct {
 	HasUnresolvedThreads bool
 	HasPendingReviews    bool
 	HasApproval          bool
-	Title                string
-	BellowsManaged       bool // true = bellows runs lifecycle workers (quench, burnish, rebase)
+	Title                   string
+	BellowsManaged          bool // true = bellows runs lifecycle workers (quench, burnish, rebase)
+	BellowsManuallyAssigned bool // true = a user explicitly assigned bellows via IPC; reconcile must not clobber
 }
 
 // IsExternal returns true if this PR was discovered via GitHub reconciliation
@@ -1017,7 +1019,7 @@ func (db *DB) InsertPR(pr *PR) error {
 
 // PRByNumber returns the PR record for a given GitHub PR number, or nil if not found.
 func (db *DB) PRByNumber(number int) (*PR, error) {
-	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed
+	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned
 		FROM prs WHERE number = ? ORDER BY id DESC LIMIT 1`, number)
 	if err != nil {
 		return nil, err
@@ -1063,19 +1065,19 @@ func (db *DB) UpdatePRLifecycle(id int, ciFixCount, reviewFixCount, rebaseCount 
 
 // GetPRByID returns a PR by its primary key id, or nil if not found.
 func (db *DB) GetPRByID(id int) (*PR, error) {
-	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed
+	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned
 		FROM prs WHERE id = ?`, id)
 }
 
 // GetPRByNumber returns a PR by its anvil and number.
 func (db *DB) GetPRByNumber(anvil string, number int) (*PR, error) {
-	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed
+	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned
 		FROM prs WHERE anvil = ? AND number = ? ORDER BY id DESC LIMIT 1`, anvil, number)
 }
 
 // OpenPRs returns all PRs with non-terminal status.
 func (db *DB) OpenPRs() ([]PR, error) {
-	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed
+	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned
 		FROM prs WHERE status IN ` + nonTerminalPRStatusSQL() + `
 		ORDER BY created_at`)
 }
@@ -1104,9 +1106,9 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 		var status string
 		var createdAt string
 		var lastChecked sql.NullString
-		var ciPassing, isConflicting, hasThreads, hasPendingReviews, hasApproval, bellowsManaged int
+		var ciPassing, isConflicting, hasThreads, hasPendingReviews, hasApproval, bellowsManaged, bellowsManuallyAssigned int
 		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch, &p.BaseBranch,
-			&status, &createdAt, &lastChecked, &p.CIFixCount, &p.ReviewFixCount, &p.RebaseCount, &ciPassing, &isConflicting, &hasThreads, &hasPendingReviews, &hasApproval, &p.Title, &bellowsManaged); err != nil {
+			&status, &createdAt, &lastChecked, &p.CIFixCount, &p.ReviewFixCount, &p.RebaseCount, &ciPassing, &isConflicting, &hasThreads, &hasPendingReviews, &hasApproval, &p.Title, &bellowsManaged, &bellowsManuallyAssigned); err != nil {
 			return nil, err
 		}
 		p.Status = PRStatus(status)
@@ -1116,6 +1118,7 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 		p.HasPendingReviews = hasPendingReviews != 0
 		p.HasApproval = hasApproval != 0
 		p.BellowsManaged = bellowsManaged != 0
+		p.BellowsManuallyAssigned = bellowsManuallyAssigned != 0
 		p.CreatedAt = parseTime(createdAt)
 
 		if lastChecked.Valid {
@@ -1130,7 +1133,7 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 // MergedPRs returns all PRs with status=merged that have a non-empty,
 // non-external bead_id (i.e. beads that Forge can attempt to close).
 func (db *DB) MergedPRs() ([]PR, error) {
-	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed
+	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned
 		FROM prs WHERE status = 'merged' AND bead_id != '' AND bead_id NOT LIKE 'ext-%'
 		ORDER BY created_at, id`)
 }
@@ -1259,6 +1262,18 @@ func (db *DB) UpdatePRMergeability(id int, ciPassing, isConflicting, hasUnresolv
 // When true, bellows will run lifecycle workers (quench, burnish, rebase) for this PR.
 func (db *DB) UpdatePRBellowsManaged(id int, managed bool) error {
 	_, err := db.conn.Exec(`UPDATE prs SET bellows_managed = ? WHERE id = ?`, boolToInt(managed), id)
+	return err
+}
+
+// UpdatePRBellowsAssignment sets both the bellows_managed and bellows_manually_assigned
+// flags for a PR atomically. The manual flag records that a user explicitly
+// assigned (or released) bellows via IPC, so the reconcile loop can distinguish
+// user-initiated assignments from legacy auto-adoption and avoid clobbering them.
+func (db *DB) UpdatePRBellowsAssignment(id int, managed, manuallyAssigned bool) error {
+	_, err := db.conn.Exec(
+		`UPDATE prs SET bellows_managed = ?, bellows_manually_assigned = ? WHERE id = ?`,
+		boolToInt(managed), boolToInt(manuallyAssigned), id,
+	)
 	return err
 }
 
