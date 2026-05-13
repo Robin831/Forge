@@ -15,6 +15,8 @@ function item(overrides: Partial<QueueItem>): QueueItem {
     status: 'open',
     labels: [],
     section: 'ready',
+    created_at: '',
+    updated_at: '',
     ...overrides,
   }
 }

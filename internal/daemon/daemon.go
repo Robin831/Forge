@@ -250,6 +250,23 @@ type Daemon struct {
 	// parentCloser closes a bead with --force. Defaults to exec.Command;
 	// may be replaced in tests.
 	parentCloser func(anvilPath, beadID, reason string) error
+
+	// queueTimestamps holds CreatedAt/UpdatedAt strings (as emitted by
+	// `bd ready --json` / `bd list --json`) keyed by "anvil/beadID". It is
+	// refreshed alongside the queue_cache rebuild so the IPC "queue" handler
+	// can attach timestamps to QueueItem responses without persisting them
+	// to SQLite. Missing entries return zero values, which serialise as
+	// empty strings on the wire.
+	queueTimestampsMu sync.RWMutex
+	queueTimestamps   map[string]queueTimestamp
+}
+
+// queueTimestamp pairs the two ISO timestamps that bd emits for a bead. The
+// strings are passed through verbatim (no parsing) so any timezone or
+// precision quirks from bd flow straight to the client.
+type queueTimestamp struct {
+	CreatedAt string
+	UpdatedAt string
 }
 
 // New creates a new daemon instance.
@@ -341,6 +358,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		reqTracker:            *ipc.NewRequestTracker("forge-"),
 		crucibleTickerResetCh: make(chan struct{}, 1),
 		lastPollMap:           make(map[string]anvilPollSnapshot),
+		queueTimestamps:       make(map[string]queueTimestamp),
 	}
 	d.notifier.Store(notifier)
 	d.dispatcher.Store(dispatcher)
@@ -1998,6 +2016,12 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 			}
 		}
 		var cacheItems []state.QueueItem
+		// Collect timestamps alongside the cache rebuild so the IPC "queue"
+		// handler can attach created_at/updated_at to QueueItem responses
+		// without persisting them in SQLite. The map is rebuilt per-poll for
+		// the same set of anvils as the cache itself, so freshness mirrors
+		// the cache exactly.
+		stamps := make(map[string]queueTimestamp)
 		for _, b := range mergedForCache {
 			if b.Labels == nil {
 				b.Labels = []string{}
@@ -2015,6 +2039,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 				Section:     section,
 				Assignee:    b.Assignee,
 			})
+			stamps[b.Anvil+"/"+b.ID] = queueTimestamp{CreatedAt: b.CreatedAt, UpdatedAt: b.UpdatedAt}
 		}
 
 		// Also include in-progress beads from successful anvils.
@@ -2050,7 +2075,10 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 				Section:     state.QueueSectionInProgress,
 				Assignee:    b.Assignee,
 			})
+			stamps[b.Anvil+"/"+b.ID] = queueTimestamp{CreatedAt: b.CreatedAt, UpdatedAt: b.UpdatedAt}
 		}
+
+		d.replaceQueueTimestamps(succeededSet, stamps)
 
 		if err := d.db.ReplaceQueueCacheForAnvils(succeededAnvils, dedupeCacheItems(cacheItems)); err != nil {
 			d.logger.Warn("failed to cache queue", "error", err)
@@ -3416,9 +3444,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("queue cache: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
+		// Timestamps live in an in-memory map populated alongside the queue
+		// cache rebuild (see pollAndDispatch). Sourcing them here avoids a
+		// SQLite schema migration on queue_cache; entries missing from the
+		// map serialise as empty strings on the wire.
 		out := make([]ipc.QueueItem, 0, len(items))
 		for _, it := range items {
 			labels := parseQueueLabels(it.Labels)
+			ts := d.lookupQueueTimestamp(it.Anvil, it.BeadID)
 			out = append(out, ipc.QueueItem{
 				BeadID:      it.BeadID,
 				Anvil:       it.Anvil,
@@ -3429,6 +3462,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				Labels:      labels,
 				Section:     string(it.Section),
 				Assignee:    it.Assignee,
+				CreatedAt:   ts.CreatedAt,
+				UpdatedAt:   ts.UpdatedAt,
 			})
 		}
 		data, _ := json.Marshal(ipc.QueueResponse{Items: out})
@@ -6007,6 +6042,43 @@ func trimStrings(ss []string) []string {
 		}
 	}
 	return res
+}
+
+// replaceQueueTimestamps refreshes the in-memory timestamp map for the given
+// set of successfully-polled anvils. Entries belonging to other anvils are
+// kept verbatim, mirroring ReplaceQueueCacheForAnvils so a failed anvil poll
+// does not wipe its last-known timestamps. `fresh` is the full set of new
+// timestamps from this poll cycle (its keys must use the "anvil/beadID"
+// format).
+func (d *Daemon) replaceQueueTimestamps(succeeded map[string]struct{}, fresh map[string]queueTimestamp) {
+	d.queueTimestampsMu.Lock()
+	defer d.queueTimestampsMu.Unlock()
+	next := make(map[string]queueTimestamp, len(fresh)+len(d.queueTimestamps))
+	// Keep entries from anvils that did not poll successfully this cycle so
+	// their timestamps remain available alongside their cached queue rows.
+	for k, v := range d.queueTimestamps {
+		anvil, _, ok := strings.Cut(k, "/")
+		if !ok {
+			continue
+		}
+		if _, replaced := succeeded[anvil]; replaced {
+			continue
+		}
+		next[k] = v
+	}
+	for k, v := range fresh {
+		next[k] = v
+	}
+	d.queueTimestamps = next
+}
+
+// lookupQueueTimestamp returns the CreatedAt/UpdatedAt pair recorded for the
+// given (anvil, beadID) during the most recent poll. Callers receive a
+// zero-valued queueTimestamp (empty strings) when no entry is present.
+func (d *Daemon) lookupQueueTimestamp(anvil, beadID string) queueTimestamp {
+	d.queueTimestampsMu.RLock()
+	defer d.queueTimestampsMu.RUnlock()
+	return d.queueTimestamps[anvil+"/"+beadID]
 }
 
 // parseQueueLabels decodes a JSON-encoded labels string from the queue_cache

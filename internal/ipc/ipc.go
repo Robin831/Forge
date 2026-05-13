@@ -331,7 +331,10 @@ type QueuedPayload struct {
 
 // QueueItem is the IPC representation of a single cached queue entry. It
 // mirrors state.QueueItem but uses JSON-friendly tags and a parsed labels
-// slice.
+// slice. CreatedAt and UpdatedAt are sourced from the in-memory poller
+// snapshot (not the queue_cache table) so timestamps flow through without
+// a SQLite schema migration; both are empty strings when the snapshot has
+// no matching entry (e.g. before the first poll completes).
 type QueueItem struct {
 	BeadID      string   `json:"bead_id"`
 	Anvil       string   `json:"anvil"`
@@ -342,6 +345,8 @@ type QueueItem struct {
 	Labels      []string `json:"labels"`
 	Section     string   `json:"section"`
 	Assignee    string   `json:"assignee,omitempty"`
+	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
 }
 
 // QueueResponse is the response payload for a "queue" command.

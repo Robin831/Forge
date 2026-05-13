@@ -4203,6 +4203,90 @@ func TestHandleIPC_Queue(t *testing.T) {
 	})
 }
 
+// TestHandleIPC_Queue_Timestamps verifies that the queue endpoint surfaces
+// created_at / updated_at sourced from the in-memory poller snapshot and
+// emits both keys (even as empty strings) so the QueueItem JSON shape stays
+// stable for the frontend date-column work that depends on this contract.
+func TestHandleIPC_Queue_Timestamps(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-ipc-queue-ts-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	db, err := state.Open(filepath.Join(tmpDir, "state.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	d.cfg.Store(&config.Config{})
+
+	seed := []state.QueueItem{
+		{
+			BeadID:   "Forge-abc1",
+			Anvil:    "forge",
+			Title:    "With timestamps",
+			Priority: 2,
+			Status:   "ready",
+			Labels:   `[]`,
+			Section:  state.QueueSectionReady,
+		},
+		{
+			BeadID:   "Forge-def2",
+			Anvil:    "forge",
+			Title:    "No snapshot entry",
+			Priority: 3,
+			Status:   "ready",
+			Labels:   `[]`,
+			Section:  state.QueueSectionReady,
+		},
+	}
+	require.NoError(t, db.ReplaceQueueCacheForAnvils([]string{"forge"}, seed))
+
+	const created = "2026-05-08T04:15:41Z"
+	const updated = "2026-05-12T11:08:11Z"
+	d.replaceQueueTimestamps(
+		map[string]struct{}{"forge": {}},
+		map[string]queueTimestamp{
+			"forge/Forge-abc1": {CreatedAt: created, UpdatedAt: updated},
+		},
+	)
+
+	resp := d.handleIPC(ipc.Command{Type: "queue"})
+	require.Equal(t, "ok", resp.Type)
+
+	// Verify the raw JSON contains the new keys so the wire contract is
+	// stable for the frontend (created_at/updated_at must always be present,
+	// even when empty).
+	var raw struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal(resp.Payload, &raw))
+	require.Len(t, raw.Items, 2)
+	for _, item := range raw.Items {
+		_, hasCreated := item["created_at"]
+		_, hasUpdated := item["updated_at"]
+		assert.True(t, hasCreated, "every queue item must expose a created_at key")
+		assert.True(t, hasUpdated, "every queue item must expose an updated_at key")
+	}
+
+	var payload ipc.QueueResponse
+	require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+	require.Len(t, payload.Items, 2)
+
+	byID := map[string]ipc.QueueItem{}
+	for _, item := range payload.Items {
+		byID[item.BeadID] = item
+	}
+	assert.Equal(t, created, byID["Forge-abc1"].CreatedAt)
+	assert.Equal(t, updated, byID["Forge-abc1"].UpdatedAt)
+	// Beads missing from the snapshot fall back to empty strings rather
+	// than crashing the handler or omitting the row entirely.
+	assert.Equal(t, "", byID["Forge-def2"].CreatedAt)
+	assert.Equal(t, "", byID["Forge-def2"].UpdatedAt)
+}
+
 func TestHandleIPC_Workers(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-ipc-workers-*")
 	require.NoError(t, err)
