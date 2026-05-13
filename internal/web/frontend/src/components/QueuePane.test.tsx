@@ -127,4 +127,29 @@ describe('QueuePane', () => {
     renderPane([])
     expect(screen.getByText('No beads in queue.')).toBeInTheDocument()
   })
+
+  it('renders a relative-time label on each row with an ISO tooltip', async () => {
+    const user = userEvent.setup()
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+    renderPane([
+      item({ bead_id: 'a1', anvil: 'forge', section: 'ready', updated_at: oneHourAgo }),
+      item({ bead_id: 'a2', anvil: 'forge', section: 'ready', updated_at: twoHoursAgo }),
+    ])
+    await user.click(screen.getByRole('button', { name: /forge/ }))
+    await user.click(screen.getByRole('button', { name: /Ready \(2\)/ }))
+
+    const firstRow = screen.getByText('a1').closest('li')!
+    const secondRow = screen.getByText('a2').closest('li')!
+    expect(within(firstRow).getByText('Updated 1h ago')).toBeInTheDocument()
+    expect(within(firstRow).getByText('Updated 1h ago')).toHaveAttribute(
+      'title',
+      oneHourAgo,
+    )
+    expect(within(secondRow).getByText('Updated 2h ago')).toBeInTheDocument()
+    expect(within(secondRow).getByText('Updated 2h ago')).toHaveAttribute(
+      'title',
+      twoHoursAgo,
+    )
+  })
 })
