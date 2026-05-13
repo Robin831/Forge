@@ -210,6 +210,15 @@ func TestBuildDefaultBody(t *testing.T) {
 // the given commit message and returns the repo directory.
 func makeTestRepo(t *testing.T, commitMsg string) string {
 	t.Helper()
+	// Unset worktree-specific git env vars so commands run in the temp repo
+	// rather than the parent worktree. Restore them after the test.
+	for _, key := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES"} {
+		if val, ok := os.LookupEnv(key); ok {
+			os.Unsetenv(key)
+			key, val := key, val
+			t.Cleanup(func() { os.Setenv(key, val) })
+		}
+	}
 	dir := t.TempDir()
 	run := func(args ...string) {
 		t.Helper()

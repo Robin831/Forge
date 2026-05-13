@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -274,14 +275,16 @@ func TestBlocksFilter_ChildDoesNotBecomeCrucible(t *testing.T) {
 }
 
 // TestPoll_MultipleAnvils verifies that Poll collects results from all anvils
-// concurrently. Anvil paths point to temp directories where 'bd ready' will
-// fail, but all anvils must still be represented in the returned results.
-// Running with -race will detect any data-race in the concurrent poll loop.
+// concurrently. Anvil paths point to non-existent directories so 'bd ready'
+// fails (exec cannot chdir), but all anvils must still be represented in the
+// returned results. Running with -race will detect any data-race in the
+// concurrent poll loop.
 func TestPoll_MultipleAnvils(t *testing.T) {
+	base := t.TempDir()
 	anvils := map[string]config.AnvilConfig{
-		"anvil-a": {Path: t.TempDir()},
-		"anvil-b": {Path: t.TempDir()},
-		"anvil-c": {Path: t.TempDir()},
+		"anvil-a": {Path: filepath.Join(base, "anvil-a")},
+		"anvil-b": {Path: filepath.Join(base, "anvil-b")},
+		"anvil-c": {Path: filepath.Join(base, "anvil-c")},
 	}
 
 	p := New(anvils)
