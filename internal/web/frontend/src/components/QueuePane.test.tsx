@@ -181,6 +181,32 @@ describe('QueuePane', () => {
     expect(idsInOrder()).toEqual(['a1', 'a3', 'a2'])
   })
 
+  it('shows a clear button only when the filter has text and resets the filter on click', async () => {
+    const user = userEvent.setup()
+    renderPane([
+      item({ bead_id: 'a1', anvil: 'forge', section: 'ready', title: 'alpha' }),
+      item({ bead_id: 'a2', anvil: 'forge', section: 'ready', title: 'beta' }),
+    ])
+
+    // The clear button is hidden while the filter is empty.
+    expect(screen.queryByRole('button', { name: /Clear filter/ })).not.toBeInTheDocument()
+
+    const filterInput = screen.getByRole('textbox', { name: /Filter beads/ })
+    await user.type(filterInput, 'alpha')
+
+    const clearBtn = screen.getByRole('button', { name: /Clear filter/ })
+    expect(clearBtn).toBeInTheDocument()
+    // Only the matching item's anvil is now visible in the filtered groups.
+    expect(screen.getByRole('button', { name: /forge/ })).toHaveTextContent('1')
+
+    await user.click(clearBtn)
+
+    expect(filterInput).toHaveValue('')
+    expect(screen.queryByRole('button', { name: /Clear filter/ })).not.toBeInTheDocument()
+    // After clearing, both items contribute to the count again.
+    expect(screen.getByRole('button', { name: /forge/ })).toHaveTextContent('2')
+  })
+
   it('renders a relative-time label on each row with an ISO tooltip', async () => {
     const user = userEvent.setup()
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()

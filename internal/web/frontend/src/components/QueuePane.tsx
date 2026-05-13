@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, List, MoreHorizontal, Play, RotateCcw, Square } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight, List, MoreHorizontal, Play, RotateCcw, Square, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { actions, type QueueItem } from '../api'
 import { priorityClasses, priorityLabel, relativeTime } from '../lib/format'
@@ -161,6 +161,7 @@ export default function QueuePane({
   const [dialog, setDialog] = useState<DialogState | null>(null)
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
+  const filterInputRef = useRef<HTMLInputElement>(null)
   const [sortKey, setSortKey] = useState<SortKey>('priority-asc')
   // Expand state is keyed by anvil name (`anvil:<name>`) and bucket
   // (`bucket:<anvil>:<bucket>`). Missing keys mean collapsed — both anvils and
@@ -247,14 +248,27 @@ export default function QueuePane({
         error={error}
         headerExtra={
           <div className="flex flex-col gap-2 sm:flex-row">
-            <input
-              type="text"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter beads (id, title, label)"
-              aria-label="Filter beads"
-              className="w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
-            />
+            <div className="relative w-full">
+              <input
+                ref={filterInputRef}
+                type="text"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Filter beads (id, title, label)"
+                aria-label="Filter beads"
+                className={`w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300 ${filter.trim() ? 'pr-7' : ''}`}
+              />
+              {filter.trim() && (
+                <button
+                  type="button"
+                  onClick={() => { setFilter(''); filterInputRef.current?.focus() }}
+                  aria-label="Clear filter"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
+                >
+                  <X size={14} aria-hidden />
+                </button>
+              )}
+            </div>
             <select
               value={sortKey}
               onChange={(e) => setSortKey(e.target.value as SortKey)}
