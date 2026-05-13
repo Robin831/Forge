@@ -1168,7 +1168,8 @@ rules:
       added: "2026-03-20"
     - id: pr-description-matches-actual-changes
       category: other
-      pattern: PR description or title claims a specific count or list of added/changed/removed items
+      pattern: >-
+        PR description or title claims a specific count or list of added/changed/removed items
       check: >-
         Verify that the count or list stated in the PR description or title matches the actual changes in the diff — e.g., if the PR says 'learned 4 rules' confirm exactly 4 new rules appear, or if it lists specific items confirm each is present; if they diverge, update the description or add the missing changes
       source: ['copilot:PR#332', 'copilot:PR#337', 'copilot:PR#557']
@@ -3972,3 +3973,250 @@ rules:
         Verify tests use the actual typed constants (e.g. crucible.Status) rather than raw string literals, so tests reflect real runtime values and catch type/assertion drift
       source: copilot:PR#561
       added: "2026-04-30"
+    - id: ipc-version-compat-nil-field
+      category: error-handling
+      pattern: >-
+        Code consumes an IPC/JSON payload from another process and treats successful unmarshal as proof that an optional field was present
+      check: >-
+        Verify that missing optional fields (nil pointer / zero value after unmarshal) are distinguished from present-but-empty values — e.g., use a pointer field and treat nil as 'absent' to fall back to an alternate data source, so newer clients remain compatible with older servers that don't populate the field
+      source: copilot:PR#589
+      added: "2026-05-11"
+    - id: prune-stale-map-entries-on-config-reload
+      category: other
+      pattern: >-
+        Long-lived maps keyed by config-driven identifiers (e.g., anvil names) that accumulate entries across hot-reloads and feed status/snapshot responses
+      check: >-
+        Verify entries for removed or renamed keys are pruned against the current configured set during reload or snapshot construction so reported state reflects only active entities
+      source: copilot:PR#589
+      added: "2026-05-11"
+    - id: bd-invocations-need-anvil-dir-and-runner
+      category: error-handling
+      pattern: >-
+        Code invoking the `bd` CLI (e.g. `bd show`, `bd ready`) directly via `exec.Command` without setting `cmd.Dir` to an anvil path or using the project's standard runner (e.g. `executil.HideWindow`, `s.bdRunner`, `forgechat.DefaultBdRunner`).
+      check: >-
+        Verify every `bd` invocation runs from an anvil directory by setting `cmd.Dir` to a configured anvil path (or routing through an injected runner like `s.bdRunner`/`forgechat.DefaultBdRunner`) and uses the standard stderr-capture/`executil.HideWindow` wrapper, so `bd` can locate the Dolt DB and failures surface instead of silently returning empty results.
+      source: copilot:PR#590
+      added: "2026-05-11"
+    - id: bd-show-json-parse
+      category: error-handling
+      pattern: Parsing output of `bd show --json` directly with json.Unmarshal
+      check: >-
+        Verify bd show --json output is decoded using executil.DecodeJSON / unwrapJSONArray (or equivalent) so both array `[{...}]` and bare object `{...}` forms are accepted and trailing diagnostics are tolerated.
+      source: copilot:PR#590
+      added: "2026-05-11"
+    - id: bead-id-anvil-disambiguation
+      category: other
+      pattern: >-
+        Lookup maps or caches keyed only by bead ID (e.g. map[beadID]anvil) when resolving an anvil or other per-anvil metadata for a bead reference.
+      check: >-
+        Verify the lookup accounts for the same bead ID existing in multiple anvils: either key by (bead_id, anvil), accept a caller-provided anvil hint, or return an empty/ambiguous result when multiple anvils match — never silently pick the first mapping, which is non-deterministic and can attach the wrong anvil.
+      source: copilot:PR#590
+      added: "2026-05-11"
+    - id: no-global-mutation-in-parallel-test-stubs
+      category: testing
+      pattern: >-
+        Test helpers/stubs that swap package-level variables (e.g., function vars, globals) and restore them in t.Cleanup, used in a package where any test calls t.Parallel().
+      check: >-
+        Verify the stub is safe for parallel use: either no test in the package uses t.Parallel(), or the global swap is protected by a package-level mutex held across the test's lifetime, or the dependency is injected (constructor/struct field/context) instead of mutating a global.
+      source: copilot:PR#590
+      added: "2026-05-11"
+    - id: clear-stale-state-on-prop-change
+      category: ui
+      pattern: >-
+        Modal or component reuses internal state (data/error/loading) across different inputs, updating state only via effects after the prop changes
+      check: >-
+        Verify that when the identifying prop changes (e.g. switching to a new entity), stale state like data/error/loading is cleared synchronously during render or in the same setter call, so the component never paints new metadata against old data
+      source: copilot:PR#591
+      added: "2026-05-11"
+    - id: handle-401-logout-in-api-calls
+      category: error-handling
+      pattern: >-
+        Frontend component uses apiGet/apiPost (or similar) directly to make authenticated API requests
+      check: >-
+        Verify the component handles ApiError status 401 by calling logout() from the auth context to redirect to /login, consistent with useApiPoll and WorkerLogModal, instead of just surfacing an 'unauthorized' error
+      source: copilot:PR#591
+      added: "2026-05-11"
+    - id: pr-description-matches-scope
+      category: testing
+      pattern: >-
+        PR description promises tests or other deliverables (e.g. test files, harness setup, docs) that are not actually present in the diff
+      check: >-
+        Verify that every deliverable mentioned in the PR description is included in the diff; if not, either add the missing items (including any required test harness) or update the PR description to reflect the actual scope
+      source: copilot:PR#591
+      added: "2026-05-11"
+    - id: memoize-object-props-with-reset-effects
+      category: performance
+      pattern: >-
+        A React component prop is passed as a freshly-created object/array literal on each render while the parent re-renders periodically (e.g. polling), and the child has an effect that resets state or refetches when that prop changes by reference
+      check: >-
+        Verify the prop is memoized (e.g. useMemo keyed by stable identity fields) or that the child's effect compares stable identity fields instead of object reference, so periodic parent re-renders don't clobber child state or trigger redundant refetches
+      source: copilot:PR#592
+      added: "2026-05-11"
+    - id: preserve-graph-tree-structure
+      category: ui
+      pattern: >-
+        Frontend code rendering a tree/graph response from an API that may contain the same node in multiple branches (e.g., diamond dependency graphs where children are elided to keep the response a tree)
+      check: >-
+        Verify the renderer does not globally deduplicate nodes by ID. Global dedupe can place a node at the wrong hop/level, draw edges between non-adjacent levels, and hide expand affordances for occurrences at the depth limit. Render the API tree as-is, or track per-occurrence placement while still preventing recursive expansion, so hop labels and expandability remain accurate.
+      source: copilot:PR#592
+      added: "2026-05-11"
+    - id: verification-commands-match-repo
+      category: other
+      pattern: >-
+        PR description or acceptance text listing verification commands (build/test/lint scripts, Makefile targets, npm scripts) or acceptance criteria referencing specific commands for verification
+      check: >-
+        Verify the listed commands actually exist in this repo — check package.json scripts, Makefile targets, and conventional Go commands (e.g. `go test ./...`, `npm run build` in `internal/web/frontend`). Either update the description to match real commands or add the missing scripts/targets.
+      source: ['copilot:PR#592', 'copilot:PR#593']
+      added: "2026-05-11"
+    - id: empty-state-vs-loading
+      category: ui
+      pattern: >-
+        UI component renders a 'no results match filter' empty state based on filtered list length
+      check: >-
+        Verify the filtered-empty message is gated on an active filter (e.g. filter.trim().length > 0) and/or !loading, so it doesn't show misleadingly during initial load or when no filter is applied
+      source: copilot:PR#593
+      added: "2026-05-11"
+    - id: scroll-anchoring-comment-accuracy
+      category: ui
+      pattern: >-
+        Comments explaining scroll position stability when prepending DOM content (e.g., referencing scrollTop preservation)
+      check: >-
+        Verify the comment accurately describes the mechanism — browsers use scroll anchoring to preserve visual viewport position, not scrollTop preservation. Reword to mention scroll position/viewport or scroll anchoring explicitly rather than scrollTop.
+      source: copilot:PR#593
+      added: "2026-05-11"
+    - id: include-reviewing-status-in-active-filters
+      category: ui
+      pattern: >-
+        Frontend filters or slot counters that select 'active' workers/beads by status (e.g., pending/running/monitoring) for display in pipeline/queue UI components or for Smith capacity calculations
+      check: >-
+        Verify the status filter includes 'reviewing' (Warden stage) alongside pending/running/monitoring, so Warden-stage beads are counted and visible in both UI filters and active Smith slot counts; apply consistently across all related contexts (e.g., pipeline bar, beadRows, and active-slot capacity)
+      source: copilot:PR#594
+      added: "2026-05-11"
+    - id: dedupe-counts-by-entity
+      category: ui
+      pattern: >-
+        Computing display counts or aggregations from a list of workers/processes/jobs that may contain multiple entries per logical entity (e.g. list.length where a single bead can contribute multiple workers)
+      check: >-
+        Verify counts are de-duplicated by the logical entity key (e.g. (anvil, bead_id)) rather than counting raw list entries, so that a single bead contributing multiple workers to the same bucket is not counted multiple times
+      source: copilot:PR#594
+      added: "2026-05-11"
+    - id: predicate-matches-comment-intent
+      category: ui
+      pattern: >-
+        A predicate/filter function whose name or accompanying comment describes a narrow concept (e.g. a synthetic/sentinel row) but whose implementation matches a broader set of items (e.g. only checks a single field like phase/type/status)
+      check: >-
+        Verify the predicate's implementation actually identifies the specific entity described in its name/comment. If the distinguishing characteristic is a composite (id prefix, missing field, synthetic marker), the check must include those discriminators — otherwise legitimate items sharing only the broad attribute will be incorrectly filtered. Either tighten the predicate to match the documented intent or update the name/comment to reflect the broader behavior.
+      source: copilot:PR#594
+      added: "2026-05-11"
+    - id: validate-path-after-wait
+      category: security
+      pattern: >-
+        Code that waits for a file path to appear (e.g., polling for a log file) and then opens it, where the initial path resolution/allowlist validation happened before the file existed
+      check: >-
+        Verify the path is re-validated (Lstat + EvalSymlinks + allowlist check + regular-file check) immediately before opening, so a symlink materializing later cannot bypass the allowlist guarantee
+      source: copilot:PR#595
+      added: "2026-05-11"
+    - id: doc-comment-matches-return-contract
+      category: style
+      pattern: >-
+        Function with a doc comment describing specific return values for edge cases (e.g., missing file, error conditions)
+      check: >-
+        Verify the doc comment accurately describes what the function actually returns in each documented case, especially for sentinel/zero values vs. populated values
+      source: copilot:PR#595
+      added: "2026-05-11"
+    - id: ts-optional-fn-narrowing
+      category: error-handling
+      pattern: >-
+        Calling an optional function prop/field directly inside a conditional that doesn't narrow its type (e.g. guarded only by a separate boolean like `clickable`)
+      check: >-
+        Ensure the optional function is narrowed before invocation — use an explicit `if (fn && ...)` guard or optional-chaining call `fn?.(...)` to avoid TS 'possibly undefined' errors under strict mode
+      source: copilot:PR#595
+      added: "2026-05-11"
+    - id: safe-dom-id-from-user-input
+      category: ui
+      pattern: >-
+        DOM `id`, `aria-controls`, or other HTML token attributes derived from user-configured strings (e.g. anvil names, YAML keys, labels)
+      check: >-
+        Verify the value is slugified/encoded into a safe, deterministic token (no whitespace or illegal chars) and is unique across elements, rather than interpolated raw
+      source: copilot:PR#596
+      added: "2026-05-11"
+    - id: ts-config-typecheck-coverage
+      category: testing
+      pattern: >-
+        New TypeScript config files (e.g. vitest.config.ts, *.config.ts) added to a project that uses TS project references
+      check: >-
+        Verify the new config file is included in a tsconfig (e.g. tsconfig.node.json) so it is covered by tsc/lint typechecking, rather than only being checked at runtime
+      source: copilot:PR#596
+      added: "2026-05-11"
+    - id: test-files-typecheck-coverage
+      category: testing
+      pattern: >-
+        tsconfig changes that exclude test files (e.g. `src/**/*.test.*`, `src/test/**`) from the main TypeScript project
+      check: >-
+        Verify test files remain typechecked via a dedicated tsconfig (e.g. `tsconfig.test.json`) wired into lint/typecheck scripts, so excluding them from the prod build config does not silently drop type checking for tests
+      source: copilot:PR#596
+      added: "2026-05-11"
+    - id: procfs-permission-errors
+      category: error-handling
+      pattern: >-
+        Code reads /proc/<pid>/ entries (comm, exe, status, etc.) to verify process identity or liveness and treats read errors as 'process not present'
+      check: >-
+        Distinguish ENOENT (process really gone) from EACCES/EPERM (cannot verify due to hidepid or other restrictions). Permission errors must be returned as non-nil errors so callers fall back to the safe 'assume alive' path rather than treating the process as dead. Confirm the function's doc comment accurately describes this semantics.
+      source: copilot:PR#597
+      added: "2026-05-11"
+    - id: test-fallback-paths
+      category: testing
+      pattern: >-
+        Code with a primary path and a fallback path (e.g., reading from /proc/<pid>/comm with fallback to /proc/<pid>/exe), where tests only exercise the primary path
+      check: >-
+        Verify that unit tests cover the fallback path(s), not just the primary path. Add tests that force the fallback condition (e.g., by making the primary source unreadable) and assert correct behavior.
+      source: copilot:PR#597
+      added: "2026-05-11"
+    - id: brittle-regex-test-assertions
+      category: testing
+      pattern: >-
+        Tests that use narrow regexes to locate code structures (e.g. requiring specific formatting like `return (` + newline + `<div className="..."`) and assert against a single specific value (e.g. `max-w-7xl`) rather than the broader class of values being guarded against
+      check: >-
+        Verify the regex tolerates harmless formatting variations (whitespace, newlines, single-line vs multi-line, fragment wrappers, `className={'...'}` / template-string forms) and that the assertion targets the general invariant (e.g. no `max-w-*` class at all) rather than one specific token, so the test won't break on incidental refactors and won't miss equivalent violations
+      source: copilot:PR#598
+      added: "2026-05-11"
+    - id: vitest-hoisted-mocks
+      category: testing
+      pattern: >-
+        vi.mock() factory references variables declared in module scope (e.g. a mock function defined with const/let outside the factory)
+      check: >-
+        Ensure mock functions used inside vi.mock() factories are created via vi.hoisted(() => vi.fn()) or defined inside the factory itself, since vi.mock() is hoisted above module-scope declarations and will trigger TDZ 'Cannot access before initialization' errors
+      source: copilot:PR#599
+      added: "2026-05-11"
+    - id: respect-ctx-and-timeout
+      category: concurrency
+      pattern: >-
+        Custom step or scan functions invoked from runStep-like dispatchers that perform file walks, subprocess execution, or long-running work without accepting the parent ctx or honoring step.Timeout
+      check: >-
+        Verify the function threads the parent ctx through (or derives a context.WithTimeout from step.Timeout) and checks for cancellation during loops/walks, so the work stops promptly when the Temper context is cancelled or the configured timeout elapses
+      source: copilot:PR#601
+      added: "2026-05-12"
+    - id: validate-allows-documented-config
+      category: error-handling
+      pattern: >-
+        Adding a new optional config field (e.g. a boolean flag) that changes which sibling fields are required, while existing Validate() still enforces the old required-field rules
+      check: >-
+        Verify that Config.Validate() is updated to match the documented semantics of the new field — when the flag relaxes or replaces a previously required sibling (e.g. allowing empty command when verify_no_conflict_markers is set), Validate must permit that combination, and any newly-implied constraints (e.g. args must also be empty) should be enforced. Confirm docs, struct tags, and validation agree.
+      source: copilot:PR#601
+      added: "2026-05-12"
+    - id: case-insensitive-map-lookup-ambiguity
+      category: error-handling
+      pattern: >-
+        Case-insensitive lookup over a map whose keys may differ only by case, returning the first match found during iteration
+      check: >-
+        Verify the lookup detects multiple case-insensitive matches and returns no result (or an explicit ambiguity error) rather than relying on nondeterministic map iteration order to pick one
+      source: copilot:PR#602
+      added: "2026-05-12"
+    - id: prompt-claims-match-enforcement
+      category: security
+      pattern: >-
+        Agent/subprocess system prompts that assert restricted capabilities (e.g. "READ-ONLY", "must not modify files", "no destructive commands") for a stage spawned via a provider runner
+      check: >-
+        Verify the claimed restrictions are technically enforced (e.g. stage-specific tool allowlist limited to Read/Grep/Glob, provider flags that drop --dangerously-skip-permissions, sandboxed permissions) rather than relying on prompt wording alone; if enforcement isn't in place, soften the prompt so it doesn't promise isolation the runtime doesn't guarantee
+      source: copilot:PR#602
+      added: "2026-05-12"
