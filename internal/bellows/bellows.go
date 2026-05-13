@@ -280,31 +280,19 @@ func (m *Monitor) reconcileTerminalStates(ctx context.Context) {
 // checkPR; the sweep is a no-op for them because the worker is already
 // "done" before this pass runs.
 func (m *Monitor) sweepOrphanedMonitoringWorkers() {
-	workers, err := m.db.MonitoringBellowsWorkers()
+	orphans, err := m.db.OrphanedMonitoringBellowsWorkers()
 	if err != nil {
-		log.Printf("[bellows] sweepOrphanedMonitoringWorkers: error listing monitoring workers: %v", err)
+		log.Printf("[bellows] sweepOrphanedMonitoringWorkers: error listing orphaned workers: %v", err)
 		return
 	}
-	for _, w := range workers {
-		if w.PRNumber == 0 {
-			continue
-		}
-		pr, err := m.db.GetPRByNumber(w.Anvil, w.PRNumber)
-		if err != nil {
-			log.Printf("[bellows] sweepOrphanedMonitoringWorkers: error looking up PR for worker %s: %v", w.ID, err)
-			continue
-		}
-		orphan := pr == nil || pr.Status == state.PRMerged || pr.Status == state.PRClosed
-		if !orphan {
-			continue
-		}
+	for _, o := range orphans {
 		reason := "no matching PR row"
-		if pr != nil {
-			reason = fmt.Sprintf("PR status=%s", pr.Status)
+		if o.PRStatus != "" {
+			reason = fmt.Sprintf("PR status=%s", o.PRStatus)
 		}
-		log.Printf("[bellows] Sweeping orphaned monitoring worker %s (%s)", w.ID, reason)
-		if err := m.db.UpdateWorkerStatus(w.ID, state.WorkerDone); err != nil {
-			log.Printf("[bellows] sweepOrphanedMonitoringWorkers: failed to update worker %s to done: %v", w.ID, err)
+		log.Printf("[bellows] Sweeping orphaned monitoring worker %s (%s)", o.WorkerID, reason)
+		if err := m.db.UpdateWorkerStatus(o.WorkerID, state.WorkerDone); err != nil {
+			log.Printf("[bellows] sweepOrphanedMonitoringWorkers: failed to update worker %s to done: %v", o.WorkerID, err)
 		}
 	}
 }

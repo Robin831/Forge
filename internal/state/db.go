@@ -152,6 +152,11 @@ func (db *DB) migrate() error {
 	if _, err := db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_retries_clarification ON retries(clarification_needed)`); err != nil {
 		return fmt.Errorf("creating clarification index: %w", err)
 	}
+	// Composite index for fast PR lookups by (anvil, number) — used by the
+	// bellows orphan sweep JOIN and GetPRByNumber.
+	if _, err := db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_prs_anvil_number ON prs(anvil, number)`); err != nil {
+		return fmt.Errorf("creating prs anvil+number index: %w", err)
+	}
 	return nil
 }
 
@@ -813,17 +818,41 @@ func (db *DB) WorkersByAnvil(anvil string) ([]Worker, error) {
 		ORDER BY started_at DESC`, anvil)
 }
 
-// MonitoringBellowsWorkers returns every worker row whose phase is "bellows"
-// and whose status is "monitoring". The bellows poll loop uses this to sweep
-// orphaned monitoring workers whose underlying PR has reached a terminal
-// state (merged/closed) outside the normal transition path — e.g. an external
-// PR that was closed on GitHub before it was assigned to bellows, so its
-// prs.status is already "closed" by the time OpenPRs would have surfaced it,
-// leaving the worker stranded in monitoring.
-func (db *DB) MonitoringBellowsWorkers() ([]Worker, error) {
-	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
-		FROM workers WHERE phase = 'bellows' AND status = 'monitoring'
-		ORDER BY started_at`)
+// OrphanedWorkerInfo identifies a bellows monitoring worker whose underlying PR
+// is missing or in a terminal state. PRStatus is empty when no PR row exists.
+type OrphanedWorkerInfo struct {
+	WorkerID string
+	PRStatus string
+}
+
+// OrphanedMonitoringBellowsWorkers returns bellows monitoring workers whose
+// underlying PR is missing or already terminal (merged/closed), using a single
+// LEFT JOIN query rather than per-row GetPRByNumber lookups.
+func (db *DB) OrphanedMonitoringBellowsWorkers() ([]OrphanedWorkerInfo, error) {
+	rows, err := db.conn.Query(`
+		SELECT w.id, COALESCE(latest.status, '') AS pr_status
+		FROM workers w
+		LEFT JOIN (
+			SELECT anvil, number, status
+			FROM prs
+			WHERE id IN (SELECT MAX(id) FROM prs GROUP BY anvil, number)
+		) latest ON latest.anvil = w.anvil AND latest.number = w.pr_number
+		WHERE w.phase = 'bellows' AND w.status = 'monitoring' AND w.pr_number != 0
+		  AND (latest.status IS NULL OR latest.status IN ('merged', 'closed'))
+		ORDER BY w.started_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []OrphanedWorkerInfo
+	for rows.Next() {
+		var o OrphanedWorkerInfo
+		if err := rows.Scan(&o.WorkerID, &o.PRStatus); err != nil {
+			return nil, err
+		}
+		result = append(result, o)
+	}
+	return result, rows.Err()
 }
 
 // CompletedWorkers returns workers in terminal states (done, failed, timeout),
