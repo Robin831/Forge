@@ -128,6 +128,30 @@ describe('QueuePane', () => {
     expect(screen.getByText('No beads in queue.')).toBeInTheDocument()
   })
 
+  it('reorders the visible list when the sort dropdown changes', async () => {
+    const user = userEvent.setup()
+    // Priority order (default) puts P0/zebra first, then P2/alpha, then P3/middle.
+    // Title order is alpha < middle < zebra — so the reorder is observable.
+    renderPane([
+      item({ bead_id: 'a1', anvil: 'forge', section: 'ready', priority: 2, title: 'alpha' }),
+      item({ bead_id: 'a2', anvil: 'forge', section: 'ready', priority: 0, title: 'zebra' }),
+      item({ bead_id: 'a3', anvil: 'forge', section: 'ready', priority: 3, title: 'middle' }),
+    ])
+    await user.click(screen.getByRole('button', { name: /forge/ }))
+    await user.click(screen.getByRole('button', { name: /Ready \(3\)/ }))
+
+    // The bead_id <Link> is the only link rendered in each row, so their DOM
+    // order reflects the visible row order — robust against unrelated markup.
+    const idsInOrder = () =>
+      screen.getAllByRole('link').map((a) => a.textContent)
+
+    expect(idsInOrder()).toEqual(['a2', 'a1', 'a3'])
+
+    await user.selectOptions(screen.getByTestId('queue-sort-select'), 'title-asc')
+
+    expect(idsInOrder()).toEqual(['a1', 'a3', 'a2'])
+  })
+
   it('renders a relative-time label on each row with an ISO tooltip', async () => {
     const user = userEvent.setup()
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
