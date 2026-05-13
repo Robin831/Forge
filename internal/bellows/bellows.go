@@ -269,8 +269,38 @@ func (m *Monitor) reconcileTerminalStates(ctx context.Context) {
 	}
 }
 
+// sweepOrphanedMonitoringWorkers transitions any bellows worker stuck in
+// "monitoring" whose underlying PR is terminal (merged/closed) or missing
+// from the prs table to "done". This covers the case where an unmanaged
+// external PR's prs.status was persisted as merged/closed before it was
+// flipped to bellows_managed=1: from that point on OpenPRs() never surfaces
+// it again, so checkPR's CompleteWorkersByBead path cannot fire and the
+// worker would otherwise remain in monitoring forever. Forge-managed PRs
+// continue to transition via the existing CompleteWorkersByBead call in
+// checkPR; the sweep is a no-op for them because the worker is already
+// "done" before this pass runs.
+func (m *Monitor) sweepOrphanedMonitoringWorkers() {
+	orphans, err := m.db.OrphanedMonitoringBellowsWorkers()
+	if err != nil {
+		log.Printf("[bellows] sweepOrphanedMonitoringWorkers: error listing orphaned workers: %v", err)
+		return
+	}
+	for _, o := range orphans {
+		reason := "no matching PR row"
+		if o.PRStatus != "" {
+			reason = fmt.Sprintf("PR status=%s", o.PRStatus)
+		}
+		log.Printf("[bellows] Sweeping orphaned monitoring worker %s (%s)", o.WorkerID, reason)
+		if err := m.db.UpdateWorkerStatus(o.WorkerID, state.WorkerDone); err != nil {
+			log.Printf("[bellows] sweepOrphanedMonitoringWorkers: failed to update worker %s to done: %v", o.WorkerID, err)
+		}
+	}
+}
+
 // checkAll polls all open PRs and emits events for state changes.
 func (m *Monitor) checkAll(ctx context.Context) {
+	m.sweepOrphanedMonitoringWorkers()
+
 	prs, err := m.db.OpenPRs()
 	if err != nil {
 		log.Printf("[bellows] Error listing open PRs: %v", err)
