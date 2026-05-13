@@ -36,6 +36,11 @@ type Bead struct {
 	Dependencies   []BeadDep `json:"dependencies"`   // Detailed dependency info from bd
 	DependentCount int       `json:"dependent_count"` // Number of beads that depend on this bead
 	ExternalRef    string    `json:"external_ref"`    // External tracker reference from bd (for example "gh-42", a full URL, or another non-GitHub ref)
+	// CreatedAt and UpdatedAt are ISO timestamps emitted by `bd ready --json`.
+	// They flow through to the queue serialiser so the web UI can surface
+	// bead age without a SQLite schema migration.
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 
 	// Forge-injected: which anvil this bead belongs to
 	Anvil string `json:"-"`

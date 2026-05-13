@@ -12,6 +12,8 @@ export interface QueueItem {
   labels: string[]
   section: string
   assignee?: string
+  created_at: string
+  updated_at: string
 }
 
 export interface QueueResponse {
