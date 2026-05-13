@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, List, MoreHorizontal, Play, RotateCcw, Square } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { actions, type QueueItem } from '../api'
-import { priorityClasses, priorityLabel } from '../lib/format'
+import { priorityClasses, priorityLabel, relativeTime } from '../lib/format'
 import { useAction } from '../hooks/useAction'
 import ConfirmModal from './ConfirmModal'
 import Pane, { EmptyState } from './Pane'
@@ -358,6 +358,14 @@ function BucketSection({
                         <>
                           <span aria-hidden>·</span>
                           <span>@{item.assignee}</span>
+                        </>
+                      )}
+                      {item.updated_at && (
+                        <>
+                          <span aria-hidden>·</span>
+                          <span title={item.updated_at}>
+                            Updated {relativeTime(item.updated_at)}
+                          </span>
                         </>
                       )}
                     </p>
