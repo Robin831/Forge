@@ -33,6 +33,75 @@ const BUCKET_LABEL: Record<BucketKey, string> = {
   in_progress: 'In progress',
 }
 
+export type SortKey =
+  | 'priority-asc'
+  | 'updated-desc'
+  | 'updated-asc'
+  | 'created-desc'
+  | 'created-asc'
+  | 'title-asc'
+
+const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
+  { value: 'priority-asc', label: 'Priority (asc)' },
+  { value: 'updated-desc', label: 'Last updated (newest first)' },
+  { value: 'updated-asc', label: 'Last updated (oldest first)' },
+  { value: 'created-desc', label: 'Created (newest first)' },
+  { value: 'created-asc', label: 'Created (oldest first)' },
+  { value: 'title-asc', label: 'Title (A→Z)' },
+]
+
+// parseTimestamp converts an ISO string to a numeric epoch for comparison.
+// Missing/unparseable values become NaN and are treated as "oldest" by
+// compareTimestamps so the timestamp-based options degrade gracefully when the
+// backend hasn't filled in created_at / updated_at yet.
+function parseTimestamp(value: string | undefined): number {
+  if (!value) return NaN
+  const t = Date.parse(value)
+  return Number.isNaN(t) ? NaN : t
+}
+
+// compareTimestamps sorts by parsed epoch. NaN values are treated as "oldest":
+// they sort first for ascending order (oldest first) and last for descending
+// order (newest first), so UI labels match the actual item ordering.
+function compareTimestamps(a: number, b: number, direction: 'asc' | 'desc'): number {
+  const aMissing = Number.isNaN(a)
+  const bMissing = Number.isNaN(b)
+  if (aMissing && bMissing) return 0
+  if (aMissing) return direction === 'asc' ? -1 : 1
+  if (bMissing) return direction === 'asc' ? 1 : -1
+  return direction === 'asc' ? a - b : b - a
+}
+
+export function sortItems(items: QueueItem[], sortKey: SortKey): QueueItem[] {
+  const copy = items.slice()
+  switch (sortKey) {
+    case 'priority-asc':
+      copy.sort((a, b) => a.priority - b.priority)
+      return copy
+    case 'updated-desc':
+    case 'updated-asc': {
+      const dir = sortKey === 'updated-desc' ? 'desc' : 'asc'
+      const ts = new Map(copy.map((item) => [item, parseTimestamp(item.updated_at)]))
+      copy.sort((a, b) => compareTimestamps(ts.get(a)!, ts.get(b)!, dir))
+      return copy
+    }
+    case 'created-desc':
+    case 'created-asc': {
+      const dir = sortKey === 'created-desc' ? 'desc' : 'asc'
+      const ts = new Map(copy.map((item) => [item, parseTimestamp(item.created_at)]))
+      copy.sort((a, b) => compareTimestamps(ts.get(a)!, ts.get(b)!, dir))
+      return copy
+    }
+    case 'title-asc':
+      copy.sort((a, b) =>
+        (a.title || a.bead_id).localeCompare(b.title || b.bead_id, undefined, {
+          sensitivity: 'base',
+        }),
+      )
+      return copy
+  }
+}
+
 interface AnvilGroup {
   anvil: string
   total: number
@@ -92,6 +161,7 @@ export default function QueuePane({
   const [dialog, setDialog] = useState<DialogState | null>(null)
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
+  const [sortKey, setSortKey] = useState<SortKey>('priority-asc')
   // Expand state is keyed by anvil name (`anvil:<name>`) and bucket
   // (`bucket:<anvil>:<bucket>`). Missing keys mean collapsed — both anvils and
   // buckets start closed so the operator sees a compact summary first. State
@@ -109,7 +179,15 @@ export default function QueuePane({
     })
   }, [items, filter])
 
-  const groups = useMemo(() => groupQueueItems(filteredItems), [filteredItems])
+  const groups = useMemo(() => {
+    const grouped = groupQueueItems(filteredItems)
+    return grouped.map((group) => ({
+      ...group,
+      buckets: Object.fromEntries(
+        BUCKET_ORDER.map((bucket) => [bucket, sortItems(group.buckets[bucket], sortKey)]),
+      ) as Record<BucketKey, QueueItem[]>,
+    }))
+  }, [filteredItems, sortKey])
 
   const toggle = (key: string) =>
     setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))
@@ -168,14 +246,29 @@ export default function QueuePane({
         loading={loading}
         error={error}
         headerExtra={
-          <input
-            type="text"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter beads (id, title, label)"
-            aria-label="Filter beads"
-            className="w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
-          />
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter beads (id, title, label)"
+              aria-label="Filter beads"
+              className="w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
+            />
+            <select
+              value={sortKey}
+              onChange={(e) => setSortKey(e.target.value as SortKey)}
+              aria-label="Sort queue"
+              data-testid="queue-sort-select"
+              className="w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-100 focus:border-amber-400/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300 sm:w-auto"
+            >
+              {SORT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
         }
       >
         {items.length === 0 && !loading ? (
