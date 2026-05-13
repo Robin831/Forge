@@ -1007,18 +1007,24 @@ func (p *PR) IsExternal() bool {
 // bellows_managed defaults to 0 for ext-* (externally created) PRs so the
 // reconcile loop's auto-adoption release path is not triggered on every fresh
 // insert; users opt in via the assign_bellows IPC action which sets both flags
-// (Forge-l125). An explicit pr.BellowsManaged=true on the struct overrides the
-// default so callers can pre-pin an ext-* row at insert time.
+// (Forge-l125). An explicit pr.BellowsManaged=true on the struct pre-pins an ext-*
+// row at insert time and automatically sets bellows_manually_assigned=1 so that
+// reconcile does not clear the flag on the next cycle.
 func (db *DB) InsertPR(pr *PR) error {
 	bellowsManaged := 1
-	if pr.IsExternal() && !pr.BellowsManaged {
-		bellowsManaged = 0
+	bellowsManuallyAssigned := 0
+	if pr.IsExternal() {
+		if pr.BellowsManaged {
+			bellowsManuallyAssigned = 1
+		} else {
+			bellowsManaged = 0
+		}
 	}
 	res, err := db.conn.Exec(
-		`INSERT INTO prs (number, anvil, bead_id, branch, base_branch, status, created_at, ci_fix_count, review_fix_count, has_pending_reviews, title, bellows_managed)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		`INSERT INTO prs (number, anvil, bead_id, branch, base_branch, status, created_at, ci_fix_count, review_fix_count, has_pending_reviews, title, bellows_managed, bellows_manually_assigned)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
 		pr.Number, pr.Anvil, pr.BeadID, pr.Branch, pr.BaseBranch, string(pr.Status),
-		pr.CreatedAt.Format(dbTimeLayout), pr.CIFixCount, pr.ReviewFixCount, pr.Title, bellowsManaged,
+		pr.CreatedAt.Format(dbTimeLayout), pr.CIFixCount, pr.ReviewFixCount, pr.Title, bellowsManaged, bellowsManuallyAssigned,
 	)
 	if err != nil {
 		return err
