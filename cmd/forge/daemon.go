@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Robin831/Forge/internal/daemon"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/spf13/cobra"
 )
 
@@ -89,6 +90,7 @@ var upCmd = &cobra.Command{
 		bgCmd.Stdout = nil
 		bgCmd.Stderr = nil
 		bgCmd.Stdin = nil
+		executil.HideWindow(bgCmd)
 
 		// Detach the background process (platform-specific implementation in daemon_*.go)
 		detachProcess(bgCmd)

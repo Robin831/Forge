@@ -4569,6 +4569,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			defer openCancel()
 			openCmd := exec.CommandContext(openCtx, "gh", "pr", "view", strconv.Itoa(pa.PRNumber), "--web")
 			openCmd.Dir = anvilCfg.Path
+			executil.HideWindow(openCmd)
 			if out, err := openCmd.CombinedOutput(); err != nil {
 				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr view --web failed: %v: %s", err, strings.TrimSpace(string(out)))})
 				return ipc.Response{Type: "error", Payload: msg}
