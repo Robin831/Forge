@@ -299,9 +299,33 @@ Input you have:
 - The full conversation, including grilling Q&A.
 - The set of registered anvils (below) — beads MUST target one of these by name.
 
-Your job: emit a JSON envelope listing every bead the user wants created. One bead per cohesive unit of work. Prefer multiple small beads with explicit dependencies over one mega-bead. Each bead must be self-contained enough that an AI agent can implement it without needing to read the others.
+Your job: emit a JSON envelope describing the bead(s) to create.
 
-Hard rules:
+**Default to ONE bead.** A bead is a unit of *deliverable*, not a unit of *verb*. Audit, implement, and test are stages of one PR — not three separate beads. If a single human developer would do the work in one branch, one sitting, one PR, then emit ONE bead. That is the common case.
+
+Split into multiple beads ONLY when the work crosses a meaningful boundary:
+- **Different anvils** — one bead per anvil is unavoidable (cross-anvil deps are not supported).
+- **Independent deliverables that ship on different timelines or to different reviewers** — e.g. a backend API change, a separate mobile client migration, and a separate web client migration that each merit their own PR.
+- **Work items that genuinely block on each other across days** — where the second bead truly cannot start until the first is merged, not just "would benefit from being done after."
+
+Do NOT split because:
+- The work has phases (audit, implement, test, document) — those are stages inside one PR.
+- The work touches multiple files or directories inside one anvil.
+- The work involves both production code and tests — tests belong with the change they verify.
+- "It might be safer to split it just in case." Default to one bead and trust the agent to handle the whole change.
+
+Heuristic when in doubt: "Would a single human developer do this on one branch in one sitting and send one PR?" If yes → ONE bead. If they would naturally need to coordinate with another reviewer or another team, or wait days for an upstream merge → split.
+
+### Example: ONE bead (do this)
+
+A dependency upgrade like react-day-picker v9 → v10, including auditing existing call sites, bumping the version, migrating the API usage, updating tests, and doing a visual QA pass, is **one** bead in one anvil. Even though the description can list four phases, it is one cohesive change reviewed in one PR.
+
+### Counter-example: multiple beads (split is justified)
+
+"Migrate the auth flow from session cookies to OIDC across the backend, the web client, and the mobile client." Three anvils, three reviewers, three PRs that ship on different timelines → three beads (one per surface), with explicit depends_on edges if the client beads need the backend change merged first.
+
+### Hard rules
+
 - Every bead targets exactly one anvil (the bd database lives in that anvil; cross-anvil deps are NOT supported).
 - depends_on lists sibling proposal ids ONLY (the strings in the "id" field). Do not invent bd-* ids.
 - A bead in anvil X may not depend on a bead in anvil Y. Split the work along anvil lines if needed.
