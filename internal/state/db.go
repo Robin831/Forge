@@ -1002,12 +1002,19 @@ func (p *PR) IsExternal() bool {
 // has_pending_reviews is explicitly set to 1 (pending) so new PRs don't appear in
 // Ready to Merge until bellows confirms no reviews are pending. This closes the race
 // window where GitHub assigns reviewers (e.g. Copilot) asynchronously after PR creation.
+// bellows_managed is explicitly set to 0 for ext-* (externally created) PRs so the
+// reconcile loop's auto-adoption release path is not triggered on every fresh insert;
+// users opt in via the assign_bellows IPC action which sets both flags (Forge-l125).
 func (db *DB) InsertPR(pr *PR) error {
+	bellowsManaged := 1
+	if pr.IsExternal() {
+		bellowsManaged = 0
+	}
 	res, err := db.conn.Exec(
-		`INSERT INTO prs (number, anvil, bead_id, branch, base_branch, status, created_at, ci_fix_count, review_fix_count, has_pending_reviews, title)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+		`INSERT INTO prs (number, anvil, bead_id, branch, base_branch, status, created_at, ci_fix_count, review_fix_count, has_pending_reviews, title, bellows_managed)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 		pr.Number, pr.Anvil, pr.BeadID, pr.Branch, pr.BaseBranch, string(pr.Status),
-		pr.CreatedAt.Format(dbTimeLayout), pr.CIFixCount, pr.ReviewFixCount, pr.Title,
+		pr.CreatedAt.Format(dbTimeLayout), pr.CIFixCount, pr.ReviewFixCount, pr.Title, bellowsManaged,
 	)
 	if err != nil {
 		return err
