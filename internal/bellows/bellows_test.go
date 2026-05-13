@@ -1322,3 +1322,146 @@ func TestReconcileTerminalStates(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, state.PROpen, updated.Status, "reconcile must not touch open rows (checkAll handles those)")
 }
+
+// TestSweepOrphanedMonitoringWorkers_TerminalPR is the primary regression test
+// for the orphaned-worker bug: when an ext-* PR's prs.status is already
+// merged/closed (because the unmanaged early-return persisted it before the
+// user flipped bellows_managed=1), OpenPRs() never surfaces it again, so the
+// normal CompleteWorkersByBead path in checkPR cannot fire. The sweep must
+// transition the stranded worker to "done" on its own.
+func TestSweepOrphanedMonitoringWorkers_TerminalPR(t *testing.T) {
+	cases := []struct {
+		name      string
+		prStatus  state.PRStatus
+		wantSwept bool
+	}{
+		{name: "merged ext-* PR sweeps its monitoring worker", prStatus: state.PRMerged, wantSwept: true},
+		{name: "closed ext-* PR sweeps its monitoring worker", prStatus: state.PRClosed, wantSwept: true},
+		{name: "open ext-* PR leaves monitoring worker in place", prStatus: state.PROpen, wantSwept: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, cleanup := openTempDB(t)
+			defer cleanup()
+
+			pr := &state.PR{
+				Number:         3073,
+				Anvil:          "munin",
+				BeadID:         "ext-3073",
+				Branch:         "feature/ext-3073",
+				Status:         state.PROpen,
+				BellowsManaged: true,
+				CreatedAt:      time.Now(),
+			}
+			require.NoError(t, db.InsertPR(pr))
+			require.NoError(t, db.UpdatePRStatus(pr.ID, tc.prStatus))
+
+			workerID := "bellows-munin-3073"
+			require.NoError(t, db.InsertWorker(&state.Worker{
+				ID:        workerID,
+				BeadID:    pr.BeadID,
+				Anvil:     pr.Anvil,
+				Branch:    pr.Branch,
+				Status:    state.WorkerMonitoring,
+				Phase:     "bellows",
+				PRNumber:  pr.Number,
+				StartedAt: time.Now(),
+			}))
+
+			m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil)
+			m.sweepOrphanedMonitoringWorkers()
+
+			workers, err := db.WorkersByBead(pr.BeadID, pr.Anvil, 0)
+			require.NoError(t, err)
+			require.Len(t, workers, 1)
+
+			if tc.wantSwept {
+				assert.Equal(t, state.WorkerDone, workers[0].Status, "sweep must transition orphaned worker to done")
+				require.NotNil(t, workers[0].CompletedAt, "completed_at must be set on swept worker")
+				completed, err := db.CompletedWorkers(0)
+				require.NoError(t, err)
+				found := false
+				for _, w := range completed {
+					if w.ID == workerID {
+						found = true
+						break
+					}
+				}
+				assert.True(t, found, "swept worker must surface in CompletedWorkers")
+			} else {
+				assert.Equal(t, state.WorkerMonitoring, workers[0].Status, "sweep must not touch monitoring workers whose PR is still open")
+			}
+		})
+	}
+}
+
+// TestSweepOrphanedMonitoringWorkers_MissingPR verifies that a monitoring
+// bellows worker whose prs row has been deleted is still swept to done. This
+// guards against the orphan persisting after a manual SQL tweak or a future
+// code path that removes a PR row without completing its worker.
+func TestSweepOrphanedMonitoringWorkers_MissingPR(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	workerID := "bellows-munin-9999"
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID:        workerID,
+		BeadID:    "ext-9999",
+		Anvil:     "munin",
+		Branch:    "feature/missing",
+		Status:    state.WorkerMonitoring,
+		Phase:     "bellows",
+		PRNumber:  9999,
+		StartedAt: time.Now(),
+	}))
+
+	m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil)
+	m.sweepOrphanedMonitoringWorkers()
+
+	workers, err := db.WorkersByBead("ext-9999", "munin", 0)
+	require.NoError(t, err)
+	require.Len(t, workers, 1)
+	assert.Equal(t, state.WorkerDone, workers[0].Status)
+	require.NotNil(t, workers[0].CompletedAt)
+}
+
+// TestSweepOrphanedMonitoringWorkers_IgnoresNonBellowsWorkers verifies that
+// the sweep is scoped to phase=bellows and status=monitoring — pipeline
+// workers in other phases or statuses must remain untouched.
+func TestSweepOrphanedMonitoringWorkers_IgnoresNonBellowsWorkers(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    100,
+		Anvil:     "munin",
+		BeadID:    "forge-running",
+		Branch:    "forge/forge-running",
+		Status:    state.PRMerged, // terminal — would be swept if phase matched
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRStatus(pr.ID, state.PRMerged))
+
+	// A non-bellows worker (e.g. a smith) — must not be swept even if its
+	// bead's PR is merged.
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID:        "smith-forge-running",
+		BeadID:    pr.BeadID,
+		Anvil:     pr.Anvil,
+		Branch:    pr.Branch,
+		Status:    state.WorkerRunning,
+		Phase:     "smith",
+		PRNumber:  pr.Number,
+		StartedAt: time.Now(),
+	}))
+
+	m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil)
+	m.sweepOrphanedMonitoringWorkers()
+
+	w, err := db.WorkersByBead(pr.BeadID, pr.Anvil, 0)
+	require.NoError(t, err)
+	require.Len(t, w, 1)
+	assert.Equal(t, state.WorkerRunning, w[0].Status, "non-bellows workers must not be affected by the sweep")
+}
