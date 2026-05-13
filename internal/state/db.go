@@ -144,8 +144,10 @@ func (db *DB) migrate() error {
 		}
 	}
 	// Data fixup: ext- PRs that existed before the bellows_managed migration
-	// got bellows_managed=1 from the column default. Correct them to 0.
-	if _, err := db.conn.Exec(`UPDATE prs SET bellows_managed = 0 WHERE bead_id LIKE 'ext-%' AND bellows_managed = 1`); err != nil {
+	// got bellows_managed=1 from the column default. Correct them to 0, but
+	// leave user-pinned rows (bellows_manually_assigned=1) alone so that
+	// manual assignments survive a daemon restart (Forge-l125).
+	if _, err := db.conn.Exec(`UPDATE prs SET bellows_managed = 0 WHERE bead_id LIKE 'ext-%' AND bellows_managed = 1 AND bellows_manually_assigned = 0`); err != nil {
 		return fmt.Errorf("fixing ext- bellows_managed: %w", err)
 	}
 
@@ -1002,12 +1004,14 @@ func (p *PR) IsExternal() bool {
 // has_pending_reviews is explicitly set to 1 (pending) so new PRs don't appear in
 // Ready to Merge until bellows confirms no reviews are pending. This closes the race
 // window where GitHub assigns reviewers (e.g. Copilot) asynchronously after PR creation.
-// bellows_managed is explicitly set to 0 for ext-* (externally created) PRs so the
-// reconcile loop's auto-adoption release path is not triggered on every fresh insert;
-// users opt in via the assign_bellows IPC action which sets both flags (Forge-l125).
+// bellows_managed defaults to 0 for ext-* (externally created) PRs so the
+// reconcile loop's auto-adoption release path is not triggered on every fresh
+// insert; users opt in via the assign_bellows IPC action which sets both flags
+// (Forge-l125). An explicit pr.BellowsManaged=true on the struct overrides the
+// default so callers can pre-pin an ext-* row at insert time.
 func (db *DB) InsertPR(pr *PR) error {
 	bellowsManaged := 1
-	if pr.IsExternal() {
+	if pr.IsExternal() && !pr.BellowsManaged {
 		bellowsManaged = 0
 	}
 	res, err := db.conn.Exec(
