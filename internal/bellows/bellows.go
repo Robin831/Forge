@@ -426,6 +426,12 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			HasPendingReviews:    pr.HasPendingReviews,
 			IsConflicting:        conflictSeed,
 			HasUnresolvedThreads: threadsSeed,
+			// PRStatus.NeedsChanges() returns true when unresolved threads exist,
+			// so without seeding this in lockstep with threadsSeed the primary
+			// review-changes branch would re-fire on the first poll for any PR
+			// already in needs_fix or post-fix state — masking the secondary
+			// still-unresolved retry branch and dispatching duplicates.
+			NeedsChanges: threadsSeed,
 		}
 	}
 	// When CI is still in progress, preserve the last *completed* CIPassing value
