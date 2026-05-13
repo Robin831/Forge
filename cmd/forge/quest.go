@@ -236,6 +236,7 @@ func runShellCmd(ctx context.Context, command, dir string) error {
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
+	executil.HideWindow(cmd)
 	executil.SetProcessGroup(cmd)
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout

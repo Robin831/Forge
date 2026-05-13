@@ -399,6 +399,7 @@ var bdShowJSON = func(ctx context.Context, dir, beadID string) ([]byte, error) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	executil.HideWindow(cmd)
 	return cmd.Output()
 }
 

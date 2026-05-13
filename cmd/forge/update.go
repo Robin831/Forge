@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/daemon"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/forge"
 	"github.com/spf13/cobra"
 )
@@ -512,6 +513,7 @@ del "%%~f0"
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Stdin = nil
+	executil.HideWindow(cmd)
 	detachProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(scriptPath)
@@ -531,6 +533,7 @@ func startDaemon(exe string) error {
 	bgCmd.Stdout = nil
 	bgCmd.Stderr = nil
 	bgCmd.Stdin = nil
+	executil.HideWindow(bgCmd)
 	detachProcess(bgCmd)
 	if err := bgCmd.Start(); err != nil {
 		return err

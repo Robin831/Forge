@@ -16,6 +16,7 @@ import (
 	"github.com/Robin831/Forge/internal/autostart"
 	"github.com/Robin831/Forge/internal/changelog"
 	"github.com/Robin831/Forge/internal/daemon"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/state"
@@ -33,7 +34,7 @@ var (
 	execRunCommand = func(name string, args ...string) ([]byte, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 		defer cancel()
-		return exec.CommandContext(ctx, name, args...).CombinedOutput()
+		return executil.HideWindow(exec.CommandContext(ctx, name, args...)).CombinedOutput()
 	}
 )
 
