@@ -725,16 +725,18 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 // per-instance marker rolls out. Re-evaluating on every reconcile makes the
 // transition automatic — no manual state.db edits or pod resets required.
 //
-// Synthetic ext-* PRs are never bellows-managed regardless of marker state.
+// Synthetic ext-* PRs are not eligible for bellows management via the legacy
+// auto-adoption path, but a user can explicitly assign bellows to them via the
+// assign_bellows IPC action; those user-pinned rows carry
+// bellows_manually_assigned=1 and must be left alone by reconcile (Forge-l125).
 func (d *Daemon) reevaluateTrackedPR(existing *state.PR, pr vcs.OpenPR, anvilName string, forgeManaged bool, myForgeID string) {
 	// ext-* rows are synthetic identifiers for PRs Forge did not create.
-	// They are never eligible for bellows management regardless of marker state;
-	// defensively clear bellows_managed if it somehow got set.
+	// Clear bellows_managed only when it was set by legacy auto-adoption —
+	// not when the user explicitly assigned bellows via assign_bellows.
 	if strings.HasPrefix(existing.BeadID, "ext-") {
-		if existing.BellowsManaged {
-			// ext-* must never be bellows-managed; defensive correction.
+		if existing.BellowsManaged && !existing.BellowsManuallyAssigned {
 			_ = d.db.UpdatePRBellowsManaged(existing.ID, false)
-			d.logger.Info("reconcile: cleared bellows_managed on ext-* PR",
+			d.logger.Info("reconcile: cleared bellows_managed on auto-adopted ext-* PR",
 				"pr", pr.Number, "anvil", anvilName, "bead", existing.BeadID)
 		}
 		return
@@ -4657,13 +4659,27 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 		case "assign_bellows":
 			if pa.PRID > 0 {
-				if err := d.db.UpdatePRBellowsManaged(pa.PRID, true); err != nil {
+				// Set both bellows_managed=1 and bellows_manually_assigned=1 so
+				// the reconcile loop's defensive ext-* clobber leaves this PR alone.
+				if err := d.db.UpdatePRBellowsAssignment(pa.PRID, true, true); err != nil {
 					msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to assign bellows: %v", err)})
 					return ipc.Response{Type: "error", Payload: msg}
 				}
 			}
 			_ = d.db.LogEvent("bellows_assigned", fmt.Sprintf("PR #%d assigned to bellows for lifecycle management", pa.PRNumber), pa.BeadID, pa.Anvil)
 			d.logger.Info("bellows assigned to external PR via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+
+		case "unassign_bellows":
+			if pa.PRID > 0 {
+				// Clear both flags so reconcile no longer treats this PR as
+				// user-pinned and bellows stops running lifecycle workers for it.
+				if err := d.db.UpdatePRBellowsAssignment(pa.PRID, false, false); err != nil {
+					msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to unassign bellows: %v", err)})
+					return ipc.Response{Type: "error", Payload: msg}
+				}
+			}
+			_ = d.db.LogEvent("bellows_unassigned", fmt.Sprintf("PR #%d released from bellows lifecycle management", pa.PRNumber), pa.BeadID, pa.Anvil)
+			d.logger.Info("bellows unassigned from PR via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
 		case "approve":
 			reqID, _ := d.reqTracker.Track()

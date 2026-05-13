@@ -65,6 +65,87 @@ func TestDB_PRLifecycle(t *testing.T) {
 	}
 }
 
+// TestDB_BellowsAssignment exercises the bellows_managed / bellows_manually_assigned
+// pair set by the assign_bellows IPC action (Forge-l125). The manual flag must
+// persist across reads so the reconcile loop can distinguish user-pinned PRs
+// from legacy auto-adoption.
+func TestDB_BellowsAssignment(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-bellows-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	pr := &PR{
+		Number: 42, Anvil: "anvil-1", BeadID: "ext-42",
+		Branch: "feature/external", Status: PROpen, CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(pr); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh insert: both flags must default to 0 for ext-* PRs (the migration
+	// data-fixup clears bellows_managed=1 defaults on ext-* rows; manual flag
+	// defaults to 0 column-wise).
+	got, err := db.GetPRByID(pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BellowsManaged || got.BellowsManuallyAssigned {
+		t.Fatalf("fresh ext-* PR should have both flags off, got managed=%v manual=%v",
+			got.BellowsManaged, got.BellowsManuallyAssigned)
+	}
+
+	// assign_bellows sets both flags.
+	if err := db.UpdatePRBellowsAssignment(pr.ID, true, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.GetPRByID(pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.BellowsManaged || !got.BellowsManuallyAssigned {
+		t.Fatalf("after assign_bellows expected both flags set, got managed=%v manual=%v",
+			got.BellowsManaged, got.BellowsManuallyAssigned)
+	}
+
+	// unassign_bellows clears both flags.
+	if err := db.UpdatePRBellowsAssignment(pr.ID, false, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.GetPRByID(pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BellowsManaged || got.BellowsManuallyAssigned {
+		t.Fatalf("after unassign_bellows expected both flags clear, got managed=%v manual=%v",
+			got.BellowsManaged, got.BellowsManuallyAssigned)
+	}
+
+	// UpdatePRBellowsManaged alone must not touch the manual flag.
+	if err := db.UpdatePRBellowsAssignment(pr.ID, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdatePRBellowsManaged(pr.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.GetPRByID(pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BellowsManaged {
+		t.Fatalf("expected bellows_managed=false after UpdatePRBellowsManaged(false)")
+	}
+	if !got.BellowsManuallyAssigned {
+		t.Fatalf("UpdatePRBellowsManaged must not clear bellows_manually_assigned")
+	}
+}
+
 func TestDB_QueueCache(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

@@ -244,7 +244,7 @@ type PRActionPayload struct {
 	Anvil    string `json:"anvil"`
 	BeadID   string `json:"bead_id"`
 	Branch   string `json:"branch"`
-	Action   string `json:"action"` // "open_browser" | "merge" | "quench" | "burnish" | "rebase" | "close" | "approve" | "assign_bellows"
+	Action   string `json:"action"` // "open_browser" | "merge" | "quench" | "burnish" | "rebase" | "close" | "approve" | "assign_bellows" | "unassign_bellows"
 }
 
 // WardenRerunPayload is the payload for a "warden_rerun" command.
