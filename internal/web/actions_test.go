@@ -461,6 +461,7 @@ func TestActions_BeadAddComment_OK(t *testing.T) {
 	})
 
 	srv := newServerWithDefaults(t, nil)
+	srv.SetAnvilLister(func() map[string]string { return map[string]string{"forge": "/anvils/forge"} })
 	cookie := loginAndGetCookie(t, srv)
 
 	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/comment", map[string]any{
@@ -510,6 +511,7 @@ func TestActions_BeadAddComment_BdFailure(t *testing.T) {
 	})
 
 	srv := newServerWithDefaults(t, nil)
+	srv.SetAnvilLister(func() map[string]string { return map[string]string{"forge": "/anvils/forge"} })
 	cookie := loginAndGetCookie(t, srv)
 
 	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/comment", map[string]any{
@@ -564,6 +566,7 @@ func TestActions_BeadAddComment_NoJSONFromBdReturns204(t *testing.T) {
 	})
 
 	srv := newServerWithDefaults(t, nil)
+	srv.SetAnvilLister(func() map[string]string { return map[string]string{"forge": "/anvils/forge"} })
 	cookie := loginAndGetCookie(t, srv)
 
 	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/comment", map[string]any{
@@ -572,5 +575,58 @@ func TestActions_BeadAddComment_NoJSONFromBdReturns204(t *testing.T) {
 	})
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestActions_BeadAddComment_RejectsUnknownAnvil(t *testing.T) {
+	// Without a guard, an unknown anvil name would resolve to an empty path
+	// and `bd comments add` would run in the daemon's cwd against the wrong
+	// beads DB. The handler must reject the request before reaching bd, even
+	// if the bd shim were stubbed to succeed.
+	called := false
+	stubBdCommentsAdd(t, func(_, _ string) ([]byte, error) {
+		called = true
+		return []byte(`{}`), nil
+	})
+
+	srv := newServerWithDefaults(t, nil)
+	srv.SetAnvilLister(func() map[string]string { return map[string]string{"forge": "/anvils/forge"} })
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/comment", map[string]any{
+		"anvil": "ghost",
+		"body":  "hi",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown anvil, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Errorf("bd comments add should not be invoked for an unknown anvil")
+	}
+}
+
+func TestActions_BeadAddComment_RejectsOversizedBody(t *testing.T) {
+	// Bodies over 8 KiB are rejected outright so a single argv entry never
+	// risks blowing past Windows' 32k command-line limit. The bd shim must
+	// not be invoked.
+	called := false
+	stubBdCommentsAdd(t, func(_, _ string) ([]byte, error) {
+		called = true
+		return []byte(`{}`), nil
+	})
+
+	srv := newServerWithDefaults(t, nil)
+	srv.SetAnvilLister(func() map[string]string { return map[string]string{"forge": "/anvils/forge"} })
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/comment", map[string]any{
+		"anvil": "forge",
+		"body":  strings.Repeat("x", 8*1024+1),
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversize body, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Errorf("bd comments add should not be invoked for an oversized body")
 	}
 }

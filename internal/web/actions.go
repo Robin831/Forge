@@ -232,9 +232,12 @@ func (s *Server) handleBeadNote(w http.ResponseWriter, r *http.Request) {
 }
 
 // maxCommentBodyBytes caps the payload size on POST /api/bead/{id}/comment.
-// 32 KiB is well above the comment lengths anyone types in practice and
-// keeps the bd argv from blowing past the kernel's ARG_MAX on Linux.
-const maxCommentBodyBytes = 32 * 1024
+// The body is forwarded to bd as a single argv entry, and Windows caps the
+// entire CreateProcess command line at 32,767 characters — so the 32 KiB
+// budget we use elsewhere is unsafe here. 8 KiB leaves comfortable headroom
+// for the bd path, subcommand, bead id, --json flag, and quoting overhead
+// while still being well above the comment lengths anyone types in practice.
+const maxCommentBodyBytes = 8 * 1024
 
 // addCommentRequest is the JSON shape for POST /api/bead/{id}/comment. anvil
 // is required so the handler can resolve the on-disk path for cmd.Dir; body
@@ -286,7 +289,16 @@ func (s *Server) handleBeadAddComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the anvil to its on-disk path *before* shelling out. Without
+	// this guard an unknown (or unregistered) anvil name would leave cmd.Dir
+	// empty, causing `bd comments add` to run in the daemon's cwd against
+	// whichever beads DB happens to be there — silently writing to the wrong
+	// repository. Reject the request instead.
 	anvilPath := s.resolveAnvilPath(req.Anvil)
+	if anvilPath == "" {
+		writeError(w, http.StatusBadRequest, "unknown anvil")
+		return
+	}
 	s.logActor(r, "add_comment", "bead", beadID, "anvil", req.Anvil)
 
 	ctx, cancel := context.WithTimeout(r.Context(), executil.DefaultBdTimeout)
