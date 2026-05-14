@@ -421,6 +421,15 @@ export const actions = {
     apiPost(`/api/bead/${encodeURIComponent(beadID)}/label/remove`, { anvil, label }),
   addNote: (beadID: string, anvil: string, note: string) =>
     apiPost(`/api/bead/${encodeURIComponent(beadID)}/note`, { anvil, note }),
+  // addComment POSTs to the bd-backed comment endpoint. The backend returns
+  // the created comment in `{comment}` on 201; a 204 means the write
+  // succeeded but bd did not echo a parseable comment back (older bd
+  // versions) — callers should fall back to the next poll in that case.
+  addComment: (beadID: string, anvil: string, body: string) =>
+    apiPost<{ comment?: BeadDetailComment }>(
+      `/api/bead/${encodeURIComponent(beadID)}/comment`,
+      { anvil, body },
+    ),
 }
 
 // ForgeSession is one design conversation persisted on the server.

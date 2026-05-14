@@ -527,6 +527,18 @@ var bdCommentsJSON = func(ctx context.Context, dir, beadID string) ([]byte, erro
 	return cmd.Output()
 }
 
+// bdCommentsAdd shells out to `bd comments add <id> <body> --json`. body is
+// passed as a separate argv entry so it is never subject to shell expansion.
+// Like bdCommentsJSON the variable is package-level so tests can swap it.
+var bdCommentsAdd = func(ctx context.Context, dir, beadID, body string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "bd", "comments", "add", beadID, body, "--json")
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	executil.HideWindow(cmd)
+	return cmd.Output()
+}
+
 // fetchBeadComments returns the comment list for the bead, or an empty slice
 // on any failure. bd's JSON shape uses `text` for the comment body; this
 // helper renames it to `body` for the web layer's response.

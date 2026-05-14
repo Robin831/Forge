@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -90,6 +91,7 @@ func TestActions_RequireAuth(t *testing.T) {
 		"/api/bead/Forge-abc1/label/add",
 		"/api/bead/Forge-abc1/label/remove",
 		"/api/bead/Forge-abc1/note",
+		"/api/bead/Forge-abc1/comment",
 	} {
 		req := httptest.NewRequest("POST", path, strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
@@ -441,5 +443,134 @@ func TestActions_InvalidBeadID(t *testing.T) {
 	})
 	if rec.Code != http.StatusBadRequest && rec.Code != http.StatusNotFound {
 		t.Errorf("expected 400 or 404, got %d", rec.Code)
+	}
+}
+
+func TestActions_BeadAddComment_OK(t *testing.T) {
+	var gotBeadID, gotBody string
+	stubBdCommentsAdd(t, func(beadID, body string) ([]byte, error) {
+		gotBeadID = beadID
+		gotBody = body
+		return []byte(`{
+			"id": "comment-xyz",
+			"issue_id": "Forge-abc1",
+			"author": "Test User",
+			"text": "Looks good to me",
+			"created_at": "2026-05-14T08:00:00Z"
+		}`), nil
+	})
+
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/comment", map[string]any{
+		"anvil": "forge",
+		"body":  "Looks good to me",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotBeadID != "Forge-abc1" {
+		t.Errorf("bd invoked with wrong bead id: %q", gotBeadID)
+	}
+	if gotBody != "Looks good to me" {
+		t.Errorf("bd invoked with wrong body: %q", gotBody)
+	}
+
+	var body struct {
+		Comment struct {
+			ID        string `json:"id"`
+			Author    string `json:"author"`
+			Body      string `json:"body"`
+			CreatedAt string `json:"created_at"`
+		} `json:"comment"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if body.Comment.ID != "comment-xyz" {
+		t.Errorf("comment id: got %q", body.Comment.ID)
+	}
+	if body.Comment.Author != "Test User" {
+		t.Errorf("comment author: got %q", body.Comment.Author)
+	}
+	// The handler renames bd's `text` field to `body` so the SPA can render
+	// it uniformly with other markdown-ish text blocks (matches the read path).
+	if body.Comment.Body != "Looks good to me" {
+		t.Errorf("comment body: got %q", body.Comment.Body)
+	}
+	if body.Comment.CreatedAt != "2026-05-14T08:00:00Z" {
+		t.Errorf("comment created_at: got %q", body.Comment.CreatedAt)
+	}
+}
+
+func TestActions_BeadAddComment_BdFailure(t *testing.T) {
+	stubBdCommentsAdd(t, func(_, _ string) ([]byte, error) {
+		return nil, errors.New("exit status 1: bd: issue not found")
+	})
+
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/comment", map[string]any{
+		"anvil": "forge",
+		"body":  "anything",
+	})
+	if rec.Code < 500 || rec.Code > 599 {
+		t.Fatalf("expected 5xx on bd failure, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse error body: %v", err)
+	}
+	if body.Error == "" || !strings.Contains(body.Error, "bd comments add") {
+		t.Errorf("expected structured error containing 'bd comments add', got %q", body.Error)
+	}
+}
+
+func TestActions_BeadAddComment_RequiresBody(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/comment", map[string]any{
+		"anvil": "forge",
+		"body":  "   ",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty body, got %d", rec.Code)
+	}
+}
+
+func TestActions_BeadAddComment_RequiresAnvil(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/comment", map[string]any{
+		"body": "hi",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing anvil, got %d", rec.Code)
+	}
+}
+
+func TestActions_BeadAddComment_NoJSONFromBdReturns204(t *testing.T) {
+	stubBdCommentsAdd(t, func(_, _ string) ([]byte, error) {
+		// Older bd versions may print non-JSON output even with --json. The
+		// handler treats this as a successful no-content write so the SPA
+		// falls back to its next poll for the canonical list.
+		return []byte("comment added\n"), nil
+	})
+
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/comment", map[string]any{
+		"anvil": "forge",
+		"body":  "noted",
+	})
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

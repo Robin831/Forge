@@ -1,12 +1,14 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"regexp"
 	"strings"
 
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/go-chi/chi/v5"
 )
@@ -226,6 +228,99 @@ func (s *Server) handleBeadNote(w http.ResponseWriter, r *http.Request) {
 	s.logActor(r, "append_notes", "bead", beadID, "anvil", req.Anvil)
 	s.dispatchAction(w, "append_notes", ipc.AppendNotesPayload{
 		BeadID: beadID, Anvil: req.Anvil, Notes: req.Note,
+	})
+}
+
+// maxCommentBodyBytes caps the payload size on POST /api/bead/{id}/comment.
+// 32 KiB is well above the comment lengths anyone types in practice and
+// keeps the bd argv from blowing past the kernel's ARG_MAX on Linux.
+const maxCommentBodyBytes = 32 * 1024
+
+// addCommentRequest is the JSON shape for POST /api/bead/{id}/comment. anvil
+// is required so the handler can resolve the on-disk path for cmd.Dir; body
+// is the comment text passed verbatim to `bd comments add`.
+type addCommentRequest struct {
+	Anvil string `json:"anvil"`
+	Body  string `json:"body"`
+}
+
+// handleBeadAddComment proxies POST /api/bead/{id}/comment to
+// `bd comments add <id> <body> --json`. It mirrors the read path's shell-out
+// pattern (bdCommentsJSON in views.go) rather than going through IPC because
+// the daemon's comment-write path is the bd CLI directly. On success the
+// created comment is parsed out of bd's JSON output and returned with 201;
+// when bd returns nothing parseable the response is 204 so the SPA can fall
+// back to its next poll. bd failures become 502 (a 5xx upstream-failure)
+// with the standard {"error": "..."} body.
+func (s *Server) handleBeadAddComment(w http.ResponseWriter, r *http.Request) {
+	beadID := chi.URLParam(r, "bead_id")
+	if !isValidBeadID(beadID) {
+		writeError(w, http.StatusBadRequest, "invalid bead id")
+		return
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxCommentBodyBytes+1024))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	var req addCommentRequest
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+	}
+	req.Anvil = strings.TrimSpace(req.Anvil)
+	body := strings.TrimSpace(req.Body)
+	if body == "" {
+		writeError(w, http.StatusBadRequest, "body is required")
+		return
+	}
+	if len(body) > maxCommentBodyBytes {
+		writeError(w, http.StatusBadRequest, "body too long")
+		return
+	}
+	if req.Anvil == "" {
+		writeError(w, http.StatusBadRequest, "anvil is required")
+		return
+	}
+
+	anvilPath := s.resolveAnvilPath(req.Anvil)
+	s.logActor(r, "add_comment", "bead", beadID, "anvil", req.Anvil)
+
+	ctx, cancel := context.WithTimeout(r.Context(), executil.DefaultBdTimeout)
+	defer cancel()
+	out, err := bdCommentsAdd(ctx, anvilPath, beadID, body)
+	if err != nil {
+		s.logger.Warn("bd comments add failed", "bead_id", beadID, "anvil", req.Anvil, "error", err)
+		writeError(w, http.StatusBadGateway, "bd comments add failed: "+err.Error())
+		return
+	}
+
+	var parsed struct {
+		ID        string `json:"id"`
+		Author    string `json:"author"`
+		Text      string `json:"text"`
+		CreatedAt string `json:"created_at"`
+	}
+	if len(out) > 0 {
+		_ = executil.DecodeJSON(out, &parsed)
+	}
+	if parsed.ID == "" && parsed.Text == "" {
+		// bd succeeded but produced no parseable JSON (e.g. older bd
+		// versions). Return 204 so the SPA falls back to its next poll
+		// for the canonical list.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"comment": beadDetailComment{
+			ID:        parsed.ID,
+			Author:    parsed.Author,
+			Body:      parsed.Text,
+			CreatedAt: parsed.CreatedAt,
+		},
 	})
 }
 
