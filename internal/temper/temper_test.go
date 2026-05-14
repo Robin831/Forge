@@ -189,6 +189,142 @@ func TestDetectSteps_NodeAtRoot(t *testing.T) {
 	}
 }
 
+func TestDetectSteps_AppendsVitestWorkerCapWhenScriptUsesVitest(t *testing.T) {
+	// Reproduces the Hytte OOM scenario: a Vite/Vitest frontend whose test:run
+	// script invokes vitest. Temper must cap worker concurrency to 1 thread so
+	// uncapped Vitest workers cannot push the host past its RAM limit.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{
+        "scripts": {
+            "test:run": "vitest run",
+            "lint": "eslint ."
+        }
+    }`), 0o644))
+
+	steps := detectSteps(dir, nil, false)
+
+	var testStep *Step
+	for i := range steps {
+		if steps[i].Name == "test" {
+			testStep = &steps[i]
+			break
+		}
+	}
+	require.NotNil(t, testStep, "expected a test step for the Node project")
+
+	assert.Equal(t, "npm", testStep.Command)
+	assert.Contains(t, testStep.Args, "--",
+		"vitest args must be passed after `--` so npm forwards them to the script")
+	assert.Contains(t, testStep.Args, "--pool=threads")
+	assert.Contains(t, testStep.Args, "--poolOptions.threads.maxThreads=1")
+	assert.Contains(t, testStep.Args, "--poolOptions.threads.minThreads=1")
+
+	// The leading "run test:run" prefix must still be intact so the existing
+	// npm invocation continues to work.
+	require.GreaterOrEqual(t, len(testStep.Args), 2)
+	assert.Equal(t, "run", testStep.Args[0])
+	assert.Equal(t, "test:run", testStep.Args[1])
+}
+
+func TestDetectSteps_DoesNotAppendVitestCapWhenScriptDoesNotUseVitest(t *testing.T) {
+	// A non-Vitest test script (e.g. jest, mocha) must not get the Vitest-
+	// specific flags appended — those flags would either be ignored or
+	// reported as unknown options by other runners.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{
+        "scripts": {
+            "test:run": "jest --ci"
+        }
+    }`), 0o644))
+
+	steps := detectSteps(dir, nil, false)
+
+	var testStep *Step
+	for i := range steps {
+		if steps[i].Name == "test" {
+			testStep = &steps[i]
+			break
+		}
+	}
+	require.NotNil(t, testStep, "expected a test step for the Node project")
+
+	assert.Equal(t, []string{"run", "test:run"}, testStep.Args,
+		"non-vitest scripts must not have vitest cap flags appended")
+}
+
+func TestDetectSteps_DoesNotAppendVitestCapWhenScriptMissing(t *testing.T) {
+	// An empty/missing scripts block must not get the Vitest cap — there is
+	// no way to know what the script will do, so default to the previous
+	// behaviour of just running `npm run test:run`.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+
+	steps := detectSteps(dir, nil, false)
+
+	var testStep *Step
+	for i := range steps {
+		if steps[i].Name == "test" {
+			testStep = &steps[i]
+			break
+		}
+	}
+	require.NotNil(t, testStep)
+	assert.Equal(t, []string{"run", "test:run"}, testStep.Args)
+}
+
+func TestConfigFromSteps_OverridePreservesUserCommandUnchanged(t *testing.T) {
+	// Acceptance criterion from the bead: a per-anvil temper.steps override
+	// must pass through verbatim — Forge must not silently inject the Vitest
+	// worker cap into a user-supplied command.
+	userArgs := []string{"run", "test:run"}
+	cfg := ConfigFromSteps([]config.TemperStepConfig{
+		{Name: "test", Command: "npm", Args: userArgs},
+	})
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.Steps, 1)
+	assert.Equal(t, "npm", cfg.Steps[0].Command)
+	assert.Equal(t, userArgs, cfg.Steps[0].Args,
+		"user-supplied Args must be preserved verbatim; auto-detect cap must not leak in")
+}
+
+func TestCommandInvokesVitest(t *testing.T) {
+	cases := []struct {
+		script string
+		want   bool
+	}{
+		{"vitest", true},
+		{"vitest run", true},
+		{"vitest run --coverage", true},
+		{"npx vitest run", true},
+		{"node_modules/.bin/vitest run", true},
+		{"./node_modules/.bin/vitest", true},
+		{"vitest.cmd run", true},
+		{"jest --ci", false},
+		{"mocha --reporter spec", false},
+		{"", false},
+		{"echo vitestic", false}, // substring must not match
+		{"echo not-vitest", false},
+	}
+	for _, c := range cases {
+		got := commandInvokesVitest(c.script)
+		assert.Equal(t, c.want, got, "commandInvokesVitest(%q)", c.script)
+	}
+}
+
+func TestScriptUsesVitest_MissingPackageJSON(t *testing.T) {
+	// No package.json at all — must safely return false rather than panicking
+	// or returning an error to callers.
+	dir := t.TempDir()
+	assert.False(t, scriptUsesVitest(dir, "test:run"))
+}
+
+func TestScriptUsesVitest_CorruptPackageJSON(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{not valid json"), 0o644))
+	assert.False(t, scriptUsesVitest(dir, "test:run"),
+		"corrupt JSON must not crash detection; safe default is `not vitest`")
+}
+
 func TestDetectSteps_NodeInSubdirectory(t *testing.T) {
 	dir := t.TempDir()
 	// Go at root, Node in web/

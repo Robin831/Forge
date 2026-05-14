@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -23,6 +24,19 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 	"gopkg.in/yaml.v3"
 )
+
+// vitestSingleThreadArgs caps Vitest worker concurrency to one thread. On
+// memory-constrained hosts the default Vitest pool spawns N-CPU workers, each
+// of which can balloon to 1+ GB RSS on Vite-based frontends — enough to push
+// the Forge daemon, the Smith subprocess, and the temper test runner past the
+// host's RAM and trigger an OOM kill of the Smith. Single-threaded mode is
+// slower but functionally identical. Users who know their host can take more
+// can override the test step entirely via `temper.commands` / `temper.steps`.
+var vitestSingleThreadArgs = []string{
+	"--pool=threads",
+	"--poolOptions.threads.maxThreads=1",
+	"--poolOptions.threads.minThreads=1",
+}
 
 // StepResult captures the outcome of a single verification step.
 type StepResult struct {
@@ -625,10 +639,18 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 			Timeout:  2 * time.Minute,
 			Optional: true, // lint might not be configured
 		})
+		// When the test:run script invokes Vitest, pass through worker-cap
+		// flags via `npm run ... --` so the pool stays single-threaded. See
+		// vitestSingleThreadArgs for rationale.
+		testArgs := []string{"run", "test:run"}
+		if scriptUsesVitest(filepath.Join(worktreePath, nodeDir), "test:run") {
+			testArgs = append(testArgs, "--")
+			testArgs = append(testArgs, vitestSingleThreadArgs...)
+		}
 		steps = append(steps, Step{
 			Name:     prefix + "test",
 			Command:  "npm",
-			Args:     []string{"run", "test:run"},
+			Args:     testArgs,
 			Dir:      dir,
 			Timeout:  5 * time.Minute,
 			Optional: true, // test script might not exist
@@ -959,6 +981,48 @@ func hasRunPrefix(line []byte, c byte) bool {
 		}
 	}
 	return true
+}
+
+// scriptUsesVitest reports whether the named script in dir/package.json
+// invokes Vitest. Returns false when package.json is missing, unreadable, or
+// does not declare the script — those cases are safe defaults because the
+// fallback `npm run <script>` invocation will either no-op or be reported as
+// an optional test failure by Temper without affecting the overall result.
+func scriptUsesVitest(dir, scriptName string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return false
+	}
+	script, ok := pkg.Scripts[scriptName]
+	if !ok {
+		return false
+	}
+	return commandInvokesVitest(script)
+}
+
+// commandInvokesVitest reports whether the given npm script command line
+// invokes vitest as one of its tokens. It matches `vitest`, `vitest run`,
+// `npx vitest`, and `node_modules/.bin/vitest` style invocations without
+// matching substrings that merely contain the letters (e.g. `vitestic`).
+func commandInvokesVitest(script string) bool {
+	for _, tok := range strings.Fields(script) {
+		base := tok
+		if i := strings.LastIndexAny(tok, "/\\"); i >= 0 {
+			base = tok[i+1:]
+		}
+		base = strings.TrimSuffix(base, ".cmd")
+		base = strings.TrimSuffix(base, ".exe")
+		if base == "vitest" {
+			return true
+		}
+	}
+	return false
 }
 
 // detectNodeDirs returns the relative directories containing a package.json.

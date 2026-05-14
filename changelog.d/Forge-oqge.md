@@ -1,0 +1,2 @@
+category: Fixed
+- **Temper caps Vitest worker concurrency to one thread** - Auto-detected Vitest test steps now pass `--pool=threads --poolOptions.threads.maxThreads=1 --poolOptions.threads.minThreads=1` so a single Smith does not spawn N-CPU Vitest workers, each potentially using 1+ GB RSS. Prevents OOM kills on memory-constrained hosts. Users can opt out by overriding the test step via `temper.commands` or `temper.steps`. (Forge-oqge)
