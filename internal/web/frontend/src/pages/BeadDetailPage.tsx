@@ -1,10 +1,23 @@
-import { useMemo, useState } from 'react'
-import { ArrowLeft, FileText, GitBranch, Network, Plus, StickyNote, X, XCircle } from 'lucide-react'
+import { useMemo, useState, type ReactNode } from 'react'
+import {
+  ArrowLeft,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  GitBranch,
+  MessageSquare,
+  Network,
+  Plus,
+  StickyNote,
+  X,
+  XCircle,
+} from 'lucide-react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useApiPoll } from '../hooks/useApiPoll'
 import {
   actions,
   type BeadBrief,
+  type BeadDetailComment,
   type BeadDetailResponse,
   type BeadDetailWorker,
   type StatusResponse,
@@ -232,6 +245,29 @@ export default function BeadDetailPage() {
           </p>
         )}
       </header>
+
+      {data?.notes && data.notes.trim() !== '' && (
+        <CollapsibleSection
+          title="Notes"
+          icon={<StickyNote size={16} className="text-amber-400" aria-hidden />}
+        >
+          <p className="whitespace-pre-wrap px-4 py-3 text-sm text-slate-200">{data.notes}</p>
+        </CollapsibleSection>
+      )}
+
+      {data && data.comments.length > 0 && (
+        <CollapsibleSection
+          title="Comments"
+          icon={<MessageSquare size={16} className="text-sky-400" aria-hidden />}
+          count={data.comments.length}
+        >
+          <ul className="divide-y divide-slate-800">
+            {data.comments.map((c, idx) => (
+              <CommentCard key={c.id || `${c.author}-${c.created_at}-${idx}`} comment={c} />
+            ))}
+          </ul>
+        </CollapsibleSection>
+      )}
 
       {data?.retry && (
         <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
@@ -612,6 +648,66 @@ function DetailItem({ label, value, warn }: DetailItemProps) {
       <dt className="text-slate-500">{label}</dt>
       <dd className={`font-mono ${warn ? 'text-amber-300' : 'text-slate-200'}`}>{value}</dd>
     </div>
+  )
+}
+
+interface CollapsibleSectionProps {
+  title: string
+  icon?: ReactNode
+  count?: number
+  defaultOpen?: boolean
+  children: ReactNode
+}
+
+// CollapsibleSection wraps a panel body with a clickable header that toggles
+// visibility, matching the chevron-toggled style used elsewhere on the page
+// (e.g. QueuePane). Default expanded; collapse state lives in component-local
+// useState so it resets on navigation.
+function CollapsibleSection({
+  title,
+  icon,
+  count,
+  defaultOpen = true,
+  children,
+}: CollapsibleSectionProps) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-slate-800/40 focus:bg-slate-800/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
+      >
+        {open ? (
+          <ChevronDown size={14} className="text-slate-400" aria-hidden />
+        ) : (
+          <ChevronRight size={14} className="text-slate-400" aria-hidden />
+        )}
+        {icon}
+        <h3 className="text-sm font-semibold text-slate-200">{title}</h3>
+        {typeof count === 'number' && (
+          <span className="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-xs font-normal text-slate-300">
+            {count}
+          </span>
+        )}
+      </button>
+      {open && <div className="border-t border-slate-800/60">{children}</div>}
+    </section>
+  )
+}
+
+function CommentCard({ comment }: { comment: BeadDetailComment }) {
+  return (
+    <li className="px-4 py-3">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs text-slate-500">
+        <span className="font-medium text-slate-200">{comment.author || 'unknown'}</span>
+        {comment.created_at && (
+          <span title={comment.created_at}>{relativeTime(comment.created_at)}</span>
+        )}
+      </div>
+      <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-200">{comment.body}</p>
+    </li>
   )
 }
 
