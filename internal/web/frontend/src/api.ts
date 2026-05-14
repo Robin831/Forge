@@ -242,6 +242,16 @@ export interface BeadDetailWorker {
   pr_number?: number
 }
 
+// BeadDetailComment is one entry from the `comments` array on the bead detail
+// response. The backend renames bd's `text` field to `body` so the SPA can
+// render it uniformly with other markdown-ish text blocks.
+export interface BeadDetailComment {
+  id?: string
+  author: string
+  body: string
+  created_at: string
+}
+
 // BeadBrief is the lightweight reference shape used by the dep graph
 // (matches Go's beadDetailDepRef). The nested blocks / blocked_by fields
 // are populated only when the deps endpoint is asked to recurse past
@@ -268,6 +278,8 @@ export interface BeadDetailResponse {
   prs: BeadDetailPR[]
   blocks: BeadBrief[]
   blocked_by: BeadBrief[]
+  notes?: string
+  comments: BeadDetailComment[]
 }
 
 export interface BeadDepsResponse {
