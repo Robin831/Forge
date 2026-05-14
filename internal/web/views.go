@@ -536,7 +536,7 @@ var bdCommentsAdd = func(ctx context.Context, dir, beadID, body string) ([]byte,
 		cmd.Dir = dir
 	}
 	executil.HideWindow(cmd)
-	return cmd.Output()
+	return cmd.CombinedOutput()
 }
 
 // fetchBeadComments returns the comment list for the bead, or an empty slice
@@ -639,12 +639,24 @@ func walkBeadDeps(ctx context.Context, dir, beadID string, depth int, lookup anv
 
 // resolveAnvilPath maps an anvil name to its on-disk path using the live
 // registry. Returns "" when the name is empty, the registry is not
-// configured, or the name is not registered.
+// configured, or the name is not registered. The lookup is case-insensitive
+// so callers match the daemon's IPC behaviour (e.g. "Forge" resolves to the
+// "forge" registry entry).
 func (s *Server) resolveAnvilPath(name string) string {
 	if name == "" || s.anvils == nil {
 		return ""
 	}
-	return s.anvils()[name]
+	registry := s.anvils()
+	if path, ok := registry[name]; ok {
+		return path
+	}
+	lower := strings.ToLower(name)
+	for k, path := range registry {
+		if strings.ToLower(k) == lower {
+			return path
+		}
+	}
+	return ""
 }
 
 // handleBeadDetail returns a consolidated view of one bead used by the

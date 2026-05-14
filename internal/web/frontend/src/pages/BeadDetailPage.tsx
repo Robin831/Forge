@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   ArrowLeft,
   ChevronDown,
@@ -80,10 +80,26 @@ export default function BeadDetailPage() {
   // while the polled detail response catches up. Each entry is merged into
   // the rendered list and de-duplicated against the server list by id.
   const [localComments, setLocalComments] = useState<BeadDetailComment[]>([])
+  // submittedAtCountRef records the server comment count at the time the first
+  // pending local entry was submitted so we can detect when it has been
+  // persisted (including the 204 path where bd returns no parseable JSON and
+  // the local entry has a synthetic id that will never match a server id).
+  const submittedAtCountRef = useRef<number | null>(null)
 
   const status = useApiPoll<StatusResponse>('/api/status', POLL_INTERVAL_MS)
   const detail = useApiPoll<BeadDetailResponse>(path, POLL_INTERVAL_MS)
   const data = detail.data
+
+  // Clear local entries once the server list grows past the count we had at
+  // submission time — at that point the new comment has been persisted.
+  useEffect(() => {
+    if (submittedAtCountRef.current === null) return
+    const serverCount = data?.comments?.length ?? 0
+    if (serverCount > submittedAtCountRef.current) {
+      setLocalComments([])
+      submittedAtCountRef.current = null
+    }
+  }, [data?.comments])
   const resolvedAnvil = data?.anvil || anvil
   const { run, busy } = useAction()
   const [dialog, setDialog] = useState<
@@ -293,7 +309,12 @@ export default function BeadDetailPage() {
             <CommentComposer
               beadID={beadID}
               anvil={resolvedAnvil}
-              onAdded={(c) => setLocalComments((prev) => [...prev, c])}
+              onAdded={(c) => {
+                if (submittedAtCountRef.current === null) {
+                  submittedAtCountRef.current = data?.comments?.length ?? 0
+                }
+                setLocalComments((prev) => [...prev, c])
+              }}
             />
           )}
         </CollapsibleSection>

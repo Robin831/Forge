@@ -630,3 +630,60 @@ func TestActions_BeadAddComment_RejectsOversizedBody(t *testing.T) {
 		t.Errorf("bd comments add should not be invoked for an oversized body")
 	}
 }
+
+func TestActions_BeadAddComment_ArrayResponseFromBd(t *testing.T) {
+	// bd may return an array (the updated comment list) instead of a single
+	// object. The handler should use the last element and return 201.
+	stubBdCommentsAdd(t, func(_, _ string) ([]byte, error) {
+		return []byte(`[
+			{"id":"comment-old","author":"Alice","text":"first","created_at":"2026-05-14T07:00:00Z"},
+			{"id":"comment-new","author":"Bob","text":"second","created_at":"2026-05-14T08:00:00Z"}
+		]`), nil
+	})
+
+	srv := newServerWithDefaults(t, nil)
+	srv.SetAnvilLister(func() map[string]string { return map[string]string{"forge": "/anvils/forge"} })
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/comment", map[string]any{
+		"anvil": "forge",
+		"body":  "second",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for array bd response, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Comment struct {
+			ID   string `json:"id"`
+			Body string `json:"body"`
+		} `json:"comment"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if body.Comment.ID != "comment-new" {
+		t.Errorf("expected last array element id %q, got %q", "comment-new", body.Comment.ID)
+	}
+	if body.Comment.Body != "second" {
+		t.Errorf("expected last array element body %q, got %q", "second", body.Comment.Body)
+	}
+}
+
+func TestActions_BeadAddComment_CaseInsensitiveAnvil(t *testing.T) {
+	// The registry uses lowercase "forge"; submitting with "Forge" must resolve.
+	stubBdCommentsAdd(t, func(_, _ string) ([]byte, error) {
+		return []byte(`{"id":"c1","author":"u","text":"hi","created_at":"2026-05-14T08:00:00Z"}`), nil
+	})
+
+	srv := newServerWithDefaults(t, nil)
+	srv.SetAnvilLister(func() map[string]string { return map[string]string{"forge": "/anvils/forge"} })
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/comment", map[string]any{
+		"anvil": "Forge",
+		"body":  "hi",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for mixed-case anvil, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}

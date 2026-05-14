@@ -305,19 +305,31 @@ func (s *Server) handleBeadAddComment(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	out, err := bdCommentsAdd(ctx, anvilPath, beadID, body)
 	if err != nil {
-		s.logger.Warn("bd comments add failed", "bead_id", beadID, "anvil", req.Anvil, "error", err)
-		writeError(w, http.StatusBadGateway, "bd comments add failed: "+err.Error())
+		detail := err.Error()
+		if len(out) > 0 {
+			detail += ": " + strings.TrimSpace(string(out))
+		}
+		s.logger.Warn("bd comments add failed", "bead_id", beadID, "anvil", req.Anvil, "error", detail)
+		writeError(w, http.StatusBadGateway, "bd comments add failed: "+detail)
 		return
 	}
 
-	var parsed struct {
+	type bdCommentEntry struct {
 		ID        string `json:"id"`
 		Author    string `json:"author"`
 		Text      string `json:"text"`
 		CreatedAt string `json:"created_at"`
 	}
+	var parsed bdCommentEntry
 	if len(out) > 0 {
-		_ = executil.DecodeJSON(out, &parsed)
+		// bd may return an array (the updated comment list) or a single object.
+		// Prefer the last element of an array; fall back to single-object decode.
+		var arr []bdCommentEntry
+		if decErr := executil.DecodeJSON(out, &arr); decErr == nil && len(arr) > 0 {
+			parsed = arr[len(arr)-1]
+		} else {
+			_ = executil.DecodeJSON(out, &parsed)
+		}
 	}
 	if parsed.ID == "" && parsed.Text == "" {
 		// bd succeeded but produced no parseable JSON (e.g. older bd
