@@ -788,20 +788,25 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 	prs := collectBeadPRs(s.db, beadID, resp.Anvil)
 	resp.PRs = prs
 
+	anvilPath := s.resolveAnvilPath(resp.Anvil)
+
 	// Dependency lists + notes share a single `bd show <id> --json` call.
 	// Failures fall back to empty slices/strings so the response shape
 	// stays stable when bd is missing or returns unexpected output.
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	anvilPath := s.resolveAnvilPath(resp.Anvil)
-	if entry, err := fetchBeadShow(ctx, anvilPath, beadID); err == nil && entry != nil {
+	// Each bd call gets its own independent context so a slow or cancelled
+	// show call does not starve the comment fetch.
+	showCtx, showCancel := context.WithTimeout(r.Context(), executil.DefaultBdTimeout)
+	defer showCancel()
+	if entry, err := fetchBeadShow(showCtx, anvilPath, beadID); err == nil && entry != nil {
 		resp.Notes = entry.Notes
 		resp.Blocks, resp.BlockedBy = extractBeadDeps(entry, newAnvilLookup(s.db))
 	}
 
 	// Comments come from a separate `bd comments <id> --json` shell-out.
 	// Errors are non-fatal: the rest of the page still renders.
-	resp.Comments = fetchBeadComments(ctx, anvilPath, beadID, s.logger)
+	commentsCtx, commentsCancel := context.WithTimeout(r.Context(), executil.DefaultBdTimeout)
+	defer commentsCancel()
+	resp.Comments = fetchBeadComments(commentsCtx, anvilPath, beadID, s.logger)
 
 	writeJSON(w, http.StatusOK, resp)
 }
