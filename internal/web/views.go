@@ -527,6 +527,18 @@ var bdCommentsJSON = func(ctx context.Context, dir, beadID string) ([]byte, erro
 	return cmd.Output()
 }
 
+// bdCommentsAdd shells out to `bd comments add <id> <body> --json`. body is
+// passed as a separate argv entry so it is never subject to shell expansion.
+// Like bdCommentsJSON the variable is package-level so tests can swap it.
+var bdCommentsAdd = func(ctx context.Context, dir, beadID, body string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "bd", "comments", "add", beadID, body, "--json")
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	executil.HideWindow(cmd)
+	return cmd.CombinedOutput()
+}
+
 // fetchBeadComments returns the comment list for the bead, or an empty slice
 // on any failure. bd's JSON shape uses `text` for the comment body; this
 // helper renames it to `body` for the web layer's response.
@@ -627,12 +639,24 @@ func walkBeadDeps(ctx context.Context, dir, beadID string, depth int, lookup anv
 
 // resolveAnvilPath maps an anvil name to its on-disk path using the live
 // registry. Returns "" when the name is empty, the registry is not
-// configured, or the name is not registered.
+// configured, or the name is not registered. The lookup is case-insensitive
+// so callers match the daemon's IPC behaviour (e.g. "Forge" resolves to the
+// "forge" registry entry).
 func (s *Server) resolveAnvilPath(name string) string {
 	if name == "" || s.anvils == nil {
 		return ""
 	}
-	return s.anvils()[name]
+	registry := s.anvils()
+	if path, ok := registry[name]; ok {
+		return path
+	}
+	lower := strings.ToLower(name)
+	for k, path := range registry {
+		if strings.ToLower(k) == lower {
+			return path
+		}
+	}
+	return ""
 }
 
 // handleBeadDetail returns a consolidated view of one bead used by the

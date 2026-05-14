@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   ArrowLeft,
   ChevronDown,
@@ -16,6 +16,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useApiPoll } from '../hooks/useApiPoll'
 import {
   actions,
+  ApiError,
   type BeadBrief,
   type BeadDetailComment,
   type BeadDetailResponse,
@@ -75,9 +76,30 @@ export default function BeadDetailPage() {
     return `/api/bead/${encodeURIComponent(beadID)}${q ? `?${q}` : ''}`
   }, [beadID, anvil])
 
+  // localComments holds comments returned by POST /api/bead/{id}/comment
+  // while the polled detail response catches up. Each entry is merged into
+  // the rendered list and de-duplicated against the server list by id.
+  const [localComments, setLocalComments] = useState<BeadDetailComment[]>([])
+  // submittedAtCountRef records the server comment count at the time the first
+  // pending local entry was submitted so we can detect when it has been
+  // persisted (including the 204 path where bd returns no parseable JSON and
+  // the local entry has a synthetic id that will never match a server id).
+  const submittedAtCountRef = useRef<number | null>(null)
+
   const status = useApiPoll<StatusResponse>('/api/status', POLL_INTERVAL_MS)
   const detail = useApiPoll<BeadDetailResponse>(path, POLL_INTERVAL_MS)
   const data = detail.data
+
+  // Clear local entries once the server list grows past the count we had at
+  // submission time — at that point the new comment has been persisted.
+  useEffect(() => {
+    if (submittedAtCountRef.current === null) return
+    const serverCount = data?.comments?.length ?? 0
+    if (serverCount > submittedAtCountRef.current) {
+      setLocalComments([])
+      submittedAtCountRef.current = null
+    }
+  }, [data?.comments])
   const resolvedAnvil = data?.anvil || anvil
   const { run, busy } = useAction()
   const [dialog, setDialog] = useState<
@@ -89,6 +111,19 @@ export default function BeadDetailPage() {
   >(null)
   const [depBrief, setDepBrief] = useState<BeadBrief | null>(null)
   const [graphOpen, setGraphOpen] = useState(false)
+
+  // mergedComments concatenates the server-side list with optimistic local
+  // additions, dropping any local entry whose id has already appeared on the
+  // server. The displayed list keeps the server's order and appends the
+  // remaining optimistic entries at the end (newest last) so users see
+  // their submission immediately.
+  const mergedComments = useMemo<BeadDetailComment[]>(() => {
+    const serverList = data?.comments ?? []
+    if (localComments.length === 0) return serverList
+    const seen = new Set(serverList.map((c) => c.id).filter((id): id is string => !!id))
+    const extras = localComments.filter((c) => !c.id || !seen.has(c.id))
+    return [...serverList, ...extras]
+  }, [data?.comments, localComments])
 
   const graphRoot = useMemo<BeadBrief | null>(
     () =>
@@ -255,17 +290,33 @@ export default function BeadDetailPage() {
         </CollapsibleSection>
       )}
 
-      {data && data.comments.length > 0 && (
+      {data && (mergedComments.length > 0 || resolvedAnvil) && (
         <CollapsibleSection
           title="Comments"
           icon={<MessageSquare size={16} className="text-sky-400" aria-hidden />}
-          count={data.comments.length}
+          count={mergedComments.length}
         >
-          <ul className="divide-y divide-slate-800">
-            {data.comments.map((c, idx) => (
-              <CommentCard key={c.id || `${c.author}-${c.created_at}-${idx}`} comment={c} />
-            ))}
-          </ul>
+          {mergedComments.length === 0 ? (
+            <EmptyState message="No comments on this bead yet." />
+          ) : (
+            <ul className="divide-y divide-slate-800">
+              {mergedComments.map((c, idx) => (
+                <CommentCard key={c.id || `${c.author}-${c.created_at}-${idx}`} comment={c} />
+              ))}
+            </ul>
+          )}
+          {resolvedAnvil && (
+            <CommentComposer
+              beadID={beadID}
+              anvil={resolvedAnvil}
+              onAdded={(c) => {
+                if (submittedAtCountRef.current === null) {
+                  submittedAtCountRef.current = data?.comments?.length ?? 0
+                }
+                setLocalComments((prev) => [...prev, c])
+              }}
+            />
+          )}
         </CollapsibleSection>
       )}
 
@@ -694,6 +745,94 @@ function CollapsibleSection({
       </button>
       {open && <div className="border-t border-slate-800/60">{children}</div>}
     </section>
+  )
+}
+
+interface CommentComposerProps {
+  beadID: string
+  anvil: string
+  onAdded: (comment: BeadDetailComment) => void
+}
+
+// CommentComposer renders the textarea + "Add comment" button at the bottom
+// of the Comments panel. It POSTs to /api/bead/{id}/comment and reports the
+// created comment to the parent so it can optimistically append the entry
+// before the next 5s poll refresh catches up. A 204 (bd succeeded but did
+// not echo a comment) is treated as success; the optimistic append uses a
+// synthetic local entry that the merge will drop once the poll arrives.
+function CommentComposer({ beadID, anvil, onAdded }: CommentComposerProps) {
+  const [draft, setDraft] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [errMsg, setErrMsg] = useState<string | null>(null)
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    const body = draft.trim()
+    if (!body || submitting) return
+    setSubmitting(true)
+    setErrMsg(null)
+    try {
+      const resp = await actions.addComment(beadID, anvil, body)
+      const created: BeadDetailComment = resp.comment ?? {
+        id: `local-${Date.now()}`,
+        author: '',
+        body,
+        created_at: new Date().toISOString(),
+      }
+      onAdded(created)
+      setDraft('')
+    } catch (err) {
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'failed to add comment'
+      setErrMsg(message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const canSubmit = draft.trim().length > 0 && !submitting
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="border-t border-slate-800/60 bg-slate-950/40 px-4 py-3"
+      aria-label="Add comment"
+    >
+      <label htmlFor={`comment-composer-${beadID}`} className="sr-only">
+        Add a comment
+      </label>
+      <textarea
+        id={`comment-composer-${beadID}`}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder="Add a comment…"
+        rows={3}
+        disabled={submitting}
+        className="block w-full resize-y rounded-md border border-slate-700 bg-slate-900 px-2.5 py-2 text-sm text-slate-200 placeholder:text-slate-500 focus:border-amber-400/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-60"
+      />
+      {errMsg && (
+        <p
+          role="alert"
+          className="mt-2 rounded-md border border-red-700/40 bg-red-900/20 px-2.5 py-1.5 text-xs text-red-200"
+        >
+          {errMsg}
+        </p>
+      )}
+      <div className="mt-2 flex justify-end">
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          className="inline-flex items-center gap-1.5 rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200 hover:bg-amber-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
+        >
+          <MessageSquare size={12} aria-hidden />
+          {submitting ? 'Adding…' : 'Add comment'}
+        </button>
+      </div>
+    </form>
   )
 }
 

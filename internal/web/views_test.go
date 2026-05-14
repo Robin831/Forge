@@ -20,6 +20,9 @@ var bdShowMu sync.Mutex
 // bdCommentsMu serializes bdCommentsJSON swaps for the same reason.
 var bdCommentsMu sync.Mutex
 
+// bdCommentsAddMu serializes bdCommentsAdd swaps for the same reason.
+var bdCommentsAddMu sync.Mutex
+
 // stubBdShow installs a temporary bdShowJSON implementation for the test.
 // bdShowMu is locked until t.Cleanup runs, serializing parallel tests that
 // use the global. The fn callback receives only the bead ID; the dir
@@ -49,6 +52,23 @@ func stubBdComments(t *testing.T, fn func(beadID string) ([]byte, error)) {
 	t.Cleanup(func() {
 		bdCommentsJSON = prev
 		bdCommentsMu.Unlock()
+	})
+}
+
+// stubBdCommentsAdd installs a temporary bdCommentsAdd implementation for the
+// test, mirroring stubBdComments. The fn callback receives the bead ID and
+// body so success-path tests can assert that bd was invoked with the user's
+// payload; failure-path tests can ignore them and just return an error.
+func stubBdCommentsAdd(t *testing.T, fn func(beadID, body string) ([]byte, error)) {
+	t.Helper()
+	bdCommentsAddMu.Lock()
+	prev := bdCommentsAdd
+	bdCommentsAdd = func(_ context.Context, _ string, beadID, body string) ([]byte, error) {
+		return fn(beadID, body)
+	}
+	t.Cleanup(func() {
+		bdCommentsAdd = prev
+		bdCommentsAddMu.Unlock()
 	})
 }
 
