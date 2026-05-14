@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os/exec"
 	"sort"
@@ -327,6 +328,16 @@ type beadDetailWorker struct {
 	PRNumber    int     `json:"pr_number,omitempty"`
 }
 
+// beadDetailComment is one comment from `bd comments <id> --json`. The bd CLI
+// names the body field `text`, but the response surfaces it as `body` so the
+// SPA can render it uniformly with other markdown-ish text blocks.
+type beadDetailComment struct {
+	ID        string `json:"id,omitempty"`
+	Author    string `json:"author"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+}
+
 // beadDetailDepRef is a lightweight reference to a related bead. It is used
 // both for the immediate Blocks/BlockedBy lists on beadDetailResponse and
 // for the recursive tree returned by /api/bead/{id}/deps. The nested
@@ -344,17 +355,19 @@ type beadDetailDepRef struct {
 
 // beadDetailResponse is the consolidated JSON shape for /api/bead/{id}.
 type beadDetailResponse struct {
-	BeadID    string             `json:"bead_id"`
-	Anvil     string             `json:"anvil,omitempty"`
-	Queue     *beadDetailQueue   `json:"queue,omitempty"`
-	Ingot     *ingot.Ingot       `json:"ingot,omitempty"`
-	Retry     *beadDetailRetry   `json:"retry,omitempty"`
-	Cost      *beadDetailCost    `json:"cost,omitempty"`
-	Workers   []beadDetailWorker `json:"workers"`
-	Events    []beadDetailEvent  `json:"events"`
-	PRs       []beadDetailPR     `json:"prs"`
-	Blocks    []beadDetailDepRef `json:"blocks"`
-	BlockedBy []beadDetailDepRef `json:"blocked_by"`
+	BeadID    string              `json:"bead_id"`
+	Anvil     string              `json:"anvil,omitempty"`
+	Queue     *beadDetailQueue    `json:"queue,omitempty"`
+	Ingot     *ingot.Ingot        `json:"ingot,omitempty"`
+	Retry     *beadDetailRetry    `json:"retry,omitempty"`
+	Cost      *beadDetailCost     `json:"cost,omitempty"`
+	Workers   []beadDetailWorker  `json:"workers"`
+	Events    []beadDetailEvent   `json:"events"`
+	PRs       []beadDetailPR      `json:"prs"`
+	Blocks    []beadDetailDepRef  `json:"blocks"`
+	BlockedBy []beadDetailDepRef  `json:"blocked_by"`
+	Notes     string              `json:"notes,omitempty"`
+	Comments  []beadDetailComment `json:"comments"`
 }
 
 // beadDepsResponse is the JSON shape returned by /api/bead/{id}/deps.
@@ -377,6 +390,7 @@ type bdShowEntry struct {
 	Title          string        `json:"title"`
 	Status         string        `json:"status"`
 	Priority       int           `json:"priority"`
+	Notes          string        `json:"notes"`
 	DependencyType string        `json:"dependency_type"`
 	Dependencies   []bdShowEntry `json:"dependencies"`
 	Dependents     []bdShowEntry `json:"dependents"`
@@ -476,6 +490,13 @@ func fetchBeadDeps(ctx context.Context, dir, beadID string, lookup anvilLookup) 
 	if err != nil {
 		return []beadDetailDepRef{}, []beadDetailDepRef{}
 	}
+	return extractBeadDeps(entry, lookup)
+}
+
+// extractBeadDeps projects an already-fetched bd show entry into immediate
+// Blocks/BlockedBy lists. Split out so handleBeadDetail can reuse the same
+// `bd show` invocation that supplies Notes.
+func extractBeadDeps(entry *bdShowEntry, lookup anvilLookup) (blocks, blockedBy []beadDetailDepRef) {
 	blocks = make([]beadDetailDepRef, 0, len(entry.Dependents))
 	for _, d := range entry.Dependents {
 		if !isBlockingDep(d) {
@@ -491,6 +512,57 @@ func fetchBeadDeps(ctx context.Context, dir, beadID string, lookup anvilLookup) 
 		blockedBy = append(blockedBy, makeDepRef(d, lookup))
 	}
 	return blocks, blockedBy
+}
+
+// bdCommentsJSON shells out to `bd comments <id> --json`. The variable is
+// package-level so tests can swap it without spawning real subprocesses. The
+// dir parameter is the anvil's on-disk path; passing a non-empty value sets
+// cmd.Dir so bd can locate the Dolt database.
+var bdCommentsJSON = func(ctx context.Context, dir, beadID string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "bd", "comments", beadID, "--json")
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	executil.HideWindow(cmd)
+	return cmd.Output()
+}
+
+// fetchBeadComments returns the comment list for the bead, or an empty slice
+// on any failure. bd's JSON shape uses `text` for the comment body; this
+// helper renames it to `body` for the web layer's response.
+func fetchBeadComments(ctx context.Context, dir, beadID string, logger *slog.Logger) []beadDetailComment {
+	out, err := bdCommentsJSON(ctx, dir, beadID)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("bd comments failed", "bead_id", beadID, "error", err)
+		}
+		return []beadDetailComment{}
+	}
+	if len(out) == 0 {
+		return []beadDetailComment{}
+	}
+	var raw []struct {
+		ID        string `json:"id"`
+		Author    string `json:"author"`
+		Text      string `json:"text"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := executil.DecodeJSON(out, &raw); err != nil {
+		if logger != nil {
+			logger.Warn("bd comments decode failed", "bead_id", beadID, "error", err)
+		}
+		return []beadDetailComment{}
+	}
+	comments := make([]beadDetailComment, 0, len(raw))
+	for _, r := range raw {
+		comments = append(comments, beadDetailComment{
+			ID:        r.ID,
+			Author:    r.Author,
+			Body:      r.Text,
+			CreatedAt: r.CreatedAt,
+		})
+	}
+	return comments
 }
 
 // makeDepRef projects a bd show entry into the web layer's dep ref shape.
@@ -583,6 +655,7 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 		PRs:       []beadDetailPR{},
 		Blocks:    []beadDetailDepRef{},
 		BlockedBy: []beadDetailDepRef{},
+		Comments:  []beadDetailComment{},
 	}
 
 	// Queue cache lookup. The DB only exposes a list helper, so we filter in
@@ -715,12 +788,20 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 	prs := collectBeadPRs(s.db, beadID, resp.Anvil)
 	resp.PRs = prs
 
-	// Dependency lists. `bd show <id> --json` is the source of truth for
-	// the bead graph and handles cross-anvil deps gracefully. Failures
-	// fall back to empty slices so the response shape stays stable.
+	// Dependency lists + notes share a single `bd show <id> --json` call.
+	// Failures fall back to empty slices/strings so the response shape
+	// stays stable when bd is missing or returns unexpected output.
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	resp.Blocks, resp.BlockedBy = fetchBeadDeps(ctx, s.resolveAnvilPath(resp.Anvil), beadID, newAnvilLookup(s.db))
+	anvilPath := s.resolveAnvilPath(resp.Anvil)
+	if entry, err := fetchBeadShow(ctx, anvilPath, beadID); err == nil && entry != nil {
+		resp.Notes = entry.Notes
+		resp.Blocks, resp.BlockedBy = extractBeadDeps(entry, newAnvilLookup(s.db))
+	}
+
+	// Comments come from a separate `bd comments <id> --json` shell-out.
+	// Errors are non-fatal: the rest of the page still renders.
+	resp.Comments = fetchBeadComments(ctx, anvilPath, beadID, s.logger)
 
 	writeJSON(w, http.StatusOK, resp)
 }
