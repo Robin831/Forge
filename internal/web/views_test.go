@@ -17,6 +17,9 @@ import (
 // lock for its entire lifetime; only one such test can run at a time.
 var bdShowMu sync.Mutex
 
+// bdCommentsMu serializes bdCommentsJSON swaps for the same reason.
+var bdCommentsMu sync.Mutex
+
 // stubBdShow installs a temporary bdShowJSON implementation for the test.
 // bdShowMu is locked until t.Cleanup runs, serializing parallel tests that
 // use the global. The fn callback receives only the bead ID; the dir
@@ -31,6 +34,21 @@ func stubBdShow(t *testing.T, fn func(beadID string) ([]byte, error)) {
 	t.Cleanup(func() {
 		bdShowJSON = prev
 		bdShowMu.Unlock()
+	})
+}
+
+// stubBdComments installs a temporary bdCommentsJSON implementation for the
+// test, mirroring stubBdShow.
+func stubBdComments(t *testing.T, fn func(beadID string) ([]byte, error)) {
+	t.Helper()
+	bdCommentsMu.Lock()
+	prev := bdCommentsJSON
+	bdCommentsJSON = func(_ context.Context, _ string, beadID string) ([]byte, error) {
+		return fn(beadID)
+	}
+	t.Cleanup(func() {
+		bdCommentsJSON = prev
+		bdCommentsMu.Unlock()
 	})
 }
 
@@ -124,6 +142,9 @@ func TestBeadDetail_IncludesDeps(t *testing.T) {
 			[]map[string]any{depEntry("Forge-up", "Upstream", "closed", 1)},
 		), nil
 	})
+	stubBdComments(t, func(_ string) ([]byte, error) {
+		return []byte("[]"), nil
+	})
 
 	srv := newServerWithDefaults(t, nil)
 	cookie := loginAndGetCookie(t, srv)
@@ -154,6 +175,9 @@ func TestBeadDetail_IncludesDeps(t *testing.T) {
 func TestBeadDetail_IsolatedBeadEmptyDeps(t *testing.T) {
 	stubBdShow(t, func(beadID string) ([]byte, error) {
 		return bdShowFixture(beadID, "Solo", "open", 3, nil, nil), nil
+	})
+	stubBdComments(t, func(_ string) ([]byte, error) {
+		return []byte("[]"), nil
 	})
 
 	srv := newServerWithDefaults(t, nil)
@@ -462,5 +486,120 @@ func TestDepsEndpoint_RequiresAuth(t *testing.T) {
 	srv.routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", rec.Code)
+	}
+}
+
+// bdShowFixtureWithNotes mirrors bdShowFixture but injects a `notes` field
+// alongside the rest of the show payload, matching how bd renders beads with
+// `--append-notes` content.
+func bdShowFixtureWithNotes(id, title, status string, priority int, notes string, dependents, dependencies []map[string]any) []byte {
+	entry := map[string]any{
+		"id":           id,
+		"title":        title,
+		"status":       status,
+		"priority":     priority,
+		"notes":        notes,
+		"dependents":   dependents,
+		"dependencies": dependencies,
+	}
+	raw, _ := json.Marshal([]any{entry})
+	return raw
+}
+
+func TestBeadDetail_PopulatesNotesAndComments(t *testing.T) {
+	const notes = "First note line\nSecond note line"
+	stubBdShow(t, func(beadID string) ([]byte, error) {
+		if beadID != "Forge-notes" {
+			t.Errorf("unexpected bead id for show: %s", beadID)
+		}
+		return bdShowFixtureWithNotes("Forge-notes", "Notes bead", "in_progress", 2, notes, nil, nil), nil
+	})
+	stubBdComments(t, func(beadID string) ([]byte, error) {
+		if beadID != "Forge-notes" {
+			t.Errorf("unexpected bead id for comments: %s", beadID)
+		}
+		payload := `[
+			{"id":"c1","issue_id":"Forge-notes","author":"Alice","text":"first comment","created_at":"2026-05-13T10:00:00Z"},
+			{"id":"c2","issue_id":"Forge-notes","author":"Bob","text":"second comment","created_at":"2026-05-13T11:00:00Z"}
+		]`
+		return []byte(payload), nil
+	})
+
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	req := httptest.NewRequest("GET", "/api/bead/Forge-notes", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var got beadDetailResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Notes != notes {
+		t.Errorf("notes mismatch: got %q want %q", got.Notes, notes)
+	}
+	if len(got.Comments) != 2 {
+		t.Fatalf("expected 2 comments, got %d (%+v)", len(got.Comments), got.Comments)
+	}
+	want := []beadDetailComment{
+		{ID: "c1", Author: "Alice", Body: "first comment", CreatedAt: "2026-05-13T10:00:00Z"},
+		{ID: "c2", Author: "Bob", Body: "second comment", CreatedAt: "2026-05-13T11:00:00Z"},
+	}
+	for i, w := range want {
+		if got.Comments[i] != w {
+			t.Errorf("comment %d: got %+v want %+v", i, got.Comments[i], w)
+		}
+	}
+}
+
+func TestBeadDetail_CommentsFailureReturnsEmpty(t *testing.T) {
+	const notes = "Notes still present"
+	stubBdShow(t, func(_ string) ([]byte, error) {
+		return bdShowFixtureWithNotes("Forge-cerr", "Comment err", "open", 3, notes, nil, nil), nil
+	})
+	stubBdComments(t, func(_ string) ([]byte, error) {
+		return nil, errors.New("bd comments: exit 1")
+	})
+
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	req := httptest.NewRequest("GET", "/api/bead/Forge-cerr", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 even when bd comments fails, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Comments must be a non-null, empty array — the SPA assumes the
+	// field is always iterable. Notes from the (successful) bd show call
+	// must still be surfaced.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("parse raw: %v", err)
+	}
+	commentsRaw, ok := raw["comments"]
+	if !ok {
+		t.Fatalf("comments field missing from response: %s", rec.Body.String())
+	}
+	if string(commentsRaw) != "[]" {
+		t.Errorf("comments should serialise as [] on failure, got %s", string(commentsRaw))
+	}
+
+	var got beadDetailResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Notes != notes {
+		t.Errorf("notes lost on comments failure: got %q want %q", got.Notes, notes)
+	}
+	if len(got.Comments) != 0 {
+		t.Errorf("expected zero comments on failure, got %+v", got.Comments)
 	}
 }
