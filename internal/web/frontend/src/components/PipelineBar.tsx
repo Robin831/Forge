@@ -5,9 +5,12 @@ import type { WorkerInfo } from '../api'
 // StageKey labels the six visible columns of the pipeline bar. The Bellows
 // PR-monitor is intentionally folded into the "pr" stage as a sub-label
 // rather than getting its own column — see the per-bead description.
-type StageKey = 'schematic' | 'smith' | 'temper' | 'warden' | 'pr' | 'merged'
+// "ready_to_merge" sits after the PR stage and counts PRs the daemon has
+// promoted (CI green, no pending reviews, no unresolved threads, not
+// conflicting) so an operator can see what's waiting on a human merge click.
+type StageKey = 'schematic' | 'smith' | 'temper' | 'warden' | 'pr' | 'ready_to_merge'
 
-const STAGES: StageKey[] = ['schematic', 'smith', 'temper', 'warden', 'pr', 'merged']
+const STAGES: StageKey[] = ['schematic', 'smith', 'temper', 'warden', 'pr', 'ready_to_merge']
 
 const STAGE_LABEL: Record<StageKey, string> = {
   schematic: 'Schematic',
@@ -15,7 +18,7 @@ const STAGE_LABEL: Record<StageKey, string> = {
   temper: 'Temper',
   warden: 'Warden',
   pr: 'PR',
-  merged: 'Merged',
+  ready_to_merge: 'Ready to merge',
 }
 
 // Stage accents mirror Hytte's Mezzanine PipelineBar palette so users moving
@@ -27,13 +30,15 @@ const STAGE_ACCENT: Record<StageKey, string> = {
   temper: 'border-t-yellow-500',
   warden: 'border-t-cyan-500',
   pr: 'border-t-blue-500',
-  merged: 'border-t-green-500',
+  ready_to_merge: 'border-t-emerald-500',
 }
 
 // phaseToStage projects a backend worker phase string onto one of the six
 // pipeline-bar stages. Bellows + its sub-workers (quench/burnish/rebase) all
 // land on "pr" because to the user they are one logical stage; we surface the
-// sub-state separately via prBellowsLabel.
+// sub-state separately via prBellowsLabel. The daemon promotes a bellows
+// synthetic monitor's phase to "ready_to_merge" once the underlying PR
+// satisfies every ready-to-merge condition.
 export function phaseToStage(phase: string | undefined): StageKey | null {
   switch (phase) {
     case 'schematic':
@@ -51,10 +56,12 @@ export function phaseToStage(phase: string | undefined): StageKey | null {
     case 'cifix':
     case 'reviewfix':
       return 'pr'
-    case 'merged':
-      return 'merged'
+    case 'ready_to_merge':
+      return 'ready_to_merge'
     // crucible, smelter, schematic-fail and any unknown phase fall through
     // and are not counted on the bar — they don't map cleanly to a stage.
+    // "merged" is intentionally absent: once a PR merges its synthetic
+    // bellows row is swept and the bead leaves the in-flight pipeline.
     default:
       return null
   }
@@ -64,9 +71,15 @@ export function phaseToStage(phase: string | undefined): StageKey | null {
 // that bellows upserts for each open PR. The synthetic row has a
 // "bellows-<anvil>-<num>" id prefix and no log_path. Pipeline workers that
 // temporarily enter phase=bellows are NOT synthetic monitors and must remain
-// visible as regular clickable rows.
+// visible as regular clickable rows. The daemon promotes a synthetic
+// monitor's phase to "ready_to_merge" once its PR is mergeable, so both
+// phases qualify here.
 export function isBellowsMonitor(w: WorkerInfo): boolean {
-  return w.phase === 'bellows' && !w.log_path && w.id.startsWith('bellows-')
+  return (
+    (w.phase === 'bellows' || w.phase === 'ready_to_merge') &&
+    !w.log_path &&
+    w.id.startsWith('bellows-')
+  )
 }
 
 // prSubLabel collapses any active bellows sub-state into a short caption
@@ -149,9 +162,15 @@ export default function PipelineBar({ workers }: PipelineBarProps) {
       const key = `${w.anvil}:${w.bead_id}`
       // Prefer the non-bellows-monitor entry when a bead has both (e.g. quench
       // running while bellows monitors the PR) so the bead row shows the more
-      // informative sub-state in the PR column.
+      // informative sub-state in the PR column. The daemon-promoted
+      // "ready_to_merge" phase is a synthetic bellows monitor too, so we
+      // treat it the same as "bellows" for replacement purposes.
       const existing = seen.get(key)
-      if (!existing || (existing.worker.phase === 'bellows' && w.phase !== 'bellows')) {
+      const existingIsMonitor =
+        existing &&
+        (existing.worker.phase === 'bellows' || existing.worker.phase === 'ready_to_merge')
+      const incomingIsMonitor = w.phase === 'bellows' || w.phase === 'ready_to_merge'
+      if (!existing || (existingIsMonitor && !incomingIsMonitor)) {
         seen.set(key, { worker: w, stage })
       }
     }
@@ -202,25 +221,35 @@ interface StagePillProps {
 }
 
 function StagePill({ stage }: StagePillProps) {
+  // The ready-to-merge pill is the operator's "things you can click Merge on"
+  // indicator, so the container glows emerald and the count badge swaps to
+  // emerald (instead of the default amber) the moment it's non-zero. When the
+  // count is zero we fall back to the standard muted styling so an empty
+  // queue blends in with the other idle stages.
+  const isReady = stage.key === 'ready_to_merge'
+  const readyActive = isReady && stage.count > 0
+  const containerClass = readyActive
+    ? `flex min-w-[88px] flex-1 flex-col rounded-md border border-emerald-500/50 border-t-2 bg-emerald-500/10 ${STAGE_ACCENT[stage.key]}`
+    : `flex min-w-[88px] flex-1 flex-col rounded-md border border-slate-700/60 border-t-2 bg-slate-900/60 ${STAGE_ACCENT[stage.key]}`
+  const labelClass = readyActive
+    ? 'text-[11px] font-semibold text-emerald-100'
+    : 'text-[11px] font-medium text-slate-200'
+  const countClass =
+    stage.count > 0
+      ? readyActive
+        ? 'flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[10px] font-bold bg-emerald-400/30 text-emerald-100'
+        : 'flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[10px] font-semibold bg-amber-500/20 text-amber-200'
+      : 'flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[10px] font-semibold bg-slate-800 text-slate-500'
   return (
     <div
       role="region"
       aria-label={`${STAGE_LABEL[stage.key]} stage`}
       data-testid={`pipeline-stage-${stage.key}`}
-      className={`flex min-w-[88px] flex-1 flex-col rounded-md border border-slate-700/60 border-t-2 bg-slate-900/60 ${STAGE_ACCENT[stage.key]}`}
+      className={containerClass}
     >
       <div className="flex items-center justify-between px-2.5 py-1.5">
-        <span className="text-[11px] font-medium text-slate-200">
-          {STAGE_LABEL[stage.key]}
-        </span>
-        <span
-          className={`flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
-            stage.count > 0
-              ? 'bg-amber-500/20 text-amber-200'
-              : 'bg-slate-800 text-slate-500'
-          }`}
-          data-testid={`pipeline-count-${stage.key}`}
-        >
+        <span className={labelClass}>{STAGE_LABEL[stage.key]}</span>
+        <span className={countClass} data-testid={`pipeline-count-${stage.key}`}>
           {stage.count}
         </span>
       </div>
@@ -283,7 +312,7 @@ function activeMarkerClass(stage: StageKey): string {
       return 'bg-cyan-400'
     case 'pr':
       return 'bg-blue-400'
-    case 'merged':
-      return 'bg-green-400'
+    case 'ready_to_merge':
+      return 'bg-emerald-400'
   }
 }
