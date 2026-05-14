@@ -3475,11 +3475,30 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("active workers: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
+		// Build an index of PRs that currently meet every ready-to-merge
+		// condition (CI green, no pending reviews, no unresolved threads, not
+		// conflicting, non-terminal status). Bellows synthetic monitor workers
+		// whose PR appears in this set are promoted to phase='ready_to_merge'
+		// so the Hearth pipeline bar can show them as a distinct stage past
+		// the PR/Bellows column.
+		readyPRs, err := d.db.ReadyToMergePRs()
+		if err != nil {
+			d.logger.Warn("workers IPC: ReadyToMergePRs failed; ready-to-merge stage will be empty", "error", err)
+			readyPRs = nil
+		}
+		readyKey := make(map[string]bool, len(readyPRs))
+		for _, p := range readyPRs {
+			readyKey[fmt.Sprintf("%s/%d", p.Anvil, p.Number)] = true
+		}
 		out := make([]ipc.WorkerInfo, 0, len(workers))
 		for _, w := range workers {
 			completedAt := ""
 			if w.CompletedAt != nil {
 				completedAt = w.CompletedAt.Format(time.RFC3339)
+			}
+			phase := w.Phase
+			if phase == "bellows" && w.PRNumber > 0 && readyKey[fmt.Sprintf("%s/%d", w.Anvil, w.PRNumber)] {
+				phase = "ready_to_merge"
 			}
 			out = append(out, ipc.WorkerInfo{
 				ID:          w.ID,
@@ -3488,7 +3507,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				Branch:      w.Branch,
 				Title:       w.Title,
 				Status:      string(w.Status),
-				Phase:       w.Phase,
+				Phase:       phase,
 				Kind:        ipc.WorkerKindFromPhase(w.Phase),
 				PID:         w.PID,
 				StartedAt:   w.StartedAt.Format(time.RFC3339),

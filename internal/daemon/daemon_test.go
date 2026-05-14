@@ -4505,6 +4505,153 @@ func TestHandleIPC_Status_AnvilLastPoll(t *testing.T) {
 	})
 }
 
+// TestHandleIPC_Workers_ReadyToMerge verifies that the daemon's workers IPC
+// response promotes a synthetic bellows monitor worker's phase to
+// "ready_to_merge" when its underlying PR satisfies every ready-to-merge
+// condition (CI green, no pending reviews, no unresolved threads, not
+// conflicting, non-terminal status). PRs that fail any single flag must
+// keep the worker on phase "bellows" so the SPA's PipelineBar counts them
+// in the PR/Bellows stage instead. Merged PRs leave the workers list
+// entirely once their synthetic monitor is swept.
+func TestHandleIPC_Workers_ReadyToMerge(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-ipc-workers-rtm-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	db, err := state.Open(filepath.Join(tmpDir, "state.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	now := time.Now()
+	// Three PRs across two anvils so the test also exercises the
+	// per-anvil grouping required by the bead's "per-anvil section" note.
+	// - anvil-a/PR 100: every flag green → ready_to_merge.
+	// - anvil-a/PR 101: CI failing → stays in PR/Bellows.
+	// - anvil-b/PR 200: every flag green → ready_to_merge.
+	prs := []state.PR{
+		{Number: 100, Anvil: "anvil-a", BeadID: "Forge-rtm1", Branch: "forge/Forge-rtm1", Status: state.PROpen, CreatedAt: now, Title: "rtm1"},
+		{Number: 101, Anvil: "anvil-a", BeadID: "Forge-rtm2", Branch: "forge/Forge-rtm2", Status: state.PROpen, CreatedAt: now, Title: "rtm2"},
+		{Number: 200, Anvil: "anvil-b", BeadID: "Forge-rtm3", Branch: "forge/Forge-rtm3", Status: state.PROpen, CreatedAt: now, Title: "rtm3"},
+	}
+	for i := range prs {
+		require.NoError(t, db.InsertPR(&prs[i]))
+	}
+	require.NoError(t, db.UpdatePRMergeability(prs[0].ID, true, false, false, false, true))
+	require.NoError(t, db.UpdatePRMergeability(prs[1].ID, false, false, false, false, true))
+	require.NoError(t, db.UpdatePRMergeability(prs[2].ID, true, false, false, false, true))
+
+	for _, p := range prs {
+		require.NoError(t, db.InsertWorkerIfMissing(&state.Worker{
+			ID:        fmt.Sprintf("bellows-%s-%d", p.Anvil, p.Number),
+			BeadID:    p.BeadID,
+			Anvil:     p.Anvil,
+			Branch:    p.Branch,
+			Status:    state.WorkerMonitoring,
+			Phase:     "bellows",
+			Title:     p.Title,
+			PRNumber:  p.Number,
+			StartedAt: now,
+		}))
+	}
+
+	d := &Daemon{
+		db:        db,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		startTime: now,
+	}
+	d.cfg.Store(&config.Config{})
+
+	resp := d.handleIPC(ipc.Command{Type: "workers"})
+	require.Equal(t, "ok", resp.Type)
+	var payload ipc.WorkersResponse
+	require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+
+	phaseByID := make(map[string]string, len(payload.Workers))
+	for _, w := range payload.Workers {
+		phaseByID[w.ID] = w.Phase
+	}
+
+	assert.Equal(t, "ready_to_merge", phaseByID["bellows-anvil-a-100"],
+		"bellows monitor for a PR meeting every condition must be promoted to phase=ready_to_merge")
+	assert.Equal(t, "bellows", phaseByID["bellows-anvil-a-101"],
+		"bellows monitor for a PR with CI failing must stay on phase=bellows so PipelineBar counts it in PR/Bellows")
+	assert.Equal(t, "ready_to_merge", phaseByID["bellows-anvil-b-200"],
+		"per-anvil grouping: a ready PR on a different anvil must also be promoted")
+
+	// Counting by anvil mirrors what the SPA does client-side. The
+	// per-anvil ready_to_merge tally must reflect only the PRs whose flags
+	// are all green; the failing-CI PR must NOT be counted.
+	readyByAnvil := map[string]int{}
+	for _, w := range payload.Workers {
+		if w.Phase == "ready_to_merge" {
+			readyByAnvil[w.Anvil]++
+		}
+	}
+	assert.Equal(t, 1, readyByAnvil["anvil-a"], "anvil-a has exactly one ready_to_merge PR")
+	assert.Equal(t, 1, readyByAnvil["anvil-b"], "anvil-b has exactly one ready_to_merge PR")
+}
+
+// TestHandleIPC_Workers_ReadyToMerge_FlagSensitivity verifies that flipping
+// any single ready-to-merge condition (is_conflicting, has_unresolved_threads,
+// has_pending_reviews, ci_passing) causes the bellows monitor worker's phase
+// to fall back from "ready_to_merge" to "bellows" so the PR is counted in the
+// PR/Bellows stage rather than Ready-to-merge.
+func TestHandleIPC_Workers_ReadyToMerge_FlagSensitivity(t *testing.T) {
+	cases := []struct {
+		name                 string
+		ciPassing            bool
+		isConflicting        bool
+		hasUnresolvedThreads bool
+		hasPendingReviews    bool
+		wantPhase            string
+	}{
+		{"all green", true, false, false, false, "ready_to_merge"},
+		{"ci failing", false, false, false, false, "bellows"},
+		{"conflicting", true, true, false, false, "bellows"},
+		{"unresolved threads", true, false, true, false, "bellows"},
+		{"pending reviews", true, false, false, true, "bellows"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir, err := os.MkdirTemp("", "forge-rtm-flag-*")
+			require.NoError(t, err)
+			defer os.RemoveAll(tmpDir)
+
+			db, err := state.Open(filepath.Join(tmpDir, "state.db"))
+			require.NoError(t, err)
+			defer db.Close()
+
+			now := time.Now()
+			pr := state.PR{Number: 42, Anvil: "anvil", BeadID: "Forge-rtmflag", Branch: "forge/Forge-rtmflag", Status: state.PROpen, CreatedAt: now}
+			require.NoError(t, db.InsertPR(&pr))
+			require.NoError(t, db.UpdatePRMergeability(pr.ID, tc.ciPassing, tc.isConflicting, tc.hasUnresolvedThreads, tc.hasPendingReviews, true))
+			require.NoError(t, db.InsertWorkerIfMissing(&state.Worker{
+				ID:        "bellows-anvil-42",
+				BeadID:    pr.BeadID,
+				Anvil:     pr.Anvil,
+				Status:    state.WorkerMonitoring,
+				Phase:     "bellows",
+				PRNumber:  pr.Number,
+				StartedAt: now,
+			}))
+
+			d := &Daemon{
+				db:        db,
+				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+				startTime: now,
+			}
+			d.cfg.Store(&config.Config{})
+
+			resp := d.handleIPC(ipc.Command{Type: "workers"})
+			require.Equal(t, "ok", resp.Type)
+			var payload ipc.WorkersResponse
+			require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+			require.Len(t, payload.Workers, 1)
+			assert.Equal(t, tc.wantPhase, payload.Workers[0].Phase)
+		})
+	}
+}
+
 // TestPollAndDispatch_NoSuccessPollEvent verifies the events table no longer
 // receives a row per successful poll — successful polls are tracked only in
 // the daemon's in-memory map — while failures still appear as poll_error rows
