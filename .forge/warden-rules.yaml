@@ -4220,3 +4220,122 @@ rules:
         Verify the claimed restrictions are technically enforced (e.g. stage-specific tool allowlist limited to Read/Grep/Glob, provider flags that drop --dangerously-skip-permissions, sandboxed permissions) rather than relying on prompt wording alone; if enforcement isn't in place, soften the prompt so it doesn't promise isolation the runtime doesn't guarantee
       source: copilot:PR#602
       added: "2026-05-12"
+    - id: avoid-n-plus-1-queries-in-loops
+      category: performance
+      pattern: >-
+        A loop or sweep that iterates over a collection of records and performs an individual database/IPC lookup per item (e.g., GetPRByNumber inside a per-worker loop)
+      check: >-
+        Verify the code does not introduce N+1 query patterns on hot/periodic paths; prefer a single batched query (e.g., JOIN or IN-clause) that returns all needed rows at once, especially for code that runs on a recurring poll interval
+      source: copilot:PR#604
+      added: "2026-05-13"
+    - id: composite-index-for-frequent-lookups
+      category: performance
+      pattern: >-
+        New or modified query paths that repeatedly look up rows by a multi-column key (e.g., GetPRByNumber filtering by anvil and number) in a table that will grow over time
+      check: >-
+        Verify the table has a composite index covering the lookup columns (e.g., prs(anvil, number)) rather than only a single-column index, and add a `CREATE INDEX IF NOT EXISTS` migration if missing to prevent row scans as the table grows
+      source: copilot:PR#604
+      added: "2026-05-13"
+    - id: doc-matches-reconcile-semantics
+      category: other
+      pattern: >-
+        Doc comments on insert/update APIs that describe how a flag (e.g. bellows_managed) persists for ext-* rows, while reconcile logic clears that flag unless a companion flag (e.g. bellows_manually_assigned) is also set
+      check: >-
+        Verify the documented behavior matches the actual reconcile/persistence semantics end-to-end: either the comment must state the companion flag (or follow-up call) required to make the state durable, or the INSERT/UPDATE must persist the companion flag so the documented pre-pin actually survives reconcile
+      source: copilot:PR#606
+      added: "2026-05-13"
+    - id: cache-timestamp-consistency
+      category: concurrency
+      pattern: >-
+        Updating in-memory state (timestamps, indexes, caches) before persisting the corresponding data to the database or external store
+      check: >-
+        Verify that in-memory state mirroring a persisted snapshot is only updated after the persistence call succeeds, so readers never observe new metadata paired with stale persisted data on write failure
+      source: copilot:PR#608
+      added: "2026-05-13"
+    - id: sort-comparator-nan-handling
+      category: ui
+      pattern: >-
+        Comparator functions used for sorting that handle missing/unparseable values (NaN, null, undefined) with a fixed tie-break (e.g., always returning 1 to push them to the end)
+      check: >-
+        Verify that missing/unparseable values are ordered consistently with the sort direction and the user-visible label (e.g., 'oldest first' should place missing-as-oldest items first in asc and last in desc), that the code comments match the actual behavior, and that a test covers the missing-value case in both directions
+      source: copilot:PR#610
+      added: "2026-05-13"
+    - id: no-unsafe-type-casts-in-tests
+      category: testing
+      pattern: >-
+        Test files using `as unknown as <Type>` or similar unsafe casts to force values (e.g., undefined/null) into fields that the type contract declares as required
+      check: >-
+        Verify tests model missing/empty values the same way the app and API do (e.g., empty string for an optional-in-practice field) rather than bypassing the type system with unsafe casts; if the field can truly be absent, update the type definition instead of casting around it
+      source: copilot:PR#610
+      added: "2026-05-13"
+    - id: precompute-sort-keys
+      category: performance
+      pattern: >-
+        Array sort comparator that derives a sort key by parsing/computing on each comparison (e.g., Date.parse, regex, JSON.parse, expensive accessor)
+      check: >-
+        Verify expensive per-comparison work is hoisted out of the comparator — precompute each item's sort key once (decorate-sort-undecorate) so the derivation runs O(n) instead of O(n log n) times
+      source: copilot:PR#610
+      added: "2026-05-13"
+    - id: iterate-centralized-keys
+      category: style
+      pattern: >-
+        Per-key logic duplicated across buckets/enums when a central key list (e.g., BUCKET_ORDER) already exists
+      check: >-
+        Iterate over the centralized key list to build the result instead of repeating per-key blocks, so adding/renaming a key only requires updating the central list
+      source: copilot:PR#610
+      added: "2026-05-13"
+    - id: trim-filter-ui-consistency
+      category: ui
+      pattern: >-
+        UI element visibility or styling is conditional on a raw input string (e.g., filter, search query) while the actual logic uses a transformed version (e.g., `.trim()`, normalized, lowercased)
+      check: >-
+        Verify that conditional rendering and styling use the same transformation as the underlying logic, so UI state matches behavior (e.g., a clear button tied to a filter should appear only when the filter is actually active after trimming)
+      source: copilot:PR#611
+      added: "2026-05-13"
+    - id: focus-after-conditional-unmount
+      category: ui
+      pattern: >-
+        A button or interactive element conditionally rendered based on state (e.g., shown only when input has a value) where clicking it changes that state and unmounts the element
+      check: >-
+        Verify keyboard focus is preserved after the element unmounts — either move focus back to a related element via a ref, or keep the element mounted and toggle visibility/disabled instead of conditionally rendering it
+      source: copilot:PR#611
+      added: "2026-05-13"
+    - id: independent-subprocess-timeout-budget
+      category: concurrency
+      pattern: >-
+        Calling a secondary bd subprocess (e.g. `bd comments`) inside the same context used for a prior bd call (e.g. `bd show`) within a request handler
+      check: >-
+        Verify each independent bd subprocess invocation gets its own fresh context with the project's DefaultBdTimeout (or equivalent full budget), rather than inheriting/sharing a parent context that may already be expired or cancelled, especially when the secondary call is meant to be independent and non-fatal
+      source: copilot:PR#613
+      added: "2026-05-14"
+    - id: optimistic-update-dedup
+      category: ui
+      pattern: >-
+        Optimistic UI updates that append synthetic local entries with client-generated IDs (e.g. `local-${Date.now()}`) while polling/refreshing from a server that assigns its own canonical IDs
+      check: >-
+        Verify that optimistic local entries are reconciled with server data so the same item is not displayed twice — either dedupe by stable content fields (author/body/timestamp), drop all unsynced local entries once the server list contains newer items, or clear the local buffer after any successful server refresh post-submission. Matching only by client-generated ID will never reconcile, since the server's ID will differ.
+      source: copilot:PR#615
+      added: "2026-05-14"
+    - id: bd-json-array-or-object
+      category: error-handling
+      pattern: Decoding `bd ... --json` output into a single struct via executil.DecodeJSON
+      check: >-
+        Verify the handler tolerates both array and object payloads from bd (e.g., try decoding as a slice and use the last element when an array is returned), or document the exact bd output contract relied upon, so a successful bd call isn't silently turned into a 204.
+      source: copilot:PR#615
+      added: "2026-05-14"
+    - id: case-insensitive-anvil-lookup
+      category: error-handling
+      pattern: >-
+        Code that looks up an anvil by name from the registry (e.g. resolveAnvilPath, map lookup keyed by anvil name) in request handlers or web endpoints
+      check: >-
+        Verify the anvil name is normalized case-insensitively (e.g. lowercased or scanned with case-insensitive comparison) before the registry lookup, matching the daemon's IPC handler behavior, so requests like 'Forge' vs 'forge' are treated consistently across all API surfaces
+      source: copilot:PR#615
+      added: "2026-05-14"
+    - id: capture-stderr-for-exec-errors
+      category: error-handling
+      pattern: >-
+        Shell command invocations (exec.Cmd) where the command's output is surfaced in an error message or log — e.g. `cmd.Output()` followed by wrapping `err` into a user-facing error or audit log entry.
+      check: >-
+        Verify the code captures stderr (via `cmd.CombinedOutput()` or by explicitly setting `cmd.Stderr` to a buffer) so the underlying tool's diagnostic message is included in the surfaced error and any audit logs, instead of only `exit status N` from `*exec.ExitError`.
+      source: copilot:PR#615
+      added: "2026-05-14"
