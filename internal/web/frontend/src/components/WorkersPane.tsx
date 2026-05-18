@@ -101,7 +101,10 @@ export default function WorkersPane({
   // smith log, so a row with no log modal would look broken. Its state is now
   // surfaced inside the Pipeline bar's PR stage. Bellows-spawned sub-workers
   // (quench/burnish/rebase) keep their own phase and remain clickable here.
-  const visibleWorkers = workers.filter((w) => !isBellowsMonitor(w))
+  const visibleWorkers = useMemo(
+    () => workers.filter((w) => !isBellowsMonitor(w)),
+    [workers],
+  )
 
   // Sort by started_at descending so workers within each anvil group appear
   // newest first. groupWorkersByAnvil then orders groups by their newest
@@ -146,17 +149,19 @@ export default function WorkersPane({
   useEffect(() => {
     const el = bodyRef.current
     if (!el) return
-    let pending = false
+    let rafId = 0
     const onScroll = () => {
-      if (pending) return
-      pending = true
-      window.requestAnimationFrame(() => {
-        pending = false
+      if (rafId) return
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0
         setScrollTop(el.scrollTop)
       })
     }
     el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      if (rafId) window.cancelAnimationFrame(rafId)
+    }
   }, [setScrollTop])
 
   const toggleGroup = (anvil: string) =>

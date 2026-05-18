@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router-dom'
@@ -65,6 +65,10 @@ const TEST_WORKERS: WorkerInfo[] = [
 beforeEach(() => {
   sessionStorage.clear()
   localStorage.clear()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('WorkersPane persistence', () => {
@@ -209,8 +213,11 @@ describe('WorkersPane persistence', () => {
     } finally {
       if (origDesc) {
         Object.defineProperty(Element.prototype, 'scrollTop', origDesc)
+      } else {
+        // Property was inherited from a parent prototype — remove the own
+        // property we added so subsequent tests aren't affected.
+        delete (Element.prototype as unknown as Record<string, unknown>).scrollTop
       }
-      vi.useRealTimers()
     }
 
     expect(scrollTopWrites).toContain(200)
