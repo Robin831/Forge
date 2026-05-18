@@ -1588,8 +1588,8 @@ rules:
       pattern: >-
         External command executed via cmd.Output() or cmd.Run() without capturing cmd.Stderr
       check: >-
-        Verify that cmd.Stderr is buffered and its contents are included in the returned error message along with relevant context (e.g., path, arguments) to make failures diagnosable
-      source: copilot:PR#375
+        Verify that cmd.Stderr is buffered (via cmd.CombinedOutput() or by explicitly setting cmd.Stderr to a buffer) and its contents are included in the returned error message and any audit logs along with relevant context (e.g., path, arguments) to make failures diagnosable, instead of surfacing only `exit status N` from *exec.ExitError
+      source: copilot:PR#375, copilot:PR#615
       added: "2026-03-21"
     - id: american-english-spelling
       category: style
@@ -4237,7 +4237,7 @@ rules:
       source: copilot:PR#604
       added: "2026-05-13"
     - id: doc-matches-reconcile-semantics
-      category: other
+      category: documentation
       pattern: >-
         Doc comments on insert/update APIs that describe how a flag (e.g. bellows_managed) persists for ext-* rows, while reconcile logic clears that flag unless a companion flag (e.g. bellows_manually_assigned) is also set
       check: >-
@@ -4329,13 +4329,5 @@ rules:
         Code that looks up an anvil by name from the registry (e.g. resolveAnvilPath, map lookup keyed by anvil name) in request handlers or web endpoints
       check: >-
         Verify the anvil name is normalized case-insensitively (e.g. lowercased or scanned with case-insensitive comparison) before the registry lookup, matching the daemon's IPC handler behavior, so requests like 'Forge' vs 'forge' are treated consistently across all API surfaces
-      source: copilot:PR#615
-      added: "2026-05-14"
-    - id: capture-stderr-for-exec-errors
-      category: error-handling
-      pattern: >-
-        Shell command invocations (exec.Cmd) where the command's output is surfaced in an error message or log — e.g. `cmd.Output()` followed by wrapping `err` into a user-facing error or audit log entry.
-      check: >-
-        Verify the code captures stderr (via `cmd.CombinedOutput()` or by explicitly setting `cmd.Stderr` to a buffer) so the underlying tool's diagnostic message is included in the surfaced error and any audit logs, instead of only `exit status N` from `*exec.ExitError`.
       source: copilot:PR#615
       added: "2026-05-14"
