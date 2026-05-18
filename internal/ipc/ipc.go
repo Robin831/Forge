@@ -347,6 +347,12 @@ type QueueItem struct {
 	Assignee    string   `json:"assignee,omitempty"`
 	CreatedAt   string   `json:"created_at"`
 	UpdatedAt   string   `json:"updated_at"`
+	// AutoDispatchTag is the anvil's configured dispatch label (forge.yaml
+	// `auto_dispatch_tag`). Surfaced on each queue row so the Hearth web UI
+	// can render a one-click "apply tag" button on Unlabeled beads without
+	// an extra round-trip to the anvil registry. Empty when the owning
+	// anvil has no tag configured.
+	AutoDispatchTag string `json:"auto_dispatch_tag,omitempty"`
 }
 
 // QueueResponse is the response payload for a "queue" command.

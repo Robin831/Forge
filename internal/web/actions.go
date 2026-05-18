@@ -172,6 +172,86 @@ func (s *Server) handleQueueStop(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleQueueApplyDispatchTag proxies POST /api/queue/{bead_id}/apply-dispatch-tag
+// to the daemon's update_label IPC. Unlike handleBeadLabelAdd, the label
+// itself is resolved server-side from the anvil's configured
+// auto_dispatch_tag (forge.yaml) so the frontend doesn't need to know which
+// tag a given anvil uses. Returns 400 when the anvil has no tag configured;
+// on success the resolved tag is echoed back in the response body so the
+// SPA can render it in the success toast without an extra round-trip.
+func (s *Server) handleQueueApplyDispatchTag(w http.ResponseWriter, r *http.Request) {
+	beadID, req, ok := requireBeadAndAnvil(w, r)
+	if !ok {
+		return
+	}
+	tag := s.resolveAnvilDispatchTag(req.Anvil)
+	if tag == "" {
+		writeError(w, http.StatusBadRequest, "anvil has no auto_dispatch_tag configured")
+		return
+	}
+	if !validLabel.MatchString(tag) {
+		// A malformed config tag would be rejected by the IPC anyway, but
+		// catching it here returns a clearer 400 (not 500) and avoids
+		// dispatching an obviously-broken command.
+		writeError(w, http.StatusBadRequest, "configured auto_dispatch_tag is not a valid label")
+		return
+	}
+	s.logActor(r, "update_label", "bead", beadID, "anvil", req.Anvil, "label", tag, "action", "add", "via", "apply_dispatch_tag")
+	body, err := json.Marshal(ipc.UpdateLabelPayload{
+		BeadID: beadID, Anvil: req.Anvil, Label: tag, Action: "add",
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode payload: "+err.Error())
+		return
+	}
+	resp := s.handler(ipc.Command{Type: "update_label", Payload: body})
+	switch resp.Type {
+	case "ok", "status":
+		writeJSON(w, http.StatusOK, map[string]any{"tag": tag})
+	case "queued":
+		out := map[string]any{"queued": true, "tag": tag, "request_id": resp.RequestID}
+		if len(resp.Payload) > 0 {
+			var qp ipc.QueuedPayload
+			if err := json.Unmarshal(resp.Payload, &qp); err == nil && qp.Message != "" {
+				out["message"] = qp.Message
+			}
+		}
+		writeJSON(w, http.StatusAccepted, out)
+	case "error":
+		var errBody struct {
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(resp.Payload, &errBody)
+		if errBody.Message == "" {
+			errBody.Message = "command failed"
+		}
+		writeError(w, http.StatusInternalServerError, errBody.Message)
+	default:
+		writeError(w, http.StatusInternalServerError, "unexpected response type "+resp.Type)
+	}
+}
+
+// resolveAnvilDispatchTag returns the configured auto_dispatch_tag for an
+// anvil, or "" when the lister is unset or the anvil is unknown / has no
+// tag configured. The lookup is case-insensitive so callers match
+// resolveAnvilPath's behaviour.
+func (s *Server) resolveAnvilDispatchTag(name string) string {
+	if name == "" || s.anvilTags == nil {
+		return ""
+	}
+	registry := s.anvilTags()
+	if tag, ok := registry[name]; ok {
+		return tag
+	}
+	lower := strings.ToLower(name)
+	for k, tag := range registry {
+		if strings.ToLower(k) == lower {
+			return tag
+		}
+	}
+	return ""
+}
+
 // handleBeadClose proxies POST /api/bead/{id}/close to the daemon's close_bead
 // IPC, which shells out to bd close.
 func (s *Server) handleBeadClose(w http.ResponseWriter, r *http.Request) {

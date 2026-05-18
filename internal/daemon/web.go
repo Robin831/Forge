@@ -65,6 +65,20 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 		}
 		return out
 	})
+	// Expose each anvil's auto_dispatch_tag so the Hearth Apply-tag action
+	// can resolve the configured label without trusting a frontend constant.
+	// Anvils without a tag are omitted so the handler can use a simple
+	// "ok" lookup.
+	srv.SetAnvilDispatchTagLister(func() map[string]string {
+		cfg := d.cfg.Load()
+		out := make(map[string]string, len(cfg.Anvils))
+		for name, anvil := range cfg.Anvils {
+			if anvil.AutoDispatchTag != "" {
+				out[name] = anvil.AutoDispatchTag
+			}
+		}
+		return out
+	})
 
 	go func() {
 		if err := srv.Start(ctx); err != nil && ctx.Err() == nil {

@@ -62,6 +62,14 @@ type Config struct {
 // underneath.
 type AnvilLister func() map[string]string
 
+// AnvilDispatchTagLister returns the per-anvil auto-dispatch tag from
+// forge.yaml (`auto_dispatch_tag`) as a map of name -> tag. Anvils with no
+// tag configured are omitted from the map. Used by the Hearth web UI's
+// one-click "Apply tag" action so the dispatch label is resolved
+// server-side and matches the daemon's runtime config (including
+// hot-reloads). Implementations must be safe to call concurrently.
+type AnvilDispatchTagLister func() map[string]string
+
 // BdRunnerFn is a process-spawning function compatible with the materializer
 // in package forgechat. The daemon supplies forgechat.DefaultBdRunner; tests
 // inject a fake to avoid spawning real bd subprocesses.
@@ -87,6 +95,11 @@ type Server struct {
 	// emission cannot proceed without anvil routing.
 	anvils AnvilLister
 
+	// anvilTags returns the live per-anvil dispatch tags. Optional: when
+	// nil the /api/queue/{id}/apply-dispatch-tag endpoint reports 400 with
+	// "anvil has no auto_dispatch_tag configured" for every request.
+	anvilTags AnvilDispatchTagLister
+
 	// bdRunner runs `bd` subprocesses for bead materialisation. Optional:
 	// nil falls back to forgechat.DefaultBdRunner. Tests inject a fake.
 	bdRunner BdRunnerFn
@@ -110,6 +123,13 @@ func (s *Server) SetChatRunner(r forgechat.Runner) {
 // so hot-reloads are picked up automatically.
 func (s *Server) SetAnvilLister(a AnvilLister) {
 	s.anvils = a
+}
+
+// SetAnvilDispatchTagLister installs the per-anvil dispatch tag callback
+// used by the one-click Apply-tag action on the Hearth queue. nil clears
+// the callback, after which apply-dispatch-tag requests are rejected.
+func (s *Server) SetAnvilDispatchTagLister(a AnvilDispatchTagLister) {
+	s.anvilTags = a
 }
 
 // SetBdRunner installs the bd subprocess shim used for bead materialisation.

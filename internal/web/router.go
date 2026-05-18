@@ -67,6 +67,7 @@ func (s *Server) routes() http.Handler {
 		r.Post("/queue/{bead_id}/clarify", s.handleQueueClarify)
 		r.Post("/queue/{bead_id}/unclarify", s.handleQueueUnclarify)
 		r.Post("/queue/{bead_id}/stop", s.handleQueueStop)
+		r.Post("/queue/{bead_id}/apply-dispatch-tag", s.handleQueueApplyDispatchTag)
 		r.Post("/bead/{bead_id}/close", s.handleBeadClose)
 		r.Post("/bead/{bead_id}/label/add", s.handleBeadLabelAdd)
 		r.Post("/bead/{bead_id}/label/remove", s.handleBeadLabelRemove)

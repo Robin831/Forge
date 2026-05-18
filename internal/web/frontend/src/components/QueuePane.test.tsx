@@ -1,10 +1,10 @@
 import '@testing-library/jest-dom/vitest'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import QueuePane, { groupQueueItems, sortItems } from './QueuePane'
-import type { QueueItem } from '../api'
+import { actions, type QueueItem } from '../api'
 
 function item(overrides: Partial<QueueItem>): QueueItem {
   return {
@@ -205,6 +205,122 @@ describe('QueuePane', () => {
     expect(screen.queryByRole('button', { name: /Clear filter/ })).not.toBeInTheDocument()
     // After clearing, both items contribute to the count again.
     expect(screen.getByRole('button', { name: /forge/ })).toHaveTextContent('2')
+  })
+
+  describe('apply-dispatch-tag button', () => {
+    beforeEach(() => {
+      vi.spyOn(actions, 'applyDispatchTag').mockResolvedValue({ tag: 'forgeReady' })
+    })
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    it('shows a Tag icon on Unlabeled rows that carry an auto_dispatch_tag', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({
+          bead_id: 'u1',
+          anvil: 'hetzner',
+          section: 'unlabeled',
+          auto_dispatch_tag: 'forgeReady',
+        }),
+      ])
+      await user.click(screen.getByRole('button', { name: /hetzner/ }))
+      await user.click(screen.getByRole('button', { name: /Unlabeled \(1\)/ }))
+      const btn = screen.getByRole('button', { name: 'Apply forgeReady' })
+      expect(btn).toBeInTheDocument()
+      expect(btn).toHaveAttribute('title', 'Apply forgeReady')
+    })
+
+    it('hides the Tag button when the anvil has no auto_dispatch_tag configured', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({ bead_id: 'u1', anvil: 'forge', section: 'unlabeled' }),
+      ])
+      await user.click(screen.getByRole('button', { name: /forge/ }))
+      await user.click(screen.getByRole('button', { name: /Unlabeled \(1\)/ }))
+      expect(
+        screen.queryByRole('button', { name: /^Apply / }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('hides the Tag button on Ready and In-progress rows even with a tag', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({
+          bead_id: 'r1',
+          anvil: 'hetzner',
+          section: 'ready',
+          auto_dispatch_tag: 'forgeReady',
+        }),
+      ])
+      await user.click(screen.getByRole('button', { name: /hetzner/ }))
+      await user.click(screen.getByRole('button', { name: /Ready \(1\)/ }))
+      expect(
+        screen.queryByRole('button', { name: /^Apply / }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('uses the per-anvil tag — different anvils show different labels', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({
+          bead_id: 'h1',
+          anvil: 'hetzner',
+          section: 'unlabeled',
+          auto_dispatch_tag: 'forgeReady',
+        }),
+        item({
+          bead_id: 's1',
+          anvil: 'skybert',
+          section: 'unlabeled',
+          auto_dispatch_tag: 'forgeSkybert',
+        }),
+      ])
+      // Open both anvils and their Unlabeled buckets, then assert both
+      // per-anvil tag buttons are visible simultaneously with the right
+      // labels.
+      await user.click(screen.getByRole('button', { name: /hetzner/ }))
+      await user.click(screen.getByRole('button', { name: /skybert/ }))
+      const unlabeledHeaders = screen.getAllByRole('button', {
+        name: /Unlabeled \(1\)/,
+      })
+      expect(unlabeledHeaders).toHaveLength(2)
+      for (const header of unlabeledHeaders) {
+        await user.click(header)
+      }
+      expect(
+        screen.getByRole('button', { name: 'Apply forgeReady' }),
+      ).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'Apply forgeSkybert' }),
+      ).toBeInTheDocument()
+    })
+
+    it('calls the API and optimistically promotes the row to Ready', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({
+          bead_id: 'u1',
+          anvil: 'hetzner',
+          section: 'unlabeled',
+          auto_dispatch_tag: 'forgeReady',
+        }),
+      ])
+      await user.click(screen.getByRole('button', { name: /hetzner/ }))
+      await user.click(screen.getByRole('button', { name: /Unlabeled \(1\)/ }))
+      await user.click(screen.getByRole('button', { name: 'Apply forgeReady' }))
+
+      expect(actions.applyDispatchTag).toHaveBeenCalledWith('u1', 'hetzner')
+      // After success the Unlabeled bucket should disappear (its only row has
+      // been promoted to Ready) and a Ready bucket should appear with the row.
+      expect(
+        screen.queryByRole('button', { name: /Unlabeled/ }),
+      ).not.toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: /Ready \(1\)/ }),
+      ).toBeInTheDocument()
+    })
   })
 
   it('renders a relative-time label on each row with an ISO tooltip', async () => {

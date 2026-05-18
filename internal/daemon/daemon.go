@@ -3444,6 +3444,16 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("queue cache: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
+		// Snapshot the anvil dispatch tags once so the loop avoids repeatedly
+		// re-reading the config and the Hearth web UI can render an Apply
+		// button per row without round-tripping to the registry.
+		cfg := d.cfg.Load()
+		anvilTags := make(map[string]string, len(cfg.Anvils))
+		for name, a := range cfg.Anvils {
+			if a.AutoDispatchTag != "" {
+				anvilTags[name] = a.AutoDispatchTag
+			}
+		}
 		// Timestamps live in an in-memory map populated alongside the queue
 		// cache rebuild (see pollAndDispatch). Sourcing them here avoids a
 		// SQLite schema migration on queue_cache; entries missing from the
@@ -3453,17 +3463,18 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			labels := parseQueueLabels(it.Labels)
 			ts := d.lookupQueueTimestamp(it.Anvil, it.BeadID)
 			out = append(out, ipc.QueueItem{
-				BeadID:      it.BeadID,
-				Anvil:       it.Anvil,
-				Title:       it.Title,
-				Description: it.Description,
-				Priority:    it.Priority,
-				Status:      it.Status,
-				Labels:      labels,
-				Section:     string(it.Section),
-				Assignee:    it.Assignee,
-				CreatedAt:   ts.CreatedAt,
-				UpdatedAt:   ts.UpdatedAt,
+				BeadID:          it.BeadID,
+				Anvil:           it.Anvil,
+				Title:           it.Title,
+				Description:     it.Description,
+				Priority:        it.Priority,
+				Status:          it.Status,
+				Labels:          labels,
+				Section:         string(it.Section),
+				Assignee:        it.Assignee,
+				CreatedAt:       ts.CreatedAt,
+				UpdatedAt:       ts.UpdatedAt,
+				AutoDispatchTag: anvilTags[it.Anvil],
 			})
 		}
 		data, _ := json.Marshal(ipc.QueueResponse{Items: out})

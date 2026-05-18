@@ -1,0 +1,2 @@
+category: Added
+- **One-click apply-dispatch-tag button in the Hearth queue** - Unlabeled queue rows now show a small Tag icon that adds the owning anvil's configured `auto_dispatch_tag` (e.g. `forgeReady` on Hetzner, `forgeSkybert` on Skybert). The tag is resolved server-side via a new `POST /api/queue/{id}/apply-dispatch-tag` endpoint and the daemon's regular poll picks the bead up on the next cycle. (Forge-t4zs)
