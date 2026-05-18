@@ -33,38 +33,37 @@ import (
 
 	"github.com/Robin831/Forge/internal/adventurer"
 	"github.com/Robin831/Forge/internal/bellows"
-	"github.com/Robin831/Forge/internal/quench"
+	"github.com/Robin831/Forge/internal/burnish"
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
-	"github.com/Robin831/Forge/internal/questgiver"
 	"github.com/Robin831/Forge/internal/executil"
-	"github.com/Robin831/Forge/internal/ingot"
-	"github.com/Robin831/Forge/internal/vcs"
-	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/hotreload"
+	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
 	"github.com/Robin831/Forge/internal/notify"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
-	"github.com/Robin831/Forge/internal/queueactions"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/quench"
+	"github.com/Robin831/Forge/internal/questgiver"
+	"github.com/Robin831/Forge/internal/queueactions"
 	"github.com/Robin831/Forge/internal/rebase"
-	"github.com/Robin831/Forge/internal/burnish"
-	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/smelter"
+	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
+	"github.com/Robin831/Forge/internal/vcs"
+	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/vulncheck"
 	"github.com/Robin831/Forge/internal/warden"
 	"github.com/Robin831/Forge/internal/wicket"
 	"github.com/Robin831/Forge/internal/worker"
 	"github.com/Robin831/Forge/internal/worktree"
-
 )
 
 const (
@@ -3977,6 +3976,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		reqID, _ := d.reqTracker.Track()
 		beadID := sp.BeadID
 		anvilName := sp.Anvil
+		reason := strings.TrimSpace(sp.Reason)
+		if reason == "" {
+			reason = "manually stopped"
+		}
 		go func() {
 			releaseCtx, releaseCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 			defer releaseCancel()
@@ -3988,7 +3991,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
 				return
 			}
-			d.logger.Info("bead stopped", "bead", beadID, "anvil", anvilName)
+			d.logger.Info("bead stopped", "bead", beadID, "anvil", anvilName, "reason", reason)
 			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s stopped", beadID)})
 			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
 		}()
@@ -4067,12 +4070,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// Bead retry: delegate the state mutation + audit event to the
 		// shared queueactions.Retry, then handle the daemon-local async work
 		// (bd shell, crucible cache, poll dispatch) below.
-		retry, getErr := d.db.GetRetry(rp.BeadID, rp.Anvil)
-		if getErr != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to get retry state: %v", getErr)})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		hasCircuitBreaker := retry != nil && retry.DispatchFailures > 0
 		if err := queueactions.Retry(context.Background(), d.queueActionsHandle(), queueactions.Params{
 			BeadID:    rp.BeadID,
 			AnvilName: rp.Anvil,
@@ -4080,11 +4077,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("retry bead", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if hasCircuitBreaker {
-			d.logger.Info("retry state reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
-		} else {
-			d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
-		}
+		d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
 		reqID, _ := d.reqTracker.Track()
 		go func() {
 			bdUpdateOK := false
@@ -4112,11 +4105,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				d.crucibleStatuses.Delete(rp.Anvil + "/" + rp.BeadID)
 			}
 			d.pollAndDispatch(d.runCtx, false)
-			msg := "retry reset"
-			if hasCircuitBreaker {
-				msg = "retry state reset"
-			}
-			data, _ := json.Marshal(map[string]string{"message": msg})
+			data, _ := json.Marshal(map[string]string{"message": "retry reset"})
 			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
 		}()
 		resp, _ := ipc.NewQueuedResponse(reqID, "retrying bead")
