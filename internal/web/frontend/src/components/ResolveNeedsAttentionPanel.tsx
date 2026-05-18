@@ -1,13 +1,51 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ExternalLink, X } from 'lucide-react'
-import type { EscalationDetail } from '../api/forge'
-import { useEscalation, useResolveActions } from '../stores/resolveStore'
+import type { EscalationDetail, ResolveVerb } from '../api/forge'
+import {
+  resolveKey,
+  useEscalation,
+  useResolveActions,
+  useResolveStatus,
+} from '../stores/resolveStore'
 
 // EscalationType narrows the panel to the two failure modes the daemon
 // raises today. Both share the same data shape but consumers may want to
 // label the panel differently (e.g. "Smith failed" vs. "Dispatch failed"
 // in the header copy).
 export type EscalationType = 'dispatch_failed' | 'smith_failed'
+
+// BEAD_VERBS lists the resolve verbs applicable when the bead failed to
+// dispatch — no worker process ever started, so 'stop' (kill worker) is
+// intentionally absent: the daemon would have nothing to kill.
+const BEAD_VERBS: readonly ResolveVerb[] = [
+  'retry',
+  'clarify',
+  'unclarify',
+  'clear',
+]
+
+// WORKER_VERBS lists the resolve verbs applicable when a smith worker
+// failed mid-execution. All five verbs apply: a stuck worker may need to
+// be killed, flags cleared, the bead retried, or routed to a human via
+// clarify.
+const WORKER_VERBS: readonly ResolveVerb[] = [
+  'retry',
+  'stop',
+  'clarify',
+  'unclarify',
+  'clear',
+]
+
+// VERB_LABEL maps each verb to the button label rendered in the action
+// row. Kept here (rather than co-located with RESOLVE_VERBS in api/forge)
+// so the wording stays close to the panel that uses it.
+const VERB_LABEL: Record<ResolveVerb, string> = {
+  retry: 'Retry',
+  stop: 'Stop worker',
+  clarify: 'Needs clarification',
+  unclarify: 'Clear clarification',
+  clear: 'Clear flag',
+}
 
 export interface ResolveNeedsAttentionPanelProps {
   // escalationId is the bead id the operator is triaging; the store
@@ -20,6 +58,15 @@ export interface ResolveNeedsAttentionPanelProps {
   // panel does not own its own modal chrome — the parent decides whether
   // to render it inline or in a dialog.
   onClose?: () => void
+  // onConfirmDestructive, when provided, intercepts clicks on retry/stop
+  // so a parent component can present a confirmation modal before the
+  // verb is dispatched. The parent must call `proceed()` to commit; doing
+  // nothing cancels the action. Non-destructive verbs (clear, clarify,
+  // unclarify) bypass this hook and run immediately.
+  onConfirmDestructive?: (
+    verb: 'retry' | 'stop',
+    proceed: () => void,
+  ) => void
 }
 
 const TYPE_TITLE: Record<EscalationType, string> = {
@@ -90,9 +137,10 @@ export default function ResolveNeedsAttentionPanel({
   escalationId,
   escalationType,
   onClose,
+  onConfirmDestructive,
 }: ResolveNeedsAttentionPanelProps) {
   const entry = useEscalation(escalationId)
-  const { fetchEscalation } = useResolveActions()
+  const { fetchEscalation, run, reset } = useResolveActions()
   const auditNoteId = `resolve-audit-note-${escalationId}`
   const [auditNote, setAuditNote] = useState('')
   // prFormOpen toggles the inline title/body fallback form. We default to
@@ -115,6 +163,22 @@ export default function ResolveNeedsAttentionPanel({
 
   const isLoading = entry.status === 'loading' && !detail
   const isError = entry.status === 'error' && !detail
+
+  const verbs = escalationType === 'dispatch_failed' ? BEAD_VERBS : WORKER_VERBS
+
+  // The resolve-store entry is keyed on (anvil, beadID). When the
+  // escalation detail hasn't loaded yet we fall back to a placeholder key
+  // so the hook still has a stable string; the action buttons themselves
+  // are only rendered inside the `{detail && ...}` branch so the
+  // placeholder is never actually clicked through.
+  const actionKey = detail
+    ? resolveKey(escalationId, detail.anvil)
+    : `__pending__/${escalationId}`
+  const actionEntry = useResolveStatus(actionKey)
+  const actionPending = actionEntry.status === 'pending'
+  const actionError = actionEntry.status === 'error' ? actionEntry.error : undefined
+  const actionsDisabled = actionPending || actionEntry.status === 'error'
+  const anvilMissing = detail != null && !detail.anvil
 
   return (
     <section
@@ -208,6 +272,85 @@ export default function ResolveNeedsAttentionPanel({
               rows={3}
               className="mt-2 w-full resize-y rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-400/50"
             />
+          </div>
+
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Resolve actions
+            </h3>
+            {anvilMissing ? (
+              <p className="mt-2 rounded-md border border-amber-700/40 bg-amber-900/20 px-3 py-2 text-xs text-amber-300">
+                Anvil is ambiguous — retry the fetch with an explicit{' '}
+                <code className="rounded bg-slate-800 px-1 font-mono">
+                  ?anvil=
+                </code>{' '}
+                parameter before resolving.
+              </p>
+            ) : (
+              <div
+                role="group"
+                aria-label="Resolve actions"
+                className="mt-2 flex flex-wrap gap-2"
+              >
+                {verbs.map((verb) => {
+                  const invoke = () => {
+                    const note = auditNote.trim()
+                    void run(actionKey, escalationId, {
+                      verb,
+                      anvil: detail.anvil,
+                      note: note === '' ? undefined : note,
+                    })
+                  }
+                  const onClick = () => {
+                    if (
+                      onConfirmDestructive &&
+                      (verb === 'retry' || verb === 'stop')
+                    ) {
+                      onConfirmDestructive(verb, invoke)
+                      return
+                    }
+                    invoke()
+                  }
+                  const isActive =
+                    actionPending && actionEntry.verb === verb
+                  const isVerbDisabled =
+                    actionsDisabled ||
+                    (verb === 'clarify' && auditNote.trim() === '')
+                  return (
+                    <button
+                      key={verb}
+                      type="button"
+                      data-verb={verb}
+                      onClick={onClick}
+                      disabled={isVerbDisabled}
+                      title={
+                        verb === 'clarify' && auditNote.trim() === ''
+                          ? 'Enter an audit note before marking as needs clarification'
+                          : undefined
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-100 hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isActive ? `${VERB_LABEL[verb]}…` : VERB_LABEL[verb]}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {actionError && (
+              <div
+                role="alert"
+                className="mt-2 flex items-start gap-2 rounded-md border border-red-700/40 bg-red-900/20 px-3 py-2 text-sm text-red-200"
+              >
+                <span className="flex-1">{actionError}</span>
+                <button
+                  type="button"
+                  onClick={() => reset(actionKey)}
+                  className="shrink-0 underline hover:no-underline focus:outline-none focus-visible:ring-1 focus-visible:ring-red-400"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
           </div>
 
           <div>
