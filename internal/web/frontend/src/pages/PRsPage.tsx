@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
   Bell,
@@ -9,11 +9,13 @@ import {
   RotateCcw,
   ShieldCheck,
   Wrench,
+  X,
   XCircle,
 } from 'lucide-react'
 import { useApiPoll } from '../hooks/useApiPoll'
 import { useAction } from '../hooks/useAction'
 import { useToast } from '../hooks/useToast'
+import { useUIState } from '../hooks/useUIState'
 import { prActions, type PRActionKind, type PRItem, type StatusResponse } from '../api'
 import AppHeader from '../components/AppHeader'
 import ConfirmModal from '../components/ConfirmModal'
@@ -29,6 +31,88 @@ import { PRS_CACHE_TTL_MS, usePRsData } from './usePRsData'
 const STATUS_POLL_INTERVAL_MS = 10_000
 
 const SECTION_ORDER: PRSectionKind[] = ['forge_prs', 'external_prs', 'recently_merged']
+
+export type PRSortKey =
+  | 'updated-desc'
+  | 'updated-asc'
+  | 'created-desc'
+  | 'created-asc'
+  | 'number-desc'
+  | 'number-asc'
+  | 'title-asc'
+
+const SORT_OPTIONS: ReadonlyArray<{ value: PRSortKey; label: string }> = [
+  { value: 'updated-desc', label: 'Updated (newest first)' },
+  { value: 'updated-asc', label: 'Updated (oldest first)' },
+  { value: 'created-desc', label: 'Created (newest first)' },
+  { value: 'created-asc', label: 'Created (oldest first)' },
+  { value: 'number-desc', label: 'PR # (high to low)' },
+  { value: 'number-asc', label: 'PR # (low to high)' },
+  { value: 'title-asc', label: 'Title (A→Z)' },
+]
+
+// parseTimestamp / compareTimestamps mirror the helpers in QueuePane so missing
+// or unparseable created_at / updated_at values degrade gracefully: items
+// without a timestamp sort to the "oldest" end regardless of direction.
+function parseTimestamp(value: string | undefined): number {
+  if (!value) return NaN
+  const t = Date.parse(value)
+  return Number.isNaN(t) ? NaN : t
+}
+
+function compareTimestamps(a: number, b: number, direction: 'asc' | 'desc'): number {
+  const aMissing = Number.isNaN(a)
+  const bMissing = Number.isNaN(b)
+  if (aMissing && bMissing) return 0
+  if (aMissing) return direction === 'asc' ? -1 : 1
+  if (bMissing) return direction === 'asc' ? 1 : -1
+  return direction === 'asc' ? a - b : b - a
+}
+
+export function sortPRs(items: PRItem[], sortKey: PRSortKey): PRItem[] {
+  const copy = items.slice()
+  switch (sortKey) {
+    case 'updated-desc':
+    case 'updated-asc': {
+      const dir = sortKey === 'updated-desc' ? 'desc' : 'asc'
+      const ts = new Map(copy.map((item) => [item, parseTimestamp(item.updated_at)]))
+      copy.sort((a, b) => compareTimestamps(ts.get(a)!, ts.get(b)!, dir))
+      return copy
+    }
+    case 'created-desc':
+    case 'created-asc': {
+      const dir = sortKey === 'created-desc' ? 'desc' : 'asc'
+      const ts = new Map(copy.map((item) => [item, parseTimestamp(item.created_at)]))
+      copy.sort((a, b) => compareTimestamps(ts.get(a)!, ts.get(b)!, dir))
+      return copy
+    }
+    case 'number-desc':
+      copy.sort((a, b) => b.number - a.number)
+      return copy
+    case 'number-asc':
+      copy.sort((a, b) => a.number - b.number)
+      return copy
+    case 'title-asc':
+      copy.sort((a, b) =>
+        (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' }),
+      )
+      return copy
+  }
+}
+
+export function filterPRs(items: PRItem[], filter: string): PRItem[] {
+  const q = filter.trim().toLowerCase()
+  if (!q) return items
+  return items.filter((pr) => {
+    if (pr.title && pr.title.toLowerCase().includes(q)) return true
+    if (pr.bead_id && pr.bead_id.toLowerCase().includes(q)) return true
+    if (pr.anvil.toLowerCase().includes(q)) return true
+    if (pr.branch && pr.branch.toLowerCase().includes(q)) return true
+    if (pr.author && pr.author.toLowerCase().includes(q)) return true
+    if (String(pr.number).includes(q)) return true
+    return false
+  })
+}
 
 const SECTION_ICON_CLASSES: Record<PRSectionKind, string> = {
   forge_prs: 'text-amber-400',
@@ -58,11 +142,90 @@ export default function PRsPage() {
   const status = useApiPoll<StatusResponse>('/api/status', STATUS_POLL_INTERVAL_MS)
   const { forge_prs, external_prs, recently_merged, loading, error, refresh, fetchedAt } =
     usePRsData()
-  const items: Record<PRSectionKind, PRItem[]> = {
-    forge_prs,
-    external_prs,
-    recently_merged,
+
+  // filter / scroll are transient navigation state — sessionStorage so they
+  // survive a back-nav round-trip but reset when the tab closes. sort and
+  // per-section expanded state are true preferences — localStorage so they
+  // survive a browser restart. Mirrors the mixed split documented in
+  // QueuePane; keys are namespaced by route via useUIState's default scope.
+  const [filter, setFilter] = useUIState<string>('pr.filter', '', { storage: 'session' })
+  const filterInputRef = useRef<HTMLInputElement>(null)
+  const [sortKey, setSortKey] = useUIState<PRSortKey>('pr.sort', 'updated-desc', {
+    storage: 'local',
+  })
+  // Each section has its own expanded key so the storage layout matches the
+  // `pr.section.<id>.expanded` namespace from the bead spec. Sections default
+  // to expanded so the first-time experience preserves the prior layout.
+  const [forgeExpanded, setForgeExpanded] = useUIState<boolean>(
+    'pr.section.forge_prs.expanded',
+    true,
+    { storage: 'local' },
+  )
+  const [externalExpanded, setExternalExpanded] = useUIState<boolean>(
+    'pr.section.external_prs.expanded',
+    true,
+    { storage: 'local' },
+  )
+  const [mergedExpanded, setMergedExpanded] = useUIState<boolean>(
+    'pr.section.recently_merged.expanded',
+    true,
+    { storage: 'local' },
+  )
+  const expandedBySection: Record<PRSectionKind, boolean> = {
+    forge_prs: forgeExpanded,
+    external_prs: externalExpanded,
+    recently_merged: mergedExpanded,
   }
+  const toggleSection = (kind: PRSectionKind) => {
+    if (kind === 'forge_prs') setForgeExpanded(!forgeExpanded)
+    else if (kind === 'external_prs') setExternalExpanded(!externalExpanded)
+    else setMergedExpanded(!mergedExpanded)
+  }
+  // Window-level scroll because the /prs route scrolls at the document level
+  // — there's no single scroll container around the three Panes. We capture
+  // window.scrollY and restore it on remount in the same useLayoutEffect
+  // pattern as QueuePane/WorkersPane.
+  const [scrollTop, setScrollTop] = useUIState<number>('pr.scroll', 0, { storage: 'session' })
+
+  // Apply filter + sort. Each section is filtered and sorted independently so
+  // the per-section counts reflect what the user is actually seeing.
+  const visibleItems = useMemo<Record<PRSectionKind, PRItem[]>>(
+    () => ({
+      forge_prs: sortPRs(filterPRs(forge_prs, filter), sortKey),
+      external_prs: sortPRs(filterPRs(external_prs, filter), sortKey),
+      recently_merged: sortPRs(filterPRs(recently_merged, filter), sortKey),
+    }),
+    [forge_prs, external_prs, recently_merged, filter, sortKey],
+  )
+
+  // Restore window scroll before the browser paints so users see no jump from
+  // 0 → saved on back-navigation. The dep on `loading` re-fires once polled
+  // data arrives so the page has the height the saved scrollTop expects.
+  useLayoutEffect(() => {
+    if (scrollTop > 0 && window.scrollY !== scrollTop) {
+      window.scrollTo(0, scrollTop)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading])
+
+  // Throttle scroll capture so we don't write to storage on every pixel.
+  // useUIState debounces writes by 150ms, but updating React state on every
+  // scroll event would still cause wasteful renders.
+  useEffect(() => {
+    let rafId = 0
+    const onScroll = () => {
+      if (rafId) return
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0
+        setScrollTop(window.scrollY)
+      })
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      if (rafId) window.cancelAnimationFrame(rafId)
+    }
+  }, [setScrollTop])
 
   const { run, busy } = useAction()
   const toast = useToast()
@@ -104,7 +267,7 @@ export default function PRsPage() {
     <div className="flex min-h-full flex-col gap-6 p-4 sm:p-6">
       <AppHeader daemonOnline={status.data?.running} daemonLoading={status.loading} />
 
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs text-slate-500">
           {fetchedAt
             ? `Last updated ${formatRelative(fetchedAt)}`
@@ -112,15 +275,54 @@ export default function PRsPage() {
               ? 'Loading…'
               : 'Not yet loaded'}
         </p>
-        <button
-          type="button"
-          onClick={refresh}
-          disabled={loading}
-          className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800/60 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:border-slate-600 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <RefreshCw size={12} aria-hidden className={loading ? 'animate-spin' : undefined} />
-          Refresh
-        </button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="relative w-full sm:w-64">
+            <input
+              ref={filterInputRef}
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter PRs (title, bead, anvil, branch, #)"
+              aria-label="Filter PRs"
+              className={`w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300 ${filter.trim() ? 'pr-7' : ''}`}
+            />
+            {filter.trim() && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFilter('')
+                  filterInputRef.current?.focus()
+                }}
+                aria-label="Clear filter"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
+              >
+                <X size={14} aria-hidden />
+              </button>
+            )}
+          </div>
+          <select
+            value={sortKey}
+            onChange={(e) => setSortKey(e.target.value as PRSortKey)}
+            aria-label="Sort PRs"
+            data-testid="prs-sort-select"
+            className="w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-100 focus:border-amber-400/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300 sm:w-auto"
+          >
+            {SORT_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800/60 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:border-slate-600 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RefreshCw size={12} aria-hidden className={loading ? 'animate-spin' : undefined} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       <main className="flex flex-col gap-4">
@@ -128,11 +330,13 @@ export default function PRsPage() {
           <PRSectionContainer
             key={kind}
             kind={kind}
-            items={items[kind]}
-            loading={loading && items[kind].length === 0}
+            items={visibleItems[kind]}
+            loading={loading && visibleItems[kind].length === 0}
             error={error}
             onAction={requestAction}
             actingKey={actingKey}
+            expanded={expandedBySection[kind]}
+            onToggle={() => toggleSection(kind)}
           />
         ))}
       </main>
@@ -162,6 +366,8 @@ interface PRSectionContainerProps {
   error?: string | null
   onAction: (pr: PRItem, kind: PRActionKind) => void
   actingKey: string | null
+  expanded: boolean
+  onToggle: () => void
 }
 
 function PRSectionContainer({
@@ -171,6 +377,8 @@ function PRSectionContainer({
   error,
   onAction,
   actingKey,
+  expanded,
+  onToggle,
 }: PRSectionContainerProps) {
   return (
     <Pane
@@ -179,6 +387,9 @@ function PRSectionContainer({
       count={items.length}
       loading={loading}
       error={error ?? null}
+      collapsible
+      expanded={expanded}
+      onToggle={onToggle}
     >
       <div className="px-4 pt-3 text-xs text-slate-400">{PR_SECTION_DESCRIPTIONS[kind]}</div>
       {items.length === 0 ? (
