@@ -1,5 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, MonitorOff, Skull, Users } from 'lucide-react'
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  MonitorOff,
+  Skull,
+  Users,
+} from 'lucide-react'
 import { actions, type WorkerInfo } from '../api'
 import { useAction } from '../hooks/useAction'
 import { useUIState } from '../hooks/useUIState'
@@ -7,6 +14,7 @@ import { relativeTime } from '../lib/format'
 import { isBellowsMonitor } from './PipelineBar'
 import ConfirmModal from './ConfirmModal'
 import Pane, { EmptyState } from './Pane'
+import ResolveNeedsAttentionPanel from './ResolveNeedsAttentionPanel'
 
 interface WorkersPaneProps {
   workers: WorkerInfo[]
@@ -78,6 +86,11 @@ export default function WorkersPane({
 }: WorkersPaneProps) {
   const { run, busy } = useAction()
   const [killTarget, setKillTarget] = useState<WorkerInfo | null>(null)
+  // expandedRowId is the worker id whose ResolveNeedsAttentionPanel is
+  // currently expanded inline beneath its row. Only one row's panel is
+  // visible at a time so the pane keeps a compact footprint; clicking the
+  // toggle a second time (or the panel's close button) collapses it back.
+  const [expandedRowId, setExpandedRowId] = useState<string | null>(null)
 
   // collapsed is keyed by anvil name. Missing keys (and explicit `false`)
   // render the group expanded — matching the pre-grouping behaviour where
@@ -226,70 +239,115 @@ export default function WorkersPane({
                         const hasLog = !!w.log_path && !isBellows
                         const clickable = hasLog && !!onSelectWorker
                         const canKill = w.status === 'pending' || w.status === 'running'
+                        // Only failed workers have a smith_failed escalation the
+                        // daemon can resolve. Healthy / in-flight workers have
+                        // nothing for the panel to fetch, so we hide the toggle.
+                        const canResolve = w.status === 'failed' && !isBellows
+                        const isExpanded = expandedRowId === w.id
+                        const toggleExpand = () =>
+                          setExpandedRowId((prev) => (prev === w.id ? null : w.id))
                         return (
-                          <li key={w.id} className="flex items-stretch">
-                            <div className="min-w-0 flex-1">
-                              <button
-                                type="button"
-                                disabled={!clickable}
-                                onClick={() => {
-                                  if (clickable) onSelectWorker?.(w)
-                                }}
-                                className={`block w-full px-4 py-3 text-left ${
-                                  clickable
-                                    ? 'cursor-pointer transition-colors hover:bg-slate-800/40 focus:bg-slate-800/40 focus:outline-none focus:ring-1 focus:ring-amber-400/40'
-                                    : 'opacity-80'
-                                }`}
-                                aria-label={
-                                  clickable ? `Open log for ${w.title || w.bead_id}` : undefined
-                                }
-                              >
-                                <div className="flex flex-wrap items-start gap-2">
-                                  <span
-                                    className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass(w.status)}`}
-                                  >
-                                    {w.status}
-                                  </span>
-                                  {w.phase && (
-                                    <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
-                                      {w.phase}
-                                    </span>
-                                  )}
-                                  {w.pr_number ? (
-                                    <span className="rounded-md border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-[10px] text-purple-300">
-                                      PR #{w.pr_number}
-                                    </span>
-                                  ) : null}
-                                  {clickable && (
-                                    <span className="ml-auto text-[10px] uppercase tracking-wide text-slate-500">
-                                      view log
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="mt-1.5 truncate text-sm font-medium text-slate-100">
-                                  {w.title || w.bead_id}
-                                </p>
-                                <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
-                                  <span className="font-mono text-slate-400">{w.bead_id}</span>
-                                  <span aria-hidden>·</span>
-                                  <span>{w.anvil}</span>
-                                  <span aria-hidden>·</span>
-                                  <span title={w.started_at}>{relativeTime(w.started_at)}</span>
-                                </p>
-                              </button>
-                            </div>
-                            {canKill && (
-                              <div className="flex items-start p-2">
+                          <li key={w.id}>
+                            <div className="flex items-stretch">
+                              <div className="min-w-0 flex-1">
                                 <button
                                   type="button"
-                                  onClick={() => setKillTarget(w)}
-                                  disabled={busy}
-                                  className="rounded-md border border-red-500/40 bg-red-500/10 p-1.5 text-red-300 hover:bg-red-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-50"
-                                  aria-label={`Kill worker ${w.id}`}
-                                  title="Kill worker"
+                                  disabled={!clickable}
+                                  onClick={() => {
+                                    if (clickable) onSelectWorker?.(w)
+                                  }}
+                                  className={`block w-full px-4 py-3 text-left ${
+                                    clickable
+                                      ? 'cursor-pointer transition-colors hover:bg-slate-800/40 focus:bg-slate-800/40 focus:outline-none focus:ring-1 focus:ring-amber-400/40'
+                                      : 'opacity-80'
+                                  }`}
+                                  aria-label={
+                                    clickable ? `Open log for ${w.title || w.bead_id}` : undefined
+                                  }
                                 >
-                                  <Skull size={14} />
+                                  <div className="flex flex-wrap items-start gap-2">
+                                    <span
+                                      className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass(w.status)}`}
+                                    >
+                                      {w.status}
+                                    </span>
+                                    {w.phase && (
+                                      <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
+                                        {w.phase}
+                                      </span>
+                                    )}
+                                    {w.pr_number ? (
+                                      <span className="rounded-md border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-[10px] text-purple-300">
+                                        PR #{w.pr_number}
+                                      </span>
+                                    ) : null}
+                                    {clickable && (
+                                      <span className="ml-auto text-[10px] uppercase tracking-wide text-slate-500">
+                                        view log
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-1.5 truncate text-sm font-medium text-slate-100">
+                                    {w.title || w.bead_id}
+                                  </p>
+                                  <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
+                                    <span className="font-mono text-slate-400">{w.bead_id}</span>
+                                    <span aria-hidden>·</span>
+                                    <span>{w.anvil}</span>
+                                    <span aria-hidden>·</span>
+                                    <span title={w.started_at}>{relativeTime(w.started_at)}</span>
+                                  </p>
                                 </button>
+                              </div>
+                              {canResolve && (
+                                <div className="flex items-start p-2">
+                                  <button
+                                    type="button"
+                                    onClick={toggleExpand}
+                                    aria-expanded={isExpanded}
+                                    aria-controls={`workers-resolve-${w.id}`}
+                                    data-testid={`workers-resolve-toggle-${w.id}`}
+                                    className="rounded-md border border-amber-500/40 bg-amber-500/10 p-1.5 text-amber-300 hover:bg-amber-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                                    aria-label={
+                                      isExpanded
+                                        ? `Hide resolution panel for ${w.bead_id}`
+                                        : `Show resolution panel for ${w.bead_id}`
+                                    }
+                                    title={
+                                      isExpanded
+                                        ? 'Hide resolution panel'
+                                        : 'Resolve needs attention'
+                                    }
+                                  >
+                                    <AlertTriangle size={14} />
+                                  </button>
+                                </div>
+                              )}
+                              {canKill && (
+                                <div className="flex items-start p-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setKillTarget(w)}
+                                    disabled={busy}
+                                    className="rounded-md border border-red-500/40 bg-red-500/10 p-1.5 text-red-300 hover:bg-red-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-50"
+                                    aria-label={`Kill worker ${w.id}`}
+                                    title="Kill worker"
+                                  >
+                                    <Skull size={14} />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                            {canResolve && isExpanded && (
+                              <div
+                                id={`workers-resolve-${w.id}`}
+                                className="border-t border-slate-800/60 bg-slate-950/30 px-4 py-3"
+                              >
+                                <ResolveNeedsAttentionPanel
+                                  escalationId={w.bead_id}
+                                  escalationType="smith_failed"
+                                  onClose={() => setExpandedRowId(null)}
+                                />
                               </div>
                             )}
                           </li>
