@@ -100,6 +100,14 @@ func (s *Server) routes() http.Handler {
 		r.Post("/forge/sessions/{id}/messages", s.handleForgeSessionAppend)
 		r.Post("/forge/sessions/{id}/turn", s.handleForgeSessionTurn)
 		r.Post("/forge/sessions/{id}/create-beads", s.handleForgeSessionCreateBeads)
+
+		// Hearth 2.0 resolve-needs-attention page. The POST endpoint is a
+		// thin façade over the daemon's queue_* IPC verbs so the SPA
+		// renders a single action picker; the GET endpoint returns the
+		// full untruncated escalation message plus git context shelled
+		// from the worker's worktree.
+		r.Post("/forge/resolve", s.handleForgeResolve)
+		r.Get("/forge/escalation/{bead_id}", s.handleForgeEscalation)
 	})
 
 	// Static UI fallback. The next bead replaces this with the embedded

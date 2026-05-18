@@ -1,0 +1,2 @@
+category: Added
+- **Resolve-needs-attention HTTP endpoints** - Wire the Hearth 2.0 escalation page to the daemon via `POST /api/forge/resolve` (dispatching one of clear/retry/clarify/unclarify/stop to the queue IPC handlers) and `GET /api/forge/escalation/{bead_id}` (full untruncated escalation message plus git context — parent base, origin branch commits, local worktree commits, diff range — shelled from the worker's worktree). (Forge-k2ls)
