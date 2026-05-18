@@ -5,6 +5,7 @@ import './index.css'
 import App from './App'
 import { AuthProvider } from './auth'
 import { ToastProvider, ToastViewport } from './hooks/useToast'
+import { ResolveStoreProvider } from './stores/resolveStore'
 
 const root = document.getElementById('root')
 if (!root) {
@@ -16,8 +17,10 @@ createRoot(root).render(
     <BrowserRouter>
       <AuthProvider>
         <ToastProvider>
-          <App />
-          <ToastViewport />
+          <ResolveStoreProvider>
+            <App />
+            <ToastViewport />
+          </ResolveStoreProvider>
         </ToastProvider>
       </AuthProvider>
     </BrowserRouter>
