@@ -5038,10 +5038,152 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "queue_clarify":
+		return d.handleQueueClarify(cmd)
+	case "queue_unclarify":
+		return d.handleQueueUnclarify(cmd)
+	case "queue_retry":
+		return d.handleQueueRetry(cmd)
+	case "queue_clear":
+		return d.handleQueueClear(cmd)
+	case "queue_stop":
+		return d.handleQueueStop(cmd)
+
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}
 	}
+}
+
+// handleQueueClarify implements the "queue_clarify" IPC verb: marks a bead
+// as needing human clarification. Required: bead_id, anvil_name, note.
+// Optional: forge_id (multi-forge safety; rejected if mismatched).
+func (d *Daemon) handleQueueClarify(cmd ipc.Command) ipc.Response {
+	var qp ipc.QueueActionPayload
+	if err := json.Unmarshal(cmd.Payload, &qp); err != nil {
+		msg, _ := json.Marshal(map[string]string{"message": "invalid queue_clarify payload"})
+		return ipc.Response{Type: "error", Payload: msg}
+	}
+	if err := queueactions.Clarify(context.Background(), d.queueActionsHandle(), queueactions.Params{
+		BeadID:    qp.BeadID,
+		ForgeID:   qp.ForgeID,
+		AnvilName: qp.AnvilName,
+		Note:      qp.Note,
+	}); err != nil {
+		msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("set clarification", err)})
+		return ipc.Response{Type: "error", Payload: msg}
+	}
+	d.logger.Info("bead marked as clarification_needed via queue_clarify",
+		"bead", qp.BeadID, "anvil", qp.AnvilName, "reason", strings.TrimSpace(qp.Note))
+	data, _ := json.Marshal(map[string]string{"message": "clarification_needed set"})
+	return ipc.Response{Type: "ok", Payload: data}
+}
+
+// handleQueueUnclarify implements the "queue_unclarify" IPC verb: clears the
+// clarification_needed flag so a bead can be dispatched again. Required:
+// bead_id, anvil_name. Note is optional and appears in the audit event.
+func (d *Daemon) handleQueueUnclarify(cmd ipc.Command) ipc.Response {
+	var qp ipc.QueueActionPayload
+	if err := json.Unmarshal(cmd.Payload, &qp); err != nil {
+		msg, _ := json.Marshal(map[string]string{"message": "invalid queue_unclarify payload"})
+		return ipc.Response{Type: "error", Payload: msg}
+	}
+	if err := queueactions.Unclarify(context.Background(), d.queueActionsHandle(), queueactions.Params{
+		BeadID:    qp.BeadID,
+		ForgeID:   qp.ForgeID,
+		AnvilName: qp.AnvilName,
+		Note:      qp.Note,
+	}); err != nil {
+		msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("clear clarification", err)})
+		return ipc.Response{Type: "error", Payload: msg}
+	}
+	d.logger.Info("clarification_needed cleared via queue_unclarify",
+		"bead", qp.BeadID, "anvil", qp.AnvilName)
+	data, _ := json.Marshal(map[string]string{"message": "clarification_needed cleared"})
+	return ipc.Response{Type: "ok", Payload: data}
+}
+
+// handleQueueRetry implements the "queue_retry" IPC verb: resets the dispatch
+// circuit breaker so the bead re-enters the queue. This is the thin primitive
+// — it does not shell out to bd or kick the poller; callers that need those
+// orchestration steps continue to use retry_bead.
+func (d *Daemon) handleQueueRetry(cmd ipc.Command) ipc.Response {
+	var qp ipc.QueueActionPayload
+	if err := json.Unmarshal(cmd.Payload, &qp); err != nil {
+		msg, _ := json.Marshal(map[string]string{"message": "invalid queue_retry payload"})
+		return ipc.Response{Type: "error", Payload: msg}
+	}
+	hadCircuitBreaker, err := queueactions.Retry(context.Background(), d.queueActionsHandle(), queueactions.Params{
+		BeadID:    qp.BeadID,
+		ForgeID:   qp.ForgeID,
+		AnvilName: qp.AnvilName,
+		Note:      qp.Note,
+	})
+	if err != nil {
+		msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("retry bead", err)})
+		return ipc.Response{Type: "error", Payload: msg}
+	}
+	d.logger.Info("retry reset for bead via queue_retry",
+		"bead", qp.BeadID, "anvil", qp.AnvilName, "circuit_breaker_cleared", hadCircuitBreaker)
+	respMsg := "retry reset"
+	if hadCircuitBreaker {
+		respMsg = "retry state reset"
+	}
+	data, _ := json.Marshal(map[string]string{"message": respMsg})
+	return ipc.Response{Type: "ok", Payload: data}
+}
+
+// handleQueueClear implements the "queue_clear" IPC verb: drops needs-attention
+// flags from a bead's retry row without re-dispatching it. Idempotent.
+func (d *Daemon) handleQueueClear(cmd ipc.Command) ipc.Response {
+	var qp ipc.QueueActionPayload
+	if err := json.Unmarshal(cmd.Payload, &qp); err != nil {
+		msg, _ := json.Marshal(map[string]string{"message": "invalid queue_clear payload"})
+		return ipc.Response{Type: "error", Payload: msg}
+	}
+	if err := queueactions.Clear(context.Background(), d.queueActionsHandle(), queueactions.Params{
+		BeadID:    qp.BeadID,
+		ForgeID:   qp.ForgeID,
+		AnvilName: qp.AnvilName,
+		Note:      qp.Note,
+	}); err != nil {
+		msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("clear needs-attention flags", err)})
+		return ipc.Response{Type: "error", Payload: msg}
+	}
+	d.logger.Info("needs-attention flags cleared via queue_clear",
+		"bead", qp.BeadID, "anvil", qp.AnvilName)
+	data, _ := json.Marshal(map[string]string{"message": "needs-attention flags cleared"})
+	return ipc.Response{Type: "ok", Payload: data}
+}
+
+// handleQueueStop implements the "queue_stop" IPC verb: terminates any running
+// worker for the bead and marks it clarification_needed so neither auto nor
+// manual dispatch picks it up. Unlike stop_bead this primitive does not shell
+// out to bd update — callers needing to release the bd assignee continue to
+// use stop_bead.
+func (d *Daemon) handleQueueStop(cmd ipc.Command) ipc.Response {
+	var qp ipc.QueueActionPayload
+	if err := json.Unmarshal(cmd.Payload, &qp); err != nil {
+		msg, _ := json.Marshal(map[string]string{"message": "invalid queue_stop payload"})
+		return ipc.Response{Type: "error", Payload: msg}
+	}
+	terminatedWorkerID, err := queueactions.Stop(context.Background(), d.queueActionsHandle(), queueactions.Params{
+		BeadID:    qp.BeadID,
+		ForgeID:   qp.ForgeID,
+		AnvilName: qp.AnvilName,
+		Note:      qp.Note,
+	})
+	if err != nil {
+		msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("stop bead", err)})
+		return ipc.Response{Type: "error", Payload: msg}
+	}
+	if terminatedWorkerID != "" {
+		d.logger.Info("killed worker for stopped bead via queue_stop",
+			"worker", terminatedWorkerID, "bead", qp.BeadID, "anvil", qp.AnvilName)
+	}
+	d.activeBeads.Delete(qp.BeadID)
+	data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s stopped", qp.BeadID)})
+	return ipc.Response{Type: "ok", Payload: data}
 }
 
 // BroadcastEvent sends an event to all connected IPC clients.

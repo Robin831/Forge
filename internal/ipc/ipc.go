@@ -227,6 +227,21 @@ type StopBeadPayload struct {
 	Reason string `json:"reason"` // Optional; defaults to "manually stopped"
 }
 
+// QueueActionPayload is the payload for the queue resolution verbs:
+// "queue_clarify", "queue_unclarify", "queue_retry", "queue_clear", and
+// "queue_stop". These are thin IPC wrappers around the shared queueactions
+// package functions and accept a forge_id for multi-forge safety: when
+// supplied the daemon rejects the request unless its local forge_id matches.
+//
+// AnvilName uses the legacy "anvil" JSON tag so existing callers can reuse
+// the same field name they pass to set_clarification / stop_bead.
+type QueueActionPayload struct {
+	BeadID    string `json:"bead_id"`
+	ForgeID   string `json:"forge_id,omitempty"`
+	AnvilName string `json:"anvil_name,omitempty"`
+	Note      string `json:"note,omitempty"`
+}
+
 // ResolveOrphanPayload is the payload for a "resolve_orphan" command.
 // Sent by Hearth to the daemon when the user picks an action for an orphaned bead.
 // Action is one of "recover", "close", or "discard".
