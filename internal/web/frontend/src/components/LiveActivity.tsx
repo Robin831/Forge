@@ -46,14 +46,14 @@ export default function LiveActivity() {
   // paused on. The SSE keeps running so the buffer continues to grow, but
   // the snapshot is what the list renders — mirroring the "freeze frame"
   // behaviour of a tailing log. Initialise with null even when paused is
-  // restored from storage so the very first paint shows whatever the
-  // buffer holds right now; the post-mount effect then captures that
-  // buffer as the frozen snapshot.
+  // restored from storage: the snapshot is only captured once items are
+  // non-empty, so a persisted paused state doesn't freeze on the empty
+  // buffer that exists before the SSE connection has replayed its events.
   const [pauseSnapshot, setPauseSnapshot] = useState<EventInfo[] | null>(null)
 
   useEffect(() => {
     if (paused) {
-      if (pauseSnapshot === null) {
+      if (pauseSnapshot === null && items.length > 0) {
         setPauseSnapshot([...items])
       }
     } else if (pauseSnapshot !== null) {
@@ -63,9 +63,9 @@ export default function LiveActivity() {
 
   const sourceItems = pauseSnapshot ?? items
 
-  // Filter matches against type, message, bead_id, and anvil — the same
-  // surface as QueuePane's filter. Case-insensitive substring match keeps
-  // the UX predictable across mixed-case event types and free-form messages.
+  // Filter matches against type, message, bead_id, and anvil.
+  // Case-insensitive substring match keeps the UX predictable across
+  // mixed-case event types and free-form messages.
   const filteredItems = useMemo(() => {
     const q = filter.trim().toLowerCase()
     if (!q) return sourceItems
