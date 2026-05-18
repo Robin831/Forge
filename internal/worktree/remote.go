@@ -133,9 +133,11 @@ func DeleteRemoteBranch(ctx context.Context, anvilPath, branch string) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		// Git reports "error: unable to delete 'branch': remote ref does not exist"
+		// when the branch is already gone (concurrent forge raced us). Treat
+		// that as success so multi-forge dispatch never collides on cleanup.
 		msg := stderr.String()
-		if strings.Contains(msg, "remote ref does not exist") ||
-			strings.Contains(msg, "unable to delete") && strings.Contains(msg, "remote ref does not exist") {
+		if strings.Contains(msg, "remote ref does not exist") {
 			return nil
 		}
 		return fmt.Errorf("git push origin --delete %s: %w: %s", branch, err, strings.TrimSpace(msg))

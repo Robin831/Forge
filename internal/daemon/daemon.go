@@ -3090,6 +3090,27 @@ func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.B
 			d.logger.Error("pre-dispatch: failed to mark bead as needs_human", "bead", bead.ID, "error", markErr)
 		}
 		d.recordDispatchFailure(bead.ID, bead.Anvil, reason, true)
+
+		// Fire bead-failed notifications immediately. Unlike the normal retry
+		// path, the stranded-branch case is a 1-strike escalation: needs_human
+		// has already been set above, so we should not wait for the circuit
+		// breaker to trip before alerting the operator. Mirrors the async
+		// notification block in recordDispatchFailure's circuit-break branch.
+		disp := d.dispatcher.Load()
+		notifier := d.notifier.Load()
+		if disp != nil || notifier != nil {
+			beadID, anvil := bead.ID, bead.Anvil
+			go func(reason string) {
+				notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if notifier != nil {
+					notifier.BeadFailed(notifCtx, anvil, beadID, 1, reason)
+				}
+				if disp != nil {
+					disp.Dispatch(notifCtx, notify.EventBeadFailed, beadID, anvil, reason)
+				}
+			}(reason)
+		}
 		return false
 	}
 
