@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, List, MoreHorizontal, Play, RotateCcw, Square, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, List, MoreHorizontal, Play, RotateCcw, Square, Tag, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { actions, type QueueItem } from '../api'
 import { priorityClasses, priorityLabel, relativeTime } from '../lib/format'
@@ -123,6 +123,14 @@ function bucketFor(item: QueueItem): BucketKey {
   }
 }
 
+// queueRowKey is the stable identity for a bead inside the queue UI. The same
+// bead id can legitimately appear under more than one anvil, so we namespace
+// by anvil to keep per-row state (in-flight requests, optimistic promotions)
+// from colliding.
+function queueRowKey(item: { bead_id: string; anvil: string }): string {
+  return `${item.anvil}:${item.bead_id}`
+}
+
 // Encode an arbitrary anvil name into a valid HTML id token.
 // encodeURIComponent is deterministic and collision-free; replacing % with _
 // keeps the result free of characters that are invalid in id tokens.
@@ -130,8 +138,20 @@ function anvilDomId(name: string): string {
   return `anvil-body-${encodeURIComponent(name).replace(/%/g, '_')}`
 }
 
-export function groupQueueItems(items: QueueItem[]): AnvilGroup[] {
+// GroupQueueOptions configures optimistic UI overrides on top of the server's
+// section classification. `promotedToReady` is the set of rows the user has
+// just applied the dispatch tag to: until the next queue poll surfaces the
+// new label they should render in Ready instead of Unlabeled.
+interface GroupQueueOptions {
+  promotedToReady?: Record<string, boolean>
+}
+
+export function groupQueueItems(
+  items: QueueItem[],
+  opts: GroupQueueOptions = {},
+): AnvilGroup[] {
   const byAnvil = new Map<string, AnvilGroup>()
+  const promoted = opts.promotedToReady ?? {}
   for (const item of items) {
     let group = byAnvil.get(item.anvil)
     if (!group) {
@@ -142,7 +162,11 @@ export function groupQueueItems(items: QueueItem[]): AnvilGroup[] {
       }
       byAnvil.set(item.anvil, group)
     }
-    group.buckets[bucketFor(item)].push(item)
+    let bucket = bucketFor(item)
+    if (bucket === 'unlabeled' && promoted[queueRowKey(item)]) {
+      bucket = 'ready'
+    }
+    group.buckets[bucket].push(item)
     group.total += 1
   }
   // Preserve the upstream order within each bucket (daemon already sorts by
@@ -168,6 +192,13 @@ export default function QueuePane({
   // buckets start closed so the operator sees a compact summary first. State
   // lives in component-local useState (per the bead spec: no localStorage).
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  // Apply-tag bookkeeping. `applyingTag` tracks per-row in-flight requests so
+  // we can disable the button and dedupe double-clicks. `promotedToReady`
+  // tracks rows we have optimistically moved out of the Unlabeled bucket so
+  // they render in Ready immediately, before the daemon's next queue poll
+  // refreshes `items` via SSE. Both maps are keyed by queueRowKey(item).
+  const [applyingTag, setApplyingTag] = useState<Record<string, boolean>>({})
+  const [promotedToReady, setPromotedToReady] = useState<Record<string, boolean>>({})
 
   const filteredItems = useMemo(() => {
     const q = filter.trim().toLowerCase()
@@ -181,14 +212,14 @@ export default function QueuePane({
   }, [items, filter])
 
   const groups = useMemo(() => {
-    const grouped = groupQueueItems(filteredItems)
+    const grouped = groupQueueItems(filteredItems, { promotedToReady })
     return grouped.map((group) => ({
       ...group,
       buckets: Object.fromEntries(
         BUCKET_ORDER.map((bucket) => [bucket, sortItems(group.buckets[bucket], sortKey)]),
       ) as Record<BucketKey, QueueItem[]>,
     }))
-  }, [filteredItems, sortKey])
+  }, [filteredItems, sortKey, promotedToReady])
 
   const toggle = (key: string) =>
     setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))
@@ -206,6 +237,32 @@ export default function QueuePane({
     void run(() => actions.unclarify(item.bead_id, item.anvil), {
       successMessage: `Cleared clarification for ${item.bead_id}`,
       onSuccess: onActionSuccess,
+    })
+  }
+
+  // handleApplyDispatchTag adds the anvil's configured auto_dispatch_tag to
+  // the bead so the next daemon poll picks it up. We mark the row in-flight
+  // for the duration of the request (to prevent double-clicks) and
+  // optimistically promote it from Unlabeled to Ready as soon as the POST
+  // resolves successfully — the user shouldn't have to wait for the next
+  // SSE refresh to see the row move.
+  const handleApplyDispatchTag = (item: QueueItem) => {
+    if (!item.auto_dispatch_tag) return
+    const key = queueRowKey(item)
+    if (applyingTag[key]) return
+    setApplyingTag((prev) => ({ ...prev, [key]: true }))
+    void run(() => actions.applyDispatchTag(item.bead_id, item.anvil), {
+      successMessage: `Applied ${item.auto_dispatch_tag} to ${item.bead_id}`,
+      onSuccess: onActionSuccess,
+    }).then((ok) => {
+      setApplyingTag((prev) => {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
+      if (ok) {
+        setPromotedToReady((prev) => ({ ...prev, [key]: true }))
+      }
     })
   }
 
@@ -323,6 +380,7 @@ export default function QueuePane({
                         return [
                           <BucketSection
                             key={bucketKey}
+                            bucket={bucket}
                             label={BUCKET_LABEL[bucket]}
                             count={bucketItems.length}
                             open={bucketOpen}
@@ -334,6 +392,8 @@ export default function QueuePane({
                             setDialog={setDialog}
                             onRetry={handleRetry}
                             onUnclarify={handleUnclarify}
+                            onApplyDispatchTag={handleApplyDispatchTag}
+                            applyingTag={applyingTag}
                           />,
                         ]
                       })}
@@ -397,6 +457,7 @@ export default function QueuePane({
 }
 
 interface BucketSectionProps {
+  bucket: BucketKey
   label: string
   count: number
   open: boolean
@@ -408,9 +469,12 @@ interface BucketSectionProps {
   setDialog: (state: DialogState) => void
   onRetry: (item: QueueItem) => void
   onUnclarify: (item: QueueItem) => void
+  onApplyDispatchTag: (item: QueueItem) => void
+  applyingTag: Record<string, boolean>
 }
 
 function BucketSection({
+  bucket,
   label,
   count,
   open,
@@ -422,6 +486,8 @@ function BucketSection({
   setDialog,
   onRetry,
   onUnclarify,
+  onApplyDispatchTag,
+  applyingTag,
 }: BucketSectionProps) {
   return (
     <div>
@@ -441,7 +507,10 @@ function BucketSection({
       {open && (
         <ul className="divide-y divide-slate-800/60 border-t border-slate-800/60">
           {items.map((item) => {
-            const menuKey = `${item.anvil}:${item.bead_id}`
+            const menuKey = queueRowKey(item)
+            const showApplyTag =
+              bucket === 'unlabeled' && !!item.auto_dispatch_tag
+            const applyInFlight = !!applyingTag[menuKey]
             return (
               <li key={menuKey} className="px-4 py-3 pl-8">
                 <div className="flex items-start gap-2">
@@ -451,8 +520,20 @@ function BucketSection({
                     {priorityLabel(item.priority)}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-slate-100">
-                      {item.title || item.bead_id}
+                    <p className="flex items-start gap-2 text-sm font-medium text-slate-100">
+                      <span className="truncate">{item.title || item.bead_id}</span>
+                      {showApplyTag && (
+                        <button
+                          type="button"
+                          onClick={() => onApplyDispatchTag(item)}
+                          disabled={busy || applyInFlight}
+                          aria-label={`Apply ${item.auto_dispatch_tag}`}
+                          title={`Apply ${item.auto_dispatch_tag}`}
+                          className="shrink-0 rounded-md border border-slate-700 bg-slate-800 p-1 text-amber-300 hover:border-amber-400/60 hover:text-amber-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
+                        >
+                          <Tag size={12} aria-hidden />
+                        </button>
+                      )}
                     </p>
                     <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
                       <Link

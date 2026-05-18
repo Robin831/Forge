@@ -14,6 +14,11 @@ export interface QueueItem {
   assignee?: string
   created_at: string
   updated_at: string
+  // auto_dispatch_tag is the anvil's configured dispatch label (forge.yaml
+  // `auto_dispatch_tag`). Surfaced per-row so the queue UI can render a
+  // one-click apply-tag button on Unlabeled beads without an extra fetch.
+  // Empty when the owning anvil has no tag configured.
+  auto_dispatch_tag?: string
 }
 
 export interface QueueResponse {
@@ -417,6 +422,15 @@ export const actions = {
     apiPost(`/api/bead/${encodeURIComponent(beadID)}/close`, { anvil }),
   addLabel: (beadID: string, anvil: string, label: string) =>
     apiPost(`/api/bead/${encodeURIComponent(beadID)}/label/add`, { anvil, label }),
+  // applyDispatchTag asks the backend to add the anvil's configured
+  // auto_dispatch_tag to the bead. The tag itself is resolved server-side
+  // from forge.yaml; the response includes the resolved tag so the SPA can
+  // render it in the success toast.
+  applyDispatchTag: (beadID: string, anvil: string) =>
+    apiPost<{ tag?: string }>(
+      `/api/queue/${encodeURIComponent(beadID)}/apply-dispatch-tag`,
+      { anvil },
+    ),
   removeLabel: (beadID: string, anvil: string, label: string) =>
     apiPost(`/api/bead/${encodeURIComponent(beadID)}/label/remove`, { anvil, label }),
   addNote: (beadID: string, anvil: string, note: string) =>

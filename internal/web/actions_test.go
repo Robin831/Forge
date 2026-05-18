@@ -87,6 +87,7 @@ func TestActions_RequireAuth(t *testing.T) {
 		"/api/queue/Forge-abc1/clarify",
 		"/api/queue/Forge-abc1/unclarify",
 		"/api/queue/Forge-abc1/stop",
+		"/api/queue/Forge-abc1/apply-dispatch-tag",
 		"/api/bead/Forge-abc1/close",
 		"/api/bead/Forge-abc1/label/add",
 		"/api/bead/Forge-abc1/label/remove",
@@ -344,6 +345,126 @@ func TestActions_BeadLabel_RejectsBadCharacters(t *testing.T) {
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for bad label, got %d", rec.Code)
+	}
+}
+
+func TestActions_QueueApplyDispatchTag_OK(t *testing.T) {
+	rh := &recordingHandler{}
+	srv := newServerWithDefaults(t, rh.handle)
+	srv.SetAnvilDispatchTagLister(func() map[string]string {
+		return map[string]string{"forge": "forgeReady"}
+	})
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/queue/Forge-abc1/apply-dispatch-tag", map[string]any{
+		"anvil": "forge",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cmd, ok := rh.lastCommand()
+	if !ok || cmd.Type != "update_label" {
+		t.Fatalf("expected update_label, got %v", cmd)
+	}
+	var p ipc.UpdateLabelPayload
+	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if p.Action != "add" || p.Label != "forgeReady" || p.BeadID != "Forge-abc1" || p.Anvil != "forge" {
+		t.Errorf("payload mismatch: %+v", p)
+	}
+	var body struct {
+		Tag string `json:"tag"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if body.Tag != "forgeReady" {
+		t.Errorf("response tag: got %q, want %q", body.Tag, "forgeReady")
+	}
+}
+
+func TestActions_QueueApplyDispatchTag_PerAnvilTag(t *testing.T) {
+	// Each anvil resolves its own tag — the same UI button applies
+	// different labels depending on which anvil owns the bead.
+	rh := &recordingHandler{}
+	srv := newServerWithDefaults(t, rh.handle)
+	srv.SetAnvilDispatchTagLister(func() map[string]string {
+		return map[string]string{
+			"hetzner": "forgeReady",
+			"skybert": "forgeSkybert",
+		}
+	})
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/queue/Forge-abc1/apply-dispatch-tag", map[string]any{
+		"anvil": "skybert",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cmd, _ := rh.lastCommand()
+	var p ipc.UpdateLabelPayload
+	_ = json.Unmarshal(cmd.Payload, &p)
+	if p.Label != "forgeSkybert" {
+		t.Errorf("expected forgeSkybert, got %q", p.Label)
+	}
+}
+
+func TestActions_QueueApplyDispatchTag_RequiresAnvil(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	srv.SetAnvilDispatchTagLister(func() map[string]string {
+		return map[string]string{"forge": "forgeReady"}
+	})
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/queue/Forge-abc1/apply-dispatch-tag", map[string]any{})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 (missing anvil), got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestActions_QueueApplyDispatchTag_NoTagConfigured(t *testing.T) {
+	rh := &recordingHandler{}
+	srv := newServerWithDefaults(t, rh.handle)
+	srv.SetAnvilDispatchTagLister(func() map[string]string {
+		return map[string]string{} // anvil exists, but has no auto_dispatch_tag
+	})
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/queue/Forge-abc1/apply-dispatch-tag", map[string]any{
+		"anvil": "forge",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when tag is unset, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if !strings.Contains(body.Error, "auto_dispatch_tag") {
+		t.Errorf("expected error to mention auto_dispatch_tag, got %q", body.Error)
+	}
+	if _, dispatched := rh.lastCommand(); dispatched {
+		t.Errorf("update_label should not be dispatched when no tag is configured")
+	}
+}
+
+func TestActions_QueueApplyDispatchTag_NoListerConfigured(t *testing.T) {
+	// When SetAnvilDispatchTagLister is never called the handler must still
+	// fail cleanly with a 400 rather than dispatching an empty-label IPC.
+	rh := &recordingHandler{}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/queue/Forge-abc1/apply-dispatch-tag", map[string]any{
+		"anvil": "forge",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 with no lister, got %d", rec.Code)
+	}
+	if _, dispatched := rh.lastCommand(); dispatched {
+		t.Errorf("update_label should not be dispatched without a tag lister")
 	}
 }
 
