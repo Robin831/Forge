@@ -264,4 +264,85 @@ describe('PRsPage persistence', () => {
     // useLayoutEffect should have called scrollTo(0, 250) before paint.
     expect(scrollToSpy).toHaveBeenCalledWith(0, 250)
   })
+
+  it('restores filter, sort, expanded sections, and scroll together after back-navigation', async () => {
+    // Combined integration test that mirrors the QueuePane round-trip pattern:
+    // four different kinds of pane state (filter in sessionStorage, sort in
+    // localStorage, section-expanded flags in localStorage, scroll position in
+    // sessionStorage) must all rehydrate in a single round-trip. The separate
+    // tests above verify each storage path in isolation; this one proves they
+    // compose — touching multiple keys in one session doesn't cause any to be
+    // dropped on the unmount/remount cycle and they all land before paint.
+    vi.useFakeTimers()
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+
+    const { router } = renderApp()
+
+    // Set every observable piece of state in a single session.
+    const filterInput = screen.getByRole('textbox', { name: /Filter PRs/ })
+    await user.type(filterInput, 'beta')
+    expect(filterInput).toHaveValue('beta')
+
+    await user.selectOptions(screen.getByTestId('prs-sort-select'), 'title-asc')
+
+    const externalToggle = screen.getByRole('button', { name: /External PRs/ })
+    await user.click(externalToggle)
+    expect(externalToggle).toHaveAttribute('aria-expanded', 'false')
+
+    // Shim window.scrollY so the rAF-throttled onScroll handler observes 175
+    // and the 150ms debounce writes it to sessionStorage.
+    let _scrollY = 175
+    const origScrollY = Object.getOwnPropertyDescriptor(window, 'scrollY')
+    Object.defineProperty(window, 'scrollY', {
+      configurable: true,
+      get: () => _scrollY,
+    })
+
+    window.dispatchEvent(new Event('scroll'))
+
+    await act(async () => {
+      vi.runAllTimers()
+    })
+
+    // Navigate away — PRsPage fully unmounts (sibling routes); useUIState's
+    // unmount cleanup flushes any still-pending debounced writes.
+    await act(async () => {
+      await router.navigate('/bead/Forge-aaaa')
+    })
+    expect(screen.getByTestId('bead-stub')).toBeInTheDocument()
+
+    // Pretend the new page started at 0 so window.scrollTo will fire on remount.
+    _scrollY = 0
+
+    const scrollToSpy = vi.fn()
+    window.scrollTo = scrollToSpy
+
+    try {
+      await act(async () => {
+        await router.navigate(-1)
+      })
+    } finally {
+      if (origScrollY) {
+        Object.defineProperty(window, 'scrollY', origScrollY)
+      } else {
+        delete (window as unknown as Record<string, unknown>).scrollY
+      }
+    }
+
+    // All four state types survived the round-trip and the first paint
+    // already carries them — no awaits needed before these assertions.
+    expect(screen.getByRole('textbox', { name: /Filter PRs/ })).toHaveValue('beta')
+    expect(screen.getByTestId('prs-sort-select')).toHaveValue('title-asc')
+    expect(screen.getByRole('button', { name: /External PRs/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    // Sections we didn't touch stay expanded — proves we restore deliberate
+    // entries only and don't blanket-collapse on remount.
+    expect(screen.getByRole('button', { name: /Forge PRs/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(scrollToSpy).toHaveBeenCalledWith(0, 175)
+  })
 })
