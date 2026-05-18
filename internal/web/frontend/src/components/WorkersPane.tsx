@@ -1,7 +1,8 @@
-import { useState } from 'react'
-import { MonitorOff, Skull, Users } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight, MonitorOff, Skull, Users } from 'lucide-react'
 import { actions, type WorkerInfo } from '../api'
 import { useAction } from '../hooks/useAction'
+import { useUIState } from '../hooks/useUIState'
 import { relativeTime } from '../lib/format'
 import { isBellowsMonitor } from './PipelineBar'
 import ConfirmModal from './ConfirmModal'
@@ -32,6 +33,41 @@ function statusClass(status: string): string {
   return STATUS_CLASSES[status] ?? 'bg-slate-800 text-slate-300 border-slate-700'
 }
 
+// Encode an arbitrary anvil name into a valid HTML id token using the same
+// percent-encoding scheme as QueuePane (replace % with _ for readability).
+// The `workers-` prefix keeps IDs unique when both panes appear on the same
+// page, since HTML ids must be document-scoped.
+function anvilDomId(name: string): string {
+  return `workers-anvil-body-${encodeURIComponent(name).replace(/%/g, '_')}`
+}
+
+interface AnvilGroup {
+  anvil: string
+  workers: WorkerInfo[]
+}
+
+// groupWorkersByAnvil partitions the (already filtered + sorted) worker list
+// into per-anvil sections. Groups are ordered by their newest worker's
+// started_at descending so the most recently active anvil appears first,
+// preserving the "newest at top" intent across the whole pane. Workers
+// within each group keep their incoming order (newest started_at first).
+function groupWorkersByAnvil(workers: WorkerInfo[]): AnvilGroup[] {
+  const byAnvil = new Map<string, AnvilGroup>()
+  for (const w of workers) {
+    let group = byAnvil.get(w.anvil)
+    if (!group) {
+      group = { anvil: w.anvil, workers: [] }
+      byAnvil.set(w.anvil, group)
+    }
+    group.workers.push(w)
+  }
+  return Array.from(byAnvil.values()).sort((a, b) => {
+    const aT = Date.parse(a.workers[0]?.started_at) || 0
+    const bT = Date.parse(b.workers[0]?.started_at) || 0
+    return bT - aT || a.anvil.localeCompare(b.anvil)
+  })
+}
+
 export default function WorkersPane({
   workers,
   loading,
@@ -43,19 +79,47 @@ export default function WorkersPane({
   const { run, busy } = useAction()
   const [killTarget, setKillTarget] = useState<WorkerInfo | null>(null)
 
+  // collapsed is keyed by anvil name. Missing keys (and explicit `false`)
+  // render the group expanded — matching the pre-grouping behaviour where
+  // every worker was visible by default. localStorage so per-anvil
+  // preferences survive a browser restart, mirroring QueuePane's split.
+  const [collapsed, setCollapsed] = useUIState<Record<string, boolean>>(
+    'workers-pane.group-collapsed',
+    {},
+    { storage: 'local' },
+  )
+  // Scroll position is transient navigation state — sessionStorage so it
+  // survives a back-nav round-trip but resets when the tab closes.
+  const [scrollTop, setScrollTop] = useUIState<number>(
+    'workers-pane.scroll',
+    0,
+    { storage: 'session' },
+  )
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+
   // The Bellows PR-monitor row is intentionally filtered out — it produces no
   // smith log, so a row with no log modal would look broken. Its state is now
   // surfaced inside the Pipeline bar's PR stage. Bellows-spawned sub-workers
   // (quench/burnish/rebase) keep their own phase and remain clickable here.
-  const visibleWorkers = workers.filter((w) => !isBellowsMonitor(w))
+  const visibleWorkers = useMemo(
+    () => workers.filter((w) => !isBellowsMonitor(w)),
+    [workers],
+  )
 
-  // Sort by started_at descending so newest workers are at the top — matches
-  // hearth TUI behaviour and Hytte's WorkersCard.
-  const sorted = [...visibleWorkers].sort((a, b) => {
-    const aT = Date.parse(a.started_at) || 0
-    const bT = Date.parse(b.started_at) || 0
-    return bT - aT
-  })
+  // Sort by started_at descending so workers within each anvil group appear
+  // newest first. groupWorkersByAnvil then orders groups by their newest
+  // member, so the overall list is newest-group-first, newest-within-group.
+  const sorted = useMemo(
+    () =>
+      [...visibleWorkers].sort((a, b) => {
+        const aT = Date.parse(a.started_at) || 0
+        const bT = Date.parse(b.started_at) || 0
+        return bT - aT
+      }),
+    [visibleWorkers],
+  )
+
+  const groups = useMemo(() => groupWorkersByAnvil(sorted), [sorted])
 
   // Idle slot count = (configured cap) - (active Smith-like workers). We count
   // workers that occupy a Smith slot (pending/running/reviewing) and that are
@@ -66,6 +130,42 @@ export default function WorkersPane({
     (w) => w.status === 'pending' || w.status === 'running' || w.status === 'reviewing',
   )
   const idleCount = Math.max(0, maxTotalSmiths - activeSlotWorkers.length)
+
+  // Restore scroll position before the browser paints so users see no jump
+  // from 0 → saved on back-navigation. The dep on `loading` re-fires once
+  // the polled data arrives so the list has actual height to scroll into.
+  useLayoutEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    if (scrollTop > 0 && el.scrollTop !== scrollTop) {
+      el.scrollTop = scrollTop
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading])
+
+  // Throttle scroll capture so we don't write to storage on every pixel.
+  // The hook itself debounces writes by 150ms, but updating React state on
+  // every scroll event still causes wasteful renders.
+  useEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    let rafId = 0
+    const onScroll = () => {
+      if (rafId) return
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0
+        setScrollTop(el.scrollTop)
+      })
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      if (rafId) window.cancelAnimationFrame(rafId)
+    }
+  }, [setScrollTop])
+
+  const toggleGroup = (anvil: string) =>
+    setCollapsed((prev) => ({ ...prev, [anvil]: !prev[anvil] }))
 
   const handleKill = async () => {
     if (!killTarget) return
@@ -84,85 +184,118 @@ export default function WorkersPane({
         count={visibleWorkers.length}
         loading={loading}
         error={error}
+        bodyRef={bodyRef}
       >
         {sorted.length === 0 && idleCount === 0 && !loading ? (
           <EmptyState message="No active workers." />
         ) : (
           <ul className="divide-y divide-slate-800">
-            {sorted.map((w) => {
-              // Bellows pseudo-workers monitor a PR; they have no claude log
-              // so the modal would just render an error. Render their cards
-              // as static info rather than clickable buttons. The phase
-              // fallback is for older API clients that don't yet send `kind`.
-              const isBellows = w.kind === 'bellows' || w.phase === 'bellows'
-              const hasLog = !!w.log_path && !isBellows
-              const clickable = hasLog && !!onSelectWorker
-              const canKill = w.status === 'pending' || w.status === 'running'
+            {groups.map((group) => {
+              const isCollapsed = !!collapsed[group.anvil]
               return (
-                <li key={w.id} className="flex items-stretch">
-                  <div className="min-w-0 flex-1">
-                    <button
-                      type="button"
-                      disabled={!clickable}
-                      onClick={() => {
-                        if (clickable) onSelectWorker?.(w)
-                      }}
-                      className={`block w-full px-4 py-3 text-left ${
-                        clickable
-                          ? 'cursor-pointer transition-colors hover:bg-slate-800/40 focus:bg-slate-800/40 focus:outline-none focus:ring-1 focus:ring-amber-400/40'
-                          : 'opacity-80'
-                      }`}
-                      aria-label={
-                        clickable ? `Open log for ${w.title || w.bead_id}` : undefined
-                      }
+                <li key={group.anvil}>
+                  <button
+                    type="button"
+                    data-testid={`workers-group-${group.anvil}`}
+                    onClick={() => toggleGroup(group.anvil)}
+                    aria-expanded={!isCollapsed}
+                    aria-controls={anvilDomId(group.anvil)}
+                    className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm font-semibold text-slate-100 hover:bg-slate-800/40 focus:bg-slate-800/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
+                  >
+                    {isCollapsed ? (
+                      <ChevronRight size={14} className="text-slate-400" aria-hidden />
+                    ) : (
+                      <ChevronDown size={14} className="text-slate-400" aria-hidden />
+                    )}
+                    <span className="truncate">{group.anvil}</span>
+                    <span className="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-xs font-normal text-slate-300">
+                      {group.workers.length}
+                    </span>
+                  </button>
+                  {!isCollapsed && (
+                    <ul
+                      id={anvilDomId(group.anvil)}
+                      className="divide-y divide-slate-800/60 border-t border-slate-800/60"
                     >
-                      <div className="flex flex-wrap items-start gap-2">
-                        <span
-                          className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass(w.status)}`}
-                        >
-                          {w.status}
-                        </span>
-                        {w.phase && (
-                          <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
-                            {w.phase}
-                          </span>
-                        )}
-                        {w.pr_number ? (
-                          <span className="rounded-md border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-[10px] text-purple-300">
-                            PR #{w.pr_number}
-                          </span>
-                        ) : null}
-                        {clickable && (
-                          <span className="ml-auto text-[10px] uppercase tracking-wide text-slate-500">
-                            view log
-                          </span>
-                        )}
-                      </div>
-                      <p className="mt-1.5 truncate text-sm font-medium text-slate-100">
-                        {w.title || w.bead_id}
-                      </p>
-                      <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
-                        <span className="font-mono text-slate-400">{w.bead_id}</span>
-                        <span aria-hidden>·</span>
-                        <span>{w.anvil}</span>
-                        <span aria-hidden>·</span>
-                        <span title={w.started_at}>{relativeTime(w.started_at)}</span>
-                      </p>
-                    </button>
-                  </div>
-                  {canKill && (
-                    <div className="flex items-start p-2">
-                      <button
-                        type="button"
-                        onClick={() => setKillTarget(w)}
-                        disabled={busy}
-                        className="rounded-md border border-red-500/40 bg-red-500/10 p-1.5 text-red-300 hover:bg-red-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-50"
-                        aria-label={`Kill worker ${w.id}`}
-                        title="Kill worker"
-                      >
-                        <Skull size={14} />
-                      </button>
-                    </div>
+                      {group.workers.map((w) => {
+                        // Bellows pseudo-workers monitor a PR; they have no claude log
+                        // so the modal would just render an error. Render their cards
+                        // as static info rather than clickable buttons. The phase
+                        // fallback is for older API clients that don't yet send `kind`.
+                        const isBellows = w.kind === 'bellows' || w.phase === 'bellows'
+                        const hasLog = !!w.log_path && !isBellows
+                        const clickable = hasLog && !!onSelectWorker
+                        const canKill = w.status === 'pending' || w.status === 'running'
+                        return (
+                          <li key={w.id} className="flex items-stretch">
+                            <div className="min-w-0 flex-1">
+                              <button
+                                type="button"
+                                disabled={!clickable}
+                                onClick={() => {
+                                  if (clickable) onSelectWorker?.(w)
+                                }}
+                                className={`block w-full px-4 py-3 text-left ${
+                                  clickable
+                                    ? 'cursor-pointer transition-colors hover:bg-slate-800/40 focus:bg-slate-800/40 focus:outline-none focus:ring-1 focus:ring-amber-400/40'
+                                    : 'opacity-80'
+                                }`}
+                                aria-label={
+                                  clickable ? `Open log for ${w.title || w.bead_id}` : undefined
+                                }
+                              >
+                                <div className="flex flex-wrap items-start gap-2">
+                                  <span
+                                    className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass(w.status)}`}
+                                  >
+                                    {w.status}
+                                  </span>
+                                  {w.phase && (
+                                    <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
+                                      {w.phase}
+                                    </span>
+                                  )}
+                                  {w.pr_number ? (
+                                    <span className="rounded-md border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-[10px] text-purple-300">
+                                      PR #{w.pr_number}
+                                    </span>
+                                  ) : null}
+                                  {clickable && (
+                                    <span className="ml-auto text-[10px] uppercase tracking-wide text-slate-500">
+                                      view log
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="mt-1.5 truncate text-sm font-medium text-slate-100">
+                                  {w.title || w.bead_id}
+                                </p>
+                                <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
+                                  <span className="font-mono text-slate-400">{w.bead_id}</span>
+                                  <span aria-hidden>·</span>
+                                  <span>{w.anvil}</span>
+                                  <span aria-hidden>·</span>
+                                  <span title={w.started_at}>{relativeTime(w.started_at)}</span>
+                                </p>
+                              </button>
+                            </div>
+                            {canKill && (
+                              <div className="flex items-start p-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setKillTarget(w)}
+                                  disabled={busy}
+                                  className="rounded-md border border-red-500/40 bg-red-500/10 p-1.5 text-red-300 hover:bg-red-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-50"
+                                  aria-label={`Kill worker ${w.id}`}
+                                  title="Kill worker"
+                                >
+                                  <Skull size={14} />
+                                </button>
+                              </div>
+                            )}
+                          </li>
+                        )
+                      })}
+                    </ul>
                   )}
                 </li>
               )
