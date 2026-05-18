@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { AlertTriangle, ExternalLink, X } from 'lucide-react'
 import type { EscalationDetail, ResolveVerb } from '../api/forge'
 import {
@@ -58,15 +58,70 @@ export interface ResolveNeedsAttentionPanelProps {
   // panel does not own its own modal chrome — the parent decides whether
   // to render it inline or in a dialog.
   onClose?: () => void
-  // onConfirmDestructive, when provided, intercepts clicks on retry/stop
-  // so a parent component can present a confirmation modal before the
-  // verb is dispatched. The parent must call `proceed()` to commit; doing
-  // nothing cancels the action. Non-destructive verbs (clear, clarify,
-  // unclarify) bypass this hook and run immediately.
-  onConfirmDestructive?: (
-    verb: 'retry' | 'stop',
-    proceed: () => void,
-  ) => void
+}
+
+// DESTRUCTIVE_VERBS lists the verbs that prompt for confirmation before
+// dispatching. Retry kicks the pipeline back to Smith and stop kills a
+// running worker, so both are easy to fire by accident from the keyboard.
+const DESTRUCTIVE_VERBS: ReadonlySet<ResolveVerb> = new Set(['retry', 'stop'])
+
+interface ModalProps {
+  open: boolean
+  title: string
+  onConfirm: () => void
+  onCancel: () => void
+  children: ReactNode
+}
+
+// Modal is a small inline confirmation dialog. We keep it co-located
+// because no shared Modal primitive exists yet and the panel is the only
+// caller; if a second use site appears it should be lifted into its own
+// component.
+function Modal({ open, title, onConfirm, onCancel, children }: ModalProps) {
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onCancel])
+
+  if (!open) return null
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="resolve-confirm-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4"
+    >
+      <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900 p-5 shadow-xl">
+        <h2
+          id="resolve-confirm-title"
+          className="text-base font-semibold text-slate-100"
+        >
+          {title}
+        </h2>
+        <div className="mt-2 text-sm text-slate-300">{children}</div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+          >
+            Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 const TYPE_TITLE: Record<EscalationType, string> = {
@@ -137,7 +192,6 @@ export default function ResolveNeedsAttentionPanel({
   escalationId,
   escalationType,
   onClose,
-  onConfirmDestructive,
 }: ResolveNeedsAttentionPanelProps) {
   const entry = useEscalation(escalationId)
   const { fetchEscalation, run, reset } = useResolveActions()
@@ -149,6 +203,13 @@ export default function ResolveNeedsAttentionPanel({
   const [prFormOpen, setPrFormOpen] = useState(false)
   const [prTitle, setPrTitle] = useState('')
   const [prBody, setPrBody] = useState('')
+  // confirmVerb is non-null while the confirmation modal is open for a
+  // destructive verb. Storing the verb (rather than a boolean) lets the
+  // modal title/body adapt to retry vs. stop, and lets the confirm
+  // callback know which action to dispatch.
+  const [confirmVerb, setConfirmVerb] = useState<{ verb: ResolveVerb } | null>(
+    null,
+  )
 
   useEffect(() => {
     if (!escalationId) return
@@ -302,11 +363,8 @@ export default function ResolveNeedsAttentionPanel({
                     })
                   }
                   const onClick = () => {
-                    if (
-                      onConfirmDestructive &&
-                      (verb === 'retry' || verb === 'stop')
-                    ) {
-                      onConfirmDestructive(verb, invoke)
+                    if (DESTRUCTIVE_VERBS.has(verb)) {
+                      setConfirmVerb({ verb })
                       return
                     }
                     invoke()
@@ -402,6 +460,30 @@ export default function ResolveNeedsAttentionPanel({
           </div>
         </>
       )}
+      <Modal
+        open={confirmVerb !== null}
+        title={
+          confirmVerb
+            ? `Confirm: ${VERB_LABEL[confirmVerb.verb]}`
+            : ''
+        }
+        onCancel={() => setConfirmVerb(null)}
+        onConfirm={() => {
+          if (confirmVerb && detail) {
+            const note = auditNote.trim()
+            void run(actionKey, escalationId, {
+              verb: confirmVerb.verb,
+              anvil: detail.anvil,
+              note: note === '' ? undefined : note,
+            })
+          }
+          setConfirmVerb(null)
+        }}
+      >
+        {confirmVerb?.verb === 'stop'
+          ? 'Killing the worker stops the running smith process and prevents re-dispatch until the flag is cleared. Continue?'
+          : 'Retrying clears the needs-attention flag and re-dispatches this bead on the next poll. Continue?'}
+      </Modal>
     </section>
   )
 }
