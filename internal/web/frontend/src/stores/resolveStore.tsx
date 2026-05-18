@@ -3,7 +3,6 @@ import {
   useCallback,
   useContext,
   useMemo,
-  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -17,8 +16,9 @@ import {
 // ResolveStatus is the lifecycle of a single resolve request. Mirrors the
 // states the panel buttons render: idle (no recent attempt), pending
 // (in-flight POST, button disabled + spinner), success (recent OK), error
-// (last attempt failed, surface the message). The reducer below transitions
-// pending→success/error and never back to pending without a reset.
+// (last attempt failed, surface the message). State is updated via direct
+// setEntries calls: calling run on an existing key always sets it to pending
+// first, regardless of its previous status.
 export type ResolveStatus = 'idle' | 'pending' | 'success' | 'error'
 
 // ResolveEntry is the per-key state surfaced to consumers. `verb` records
@@ -85,14 +85,6 @@ const ResolveStoreContext = createContext<ResolveStoreValue | null>(null)
 export function ResolveStoreProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<Record<ResolveKey, ResolveEntry>>({})
 
-  // entriesRef shadows the state for the action helpers so the closures
-  // captured by run/reset don't go stale between renders. The same trick
-  // is used by useUIState's debounced setter; it lets us read the latest
-  // state inside an async callback without re-creating the callback on
-  // every render.
-  const entriesRef = useRef(entries)
-  entriesRef.current = entries
-
   const setEntry = useCallback((key: ResolveKey, entry: ResolveEntry) => {
     setEntries((prev) => ({ ...prev, [key]: entry }))
   }, [])
@@ -145,9 +137,17 @@ export function ResolveStoreProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  // actions is memoised independently of entries so that useResolveActions()
+  // returns a stable object reference across renders — safe to include in
+  // effect dependency lists without triggering spurious re-runs.
+  const actions = useMemo<ResolveActions>(
+    () => ({ run, reset, setEntry }),
+    [run, reset, setEntry],
+  )
+
   const value = useMemo<ResolveStoreValue>(
-    () => ({ entries, actions: { run, reset, setEntry } }),
-    [entries, run, reset, setEntry],
+    () => ({ entries, actions }),
+    [entries, actions],
   )
 
   return (

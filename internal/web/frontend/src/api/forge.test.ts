@@ -103,11 +103,12 @@ describe('fetchEscalation', () => {
       jsonResponse({ error: 'invalid bead id' }, { status: 400 }),
     )
 
-    await expect(fetchEscalation('bad')).rejects.toMatchObject({
+    const rejection = fetchEscalation('bad')
+    await expect(rejection).rejects.toMatchObject({
       status: 400,
       message: 'invalid bead id',
     })
-    await expect(fetchEscalation('bad')).rejects.toBeInstanceOf(ApiError)
+    await expect(rejection).rejects.toBeInstanceOf(ApiError)
   })
 })
 
