@@ -161,6 +161,10 @@ func TestHandleIPC_QueueUnclarify(t *testing.T) {
 
 	t.Run("note is optional", func(t *testing.T) {
 		d, db := newQueueActionDaemon(t, "forge-a")
+		// SetClarificationNeeded(false) requires an existing retry row;
+		// seed one so the test isolates the "note is optional" behaviour.
+		require.NoError(t, db.SetClarificationNeeded("BD-UNCLR-2", "anvil-1", true, "old reason"))
+
 		payload, _ := json.Marshal(ipc.QueueActionPayload{BeadID: "BD-UNCLR-2", AnvilName: "anvil-1"})
 		resp := d.handleIPC(ipc.Command{Type: "queue_unclarify", Payload: payload})
 		assert.Equal(t, "ok", resp.Type)
