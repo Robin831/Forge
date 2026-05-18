@@ -3962,13 +3962,17 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
-		if err := queueactions.Stop(context.Background(), d.queueActionsHandle(), queueactions.Params{
+		terminatedWorkerID, err := queueactions.Stop(context.Background(), d.queueActionsHandle(), queueactions.Params{
 			BeadID:    sp.BeadID,
 			AnvilName: sp.Anvil,
 			Note:      sp.Reason,
-		}); err != nil {
+		})
+		if err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("stop bead", err)})
 			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if terminatedWorkerID != "" {
+			d.logger.Info("killed worker for stopped bead", "worker", terminatedWorkerID, "bead", sp.BeadID, "anvil", sp.Anvil)
 		}
 
 		d.activeBeads.Delete(sp.BeadID)
@@ -3976,7 +3980,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		reqID, _ := d.reqTracker.Track()
 		beadID := sp.BeadID
 		anvilName := sp.Anvil
-		reason := strings.TrimSpace(sp.Reason)
+		reason := queueactions.SanitizeControl(strings.TrimSpace(sp.Reason))
 		if reason == "" {
 			reason = "manually stopped"
 		}
@@ -4070,10 +4074,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// Bead retry: delegate the state mutation + audit event to the
 		// shared queueactions.Retry, then handle the daemon-local async work
 		// (bd shell, crucible cache, poll dispatch) below.
-		if err := queueactions.Retry(context.Background(), d.queueActionsHandle(), queueactions.Params{
+		hadCircuitBreaker, err := queueactions.Retry(context.Background(), d.queueActionsHandle(), queueactions.Params{
 			BeadID:    rp.BeadID,
 			AnvilName: rp.Anvil,
-		}); err != nil {
+		})
+		if err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("retry bead", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
@@ -4105,7 +4110,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				d.crucibleStatuses.Delete(rp.Anvil + "/" + rp.BeadID)
 			}
 			d.pollAndDispatch(d.runCtx, false)
-			data, _ := json.Marshal(map[string]string{"message": "retry reset"})
+			// Preserve the pre-refactor response wording: CLI/web consumers
+			// distinguish "retry state reset" (circuit-breaker cleared) from
+			// "retry reset" (no circuit-breaker, just a manual nudge).
+			retryMsg := "retry reset"
+			if hadCircuitBreaker {
+				retryMsg = "retry state reset"
+			}
+			data, _ := json.Marshal(map[string]string{"message": retryMsg})
 			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
 		}()
 		resp, _ := ipc.NewQueuedResponse(reqID, "retrying bead")

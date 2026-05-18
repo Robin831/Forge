@@ -231,9 +231,12 @@ func TestRetry(t *testing.T) {
 	t.Run("with circuit breaker", func(t *testing.T) {
 		h := newFakeHandle()
 		h.retryRecords["BD-1/munin"] = &state.RetryRecord{BeadID: "BD-1", Anvil: "munin", DispatchFailures: 3}
-		err := Retry(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", Note: "manual retry"})
+		hadCB, err := Retry(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", Note: "manual retry"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if !hadCB {
+			t.Fatalf("expected hasCircuitBreaker=true for a record with DispatchFailures>0")
 		}
 		if len(h.resets) != 1 {
 			t.Fatalf("expected 1 reset, got %d", len(h.resets))
@@ -251,9 +254,12 @@ func TestRetry(t *testing.T) {
 
 	t.Run("without circuit breaker", func(t *testing.T) {
 		h := newFakeHandle()
-		err := Retry(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin"})
+		hadCB, err := Retry(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if hadCB {
+			t.Fatalf("expected hasCircuitBreaker=false when no retry record exists")
 		}
 		if len(h.events) != 1 || h.events[0].Type != state.EventRetryReset {
 			t.Fatalf("expected EventRetryReset, got %+v", h.events)
@@ -267,7 +273,7 @@ func TestRetry(t *testing.T) {
 		h := newFakeHandle()
 		h.retryRecords["BD-1/munin"] = &state.RetryRecord{BeadID: "BD-1", Anvil: "munin", DispatchFailures: 2}
 		h.failReset = true
-		err := Retry(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin"})
+		_, err := Retry(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin"})
 		if err == nil {
 			t.Fatalf("expected error from failed reset")
 		}
@@ -279,7 +285,7 @@ func TestRetry(t *testing.T) {
 	t.Run("forge mismatch rejected", func(t *testing.T) {
 		h := newFakeHandle()
 		h.retryRecords["BD-1/munin"] = &state.RetryRecord{BeadID: "BD-1", Anvil: "munin", DispatchFailures: 1}
-		err := Retry(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", ForgeID: "forge-b"})
+		_, err := Retry(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", ForgeID: "forge-b"})
 		if !errors.Is(err, ErrForgeMismatch) {
 			t.Fatalf("expected ErrForgeMismatch, got %v", err)
 		}
@@ -320,9 +326,12 @@ func TestStop(t *testing.T) {
 	t.Run("kills worker and sets clarification", func(t *testing.T) {
 		h := newFakeHandle()
 		h.workers["BD-1/munin"] = &state.Worker{ID: "w-1", BeadID: "BD-1", Anvil: "munin", PID: 0}
-		err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", Note: "wrong approach"})
+		workerID, err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", Note: "wrong approach"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if workerID != "w-1" {
+			t.Fatalf("expected terminated workerID=%q, got %q", "w-1", workerID)
 		}
 		if len(h.workerStatus) != 1 || h.workerStatus[0].WorkerID != "w-1" || h.workerStatus[0].Status != state.WorkerFailed {
 			t.Fatalf("expected worker w-1 marked failed, got %+v", h.workerStatus)
@@ -340,7 +349,7 @@ func TestStop(t *testing.T) {
 
 	t.Run("falls back to default reason", func(t *testing.T) {
 		h := newFakeHandle()
-		err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin"})
+		_, err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -351,7 +360,7 @@ func TestStop(t *testing.T) {
 
 	t.Run("strips control characters from note", func(t *testing.T) {
 		h := newFakeHandle()
-		err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", Note: "bad\x07stuff\nok"})
+		_, err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", Note: "bad\x07stuff\nok"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -362,9 +371,12 @@ func TestStop(t *testing.T) {
 
 	t.Run("no worker is fine", func(t *testing.T) {
 		h := newFakeHandle()
-		err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", Note: "x"})
+		workerID, err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", Note: "x"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if workerID != "" {
+			t.Fatalf("expected empty workerID when no worker exists, got %q", workerID)
 		}
 		if len(h.workerStatus) != 0 {
 			t.Fatalf("expected no worker status updates, got %+v", h.workerStatus)
@@ -374,13 +386,22 @@ func TestStop(t *testing.T) {
 	t.Run("forge mismatch rejected", func(t *testing.T) {
 		h := newFakeHandle()
 		h.workers["BD-1/munin"] = &state.Worker{ID: "w-1", BeadID: "BD-1", Anvil: "munin"}
-		err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", ForgeID: "forge-b", Note: "x"})
+		_, err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", ForgeID: "forge-b", Note: "x"})
 		if !errors.Is(err, ErrForgeMismatch) {
 			t.Fatalf("expected ErrForgeMismatch, got %v", err)
 		}
 		if len(h.workerStatus) != 0 || len(h.clarifications) != 0 || len(h.events) != 0 {
 			t.Fatalf("no state should have been mutated; got status=%d clarifications=%d events=%d",
 				len(h.workerStatus), len(h.clarifications), len(h.events))
+		}
+	})
+
+	t.Run("unconfigured local forge rejects targeted request", func(t *testing.T) {
+		h := newFakeHandle()
+		h.localForgeID = ""
+		_, err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", ForgeID: "forge-a", Note: "x"})
+		if !errors.Is(err, ErrForgeMismatch) {
+			t.Fatalf("expected ErrForgeMismatch when local forge_id is unconfigured, got %v", err)
 		}
 	})
 }

@@ -103,21 +103,25 @@ func Unclarify(ctx context.Context, q QueueHandle, p Params) error {
 // retry (resetting bellows fix counts) remains in the daemon because it
 // requires lifecycle and bellows references that have no place behind the
 // shared interface.
-func Retry(ctx context.Context, q QueueHandle, p Params) error {
+//
+// The returned bool is true when a circuit-breaker row with DispatchFailures>0
+// was found and cleared; callers can use this to preserve the prior IPC
+// response wording ("retry state reset" vs "retry reset").
+func Retry(ctx context.Context, q QueueHandle, p Params) (bool, error) {
 	if err := validateCommon(p); err != nil {
-		return err
+		return false, err
 	}
 	if err := checkForge(q, p); err != nil {
-		return err
+		return false, err
 	}
 	retry, err := q.GetRetry(p.BeadID, p.AnvilName)
 	if err != nil {
-		return fmt.Errorf("get retry state: %w", err)
+		return false, fmt.Errorf("get retry state: %w", err)
 	}
 	hasCircuitBreaker := retry != nil && retry.DispatchFailures > 0
 	if err := q.ResetRetry(p.BeadID, p.AnvilName); err != nil {
 		if hasCircuitBreaker {
-			return fmt.Errorf("reset retry state: %w", err)
+			return false, fmt.Errorf("reset retry state: %w", err)
 		}
 		// Pre-existing behaviour: a missing retry row is not fatal when there
 		// was no circuit breaker to clear. Swallow and continue so the audit
@@ -128,9 +132,9 @@ func Retry(ctx context.Context, q QueueHandle, p Params) error {
 		base = fmt.Sprintf("Retry reset for bead %s (manual)", p.BeadID)
 	}
 	if err := q.LogEvent(state.EventRetryReset, formatEvent(base, p.Note), p.BeadID, p.AnvilName); err != nil {
-		return fmt.Errorf("log event: %w", err)
+		return false, fmt.Errorf("log event: %w", err)
 	}
-	return nil
+	return hasCircuitBreaker, nil
 }
 
 // Clear drops the needs-attention flags from a bead's retry row without
@@ -156,35 +160,41 @@ func Clear(ctx context.Context, q QueueHandle, p Params) error {
 // clarification (preventing both auto and manual re-dispatch), and writes an
 // audit event. The caller is responsible for any follow-up shell work — most
 // notably `bd update --status=open --assignee=` to release the claim.
-func Stop(ctx context.Context, q QueueHandle, p Params) error {
+//
+// The returned string is the worker ID that was signalled and marked failed,
+// or empty if no active worker was found. Callers can log this to preserve
+// operator visibility into which process was terminated.
+func Stop(ctx context.Context, q QueueHandle, p Params) (string, error) {
 	if err := validateCommon(p); err != nil {
-		return err
+		return "", err
 	}
 	if err := checkForge(q, p); err != nil {
-		return err
+		return "", err
 	}
 	reason := strings.TrimSpace(p.Note)
 	if reason == "" {
 		reason = "manually stopped"
 	}
-	reason = sanitizeControl(reason)
+	reason = SanitizeControl(reason)
 
+	var terminatedWorkerID string
 	if w, err := q.ActiveWorkerByBeadAndAnvil(p.BeadID, p.AnvilName); err == nil && w != nil {
 		if w.PID > 0 {
 			signalWorker(w.PID)
 		}
 		_ = q.UpdateWorkerStatus(w.ID, state.WorkerFailed)
+		terminatedWorkerID = w.ID
 	}
 
 	if err := q.SetClarificationNeeded(p.BeadID, p.AnvilName, true, reason); err != nil {
-		return fmt.Errorf("set clarification: %w", err)
+		return "", fmt.Errorf("set clarification: %w", err)
 	}
 
 	msg := fmt.Sprintf("Bead %s stopped: %s", p.BeadID, reason)
 	if err := q.LogEvent(state.EventBeadStopped, msg, p.BeadID, p.AnvilName); err != nil {
-		return fmt.Errorf("log event: %w", err)
+		return "", fmt.Errorf("log event: %w", err)
 	}
-	return nil
+	return terminatedWorkerID, nil
 }
 
 // validateCommon enforces the shared required fields (BeadID, AnvilName).
@@ -199,15 +209,22 @@ func validateCommon(p Params) error {
 }
 
 // checkForge enforces the multi-forge safety rule: if the caller supplied a
-// forge_id, it must match the local forge. An empty forge_id preserves
+// forge_id, it must match the local forge. An empty caller forge_id preserves
 // historical single-forge behaviour where the daemon implicitly owned every
 // worker/bead in its state DB.
+//
+// When the caller supplies a forge_id but the local daemon has none configured,
+// the request is rejected rather than silently accepted — an unconfigured local
+// id is precisely when cross-forge clobbering is most likely and least visible.
 func checkForge(q QueueHandle, p Params) error {
 	if strings.TrimSpace(p.ForgeID) == "" {
 		return nil
 	}
 	local := strings.TrimSpace(q.LocalForgeID())
-	if local == "" || p.ForgeID == local {
+	if local == "" {
+		return fmt.Errorf("%w: caller=%q local=<unconfigured>", ErrForgeMismatch, p.ForgeID)
+	}
+	if p.ForgeID == local {
 		return nil
 	}
 	return fmt.Errorf("%w: caller=%q local=%q", ErrForgeMismatch, p.ForgeID, local)
@@ -223,10 +240,11 @@ func formatEvent(base, note string) string {
 	return base + " (note: " + note + ")"
 }
 
-// sanitizeControl strips control characters (except newline) from operator
+// SanitizeControl strips control characters (except newline) from operator
 // input that ends up in the bead's clarification_reason and event message.
-// Mirrors the historical Stop handler so log lines remain greppable.
-func sanitizeControl(s string) string {
+// Exported so daemon log sites can apply the same transform and remain
+// consistent with what the audit event records.
+func SanitizeControl(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r < 32 && r != '\n' {
 			return -1
