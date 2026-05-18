@@ -158,7 +158,8 @@ export function useUIState<T>(
 // Exported primarily for tests; production code should not need to call this.
 export function clearAll(prefix: string = KEY_PREFIX): void {
   if (ssr()) return
-  for (const target of [window.sessionStorage, window.localStorage]) {
+  for (const target of [getStore('session'), getStore('local')]) {
+    if (!target) continue
     try {
       const toRemove: string[] = []
       for (let i = 0; i < target.length; i++) {
