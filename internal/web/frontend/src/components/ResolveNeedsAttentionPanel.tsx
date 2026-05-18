@@ -93,6 +93,7 @@ export default function ResolveNeedsAttentionPanel({
 }: ResolveNeedsAttentionPanelProps) {
   const entry = useEscalation(escalationId)
   const { fetchEscalation } = useResolveActions()
+  const auditNoteId = `resolve-audit-note-${escalationId}`
   const [auditNote, setAuditNote] = useState('')
   // prFormOpen toggles the inline title/body fallback form. We default to
   // closed so the panel renders compactly; clicking "Open PR manually"
@@ -194,13 +195,13 @@ export default function ResolveNeedsAttentionPanel({
 
           <div>
             <label
-              htmlFor="resolve-audit-note"
+              htmlFor={auditNoteId}
               className="text-xs font-semibold uppercase tracking-wide text-slate-400"
             >
               Audit note
             </label>
             <textarea
-              id="resolve-audit-note"
+              id={auditNoteId}
               value={auditNote}
               onChange={(e) => setAuditNote(e.target.value)}
               placeholder="Optional note recorded with any resolve action (visible in the event log)."
