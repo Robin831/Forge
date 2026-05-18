@@ -5064,6 +5064,11 @@ func (d *Daemon) handleQueueClarify(cmd ipc.Command) ipc.Response {
 		msg, _ := json.Marshal(map[string]string{"message": "invalid queue_clarify payload"})
 		return ipc.Response{Type: "error", Payload: msg}
 	}
+	if qp.AnvilName != "" {
+		if canonical, _, ok := d.resolveAnvilConfig(qp.AnvilName); ok {
+			qp.AnvilName = canonical
+		}
+	}
 	if err := queueactions.Clarify(context.Background(), d.queueActionsHandle(), queueactions.Params{
 		BeadID:    qp.BeadID,
 		ForgeID:   qp.ForgeID,
@@ -5087,6 +5092,11 @@ func (d *Daemon) handleQueueUnclarify(cmd ipc.Command) ipc.Response {
 	if err := json.Unmarshal(cmd.Payload, &qp); err != nil {
 		msg, _ := json.Marshal(map[string]string{"message": "invalid queue_unclarify payload"})
 		return ipc.Response{Type: "error", Payload: msg}
+	}
+	if qp.AnvilName != "" {
+		if canonical, _, ok := d.resolveAnvilConfig(qp.AnvilName); ok {
+			qp.AnvilName = canonical
+		}
 	}
 	if err := queueactions.Unclarify(context.Background(), d.queueActionsHandle(), queueactions.Params{
 		BeadID:    qp.BeadID,
@@ -5112,6 +5122,11 @@ func (d *Daemon) handleQueueRetry(cmd ipc.Command) ipc.Response {
 	if err := json.Unmarshal(cmd.Payload, &qp); err != nil {
 		msg, _ := json.Marshal(map[string]string{"message": "invalid queue_retry payload"})
 		return ipc.Response{Type: "error", Payload: msg}
+	}
+	if qp.AnvilName != "" {
+		if canonical, _, ok := d.resolveAnvilConfig(qp.AnvilName); ok {
+			qp.AnvilName = canonical
+		}
 	}
 	hadCircuitBreaker, err := queueactions.Retry(context.Background(), d.queueActionsHandle(), queueactions.Params{
 		BeadID:    qp.BeadID,
@@ -5141,6 +5156,11 @@ func (d *Daemon) handleQueueClear(cmd ipc.Command) ipc.Response {
 		msg, _ := json.Marshal(map[string]string{"message": "invalid queue_clear payload"})
 		return ipc.Response{Type: "error", Payload: msg}
 	}
+	if qp.AnvilName != "" {
+		if canonical, _, ok := d.resolveAnvilConfig(qp.AnvilName); ok {
+			qp.AnvilName = canonical
+		}
+	}
 	if err := queueactions.Clear(context.Background(), d.queueActionsHandle(), queueactions.Params{
 		BeadID:    qp.BeadID,
 		ForgeID:   qp.ForgeID,
@@ -5166,6 +5186,11 @@ func (d *Daemon) handleQueueStop(cmd ipc.Command) ipc.Response {
 	if err := json.Unmarshal(cmd.Payload, &qp); err != nil {
 		msg, _ := json.Marshal(map[string]string{"message": "invalid queue_stop payload"})
 		return ipc.Response{Type: "error", Payload: msg}
+	}
+	if qp.AnvilName != "" {
+		if canonical, _, ok := d.resolveAnvilConfig(qp.AnvilName); ok {
+			qp.AnvilName = canonical
+		}
 	}
 	terminatedWorkerID, err := queueactions.Stop(context.Background(), d.queueActionsHandle(), queueactions.Params{
 		BeadID:    qp.BeadID,
