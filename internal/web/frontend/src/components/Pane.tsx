@@ -42,6 +42,9 @@ export default function Pane({
   children,
 }: PaneProps) {
   const isCollapsed = collapsible && !expanded
+  // When `collapsible` the title row is rendered inside a <button>, so we
+  // use a <span> there — <h2> inside <button> is invalid HTML per the spec.
+  const TitleEl = collapsible ? 'span' : 'h2'
   const titleRow = (
     <div className="flex items-center gap-2">
       {collapsible &&
@@ -51,7 +54,7 @@ export default function Pane({
           <ChevronRight size={14} className="text-slate-400" aria-hidden />
         ))}
       {icon}
-      <h2 className="text-sm font-semibold text-slate-200">{title}</h2>
+      <TitleEl className="text-sm font-semibold text-slate-200">{title}</TitleEl>
       {typeof count === 'number' && (
         <span className="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-300">
           {count}

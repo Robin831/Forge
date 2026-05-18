@@ -97,6 +97,9 @@ export function sortPRs(items: PRItem[], sortKey: PRSortKey): PRItem[] {
         (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' }),
       )
       return copy
+    default:
+      // Stale or corrupted storage value — return unsorted as a safe fallback.
+      return copy
   }
 }
 
@@ -109,7 +112,7 @@ export function filterPRs(items: PRItem[], filter: string): PRItem[] {
     if (pr.anvil.toLowerCase().includes(q)) return true
     if (pr.branch && pr.branch.toLowerCase().includes(q)) return true
     if (pr.author && pr.author.toLowerCase().includes(q)) return true
-    if (String(pr.number).includes(q)) return true
+    if (String(pr.number).includes(q) || `#${pr.number}`.includes(q)) return true
     return false
   })
 }
