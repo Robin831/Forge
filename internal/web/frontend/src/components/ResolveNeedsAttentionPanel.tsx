@@ -416,14 +416,17 @@ export default function ResolveNeedsAttentionPanel({
         onCancel={() => setConfirmVerb(null)}
         onConfirm={() => {
           if (confirmVerb && detail) {
+            const verb = confirmVerb.verb
             const note = auditNote.trim()
+            // Close the modal before dispatching so rapid clicks cannot
+            // fire the action more than once before React re-renders.
+            setConfirmVerb(null)
             void run(actionKey, escalationId, {
-              verb: confirmVerb.verb,
+              verb,
               anvil: detail.anvil,
               note: note === '' ? undefined : note,
             })
           }
-          setConfirmVerb(null)
         }}
       />
     </section>
