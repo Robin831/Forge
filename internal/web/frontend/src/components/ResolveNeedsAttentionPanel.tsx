@@ -140,7 +140,7 @@ export default function ResolveNeedsAttentionPanel({
   onConfirmDestructive,
 }: ResolveNeedsAttentionPanelProps) {
   const entry = useEscalation(escalationId)
-  const { fetchEscalation, run } = useResolveActions()
+  const { fetchEscalation, run, reset } = useResolveActions()
   const auditNoteId = `resolve-audit-note-${escalationId}`
   const [auditNote, setAuditNote] = useState('')
   // prFormOpen toggles the inline title/body fallback form. We default to
@@ -178,6 +178,7 @@ export default function ResolveNeedsAttentionPanel({
   const actionPending = actionEntry.status === 'pending'
   const actionError = actionEntry.status === 'error' ? actionEntry.error : undefined
   const actionsDisabled = actionPending || actionEntry.status === 'error'
+  const anvilMissing = detail != null && !detail.anvil
 
   return (
     <section
@@ -277,53 +278,78 @@ export default function ResolveNeedsAttentionPanel({
             <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
               Resolve actions
             </h3>
-            <div
-              role="group"
-              aria-label="Resolve actions"
-              className="mt-2 flex flex-wrap gap-2"
-            >
-              {verbs.map((verb) => {
-                const invoke = () => {
-                  const note = auditNote.trim()
-                  void run(actionKey, escalationId, {
-                    verb,
-                    anvil: detail.anvil,
-                    note: note === '' ? undefined : note,
-                  })
-                }
-                const onClick = () => {
-                  if (
-                    onConfirmDestructive &&
-                    (verb === 'retry' || verb === 'stop')
-                  ) {
-                    onConfirmDestructive(verb, invoke)
-                    return
-                  }
-                  invoke()
-                }
-                const isActive =
-                  actionPending && actionEntry.verb === verb
-                return (
-                  <button
-                    key={verb}
-                    type="button"
-                    data-verb={verb}
-                    onClick={onClick}
-                    disabled={actionsDisabled}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-100 hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isActive ? `${VERB_LABEL[verb]}…` : VERB_LABEL[verb]}
-                  </button>
-                )
-              })}
-            </div>
-            {actionError && (
-              <p
-                role="alert"
-                className="mt-2 rounded-md border border-red-700/40 bg-red-900/20 px-3 py-2 text-sm text-red-200"
-              >
-                {actionError}
+            {anvilMissing ? (
+              <p className="mt-2 rounded-md border border-amber-700/40 bg-amber-900/20 px-3 py-2 text-xs text-amber-300">
+                Anvil is ambiguous — retry the fetch with an explicit{' '}
+                <code className="rounded bg-slate-800 px-1 font-mono">
+                  ?anvil=
+                </code>{' '}
+                parameter before resolving.
               </p>
+            ) : (
+              <div
+                role="group"
+                aria-label="Resolve actions"
+                className="mt-2 flex flex-wrap gap-2"
+              >
+                {verbs.map((verb) => {
+                  const invoke = () => {
+                    const note = auditNote.trim()
+                    void run(actionKey, escalationId, {
+                      verb,
+                      anvil: detail.anvil,
+                      note: note === '' ? undefined : note,
+                    })
+                  }
+                  const onClick = () => {
+                    if (
+                      onConfirmDestructive &&
+                      (verb === 'retry' || verb === 'stop')
+                    ) {
+                      onConfirmDestructive(verb, invoke)
+                      return
+                    }
+                    invoke()
+                  }
+                  const isActive =
+                    actionPending && actionEntry.verb === verb
+                  const isVerbDisabled =
+                    actionsDisabled ||
+                    (verb === 'clarify' && auditNote.trim() === '')
+                  return (
+                    <button
+                      key={verb}
+                      type="button"
+                      data-verb={verb}
+                      onClick={onClick}
+                      disabled={isVerbDisabled}
+                      title={
+                        verb === 'clarify' && auditNote.trim() === ''
+                          ? 'Enter an audit note before marking as needs clarification'
+                          : undefined
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-100 hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isActive ? `${VERB_LABEL[verb]}…` : VERB_LABEL[verb]}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {actionError && (
+              <div
+                role="alert"
+                className="mt-2 flex items-start gap-2 rounded-md border border-red-700/40 bg-red-900/20 px-3 py-2 text-sm text-red-200"
+              >
+                <span className="flex-1">{actionError}</span>
+                <button
+                  type="button"
+                  onClick={() => reset(actionKey)}
+                  className="shrink-0 underline hover:no-underline focus:outline-none focus-visible:ring-1 focus-visible:ring-red-400"
+                >
+                  Dismiss
+                </button>
+              </div>
             )}
           </div>
 
