@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ExternalLink, X } from 'lucide-react'
 import type { EscalationDetail, ResolveVerb } from '../api/forge'
+import ConfirmModal from './ConfirmModal'
 import {
   resolveKey,
   useEscalation,
@@ -63,66 +64,8 @@ export interface ResolveNeedsAttentionPanelProps {
 // DESTRUCTIVE_VERBS lists the verbs that prompt for confirmation before
 // dispatching. Retry kicks the pipeline back to Smith and stop kills a
 // running worker, so both are easy to fire by accident from the keyboard.
-const DESTRUCTIVE_VERBS: ReadonlySet<ResolveVerb> = new Set(['retry', 'stop'])
+const DESTRUCTIVE_VERBS: ReadonlySet<ResolveVerb> = new Set<ResolveVerb>(['retry', 'stop'])
 
-interface ModalProps {
-  open: boolean
-  title: string
-  onConfirm: () => void
-  onCancel: () => void
-  children: ReactNode
-}
-
-// Modal is a small inline confirmation dialog. We keep it co-located
-// because no shared Modal primitive exists yet and the panel is the only
-// caller; if a second use site appears it should be lifted into its own
-// component.
-function Modal({ open, title, onConfirm, onCancel, children }: ModalProps) {
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onCancel])
-
-  if (!open) return null
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="resolve-confirm-title"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4"
-    >
-      <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900 p-5 shadow-xl">
-        <h2
-          id="resolve-confirm-title"
-          className="text-base font-semibold text-slate-100"
-        >
-          {title}
-        </h2>
-        <div className="mt-2 text-sm text-slate-300">{children}</div>
-        <div className="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
-          >
-            Confirm
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 const TYPE_TITLE: Record<EscalationType, string> = {
   dispatch_failed: 'Dispatch failed — needs attention',
@@ -460,13 +403,16 @@ export default function ResolveNeedsAttentionPanel({
           </div>
         </>
       )}
-      <Modal
+      <ConfirmModal
         open={confirmVerb !== null}
-        title={
-          confirmVerb
-            ? `Confirm: ${VERB_LABEL[confirmVerb.verb]}`
-            : ''
+        title={confirmVerb ? `Confirm: ${VERB_LABEL[confirmVerb.verb]}` : ''}
+        message={
+          confirmVerb?.verb === 'stop'
+            ? 'Killing the worker stops the running smith process and prevents re-dispatch until the flag is cleared. Continue?'
+            : 'Retrying clears the needs-attention flag and re-dispatches this bead on the next poll. Continue?'
         }
+        tone="danger"
+        busy={actionPending}
         onCancel={() => setConfirmVerb(null)}
         onConfirm={() => {
           if (confirmVerb && detail) {
@@ -479,11 +425,7 @@ export default function ResolveNeedsAttentionPanel({
           }
           setConfirmVerb(null)
         }}
-      >
-        {confirmVerb?.verb === 'stop'
-          ? 'Killing the worker stops the running smith process and prevents re-dispatch until the flag is cleared. Continue?'
-          : 'Retrying clears the needs-attention flag and re-dispatches this bead on the next poll. Continue?'}
-      </Modal>
+      />
     </section>
   )
 }
