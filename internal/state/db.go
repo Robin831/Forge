@@ -1516,6 +1516,10 @@ const (
 	EventSchematicSkipped     EventType = "schematic_skipped"
 	EventDispatchFailed       EventType = "dispatch_failed"
 	EventDispatchCircuitBreak EventType = "dispatch_circuit_break"
+	// EventDispatchBlockedStrandedBranch fires when the pre-dispatch remote
+	// check finds origin/forge/<bead-id> with commits not reachable from the
+	// base ref and no PR — a prior worker pushed but never opened a PR.
+	EventDispatchBlockedStrandedBranch EventType = "dispatch_blocked_stranded_branch"
 	EventRateLimited          EventType = "rate_limited"
 	EventCostLimitHit         EventType = "cost_limit_hit"
 	EventSchematicSubBead     EventType = "schematic_sub_bead"

@@ -2520,6 +2520,17 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	}
 
 normalPipeline:
+	// Pre-dispatch remote-branch check. If origin already carries unmerged
+	// commits for forge/<bead-id> from a prior worker that escalated between
+	// `git push` and `gh pr create`, dispatching a fresh Smith produces a
+	// parallel implementation that cannot be reconciled without destroying
+	// one side's work. Catch the stranded state HERE so the dispatch never
+	// burns Smith time on it. A merged stale branch is cleaned up
+	// transparently and dispatch proceeds normally.
+	if !d.preDispatchRemoteBranchCheck(ctx, bead, anvilCfg.Path) {
+		return
+	}
+
 	// Apply smith timeout.
 	// IMPORTANT: derive pipelineCtx from context.Background(), NOT from the
 	// daemon's ctx. This ensures that a graceful shutdown (SIGINT/SIGTERM)
@@ -2994,6 +3005,95 @@ func cleanGitEnv() []string {
 		}
 	}
 	return out
+}
+
+// preDispatchRemoteBranchCheck probes origin for the bead's forge branch
+// before the pipeline runs. It returns true when dispatch should proceed and
+// false when it must abort (the bead is either being handed off to bellows
+// because an open PR already covers the branch, or it has been marked
+// needs-attention because the branch carries stranded work from a prior
+// worker).
+//
+// The three reachable outcomes:
+//
+//   - Absent: no branch on origin → proceed normally.
+//   - Merged: branch on origin but fully reachable from the base ref → delete
+//     the stale branch and proceed normally.
+//   - Stranded: branch on origin with commits not reachable from the base ref
+//     → cross-check for an existing PR. If a PR exists, log and let bellows
+//     own it (return false to skip the pipeline). Otherwise mark needs_human
+//     so the operator can decide between accept / reset / merge.
+//
+// An ls-remote / fetch error is conservative: dispatch proceeds so we don't
+// stall the queue on a transient network blip. If the branch really is
+// stranded, the prior end-of-pipeline Smith escalation still fires.
+func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.Bead, anvilPath string) bool {
+	branch := worktree.BranchName(bead.ID)
+	stateResult, info, err := worktree.CheckRemoteBranchState(ctx, anvilPath, branch, bead.EpicBranch)
+	if err != nil {
+		d.logger.Warn("pre-dispatch remote branch check failed; proceeding with dispatch",
+			"bead", bead.ID, "branch", branch, "error", err)
+		return true
+	}
+
+	switch stateResult {
+	case worktree.RemoteBranchAbsent:
+		return true
+
+	case worktree.RemoteBranchMerged:
+		d.logger.Info("pre-dispatch: deleting stale merged forge branch on origin",
+			"bead", bead.ID, "branch", branch, "sha", info.SHA, "base", info.BaseRef)
+		if delErr := worktree.DeleteRemoteBranch(ctx, anvilPath, branch); delErr != nil {
+			// Non-fatal: a concurrent process may have deleted it, or the
+			// remote may have temporarily refused the push. The next attempt
+			// to push (during the pipeline) will surface a clearer error.
+			d.logger.Warn("pre-dispatch: failed to delete stale merged branch; continuing dispatch",
+				"bead", bead.ID, "branch", branch, "error", delErr)
+		}
+		return true
+
+	case worktree.RemoteBranchStranded:
+		// If a PR already exists for this branch, bellows owns it — never
+		// duplicate a worker on top of a tracked PR. This may happen when a
+		// prior dispatch created the PR but the daemon crashed before
+		// recording it in state.db.
+		if pr, prErr := d.vcsForAnvil(bead.Anvil).GetPRByHeadBranch(ctx, anvilPath, branch); prErr == nil && pr != nil {
+			d.logger.Info("pre-dispatch: branch has an existing PR; deferring to bellows",
+				"bead", bead.ID, "branch", branch, "pr", pr.Number)
+			_ = d.db.LogEvent(state.EventPRAlreadyExists,
+				fmt.Sprintf("Pre-dispatch: %s already has open PR #%d; dispatch skipped (bellows takes over)",
+					branch, pr.Number),
+				bead.ID, bead.Anvil)
+			d.registerExistingPRByBranch(ctx, bead.Anvil, anvilPath, bead.ID, branch, bead.EpicBranch)
+			return false
+		}
+
+		// No PR — the prior worker pushed but never opened one. Surface as
+		// needs-attention with a message modelled on the Smith escalation
+		// from the 2026-05-18 Fhi.Metadata-orjp2 incident so the operator's
+		// mental model is consistent regardless of when the check fires.
+		shortSHA := info.SHA
+		if len(shortSHA) > 12 {
+			shortSHA = shortSHA[:12]
+		}
+		reason := fmt.Sprintf(
+			"origin/%s already has commits from a prior worker that were never opened as a PR. "+
+				"A fresh Smith would produce a parallel implementation and a non-fast-forward push. "+
+				"Resolving this requires a human decision (accept the prior work and open a PR, "+
+				"reset the remote branch, or merge with new work). SHA: %s",
+			branch, shortSHA,
+		)
+		d.logger.Warn("pre-dispatch: stranded forge branch on origin — escalating to needs_human",
+			"bead", bead.ID, "branch", branch, "sha", info.SHA, "base", info.BaseRef)
+		_ = d.db.LogEvent(state.EventDispatchBlockedStrandedBranch, reason, bead.ID, bead.Anvil)
+		if markErr := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); markErr != nil {
+			d.logger.Error("pre-dispatch: failed to mark bead as needs_human", "bead", bead.ID, "error", markErr)
+		}
+		d.recordDispatchFailure(bead.ID, bead.Anvil, reason, true)
+		return false
+	}
+
+	return true
 }
 
 // forgeBranchAheadOfMain checks whether the origin remote has a forge branch
