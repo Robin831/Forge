@@ -33,16 +33,13 @@ import (
 
 	"github.com/Robin831/Forge/internal/adventurer"
 	"github.com/Robin831/Forge/internal/bellows"
-	"github.com/Robin831/Forge/internal/quench"
+	"github.com/Robin831/Forge/internal/burnish"
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
-	"github.com/Robin831/Forge/internal/questgiver"
 	"github.com/Robin831/Forge/internal/executil"
-	"github.com/Robin831/Forge/internal/ingot"
-	"github.com/Robin831/Forge/internal/vcs"
-	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/hotreload"
+	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
 	"github.com/Robin831/Forge/internal/notify"
@@ -50,20 +47,23 @@ import (
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/quench"
+	"github.com/Robin831/Forge/internal/questgiver"
+	"github.com/Robin831/Forge/internal/queueactions"
 	"github.com/Robin831/Forge/internal/rebase"
-	"github.com/Robin831/Forge/internal/burnish"
-	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/smelter"
+	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
+	"github.com/Robin831/Forge/internal/vcs"
+	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/vulncheck"
 	"github.com/Robin831/Forge/internal/warden"
 	"github.com/Robin831/Forge/internal/wicket"
 	"github.com/Robin831/Forge/internal/worker"
 	"github.com/Robin831/Forge/internal/worktree"
-
 )
 
 const (
@@ -3889,21 +3889,15 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "invalid set_clarification payload"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if cp.BeadID == "" || cp.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+		if err := queueactions.Clarify(context.Background(), d.queueActionsHandle(), queueactions.Params{
+			BeadID:    cp.BeadID,
+			AnvilName: cp.Anvil,
+			Note:      cp.Reason,
+		}); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("set clarification", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		reason := strings.TrimSpace(cp.Reason)
-		if reason == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "reason is required"})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		if err := d.db.SetClarificationNeeded(cp.BeadID, cp.Anvil, true, reason); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to set clarification: %v", err)})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		_ = d.db.LogEvent(state.EventClarificationNeeded, fmt.Sprintf("Bead %s needs clarification: %s", cp.BeadID, reason), cp.BeadID, cp.Anvil)
-		d.logger.Info("bead marked as clarification_needed", "bead", cp.BeadID, "anvil", cp.Anvil, "reason", reason)
+		d.logger.Info("bead marked as clarification_needed", "bead", cp.BeadID, "anvil", cp.Anvil, "reason", strings.TrimSpace(cp.Reason))
 		data, _ := json.Marshal(map[string]string{"message": "clarification_needed set"})
 		return ipc.Response{Type: "ok", Payload: data}
 
@@ -4103,17 +4097,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		reason := strings.TrimSpace(sp.Reason)
-		if reason == "" {
-			reason = "manually stopped"
-		}
-		reason = strings.Map(func(r rune) rune {
-			if r < 32 && r != '\n' {
-				return -1
-			}
-			return r
-		}, reason)
-
 		anvilCfg, ok := d.cfg.Load().Anvils[sp.Anvil]
 		if !ok {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", sp.Anvil)})
@@ -4124,43 +4107,41 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
-		// Kill worker and update DB synchronously — these are fast local ops.
-		if w, err := d.db.ActiveWorkerByBeadAndAnvil(sp.BeadID, sp.Anvil); err == nil && w != nil {
-			if w.PID > 0 {
-				if proc, err := os.FindProcess(w.PID); err == nil {
-					if runtime.GOOS == "windows" {
-						_ = proc.Kill()
-					} else {
-						_ = proc.Signal(syscall.SIGINT)
-					}
-				}
-			}
-			_ = d.db.UpdateWorkerStatus(w.ID, state.WorkerFailed)
-			d.logger.Info("killed worker for stopped bead", "worker", w.ID, "bead", sp.BeadID)
-		}
-
-		if err := d.db.SetClarificationNeeded(sp.BeadID, sp.Anvil, true, reason); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to set clarification: %v", err)})
+		terminatedWorkerID, err := queueactions.Stop(context.Background(), d.queueActionsHandle(), queueactions.Params{
+			BeadID:    sp.BeadID,
+			AnvilName: sp.Anvil,
+			Note:      sp.Reason,
+		})
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("stop bead", err)})
 			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if terminatedWorkerID != "" {
+			d.logger.Info("killed worker for stopped bead", "worker", terminatedWorkerID, "bead", sp.BeadID, "anvil", sp.Anvil)
 		}
 
 		d.activeBeads.Delete(sp.BeadID)
 
 		reqID, _ := d.reqTracker.Track()
+		beadID := sp.BeadID
+		anvilName := sp.Anvil
+		reason := queueactions.SanitizeControl(strings.TrimSpace(sp.Reason))
+		if reason == "" {
+			reason = "manually stopped"
+		}
 		go func() {
 			releaseCtx, releaseCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 			defer releaseCancel()
-			releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", sp.BeadID, "--status=open", "--assignee=", "--json"))
+			releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", beadID, "--status=open", "--assignee=", "--json"))
 			releaseCmd.Dir = anvilCfg.Path
 			if out, err := releaseCmd.CombinedOutput(); err != nil {
-				d.logger.Warn("bd update failed when releasing stopped bead", "bead", sp.BeadID, "error", err, "output", strings.TrimSpace(string(out)))
+				d.logger.Warn("bd update failed when releasing stopped bead", "bead", beadID, "error", err, "output", strings.TrimSpace(string(out)))
 				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead stopped but bd release failed: %v", err)})
 				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
 				return
 			}
-			_ = d.db.LogEvent(state.EventBeadStopped, fmt.Sprintf("Bead %s stopped: %s", sp.BeadID, reason), sp.BeadID, sp.Anvil)
-			d.logger.Info("bead stopped", "bead", sp.BeadID, "anvil", sp.Anvil, "reason", reason)
-			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s stopped", sp.BeadID)})
+			d.logger.Info("bead stopped", "bead", beadID, "anvil", anvilName, "reason", reason)
+			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s stopped", beadID)})
 			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
 		}()
 		resp, _ := ipc.NewQueuedResponse(reqID, "stopping bead")
@@ -4172,15 +4153,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "invalid clear_clarification payload"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if cp.BeadID == "" || cp.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+		if err := queueactions.Unclarify(context.Background(), d.queueActionsHandle(), queueactions.Params{
+			BeadID:    cp.BeadID,
+			AnvilName: cp.Anvil,
+			Note:      cp.Reason,
+		}); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("clear clarification", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if err := d.db.SetClarificationNeeded(cp.BeadID, cp.Anvil, false, ""); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to clear clarification: %v", err)})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		_ = d.db.LogEvent(state.EventClarificationCleared, fmt.Sprintf("Clarification cleared for bead %s", cp.BeadID), cp.BeadID, cp.Anvil)
 		d.logger.Info("clarification_needed cleared", "bead", cp.BeadID, "anvil", cp.Anvil)
 		data, _ := json.Marshal(map[string]string{"message": "clarification_needed cleared"})
 		return ipc.Response{Type: "ok", Payload: data}
@@ -4236,27 +4216,18 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			data, _ := json.Marshal(map[string]string{"message": "PR fix counts reset, status set to open"})
 			return ipc.Response{Type: "ok", Payload: data}
 		}
-		// Bead retry: validate DB state synchronously, then shell out async.
-		retry, err := d.db.GetRetry(rp.BeadID, rp.Anvil)
+		// Bead retry: delegate the state mutation + audit event to the
+		// shared queueactions.Retry, then handle the daemon-local async work
+		// (bd shell, crucible cache, poll dispatch) below.
+		hadCircuitBreaker, err := queueactions.Retry(context.Background(), d.queueActionsHandle(), queueactions.Params{
+			BeadID:    rp.BeadID,
+			AnvilName: rp.Anvil,
+		})
 		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to get retry state: %v", err)})
+			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("retry bead", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		hasCircuitBreaker := retry != nil && retry.DispatchFailures > 0
-		if hasCircuitBreaker {
-			if err := d.db.ResetRetry(rp.BeadID, rp.Anvil); err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset retry state: %v", err)})
-				return ipc.Response{Type: "error", Payload: msg}
-			}
-			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Retry state reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
-			d.logger.Info("retry state reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
-		} else {
-			if err := d.db.ResetRetry(rp.BeadID, rp.Anvil); err != nil {
-				d.logger.Warn("ResetRetry failed (might not have a retry record)", "bead", rp.BeadID, "anvil", rp.Anvil, "error", err)
-			}
-			_ = d.db.LogEvent(state.EventRetryReset, fmt.Sprintf("Retry reset for bead %s (manual)", rp.BeadID), rp.BeadID, rp.Anvil)
-			d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
-		}
+		d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
 		reqID, _ := d.reqTracker.Track()
 		go func() {
 			bdUpdateOK := false
@@ -4284,11 +4255,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				d.crucibleStatuses.Delete(rp.Anvil + "/" + rp.BeadID)
 			}
 			d.pollAndDispatch(d.runCtx, false)
-			msg := "retry reset"
-			if hasCircuitBreaker {
-				msg = "retry state reset"
+			// Preserve the pre-refactor response wording: CLI/web consumers
+			// distinguish "retry state reset" (circuit-breaker cleared) from
+			// "retry reset" (no circuit-breaker, just a manual nudge).
+			retryMsg := "retry reset"
+			if hadCircuitBreaker {
+				retryMsg = "retry state reset"
 			}
-			data, _ := json.Marshal(map[string]string{"message": msg})
+			data, _ := json.Marshal(map[string]string{"message": retryMsg})
 			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
 		}()
 		resp, _ := ipc.NewQueuedResponse(reqID, "retrying bead")
@@ -4300,20 +4274,18 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": "invalid clear_bead payload"})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		if cp.BeadID == "" || cp.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
 		if cp.Anvil != "" {
 			if canonical, _, ok := d.resolveAnvilConfig(cp.Anvil); ok {
 				cp.Anvil = canonical
 			}
 		}
-		if err := d.db.ClearNeedsAttention(cp.BeadID, cp.Anvil); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to clear needs-attention flags: %v", err)})
+		if err := queueactions.Clear(context.Background(), d.queueActionsHandle(), queueactions.Params{
+			BeadID:    cp.BeadID,
+			AnvilName: cp.Anvil,
+		}); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("clear needs-attention flags", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		_ = d.db.LogEvent(state.EventRetryCleared, fmt.Sprintf("Needs-attention flags cleared for bead %s (manual)", cp.BeadID), cp.BeadID, cp.Anvil)
 		d.logger.Info("needs-attention flags cleared", "bead", cp.BeadID, "anvil", cp.Anvil)
 		data, _ := json.Marshal(map[string]string{"message": "needs-attention flags cleared"})
 		return ipc.Response{Type: "ok", Payload: data}

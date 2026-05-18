@@ -1,0 +1,2 @@
+category: Changed
+- **Queue resolution actions now go through a shared package** - The IPC handlers for `forge queue clarify|unclarify|retry|clear|stop` delegate to a new `internal/queueactions` package that enforces multi-forge safety (rejecting requests whose `forge_id` does not match the local Forge) and always writes an audit event to the `events` table. As a side effect, `bead_stopped` events are now logged synchronously when Stop is invoked rather than only on successful `bd update` release. (Forge-nh12)
