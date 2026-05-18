@@ -86,14 +86,18 @@ func CheckRemoteBranchState(ctx context.Context, anvilPath, branch, baseBranch s
 	}
 	info.SHA = sha
 
-	// Fetch the branch so the local remote-tracking ref reflects the SHA we
-	// just observed via ls-remote. Without this, a stale local origin/<branch>
-	// (or no local ref at all) would make the ancestry check below incorrect.
+	// Fetch the forge branch so the local remote-tracking ref reflects the SHA
+	// we just observed via ls-remote. Without this, a stale local
+	// origin/<branch> (or no local ref at all) would make the ancestry check
+	// below incorrect.
 	if err := gitCmd(ctx, anvilPath, "fetch", "origin", "--", branch); err != nil {
 		return RemoteBranchAbsent, info, fmt.Errorf("fetching origin %s: %w", branch, err)
 	}
 
-	baseRef, err := resolveBaseRefWithOverride(ctx, anvilPath, baseBranch)
+	// Fetch and resolve the base ref so the local tracking ref is current
+	// before the ancestry test. A stale origin/<base> can misclassify a
+	// recently-merged branch as stranded (or vice-versa).
+	baseRef, err := fetchAndResolveBaseRef(ctx, anvilPath, baseBranch)
 	if err != nil {
 		return RemoteBranchAbsent, info, fmt.Errorf("resolving base ref: %w", err)
 	}
@@ -107,16 +111,30 @@ func CheckRemoteBranchState(ctx context.Context, anvilPath, branch, baseBranch s
 	return RemoteBranchStranded, info, nil
 }
 
-// resolveBaseRefWithOverride returns "origin/<baseBranch>" when baseBranch is
-// non-empty and present on origin, falling back to resolveBaseRef (origin/main
-// or origin/master) otherwise.
-func resolveBaseRefWithOverride(ctx context.Context, anvilPath, baseBranch string) (string, error) {
+// fetchAndResolveBaseRef fetches the base ref from origin so the local
+// tracking ref is current, then returns its full refname ("origin/<name>").
+// If baseBranch is non-empty it is fetched from origin and returned when the
+// tracking ref is confirmed locally; otherwise both "main" and "master" are
+// fetched (non-fatally, since the remote may have only one) and whichever is
+// present locally is returned. Fetch errors are treated as non-fatal so a
+// transient network blip does not block the ancestry check — the caller
+// proceeds with whatever local state is available.
+func fetchAndResolveBaseRef(ctx context.Context, anvilPath, baseBranch string) (string, error) {
 	if baseBranch != "" {
-		candidate := "origin/" + baseBranch
-		if err := gitCmd(ctx, anvilPath, "rev-parse", "--verify", candidate); err == nil {
-			return candidate, nil
+		// Fetch the override ref; if the fetch succeeds and the tracking ref
+		// is now present locally, use it. On failure fall through to defaults
+		// so a transient error does not silently ignore the override.
+		if err := gitCmd(ctx, anvilPath, "fetch", "origin", "--", baseBranch); err == nil {
+			candidate := "origin/" + baseBranch
+			if verr := gitCmd(ctx, anvilPath, "rev-parse", "--verify", candidate); verr == nil {
+				return candidate, nil
+			}
 		}
 	}
+	// Non-fatally fetch both default-branch candidates; the remote may have
+	// only one of them.
+	_ = gitCmd(ctx, anvilPath, "fetch", "origin", "--", "main")
+	_ = gitCmd(ctx, anvilPath, "fetch", "origin", "--", "master")
 	return resolveBaseRef(ctx, anvilPath)
 }
 

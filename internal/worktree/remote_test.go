@@ -77,9 +77,8 @@ func TestCheckRemoteBranchState_Merged(t *testing.T) {
 	anvil := initRemoteAndClone(t)
 	branch := BranchName("Forge-merged")
 
-	// Create a branch pointing at an ancestor of main: HEAD~0 is main's tip,
-	// which is reachable from itself. Use the initial commit's SHA so the
-	// branch is unambiguously merged.
+	// Create a branch at main's current tip and push it. The tip commit is
+	// reachable from main (it IS the tip), so the branch is classified as merged.
 	runGit(t, anvil, "checkout", "-b", branch)
 	runGit(t, anvil, "push", "origin", branch)
 	runGit(t, anvil, "checkout", "main")
@@ -90,6 +89,60 @@ func TestCheckRemoteBranchState_Merged(t *testing.T) {
 	}
 	if state != RemoteBranchMerged {
 		t.Fatalf("state = %s; want merged", state)
+	}
+}
+
+// TestCheckRemoteBranchState_MergedViaBaseBranch exercises the baseBranch
+// override: a crucible child whose commits have been merged into the epic
+// branch (but NOT into main) should be classified as merged when baseBranch
+// is set to the epic branch, and as stranded when baseBranch is "".
+func TestCheckRemoteBranchState_MergedViaBaseBranch(t *testing.T) {
+	anvil := initRemoteAndClone(t)
+
+	epicBranch := "feature/epic-test"
+	forgeBranch := BranchName("Forge-child-epic")
+
+	// Build epic branch with one extra commit, then create a forge child off it.
+	runGit(t, anvil, "checkout", "-b", epicBranch)
+	if err := os.WriteFile(filepath.Join(anvil, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+		t.Fatalf("write epic.txt: %v", err)
+	}
+	runGit(t, anvil, "add", "epic.txt")
+	runGit(t, anvil, "commit", "-m", "epic work")
+	runGit(t, anvil, "push", "origin", epicBranch)
+
+	runGit(t, anvil, "checkout", "-b", forgeBranch)
+	if err := os.WriteFile(filepath.Join(anvil, "child.txt"), []byte("child\n"), 0o644); err != nil {
+		t.Fatalf("write child.txt: %v", err)
+	}
+	runGit(t, anvil, "add", "child.txt")
+	runGit(t, anvil, "commit", "-m", "child work")
+	runGit(t, anvil, "push", "origin", forgeBranch)
+
+	// Merge the forge branch into the epic branch (fast-forward: epic tip =
+	// forge tip, so the forge commit is reachable from origin/epicBranch).
+	runGit(t, anvil, "checkout", epicBranch)
+	runGit(t, anvil, "merge", forgeBranch)
+	runGit(t, anvil, "push", "origin", epicBranch)
+	runGit(t, anvil, "checkout", "main")
+
+	// With baseBranch=epicBranch: the forge tip is reachable from the epic
+	// branch → classified as merged.
+	got, _, err := CheckRemoteBranchState(context.Background(), anvil, forgeBranch, epicBranch)
+	if err != nil {
+		t.Fatalf("CheckRemoteBranchState(baseBranch=%s): %v", epicBranch, err)
+	}
+	if got != RemoteBranchMerged {
+		t.Fatalf("state = %s; want merged (reachable from epic branch)", got)
+	}
+
+	// With baseBranch="": the forge commits are not on main → stranded.
+	got, _, err = CheckRemoteBranchState(context.Background(), anvil, forgeBranch, "")
+	if err != nil {
+		t.Fatalf("CheckRemoteBranchState(baseBranch=''): %v", err)
+	}
+	if got != RemoteBranchStranded {
+		t.Fatalf("state = %s; want stranded (not reachable from main)", got)
 	}
 }
 

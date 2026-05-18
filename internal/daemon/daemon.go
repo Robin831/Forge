@@ -555,6 +555,41 @@ func (d *Daemon) ingotRecordPR(beadID, anvil string, prNumber int, prURL string)
 	}
 }
 
+// registerPRIfUntracked inserts match into state.db for beadID when the PR is
+// not already tracked, then logs the registration event. It is a low-level
+// helper called by registerExistingPRByBranch and by code paths that already
+// hold a fetched *vcs.OpenPR (avoiding a redundant GetPRByHeadBranch call).
+// Returns the PR number on success, 0 on failure.
+func (d *Daemon) registerPRIfUntracked(ctx context.Context, anvilName, beadID string, match *vcs.OpenPR, baseBranch string) int {
+	if existing, _ := d.db.GetPRByNumber(anvilName, match.Number); existing != nil {
+		// Already tracked — nothing to do, HasOpenPRForBead will return true.
+		return match.Number
+	}
+	dbPR := &state.PR{
+		Number:     match.Number,
+		Anvil:      anvilName,
+		BeadID:     beadID,
+		Branch:     match.Branch,
+		BaseBranch: baseBranch,
+		Status:     state.PROpen,
+		CreatedAt:  time.Now(),
+		Title:      match.Title,
+	}
+	if err := d.db.InsertPR(dbPR); err != nil {
+		d.logger.Warn("failed to insert existing PR record",
+			"anvil", anvilName, "pr", match.Number, "bead", beadID, "error", err)
+		return 0
+	}
+	d.logger.Info("registered existing PR",
+		"bead", beadID, "anvil", anvilName, "pr", match.Number, "branch", match.Branch)
+	if logErr := d.db.LogEvent(state.EventPRCreated,
+		fmt.Sprintf("Registered existing PR #%d for branch %s", match.Number, match.Branch),
+		beadID, anvilName); logErr != nil {
+		d.logger.Warn("failed to log PR registration event", "bead", beadID, "error", logErr)
+	}
+	return match.Number
+}
+
 // registerExistingPRByBranch handles the ErrPRAlreadyExists case from CreatePR
 // by looking up the open PR matching the given branch via the VCS provider and
 // registering it in state.db when it is not already tracked. Without this
@@ -581,33 +616,7 @@ func (d *Daemon) registerExistingPRByBranch(ctx context.Context, anvilName, anvi
 			"anvil", anvilName, "branch", branch, "bead", beadID)
 		return 0
 	}
-	if existing, _ := d.db.GetPRByNumber(anvilName, match.Number); existing != nil {
-		// Already tracked — nothing to do, HasOpenPRForBead will return true.
-		return match.Number
-	}
-	dbPR := &state.PR{
-		Number:     match.Number,
-		Anvil:      anvilName,
-		BeadID:     beadID,
-		Branch:     match.Branch,
-		BaseBranch: baseBranch,
-		Status:     state.PROpen,
-		CreatedAt:  time.Now(),
-		Title:      match.Title,
-	}
-	if err := d.db.InsertPR(dbPR); err != nil {
-		d.logger.Warn("failed to insert existing PR record after ErrPRAlreadyExists",
-			"anvil", anvilName, "pr", match.Number, "bead", beadID, "error", err)
-		return 0
-	}
-	d.logger.Info("registered existing PR for already-exists branch",
-		"bead", beadID, "anvil", anvilName, "pr", match.Number, "branch", branch)
-	if logErr := d.db.LogEvent(state.EventPRCreated,
-		fmt.Sprintf("Registered existing PR #%d for branch %s (recovered from ErrPRAlreadyExists)", match.Number, branch),
-		beadID, anvilName); logErr != nil {
-		d.logger.Warn("failed to log PR registration event", "bead", beadID, "error", logErr)
-	}
-	return match.Number
+	return d.registerPRIfUntracked(ctx, anvilName, beadID, match, baseBranch)
 }
 
 // buildVCSProviders creates a VCS provider for each configured anvil based on
@@ -2528,6 +2537,10 @@ normalPipeline:
 	// burns Smith time on it. A merged stale branch is cleaned up
 	// transparently and dispatch proceeds normally.
 	if !d.preDispatchRemoteBranchCheck(ctx, bead, anvilCfg.Path) {
+		// The pending worker row inserted at claim time must be terminated so
+		// Hearth does not show a permanent pending worker. The pipeline never
+		// ran, so we mark it failed here rather than leaving it in limbo.
+		_ = d.db.UpdateWorkerStatus(claimWorkerID, state.WorkerFailed)
 		return
 	}
 
@@ -3057,14 +3070,25 @@ func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.B
 		// duplicate a worker on top of a tracked PR. This may happen when a
 		// prior dispatch created the PR but the daemon crashed before
 		// recording it in state.db.
-		if pr, prErr := d.vcsForAnvil(bead.Anvil).GetPRByHeadBranch(ctx, anvilPath, branch); prErr == nil && pr != nil {
+		pr, prErr := d.vcsForAnvil(bead.Anvil).GetPRByHeadBranch(ctx, anvilPath, branch)
+		if prErr != nil {
+			// A transient gh pr list failure must not cause a false needs_human
+			// escalation. Log the error and abort this dispatch cycle; the next
+			// poll will retry the PR check before deciding.
+			d.logger.Warn("pre-dispatch: PR lookup failed for stranded branch; skipping dispatch until next poll",
+				"bead", bead.ID, "branch", branch, "error", prErr)
+			return false
+		}
+		if pr != nil {
 			d.logger.Info("pre-dispatch: branch has an existing PR; deferring to bellows",
 				"bead", bead.ID, "branch", branch, "pr", pr.Number)
 			_ = d.db.LogEvent(state.EventPRAlreadyExists,
 				fmt.Sprintf("Pre-dispatch: %s already has open PR #%d; dispatch skipped (bellows takes over)",
 					branch, pr.Number),
 				bead.ID, bead.Anvil)
-			d.registerExistingPRByBranch(ctx, bead.Anvil, anvilPath, bead.ID, branch, bead.EpicBranch)
+			// Use registerPRIfUntracked directly with the already-fetched pr to
+			// avoid a redundant GetPRByHeadBranch call inside registerExistingPRByBranch.
+			d.registerPRIfUntracked(ctx, bead.Anvil, bead.ID, pr, bead.EpicBranch)
 			return false
 		}
 
