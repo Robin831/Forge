@@ -922,11 +922,10 @@ func GitEnv(worktreePath string) []string {
 	return env
 }
 
-// sanitizePath converts a bead ID to a safe directory/branch name.
+// SanitizePath converts a bead ID to a safe directory/branch name.
 // E.g., "Forge-n1g.4.1" → "Forge-n1g.4.1" (dots are fine in git branches).
-// Slashes and other problematic chars are replaced.
-func sanitizePath(beadID string) string {
-	// Replace characters that are problematic in file paths or branch names
+// Slashes and other problematic chars are replaced with dashes.
+func SanitizePath(beadID string) string {
 	r := strings.NewReplacer(
 		"/", "-",
 		"\\", "-",
@@ -935,3 +934,6 @@ func sanitizePath(beadID string) string {
 	)
 	return r.Replace(beadID)
 }
+
+// sanitizePath is the unexported alias kept for internal callers.
+func sanitizePath(beadID string) string { return SanitizePath(beadID) }
