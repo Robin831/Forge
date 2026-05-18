@@ -8,7 +8,9 @@ import {
 } from 'react'
 import { ApiError } from '../api'
 import {
+  fetchEscalation as apiFetchEscalation,
   postResolve,
+  type EscalationDetail,
   type ResolveRequest,
   type ResolveVerb,
 } from '../api/forge'
@@ -53,6 +55,24 @@ export function resolveKey(
 
 const IDLE: ResolveEntry = { status: 'idle', updatedAt: 0 }
 
+// EscalationStatus is the lifecycle of a single fetchEscalation call.
+// 'idle' means the panel has not yet asked for this escalation; consumers
+// rendering on mount will briefly see this before the useEffect fires.
+export type EscalationStatus = 'idle' | 'loading' | 'success' | 'error'
+
+// EscalationEntry is the per-id state surfaced to consumers. data is the
+// last successful response (kept across re-fetches so refreshes don't
+// flash an empty skeleton); error is the message from the last failed
+// attempt and is cleared on success.
+export interface EscalationEntry {
+  status: EscalationStatus
+  data?: EscalationDetail
+  error?: string
+  updatedAt: number
+}
+
+const IDLE_ESCALATION: EscalationEntry = { status: 'idle', updatedAt: 0 }
+
 interface ResolveActions {
   // run dispatches a verb to POST /api/forge/resolve and tracks the
   // result against the supplied key. Resolves to true on success, false
@@ -66,6 +86,15 @@ interface ResolveActions {
   // case a consumer wants to seed a key (e.g. record an externally-driven
   // success). Production code should prefer `run`.
   setEntry: (key: ResolveKey, entry: ResolveEntry) => void
+  // fetchEscalation loads the escalation detail for a bead via
+  // GET /api/forge/escalation/{bead_id} and stores it under escalationId.
+  // The store transitions to 'loading' immediately so consumers can render
+  // a skeleton, then to 'success' or 'error'. Resolves to the detail (or
+  // null on error) so callers awaiting the result can branch.
+  fetchEscalation: (
+    escalationId: string,
+    anvil?: string,
+  ) => Promise<EscalationDetail | null>
 }
 
 interface ResolveStoreValue {
@@ -74,6 +103,10 @@ interface ResolveStoreValue {
   // single entry; this is exposed for tests and for panels that need to
   // render a bulk view.
   entries: Record<ResolveKey, ResolveEntry>
+  // escalations is the full map of escalation detail entries keyed by the
+  // escalationId passed to fetchEscalation. Most consumers should use
+  // `useEscalation(id)`; this is exposed for tests and bulk views.
+  escalations: Record<string, EscalationEntry>
   actions: ResolveActions
 }
 
@@ -84,6 +117,9 @@ const ResolveStoreContext = createContext<ResolveStoreValue | null>(null)
 // `useResolveStatus` / `useResolveActions` without prop-drilling.
 export function ResolveStoreProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<Record<ResolveKey, ResolveEntry>>({})
+  const [escalations, setEscalations] = useState<
+    Record<string, EscalationEntry>
+  >({})
 
   const setEntry = useCallback((key: ResolveKey, entry: ResolveEntry) => {
     setEntries((prev) => ({ ...prev, [key]: entry }))
@@ -137,17 +173,69 @@ export function ResolveStoreProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  const fetchEscalation = useCallback(
+    async (
+      escalationId: string,
+      anvil?: string,
+    ): Promise<EscalationDetail | null> => {
+      // Preserve any previously-loaded data on the entry so a refetch
+      // does not flash a skeleton in the UI; the status flag is what
+      // consumers observe to render a loading indicator.
+      setEscalations((prev) => {
+        const existing = prev[escalationId]
+        return {
+          ...prev,
+          [escalationId]: {
+            status: 'loading',
+            data: existing?.data,
+            updatedAt: Date.now(),
+          },
+        }
+      })
+      try {
+        const detail = await apiFetchEscalation(escalationId, anvil)
+        setEscalations((prev) => ({
+          ...prev,
+          [escalationId]: {
+            status: 'success',
+            data: detail,
+            updatedAt: Date.now(),
+          },
+        }))
+        return detail
+      } catch (err) {
+        const message =
+          err instanceof ApiError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : 'request failed'
+        setEscalations((prev) => ({
+          ...prev,
+          [escalationId]: {
+            status: 'error',
+            data: prev[escalationId]?.data,
+            error: message,
+            updatedAt: Date.now(),
+          },
+        }))
+        return null
+      }
+    },
+    [],
+  )
+
   // actions is memoised independently of entries so that useResolveActions()
   // returns a stable object reference across renders — safe to include in
   // effect dependency lists without triggering spurious re-runs.
   const actions = useMemo<ResolveActions>(
-    () => ({ run, reset, setEntry }),
-    [run, reset, setEntry],
+    () => ({ run, reset, setEntry, fetchEscalation }),
+    [run, reset, setEntry, fetchEscalation],
   )
 
   const value = useMemo<ResolveStoreValue>(
-    () => ({ entries, actions }),
-    [entries, actions],
+    () => ({ entries, escalations, actions }),
+    [entries, escalations, actions],
   )
 
   return (
@@ -190,4 +278,20 @@ export function useResolveActions(): ResolveActions {
 // eslint-disable-next-line react-refresh/only-export-components
 export function useResolveEntries(): Record<ResolveKey, ResolveEntry> {
   return useResolveStore().entries
+}
+
+// useEscalation selects a single escalation entry from the store. Missing
+// ids resolve to the shared IDLE_ESCALATION constant so consumers can
+// destructure `status` without a null check on every render.
+// eslint-disable-next-line react-refresh/only-export-components
+export function useEscalation(escalationId: string): EscalationEntry {
+  const { escalations } = useResolveStore()
+  return escalations[escalationId] ?? IDLE_ESCALATION
+}
+
+// useEscalations exposes the full escalation map. Reserved for tests and
+// bulk views; most callers should use useEscalation(id) instead.
+// eslint-disable-next-line react-refresh/only-export-components
+export function useEscalations(): Record<string, EscalationEntry> {
+  return useResolveStore().escalations
 }
