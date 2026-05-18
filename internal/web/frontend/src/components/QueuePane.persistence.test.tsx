@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router-dom'
@@ -206,5 +206,73 @@ describe('QueuePane persistence', () => {
       'href',
       '/bead/a1?anvil=forge&from=queue',
     )
+  })
+
+  it('captures scroll position and restores it after back-navigation', async () => {
+    // Use fake timers so we can advance through rAF (shimmed as setTimeout in
+    // jsdom) and the 150ms useUIState debounce without real-time waits.
+    vi.useFakeTimers()
+
+    const { router } = renderApp(TEST_ITEMS)
+
+    // Locate the Pane's scrollable body element (the div with role="region").
+    const scrollBody = document.querySelector('div[role="region"]') as HTMLElement
+    expect(scrollBody).not.toBeNull()
+
+    // jsdom has no layout engine so el.scrollTop always reads 0. Override the
+    // property on this specific element so the onScroll handler reads 300.
+    let _scrollTop = 300
+    Object.defineProperty(scrollBody, 'scrollTop', {
+      configurable: true,
+      get: () => _scrollTop,
+      set: (v: number) => { _scrollTop = v },
+    })
+
+    // Dispatch the scroll event — triggers the rAF-throttled onScroll handler.
+    scrollBody.dispatchEvent(new Event('scroll'))
+
+    // Flush rAF (shimmed as setTimeout(0) in jsdom) and all queued timers,
+    // including the 150ms debounce that runs inside the rAF callback. After
+    // this, sessionStorage already has the captured scroll position (300).
+    await act(async () => {
+      vi.runAllTimers()
+    })
+
+    // Navigate away — QueuePane unmounts. useUIState's unmount cleanup is a
+    // no-op here (debounce timer already fired), but the value is in storage.
+    await act(async () => {
+      await router.navigate('/bead/a1?anvil=forge&from=queue')
+    })
+
+    expect(screen.getByTestId('bead-stub')).toBeInTheDocument()
+
+    // Spy on scrollTop writes during the back-navigation remount to verify that
+    // useLayoutEffect calls el.scrollTop = 300 before the browser paints.
+    const scrollTopWrites: number[] = []
+    const origDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get: origDesc?.get ?? (() => 0),
+      set(v: number) {
+        scrollTopWrites.push(v)
+        origDesc?.set?.call(this, v)
+      },
+    })
+
+    try {
+      // Navigate back — QueuePane remounts, reads 300 from sessionStorage, and
+      // useLayoutEffect sets el.scrollTop = 300 before the browser paints.
+      await act(async () => {
+        await router.navigate(-1)
+      })
+    } finally {
+      if (origDesc) {
+        Object.defineProperty(Element.prototype, 'scrollTop', origDesc)
+      }
+      vi.useRealTimers()
+    }
+
+    // The layout effect must have written the restored position to the body.
+    expect(scrollTopWrites).toContain(300)
   })
 })
