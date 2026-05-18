@@ -3778,7 +3778,7 @@ func TestPreDispatchRemoteBranchCheck(t *testing.T) {
 		bead := poller.Bead{ID: "PRD-STRANDED-PR", Anvil: anvilName, Title: "stranded with PR"}
 		branch := worktree.BranchName(bead.ID)
 		mockVCS := &mockVCSProvider{
-			openPRs: []vcs.OpenPR{{Number: 77, Branch: branch, URL: "https://example.com/77"}},
+			openPRs: []vcs.OpenPR{{Number: 77, Branch: branch}},
 		}
 		d := &Daemon{
 			db:           db,
