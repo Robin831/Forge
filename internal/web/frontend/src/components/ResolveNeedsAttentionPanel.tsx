@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ExternalLink, X } from 'lucide-react'
 import type { EscalationDetail, ResolveVerb } from '../api/forge'
+import ConfirmModal from './ConfirmModal'
 import {
   resolveKey,
   useEscalation,
@@ -58,16 +59,13 @@ export interface ResolveNeedsAttentionPanelProps {
   // panel does not own its own modal chrome — the parent decides whether
   // to render it inline or in a dialog.
   onClose?: () => void
-  // onConfirmDestructive, when provided, intercepts clicks on retry/stop
-  // so a parent component can present a confirmation modal before the
-  // verb is dispatched. The parent must call `proceed()` to commit; doing
-  // nothing cancels the action. Non-destructive verbs (clear, clarify,
-  // unclarify) bypass this hook and run immediately.
-  onConfirmDestructive?: (
-    verb: 'retry' | 'stop',
-    proceed: () => void,
-  ) => void
 }
+
+// DESTRUCTIVE_VERBS lists the verbs that prompt for confirmation before
+// dispatching. Retry kicks the pipeline back to Smith and stop kills a
+// running worker, so both are easy to fire by accident from the keyboard.
+const DESTRUCTIVE_VERBS: ReadonlySet<ResolveVerb> = new Set<ResolveVerb>(['retry', 'stop'])
+
 
 const TYPE_TITLE: Record<EscalationType, string> = {
   dispatch_failed: 'Dispatch failed — needs attention',
@@ -137,7 +135,6 @@ export default function ResolveNeedsAttentionPanel({
   escalationId,
   escalationType,
   onClose,
-  onConfirmDestructive,
 }: ResolveNeedsAttentionPanelProps) {
   const entry = useEscalation(escalationId)
   const { fetchEscalation, run, reset } = useResolveActions()
@@ -149,6 +146,13 @@ export default function ResolveNeedsAttentionPanel({
   const [prFormOpen, setPrFormOpen] = useState(false)
   const [prTitle, setPrTitle] = useState('')
   const [prBody, setPrBody] = useState('')
+  // confirmVerb is non-null while the confirmation modal is open for a
+  // destructive verb. Storing the verb (rather than a boolean) lets the
+  // modal title/body adapt to retry vs. stop, and lets the confirm
+  // callback know which action to dispatch.
+  const [confirmVerb, setConfirmVerb] = useState<{ verb: ResolveVerb } | null>(
+    null,
+  )
 
   useEffect(() => {
     if (!escalationId) return
@@ -302,11 +306,8 @@ export default function ResolveNeedsAttentionPanel({
                     })
                   }
                   const onClick = () => {
-                    if (
-                      onConfirmDestructive &&
-                      (verb === 'retry' || verb === 'stop')
-                    ) {
-                      onConfirmDestructive(verb, invoke)
+                    if (DESTRUCTIVE_VERBS.has(verb)) {
+                      setConfirmVerb({ verb })
                       return
                     }
                     invoke()
@@ -402,6 +403,32 @@ export default function ResolveNeedsAttentionPanel({
           </div>
         </>
       )}
+      <ConfirmModal
+        open={confirmVerb !== null}
+        title={confirmVerb ? `Confirm: ${VERB_LABEL[confirmVerb.verb]}` : ''}
+        message={
+          confirmVerb?.verb === 'stop'
+            ? 'Killing the worker stops the running smith process and prevents re-dispatch until the flag is cleared. Continue?'
+            : 'Retrying clears the needs-attention flag and re-dispatches this bead on the next poll. Continue?'
+        }
+        tone="danger"
+        busy={actionPending}
+        onCancel={() => setConfirmVerb(null)}
+        onConfirm={() => {
+          if (confirmVerb && detail) {
+            const verb = confirmVerb.verb
+            const note = auditNote.trim()
+            // Close the modal before dispatching so rapid clicks cannot
+            // fire the action more than once before React re-renders.
+            setConfirmVerb(null)
+            void run(actionKey, escalationId, {
+              verb,
+              anvil: detail.anvil,
+              note: note === '' ? undefined : note,
+            })
+          }
+        }}
+      />
     </section>
   )
 }

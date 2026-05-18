@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 
 export type ConfirmTone = 'danger' | 'primary'
 
@@ -44,6 +44,7 @@ export default function ConfirmModal({
   const [input, setInput] = useState(inputDefault)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const cancelRef = useRef<HTMLButtonElement | null>(null)
+  const titleId = useId()
 
   useEffect(() => {
     if (open) {
@@ -88,12 +89,12 @@ export default function ConfirmModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-labelledby="confirm-modal-title"
+      aria-labelledby={titleId}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4"
     >
       <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900 p-5 shadow-xl">
         <h2
-          id="confirm-modal-title"
+          id={titleId}
           className="text-base font-semibold text-slate-100"
         >
           {title}
