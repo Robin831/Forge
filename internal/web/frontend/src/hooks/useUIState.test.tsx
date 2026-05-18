@@ -3,16 +3,31 @@ import { act, renderHook } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
 
-const { useAuthMock } = vi.hoisted(() => ({
-  useAuthMock: vi.fn(() => ({
-    authenticated: true,
-    user: 'alice',
-    loading: false,
-    login: async () => ({ ok: true }),
-    logout: async () => {},
-    refresh: async () => {},
-  })),
-}))
+const { useAuthMock } = vi.hoisted(() => {
+  type State = {
+    authenticated: boolean
+    user: string | null
+    loading: boolean
+    login: (
+      user: string,
+      password: string,
+    ) => Promise<{ ok: boolean; error?: string }>
+    logout: () => Promise<void>
+    refresh: () => Promise<void>
+  }
+  return {
+    useAuthMock: vi.fn(
+      (): State => ({
+        authenticated: true,
+        user: 'alice',
+        loading: false,
+        login: async () => ({ ok: true }),
+        logout: async () => {},
+        refresh: async () => {},
+      }),
+    ),
+  }
+})
 
 vi.mock('../auth', () => ({
   useAuth: () => useAuthMock(),
