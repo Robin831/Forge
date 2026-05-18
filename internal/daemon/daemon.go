@@ -555,6 +555,41 @@ func (d *Daemon) ingotRecordPR(beadID, anvil string, prNumber int, prURL string)
 	}
 }
 
+// registerPRIfUntracked inserts match into state.db for beadID when the PR is
+// not already tracked, then logs the registration event. It is a low-level
+// helper called by registerExistingPRByBranch and by code paths that already
+// hold a fetched *vcs.OpenPR (avoiding a redundant GetPRByHeadBranch call).
+// Returns the PR number on success, 0 on failure.
+func (d *Daemon) registerPRIfUntracked(ctx context.Context, anvilName, beadID string, match *vcs.OpenPR, baseBranch string) int {
+	if existing, _ := d.db.GetPRByNumber(anvilName, match.Number); existing != nil {
+		// Already tracked — nothing to do, HasOpenPRForBead will return true.
+		return match.Number
+	}
+	dbPR := &state.PR{
+		Number:     match.Number,
+		Anvil:      anvilName,
+		BeadID:     beadID,
+		Branch:     match.Branch,
+		BaseBranch: baseBranch,
+		Status:     state.PROpen,
+		CreatedAt:  time.Now(),
+		Title:      match.Title,
+	}
+	if err := d.db.InsertPR(dbPR); err != nil {
+		d.logger.Warn("failed to insert existing PR record",
+			"anvil", anvilName, "pr", match.Number, "bead", beadID, "error", err)
+		return 0
+	}
+	d.logger.Info("registered existing PR",
+		"bead", beadID, "anvil", anvilName, "pr", match.Number, "branch", match.Branch)
+	if logErr := d.db.LogEvent(state.EventPRCreated,
+		fmt.Sprintf("Registered existing PR #%d for branch %s", match.Number, match.Branch),
+		beadID, anvilName); logErr != nil {
+		d.logger.Warn("failed to log PR registration event", "bead", beadID, "error", logErr)
+	}
+	return match.Number
+}
+
 // registerExistingPRByBranch handles the ErrPRAlreadyExists case from CreatePR
 // by looking up the open PR matching the given branch via the VCS provider and
 // registering it in state.db when it is not already tracked. Without this
@@ -581,33 +616,7 @@ func (d *Daemon) registerExistingPRByBranch(ctx context.Context, anvilName, anvi
 			"anvil", anvilName, "branch", branch, "bead", beadID)
 		return 0
 	}
-	if existing, _ := d.db.GetPRByNumber(anvilName, match.Number); existing != nil {
-		// Already tracked — nothing to do, HasOpenPRForBead will return true.
-		return match.Number
-	}
-	dbPR := &state.PR{
-		Number:     match.Number,
-		Anvil:      anvilName,
-		BeadID:     beadID,
-		Branch:     match.Branch,
-		BaseBranch: baseBranch,
-		Status:     state.PROpen,
-		CreatedAt:  time.Now(),
-		Title:      match.Title,
-	}
-	if err := d.db.InsertPR(dbPR); err != nil {
-		d.logger.Warn("failed to insert existing PR record after ErrPRAlreadyExists",
-			"anvil", anvilName, "pr", match.Number, "bead", beadID, "error", err)
-		return 0
-	}
-	d.logger.Info("registered existing PR for already-exists branch",
-		"bead", beadID, "anvil", anvilName, "pr", match.Number, "branch", branch)
-	if logErr := d.db.LogEvent(state.EventPRCreated,
-		fmt.Sprintf("Registered existing PR #%d for branch %s (recovered from ErrPRAlreadyExists)", match.Number, branch),
-		beadID, anvilName); logErr != nil {
-		d.logger.Warn("failed to log PR registration event", "bead", beadID, "error", logErr)
-	}
-	return match.Number
+	return d.registerPRIfUntracked(ctx, anvilName, beadID, match, baseBranch)
 }
 
 // buildVCSProviders creates a VCS provider for each configured anvil based on
@@ -2520,6 +2529,21 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	}
 
 normalPipeline:
+	// Pre-dispatch remote-branch check. If origin already carries unmerged
+	// commits for forge/<bead-id> from a prior worker that escalated between
+	// `git push` and `gh pr create`, dispatching a fresh Smith produces a
+	// parallel implementation that cannot be reconciled without destroying
+	// one side's work. Catch the stranded state HERE so the dispatch never
+	// burns Smith time on it. A merged stale branch is cleaned up
+	// transparently and dispatch proceeds normally.
+	if !d.preDispatchRemoteBranchCheck(ctx, bead, anvilCfg.Path) {
+		// The pending worker row inserted at claim time must be terminated so
+		// Hearth does not show a permanent pending worker. The pipeline never
+		// ran, so we mark it failed here rather than leaving it in limbo.
+		_ = d.db.UpdateWorkerStatus(claimWorkerID, state.WorkerFailed)
+		return
+	}
+
 	// Apply smith timeout.
 	// IMPORTANT: derive pipelineCtx from context.Background(), NOT from the
 	// daemon's ctx. This ensures that a graceful shutdown (SIGINT/SIGTERM)
@@ -2994,6 +3018,127 @@ func cleanGitEnv() []string {
 		}
 	}
 	return out
+}
+
+// preDispatchRemoteBranchCheck probes origin for the bead's forge branch
+// before the pipeline runs. It returns true when dispatch should proceed and
+// false when it must abort (the bead is either being handed off to bellows
+// because an open PR already covers the branch, or it has been marked
+// needs-attention because the branch carries stranded work from a prior
+// worker).
+//
+// The three reachable outcomes:
+//
+//   - Absent: no branch on origin → proceed normally.
+//   - Merged: branch on origin but fully reachable from the base ref → delete
+//     the stale branch and proceed normally.
+//   - Stranded: branch on origin with commits not reachable from the base ref
+//     → cross-check for an existing PR. If a PR exists, log and let bellows
+//     own it (return false to skip the pipeline). Otherwise mark needs_human
+//     so the operator can decide between accept / reset / merge.
+//
+// An ls-remote / fetch error is conservative: dispatch proceeds so we don't
+// stall the queue on a transient network blip. If the branch really is
+// stranded, the prior end-of-pipeline Smith escalation still fires.
+func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.Bead, anvilPath string) bool {
+	branch := worktree.BranchName(bead.ID)
+	stateResult, info, err := worktree.CheckRemoteBranchState(ctx, anvilPath, branch, bead.EpicBranch)
+	if err != nil {
+		d.logger.Warn("pre-dispatch remote branch check failed; proceeding with dispatch",
+			"bead", bead.ID, "branch", branch, "error", err)
+		return true
+	}
+
+	switch stateResult {
+	case worktree.RemoteBranchAbsent:
+		return true
+
+	case worktree.RemoteBranchMerged:
+		d.logger.Info("pre-dispatch: deleting stale merged forge branch on origin",
+			"bead", bead.ID, "branch", branch, "sha", info.SHA, "base", info.BaseRef)
+		if delErr := worktree.DeleteRemoteBranch(ctx, anvilPath, branch); delErr != nil {
+			// Non-fatal: a concurrent process may have deleted it, or the
+			// remote may have temporarily refused the push. The next attempt
+			// to push (during the pipeline) will surface a clearer error.
+			d.logger.Warn("pre-dispatch: failed to delete stale merged branch; continuing dispatch",
+				"bead", bead.ID, "branch", branch, "error", delErr)
+		}
+		return true
+
+	case worktree.RemoteBranchStranded:
+		// If a PR already exists for this branch, bellows owns it — never
+		// duplicate a worker on top of a tracked PR. This may happen when a
+		// prior dispatch created the PR but the daemon crashed before
+		// recording it in state.db.
+		pr, prErr := d.vcsForAnvil(bead.Anvil).GetPRByHeadBranch(ctx, anvilPath, branch)
+		if prErr != nil {
+			// A transient gh pr list failure must not cause a false needs_human
+			// escalation. Log the error and abort this dispatch cycle; the next
+			// poll will retry the PR check before deciding.
+			d.logger.Warn("pre-dispatch: PR lookup failed for stranded branch; skipping dispatch until next poll",
+				"bead", bead.ID, "branch", branch, "error", prErr)
+			return false
+		}
+		if pr != nil {
+			d.logger.Info("pre-dispatch: branch has an existing PR; deferring to bellows",
+				"bead", bead.ID, "branch", branch, "pr", pr.Number)
+			_ = d.db.LogEvent(state.EventPRAlreadyExists,
+				fmt.Sprintf("Pre-dispatch: %s already has open PR #%d; dispatch skipped (bellows takes over)",
+					branch, pr.Number),
+				bead.ID, bead.Anvil)
+			// Use registerPRIfUntracked directly with the already-fetched pr to
+			// avoid a redundant GetPRByHeadBranch call inside registerExistingPRByBranch.
+			d.registerPRIfUntracked(ctx, bead.Anvil, bead.ID, pr, bead.EpicBranch)
+			return false
+		}
+
+		// No PR — the prior worker pushed but never opened one. Surface as
+		// needs-attention with a message modelled on the Smith escalation
+		// from the 2026-05-18 Fhi.Metadata-orjp2 incident so the operator's
+		// mental model is consistent regardless of when the check fires.
+		shortSHA := info.SHA
+		if len(shortSHA) > 12 {
+			shortSHA = shortSHA[:12]
+		}
+		reason := fmt.Sprintf(
+			"origin/%s already has commits from a prior worker that were never opened as a PR. "+
+				"A fresh Smith would produce a parallel implementation and a non-fast-forward push. "+
+				"Resolving this requires a human decision (accept the prior work and open a PR, "+
+				"reset the remote branch, or merge with new work). SHA: %s",
+			branch, shortSHA,
+		)
+		d.logger.Warn("pre-dispatch: stranded forge branch on origin — escalating to needs_human",
+			"bead", bead.ID, "branch", branch, "sha", info.SHA, "base", info.BaseRef)
+		_ = d.db.LogEvent(state.EventDispatchBlockedStrandedBranch, reason, bead.ID, bead.Anvil)
+		if markErr := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); markErr != nil {
+			d.logger.Error("pre-dispatch: failed to mark bead as needs_human", "bead", bead.ID, "error", markErr)
+		}
+		d.recordDispatchFailure(bead.ID, bead.Anvil, reason, true)
+
+		// Fire bead-failed notifications immediately. Unlike the normal retry
+		// path, the stranded-branch case is a 1-strike escalation: needs_human
+		// has already been set above, so we should not wait for the circuit
+		// breaker to trip before alerting the operator. Mirrors the async
+		// notification block in recordDispatchFailure's circuit-break branch.
+		disp := d.dispatcher.Load()
+		notifier := d.notifier.Load()
+		if disp != nil || notifier != nil {
+			beadID, anvil := bead.ID, bead.Anvil
+			go func(reason string) {
+				notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if notifier != nil {
+					notifier.BeadFailed(notifCtx, anvil, beadID, 1, reason)
+				}
+				if disp != nil {
+					disp.Dispatch(notifCtx, notify.EventBeadFailed, beadID, anvil, reason)
+				}
+			}(reason)
+		}
+		return false
+	}
+
+	return true
 }
 
 // forgeBranchAheadOfMain checks whether the origin remote has a forge branch

@@ -3635,6 +3635,179 @@ func TestForgeBranchAheadOfMain(t *testing.T) {
 	})
 }
 
+// TestPreDispatchRemoteBranchCheck verifies the dispatch-time guard that
+// detects stranded origin/forge/<bead-id> branches from a prior worker. The
+// three transition outcomes the daemon must implement:
+//   - Absent → proceed (returns true, no state changes)
+//   - Merged → delete stale branch, proceed (returns true, branch gone on origin)
+//   - Stranded with no PR → mark needs_human and abort (returns false)
+//   - Stranded with PR → log, register PR, abort (returns false; no needs_human)
+func TestPreDispatchRemoteBranchCheck(t *testing.T) {
+	const anvilName = "test-anvil"
+
+	gitLocal := func(t *testing.T, anvilPath string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = anvilPath
+		cmd.Env = cleanGitTestEnv()
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+
+	t.Run("absent branch: dispatch proceeds", func(t *testing.T) {
+		anvilPath := initTestGitRepo(t)
+		db, err := state.Open(filepath.Join(anvilPath, "state.db"))
+		require.NoError(t, err)
+		defer db.Close()
+
+		d := &Daemon{
+			db:           db,
+			logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr:  worktree.NewManager(),
+			vcsProviders: map[string]vcs.Provider{anvilName: &mockVCSProvider{}},
+		}
+		d.cfg.Store(&config.Config{})
+
+		bead := poller.Bead{ID: "PRD-ABSENT", Anvil: anvilName, Title: "absent"}
+		if !d.preDispatchRemoteBranchCheck(context.Background(), bead, anvilPath) {
+			t.Fatal("expected dispatch to proceed when branch is absent")
+		}
+
+		r, err := db.GetRetry(bead.ID, bead.Anvil)
+		require.NoError(t, err)
+		if r != nil && r.NeedsHuman {
+			t.Errorf("bead should not be marked needs_human when branch is absent")
+		}
+	})
+
+	t.Run("merged branch: dispatch proceeds and stale branch is deleted", func(t *testing.T) {
+		anvilPath := initTestGitRepo(t)
+		db, err := state.Open(filepath.Join(anvilPath, "state.db"))
+		require.NoError(t, err)
+		defer db.Close()
+
+		d := &Daemon{
+			db:           db,
+			logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr:  worktree.NewManager(),
+			vcsProviders: map[string]vcs.Provider{anvilName: &mockVCSProvider{}},
+		}
+		d.cfg.Store(&config.Config{})
+
+		bead := poller.Bead{ID: "PRD-MERGED", Anvil: anvilName, Title: "merged"}
+		branch := worktree.BranchName(bead.ID)
+		// Push a branch pointing at the same commit as main → fully merged.
+		gitLocal(t, anvilPath, "checkout", "-b", branch)
+		gitLocal(t, anvilPath, "push", "origin", branch)
+		gitLocal(t, anvilPath, "checkout", "main")
+
+		if !d.preDispatchRemoteBranchCheck(context.Background(), bead, anvilPath) {
+			t.Fatal("expected dispatch to proceed for merged stale branch")
+		}
+
+		// Branch must be deleted from origin.
+		lsCmd := exec.Command("git", "ls-remote", "--heads", "origin", "--", branch)
+		lsCmd.Dir = anvilPath
+		lsCmd.Env = cleanGitTestEnv()
+		out, err := lsCmd.Output()
+		require.NoError(t, err)
+		if strings.TrimSpace(string(out)) != "" {
+			t.Errorf("expected stale merged branch %s to be deleted from origin; got %q", branch, string(out))
+		}
+	})
+
+	t.Run("stranded branch without PR: dispatch blocked and marked needs_human", func(t *testing.T) {
+		anvilPath := initTestGitRepo(t)
+		db, err := state.Open(filepath.Join(anvilPath, "state.db"))
+		require.NoError(t, err)
+		defer db.Close()
+
+		d := &Daemon{
+			db:           db,
+			logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr:  worktree.NewManager(),
+			vcsProviders: map[string]vcs.Provider{anvilName: &mockVCSProvider{}},
+		}
+		d.cfg.Store(&config.Config{})
+
+		bead := poller.Bead{ID: "PRD-STRANDED", Anvil: anvilName, Title: "stranded"}
+		branch := worktree.BranchName(bead.ID)
+		// Push a branch with a commit not reachable from main → stranded.
+		gitLocal(t, anvilPath, "checkout", "-b", branch)
+		require.NoError(t, os.WriteFile(filepath.Join(anvilPath, "stranded.txt"), []byte("prior\n"), 0o644))
+		gitLocal(t, anvilPath, "add", "stranded.txt")
+		gitLocal(t, anvilPath, "commit", "-m", "stranded prior work")
+		gitLocal(t, anvilPath, "push", "origin", branch)
+		gitLocal(t, anvilPath, "checkout", "main")
+
+		if d.preDispatchRemoteBranchCheck(context.Background(), bead, anvilPath) {
+			t.Fatal("expected dispatch to be blocked for stranded branch")
+		}
+
+		r, err := db.GetRetry(bead.ID, bead.Anvil)
+		require.NoError(t, err)
+		require.NotNil(t, r, "retry row should be created for stranded bead")
+		if !r.NeedsHuman {
+			t.Errorf("bead should be marked needs_human when branch is stranded")
+		}
+		if !strings.Contains(r.LastError, "prior worker") {
+			t.Errorf("needs_human reason should mention prior worker; got %q", r.LastError)
+		}
+
+		// An EventDispatchBlockedStrandedBranch event should be logged.
+		events, err := db.RecentEvents(20)
+		require.NoError(t, err)
+		var found bool
+		for _, ev := range events {
+			if ev.Type == state.EventDispatchBlockedStrandedBranch && ev.BeadID == bead.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected EventDispatchBlockedStrandedBranch to be logged for %s", bead.ID)
+		}
+	})
+
+	t.Run("stranded branch with existing PR: dispatch blocked, no needs_human", func(t *testing.T) {
+		anvilPath := initTestGitRepo(t)
+		db, err := state.Open(filepath.Join(anvilPath, "state.db"))
+		require.NoError(t, err)
+		defer db.Close()
+
+		bead := poller.Bead{ID: "PRD-STRANDED-PR", Anvil: anvilName, Title: "stranded with PR"}
+		branch := worktree.BranchName(bead.ID)
+		mockVCS := &mockVCSProvider{
+			openPRs: []vcs.OpenPR{{Number: 77, Branch: branch}},
+		}
+		d := &Daemon{
+			db:           db,
+			logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr:  worktree.NewManager(),
+			vcsProviders: map[string]vcs.Provider{anvilName: mockVCS},
+		}
+		d.cfg.Store(&config.Config{})
+
+		// Push a stranded branch.
+		gitLocal(t, anvilPath, "checkout", "-b", branch)
+		require.NoError(t, os.WriteFile(filepath.Join(anvilPath, "with-pr.txt"), []byte("prior\n"), 0o644))
+		gitLocal(t, anvilPath, "add", "with-pr.txt")
+		gitLocal(t, anvilPath, "commit", "-m", "stranded prior work with PR")
+		gitLocal(t, anvilPath, "push", "origin", branch)
+		gitLocal(t, anvilPath, "checkout", "main")
+
+		if d.preDispatchRemoteBranchCheck(context.Background(), bead, anvilPath) {
+			t.Fatal("expected dispatch to be blocked when PR exists for stranded branch")
+		}
+
+		r, err := db.GetRetry(bead.ID, bead.Anvil)
+		require.NoError(t, err)
+		if r != nil && r.NeedsHuman {
+			t.Errorf("bead must NOT be marked needs_human when a PR already exists; bellows takes over")
+		}
+	})
+}
+
 func TestHandleIPC_WicketScan(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-test-*")
 	require.NoError(t, err)
