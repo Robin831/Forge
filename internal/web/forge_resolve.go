@@ -1,9 +1,11 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/worktree"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -159,17 +162,30 @@ type escalationGit struct {
 // branches.
 const maxEscalationCommits = 50
 
-// gitRunner runs a git subprocess in the given directory and returns
-// stdout. The variable is package-level so tests can swap it without
-// spawning real git processes. The signature mirrors bdShowJSON: dir is
-// the worktree path; args are the git arguments after the program name.
-var gitRunner = func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+// gitEnvGetter returns the git environment for confining git to a worktree.
+// Package-level so tests can replace it without requiring a real git worktree.
+var gitEnvGetter = worktree.GitEnv
+
+// gitRunner runs a git subprocess in the given directory and returns stdout.
+// env, when non-nil, replaces the process environment (use worktree.GitEnv to
+// confine git to a specific worktree). The variable is package-level so tests
+// can swap it without spawning real git processes.
+var gitRunner = func(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	if len(env) > 0 {
+		cmd.Env = env
+	}
 	executil.HideWindow(cmd)
-	return cmd.Output()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil && stderr.Len() > 0 {
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return out, err
 }
 
 // handleForgeEscalation handles GET /api/forge/escalation/{bead_id}. It
@@ -196,14 +212,18 @@ func (s *Server) handleForgeEscalation(w http.ResponseWriter, r *http.Request) {
 	// and the caller must retry with ?anvil=.
 	if resp.Anvil == "" {
 		resp.Anvil = newAnvilLookup(s.db)(beadID)
+		if resp.Anvil == "" {
+			resp.Errors = append(resp.Errors, "anvil: ambiguous or not found; supply ?anvil= to narrow the lookup")
+		}
 	}
 
 	// Retry row drives both the escalation message and the retry detail
 	// block. A missing row is fine — escalations exist for orphaned beads
-	// (no worker) too — but without it we cannot produce a useful message
-	// either, so add it to the errors list.
+	// (no worker) too.
 	if resp.Anvil != "" {
-		if rec, err := s.db.GetRetry(beadID, resp.Anvil); err == nil && rec != nil {
+		if rec, err := s.db.GetRetry(beadID, resp.Anvil); err != nil {
+			resp.Errors = append(resp.Errors, "retry: "+err.Error())
+		} else if rec != nil {
 			resp.EscalationMessage = rec.LastError
 			detail := &retryDetail{
 				NeedsHuman:          rec.NeedsHuman,
@@ -228,44 +248,37 @@ func (s *Server) handleForgeEscalation(w http.ResponseWriter, r *http.Request) {
 	}
 	anvilPath := s.resolveAnvilPath(resp.Anvil)
 	if anvilPath != "" {
-		resp.WorktreePath = filepath.Join(anvilPath, ".workers", sanitizeBeadIDForPath(beadID))
+		resp.WorktreePath = filepath.Join(anvilPath, ".workers", worktree.SanitizePath(beadID))
 		if info, err := os.Stat(resp.WorktreePath); err == nil && info.IsDir() {
 			resp.WorktreeExists = true
 		}
 	}
 
-	// Gather git context when we have a worktree to read from. Each shell
-	// invocation is bounded and tolerates failures: missing refs or a
-	// non-git worktree append to resp.Errors rather than 5xx the request.
+	// Gather git context when we have a worktree to read from. GitEnv
+	// pins git to the worktree so it cannot walk up into the anvil repo;
+	// a nil return means the directory is not a valid worktree and we skip
+	// the git calls entirely rather than risk cross-branch results.
 	if resp.WorktreeExists && resp.Branch != "" {
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-		defer cancel()
-		resp.Context = gatherEscalationContext(ctx, resp.WorktreePath, resp.Branch, &resp.Errors)
+		gitEnv := gitEnvGetter(resp.WorktreePath)
+		if gitEnv == nil {
+			resp.Errors = append(resp.Errors, "worktree: directory exists but is not a valid git worktree")
+		} else {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			resp.Context = gatherEscalationContext(ctx, resp.WorktreePath, resp.Branch, gitEnv, &resp.Errors)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// sanitizeBeadIDForPath mirrors worktree.sanitizePath. The worktree
-// package keeps that function unexported; rather than widen its API for
-// one consumer, we duplicate the four-rune transformation here.
-func sanitizeBeadIDForPath(beadID string) string {
-	r := strings.NewReplacer(
-		"/", "-",
-		"\\", "-",
-		" ", "-",
-		":", "-",
-	)
-	return r.Replace(beadID)
-}
-
 // gatherEscalationContext shells to git in the worker's worktree to
 // produce the parent base, the origin-side and local-side commit lists,
-// and a diff summary. Each step is independent: a failure in one (e.g.
-// the origin branch was deleted) does not prevent the others from
-// running. Errors land in *outErrs as opaque strings the SPA can render
-// in a diagnostics block.
-func gatherEscalationContext(ctx context.Context, worktreePath, branch string, outErrs *[]string) *escalationGit {
+// and a diff summary. env must be a non-nil slice from worktree.GitEnv
+// so that git is confined to the worktree and cannot walk up into the
+// parent anvil repo. Each step is independent: a failure in one does
+// not prevent the others from running; errors land in *outErrs.
+func gatherEscalationContext(ctx context.Context, worktreePath, branch string, env []string, outErrs *[]string) *escalationGit {
 	ctxOut := &escalationGit{}
 
 	addErr := func(stage string, err error) {
@@ -276,9 +289,9 @@ func gatherEscalationContext(ctx context.Context, worktreePath, branch string, o
 	}
 
 	// Parent base: origin/main, falling back to origin/master.
-	if out, err := gitRunner(ctx, worktreePath, "rev-parse", "--verify", "--quiet", "origin/main"); err == nil && len(out) > 0 {
+	if out, err := gitRunner(ctx, worktreePath, env, "rev-parse", "--verify", "--quiet", "origin/main"); err == nil && len(out) > 0 {
 		ctxOut.ParentBase = "origin/main"
-	} else if out, err := gitRunner(ctx, worktreePath, "rev-parse", "--verify", "--quiet", "origin/master"); err == nil && len(out) > 0 {
+	} else if out, err := gitRunner(ctx, worktreePath, env, "rev-parse", "--verify", "--quiet", "origin/master"); err == nil && len(out) > 0 {
 		ctxOut.ParentBase = "origin/master"
 	} else {
 		addErr("parent_base", errors.New("neither origin/main nor origin/master found"))
@@ -287,7 +300,7 @@ func gatherEscalationContext(ctx context.Context, worktreePath, branch string, o
 	// Local commits on the worker branch versus the parent base.
 	if ctxOut.ParentBase != "" {
 		ctxOut.DiffRange = ctxOut.ParentBase + "..HEAD"
-		if out, err := gitRunner(ctx, worktreePath, "log",
+		if out, err := gitRunner(ctx, worktreePath, env, "log",
 			"--pretty=format:%h %s",
 			"-n", strconv.Itoa(maxEscalationCommits),
 			ctxOut.DiffRange,
@@ -299,7 +312,7 @@ func gatherEscalationContext(ctx context.Context, worktreePath, branch string, o
 
 		// Diff stat against the parent base — short summary so the
 		// response stays bounded even for large diffs.
-		if out, err := gitRunner(ctx, worktreePath, "diff", "--shortstat", ctxOut.DiffRange); err == nil {
+		if out, err := gitRunner(ctx, worktreePath, env, "diff", "--shortstat", ctxOut.DiffRange); err == nil {
 			ctxOut.DiffStat = strings.TrimSpace(string(out))
 		} else {
 			addErr("diff_stat", err)
@@ -312,9 +325,9 @@ func gatherEscalationContext(ctx context.Context, worktreePath, branch string, o
 	// worktree). When the branch has not been pushed yet, origin lookup
 	// fails cleanly and OriginBranchExists stays false.
 	ctxOut.OriginBranchRef = "origin/" + branch
-	if out, err := gitRunner(ctx, worktreePath, "rev-parse", "--verify", "--quiet", ctxOut.OriginBranchRef); err == nil && len(out) > 0 {
+	if out, err := gitRunner(ctx, worktreePath, env, "rev-parse", "--verify", "--quiet", ctxOut.OriginBranchRef); err == nil && len(out) > 0 {
 		ctxOut.OriginBranchExists = true
-		if logOut, logErr := gitRunner(ctx, worktreePath, "log",
+		if logOut, logErr := gitRunner(ctx, worktreePath, env, "log",
 			"--pretty=format:%h %s",
 			"-n", strconv.Itoa(maxEscalationCommits),
 			ctxOut.OriginBranchRef,

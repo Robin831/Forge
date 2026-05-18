@@ -28,7 +28,7 @@ func stubGitRunner(t *testing.T, fn func(args []string) ([]byte, error)) {
 	t.Helper()
 	gitRunnerMu.Lock()
 	prev := gitRunner
-	gitRunner = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+	gitRunner = func(_ context.Context, _ string, _ []string, args ...string) ([]byte, error) {
 		return fn(args)
 	}
 	t.Cleanup(func() {
@@ -306,6 +306,12 @@ func TestForgeEscalation_GathersGitContextFromWorktree(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert retry: %v", err)
 	}
+
+	// Stub gitEnvGetter so the test directory is treated as a valid worktree
+	// without requiring a real git repo on disk.
+	prevEnvGetter := gitEnvGetter
+	gitEnvGetter = func(_ string) []string { return []string{"GIT_TEST=1"} }
+	t.Cleanup(func() { gitEnvGetter = prevEnvGetter })
 
 	// Fake git: respond to the verify and log probes the handler issues.
 	stubGitRunner(t, func(args []string) ([]byte, error) {
