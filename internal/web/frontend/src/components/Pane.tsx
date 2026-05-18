@@ -1,5 +1,5 @@
 import { Loader2 } from 'lucide-react'
-import type { ReactNode } from 'react'
+import type { ReactNode, RefObject } from 'react'
 
 interface PaneProps {
   title: string
@@ -11,6 +11,9 @@ interface PaneProps {
   // Useful for inline controls such as a filter input that should live with
   // the pane title rather than the body.
   headerExtra?: ReactNode
+  // bodyRef attaches to the scrollable body element so callers can read/write
+  // scrollTop (used by QueuePane to persist scroll position across navigation).
+  bodyRef?: RefObject<HTMLDivElement | null>
   children: ReactNode
 }
 
@@ -24,6 +27,7 @@ export default function Pane({
   loading,
   error,
   headerExtra,
+  bodyRef,
   children,
 }: PaneProps) {
   return (
@@ -51,7 +55,7 @@ export default function Pane({
         {headerExtra}
       </header>
 
-      <div className="flex-1 overflow-y-auto" role="region">
+      <div ref={bodyRef} className="flex-1 overflow-y-auto" role="region">
         {error ? (
           <div className="m-4 rounded-md border border-red-700/40 bg-red-900/20 px-3 py-2 text-sm text-red-200">
             {error}

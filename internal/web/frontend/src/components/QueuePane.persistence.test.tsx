@@ -1,0 +1,210 @@
+import '@testing-library/jest-dom/vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { act, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { createMemoryRouter, RouterProvider, useLocation } from 'react-router-dom'
+import QueuePane from './QueuePane'
+import type { QueueItem } from '../api'
+import { KEY_PREFIX } from '../hooks/useUIState'
+
+function item(overrides: Partial<QueueItem>): QueueItem {
+  return {
+    bead_id: 'bd-1',
+    anvil: 'forge',
+    title: 'Example bead',
+    priority: 2,
+    status: 'open',
+    labels: [],
+    section: 'ready',
+    created_at: '',
+    updated_at: '',
+    ...overrides,
+  }
+}
+
+// QueueRoot renders the queue pane at "/" — its own page, no shared layout,
+// so navigating to /bead/* fully unmounts it. This mirrors App.tsx where
+// DashboardPage and BeadDetailPage are sibling top-level routes; the
+// remount-on-return is exactly the scenario the persistence has to handle.
+function QueueRoot({ items }: { items: QueueItem[] }) {
+  return <QueuePane items={items} loading={false} error={null} />
+}
+
+function BeadStub() {
+  const loc = useLocation()
+  return (
+    <div data-testid="bead-stub">
+      bead detail: {loc.pathname}
+      {loc.search}
+    </div>
+  )
+}
+
+function renderApp(items: QueueItem[], initialPath = '/') {
+  const router = createMemoryRouter(
+    [
+      { path: '/', element: <QueueRoot items={items} /> },
+      { path: '/bead/:bead_id', element: <BeadStub /> },
+    ],
+    { initialEntries: [initialPath] },
+  )
+  const utils = render(<RouterProvider router={router} />)
+  return { ...utils, router }
+}
+
+const TEST_ITEMS: QueueItem[] = [
+  item({
+    bead_id: 'a1',
+    anvil: 'forge',
+    section: 'ready',
+    priority: 1,
+    title: 'alpha',
+  }),
+  item({
+    bead_id: 'a2',
+    anvil: 'forge',
+    section: 'unlabeled',
+    priority: 2,
+    title: 'beta',
+  }),
+  item({
+    bead_id: 'b1',
+    anvil: 'heimdall',
+    section: 'ready',
+    priority: 0,
+    title: 'gamma',
+  }),
+]
+
+beforeEach(() => {
+  sessionStorage.clear()
+  localStorage.clear()
+})
+
+describe('QueuePane persistence', () => {
+  it('restores filter, sort, and expansion state after back-navigation', async () => {
+    const user = userEvent.setup()
+    const { router } = renderApp(TEST_ITEMS)
+
+    // Set a filter that matches "beta" only.
+    const filterInput = screen.getByRole('textbox', { name: /Filter beads/ })
+    await user.type(filterInput, 'beta')
+    expect(filterInput).toHaveValue('beta')
+
+    // Pick a non-default sort. (The bead description mentions "sort by anvil";
+    // QueuePane doesn't expose anvil sorting, so we use title-asc — the
+    // observable effect is the same: a non-default sortKey that must be
+    // restored from localStorage after the round-trip.)
+    await user.selectOptions(screen.getByTestId('queue-sort-select'), 'title-asc')
+
+    // Expand the forge anvil and then collapse the Unlabeled bucket inside
+    // it. We toggle Unlabeled open once before collapsing it because missing
+    // keys mean collapsed already — we want an explicit `false` in storage so
+    // we can distinguish "never touched" from "deliberately closed".
+    await user.click(screen.getByRole('button', { name: /forge/ }))
+    const unlabeledHeader = screen.getByRole('button', { name: /Unlabeled \(1\)/ })
+    await user.click(unlabeledHeader)
+    expect(unlabeledHeader).toHaveAttribute('aria-expanded', 'true')
+    await user.click(unlabeledHeader)
+    expect(unlabeledHeader).toHaveAttribute('aria-expanded', 'false')
+
+    // Navigate to the bead detail. This fully unmounts QueuePane because the
+    // routes are siblings; useUIState's unmount cleanup flushes any debounced
+    // writes synchronously so storage is guaranteed to be current before the
+    // back-nav remount reads from it.
+    await act(async () => {
+      await router.navigate('/bead/a1?anvil=forge&from=queue')
+    })
+    expect(screen.getByTestId('bead-stub')).toHaveTextContent('from=queue')
+    expect(
+      screen.queryByRole('textbox', { name: /Filter beads/ }),
+    ).not.toBeInTheDocument()
+
+    // Back-navigation remounts QueuePane. useUIState reads storage
+    // synchronously inside its lazy useState initialiser, so the very first
+    // paint after pop already carries restored values — no default-state
+    // flicker. We assert on the first sync paint without any extra awaits.
+    await act(async () => {
+      await router.navigate(-1)
+    })
+
+    const restoredInput = screen.getByRole('textbox', { name: /Filter beads/ })
+    expect(restoredInput).toHaveValue('beta')
+    expect(screen.getByTestId('queue-sort-select')).toHaveValue('title-asc')
+    const forgeHeader = screen.getByRole('button', { name: /forge/ })
+    expect(forgeHeader).toHaveAttribute('aria-expanded', 'true')
+    const restoredBucket = screen.getByRole('button', { name: /Unlabeled \(1\)/ })
+    expect(restoredBucket).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('restores state after a remount (refresh) from persisted storage', async () => {
+    const user = userEvent.setup()
+    const first = renderApp(TEST_ITEMS)
+
+    await user.selectOptions(screen.getByTestId('queue-sort-select'), 'title-asc')
+    await user.click(screen.getByRole('button', { name: /heimdall/ }))
+    expect(screen.getByRole('button', { name: /heimdall/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+
+    // Tear the entire tree down — what a hard refresh looks like to React.
+    // sessionStorage and localStorage survive the unmount, so the fresh mount
+    // must rehydrate from them.
+    first.unmount()
+
+    renderApp(TEST_ITEMS)
+
+    expect(screen.getByTestId('queue-sort-select')).toHaveValue('title-asc')
+    expect(screen.getByRole('button', { name: /heimdall/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: /forge/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+  })
+
+  it('hydrates from seeded storage on first paint with no default-state flash', () => {
+    // Pre-seed storage as if a previous session wrote these values, then mount
+    // the QueuePane. The first synchronous render must already reflect them —
+    // we assert without any awaits, so any post-mount effect would necessarily
+    // come after the first paint and show as a flash.
+    sessionStorage.setItem(
+      `${KEY_PREFIX}root.queue-pane.search`,
+      JSON.stringify('gamma'),
+    )
+    localStorage.setItem(
+      `${KEY_PREFIX}root.queue-pane.sort`,
+      JSON.stringify('title-asc'),
+    )
+    localStorage.setItem(
+      `${KEY_PREFIX}root.queue-pane.bucket-expanded`,
+      JSON.stringify({ 'anvil:heimdall': true }),
+    )
+
+    renderApp(TEST_ITEMS)
+
+    expect(screen.getByRole('textbox', { name: /Filter beads/ })).toHaveValue(
+      'gamma',
+    )
+    expect(screen.getByTestId('queue-sort-select')).toHaveValue('title-asc')
+    expect(screen.getByRole('button', { name: /heimdall/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+  })
+
+  it('appends from=queue to bead detail links', async () => {
+    const user = userEvent.setup()
+    renderApp(TEST_ITEMS)
+    await user.click(screen.getByRole('button', { name: /forge/ }))
+    await user.click(screen.getByRole('button', { name: /Ready \(1\)/ }))
+    const link = screen.getByRole('link', { name: 'a1' })
+    expect(link).toHaveAttribute(
+      'href',
+      '/bead/a1?anvil=forge&from=queue',
+    )
+  })
+})

@@ -1,9 +1,10 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, List, MoreHorizontal, Play, RotateCcw, Square, Tag, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { actions, type QueueItem } from '../api'
 import { priorityClasses, priorityLabel, relativeTime } from '../lib/format'
 import { useAction } from '../hooks/useAction'
+import { useUIState } from '../hooks/useUIState'
 import ConfirmModal from './ConfirmModal'
 import Pane, { EmptyState } from './Pane'
 
@@ -184,14 +185,23 @@ export default function QueuePane({
   const { run, busy } = useAction()
   const [dialog, setDialog] = useState<DialogState | null>(null)
   const [openMenu, setOpenMenu] = useState<string | null>(null)
-  const [filter, setFilter] = useState('')
+  // filter / scroll position are transient navigation state — sessionStorage so
+  // they survive a back-nav round-trip but reset when the tab closes. sortKey
+  // and expanded are true preferences — localStorage so they survive a browser
+  // restart. All keys are namespaced by route via useUIState's default scope.
+  const [filter, setFilter] = useUIState<string>('queue-pane.search', '', { storage: 'session' })
   const filterInputRef = useRef<HTMLInputElement>(null)
-  const [sortKey, setSortKey] = useState<SortKey>('priority-asc')
+  const [sortKey, setSortKey] = useUIState<SortKey>('queue-pane.sort', 'priority-asc', { storage: 'local' })
   // Expand state is keyed by anvil name (`anvil:<name>`) and bucket
   // (`bucket:<anvil>:<bucket>`). Missing keys mean collapsed — both anvils and
-  // buckets start closed so the operator sees a compact summary first. State
-  // lives in component-local useState (per the bead spec: no localStorage).
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  // buckets start closed so the operator sees a compact summary first.
+  const [expanded, setExpanded] = useUIState<Record<string, boolean>>(
+    'queue-pane.bucket-expanded',
+    {},
+    { storage: 'local' },
+  )
+  const [scrollTop, setScrollTop] = useUIState<number>('queue-pane.scroll', 0, { storage: 'session' })
+  const bodyRef = useRef<HTMLDivElement | null>(null)
   // Apply-tag bookkeeping. `applyingTag` tracks per-row in-flight requests so
   // we can disable the button and dedupe double-clicks. `promotedToReady`
   // tracks rows we have optimistically moved out of the Unlabeled bucket so
@@ -199,6 +209,41 @@ export default function QueuePane({
   // refreshes `items` via SSE. Both maps are keyed by queueRowKey(item).
   const [applyingTag, setApplyingTag] = useState<Record<string, boolean>>({})
   const [promotedToReady, setPromotedToReady] = useState<Record<string, boolean>>({})
+
+  // Restore scroll position before the browser paints so users see no jump
+  // from 0 → saved on back-navigation. useLayoutEffect runs synchronously
+  // after the DOM mutation but before paint, which is exactly the window we
+  // need; the dep on `loading` re-fires once the polled data arrives so the
+  // list has actual height to scroll into.
+  useLayoutEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    if (scrollTop > 0 && el.scrollTop !== scrollTop) {
+      el.scrollTop = scrollTop
+    }
+    // We deliberately depend on `loading` (not `items`) so we restore after
+    // the first data arrival, and we don't re-run on every poll tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading])
+
+  // Throttle scroll capture so we don't write to storage on every pixel.
+  // The hook itself debounces writes by 150ms, but updating React state on
+  // every scroll event still causes wasteful renders.
+  useEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    let pending = false
+    const onScroll = () => {
+      if (pending) return
+      pending = true
+      window.requestAnimationFrame(() => {
+        pending = false
+        setScrollTop(el.scrollTop)
+      })
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [setScrollTop])
 
   const filteredItems = useMemo(() => {
     const q = filter.trim().toLowerCase()
@@ -303,6 +348,7 @@ export default function QueuePane({
         count={totalCount}
         loading={loading}
         error={error}
+        bodyRef={bodyRef}
         headerExtra={
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative w-full">
@@ -537,7 +583,7 @@ function BucketSection({
                     </p>
                     <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
                       <Link
-                        to={`/bead/${item.bead_id}?anvil=${encodeURIComponent(item.anvil)}`}
+                        to={`/bead/${item.bead_id}?anvil=${encodeURIComponent(item.anvil)}&from=queue`}
                         className="font-mono text-slate-400 hover:text-amber-300"
                       >
                         {item.bead_id}

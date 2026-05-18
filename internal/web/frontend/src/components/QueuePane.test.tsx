@@ -6,6 +6,13 @@ import { MemoryRouter } from 'react-router-dom'
 import QueuePane, { groupQueueItems, sortItems } from './QueuePane'
 import { actions, type QueueItem } from '../api'
 
+beforeEach(() => {
+  // QueuePane persists filter/sort/expanded via useUIState. Each test should
+  // start with empty storage so we get deterministic defaults.
+  sessionStorage.clear()
+  localStorage.clear()
+})
+
 function item(overrides: Partial<QueueItem>): QueueItem {
   return {
     bead_id: 'bd-1',
