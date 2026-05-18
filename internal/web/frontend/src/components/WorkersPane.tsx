@@ -33,9 +33,10 @@ function statusClass(status: string): string {
   return STATUS_CLASSES[status] ?? 'bg-slate-800 text-slate-300 border-slate-700'
 }
 
-// Encode an arbitrary anvil name into a valid HTML id token, mirroring the
-// helper used in QueuePane so the same anvil renders with a stable aria-controls
-// target regardless of which pane references it.
+// Encode an arbitrary anvil name into a valid HTML id token using the same
+// percent-encoding scheme as QueuePane (replace % with _ for readability).
+// The `workers-` prefix keeps IDs unique when both panes appear on the same
+// page, since HTML ids must be document-scoped.
 function anvilDomId(name: string): string {
   return `workers-anvil-body-${encodeURIComponent(name).replace(/%/g, '_')}`
 }
@@ -46,9 +47,10 @@ interface AnvilGroup {
 }
 
 // groupWorkersByAnvil partitions the (already filtered + sorted) worker list
-// into per-anvil sections. Anvils are alphabetised so the layout stays stable
-// across polls; workers within each group keep their incoming order (newest
-// started_at first, as established by the caller).
+// into per-anvil sections. Groups are ordered by their newest worker's
+// started_at descending so the most recently active anvil appears first,
+// preserving the "newest at top" intent across the whole pane. Workers
+// within each group keep their incoming order (newest started_at first).
 function groupWorkersByAnvil(workers: WorkerInfo[]): AnvilGroup[] {
   const byAnvil = new Map<string, AnvilGroup>()
   for (const w of workers) {
@@ -59,9 +61,11 @@ function groupWorkersByAnvil(workers: WorkerInfo[]): AnvilGroup[] {
     }
     group.workers.push(w)
   }
-  return Array.from(byAnvil.values()).sort((a, b) =>
-    a.anvil.localeCompare(b.anvil),
-  )
+  return Array.from(byAnvil.values()).sort((a, b) => {
+    const aT = Date.parse(a.workers[0]?.started_at) || 0
+    const bT = Date.parse(b.workers[0]?.started_at) || 0
+    return bT - aT || a.anvil.localeCompare(b.anvil)
+  })
 }
 
 export default function WorkersPane({
@@ -99,8 +103,9 @@ export default function WorkersPane({
   // (quench/burnish/rebase) keep their own phase and remain clickable here.
   const visibleWorkers = workers.filter((w) => !isBellowsMonitor(w))
 
-  // Sort by started_at descending so newest workers are at the top — matches
-  // hearth TUI behaviour and Hytte's WorkersCard.
+  // Sort by started_at descending so workers within each anvil group appear
+  // newest first. groupWorkersByAnvil then orders groups by their newest
+  // member, so the overall list is newest-group-first, newest-within-group.
   const sorted = useMemo(
     () =>
       [...visibleWorkers].sort((a, b) => {
@@ -186,6 +191,7 @@ export default function WorkersPane({
                 <li key={group.anvil}>
                   <button
                     type="button"
+                    data-testid={`workers-group-${group.anvil}`}
                     onClick={() => toggleGroup(group.anvil)}
                     aria-expanded={!isCollapsed}
                     aria-controls={anvilDomId(group.anvil)}
