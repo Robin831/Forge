@@ -1413,6 +1413,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 						DetectOptions:   burnishDetectOpts,
 						GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 						Hooks:           anvilCfg.Hooks,
+						VerifyTimeout:   burnishCfg.Settings.BurnishVerifyTimeout,
 					})
 				}
 			}
@@ -1435,6 +1436,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					DetectOptions:   burnishDetectOpts,
 					GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 					Hooks:           anvilCfg.Hooks,
+					VerifyTimeout:   burnishCfg.Settings.BurnishVerifyTimeout,
 				})
 			}
 			status := state.WorkerDone

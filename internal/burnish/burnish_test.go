@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/hooks"
@@ -819,6 +820,151 @@ func TestFix_BeforeTemperHook_Fails_AbortsBurnish(t *testing.T) {
 	}
 	if pushCalled {
 		t.Error("push should NOT have been called after before_temper hook failure")
+	}
+}
+
+// TestFix_VerifyTimeout_MarksWorkerFailed verifies that when the verification
+// step (temper) never returns, the burnish loop fires its configured timeout,
+// returns a stable error string ("warden_timeout"), and transitions the
+// worker row in state.DB to "failed".
+//
+// This regression covers the round-2 burnish hang on PR 761 (Forge-j67a),
+// where Smith committed locally but the post-Smith pipeline went silent and
+// the worker row stayed running indefinitely with no Warden / no push.
+func TestFix_VerifyTimeout_MarksWorkerFailed(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+
+	// Register a worker row so we can assert the failed transition.
+	workerID := "test-burnish-1"
+	if err := db.InsertWorker(&state.Worker{
+		ID:        workerID,
+		BeadID:    "test-bead",
+		Anvil:     "test-anvil",
+		Branch:    "forge/test",
+		Status:    state.WorkerRunning,
+		Phase:     "burnish",
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+
+	smithSpawnFn = makeSmithStub(0)
+
+	// Block until the test ends or the verifyCtx is cancelled. This simulates
+	// a verification step that "never returns" within the deadline.
+	temperRunFn = func(ctx context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		<-ctx.Done()
+		return &temper.Result{Passed: false, FailedStep: "blocked"}
+	}
+
+	pushCalled := 0
+	gitPushFn = func(_ context.Context, _, _ string) error {
+		pushCalled++
+		return nil
+	}
+	gitRevParseFn = noRevParse
+
+	v := &fakeVCS{comments: []vcs.ReviewComment{
+		{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED"},
+	}}
+
+	params := defaultFixParams(db, v)
+	params.WorkerID = workerID
+	params.MaxAttempts = 1
+	params.VerifyTimeout = 100 * time.Millisecond
+
+	start := time.Now()
+	result := Fix(context.Background(), params)
+	elapsed := time.Since(start)
+
+	if result.Addressed {
+		t.Error("expected Addressed=false on verification timeout")
+	}
+	if result.Error == nil {
+		t.Fatal("expected error on verification timeout")
+	}
+	if !strings.Contains(result.Error.Error(), ErrVerifyTimeoutReason) {
+		t.Errorf("expected error to contain %q, got: %v", ErrVerifyTimeoutReason, result.Error)
+	}
+	if pushCalled != 0 {
+		t.Errorf("expected no push on verification timeout, got %d", pushCalled)
+	}
+	// Allow generous slack on slow CI, but should be well under MaxAttempts*verifyTimeout.
+	if elapsed > 5*time.Second {
+		t.Errorf("Fix took %s; expected fast return on verification timeout", elapsed)
+	}
+
+	// Verify the worker row transitioned to failed.
+	w, err := db.GetWorker(workerID)
+	if err != nil {
+		t.Fatalf("GetWorker(%s): %v", workerID, err)
+	}
+	if w.Status != state.WorkerFailed {
+		t.Errorf("worker %s status = %s, want %s", workerID, w.Status, state.WorkerFailed)
+	}
+}
+
+// TestFix_VerifyTimeout_DefaultsToPackageConstant verifies that when no
+// VerifyTimeout is configured (zero value), the burnish loop applies the
+// package-level default rather than treating zero as "no timeout".
+func TestFix_VerifyTimeout_DefaultsToPackageConstant(t *testing.T) {
+	if got := resolveVerifyTimeout(0); got != DefaultVerifyTimeout {
+		t.Errorf("resolveVerifyTimeout(0) = %s, want %s", got, DefaultVerifyTimeout)
+	}
+	custom := 7 * time.Minute
+	if got := resolveVerifyTimeout(custom); got != custom {
+		t.Errorf("resolveVerifyTimeout(%s) = %s, want %s", custom, got, custom)
+	}
+}
+
+// TestBatchFix_VerifyTimeout verifies the batch path also honours the
+// verification timeout and surfaces the stable error string.
+func TestBatchFix_VerifyTimeout(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+
+	smithSpawnFn = makeSmithStub(0)
+	temperRunFn = func(ctx context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		<-ctx.Done()
+		return &temper.Result{Passed: false, FailedStep: "blocked"}
+	}
+	pushCalled := 0
+	gitPushFn = func(_ context.Context, _, _ string) error {
+		pushCalled++
+		return nil
+	}
+	gitRevParseFn = noRevParse
+
+	result := BatchFix(context.Background(), BatchFixParams{
+		WorktreePath:  os.TempDir(),
+		BeadID:        "test-bead",
+		AnvilName:     "test-anvil",
+		PRNumber:      42,
+		Branch:        "forge/test",
+		DB:            db,
+		Providers:     []provider.Provider{{Kind: provider.Claude, Model: "test"}},
+		VerifyTimeout: 100 * time.Millisecond,
+		Comments: []vcs.ReviewComment{
+			{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED"},
+		},
+	})
+
+	if result.Addressed {
+		t.Error("expected Addressed=false on batch verification timeout")
+	}
+	if result.Error == nil {
+		t.Fatal("expected error on batch verification timeout")
+	}
+	if !strings.Contains(result.Error.Error(), ErrVerifyTimeoutReason) {
+		t.Errorf("expected error to contain %q, got: %v", ErrVerifyTimeoutReason, result.Error)
+	}
+	if pushCalled != 0 {
+		t.Errorf("expected no push on verification timeout, got %d", pushCalled)
 	}
 }
 
