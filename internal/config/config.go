@@ -287,14 +287,19 @@ type SettingsConfig struct {
 	// before the PR is considered exhausted. Default: 5.
 	MaxReviewFixAttempts int `mapstructure:"max_review_fix_attempts" yaml:"max_review_fix_attempts"`
 	// BurnishVerifyTimeout is the maximum time allowed for the post-Smith
-	// verification (temper) and push steps in a single burnish attempt. When
-	// the verification step does not return within this window the burnish
-	// worker is marked failed with reason "warden_timeout" so the daemon's
-	// normal recovery path can re-dispatch. Default: 5m. Omitting the field
-	// (or setting it to 0) falls back to the package default — the timeout
-	// cannot be disabled, because doing so would re-introduce the original
-	// silent-hang bug (Forge-j67a). When set explicitly the value must be
-	// at least 30s.
+	// temper (verification) step in a single burnish attempt. The push and
+	// thread-resolution steps that follow are not covered by this deadline.
+	// When temper does not return within this window the burnish worker logs
+	// a WARN line and returns an error whose message contains the stable
+	// reason string "warden_timeout"; the reason is recorded in the event
+	// log (EventBurnishFailed) and in the returned error value — it is NOT
+	// stored in a separate column of the workers table. The caller is
+	// expected to transition the worker row to WorkerFailed and let the
+	// daemon's normal recovery path re-dispatch. Default: 5m. Omitting the
+	// field (or setting it to 0) falls back to the package default — the
+	// timeout cannot be disabled, because doing so would re-introduce the
+	// original silent-hang bug (Forge-j67a). When set explicitly the value
+	// must be at least 30s.
 	BurnishVerifyTimeout time.Duration `mapstructure:"burnish_verify_timeout" yaml:"burnish_verify_timeout"`
 	// MaxRebaseAttempts is the maximum number of conflict rebase attempts per
 	// PR before the PR is considered exhausted. Default: 3.
@@ -539,7 +544,12 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		MaxCIFixAttempts:          s.MaxCIFixAttempts,
 		MaxReviewFixAttempts:      s.MaxReviewFixAttempts,
 		MaxRebaseAttempts:         s.MaxRebaseAttempts,
-		BurnishVerifyTimeout:      durationString(s.BurnishVerifyTimeout),
+		BurnishVerifyTimeout:      func() string {
+			if s.BurnishVerifyTimeout > 0 {
+				return durationString(s.BurnishVerifyTimeout)
+			}
+			return ""
+		}(),
 		MergeStrategy:             s.MergeStrategy,
 		StaleInterval:             durationString(s.StaleInterval),
 		VulncheckEnabled:          s.VulncheckEnabled,
