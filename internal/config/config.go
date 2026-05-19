@@ -290,7 +290,11 @@ type SettingsConfig struct {
 	// verification (temper) and push steps in a single burnish attempt. When
 	// the verification step does not return within this window the burnish
 	// worker is marked failed with reason "warden_timeout" so the daemon's
-	// normal recovery path can re-dispatch. Default: 5m. Set to 0 to disable.
+	// normal recovery path can re-dispatch. Default: 5m. Omitting the field
+	// (or setting it to 0) falls back to the package default — the timeout
+	// cannot be disabled, because doing so would re-introduce the original
+	// silent-hang bug (Forge-j67a). When set explicitly the value must be
+	// at least 30s.
 	BurnishVerifyTimeout time.Duration `mapstructure:"burnish_verify_timeout" yaml:"burnish_verify_timeout"`
 	// MaxRebaseAttempts is the maximum number of conflict rebase attempts per
 	// PR before the PR is considered exhausted. Default: 3.
@@ -1086,9 +1090,9 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "settings.max_rebase_attempts must be >= 1")
 	}
 	if c.Settings.BurnishVerifyTimeout < 0 {
-		errs = append(errs, "settings.burnish_verify_timeout must not be negative (set to 0 to disable)")
+		errs = append(errs, "settings.burnish_verify_timeout must not be negative (omit or set to 0 to use the package default)")
 	} else if c.Settings.BurnishVerifyTimeout > 0 && c.Settings.BurnishVerifyTimeout < 30*time.Second {
-		errs = append(errs, "settings.burnish_verify_timeout must be >= 30s when enabled (or 0 to disable)")
+		errs = append(errs, "settings.burnish_verify_timeout must be >= 30s when set explicitly (omit or set to 0 to use the package default)")
 	}
 
 	if c.Settings.CopilotDailyRequestLimit < 0 {
