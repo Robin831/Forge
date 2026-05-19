@@ -30,6 +30,25 @@ import (
 // burnish worker can advance to thread resolution and completion.
 const smithExitTimeout = 30 * time.Second
 
+// DefaultVerifyTimeout is the default deadline for the post-Smith verification
+// (temper) step in a single burnish attempt. If temper does not return within
+// this window the burnish worker logs WARN, marks the worker failed with a
+// stable error string, and returns so the daemon can re-dispatch via its
+// normal recovery path. Mirrored by config.SettingsConfig.BurnishVerifyTimeout
+// for runtime override.
+//
+// To reproduce the timeout in development, override the temper test step with
+// a long-running command on the anvil's forge.yaml (e.g. `temper.steps: - {
+// name: test, command: sleep, args: [999] }`) and trigger a burnish round.
+// The burnish worker should emit "verification starting" then "WARN
+// verification timeout after 5m0s (reason=warden_timeout)" in journalctl.
+const DefaultVerifyTimeout = 5 * time.Minute
+
+// ErrVerifyTimeoutReason is the stable error/event string emitted when burnish
+// gives up waiting on verification. The bead retry path and operator dashboards
+// match on this exact string, so do not change without coordinating.
+const ErrVerifyTimeoutReason = "warden_timeout"
+
 // FixParams holds the inputs for a review fix attempt.
 type FixParams struct {
 	// WorktreePath is the git worktree for this PR's branch.
@@ -68,6 +87,9 @@ type FixParams struct {
 	// Hooks is the per-anvil hook configuration. When set, before_temper and
 	// after_temper hooks fire around every temper invocation.
 	Hooks *config.HooksConfig
+	// VerifyTimeout caps the post-Smith verification (temper) step per attempt.
+	// When <= 0 the package default (DefaultVerifyTimeout) is applied.
+	VerifyTimeout time.Duration
 }
 
 // FixResult captures the outcome of addressing review comments.
@@ -118,6 +140,9 @@ type BatchFixParams struct {
 	GoRaceDetection bool
 	// Hooks is the per-anvil hook configuration for temper hooks.
 	Hooks *config.HooksConfig
+	// VerifyTimeout caps the post-Smith verification (temper) step.
+	// When <= 0 the package default (DefaultVerifyTimeout) is applied.
+	VerifyTimeout time.Duration
 }
 
 // BatchFix combines multiple review comments into one Smith prompt.
@@ -207,6 +232,9 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		return result
 	}
 
+	log.Printf("[burnish] PR #%d bead=%s: smith exit observed (exit=%d, subtype=%s)",
+		p.PRNumber, p.BeadID, smithResult.ExitCode, smithResult.ResultSubtype)
+
 	if smithResult.ExitCode != 0 {
 		result.Error = fmt.Errorf("batch review fix failed (exit %d)", smithResult.ExitCode)
 		if p.DB != nil {
@@ -233,11 +261,30 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		result.Duration = time.Since(start)
 		return result
 	}
+	verifyTimeout := resolveVerifyTimeout(p.VerifyTimeout)
+	log.Printf("[burnish] PR #%d bead=%s: verification starting (timeout=%s)",
+		p.PRNumber, p.BeadID, verifyTimeout)
 	temperCfg := resolveTemperConfig(p.WorktreePath, p.TemperConfig, p.DetectOptions, p.GoRaceDetection)
-	verifyResult := temperRunFn(ctx, p.WorktreePath, temperCfg, p.DB, p.BeadID, p.AnvilName)
+	verifyOutc := runVerifyWithTimeout(ctx, p.PRNumber, p.BeadID, p.AnvilName, p.WorktreePath, temperCfg, p.DB, verifyTimeout)
 	if err := hookRunFn(ctx, p.WorkerID, "after_temper", hooks.HookCmd(p.Hooks, "after_temper"), hEnv); err != nil {
 		log.Printf("[burnish] PR #%d: after_temper hook failed (non-fatal): %v", p.PRNumber, err)
 	}
+	if verifyOutc.timedOut {
+		if p.DB != nil {
+			_ = p.DB.LogEvent(state.EventBurnishFailed,
+				fmt.Sprintf("PR #%d: batch verification timed out after %s (%s)", p.PRNumber, verifyTimeout, ErrVerifyTimeoutReason),
+				p.BeadID, p.AnvilName)
+			if p.WorkerID != "" {
+				_ = p.DB.UpdateWorkerStatus(p.WorkerID, state.WorkerFailed)
+			}
+		}
+		result.Error = fmt.Errorf("batch review fix: verification timed out after %s (%s)", verifyTimeout, ErrVerifyTimeoutReason)
+		result.Duration = time.Since(start)
+		return result
+	}
+	verifyResult := verifyOutc.result
+	log.Printf("[burnish] PR #%d bead=%s: verification result (passed=%t, failedStep=%s)",
+		p.PRNumber, p.BeadID, verifyResult.Passed, verifyResult.FailedStep)
 	if !verifyResult.Passed {
 		log.Printf("[burnish] PR #%d: batch Temper failed (failed step: %s) — not pushing",
 			p.PRNumber, verifyResult.FailedStep)
@@ -255,8 +302,9 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	localHead, _ := gitRevParseFn(ctx, p.WorktreePath, "HEAD")
 	remoteHead, _ := gitRevParseFn(ctx, p.WorktreePath, "origin/"+p.Branch)
 	if localHead == "" || localHead != remoteHead {
+		log.Printf("[burnish] PR #%d bead=%s: push attempt starting (branch=%s)", p.PRNumber, p.BeadID, p.Branch)
 		if err := gitPushFn(ctx, p.WorktreePath, p.Branch); err != nil {
-			log.Printf("[burnish] PR #%d: push failed after temper-verified batch fix: %v", p.PRNumber, err)
+			log.Printf("[burnish] PR #%d bead=%s: WARN push failed after temper-verified batch fix: %v", p.PRNumber, p.BeadID, err)
 			if p.DB != nil {
 				_ = p.DB.LogEvent(state.EventBurnishFailed,
 					fmt.Sprintf("PR #%d: push failed after temper-verified batch fix: %v", p.PRNumber, err),
@@ -266,8 +314,9 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 			result.Duration = time.Since(start)
 			return result
 		}
+		log.Printf("[burnish] PR #%d bead=%s: push complete", p.PRNumber, p.BeadID)
 	} else {
-		log.Printf("[burnish] PR #%d: Smith already pushed (HEAD matches origin/%s), skipping explicit push", p.PRNumber, p.Branch)
+		log.Printf("[burnish] PR #%d bead=%s: Smith already pushed (HEAD matches origin/%s), skipping explicit push", p.PRNumber, p.BeadID, p.Branch)
 	}
 
 	log.Printf("[burnish] PR #%d: batch review fix verified and pushed for %d comments", p.PRNumber, len(actionable))
@@ -277,6 +326,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	resolvedCount := 0
 	resolvableCount := 0
 	if p.VCS != nil {
+		log.Printf("[burnish] PR #%d bead=%s: thread resolution starting", p.PRNumber, p.BeadID)
 		for _, comment := range actionable {
 			if comment.ThreadID == "" {
 				continue
@@ -291,6 +341,8 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		if resolvedCount > 0 {
 			log.Printf("[burnish] PR #%d: Resolved %d/%d threads on GitHub", p.PRNumber, resolvedCount, resolvableCount)
 		}
+		log.Printf("[burnish] PR #%d bead=%s: thread resolution complete (resolved=%d/%d)",
+			p.PRNumber, p.BeadID, resolvedCount, resolvableCount)
 	}
 
 	if p.DB != nil {
@@ -411,6 +463,8 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		_ = p.DB.LogEvent(state.EventBurnishStarted,
 			fmt.Sprintf("PR #%d: attempt %d, %d comments (provider: %s)", p.PRNumber, attempt, len(actionable), providers[activeProviderIdx].Label()),
 			p.BeadID, p.AnvilName)
+		log.Printf("[burnish] PR #%d bead=%s: spawning smith (attempt=%d, provider=%s)",
+			p.PRNumber, p.BeadID, attempt, providers[activeProviderIdx].Label())
 
 		logDir := p.WorktreePath + "/.forge-logs"
 		var smithResult *smith.Result
@@ -463,6 +517,9 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			}
 		}
 
+		log.Printf("[burnish] PR #%d bead=%s: smith exit observed (attempt=%d, exit=%d, subtype=%s)",
+			p.PRNumber, p.BeadID, attempt, smithResult.ExitCode, smithResult.ResultSubtype)
+
 		// If all providers are rate-limited, abort rather than burning more attempts.
 		if smithResult.RateLimited {
 			log.Printf("[burnish] PR #%d: All providers rate limited on attempt %d", p.PRNumber, attempt)
@@ -514,11 +571,29 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			result.Duration = time.Since(start)
 			return result
 		}
+		verifyTimeout := resolveVerifyTimeout(p.VerifyTimeout)
+		log.Printf("[burnish] PR #%d bead=%s: verification starting (attempt=%d, timeout=%s)",
+			p.PRNumber, p.BeadID, attempt, verifyTimeout)
 		temperCfg := resolveTemperConfig(p.WorktreePath, p.TemperConfig, p.DetectOptions, p.GoRaceDetection)
-		verifyResult := temperRunFn(ctx, p.WorktreePath, temperCfg, p.DB, p.BeadID, p.AnvilName)
+		verifyOutc := runVerifyWithTimeout(ctx, p.PRNumber, p.BeadID, p.AnvilName, p.WorktreePath, temperCfg, p.DB, verifyTimeout)
 		if err := hookRunFn(ctx, p.WorkerID, "after_temper", hooks.HookCmd(p.Hooks, "after_temper"), hEnv); err != nil {
 			log.Printf("[burnish] PR #%d: after_temper hook failed (non-fatal): %v", p.PRNumber, err)
 		}
+		if verifyOutc.timedOut {
+			_ = p.DB.LogEvent(state.EventBurnishFailed,
+				fmt.Sprintf("PR #%d: verification timed out after %s (%s) on attempt %d",
+					p.PRNumber, verifyTimeout, ErrVerifyTimeoutReason, attempt),
+				p.BeadID, p.AnvilName)
+			if p.WorkerID != "" && p.DB != nil {
+				_ = p.DB.UpdateWorkerStatus(p.WorkerID, state.WorkerFailed)
+			}
+			result.Error = fmt.Errorf("review fix: verification timed out after %s (%s)", verifyTimeout, ErrVerifyTimeoutReason)
+			result.Duration = time.Since(start)
+			return result
+		}
+		verifyResult := verifyOutc.result
+		log.Printf("[burnish] PR #%d bead=%s: verification result (attempt=%d, passed=%t, failedStep=%s)",
+			p.PRNumber, p.BeadID, attempt, verifyResult.Passed, verifyResult.FailedStep)
 
 		// Defensive check: did Smith push despite being told not to?
 		smithAlreadyPushed := false
@@ -541,8 +616,10 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 
 		// Temper passed — push the verified commits.
 		if !smithAlreadyPushed {
+			log.Printf("[burnish] PR #%d bead=%s: push attempt starting (attempt=%d, branch=%s)",
+				p.PRNumber, p.BeadID, attempt, p.Branch)
 			if err := gitPushFn(ctx, p.WorktreePath, p.Branch); err != nil {
-				log.Printf("[burnish] PR #%d: push failed after temper-verified fix: %v", p.PRNumber, err)
+				log.Printf("[burnish] PR #%d bead=%s: WARN push failed after temper-verified fix: %v", p.PRNumber, p.BeadID, err)
 				_ = p.DB.LogEvent(state.EventBurnishFailed,
 					fmt.Sprintf("PR #%d: push failed after temper-verified fix: %v", p.PRNumber, err),
 					p.BeadID, p.AnvilName)
@@ -550,6 +627,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				result.Duration = time.Since(start)
 				return result
 			}
+			log.Printf("[burnish] PR #%d bead=%s: push complete (attempt=%d)", p.PRNumber, p.BeadID, attempt)
 		}
 
 		log.Printf("[burnish] PR #%d: Review fixes verified and pushed on attempt %d", p.PRNumber, attempt)
@@ -558,6 +636,8 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		// Resolve threads after successful fix.
 		// Only thread-level comments (with a ThreadID from GraphQL) can be resolved
 		// via the API; review-level CHANGES_REQUESTED comments have no thread ID.
+		log.Printf("[burnish] PR #%d bead=%s: thread resolution starting (count=%d)",
+			p.PRNumber, p.BeadID, len(actionable))
 		resolvedCount := 0
 		for _, comment := range actionable {
 			if comment.ThreadID == "" {
@@ -584,6 +664,8 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		if resolvedCount > 0 {
 			log.Printf("[burnish] PR #%d: Resolved %d/%d threads on GitHub", p.PRNumber, resolvedCount, len(actionable))
 		}
+		log.Printf("[burnish] PR #%d bead=%s: thread resolution complete (resolved=%d/%d)",
+			p.PRNumber, p.BeadID, resolvedCount, len(actionable))
 
 		_ = p.DB.LogEvent(state.EventBurnishSuccess,
 			fmt.Sprintf("PR #%d: Addressed %d comments on attempt %d", p.PRNumber, len(actionable), attempt),
@@ -656,6 +738,57 @@ func buildReviewFixPrompt(p FixParams, comments []vcs.ReviewComment) string {
 `, p.BeadID)
 
 	return b.String()
+}
+
+// resolveVerifyTimeout returns the verification timeout to use, defaulting to
+// DefaultVerifyTimeout when the caller did not configure one.
+func resolveVerifyTimeout(d time.Duration) time.Duration {
+	if d <= 0 {
+		return DefaultVerifyTimeout
+	}
+	return d
+}
+
+// verifyOutcome carries the result of a temper run executed under a deadline.
+type verifyOutcome struct {
+	result   *temper.Result
+	timedOut bool
+}
+
+// runVerifyWithTimeout runs temperRunFn under a deadline. When the deadline
+// fires before temper returns, the wrapper logs a WARN transition, returns
+// timedOut=true, and lets temper's own goroutine finish in the background
+// (the cancel call signals temper to abort cleanly via its context). The
+// verification context is derived from ctx so an outer cancellation also
+// unblocks the call. The timer and the result channel are independent
+// signals so we cannot get into the race where Go's `select` picks resCh
+// over a deadline-fired ctx.Done().
+func runVerifyWithTimeout(ctx context.Context, prNumber int, beadID, anvilName, worktreePath string,
+	cfg temper.Config, db *state.DB, timeout time.Duration) verifyOutcome {
+	verifyCtx, cancel := context.WithCancel(ctx)
+	resCh := make(chan *temper.Result, 1)
+	go func() {
+		// temper observes verifyCtx cancellation and aborts running steps.
+		resCh <- temperRunFn(verifyCtx, worktreePath, cfg, db, beadID, anvilName)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case r := <-resCh:
+		cancel()
+		return verifyOutcome{result: r}
+	case <-timer.C:
+		log.Printf("[burnish] PR #%d bead=%s: WARN verification timeout after %s (reason=%s)",
+			prNumber, beadID, timeout, ErrVerifyTimeoutReason)
+		cancel()
+		return verifyOutcome{timedOut: true}
+	case <-ctx.Done():
+		// Outer cancellation: wait for temper to observe it and return so we
+		// don't leak the goroutine after the daemon proceeds.
+		cancel()
+		r := <-resCh
+		return verifyOutcome{result: r}
+	}
 }
 
 // hookRunFn is the function used to run hooks. Package-level variable for test stubbing.

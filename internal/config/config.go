@@ -286,6 +286,21 @@ type SettingsConfig struct {
 	// MaxReviewFixAttempts is the maximum number of review fix cycles per PR
 	// before the PR is considered exhausted. Default: 5.
 	MaxReviewFixAttempts int `mapstructure:"max_review_fix_attempts" yaml:"max_review_fix_attempts"`
+	// BurnishVerifyTimeout is the maximum time allowed for the post-Smith
+	// temper (verification) step in a single burnish attempt. The push and
+	// thread-resolution steps that follow are not covered by this deadline.
+	// When temper does not return within this window the burnish worker logs
+	// a WARN line and returns an error whose message contains the stable
+	// reason string "warden_timeout"; the reason is recorded in the event
+	// log (EventBurnishFailed) and in the returned error value — it is NOT
+	// stored in a separate column of the workers table. The caller is
+	// expected to transition the worker row to WorkerFailed and let the
+	// daemon's normal recovery path re-dispatch. Default: 5m. Omitting the
+	// field (or setting it to 0) falls back to the package default — the
+	// timeout cannot be disabled, because doing so would re-introduce the
+	// original silent-hang bug (Forge-j67a). When set explicitly the value
+	// must be at least 30s.
+	BurnishVerifyTimeout time.Duration `mapstructure:"burnish_verify_timeout" yaml:"burnish_verify_timeout"`
 	// MaxRebaseAttempts is the maximum number of conflict rebase attempts per
 	// PR before the PR is considered exhausted. Default: 3.
 	MaxRebaseAttempts int `mapstructure:"max_rebase_attempts" yaml:"max_rebase_attempts"`
@@ -469,6 +484,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		MaxCIFixAttempts          int      `yaml:"max_ci_fix_attempts"`
 		MaxReviewFixAttempts      int      `yaml:"max_review_fix_attempts"`
 		MaxRebaseAttempts         int      `yaml:"max_rebase_attempts"`
+		BurnishVerifyTimeout      string   `yaml:"burnish_verify_timeout,omitempty"`
 		MergeStrategy             string   `yaml:"merge_strategy,omitempty"`
 		StaleInterval             string   `yaml:"stale_interval"`
 		DepcheckInterval          string   `yaml:"depcheck_interval,omitempty"`
@@ -528,6 +544,12 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		MaxCIFixAttempts:          s.MaxCIFixAttempts,
 		MaxReviewFixAttempts:      s.MaxReviewFixAttempts,
 		MaxRebaseAttempts:         s.MaxRebaseAttempts,
+		BurnishVerifyTimeout:      func() string {
+			if s.BurnishVerifyTimeout > 0 {
+				return durationString(s.BurnishVerifyTimeout)
+			}
+			return ""
+		}(),
 		MergeStrategy:             s.MergeStrategy,
 		StaleInterval:             durationString(s.StaleInterval),
 		VulncheckEnabled:          s.VulncheckEnabled,
@@ -779,6 +801,7 @@ func Defaults() Config {
 			MaxCIFixAttempts:     5,
 			MaxReviewFixAttempts: 5,
 			MaxRebaseAttempts:    3,
+			BurnishVerifyTimeout: 5 * time.Minute,
 			StaleInterval:        5 * time.Minute,
 			DepcheckInterval:     168 * time.Hour, // weekly
 			DepcheckTimeout:      5 * time.Minute,
@@ -820,6 +843,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.max_ci_fix_attempts", 5)
 	v.SetDefault("settings.max_review_fix_attempts", 5)
 	v.SetDefault("settings.max_rebase_attempts", 3)
+	v.SetDefault("settings.burnish_verify_timeout", "5m")
 	v.SetDefault("settings.stale_interval", "5m")
 	v.SetDefault("settings.depcheck_interval", "168h")
 	v.SetDefault("settings.depcheck_timeout", "5m")
@@ -920,6 +944,13 @@ func Load(configFile string) (*Config, error) {
 			return nil, fmt.Errorf("invalid stale_interval %q: %w", raw, err)
 		}
 		cfg.Settings.StaleInterval = d
+	}
+	if raw := v.GetString("settings.burnish_verify_timeout"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid burnish_verify_timeout %q: %w", raw, err)
+		}
+		cfg.Settings.BurnishVerifyTimeout = d
 	}
 	if raw := v.GetString("settings.depcheck_interval"); raw != "" {
 		d, err := time.ParseDuration(raw)
@@ -1067,6 +1098,11 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.MaxRebaseAttempts < 1 {
 		errs = append(errs, "settings.max_rebase_attempts must be >= 1")
+	}
+	if c.Settings.BurnishVerifyTimeout < 0 {
+		errs = append(errs, "settings.burnish_verify_timeout must not be negative (omit or set to 0 to use the package default)")
+	} else if c.Settings.BurnishVerifyTimeout > 0 && c.Settings.BurnishVerifyTimeout < 30*time.Second {
+		errs = append(errs, "settings.burnish_verify_timeout must be >= 30s when set explicitly (omit or set to 0 to use the package default)")
 	}
 
 	if c.Settings.CopilotDailyRequestLimit < 0 {
