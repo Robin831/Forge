@@ -4331,3 +4331,210 @@ rules:
         Verify the anvil name is normalized case-insensitively (e.g. lowercased or scanned with case-insensitive comparison) before the registry lookup, matching the daemon's IPC handler behavior, so requests like 'Forge' vs 'forge' are treated consistently across all API surfaces
       source: copilot:PR#615
       added: "2026-05-14"
+    - id: safe-storage-access-in-helpers
+      category: error-handling
+      pattern: >-
+        Helper functions that wrap window.sessionStorage or window.localStorage access in try/catch to remain non-throwing in private/sandboxed contexts
+      check: >-
+        Verify every direct read of window.sessionStorage or window.localStorage (including target-list construction before the try block) goes through the safe storage accessor or is individually wrapped in try/catch, so SecurityError cannot escape the helper
+      source: copilot:PR#619
+      added: "2026-05-18"
+    - id: test-scroll-restoration
+      category: testing
+      pattern: >-
+        Component persists scroll position to storage with restore/capture effects (e.g., rAF/throttled scroll handlers writing to a storage key, useEffect restoring scrollTop on mount)
+      check: >-
+        Verify tests assert end-to-end scroll restoration: set scrollTop, fire a scroll event, simulate navigating away and back (unmount/remount), and assert scrollTop is restored to the persisted value — not just that the storage key is written
+      source: copilot:PR#620
+      added: "2026-05-18"
+    - id: comment-matches-ui-ordering
+      category: ui
+      pattern: >-
+        Code comments or documentation describing list/sort ordering behavior in UI components that group or nest items
+      check: >-
+        Verify that ordering comments accurately reflect the actual rendered order — when items are grouped, confirm whether the stated ordering applies globally or only within groups, and either fix the grouping to match the comment or update the comment to match the UI semantics
+      source: copilot:PR#621
+      added: "2026-05-18"
+    - id: test-ui-persistence
+      category: testing
+      pattern: >-
+        Component adds localStorage/sessionStorage-backed UI state (collapsed groups, scroll position, filters, sort, expansion)
+      check: >-
+        Verify component tests cover the persistence behaviors: state restored on remount/back-nav, storage keys are written/read correctly, and edge cases like missing/corrupt stored values. Mirror existing persistence test patterns (e.g., QueuePane.persistence.test.tsx) when present.
+      source: copilot:PR#621
+      added: "2026-05-18"
+    - id: stable-usememo-deps
+      category: performance
+      pattern: >-
+        useMemo or useEffect depends on a value computed inline during render (e.g., array.filter(...), object literal, or new array/object) rather than a stable reference
+      check: >-
+        Verify that all dependencies passed to useMemo/useCallback/useEffect are stable references (memoized themselves or primitive values). Inline-computed arrays/objects create a new reference every render, defeating memoization. Either memoize the intermediate value with its own useMemo (depending on stable inputs), depend on the underlying stable source directly, or remove the outer useMemo if it provides no benefit.
+      source: copilot:PR#621
+      added: "2026-05-18"
+    - id: raf-cleanup-on-unmount
+      category: concurrency
+      pattern: >-
+        useEffect that schedules requestAnimationFrame (or setTimeout/setInterval) inside an event handler or callback and only cleans up the listener
+      check: >-
+        Verify the rAF/timer id is tracked and cancelled in the effect's cleanup function (and/or guarded with an unmounted flag) so pending callbacks cannot call state setters or trigger debounced writes after the component unmounts
+      source: copilot:PR#621
+      added: "2026-05-18"
+    - id: fake-timers-cleanup
+      category: testing
+      pattern: >-
+        Test calls vi.useFakeTimers() (or jest.useFakeTimers()) without an unconditional cleanup path
+      check: >-
+        Verify vi.useRealTimers() is guaranteed to run via try/finally wrapping the entire test body or an afterEach hook, so a failed assertion cannot leak fake timers into subsequent tests
+      source: copilot:PR#621
+      added: "2026-05-18"
+    - id: paused-state-snapshot-empty-buffer
+      category: ui
+      pattern: >-
+        Effect that snapshots/freezes a live data buffer when a persisted `paused` (or similar) state is true on mount, before async data sources (SSE, WebSocket, initial replay) have populated the buffer
+      check: >-
+        Verify that restoring a paused state from storage does not freeze an empty buffer before initial async data (e.g. SSE replay) arrives; either defer the freeze until the data source has delivered its initial payload, or restore the buffered items from storage alongside the paused flag
+      source: copilot:PR#622
+      added: "2026-05-18"
+    - id: no-cross-component-filter-comparison-comments
+      category: style
+      pattern: >-
+        Inline code comments that compare or reference another component's filtering/sorting/matching behavior (e.g. 'unlike X, this filters Y')
+      check: >-
+        Verify such comparison comments are accurate and remove them if they describe unrelated logic — cross-component comparisons drift out of sync and mislead future changes to either side
+      source: copilot:PR#622
+      added: "2026-05-18"
+    - id: changelog-storage-scope-accuracy
+      category: style
+      pattern: >-
+        Changelog fragments describing persistence/storage behavior (e.g., scroll position, filters, UI state) saved via sessionStorage, localStorage, cookies, or in-memory caches
+      check: >-
+        Verify the changelog wording accurately reflects the storage scope and lifetime — e.g., sessionStorage persists within a tab session but resets when the tab/session closes (not across browser restarts), while localStorage persists across restarts. Distinguish per-field storage scopes when multiple are used.
+      source: copilot:PR#622
+      added: "2026-05-18"
+    - id: validate-persisted-ui-state
+      category: error-handling
+      pattern: >-
+        Using useUIState (or similar persistence hook) to hydrate values from storage and using them as typed keys/enums without validation
+      check: >-
+        Verify hydrated values are validated against the allowed set (e.g. SORT_OPTIONS) or guarded with a runtime default before being used, so stale/corrupted persisted state cannot cause downstream functions to return undefined and crash
+      source: copilot:PR#623
+      added: "2026-05-18"
+    - id: normalize-prefix-in-search
+      category: ui
+      pattern: >-
+        Search/filter input compared against numeric or unprefixed values when users see prefixed forms (e.g. #101, PR-42, @user)
+      check: >-
+        Verify the comparison normalizes or accepts the visible prefixed form — strip a leading prefix like '#' before comparing, or match against both the bare value and the prefixed form (e.g. String(pr.number) and `#${pr.number}`)
+      source: copilot:PR#623
+      added: "2026-05-18"
+    - id: no-heading-in-button
+      category: ui
+      pattern: >-
+        A collapsible or interactive button element wraps a heading tag (h1-h6) as its child content
+      check: >-
+        Verify that block-level heading elements are not nested inside <button> elements; use a phrasing element styled as a heading inside the button, or keep the heading outside and link the button via aria-labelledby/aria-controls
+      source: copilot:PR#623
+      added: "2026-05-18"
+    - id: fetch-base-before-ancestry-check
+      category: error-handling
+      pattern: >-
+        Code that performs git merge-base or ancestry checks against a local remote-tracking ref (e.g. origin/main, origin/master, origin/<baseBranch>) without first fetching that base ref
+      check: >-
+        Verify the base ref is refreshed (git fetch of the resolved base branch, including any override) or its existence is confirmed via ls-remote before the ancestry/merge-base test, so stale local refs don't cause merged branches to be misclassified as stranded (or vice versa)
+      source: copilot:PR#626
+      added: "2026-05-18"
+    - id: test-base-branch-override
+      category: testing
+      pattern: >-
+        Tests for CheckRemoteBranchState (or similar functions accepting a baseBranch parameter) that only pass empty string for baseBranch
+      check: >-
+        Verify tests cover the non-empty baseBranch override path, including a case where the branch is reachable from origin/<baseBranch> but not origin/main, ensuring correct classification (e.g., merged vs. stranded)
+      source: copilot:PR#626
+      added: "2026-05-18"
+    - id: clean-up-pending-worker-on-early-dispatch-return
+      category: error-handling
+      pattern: >-
+        dispatchBead or similar dispatch functions inserting a pending worker row in state.db at claim time, then returning early (e.g., when preDispatchRemoteBranchCheck or another guard returns false) before the pipeline overwrites the row
+      check: >-
+        Verify that every early-return path after the pending worker row is inserted updates or deletes that row (using the claim worker ID) to a terminal status such as failed/done/monitoring, so Hearth does not display a permanently stuck pending worker
+      source: copilot:PR#626
+      added: "2026-05-18"
+    - id: distinguish-lookup-errors-from-empty-results
+      category: error-handling
+      pattern: >-
+        Code branches on a successful lookup result (e.g., `err == nil && result != nil`) and falls through to a failure/escalation path otherwise, conflating transient errors with empty results. Also redundantly re-fetches data already available in scope.
+      check: >-
+        Verify that lookup/API errors are handled explicitly (logged or retried) and distinguished from genuine empty results, so transient failures don't trigger false escalations. Also confirm already-fetched values are reused instead of being looked up again in helper functions.
+      source: copilot:PR#626
+      added: "2026-05-18"
+    - id: sanitize-log-and-event-consistently
+      category: style
+      pattern: >-
+        A value (e.g. user-provided reason/note) is sanitized before being written to one sink (audit event, DB record) but the same value is logged or emitted to another sink without the same sanitization
+      check: >-
+        Verify that when a value is sanitized for one output, all sinks (logs, events, audit records) receive the same sanitized value — either by returning the sanitized value from the shared helper or by applying the same sanitization at every emission site, so log lines and audit events stay consistent and greppable
+      source: copilot:PR#627
+      added: "2026-05-18"
+    - id: preserve-operational-logs-on-refactor
+      category: other
+      pattern: >-
+        Refactoring extracts logic into a shared package or helper, removing log statements from the original handler
+      check: >-
+        Verify that operationally-significant log messages (especially info/warn logs about worker lifecycle, signalling, or state transitions) are preserved after the refactor — either emitted from the new location or surfaced back to the caller so the original log site can retain visibility
+      source: copilot:PR#627
+      added: "2026-05-18"
+    - id: preserve-response-wording-on-refactor
+      category: other
+      pattern: >-
+        Refactoring code that emits response strings, status messages, or signals consumed by CLI/web clients or tests (especially when extracting shared logic or simplifying branching)
+      check: >-
+        Verify that distinct response/message wordings are preserved across all branches (e.g., circuit-breaker vs. no-circuit-breaker paths). If wording is intentionally unified, confirm no downstream consumer or test relies on the prior distinction, or derive the wording from the underlying state to maintain the signal.
+      source: copilot:PR#627
+      added: "2026-05-18"
+    - id: multi-forge-id-mismatch-check
+      category: error-handling
+      pattern: >-
+        Multi-tenant/multi-instance ID validation where one side of a comparison may be empty (e.g., comparing caller-supplied ForgeID against a locally configured ID)
+      check: >-
+        Verify that asymmetric empty-ID cases are handled deliberately: when one side is empty and the other is set, the validation should either reject the mismatch, require both to be non-empty, or explicitly document why the check is skipped. Silently passing validation when local config is unset defeats the safety check precisely when isolation matters most.
+      source: copilot:PR#627
+      added: "2026-05-18"
+    - id: canonicalize-anvil-name-ipc
+      category: error-handling
+      pattern: >-
+        Daemon IPC handlers that accept a user-supplied anvil name and use it for DB queries or crucibleStatuses map lookups
+      check: >-
+        Verify the handler passes the input anvil name through d.resolveAnvilConfig (when non-empty) to canonicalize case before delegating to queueactions or performing GetRetry/ActiveWorkerByBeadAndAnvil lookups, matching the pattern used by legacy retry_bead/clear_bead handlers
+      source: copilot:PR#628
+      added: "2026-05-18"
+    - id: capture-stderr-in-git-runner
+      category: error-handling
+      pattern: >-
+        Runner or helper executing external commands (e.g. git) uses cmd.Output() or otherwise discards stderr, then surfaces the resulting error to operators/users or stores it in diagnostic fields
+      check: >-
+        Verify the command runner captures stderr (e.g. cmd.Stderr = &buf) and includes the captured text in the wrapped error so diagnostic output contains the tool's actual error message rather than just 'exit status N'
+      source: copilot:PR#629
+      added: "2026-05-18"
+    - id: no-unused-locals-ts
+      category: style
+      pattern: TypeScript variables, refs, or imports declared but never read in frontend code
+      check: >-
+        Verify no unused locals exist (noUnusedLocals: true will fail tsc build) — remove the declaration or actually use it
+      source: copilot:PR#630
+      added: "2026-05-18"
+    - id: react-stable-identity-actions
+      category: ui
+      pattern: >-
+        React hook/provider exposes an `actions` object (or similar handle) and documents it as stable/referentially identity-stable across renders, while constructing it inside a `useMemo`/object literal whose dependencies include frequently-changing state
+      check: >-
+        Verify the actions object is memoized independently of changing state (deps limited to the underlying callbacks like run/reset/setEntry), or update the documentation/API to reflect the actual stability guarantee so consumers' effects don't re-run unexpectedly
+      source: copilot:PR#630
+      added: "2026-05-18"
+    - id: comments-match-implementation
+      category: style
+      pattern: >-
+        Header/inline comments describing state transitions, reducer patterns, invariants, or control flow in a module
+      check: >-
+        Verify the comment accurately describes the actual implementation — e.g., if the comment mentions a 'reducer' or specific state-transition rules (like 'never back to pending without reset'), confirm the code uses a reducer and enforces those transitions. Update the comment or the implementation so they agree.
+      source: copilot:PR#630
+      added: "2026-05-18"
