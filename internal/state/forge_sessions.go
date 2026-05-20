@@ -353,6 +353,52 @@ func (db *DB) UpdateForgeSessionStageAndPlan(id int64, stage, plan *string) (*Fo
 	return db.GetForgeSession(id)
 }
 
+// ListForgeSessionsMissingAnvil returns sessions whose anvil column is empty,
+// ordered by id ASC for stable iteration. Used by the `forge backfill-anvils`
+// admin command to repair legacy rows created before the anvil field became
+// required.
+func (db *DB) ListForgeSessionsMissingAnvil() ([]ForgeSession, error) {
+	rows, err := db.conn.Query(
+		`SELECT id, title, status, anvil, created_by, created_at, updated_at, stage, plan
+		 FROM forge_sessions WHERE anvil = '' ORDER BY id ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ForgeSession{}
+	for rows.Next() {
+		s, err := scanForgeSessionRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *s)
+	}
+	return out, rows.Err()
+}
+
+// UpdateForgeSessionAnvil sets the anvil column on a session and advances
+// updated_at. Returns ErrForgeSessionNotFound when no row matches the id so
+// the caller can distinguish a missing row from a no-op write.
+func (db *DB) UpdateForgeSessionAnvil(id int64, anvil string) error {
+	now := time.Now().UTC().Format(dbTimeLayout)
+	res, err := db.conn.Exec(
+		`UPDATE forge_sessions SET anvil = ?, updated_at = ? WHERE id = ?`,
+		anvil, now, id,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrForgeSessionNotFound
+	}
+	return nil
+}
+
 // ListForgeSessionMessages returns the messages for a session in insertion
 // order (oldest first), suitable for direct rendering in the chat view.
 func (db *DB) ListForgeSessionMessages(sessionID int64) ([]ForgeSessionMessage, error) {
