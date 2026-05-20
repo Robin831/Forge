@@ -357,9 +357,6 @@ func TestRunConsolidation_ZeroThresholdSkipsPass(t *testing.T) {
 // TestArchiveRules_WritesSupersededByCorrectly verifies the smelter archives
 // each replaced rule with reason=duplicate and the correct superseded_by ID.
 func TestArchiveRules_WritesSupersededByCorrectly(t *testing.T) {
-	db := openTestDB(t)
-	s := New(db, time.Hour, map[string]string{})
-
 	dir := t.TempDir()
 	archived := []warden.Rule{
 		{ID: "r1", Category: "style", Pattern: "p1", Check: "c1"},
@@ -373,7 +370,7 @@ func TestArchiveRules_WritesSupersededByCorrectly(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, s.archiveRules(dir, archived, summary, nil))
+	require.NoError(t, archiveRules(dir, archived, summary, nil))
 
 	a, err := warden.LoadArchive(warden.ArchivePath(dir))
 	require.NoError(t, err)
@@ -389,9 +386,6 @@ func TestArchiveRules_WritesSupersededByCorrectly(t *testing.T) {
 // TestPersistRulesAndArchive_ArchiveFirstThenRules verifies the happy path:
 // when both archive and rules-file writes succeed, both files land on disk.
 func TestPersistRulesAndArchive_ArchiveFirstThenRules(t *testing.T) {
-	db := openTestDB(t)
-	s := New(db, time.Hour, map[string]string{})
-
 	dir := t.TempDir()
 	rf := &warden.RulesFile{Rules: []warden.Rule{
 		{ID: "merged-1", Category: "style", Pattern: "p", Check: "c"},
@@ -405,7 +399,7 @@ func TestPersistRulesAndArchive_ArchiveFirstThenRules(t *testing.T) {
 		Category:    "style",
 	}}
 
-	require.NoError(t, s.persistRulesAndArchive(dir, rf, archived, summary, nil))
+	require.NoError(t, persistRulesAndArchive(dir, rf, archived, summary, nil))
 
 	rulesData, err := os.ReadFile(filepath.Join(dir, warden.RulesFileName))
 	require.NoError(t, err)
@@ -423,9 +417,6 @@ func TestPersistRulesAndArchive_ArchiveFirstThenRules(t *testing.T) {
 // file must NOT be written. Otherwise the smelter would commit a rules file
 // whose superseded entries have no archive record (bead-contract violation).
 func TestPersistRulesAndArchive_ArchiveFailureAbortsRulesSave(t *testing.T) {
-	db := openTestDB(t)
-	s := New(db, time.Hour, map[string]string{})
-
 	dir := t.TempDir()
 
 	// Force archive write to fail by creating a *directory* at the archive
@@ -445,7 +436,7 @@ func TestPersistRulesAndArchive_ArchiveFailureAbortsRulesSave(t *testing.T) {
 		Category:    "style",
 	}}
 
-	err := s.persistRulesAndArchive(dir, rf, archived, summary, nil)
+	err := persistRulesAndArchive(dir, rf, archived, summary, nil)
 	require.Error(t, err, "archive failure must propagate")
 	assert.Contains(t, err.Error(), "archiving rules")
 
@@ -518,9 +509,6 @@ func TestRunStaleness_MovesOldRulesAndUpdatesRulesFile(t *testing.T) {
 // Pass 2 stale entries into the archive store alongside Pass 1 duplicates,
 // preserving their pre-built reason and LastSeen values.
 func TestArchiveRules_WritesStaleEntries(t *testing.T) {
-	db := openTestDB(t)
-	s := New(db, time.Hour, map[string]string{})
-
 	dir := t.TempDir()
 	staleAt := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
 	staleArchived := []warden.ArchivedRule{
@@ -532,7 +520,7 @@ func TestArchiveRules_WritesStaleEntries(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, s.archiveRules(dir, nil, nil, staleArchived))
+	require.NoError(t, archiveRules(dir, nil, nil, staleArchived))
 
 	a, err := warden.LoadArchive(warden.ArchivePath(dir))
 	require.NoError(t, err)
@@ -546,9 +534,6 @@ func TestArchiveRules_WritesStaleEntries(t *testing.T) {
 // TestArchiveRules_CombinesPass1AndPass2Entries verifies that a single
 // archive write captures both duplicates (Pass 1) and stale entries (Pass 2).
 func TestArchiveRules_CombinesPass1AndPass2Entries(t *testing.T) {
-	db := openTestDB(t)
-	s := New(db, time.Hour, map[string]string{})
-
 	dir := t.TempDir()
 
 	dupArchived := []warden.Rule{
@@ -568,7 +553,7 @@ func TestArchiveRules_CombinesPass1AndPass2Entries(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, s.archiveRules(dir, dupArchived, summary, staleArchived))
+	require.NoError(t, archiveRules(dir, dupArchived, summary, staleArchived))
 
 	a, err := warden.LoadArchive(warden.ArchivePath(dir))
 	require.NoError(t, err)
@@ -591,9 +576,6 @@ func TestArchiveRules_CombinesPass1AndPass2Entries(t *testing.T) {
 // invariant for Pass 2: when only stale rules need archiving (no Pass 1
 // activity), both the archive file and the active rules file are written.
 func TestPersistRulesAndArchive_StaleOnlyWritesArchive(t *testing.T) {
-	db := openTestDB(t)
-	s := New(db, time.Hour, map[string]string{})
-
 	dir := t.TempDir()
 	rf := &warden.RulesFile{Rules: []warden.Rule{
 		{ID: "kept", Category: "style", Pattern: "p", Check: "c"},
@@ -607,7 +589,7 @@ func TestPersistRulesAndArchive_StaleOnlyWritesArchive(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, s.persistRulesAndArchive(dir, rf, nil, nil, staleArchived))
+	require.NoError(t, persistRulesAndArchive(dir, rf, nil, nil, staleArchived))
 
 	rulesData, err := os.ReadFile(filepath.Join(dir, warden.RulesFileName))
 	require.NoError(t, err)
@@ -624,15 +606,12 @@ func TestPersistRulesAndArchive_StaleOnlyWritesArchive(t *testing.T) {
 // there are no consolidated rules to archive, the archive file is not
 // created — only the active rules file is written.
 func TestPersistRulesAndArchive_NoArchiveSkipsArchiveStep(t *testing.T) {
-	db := openTestDB(t)
-	s := New(db, time.Hour, map[string]string{})
-
 	dir := t.TempDir()
 	rf := &warden.RulesFile{Rules: []warden.Rule{
 		{ID: "r1", Category: "style", Pattern: "p", Check: "c"},
 	}}
 
-	require.NoError(t, s.persistRulesAndArchive(dir, rf, nil, nil, nil))
+	require.NoError(t, persistRulesAndArchive(dir, rf, nil, nil, nil))
 
 	_, err := os.Stat(filepath.Join(dir, warden.RulesFileName))
 	assert.NoError(t, err, "rules file should be saved")

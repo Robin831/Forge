@@ -419,7 +419,7 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	//    archive entry for the rules it replaced (the bead contract). If
 	//    either step fails we abort before staging/commit/push, leaving the
 	//    pending queue intact for the next flush.
-	if err := s.persistRulesAndArchive(wt.Path, rf, archived, consolidationSummary, staleArchived); err != nil {
+	if err := persistRulesAndArchive(wt.Path, rf, archived, consolidationSummary, staleArchived); err != nil {
 		return fmt.Errorf("persisting warden rules for %s: %w", anvilName, err)
 	}
 
@@ -510,9 +510,12 @@ func (s *Smelter) runStaleness(anvilName string, rf *warden.RulesFile) []warden.
 // the rules file on disk without a matching archive record for the rules
 // it superseded. Any error from either step is returned so callers can
 // abort the flush before staging/commit/push.
-func (s *Smelter) persistRulesAndArchive(wtPath string, rf *warden.RulesFile, archived []warden.Rule, summary []warden.MergeResult, stale []warden.ArchivedRule) error {
+//
+// This is a free function (not a method) so the off-cycle CLI consolidate
+// command shares the same persistence path as the scheduled smelter loop.
+func persistRulesAndArchive(wtPath string, rf *warden.RulesFile, archived []warden.Rule, summary []warden.MergeResult, stale []warden.ArchivedRule) error {
 	if len(archived) > 0 || len(stale) > 0 {
-		if err := s.archiveRules(wtPath, archived, summary, stale); err != nil {
+		if err := archiveRules(wtPath, archived, summary, stale); err != nil {
 			return fmt.Errorf("archiving rules: %w", err)
 		}
 	}
@@ -527,7 +530,7 @@ func (s *Smelter) persistRulesAndArchive(wtPath string, rf *warden.RulesFile, ar
 // reason="duplicate" and superseded_by set to the merged rule's ID. Pass 2
 // entries are appended verbatim, preserving the LastSeen and ArchiveReason
 // values supplied by ArchiveStale.
-func (s *Smelter) archiveRules(wtPath string, archived []warden.Rule, summary []warden.MergeResult, stale []warden.ArchivedRule) error {
+func archiveRules(wtPath string, archived []warden.Rule, summary []warden.MergeResult, stale []warden.ArchivedRule) error {
 	// Build map: originalID -> mergedID for the Pass 1 entries.
 	supersededBy := make(map[string]string, len(archived))
 	for _, m := range summary {
