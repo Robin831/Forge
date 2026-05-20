@@ -1,0 +1,2 @@
+category: Added
+- **Smelter paths backfill pass (Pass 3)** - After the staleness pass, the Smelter now backfills `Paths` on active warden rules whose Paths field is empty and whose Source carries a `copilot:PR#N` token. The pass calls the GitHub API for the referenced PR(s), unions the changed file extensions, and writes them as doublestar globs (e.g. `.go` → `**/*.go`). The pass is idempotent — rules with non-empty Paths are skipped. The commit subject and `smelter_flushed` events surface how many rules picked up new Paths per anvil. (Forge-abrp)

@@ -379,10 +379,22 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	//     rf.Rules after this step.
 	staleArchived := s.runStaleness(anvilName, rf)
 
-	if added == 0 && len(consolidationSummary) == 0 && len(staleArchived) == 0 {
+	// 2d. Pass 3 paths backfill: for each active rule whose Paths field is
+	//     empty and whose Source carries a copilot:PR#N token, fetch the
+	//     PR's changed files and derive file-extension globs. Idempotent:
+	//     rules with non-empty Paths are skipped. Pass 3 only mutates
+	//     existing rules in rf, so no archive write is required.
+	pathsBackfilled := s.runPathsBackfill(ctx, wt.Path, anvilName, rf)
+	if pathsBackfilled > 0 {
+		log.Printf("[smelter] paths backfilled on %d rule(s) for %s", pathsBackfilled, anvilName)
+		_ = s.db.LogEvent(state.EventSmelterFlushed,
+			fmt.Sprintf("Backfilled paths on %d rule(s) for %s", pathsBackfilled, anvilName), "", anvilName)
+	}
+
+	if added == 0 && len(consolidationSummary) == 0 && len(staleArchived) == 0 && pathsBackfilled == 0 {
 		// All rules were duplicates (already in the file) or malformed AND
-		// nothing was consolidated AND nothing aged out. Delete from DB and
-		// emit a flush event.
+		// nothing was consolidated, aged out, or path-backfilled. Delete
+		// from DB and emit a flush event.
 		log.Printf("[smelter] All %d pending rule(s) for %s were duplicates or malformed — cleaning up", len(rules), anvilName)
 		if err := s.db.DeletePendingRules(flushedIDs); err != nil {
 			return err
@@ -405,7 +417,7 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	}
 
 	// 4. Commit and force-push from the worktree.
-	if err := s.commitAndPush(ctx, wt.Path, branch, added, consolidationSummary, staleArchived); err != nil {
+	if err := s.commitAndPush(ctx, wt.Path, branch, added, consolidationSummary, staleArchived, pathsBackfilled); err != nil {
 		return fmt.Errorf("commit/push for %s: %w", anvilName, err)
 	}
 
@@ -535,8 +547,10 @@ func (s *Smelter) archiveRules(wtPath string, archived []warden.Rule, summary []
 // worktree. The worktree is already on the correct branch. When summary is
 // non-empty it is appended to the commit message body so reviewers can see
 // which clusters were merged. When stale is non-empty its count is included
-// in the commit subject so reviewers can see how many rules aged out.
-func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, ruleCount int, summary []warden.MergeResult, stale []warden.ArchivedRule) error {
+// in the commit subject so reviewers can see how many rules aged out. When
+// pathsBackfilled is positive its count is included in the commit subject
+// so reviewers can see how many existing rules picked up new Paths.
+func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, ruleCount int, summary []warden.MergeResult, stale []warden.ArchivedRule, pathsBackfilled int) error {
 	gitEnv := cleanGitEnv()
 	git := func(args ...string) error {
 		cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -575,6 +589,9 @@ func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, rule
 	}
 	if len(stale) > 0 {
 		parts = append(parts, fmt.Sprintf("archive %d stale rule(s)", len(stale)))
+	}
+	if pathsBackfilled > 0 {
+		parts = append(parts, fmt.Sprintf("backfill paths on %d rule(s)", pathsBackfilled))
 	}
 	var subject string
 	if len(parts) == 0 {
