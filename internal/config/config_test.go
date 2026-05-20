@@ -1126,6 +1126,8 @@ func TestLoad_WardenSettings_Default(t *testing.T) {
 	assert.True(t, cfg.Settings.Warden.IsFilterPathGlobEnabled())
 	assert.True(t, cfg.Settings.Warden.IsFilterCategoryEnabled())
 	assert.True(t, cfg.Settings.Warden.IsFilterPatternGrepEnabled())
+	assert.Equal(t, 180, cfg.Settings.Warden.ResolvedArchiveAfterDays())
+	assert.InDelta(t, 0.6, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
 }
 
 func TestLoad_WardenSettings_Custom(t *testing.T) {
@@ -1139,6 +1141,8 @@ settings:
     filter_path_glob: false
     filter_category: false
     filter_pattern_grep: false
+    archive_after_days: 90
+    dedup_threshold: 0.8
 `
 	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
 
@@ -1149,6 +1153,8 @@ settings:
 	assert.False(t, cfg.Settings.Warden.IsFilterPathGlobEnabled())
 	assert.False(t, cfg.Settings.Warden.IsFilterCategoryEnabled())
 	assert.False(t, cfg.Settings.Warden.IsFilterPatternGrepEnabled())
+	assert.Equal(t, 90, cfg.Settings.Warden.ResolvedArchiveAfterDays())
+	assert.InDelta(t, 0.8, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
 }
 
 func TestTemperStepConfig_VerifyNoConflictMarkersRoundTrip(t *testing.T) {
