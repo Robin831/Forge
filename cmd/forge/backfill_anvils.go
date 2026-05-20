@@ -59,6 +59,38 @@ Prints a summary of scanned / updated / skipped rows at the end. Use
 			return fmt.Errorf("listing sessions with empty anvil: %w", err)
 		}
 
+		mode := "applied"
+		if dryRun {
+			mode = "dry-run"
+		}
+
+		// Short-circuit the empty case with a friendly message instead of
+		// printing an empty table. Still emit a structured JSON document so
+		// scripts can rely on the schema.
+		if len(sessions) == 0 {
+			if jsonOutput {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(map[string]any{
+					"dry_run":           dryRun,
+					"scanned":           0,
+					"updated":           0,
+					"skipped_ambiguous": 0,
+					"skipped_no_match":  0,
+					"errors":            0,
+					"anvils":            anvilNames,
+					"rows":              []any{},
+				})
+			}
+			fmt.Printf("No forge_sessions rows with empty anvil; nothing to do (%s).\n", mode)
+			return nil
+		}
+
+		if !jsonOutput {
+			fmt.Fprintf(os.Stderr, "Scanning %d forge_sessions row(s) with empty anvil against %d registered anvil(s): %s [%s]\n",
+				len(sessions), len(anvilNames), strings.Join(anvilNames, ", "), strings.ToUpper(mode))
+		}
+
 		type result struct {
 			ID      int64    `json:"id"`
 			Title   string   `json:"title"`
@@ -100,15 +132,22 @@ Prints a summary of scanned / updated / skipped rows at the end. Use
 		if jsonOutput {
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
-			return enc.Encode(map[string]any{
-				"dry_run":            dryRun,
-				"scanned":            len(sessions),
-				"updated":            updated,
-				"skipped_ambiguous":  ambiguous,
-				"skipped_no_match":   noMatch,
-				"errors":             errs,
-				"rows":               results,
-			})
+			if err := enc.Encode(map[string]any{
+				"dry_run":           dryRun,
+				"scanned":           len(sessions),
+				"updated":           updated,
+				"skipped_ambiguous": ambiguous,
+				"skipped_no_match":  noMatch,
+				"errors":            errs,
+				"anvils":            anvilNames,
+				"rows":              results,
+			}); err != nil {
+				return err
+			}
+			if errs > 0 {
+				return fmt.Errorf("%d row(s) failed to update", errs)
+			}
+			return nil
 		}
 
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
@@ -127,12 +166,11 @@ Prints a summary of scanned / updated / skipped rows at the end. Use
 		}
 		tw.Flush()
 
-		mode := "applied"
-		if dryRun {
-			mode = "dry-run"
-		}
 		fmt.Printf("\nSummary (%s): scanned=%d updated=%d skipped_ambiguous=%d skipped_no_match=%d errors=%d\n",
 			mode, len(sessions), updated, ambiguous, noMatch, errs)
+		if dryRun && updated > 0 {
+			fmt.Println("Re-run without --dry-run to apply these updates.")
+		}
 
 		if errs > 0 {
 			return fmt.Errorf("%d row(s) failed to update", errs)

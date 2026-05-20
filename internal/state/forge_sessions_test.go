@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -276,5 +277,96 @@ func TestForgeSessions_AppendValidation(t *testing.T) {
 		Content:   "no role",
 	}); err == nil {
 		t.Error("expected error for missing role")
+	}
+}
+
+func TestForgeSessions_ListMissingAnvil(t *testing.T) {
+	db := openTestDB(t)
+
+	// Three sessions with empty anvil, interleaved with two that already
+	// have one. The list should return only the empty-anvil rows, in
+	// ascending id order, leaving the populated ones untouched.
+	empty1, err := db.CreateForgeSession(ForgeSession{Title: "first empty", CreatedBy: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateForgeSession(ForgeSession{Title: "has anvil", Anvil: "forge", CreatedBy: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	empty2, err := db.CreateForgeSession(ForgeSession{Title: "second empty", CreatedBy: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateForgeSession(ForgeSession{Title: "also has anvil", Anvil: "heimdall", CreatedBy: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	empty3, err := db.CreateForgeSession(ForgeSession{Title: "third empty", CreatedBy: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := db.ListForgeSessionsMissingAnvil()
+	if err != nil {
+		t.Fatalf("ListForgeSessionsMissingAnvil: %v", err)
+	}
+	wantIDs := []int64{empty1.ID, empty2.ID, empty3.ID}
+	if len(missing) != len(wantIDs) {
+		t.Fatalf("expected %d rows, got %d", len(wantIDs), len(missing))
+	}
+	for i, want := range wantIDs {
+		if missing[i].ID != want {
+			t.Errorf("row %d: want id=%d, got id=%d", i, want, missing[i].ID)
+		}
+		if missing[i].Anvil != "" {
+			t.Errorf("row %d: expected empty anvil, got %q", i, missing[i].Anvil)
+		}
+	}
+}
+
+func TestForgeSessions_ListMissingAnvil_EmptyTable(t *testing.T) {
+	db := openTestDB(t)
+	missing, err := db.ListForgeSessionsMissingAnvil()
+	if err != nil {
+		t.Fatalf("ListForgeSessionsMissingAnvil: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Errorf("expected 0 rows on empty table, got %d", len(missing))
+	}
+}
+
+func TestForgeSessions_UpdateAnvil(t *testing.T) {
+	db := openTestDB(t)
+	s, err := db.CreateForgeSession(ForgeSession{Title: "Refactor poller", CreatedBy: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalUpdated := s.UpdatedAt
+	// Sleep so updated_at advancement is observable across the dbTimeLayout
+	// resolution on platforms where the clock advances on ms ticks.
+	time.Sleep(2 * time.Millisecond)
+
+	if err := db.UpdateForgeSessionAnvil(s.ID, "forge"); err != nil {
+		t.Fatalf("UpdateForgeSessionAnvil: %v", err)
+	}
+	got, err := db.GetForgeSession(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Anvil != "forge" {
+		t.Errorf("expected anvil=forge, got %q", got.Anvil)
+	}
+	if !got.UpdatedAt.After(originalUpdated) {
+		t.Errorf("expected updated_at to advance; was %v, now %v", originalUpdated, got.UpdatedAt)
+	}
+	if got.Title != "Refactor poller" {
+		t.Errorf("title should be untouched, got %q", got.Title)
+	}
+}
+
+func TestForgeSessions_UpdateAnvil_MissingRow(t *testing.T) {
+	db := openTestDB(t)
+	err := db.UpdateForgeSessionAnvil(9999, "forge")
+	if !errors.Is(err, ErrForgeSessionNotFound) {
+		t.Errorf("expected ErrForgeSessionNotFound, got %v", err)
 	}
 }
