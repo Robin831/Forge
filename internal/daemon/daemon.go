@@ -415,6 +415,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 	// makes the intent explicit and avoids any future ambiguity).
 	d.costLimitLoggedDate.Store("")
 	d.cfg.Store(cfg)
+	applyWardenFilterConfig(cfg)
 	d.labelAdder = func(anvilPath, beadID, tag string) error {
 		ctx, cancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 		defer cancel()
@@ -881,6 +882,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.configWatcher = hotreload.NewWatcher(d.configFile, d.cfg.Load(), d.logger)
 		d.configWatcher.OnChange(func(old, new *config.Config) {
 			d.cfg.Store(new)
+			applyWardenFilterConfig(new)
 			// Re-publish the resolved forge id so PR-body builders and the
 			// reconciler use the new value immediately. Resolution falls back
 			// to os.Hostname() so this normally only changes when the operator
@@ -6902,4 +6904,22 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 
 	// Pipeline succeeded — use shared finalize path (PR + notify + close).
 	d.finalizePipeline(pipelineCtx, outcome, bead, anvilCfg.Path, outcome.WorkerID)
+}
+
+// applyWardenFilterConfig pushes settings.warden into the warden package so
+// future warden reviews use the configured filter cap and toggles. Called at
+// daemon startup and again whenever the config hot-reloads.
+func applyWardenFilterConfig(cfg *config.Config) {
+	if cfg == nil {
+		warden.SetActiveFilterConfig(warden.DefaultReviewFilterConfig())
+		return
+	}
+	w := cfg.Settings.Warden
+	warden.SetActiveFilterConfig(warden.ReviewFilterConfig{
+		MaxRules:          w.ResolvedMaxRulesPerReview(),
+		UseAllRules:       w.UseAllRules,
+		FilterPathGlob:    w.IsFilterPathGlobEnabled(),
+		FilterCategory:    w.IsFilterCategoryEnabled(),
+		FilterPatternGrep: w.IsFilterPatternGrepEnabled(),
+	})
 }

@@ -89,6 +89,31 @@ func TestFormatChecklist(t *testing.T) {
 	assert.Contains(t, checklist, "2. [ ] Check: ensure consistent formula (pattern: width calc)")
 }
 
+// TestLoadRules_NoPathsBackwardCompat verifies that a warden-rules.yaml file
+// written before the Paths field existed (no `paths:` key) still loads cleanly
+// and produces a rule with a nil Paths slice. The path-glob filter must then
+// fall through to the next filter for that rule.
+func TestLoadRules_NoPathsBackwardCompat(t *testing.T) {
+	dir := t.TempDir()
+	forgeDir := filepath.Join(dir, ".forge")
+	require.NoError(t, os.MkdirAll(forgeDir, 0o755))
+	yamlContent := `rules:
+  - id: legacy-1
+    category: style
+    pattern: "consistent naming"
+    check: "use camelCase"
+    source: copilot:PR#10
+    added: "2026-01-01"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(forgeDir, "warden-rules.yaml"), []byte(yamlContent), 0o644))
+
+	rf, err := LoadRules(dir)
+	require.NoError(t, err)
+	require.Len(t, rf.Rules, 1)
+	assert.Nil(t, rf.Rules[0].Paths, "Paths must default to nil for rules without a paths field")
+	assert.Equal(t, "legacy-1", rf.Rules[0].ID)
+}
+
 func TestSaveAndLoadRulesWithColonSpace(t *testing.T) {
 	dir := t.TempDir()
 	rf := &RulesFile{

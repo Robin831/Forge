@@ -455,6 +455,76 @@ type SettingsConfig struct {
 	// fixed default. Override this in deployments where the host name is not
 	// stable (e.g. ephemeral pods that may share a hostname).
 	ForgeID string `mapstructure:"forge_id" yaml:"forge_id,omitempty"`
+
+	// Warden holds review-time rule filtering settings. These control how many
+	// learned warden rules are injected into the Warden review prompt and
+	// which filter passes are applied.
+	Warden WardenSettings `mapstructure:"warden" yaml:"warden,omitempty"`
+}
+
+// WardenSettings configures the review-time rule filter applied to the
+// warden-rules.yaml entries before they are rendered into the Warden review
+// prompt. The defaults shrink a typical prompt by filtering out rules that
+// can't match the current diff (path/category/pattern grep).
+type WardenSettings struct {
+	// MaxRulesPerReview caps the number of rules emitted in the checklist
+	// after filtering. Omitted or zero uses the default of 30. Negative
+	// values disable the cap entirely. Positive values set an explicit cap.
+	MaxRulesPerReview int `mapstructure:"max_rules_per_review" yaml:"max_rules_per_review,omitempty"`
+	// UseAllRules, when true, bypasses the three filter passes and applies
+	// only the MaxRulesPerReview cap. Useful for A/B comparison against the
+	// pre-filter behavior. Default: false.
+	UseAllRules bool `mapstructure:"use_all_rules" yaml:"use_all_rules,omitempty"`
+	// FilterPathGlob enables filtering by Rule.Paths against the changed
+	// files in the diff. Pointer so unset means "use default (true)".
+	FilterPathGlob *bool `mapstructure:"filter_path_glob" yaml:"filter_path_glob,omitempty"`
+	// FilterCategory enables filtering by Rule.Category against the
+	// in-code extension → category map. Pointer so unset means "use default
+	// (true)".
+	FilterCategory *bool `mapstructure:"filter_category" yaml:"filter_category,omitempty"`
+	// FilterPatternGrep enables substring matching of ≥4-char words from
+	// Rule.Pattern against the diff. Pointer so unset means "use default
+	// (true)".
+	FilterPatternGrep *bool `mapstructure:"filter_pattern_grep" yaml:"filter_pattern_grep,omitempty"`
+}
+
+// IsFilterPathGlobEnabled returns true unless the toggle is explicitly false.
+func (w WardenSettings) IsFilterPathGlobEnabled() bool {
+	if w.FilterPathGlob == nil {
+		return true
+	}
+	return *w.FilterPathGlob
+}
+
+// IsFilterCategoryEnabled returns true unless the toggle is explicitly false.
+func (w WardenSettings) IsFilterCategoryEnabled() bool {
+	if w.FilterCategory == nil {
+		return true
+	}
+	return *w.FilterCategory
+}
+
+// IsFilterPatternGrepEnabled returns true unless the toggle is explicitly
+// false.
+func (w WardenSettings) IsFilterPatternGrepEnabled() bool {
+	if w.FilterPatternGrep == nil {
+		return true
+	}
+	return *w.FilterPatternGrep
+}
+
+// ResolvedMaxRulesPerReview returns the cap to pass to FilterRules.
+// Zero (unset) → 30 (default). Negative → 0 (no cap; capRules treats ≤0 as
+// unlimited). Positive → returned as-is.
+func (w WardenSettings) ResolvedMaxRulesPerReview() int {
+	switch {
+	case w.MaxRulesPerReview == 0:
+		return 30
+	case w.MaxRulesPerReview < 0:
+		return 0
+	default:
+		return w.MaxRulesPerReview
+	}
 }
 
 // durationString returns the duration string, or omits zero values.
@@ -520,10 +590,11 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WicketNeedsHumanLabel  string `yaml:"wicket_needs_human_label,omitempty"`
 		WicketBeadCreatedLabel string `yaml:"wicket_bead_created_label,omitempty"`
 		WicketTriggerLabel     string `yaml:"wicket_trigger_label,omitempty"`
-		WicketStaleDays          int    `yaml:"wicket_stale_days,omitempty"`
-		BdReadyLimit             int    `yaml:"bd_ready_limit,omitempty"`
-		CruciblePollInterval     string `yaml:"crucible_poll_interval,omitempty"`
-		ForgeID                  string `yaml:"forge_id,omitempty"`
+		WicketStaleDays          int            `yaml:"wicket_stale_days,omitempty"`
+		BdReadyLimit             int            `yaml:"bd_ready_limit,omitempty"`
+		CruciblePollInterval     string         `yaml:"crucible_poll_interval,omitempty"`
+		ForgeID                  string         `yaml:"forge_id,omitempty"`
+		Warden                   WardenSettings `yaml:"warden,omitempty"`
 	}
 
 	sh := shadow{
@@ -580,6 +651,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WicketStaleDays:        s.WicketStaleDays,
 		BdReadyLimit:           s.BdReadyLimit,
 		ForgeID:                s.ForgeID,
+		Warden:                 s.Warden,
 	}
 
 	if s.CruciblePollInterval > 0 {
@@ -821,8 +893,19 @@ func Defaults() Config {
 			WicketTriggerLabel:     "",
 			BdReadyLimit:           100,
 			CruciblePollInterval:   3 * time.Minute,
+			Warden: WardenSettings{
+				MaxRulesPerReview: 30,
+				UseAllRules:       false,
+				FilterPathGlob:    boolPtr(true),
+				FilterCategory:    boolPtr(true),
+				FilterPatternGrep: boolPtr(true),
+			},
 		},
 	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 // Load reads the configuration from the given file path, or auto-discovers
@@ -864,6 +947,11 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.wicket_trigger_label", "")
 	v.SetDefault("settings.bd_ready_limit", 100)
 	v.SetDefault("settings.crucible_poll_interval", "3m")
+	v.SetDefault("settings.warden.max_rules_per_review", 30)
+	v.SetDefault("settings.warden.use_all_rules", false)
+	v.SetDefault("settings.warden.filter_path_glob", true)
+	v.SetDefault("settings.warden.filter_category", true)
+	v.SetDefault("settings.warden.filter_pattern_grep", true)
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	// SetEnvKeyReplacer maps dotted config keys (settings.auto_learn_rules) to

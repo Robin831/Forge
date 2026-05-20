@@ -14,6 +14,7 @@ import (
 
 func init() {
 	upCmd.Flags().Bool("foreground", false, "Run daemon in foreground (for debugging or containers)")
+	upCmd.Flags().Bool("all-rules", false, "Inject every learned warden rule into the review prompt (bypass diff-aware filtering). Overrides settings.warden.use_all_rules when set.")
 
 	rootCmd.AddCommand(upCmd)
 	rootCmd.AddCommand(downCmd)
@@ -60,6 +61,15 @@ var upCmd = &cobra.Command{
 		if !cmd.Flags().Changed("foreground") && isForegroundEnv() {
 			foreground = true
 		}
+		// Resolve --all-rules: flag OR settings.warden.use_all_rules (OR semantics).
+		// Setting the flag forces the daemon to inject every learned rule into
+		// the warden review prompt, bypassing diff-aware filtering — useful for
+		// A/B comparing the filtered prompt against the legacy behaviour.
+		allRulesFlag, _ := cmd.Flags().GetBool("all-rules")
+		if allRulesFlag {
+			cfg.Settings.Warden.UseAllRules = true
+		}
+
 		if foreground {
 			// Run in foreground (used by the background spawn and for debugging)
 			d, err := daemon.New(cfg)
@@ -84,6 +94,9 @@ var upCmd = &cobra.Command{
 		spawnArgs := []string{"up", "--foreground"}
 		if configFile != "" {
 			spawnArgs = append(spawnArgs, "--config", configFile)
+		}
+		if allRulesFlag {
+			spawnArgs = append(spawnArgs, "--all-rules")
 		}
 
 		bgCmd := exec.Command(exe, spawnArgs...)
