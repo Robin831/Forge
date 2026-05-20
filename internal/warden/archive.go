@@ -30,6 +30,67 @@ type ArchivedRule struct {
 	ArchiveReason string    `yaml:"archive_reason"          json:"archive_reason"`
 }
 
+// MarshalYAML produces a single mapping node combining Rule's fields (via
+// its custom marshaller) with the archive-specific fields. The default
+// inline embedding does not work here because Rule.MarshalYAML returns a
+// mapping node that would otherwise replace the entire ArchivedRule
+// mapping, dropping the archive bookkeeping fields.
+func (ar ArchivedRule) MarshalYAML() (any, error) {
+	ruleAny, err := ar.Rule.MarshalYAML()
+	if err != nil {
+		return nil, err
+	}
+	mapping, ok := ruleAny.(*yaml.Node)
+	if !ok || mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("archive: Rule.MarshalYAML did not return a mapping node")
+	}
+
+	extras := struct {
+		SupersededBy  string    `yaml:"superseded_by,omitempty"`
+		LastSeen      time.Time `yaml:"last_seen,omitempty"`
+		ArchivedAt    time.Time `yaml:"archived_at"`
+		ArchiveReason string    `yaml:"archive_reason"`
+	}{
+		SupersededBy:  ar.SupersededBy,
+		LastSeen:      ar.LastSeen,
+		ArchivedAt:    ar.ArchivedAt,
+		ArchiveReason: ar.ArchiveReason,
+	}
+
+	var extraNode yaml.Node
+	if err := extraNode.Encode(extras); err != nil {
+		return nil, err
+	}
+	if extraNode.Kind == yaml.MappingNode {
+		mapping.Content = append(mapping.Content, extraNode.Content...)
+	}
+	return mapping, nil
+}
+
+// UnmarshalYAML decodes a mapping node into both the embedded Rule and the
+// archive-specific fields. Decoding the same node twice — once into Rule
+// and once into the extras struct — sidesteps the inline+custom-marshaler
+// interaction that would otherwise silently drop fields.
+func (ar *ArchivedRule) UnmarshalYAML(value *yaml.Node) error {
+	if err := value.Decode(&ar.Rule); err != nil {
+		return err
+	}
+	var extras struct {
+		SupersededBy  string    `yaml:"superseded_by"`
+		LastSeen      time.Time `yaml:"last_seen"`
+		ArchivedAt    time.Time `yaml:"archived_at"`
+		ArchiveReason string    `yaml:"archive_reason"`
+	}
+	if err := value.Decode(&extras); err != nil {
+		return err
+	}
+	ar.SupersededBy = extras.SupersededBy
+	ar.LastSeen = extras.LastSeen
+	ar.ArchivedAt = extras.ArchivedAt
+	ar.ArchiveReason = extras.ArchiveReason
+	return nil
+}
+
 // Archive is the top-level structure of warden-rules.archive.yaml.
 type Archive struct {
 	Rules []ArchivedRule `yaml:"rules"`
