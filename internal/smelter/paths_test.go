@@ -122,7 +122,7 @@ func TestRunPathsBackfill_SkipsRulesWithExistingPaths(t *testing.T) {
 	}}
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Equal(t, 0, updated, "rule with existing Paths must be skipped")
+	assert.Empty(t, updated, "rule with existing Paths must be skipped")
 	assert.Equal(t, 0, calls, "stub fetcher must not be invoked for rules with existing Paths")
 	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths, "Paths must not be mutated")
 }
@@ -145,7 +145,7 @@ func TestRunPathsBackfill_PopulatesPathsFromPR(t *testing.T) {
 	}}
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Equal(t, 1, updated)
+	assert.Equal(t, []string{"r1"}, updated)
 	assert.Equal(t, []string{"**/*.go", "**/*.ts"}, rf.Rules[0].Paths)
 }
 
@@ -169,7 +169,7 @@ func TestRunPathsBackfill_UnionsAcrossMultiplePRs(t *testing.T) {
 	}}
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Equal(t, 1, updated)
+	assert.Equal(t, []string{"r1"}, updated)
 	assert.Equal(t, []string{"**/*.go", "**/*.ts"}, rf.Rules[0].Paths)
 }
 
@@ -189,7 +189,7 @@ func TestRunPathsBackfill_SkipsNonCopilotSources(t *testing.T) {
 	}}
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Equal(t, 0, updated)
+	assert.Empty(t, updated)
 	assert.Equal(t, 0, calls, "rules without copilot sources must not trigger fetcher")
 	assert.Empty(t, rf.Rules[0].Paths)
 	assert.Empty(t, rf.Rules[1].Paths)
@@ -208,7 +208,7 @@ func TestRunPathsBackfill_FetchErrorLeavesRuleUnchanged(t *testing.T) {
 	}}
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Equal(t, 0, updated, "fetch errors must not count as successful backfills")
+	assert.Empty(t, updated, "fetch errors must not count as successful backfills")
 	assert.Empty(t, rf.Rules[0].Paths, "Paths must stay empty on error so a future flush can retry")
 }
 
@@ -228,7 +228,7 @@ func TestRunPathsBackfill_PartialFetchSucceedsWhenOnePRWorks(t *testing.T) {
 	}}
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Equal(t, 1, updated)
+	assert.Equal(t, []string{"r1"}, updated)
 	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
 }
 
@@ -245,7 +245,7 @@ func TestRunPathsBackfill_NoExtensionsLeavesRuleUnchanged(t *testing.T) {
 	}}
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Equal(t, 0, updated)
+	assert.Empty(t, updated)
 	assert.Empty(t, rf.Rules[0].Paths)
 }
 
@@ -265,14 +265,14 @@ func TestRunPathsBackfill_Idempotency_RepeatedRunIsNoop(t *testing.T) {
 
 	// First run: populates Paths.
 	first := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	require.Equal(t, 1, first)
+	require.Equal(t, []string{"r1"}, first)
 	require.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
 
 	// Second run: rule has Paths, so the pass must skip it entirely — the
 	// stub fetcher must not be called a second time.
 	prevCalls := calls
 	second := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Equal(t, 0, second, "second run must report no updates")
+	assert.Empty(t, second, "second run must report no updates")
 	assert.Equal(t, prevCalls, calls, "second run must not invoke the fetcher")
 }
 
@@ -295,7 +295,7 @@ func TestRunPathsBackfill_HonorsCanceledContext(t *testing.T) {
 	cancel()
 
 	updated := s.runPathsBackfill(ctx, t.TempDir(), "anvil-a", rf)
-	assert.Equal(t, 0, updated)
+	assert.Empty(t, updated)
 	assert.Equal(t, 0, calls, "canceled context must short-circuit before any fetch")
 }
 
@@ -320,7 +320,7 @@ func TestRunPathsBackfill_MultiTokenSourceString(t *testing.T) {
 	}}
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Equal(t, 1, updated)
+	assert.Equal(t, []string{"r1"}, updated)
 	assert.Equal(t, []string{"**/*.go", "**/*.ts"}, rf.Rules[0].Paths)
 }
 
@@ -342,7 +342,7 @@ func TestRunPathsBackfill_CachesResultsAcrossRules(t *testing.T) {
 	}}
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Equal(t, 2, updated)
+	assert.Equal(t, []string{"r1", "r2"}, updated)
 	assert.Equal(t, 1, calls, "fetch result must be cached and reused across rules")
 	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
 	assert.Equal(t, []string{"**/*.go"}, rf.Rules[1].Paths)
@@ -365,7 +365,7 @@ func TestRunPathsBackfill_DedupesSameSourceRepeated(t *testing.T) {
 	}}
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Equal(t, 1, updated)
+	assert.Equal(t, []string{"r1"}, updated)
 	assert.Equal(t, 1, calls, "duplicate PR references must be deduplicated")
 	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
 }

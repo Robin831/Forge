@@ -344,7 +344,7 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 		return fmt.Errorf("loading warden rules for %s: %w", anvilName, err)
 	}
 
-	var added int
+	var addedIDs []string
 	var flushedIDs []int
 	for _, pr := range rules {
 		var rule warden.Rule
@@ -355,7 +355,7 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 			continue
 		}
 		if rf.AddRule(rule) {
-			added++
+			addedIDs = append(addedIDs, rule.ID)
 		}
 		flushedIDs = append(flushedIDs, pr.ID)
 	}
@@ -384,14 +384,21 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	//     PR's changed files and derive file-extension globs. Idempotent:
 	//     rules with non-empty Paths are skipped. Pass 3 only mutates
 	//     existing rules in rf, so no archive write is required.
-	pathsBackfilled := s.runPathsBackfill(ctx, wt.Path, anvilName, rf)
-	if pathsBackfilled > 0 {
-		log.Printf("[smelter] paths backfilled on %d rule(s) for %s", pathsBackfilled, anvilName)
+	backfilledIDs := s.runPathsBackfill(ctx, wt.Path, anvilName, rf)
+	if len(backfilledIDs) > 0 {
+		log.Printf("[smelter] paths backfilled on %d rule(s) for %s", len(backfilledIDs), anvilName)
 		_ = s.db.LogEvent(state.EventSmelterFlushed,
-			fmt.Sprintf("Backfilled paths on %d rule(s) for %s", pathsBackfilled, anvilName), "", anvilName)
+			fmt.Sprintf("Backfilled paths on %d rule(s) for %s", len(backfilledIDs), anvilName), "", anvilName)
 	}
 
-	if added == 0 && len(consolidationSummary) == 0 && len(staleArchived) == 0 && pathsBackfilled == 0 {
+	passes := PassResults{
+		Added:        addedIDs,
+		Consolidated: consolidationSummary,
+		Archived:     staleArchived,
+		Backfilled:   backfilledIDs,
+	}
+
+	if !passes.HasChanges() {
 		// All rules were duplicates (already in the file) or malformed AND
 		// nothing was consolidated, aged out, or path-backfilled. Delete
 		// from DB and emit a flush event.
@@ -417,12 +424,12 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	}
 
 	// 4. Commit and force-push from the worktree.
-	if err := s.commitAndPush(ctx, wt.Path, branch, added, consolidationSummary, staleArchived, pathsBackfilled); err != nil {
+	if err := s.commitAndPush(ctx, wt.Path, branch, passes); err != nil {
 		return fmt.Errorf("commit/push for %s: %w", anvilName, err)
 	}
 
 	// 5. Create or update the PR.
-	if err := s.ensurePR(ctx, wt.Path, anvilName, branch, added); err != nil {
+	if err := s.ensurePR(ctx, wt.Path, anvilName, branch, passes); err != nil {
 		return fmt.Errorf("PR creation for %s: %w", anvilName, err)
 	}
 
@@ -431,7 +438,7 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 		return fmt.Errorf("deleting flushed rules for %s: %w", anvilName, err)
 	}
 
-	msg := fmt.Sprintf("Flushed %d new warden rule(s) for %s (%d total pending processed)", added, anvilName, len(rules))
+	msg := fmt.Sprintf("Flushed warden rule(s) for %s: %s (%d total pending processed)", anvilName, passResultsSummary(passes), len(rules))
 	log.Printf("[smelter] %s", msg)
 	_ = s.db.LogEvent(state.EventSmelterFlushed, msg, "", anvilName)
 
@@ -544,13 +551,12 @@ func (s *Smelter) archiveRules(wtPath string, archived []warden.Rule, summary []
 }
 
 // commitAndPush stages the rules file, commits, and force-pushes from the
-// worktree. The worktree is already on the correct branch. When summary is
-// non-empty it is appended to the commit message body so reviewers can see
-// which clusters were merged. When stale is non-empty its count is included
-// in the commit subject so reviewers can see how many rules aged out. When
-// pathsBackfilled is positive its count is included in the commit subject
-// so reviewers can see how many existing rules picked up new Paths.
-func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, ruleCount int, summary []warden.MergeResult, stale []warden.ArchivedRule, pathsBackfilled int) error {
+// worktree. The worktree is already on the correct branch. The commit
+// message is rendered from the aggregate pass outcomes via
+// buildCommitMessage so all three passes (added/consolidated from Pass 1,
+// archived from Pass 2, backfilled from Pass 3) land in one commit on the
+// same PR — one PR per anvil per smelter run.
+func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, passes PassResults) error {
 	gitEnv := cleanGitEnv()
 	git := func(args ...string) error {
 		cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -577,35 +583,7 @@ func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, rule
 		}
 	}
 
-	// Build the commit message subject from the work that was actually
-	// performed. The subject ends in "[no-changelog]" so the changelog
-	// validator skips it.
-	var parts []string
-	if ruleCount > 0 {
-		parts = append(parts, fmt.Sprintf("learn %d warden rule(s)", ruleCount))
-	}
-	if len(summary) > 0 {
-		parts = append(parts, fmt.Sprintf("consolidate %d cluster(s)", len(summary)))
-	}
-	if len(stale) > 0 {
-		parts = append(parts, fmt.Sprintf("archive %d stale rule(s)", len(stale)))
-	}
-	if pathsBackfilled > 0 {
-		parts = append(parts, fmt.Sprintf("backfill paths on %d rule(s)", pathsBackfilled))
-	}
-	var subject string
-	if len(parts) == 0 {
-		// Defensive fallback: callers only reach commitAndPush when at least
-		// one of the three counts is positive, but keep the legacy form to
-		// avoid an empty subject if invariants ever shift.
-		subject = fmt.Sprintf("forge: learn %d warden rule(s) from pending queue [no-changelog]", ruleCount)
-	} else {
-		subject = "forge: " + strings.Join(parts, ", ") + " [no-changelog]"
-	}
-	commitMsg := subject
-	if body := warden.FormatConsolidationSummary(summary); body != "" {
-		commitMsg = subject + "\n\n" + body
-	}
+	commitMsg := buildCommitMessage(passes)
 	if err := git("commit", "-m", commitMsg); err != nil {
 		return err
 	}
@@ -657,7 +635,7 @@ func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, rule
 
 // ensurePR creates a PR for the batch branch if one doesn't already exist.
 // If a previous PR was merged or closed, creates a new one.
-func (s *Smelter) ensurePR(ctx context.Context, wtPath, anvilName, branch string, ruleCount int) error {
+func (s *Smelter) ensurePR(ctx context.Context, wtPath, anvilName, branch string, passes PassResults) error {
 	// Check for an existing open PR on the batch branch.
 	prNumber, prState, err := s.findBatchPR(ctx, wtPath, branch)
 	if err != nil {
@@ -667,10 +645,8 @@ func (s *Smelter) ensurePR(ctx context.Context, wtPath, anvilName, branch string
 
 	if prState == "OPEN" {
 		// PR already exists and is open — it was just force-pushed, so it's updated.
-		// Also update the body so the rule count reflects the current push.
-		body := fmt.Sprintf("Automated batch update of warden rules.\n\n"+
-			"This PR adds %d new rule(s) learned from Copilot review comments.\n\n"+
-			"Generated by the Forge Smelter.", ruleCount)
+		// Also update the body so it reflects all pass outcomes from the current push.
+		body := buildPRBody(passes)
 		editCtx, editCancel := context.WithTimeout(ctx, 60*time.Second)
 		defer editCancel()
 		editCmd := executil.HideWindow(exec.CommandContext(editCtx, "gh", "pr", "edit",
@@ -683,14 +659,12 @@ func (s *Smelter) ensurePR(ctx context.Context, wtPath, anvilName, branch string
 		if err := editCmd.Run(); err != nil {
 			log.Printf("[smelter] Warning: could not update PR #%d body: %v\nstderr: %s", prNumber, err, editStderr.String())
 		}
-		log.Printf("[smelter] Existing open PR #%d for %s updated via force-push (%d rule(s))", prNumber, anvilName, ruleCount)
+		log.Printf("[smelter] Existing open PR #%d for %s updated via force-push (%s)", prNumber, anvilName, passResultsSummary(passes))
 		return nil
 	}
 
 	// No open PR (merged/closed/doesn't exist) — create a new one.
-	body := fmt.Sprintf("Automated batch update of warden rules.\n\n"+
-		"This PR adds %d new rule(s) learned from Copilot review comments.\n\n"+
-		"Generated by the Forge Smelter.", ruleCount)
+	body := buildPRBody(passes)
 
 	ghCtx, ghCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer ghCancel()
