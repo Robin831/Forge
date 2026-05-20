@@ -14,6 +14,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -65,18 +66,49 @@ type Smelter struct {
 
 	// intervalCh signals Run to reset the ticker with a new duration.
 	intervalCh chan time.Duration
+
+	// consolidator is the AI invocation hook used by the consolidation pass.
+	// When nil, consolidation is skipped (legacy behavior). Set via
+	// WithConsolidator.
+	consolidator warden.ConsolidationRunner
+	// dedupThreshold returns the active similarity threshold. When nil or it
+	// returns <= 0, consolidation is skipped.
+	dedupThreshold func() float64
+}
+
+// Option configures a Smelter at construction time.
+type Option func(*Smelter)
+
+// WithConsolidator wires the AI invocation hook used by Pass 1 consolidation.
+// When the runner returns a JSON object with the merged rule fields, the
+// Smelter replaces the cluster members in the active rules file and moves
+// the originals to the archive store. Pass nil to disable consolidation.
+func WithConsolidator(runner warden.ConsolidationRunner) Option {
+	return func(s *Smelter) { s.consolidator = runner }
+}
+
+// WithDedupThreshold supplies a function the Smelter calls at flush time to
+// resolve the current dedup similarity threshold. A function (rather than a
+// value) is used so config hot-reload can take effect without restarting
+// the smelter. A nil function or one returning <= 0 disables consolidation.
+func WithDedupThreshold(fn func() float64) Option {
+	return func(s *Smelter) { s.dedupThreshold = fn }
 }
 
 // New creates a Smelter. interval controls how often Flush is called;
 // pass 0 to disable scheduled runs (Flush can still be called directly).
-func New(db *state.DB, interval time.Duration, anvilPaths map[string]string) *Smelter {
-	return &Smelter{
+func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, opts ...Option) *Smelter {
+	s := &Smelter{
 		db:         db,
 		wtMgr:      worktree.NewManager(),
 		interval:   interval,
 		anvilPaths: anvilPaths,
 		intervalCh: make(chan time.Duration, 1),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // UpdateAnvilPaths replaces the set of anvils. Safe to call while Run is active.
@@ -317,8 +349,20 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 		flushedIDs = append(flushedIDs, pr.ID)
 	}
 
-	if added == 0 {
-		// All rules were duplicates (already in the file) or malformed. Delete from DB and emit a flush event.
+	// 2b. Pass 1 consolidation: cluster near-duplicate rules and merge each
+	//     cluster into a single canonical rule via the warden-stage AI. Runs
+	//     before save/commit so the merge lands in the same Smelter PR.
+	consolidationSummary, archived, err := s.runConsolidation(ctx, wt.Path, anvilName, rf)
+	if err != nil {
+		// Non-fatal: log and continue with whatever rules we have. The original
+		// (pre-consolidation) rules are still in rf because Consolidate only
+		// mutates rf when at least one cluster merged successfully.
+		log.Printf("[smelter] consolidation error for %s: %v", anvilName, err)
+	}
+
+	if added == 0 && len(consolidationSummary) == 0 {
+		// All rules were duplicates (already in the file) or malformed AND
+		// nothing was consolidated. Delete from DB and emit a flush event.
 		log.Printf("[smelter] All %d pending rule(s) for %s were duplicates or malformed — cleaning up", len(rules), anvilName)
 		if err := s.db.DeletePendingRules(flushedIDs); err != nil {
 			return err
@@ -336,8 +380,17 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 		return fmt.Errorf("saving warden rules for %s: %w", anvilName, err)
 	}
 
+	// 3b. Persist archived rules (replaced by consolidation) to the per-anvil
+	//     archive store. Done before commit so the archive file is part of the
+	//     same Smelter PR.
+	if len(archived) > 0 {
+		if err := s.archiveRules(wt.Path, archived, consolidationSummary); err != nil {
+			log.Printf("[smelter] archive write failed for %s: %v", anvilName, err)
+		}
+	}
+
 	// 4. Commit and force-push from the worktree.
-	if err := s.commitAndPush(ctx, wt.Path, branch, added); err != nil {
+	if err := s.commitAndPush(ctx, wt.Path, branch, added, consolidationSummary); err != nil {
 		return fmt.Errorf("commit/push for %s: %w", anvilName, err)
 	}
 
@@ -358,9 +411,68 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	return nil
 }
 
+// runConsolidation invokes warden.Consolidate over the in-memory rules file
+// when a consolidator and positive threshold are configured. It returns the
+// per-cluster summary and the original rule entries that were superseded so
+// the caller can write them to the archive store. Errors that occur for
+// individual clusters are aggregated and returned but do not abort the pass.
+func (s *Smelter) runConsolidation(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile) ([]warden.MergeResult, []warden.Rule, error) {
+	if s.consolidator == nil || s.dedupThreshold == nil {
+		return nil, nil, nil
+	}
+	threshold := s.dedupThreshold()
+	if threshold <= 0 {
+		return nil, nil, nil
+	}
+	replaced, summary, errs := warden.Consolidate(ctx, wtPath, rf, threshold, s.consolidator)
+	if len(summary) > 0 {
+		log.Printf("[smelter] consolidated %d cluster(s) for %s", len(summary), anvilName)
+		_ = s.db.LogEvent(state.EventSmelterFlushed,
+			fmt.Sprintf("Consolidated %d cluster(s) for %s", len(summary), anvilName), "", anvilName)
+	}
+	var combined error
+	if len(errs) > 0 {
+		// Surface the first error verbatim; the rest go to the log.
+		for i, e := range errs {
+			if i == 0 {
+				combined = e
+				continue
+			}
+			log.Printf("[smelter] additional consolidation error for %s: %v", anvilName, e)
+		}
+	}
+	return summary, replaced, combined
+}
+
+// archiveRules persists the superseded rules to the per-anvil archive store
+// with reason="duplicate" and superseded_by set to the merged rule's ID.
+// summary is consulted so each archived rule is tagged with the correct
+// superseder.
+func (s *Smelter) archiveRules(wtPath string, archived []warden.Rule, summary []warden.MergeResult) error {
+	// Build map: originalID -> mergedID.
+	supersededBy := make(map[string]string, len(archived))
+	for _, m := range summary {
+		for _, id := range m.ReplacedIDs {
+			supersededBy[id] = m.Merged.ID
+		}
+	}
+
+	archivePath := warden.ArchivePath(wtPath)
+	archive, err := warden.LoadArchive(archivePath)
+	if err != nil {
+		return fmt.Errorf("loading archive: %w", err)
+	}
+	for _, r := range archived {
+		archive.Add(r, warden.ArchiveReasonDuplicate, supersededBy[r.ID])
+	}
+	return archive.Save(archivePath)
+}
+
 // commitAndPush stages the rules file, commits, and force-pushes from the
-// worktree. The worktree is already on the correct branch.
-func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, ruleCount int) error {
+// worktree. The worktree is already on the correct branch. When summary is
+// non-empty it is appended to the commit message body so reviewers can see
+// which clusters were merged.
+func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, ruleCount int, summary []warden.MergeResult) error {
 	gitEnv := cleanGitEnv()
 	git := func(args ...string) error {
 		cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -376,13 +488,25 @@ func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, rule
 		return nil
 	}
 
-	// Stage the rules file.
+	// Stage the rules file and the archive file (when present — the
+	// archive may have been written by the consolidation pass).
 	if err := git("add", warden.RulesFileName); err != nil {
 		return err
 	}
+	if _, statErr := os.Stat(filepath.Join(wtPath, warden.ArchiveFileName)); statErr == nil {
+		if err := git("add", warden.ArchiveFileName); err != nil {
+			return err
+		}
+	}
 
-	// Commit with the specified message format.
-	commitMsg := fmt.Sprintf("forge: learn %d warden rule(s) from pending queue [no-changelog]", ruleCount)
+	// Build the commit message: keep the existing single-line subject for
+	// backwards compatibility, then append a structured consolidation
+	// summary body when Pass 1 merged any clusters.
+	subject := fmt.Sprintf("forge: learn %d warden rule(s) from pending queue [no-changelog]", ruleCount)
+	commitMsg := subject
+	if body := warden.FormatConsolidationSummary(summary); body != "" {
+		commitMsg = subject + "\n\n" + body
+	}
 	if err := git("commit", "-m", commitMsg); err != nil {
 		return err
 	}

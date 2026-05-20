@@ -1070,7 +1070,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Always create the worker when enabled so hot-reload can update interval/paths.
 	// Run handles interval <= 0 by pausing the ticker until a positive value arrives.
 	if d.config().Settings.IsSmelterEnabled() {
-		d.smelterWorker = smelter.New(d.db, d.config().Settings.SmelterInterval, monitorAnvils)
+		d.smelterWorker = smelter.New(
+			d.db,
+			d.config().Settings.SmelterInterval,
+			monitorAnvils,
+			smelter.WithConsolidator(warden.DefaultConsolidationRunner()),
+			smelter.WithDedupThreshold(func() float64 {
+				return d.config().Settings.Warden.ResolvedDedupThreshold()
+			}),
+		)
 		go func() {
 			if err := d.smelterWorker.Run(ctx); err != nil && err != context.Canceled {
 				d.logger.Error("Smelter error", "error", err)
