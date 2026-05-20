@@ -158,6 +158,22 @@ func (a *Archive) Add(rule Rule, reason, supersededBy string) {
 	a.Rules = append(a.Rules, entry)
 }
 
+// AddArchived appends a pre-built ArchivedRule, deduplicating by ID. If an
+// entry with the same ID already exists it is replaced in place so the
+// archive stays deduplicated. Unlike Add, this preserves the supplied
+// LastSeen/ArchivedAt/ArchiveReason values rather than rewriting them —
+// used when the caller (e.g. Pass 2 staleness archiving) has already built
+// the entry with the correct bookkeeping.
+func (a *Archive) AddArchived(ar ArchivedRule) {
+	for i, existing := range a.Rules {
+		if existing.ID == ar.ID {
+			a.Rules[i] = ar
+			return
+		}
+	}
+	a.Rules = append(a.Rules, ar)
+}
+
 // Find returns the archived rule with the given ID and true when present.
 func (a *Archive) Find(id string) (*ArchivedRule, bool) {
 	for i := range a.Rules {

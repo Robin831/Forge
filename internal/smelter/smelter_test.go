@@ -373,7 +373,7 @@ func TestArchiveRules_WritesSupersededByCorrectly(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, s.archiveRules(dir, archived, summary))
+	require.NoError(t, s.archiveRules(dir, archived, summary, nil))
 
 	a, err := warden.LoadArchive(warden.ArchivePath(dir))
 	require.NoError(t, err)
@@ -405,7 +405,7 @@ func TestPersistRulesAndArchive_ArchiveFirstThenRules(t *testing.T) {
 		Category:    "style",
 	}}
 
-	require.NoError(t, s.persistRulesAndArchive(dir, rf, archived, summary))
+	require.NoError(t, s.persistRulesAndArchive(dir, rf, archived, summary, nil))
 
 	rulesData, err := os.ReadFile(filepath.Join(dir, warden.RulesFileName))
 	require.NoError(t, err)
@@ -445,14 +445,179 @@ func TestPersistRulesAndArchive_ArchiveFailureAbortsRulesSave(t *testing.T) {
 		Category:    "style",
 	}}
 
-	err := s.persistRulesAndArchive(dir, rf, archived, summary)
+	err := s.persistRulesAndArchive(dir, rf, archived, summary, nil)
 	require.Error(t, err, "archive failure must propagate")
-	assert.Contains(t, err.Error(), "archiving consolidated rules")
+	assert.Contains(t, err.Error(), "archiving rules")
 
 	// Critical: the active rules file must not have been written.
 	_, statErr := os.Stat(filepath.Join(dir, warden.RulesFileName))
 	assert.True(t, os.IsNotExist(statErr),
 		"active rules file must not be saved when archive write fails (got stat err: %v)", statErr)
+}
+
+// TestRunStaleness_DisabledByDefault verifies that without an
+// archive-after-days option configured the staleness pass is a no-op.
+func TestRunStaleness_DisabledByDefault(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "r1", Category: "style", Pattern: "p", Check: "c", Added: "2020-01-01"},
+	}}
+
+	archived := s.runStaleness("anvil-a", rf)
+	assert.Empty(t, archived)
+	assert.Len(t, rf.Rules, 1, "rf.Rules must be untouched when the staleness pass is disabled")
+}
+
+// TestRunStaleness_ZeroThresholdSkipsPass verifies that a threshold of zero
+// or negative disables the staleness pass even when WithArchiveAfterDays is
+// configured.
+func TestRunStaleness_ZeroThresholdSkipsPass(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{},
+		WithArchiveAfterDays(func() int { return 0 }),
+	)
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "r1", Added: "2020-01-01"},
+	}}
+
+	archived := s.runStaleness("anvil-a", rf)
+	assert.Empty(t, archived)
+	assert.Len(t, rf.Rules, 1)
+}
+
+// TestRunStaleness_MovesOldRulesAndUpdatesRulesFile verifies the staleness
+// pass partitions rules correctly, mutates rf.Rules in place so Pass 3 only
+// operates on actives, and returns ArchivedRule entries with reason=stale.
+func TestRunStaleness_MovesOldRulesAndUpdatesRulesFile(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{},
+		WithArchiveAfterDays(func() int { return 180 }),
+	)
+
+	fresh := warden.Rule{ID: "fresh", Category: "style", Pattern: "p1", Check: "c1",
+		Added: time.Now().UTC().AddDate(0, 0, -10).Format("2006-01-02")}
+	stale := warden.Rule{ID: "stale", Category: "style", Pattern: "p2", Check: "c2",
+		Added: "2020-01-01"}
+	rf := &warden.RulesFile{Rules: []warden.Rule{fresh, stale}}
+
+	archived := s.runStaleness("anvil-a", rf)
+	require.Len(t, archived, 1)
+	assert.Equal(t, "stale", archived[0].ID)
+	assert.Equal(t, warden.ArchiveReasonStale, archived[0].ArchiveReason)
+	assert.False(t, archived[0].LastSeen.IsZero(), "LastSeen should be set on archived stale entries")
+
+	// rf.Rules should now contain only the fresh rule so Pass 3 sees only actives.
+	require.Len(t, rf.Rules, 1)
+	assert.Equal(t, "fresh", rf.Rules[0].ID)
+}
+
+// TestArchiveRules_WritesStaleEntries verifies that archiveRules persists
+// Pass 2 stale entries into the archive store alongside Pass 1 duplicates,
+// preserving their pre-built reason and LastSeen values.
+func TestArchiveRules_WritesStaleEntries(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	dir := t.TempDir()
+	staleAt := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
+	staleArchived := []warden.ArchivedRule{
+		{
+			Rule:          warden.Rule{ID: "old", Category: "style", Pattern: "p", Check: "c", Added: "2020-01-01"},
+			LastSeen:      staleAt,
+			ArchivedAt:    staleAt,
+			ArchiveReason: warden.ArchiveReasonStale,
+		},
+	}
+
+	require.NoError(t, s.archiveRules(dir, nil, nil, staleArchived))
+
+	a, err := warden.LoadArchive(warden.ArchivePath(dir))
+	require.NoError(t, err)
+	require.Len(t, a.Rules, 1)
+	assert.Equal(t, "old", a.Rules[0].ID)
+	assert.Equal(t, warden.ArchiveReasonStale, a.Rules[0].ArchiveReason)
+	assert.Equal(t, "", a.Rules[0].SupersededBy)
+	assert.Equal(t, staleAt, a.Rules[0].LastSeen)
+}
+
+// TestArchiveRules_CombinesPass1AndPass2Entries verifies that a single
+// archive write captures both duplicates (Pass 1) and stale entries (Pass 2).
+func TestArchiveRules_CombinesPass1AndPass2Entries(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	dir := t.TempDir()
+
+	dupArchived := []warden.Rule{
+		{ID: "dup1", Category: "style", Pattern: "p1", Check: "c1"},
+	}
+	summary := []warden.MergeResult{{
+		Merged:      warden.Rule{ID: "merged-1", Category: "style"},
+		ReplacedIDs: []string{"dup1"},
+		Category:    "style",
+	}}
+	staleArchived := []warden.ArchivedRule{
+		{
+			Rule:          warden.Rule{ID: "stale1", Category: "style", Added: "2020-01-01"},
+			LastSeen:      time.Now().UTC(),
+			ArchivedAt:    time.Now().UTC(),
+			ArchiveReason: warden.ArchiveReasonStale,
+		},
+	}
+
+	require.NoError(t, s.archiveRules(dir, dupArchived, summary, staleArchived))
+
+	a, err := warden.LoadArchive(warden.ArchivePath(dir))
+	require.NoError(t, err)
+	require.Len(t, a.Rules, 2)
+
+	byID := make(map[string]warden.ArchivedRule, len(a.Rules))
+	for _, r := range a.Rules {
+		byID[r.ID] = r
+	}
+	require.Contains(t, byID, "dup1")
+	assert.Equal(t, warden.ArchiveReasonDuplicate, byID["dup1"].ArchiveReason)
+	assert.Equal(t, "merged-1", byID["dup1"].SupersededBy)
+
+	require.Contains(t, byID, "stale1")
+	assert.Equal(t, warden.ArchiveReasonStale, byID["stale1"].ArchiveReason)
+	assert.Equal(t, "", byID["stale1"].SupersededBy)
+}
+
+// TestPersistRulesAndArchive_StaleOnlyWritesArchive verifies the load-bearing
+// invariant for Pass 2: when only stale rules need archiving (no Pass 1
+// activity), both the archive file and the active rules file are written.
+func TestPersistRulesAndArchive_StaleOnlyWritesArchive(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	dir := t.TempDir()
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "kept", Category: "style", Pattern: "p", Check: "c"},
+	}}
+	staleArchived := []warden.ArchivedRule{
+		{
+			Rule:          warden.Rule{ID: "old", Category: "style", Added: "2020-01-01"},
+			LastSeen:      time.Now().UTC(),
+			ArchivedAt:    time.Now().UTC(),
+			ArchiveReason: warden.ArchiveReasonStale,
+		},
+	}
+
+	require.NoError(t, s.persistRulesAndArchive(dir, rf, nil, nil, staleArchived))
+
+	rulesData, err := os.ReadFile(filepath.Join(dir, warden.RulesFileName))
+	require.NoError(t, err)
+	assert.Contains(t, string(rulesData), "kept")
+
+	a, err := warden.LoadArchive(warden.ArchivePath(dir))
+	require.NoError(t, err)
+	require.Len(t, a.Rules, 1)
+	assert.Equal(t, "old", a.Rules[0].ID)
+	assert.Equal(t, warden.ArchiveReasonStale, a.Rules[0].ArchiveReason)
 }
 
 // TestPersistRulesAndArchive_NoArchiveSkipsArchiveStep verifies that when
@@ -467,7 +632,7 @@ func TestPersistRulesAndArchive_NoArchiveSkipsArchiveStep(t *testing.T) {
 		{ID: "r1", Category: "style", Pattern: "p", Check: "c"},
 	}}
 
-	require.NoError(t, s.persistRulesAndArchive(dir, rf, nil, nil))
+	require.NoError(t, s.persistRulesAndArchive(dir, rf, nil, nil, nil))
 
 	_, err := os.Stat(filepath.Join(dir, warden.RulesFileName))
 	assert.NoError(t, err, "rules file should be saved")
@@ -563,6 +728,6 @@ func TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch(t *testing.T) {
 
 	// commitAndPush must succeed: the fetch populates the remote-tracking ref
 	// so --force-with-lease can verify the lease and allow the push.
-	err = s.commitAndPush(ctx, localDir, branch, 1, nil)
+	err = s.commitAndPush(ctx, localDir, branch, 1, nil, nil)
 	require.NoError(t, err, "commitAndPush should succeed after fetching remote-tracking ref")
 }
