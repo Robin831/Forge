@@ -125,6 +125,17 @@ func TestBuildCommitMessage_BackfilledOnly(t *testing.T) {
 	assert.Contains(t, msg, "- r2")
 }
 
+func TestBuildCommitMessage_ConsolidatedEmptyReplacedIDs(t *testing.T) {
+	passes := PassResults{
+		Consolidated: []warden.MergeResult{
+			{Merged: warden.Rule{ID: "m"}, ReplacedIDs: []string{"", "valid-id"}, Category: "style", MaxSimilarity: 0.5},
+		},
+	}
+	msg := buildCommitMessage(passes)
+	assert.Contains(t, msg, "[style] m ← (no id), valid-id (sim=0.50)",
+		"empty replaced IDs should render as (no id), not as blank")
+}
+
 func TestBuildCommitMessage_NoPasses_FallbackSubject(t *testing.T) {
 	// Defensive path — callers should not invoke buildCommitMessage with no
 	// changes, but the function must still produce a non-empty subject.
