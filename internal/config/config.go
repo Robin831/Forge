@@ -486,11 +486,12 @@ type WardenSettings struct {
 	// Rule.Pattern against the diff. Pointer so unset means "use default
 	// (true)".
 	FilterPatternGrep *bool `mapstructure:"filter_pattern_grep" yaml:"filter_pattern_grep,omitempty"`
-	// ArchiveAfterDays controls the staleness threshold (in days) that a
-	// future archive/dedup pass will use to retire inactive rules. Rule
-	// entries do not yet carry a last-seen timestamp; when that tracking is
-	// added, this value will gate the archive pass. Zero falls back to the
-	// default of 180 days.
+	// ArchiveAfterDays controls the staleness threshold (in days) used by
+	// the Smelter's Pass 2 staleness sweep. A rule whose Added date is
+	// older than this threshold and has had no recent source activity is
+	// moved to the archive store with reason="stale". Zero falls back to
+	// the default of 180 days; a negative value disables the pass
+	// (callers may use it to mean "never archive").
 	ArchiveAfterDays int `mapstructure:"archive_after_days" yaml:"archive_after_days,omitempty"`
 	// DedupThreshold is the similarity score (0.0–1.0) above which two
 	// active rules are considered duplicates and the older entry is moved to

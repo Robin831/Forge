@@ -100,3 +100,36 @@ func TestArchivePath(t *testing.T) {
 	got := ArchivePath("/anvil")
 	assert.Equal(t, filepath.Join("/anvil", ".forge", "warden-rules.archive.yaml"), got)
 }
+
+func TestArchive_AddArchived_AppendsAndDedupes(t *testing.T) {
+	a := &Archive{}
+	when := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
+	ar := ArchivedRule{
+		Rule:          Rule{ID: "r1", Check: "first"},
+		LastSeen:      when,
+		ArchivedAt:    when,
+		ArchiveReason: ArchiveReasonStale,
+	}
+	a.AddArchived(ar)
+	require.Len(t, a.Rules, 1)
+	assert.Equal(t, "first", a.Rules[0].Check)
+	assert.Equal(t, when, a.Rules[0].LastSeen)
+	assert.Equal(t, ArchiveReasonStale, a.Rules[0].ArchiveReason)
+
+	// Same ID with different content should replace in place, preserving
+	// the new LastSeen/reason verbatim (no auto-rewriting like Add does).
+	when2 := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	ar2 := ArchivedRule{
+		Rule:          Rule{ID: "r1", Check: "second"},
+		LastSeen:      when2,
+		ArchivedAt:    when2,
+		ArchiveReason: ArchiveReasonDuplicate,
+		SupersededBy:  "merged-1",
+	}
+	a.AddArchived(ar2)
+	require.Len(t, a.Rules, 1)
+	assert.Equal(t, "second", a.Rules[0].Check)
+	assert.Equal(t, when2, a.Rules[0].LastSeen)
+	assert.Equal(t, ArchiveReasonDuplicate, a.Rules[0].ArchiveReason)
+	assert.Equal(t, "merged-1", a.Rules[0].SupersededBy)
+}

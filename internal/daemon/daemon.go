@@ -1078,6 +1078,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 			smelter.WithDedupThreshold(func() float64 {
 				return d.config().Settings.Warden.ResolvedDedupThreshold()
 			}),
+			smelter.WithArchiveAfterDays(func() int {
+				return d.config().Settings.Warden.ResolvedArchiveAfterDays()
+			}),
 		)
 		go func() {
 			if err := d.smelterWorker.Run(ctx); err != nil && err != context.Canceled {

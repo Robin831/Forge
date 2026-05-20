@@ -74,6 +74,9 @@ type Smelter struct {
 	// dedupThreshold returns the active similarity threshold. When nil or it
 	// returns <= 0, consolidation is skipped.
 	dedupThreshold func() float64
+	// archiveAfterDays returns the staleness threshold in days for Pass 2.
+	// When nil or it returns <= 0, the staleness pass is skipped.
+	archiveAfterDays func() int
 }
 
 // Option configures a Smelter at construction time.
@@ -93,6 +96,14 @@ func WithConsolidator(runner warden.ConsolidationRunner) Option {
 // the smelter. A nil function or one returning <= 0 disables consolidation.
 func WithDedupThreshold(fn func() float64) Option {
 	return func(s *Smelter) { s.dedupThreshold = fn }
+}
+
+// WithArchiveAfterDays supplies a function the Smelter calls at flush time
+// to resolve the staleness threshold (in days) used by Pass 2. A function
+// is used so config hot-reload can take effect without restarting. A nil
+// function or one returning <= 0 disables the staleness pass.
+func WithArchiveAfterDays(fn func() int) Option {
+	return func(s *Smelter) { s.archiveAfterDays = fn }
 }
 
 // New creates a Smelter. interval controls how often Flush is called;
@@ -360,9 +371,18 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 		log.Printf("[smelter] consolidation error for %s: %v", anvilName, err)
 	}
 
-	if added == 0 && len(consolidationSummary) == 0 {
+	// 2c. Pass 2 staleness archive: move rules that have aged past the
+	//     configured threshold and have had no recent source activity into
+	//     the archive store with reason="stale". Runs after Pass 1 so the
+	//     newly-merged rules in rf.Rules are still candidates for staleness
+	//     in future flushes. Pass 3 only operates on whatever remains in
+	//     rf.Rules after this step.
+	staleArchived := s.runStaleness(anvilName, rf)
+
+	if added == 0 && len(consolidationSummary) == 0 && len(staleArchived) == 0 {
 		// All rules were duplicates (already in the file) or malformed AND
-		// nothing was consolidated. Delete from DB and emit a flush event.
+		// nothing was consolidated AND nothing aged out. Delete from DB and
+		// emit a flush event.
 		log.Printf("[smelter] All %d pending rule(s) for %s were duplicates or malformed — cleaning up", len(rules), anvilName)
 		if err := s.db.DeletePendingRules(flushedIDs); err != nil {
 			return err
@@ -380,12 +400,12 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	//    archive entry for the rules it replaced (the bead contract). If
 	//    either step fails we abort before staging/commit/push, leaving the
 	//    pending queue intact for the next flush.
-	if err := s.persistRulesAndArchive(wt.Path, rf, archived, consolidationSummary); err != nil {
+	if err := s.persistRulesAndArchive(wt.Path, rf, archived, consolidationSummary, staleArchived); err != nil {
 		return fmt.Errorf("persisting warden rules for %s: %w", anvilName, err)
 	}
 
 	// 4. Commit and force-push from the worktree.
-	if err := s.commitAndPush(ctx, wt.Path, branch, added, consolidationSummary); err != nil {
+	if err := s.commitAndPush(ctx, wt.Path, branch, added, consolidationSummary, staleArchived); err != nil {
 		return fmt.Errorf("commit/push for %s: %w", anvilName, err)
 	}
 
@@ -439,16 +459,42 @@ func (s *Smelter) runConsolidation(ctx context.Context, wtPath, anvilName string
 	return summary, replaced, combined
 }
 
+// runStaleness invokes warden.ArchiveStale on the active rules slice when an
+// archive-after threshold is configured. Stale rules are removed from rf in
+// place and returned as ArchivedRule entries so the caller can persist them
+// to the archive store and surface the count in the commit message.
+//
+// When archiveAfterDays is nil or returns <= 0, the pass is a no-op and the
+// returned slice is empty — rf.Rules is left untouched.
+func (s *Smelter) runStaleness(anvilName string, rf *warden.RulesFile) []warden.ArchivedRule {
+	if s.archiveAfterDays == nil {
+		return nil
+	}
+	threshold := s.archiveAfterDays()
+	if threshold <= 0 {
+		return nil
+	}
+	active, stale := warden.ArchiveStale(rf.Rules, threshold, time.Now().UTC())
+	if len(stale) == 0 {
+		return nil
+	}
+	rf.Rules = active
+	log.Printf("[smelter] archived %d stale rule(s) for %s (threshold=%dd)", len(stale), anvilName, threshold)
+	_ = s.db.LogEvent(state.EventSmelterFlushed,
+		fmt.Sprintf("Archived %d stale rule(s) for %s", len(stale), anvilName), "", anvilName)
+	return stale
+}
+
 // persistRulesAndArchive writes the archive entries (when any) and then
 // saves the active rules file. Ordering is load-bearing: the archive must
 // land before the active rules file so a partial failure can never leave
 // the rules file on disk without a matching archive record for the rules
 // it superseded. Any error from either step is returned so callers can
 // abort the flush before staging/commit/push.
-func (s *Smelter) persistRulesAndArchive(wtPath string, rf *warden.RulesFile, archived []warden.Rule, summary []warden.MergeResult) error {
-	if len(archived) > 0 {
-		if err := s.archiveRules(wtPath, archived, summary); err != nil {
-			return fmt.Errorf("archiving consolidated rules: %w", err)
+func (s *Smelter) persistRulesAndArchive(wtPath string, rf *warden.RulesFile, archived []warden.Rule, summary []warden.MergeResult, stale []warden.ArchivedRule) error {
+	if len(archived) > 0 || len(stale) > 0 {
+		if err := s.archiveRules(wtPath, archived, summary, stale); err != nil {
+			return fmt.Errorf("archiving rules: %w", err)
 		}
 	}
 	if err := warden.SaveRules(wtPath, rf); err != nil {
@@ -457,12 +503,13 @@ func (s *Smelter) persistRulesAndArchive(wtPath string, rf *warden.RulesFile, ar
 	return nil
 }
 
-// archiveRules persists the superseded rules to the per-anvil archive store
-// with reason="duplicate" and superseded_by set to the merged rule's ID.
-// summary is consulted so each archived rule is tagged with the correct
-// superseder.
-func (s *Smelter) archiveRules(wtPath string, archived []warden.Rule, summary []warden.MergeResult) error {
-	// Build map: originalID -> mergedID.
+// archiveRules persists archive entries from Pass 1 (duplicates) and Pass 2
+// (stale) to the per-anvil archive store. Pass 1 entries are added with
+// reason="duplicate" and superseded_by set to the merged rule's ID. Pass 2
+// entries are appended verbatim, preserving the LastSeen and ArchiveReason
+// values supplied by ArchiveStale.
+func (s *Smelter) archiveRules(wtPath string, archived []warden.Rule, summary []warden.MergeResult, stale []warden.ArchivedRule) error {
+	// Build map: originalID -> mergedID for the Pass 1 entries.
 	supersededBy := make(map[string]string, len(archived))
 	for _, m := range summary {
 		for _, id := range m.ReplacedIDs {
@@ -478,14 +525,18 @@ func (s *Smelter) archiveRules(wtPath string, archived []warden.Rule, summary []
 	for _, r := range archived {
 		archive.Add(r, warden.ArchiveReasonDuplicate, supersededBy[r.ID])
 	}
+	for _, ar := range stale {
+		archive.AddArchived(ar)
+	}
 	return archive.Save(archivePath)
 }
 
 // commitAndPush stages the rules file, commits, and force-pushes from the
 // worktree. The worktree is already on the correct branch. When summary is
 // non-empty it is appended to the commit message body so reviewers can see
-// which clusters were merged.
-func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, ruleCount int, summary []warden.MergeResult) error {
+// which clusters were merged. When stale is non-empty its count is included
+// in the commit subject so reviewers can see how many rules aged out.
+func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, ruleCount int, summary []warden.MergeResult, stale []warden.ArchivedRule) error {
 	gitEnv := cleanGitEnv()
 	git := func(args ...string) error {
 		cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -512,17 +563,27 @@ func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, rule
 		}
 	}
 
-	// Build the commit message: keep the existing single-line subject for
-	// backwards compatibility, then append a structured consolidation
-	// summary body when Pass 1 merged any clusters.
+	// Build the commit message subject from the work that was actually
+	// performed. The subject ends in "[no-changelog]" so the changelog
+	// validator skips it.
+	var parts []string
+	if ruleCount > 0 {
+		parts = append(parts, fmt.Sprintf("learn %d warden rule(s)", ruleCount))
+	}
+	if len(summary) > 0 {
+		parts = append(parts, fmt.Sprintf("consolidate %d cluster(s)", len(summary)))
+	}
+	if len(stale) > 0 {
+		parts = append(parts, fmt.Sprintf("archive %d stale rule(s)", len(stale)))
+	}
 	var subject string
-	switch {
-	case ruleCount > 0 && len(summary) > 0:
-		subject = fmt.Sprintf("forge: learn %d warden rule(s), consolidate %d cluster(s) [no-changelog]", ruleCount, len(summary))
-	case len(summary) > 0:
-		subject = fmt.Sprintf("forge: consolidate %d warden rule cluster(s) [no-changelog]", len(summary))
-	default:
+	if len(parts) == 0 {
+		// Defensive fallback: callers only reach commitAndPush when at least
+		// one of the three counts is positive, but keep the legacy form to
+		// avoid an empty subject if invariants ever shift.
 		subject = fmt.Sprintf("forge: learn %d warden rule(s) from pending queue [no-changelog]", ruleCount)
+	} else {
+		subject = "forge: " + strings.Join(parts, ", ") + " [no-changelog]"
 	}
 	commitMsg := subject
 	if body := warden.FormatConsolidationSummary(summary); body != "" {
