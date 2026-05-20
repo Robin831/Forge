@@ -476,6 +476,9 @@ func (s *Server) validateSessionAnvil(anvil *string) (string, bool) {
 		return "", true
 	}
 	registry := s.anvils()
+	if len(registry) == 0 {
+		return "", true
+	}
 	if *anvil == "" {
 		if len(registry) == 1 {
 			for name := range registry {
