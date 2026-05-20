@@ -92,7 +92,10 @@ func TestClusterByJaccard_MultipleClusters(t *testing.T) {
 		{ID: "r3", Pattern: "spelling mistake", Check: "verify spelling in button"},
 		{ID: "r4", Pattern: "button label typo", Check: "spelling consistency button"},
 	}
-	clusters := ClusterByJaccard(rules, 0.3)
+	// Threshold chosen so r1<->r2 (J ≈ 0.333) and r3<->r4 (J ≈ 0.286) both
+	// cluster, while cross-cluster pairs (J = 0) stay separate. Boundary
+	// behavior is exercised by TestClusterByJaccard_BoundaryThreshold.
+	clusters := ClusterByJaccard(rules, 0.25)
 	if len(clusters) != 2 {
 		t.Fatalf("expected 2 clusters, got %d", len(clusters))
 	}
