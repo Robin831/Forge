@@ -70,9 +70,9 @@ type ConsolidateResult struct {
 // ConsolidateAnvil loads the warden rules file under opts.AnvilPath, runs
 // the three smelter passes (Pass 1 cluster consolidation, Pass 2 staleness
 // archive, Pass 3 paths backfill) against the in-memory rules, and persists
-// both the active rules file and the archive file when any pass produced
-// changes. Idempotent: rerunning against an already-consolidated file is a
-// no-op (Passes.HasChanges() will be false in the result).
+// the results when any pass produced changes. Idempotent: rerunning against
+// an already-consolidated file is a no-op (Passes.HasChanges() will be
+// false in the result).
 //
 // Pass 1 is skipped when opts.Consolidator is nil or opts.DedupThreshold
 // <= 0. Pass 2 is skipped when opts.ArchiveAfterDays <= 0. Pass 3 has no
@@ -80,9 +80,13 @@ type ConsolidateResult struct {
 // and whose Paths field is empty (idempotent on already-backfilled rules).
 //
 // Behaviour notes:
-//   - When persistence is required, the archive is written before the
-//     active rules so a partial failure can never leave the active file
-//     without a matching archive record.
+//   - The active rules file is always written when any pass produced changes.
+//   - The archive file is written only when Pass 1 (duplicates) or Pass 2
+//     (stale rules) produced entries to archive. A Pass 3-only run updates
+//     the active rules file but leaves the archive file untouched.
+//   - When the archive is written, it lands before the active rules file so
+//     a partial failure can never leave the active file without a matching
+//     archive record.
 //   - The pending warden rules queue in state.db is NOT consulted —
 //     ConsolidateAnvil operates only on what is already on disk. Pulling
 //     pending rules into the active file remains the smelter loop's

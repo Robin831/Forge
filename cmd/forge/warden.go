@@ -273,10 +273,12 @@ scheduled smelter runs:
   Pass 2 — archive rules whose Added date is older than archive_after_days.
   Pass 3 — backfill the Paths field from each rule's source PR(s).
 
-Writes both .forge/warden-rules.yaml and .forge/warden-rules.archive.yaml
-in-place under the anvil so the caller can commit them. The pending warden
-rules queue in state.db is NOT consulted — this command only operates on
-what is already in the active rules file.`,
+Always writes .forge/warden-rules.yaml when any pass produced changes.
+.forge/warden-rules.archive.yaml is written only when Pass 1 or Pass 2
+produced archive entries (duplicate or stale rules); a backfill-only run
+leaves the archive file unchanged. The pending warden rules queue in
+state.db is NOT consulted — this command only operates on what is already
+in the active rules file.`,
 	Args:    cobra.ExactArgs(1),
 	Example: "  forge warden consolidate munin",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -329,7 +331,9 @@ what is already in the active rules file.`,
 			fmt.Println("No changes — active rules file already at steady state.")
 		} else {
 			fmt.Printf("\nWrote %s\n", warden.RulesPath(anvil.Path))
-			fmt.Printf("Wrote %s\n", warden.ArchivePath(anvil.Path))
+			if len(result.Passes.Consolidated) > 0 || len(result.Passes.Archived) > 0 {
+				fmt.Printf("Wrote %s\n", warden.ArchivePath(anvil.Path))
+			}
 			fmt.Println("Review and commit the changes when ready.")
 		}
 		if result.FirstError != nil {
