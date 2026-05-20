@@ -136,8 +136,9 @@ func (a *Archive) Save(path string) error {
 // Add appends a rule to the archive, recording the reason it was archived
 // and (optionally) the ID of the rule that supersedes it. If an entry with
 // the same ID already exists, it is replaced in place so the archive stays
-// deduplicated by ID. ArchivedAt is set to time.Now(); LastSeen falls back
-// to ArchivedAt when the source rule has no recorded LastSeen.
+// deduplicated by ID. Both ArchivedAt and LastSeen are set to time.Now() at
+// archive time (Rule has no last-seen field yet; a future pass will propagate
+// one when per-rule activity tracking is introduced).
 func (a *Archive) Add(rule Rule, reason, supersededBy string) {
 	now := time.Now().UTC()
 	entry := ArchivedRule{
