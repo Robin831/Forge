@@ -66,6 +66,12 @@ type Rule struct {
 	Check    string     `yaml:"check"    json:"check"`
 	Source   SourceList `yaml:"source"   json:"source"`
 	Added    string     `yaml:"added"    json:"added"`
+	// Paths is an optional list of doublestar glob patterns. When set, the
+	// path-glob filter (see FilterRules) keeps the rule only when at least one
+	// changed file matches one of these patterns. When empty, the rule passes
+	// through to the next filter — backward compatible with rules written
+	// before this field existed.
+	Paths []string `yaml:"paths,omitempty" json:"paths,omitempty"`
 }
 
 // needsQuoting returns true if a YAML scalar value needs explicit quoting
@@ -196,12 +202,35 @@ func (rf *RulesFile) RemoveRule(id string) bool {
 
 // FormatChecklist returns the rules formatted as a numbered checklist
 // suitable for inclusion in a review prompt.
+//
+// This formatter applies no filtering and is kept for the Smith self-review
+// checklist (combined-mode prompt). The Warden review prompt uses
+// FormatChecklistForDiff so it can filter rules against the actual diff.
 func (rf *RulesFile) FormatChecklist() string {
 	if len(rf.Rules) == 0 {
 		return ""
 	}
 	var sb strings.Builder
 	for i, r := range rf.Rules {
+		fmt.Fprintf(&sb, "%d. [ ] Check: %s (pattern: %s)\n", i+1, r.Check, r.Pattern)
+	}
+	return sb.String()
+}
+
+// FormatChecklistForDiff returns the learned rules as a numbered checklist
+// after filtering them against the supplied diff and changedFiles per cfg.
+// When the filtered set is empty the result is "" (so the caller can omit the
+// "Learned Review Rules" section entirely).
+func (rf *RulesFile) FormatChecklistForDiff(diff string, changedFiles []string, cfg ReviewFilterConfig) string {
+	if len(rf.Rules) == 0 {
+		return ""
+	}
+	filtered := FilterRules(rf.Rules, diff, changedFiles, cfg)
+	if len(filtered) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for i, r := range filtered {
 		fmt.Fprintf(&sb, "%d. [ ] Check: %s (pattern: %s)\n", i+1, r.Check, r.Pattern)
 	}
 	return sb.String()

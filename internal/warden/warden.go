@@ -261,10 +261,12 @@ func buildReviewPrompt(beadID, beadTitle, beadDescription, diff, anvilPath, prio
 		agentsMD = string(data)
 	}
 
-	// Load learned review rules for this anvil
+	// Load learned review rules for this anvil and filter them against the
+	// current diff so unrelated rules don't bloat the review prompt.
 	rulesSection := ""
 	if rf, err := LoadRules(anvilPath); err == nil {
-		if checklist := rf.FormatChecklist(); checklist != "" {
+		changedFiles := changedFilesFromDiff(diff)
+		if checklist := rf.FormatChecklistForDiff(diff, changedFiles, ActiveFilterConfig); checklist != "" {
 			rulesSection = "\n## Learned Review Rules\n\nThese are domain-specific patterns learned from past reviews. Check each one against the diff:\n\n" + checklist
 		}
 	} else {

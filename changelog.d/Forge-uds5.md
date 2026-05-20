@@ -1,0 +1,2 @@
+category: Added
+- **Diff-aware warden rule filtering** - The Warden review prompt now filters learned rules by path glob, category routing, and pattern grep against the actual diff so only relevant rules are injected. Reduces prompt token usage on focused changes by ≥80%. Configure via `settings.warden.max_rules_per_review`, `settings.warden.use_all_rules`, and the per-filter toggle flags; bypass at runtime with `forge up --all-rules` for A/B comparison. (Forge-uds5)

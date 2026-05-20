@@ -1114,6 +1114,43 @@ func TestTemperStepConfig_VerifyCleanRoundTrip(t *testing.T) {
 	assert.Equal(t, []string{"web/dist", "web/static/build"}, roundTripped.Steps[0].VerifyClean)
 }
 
+func TestLoad_WardenSettings_Default(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("settings:\n  max_total_smiths: 2\n"), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 30, cfg.Settings.Warden.ResolvedMaxRulesPerReview())
+	assert.False(t, cfg.Settings.Warden.UseAllRules)
+	assert.True(t, cfg.Settings.Warden.IsFilterPathGlobEnabled())
+	assert.True(t, cfg.Settings.Warden.IsFilterCategoryEnabled())
+	assert.True(t, cfg.Settings.Warden.IsFilterPatternGrepEnabled())
+}
+
+func TestLoad_WardenSettings_Custom(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  warden:
+    max_rules_per_review: 50
+    use_all_rules: true
+    filter_path_glob: false
+    filter_category: false
+    filter_pattern_grep: false
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 50, cfg.Settings.Warden.MaxRulesPerReview)
+	assert.True(t, cfg.Settings.Warden.UseAllRules)
+	assert.False(t, cfg.Settings.Warden.IsFilterPathGlobEnabled())
+	assert.False(t, cfg.Settings.Warden.IsFilterCategoryEnabled())
+	assert.False(t, cfg.Settings.Warden.IsFilterPatternGrepEnabled())
+}
+
 func TestTemperStepConfig_VerifyNoConflictMarkersRoundTrip(t *testing.T) {
 	original := &TemperCommandsConfig{
 		Steps: []TemperStepConfig{
