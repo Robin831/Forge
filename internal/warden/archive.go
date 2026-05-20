@@ -1,0 +1,120 @@
+package warden
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// ArchiveFileName is the per-anvil file storing archived (superseded or
+// stale) review rules.
+const ArchiveFileName = ".forge/warden-rules.archive.yaml"
+
+// Archive reason constants. ArchivedRule.ArchiveReason must be one of these.
+const (
+	ArchiveReasonDuplicate = "duplicate"
+	ArchiveReasonStale     = "stale"
+)
+
+// ArchivedRule represents a Rule that has been retired from the active
+// rules file. It embeds the original Rule and adds bookkeeping fields
+// describing why and when the rule was archived.
+type ArchivedRule struct {
+	Rule          `yaml:",inline"`
+	SupersededBy  string    `yaml:"superseded_by,omitempty" json:"superseded_by,omitempty"`
+	LastSeen      time.Time `yaml:"last_seen,omitempty"     json:"last_seen,omitempty"`
+	ArchivedAt    time.Time `yaml:"archived_at"             json:"archived_at"`
+	ArchiveReason string    `yaml:"archive_reason"          json:"archive_reason"`
+}
+
+// Archive is the top-level structure of warden-rules.archive.yaml.
+type Archive struct {
+	Rules []ArchivedRule `yaml:"rules"`
+}
+
+// ArchivePath returns the full path to the archive file for an anvil.
+func ArchivePath(anvilPath string) string {
+	return filepath.Join(anvilPath, ArchiveFileName)
+}
+
+// LoadArchive reads the archive file at the given path. Returns an empty
+// Archive (not an error) if the file does not exist.
+func LoadArchive(path string) (*Archive, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &Archive{}, nil
+		}
+		return nil, fmt.Errorf("reading warden archive: %w", err)
+	}
+
+	var a Archive
+	if err := yaml.Unmarshal(data, &a); err != nil {
+		return nil, fmt.Errorf("parsing warden archive: %w", err)
+	}
+	return &a, nil
+}
+
+// Save writes the archive to the given file path, creating the parent
+// directory if it does not exist.
+func (a *Archive) Save(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating archive directory: %w", err)
+	}
+
+	data, err := yaml.Marshal(a)
+	if err != nil {
+		return fmt.Errorf("marshaling warden archive: %w", err)
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// Add appends a rule to the archive, recording the reason it was archived
+// and (optionally) the ID of the rule that supersedes it. If an entry with
+// the same ID already exists, it is replaced in place so the archive stays
+// deduplicated by ID. ArchivedAt is set to time.Now(); LastSeen falls back
+// to ArchivedAt when the source rule has no recorded LastSeen.
+func (a *Archive) Add(rule Rule, reason, supersededBy string) {
+	now := time.Now().UTC()
+	entry := ArchivedRule{
+		Rule:          rule,
+		SupersededBy:  supersededBy,
+		LastSeen:      now,
+		ArchivedAt:    now,
+		ArchiveReason: reason,
+	}
+
+	for i, existing := range a.Rules {
+		if existing.ID == rule.ID {
+			a.Rules[i] = entry
+			return
+		}
+	}
+	a.Rules = append(a.Rules, entry)
+}
+
+// Find returns the archived rule with the given ID and true when present.
+func (a *Archive) Find(id string) (*ArchivedRule, bool) {
+	for i := range a.Rules {
+		if a.Rules[i].ID == id {
+			return &a.Rules[i], true
+		}
+	}
+	return nil, false
+}
+
+// Remove deletes the archived rule with the given ID and returns it. The
+// second return value reports whether a rule was found and removed.
+func (a *Archive) Remove(id string) (*ArchivedRule, bool) {
+	for i, r := range a.Rules {
+		if r.ID == id {
+			removed := r
+			a.Rules = append(a.Rules[:i], a.Rules[i+1:]...)
+			return &removed, true
+		}
+	}
+	return nil, false
+}

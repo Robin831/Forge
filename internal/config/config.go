@@ -486,6 +486,34 @@ type WardenSettings struct {
 	// Rule.Pattern against the diff. Pointer so unset means "use default
 	// (true)".
 	FilterPatternGrep *bool `mapstructure:"filter_pattern_grep" yaml:"filter_pattern_grep,omitempty"`
+	// ArchiveAfterDays controls when an active rule is moved to the archive
+	// because it has not been observed (via LastSeen) for this many days.
+	// Zero falls back to the default of 180 days.
+	ArchiveAfterDays int `mapstructure:"archive_after_days" yaml:"archive_after_days,omitempty"`
+	// DedupThreshold is the similarity score (0.0–1.0) above which two
+	// active rules are considered duplicates and the older entry is moved to
+	// the archive with reason "duplicate". Zero falls back to the default
+	// of 0.6.
+	DedupThreshold float64 `mapstructure:"dedup_threshold" yaml:"dedup_threshold,omitempty"`
+}
+
+// ResolvedArchiveAfterDays returns the effective archive-after threshold in
+// days. Zero (unset) resolves to the default of 180; negative values are
+// returned as-is so callers can treat them as "never archive".
+func (w WardenSettings) ResolvedArchiveAfterDays() int {
+	if w.ArchiveAfterDays == 0 {
+		return 180
+	}
+	return w.ArchiveAfterDays
+}
+
+// ResolvedDedupThreshold returns the effective dedup-similarity threshold.
+// Zero (unset) resolves to the default of 0.6.
+func (w WardenSettings) ResolvedDedupThreshold() float64 {
+	if w.DedupThreshold == 0 {
+		return 0.6
+	}
+	return w.DedupThreshold
 }
 
 // IsFilterPathGlobEnabled returns true unless the toggle is explicitly false.
@@ -899,6 +927,8 @@ func Defaults() Config {
 				FilterPathGlob:    boolPtr(true),
 				FilterCategory:    boolPtr(true),
 				FilterPatternGrep: boolPtr(true),
+				ArchiveAfterDays:  180,
+				DedupThreshold:    0.6,
 			},
 		},
 	}
@@ -952,6 +982,8 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.warden.filter_path_glob", true)
 	v.SetDefault("settings.warden.filter_category", true)
 	v.SetDefault("settings.warden.filter_pattern_grep", true)
+	v.SetDefault("settings.warden.archive_after_days", 180)
+	v.SetDefault("settings.warden.dedup_threshold", 0.6)
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	// SetEnvKeyReplacer maps dotted config keys (settings.auto_learn_rules) to
