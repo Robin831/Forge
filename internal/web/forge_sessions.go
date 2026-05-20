@@ -477,6 +477,9 @@ func (s *Server) validateSessionAnvil(anvil *string) (string, bool) {
 	}
 	registry := s.anvils()
 	if len(registry) == 0 {
+		if *anvil != "" {
+			return fmt.Sprintf("unknown anvil %s; no anvils are registered", *anvil), false
+		}
 		return "", true
 	}
 	if *anvil == "" {

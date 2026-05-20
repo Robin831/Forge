@@ -361,6 +361,16 @@ func TestForgeSessions_CreateAnvilValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			wantError:  "ambiguous anvil MUNIN",
 		},
+		{
+			// Registry is wired but empty; a non-empty anvil must be rejected
+			// so the caller gets a clear error rather than silently creating a
+			// session on an unroutable anvil.
+			name:       "non-empty anvil rejected when registry is empty",
+			registry:   map[string]string{},
+			body:       `{"title":"draft","anvil":"ghost"}`,
+			wantStatus: http.StatusBadRequest,
+			wantError:  "unknown anvil ghost; no anvils are registered",
+		},
 	}
 
 	for _, tc := range cases {
