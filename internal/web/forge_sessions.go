@@ -2,8 +2,10 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -160,6 +162,10 @@ func (s *Server) handleForgeSessionsCreate(w http.ResponseWriter, r *http.Reques
 	req.Title = strings.TrimSpace(req.Title)
 	req.Anvil = strings.TrimSpace(req.Anvil)
 	req.InitialMessage = strings.TrimSpace(req.InitialMessage)
+	if msg, ok := s.validateSessionAnvil(&req.Anvil); !ok {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	if len(req.InitialMessage) > maxForgeMessageBytes {
 		writeError(w, http.StatusBadRequest, "initial message exceeds size limit")
 		return
@@ -455,6 +461,64 @@ func (s *Server) handleForgeSessionAppend(w http.ResponseWriter, r *http.Request
 		"message": toForgeMessageDTO(m),
 		"session": toForgeSessionDTO(*updated, count),
 	})
+}
+
+// validateSessionAnvil enforces the anvil rules at session-create time so a
+// browser bug or stale client can't strand a draft on a non-routable anvil.
+// On success it returns ("", true), possibly rewriting *anvil with the
+// canonical (registry-cased) name; on failure it returns the error message
+// for a 400 response and (..., false). When the registry callback is not
+// wired the function is a no-op — the daemon is responsible for wiring
+// SetAnvilLister in production, and tests that don't care about anvil
+// routing can omit it.
+func (s *Server) validateSessionAnvil(anvil *string) (string, bool) {
+	if s.anvils == nil {
+		return "", true
+	}
+	registry := s.anvils()
+	if len(registry) == 0 {
+		if *anvil != "" {
+			return fmt.Sprintf("unknown anvil %s; no anvils are registered", *anvil), false
+		}
+		return "", true
+	}
+	if *anvil == "" {
+		if len(registry) == 1 {
+			for name := range registry {
+				*anvil = name
+			}
+			return "", true
+		}
+		return "anvil is required when more than one anvil is registered", false
+	}
+	if _, ok := registry[*anvil]; ok {
+		return "", true
+	}
+	// No exact match: do a case-insensitive scan. Multiple matches are
+	// ambiguous because map iteration order is unspecified — refuse rather
+	// than pick a winner at random. resolveSessionAnvil applies the same
+	// rule when reading a stored session.
+	var matched string
+	matches := 0
+	for name := range registry {
+		if strings.EqualFold(name, *anvil) {
+			matched = name
+			matches++
+		}
+	}
+	if matches == 1 {
+		*anvil = matched
+		return "", true
+	}
+	names := make([]string, 0, len(registry))
+	for name := range registry {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if matches > 1 {
+		return fmt.Sprintf("ambiguous anvil %s; multiple registry entries match case-insensitively (registered: %s)", *anvil, strings.Join(names, ", ")), false
+	}
+	return fmt.Sprintf("unknown anvil %s; registered: %s", *anvil, strings.Join(names, ", ")), false
 }
 
 // parseForgeSessionID extracts the {id} URL parameter and parses it as an

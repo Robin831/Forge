@@ -309,6 +309,102 @@ func TestForgeSessions_CSRFEnforced(t *testing.T) {
 	}
 }
 
+// TestForgeSessions_CreateAnvilValidation exercises the four anvil-input
+// branches handled by validateSessionAnvil: auto-populate when exactly one
+// is registered, reject when several are registered without a choice,
+// reject unknown names with a registered-list hint, and canonicalise the
+// casing on match.
+func TestForgeSessions_CreateAnvilValidation(t *testing.T) {
+	cases := []struct {
+		name       string
+		registry   map[string]string
+		body       string
+		wantStatus int
+		wantAnvil  string // anvil stored on the session (only checked on 2xx)
+		wantError  string // substring expected in the error body (only on 4xx)
+	}{
+		{
+			name:       "empty anvil auto-populates when exactly one registered",
+			registry:   map[string]string{"alpha": "/anvils/alpha"},
+			body:       `{"title":"draft"}`,
+			wantStatus: http.StatusCreated,
+			wantAnvil:  "alpha",
+		},
+		{
+			name:       "empty anvil rejected when multiple registered",
+			registry:   map[string]string{"alpha": "/anvils/alpha", "beta": "/anvils/beta"},
+			body:       `{"title":"draft"}`,
+			wantStatus: http.StatusBadRequest,
+			wantError:  "anvil is required when more than one anvil is registered",
+		},
+		{
+			name:       "unknown anvil rejected with registered-list hint",
+			registry:   map[string]string{"alpha": "/anvils/alpha", "beta": "/anvils/beta"},
+			body:       `{"title":"draft","anvil":"gamma"}`,
+			wantStatus: http.StatusBadRequest,
+			wantError:  "unknown anvil gamma; registered: alpha, beta",
+		},
+		{
+			name:       "case-insensitive match canonicalises the name",
+			registry:   map[string]string{"Heimdall": "/anvils/heimdall"},
+			body:       `{"title":"draft","anvil":"HEIMDALL"}`,
+			wantStatus: http.StatusCreated,
+			wantAnvil:  "Heimdall",
+		},
+		{
+			// Two registry keys differ only by case; map iteration order is
+			// random in Go, so silently picking one would be nondeterministic.
+			// validateSessionAnvil must refuse instead.
+			name:       "ambiguous case-insensitive match rejected",
+			registry:   map[string]string{"munin": "/repos/munin-lower", "Munin": "/repos/munin-upper"},
+			body:       `{"title":"draft","anvil":"MUNIN"}`,
+			wantStatus: http.StatusBadRequest,
+			wantError:  "ambiguous anvil MUNIN",
+		},
+		{
+			// Registry is wired but empty; a non-empty anvil must be rejected
+			// so the caller gets a clear error rather than silently creating a
+			// session on an unroutable anvil.
+			name:       "non-empty anvil rejected when registry is empty",
+			registry:   map[string]string{},
+			body:       `{"title":"draft","anvil":"ghost"}`,
+			wantStatus: http.StatusBadRequest,
+			wantError:  "unknown anvil ghost; no anvils are registered",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newServerWithDefaults(t, nil)
+			registry := tc.registry
+			srv.SetAnvilLister(func() map[string]string { return registry })
+			cookie := loginAndGetCookie(t, srv)
+
+			rec := forgeRequest(t, srv, http.MethodPost, "/api/forge/sessions", tc.body, cookie)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status: want %d got %d body=%s", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+			if tc.wantStatus >= 400 {
+				if tc.wantError != "" && !strings.Contains(rec.Body.String(), tc.wantError) {
+					t.Errorf("error body: want substring %q, got %s", tc.wantError, rec.Body.String())
+				}
+				return
+			}
+			var created struct {
+				Session struct {
+					Anvil string `json:"anvil"`
+				} `json:"session"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if created.Session.Anvil != tc.wantAnvil {
+				t.Errorf("anvil: want %q got %q", tc.wantAnvil, created.Session.Anvil)
+			}
+		})
+	}
+}
+
 // itoa converts a positive int64 to its decimal string. We use a tiny
 // helper rather than strconv.Itoa to avoid importing strconv just for the
 // int64→string conversion in test URL building.

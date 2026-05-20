@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Robin831/Forge/internal/forgechat"
+	"github.com/Robin831/Forge/internal/state"
 )
 
 // stubRunner is a deterministic forgechat.Runner used by the web tests. It
@@ -383,8 +384,17 @@ func TestForgeTurn_AmbiguousCaseAnvilProducesNilTarget(t *testing.T) {
 		}
 	})
 	cookie := loginAndGetCookie(t, srv)
-	// "MUNIN" has no exact match; the case-insensitive scan finds two candidates.
-	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start","anvil":"MUNIN"}`)
+	// Insert directly via the DB so we can stage an ambiguous case-insensitive
+	// anvil reference — the HTTP create handler rejects this at write time, but
+	// resolveSessionAnvil still needs to handle the case for sessions that were
+	// created before one of the colliding anvils was registered.
+	sess, err := srv.db.CreateForgeSession(state.ForgeSession{
+		Title: "ambiguous", CreatedBy: "alice", Anvil: "MUNIN",
+	})
+	if err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	id := sess.ID
 
 	rec := forgeRequest(t, srv, http.MethodPost, "/api/forge/sessions/"+itoa(id)+"/turn", `{"content":"hi"}`, cookie)
 	if rec.Code != http.StatusOK {
@@ -412,7 +422,17 @@ func TestForgeTurn_UnknownAnvilProducesNilTarget(t *testing.T) {
 		return map[string]string{"other": "/repos/other"}
 	})
 	cookie := loginAndGetCookie(t, srv)
-	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start","anvil":"gone"}`)
+	// Insert directly via the DB so we can stage an unknown anvil reference —
+	// the HTTP create handler rejects this at write time, but resolveSessionAnvil
+	// still needs to handle the case for sessions whose anvil was unregistered
+	// after creation.
+	sess, err := srv.db.CreateForgeSession(state.ForgeSession{
+		Title: "unknown", CreatedBy: "alice", Anvil: "gone",
+	})
+	if err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	id := sess.ID
 
 	rec := forgeRequest(t, srv, http.MethodPost, "/api/forge/sessions/"+itoa(id)+"/turn", `{"content":"hi"}`, cookie)
 	if rec.Code != http.StatusOK {
