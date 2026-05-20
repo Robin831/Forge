@@ -20,7 +20,9 @@ import { useApiPoll } from '../hooks/useApiPoll'
 import { useToast } from '../hooks/useToast'
 import {
   ApiError,
+  forgeAnvils,
   forgeSessions,
+  type ForgeAnvil,
   type ForgeBeadsCreatedPayload,
   type ForgeMessage,
   type ForgeQuestionPayload,
@@ -32,6 +34,12 @@ import AppHeader from '../components/AppHeader'
 import { relativeTime } from '../lib/format'
 
 const STATUS_POLL_INTERVAL_MS = 10_000
+
+// LAST_USED_ANVIL_KEY is the localStorage slot that remembers the anvil
+// the user picked on their previous new-session submission. Reading it on
+// form mount lets the dropdown pre-select the most-recently-used anvil so
+// repeat users don't have to re-pick every time.
+const LAST_USED_ANVIL_KEY = 'forge.newSession.lastAnvil'
 
 // ForgePage is the Hearth 2.0 "Beads-Forge" page: an iterative, chat-style
 // surface for designing beads through conversation. The page steps through
@@ -52,6 +60,10 @@ export default function ForgePage() {
   const [busy, setBusy] = useState(false)
   const [renamingId, setRenamingId] = useState<number | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [anvils, setAnvils] = useState<ForgeAnvil[]>([])
+  const [loadingAnvils, setLoadingAnvils] = useState(true)
+  const [anvilsError, setAnvilsError] = useState<string | null>(null)
+  const [selectedAnvil, setSelectedAnvil] = useState<string>('')
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
@@ -80,6 +92,47 @@ export default function ForgePage() {
   useEffect(() => {
     void refreshSessions()
   }, [refreshSessions])
+
+  // Fetch the registered anvil list on mount. The new-session form needs
+  // this both to populate the dropdown and to apply the default selection.
+  // Falling back to "first in the list" on a missing or unknown stored
+  // entry keeps the UI usable after an anvil has been removed.
+  useEffect(() => {
+    let cancelled = false
+    setLoadingAnvils(true)
+    setAnvilsError(null)
+    ;(async () => {
+      try {
+        const data = await forgeAnvils.list()
+        if (cancelled) return
+        const list = data.anvils ?? []
+        setAnvils(list)
+        if (list.length === 0) {
+          setSelectedAnvil('')
+          return
+        }
+        let stored = ''
+        try {
+          stored = window.localStorage.getItem(LAST_USED_ANVIL_KEY) ?? ''
+        } catch {
+          stored = ''
+        }
+        const match = stored && list.find((a) => a.name === stored)
+        setSelectedAnvil(match ? match.name : list[0].name)
+      } catch (err) {
+        if (cancelled) return
+        const msg = err instanceof ApiError ? err.message : 'Failed to load anvils'
+        setAnvilsError(msg)
+        setAnvils([])
+        setSelectedAnvil('')
+      } finally {
+        if (!cancelled) setLoadingAnvils(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (activeId === null) {
@@ -156,11 +209,19 @@ export default function ForgePage() {
 
   const startNewSession = useCallback(async () => {
     const text = draft.trim()
+    if (!selectedAnvil) return
     setBusy(true)
     try {
       const data = await forgeSessions.create({
+        anvil: selectedAnvil,
         initial_message: text || undefined,
       })
+      // Remember the chosen anvil so the next session defaults to it.
+      try {
+        window.localStorage.setItem(LAST_USED_ANVIL_KEY, selectedAnvil)
+      } catch {
+        // localStorage may be disabled (private mode, quota); ignore.
+      }
       setSessions((prev) => [data.session, ...prev])
       setActiveId(data.session.id)
       setDraft('')
@@ -184,7 +245,7 @@ export default function ForgePage() {
     } finally {
       setBusy(false)
     }
-  }, [applyTurnResponse, draft, handleApiError, refreshSessions])
+  }, [applyTurnResponse, draft, handleApiError, refreshSessions, selectedAnvil])
 
   const sendMessage = useCallback(async () => {
     if (activeId === null) return
@@ -433,6 +494,11 @@ export default function ForgePage() {
               onStart={startNewSession}
               busy={busy}
               composerRef={composerRef}
+              anvils={anvils}
+              selectedAnvil={selectedAnvil}
+              onAnvilChange={setSelectedAnvil}
+              anvilsLoading={loadingAnvils}
+              anvilsError={anvilsError}
             />
           )}
         </main>
@@ -1142,13 +1208,32 @@ interface NewSessionViewProps {
   onStart: () => void
   busy: boolean
   composerRef: React.RefObject<HTMLTextAreaElement | null>
+  anvils: ForgeAnvil[]
+  selectedAnvil: string
+  onAnvilChange: (name: string) => void
+  anvilsLoading: boolean
+  anvilsError: string | null
 }
 
-function NewSessionView({ draft, onDraftChange, onStart, busy, composerRef }: NewSessionViewProps) {
+function NewSessionView({
+  draft,
+  onDraftChange,
+  onStart,
+  busy,
+  composerRef,
+  anvils,
+  selectedAnvil,
+  onAnvilChange,
+  anvilsLoading,
+  anvilsError,
+}: NewSessionViewProps) {
+  const noAnvils = !anvilsLoading && !anvilsError && anvils.length === 0
+  const submitDisabled =
+    busy || anvilsLoading || noAnvils || anvilsError !== null || !selectedAnvil
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      onStart()
+      if (!submitDisabled) onStart()
     }
   }
   return (
@@ -1160,6 +1245,16 @@ function NewSessionView({ draft, onDraftChange, onStart, busy, composerRef }: Ne
           Describe an idea — claude will discuss it with you, draft a plan, then grill the design
           decisions until everything is settled.
         </p>
+      </div>
+      <div className="w-full max-w-xl text-left">
+        <AnvilPicker
+          anvils={anvils}
+          selectedAnvil={selectedAnvil}
+          onChange={onAnvilChange}
+          loading={anvilsLoading}
+          error={anvilsError}
+          disabled={busy}
+        />
       </div>
       <textarea
         ref={composerRef}
@@ -1174,12 +1269,72 @@ function NewSessionView({ draft, onDraftChange, onStart, busy, composerRef }: Ne
       <button
         type="button"
         onClick={onStart}
-        disabled={busy}
+        disabled={submitDisabled}
         className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/20 px-4 py-2 text-sm font-medium text-amber-200 transition-colors hover:bg-amber-500/30 disabled:cursor-not-allowed disabled:opacity-50"
       >
         <Plus size={14} aria-hidden />
         {busy ? 'Starting…' : draft.trim() ? 'Start with this prompt' : 'Start empty session'}
       </button>
     </div>
+  )
+}
+
+interface AnvilPickerProps {
+  anvils: ForgeAnvil[]
+  selectedAnvil: string
+  onChange: (name: string) => void
+  loading: boolean
+  error: string | null
+  disabled: boolean
+}
+
+function AnvilPicker({ anvils, selectedAnvil, onChange, loading, error, disabled }: AnvilPickerProps) {
+  if (loading) {
+    return (
+      <div className="rounded-md border border-slate-700 bg-slate-950/40 px-3 py-2 text-sm text-slate-400">
+        Loading anvils…
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div
+        role="alert"
+        className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200"
+      >
+        {error}
+      </div>
+    )
+  }
+  if (anvils.length === 0) {
+    return (
+      <div
+        role="alert"
+        data-testid="forge-no-anvils"
+        className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100"
+      >
+        No anvils registered. Run <code className="rounded bg-slate-800/60 px-1">forge anvil add ...</code>{' '}
+        before starting a session.
+      </div>
+    )
+  }
+  return (
+    <label className="flex flex-col gap-1 text-left text-xs font-medium text-slate-300">
+      <span>Anvil</span>
+      <select
+        value={selectedAnvil}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        data-testid="forge-anvil-select"
+        aria-label="Anvil"
+        className="w-full rounded-md border border-slate-700 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:border-amber-400 focus:outline-none disabled:opacity-60"
+      >
+        {anvils.map((a) => (
+          <option key={a.name} value={a.name}>
+            {a.name}
+          </option>
+        ))}
+      </select>
+    </label>
   )
 }

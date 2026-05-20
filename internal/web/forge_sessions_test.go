@@ -405,6 +405,90 @@ func TestForgeSessions_CreateAnvilValidation(t *testing.T) {
 	}
 }
 
+// TestForgeAnvilsList_RequiresAuth verifies that GET /api/forge/anvils is
+// gated behind the same session cookie as the rest of the API surface.
+func TestForgeAnvilsList_RequiresAuth(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	rec := forgeRequest(t, srv, http.MethodGet, "/api/forge/anvils", "", "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+// TestForgeAnvilsList_ReturnsRegisteredAnvils confirms the handler returns
+// each anvil from the lister, sorted alphabetically so the SPA's dropdown
+// renders in a stable order.
+func TestForgeAnvilsList_ReturnsRegisteredAnvils(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	srv.SetAnvilLister(func() map[string]string {
+		return map[string]string{"beta": "/anvils/beta", "alpha": "/anvils/alpha"}
+	})
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := forgeRequest(t, srv, http.MethodGet, "/api/forge/anvils", "", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Anvils []struct {
+			Name string `json:"name"`
+		} `json:"anvils"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(got.Anvils) != 2 {
+		t.Fatalf("expected 2 anvils, got %d", len(got.Anvils))
+	}
+	if got.Anvils[0].Name != "alpha" || got.Anvils[1].Name != "beta" {
+		t.Errorf("anvils not sorted: %+v", got.Anvils)
+	}
+}
+
+// TestForgeAnvilsList_EmptyWhenNoneRegistered exercises both the "no lister
+// wired" and "lister returns empty map" branches — the SPA renders the same
+// empty-state message for both.
+func TestForgeAnvilsList_EmptyWhenNoneRegistered(t *testing.T) {
+	cases := []struct {
+		name    string
+		install func(*Server)
+	}{
+		{
+			name:    "no lister wired",
+			install: func(*Server) {},
+		},
+		{
+			name: "lister returns empty map",
+			install: func(srv *Server) {
+				srv.SetAnvilLister(func() map[string]string { return map[string]string{} })
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newServerWithDefaults(t, nil)
+			tc.install(srv)
+			cookie := loginAndGetCookie(t, srv)
+
+			rec := forgeRequest(t, srv, http.MethodGet, "/api/forge/anvils", "", cookie)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+			}
+			var got struct {
+				Anvils []struct {
+					Name string `json:"name"`
+				} `json:"anvils"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(got.Anvils) != 0 {
+				t.Errorf("expected empty list, got %+v", got.Anvils)
+			}
+		})
+	}
+}
+
 // itoa converts a positive int64 to its decimal string. We use a tiny
 // helper rather than strconv.Itoa to avoid importing strconv just for the
 // int64→string conversion in test URL building.

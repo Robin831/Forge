@@ -463,6 +463,41 @@ func (s *Server) handleForgeSessionAppend(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// forgeAnvilDTO is the JSON shape returned by handleForgeAnvilsList. The
+// SPA only needs the name to render the dropdown; the on-disk path is
+// intentionally omitted so the browser cannot leak filesystem layout.
+type forgeAnvilDTO struct {
+	Name string `json:"name"`
+}
+
+// handleForgeAnvilsList serves GET /api/forge/anvils. The Beads-Forge new
+// session form fetches this on mount to populate the anvil-select control.
+// Names are sorted so the dropdown order is stable across renders.
+//
+// When the daemon has not wired the anvil lister yet (early startup, tests
+// that omit it) the response is an empty list — the same shape the SPA
+// renders for the "no anvils registered" empty state.
+func (s *Server) handleForgeAnvilsList(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
+	if sess == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	out := []forgeAnvilDTO{}
+	if s.anvils != nil {
+		registry := s.anvils()
+		names := make([]string, 0, len(registry))
+		for name := range registry {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			out = append(out, forgeAnvilDTO{Name: name})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"anvils": out})
+}
+
 // validateSessionAnvil enforces the anvil rules at session-create time so a
 // browser bug or stale client can't strand a draft on a non-routable anvil.
 // On success it returns ("", true), possibly rewriting *anvil with the
