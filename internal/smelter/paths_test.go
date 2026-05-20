@@ -36,6 +36,29 @@ func TestExtractPRNumber(t *testing.T) {
 	}
 }
 
+func TestExtractPRNumbers(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		want   []int
+	}{
+		{"single ref", "copilot:PR#130", []int{130}},
+		{"comma-separated two refs", "copilot:PR#1, copilot:PR#2", []int{1, 2}},
+		{"space-separated two refs", "copilot:PR#10 copilot:PR#20", []int{10, 20}},
+		{"three refs mixed delimiters", "copilot:PR#3, copilot:PR#5 copilot:PR#7", []int{3, 5, 7}},
+		{"deduplicated when same token repeated", "copilot:PR#42, copilot:PR#42", []int{42}},
+		{"no copilot tokens", "quench:PR#7", nil},
+		{"empty string", "", nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractPRNumbers(tc.source)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestGlobsFromExtensions(t *testing.T) {
 	t.Run("derives unique globs sorted", func(t *testing.T) {
 		files := []string{
@@ -274,6 +297,55 @@ func TestRunPathsBackfill_HonorsCanceledContext(t *testing.T) {
 	updated := s.runPathsBackfill(ctx, t.TempDir(), "anvil-a", rf)
 	assert.Equal(t, 0, updated)
 	assert.Equal(t, 0, calls, "canceled context must short-circuit before any fetch")
+}
+
+func TestRunPathsBackfill_MultiTokenSourceString(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 0, map[string]string{})
+
+	withStubFetcher(t, func(_ context.Context, _ string, prNum int) ([]string, error) {
+		switch prNum {
+		case 10:
+			return []string{"cmd/main.go"}, nil
+		case 20:
+			return []string{"web/app.ts"}, nil
+		}
+		t.Fatalf("unexpected PR #%d", prNum)
+		return nil, nil
+	})
+
+	// Single source string containing two copilot:PR#N tokens separated by a comma.
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "r1", Source: warden.SourceList{"copilot:PR#10, copilot:PR#20"}},
+	}}
+
+	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	assert.Equal(t, 1, updated)
+	assert.Equal(t, []string{"**/*.go", "**/*.ts"}, rf.Rules[0].Paths)
+}
+
+func TestRunPathsBackfill_CachesResultsAcrossRules(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 0, map[string]string{})
+
+	var calls int
+	withStubFetcher(t, func(_ context.Context, _ string, prNum int) ([]string, error) {
+		calls++
+		assert.Equal(t, 99, prNum)
+		return []string{"a.go"}, nil
+	})
+
+	// Two rules both reference the same PR — the fetcher must only be called once.
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "r1", Source: warden.SourceList{"copilot:PR#99"}},
+		{ID: "r2", Source: warden.SourceList{"copilot:PR#99"}},
+	}}
+
+	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	assert.Equal(t, 2, updated)
+	assert.Equal(t, 1, calls, "fetch result must be cached and reused across rules")
+	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
+	assert.Equal(t, []string{"**/*.go"}, rf.Rules[1].Paths)
 }
 
 func TestRunPathsBackfill_DedupesSameSourceRepeated(t *testing.T) {

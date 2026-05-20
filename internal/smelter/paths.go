@@ -27,7 +27,8 @@ var prNumberPattern = regexp.MustCompile(`copilot:PR#(\d+)`)
 
 // extractPRNumber parses the PR number from a single source token. Returns
 // (n, true) when the source contains a copilot:PR#N reference; (0, false)
-// otherwise.
+// otherwise. Only the first match is returned — use extractPRNumbers when a
+// source string may contain multiple copilot:PR#N tokens.
 func extractPRNumber(source string) (int, bool) {
 	m := prNumberPattern.FindStringSubmatch(source)
 	if m == nil {
@@ -38,6 +39,30 @@ func extractPRNumber(source string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// extractPRNumbers returns all unique PR numbers found in a single source
+// string. A source like "copilot:PR#1, copilot:PR#2" yields [1, 2]. Results
+// are deduplicated but preserve order of first appearance.
+func extractPRNumbers(source string) []int {
+	matches := prNumberPattern.FindAllStringSubmatch(source, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{})
+	var nums []int
+	for _, m := range matches {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			continue
+		}
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		nums = append(nums, n)
+	}
+	return nums
 }
 
 // fetchChangedFiles is the package-level entry point used by runPathsBackfill
@@ -129,7 +154,17 @@ func globsFromExtensions(files []string) []string {
 // produced at least one glob.
 //
 // Returns the number of rules whose Paths was populated.
+// prFetchResult caches the outcome of a single gh API call for one PR.
+type prFetchResult struct {
+	files []string
+	err   error
+}
+
 func (s *Smelter) runPathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile) int {
+	// Cache fetched file lists per PR number so that multiple rules referencing
+	// the same PR number do not trigger redundant gh API calls.
+	prCache := make(map[int]prFetchResult)
+
 	var updated int
 	for i := range rf.Rules {
 		if ctx.Err() != nil {
@@ -141,18 +176,18 @@ func (s *Smelter) runPathsBackfill(ctx context.Context, wtPath, anvilName string
 		}
 
 		// Collect unique PR numbers referenced by this rule's sources.
+		// extractPRNumbers handles source strings that contain multiple
+		// copilot:PR#N tokens (e.g. "copilot:PR#1, copilot:PR#2").
 		var prNums []int
 		seenPR := make(map[int]struct{})
 		for _, src := range rule.Source {
-			n, ok := extractPRNumber(src)
-			if !ok {
-				continue
+			for _, n := range extractPRNumbers(src) {
+				if _, dup := seenPR[n]; dup {
+					continue
+				}
+				seenPR[n] = struct{}{}
+				prNums = append(prNums, n)
 			}
-			if _, dup := seenPR[n]; dup {
-				continue
-			}
-			seenPR[n] = struct{}{}
-			prNums = append(prNums, n)
 		}
 		if len(prNums) == 0 {
 			continue
@@ -161,13 +196,18 @@ func (s *Smelter) runPathsBackfill(ctx context.Context, wtPath, anvilName string
 		var allFiles []string
 		var anySuccess bool
 		for _, prNum := range prNums {
-			files, err := fetchChangedFiles(ctx, wtPath, prNum)
-			if err != nil {
-				log.Printf("[smelter] paths backfill: PR#%d for rule %s on %s: %v", prNum, rule.ID, anvilName, err)
+			result, cached := prCache[prNum]
+			if !cached {
+				files, err := fetchChangedFiles(ctx, wtPath, prNum)
+				result = prFetchResult{files: files, err: err}
+				prCache[prNum] = result
+			}
+			if result.err != nil {
+				log.Printf("[smelter] paths backfill: PR#%d for rule %s on %s: %v", prNum, rule.ID, anvilName, result.err)
 				continue
 			}
 			anySuccess = true
-			allFiles = append(allFiles, files...)
+			allFiles = append(allFiles, result.files...)
 		}
 		if !anySuccess {
 			continue
