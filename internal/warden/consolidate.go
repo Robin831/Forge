@@ -252,14 +252,16 @@ func Consolidate(ctx context.Context, repoDir string, rf *RulesFile, threshold f
 				continue
 			}
 
-			// Free the cluster members' IDs from activeIDs before picking
-			// the merged ID — the merged rule may reasonably reuse one of
-			// the cluster's existing IDs without colliding.
+			// Pick the merged ID while the cluster members' IDs are still in
+			// activeIDs so the merged rule always gets an ID distinct from every
+			// replaced rule. Reusing a replaced ID would create a self-referential
+			// archive entry (superseded_by == own ID). Remove the replaced IDs
+			// from activeIDs only after the merged rule's ID has been chosen.
+			mergedRule := MergeRule(c.Rules, cat, pattern, check, suggestedID, activeIDs)
+			activeIDs[mergedRule.ID] = struct{}{}
 			for _, mem := range c.Rules {
 				delete(activeIDs, mem.ID)
 			}
-			mergedRule := MergeRule(c.Rules, cat, pattern, check, suggestedID, activeIDs)
-			activeIDs[mergedRule.ID] = struct{}{}
 
 			ids := make([]string, 0, len(c.Rules))
 			for _, mem := range c.Rules {

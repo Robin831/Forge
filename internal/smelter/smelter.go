@@ -515,7 +515,15 @@ func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, rule
 	// Build the commit message: keep the existing single-line subject for
 	// backwards compatibility, then append a structured consolidation
 	// summary body when Pass 1 merged any clusters.
-	subject := fmt.Sprintf("forge: learn %d warden rule(s) from pending queue [no-changelog]", ruleCount)
+	var subject string
+	switch {
+	case ruleCount > 0 && len(summary) > 0:
+		subject = fmt.Sprintf("forge: learn %d warden rule(s), consolidate %d cluster(s) [no-changelog]", ruleCount, len(summary))
+	case len(summary) > 0:
+		subject = fmt.Sprintf("forge: consolidate %d warden rule cluster(s) [no-changelog]", len(summary))
+	default:
+		subject = fmt.Sprintf("forge: learn %d warden rule(s) from pending queue [no-changelog]", ruleCount)
+	}
 	commitMsg := subject
 	if body := warden.FormatConsolidationSummary(summary); body != "" {
 		commitMsg = subject + "\n\n" + body

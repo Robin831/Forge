@@ -114,13 +114,13 @@ func TestClusterByJaccard_NoMerge(t *testing.T) {
 }
 
 func TestClusterByJaccard_BoundaryThreshold(t *testing.T) {
-	// Two rules whose Jaccard is exactly the threshold should cluster.
+	// Two rules whose Jaccard equals the threshold exactly should cluster.
 	rules := []Rule{
 		{ID: "r1", Pattern: "alpha beta", Check: "gamma delta"},   // {alpha, beta, gamma, delta}
 		{ID: "r2", Pattern: "alpha epsilon", Check: "zeta gamma"}, // {alpha, epsilon, zeta, gamma}
 	}
-	// intersection: {alpha, gamma} = 2; union: 6; jaccard = 2/6 ≈ 0.333
-	clusters := ClusterByJaccard(rules, 0.33)
+	// intersection: {alpha, gamma} = 2; union: 6; jaccard = 2/6 exactly
+	clusters := ClusterByJaccard(rules, 2.0/6.0)
 	assert.Len(t, clusters, 1, "boundary case should still cluster when sim >= threshold")
 	clusters = ClusterByJaccard(rules, 0.5)
 	assert.Empty(t, clusters)

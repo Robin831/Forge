@@ -3,6 +3,7 @@ package warden
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // TokenSet is the bag-of-words representation used by Jaccard similarity.
@@ -31,7 +32,7 @@ func Tokenize(s string) TokenSet {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
 	for _, w := range fields {
-		if len(w) < minTokenLen {
+		if utf8.RuneCountInString(w) < minTokenLen {
 			continue
 		}
 		if stopWords[w] {
@@ -130,6 +131,11 @@ func ClusterByJaccard(rules []Rule, threshold float64) []Cluster {
 			}
 			ri, rj := find(i), find(j)
 			if ri != rj {
+				// Carry the losing root's accumulated maxSim to the winner
+				// before re-parenting so it isn't orphaned.
+				if maxSim[ri] > maxSim[rj] {
+					maxSim[rj] = maxSim[ri]
+				}
 				parent[ri] = rj
 			}
 			// Record max similarity against the (new) root.
