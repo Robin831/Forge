@@ -163,6 +163,13 @@ type prFetchResult struct {
 }
 
 func (s *Smelter) runPathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile) []string {
+	return pathsBackfill(ctx, wtPath, anvilName, rf)
+}
+
+// pathsBackfill is the free-function form of runPathsBackfill. It carries no
+// dependency on Smelter state so the off-cycle CLI consolidate command can
+// share the same Pass 3 implementation as the scheduled smelter loop.
+func pathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile) []string {
 	// Cache fetched file lists per PR number so that multiple rules referencing
 	// the same PR number do not trigger redundant gh API calls.
 	prCache := make(map[int]prFetchResult)

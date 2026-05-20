@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/smelter"
 	"github.com/Robin831/Forge/internal/warden"
 	"github.com/spf13/cobra"
 )
@@ -24,9 +25,14 @@ func init() {
 	wardenListCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
 	_ = wardenListCmd.MarkFlagRequired("anvil")
 
+	wardenRestoreCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
+	_ = wardenRestoreCmd.MarkFlagRequired("anvil")
+
 	wardenCmd.AddCommand(wardenLearnCmd)
 	wardenCmd.AddCommand(wardenForgetCmd)
 	wardenCmd.AddCommand(wardenListCmd)
+	wardenCmd.AddCommand(wardenConsolidateCmd)
+	wardenCmd.AddCommand(wardenRestoreCmd)
 	rootCmd.AddCommand(wardenCmd)
 }
 
@@ -256,4 +262,155 @@ func truncateStr(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+var wardenConsolidateCmd = &cobra.Command{
+	Use:   "consolidate <anvil>",
+	Short: "Run the three-pass smelter consolidation against an anvil",
+	Long: `Off-cycle manual trigger for the same three-pass merge logic the
+scheduled smelter runs:
+  Pass 1 — cluster near-duplicate rules and merge each cluster.
+  Pass 2 — archive rules whose Added date is older than archive_after_days.
+  Pass 3 — backfill the Paths field from each rule's source PR(s).
+
+Writes both .forge/warden-rules.yaml and .forge/warden-rules.archive.yaml
+in-place under the anvil so the caller can commit them. The pending warden
+rules queue in state.db is NOT consulted — this command only operates on
+what is already in the active rules file.`,
+	Args:    cobra.ExactArgs(1),
+	Example: "  forge warden consolidate munin",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		anvilName := args[0]
+
+		if cfg == nil {
+			loaded, err := config.Load(configFile)
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+			cfg = loaded
+		}
+
+		anvil, ok := cfg.Anvils[anvilName]
+		if !ok {
+			return fmt.Errorf("anvil %q not found in config", anvilName)
+		}
+
+		opts := smelter.ConsolidateOptions{
+			AnvilPath:        anvil.Path,
+			AnvilName:        anvilName,
+			Consolidator:     warden.DefaultConsolidationRunner(),
+			DedupThreshold:   cfg.Settings.Warden.ResolvedDedupThreshold(),
+			ArchiveAfterDays: cfg.Settings.Warden.ResolvedArchiveAfterDays(),
+		}
+
+		fmt.Fprintf(os.Stderr, "Running three-pass consolidation against %s (dedup_threshold=%.2f, archive_after_days=%d)...\n",
+			anvilName, opts.DedupThreshold, opts.ArchiveAfterDays)
+
+		result, err := smelter.ConsolidateAnvil(rootCtx, opts)
+		if err != nil {
+			return fmt.Errorf("consolidate %s: %w", anvilName, err)
+		}
+
+		// Print a structured summary.
+		fmt.Printf("Anvil:           %s\n", anvilName)
+		fmt.Printf("Active before:   %d\n", result.InitialCount)
+		fmt.Printf("Active after:    %d\n", result.FinalActive)
+		fmt.Printf("Archive size:    %d\n", result.ArchiveCount)
+		if n := len(result.Passes.Consolidated); n > 0 {
+			fmt.Printf("Consolidated:    %d cluster(s)\n", n)
+		}
+		if n := len(result.Passes.Archived); n > 0 {
+			fmt.Printf("Archived stale:  %d rule(s)\n", n)
+		}
+		if n := len(result.Passes.Backfilled); n > 0 {
+			fmt.Printf("Backfilled:      %d rule(s)\n", n)
+		}
+		if !result.Passes.HasChanges() {
+			fmt.Println("No changes — active rules file already at steady state.")
+		} else {
+			fmt.Printf("\nWrote %s\n", warden.RulesPath(anvil.Path))
+			fmt.Printf("Wrote %s\n", warden.ArchivePath(anvil.Path))
+			fmt.Println("Review and commit the changes when ready.")
+		}
+		if result.FirstError != nil {
+			fmt.Fprintf(os.Stderr, "Warning: first consolidation cluster error: %v\n", result.FirstError)
+		}
+		return nil
+	},
+}
+
+var wardenRestoreCmd = &cobra.Command{
+	Use:   "restore <rule-id>",
+	Short: "Move an archived warden rule back into the active rules file",
+	Long: `Look up rule-id in .forge/warden-rules.archive.yaml for the given
+anvil, remove it from the archive, re-insert it into .forge/warden-rules.yaml,
+and write both files. The embedded Rule (id, category, pattern, check, source,
+added, paths) is preserved verbatim so a subsequent consolidate pass would
+archive the same content.
+
+Archive bookkeeping fields (archived_at, last_seen, archive_reason,
+superseded_by) are intentionally dropped on restore — the active file does
+not carry them. Re-archiving the rule later generates fresh bookkeeping.`,
+	Args:    cobra.ExactArgs(1),
+	Example: "  forge warden restore stale-rule-id --anvil munin",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ruleID := args[0]
+		anvilName, _ := cmd.Flags().GetString("anvil")
+
+		if cfg == nil {
+			loaded, err := config.Load(configFile)
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+			cfg = loaded
+		}
+
+		anvil, ok := cfg.Anvils[anvilName]
+		if !ok {
+			return fmt.Errorf("anvil %q not found in config", anvilName)
+		}
+
+		archivePath := warden.ArchivePath(anvil.Path)
+		archive, err := warden.LoadArchive(archivePath)
+		if err != nil {
+			return fmt.Errorf("loading archive: %w", err)
+		}
+		if len(archive.Rules) == 0 {
+			return fmt.Errorf("archive is empty at %s", archivePath)
+		}
+
+		archived, found := archive.Remove(ruleID)
+		if !found {
+			return fmt.Errorf("rule %q not found in archive %s", ruleID, archivePath)
+		}
+
+		rf, err := warden.LoadRules(anvil.Path)
+		if err != nil {
+			return fmt.Errorf("loading active rules: %w", err)
+		}
+
+		// AddRule preserves the embedded Rule's fields verbatim (including
+		// Added) and only fills Added when empty — restore keeps the original
+		// timestamp so a subsequent consolidate sees the same Rule content.
+		if !rf.AddRule(archived.Rule) {
+			return fmt.Errorf("rule %q already exists in active rules file %s; archive entry was not removed",
+				ruleID, warden.RulesPath(anvil.Path))
+		}
+
+		// Write active rules first: if archive save then fails, the rule is
+		// duplicated rather than lost. The reverse ordering would risk losing
+		// the rule entirely if the active-file write failed mid-flight.
+		if err := warden.SaveRules(anvil.Path, rf); err != nil {
+			return fmt.Errorf("saving active rules: %w", err)
+		}
+		if err := archive.Save(archivePath); err != nil {
+			return fmt.Errorf("saving archive (active file already updated; rule duplicated): %w", err)
+		}
+
+		fmt.Printf("Restored rule %q to %s\n", ruleID, warden.RulesPath(anvil.Path))
+		fmt.Printf("Removed from %s (was archived: reason=%q, superseded_by=%q)\n",
+			archivePath, archived.ArchiveReason, archived.SupersededBy)
+		fmt.Printf("Active rules: %d  Archive: %d\n", len(rf.Rules), len(archive.Rules))
+		return nil
+	},
 }
