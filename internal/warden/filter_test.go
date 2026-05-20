@@ -130,7 +130,7 @@ func TestFilterRules_MaxRulesCap(t *testing.T) {
 		rules = append(rules, Rule{
 			ID:       string(rune('a'+i)) + "-rule",
 			Category: "other",
-			Pattern:  "always", // 6 chars → counted but won't match diff word
+			Pattern:  "always", // 6 chars → matches "always" in the diff, kept by pattern-grep
 			Check:    "x",
 		})
 	}

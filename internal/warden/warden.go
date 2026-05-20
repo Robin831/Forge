@@ -266,7 +266,7 @@ func buildReviewPrompt(beadID, beadTitle, beadDescription, diff, anvilPath, prio
 	rulesSection := ""
 	if rf, err := LoadRules(anvilPath); err == nil {
 		changedFiles := changedFilesFromDiff(diff)
-		if checklist := rf.FormatChecklistForDiff(diff, changedFiles, ActiveFilterConfig); checklist != "" {
+		if checklist := rf.FormatChecklistForDiff(diff, changedFiles, GetActiveFilterConfig()); checklist != "" {
 			rulesSection = "\n## Learned Review Rules\n\nThese are domain-specific patterns learned from past reviews. Check each one against the diff:\n\n" + checklist
 		}
 	} else {

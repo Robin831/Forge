@@ -468,7 +468,8 @@ type SettingsConfig struct {
 // can't match the current diff (path/category/pattern grep).
 type WardenSettings struct {
 	// MaxRulesPerReview caps the number of rules emitted in the checklist
-	// after filtering. Zero or negative disables the cap. Default: 30.
+	// after filtering. Omitted or zero uses the default of 30. Negative
+	// values disable the cap entirely. Positive values set an explicit cap.
 	MaxRulesPerReview int `mapstructure:"max_rules_per_review" yaml:"max_rules_per_review,omitempty"`
 	// UseAllRules, when true, bypasses the three filter passes and applies
 	// only the MaxRulesPerReview cap. Useful for A/B comparison against the
@@ -512,13 +513,18 @@ func (w WardenSettings) IsFilterPatternGrepEnabled() bool {
 	return *w.FilterPatternGrep
 }
 
-// ResolvedMaxRulesPerReview returns the cap, defaulting to 30 when the field
-// is unset (zero).
+// ResolvedMaxRulesPerReview returns the cap to pass to FilterRules.
+// Zero (unset) → 30 (default). Negative → 0 (no cap; capRules treats ≤0 as
+// unlimited). Positive → returned as-is.
 func (w WardenSettings) ResolvedMaxRulesPerReview() int {
-	if w.MaxRulesPerReview <= 0 {
+	switch {
+	case w.MaxRulesPerReview == 0:
 		return 30
+	case w.MaxRulesPerReview < 0:
+		return 0
+	default:
+		return w.MaxRulesPerReview
 	}
-	return w.MaxRulesPerReview
 }
 
 // durationString returns the duration string, or omits zero values.

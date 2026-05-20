@@ -6911,15 +6911,15 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 // daemon startup and again whenever the config hot-reloads.
 func applyWardenFilterConfig(cfg *config.Config) {
 	if cfg == nil {
-		warden.ActiveFilterConfig = warden.DefaultReviewFilterConfig()
+		warden.SetActiveFilterConfig(warden.DefaultReviewFilterConfig())
 		return
 	}
 	w := cfg.Settings.Warden
-	warden.ActiveFilterConfig = warden.ReviewFilterConfig{
+	warden.SetActiveFilterConfig(warden.ReviewFilterConfig{
 		MaxRules:          w.ResolvedMaxRulesPerReview(),
 		UseAllRules:       w.UseAllRules,
 		FilterPathGlob:    w.IsFilterPathGlobEnabled(),
 		FilterCategory:    w.IsFilterCategoryEnabled(),
 		FilterPatternGrep: w.IsFilterPatternGrepEnabled(),
-	}
+	})
 }

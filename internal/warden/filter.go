@@ -1,8 +1,10 @@
 package warden
 
 import (
+	"bufio"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/bmatcuk/doublestar/v4"
 )
@@ -38,11 +40,26 @@ func DefaultReviewFilterConfig() ReviewFilterConfig {
 	}
 }
 
-// ActiveFilterConfig holds the active review-time configuration. The Forge
-// daemon assigns this at startup from settings.warden so the warden package
-// stays decoupled from the config package. Tests may override this value;
-// callers should save and restore the previous value when doing so.
-var ActiveFilterConfig = DefaultReviewFilterConfig()
+// activeFilterConfig holds the active review-time configuration behind an
+// atomic.Value so concurrent reads (review-time) and writes (hot-reload
+// callback) are race-free without a mutex.
+var activeFilterConfig atomic.Value
+
+func init() {
+	activeFilterConfig.Store(DefaultReviewFilterConfig())
+}
+
+// GetActiveFilterConfig returns the current active review filter configuration.
+// Safe to call from any goroutine.
+func GetActiveFilterConfig() ReviewFilterConfig {
+	return activeFilterConfig.Load().(ReviewFilterConfig)
+}
+
+// SetActiveFilterConfig replaces the active review filter configuration.
+// Safe to call from any goroutine, including the hot-reload callback.
+func SetActiveFilterConfig(cfg ReviewFilterConfig) {
+	activeFilterConfig.Store(cfg)
+}
 
 // canonicalCategories is the set of categories the category filter recognises.
 // Rules with a category outside this set always pass the filter (treated as
@@ -225,6 +242,9 @@ func capRules(rules []Rule, max int) []Rule {
 // Returns nil when the diff has no "diff --git" headers. parseDiffGitPath
 // (in warden.go) is reused so renames and a/ b/ paths with spaces behave the
 // same here as in the diff-filter pre-truncation pass.
+//
+// Uses bufio.Scanner to avoid allocating a full slice of every line in a
+// potentially large diff.
 func changedFilesFromDiff(diff string) []string {
 	if diff == "" {
 		return nil
@@ -232,7 +252,9 @@ func changedFilesFromDiff(diff string) []string {
 	const marker = "diff --git "
 	var out []string
 	seen := make(map[string]bool)
-	for _, line := range strings.Split(diff, "\n") {
+	scanner := bufio.NewScanner(strings.NewReader(diff))
+	for scanner.Scan() {
+		line := scanner.Text()
 		if !strings.HasPrefix(line, marker) {
 			continue
 		}
