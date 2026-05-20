@@ -29,7 +29,10 @@ func IsStale(rule Rule, archiveAfterDays int, now time.Time) bool {
 	if rule.Added == "" {
 		return false
 	}
-	added, err := time.Parse(staleAddedLayout, rule.Added)
+	// Parse in now's location so both sides of the subtraction share the same
+	// timezone; mismatched locations (e.g. UTC vs local) would inject a fixed
+	// offset and corrupt the "whole days" boundary.
+	added, err := time.ParseInLocation(staleAddedLayout, rule.Added, now.Location())
 	if err != nil {
 		return false
 	}
@@ -42,8 +45,7 @@ func IsStale(rule Rule, archiveAfterDays int, now time.Time) bool {
 	if elapsed <= fullWindow {
 		return false
 	}
-	halfWindow := fullWindow / 2
-	return elapsed > halfWindow
+	return true
 }
 
 // ArchiveStale partitions rules into the active set (rules to keep) and a
