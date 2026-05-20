@@ -728,6 +728,6 @@ func TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch(t *testing.T) {
 
 	// commitAndPush must succeed: the fetch populates the remote-tracking ref
 	// so --force-with-lease can verify the lease and allow the push.
-	err = s.commitAndPush(ctx, localDir, branch, 1, nil, nil)
+	err = s.commitAndPush(ctx, localDir, branch, 1, nil, nil, 0)
 	require.NoError(t, err, "commitAndPush should succeed after fetching remote-tracking ref")
 }
