@@ -2,6 +2,7 @@ package smelter
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -263,6 +264,218 @@ func TestFlush_MultipleRulesSameAnvil_AllProcessed(t *testing.T) {
 	assert.Len(t, byAnvil["anvil-a"], 3, "all 3 rules should be queried for anvil-a")
 }
 
+// stubConsolidator returns a runner that emits a fixed merged-rule JSON
+// payload for every call. Used by smelter consolidation tests.
+func stubConsolidator(t *testing.T, mergedID, pattern, check string) warden.ConsolidationRunner {
+	t.Helper()
+	return func(_ context.Context, _, _ string) ([]byte, error) {
+		body, err := json.Marshal(map[string]string{
+			"id":      mergedID,
+			"pattern": pattern,
+			"check":   check,
+		})
+		require.NoError(t, err)
+		return body, nil
+	}
+}
+
+// TestRunConsolidation_DisabledByDefault verifies that without explicit
+// configuration the consolidation pass is a no-op.
+func TestRunConsolidation_DisabledByDefault(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "r1", Category: "style", Pattern: "shared word", Check: "shared concern"},
+		{ID: "r2", Category: "style", Pattern: "shared word", Check: "shared concern"},
+	}}
+
+	summary, replaced, err := s.runConsolidation(context.Background(), t.TempDir(), "anvil-a", rf)
+	require.NoError(t, err)
+	assert.Empty(t, summary)
+	assert.Empty(t, replaced)
+	assert.Len(t, rf.Rules, 2)
+}
+
+// TestRunConsolidation_MergesClusterAndPopulatesSummary verifies the smelter
+// integrates warden.Consolidate correctly and returns the summary metadata
+// needed for the commit message.
+func TestRunConsolidation_MergesClusterAndPopulatesSummary(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{},
+		WithConsolidator(stubConsolidator(t, "shared-concern", "shared pattern", "verify shared concern")),
+		WithDedupThreshold(func() float64 { return 0.3 }),
+	)
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "r1", Category: "style", Pattern: "shared word here", Check: "verify shared concern", Source: warden.SourceList{"PR-1"}, Added: "2024-02-01"},
+		{ID: "r2", Category: "style", Pattern: "shared word there", Check: "ensure shared concern", Source: warden.SourceList{"PR-2"}, Added: "2024-01-01"},
+		// Unrelated rule should be untouched.
+		{ID: "r3", Category: "security", Pattern: "sql injection", Check: "use prepared statements"},
+	}}
+
+	summary, replaced, err := s.runConsolidation(context.Background(), t.TempDir(), "anvil-a", rf)
+	require.NoError(t, err)
+	require.Len(t, summary, 1)
+	assert.Equal(t, "style", summary[0].Category)
+	assert.ElementsMatch(t, []string{"r1", "r2"}, summary[0].ReplacedIDs)
+	assert.Equal(t, "shared-concern", summary[0].Merged.ID)
+	assert.Equal(t, "2024-01-01", summary[0].Merged.Added, "merged Added should be the oldest in cluster")
+	assert.Equal(t, warden.SourceList{"PR-1", "PR-2"}, summary[0].Merged.Source)
+
+	assert.Len(t, replaced, 2)
+
+	// Rules file should now contain r3 plus the merged rule.
+	ids := make([]string, 0, len(rf.Rules))
+	for _, r := range rf.Rules {
+		ids = append(ids, r.ID)
+	}
+	assert.ElementsMatch(t, []string{"r3", "shared-concern"}, ids)
+}
+
+// TestRunConsolidation_ZeroThresholdSkipsPass verifies that a zero threshold
+// disables consolidation even when a consolidator is wired.
+func TestRunConsolidation_ZeroThresholdSkipsPass(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{},
+		WithConsolidator(stubConsolidator(t, "m", "p", "c")),
+		WithDedupThreshold(func() float64 { return 0 }),
+	)
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "r1", Category: "style", Pattern: "same", Check: "same"},
+		{ID: "r2", Category: "style", Pattern: "same", Check: "same"},
+	}}
+
+	summary, replaced, err := s.runConsolidation(context.Background(), t.TempDir(), "anvil-a", rf)
+	require.NoError(t, err)
+	assert.Empty(t, summary)
+	assert.Empty(t, replaced)
+	assert.Len(t, rf.Rules, 2)
+}
+
+// TestArchiveRules_WritesSupersededByCorrectly verifies the smelter archives
+// each replaced rule with reason=duplicate and the correct superseded_by ID.
+func TestArchiveRules_WritesSupersededByCorrectly(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	dir := t.TempDir()
+	archived := []warden.Rule{
+		{ID: "r1", Category: "style", Pattern: "p1", Check: "c1"},
+		{ID: "r2", Category: "style", Pattern: "p2", Check: "c2"},
+	}
+	summary := []warden.MergeResult{
+		{
+			Merged:      warden.Rule{ID: "merged-1", Category: "style"},
+			ReplacedIDs: []string{"r1", "r2"},
+			Category:    "style",
+		},
+	}
+
+	require.NoError(t, s.archiveRules(dir, archived, summary))
+
+	a, err := warden.LoadArchive(warden.ArchivePath(dir))
+	require.NoError(t, err)
+	require.Len(t, a.Rules, 2)
+
+	for _, ar := range a.Rules {
+		assert.Equal(t, warden.ArchiveReasonDuplicate, ar.ArchiveReason)
+		assert.Equal(t, "merged-1", ar.SupersededBy)
+		assert.False(t, ar.ArchivedAt.IsZero())
+	}
+}
+
+// TestPersistRulesAndArchive_ArchiveFirstThenRules verifies the happy path:
+// when both archive and rules-file writes succeed, both files land on disk.
+func TestPersistRulesAndArchive_ArchiveFirstThenRules(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	dir := t.TempDir()
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "merged-1", Category: "style", Pattern: "p", Check: "c"},
+	}}
+	archived := []warden.Rule{
+		{ID: "r1", Category: "style", Pattern: "p1", Check: "c1"},
+	}
+	summary := []warden.MergeResult{{
+		Merged:      warden.Rule{ID: "merged-1", Category: "style"},
+		ReplacedIDs: []string{"r1"},
+		Category:    "style",
+	}}
+
+	require.NoError(t, s.persistRulesAndArchive(dir, rf, archived, summary))
+
+	rulesData, err := os.ReadFile(filepath.Join(dir, warden.RulesFileName))
+	require.NoError(t, err)
+	assert.Contains(t, string(rulesData), "merged-1")
+
+	a, err := warden.LoadArchive(warden.ArchivePath(dir))
+	require.NoError(t, err)
+	require.Len(t, a.Rules, 1)
+	assert.Equal(t, "r1", a.Rules[0].ID)
+	assert.Equal(t, "merged-1", a.Rules[0].SupersededBy)
+}
+
+// TestPersistRulesAndArchive_ArchiveFailureAbortsRulesSave verifies the
+// load-bearing ordering invariant: if archive write fails, the active rules
+// file must NOT be written. Otherwise the smelter would commit a rules file
+// whose superseded entries have no archive record (bead-contract violation).
+func TestPersistRulesAndArchive_ArchiveFailureAbortsRulesSave(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	dir := t.TempDir()
+
+	// Force archive write to fail by creating a *directory* at the archive
+	// file path. os.WriteFile inside Archive.Save will then return EISDIR.
+	require.NoError(t, os.MkdirAll(filepath.Dir(warden.ArchivePath(dir)), 0o755))
+	require.NoError(t, os.MkdirAll(warden.ArchivePath(dir), 0o755))
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "merged-1", Category: "style", Pattern: "p", Check: "c"},
+	}}
+	archived := []warden.Rule{
+		{ID: "r1", Category: "style", Pattern: "p1", Check: "c1"},
+	}
+	summary := []warden.MergeResult{{
+		Merged:      warden.Rule{ID: "merged-1", Category: "style"},
+		ReplacedIDs: []string{"r1"},
+		Category:    "style",
+	}}
+
+	err := s.persistRulesAndArchive(dir, rf, archived, summary)
+	require.Error(t, err, "archive failure must propagate")
+	assert.Contains(t, err.Error(), "archiving consolidated rules")
+
+	// Critical: the active rules file must not have been written.
+	_, statErr := os.Stat(filepath.Join(dir, warden.RulesFileName))
+	assert.True(t, os.IsNotExist(statErr),
+		"active rules file must not be saved when archive write fails (got stat err: %v)", statErr)
+}
+
+// TestPersistRulesAndArchive_NoArchiveSkipsArchiveStep verifies that when
+// there are no consolidated rules to archive, the archive file is not
+// created — only the active rules file is written.
+func TestPersistRulesAndArchive_NoArchiveSkipsArchiveStep(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	dir := t.TempDir()
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "r1", Category: "style", Pattern: "p", Check: "c"},
+	}}
+
+	require.NoError(t, s.persistRulesAndArchive(dir, rf, nil, nil))
+
+	_, err := os.Stat(filepath.Join(dir, warden.RulesFileName))
+	assert.NoError(t, err, "rules file should be saved")
+
+	_, err = os.Stat(warden.ArchivePath(dir))
+	assert.True(t, os.IsNotExist(err), "archive file should not be created when nothing to archive")
+}
+
 // TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch verifies that
 // commitAndPush succeeds when the batch branch already exists on origin but
 // the local worktree has no remote-tracking ref (fresh creation path). The
@@ -350,6 +563,6 @@ func TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch(t *testing.T) {
 
 	// commitAndPush must succeed: the fetch populates the remote-tracking ref
 	// so --force-with-lease can verify the lease and allow the push.
-	err = s.commitAndPush(ctx, localDir, branch, 1)
+	err = s.commitAndPush(ctx, localDir, branch, 1, nil)
 	require.NoError(t, err, "commitAndPush should succeed after fetching remote-tracking ref")
 }

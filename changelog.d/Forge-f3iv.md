@@ -1,0 +1,2 @@
+category: Added
+- **Smelter Pass 1 near-duplicate consolidation** - The Smelter now clusters active warden rules by category, scores pairwise Jaccard similarity over their pattern+check word bags, and asks the warden-stage provider to merge each cluster (>= `warden.dedup_threshold`) into a single canonical rule. Superseded rules move to the per-anvil archive with reason `duplicate` and `superseded_by` set, and the consolidation summary is appended to the Smelter PR commit message. (Forge-f3iv)
