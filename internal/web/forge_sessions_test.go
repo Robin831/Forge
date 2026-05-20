@@ -351,6 +351,16 @@ func TestForgeSessions_CreateAnvilValidation(t *testing.T) {
 			wantStatus: http.StatusCreated,
 			wantAnvil:  "Heimdall",
 		},
+		{
+			// Two registry keys differ only by case; map iteration order is
+			// random in Go, so silently picking one would be nondeterministic.
+			// validateSessionAnvil must refuse instead.
+			name:       "ambiguous case-insensitive match rejected",
+			registry:   map[string]string{"munin": "/repos/munin-lower", "Munin": "/repos/munin-upper"},
+			body:       `{"title":"draft","anvil":"MUNIN"}`,
+			wantStatus: http.StatusBadRequest,
+			wantError:  "ambiguous anvil MUNIN",
+		},
 	}
 
 	for _, tc := range cases {

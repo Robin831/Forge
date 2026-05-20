@@ -488,17 +488,33 @@ func (s *Server) validateSessionAnvil(anvil *string) (string, bool) {
 		}
 		return "anvil is required when more than one anvil is registered", false
 	}
+	if _, ok := registry[*anvil]; ok {
+		return "", true
+	}
+	// No exact match: do a case-insensitive scan. Multiple matches are
+	// ambiguous because map iteration order is unspecified — refuse rather
+	// than pick a winner at random. resolveSessionAnvil applies the same
+	// rule when reading a stored session.
+	var matched string
+	matches := 0
 	for name := range registry {
 		if strings.EqualFold(name, *anvil) {
-			*anvil = name
-			return "", true
+			matched = name
+			matches++
 		}
+	}
+	if matches == 1 {
+		*anvil = matched
+		return "", true
 	}
 	names := make([]string, 0, len(registry))
 	for name := range registry {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	if matches > 1 {
+		return fmt.Sprintf("ambiguous anvil %s; multiple registry entries match case-insensitively (registered: %s)", *anvil, strings.Join(names, ", ")), false
+	}
 	return fmt.Sprintf("unknown anvil %s; registered: %s", *anvil, strings.Join(names, ", ")), false
 }
 
