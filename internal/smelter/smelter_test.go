@@ -386,6 +386,96 @@ func TestArchiveRules_WritesSupersededByCorrectly(t *testing.T) {
 	}
 }
 
+// TestPersistRulesAndArchive_ArchiveFirstThenRules verifies the happy path:
+// when both archive and rules-file writes succeed, both files land on disk.
+func TestPersistRulesAndArchive_ArchiveFirstThenRules(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	dir := t.TempDir()
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "merged-1", Category: "style", Pattern: "p", Check: "c"},
+	}}
+	archived := []warden.Rule{
+		{ID: "r1", Category: "style", Pattern: "p1", Check: "c1"},
+	}
+	summary := []warden.MergeResult{{
+		Merged:      warden.Rule{ID: "merged-1", Category: "style"},
+		ReplacedIDs: []string{"r1"},
+		Category:    "style",
+	}}
+
+	require.NoError(t, s.persistRulesAndArchive(dir, rf, archived, summary))
+
+	rulesData, err := os.ReadFile(filepath.Join(dir, warden.RulesFileName))
+	require.NoError(t, err)
+	assert.Contains(t, string(rulesData), "merged-1")
+
+	a, err := warden.LoadArchive(warden.ArchivePath(dir))
+	require.NoError(t, err)
+	require.Len(t, a.Rules, 1)
+	assert.Equal(t, "r1", a.Rules[0].ID)
+	assert.Equal(t, "merged-1", a.Rules[0].SupersededBy)
+}
+
+// TestPersistRulesAndArchive_ArchiveFailureAbortsRulesSave verifies the
+// load-bearing ordering invariant: if archive write fails, the active rules
+// file must NOT be written. Otherwise the smelter would commit a rules file
+// whose superseded entries have no archive record (bead-contract violation).
+func TestPersistRulesAndArchive_ArchiveFailureAbortsRulesSave(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	dir := t.TempDir()
+
+	// Force archive write to fail by creating a *directory* at the archive
+	// file path. os.WriteFile inside Archive.Save will then return EISDIR.
+	require.NoError(t, os.MkdirAll(filepath.Dir(warden.ArchivePath(dir)), 0o755))
+	require.NoError(t, os.MkdirAll(warden.ArchivePath(dir), 0o755))
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "merged-1", Category: "style", Pattern: "p", Check: "c"},
+	}}
+	archived := []warden.Rule{
+		{ID: "r1", Category: "style", Pattern: "p1", Check: "c1"},
+	}
+	summary := []warden.MergeResult{{
+		Merged:      warden.Rule{ID: "merged-1", Category: "style"},
+		ReplacedIDs: []string{"r1"},
+		Category:    "style",
+	}}
+
+	err := s.persistRulesAndArchive(dir, rf, archived, summary)
+	require.Error(t, err, "archive failure must propagate")
+	assert.Contains(t, err.Error(), "archiving consolidated rules")
+
+	// Critical: the active rules file must not have been written.
+	_, statErr := os.Stat(filepath.Join(dir, warden.RulesFileName))
+	assert.True(t, os.IsNotExist(statErr),
+		"active rules file must not be saved when archive write fails (got stat err: %v)", statErr)
+}
+
+// TestPersistRulesAndArchive_NoArchiveSkipsArchiveStep verifies that when
+// there are no consolidated rules to archive, the archive file is not
+// created — only the active rules file is written.
+func TestPersistRulesAndArchive_NoArchiveSkipsArchiveStep(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{})
+
+	dir := t.TempDir()
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "r1", Category: "style", Pattern: "p", Check: "c"},
+	}}
+
+	require.NoError(t, s.persistRulesAndArchive(dir, rf, nil, nil))
+
+	_, err := os.Stat(filepath.Join(dir, warden.RulesFileName))
+	assert.NoError(t, err, "rules file should be saved")
+
+	_, err = os.Stat(warden.ArchivePath(dir))
+	assert.True(t, os.IsNotExist(err), "archive file should not be created when nothing to archive")
+}
+
 // TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch verifies that
 // commitAndPush succeeds when the batch branch already exists on origin but
 // the local worktree has no remote-tracking ref (fresh creation path). The

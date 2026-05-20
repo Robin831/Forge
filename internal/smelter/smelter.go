@@ -375,18 +375,13 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 		return nil
 	}
 
-	// 3. Save the updated rules file in the worktree.
-	if err := warden.SaveRules(wt.Path, rf); err != nil {
-		return fmt.Errorf("saving warden rules for %s: %w", anvilName, err)
-	}
-
-	// 3b. Persist archived rules (replaced by consolidation) to the per-anvil
-	//     archive store. Done before commit so the archive file is part of the
-	//     same Smelter PR.
-	if len(archived) > 0 {
-		if err := s.archiveRules(wt.Path, archived, consolidationSummary); err != nil {
-			log.Printf("[smelter] archive write failed for %s: %v", anvilName, err)
-		}
+	// 3. Persist the archive and active rules file. Archive must land first
+	//    so the active rules file can never be committed without a matching
+	//    archive entry for the rules it replaced (the bead contract). If
+	//    either step fails we abort before staging/commit/push, leaving the
+	//    pending queue intact for the next flush.
+	if err := s.persistRulesAndArchive(wt.Path, rf, archived, consolidationSummary); err != nil {
+		return fmt.Errorf("persisting warden rules for %s: %w", anvilName, err)
 	}
 
 	// 4. Commit and force-push from the worktree.
@@ -442,6 +437,24 @@ func (s *Smelter) runConsolidation(ctx context.Context, wtPath, anvilName string
 		}
 	}
 	return summary, replaced, combined
+}
+
+// persistRulesAndArchive writes the archive entries (when any) and then
+// saves the active rules file. Ordering is load-bearing: the archive must
+// land before the active rules file so a partial failure can never leave
+// the rules file on disk without a matching archive record for the rules
+// it superseded. Any error from either step is returned so callers can
+// abort the flush before staging/commit/push.
+func (s *Smelter) persistRulesAndArchive(wtPath string, rf *warden.RulesFile, archived []warden.Rule, summary []warden.MergeResult) error {
+	if len(archived) > 0 {
+		if err := s.archiveRules(wtPath, archived, summary); err != nil {
+			return fmt.Errorf("archiving consolidated rules: %w", err)
+		}
+	}
+	if err := warden.SaveRules(wtPath, rf); err != nil {
+		return fmt.Errorf("saving warden rules: %w", err)
+	}
+	return nil
 }
 
 // archiveRules persists the superseded rules to the per-anvil archive store
