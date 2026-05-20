@@ -153,19 +153,21 @@ func globsFromExtensions(files []string) []string {
 // tried. A rule is only modified when at least one fetch succeeded and
 // produced at least one glob.
 //
-// Returns the number of rules whose Paths was populated.
+// Returns the IDs of rules whose Paths was populated, in the order they were
+// visited. The caller can use len() to obtain the count for logging or the
+// list itself to render the "Backfilled:" section of the smelter commit.
 // prFetchResult caches the outcome of a single gh API call for one PR.
 type prFetchResult struct {
 	files []string
 	err   error
 }
 
-func (s *Smelter) runPathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile) int {
+func (s *Smelter) runPathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile) []string {
 	// Cache fetched file lists per PR number so that multiple rules referencing
 	// the same PR number do not trigger redundant gh API calls.
 	prCache := make(map[int]prFetchResult)
 
-	var updated int
+	var updated []string
 	for i := range rf.Rules {
 		if ctx.Err() != nil {
 			return updated
@@ -218,7 +220,7 @@ func (s *Smelter) runPathsBackfill(ctx context.Context, wtPath, anvilName string
 			continue
 		}
 		rule.Paths = globs
-		updated++
+		updated = append(updated, rule.ID)
 	}
 	return updated
 }
