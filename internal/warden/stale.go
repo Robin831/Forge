@@ -33,12 +33,17 @@ func IsStale(rule Rule, archiveAfterDays int, now time.Time) bool {
 	if err != nil {
 		return false
 	}
+	// Compare in whole days: Added is a date-only value parsed at midnight,
+	// so truncate now to midnight as well to keep the boundary at exact day
+	// counts (e.g. threshold=30 and added 30 days ago is not stale).
+	nowDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	elapsed := nowDay.Sub(added)
 	fullWindow := time.Duration(archiveAfterDays) * 24 * time.Hour
-	if now.Sub(added) <= fullWindow {
+	if elapsed <= fullWindow {
 		return false
 	}
 	halfWindow := fullWindow / 2
-	return now.Sub(added) > halfWindow
+	return elapsed > halfWindow
 }
 
 // ArchiveStale partitions rules into the active set (rules to keep) and a
