@@ -540,6 +540,24 @@ export interface ForgeTurnResponse {
   messages: ForgeMessage[]
 }
 
+// ForgeAnvil is one entry in the GET /api/forge/anvils response. The
+// backend only exposes the name today; the path is held server-side so
+// the browser cannot leak filesystem layout.
+export interface ForgeAnvil {
+  name: string
+}
+
+export interface ForgeAnvilsListResponse {
+  anvils: ForgeAnvil[]
+}
+
+// forgeAnvils wraps the read-only anvil-listing endpoint used by the
+// Beads-Forge new-session form to populate its anvil-select dropdown.
+export const forgeAnvils = {
+  list: (signal?: AbortSignal) =>
+    apiGet<ForgeAnvilsListResponse>('/api/forge/anvils', signal),
+}
+
 // forgeSessions wraps the /api/forge/sessions endpoints. All mutating calls
 // route through apiPost / apiSend which set the X-Forge-Action header that
 // the daemon's CSRF middleware requires.

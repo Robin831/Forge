@@ -92,6 +92,7 @@ func (s *Server) routes() http.Handler {
 		// signed-in user. The /turn endpoint drives the AI loop —
 		// running claude per-turn, requesting plans, and stepping
 		// through the grilling stage.
+		r.Get("/forge/anvils", s.handleForgeAnvilsList)
 		r.Get("/forge/sessions", s.handleForgeSessionsList)
 		r.Post("/forge/sessions", s.handleForgeSessionsCreate)
 		r.Get("/forge/sessions/{id}", s.handleForgeSessionGet)
