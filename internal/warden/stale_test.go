@@ -131,14 +131,6 @@ func TestArchiveStale_EmptyInput(t *testing.T) {
 	assert.Nil(t, archived)
 }
 
-func ruleIDs(rules []Rule) []string {
-	out := make([]string, len(rules))
-	for i, r := range rules {
-		out[i] = r.ID
-	}
-	return out
-}
-
 func archivedIDs(rules []ArchivedRule) []string {
 	out := make([]string, len(rules))
 	for i, r := range rules {
