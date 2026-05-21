@@ -1,2 +1,0 @@
-category: Fixed
-- **Stale pidfile crashloop on container restart** - Daemon startup now verifies that the PID in `forge.pid` actually belongs to a forge process (via `/proc/<pid>/comm` on Linux), not just that a process with that PID is alive. Containers killed before graceful shutdown no longer crashloop on restart with `Forge daemon already running` when an unrelated low-PID process inherits the stale pidfile. (Forge-4b55)

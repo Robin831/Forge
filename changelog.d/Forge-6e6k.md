@@ -1,2 +1,0 @@
-category: Fixed
-- **queue_cache writer no longer wedges on bead transitions** - Dedupe `(bead_id, anvil)` pairs in the daemon's poll-cycle cache writer before passing them to `ReplaceQueueCacheForAnvils`. Previously, a bead briefly appearing in both the merged ready snapshot and `PollInProgress` results would trigger a UNIQUE constraint violation, roll back the surrounding transaction, and freeze `queue_cache` on stale rows indefinitely. The dedupe prefers the in-progress entry on collision since it reflects the more current state. (Forge-6e6k)

@@ -1,2 +1,0 @@
-category: Added
-- **Beads-Forge page foundation** - Hearth 2.0 gains a new `/forge` route with a session sidebar, chat-style conversation view, and a free-text "new session" draft input. Sessions and messages are persisted in `state.db` via the new `forge_sessions` and `forge_session_messages` tables, and managed through the `/api/forge/sessions` REST endpoints. This is a foundation-only delivery — claude integration and bead emission arrive in follow-on beads. (Forge-qcqv)

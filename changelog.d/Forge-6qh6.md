@@ -1,2 +1,0 @@
-category: Added
-- **Queue resolution IPC verbs with multi-forge safety** - New daemon IPC handlers `queue_clarify`, `queue_unclarify`, `queue_retry`, `queue_clear`, and `queue_stop` wrap the shared `internal/queueactions` primitives and accept an optional `forge_id` field that, when supplied, must match the local Forge instance — preventing one Forge from accidentally clobbering another's queue state when several share a database. (Forge-6qh6)

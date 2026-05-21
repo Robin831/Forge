@@ -1,2 +1,0 @@
-category: Added
-- **Bead detail page renders Notes and Comments panels** - The bead detail page now shows the bead's appended notes and comment thread (consumed from the new `notes` and `comments` fields on `/api/bead/{id}`). Both panels are collapsible (default expanded), preserve line breaks, and show relative timestamps with an ISO tooltip on each comment. Empty notes and empty comment lists omit their respective panels. (Forge-946t)

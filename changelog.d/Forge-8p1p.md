@@ -1,2 +1,0 @@
-category: Changed
-- **Always defer bead close until PR merges** - Standalone beads (no graph relationships) previously closed immediately on PR creation, before CI ran or any human review, leading to misleading "open" lists when PRs were rejected or sat unmerged. The pipeline now uniformly defers bead close to the merge-watcher regardless of dependency graph shape, matching the behavior already used for beads with dependents. (Forge-8p1p)

@@ -1,2 +1,0 @@
-category: Added
-- **Hearth 2.0 web backend skeleton** - New `internal/web` package adds a chi v5 HTTP server inside the forge daemon with bcrypt-validated session login, `web_sessions` table for 30-day sliding sessions, and read endpoints `GET /api/status`, `GET /api/queue`, `GET /api/workers` that mirror the IPC equivalents. Gated by `FORGE_WEB_ENABLED=1`; address from `FORGE_WEB_ADDR` (default `:8080`); users from `FORGE_USERS` (`user:bcrypthash,...`). Disabled by default. (Forge-s0wk)

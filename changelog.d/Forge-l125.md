@@ -1,2 +1,0 @@
-category: Fixed
-- **Bellows assignment on external PRs now persists across reconcile cycles** - The reconcile loop's defensive ext-* clobber was silently reverting user-initiated `assign_bellows` actions within one poll, which made bellows quietly stop handling the PR. Manual assignments are now tracked separately via a new `bellows_manually_assigned` column and preserved by reconcile; the legacy auto-adoption release path still fires for ext-* PRs that were not user-pinned. A companion `unassign_bellows` IPC action clears both flags for clean release. (Forge-l125)

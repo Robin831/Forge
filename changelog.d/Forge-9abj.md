@@ -1,2 +1,0 @@
-category: Fixed
-- **Detect stranded remote branches before dispatch** - The daemon now probes `origin/forge/<bead-id>` before spawning a Smith. If the branch carries commits not reachable from the base ref and no PR exists, the bead is marked needs-attention with a clear reason instead of running a fresh worker that would push in parallel and escalate at the end. Merged stale branches are cleaned up transparently. Branches that already have an open PR defer to bellows rather than being treated as stranded. (Forge-9abj)

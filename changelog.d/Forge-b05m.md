@@ -1,2 +1,0 @@
-category: Added
-- **`forge queue clear` command** - Clears the needs-attention flags from a bead's retry row without re-dispatching. Use this when the underlying work is already done (PR merged, bead closed) and you only want the bead to drop out of the needs-attention list. Unlike `retry`, it does not schedule a re-dispatch; unlike `stop`, it does not mark the bead as needing clarification. Idempotent and emits a `retry_cleared` event. (Forge-b05m)

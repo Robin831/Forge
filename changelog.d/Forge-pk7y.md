@@ -1,2 +1,0 @@
-category: Fixed
-- **Suppress Windows console flash from remaining subprocess sites** - Wrapped the last unwrapped `exec.Command`/`exec.CommandContext` call sites in `internal/daemon`, `internal/web`, `cmd/forge/daemon`, `cmd/forge/doctor`, `cmd/forge/quest`, and `cmd/forge/update` with `executil.HideWindow` so they no longer produce a brief console window flash on Windows when they fire. (Forge-pk7y)

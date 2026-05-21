@@ -1,3 +1,0 @@
-category: Added
-- **`forge warden consolidate <anvil>`** - Off-cycle CLI trigger for the three-pass smelter consolidation (cluster merge, staleness archive, paths backfill) against a named anvil. Writes both `.forge/warden-rules.yaml` and `.forge/warden-rules.archive.yaml` in place so the caller can review and commit. (Forge-59jt)
-- **`forge warden restore <rule-id> --anvil <name>`** - Move an archived warden rule back into the active rules file. The embedded Rule (id/category/pattern/check/source/added/paths) is preserved verbatim so a subsequent consolidate pass would re-archive the same content; archive bookkeeping (archived_at/last_seen/archive_reason/superseded_by) is dropped on restore. (Forge-59jt)

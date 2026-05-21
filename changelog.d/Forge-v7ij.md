@@ -1,2 +1,0 @@
-category: Added
-- **Hearth 2.0 pipeline overview bar** - Added a horizontal Schematic → Smith → Temper → Warden → PR → Merged pipeline bar above the Queue/Workers/LiveActivity columns with a per-stage count and one row per active in-flight bead. Bellows status is now nested under the PR stage (monitoring / ci-fix / review-fix / rebase) instead of appearing as a standalone Workers row, and the Workers pane shows dimmed Idle slots equal to the remaining global Smith capacity. The status API now exposes `max_total_smiths`. (Forge-v7ij)

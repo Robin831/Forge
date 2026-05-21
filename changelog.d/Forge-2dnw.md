@@ -1,2 +1,0 @@
-category: Fixed
-- **PR 'Changes' section no longer leaks warden verdict** - Changelog fragment lookup now globs suffixed filenames (e.g. `<beadID>-technical.en.md`) in addition to the plain `<beadID>.md` / `<beadID>.en.md` convention, and warden approval text is rendered under a separate `## Reviewer's approval notes` heading instead of masquerading as a changelog bullet under `## Changes`. (Forge-2dnw)

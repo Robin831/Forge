@@ -1,4 +1,0 @@
-category: Fixed
-- **forge queue retry now resumes paused crucibles** - `forge queue retry` clears the daemon's in-memory paused crucible status and re-applies the anvil's `auto_dispatch_tag` (which `releaseBeadClaim` strips when a pipeline fails), so a paused crucible can re-enter the loop without a daemon restart. (Forge-s3d6)
-- **Hearth crucible resume restores auto_dispatch_tag** - The Hearth "resume" action now re-adds the anvil's `auto_dispatch_tag` to the parent bead so tagged-dispatch anvils can rediscover it via `bd ready`. (Forge-s3d6)
-- **Anvil name lookups are case-insensitive** - `forge queue retry` and the Hearth crucible action handlers canonicalise user-provided anvil names against the configured registry, so passing `--anvil Munin` resolves to the configured `munin` instead of failing with "no retry record found". (Forge-s3d6)
