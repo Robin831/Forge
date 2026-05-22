@@ -827,7 +827,7 @@ rules:
         Test comments describing setup behavior (e.g., 'skip if set', 'restore after test') or test case comments describing expected values and edge cases
       check: >-
         Verify that test comments accurately describe what the code actually does — e.g., if the comment says 'skip if set' but the code forcibly clears the value with t.Setenv, update the comment to say 'force env var to be unset'. Also verify that test case comments accurately describe the actual expected values and behavior being asserted — misleading comments cause confusion about intended semantics.
-      source: ['copilot:PR#286', 'copilot:PR#338']
+      source: ['copilot:PR#286', 'copilot:PR#338', 'copilot:PR#638']
       added: "2026-03-16"
     - id: deduplicate-error-chain-sentinel-rules
       category: other
@@ -981,7 +981,7 @@ rules:
         PR description references files, components, deliverables, features, keybindings, or implementation changes
       check: >-
         Verify that every file, component, or artifact mentioned in the PR description is actually included in the changeset. If something listed is not shipped, either add it or update the description to match what is actually being delivered. In particular, if only a changelog fragment is present without the actual implementation, either add the missing code or update the PR description to reflect what is actually being shipped.
-      source: ['copilot:PR#320', 'copilot:PR#383']
+      source: ['copilot:PR#320', 'copilot:PR#383', 'copilot:PR#637', 'copilot:PR#648']
       added: "2026-03-20"
     - id: abort-path-cleanup
       category: ui
@@ -1406,7 +1406,7 @@ rules:
         Function or method doc comments that describe error behavior, return values, or fallback logic, or functions whose behavior is modified without updating doc comments
       check: >-
         Verify that doc comments accurately describe the actual implementation behavior — especially around error returns, fallback paths, edge cases, and reuse/lookup semantics. If the code silently falls back instead of returning an error, the comment must not claim an error is returned, and vice versa. After changing function semantics, update the doc comment to reflect the new behavior.
-      source: ['copilot:PR#346', 'copilot:PR#490']
+      source: ['copilot:PR#346', 'copilot:PR#490', 'copilot:PR#647']
       added: "2026-03-20"
     - id: test-helper-filesystem-errors
       category: testing
@@ -4567,7 +4567,7 @@ rules:
       pattern: >-
         New inline Modal or dialog component added to a file, especially when comments acknowledge no shared modal primitive exists
       check: >-
-        Verify whether ConfirmModal (src/components/ConfirmModal.tsx) or another existing modal component can be reused or extracted instead of introducing a duplicate inline modal implementation
+        Verify whether an existing shared modal component (e.g., a ConfirmModal or similar primitive already in the codebase) can be reused or extracted instead of introducing a duplicate inline modal implementation
       source: copilot:PR#634
       added: "2026-05-18"
     - id: unique-aria-labelledby-ids
@@ -4602,14 +4602,6 @@ rules:
         Verify that omitempty actually omits the field when the underlying value is zero: either guard the assignment (only set the shadow field when value > 0) or ensure the stringifier returns "" for the zero value. Otherwise the zero/default case will always be serialized, defeating omitempty.
       source: copilot:PR#637
       added: "2026-05-19"
-    - id: pr-scope-matches-description
-      category: other
-      pattern: >-
-        PR description or acceptance criteria reference changes to a specific package/component (e.g., 'extends internal/watchdog')
-      check: >-
-        Verify the diff actually touches the referenced package/component; if not, either implement the described change or update the PR description/acceptance criteria to match the delivered changes
-      source: copilot:PR#637
-      added: "2026-05-19"
     - id: sync-package-level-mutable-state
       category: concurrency
       pattern: >-
@@ -4632,14 +4624,6 @@ rules:
         Code calls strings.Split on potentially large inputs (e.g., diffs, file contents, logs) just to scan for markers or iterate lines
       check: >-
         Verify large strings are scanned without allocating a full slice of lines — use strings.Index loops, bufio.Scanner, or bufio.Reader over strings.NewReader to keep allocations bounded
-      source: copilot:PR#638
-      added: "2026-05-20"
-    - id: accurate-test-comments
-      category: testing
-      pattern: >-
-        Inline comments in test files that describe what a test input/value represents or asserts (e.g., explaining why a string won't match a pattern, what a fixture value tests)
-      check: >-
-        Verify the comment accurately reflects the actual test data and behavior — if the comment claims a value won't match but the value actually does match (or vice versa), update the comment so future readers aren't misled about what the test is asserting
       source: copilot:PR#638
       added: "2026-05-20"
     - id: validate-against-empty-registry
@@ -4785,14 +4769,6 @@ rules:
         Verify that output messages referencing created artifacts (file paths, archives, etc.) are only printed when those artifacts actually exist or were modified during the run; otherwise omit them or report 'unchanged/not created'
       source: copilot:PR#647
       added: "2026-05-20"
-    - id: doc-comment-matches-behavior
-      category: style
-      pattern: >-
-        Doc comments describing function behavior (persistence, side effects, ordering) on functions with conditional code paths
-      check: >-
-        Verify the doc comment accurately describes all code paths, including edge cases where some operations are skipped (e.g., conditional writes, early returns). The comment must not overstate what the function does.
-      source: copilot:PR#647
-      added: "2026-05-20"
     - id: scoped-stash-no-data-loss
       category: error-handling
       pattern: >-
@@ -4807,13 +4783,5 @@ rules:
         Shell script uses pipelines (e.g., `cmd | head`, `cmd | grep`) where the upstream command's failure matters
       check: >-
         Verify `set -o pipefail` is enabled (or the pipeline is restructured) so upstream command failures aren't masked by the exit status of the final pipeline stage
-      source: copilot:PR#648
-      added: "2026-05-20"
-    - id: pr-description-matches-changes
-      category: other
-      pattern: >-
-        PR title/description mentions changes (code edits, tests, handlers) that are not present in the actual diff
-      check: >-
-        Verify the PR title and description accurately describe every change in the diff; if scope mentioned in the description is missing from the files changed, either add the missing changes or update the title/description to match what was actually implemented
       source: copilot:PR#648
       added: "2026-05-20"
