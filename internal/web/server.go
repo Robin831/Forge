@@ -104,6 +104,16 @@ type Server struct {
 	// nil falls back to forgechat.DefaultBdRunner. Tests inject a fake.
 	bdRunner BdRunnerFn
 
+	// turnStore tracks in-flight async turns spawned by the /turn handler.
+	// SSE / polling endpoints (sibling sub-tasks) read from this store via
+	// Get(turnID). Always non-nil — initialised in New.
+	turnStore *TurnStore
+
+	// turnTimeout is the hard backstop applied to each async turn goroutine.
+	// Defaults to 15m (the MaxForgeChatTurnTimeout). Tests override it via
+	// SetTurnTimeoutForTest to exercise the timeout path quickly.
+	turnTimeout time.Duration
+
 	// staticH serves the embedded SPA bundle. Built once in routes() so
 	// handleLoginPage can fall back to it without re-walking the embedded
 	// filesystem on every request.
@@ -138,6 +148,23 @@ func (s *Server) SetBdRunner(r BdRunnerFn) {
 	s.bdRunner = r
 }
 
+// TurnStore exposes the in-flight turn registry for the SSE / polling
+// endpoints (sibling sub-tasks) and tests. Never nil after New returns.
+func (s *Server) TurnStore() *TurnStore {
+	return s.turnStore
+}
+
+// SetTurnTimeout overrides the hard backstop applied to each async turn
+// goroutine. The default (15m) matches MaxForgeChatTurnTimeout from the
+// config package. Used by tests to exercise the timeout sentinel without
+// waiting fifteen real minutes.
+func (s *Server) SetTurnTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	s.turnTimeout = d
+}
+
 // New constructs a Server. The cfg is validated; an error is returned when
 // required fields are missing.
 func New(cfg Config, db *state.DB, handler CommandHandler, logger *slog.Logger) (*Server, error) {
@@ -164,10 +191,12 @@ func New(cfg Config, db *state.DB, handler CommandHandler, logger *slog.Logger) 
 	}
 
 	s := &Server{
-		cfg:     cfg,
-		db:      db,
-		handler: handler,
-		logger:  logger,
+		cfg:         cfg,
+		db:          db,
+		handler:     handler,
+		logger:      logger,
+		turnStore:   NewTurnStore(),
+		turnTimeout: 15 * time.Minute,
 	}
 	s.httpServer = &http.Server{
 		Addr:              cfg.Addr,
