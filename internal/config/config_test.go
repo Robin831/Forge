@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1178,4 +1180,135 @@ func TestTemperStepConfig_VerifyNoConflictMarkersRoundTrip(t *testing.T) {
 	assert.Equal(t,
 		[]string{"internal/web/dist", "internal/web/static"},
 		roundTripped.Steps[0].VerifyNoConflictMarkers)
+}
+
+// captureSlog swaps the default slog logger for one writing to a buffer for
+// the duration of the test. Returns the buffer so callers can assert on the
+// captured output, and restores the original logger via t.Cleanup so a
+// failure mid-test does not poison sibling tests.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// TestLoad_ForgeChatTurnTimeout_DefaultWhenUnset asserts that when forge.yaml
+// omits settings.forgechat.turn_timeout the loader falls back to
+// DefaultForgeChatTurnTimeout (5 minutes). The runner accesses the effective
+// value via cfg.Settings.ForgeChat.ResolvedTurnTimeout(), which applies the
+// default and clamping rules on top of the raw TurnTimeout field.
+func TestLoad_ForgeChatTurnTimeout_DefaultWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  max_total_smiths: 2
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 5*time.Minute, cfg.Settings.ForgeChat.TurnTimeout,
+		"unset turn_timeout should resolve to the 5m default")
+	assert.Equal(t, DefaultForgeChatTurnTimeout, cfg.Settings.ForgeChat.TurnTimeout,
+		"unset turn_timeout should equal DefaultForgeChatTurnTimeout")
+}
+
+// TestLoad_ForgeChatTurnTimeout_PreservesValueWithinRange asserts that any
+// value between (0, MaxForgeChatTurnTimeout] is preserved verbatim, with no
+// clamping and no warning emitted.
+func TestLoad_ForgeChatTurnTimeout_PreservesValueWithinRange(t *testing.T) {
+	buf := captureSlog(t)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  forgechat:
+    turn_timeout: 10m
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 10*time.Minute, cfg.Settings.ForgeChat.TurnTimeout,
+		"in-range turn_timeout must be preserved as-is")
+	assert.NotContains(t, buf.String(), "exceeds hard cap",
+		"in-range turn_timeout must not emit the clamp warning")
+}
+
+// TestLoad_ForgeChatTurnTimeout_ClampedAboveMax asserts that values above the
+// 15-minute hard cap are clamped to MaxForgeChatTurnTimeout and that a
+// slog.Warn is emitted so operators see why their configured value did not
+// take effect.
+func TestLoad_ForgeChatTurnTimeout_ClampedAboveMax(t *testing.T) {
+	buf := captureSlog(t)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  forgechat:
+    turn_timeout: 30m
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, 15*time.Minute, cfg.Settings.ForgeChat.TurnTimeout,
+		"turn_timeout above the cap must be clamped to MaxForgeChatTurnTimeout")
+	assert.Equal(t, MaxForgeChatTurnTimeout, cfg.Settings.ForgeChat.TurnTimeout)
+
+	// Verify the operator-facing warning landed in the log. Match on key
+	// substrings rather than the full formatted line so future tweaks to
+	// the log format don't break the regression.
+	logged := buf.String()
+	assert.Contains(t, logged, "forgechat.turn_timeout exceeds hard cap",
+		"clamping must emit a slog warning so operators can diagnose it")
+	assert.Contains(t, logged, "clamping",
+		"warning must mention that the value was clamped")
+}
+
+// TestLoad_ForgeChatTurnTimeout_InvalidDuration verifies that a malformed
+// duration string surfaces as an error rather than silently falling back to
+// the default. This guards against typos like "5min" silently becoming 5m.
+func TestLoad_ForgeChatTurnTimeout_InvalidDuration(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  forgechat:
+    turn_timeout: notaduration
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	_, err := Load(cfgPath)
+	assert.ErrorContains(t, err, "forgechat.turn_timeout")
+}
+
+// TestForgeChatSettings_ResolvedTurnTimeout exercises the resolver function
+// directly so the default/clamp logic is covered even for callers that
+// construct a ForgeChatSettings in code (e.g. tests) without going through
+// Load.
+func TestForgeChatSettings_ResolvedTurnTimeout(t *testing.T) {
+	cases := []struct {
+		name  string
+		input time.Duration
+		want  time.Duration
+	}{
+		{"zero falls back to default", 0, DefaultForgeChatTurnTimeout},
+		{"negative falls back to default", -1 * time.Second, DefaultForgeChatTurnTimeout},
+		{"value within range preserved", 7 * time.Minute, 7 * time.Minute},
+		{"value at cap preserved", MaxForgeChatTurnTimeout, MaxForgeChatTurnTimeout},
+		{"value above cap clamped", 1 * time.Hour, MaxForgeChatTurnTimeout},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := ForgeChatSettings{TurnTimeout: tc.input}
+			assert.Equal(t, tc.want, f.ResolvedTurnTimeout())
+		})
+	}
 }
