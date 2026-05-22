@@ -1,0 +1,2 @@
+category: Added
+- **Beads-Forge turn SSE and polling endpoints** - `GET /api/forge/sessions/{id}/turn/{turn_id}/stream` streams the in-flight TurnState's events (text_delta, tool_use, tool_result, message, complete, error) as Server-Sent Events; `GET /api/forge/sessions/{id}/turn/{turn_id}` returns the current TurnState snapshot as JSON for clients that don't consume SSE. Both endpoints validate session ownership and gracefully handle late-connecting consumers by synthesising a terminal frame from the snapshot. (Forge-ivgo)
