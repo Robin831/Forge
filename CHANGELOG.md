@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.18.0] - 2026-05-22
+
+### Added
+
+- **Hearth 2.0 needs-attention panel: approve-as-is and warden-rerun buttons** - The SPA escalation panel now exposes the daemon's Forge-level dispatch overrides — "Approve as-is (skip Warden)" and "Re-run Warden" — alongside the existing five resolve verbs. Approve-as-is shows a confirmation modal; warden-rerun fires immediately. The stale clipboard-helper "Open PR manually" section has been removed since the daemon resolves the GitHub repo from the anvil and runs `gh pr create` in-process. (Forge-ts2r)
+
 ## [0.17.0] - 2026-05-22
 
 ### Added
