@@ -100,6 +100,8 @@ func (s *Server) routes() http.Handler {
 		r.Delete("/forge/sessions/{id}", s.handleForgeSessionDelete)
 		r.Post("/forge/sessions/{id}/messages", s.handleForgeSessionAppend)
 		r.Post("/forge/sessions/{id}/turn", s.handleForgeSessionTurn)
+		r.Get("/forge/sessions/{id}/turn/{turn_id}", s.handleForgeSessionTurnGet)
+		r.Get("/forge/sessions/{id}/turn/{turn_id}/stream", s.handleForgeSessionTurnStream)
 		r.Post("/forge/sessions/{id}/create-beads", s.handleForgeSessionCreateBeads)
 
 		// Hearth 2.0 resolve-needs-attention page. The POST endpoint is a

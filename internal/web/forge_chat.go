@@ -251,9 +251,10 @@ func (s *Server) runTurnAsync(st *TurnState, req forgechat.TurnRequest) {
 			st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
 		}
 		// Close Done first so callers waiting on it see terminal status
-		// before Events drains; matches TurnState docs ("Events... after Done").
+		// before subscriber channels drain; then closeAll so each SSE
+		// consumer's per-client channel is closed and the handler exits.
 		close(st.Done)
-		close(st.Events)
+		st.bcast.closeAll()
 	}()
 
 	ctx, cancel := context.WithTimeout(s.serverCtx, s.turnTimeout)
