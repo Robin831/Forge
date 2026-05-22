@@ -1,22 +1,28 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/forgechat"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/google/uuid"
 )
 
 // Beads-Forge per-turn AI handlers.
 //
-// The foundation bead in Forge-qcqv only persisted user messages. This file
-// adds the actual claude integration: each turn drives a forgechat.Runner,
-// then writes the resulting assistant messages and any stage / plan
-// transitions to the DB inside a single best-effort flow.
+// The async-scheduling bead (Forge-4mug) converted the /turn endpoint from a
+// blocking long-poll into an async dispatcher: validation + user-message
+// persistence + stage transitions still run synchronously (so the handler can
+// reject bad input with the usual 4xx codes), and the AI runner call moves
+// into a background goroutine. The handler returns 202 Accepted with the
+// generated turn_id; SSE and polling endpoints (sibling sub-tasks) consume
+// the resulting TurnState from the process-local TurnStore.
 //
 // Stages drive the prompts and the UI affordances:
 //   - drafting: open conversation; user can request a fresh plan.
@@ -38,10 +44,11 @@ type turnRequest struct {
 	MarkReady        bool   `json:"mark_ready,omitempty"`
 }
 
-// handleForgeSessionTurn drives one AI round-trip for a session. The handler
-// is intentionally a single chunky endpoint rather than several narrow ones
-// so the SPA can compose user actions ("answer this question and ask for
-// the next batch") in one HTTP call.
+// handleForgeSessionTurn schedules one AI round-trip for a session. The
+// handler validates input, persists the user-side mutations (message, answer,
+// stage transition), and either returns immediately (for no-AI flows like
+// mark_ready) or schedules an AI turn in a background goroutine and returns
+// 202 with the generated turn_id.
 func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	if sess == nil {
@@ -80,7 +87,9 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Mark-ready is a manual escape hatch: skip claude, just transition.
+	// Mark-ready is a manual escape hatch: skip claude, just transition. No
+	// AI work, no turn_id — return the synchronous 200 the SPA already
+	// understands.
 	if req.MarkReady {
 		updated, statusMsg, err := s.transitionStage(id, state.ForgeStageReady, "Session marked ready by user")
 		if err != nil {
@@ -91,9 +100,10 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Append the user's message (if any) before invoking claude. We persist
-	// the answer metadata when AnswerOptionID is set, regardless of whether
-	// Content is non-empty — the user can pick an option without typing.
+	// Append the user's message (if any) before scheduling the AI turn. We
+	// persist the answer metadata when AnswerOptionID is set, regardless of
+	// whether Content is non-empty — the user can pick an option without
+	// typing.
 	var newUserMsg *state.ForgeSessionMessage
 	if req.Content != "" || req.AnswerOptionID != "" {
 		role := state.ForgeMessageRoleUser
@@ -101,12 +111,10 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		metadata := ""
 
 		if row.Stage == state.ForgeStageGrilling && (req.AnswerOptionID != "" || req.AnswerQuestionID != 0) {
-			// Require answer_question_id whenever answer_option_id is provided.
 			if req.AnswerOptionID != "" && req.AnswerQuestionID == 0 {
 				writeError(w, http.StatusBadRequest, "answer_question_id is required when answer_option_id is set")
 				return
 			}
-			// Verify the referenced question belongs to this session and is kind=question.
 			if req.AnswerQuestionID != 0 && !s.sessionHasQuestion(id, req.AnswerQuestionID) {
 				writeError(w, http.StatusBadRequest, "answer_question_id not found in this session")
 				return
@@ -122,8 +130,6 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		}
 
 		content := req.Content
-		// When an option is picked without free-form text, use the option
-		// label as the persisted content so the chat reads naturally.
 		if content == "" && req.AnswerOptionID != "" && req.AnswerQuestionID != 0 {
 			if label, ok := s.optionLabel(id, req.AnswerQuestionID, req.AnswerOptionID); ok {
 				content = label
@@ -150,7 +156,6 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 
 	// Stage transition: starting grilling requires a plan to grill against.
 	stage := row.Stage
-	var transitionMsg *state.ForgeSessionMessage
 	if req.StartGrilling {
 		reload, err := s.db.GetForgeSession(id)
 		if err != nil || reload == nil {
@@ -161,14 +166,13 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "request a plan before starting the grilling stage")
 			return
 		}
-		updated, msg, err := s.transitionStage(id, state.ForgeStageGrilling, "Stage changed to grilling — claude will now interrogate the plan")
+		updated, _, err := s.transitionStage(id, state.ForgeStageGrilling, "Stage changed to grilling — claude will now interrogate the plan")
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to transition stage: "+err.Error())
 			return
 		}
 		row = updated
 		stage = updated.Stage
-		transitionMsg = msg
 	}
 
 	// Decide the mode for the AI turn from the (possibly transitioned) stage.
@@ -182,7 +186,7 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		mode = forgechat.ModeGrill
 	case state.ForgeStageReady:
 		// No AI turn for a settled session. Surface the user's appended
-		// message (if any) and bail out cleanly.
+		// message (if any) and bail out cleanly via the existing 200 path.
 		fresh, _ := s.db.GetForgeSession(id)
 		s.respondTurn(w, http.StatusOK, fresh, nil, optMsg(newUserMsg))
 		return
@@ -195,9 +199,7 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Build the conversation history fed into the prompt. Convert state
-	// messages into forgechat.HistoryMessage; include the current plan
-	// once via the dedicated TurnRequest field.
+	// Build the conversation history fed into the prompt.
 	msgs, err := s.db.ListForgeSessionMessages(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load history: "+err.Error())
@@ -213,9 +215,6 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		})
 	}
 
-	// Run the AI turn. Rely on ClaudeRunner's own timeout (configured via
-	// settings.forgechat.turn_timeout) rather than imposing a separate
-	// handler-level deadline that would shadow the operator's setting.
 	turnReq := forgechat.TurnRequest{
 		Stage:     forgechat.Stage(stage),
 		Mode:      mode,
@@ -225,13 +224,66 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		Anvil:     s.resolveSessionAnvil(row.Anvil),
 		SessionID: id,
 	}
-	turnResp, err := s.chatRunner.Turn(r.Context(), turnReq)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "AI turn failed: "+err.Error())
+
+	// Spin up the async turn. The goroutine owns the TurnState's lifecycle:
+	// it transitions pending→running→complete|error, persists assistant
+	// messages, and closes Events / Done on exit. The 15m backstop (from
+	// MaxForgeChatTurnTimeout) is enforced via context.WithTimeout — the
+	// ClaudeRunner already imposes its own configurable timeout, this one
+	// is the hard cap mandated by the bead.
+	turnID := uuid.NewString()
+	st := s.turnStore.New(turnID, id)
+	go s.runTurnAsync(st, turnReq)
+
+	writeJSON(w, http.StatusAccepted, map[string]any{"turn_id": turnID})
+}
+
+// runTurnAsync drives the AI turn in a background goroutine, persists any
+// resulting assistant messages, and closes the TurnState channels on exit.
+// Errors are recorded on the state (visible via SSE / polling). A deferred
+// recover prevents panics from escaping to the runtime; any recovered panic
+// is surfaced as a TurnStatusError event before the channels close.
+func (s *Server) runTurnAsync(st *TurnState, req forgechat.TurnRequest) {
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("turn panic: %v", r)
+			st.SetError(err)
+			st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
+		}
+		// Close Done first so callers waiting on it see terminal status
+		// before Events drains; matches TurnState docs ("Events... after Done").
+		close(st.Done)
+		close(st.Events)
+	}()
+
+	ctx, cancel := context.WithTimeout(s.serverCtx, s.turnTimeout)
+	defer cancel()
+
+	st.setStatus(TurnStatusRunning)
+
+	if s.chatRunner == nil {
+		err := errors.New("AI runner not configured")
+		st.SetError(err)
+		st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
 		return
 	}
 
-	// Persist assistant messages.
+	turnResp, err := s.chatRunner.Turn(ctx, req)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		}
+		st.SetError(err)
+		st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
+		return
+	}
+	if turnResp == nil {
+		err := errors.New("AI runner returned nil response")
+		st.SetError(err)
+		st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
+		return
+	}
+
 	emitted := make([]state.ForgeSessionMessage, 0, len(turnResp.Messages))
 	for _, em := range turnResp.Messages {
 		role := state.ForgeMessageRoleAssistant
@@ -239,22 +291,26 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 			role = state.ForgeMessageRoleSystem
 		}
 		m, err := s.db.AppendForgeSessionMessage(state.ForgeSessionMessage{
-			SessionID: id,
+			SessionID: req.SessionID,
 			Role:      role,
 			Kind:      em.Kind,
 			Content:   em.Content,
 			Metadata:  em.Metadata,
 		})
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to persist assistant message: "+err.Error())
+			st.SetError(err)
+			st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
 			return
 		}
 		emitted = append(emitted, m)
+		st.AppendText(em.Content)
+		st.Emit(TurnEvent{Type: TurnEventTextDelta, Data: em.Content})
+		st.Emit(TurnEvent{Type: TurnEventMessage, Data: m})
 	}
 
 	// Apply plan + stage transitions emitted by the turn.
 	var stagePtr, planPtr *string
-	if turnResp.NewStage != "" && string(turnResp.NewStage) != stage {
+	if turnResp.NewStage != "" && string(turnResp.NewStage) != string(req.Stage) {
 		stageVal := string(turnResp.NewStage)
 		stagePtr = &stageVal
 	}
@@ -262,33 +318,18 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		planPtr = &turnResp.NewPlan
 	}
 	if stagePtr != nil || planPtr != nil {
-		if _, err := s.db.UpdateForgeSessionStageAndPlan(id, stagePtr, planPtr); err != nil {
-			if errors.Is(err, state.ErrForgeSessionNotFound) {
-				writeError(w, http.StatusNotFound, "session not found")
-				return
-			}
-			writeError(w, http.StatusInternalServerError, "failed to update session: "+err.Error())
+		if _, err := s.db.UpdateForgeSessionStageAndPlan(req.SessionID, stagePtr, planPtr); err != nil {
+			st.SetError(err)
+			st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
 			return
 		}
 	}
 
-	final, err := s.db.GetForgeSession(id)
-	if err != nil || final == nil {
-		writeError(w, http.StatusInternalServerError, "failed to reload session")
-		return
+	if len(emitted) > 0 {
+		st.SetFinalMessageID(emitted[len(emitted)-1].ID)
 	}
-
-	// Compose the response: user message → stage-transition status (if any) →
-	// all assistant messages, ordered to match their DB insertion order.
-	out := []state.ForgeSessionMessage{}
-	if newUserMsg != nil {
-		out = append(out, *newUserMsg)
-	}
-	if transitionMsg != nil {
-		out = append(out, *transitionMsg)
-	}
-	out = append(out, emitted...)
-	s.respondTurn(w, http.StatusOK, final, nil, out)
+	st.setStatus(TurnStatusComplete)
+	st.Emit(TurnEvent{Type: TurnEventComplete, Data: st.FinalMessageID()})
 }
 
 // optMsg returns a slice with the single user message, or nil when m is nil.
@@ -340,9 +381,11 @@ func (s *Server) resolveSessionAnvil(name string) *forgechat.AnvilTarget {
 	return matched
 }
 
-// respondTurn writes a unified response shape for the turn endpoint. The
-// helper keeps the JSON contract aligned with the existing list/get
-// endpoints (session DTO + message DTOs).
+// respondTurn writes a unified response shape for the synchronous (no-AI)
+// branches of the turn endpoint — mark_ready and the StageReady no-op. The
+// async path returns 202 + {turn_id} via the handler directly. The helper
+// keeps the JSON contract aligned with the existing list/get endpoints
+// (session DTO + message DTOs).
 func (s *Server) respondTurn(w http.ResponseWriter, status int, sess *state.ForgeSession, _ error, msgs []state.ForgeSessionMessage) {
 	if sess == nil {
 		writeError(w, http.StatusInternalServerError, "missing session in response")
