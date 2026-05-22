@@ -827,7 +827,7 @@ rules:
         Test comments describing setup behavior (e.g., 'skip if set', 'restore after test') or test case comments describing expected values and edge cases
       check: >-
         Verify that test comments accurately describe what the code actually does — e.g., if the comment says 'skip if set' but the code forcibly clears the value with t.Setenv, update the comment to say 'force env var to be unset'. Also verify that test case comments accurately describe the actual expected values and behavior being asserted — misleading comments cause confusion about intended semantics.
-      source: ['copilot:PR#286', 'copilot:PR#338']
+      source: ['copilot:PR#286', 'copilot:PR#338', 'copilot:PR#638']
       added: "2026-03-16"
     - id: deduplicate-error-chain-sentinel-rules
       category: other
@@ -981,7 +981,7 @@ rules:
         PR description references files, components, deliverables, features, keybindings, or implementation changes
       check: >-
         Verify that every file, component, or artifact mentioned in the PR description is actually included in the changeset. If something listed is not shipped, either add it or update the description to match what is actually being delivered. In particular, if only a changelog fragment is present without the actual implementation, either add the missing code or update the PR description to reflect what is actually being shipped.
-      source: ['copilot:PR#320', 'copilot:PR#383']
+      source: ['copilot:PR#320', 'copilot:PR#383', 'copilot:PR#637', 'copilot:PR#648']
       added: "2026-03-20"
     - id: abort-path-cleanup
       category: ui
@@ -1406,7 +1406,7 @@ rules:
         Function or method doc comments that describe error behavior, return values, or fallback logic, or functions whose behavior is modified without updating doc comments
       check: >-
         Verify that doc comments accurately describe the actual implementation behavior — especially around error returns, fallback paths, edge cases, and reuse/lookup semantics. If the code silently falls back instead of returning an error, the comment must not claim an error is returned, and vice versa. After changing function semantics, update the doc comment to reflect the new behavior.
-      source: ['copilot:PR#346', 'copilot:PR#490']
+      source: ['copilot:PR#346', 'copilot:PR#490', 'copilot:PR#647']
       added: "2026-03-20"
     - id: test-helper-filesystem-errors
       category: testing
@@ -4538,3 +4538,250 @@ rules:
         Verify the comment accurately describes the actual implementation — e.g., if the comment mentions a 'reducer' or specific state-transition rules (like 'never back to pending without reset'), confirm the code uses a reducer and enforces those transitions. Update the comment or the implementation so they agree.
       source: copilot:PR#630
       added: "2026-05-18"
+    - id: test-new-store-slices
+      category: testing
+      pattern: >-
+        New state slice or async action added to a Zustand store (e.g., status machine, caching behavior, data preservation on refetch)
+      check: >-
+        Verify that the store's test file includes tests for the new slice covering all status transitions (idle/loading/success/error) and any caching invariants like preserving prior data during loading/error states
+      source: copilot:PR#632
+      added: "2026-05-18"
+    - id: unique-form-control-ids
+      category: ui
+      pattern: >-
+        Form controls (label/input/textarea/select) using hard-coded string id attributes inside a reusable React component
+      check: >-
+        Verify that id values are generated per-instance (e.g., React useId() or composed with a unique prop like an entity ID) so multiple instances on the same page don't produce duplicate IDs that break label/htmlFor association for assistive tech
+      source: copilot:PR#632
+      added: "2026-05-18"
+    - id: guard-actions-on-empty-required-field
+      category: ui
+      pattern: >-
+        Action buttons or handlers that pass a field (e.g. `detail.anvil`) to an API call which requires that field to be non-empty
+      check: >-
+        Verify the action is gated on the required field being non-empty — either disable the buttons with an explanatory message or hide them — so operators aren't shown actions that will always fail when the backend returned an empty/ambiguous value
+      source: copilot:PR#633
+      added: "2026-05-18"
+    - id: reuse-existing-modal-component
+      category: ui
+      pattern: >-
+        New inline Modal or dialog component added to a file, especially when comments acknowledge no shared modal primitive exists
+      check: >-
+        Verify whether an existing shared modal component (e.g., a ConfirmModal or similar primitive already in the codebase) can be reused or extracted instead of introducing a duplicate inline modal implementation
+      source: copilot:PR#634
+      added: "2026-05-18"
+    - id: unique-aria-labelledby-ids
+      category: ui
+      pattern: >-
+        Modal/dialog components using hard-coded element IDs for aria-labelledby or other ARIA reference attributes
+      check: >-
+        Verify that ARIA reference IDs (aria-labelledby, aria-describedby, etc.) use per-instance unique IDs generated via React's useId() hook rather than hard-coded strings, to avoid duplicate IDs when multiple instances are mounted
+      source: copilot:PR#634
+      added: "2026-05-18"
+    - id: modal-confirm-button-idempotency
+      category: concurrency
+      pattern: >-
+        Modal confirm/action buttons that dispatch destructive or side-effecting actions and rely on state updates (e.g. setConfirmVerb(null)) to close the modal
+      check: >-
+        Verify the confirm button is guarded against double-clicks by either using a local busy/disabled state, closing the modal synchronously before dispatching, or otherwise making the action idempotent per modal open
+      source: copilot:PR#634
+      added: "2026-05-18"
+    - id: typed-set-literal
+      category: style
+      pattern: >-
+        Creating a Set from a literal array intended to hold a specific union/string-literal type (e.g. `new Set(['retry', 'stop'])` where elements should be a named type like `ResolveVerb`)
+      check: >-
+        Verify the Set is type-constrained via an explicit generic (`new Set<TypeName>(...)`), `as const`, or `satisfies`, so non-matching strings cannot be added later
+      source: copilot:PR#634
+      added: "2026-05-18"
+    - id: omitempty-zero-duration-marshal
+      category: other
+      pattern: >-
+        MarshalYAML/MarshalJSON populates a shadow field with a stringified duration (or other zero-valued type) using a helper that returns a non-empty string for the zero value (e.g. durationString(0) returns "0s"), while the struct tag uses omitempty.
+      check: >-
+        Verify that omitempty actually omits the field when the underlying value is zero: either guard the assignment (only set the shadow field when value > 0) or ensure the stringifier returns "" for the zero value. Otherwise the zero/default case will always be serialized, defeating omitempty.
+      source: copilot:PR#637
+      added: "2026-05-19"
+    - id: sync-package-level-mutable-state
+      category: concurrency
+      pattern: >-
+        Package-level variables written from one goroutine (e.g., config hot-reload callbacks, init paths) and read from other goroutines (e.g., request/prompt handlers) without synchronization
+      check: >-
+        Verify that any package-level mutable state accessed from multiple goroutines is protected against data races — either via atomic.Value, sync.RWMutex, or accessor helpers (GetX/SetX). Flag any direct read/write of a package-level var that crosses goroutine boundaries, since this triggers Go's race detector and can cause torn reads.
+      source: copilot:PR#638
+      added: "2026-05-20"
+    - id: config-default-comment-mismatch
+      category: other
+      pattern: >-
+        A config field resolver that applies a default for zero/negative values while the field's documentation or related logic treats zero/negative as 'disabled' or 'no cap'
+      check: >-
+        Verify that the resolver's behavior matches the field's documented semantics and any consuming logic — if the comment says zero/negative disables a cap, the resolver must not silently substitute a default; align the comment, resolver, and consumer (or introduce an explicit tri-state) so operators can actually disable the feature via config
+      source: copilot:PR#638
+      added: "2026-05-20"
+    - id: avoid-full-split-on-large-strings
+      category: performance
+      pattern: >-
+        Code calls strings.Split on potentially large inputs (e.g., diffs, file contents, logs) just to scan for markers or iterate lines
+      check: >-
+        Verify large strings are scanned without allocating a full slice of lines — use strings.Index loops, bufio.Scanner, or bufio.Reader over strings.NewReader to keep allocations bounded
+      source: copilot:PR#638
+      added: "2026-05-20"
+    - id: validate-against-empty-registry
+      category: error-handling
+      pattern: >-
+        Validation functions that check user-supplied identifiers against a registry/lookup map
+      check: >-
+        Ensure non-empty identifiers are rejected when the registry is empty rather than silently passing; only an empty/unspecified identifier should be allowed in that case
+      source: copilot:PR#639
+      added: "2026-05-20"
+    - id: test-empty-registry-edge-case
+      category: testing
+      pattern: >-
+        Table-driven tests validating input against a registry/collection (e.g., anvil validation, name lookup) with cases for single, multiple, unknown, and casing variants
+      check: >-
+        Verify there is a test case for the empty-registry/empty-collection scenario when a non-empty input is provided, to lock in the intended behavior (accept or reject) and prevent regressions
+      source: copilot:PR#639
+      added: "2026-05-20"
+    - id: changelog-config-key-paths
+      category: other
+      pattern: Changelog fragment references configuration keys for a new feature
+      check: >-
+        Verify config key paths in the changelog match the actual paths used in the implementation (including parent sections like `settings.`), so users can configure the feature correctly
+      source: copilot:PR#640
+      added: "2026-05-20"
+    - id: doc-references-existing-behavior
+      category: style
+      pattern: >-
+        Comments or documentation describe behavior tied to fields, methods, or components that don't yet exist in the codebase
+      check: >-
+        Verify that comments accurately reflect current code state — if referenced fields/components aren't implemented yet, reword to indicate future/planned behavior or point at the component that will provide it
+      source: copilot:PR#640
+      added: "2026-05-20"
+    - id: union-find-aggregate-merge
+      category: other
+      pattern: >-
+        Union-find / disjoint-set structures where per-set aggregate values (max, sum, count, etc.) are stored keyed by the current root
+      check: >-
+        Verify that aggregate values keyed by root are merged into the surviving root during union operations, or recomputed in a second pass after all unions complete — otherwise values stored on the old root become orphaned and clusters report stale or zero values
+      source: copilot:PR#642
+      added: "2026-05-20"
+    - id: rune-vs-byte-length
+      category: other
+      pattern: >-
+        Using len() on strings to measure token/character length, especially when filtering by minimum length or processing potentially non-ASCII text
+      check: >-
+        Verify that len() is not being used where rune/character count is intended; use utf8.RuneCountInString or range over runes when the semantic intent is character length rather than byte length
+      source: copilot:PR#642
+      added: "2026-05-20"
+    - id: commit-subject-reflects-consolidation
+      category: other
+      pattern: >-
+        Commit/PR subject lines built from a single counter (e.g., added items) when the commit may also include other meaningful changes (consolidation, cleanup, summary-only updates)
+      check: >-
+        Verify the commit subject accurately reflects all changes made — if the primary counter is 0 but other modifications occurred (e.g., consolidationSummary non-empty), the subject should be adjusted to include those changes (e.g., consolidated cluster count) rather than misleadingly reporting '0' items
+      source: copilot:PR#642
+      added: "2026-05-20"
+    - id: merged-id-distinct-from-replaced
+      category: other
+      pattern: >-
+        Consolidating/merging entities into one and archiving the others, where the merged entity gets an ID and the archived entries record a superseded_by/replaced_by reference to it
+      check: >-
+        Verify the merged ID cannot collide with any of the IDs being archived/replaced — either guarantee the merged ID is distinct from all ReplacedIDs, or special-case archive metadata when mergedID == replacedID (e.g., omit superseded_by for that entry) so archived rows don't reference themselves and an active ID doesn't also appear in the archive
+      source: copilot:PR#642
+      added: "2026-05-20"
+    - id: exact-threshold-boundary-tests
+      category: testing
+      pattern: >-
+        Tests claiming to exercise an equality boundary (e.g., sim == threshold) using floating-point comparisons or approximations
+      check: >-
+        Verify boundary tests use the exact computed value (e.g., 2.0/6.0) rather than a rounded approximation, or that comments accurately describe the test as approximate rather than exact
+      source: copilot:PR#642
+      added: "2026-05-20"
+    - id: timezone-consistent-date-math
+      category: other
+      pattern: >-
+        Code parses a date/time string with time.Parse (defaults to UTC) and then performs arithmetic (Sub, Before, After) against another time.Time constructed in a different location (e.g., now.Location() or time.Local)
+      check: >-
+        Verify both sides of time arithmetic use a consistent location — either parse with time.ParseInLocation using the same location as the comparison value, or normalize both times to UTC — so day/duration boundaries aren't skewed by timezone offset
+      source: copilot:PR#644
+      added: "2026-05-20"
+    - id: redundant-boolean-conditions
+      category: style
+      pattern: >-
+        Chained if/else if branches comparing the same variable against thresholds, where a later condition restates a bound already guaranteed by the preceding branch
+      check: >-
+        Verify that each subsequent condition only includes comparisons that add new information; remove redundant bounds that are implied by the prior branch failing, and update accompanying comments to match
+      source: copilot:PR#644
+      added: "2026-05-20"
+    - id: extract-all-regex-matches
+      category: other
+      pattern: >-
+        Code that extracts tokens (e.g., IDs, references) from a string using a regex, where the source may contain multiple matches separated by commas/spaces
+      check: >-
+        Verify the code uses FindAll-style regex methods to capture all matches rather than only the first, and that tests cover multi-token source values
+      source: copilot:PR#645
+      added: "2026-05-20"
+    - id: cache-per-pr-api-calls
+      category: performance
+      pattern: >-
+        Loops that fetch data from an external API (e.g. `gh api`, GitHub PR file lists) keyed by an identifier (PR number, issue ID) where multiple iterations may share the same key
+      check: >-
+        Verify results are cached per key for the duration of the pass and reused across iterations to avoid redundant API calls and rate limiting; consider negative/error caching where appropriate
+      source: copilot:PR#645
+      added: "2026-05-20"
+    - id: sanitize-id-lists-in-commit-messages
+      category: error-handling
+      pattern: >-
+        Joining a slice of IDs (e.g., strings.Join) into commit messages, logs, or user-facing output without filtering empty/zero values
+      check: >-
+        Verify that ID slices are filtered or mapped through a display helper to drop empties before joining, and that tests cover the empty-ID case to prevent malformed output like 'm ← , '
+      source: copilot:PR#646
+      added: "2026-05-20"
+    - id: pr-body-reflects-all-changes
+      category: other
+      pattern: >-
+        PR or commit body text describes change counts/outcomes using a single metric while the underlying pipeline produces multiple kinds of changes (e.g., added, consolidated, archived, backfilled)
+      check: >-
+        Verify the PR/commit body accurately reflects all change categories produced by the pipeline, not just one. When multi-pass or multi-outcome logic is introduced, ensure the message-generation function receives and describes all relevant counts/results rather than a single count that may be zero while other passes produced changes.
+      source: copilot:PR#646
+      added: "2026-05-20"
+    - id: log-message-reflects-all-work
+      category: other
+      pattern: >-
+        Flush/completion log or event messages that report only one type of change when the operation performs multiple types of work (e.g., new additions plus consolidations, archives, backfills)
+      check: >-
+        Verify that summary log/event messages derive their content from the full result set (e.g., PassResults) and include counts for all change types performed, so operational logs accurately reflect the work done rather than misleadingly reporting zero when other changes occurred
+      source: copilot:PR#646
+      added: "2026-05-20"
+    - id: help-text-matches-behavior
+      category: style
+      pattern: >-
+        Command help/usage text that describes file or side-effect outputs (e.g., 'writes file X and Y')
+      check: >-
+        Verify the help text accurately reflects conditional behavior — if an output file is only written under certain conditions, the help should say so (e.g., 'writes Y only when needed') rather than implying it is always produced
+      source: copilot:PR#647
+      added: "2026-05-20"
+    - id: conditional-output-messages
+      category: ui
+      pattern: >-
+        Success output unconditionally references a file or artifact that may not have been created/modified by the operation
+      check: >-
+        Verify that output messages referencing created artifacts (file paths, archives, etc.) are only printed when those artifacts actually exist or were modified during the run; otherwise omit them or report 'unchanged/not created'
+      source: copilot:PR#647
+      added: "2026-05-20"
+    - id: scoped-stash-no-data-loss
+      category: error-handling
+      pattern: >-
+        Scripts that run `git stash` (without pathspec) and then `git stash drop` to clean up local dirty state before a pull/checkout
+      check: >-
+        Verify the stash is scoped to the specific paths the script intends to preserve (use a pathspec like `git stash push -- <path>`), and that the drop targets the exact stash ref created by this run (capture from `git stash create`/`stash push` output) rather than blindly dropping `stash@{0}`. Otherwise unrelated dirty changes or a pre-existing stash entry can be silently discarded. Consider failing fast if unexpected files are dirty.
+      source: copilot:PR#648
+      added: "2026-05-20"
+    - id: bash-pipeline-exit-status
+      category: error-handling
+      pattern: >-
+        Shell script uses pipelines (e.g., `cmd | head`, `cmd | grep`) where the upstream command's failure matters
+      check: >-
+        Verify `set -o pipefail` is enabled (or the pipeline is restructured) so upstream command failures aren't masked by the exit status of the final pipeline stage
+      source: copilot:PR#648
+      added: "2026-05-20"
