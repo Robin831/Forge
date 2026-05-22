@@ -1,13 +1,11 @@
 package web
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/Robin831/Forge/internal/forgechat"
 	"github.com/Robin831/Forge/internal/state"
@@ -215,19 +213,19 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 		})
 	}
 
-	// Run the AI turn. Use the request context with a generous floor so a
-	// slow client cannot interrupt the claude call mid-stream.
-	turnCtx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
-	defer cancel()
+	// Run the AI turn. Rely on ClaudeRunner's own timeout (configured via
+	// settings.forgechat.turn_timeout) rather than imposing a separate
+	// handler-level deadline that would shadow the operator's setting.
 	turnReq := forgechat.TurnRequest{
-		Stage:   forgechat.Stage(stage),
-		Mode:    mode,
-		Title:   row.Title,
-		Plan:    row.Plan,
-		History: history,
-		Anvil:   s.resolveSessionAnvil(row.Anvil),
+		Stage:     forgechat.Stage(stage),
+		Mode:      mode,
+		Title:     row.Title,
+		Plan:      row.Plan,
+		History:   history,
+		Anvil:     s.resolveSessionAnvil(row.Anvil),
+		SessionID: id,
 	}
-	turnResp, err := s.chatRunner.Turn(turnCtx, turnReq)
+	turnResp, err := s.chatRunner.Turn(r.Context(), turnReq)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "AI turn failed: "+err.Error())
 		return

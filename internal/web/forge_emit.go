@@ -1,13 +1,11 @@
 package web
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/Robin831/Forge/internal/forgechat"
 	"github.com/Robin831/Forge/internal/state"
@@ -106,19 +104,18 @@ func (s *Server) handleForgeSessionCreateBeads(w http.ResponseWriter, r *http.Re
 		})
 	}
 
-	// Generous turn timeout: emission is small (one JSON envelope) but the
-	// claude subprocess + provider negotiation can stretch.
-	turnCtx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
-	defer cancel()
+	// Rely on ClaudeRunner's own timeout (settings.forgechat.turn_timeout)
+	// rather than a hardcoded handler deadline that would shadow it.
 	turnReq := forgechat.TurnRequest{
-		Stage:  forgechat.StageReady,
-		Mode:   forgechat.ModeEmit,
-		Title:  row.Title,
-		Plan:   row.Plan,
-		Anvils: forgechat.AnvilContext(toHints(anvils)),
-		History: hist,
+		Stage:     forgechat.StageReady,
+		Mode:      forgechat.ModeEmit,
+		Title:     row.Title,
+		Plan:      row.Plan,
+		Anvils:    forgechat.AnvilContext(toHints(anvils)),
+		History:   hist,
+		SessionID: id,
 	}
-	turnResp, err := s.chatRunner.Turn(turnCtx, turnReq)
+	turnResp, err := s.chatRunner.Turn(r.Context(), turnReq)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "AI emission failed: "+err.Error())
 		return

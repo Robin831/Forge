@@ -106,7 +106,9 @@ func (d *Daemon) buildForgeChatRunner() forgechat.Runner {
 	if len(providers) == 0 {
 		return nil
 	}
-	return forgechat.NewClaudeRunner(providers[0], cfg.Settings.ClaudeFlags)
+	runner := forgechat.NewClaudeRunner(providers[0], cfg.Settings.ClaudeFlags)
+	runner.Timeout = cfg.Settings.ForgeChat.ResolvedTurnTimeout()
+	return runner
 }
 
 // webEnabled reports whether FORGE_WEB_ENABLED requests the web UI.
