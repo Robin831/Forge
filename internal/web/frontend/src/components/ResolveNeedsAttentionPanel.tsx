@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ExternalLink, X } from 'lucide-react'
+import { AlertTriangle, X } from 'lucide-react'
 import type { EscalationDetail, ResolveVerb } from '../api/forge'
 import ConfirmModal from './ConfirmModal'
 import {
@@ -17,24 +17,32 @@ export type EscalationType = 'dispatch_failed' | 'smith_failed'
 
 // BEAD_VERBS lists the resolve verbs applicable when the bead failed to
 // dispatch — no worker process ever started, so 'stop' (kill worker) is
-// intentionally absent: the daemon would have nothing to kill.
+// intentionally absent: the daemon would have nothing to kill. The two
+// dispatch overrides — approve-as-is and warden-rerun — are included
+// because dispatch_failed often means Warden rejected (hallucination,
+// truncation) and the operator wants to ship the worker's branch anyway
+// or ask Warden to look again.
 const BEAD_VERBS: readonly ResolveVerb[] = [
   'retry',
   'clarify',
   'unclarify',
   'clear',
+  'warden-rerun',
+  'approve-as-is',
 ]
 
 // WORKER_VERBS lists the resolve verbs applicable when a smith worker
-// failed mid-execution. All five verbs apply: a stuck worker may need to
-// be killed, flags cleared, the bead retried, or routed to a human via
-// clarify.
+// failed mid-execution. warden-rerun is included so the operator can
+// nudge Warden without killing+respawning Smith; approve-as-is is
+// intentionally omitted because shipping a still-running worker's branch
+// is ambiguous (the worker may be midway through a write).
 const WORKER_VERBS: readonly ResolveVerb[] = [
   'retry',
   'stop',
   'clarify',
   'unclarify',
   'clear',
+  'warden-rerun',
 ]
 
 // VERB_LABEL maps each verb to the button label rendered in the action
@@ -46,6 +54,8 @@ const VERB_LABEL: Record<ResolveVerb, string> = {
   clarify: 'Needs clarification',
   unclarify: 'Clear clarification',
   clear: 'Clear flag',
+  'approve-as-is': 'Approve as-is (skip Warden)',
+  'warden-rerun': 'Re-run Warden',
 }
 
 export interface ResolveNeedsAttentionPanelProps {
@@ -63,8 +73,13 @@ export interface ResolveNeedsAttentionPanelProps {
 
 // DESTRUCTIVE_VERBS lists the verbs that prompt for confirmation before
 // dispatching. Retry kicks the pipeline back to Smith and stop kills a
-// running worker, so both are easy to fire by accident from the keyboard.
-const DESTRUCTIVE_VERBS: ReadonlySet<ResolveVerb> = new Set<ResolveVerb>(['retry', 'stop'])
+// running worker; approve-as-is bypasses Warden and ships the existing
+// branch — all three are easy to fire by accident from the keyboard.
+const DESTRUCTIVE_VERBS: ReadonlySet<ResolveVerb> = new Set<ResolveVerb>([
+  'retry',
+  'stop',
+  'approve-as-is',
+])
 
 
 const TYPE_TITLE: Record<EscalationType, string> = {
@@ -140,16 +155,10 @@ export default function ResolveNeedsAttentionPanel({
   const { fetchEscalation, run, reset } = useResolveActions()
   const auditNoteId = `resolve-audit-note-${escalationId}`
   const [auditNote, setAuditNote] = useState('')
-  // prFormOpen toggles the inline title/body fallback form. We default to
-  // closed so the panel renders compactly; clicking "Open PR manually"
-  // expands it when no anchor URL is buildable.
-  const [prFormOpen, setPrFormOpen] = useState(false)
-  const [prTitle, setPrTitle] = useState('')
-  const [prBody, setPrBody] = useState('')
   // confirmVerb is non-null while the confirmation modal is open for a
   // destructive verb. Storing the verb (rather than a boolean) lets the
-  // modal title/body adapt to retry vs. stop, and lets the confirm
-  // callback know which action to dispatch.
+  // modal title/body adapt per verb (retry / stop / approve-as-is), and
+  // lets the confirm callback know which action to dispatch.
   const [confirmVerb, setConfirmVerb] = useState<{ verb: ResolveVerb } | null>(
     null,
   )
@@ -354,53 +363,6 @@ export default function ResolveNeedsAttentionPanel({
             )}
           </div>
 
-          <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-              Open PR manually
-            </h3>
-            <p className="mt-1 text-xs text-slate-400">
-              The daemon does not know the GitHub repository URL for this
-              anvil, so opening a PR directly is not wired up. Use the form
-              below to draft the title and body, then paste them into
-              <code className="mx-1 rounded bg-slate-800 px-1 py-0.5 font-mono text-[11px] text-slate-200">
-                gh pr create
-              </code>
-              from the worktree.
-            </p>
-            {!prFormOpen ? (
-              <button
-                type="button"
-                onClick={() => setPrFormOpen(true)}
-                className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-              >
-                <ExternalLink size={14} aria-hidden />
-                Draft PR title &amp; body
-              </button>
-            ) : (
-              <div className="mt-2 flex flex-col gap-3">
-                <label className="text-xs font-medium text-slate-400">
-                  Title
-                  <input
-                    type="text"
-                    value={prTitle}
-                    onChange={(e) => setPrTitle(e.target.value)}
-                    placeholder={detail.branch ?? 'PR title'}
-                    className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-400/50"
-                  />
-                </label>
-                <label className="text-xs font-medium text-slate-400">
-                  Body
-                  <textarea
-                    value={prBody}
-                    onChange={(e) => setPrBody(e.target.value)}
-                    placeholder="Summary, test plan, etc."
-                    rows={5}
-                    className="mt-1 w-full resize-y rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-400/50"
-                  />
-                </label>
-              </div>
-            )}
-          </div>
         </>
       )}
       <ConfirmModal
@@ -409,7 +371,9 @@ export default function ResolveNeedsAttentionPanel({
         message={
           confirmVerb?.verb === 'stop'
             ? 'Killing the worker stops the running smith process and prevents re-dispatch until the flag is cleared. Continue?'
-            : 'Retrying clears the needs-attention flag and re-dispatches this bead on the next poll. Continue?'
+            : confirmVerb?.verb === 'approve-as-is'
+              ? "This will skip the Warden review and open a PR from the worker's existing branch. Continue?"
+              : 'Retrying clears the needs-attention flag and re-dispatches this bead on the next poll. Continue?'
         }
         tone="danger"
         busy={actionPending}

@@ -17,13 +17,15 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 }
 
 describe('RESOLVE_VERBS', () => {
-  it('lists the five backend verbs in canonical order', () => {
+  it('lists every backend verb in canonical order', () => {
     expect(RESOLVE_VERBS).toEqual([
       'clear',
       'retry',
       'clarify',
       'unclarify',
       'stop',
+      'approve-as-is',
+      'warden-rerun',
     ])
   })
 

@@ -60,7 +60,7 @@ func TestForgeResolve_RejectsInvalidAction(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for unknown action, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "clear|retry|clarify|unclarify|stop") {
+	if !strings.Contains(rec.Body.String(), "clear|retry|clarify|unclarify|stop|approve-as-is|warden-rerun") {
 		t.Errorf("expected error to mention valid actions, got %s", rec.Body.String())
 	}
 }
@@ -157,6 +157,99 @@ func TestForgeResolve_DispatchesAllVerbs(t *testing.T) {
 				t.Errorf("payload mismatch: %+v", p)
 			}
 		})
+	}
+}
+
+// TestForgeResolve_DispatchesApproveAsIs covers the Forge-level escape
+// hatch: when the SPA sends action=approve-as-is the resolve endpoint must
+// dispatch the daemon's approve_as_is IPC with the BeadID + Anvil shape
+// (legacy "anvil" JSON tag), not the queue_* QueueActionPayload shape.
+func TestForgeResolve_DispatchesApproveAsIs(t *testing.T) {
+	rh := &recordingHandler{}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/forge/resolve", map[string]any{
+		"bead_id":    "Forge-abc1",
+		"action":     "approve-as-is",
+		"anvil_name": "forge",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cmd, ok := rh.lastCommand()
+	if !ok {
+		t.Fatalf("no command dispatched")
+	}
+	if cmd.Type != "approve_as_is" {
+		t.Errorf("expected IPC type approve_as_is, got %q", cmd.Type)
+	}
+	var p ipc.ApproveAsIsPayload
+	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if p.BeadID != "Forge-abc1" || p.Anvil != "forge" {
+		t.Errorf("payload mismatch: %+v", p)
+	}
+}
+
+// TestForgeResolve_DispatchesWardenRerun is the mirror of the approve-as-is
+// test: action=warden-rerun must reach the daemon as the warden_rerun IPC
+// with the BeadID + Anvil shape.
+func TestForgeResolve_DispatchesWardenRerun(t *testing.T) {
+	rh := &recordingHandler{}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/forge/resolve", map[string]any{
+		"bead_id":    "Forge-abc1",
+		"action":     "warden-rerun",
+		"anvil_name": "forge",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cmd, ok := rh.lastCommand()
+	if !ok {
+		t.Fatalf("no command dispatched")
+	}
+	if cmd.Type != "warden_rerun" {
+		t.Errorf("expected IPC type warden_rerun, got %q", cmd.Type)
+	}
+	var p ipc.WardenRerunPayload
+	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if p.BeadID != "Forge-abc1" || p.Anvil != "forge" {
+		t.Errorf("payload mismatch: %+v", p)
+	}
+}
+
+// TestForgeResolve_ApproveAsIs_DaemonErrorPropagates verifies that an
+// anvil-ownership mismatch (or any other daemon-side rejection) is
+// surfaced to the caller as a 5xx with the daemon's message — the SPA
+// renders this in the panel's error toast so the operator knows why the
+// override was refused.
+func TestForgeResolve_ApproveAsIs_DaemonErrorPropagates(t *testing.T) {
+	rh := &recordingHandler{
+		resp: ipc.Response{
+			Type:    "error",
+			Payload: []byte(`{"message":"no branch found for bead Forge-abc1"}`),
+		},
+	}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/forge/resolve", map[string]any{
+		"bead_id":    "Forge-abc1",
+		"action":     "approve-as-is",
+		"anvil_name": "forge",
+	})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "no branch found") {
+		t.Errorf("expected daemon error in body, got %s", rec.Body.String())
 	}
 }
 
