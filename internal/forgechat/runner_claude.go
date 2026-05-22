@@ -149,11 +149,17 @@ func (r *ClaudeRunner) Turn(ctx context.Context, req TurnRequest) (*TurnResponse
 // its deadline, and nil otherwise. Centralising the check keeps the
 // happy/sad paths in Turn easy to read and ensures the same warning fires
 // for every exit point (spawn error, partial output, full Wait).
+//
+// The sentinel body reports the *actual elapsed time* (not the configured
+// timeout) so that when the outer HTTP handler cancels before the runner's
+// deadline — or when the deadline fires slightly off-budget — the user sees
+// the wall-clock duration they actually waited rather than a misleading
+// "after 5m0s" when only 2m elapsed.
 func timeoutResponse(turnCtx context.Context, req TurnRequest, stage string, start time.Time, timeout time.Duration) *TurnResponse {
 	if !errors.Is(turnCtx.Err(), context.DeadlineExceeded) {
 		return nil
 	}
-	elapsed := time.Since(start)
+	elapsed := time.Since(start).Round(time.Second)
 	slog.Warn("forgechat: turn timed out",
 		"session_id", req.SessionID,
 		"turn_stage", stage,
@@ -162,7 +168,7 @@ func timeoutResponse(turnCtx context.Context, req TurnRequest, stage string, sta
 	)
 	body := fmt.Sprintf(
 		"_(Drafter timed out after %s. Try a more focused follow-up question, or bump settings.forgechat.turn_timeout.)_",
-		timeout,
+		elapsed,
 	)
 	return &TurnResponse{
 		Messages: []EmittedMessage{{Kind: "text", Content: body}},
