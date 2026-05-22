@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/forgechat"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
@@ -110,9 +111,14 @@ type Server struct {
 	turnStore *TurnStore
 
 	// turnTimeout is the hard backstop applied to each async turn goroutine.
-	// Defaults to 15m (the MaxForgeChatTurnTimeout). Tests override it via
-	// SetTurnTimeoutForTest to exercise the timeout path quickly.
+	// Defaults to config.MaxForgeChatTurnTimeout (15m). Tests override it via
+	// SetTurnTimeout to exercise the timeout path quickly.
 	turnTimeout time.Duration
+
+	// serverCtx is cancelled when Start's ctx is cancelled (daemon shutdown).
+	// Async turn goroutines derive their context from this so they are
+	// cancelled on shutdown rather than running until their own timeout fires.
+	serverCtx context.Context
 
 	// staticH serves the embedded SPA bundle. Built once in routes() so
 	// handleLoginPage can fall back to it without re-walking the embedded
@@ -196,7 +202,8 @@ func New(cfg Config, db *state.DB, handler CommandHandler, logger *slog.Logger) 
 		handler:     handler,
 		logger:      logger,
 		turnStore:   NewTurnStore(),
-		turnTimeout: 15 * time.Minute,
+		turnTimeout: config.MaxForgeChatTurnTimeout,
+		serverCtx:   context.Background(),
 	}
 	s.httpServer = &http.Server{
 		Addr:              cfg.Addr,
@@ -214,6 +221,11 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("web: listen %s: %w", s.cfg.Addr, err)
 	}
 	s.logger.Info("web server listening", "addr", listener.Addr().String())
+
+	// Store the server-scoped context so async turn goroutines are cancelled
+	// when the daemon shuts down. Set before Serve so the assignment
+	// happens-before any request goroutine reads it.
+	s.serverCtx = ctx
 
 	if s.cfg.PurgeInterval > 0 {
 		go s.purgeLoop(ctx)

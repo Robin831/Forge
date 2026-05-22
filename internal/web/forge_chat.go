@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -239,13 +240,23 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 
 // runTurnAsync drives the AI turn in a background goroutine, persists any
 // resulting assistant messages, and closes the TurnState channels on exit.
-// Errors are recorded on the state (visible via SSE / polling); the goroutine
-// never panics out to the runtime.
+// Errors are recorded on the state (visible via SSE / polling). A deferred
+// recover prevents panics from escaping to the runtime; any recovered panic
+// is surfaced as a TurnStatusError event before the channels close.
 func (s *Server) runTurnAsync(st *TurnState, req forgechat.TurnRequest) {
-	defer close(st.Done)
-	defer close(st.Events)
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("turn panic: %v", r)
+			st.SetError(err)
+			st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
+		}
+		// Close Done first so callers waiting on it see terminal status
+		// before Events drains; matches TurnState docs ("Events... after Done").
+		close(st.Done)
+		close(st.Events)
+	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.turnTimeout)
+	ctx, cancel := context.WithTimeout(s.serverCtx, s.turnTimeout)
 	defer cancel()
 
 	st.setStatus(TurnStatusRunning)

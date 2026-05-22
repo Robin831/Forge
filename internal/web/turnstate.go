@@ -42,8 +42,8 @@ const (
 // TurnEvent is one item delivered on TurnState.Events. Data's concrete type
 // depends on Type — consumers should type-switch on it.
 type TurnEvent struct {
-	Type TurnEventType
-	Data any
+	Type TurnEventType `json:"type"`
+	Data any           `json:"data,omitempty"`
 }
 
 // TurnState holds the in-flight state of a single Beads-Forge AI turn.
@@ -81,10 +81,11 @@ type TurnState struct {
 }
 
 // newTurnState constructs a TurnState in TurnStatusPending. eventsBuffer sizes
-// the events channel; a buffer of 0 makes the producer block on the
-// consumer, which is fine for tests but bad for real SSE traffic.
+// the events channel; <0 uses a default of 64. Pass 0 to create an unbuffered
+// channel (producer blocks until consumed — fine for tests, bad for real SSE
+// traffic).
 func newTurnState(id string, sessionID int64, eventsBuffer int) *TurnState {
-	if eventsBuffer <= 0 {
+	if eventsBuffer < 0 {
 		eventsBuffer = 64
 	}
 	return &TurnState{
@@ -119,9 +120,8 @@ func (t *TurnState) AppendText(chunk string) {
 }
 
 // RecordToolEvent appends a tool_use / tool_result event to the persisted
-// log alongside emitting it on the channel. Callers should use this rather
-// than mutating Events directly so the polling endpoint can replay tool
-// activity from the snapshot.
+// log so the polling endpoint can replay tool activity from the snapshot.
+// Callers that also need fanout should call Emit separately.
 func (t *TurnState) RecordToolEvent(ev TurnEvent) {
 	t.mu.Lock()
 	t.toolEvents = append(t.toolEvents, ev)
