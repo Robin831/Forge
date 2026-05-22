@@ -1,2 +1,0 @@
-category: Changed
-- **Configurable Beads-Forge turn timeout** - Replaced the hardcoded 90s per-turn fallback in `forgechat.ClaudeRunner` with a 5-minute default and a new `settings.forgechat.turn_timeout` config (hard-capped at 15m). On timeout the runner now returns a clear sentinel chat message and emits a structured `slog.Warn` (session id, turn stage, elapsed) instead of parsing the truncated streaming preamble. (Forge-5yn0)

@@ -1,2 +1,0 @@
-category: Changed
-- **Hearth 2.0 SPA streams turn output instead of blocking on a spinner** - The Beads-Forge chat page now opens an EventSource against the new per-turn SSE endpoint and progressively renders assistant text as it arrives, with compact tool_use / tool_result chips inline. The browser auto-reconnects on transient drops, and a polling fallback against the snapshot endpoint kicks in for environments without EventSource. (Forge-wt42)

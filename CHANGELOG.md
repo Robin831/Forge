@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.17.0] - 2026-05-22
+
+### Added
+
+- **Beads-Forge turn SSE and polling endpoints** - `GET /api/forge/sessions/{id}/turn/{turn_id}/stream` streams the in-flight TurnState's events (text_delta, tool_use, tool_result, message, complete, error) as Server-Sent Events; `GET /api/forge/sessions/{id}/turn/{turn_id}` returns the current TurnState snapshot as JSON for clients that don't consume SSE. Both endpoints validate session ownership and gracefully handle late-connecting consumers by synthesising a terminal frame from the snapshot. (Forge-ivgo)
+
+### Changed
+
+- **Async Beads-Forge turn endpoint** - `POST /api/forge/sessions/{id}/turn` now schedules the AI turn in a background goroutine and returns `202 Accepted` with `{"turn_id": "..."}` instead of blocking. Adds a process-local `TurnStore` with `TurnState` entries (status, accumulated text, tool events, final message id, error) keyed by UUID and guarded by `sync.RWMutex`, plus a typed event channel that the upcoming SSE / polling endpoints consume. Enforces the 15-minute hard cap as a `context.WithTimeout` backstop on the goroutine. The synchronous `mark_ready` and ready-stage no-op paths continue to return `200 OK`. (Forge-4mug)
+- **Configurable Beads-Forge turn timeout** - Replaced the hardcoded 90s per-turn fallback in `forgechat.ClaudeRunner` with a 5-minute default and a new `settings.forgechat.turn_timeout` config (hard-capped at 15m). On timeout the runner now returns a clear sentinel chat message and emits a structured `slog.Warn` (session id, turn stage, elapsed) instead of parsing the truncated streaming preamble. (Forge-5yn0)
+- **Hearth 2.0 SPA streams turn output instead of blocking on a spinner** - The Beads-Forge chat page now opens an EventSource against the new per-turn SSE endpoint and progressively renders assistant text as it arrives, with compact tool_use / tool_result chips inline. The browser auto-reconnects on transient drops, and a polling fallback against the snapshot endpoint kicks in for environments without EventSource. (Forge-wt42)
+
 ## [0.16.0] - 2026-05-21
 
 ### Added
