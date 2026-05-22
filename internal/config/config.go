@@ -603,8 +603,9 @@ func durationString(d time.Duration) string {
 }
 
 // forgeChatShadow renders ForgeChatSettings with the duration field as a
-// human-readable string ("5m0s") instead of nanoseconds. Empty turn_timeout
-// is omitted so the file stays clean when only defaults are used.
+// human-readable string ("5m0s") instead of nanoseconds. turn_timeout is
+// omitted when it equals the default so the file stays clean unless the
+// operator has explicitly changed it.
 type forgeChatShadow struct {
 	TurnTimeout string `yaml:"turn_timeout,omitempty"`
 }
@@ -732,7 +733,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		Warden:                 s.Warden,
 		ForgeChat: forgeChatShadow{
 			TurnTimeout: func() string {
-				if s.ForgeChat.TurnTimeout > 0 {
+				if s.ForgeChat.TurnTimeout > 0 && s.ForgeChat.TurnTimeout != DefaultForgeChatTurnTimeout {
 					return durationString(s.ForgeChat.TurnTimeout)
 				}
 				return ""
