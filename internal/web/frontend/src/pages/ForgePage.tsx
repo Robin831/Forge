@@ -15,6 +15,7 @@ import {
   Send,
   Sparkles,
   Trash2,
+  Wrench,
 } from 'lucide-react'
 import { useApiPoll } from '../hooks/useApiPoll'
 import { useToast } from '../hooks/useToast'
@@ -32,6 +33,11 @@ import {
 } from '../api'
 import AppHeader from '../components/AppHeader'
 import { relativeTime } from '../lib/format'
+import {
+  startTurn,
+  type StreamTurnHandle,
+  type ToolChipData,
+} from '../lib/turnStream'
 
 const STATUS_POLL_INTERVAL_MS = 10_000
 
@@ -68,6 +74,16 @@ export default function ForgePage() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
+
+  // streaming is non-null while an SSE / polling turn is in flight. The UI
+  // renders a dedicated streaming bubble (progressive text + tool chips +
+  // optional error banner) at the bottom of the conversation list while
+  // it's set. On terminal events the helper refetches the session so the
+  // canonical persisted rows replace the placeholder.
+  const [streaming, setStreaming] = useState<StreamingTurn | null>(null)
+  // streamHandleRef pins the active stream so we can cancel before unmount
+  // or when the user submits a new turn while one is already in flight.
+  const streamHandleRef = useRef<StreamTurnHandle | null>(null)
 
   const handleApiError = useCallback(
     (err: unknown, fallback: string) => {
@@ -160,7 +176,7 @@ export default function ForgePage() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [messages, streaming?.text, streaming?.chips.length, streaming?.error])
 
   useEffect(() => {
     if (activeId === null) {
@@ -207,6 +223,134 @@ export default function ForgePage() {
     [],
   )
 
+  // cancelActiveStream tears down any in-flight stream. Safe to call when
+  // none is active. Used before launching a new turn and on unmount.
+  const cancelActiveStream = useCallback(() => {
+    const h = streamHandleRef.current
+    streamHandleRef.current = null
+    h?.cancel()
+  }, [])
+
+  // refreshSessionMessages reloads the session + messages from the server
+  // and applies them locally. Used after a streaming turn completes so the
+  // SPA picks up the canonical assistant messages persisted by the runner
+  // (plus any stage/plan transitions the turn produced).
+  const refreshSessionMessages = useCallback(async (sessionID: number) => {
+    try {
+      const data = await forgeSessions.get(sessionID)
+      setMessages(data.messages ?? [])
+      setSessions((prev) => {
+        const idx = prev.findIndex((s) => s.id === sessionID)
+        if (idx === -1) return [data.session, ...prev]
+        const next = prev.slice()
+        next[idx] = data.session
+        return next
+      })
+    } catch {
+      // Refresh is best-effort. Leaving the streaming text in place is
+      // already a usable UI; the next manual interaction will refetch.
+    }
+  }, [])
+
+  // runStreamingTurn drives one POST /turn end-to-end. It handles both the
+  // synchronous (200) and async (202) branches: the latter opens an SSE
+  // stream that progressively fills the streaming bubble. The helper takes
+  // care of cancelling any previous in-flight stream, resetting busy on
+  // terminal events, and refetching the session on success.
+  const runStreamingTurn = useCallback(
+    async (sessionID: number, req: ForgeTurnRequest, optimisticUserId?: number) => {
+      cancelActiveStream()
+      // Clear any stale error bubble from a previous turn so it doesn't
+      // linger next to the new spinner. Sync (mark_ready) responses leave
+      // the bubble null since onTurnId never fires.
+      setStreaming(null)
+      setBusy(true)
+
+      const finalize = (mutator: (s: StreamingTurn) => StreamingTurn) => {
+        setStreaming((prev) => (prev ? mutator(prev) : prev))
+      }
+
+      try {
+        const handle = await startTurn(sessionID, req, {
+          onSync: (payload) => {
+            // No streaming — just apply the response.
+            applyTurnResponse(payload, optimisticUserId)
+            setStreaming(null)
+          },
+          onTurnId: () => {
+            // 202 confirmed — mount the streaming bubble. We defer this
+            // out of the function entry so a sync mark_ready doesn't
+            // briefly flash an empty bubble before onSync clears it.
+            setStreaming({
+              sessionId: sessionID,
+              text: '',
+              chips: [],
+              error: null,
+              pending: true,
+              reconnecting: false,
+            })
+          },
+          onOpen: () => {
+            finalize((s) => ({ ...s, reconnecting: false }))
+          },
+          onTextDelta: (chunk) => {
+            finalize((s) => ({ ...s, text: s.text + chunk, pending: false }))
+          },
+          onTool: (chip) => {
+            finalize((s) => ({ ...s, chips: [...s.chips, chip] }))
+          },
+          onTransientError: () => {
+            // Browser is reconnecting — keep the partial text visible.
+            finalize((s) => ({ ...s, reconnecting: true }))
+          },
+          onComplete: () => {
+            streamHandleRef.current = null
+            setStreaming(null)
+            void refreshSessionMessages(sessionID)
+            setBusy(false)
+          },
+          onError: (msg) => {
+            streamHandleRef.current = null
+            // Keep the partial text + error visible so the user can read
+            // what the runner had emitted before the failure.
+            finalize((s) => ({ ...s, error: msg, pending: false, reconnecting: false }))
+            setBusy(false)
+            toast.push(msg, 'error')
+          },
+        })
+        streamHandleRef.current = handle
+        if (!handle.streaming) {
+          // onSync already cleared streaming state; surface busy=false now.
+          streamHandleRef.current = null
+          setBusy(false)
+        }
+      } catch (err) {
+        // POST itself failed — roll back the optimistic message, clear the
+        // streaming bubble, and bubble the error.
+        if (optimisticUserId !== undefined) {
+          setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId))
+        }
+        setStreaming(null)
+        setBusy(false)
+        handleApiError(err, 'Failed to run AI turn')
+      }
+    },
+    [applyTurnResponse, cancelActiveStream, handleApiError, refreshSessionMessages, toast],
+  )
+
+  // Cancel the active stream on unmount so background timers / EventSource
+  // connections don't leak after the page is gone.
+  useEffect(() => () => cancelActiveStream(), [cancelActiveStream])
+
+  // Cancel the active stream whenever the user switches sessions; the
+  // streamed bubble is conceptually tied to the session it was started
+  // against. Without this, switching mid-stream would render the wrong
+  // session's deltas in the new conversation.
+  useEffect(() => {
+    cancelActiveStream()
+    setStreaming(null)
+  }, [activeId, cancelActiveStream])
+
   const startNewSession = useCallback(async () => {
     const text = draft.trim()
     if (!selectedAnvil) return
@@ -232,22 +376,18 @@ export default function ForgePage() {
       // immediately so the conversation actually advances. Otherwise leave
       // the page idle so the user can compose.
       if (text) {
-        try {
-          const turn = await forgeSessions.turn(data.session.id, {})
-          applyTurnResponse(turn)
-        } catch (err) {
-          handleApiError(err, 'Failed to run first AI turn')
-        }
+        void runStreamingTurn(data.session.id, {})
+      } else {
+        setBusy(false)
       }
       void refreshSessions()
     } catch (err) {
       handleApiError(err, 'Failed to start session')
-    } finally {
       setBusy(false)
     }
-  }, [applyTurnResponse, draft, handleApiError, refreshSessions, selectedAnvil])
+  }, [draft, handleApiError, refreshSessions, runStreamingTurn, selectedAnvil])
 
-  const sendMessage = useCallback(async () => {
+  const sendMessage = useCallback(() => {
     if (activeId === null) return
     const text = composer.trim()
     if (!text) return
@@ -261,35 +401,16 @@ export default function ForgePage() {
     }
     setComposer('')
     setMessages((prev) => [...prev, optimistic])
-    setBusy(true)
-    try {
-      const data = await forgeSessions.turn(activeId, { content: text })
-      applyTurnResponse(data, optimistic.id)
-    } catch (err) {
-      // Roll back the optimistic insert and restore the draft.
-      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id))
-      setComposer(text)
-      handleApiError(err, 'Failed to send message')
-    } finally {
-      setBusy(false)
-      composerRef.current?.focus()
-    }
-  }, [activeId, applyTurnResponse, composer, handleApiError])
+    void runStreamingTurn(activeId, { content: text }, optimistic.id)
+    composerRef.current?.focus()
+  }, [activeId, composer, runStreamingTurn])
 
   const runTurn = useCallback(
-    async (req: ForgeTurnRequest) => {
+    (req: ForgeTurnRequest) => {
       if (activeId === null) return
-      setBusy(true)
-      try {
-        const data = await forgeSessions.turn(activeId, req)
-        applyTurnResponse(data)
-      } catch (err) {
-        handleApiError(err, 'Failed to run AI turn')
-      } finally {
-        setBusy(false)
-      }
+      void runStreamingTurn(activeId, req)
     },
-    [activeId, applyTurnResponse, handleApiError],
+    [activeId, runStreamingTurn],
   )
 
   const requestPlan = useCallback(() => {
@@ -476,6 +597,10 @@ export default function ForgePage() {
                 stage={activeSession.stage}
                 busy={busy}
                 onAnswer={submitAnswer}
+                streaming={
+                  streaming && streaming.sessionId === activeSession.id ? streaming : null
+                }
+                onDismissStreamingError={() => setStreaming(null)}
               />
 
               <Composer
@@ -523,6 +648,137 @@ function composerPlaceholder(stage: ForgeSession['stage'], busy: boolean): strin
     default:
       return 'Type a message…'
   }
+}
+
+// StreamingTurn captures the in-flight state of one assistant turn. The
+// ForgePage renders this as a temporary bubble at the bottom of the
+// conversation while a turn is in flight; it is replaced by the canonical
+// persisted rows once the turn completes and the session is refetched.
+interface StreamingTurn {
+  // sessionId pins the bubble to one session so switching sidebars while a
+  // stream is in flight does not bleed the deltas into the wrong conversation.
+  sessionId: number
+  // text accumulates onTextDelta chunks in arrival order.
+  text: string
+  // chips accumulates tool_use / tool_result events as compact inline status.
+  chips: ToolChipData[]
+  // pending is true between turn submission and the first text_delta. The UI
+  // uses it to gate the "claude is thinking" spinner inside the bubble.
+  pending: boolean
+  // reconnecting is true between onTransientError and the next onOpen / delta.
+  // Surfaced as a quiet "reconnecting…" hint inside the bubble.
+  reconnecting: boolean
+  // error holds the terminal failure message. While non-null the bubble
+  // renders a red banner with a dismiss button — the partial text stays
+  // visible so the user can read what the runner had emitted before failing.
+  error: string | null
+}
+
+interface StreamingBubbleProps {
+  streaming: StreamingTurn
+  onDismissError: () => void
+}
+
+// StreamingBubble renders the live assistant turn. While `pending` it shows
+// a thinking spinner; once text starts arriving it transitions into a
+// progressively-rendered assistant bubble with inline tool chips. A
+// terminal `error` flips it into an error state with a dismiss button.
+function StreamingBubble({ streaming, onDismissError }: StreamingBubbleProps) {
+  const showThinking = streaming.pending && streaming.text.length === 0 && !streaming.error
+  return (
+    <li className="flex flex-col items-start" data-testid="forge-streaming-bubble">
+      <div className="max-w-[85%] rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-sm text-slate-100">
+        {showThinking ? (
+          <div className="flex items-center gap-2 text-slate-400">
+            <Loader2 size={14} className="animate-spin" aria-hidden />
+            <span>claude is thinking…</span>
+          </div>
+        ) : (
+          <p
+            className="whitespace-pre-wrap break-words"
+            data-testid="forge-streaming-text"
+          >
+            {streaming.text}
+            {!streaming.error && streaming.text.length > 0 && (
+              <span className="ml-0.5 inline-block animate-pulse text-slate-500" aria-hidden>
+                ▍
+              </span>
+            )}
+          </p>
+        )}
+        {streaming.chips.length > 0 && (
+          <ul
+            className="mt-2 flex flex-wrap gap-1.5"
+            data-testid="forge-streaming-chips"
+          >
+            {streaming.chips.map((chip, i) => (
+              <ToolChip key={i} chip={chip} />
+            ))}
+          </ul>
+        )}
+        {streaming.reconnecting && !streaming.error && (
+          <p className="mt-2 text-[11px] italic text-slate-400">reconnecting…</p>
+        )}
+        {streaming.error && (
+          <div
+            role="alert"
+            data-testid="forge-streaming-error"
+            className="mt-2 flex items-start gap-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-xs text-red-200"
+          >
+            <span className="flex-1">Turn failed: {streaming.error}</span>
+            <button
+              type="button"
+              onClick={onDismissError}
+              className="rounded border border-red-500/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wide hover:bg-red-500/20"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+      </div>
+      <span className="mt-1 text-[10px] text-slate-500">assistant · streaming</span>
+    </li>
+  )
+}
+
+// ToolChip renders one tool_use / tool_result event as a compact status
+// chip. The backend's payload shape is intentionally loose — we extract a
+// best-effort label from common keys (name, tool, command) and fall back
+// to the chip kind so the chip is always readable.
+function ToolChip({ chip }: { chip: ToolChipData }) {
+  const label = extractChipLabel(chip)
+  const tone =
+    chip.kind === 'tool_use'
+      ? 'border-sky-500/40 bg-sky-500/10 text-sky-200'
+      : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+  return (
+    <li
+      className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${tone}`}
+      data-testid={`forge-tool-chip-${chip.kind}`}
+      title={label}
+    >
+      <Wrench size={10} aria-hidden />
+      <span className="truncate">
+        {chip.kind === 'tool_use' ? '→' : '✓'} {label}
+      </span>
+    </li>
+  )
+}
+
+// extractChipLabel heuristically pulls a human-readable label out of a
+// tool event payload. The backend may emit a bare string, a structured
+// object, or nothing — we degrade gracefully through each shape.
+function extractChipLabel(chip: ToolChipData): string {
+  const raw = chip.raw
+  if (typeof raw === 'string' && raw.length > 0) return raw
+  if (raw && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>
+    for (const key of ['name', 'tool', 'command', 'summary', 'label']) {
+      const v = obj[key]
+      if (typeof v === 'string' && v.length > 0) return v
+    }
+  }
+  return chip.kind === 'tool_use' ? 'tool call' : 'tool result'
 }
 
 interface SessionHeaderProps {
@@ -873,6 +1129,8 @@ interface ConversationViewProps {
   stage: ForgeSession['stage']
   busy: boolean
   onAnswer: (questionId: number, optionId: string | null, freeText: string) => void
+  streaming: StreamingTurn | null
+  onDismissStreamingError: () => void
 }
 
 function ConversationView({
@@ -883,12 +1141,15 @@ function ConversationView({
   stage,
   busy,
   onAnswer,
+  streaming,
+  onDismissStreamingError,
 }: ConversationViewProps) {
+  const showEmpty = !loading && messages.length === 0 && !streaming
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4" data-testid="forge-conversation">
-      {loading && messages.length === 0 ? (
+      {loading && messages.length === 0 && !streaming ? (
         <p className="text-center text-sm text-slate-500">Loading messages…</p>
-      ) : messages.length === 0 ? (
+      ) : showEmpty ? (
         <EmptyConversation stage={stage} />
       ) : (
         <ul className="space-y-3">
@@ -900,6 +1161,12 @@ function ConversationView({
               onAnswer={onAnswer}
             />
           ))}
+          {streaming && (
+            <StreamingBubble
+              streaming={streaming}
+              onDismissError={onDismissStreamingError}
+            />
+          )}
         </ul>
       )}
       <div ref={endRef} />
