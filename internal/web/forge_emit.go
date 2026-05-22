@@ -111,12 +111,13 @@ func (s *Server) handleForgeSessionCreateBeads(w http.ResponseWriter, r *http.Re
 	turnCtx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
 	turnReq := forgechat.TurnRequest{
-		Stage:  forgechat.StageReady,
-		Mode:   forgechat.ModeEmit,
-		Title:  row.Title,
-		Plan:   row.Plan,
-		Anvils: forgechat.AnvilContext(toHints(anvils)),
-		History: hist,
+		Stage:     forgechat.StageReady,
+		Mode:      forgechat.ModeEmit,
+		Title:     row.Title,
+		Plan:      row.Plan,
+		Anvils:    forgechat.AnvilContext(toHints(anvils)),
+		History:   hist,
+		SessionID: id,
 	}
 	turnResp, err := s.chatRunner.Turn(turnCtx, turnReq)
 	if err != nil {

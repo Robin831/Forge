@@ -82,6 +82,10 @@ type TurnRequest struct {
 	// the codebase via Read / Grep / Glob. Nil leaves the anvil context out
 	// of the prompt (the AI then has to ask, which is what we're fixing).
 	Anvil *AnvilTarget
+	// SessionID identifies the originating Beads-Forge session and is logged
+	// when a turn fails (e.g. on timeout). Zero is acceptable for callers
+	// that don't have a persistent session (tests, one-off runs).
+	SessionID int64
 }
 
 // AnvilTarget is the resolved name + on-disk path of the anvil that owns a

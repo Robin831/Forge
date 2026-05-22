@@ -504,6 +504,7 @@ anvils:
 | `wicket_needs_human_label` | string | `"forge-needs-human"` | | GitHub label applied to issues flagged for human review. |
 | `wicket_bead_created_label` | string | `"forge-bead-created"` | | GitHub label applied to issues for which a bead was created. |
 | `wicket_trigger_label` | string | `""` | | When non-empty, only issues carrying this label are processed (pull model). When empty (default), Wicket processes all issues without a trigger-label gate (push model). |
+| `forgechat.turn_timeout` | duration | `5m` | (cap `15m`) | Wall-clock budget for a single Beads-Forge AI turn (drafter, grilling, plan, emit). When the budget is exceeded, the runner returns a sentinel chat message instead of the truncated streamed preamble and logs a warning. Values above `15m` are clamped on load. |
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
 

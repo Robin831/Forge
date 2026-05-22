@@ -220,12 +220,13 @@ func (s *Server) handleForgeSessionTurn(w http.ResponseWriter, r *http.Request) 
 	turnCtx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
 	turnReq := forgechat.TurnRequest{
-		Stage:   forgechat.Stage(stage),
-		Mode:    mode,
-		Title:   row.Title,
-		Plan:    row.Plan,
-		History: history,
-		Anvil:   s.resolveSessionAnvil(row.Anvil),
+		Stage:     forgechat.Stage(stage),
+		Mode:      mode,
+		Title:     row.Title,
+		Plan:      row.Plan,
+		History:   history,
+		Anvil:     s.resolveSessionAnvil(row.Anvil),
+		SessionID: id,
 	}
 	turnResp, err := s.chatRunner.Turn(turnCtx, turnReq)
 	if err != nil {

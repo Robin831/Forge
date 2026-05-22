@@ -14,6 +14,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -460,6 +461,44 @@ type SettingsConfig struct {
 	// learned warden rules are injected into the Warden review prompt and
 	// which filter passes are applied.
 	Warden WardenSettings `mapstructure:"warden" yaml:"warden,omitempty"`
+
+	// ForgeChat configures the Beads-Forge per-turn AI loop (drafter, grilling,
+	// plan, emit). Currently exposes turn_timeout so operators can lift the
+	// per-turn budget without recompiling.
+	ForgeChat ForgeChatSettings `mapstructure:"forgechat" yaml:"forgechat,omitempty"`
+}
+
+// MaxForgeChatTurnTimeout is the hard upper bound for settings.forgechat.turn_timeout.
+// Values above this are clamped on load and a warning is logged. Picked so that
+// even a worst-case grilling turn returns to the user before the browser /
+// reverse-proxy gives up on the long-poll HTTP request.
+const MaxForgeChatTurnTimeout = 15 * time.Minute
+
+// DefaultForgeChatTurnTimeout is the default wall-clock budget for a single
+// forgechat turn. Mirrored as forgechat.defaultTurnTimeout — keep the two in
+// sync if either is changed.
+const DefaultForgeChatTurnTimeout = 5 * time.Minute
+
+// ForgeChatSettings configures the Beads-Forge per-turn AI loop.
+type ForgeChatSettings struct {
+	// TurnTimeout caps the wall-clock duration of a single forgechat turn.
+	// Defaults to DefaultForgeChatTurnTimeout (5m). Values above
+	// MaxForgeChatTurnTimeout (15m) are clamped on load with a slog.Warn.
+	// Zero/unset falls back to the default at runtime.
+	TurnTimeout time.Duration `mapstructure:"turn_timeout" yaml:"turn_timeout,omitempty"`
+}
+
+// ResolvedTurnTimeout returns the effective per-turn timeout after applying
+// the default and the hard cap. Callers (e.g. NewClaudeRunner wiring) should
+// use this rather than reading TurnTimeout directly.
+func (f ForgeChatSettings) ResolvedTurnTimeout() time.Duration {
+	if f.TurnTimeout <= 0 {
+		return DefaultForgeChatTurnTimeout
+	}
+	if f.TurnTimeout > MaxForgeChatTurnTimeout {
+		return MaxForgeChatTurnTimeout
+	}
+	return f.TurnTimeout
 }
 
 // WardenSettings configures the review-time rule filter applied to the
@@ -563,6 +602,13 @@ func durationString(d time.Duration) string {
 	return d.String()
 }
 
+// forgeChatShadow renders ForgeChatSettings with the duration field as a
+// human-readable string ("5m0s") instead of nanoseconds. Empty turn_timeout
+// is omitted so the file stays clean when only defaults are used.
+type forgeChatShadow struct {
+	TurnTimeout string `yaml:"turn_timeout,omitempty"`
+}
+
 // MarshalYAML serialises SettingsConfig with time.Duration fields as
 // human-readable strings (e.g. "30s", "5m0s") instead of nanosecond ints.
 func (s SettingsConfig) MarshalYAML() (interface{}, error) {
@@ -626,6 +672,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		CruciblePollInterval     string         `yaml:"crucible_poll_interval,omitempty"`
 		ForgeID                  string         `yaml:"forge_id,omitempty"`
 		Warden                   WardenSettings `yaml:"warden,omitempty"`
+		ForgeChat                forgeChatShadow `yaml:"forgechat,omitempty"`
 	}
 
 	sh := shadow{
@@ -683,6 +730,14 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		BdReadyLimit:           s.BdReadyLimit,
 		ForgeID:                s.ForgeID,
 		Warden:                 s.Warden,
+		ForgeChat: forgeChatShadow{
+			TurnTimeout: func() string {
+				if s.ForgeChat.TurnTimeout > 0 {
+					return durationString(s.ForgeChat.TurnTimeout)
+				}
+				return ""
+			}(),
+		},
 	}
 
 	if s.CruciblePollInterval > 0 {
@@ -933,6 +988,9 @@ func Defaults() Config {
 				ArchiveAfterDays:  180,
 				DedupThreshold:    0.6,
 			},
+			ForgeChat: ForgeChatSettings{
+				TurnTimeout: DefaultForgeChatTurnTimeout,
+			},
 		},
 	}
 }
@@ -987,6 +1045,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.warden.filter_pattern_grep", true)
 	v.SetDefault("settings.warden.archive_after_days", 180)
 	v.SetDefault("settings.warden.dedup_threshold", 0.6)
+	v.SetDefault("settings.forgechat.turn_timeout", DefaultForgeChatTurnTimeout.String())
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
 	// SetEnvKeyReplacer maps dotted config keys (settings.auto_learn_rules) to
@@ -1137,6 +1196,22 @@ func Load(configFile string) (*Config, error) {
 			return nil, fmt.Errorf("invalid crucible_poll_interval %q: %w", raw, err)
 		}
 		cfg.Settings.CruciblePollInterval = d
+	}
+	if raw := v.GetString("settings.forgechat.turn_timeout"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid forgechat.turn_timeout %q: %w", raw, err)
+		}
+		cfg.Settings.ForgeChat.TurnTimeout = d
+	}
+	if cfg.Settings.ForgeChat.TurnTimeout <= 0 {
+		cfg.Settings.ForgeChat.TurnTimeout = DefaultForgeChatTurnTimeout
+	} else if cfg.Settings.ForgeChat.TurnTimeout > MaxForgeChatTurnTimeout {
+		slog.Warn("forgechat.turn_timeout exceeds hard cap; clamping",
+			"configured", cfg.Settings.ForgeChat.TurnTimeout,
+			"clamped", MaxForgeChatTurnTimeout,
+		)
+		cfg.Settings.ForgeChat.TurnTimeout = MaxForgeChatTurnTimeout
 	}
 
 	// Decrypt any enc:-prefixed webhook URLs written by Hytte.

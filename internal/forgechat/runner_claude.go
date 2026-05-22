@@ -14,6 +14,14 @@ import (
 	"github.com/Robin831/Forge/internal/smith"
 )
 
+// defaultTurnTimeout is the wall-clock budget for a single forgechat turn
+// when ClaudeRunner.Timeout is unset. Sized to cover a Claude session that
+// actually does codebase grep/read work (the previous 90s fallback timed
+// out before the agent had finished its first pass). Mirrored by
+// config.ForgeChatSettings.TurnTimeout, which lets operators tune it from
+// forge.yaml without recompiling.
+const defaultTurnTimeout = 5 * time.Minute
+
 // ClaudeRunner is the production Runner implementation. It spawns a
 // short-lived claude (or fallback) session in a temp directory for each
 // turn and parses the response into messages and stage transitions. The
@@ -28,7 +36,8 @@ type ClaudeRunner struct {
 	// prompt asks for a single JSON envelope, so a low budget is fine.
 	MaxTurns int
 	// Timeout caps the wall-clock duration of a single turn. Defaults to
-	// 90 seconds. Kept short so the HTTP handler isn't held open forever.
+	// defaultTurnTimeout (5m). Override at construction from
+	// settings.forgechat.turn_timeout.
 	Timeout time.Duration
 	// ExtraFlags are passed through to claude (e.g. --model).
 	ExtraFlags []string
@@ -39,8 +48,29 @@ func NewClaudeRunner(pv provider.Provider, extraFlags []string) *ClaudeRunner {
 	return &ClaudeRunner{
 		Provider:   pv,
 		MaxTurns:   10,
-		Timeout:    90 * time.Second,
+		Timeout:    defaultTurnTimeout,
 		ExtraFlags: extraFlags,
+	}
+}
+
+// turnStageLabel returns the human-readable stage label used in timeout
+// logs. The four labels (drafter/grilling/plan/emit) match the user-facing
+// modes so an operator reading the warning can map it back to what the
+// session was doing.
+func turnStageLabel(req TurnRequest) string {
+	if req.Mode == ModeEmit {
+		return "emit"
+	}
+	switch req.Stage {
+	case StageGrilling:
+		return "grilling"
+	case StageDrafting:
+		if req.Mode == ModePlan {
+			return "plan"
+		}
+		return "drafter"
+	default:
+		return "drafter"
 	}
 }
 
@@ -51,7 +81,7 @@ func (r *ClaudeRunner) Turn(ctx context.Context, req TurnRequest) (*TurnResponse
 	}
 	timeout := r.Timeout
 	if timeout <= 0 {
-		timeout = 90 * time.Second
+		timeout = defaultTurnTimeout
 	}
 	maxTurns := r.MaxTurns
 	if maxTurns <= 0 {
@@ -60,6 +90,8 @@ func (r *ClaudeRunner) Turn(ctx context.Context, req TurnRequest) (*TurnResponse
 
 	turnCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	turnStart := time.Now()
+	stage := turnStageLabel(req)
 
 	// os.MkdirTemp("", ...) creates the directory under os.TempDir() (/tmp on
 	// Linux), which is outside any git repository. smith.SpawnWithProvider calls
@@ -83,10 +115,18 @@ func (r *ClaudeRunner) Turn(ctx context.Context, req TurnRequest) (*TurnResponse
 	flags := append([]string{"--max-turns", fmt.Sprintf("%d", maxTurns)}, r.ExtraFlags...)
 	proc, err := smith.SpawnWithProvider(turnCtx, workDir, prompt, logDir, r.Provider, flags)
 	if err != nil {
+		if timedOut := timeoutResponse(turnCtx, req, stage, turnStart, timeout); timedOut != nil {
+			return timedOut, nil
+		}
 		return nil, fmt.Errorf("spawning %s session: %w", r.Provider.Label(), err)
 	}
 
 	res := proc.Wait()
+	if timedOut := timeoutResponse(turnCtx, req, stage, turnStart, timeout); timedOut != nil {
+		// The context deadline fired during the session — return the sentinel
+		// rather than parsing the truncated streamed preamble.
+		return timedOut, nil
+	}
 	if res == nil {
 		return nil, errors.New("forgechat: nil result from claude session")
 	}
@@ -103,6 +143,30 @@ func (r *ClaudeRunner) Turn(ctx context.Context, req TurnRequest) (*TurnResponse
 	}
 
 	return interpretResponse(req, output, res.CostUSD)
+}
+
+// timeoutResponse returns the sentinel TurnResponse when turnCtx has hit
+// its deadline, and nil otherwise. Centralising the check keeps the
+// happy/sad paths in Turn easy to read and ensures the same warning fires
+// for every exit point (spawn error, partial output, full Wait).
+func timeoutResponse(turnCtx context.Context, req TurnRequest, stage string, start time.Time, timeout time.Duration) *TurnResponse {
+	if !errors.Is(turnCtx.Err(), context.DeadlineExceeded) {
+		return nil
+	}
+	elapsed := time.Since(start)
+	slog.Warn("forgechat: turn timed out",
+		"session_id", req.SessionID,
+		"turn_stage", stage,
+		"elapsed", elapsed,
+		"timeout", timeout,
+	)
+	body := fmt.Sprintf(
+		"_(Drafter timed out after %s. Try a more focused follow-up question, or bump settings.forgechat.turn_timeout.)_",
+		timeout,
+	)
+	return &TurnResponse{
+		Messages: []EmittedMessage{{Kind: "text", Content: body}},
+	}
 }
 
 // interpretResponse converts raw claude output into a TurnResponse based on
