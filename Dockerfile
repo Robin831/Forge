@@ -151,7 +151,7 @@ COPY --from=bd-builder --chmod=0755 /out/bd /usr/local/bin/bd
 # `dolt checkout -b beads-sync` after `bd init --remote`, since the local
 # clone defaults to main and pushes are rejected on main (the server has
 # main checked out). Dolt is distributed as a single static Linux binary.
-ARG DOLT_VERSION=1.59.7
+ARG DOLT_VERSION=1.88.1
 RUN set -eux; \
     arch=$(dpkg --print-architecture); \
     case "$arch" in \
