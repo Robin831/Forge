@@ -26,15 +26,14 @@ import (
 
 // handleForgeSessionTurnStream serves SSE for one async turn. It writes the
 // usual text/event-stream headers, flushes immediately so reverse proxies
-// don't buffer the response, then forwards every TurnEvent it receives on
-// the TurnState.Events channel. When the channel closes (the runner
-// goroutine has reached a terminal state) the handler returns.
+// don't buffer the response, then subscribes to the TurnState broadcaster
+// to receive a dedicated per-client event channel. Multiple concurrent SSE
+// consumers each get their own channel so no events are stolen by a sibling.
 //
-// Clients that connect after the turn has already terminated would otherwise
-// see an empty stream — the Events channel is already closed and the
-// terminal event has been drained. We catch that case up front and emit a
-// synthesised complete/error event from the snapshot so late SSE consumers
-// still observe a deterministic terminal frame before the connection ends.
+// Clients that connect after the turn has already terminated see an
+// immediately-closed subscriber channel and we detect this via Done, then
+// synthesise a terminal frame from the snapshot so they observe a
+// deterministic complete/error event before the connection ends.
 func (s *Server) handleForgeSessionTurnStream(w http.ResponseWriter, r *http.Request) {
 	st, ok := s.lookupTurn(w, r)
 	if !ok {
@@ -54,8 +53,14 @@ func (s *Server) handleForgeSessionTurnStream(w http.ResponseWriter, r *http.Req
 	fmt.Fprint(w, "retry: 3000\n\n")
 	flusher.Flush()
 
-	// Late-connect: the runner goroutine has already exited and closed both
-	// channels. Synthesise a terminal frame from the snapshot so the client
+	// Subscribe before checking Done to avoid the race where the turn
+	// completes between the Done check and the subscribe call. If the turn
+	// is already done, Subscribe returns an immediately-closed channel and
+	// the broadcaster marks itself closed atomically under its mutex.
+	subCh := st.Subscribe(r.Context())
+
+	// Late-connect: Done is closed (and therefore the broadcaster is also
+	// closed). Synthesise a terminal frame from the snapshot so the client
 	// observes a complete/error event rather than an immediately-closed
 	// stream with no payload.
 	select {
@@ -68,6 +73,12 @@ func (s *Server) handleForgeSessionTurnStream(w http.ResponseWriter, r *http.Req
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
 
+	// sawTerminal tracks whether a TurnEventComplete or TurnEventError was
+	// delivered through subCh. If the channel closes without one (a rare
+	// race where the turn ends between Subscribe and the Done check above),
+	// we synthesise the terminal frame from the snapshot so the client is
+	// never left without a closing event.
+	var sawTerminal bool
 	for {
 		select {
 		case <-r.Context().Done():
@@ -75,9 +86,15 @@ func (s *Server) handleForgeSessionTurnStream(w http.ResponseWriter, r *http.Req
 		case <-keepalive.C:
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
-		case ev, ok := <-st.Events:
+		case ev, ok := <-subCh:
 			if !ok {
+				if !sawTerminal {
+					emitTerminalTurnSSE(w, flusher, st.Snapshot())
+				}
 				return
+			}
+			if ev.Type == TurnEventComplete || ev.Type == TurnEventError {
+				sawTerminal = true
 			}
 			writeTurnSSEEvent(w, flusher, ev)
 		}

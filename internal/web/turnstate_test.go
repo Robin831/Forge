@@ -21,8 +21,8 @@ func TestTurnStore_NewAssignsPendingStatus(t *testing.T) {
 	if st.SessionID != 42 {
 		t.Fatalf("expected session id 42, got %d", st.SessionID)
 	}
-	if st.Events == nil || st.Done == nil {
-		t.Fatal("Events/Done channels should be initialised")
+	if st.Done == nil {
+		t.Fatal("Done channel should be initialised")
 	}
 }
 

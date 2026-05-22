@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"strings"
 	"sync"
 )
@@ -46,12 +47,81 @@ type TurnEvent struct {
 	Data any           `json:"data,omitempty"`
 }
 
+// turnBroadcaster fans out events to per-client subscriber channels so
+// multiple concurrent SSE consumers each receive a complete, independent
+// copy of the event stream rather than competing for a single shared channel.
+type turnBroadcaster struct {
+	mu     sync.Mutex
+	subs   map[int]chan TurnEvent
+	next   int
+	closed bool
+}
+
+func newTurnBroadcaster() turnBroadcaster {
+	return turnBroadcaster{subs: make(map[int]chan TurnEvent)}
+}
+
+// subscribe registers a new per-client channel with the given buffer size and
+// returns its id + channel. If the broadcaster is already closed (the turn is
+// done) the returned channel is immediately closed so callers can detect the
+// terminal state without missing a closing notification.
+func (b *turnBroadcaster) subscribe(bufSize int) (int, chan TurnEvent) {
+	ch := make(chan TurnEvent, bufSize)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		close(ch)
+		return -1, ch
+	}
+	id := b.next
+	b.next++
+	b.subs[id] = ch
+	return id, ch
+}
+
+// unsubscribe removes a previously registered subscriber. id=-1 (returned when
+// subscribing to a closed broadcaster) is a no-op.
+func (b *turnBroadcaster) unsubscribe(id int) {
+	if id < 0 {
+		return
+	}
+	b.mu.Lock()
+	delete(b.subs, id)
+	b.mu.Unlock()
+}
+
+// emit delivers ev to every registered subscriber without blocking; events are
+// dropped for any subscriber whose buffer is full.
+func (b *turnBroadcaster) emit(ev TurnEvent) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, ch := range b.subs {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
+}
+
+// closeAll marks the broadcaster closed, closes every registered subscriber
+// channel, and clears the subscriber map. Any subsequent subscribe call will
+// receive an immediately-closed channel.
+func (b *turnBroadcaster) closeAll() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closed = true
+	for _, ch := range b.subs {
+		close(ch)
+	}
+	b.subs = make(map[int]chan TurnEvent)
+}
+
 // TurnState holds the in-flight state of a single Beads-Forge AI turn.
 //
 // It is created by the /turn handler before launching the background
 // goroutine, and read by the SSE / polling endpoints (sibling sub-tasks).
-// The Events channel fans out incremental updates; the Done channel signals
-// terminal status so callers can wait without polling.
+// Call Subscribe to obtain a per-client channel that receives every event
+// emitted by the runner; Done signals the terminal state.
 //
 // All mutating helpers take the mutex internally; readers should call
 // Snapshot rather than touching the unexported fields directly.
@@ -69,32 +139,46 @@ type TurnState struct {
 	finalMessageID int64
 	err            error
 
-	// Events fans out incremental updates to SSE subscribers. Closed when the
-	// goroutine exits (after Done). Buffered so a slow or absent consumer
-	// cannot block the producer indefinitely; events overflow is dropped (the
-	// SSE endpoint replays missed state via Snapshot).
-	Events chan TurnEvent
+	bcast      turnBroadcaster
+	subBufSize int
 	// Done is closed by the goroutine when the turn reaches a terminal state.
 	// Callers that need to wait for completion (tests, polling endpoints) can
 	// select on this without consuming events.
 	Done chan struct{}
 }
 
-// newTurnState constructs a TurnState in TurnStatusPending. eventsBuffer sizes
-// the events channel; <0 uses a default of 64. Pass 0 to create an unbuffered
-// channel (producer blocks until consumed — fine for tests, bad for real SSE
-// traffic).
+// newTurnState constructs a TurnState in TurnStatusPending. eventsBuffer
+// controls the per-subscriber channel buffer size returned by Subscribe; <0
+// uses a default of 64. Pass 0 to create unbuffered subscriber channels
+// (fine for tests with a synchronous consumer, not for production SSE).
 func newTurnState(id string, sessionID int64, eventsBuffer int) *TurnState {
 	if eventsBuffer < 0 {
 		eventsBuffer = 64
 	}
 	return &TurnState{
-		ID:        id,
-		SessionID: sessionID,
-		status:    TurnStatusPending,
-		Events:    make(chan TurnEvent, eventsBuffer),
-		Done:      make(chan struct{}),
+		ID:         id,
+		SessionID:  sessionID,
+		status:     TurnStatusPending,
+		bcast:      newTurnBroadcaster(),
+		subBufSize: eventsBuffer,
+		Done:       make(chan struct{}),
 	}
+}
+
+// Subscribe returns a dedicated per-client channel that receives every event
+// the runner emits. The channel is closed when the turn ends. When the turn
+// has already ended the returned channel is immediately closed so consumers
+// can detect that without missing a terminal notification.
+//
+// The goroutine launched here unsubscribes when ctx is cancelled (typically
+// when the HTTP request ends), keeping the broadcaster map tidy.
+func (t *TurnState) Subscribe(ctx context.Context) <-chan TurnEvent {
+	id, ch := t.bcast.subscribe(t.subBufSize)
+	go func() {
+		<-ctx.Done()
+		t.bcast.unsubscribe(id)
+	}()
+	return ch
 }
 
 // Status returns the current status.
@@ -201,14 +285,11 @@ func (t *TurnState) Snapshot() TurnSnapshot {
 	return snap
 }
 
-// Emit pushes an event on the Events channel without blocking. If the
-// channel is full (slow consumer or no subscriber), the event is dropped —
-// the SSE endpoint replays missed state via Snapshot on initial connect.
+// Emit broadcasts ev to all per-client subscriber channels without blocking.
+// Events are dropped for any subscriber whose buffer is full; the SSE
+// endpoint replays missed state via Snapshot on initial connect.
 func (t *TurnState) Emit(ev TurnEvent) {
-	select {
-	case t.Events <- ev:
-	default:
-	}
+	t.bcast.emit(ev)
 }
 
 // TurnStore is the process-local registry of in-flight and recently-finished
