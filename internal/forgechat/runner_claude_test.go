@@ -2,6 +2,7 @@ package forgechat
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,12 +11,12 @@ import (
 )
 
 // TestClaudeRunner_Turn_TimeoutReturnsSentinel exercises the timeout path of
-// ClaudeRunner.Turn without spawning a real claude session. The Provider is
-// pointed at a binary that does not exist so smith.SpawnWithProvider fails
-// fast at cmd.Start(); by the time Turn checks turnCtx.Err(), the 1ms
-// deadline has long since fired (mkdtemp + git rev-parse inside
-// ValidateWorktreeDir + exec setup each take more than a millisecond), so we
-// reliably hit the sentinel path and never need to wait on real I/O.
+// ClaudeRunner.Turn without spawning a real claude session. The parent context
+// is created with a deadline in the past so turnCtx is already expired when
+// Turn begins — the sentinel path fires deterministically without relying on
+// any wall-clock race. The Provider is pointed at a guaranteed-missing path
+// under t.TempDir() so smith.SpawnWithProvider fails at cmd.Start() and the
+// DeadlineExceeded check is the first thing evaluated afterwards.
 //
 // The three assertions track the contract from Forge-rjad: (1) Messages is
 // exactly the templated sentinel, (2) no truncated stream-json preamble
@@ -23,16 +24,21 @@ import (
 // is a non-error completion — the chat UI renders it as a normal assistant
 // message rather than surfacing a backend failure.
 func TestClaudeRunner_Turn_TimeoutReturnsSentinel(t *testing.T) {
+	// Pre-expire the context so the deadline is guaranteed to have already
+	// fired before Turn even starts — no reliance on setup latency.
+	expiredCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
 	runner := &ClaudeRunner{
 		Provider: provider.Provider{
 			Kind:    provider.Claude,
-			Command: "/this/binary/intentionally/does/not/exist/claude-fake",
+			Command: filepath.Join(t.TempDir(), "claude-fake"),
 		},
 		MaxTurns: 1,
-		Timeout:  1 * time.Millisecond,
+		Timeout:  5 * time.Minute, // large; pre-expired parent ctx triggers sentinel
 	}
 
-	resp, err := runner.Turn(context.Background(), TurnRequest{
+	resp, err := runner.Turn(expiredCtx, TurnRequest{
 		Stage:    StageDrafting,
 		Mode:     ModeChat,
 		UserText: "hello",

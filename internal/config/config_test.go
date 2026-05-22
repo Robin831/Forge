@@ -1197,8 +1197,9 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 
 // TestLoad_ForgeChatTurnTimeout_DefaultWhenUnset asserts that when forge.yaml
 // omits settings.forgechat.turn_timeout the loader falls back to
-// DefaultForgeChatTurnTimeout (5 minutes). This is the contract the runner
-// relies on when it reads cfg.Settings.ForgeChat.TurnTimeout directly.
+// DefaultForgeChatTurnTimeout (5 minutes). The runner accesses the effective
+// value via cfg.Settings.ForgeChat.ResolvedTurnTimeout(), which applies the
+// default and clamping rules on top of the raw TurnTimeout field.
 func TestLoad_ForgeChatTurnTimeout_DefaultWhenUnset(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "forge.yaml")
