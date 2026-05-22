@@ -228,6 +228,14 @@ function startEventSource(
       handlers.onError?.(message)
       return
     }
+    // If the EventSource is CLOSED (readyState === 2) it will not
+    // auto-reconnect; treat as terminal so the UI doesn't get stuck in
+    // perpetual "reconnecting…" state.
+    if (typeof es.readyState === 'number' && es.readyState === 2) {
+      close()
+      handlers.onError?.('connection closed')
+      return
+    }
     // Transient transport error — keep the connection going so the
     // browser's reconnect kicks in. Surface to the caller for UI feedback.
     handlers.onTransientError?.('connection lost — retrying')
@@ -252,6 +260,7 @@ function startPollingFallback(
   let cancelled = false
   let timer: ReturnType<typeof setTimeout> | null = null
   let opened = false
+  let lastPollFailed = false
   let textCursor = 0
   let toolCursor = 0
 
@@ -277,6 +286,7 @@ function startPollingFallback(
       if (!res.ok) {
         // Treat as transient — schedule another poll. The runner may still
         // be initialising the turn record.
+        lastPollFailed = true
         handlers.onTransientError?.(`HTTP ${res.status}`)
         schedule()
         return
@@ -286,7 +296,12 @@ function startPollingFallback(
       if (!opened) {
         opened = true
         handlers.onOpen?.()
+      } else if (lastPollFailed) {
+        // A previously-failed poll recovered — signal transport recovery so
+        // consumers (e.g. ForgePage) can clear their "reconnecting…" banner.
+        handlers.onOpen?.()
       }
+      lastPollFailed = false
       // Stream text deltas relative to the previously-seen tail of Text.
       const text = typeof snap.text === 'string' ? snap.text : ''
       if (text.length > textCursor) {

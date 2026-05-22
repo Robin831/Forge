@@ -257,8 +257,10 @@ export default function ForgePage() {
   // stream that progressively fills the streaming bubble. The helper takes
   // care of cancelling any previous in-flight stream, resetting busy on
   // terminal events, and refetching the session on success.
+  // Returns false when the initial POST fails so callers can roll back
+  // any optimistic UI changes (e.g. restoring the composer draft).
   const runStreamingTurn = useCallback(
-    async (sessionID: number, req: ForgeTurnRequest, optimisticUserId?: number) => {
+    async (sessionID: number, req: ForgeTurnRequest, optimisticUserId?: number): Promise<boolean> => {
       cancelActiveStream()
       // Clear any stale error bubble from a previous turn so it doesn't
       // linger next to the new spinner. Sync (mark_ready) responses leave
@@ -294,10 +296,10 @@ export default function ForgePage() {
             finalize((s) => ({ ...s, reconnecting: false }))
           },
           onTextDelta: (chunk) => {
-            finalize((s) => ({ ...s, text: s.text + chunk, pending: false }))
+            finalize((s) => ({ ...s, text: s.text + chunk, pending: false, reconnecting: false }))
           },
           onTool: (chip) => {
-            finalize((s) => ({ ...s, chips: [...s.chips, chip] }))
+            finalize((s) => ({ ...s, chips: [...s.chips, chip], reconnecting: false }))
           },
           onTransientError: () => {
             // Browser is reconnecting — keep the partial text visible.
@@ -324,6 +326,7 @@ export default function ForgePage() {
           streamHandleRef.current = null
           setBusy(false)
         }
+        return true
       } catch (err) {
         // POST itself failed — roll back the optimistic message, clear the
         // streaming bubble, and bubble the error.
@@ -333,6 +336,7 @@ export default function ForgePage() {
         setStreaming(null)
         setBusy(false)
         handleApiError(err, 'Failed to run AI turn')
+        return false
       }
     },
     [applyTurnResponse, cancelActiveStream, handleApiError, refreshSessionMessages, toast],
@@ -349,6 +353,7 @@ export default function ForgePage() {
   useEffect(() => {
     cancelActiveStream()
     setStreaming(null)
+    setBusy(false)
   }, [activeId, cancelActiveStream])
 
   const startNewSession = useCallback(async () => {
@@ -387,7 +392,7 @@ export default function ForgePage() {
     }
   }, [draft, handleApiError, refreshSessions, runStreamingTurn, selectedAnvil])
 
-  const sendMessage = useCallback(() => {
+  const sendMessage = useCallback(async () => {
     if (activeId === null) return
     const text = composer.trim()
     if (!text) return
@@ -401,7 +406,11 @@ export default function ForgePage() {
     }
     setComposer('')
     setMessages((prev) => [...prev, optimistic])
-    void runStreamingTurn(activeId, { content: text }, optimistic.id)
+    const ok = await runStreamingTurn(activeId, { content: text }, optimistic.id)
+    if (!ok) {
+      // Restore the draft so the user doesn't lose their text on a POST failure.
+      setComposer(text)
+    }
     composerRef.current?.focus()
   }, [activeId, composer, runStreamingTurn])
 

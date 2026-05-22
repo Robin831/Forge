@@ -12,6 +12,8 @@ class FakeEventSource {
   url: string
   withCredentials: boolean
   closed = false
+  // readyState mirrors the real EventSource constants: 0=CONNECTING, 1=OPEN, 2=CLOSED.
+  readyState: number = 1
   listeners: Record<string, Array<(ev: MessageEvent) => void>> = {}
   constructor(url: string, init?: { withCredentials?: boolean }) {
     this.url = url
@@ -23,6 +25,7 @@ class FakeEventSource {
   }
   close() {
     this.closed = true
+    this.readyState = 2
   }
   emit(type: string, data: unknown) {
     const fns = this.listeners[type] ?? []
@@ -32,6 +35,12 @@ class FakeEventSource {
     for (const fn of fns) fn(ev)
   }
   emitTransientError() {
+    const fns = this.listeners['error'] ?? []
+    const ev = new Event('error')
+    for (const fn of fns) fn(ev as MessageEvent)
+  }
+  emitClosedError() {
+    this.readyState = 2
     const fns = this.listeners['error'] ?? []
     const ev = new Event('error')
     for (const fn of fns) fn(ev as MessageEvent)
@@ -158,6 +167,25 @@ describe('startTurn — 202 streaming branch', () => {
     expect(calls.transient).toHaveLength(1)
     expect(calls.error).toHaveLength(0)
     expect(es.closed).toBe(false)
+  })
+
+  it('treats a CLOSED EventSource error event as terminal (no auto-reconnect)', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(acceptedResponse('t1'))
+    const { handlers, calls } = makeHandlers()
+    await startTurn(
+      1,
+      {},
+      handlers,
+      {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        eventSourceImpl: FakeEventSource as unknown as typeof EventSource,
+      },
+    )
+    const es = FakeEventSource.instances[0]
+    es.emitClosedError()
+    expect(calls.error).toHaveLength(1)
+    expect(calls.transient).toHaveLength(0)
+    expect(es.closed).toBe(true)
   })
 
   it('treats a named error event with data as terminal and closes the source', async () => {
