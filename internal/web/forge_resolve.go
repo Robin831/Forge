@@ -22,14 +22,19 @@ import (
 )
 
 // resolveAction enumerates the queue-resolution verbs accepted by
-// POST /api/forge/resolve. Each value maps to one of the daemon's
-// queue_* IPC handlers added in sub-task Forge-6qh6.
+// POST /api/forge/resolve. The first five map to the daemon's queue_*
+// IPC handlers (Forge-6qh6); approve-as-is and warden-rerun are
+// Forge-level dispatch overrides — bypass-warden and re-review-only —
+// added in Forge-ts2r to give pod-hosted forges the same escape hatches
+// the TUI exposes.
 const (
-	resolveActionClear     = "clear"
-	resolveActionRetry     = "retry"
-	resolveActionClarify   = "clarify"
-	resolveActionUnclarify = "unclarify"
-	resolveActionStop      = "stop"
+	resolveActionClear        = "clear"
+	resolveActionRetry        = "retry"
+	resolveActionClarify      = "clarify"
+	resolveActionUnclarify    = "unclarify"
+	resolveActionStop         = "stop"
+	resolveActionApproveAsIs  = "approve-as-is"
+	resolveActionWardenRerun  = "warden-rerun"
 )
 
 // resolveActionToIPC maps the web-facing action verb to the daemon IPC
@@ -38,11 +43,13 @@ const (
 // accepts and prevents an unrecognised action from sneaking through to the
 // daemon as an "unknown command" error.
 var resolveActionToIPC = map[string]string{
-	resolveActionClear:     "queue_clear",
-	resolveActionRetry:     "queue_retry",
-	resolveActionClarify:   "queue_clarify",
-	resolveActionUnclarify: "queue_unclarify",
-	resolveActionStop:      "queue_stop",
+	resolveActionClear:       "queue_clear",
+	resolveActionRetry:       "queue_retry",
+	resolveActionClarify:     "queue_clarify",
+	resolveActionUnclarify:   "queue_unclarify",
+	resolveActionStop:        "queue_stop",
+	resolveActionApproveAsIs: "approve_as_is",
+	resolveActionWardenRerun: "warden_rerun",
 }
 
 // resolveRequest is the JSON body for POST /api/forge/resolve. anvil_name is
@@ -88,7 +95,7 @@ func (s *Server) handleForgeResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	cmdType, ok := resolveActionToIPC[req.Action]
 	if !ok {
-		writeError(w, http.StatusBadRequest, "action must be one of clear|retry|clarify|unclarify|stop")
+		writeError(w, http.StatusBadRequest, "action must be one of clear|retry|clarify|unclarify|stop|approve-as-is|warden-rerun")
 		return
 	}
 	if req.AnvilName == "" {
@@ -103,12 +110,29 @@ func (s *Server) handleForgeResolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logActor(r, "forge_resolve", "bead", req.BeadID, "anvil", req.AnvilName, "action", req.Action)
-	s.dispatchAction(w, cmdType, ipc.QueueActionPayload{
-		BeadID:    req.BeadID,
-		ForgeID:   req.ForgeID,
-		AnvilName: req.AnvilName,
-		Note:      req.Note,
-	})
+	// approve_as_is and warden_rerun use a different payload shape than the
+	// queue_* verbs — just bead_id + anvil, with the legacy "anvil" JSON tag
+	// (not "anvil_name"). Dispatch them with the right payload type so the
+	// daemon's existing handlers accept the message unchanged.
+	switch req.Action {
+	case resolveActionApproveAsIs:
+		s.dispatchAction(w, cmdType, ipc.ApproveAsIsPayload{
+			BeadID: req.BeadID,
+			Anvil:  req.AnvilName,
+		})
+	case resolveActionWardenRerun:
+		s.dispatchAction(w, cmdType, ipc.WardenRerunPayload{
+			BeadID: req.BeadID,
+			Anvil:  req.AnvilName,
+		})
+	default:
+		s.dispatchAction(w, cmdType, ipc.QueueActionPayload{
+			BeadID:    req.BeadID,
+			ForgeID:   req.ForgeID,
+			AnvilName: req.AnvilName,
+			Note:      req.Note,
+		})
+	}
 }
 
 // escalationResponse is the JSON shape returned by

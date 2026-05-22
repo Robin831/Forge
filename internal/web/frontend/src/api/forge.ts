@@ -5,11 +5,20 @@
 
 import { apiGet, apiPost } from '../api'
 
-// ResolveVerb mirrors the five actions accepted by POST /api/forge/resolve
-// (see internal/web/forge_resolve.go). The string union is exported so
-// callers can pin a button's verb in a type-safe way, and so the resolve
-// store can key its state map by verb when needed.
-export type ResolveVerb = 'clear' | 'retry' | 'clarify' | 'unclarify' | 'stop'
+// ResolveVerb mirrors the actions accepted by POST /api/forge/resolve
+// (see internal/web/forge_resolve.go). The first five route to the
+// daemon's queue_* IPC handlers; `approve-as-is` and `warden-rerun` are
+// Forge-level dispatch overrides — bypass-warden and re-review-only,
+// respectively — added so pod-hosted forges can ship a worker's existing
+// branch without a laptop git checkout.
+export type ResolveVerb =
+  | 'clear'
+  | 'retry'
+  | 'clarify'
+  | 'unclarify'
+  | 'stop'
+  | 'approve-as-is'
+  | 'warden-rerun'
 
 // RESOLVE_VERBS is the canonical ordered list of verbs the backend
 // accepts. Exporting it lets the panel render the action buttons without
@@ -20,6 +29,8 @@ export const RESOLVE_VERBS: readonly ResolveVerb[] = [
   'clarify',
   'unclarify',
   'stop',
+  'approve-as-is',
+  'warden-rerun',
 ] as const
 
 // RetryDetail mirrors the `retry` block of the escalation response. Fields
