@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.18.1] - 2026-05-26
+
+### Fixed
+
+- **Bellows re-emits EventPRConflicting when PR stays conflicting across a failed rebase cycle** - Mirror the CI still-failing and review still-unresolved retry branches on the rebase path so a transient `git fetch` failure (or any aborted rebase) no longer permanently strands a CONFLICTING PR. (Forge-h2a6)
+
 ## [0.18.0] - 2026-05-22
 
 ### Added
