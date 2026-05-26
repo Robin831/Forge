@@ -774,7 +774,8 @@ func TestCheckPR_StillConflicting_ReemitsEvent(t *testing.T) {
 		CreatedAt:   time.Now(),
 	}
 	require.NoError(t, db.InsertPR(pr))
-	// InsertPR does not write the mergeability flags; set them explicitly.
+	// InsertPR does not persist rebase_count or mergeability flags; set them explicitly.
+	require.NoError(t, db.UpdatePRLifecycle(pr.ID, 0, 0, 1, true))
 	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
 
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{
@@ -817,6 +818,7 @@ func TestCheckPR_StillConflicting_RespectsMaxAttempts(t *testing.T) {
 		CreatedAt:   time.Now(),
 	}
 	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRLifecycle(pr.ID, 0, 0, 3, true))
 	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
 
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{
@@ -860,6 +862,7 @@ func TestCheckPR_StillConflicting_SkipsInFlightRebase(t *testing.T) {
 		CreatedAt:   time.Now(),
 	}
 	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRLifecycle(pr.ID, 0, 0, 1, true))
 	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
 
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{
