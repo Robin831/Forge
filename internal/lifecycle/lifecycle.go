@@ -502,3 +502,38 @@ func (m *Manager) NotifyReviewFixCompleted(anvil string, prNumber int) {
 		}
 	}
 }
+
+// NotifyRebaseCompleted clears the Conflicting flag after a rebase cycle
+// finishes (success or failure) and persists the transition needs_fix → open
+// so the Bellows still-conflicting branch can re-emit EventPRConflicting on
+// the next poll if the PR is still conflicting.
+//
+// Without this, pr.Status stays needs_fix after a rebase attempt completes.
+// The still-conflicting branch is gated on pr.Status != needs_fix, so it
+// would be permanently suppressed and the PR would be permanently stuck.
+func (m *Manager) NotifyRebaseCompleted(anvil string, prNumber int) {
+	m.mu.Lock()
+	st, ok := m.states[m.key(anvil, prNumber)]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	st.Conflicting = false
+	dbID := st.ID
+	ciNeedsFix := st.CINeedsFix
+	reviewNeedsFix := st.ReviewNeedsFix
+	m.mu.Unlock()
+
+	m.logger.Info("rebase cycle completed, cleared Conflicting", "pr", prNumber, "anvil", anvil)
+
+	// Persist the cleared state so Bellows can re-detect the conflict on the
+	// next poll. Only transition needs_fix → open when no other fix cycle is
+	// active; if CINeedsFix or ReviewNeedsFix is set the DB status must stay
+	// needs_fix so those fix cycles are preserved across daemon restarts.
+	if dbID > 0 && !ciNeedsFix && !reviewNeedsFix {
+		if err := m.db.UpdatePRStatusIfNeedsFix(dbID, state.PROpen); err != nil {
+			m.logger.Warn("failed to persist PROpen after rebase completed",
+				"pr", prNumber, "anvil", anvil, "error", err)
+		}
+	}
+}

@@ -68,6 +68,7 @@ type Monitor struct {
 	autoLearnRules       func() bool            // auto-learn warden rules from Copilot comments on PR merge
 	maxCIFixAttempts     func() int             // returns current max CI fix attempts from config
 	maxReviewFixAttempts func() int             // returns current max review fix attempts from config
+	maxRebaseAttempts    func() int             // returns current max rebase attempts from config
 	learnMuGuard     sync.Mutex             // protects learnMu map
 	learnMu          map[string]*sync.Mutex // per-anvil mutex serializing auto-learn
 	learnSem         chan struct{}          // caps overall concurrent auto-learn goroutines
@@ -93,11 +94,11 @@ type prSnapshot struct {
 // provider for a given anvil name, enabling per-anvil platform support.
 // The autoLearnRules function is called on each PR merge to check whether
 // warden rule learning is enabled, so hot-reloaded config changes take effect
-// without restarting the daemon. The maxCIFixAttempts and maxReviewFixAttempts
-// functions return the current max fix attempts from config (either may be nil,
-// in which case state.DefaultMaxCIFixAttempts / state.DefaultMaxReviewFixAttempts
-// is used).
-func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.Duration, anvilPaths map[string]string, autoLearnRules func() bool, maxCIFixAttempts func() int, maxReviewFixAttempts func() int) *Monitor {
+// without restarting the daemon. The maxCIFixAttempts, maxReviewFixAttempts,
+// and maxRebaseAttempts functions return the current max fix attempts from
+// config (any may be nil, in which case the corresponding state.Default* is
+// used).
+func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.Duration, anvilPaths map[string]string, autoLearnRules func() bool, maxCIFixAttempts func() int, maxReviewFixAttempts func() int, maxRebaseAttempts func() int) *Monitor {
 	if interval < 30*time.Second {
 		interval = 30 * time.Second
 	}
@@ -106,6 +107,9 @@ func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.
 	}
 	if maxReviewFixAttempts == nil {
 		maxReviewFixAttempts = func() int { return state.DefaultMaxReviewFixAttempts }
+	}
+	if maxRebaseAttempts == nil {
+		maxRebaseAttempts = func() int { return state.DefaultMaxRebaseAttempts }
 	}
 	return &Monitor{
 		db:                   db,
@@ -117,6 +121,7 @@ func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.
 		autoLearnRules:       autoLearnRules,
 		maxCIFixAttempts:     maxCIFixAttempts,
 		maxReviewFixAttempts: maxReviewFixAttempts,
+		maxRebaseAttempts:    maxRebaseAttempts,
 		learnMu:              make(map[string]*sync.Mutex),
 		learnSem:             make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
 		wasUnmanaged:         make(map[string]bool),
@@ -655,6 +660,29 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 		_ = m.db.LogEvent(state.EventPRConflicting,
 			fmt.Sprintf("PR #%d: merge conflict detected", pr.Number),
 			pr.BeadID, pr.Anvil)
+	} else if newSnap.IsConflicting && lastSnap.IsConflicting {
+		// PR is still conflicting with no transition. Catches the gap where a
+		// rebase action dispatched but failed at the prep step (e.g. transient
+		// git fetch failure) or where rebase itself failed and the PR stayed
+		// CONFLICTING. Without this, the seeding guard's RebaseCount > 0 clause
+		// keeps lastSnap.IsConflicting=true forever and no new event ever fires.
+		// Mirrors the CI still-failing and review still-unresolved branches.
+		maxR := m.maxRebaseAttempts()
+		if pr.Status != state.PRNeedsFix && pr.RebaseCount > 0 && pr.RebaseCount < maxR {
+			m.emit(ctx, PREvent{
+				PRNumber:  pr.Number,
+				BeadID:    pr.BeadID,
+				Anvil:     pr.Anvil,
+				Branch:    status.HeadRefName,
+				EventType: EventPRConflicting,
+				Details:   fmt.Sprintf("PR still has merge conflicts after rebase attempt %d/%d", pr.RebaseCount, maxR),
+				Timestamp: time.Now(),
+			})
+			_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
+			_ = m.db.LogEvent(state.EventPRConflicting,
+				fmt.Sprintf("PR #%d rebase retry needed (attempt %d/%d)", pr.Number, pr.RebaseCount, maxR),
+				pr.BeadID, pr.Anvil)
+		}
 	}
 
 	// Trigger on "CHANGES_REQUESTED" or transition from 0 to >0 unresolved threads (Bug 1)

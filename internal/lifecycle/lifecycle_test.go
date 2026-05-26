@@ -925,6 +925,140 @@ func TestNotifyCIFixCompleted_Noop(t *testing.T) {
 	m.NotifyCIFixCompleted("nonexistent-anvil", 999)
 }
 
+// TestNotifyRebaseCompleted_ResetsToOpen verifies that NotifyRebaseCompleted
+// clears the Conflicting flag and, when no other fix cycle is active,
+// transitions the DB status from needs_fix back to open. This allows the
+// Bellows still-conflicting branch to re-emit EventPRConflicting on the next
+// poll and dispatch a fresh rebase if the PR is still conflicting.
+func TestNotifyRebaseCompleted_ResetsToOpen(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	// Insert a PR whose DB status is needs_fix (simulating the state left
+	// after a rebase cycle was dispatched and set the status).
+	pr := &state.PR{
+		Number:    801,
+		Anvil:     "test-anvil",
+		BeadID:    "bead-rebase",
+		Branch:    "forge/bead-rebase",
+		Status:    state.PRNeedsFix,
+		CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(pr); err != nil {
+		t.Fatalf("InsertPR: %v", err)
+	}
+
+	// Load the PR into a fresh lifecycle manager. Load preserves needs_fix
+	// in the DB when CIPassing=false and sets CINeedsFix=false in memory.
+	m := New(db, testLogger(), nil)
+	if err := m.Load(ctx); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	st := m.GetState("test-anvil", 801)
+	if st == nil {
+		t.Fatal("expected lifecycle state for PR #801 after Load")
+	}
+	// Manually mark Conflicting=true to simulate the in-flight rebase state.
+	// In production this would have been set by HandleEvent(EventPRConflicting).
+	st.Conflicting = true
+
+	// Rebase worker finishes with no other active fix cycles.
+	m.NotifyRebaseCompleted("test-anvil", 801)
+
+	st = m.GetState("test-anvil", 801)
+	if st.Conflicting {
+		t.Error("expected Conflicting=false after NotifyRebaseCompleted")
+	}
+
+	// Verify the DB status was transitioned needs_fix → open.
+	dbPR, err := db.GetPRByNumber("test-anvil", 801)
+	if err != nil {
+		t.Fatalf("GetPRByNumber: %v", err)
+	}
+	if dbPR == nil {
+		t.Fatal("PR #801 not found in DB")
+	}
+	if dbPR.Status != state.PROpen {
+		t.Errorf("expected DB status PROpen after rebase completed, got %s", dbPR.Status)
+	}
+}
+
+// TestNotifyRebaseCompleted_KeepsNeedsFixWhenOtherCycleActive verifies that
+// NotifyRebaseCompleted does NOT clear the DB needs_fix status when CINeedsFix
+// or ReviewNeedsFix is still true, so those active fix cycles are preserved
+// across a daemon restart.
+func TestNotifyRebaseCompleted_KeepsNeedsFixWhenOtherCycleActive(t *testing.T) {
+	db := newTestDB(t)
+	var dispatched []ActionRequest
+	handler := func(_ context.Context, req ActionRequest) {
+		dispatched = append(dispatched, req)
+	}
+	ctx := context.Background()
+
+	// Sub-case: both CINeedsFix and ReviewNeedsFix active.
+	t.Run("CIAndReviewBothActive", func(t *testing.T) {
+		m := New(db, testLogger(), handler)
+		m.HandleEvent(ctx, makeEvent(900, bellows.EventCIFailed))
+		m.HandleEvent(ctx, makeEvent(900, bellows.EventReviewChanges))
+		m.HandleEvent(ctx, makeEvent(900, bellows.EventPRConflicting))
+
+		m.NotifyRebaseCompleted("test-anvil", 900)
+
+		st := m.GetState("test-anvil", 900)
+		if st.Conflicting {
+			t.Error("expected Conflicting=false after NotifyRebaseCompleted")
+		}
+		if !st.CINeedsFix {
+			t.Error("CINeedsFix must remain true — CI fix cycle is still active")
+		}
+		if !st.ReviewNeedsFix {
+			t.Error("ReviewNeedsFix must remain true — review fix cycle is still active")
+		}
+	})
+
+	// Sub-case: only CINeedsFix active.
+	t.Run("OnlyCIActive", func(t *testing.T) {
+		m := New(db, testLogger(), handler)
+		m.HandleEvent(ctx, makeEvent(901, bellows.EventCIFailed))
+		m.HandleEvent(ctx, makeEvent(901, bellows.EventPRConflicting))
+		m.NotifyRebaseCompleted("test-anvil", 901)
+
+		st := m.GetState("test-anvil", 901)
+		if st.Conflicting {
+			t.Error("expected Conflicting=false after rebase completed")
+		}
+		if !st.CINeedsFix {
+			t.Error("CINeedsFix must remain true when only CI is active")
+		}
+	})
+
+	// Sub-case: only ReviewNeedsFix active.
+	t.Run("OnlyReviewActive", func(t *testing.T) {
+		m := New(db, testLogger(), handler)
+		m.HandleEvent(ctx, makeEvent(902, bellows.EventReviewChanges))
+		m.HandleEvent(ctx, makeEvent(902, bellows.EventPRConflicting))
+		m.NotifyRebaseCompleted("test-anvil", 902)
+
+		st := m.GetState("test-anvil", 902)
+		if st.Conflicting {
+			t.Error("expected Conflicting=false after rebase completed")
+		}
+		if !st.ReviewNeedsFix {
+			t.Error("ReviewNeedsFix must remain true when only review is active")
+		}
+	})
+}
+
+// TestNotifyRebaseCompleted_Noop verifies NotifyRebaseCompleted is safe to call
+// for unknown PRs.
+func TestNotifyRebaseCompleted_Noop(t *testing.T) {
+	db := newTestDB(t)
+	m := New(db, testLogger(), nil)
+	// Should not panic.
+	m.NotifyRebaseCompleted("nonexistent-anvil", 999)
+}
+
 // TestCIFixRetryFlowToExhaustion exercises the lifecycle CI fix retry loop:
 // repeated EventCIFailed → dispatch → NotifyCIFixCompleted → next EventCIFailed,
 // verifying that each cycle dispatches until maxCI is reached and then stops.

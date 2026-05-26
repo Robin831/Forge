@@ -967,6 +967,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return d.cfg.Load().Settings.MaxCIFixAttempts
 	}, func() int {
 		return d.cfg.Load().Settings.MaxReviewFixAttempts
+	}, func() int {
+		return d.cfg.Load().Settings.MaxRebaseAttempts
 	})
 	d.lifecycleMgr = lifecycle.New(d.db, d.logger, d.handleLifecycleAction)
 	d.lifecycleMgr.SetThresholds(
@@ -1259,6 +1261,22 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, lockKey, req.Branch)
 		if err != nil {
 			d.logger.Error("failed to create worktree for lifecycle fix", "error", err)
+			// Reset lifecycle and bellows state so the next Bellows poll can
+			// re-emit the appropriate event and retry. Without this, CINeedsFix /
+			// ReviewNeedsFix / Conflicting stay set after a transient worktree
+			// failure (e.g. git fetch error) and the still-failing/still-unresolved/
+			// still-conflicting re-emit branches are permanently suppressed.
+			switch req.Action {
+			case lifecycle.ActionRebase:
+				d.lifecycleMgr.NotifyRebaseCompleted(req.Anvil, req.PRNumber)
+			case lifecycle.ActionFixCI:
+				d.lifecycleMgr.NotifyCIFixCompleted(req.Anvil, req.PRNumber)
+			case lifecycle.ActionFixReview:
+				d.lifecycleMgr.NotifyReviewFixCompleted(req.Anvil, req.PRNumber)
+			}
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
+			}
 			return
 		}
 		defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
@@ -1507,6 +1525,21 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				d.logger.Info("rebase succeeded", "pr", req.PRNumber, "bead", req.BeadID)
 			}
 			_ = d.db.UpdateWorkerStatus(workerID, status)
+			// Always notify lifecycle that the rebase cycle has completed so it
+			// resets pr.Status to open and allows Bellows to re-emit
+			// EventPRConflicting on the next poll if the PR is still conflicting.
+			// Without this the still-conflicting branch is permanently suppressed
+			// by its pr.Status != needs_fix guard. Mirror the CI-fix and
+			// review-fix paths.
+			d.lifecycleMgr.NotifyRebaseCompleted(req.Anvil, req.PRNumber)
+			// Reset the snapshot cache so Bellows re-seeds from the DB on
+			// the next poll. Without this, the cached snapshot would still
+			// have IsConflicting=true and the seeding guard would preserve
+			// that value, preventing the still-conflicting branch from
+			// re-emitting EventPRConflicting after the status is reset.
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
+			}
 		}
 	}()
 }
