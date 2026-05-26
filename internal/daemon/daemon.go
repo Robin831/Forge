@@ -1261,6 +1261,16 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, lockKey, req.Branch)
 		if err != nil {
 			d.logger.Error("failed to create worktree for lifecycle fix", "error", err)
+			// Reset rebase state so Bellows can re-emit on the next poll.
+			// Without this the PR stays needs_fix after a worktree-creation
+			// failure (e.g. transient git fetch error) and the still-conflicting
+			// branch is permanently suppressed by its needs_fix guard.
+			if req.Action == lifecycle.ActionRebase {
+				d.lifecycleMgr.NotifyRebaseCompleted(req.Anvil, req.PRNumber)
+				if d.bellowsMonitor != nil {
+					d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
+				}
+			}
 			return
 		}
 		defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
@@ -1509,6 +1519,19 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				d.logger.Info("rebase succeeded", "pr", req.PRNumber, "bead", req.BeadID)
 			}
 			_ = d.db.UpdateWorkerStatus(workerID, status)
+			// Always notify lifecycle that the rebase cycle has completed so it
+			// resets pr.Status to open and allows Bellows to re-emit
+			// EventPRConflicting on the next poll if the PR is still conflicting.
+			// Without this the still-conflicting branch is permanently suppressed
+			// by its pr.Status != needs_fix guard. Mirror the CI-fix and
+			// review-fix paths.
+			d.lifecycleMgr.NotifyRebaseCompleted(req.Anvil, req.PRNumber)
+			// Reset the snapshot cache so the next poll can detect a fresh
+			// conflict transition rather than seeing the same still-conflicting
+			// snapshot and falling through to the still-conflicting branch.
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
+			}
 		}
 	}()
 }
