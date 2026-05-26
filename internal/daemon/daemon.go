@@ -1261,15 +1261,21 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, lockKey, req.Branch)
 		if err != nil {
 			d.logger.Error("failed to create worktree for lifecycle fix", "error", err)
-			// Reset rebase state so Bellows can re-emit on the next poll.
-			// Without this the PR stays needs_fix after a worktree-creation
-			// failure (e.g. transient git fetch error) and the still-conflicting
-			// branch is permanently suppressed by its needs_fix guard.
-			if req.Action == lifecycle.ActionRebase {
+			// Reset lifecycle and bellows state so the next Bellows poll can
+			// re-emit the appropriate event and retry. Without this, CINeedsFix /
+			// ReviewNeedsFix / Conflicting stay set after a transient worktree
+			// failure (e.g. git fetch error) and the still-failing/still-unresolved/
+			// still-conflicting re-emit branches are permanently suppressed.
+			switch req.Action {
+			case lifecycle.ActionRebase:
 				d.lifecycleMgr.NotifyRebaseCompleted(req.Anvil, req.PRNumber)
-				if d.bellowsMonitor != nil {
-					d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
-				}
+			case lifecycle.ActionFixCI:
+				d.lifecycleMgr.NotifyCIFixCompleted(req.Anvil, req.PRNumber)
+			case lifecycle.ActionFixReview:
+				d.lifecycleMgr.NotifyReviewFixCompleted(req.Anvil, req.PRNumber)
+			}
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
 			}
 			return
 		}
