@@ -18,22 +18,22 @@ import (
 
 func TestNew_MinimumInterval(t *testing.T) {
 	// Intervals below 30s should be clamped to 30s
-	m := New(nil, nil, 5*time.Second, nil, nil, nil, nil)
+	m := New(nil, nil, 5*time.Second, nil, nil, nil, nil, nil)
 	assert.Equal(t, 30*time.Second, m.interval)
 }
 
 func TestNew_IntervalAboveMin(t *testing.T) {
-	m := New(nil, nil, 2*time.Minute, nil, nil, nil, nil)
+	m := New(nil, nil, 2*time.Minute, nil, nil, nil, nil, nil)
 	assert.Equal(t, 2*time.Minute, m.interval)
 }
 
 func TestNew_ExactMinimum(t *testing.T) {
-	m := New(nil, nil, 30*time.Second, nil, nil, nil, nil)
+	m := New(nil, nil, 30*time.Second, nil, nil, nil, nil, nil)
 	assert.Equal(t, 30*time.Second, m.interval)
 }
 
 func TestOnEvent_RegistersHandler(t *testing.T) {
-	m := New(nil, nil, time.Minute, nil, nil, nil, nil)
+	m := New(nil, nil, time.Minute, nil, nil, nil, nil, nil)
 	m.mu.Lock()
 	initial := len(m.handlers)
 	m.mu.Unlock()
@@ -48,7 +48,7 @@ func TestOnEvent_RegistersHandler(t *testing.T) {
 }
 
 func TestEmit_DispatchesToAllHandlers(t *testing.T) {
-	m := New(nil, nil, time.Minute, nil, nil, nil, nil)
+	m := New(nil, nil, time.Minute, nil, nil, nil, nil, nil)
 
 	var mu sync.Mutex
 	var received []string
@@ -376,7 +376,7 @@ func TestCheckAll_BellowsManagedPRsGetWorkerRow(t *testing.T) {
 	require.NoError(t, db.InsertPR(extUnmanaged))
 	require.NoError(t, db.UpdatePRBellowsManaged(extUnmanaged.ID, false))
 
-	m := New(db, nil, time.Minute, map[string]string{"my-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, nil, time.Minute, map[string]string{"my-anvil": "/fake"}, nil, nil, nil, nil)
 	m.checkAll(context.Background())
 
 	workers, err := db.ActiveWorkers()
@@ -408,7 +408,7 @@ func TestCheckAll_WorkerRowNotDuplicatedOnRepeatPolls(t *testing.T) {
 	}
 	require.NoError(t, db.InsertPR(pr))
 
-	m := New(db, nil, time.Minute, map[string]string{"my-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, nil, time.Minute, map[string]string{"my-anvil": "/fake"}, nil, nil, nil, nil)
 	m.checkAll(context.Background())
 	m.checkAll(context.Background())
 	m.checkAll(context.Background())
@@ -652,7 +652,7 @@ func TestCheckPR_ReviewStillUnresolved_ReemitsEvent(t *testing.T) {
 	var events []string
 	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
 		map[string]string{"test-anvil": "/fake"}, nil, nil,
-		func() int { return 5 })
+		func() int { return 5 }, nil)
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -694,7 +694,7 @@ func TestCheckPR_ReviewStillUnresolved_RespectsMaxAttempts(t *testing.T) {
 	var events []string
 	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
 		map[string]string{"test-anvil": "/fake"}, nil, nil,
-		func() int { return 5 })
+		func() int { return 5 }, nil)
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -737,7 +737,7 @@ func TestCheckPR_ReviewStillUnresolved_SkipsInFlightBurnish(t *testing.T) {
 	var events []string
 	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
 		map[string]string{"test-anvil": "/fake"}, nil, nil,
-		func() int { return 5 })
+		func() int { return 5 }, nil)
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -746,6 +746,139 @@ func TestCheckPR_ReviewStillUnresolved_SkipsInFlightBurnish(t *testing.T) {
 
 	assert.NotContains(t, events, EventReviewChanges,
 		"EventReviewChanges must NOT fire while a burnish is already in flight (status=needs_fix)")
+}
+
+// TestCheckPR_StillConflicting_ReemitsEvent is the end-to-end regression test
+// for Forge-h2a6: after a rebase action dispatched (whether it ran or bailed
+// at worktree creation) and the PR is still CONFLICTING, the next bellows
+// poll must re-emit EventPRConflicting and flip the PR back to needs_fix so a
+// new rebase dispatches.
+func TestCheckPR_StillConflicting_ReemitsEvent(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	// Insert a PR that already went through one rebase cycle: open status,
+	// RebaseCount=1, conflict still present. The seeding guard at
+	// bellows.go:449-452 preserves IsConflicting=true when RebaseCount > 0,
+	// so lastSnap.IsConflicting=true on the first poll. Combined with
+	// newSnap.IsConflicting=true from the VCS status, the primary transition
+	// branch (new && !last) cannot fire — only the secondary "still
+	// conflicting" branch can.
+	pr := &state.PR{
+		Number:      800,
+		Anvil:       "test-anvil",
+		BeadID:      "forge-stillconflict",
+		Branch:      "forge/forge-stillconflict",
+		Status:      state.PROpen,
+		RebaseCount: 1,
+		CreatedAt:   time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	// InsertPR does not write the mergeability flags; set them explicitly.
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:     "OPEN",
+		Mergeable: "CONFLICTING",
+	}}
+
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
+		map[string]string{"test-anvil": "/fake"}, nil, nil, nil,
+		func() int { return 3 })
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	assert.Contains(t, events, EventPRConflicting,
+		"EventPRConflicting must re-fire when the PR stays conflicting across a rebase cycle")
+
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	assert.Equal(t, state.PRNeedsFix, updated.Status,
+		"PR must be flipped back to needs_fix so a new rebase dispatches")
+}
+
+// TestCheckPR_StillConflicting_RespectsMaxAttempts verifies that the retry
+// cap honoured by the still-conflicting branch matches max_rebase_attempts.
+func TestCheckPR_StillConflicting_RespectsMaxAttempts(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:      801,
+		Anvil:       "test-anvil",
+		BeadID:      "forge-rebasecap",
+		Branch:      "forge/forge-rebasecap",
+		Status:      state.PROpen,
+		RebaseCount: 3, // at the cap
+		CreatedAt:   time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:     "OPEN",
+		Mergeable: "CONFLICTING",
+	}}
+
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
+		map[string]string{"test-anvil": "/fake"}, nil, nil, nil,
+		func() int { return 3 })
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	assert.NotContains(t, events, EventPRConflicting,
+		"EventPRConflicting must NOT fire once the rebase cap is reached")
+
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	assert.Equal(t, state.PROpen, updated.Status,
+		"PR status must not be flipped to needs_fix when the cap is reached")
+}
+
+// TestCheckPR_StillConflicting_SkipsInFlightRebase verifies that a PR
+// already in needs_fix (a rebase is in flight) does not receive a duplicate
+// dispatch from the still-conflicting branch.
+func TestCheckPR_StillConflicting_SkipsInFlightRebase(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:      802,
+		Anvil:       "test-anvil",
+		BeadID:      "forge-rebaseinflight",
+		Branch:      "forge/forge-rebaseinflight",
+		Status:      state.PRNeedsFix,
+		RebaseCount: 1,
+		CreatedAt:   time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:     "OPEN",
+		Mergeable: "CONFLICTING",
+	}}
+
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
+		map[string]string{"test-anvil": "/fake"}, nil, nil, nil,
+		func() int { return 3 })
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	assert.NotContains(t, events, EventPRConflicting,
+		"EventPRConflicting must NOT fire while a rebase is already in flight (status=needs_fix)")
 }
 
 // TestCheckPR_CIInProgressDoesNotTriggerFailure verifies that bellows does not
@@ -775,7 +908,7 @@ func TestCheckPR_CIInProgressDoesNotTriggerFailure(t *testing.T) {
 	}}
 
 	var events []string
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -819,7 +952,7 @@ func TestCheckPR_CICompletedFailureTriggersCIFailed(t *testing.T) {
 	}}
 
 	var events []string
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -850,7 +983,7 @@ func TestCheckPR_PassingThenInProgressThenFailure(t *testing.T) {
 
 	fake := &fakeVCSProvider{}
 	var events []string
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -907,7 +1040,7 @@ func TestCheckPR_StatusContextPendingBlocksCIFailed(t *testing.T) {
 	}}
 
 	var events []string
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -946,7 +1079,7 @@ func TestCheckPR_CompletedEmptyConclusionBlocksCIFailed(t *testing.T) {
 	}}
 
 	var events []string
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -979,7 +1112,7 @@ func TestCheckPR_TitleBackfill(t *testing.T) {
 		Title: "My PR title",
 	}}
 
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 	m.checkAll(context.Background())
 
 	updated, err := db.GetPRByID(pr.ID)
@@ -1068,7 +1201,7 @@ func TestCheckPR_PRMergedUpdatesIngotStatus(t *testing.T) {
 	seedIngot(t, db.Conn(), pr.BeadID, pr.Anvil)
 
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "MERGED"}}
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 
 	m.checkAll(context.Background())
 
@@ -1095,7 +1228,7 @@ func TestCheckPR_PRClosedUpdatesIngotStatus(t *testing.T) {
 	seedIngot(t, db.Conn(), pr.BeadID, pr.Anvil)
 
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "CLOSED"}}
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 
 	m.checkAll(context.Background())
 
@@ -1124,7 +1257,7 @@ func TestCheckPR_MissingIngotIsNoOp(t *testing.T) {
 
 	var events []string
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "MERGED"}}
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -1171,7 +1304,7 @@ func TestCheckPR_NeedsFixToMergedTransition(t *testing.T) {
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "MERGED"}}
 
 	var events []string
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -1206,7 +1339,7 @@ func TestCheckPR_NeedsFixToClosedTransition(t *testing.T) {
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "CLOSED"}}
 
 	var events []string
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -1245,7 +1378,7 @@ func TestCheckPR_OpenWithCIFailureStillTransitionsToNeedsFix(t *testing.T) {
 		},
 	}}
 
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 	m.checkAll(context.Background())
 
 	updated, err := db.GetPRByID(pr.ID)
@@ -1276,7 +1409,7 @@ func TestReconcileTerminalStates(t *testing.T) {
 	seedIngot(t, db.Conn(), mergedPR.BeadID, mergedPR.Anvil)
 
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "MERGED"}}
-	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil)
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute, map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
 
 	m.reconcileTerminalStates(context.Background())
 
@@ -1369,7 +1502,7 @@ func TestSweepOrphanedMonitoringWorkers_TerminalPR(t *testing.T) {
 				StartedAt: time.Now(),
 			}))
 
-			m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil, nil)
+			m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil, nil, nil)
 			m.sweepOrphanedMonitoringWorkers()
 
 			workers, err := db.WorkersByBead(pr.BeadID, pr.Anvil, 0)
@@ -1416,7 +1549,7 @@ func TestSweepOrphanedMonitoringWorkers_MissingPR(t *testing.T) {
 		StartedAt: time.Now(),
 	}))
 
-	m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil, nil)
+	m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil, nil, nil)
 	m.sweepOrphanedMonitoringWorkers()
 
 	workers, err := db.WorkersByBead("ext-9999", "munin", 0)
@@ -1457,7 +1590,7 @@ func TestSweepOrphanedMonitoringWorkers_IgnoresNonBellowsWorkers(t *testing.T) {
 		StartedAt: time.Now(),
 	}))
 
-	m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil, nil)
+	m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil, nil, nil)
 	m.sweepOrphanedMonitoringWorkers()
 
 	w, err := db.WorkersByBead(pr.BeadID, pr.Anvil, 0)

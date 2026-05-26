@@ -967,6 +967,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return d.cfg.Load().Settings.MaxCIFixAttempts
 	}, func() int {
 		return d.cfg.Load().Settings.MaxReviewFixAttempts
+	}, func() int {
+		return d.cfg.Load().Settings.MaxRebaseAttempts
 	})
 	d.lifecycleMgr = lifecycle.New(d.db, d.logger, d.handleLifecycleAction)
 	d.lifecycleMgr.SetThresholds(
