@@ -758,12 +758,11 @@ func TestCheckPR_StillConflicting_ReemitsEvent(t *testing.T) {
 	defer cleanup()
 
 	// Insert a PR that already went through one rebase cycle: open status,
-	// RebaseCount=1, conflict still present. The seeding guard at
-	// bellows.go:449-452 preserves IsConflicting=true when RebaseCount > 0,
-	// so lastSnap.IsConflicting=true on the first poll. Combined with
-	// newSnap.IsConflicting=true from the VCS status, the primary transition
-	// branch (new && !last) cannot fire — only the secondary "still
-	// conflicting" branch can.
+	// RebaseCount=1, conflict still present. The seeding guard preserves
+	// IsConflicting=true when RebaseCount > 0, so lastSnap.IsConflicting=true
+	// on the first poll. Combined with newSnap.IsConflicting=true from the
+	// VCS status, the primary transition branch (new && !last) cannot fire —
+	// only the secondary "still conflicting" branch can.
 	pr := &state.PR{
 		Number:      800,
 		Anvil:       "test-anvil",

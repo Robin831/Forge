@@ -1526,9 +1526,11 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			// by its pr.Status != needs_fix guard. Mirror the CI-fix and
 			// review-fix paths.
 			d.lifecycleMgr.NotifyRebaseCompleted(req.Anvil, req.PRNumber)
-			// Reset the snapshot cache so the next poll can detect a fresh
-			// conflict transition rather than seeing the same still-conflicting
-			// snapshot and falling through to the still-conflicting branch.
+			// Reset the snapshot cache so Bellows re-seeds from the DB on
+			// the next poll. Without this, the cached snapshot would still
+			// have IsConflicting=true and the seeding guard would preserve
+			// that value, preventing the still-conflicting branch from
+			// re-emitting EventPRConflicting after the status is reset.
 			if d.bellowsMonitor != nil {
 				d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
 			}
