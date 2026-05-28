@@ -199,6 +199,8 @@ func TestInsertAndGetTestResults(t *testing.T) {
 		{IngotID: ingot.ID, StepIndex: 2, StepName: "go test", Command: "go test ./...", ExitCode: 0, DurationMs: 1200, Passed: true, RecordedAt: time.Now()},
 		{IngotID: ingot.ID, StepIndex: 0, StepName: "go build", Command: "go build ./...", ExitCode: 0, DurationMs: 800, Passed: true, RecordedAt: time.Now()},
 		{IngotID: ingot.ID, StepIndex: 1, StepName: "go vet", Command: "go vet ./...", ExitCode: 1, DurationMs: 200, Passed: false, Optional: true, OutputSummary: "some warnings", RecordedAt: time.Now()},
+		// A path-skipped step records Passed=true, Skipped=true, zero duration/exit.
+		{IngotID: ingot.ID, StepIndex: 3, StepName: "client-build", Command: "npm run build", ExitCode: 0, DurationMs: 0, Passed: true, Skipped: true, RecordedAt: time.Now()},
 	}
 	for i := range steps {
 		if err := InsertTestResult(db, &steps[i]); err != nil {
@@ -213,11 +215,11 @@ func TestInsertAndGetTestResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTestResults: %v", err)
 	}
-	if len(results) != 3 {
-		t.Fatalf("got %d results; want 3", len(results))
+	if len(results) != 4 {
+		t.Fatalf("got %d results; want 4", len(results))
 	}
 	// Verify ordering by step_index
-	for i, want := range []int{0, 1, 2} {
+	for i, want := range []int{0, 1, 2, 3} {
 		if results[i].StepIndex != want {
 			t.Errorf("results[%d].StepIndex = %d; want %d", i, results[i].StepIndex, want)
 		}
@@ -230,6 +232,16 @@ func TestInsertAndGetTestResults(t *testing.T) {
 	}
 	if !results[1].Optional {
 		t.Error("results[1].Optional = false; want true")
+	}
+	if results[1].Skipped {
+		t.Error("results[1].Skipped = true; want false")
+	}
+	// The skipped step must round-trip its Skipped flag.
+	if !results[3].Skipped {
+		t.Error("results[3].Skipped = false; want true")
+	}
+	if !results[3].Passed {
+		t.Error("results[3].Passed = false; want true (skipped steps are not failures)")
 	}
 }
 

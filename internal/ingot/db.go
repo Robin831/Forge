@@ -252,8 +252,8 @@ func InsertTestResult(db *sql.DB, tr *TestResult) error {
 	res, err := db.Exec(`
 		INSERT INTO ingot_test_results
 			(ingot_id, step_index, step_name, command, exit_code,
-			 duration_ms, passed, optional, output_summary, full_output_path, recorded_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 duration_ms, passed, optional, skipped, output_summary, full_output_path, recorded_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		tr.IngotID,
 		tr.StepIndex,
 		tr.StepName,
@@ -262,6 +262,7 @@ func InsertTestResult(db *sql.DB, tr *TestResult) error {
 		tr.DurationMs,
 		boolToInt(tr.Passed),
 		boolToInt(tr.Optional),
+		boolToInt(tr.Skipped),
 		tr.OutputSummary,
 		tr.FullOutputPath,
 		formatTime(tr.RecordedAt),
@@ -281,7 +282,7 @@ func InsertTestResult(db *sql.DB, tr *TestResult) error {
 func GetTestResults(db *sql.DB, ingotID int) ([]TestResult, error) {
 	rows, err := db.Query(`
 		SELECT id, ingot_id, step_index, step_name, command, exit_code,
-		       duration_ms, passed, optional, output_summary, full_output_path, recorded_at
+		       duration_ms, passed, optional, skipped, output_summary, full_output_path, recorded_at
 		FROM ingot_test_results
 		WHERE ingot_id = ?
 		ORDER BY step_index`,
@@ -295,17 +296,18 @@ func GetTestResults(db *sql.DB, ingotID int) ([]TestResult, error) {
 	var results []TestResult
 	for rows.Next() {
 		var tr TestResult
-		var passed, optional int
+		var passed, optional, skipped int
 		var recordedAtStr string
 		if err := rows.Scan(
 			&tr.ID, &tr.IngotID, &tr.StepIndex, &tr.StepName, &tr.Command,
-			&tr.ExitCode, &tr.DurationMs, &passed, &optional,
+			&tr.ExitCode, &tr.DurationMs, &passed, &optional, &skipped,
 			&tr.OutputSummary, &tr.FullOutputPath, &recordedAtStr,
 		); err != nil {
 			return nil, fmt.Errorf("scanning test result: %w", err)
 		}
 		tr.Passed = passed == 1
 		tr.Optional = optional == 1
+		tr.Skipped = skipped == 1
 		tr.RecordedAt, err = parseTime(recordedAtStr)
 		if err != nil {
 			return nil, fmt.Errorf("parsing recorded_at: %w", err)
