@@ -53,6 +53,8 @@ type TestResult struct {
 	DurationMs     int       `json:"duration_ms"`
 	Passed         bool      `json:"passed"`
 	Optional       bool      `json:"optional"`
+	// Skipped is true when the step was path-gated off (no changed files matched its Paths globs).
+	Skipped        bool      `json:"skipped"`
 	OutputSummary  string    `json:"output_summary,omitempty"`  // first ~1000 chars or key errors
 	FullOutputPath string    `json:"full_output_path,omitempty"`
 	RecordedAt     time.Time `json:"recorded_at"`

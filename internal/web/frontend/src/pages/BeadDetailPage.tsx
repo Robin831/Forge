@@ -429,18 +429,22 @@ export default function BeadDetailPage() {
                       <td className="py-1.5">
                         <span
                           className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                            tr.passed
-                              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                              : 'border-red-500/40 bg-red-500/10 text-red-300'
+                            tr.skipped
+                              ? 'border-slate-600/50 bg-slate-700/30 text-slate-400'
+                              : tr.passed
+                                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                                : 'border-red-500/40 bg-red-500/10 text-red-300'
                           }`}
                         >
-                          {tr.passed ? 'pass' : 'FAIL'}
+                          {tr.skipped ? 'skip' : tr.passed ? 'pass' : 'FAIL'}
                         </span>
                       </td>
                       <td className="py-1.5 text-slate-400">
-                        {(tr.duration_ms / 1000).toFixed(1)}s
+                        {tr.skipped ? '—' : `${(tr.duration_ms / 1000).toFixed(1)}s`}
                       </td>
-                      <td className="py-1.5 text-slate-400">{tr.exit_code}</td>
+                      <td className="py-1.5 text-slate-400">
+                        {tr.skipped ? '—' : tr.exit_code}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

@@ -117,6 +117,7 @@ export interface TestResult {
   duration_ms: number
   passed: boolean
   optional: boolean
+  skipped?: boolean
   output_summary?: string
   recorded_at: string
 }

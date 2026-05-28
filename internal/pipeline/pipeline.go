@@ -520,6 +520,7 @@ func recordIngotTemperResults(db *state.DB, workerID, beadID, anvil string, temp
 			DurationMs:    int(step.Duration.Milliseconds()),
 			Passed:        step.Passed,
 			Optional:      step.Optional,
+			Skipped:       step.Skipped,
 			OutputSummary: truncateOutput(step.Output, 1000),
 		}
 		logIngotErr(workerID, "test_result", ingot.InsertTestResult(conn, tr))

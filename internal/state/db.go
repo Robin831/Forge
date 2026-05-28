@@ -130,6 +130,7 @@ func (db *DB) migrate() error {
 		{"forge_session_messages", "kind", `ALTER TABLE forge_session_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'`},
 		{"forge_session_messages", "metadata", `ALTER TABLE forge_session_messages ADD COLUMN metadata TEXT NOT NULL DEFAULT ''`},
 		{"prs", "bellows_manually_assigned", `ALTER TABLE prs ADD COLUMN bellows_manually_assigned INTEGER NOT NULL DEFAULT 0`},
+		{"ingot_test_results", "skipped", `ALTER TABLE ingot_test_results ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -348,6 +349,7 @@ CREATE TABLE IF NOT EXISTS ingot_test_results (
     duration_ms      INTEGER NOT NULL DEFAULT 0,
     passed           INTEGER NOT NULL DEFAULT 0,
     optional         INTEGER NOT NULL DEFAULT 0,
+    skipped          INTEGER NOT NULL DEFAULT 0,
     output_summary   TEXT NOT NULL DEFAULT '',
     full_output_path TEXT NOT NULL DEFAULT '',
     recorded_at      TEXT NOT NULL
