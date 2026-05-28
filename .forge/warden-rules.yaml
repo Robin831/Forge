@@ -7061,3 +7061,69 @@ rules:
         - '**/*.md'
         - '**/*.ts'
         - '**/*.tsx'
+    - id: rebase-lifecycle-completion-reset
+      category: error-handling
+      pattern: >-
+        Rebase/retry lifecycle code in bellows that gates retry branches on PR status (e.g. checking pr.Status != state.PRNeedsFix) or transitions PRs between needs_fix and open states
+      check: >-
+        Verify that every rebase attempt path (including early failures like git fetch or worktree creation errors) has a corresponding completion notification or explicit status reset (analogous to NotifyCIFixCompleted/NotifyReviewFixCompleted) that clears needs_fix back to open, so PRs cannot get stranded in needs_fix and retry branches can actually fire without risking duplicate in-flight rebases
+      source: copilot:PR#657
+      added: "2026-05-26"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: test-reflects-persisted-state
+      category: testing
+      pattern: >-
+        New tests seed state directly (e.g., Status: open) to exercise a code path that in the real flow runs against different persisted state (e.g., status=needs_fix set by an earlier step)
+      check: >-
+        Verify the test's seeded state matches what the production flow would actually persist at that point; if guards on intermediate status would prevent the behavior under test in reality, either reproduce that real state in the test or add the missing state-reset behavior and cover it end-to-end
+      source: copilot:PR#657
+      added: "2026-05-26"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: test-new-lifecycle-notify-methods
+      category: testing
+      pattern: >-
+        New Notify* methods added to lifecycle that mutate in-memory state or transition persisted DB status (e.g., needs_fix→open)
+      check: >-
+        Verify unit tests cover the new lifecycle notify method, including (1) status resets to open when no other fix cycles are active, and (2) status remains in the needs_fix state when other fix flags (CINeedsFix, ReviewNeedsFix, Conflicting) are still true
+      source: copilot:PR#657
+      added: "2026-05-26"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: comment-matches-actual-behavior
+      category: style
+      pattern: >-
+        Code comments that describe the effect of a function call, especially around cache invalidation, state resets, or control flow transitions
+      check: >-
+        Verify the comment accurately describes what the code actually does, not an idealized or assumed outcome. If a function only clears a cache (not state), the comment should say so without implying downstream branches will necessarily fire.
+      source: copilot:PR#657
+      added: "2026-05-26"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: no-line-numbers-in-test-comments
+      category: testing
+      pattern: >-
+        Test file comments that reference specific source file line numbers (e.g., "bellows.go:449-452")
+      check: >-
+        Verify that test comments describe behavior without hard-coded source line numbers, since those references drift and become misleading as the referenced files change
+      source: copilot:PR#657
+      added: "2026-05-26"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: lifecycle-cleanup-all-actions
+      category: error-handling
+      pattern: >-
+        Early return on error in code paths that handle multiple action types (e.g., ActionRebase, ActionFixCI, ActionFixReview) where lifecycle/state flags were set before the failure
+      check: >-
+        Verify that error cleanup resets state for ALL action types, not just one. If lifecycle sets per-action flags (CINeedsFix, ReviewNeedsFix, etc.) that suppress future dispatches until a Notify*Completed call clears them, every early-return path must call the corresponding Notify*Completed (and any related state resets like bellowsMonitor.ResetPRState) for the specific req.Action, or use a shared abort helper keyed by action type to avoid stranding fix/rebase loops after transient failures
+      source: copilot:PR#657
+      added: "2026-05-26"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
