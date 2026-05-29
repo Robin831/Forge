@@ -94,6 +94,8 @@ describe('PipelineBar', () => {
         ]}
       />,
     )
-    expect(screen.getByText('Fhi.Metadata-maz1w')).toBeVisible()
+    const beadIdEl = screen.getByText('Fhi.Metadata-maz1w')
+    expect(beadIdEl).toBeVisible()
+    expect(beadIdEl).toHaveClass('w-40')
   })
 })
