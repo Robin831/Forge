@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, X } from 'lucide-react'
-import type { EscalationDetail, ResolveVerb } from '../api/forge'
+import type { EscalationDetail, EscalationType, ResolveVerb } from '../api/forge'
 import ConfirmModal from './ConfirmModal'
 import {
   resolveKey,
@@ -9,11 +9,10 @@ import {
   useResolveStatus,
 } from '../stores/resolveStore'
 
-// EscalationType narrows the panel to the two failure modes the daemon
-// raises today. Both share the same data shape but consumers may want to
-// label the panel differently (e.g. "Smith failed" vs. "Dispatch failed"
-// in the header copy).
-export type EscalationType = 'dispatch_failed' | 'smith_failed'
+// EscalationType is shared with the API layer (api/forge.ts) so the
+// needs-attention list and this panel agree on the discriminator. Re-export
+// it here for the handful of older imports that reach for it via the panel.
+export type { EscalationType }
 
 // BEAD_VERBS lists the resolve verbs applicable when the bead failed to
 // dispatch — no worker process ever started, so 'stop' (kill worker) is
@@ -58,13 +57,68 @@ const VERB_LABEL: Record<ResolveVerb, string> = {
   'warden-rerun': 'Re-run Warden',
 }
 
+// VerbSpec is one entry in an escalation type's action set. `label` overrides
+// the default VERB_LABEL wording when a type wants escalation-specific copy
+// (e.g. the stranded-branch type renames approve-as-is to "Open PR from
+// branch") without changing the underlying verb the backend receives.
+interface VerbSpec {
+  verb: ResolveVerb
+  label?: string
+}
+
+// STRANDED_BRANCH_VERBS is the action set for a
+// dispatch_blocked_stranded_branch escalation: a prior worker pushed
+// origin/forge/<bead> but never opened a PR. The three operator choices map
+// to existing resolve verbs — open a PR from that branch (approve-as-is),
+// reset the branch and re-dispatch (retry), or accept the situation and clear
+// the flag (clear) — but are labelled for the stranded-branch context.
+const STRANDED_BRANCH_VERBS: readonly VerbSpec[] = [
+  { verb: 'approve-as-is', label: 'Open PR from branch' },
+  { verb: 'retry', label: 'Reset branch & retry' },
+  { verb: 'clear', label: 'Accept & clear' },
+]
+
+// CLARIFICATION_VERBS is the action set for a clarification escalation: the
+// operator either records the clarification (clarify, requires an audit note)
+// or clears the flag once the bead is unambiguous (unclarify).
+const CLARIFICATION_VERBS: readonly VerbSpec[] = [
+  { verb: 'clarify' },
+  { verb: 'unclarify' },
+]
+
+// verbSpecsFor maps an escalation type to its ordered action set. The two
+// recovery/worker modes share WORKER_VERBS; dispatch_failed keeps the broader
+// BEAD_VERBS (no live worker to stop); the bead-centric types added by
+// Forge-iz6s get their own tailored sets.
+function verbSpecsFor(type: EscalationType): readonly VerbSpec[] {
+  switch (type) {
+    case 'dispatch_blocked_stranded_branch':
+      return STRANDED_BRANCH_VERBS
+    case 'clarification':
+      return CLARIFICATION_VERBS
+    case 'dispatch_failed':
+      return BEAD_VERBS.map((verb) => ({ verb }))
+    case 'smith_failed':
+    case 'recovery_failed':
+    default:
+      return WORKER_VERBS.map((verb) => ({ verb }))
+  }
+}
+
 export interface ResolveNeedsAttentionPanelProps {
   // escalationId is the bead id the operator is triaging; the store
   // caches escalation detail under this key so re-renders are cheap.
   escalationId: string
-  // escalationType drives the header copy and any future type-specific
-  // affordances; data fetching is identical for both kinds today.
+  // escalationType drives the header copy and which resolve actions render.
+  // The bead-centric needs-attention list passes the real type derived from
+  // the bead's latest lifecycle event; the legacy failed-worker affordance
+  // still passes 'smith_failed'.
   escalationType: EscalationType
+  // anvil, when provided, disambiguates the escalation fetch for a bead id
+  // that exists in more than one anvil. The needs-attention list always
+  // supplies it; the worker-row affordance can omit it (the worker's anvil
+  // is already unambiguous).
+  anvil?: string
   // onClose, when provided, renders a close button in the header. The
   // panel does not own its own modal chrome — the parent decides whether
   // to render it inline or in a dialog.
@@ -85,6 +139,9 @@ const DESTRUCTIVE_VERBS: ReadonlySet<ResolveVerb> = new Set<ResolveVerb>([
 const TYPE_TITLE: Record<EscalationType, string> = {
   dispatch_failed: 'Dispatch failed — needs attention',
   smith_failed: 'Smith failed — needs attention',
+  recovery_failed: 'Recovery failed — needs attention',
+  dispatch_blocked_stranded_branch: 'Stranded branch — needs attention',
+  clarification: 'Clarification needed',
 }
 
 // formatCommitList renders a list of commits as monospace lines. The
@@ -149,24 +206,27 @@ function SkeletonBlock({ className = '' }: { className?: string }) {
 export default function ResolveNeedsAttentionPanel({
   escalationId,
   escalationType,
+  anvil,
   onClose,
 }: ResolveNeedsAttentionPanelProps) {
-  const entry = useEscalation(escalationId)
+  const entry = useEscalation(escalationId, anvil)
   const { fetchEscalation, run, reset } = useResolveActions()
   const auditNoteId = `resolve-audit-note-${escalationId}`
   const [auditNote, setAuditNote] = useState('')
   // confirmVerb is non-null while the confirmation modal is open for a
-  // destructive verb. Storing the verb (rather than a boolean) lets the
-  // modal title/body adapt per verb (retry / stop / approve-as-is), and
+  // destructive verb. Storing the verb + label (rather than a boolean) lets
+  // the modal title/body adapt per verb (retry / stop / approve-as-is) and
+  // reflect the escalation-specific label (e.g. "Open PR from branch"), and
   // lets the confirm callback know which action to dispatch.
-  const [confirmVerb, setConfirmVerb] = useState<{ verb: ResolveVerb } | null>(
-    null,
-  )
+  const [confirmVerb, setConfirmVerb] = useState<{
+    verb: ResolveVerb
+    label: string
+  } | null>(null)
 
   useEffect(() => {
     if (!escalationId) return
-    void fetchEscalation(escalationId)
-  }, [escalationId, fetchEscalation])
+    void fetchEscalation(escalationId, anvil)
+  }, [escalationId, anvil, fetchEscalation])
 
   const detail = entry.data
   const contextBlock = useMemo(
@@ -177,7 +237,7 @@ export default function ResolveNeedsAttentionPanel({
   const isLoading = entry.status === 'loading' && !detail
   const isError = entry.status === 'error' && !detail
 
-  const verbs = escalationType === 'dispatch_failed' ? BEAD_VERBS : WORKER_VERBS
+  const verbSpecs = useMemo(() => verbSpecsFor(escalationType), [escalationType])
 
   // The resolve-store entry is keyed on (anvil, beadID). When the
   // escalation detail hasn't loaded yet we fall back to a placeholder key
@@ -305,7 +365,8 @@ export default function ResolveNeedsAttentionPanel({
                 aria-label="Resolve actions"
                 className="mt-2 flex flex-wrap gap-2"
               >
-                {verbs.map((verb) => {
+                {verbSpecs.map(({ verb, label }) => {
+                  const verbLabel = label ?? VERB_LABEL[verb]
                   const invoke = () => {
                     const note = auditNote.trim()
                     void run(actionKey, escalationId, {
@@ -316,7 +377,7 @@ export default function ResolveNeedsAttentionPanel({
                   }
                   const onClick = () => {
                     if (DESTRUCTIVE_VERBS.has(verb)) {
-                      setConfirmVerb({ verb })
+                      setConfirmVerb({ verb, label: verbLabel })
                       return
                     }
                     invoke()
@@ -340,7 +401,7 @@ export default function ResolveNeedsAttentionPanel({
                       }
                       className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-100 hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {isActive ? `${VERB_LABEL[verb]}…` : VERB_LABEL[verb]}
+                      {isActive ? `${verbLabel}…` : verbLabel}
                     </button>
                   )
                 })}
@@ -367,7 +428,7 @@ export default function ResolveNeedsAttentionPanel({
       )}
       <ConfirmModal
         open={confirmVerb !== null}
-        title={confirmVerb ? `Confirm: ${VERB_LABEL[confirmVerb.verb]}` : ''}
+        title={confirmVerb ? `Confirm: ${confirmVerb.label}` : ''}
         message={
           confirmVerb?.verb === 'stop'
             ? 'Killing the worker stops the running smith process and prevents re-dispatch until the flag is cleared. Continue?'

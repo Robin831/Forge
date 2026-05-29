@@ -1776,6 +1776,44 @@ func (db *DB) EventsSince(lastID, limit int) ([]Event, error) {
 	return events, rows.Err()
 }
 
+// EventsByBead returns the most recent events for a bead, newest-first
+// (ordered by id descending so the ordering is stable even when several
+// events share the same second-resolution timestamp). When anvil is
+// non-empty the lookup is scoped to that anvil. limit <= 0 returns all
+// matching rows. Used by the needs-attention surface to derive a bead's
+// escalation type from its latest relevant lifecycle event.
+func (db *DB) EventsByBead(beadID, anvil string, limit int) ([]Event, error) {
+	query := `SELECT id, timestamp, type, message, bead_id, anvil
+		 FROM events WHERE bead_id = ?`
+	args := []any{beadID}
+	if anvil != "" {
+		query += ` AND anvil = ?`
+		args = append(args, anvil)
+	}
+	query += ` ORDER BY id DESC`
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := []Event{}
+	for rows.Next() {
+		var e Event
+		var typ, ts string
+		if err := rows.Scan(&e.ID, &ts, &typ, &e.Message, &e.BeadID, &e.Anvil); err != nil {
+			return nil, err
+		}
+		e.Type = EventType(typ)
+		e.Timestamp = parseTime(ts)
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
 // LatestWardenRejectMessage returns the message from the most recent
 // warden_reject event for the given bead, or "" if none exists.
 func (db *DB) LatestWardenRejectMessage(beadID string) string {

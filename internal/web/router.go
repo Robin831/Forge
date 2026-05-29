@@ -111,6 +111,11 @@ func (s *Server) routes() http.Handler {
 		// from the worker's worktree.
 		r.Post("/forge/resolve", s.handleForgeResolve)
 		r.Get("/forge/escalation/{bead_id}", s.handleForgeEscalation)
+		// Bead-centric needs-attention list (Forge-iz6s). Driven by the
+		// retries table (NeedsHumanBeads + ClarificationNeededBeads) so
+		// escalations are findable and resolvable regardless of whether a
+		// live worker row still exists.
+		r.Get("/forge/needs-attention", s.handleForgeNeedsAttention)
 	})
 
 	// Static UI fallback. The next bead replaces this with the embedded

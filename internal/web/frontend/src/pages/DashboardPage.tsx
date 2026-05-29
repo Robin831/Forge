@@ -11,6 +11,7 @@ import type {
 import AppHeader from '../components/AppHeader'
 import QueuePane from '../components/QueuePane'
 import WorkersPane from '../components/WorkersPane'
+import NeedsAttentionPane from '../components/NeedsAttentionPane'
 import LiveActivity from '../components/LiveActivity'
 import WorkerLogModal from '../components/WorkerLogModal'
 import CruciblesPane from '../components/CruciblesPane'
@@ -89,6 +90,11 @@ export default function DashboardPage() {
       )}
 
       <PipelineBar workers={workers.data?.workers ?? []} />
+
+      {/* Bead-centric needs-attention surface (Forge-iz6s). Always present and
+          driven by the retries table, so graceful and stale escalations are
+          findable and resolvable even when no live worker row exists. */}
+      <NeedsAttentionPane />
 
       <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-3">
         <QueuePane

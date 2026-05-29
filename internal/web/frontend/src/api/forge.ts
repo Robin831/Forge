@@ -33,6 +33,50 @@ export const RESOLVE_VERBS: readonly ResolveVerb[] = [
   'warden-rerun',
 ] as const
 
+// EscalationType discriminates the needs-attention class of a bead and drives
+// which resolve actions the panel offers. Mirrors the escalation_type values
+// returned by GET /api/forge/needs-attention (see internal/web/
+// forge_needs_attention.go). 'dispatch_failed' / 'smith_failed' are the two
+// original worker/bead modes; the rest were added by Forge-iz6s so the
+// bead-centric surface can classify graceful and stranded-branch escalations.
+export type EscalationType =
+  | 'dispatch_failed'
+  | 'smith_failed'
+  | 'recovery_failed'
+  | 'dispatch_blocked_stranded_branch'
+  | 'clarification'
+
+// NeedsAttentionItem is one row of GET /api/forge/needs-attention. It mirrors
+// `needsAttentionItem` in internal/web/forge_needs_attention.go and is driven
+// by the retries table rather than the workers table, so it surfaces every
+// needs_human / clarification bead regardless of worker-row state.
+export interface NeedsAttentionItem {
+  bead_id: string
+  anvil: string
+  title?: string
+  escalation_type: EscalationType
+  needs_human: boolean
+  clarification_needed: boolean
+  dispatch_failures: number
+  recovery_failures: number
+  last_error?: string
+  updated_at?: string
+  worker_row_exists: boolean
+}
+
+export interface NeedsAttentionResponse {
+  items: NeedsAttentionItem[]
+}
+
+// fetchNeedsAttention loads the bead-centric needs-attention list. The panel
+// polls this on the dashboard's interval so resolved beads drop off the list
+// on the next tick.
+export function fetchNeedsAttention(
+  signal?: AbortSignal,
+): Promise<NeedsAttentionResponse> {
+  return apiGet<NeedsAttentionResponse>('/api/forge/needs-attention', signal)
+}
+
 // RetryDetail mirrors the `retry` block of the escalation response. Fields
 // are best-effort: the daemon returns `undefined` for beads that never
 // reached the retry table (e.g. workers killed before their first retry).
