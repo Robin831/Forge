@@ -194,3 +194,108 @@ describe('ResolveNeedsAttentionPanel — smith_failed', () => {
     ).not.toBeInTheDocument()
   })
 })
+
+describe('ResolveNeedsAttentionPanel — dispatch_blocked_stranded_branch', () => {
+  it('renders the stranded-branch action set with relabelled verbs', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(DETAIL))
+
+    render(
+      <Wrapper>
+        <ResolveNeedsAttentionPanel
+          escalationId="Forge-aaaa"
+          escalationType="dispatch_blocked_stranded_branch"
+        />
+      </Wrapper>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Open PR from branch')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Reset branch & retry')).toBeInTheDocument()
+    expect(screen.getByText('Accept & clear')).toBeInTheDocument()
+    // The generic smith/dispatch verbs are not shown for this class.
+    expect(screen.queryByText('Re-run Warden')).not.toBeInTheDocument()
+    expect(screen.queryByText('Stop worker')).not.toBeInTheDocument()
+    expect(screen.queryByText('Needs clarification')).not.toBeInTheDocument()
+  })
+
+  it('still POSTs the underlying verb when the relabelled action fires', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(DETAIL))
+      .mockResolvedValueOnce(jsonResponse({ status: 'ok' }))
+
+    const user = userEvent.setup()
+    render(
+      <Wrapper>
+        <ResolveNeedsAttentionPanel
+          escalationId="Forge-aaaa"
+          escalationType="dispatch_blocked_stranded_branch"
+        />
+      </Wrapper>,
+    )
+
+    const openPR = await screen.findByText('Open PR from branch')
+    await user.click(openPR)
+    // Open-PR maps to approve-as-is, which is destructive → confirm first.
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByText('Confirm'))
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([url]) => url === '/api/forge/resolve'),
+      ).toHaveLength(1)
+    })
+    const [, init] = fetchMock.mock.calls.find(
+      ([url]) => url === '/api/forge/resolve',
+    ) as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      bead_id: 'Forge-aaaa',
+      action: 'approve-as-is',
+      anvil_name: 'forge',
+    })
+  })
+})
+
+describe('ResolveNeedsAttentionPanel — clarification', () => {
+  it('renders only the clarify / unclarify verbs', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(DETAIL))
+
+    render(
+      <Wrapper>
+        <ResolveNeedsAttentionPanel
+          escalationId="Forge-aaaa"
+          escalationType="clarification"
+        />
+      </Wrapper>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Needs clarification')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Clear clarification')).toBeInTheDocument()
+    expect(screen.queryByText('Retry')).not.toBeInTheDocument()
+    expect(screen.queryByText('Clear flag')).not.toBeInTheDocument()
+  })
+})
+
+describe('ResolveNeedsAttentionPanel — anvil hint', () => {
+  it('passes the anvil hint to the escalation fetch', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(DETAIL))
+
+    render(
+      <Wrapper>
+        <ResolveNeedsAttentionPanel
+          escalationId="Forge-aaaa"
+          escalationType="smith_failed"
+          anvil="forge"
+        />
+      </Wrapper>,
+    )
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled()
+    })
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toBe('/api/forge/escalation/Forge-aaaa?anvil=forge')
+  })
+})
