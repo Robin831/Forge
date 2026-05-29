@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.19.0] - 2026-05-29
+
+### Added
+
+- **Bead-centric Needs Attention panel in Hearth 2.0** - Added a persistent, always-present Needs Attention panel (and `GET /api/forge/needs-attention` endpoint) driven by the retries table rather than worker rows, so graceful Smith escalations (worker exited `done`) and stale escalations (worker aged out) are now findable and resolvable in the browser. The resolve panel renders escalation-type-appropriate actions — open PR / reset / accept for stranded branches, clarify/unclarify for clarification, and the existing clear/retry/stop set for smith/recovery/dispatch failures — using the real escalation type derived from each bead's latest lifecycle event. (Forge-iz6s)
+
+### Changed
+
+- **Dependency updates** - Update Go modules (github.com/go-chi/chi/v5 v5.2.5→v5.3.0, golang.org/x/crypto v0.51.0→v0.52.0, golang.org/x/sys v0.44.0→v0.45.0, golang.org/x/net v0.53.0→v0.54.0 indirect) and npm devDependencies (@types/node 25.8.0→25.9.1, @types/react 19.2.14→19.2.15). Major version bumps deferred for manual review. (Forge-2iwl)
+
+### Fixed
+
+- **Ingot panel now distinguishes skipped temper steps** - Path-skipped steps (e.g. client-* on a backend-only diff) previously rendered as `pass · 0.0s · exit 0`, indistinguishable from steps that actually ran. The temper `Skipped` flag is now persisted on ingot test results and surfaced in Hearth as a muted `skip` verdict with dashed-out duration and exit columns. (Forge-uzy1)
+
 ## [0.18.1] - 2026-05-26
 
 ### Fixed
