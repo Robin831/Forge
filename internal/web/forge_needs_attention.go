@@ -77,6 +77,9 @@ func (s *Server) handleForgeNeedsAttention(w http.ResponseWriter, r *http.Reques
 	}
 	if recs, err := s.db.ClarificationNeededBeads(); err == nil {
 		records = append(records, recs...)
+	} else {
+		writeError(w, http.StatusInternalServerError, "failed to load clarification-needed beads: "+err.Error())
+		return
 	}
 
 	// Title lookup from the queue cache (the same source the dashboard uses).

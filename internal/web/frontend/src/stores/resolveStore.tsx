@@ -73,6 +73,14 @@ export interface EscalationEntry {
 
 const IDLE_ESCALATION: EscalationEntry = { status: 'idle', updatedAt: 0 }
 
+// escalationKey produces a stable cache key from a bead/anvil pair. When anvil
+// is omitted the key degrades to just the bead id (legacy worker-row path where
+// the anvil is already unambiguous). Centralising it means the store and
+// consumers agree on the key shape.
+export function escalationKey(beadID: string, anvil?: string): string {
+  return anvil ? `${anvil}/${beadID}` : beadID
+}
+
 interface ResolveActions {
   // run dispatches a verb to POST /api/forge/resolve and tracks the
   // result against the supplied key. Resolves to true on success, false
@@ -178,14 +186,15 @@ export function ResolveStoreProvider({ children }: { children: ReactNode }) {
       escalationId: string,
       anvil?: string,
     ): Promise<EscalationDetail | null> => {
+      const key = escalationKey(escalationId, anvil)
       // Preserve any previously-loaded data on the entry so a refetch
       // does not flash a skeleton in the UI; the status flag is what
       // consumers observe to render a loading indicator.
       setEscalations((prev) => {
-        const existing = prev[escalationId]
+        const existing = prev[key]
         return {
           ...prev,
-          [escalationId]: {
+          [key]: {
             status: 'loading',
             data: existing?.data,
             updatedAt: Date.now(),
@@ -196,7 +205,7 @@ export function ResolveStoreProvider({ children }: { children: ReactNode }) {
         const detail = await apiFetchEscalation(escalationId, anvil)
         setEscalations((prev) => ({
           ...prev,
-          [escalationId]: {
+          [key]: {
             status: 'success',
             data: detail,
             updatedAt: Date.now(),
@@ -212,9 +221,9 @@ export function ResolveStoreProvider({ children }: { children: ReactNode }) {
               : 'request failed'
         setEscalations((prev) => ({
           ...prev,
-          [escalationId]: {
+          [key]: {
             status: 'error',
-            data: prev[escalationId]?.data,
+            data: prev[key]?.data,
             error: message,
             updatedAt: Date.now(),
           },
@@ -280,13 +289,14 @@ export function useResolveEntries(): Record<ResolveKey, ResolveEntry> {
   return useResolveStore().entries
 }
 
-// useEscalation selects a single escalation entry from the store. Missing
-// ids resolve to the shared IDLE_ESCALATION constant so consumers can
+// useEscalation selects a single escalation entry from the store, keyed by
+// anvil+beadID so same-id beads in different anvils stay distinct. Missing
+// keys resolve to the shared IDLE_ESCALATION constant so consumers can
 // destructure `status` without a null check on every render.
 // eslint-disable-next-line react-refresh/only-export-components
-export function useEscalation(escalationId: string): EscalationEntry {
+export function useEscalation(escalationId: string, anvil?: string): EscalationEntry {
   const { escalations } = useResolveStore()
-  return escalations[escalationId] ?? IDLE_ESCALATION
+  return escalations[escalationKey(escalationId, anvil)] ?? IDLE_ESCALATION
 }
 
 // useEscalations exposes the full escalation map. Reserved for tests and

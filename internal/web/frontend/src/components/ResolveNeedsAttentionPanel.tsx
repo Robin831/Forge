@@ -3,6 +3,7 @@ import { AlertTriangle, X } from 'lucide-react'
 import type { EscalationDetail, EscalationType, ResolveVerb } from '../api/forge'
 import ConfirmModal from './ConfirmModal'
 import {
+  escalationKey,
   resolveKey,
   useEscalation,
   useResolveActions,
@@ -209,7 +210,7 @@ export default function ResolveNeedsAttentionPanel({
   anvil,
   onClose,
 }: ResolveNeedsAttentionPanelProps) {
-  const entry = useEscalation(escalationId)
+  const entry = useEscalation(escalationId, anvil)
   const { fetchEscalation, run, reset } = useResolveActions()
   const auditNoteId = `resolve-audit-note-${escalationId}`
   const [auditNote, setAuditNote] = useState('')
