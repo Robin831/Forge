@@ -85,7 +85,13 @@ describe('PipelineBar', () => {
   it('does not truncate long bead IDs', () => {
     render(
       <PipelineBar
-        workers={[worker({ bead_id: 'Fhi.Metadata-maz1w', phase: 'bellows' })]}
+        workers={[
+          worker({
+            bead_id: 'Fhi.Metadata-maz1w',
+            title: 'Add metadata export endpoint',
+            phase: 'bellows',
+          }),
+        ]}
       />,
     )
     expect(screen.getByText('Fhi.Metadata-maz1w')).toBeVisible()
