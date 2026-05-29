@@ -2739,16 +2739,7 @@ normalPipeline:
 			// Bead needs human attention — mark it immediately so it appears
 			// in Hearth's Needs Attention panel without waiting for the
 			// circuit breaker to trip after multiple failures.
-			reason := "Smith produced no diff, needs human attention"
-			if outcome.SchematicResult != nil && outcome.SchematicResult.Reason != "" {
-				reason = outcome.SchematicResult.Reason
-			} else if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" && outcome.ReviewResult.NoDiff {
-				reason = "Warden rejected (no diff): " + outcome.ReviewResult.Summary
-			} else if outcome.SmithResult != nil {
-				if r := pipeline.ExtractNeedsHuman(outcome.SmithResult.FullOutput); r != "" {
-					reason = "Smith escalated: " + r
-				}
-			}
+			reason := needsHumanReason(outcome)
 
 			if err := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); err != nil {
 				d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", err)
@@ -2775,6 +2766,31 @@ normalPipeline:
 
 	// Pipeline succeeded — finalize (create PR, notify, close bead).
 	d.finalizePipeline(pipelineCtx, outcome, bead, anvilCfg.Path, claimWorkerID)
+}
+
+// needsHumanReason selects the operator-facing reason to surface in the Needs
+// Attention panel (via retries.last_error) when a pipeline releases a bead for
+// human attention. The priority is most-specific-first: an explicit Smith
+// escalation reflects a deliberate decision made after looking at the actual
+// work, so it must win over the Schematic's decomposition rationale. The
+// Schematic reason is the weakest signal — it nearly always exists (the
+// Schematic ran and has an opinion), so it is both labelled ("Schematic: ")
+// and ranked last so it can never again masquerade as a bare escalation.
+func needsHumanReason(outcome *pipeline.Outcome) string {
+	if outcome != nil {
+		if outcome.SmithResult != nil {
+			if r := pipeline.ExtractNeedsHuman(outcome.SmithResult.FullOutput); r != "" {
+				return "Smith escalated: " + r
+			}
+		}
+		if outcome.ReviewResult != nil && outcome.ReviewResult.NoDiff && outcome.ReviewResult.Summary != "" {
+			return "Warden rejected (no diff): " + outcome.ReviewResult.Summary
+		}
+		if outcome.SchematicResult != nil && outcome.SchematicResult.Reason != "" {
+			return "Schematic: " + outcome.SchematicResult.Reason
+		}
+	}
+	return "Smith produced no diff, needs human attention"
 }
 
 // finalizePipeline handles the post-success pipeline flow: create PR, clear
