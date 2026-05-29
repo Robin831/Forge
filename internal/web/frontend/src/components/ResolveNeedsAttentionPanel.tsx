@@ -3,7 +3,6 @@ import { AlertTriangle, X } from 'lucide-react'
 import type { EscalationDetail, EscalationType, ResolveVerb } from '../api/forge'
 import ConfirmModal from './ConfirmModal'
 import {
-  escalationKey,
   resolveKey,
   useEscalation,
   useResolveActions,
