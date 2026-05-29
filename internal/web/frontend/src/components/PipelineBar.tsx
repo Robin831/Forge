@@ -277,7 +277,7 @@ function BeadRow({ worker, stage }: BeadRowProps) {
       data-bead-id={worker.bead_id}
       className="flex items-center gap-2 rounded-md bg-slate-900/40 px-2 py-1 text-xs"
     >
-      <span className="w-24 shrink-0 truncate font-mono text-[11px] text-slate-400">
+      <span className="w-40 shrink-0 truncate font-mono text-[11px] text-slate-400">
         {worker.bead_id}
       </span>
       <span className="min-w-0 flex-1 truncate text-slate-200">

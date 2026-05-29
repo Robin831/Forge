@@ -81,4 +81,21 @@ describe('PipelineBar', () => {
     render(<PipelineBar workers={workers} />)
     expect(screen.getByTestId('pipeline-count-ready_to_merge')).toHaveTextContent('0')
   })
+
+  it('does not truncate long bead IDs', () => {
+    render(
+      <PipelineBar
+        workers={[
+          worker({
+            bead_id: 'Fhi.Metadata-maz1w',
+            title: 'Add metadata export endpoint',
+            phase: 'bellows',
+          }),
+        ]}
+      />,
+    )
+    const beadIdEl = screen.getByText('Fhi.Metadata-maz1w')
+    expect(beadIdEl).toBeVisible()
+    expect(beadIdEl).toHaveClass('w-40')
+  })
 })
