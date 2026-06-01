@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 import { describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import PipelineBar, { phaseToStage } from './PipelineBar'
 import type { WorkerInfo } from '../api'
 
@@ -19,6 +19,10 @@ function worker(overrides: Partial<WorkerInfo>): WorkerInfo {
 describe('phaseToStage', () => {
   it('maps the ready_to_merge phase to its own stage', () => {
     expect(phaseToStage('ready_to_merge')).toBe('ready_to_merge')
+  })
+
+  it('maps the assay phase to the assay stage', () => {
+    expect(phaseToStage('assay')).toBe('assay')
   })
 
   it('drops the legacy merged phase so it never lands on a stage', () => {
@@ -80,6 +84,68 @@ describe('PipelineBar', () => {
     ]
     render(<PipelineBar workers={workers} />)
     expect(screen.getByTestId('pipeline-count-ready_to_merge')).toHaveTextContent('0')
+  })
+
+  it('renders the Assay pill between the PR and Ready to merge pills', () => {
+    render(<PipelineBar workers={[]} />)
+
+    expect(screen.getByTestId('pipeline-stage-assay')).toBeInTheDocument()
+    expect(screen.getByText('Assay')).toBeInTheDocument()
+  })
+
+  it('emits the seven stages in pipeline order', () => {
+    const { container } = render(<PipelineBar workers={[]} />)
+    const order = Array.from(
+      container.querySelectorAll('[data-testid^="pipeline-stage-"]'),
+    ).map((el) => el.getAttribute('data-testid'))
+    expect(order).toEqual([
+      'pipeline-stage-schematic',
+      'pipeline-stage-smith',
+      'pipeline-stage-temper',
+      'pipeline-stage-warden',
+      'pipeline-stage-pr',
+      'pipeline-stage-assay',
+      'pipeline-stage-ready_to_merge',
+    ])
+  })
+
+  it('counts a running Assay worker in the Assay pill', () => {
+    const workers: WorkerInfo[] = [
+      worker({
+        id: 'assay-forge-1',
+        bead_id: 'Forge-eeee',
+        phase: 'assay',
+        status: 'running',
+        pr_number: 5,
+      }),
+    ]
+    render(<PipelineBar workers={workers} />)
+    expect(screen.getByTestId('pipeline-count-assay')).toHaveTextContent('1')
+  })
+
+  it('marks the Assay stage on the bead row when an Assay and a bellows worker share a bead', () => {
+    const workers: WorkerInfo[] = [
+      // Synthetic bellows monitor for the open PR.
+      worker({
+        id: 'bellows-forge-6',
+        bead_id: 'Forge-ffff',
+        phase: 'bellows',
+        pr_number: 6,
+      }),
+      // Real Assay review worker for the same bead — the more informative entry.
+      worker({
+        id: 'assay-forge-6',
+        bead_id: 'Forge-ffff',
+        phase: 'assay',
+        status: 'running',
+        pr_number: 6,
+      }),
+    ]
+    render(<PipelineBar workers={workers} />)
+
+    const row = screen.getByTestId('pipeline-bead-row')
+    const assayMarker = within(row).getByLabelText('Assay')
+    expect(assayMarker).toHaveClass('bg-pink-400')
   })
 
   it('does not truncate long bead IDs', () => {

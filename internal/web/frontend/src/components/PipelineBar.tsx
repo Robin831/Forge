@@ -2,15 +2,18 @@ import { useMemo } from 'react'
 import { ChevronRight } from 'lucide-react'
 import type { WorkerInfo } from '../api'
 
-// StageKey labels the six visible columns of the pipeline bar. The Bellows
+// StageKey labels the seven visible columns of the pipeline bar. The Bellows
 // PR-monitor is intentionally folded into the "pr" stage as a sub-label
 // rather than getting its own column — see the per-bead description.
-// "ready_to_merge" sits after the PR stage and counts PRs the daemon has
+// "assay" sits between the PR stage and ready-to-merge: Bellows opens the PR,
+// then triggers an Assay review (multi-pass Claude review worker), and only
+// once CI and threads clear does the PR mature to ready-to-merge.
+// "ready_to_merge" sits after the Assay stage and counts PRs the daemon has
 // promoted (CI green, no pending reviews, no unresolved threads, not
 // conflicting) so an operator can see what's waiting on a human merge click.
-type StageKey = 'schematic' | 'smith' | 'temper' | 'warden' | 'pr' | 'ready_to_merge'
+type StageKey = 'schematic' | 'smith' | 'temper' | 'warden' | 'pr' | 'assay' | 'ready_to_merge'
 
-const STAGES: StageKey[] = ['schematic', 'smith', 'temper', 'warden', 'pr', 'ready_to_merge']
+const STAGES: StageKey[] = ['schematic', 'smith', 'temper', 'warden', 'pr', 'assay', 'ready_to_merge']
 
 const STAGE_LABEL: Record<StageKey, string> = {
   schematic: 'Schematic',
@@ -18,6 +21,7 @@ const STAGE_LABEL: Record<StageKey, string> = {
   temper: 'Temper',
   warden: 'Warden',
   pr: 'PR',
+  assay: 'Assay',
   ready_to_merge: 'Ready to merge',
 }
 
@@ -30,10 +34,11 @@ const STAGE_ACCENT: Record<StageKey, string> = {
   temper: 'border-t-yellow-500',
   warden: 'border-t-cyan-500',
   pr: 'border-t-blue-500',
+  assay: 'border-t-pink-500',
   ready_to_merge: 'border-t-emerald-500',
 }
 
-// phaseToStage projects a backend worker phase string onto one of the six
+// phaseToStage projects a backend worker phase string onto one of the seven
 // pipeline-bar stages. Bellows + its sub-workers (quench/burnish/rebase) all
 // land on "pr" because to the user they are one logical stage; we surface the
 // sub-state separately via prBellowsLabel. The daemon promotes a bellows
@@ -56,6 +61,8 @@ export function phaseToStage(phase: string | undefined): StageKey | null {
     case 'cifix':
     case 'reviewfix':
       return 'pr'
+    case 'assay':
+      return 'assay'
     case 'ready_to_merge':
       return 'ready_to_merge'
     // crucible, smelter, schematic-fail and any unknown phase fall through
@@ -312,6 +319,8 @@ function activeMarkerClass(stage: StageKey): string {
       return 'bg-cyan-400'
     case 'pr':
       return 'bg-blue-400'
+    case 'assay':
+      return 'bg-pink-400'
     case 'ready_to_merge':
       return 'bg-emerald-400'
   }
