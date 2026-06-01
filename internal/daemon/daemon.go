@@ -4497,6 +4497,68 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		data, _ := json.Marshal(map[string]string{"message": "warden re-review started"})
 		return ipc.Response{Type: "ok", Payload: data}
 
+	case "assay_rerun":
+		var arp ipc.AssayRerunPayload
+		if err := json.Unmarshal(cmd.Payload, &arp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid assay_rerun payload: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if arp.Anvil == "" || arp.PR == 0 {
+			msg, _ := json.Marshal(map[string]string{"message": "assay_rerun requires anvil and pr"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		anvilCfg, ok := d.cfg.Load().Anvils[arp.Anvil]
+		if !ok {
+			msg, _ := json.Marshal(map[string]string{"message": "unknown anvil: " + arp.Anvil})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		pr, err := d.db.GetPRByID(arp.PR)
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to look up PR id %d: %v", arp.PR, err)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if pr == nil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR id %d not found", arp.PR)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if pr.Anvil != arp.Anvil {
+			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR id %d belongs to anvil %q, not %q", arp.PR, pr.Anvil, arp.Anvil)})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		_ = d.db.LogEvent(state.EventPRReviewNeeded, fmt.Sprintf("Assay re-review requested for PR #%d (manual)", pr.Number), pr.BeadID, arp.Anvil)
+		d.logger.Info("Assay re-review requested", "pr", pr.Number, "anvil", arp.Anvil, "bead", pr.BeadID)
+
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			// Resolve the current head SHA so the run records against the head
+			// actually reviewed. A manual rerun deliberately bypasses the
+			// Bellows trigger gate's head-SHA debounce, so the stored
+			// LastReviewedSHA may already equal head — dispatching
+			// ActionAssayReview directly forces the pass regardless.
+			headSHA := ""
+			statusCtx, cancel := context.WithTimeout(d.runCtx, 30*time.Second)
+			if st, serr := d.vcsForAnvil(arp.Anvil).CheckStatusLight(statusCtx, anvilCfg.Path, pr.Number); serr == nil && st != nil {
+				headSHA = st.HeadSHA
+			} else if serr != nil {
+				d.logger.Warn("assay rerun: failed to resolve PR head SHA; recording run without it", "pr", pr.Number, "anvil", arp.Anvil, "error", serr)
+			}
+			cancel()
+			d.handleLifecycleAction(d.runCtx, lifecycle.ActionRequest{
+				Action:     lifecycle.ActionAssayReview,
+				PRNumber:   pr.Number,
+				BeadID:     pr.BeadID,
+				Anvil:      arp.Anvil,
+				Branch:     pr.Branch,
+				BaseBranch: pr.BaseBranch,
+				HeadSHA:    headSHA,
+				IsManual:   true,
+			})
+		}()
+
+		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("Assay re-review started for PR #%d", pr.Number)})
+		return ipc.Response{Type: "ok", Payload: data}
+
 	case "approve_as_is":
 		var ap ipc.ApproveAsIsPayload
 		if err := json.Unmarshal(cmd.Payload, &ap); err != nil {

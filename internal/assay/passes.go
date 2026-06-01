@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 )
 
@@ -50,6 +51,30 @@ var deepPasses = []passDef{
 	{Name: "conventions", Tier: tierReview, promptFile: "conventions"},
 	{Name: "tests-missing", Tier: tierReview, promptFile: "tests_missing"},
 	{Name: "repo-specific", Tier: tierReview, promptFile: "repo_specific"},
+}
+
+// PassProvider names a single Assay pass and the resolved provider that runs
+// it. doctor uses this to verify each pass's CLI binary (typically `claude`)
+// is available before a review is attempted.
+type PassProvider struct {
+	// Pass is the pass identifier ("triage", "logic", "security", …).
+	Pass string
+	// Provider is the resolved provider (Kind/Cmd/Model) for the pass, derived
+	// from the Config's per-tier provider/model hints.
+	Provider provider.Provider
+}
+
+// PassProviders returns the resolved provider for every Assay pass — the cheap
+// triage scoping pass plus the five deep finding passes — given a Config. The
+// concrete provider for each pass comes entirely from the Config's tier hints
+// (never a hard-coded model); an empty hint resolves to the Claude provider.
+func PassProviders(c Config) []PassProvider {
+	out := make([]PassProvider, 0, 1+len(deepPasses))
+	out = append(out, PassProvider{Pass: passTriage.Name, Provider: c.providerFor(passTriage.Tier)})
+	for _, p := range deepPasses {
+		out = append(out, PassProvider{Pass: p.Name, Provider: c.providerFor(p.Tier)})
+	}
+	return out
 }
 
 // PassOutput is the raw result of a single model invocation.
