@@ -308,6 +308,40 @@ func TestEventPRConflicting_Dispatch(t *testing.T) {
 	}
 }
 
+// TestEventPRReviewNeeded_Dispatch verifies that a review-needed event
+// dispatches ActionAssayReview and propagates the head SHA. The Bellows gate is
+// the rate limiter, so each event dispatches unconditionally here.
+func TestEventPRReviewNeeded_Dispatch(t *testing.T) {
+	db := newTestDB(t)
+
+	var dispatched []ActionRequest
+	handler := func(_ context.Context, req ActionRequest) {
+		dispatched = append(dispatched, req)
+	}
+
+	m := New(db, testLogger(), handler)
+	ev := makeEvent(77, bellows.EventPRReviewNeeded)
+	ev.HeadSHA = "abc1234"
+	m.HandleEvent(context.Background(), ev)
+
+	if len(dispatched) != 1 {
+		t.Fatalf("expected 1 dispatch, got %d", len(dispatched))
+	}
+	if dispatched[0].Action != ActionAssayReview {
+		t.Errorf("expected ActionAssayReview, got %v", dispatched[0].Action)
+	}
+	if dispatched[0].HeadSHA != "abc1234" {
+		t.Errorf("expected head SHA propagated, got %q", dispatched[0].HeadSHA)
+	}
+
+	// A second review-needed event dispatches again — no per-PR cap in the
+	// lifecycle manager (the Bellows gate gates re-firing).
+	m.HandleEvent(context.Background(), ev)
+	if len(dispatched) != 2 {
+		t.Errorf("expected 2 dispatches, got %d", len(dispatched))
+	}
+}
+
 // TestEventPRConflicting_ExhaustRebase verifies rebase attempts are capped.
 func TestEventPRConflicting_ExhaustRebase(t *testing.T) {
 	db := newTestDB(t)

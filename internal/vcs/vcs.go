@@ -373,8 +373,15 @@ type PRStatus struct {
 	Mergeable         string
 	UnresolvedThreads int
 	HeadRefName       string
-	URL               string
-	Title             string
+	// HeadSHA is the commit OID at the head of the PR branch. Used by the
+	// Assay review trigger to detect whether the current head has been
+	// reviewed yet (compared against the last reviewed SHA).
+	HeadSHA string `json:"headRefOid"`
+	// IsDraft is true when the PR is a draft. Draft PRs are skipped by the
+	// Assay trigger when skip_drafts is enabled.
+	IsDraft bool `json:"isDraft"`
+	URL     string
+	Title   string
 }
 
 // IsMerged returns true if the PR has been merged.

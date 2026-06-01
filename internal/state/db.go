@@ -1579,6 +1579,7 @@ const (
 	EventBeadTagged           EventType = "bead_tagged"
 	EventBeadClosed           EventType = "bead_closed"
 	EventPRReadyToMerge       EventType = "pr_ready_to_merge"
+	EventPRReviewNeeded       EventType = "pr_review_needed"
 	EventPRMergeRequested     EventType = "pr_merge_requested"
 	EventPRMergeFailed        EventType = "pr_merge_failed"
 	EventPRAutoMerged         EventType = "pr_auto_merged"
@@ -3821,4 +3822,40 @@ func (db *DB) RecordAssayRun(r *AssayRun) error {
 	id, _ := res.LastInsertId()
 	r.ID = int(id)
 	return nil
+}
+
+// LastAssayRunAt returns the started_at timestamp of the most recent assay_runs
+// row for the given anvil and PR number. Returns the zero time (no error) when
+// no run exists. Used by the Bellows Assay trigger gate to debounce repeat runs.
+func (db *DB) LastAssayRunAt(anvil string, prNumber int) (time.Time, error) {
+	var startedAt string
+	err := db.conn.QueryRow(
+		`SELECT started_at FROM assay_runs
+		 WHERE anvil = ? AND pr_number = ?
+		 ORDER BY id DESC LIMIT 1`,
+		anvil, prNumber,
+	).Scan(&startedAt)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parseTime(startedAt), nil
+}
+
+// AssayCostUSDSince returns the total cost_usd of all assay_runs started at or
+// after the given time. The cutoff is formatted with dbTimeLayout, whose
+// lexicographic ordering matches chronological ordering, so a TEXT comparison
+// is valid. Used by the Bellows Assay trigger gate to enforce a daily cost cap.
+func (db *DB) AssayCostUSDSince(since time.Time) (float64, error) {
+	var total float64
+	err := db.conn.QueryRow(
+		`SELECT COALESCE(SUM(cost_usd), 0) FROM assay_runs WHERE started_at >= ?`,
+		since.UTC().Format(dbTimeLayout),
+	).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
 }

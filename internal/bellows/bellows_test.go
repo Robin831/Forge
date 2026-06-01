@@ -1600,3 +1600,167 @@ func TestSweepOrphanedMonitoringWorkers_IgnoresNonBellowsWorkers(t *testing.T) {
 	require.Len(t, w, 1)
 	assert.Equal(t, state.WorkerRunning, w[0].Status, "non-bellows workers must not be affected by the sweep")
 }
+
+// TestShouldEmitReviewNeeded verifies the Assay trigger gate's pure decision
+// function. The base inputs satisfy every condition (so the gate fires); each
+// case mutates exactly one signal to confirm it suppresses the trigger,
+// mirroring the CI/review still-failing gate-test patterns above.
+func TestShouldEmitReviewNeeded(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	base := func() reviewGateInputs {
+		return reviewGateInputs{
+			enabled:         true,
+			managed:         true,
+			open:            true,
+			draft:           false,
+			skipDrafts:      true,
+			headSHA:         "abc1234deadbeef",
+			lastReviewedSHA: "old999",
+			ciInProgress:    false,
+			ciPassing:       true,
+			ciFixCount:      0,
+			maxCIFix:        5,
+			lastAssayRun:    time.Time{},
+			now:             now,
+			debounceSeconds: 300,
+			dailyCostUSD:    0,
+			dailyCostLimit:  10,
+		}
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*reviewGateInputs)
+		want   bool
+	}{
+		{"all conditions hold", func(in *reviewGateInputs) {}, true},
+		{"disabled", func(in *reviewGateInputs) { in.enabled = false }, false},
+		{"unmanaged", func(in *reviewGateInputs) { in.managed = false }, false},
+		{"not open", func(in *reviewGateInputs) { in.open = false }, false},
+		{"draft with skip_drafts", func(in *reviewGateInputs) { in.draft = true }, false},
+		{"draft without skip_drafts", func(in *reviewGateInputs) { in.draft = true; in.skipDrafts = false }, true},
+		{"head already reviewed", func(in *reviewGateInputs) { in.lastReviewedSHA = in.headSHA }, false},
+		{"empty head SHA", func(in *reviewGateInputs) { in.headSHA = "" }, false},
+		{"CI in progress", func(in *reviewGateInputs) { in.ciInProgress = true }, false},
+		{"CI not passing and under max fix attempts", func(in *reviewGateInputs) { in.ciPassing = false; in.ciFixCount = 2 }, false},
+		{"CI not passing but at max fix attempts", func(in *reviewGateInputs) { in.ciPassing = false; in.ciFixCount = 5 }, true},
+		{"within debounce window", func(in *reviewGateInputs) { in.lastAssayRun = now.Add(-100 * time.Second) }, false},
+		{"outside debounce window", func(in *reviewGateInputs) { in.lastAssayRun = now.Add(-400 * time.Second) }, true},
+		{"within default debounce window", func(in *reviewGateInputs) { in.debounceSeconds = 0; in.lastAssayRun = now.Add(-100 * time.Second) }, false},
+		{"outside default debounce window", func(in *reviewGateInputs) { in.debounceSeconds = 0; in.lastAssayRun = now.Add(-400 * time.Second) }, true},
+		{"daily cost at limit", func(in *reviewGateInputs) { in.dailyCostUSD = 10; in.dailyCostLimit = 10 }, false},
+		{"daily cost over limit", func(in *reviewGateInputs) { in.dailyCostUSD = 15; in.dailyCostLimit = 10 }, false},
+		{"daily cost with no limit", func(in *reviewGateInputs) { in.dailyCostUSD = 99; in.dailyCostLimit = 0 }, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := base()
+			tt.mutate(&in)
+			assert.Equal(t, tt.want, shouldEmitReviewNeeded(in))
+		})
+	}
+}
+
+// TestMaybeEmitReviewNeeded_EmitsWhenUnreviewed exercises the gate end-to-end
+// against a real state DB: a managed, open, CI-passing PR whose head has never
+// been reviewed should emit EventPRReviewNeeded with the head SHA populated.
+func TestMaybeEmitReviewNeeded_EmitsWhenUnreviewed(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    101,
+		Anvil:     "my-anvil",
+		BeadID:    "forge-abc",
+		Branch:    "forge/forge-abc",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	m := New(db, nil, time.Minute, map[string]string{"my-anvil": "/fake"}, nil, nil, nil, nil)
+	m.SetAssayConfig(func(anvil string) AssayGateConfig {
+		return AssayGateConfig{Enabled: true, SkipDrafts: true, DebounceSeconds: 300, DailyCostLimitUSD: 10}
+	})
+
+	var got []PREvent
+	var mu sync.Mutex
+	m.OnEvent(func(_ context.Context, ev PREvent) {
+		mu.Lock()
+		got = append(got, ev)
+		mu.Unlock()
+	})
+
+	status := &vcs.PRStatus{State: "OPEN", HeadRefName: "forge/forge-abc", HeadSHA: "abc1234", URL: "https://example/pr/101"}
+	snap := &prSnapshot{CIPassing: true}
+	m.maybeEmitReviewNeeded(context.Background(), pr, status, snap, false)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, EventPRReviewNeeded, got[0].EventType)
+	assert.Equal(t, "abc1234", got[0].HeadSHA)
+	assert.Equal(t, 101, got[0].PRNumber)
+}
+
+// TestMaybeEmitReviewNeeded_SuppressedWhenHeadAlreadyReviewed verifies the gate
+// does not re-fire once an Assay run has recorded the current head SHA.
+func TestMaybeEmitReviewNeeded_SuppressedWhenHeadAlreadyReviewed(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    202,
+		Anvil:     "my-anvil",
+		BeadID:    "forge-xyz",
+		Branch:    "forge/forge-xyz",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	// Record a run against the current head, well outside the debounce window,
+	// so only the head-SHA match (not debounce) suppresses the trigger.
+	require.NoError(t, db.RecordAssayRun(&state.AssayRun{
+		Anvil:     "my-anvil",
+		PRNumber:  202,
+		HeadSHA:   "abc1234",
+		StartedAt: time.Now().Add(-1 * time.Hour),
+	}))
+
+	m := New(db, nil, time.Minute, map[string]string{"my-anvil": "/fake"}, nil, nil, nil, nil)
+	m.SetAssayConfig(func(anvil string) AssayGateConfig {
+		return AssayGateConfig{Enabled: true, SkipDrafts: true, DebounceSeconds: 300, DailyCostLimitUSD: 10}
+	})
+
+	var got []PREvent
+	var mu sync.Mutex
+	m.OnEvent(func(_ context.Context, ev PREvent) {
+		mu.Lock()
+		got = append(got, ev)
+		mu.Unlock()
+	})
+
+	status := &vcs.PRStatus{State: "OPEN", HeadRefName: "forge/forge-xyz", HeadSHA: "abc1234"}
+	snap := &prSnapshot{CIPassing: true}
+	m.maybeEmitReviewNeeded(context.Background(), pr, status, snap, false)
+
+	assert.Empty(t, got, "gate must not emit when the current head has already been reviewed")
+}
+
+// TestMaybeEmitReviewNeeded_NoConfigIsNoop verifies the gate is inert when no
+// Assay config accessor is registered (feature disabled).
+func TestMaybeEmitReviewNeeded_NoConfigIsNoop(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{Number: 303, Anvil: "my-anvil", BeadID: "forge-q", Branch: "b", Status: state.PROpen, CreatedAt: time.Now()}
+	require.NoError(t, db.InsertPR(pr))
+
+	m := New(db, nil, time.Minute, map[string]string{"my-anvil": "/fake"}, nil, nil, nil, nil)
+	var got []PREvent
+	m.OnEvent(func(_ context.Context, ev PREvent) { got = append(got, ev) })
+
+	status := &vcs.PRStatus{State: "OPEN", HeadSHA: "abc1234"}
+	m.maybeEmitReviewNeeded(context.Background(), pr, status, &prSnapshot{CIPassing: true}, false)
+	assert.Empty(t, got)
+}

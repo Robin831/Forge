@@ -192,7 +192,7 @@ func (p *Provider) MergePR(ctx context.Context, worktreePath string, prNumber in
 func (p *Provider) CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*vcs.PRStatus, error) {
 	args := []string{
 		"pr", "view", fmt.Sprintf("%d", prNumber),
-		"--json", "state,statusCheckRollup,reviews,reviewRequests,mergeable,headRefName,url,title",
+		"--json", "state,statusCheckRollup,reviews,reviewRequests,mergeable,headRefName,headRefOid,isDraft,url,title",
 	}
 
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
