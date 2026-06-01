@@ -1,0 +1,2 @@
+category: Added
+- **Assay multi-pass review engine** - New `internal/assay` package implementing the AI PR-review brain: a triage scoping pass plus five deep passes (logic, security, conventions, missing-tests, repo-specific) run Smith-style, emitting deduplicated findings hashed for idempotency per PR head SHA, with Nit capping and suppression of already-posted nits. All model identifiers are read from `assay.model_tier`/model hints and never hard-coded. (Forge-thdw)
