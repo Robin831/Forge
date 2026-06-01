@@ -23,9 +23,12 @@ const (
 	tierReview = "review"
 )
 
-// assayMaxTurns bounds each pass session. A pass must emit its JSON first, so a
-// small budget is sufficient even if the model reads a few files.
-const assayMaxTurns = 6
+// assayMaxTurns bounds each pass session. Every file read costs a turn, and
+// passes like tests-missing and repo-specific legitimately want to look at a
+// handful of supporting files before emitting JSON, so 6 turns was too tight
+// (the model would hit error_max_turns before answering on non-trivial diffs).
+// 12 leaves headroom for ~10 tool calls plus the final JSON emission.
+const assayMaxTurns = 12
 
 //go:embed prompts/*.md
 var promptFS embed.FS

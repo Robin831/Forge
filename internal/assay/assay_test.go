@@ -3,7 +3,9 @@ package assay
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -405,6 +407,49 @@ func TestReviewStrictJSONRetryThenError(t *testing.T) {
 
 	if _, err := Review(context.Background(), testRequest(), openTestDB(t), cfg); err == nil {
 		t.Fatal("expected run error from unparseable pass output")
+	}
+}
+
+// TestReviewPartialPassFailure verifies the engine no longer throws away
+// findings from healthy passes when a single pass errors. Previously a
+// max-turns or rate-limit failure on tests-missing would abort the whole
+// review and discard the other four passes' findings; now those findings
+// flow through and the pass error is surfaced via ReviewResult.PassErrors.
+func TestReviewPartialPassFailure(t *testing.T) {
+	good := findingsJSON(t, []Finding{
+		{File: "a.go", Anchor: "a.go:1", Category: "logic", Severity: SeverityImportant, Title: "t", Body: "b"},
+	})
+	script := map[string][]stubResp{
+		passTriage.Name: {{text: triageJSON(t, nil, "")}},
+	}
+	// Every deep pass except tests-missing returns one good finding; the
+	// tests-missing pass simulates a turn-budget exhaustion that bubbles
+	// up as a runner error on both the first attempt and the retry.
+	for _, p := range deepPasses {
+		if p.Name == "tests-missing" {
+			err := fmt.Errorf("assay pass tests-missing: provider claude/claude-opus-4-8 failed (exit 1, subtype error_max_turns)")
+			script[p.Name] = []stubResp{{err: err}, {err: err}}
+		} else {
+			script[p.Name] = []stubResp{{text: good}}
+		}
+	}
+	cfg := DefaultConfig().WithRunner(newScriptRunner(script).run)
+
+	result, err := Review(context.Background(), testRequest(), openTestDB(t), cfg)
+	if err != nil {
+		t.Fatalf("expected nil error from partial failure; got %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result from partial failure")
+	}
+	if len(result.Findings) == 0 {
+		t.Errorf("expected findings from non-erroring passes; got 0")
+	}
+	if len(result.PassErrors) != 1 {
+		t.Errorf("expected one PassErrors entry; got %d (%v)", len(result.PassErrors), result.PassErrors)
+	}
+	if len(result.PassErrors) > 0 && !strings.Contains(result.PassErrors[0], "tests-missing") {
+		t.Errorf("expected PassErrors to mention tests-missing; got %q", result.PassErrors[0])
 	}
 }
 

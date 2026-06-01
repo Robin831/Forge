@@ -1630,11 +1630,24 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				} else {
 					run.CostUSD = result.CostUSD
 					run.FindingsCount = len(result.Findings)
+					// Partial failures: some passes errored but others
+					// produced findings. Record the per-pass errors in
+					// assay_runs.error so they show up in the Hearth panel
+					// and log each individually so operators can see which
+					// pass(es) need tuning. The run is NOT marked failed —
+					// the findings we got are still useful.
+					if len(result.PassErrors) > 0 {
+						for _, pe := range result.PassErrors {
+							d.logger.Warn("Assay pass error (partial)", "pr", req.PRNumber, "bead", req.BeadID, "error", pe)
+						}
+						run.Error = strings.Join(result.PassErrors, "; ")
+					}
 					d.logger.Info("Assay review completed",
 						"pr", req.PRNumber,
 						"bead", req.BeadID,
 						"head", req.HeadSHA,
 						"findings", run.FindingsCount,
+						"pass_errors", len(result.PassErrors),
 						"shadow", engineCfg.ShadowMode,
 						"cost_usd", run.CostUSD,
 						"duration_ms", result.Duration.Milliseconds(),

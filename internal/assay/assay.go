@@ -19,6 +19,7 @@ package assay
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -126,6 +127,11 @@ type ReviewResult struct {
 	// NitsSuppressed is the number of Nit findings dropped because they were
 	// already posted on a prior review of this PR.
 	NitsSuppressed int
+	// PassErrors lists per-pass error strings (formatted "<pass>: <reason>")
+	// for any deep pass that failed. A non-empty PassErrors with a non-nil
+	// result means at least one pass produced findings; aggregation only
+	// fails hard when every deep pass errored.
+	PassErrors []string
 }
 
 // Review runs the multi-pass Assay review for req and returns the aggregated
@@ -199,14 +205,24 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	wg.Wait()
 
 	var all []Finding
+	var passErrors []string
 	for _, o := range outcomes {
-		if o.err != nil {
-			// Surface the first pass error as the run error.
-			return nil, o.err
-		}
+		// Count cost regardless of success — the model ran either way.
 		totalCost += o.cost
 		passes = append(passes, o.report)
+		if o.err != nil {
+			passErrors = append(passErrors, o.err.Error())
+			continue
+		}
 		all = append(all, o.findings...)
+	}
+
+	// Only hard-fail when every deep pass errored. A single pass hitting
+	// error_max_turns or a transient rate-limit must not throw away findings
+	// from the other four passes. Partial errors are reported via
+	// ReviewResult.PassErrors and recorded in assay_runs.error by the caller.
+	if len(passErrors) == len(deepPasses) {
+		return nil, fmt.Errorf("all assay deep passes failed: %s", strings.Join(passErrors, "; "))
 	}
 
 	// 3. Aggregate: dedupe → suppress already-posted Nits → cap Nits.
@@ -238,6 +254,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		Passes:         passes,
 		NitsCapped:     nCapped,
 		NitsSuppressed: nSuppressed,
+		PassErrors:     passErrors,
 	}, nil
 }
 
