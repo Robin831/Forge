@@ -3787,6 +3787,32 @@ func (db *DB) MarkResolved(findingHash string) error {
 	return err
 }
 
+// PostedFindingHashes returns the set of finding_hash values that have already
+// been posted (posted=1) for the given anvil and PR. Assay uses this to
+// suppress re-posting Nit findings on a repeat review of the same PR. The
+// returned map is never nil — an empty map means nothing has been posted yet.
+func (db *DB) PostedFindingHashes(anvil string, prNumber int) (map[string]bool, error) {
+	rows, err := db.conn.Query(
+		`SELECT finding_hash FROM pr_findings
+		 WHERE anvil = ? AND pr_number = ? AND posted = 1`,
+		anvil, prNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]bool)
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		out[h] = true
+	}
+	return out, rows.Err()
+}
+
 // RecordAssayRun inserts a new assay_runs row. started_at defaults to now (UTC)
 // when r.StartedAt is the zero time.
 func (db *DB) RecordAssayRun(r *AssayRun) error {
