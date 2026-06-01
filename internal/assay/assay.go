@@ -3,9 +3,10 @@
 // Review runs a multi-pass review over a PR diff: a cheap Triage pass scopes
 // which files warrant deeper inspection, then five deep passes (Logic,
 // Security, Conventions, Tests-missing, Repo-specific) run in parallel and emit
-// structured findings. Findings are aggregated — deduplicated by a stable
-// content hash, capped at the configured Nit budget, and (on a repeat review of
-// the same PR) already-posted Nits are suppressed.
+// structured findings. Findings are then aggregated in order: deduplicated by a
+// stable content hash, then (on a repeat review of the same PR) already-posted
+// Nits are suppressed, then the remaining Nits are capped at the configured Nit
+// budget.
 //
 // Every finding is idempotent per PR head SHA: re-running Review against the
 // same head produces the same hashes, and persistence is OR-IGNORE keyed on the
