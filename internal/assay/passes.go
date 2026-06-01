@@ -163,6 +163,7 @@ func buildPassPrompt(p passDef, req ReviewRequest, scopedDiff, triageNotes strin
 	b.WriteString("\n\n")
 	b.WriteString(jsonOutputContract)
 	b.WriteString("\n\n")
+	b.WriteString(repoGuidanceSection(req))
 	b.WriteString(contextSection(req))
 	if strings.TrimSpace(triageNotes) != "" {
 		b.WriteString("\n## Triage Notes\n\n")

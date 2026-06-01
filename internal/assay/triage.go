@@ -68,6 +68,7 @@ func buildTriagePrompt(req ReviewRequest, filteredDiff string) (string, error) {
 	b.WriteString("\n\n")
 	b.WriteString(contract)
 	b.WriteString("\n\n")
+	b.WriteString(repoGuidanceSection(req))
 	b.WriteString(contextSection(req))
 	b.WriteString("\n## Diff\n\n```diff\n")
 	b.WriteString(filteredDiff)

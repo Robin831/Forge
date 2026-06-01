@@ -45,8 +45,15 @@ type ReviewRequest struct {
 	// Anvil is the repository (anvil) name; used to key persisted rows.
 	Anvil string
 	// AnvilPath is the local checkout path, used to read repo-level context
-	// (AGENTS.md etc.). Optional — may be empty.
+	// (REVIEW.md, AGENTS.md, etc.). Optional — may be empty. When set and
+	// RepoGuidance is empty, Review() reads <AnvilPath>/REVIEW.md into
+	// RepoGuidance once per run so every pass sees the same trusted guidance.
 	AnvilPath string
+	// RepoGuidance carries the repository's REVIEW.md content (or any
+	// equivalent trusted instructions) injected into every pass prompt at
+	// highest priority. Optional — empty means the engine uses default
+	// calibration only. Pre-populated by Review() from AnvilPath when unset.
+	RepoGuidance string
 	// PRNumber is the pull request number under review.
 	PRNumber int
 	// HeadSHA is the PR head commit OID. It is the idempotency key: findings are
@@ -137,6 +144,13 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 			return nil, fmt.Errorf("assay: ReviewRequest.WorkDir is required when using the default Smith-based runner")
 		}
 		runner = newSmithRunner(cfg, req.WorkDir)
+	}
+
+	// Pick up the anvil's REVIEW.md once and forward it to every pass.
+	// A caller that already set RepoGuidance (e.g. tests, or a future
+	// alternate source) keeps full control; otherwise we read from disk.
+	if req.RepoGuidance == "" {
+		req.RepoGuidance = loadRepoGuidance(req.AnvilPath)
 	}
 
 	// Pre-shape the diff: drop auto-generated and skip-path hunks, then cap
