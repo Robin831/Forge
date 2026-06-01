@@ -713,7 +713,7 @@ func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 		SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path, stale_timeout
 		FROM workers
 		WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
-		  AND phase IN ('quench', 'cifix', 'burnish', 'reviewfix', 'rebase')
+		  AND phase IN ('quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'assay')
 		  AND stale_timeout > 0
 		ORDER BY started_at`)
 	if err != nil {

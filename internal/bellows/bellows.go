@@ -408,16 +408,31 @@ func (m *Monitor) checkAll(ctx context.Context) {
 		}
 	}
 
+	var dailyAssayCost *float64
+	if m.assayConfig != nil {
+		now := time.Now().UTC()
+		dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		cost, err := m.db.AssayCostUSDSince(dayStart)
+		if err != nil {
+			log.Printf("[bellows] Failed to query daily Assay cost: %v", err)
+		} else {
+			dailyAssayCost = &cost
+		}
+	}
+
 	for i := range prs {
 		if ctx.Err() != nil {
 			return
 		}
-		m.checkPR(ctx, &prs[i])
+		m.checkPR(ctx, &prs[i], dailyAssayCost)
 	}
 }
 
 // checkPR polls a single PR and emits events for any state changes.
-func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
+// dailyAssayCost is the precomputed global Assay cost for the current day,
+// queried once per checkAll cycle to avoid redundant per-PR queries. A nil
+// value means the query failed and the Assay gate should be skipped.
+func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *float64) {
 	m.pathsMu.RLock()
 	anvilPath, ok := m.anvilPaths[pr.Anvil]
 	m.pathsMu.RUnlock()
@@ -541,7 +556,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			delete(m.lastStatuses, key)
 			m.mu.Unlock()
 			// Re-enter checkPR so the nil-snapshot seeding path runs.
-			m.checkPR(ctx, pr)
+			m.checkPR(ctx, pr, dailyAssayCost)
 			return
 		}
 	}
@@ -790,7 +805,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	// all gating conditions hold (see shouldEmitReviewNeeded). Placed here so a
 	// PR's head is offered for AI review once CI has settled but before/while it
 	// awaits merge. No-op unless an Assay config accessor is registered.
-	m.maybeEmitReviewNeeded(ctx, pr, status, newSnap, ciInProgress)
+	m.maybeEmitReviewNeeded(ctx, pr, status, newSnap, ciInProgress, dailyAssayCost)
 
 	// Detect transition to fully ready-to-merge state (CI passing +
 	// no conflicts, unresolved threads, or pending reviews).
@@ -1142,7 +1157,7 @@ func shouldEmitReviewNeeded(in reviewGateInputs) bool {
 // maybeEmitReviewNeeded evaluates the Assay trigger gate for a managed, open PR
 // and emits EventPRReviewNeeded when all conditions hold. It is a no-op when no
 // Assay config accessor has been registered (the feature is disabled).
-func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, status *vcs.PRStatus, newSnap *prSnapshot, ciInProgress bool) {
+func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, status *vcs.PRStatus, newSnap *prSnapshot, ciInProgress bool, dailyAssayCost *float64) {
 	if m.assayConfig == nil {
 		return
 	}
@@ -1156,13 +1171,10 @@ func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, statu
 		log.Printf("[bellows] Failed to query last Assay run for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
 		return
 	}
-	now := time.Now().UTC()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	dailyCost, err := m.db.AssayCostUSDSince(dayStart)
-	if err != nil {
-		log.Printf("[bellows] Failed to query daily Assay cost: %v", err)
+	if dailyAssayCost == nil {
 		return
 	}
+	now := time.Now().UTC()
 
 	managed := !(strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged)
 	in := reviewGateInputs{
@@ -1180,7 +1192,7 @@ func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, statu
 		lastAssayRun:    lastRun,
 		now:             now,
 		debounceSeconds: cfg.DebounceSeconds,
-		dailyCostUSD:    dailyCost,
+		dailyCostUSD:    *dailyAssayCost,
 		dailyCostLimit:  cfg.DailyCostLimitUSD,
 	}
 	if !shouldEmitReviewNeeded(in) {

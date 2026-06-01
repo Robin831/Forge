@@ -332,6 +332,8 @@ func openTempDB(t *testing.T) (*state.DB, func()) {
 	}
 }
 
+func float64Ptr(v float64) *float64 { return &v }
+
 // TestCheckAll_BellowsManagedPRsGetWorkerRow is a regression test for the
 // Workers-panel visibility fix: bellows-managed PRs must appear in state.DB
 // as workers after checkAll runs.
@@ -1694,7 +1696,7 @@ func TestMaybeEmitReviewNeeded_EmitsWhenUnreviewed(t *testing.T) {
 
 	status := &vcs.PRStatus{State: "OPEN", HeadRefName: "forge/forge-abc", HeadSHA: "abc1234", URL: "https://example/pr/101"}
 	snap := &prSnapshot{CIPassing: true}
-	m.maybeEmitReviewNeeded(context.Background(), pr, status, snap, false)
+	m.maybeEmitReviewNeeded(context.Background(), pr, status, snap, false, float64Ptr(0))
 
 	require.Len(t, got, 1)
 	assert.Equal(t, EventPRReviewNeeded, got[0].EventType)
@@ -1742,7 +1744,7 @@ func TestMaybeEmitReviewNeeded_SuppressedWhenHeadAlreadyReviewed(t *testing.T) {
 
 	status := &vcs.PRStatus{State: "OPEN", HeadRefName: "forge/forge-xyz", HeadSHA: "abc1234"}
 	snap := &prSnapshot{CIPassing: true}
-	m.maybeEmitReviewNeeded(context.Background(), pr, status, snap, false)
+	m.maybeEmitReviewNeeded(context.Background(), pr, status, snap, false, float64Ptr(0))
 
 	assert.Empty(t, got, "gate must not emit when the current head has already been reviewed")
 }
@@ -1761,6 +1763,6 @@ func TestMaybeEmitReviewNeeded_NoConfigIsNoop(t *testing.T) {
 	m.OnEvent(func(_ context.Context, ev PREvent) { got = append(got, ev) })
 
 	status := &vcs.PRStatus{State: "OPEN", HeadSHA: "abc1234"}
-	m.maybeEmitReviewNeeded(context.Background(), pr, status, &prSnapshot{CIPassing: true}, false)
+	m.maybeEmitReviewNeeded(context.Background(), pr, status, &prSnapshot{CIPassing: true}, false, float64Ptr(0))
 	assert.Empty(t, got)
 }

@@ -1299,19 +1299,37 @@ func TestDB_StalledWorkers_LifecycleWithPerWorkerTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Assay worker with StaleTimeout — should be detected as stale
+	if err := db.InsertWorker(&Worker{
+		ID: "w-assay-with-timeout", BeadID: "BD-4", Anvil: "anvil-1",
+		Status: WorkerRunning, Phase: "assay",
+		StartedAt:    time.Now().Add(-25 * time.Minute),
+		LogPath:      makeStaleLog("assay-with-timeout.log"),
+		StaleTimeout: 10 * time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	stalled, err := db.StalledWorkers(5 * time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stalled) != 1 {
+	if len(stalled) != 2 {
 		ids := make([]string, len(stalled))
 		for i, w := range stalled {
 			ids[i] = w.ID
 		}
-		t.Fatalf("expected 1 stalled worker, got %d: %v", len(stalled), ids)
+		t.Fatalf("expected 2 stalled workers, got %d: %v", len(stalled), ids)
 	}
-	if stalled[0].ID != "w-quench-with-timeout" {
-		t.Errorf("expected w-quench-with-timeout, got %s", stalled[0].ID)
+	stalledIDs := map[string]bool{}
+	for _, w := range stalled {
+		stalledIDs[w.ID] = true
+	}
+	if !stalledIDs["w-quench-with-timeout"] {
+		t.Errorf("expected w-quench-with-timeout in stalled set")
+	}
+	if !stalledIDs["w-assay-with-timeout"] {
+		t.Errorf("expected w-assay-with-timeout in stalled set")
 	}
 }
 
