@@ -430,6 +430,56 @@ CREATE TABLE IF NOT EXISTS forge_session_messages (
 
 CREATE INDEX IF NOT EXISTS idx_forge_session_messages_session_id
     ON forge_session_messages(session_id, id);
+
+-- pr_findings stores individual code-review findings discovered by Assay on a
+-- PR. finding_hash is the dedup key (UNIQUE) so the same finding across repeat
+-- reviews is recorded once; consecutive_misses tracks how many reviews in a row
+-- failed to re-detect the finding (used to auto-resolve), and resolved_at marks
+-- when the finding was considered resolved.
+CREATE TABLE IF NOT EXISTS pr_findings (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    anvil               TEXT NOT NULL,
+    pr_number           INTEGER NOT NULL,
+    head_sha            TEXT NOT NULL DEFAULT '',
+    finding_hash        TEXT NOT NULL UNIQUE,
+    file                TEXT NOT NULL DEFAULT '',
+    anchor              TEXT NOT NULL DEFAULT '',
+    severity            TEXT NOT NULL DEFAULT '',
+    category            TEXT NOT NULL DEFAULT '',
+    title               TEXT NOT NULL DEFAULT '',
+    body                TEXT NOT NULL DEFAULT '',
+    evidence            TEXT NOT NULL DEFAULT '',
+    source_pass         TEXT NOT NULL DEFAULT '',
+    posted              INTEGER NOT NULL DEFAULT 0,
+    gh_comment_id       INTEGER NOT NULL DEFAULT 0,
+    gh_thread_id        TEXT NOT NULL DEFAULT '',
+    consecutive_misses  INTEGER NOT NULL DEFAULT 0,
+    resolved_at         TEXT,
+    created_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_findings_anvil_pr ON pr_findings(anvil, pr_number);
+CREATE INDEX IF NOT EXISTS idx_pr_findings_anvil_pr_sha ON pr_findings(anvil, pr_number, head_sha);
+
+-- assay_runs records each Assay review pass over a PR head SHA: timing, cost,
+-- how many findings were produced/posted, and any skip reason or error.
+CREATE TABLE IF NOT EXISTS assay_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    anvil           TEXT NOT NULL,
+    pr_number       INTEGER NOT NULL,
+    head_sha        TEXT NOT NULL DEFAULT '',
+    started_at      TEXT NOT NULL,
+    finished_at     TEXT,
+    duration_ms     INTEGER NOT NULL DEFAULT 0,
+    cost_usd        REAL NOT NULL DEFAULT 0,
+    findings_count  INTEGER NOT NULL DEFAULT 0,
+    skipped_reason  TEXT NOT NULL DEFAULT '',
+    shadow_mode     INTEGER NOT NULL DEFAULT 0,
+    posted_count    INTEGER NOT NULL DEFAULT 0,
+    error           TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_assay_runs_anvil_pr ON assay_runs(anvil, pr_number);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
@@ -3612,4 +3662,163 @@ func scanWicketIssueRow(rows *sql.Rows) (*WicketIssue, error) {
 		w.AuthorRepliedAt = &t
 	}
 	return &w, nil
+}
+
+// Finding is the database representation of a single code-review finding
+// discovered by Assay on a PR. FindingHash is the dedup key — duplicate
+// findings (same hash) are silently ignored on insert.
+type Finding struct {
+	ID                int
+	Anvil             string
+	PRNumber          int
+	HeadSHA           string
+	FindingHash       string
+	File              string
+	Anchor            string
+	Severity          string
+	Category          string
+	Title             string
+	Body              string
+	Evidence          string
+	SourcePass        string
+	Posted            bool
+	GHCommentID       int64
+	GHThreadID        string
+	ConsecutiveMisses int
+	// ResolvedAt is nil while the finding is still considered open.
+	ResolvedAt *time.Time
+	CreatedAt  time.Time
+}
+
+// AssayRun records a single Assay review pass over a PR head SHA.
+type AssayRun struct {
+	ID            int
+	Anvil         string
+	PRNumber      int
+	HeadSHA       string
+	StartedAt     time.Time
+	FinishedAt    *time.Time
+	DurationMs    int64
+	CostUSD       float64
+	FindingsCount int
+	SkippedReason string
+	ShadowMode    bool
+	PostedCount   int
+	Error         string
+}
+
+// InsertFinding inserts a new pr_findings row. Insertion is OR IGNORE so a
+// duplicate finding_hash is silently skipped — dedup is keyed on finding_hash.
+// created_at defaults to now (UTC) when f.CreatedAt is the zero time.
+func (db *DB) InsertFinding(f Finding) error {
+	createdAt := f.CreatedAt.UTC().Format(dbTimeLayout)
+	if f.CreatedAt.IsZero() {
+		createdAt = time.Now().UTC().Format(dbTimeLayout)
+	}
+	var resolvedAt any
+	if f.ResolvedAt != nil {
+		resolvedAt = f.ResolvedAt.UTC().Format(dbTimeLayout)
+	}
+	_, err := db.conn.Exec(
+		`INSERT OR IGNORE INTO pr_findings
+		     (anvil, pr_number, head_sha, finding_hash, file, anchor, severity,
+		      category, title, body, evidence, source_pass, posted, gh_comment_id,
+		      gh_thread_id, consecutive_misses, resolved_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		f.Anvil,
+		f.PRNumber,
+		f.HeadSHA,
+		f.FindingHash,
+		f.File,
+		f.Anchor,
+		f.Severity,
+		f.Category,
+		f.Title,
+		f.Body,
+		f.Evidence,
+		f.SourcePass,
+		boolToInt(f.Posted),
+		f.GHCommentID,
+		f.GHThreadID,
+		f.ConsecutiveMisses,
+		resolvedAt,
+		createdAt,
+	)
+	return err
+}
+
+// LastReviewedSHA returns the head_sha of the most recent assay_runs row for
+// the given anvil and PR number. Returns "" (no error) when no run exists.
+func (db *DB) LastReviewedSHA(anvil string, prNumber int) (string, error) {
+	var headSHA string
+	err := db.conn.QueryRow(
+		`SELECT head_sha FROM assay_runs
+		 WHERE anvil = ? AND pr_number = ?
+		 ORDER BY id DESC LIMIT 1`,
+		anvil, prNumber,
+	).Scan(&headSHA)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return headSHA, nil
+}
+
+// IncrementConsecutiveMiss bumps the consecutive_misses counter for the finding
+// identified by findingHash.
+func (db *DB) IncrementConsecutiveMiss(findingHash string) error {
+	_, err := db.conn.Exec(
+		`UPDATE pr_findings SET consecutive_misses = consecutive_misses + 1 WHERE finding_hash = ?`,
+		findingHash,
+	)
+	return err
+}
+
+// MarkResolved sets resolved_at to now (UTC) for the finding identified by
+// findingHash.
+func (db *DB) MarkResolved(findingHash string) error {
+	_, err := db.conn.Exec(
+		`UPDATE pr_findings SET resolved_at = ? WHERE finding_hash = ?`,
+		time.Now().UTC().Format(dbTimeLayout), findingHash,
+	)
+	return err
+}
+
+// RecordAssayRun inserts a new assay_runs row. started_at defaults to now (UTC)
+// when r.StartedAt is the zero time.
+func (db *DB) RecordAssayRun(r AssayRun) error {
+	startedAt := r.StartedAt.UTC().Format(dbTimeLayout)
+	if r.StartedAt.IsZero() {
+		startedAt = time.Now().UTC().Format(dbTimeLayout)
+	}
+	var finishedAt any
+	if r.FinishedAt != nil {
+		finishedAt = r.FinishedAt.UTC().Format(dbTimeLayout)
+	}
+	res, err := db.conn.Exec(
+		`INSERT INTO assay_runs
+		     (anvil, pr_number, head_sha, started_at, finished_at, duration_ms,
+		      cost_usd, findings_count, skipped_reason, shadow_mode, posted_count, error)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.Anvil,
+		r.PRNumber,
+		r.HeadSHA,
+		startedAt,
+		finishedAt,
+		r.DurationMs,
+		r.CostUSD,
+		r.FindingsCount,
+		r.SkippedReason,
+		boolToInt(r.ShadowMode),
+		r.PostedCount,
+		r.Error,
+	)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	r.ID = int(id)
+	return nil
 }

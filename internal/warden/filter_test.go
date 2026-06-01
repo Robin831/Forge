@@ -33,18 +33,6 @@ func TestPatternGrep_MatchAndMiss(t *testing.T) {
 	assert.False(t, patternGrep("xyzzy plover wibble", diff))
 }
 
-func TestChangedFilesFromDiff(t *testing.T) {
-	diff := "diff --git a/foo.cs b/foo.cs\n@@ -1 +1 @@\n-old\n+new\n" +
-		"diff --git a/bar/baz.tsx b/bar/baz.tsx\n@@ -1 +1 @@\n-x\n+y\n"
-	got := changedFilesFromDiff(diff)
-	assert.Equal(t, []string{"foo.cs", "bar/baz.tsx"}, got)
-}
-
-func TestChangedFilesFromDiff_NoHeaders(t *testing.T) {
-	assert.Nil(t, changedFilesFromDiff("no headers here"))
-	assert.Nil(t, changedFilesFromDiff(""))
-}
-
 func TestCategoriesForFile(t *testing.T) {
 	cs := categoriesForFile("src/foo.cs")
 	assert.True(t, cs["error-handling"])

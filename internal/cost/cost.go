@@ -16,6 +16,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -65,6 +66,34 @@ func OpenAIPricing() Pricing {
 		OutputPerM:     10.00,
 		CacheReadPerM:  0.00,
 		CacheWritePerM: 0.00,
+	}
+}
+
+// PricingForTier returns the Assay stage cost classification for a given model
+// tier. Assay estimates its review cost from the model_tier configured in its
+// settings ("haiku", "sonnet", or "opus"); the tier string is matched
+// case-insensitively after trimming surrounding whitespace. Unknown or empty
+// tiers fall back to DefaultPricing().
+func PricingForTier(tier string) Pricing {
+	switch strings.ToLower(strings.TrimSpace(tier)) {
+	case "haiku":
+		return Pricing{
+			InputPerM:      1.00,
+			OutputPerM:     5.00,
+			CacheReadPerM:  0.10,
+			CacheWritePerM: 1.25,
+		}
+	case "opus":
+		return Pricing{
+			InputPerM:      15.00,
+			OutputPerM:     75.00,
+			CacheReadPerM:  1.50,
+			CacheWritePerM: 18.75,
+		}
+	case "sonnet":
+		return DefaultPricing()
+	default:
+		return DefaultPricing()
 	}
 }
 

@@ -1,7 +1,6 @@
 package warden
 
 import (
-	"bufio"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -236,34 +235,4 @@ func capRules(rules []Rule, max int) []Rule {
 		return rules
 	}
 	return rules[:max]
-}
-
-// changedFilesFromDiff extracts the b-side file paths from a unified diff.
-// Returns nil when the diff has no "diff --git" headers. parseDiffGitPath
-// (in warden.go) is reused so renames and a/ b/ paths with spaces behave the
-// same here as in the diff-filter pre-truncation pass.
-//
-// Uses bufio.Scanner to avoid allocating a full slice of every line in a
-// potentially large diff.
-func changedFilesFromDiff(diff string) []string {
-	if diff == "" {
-		return nil
-	}
-	const marker = "diff --git "
-	var out []string
-	seen := make(map[string]bool)
-	scanner := bufio.NewScanner(strings.NewReader(diff))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, marker) {
-			continue
-		}
-		p := parseDiffGitPath(line)
-		if p == "" || seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, p)
-	}
-	return out
 }

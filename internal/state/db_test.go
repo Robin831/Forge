@@ -3015,3 +3015,153 @@ func TestDB_ResetRetry_ClearsRecoveryFailures(t *testing.T) {
 		t.Error("expected NeedsHuman=false after full reset")
 	}
 }
+
+func TestDB_InsertFindingDedup(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	f := Finding{
+		Anvil:       "anvil-1",
+		PRNumber:    42,
+		HeadSHA:     "abc123",
+		FindingHash: "hash-1",
+		File:        "main.go",
+		Severity:    "high",
+		Title:       "potential nil deref",
+	}
+	if err := db.InsertFinding(f); err != nil {
+		t.Fatalf("first InsertFinding: %v", err)
+	}
+	// Inserting a finding with the same finding_hash is a silent no-op.
+	if err := db.InsertFinding(f); err != nil {
+		t.Fatalf("duplicate InsertFinding: %v", err)
+	}
+
+	var count int
+	if err := db.Conn().QueryRow(
+		`SELECT COUNT(*) FROM pr_findings WHERE finding_hash = ?`, "hash-1",
+	).Scan(&count); err != nil {
+		t.Fatalf("counting findings: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 row after duplicate insert, got %d", count)
+	}
+}
+
+func TestDB_LastReviewedSHA(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// No runs yet → empty string, no error.
+	sha, err := db.LastReviewedSHA("anvil-1", 7)
+	if err != nil {
+		t.Fatalf("LastReviewedSHA (none): %v", err)
+	}
+	if sha != "" {
+		t.Errorf("expected empty SHA before any run, got %q", sha)
+	}
+
+	if err := db.RecordAssayRun(AssayRun{Anvil: "anvil-1", PRNumber: 7, HeadSHA: "sha-old"}); err != nil {
+		t.Fatalf("RecordAssayRun (old): %v", err)
+	}
+	if err := db.RecordAssayRun(AssayRun{Anvil: "anvil-1", PRNumber: 7, HeadSHA: "sha-new"}); err != nil {
+		t.Fatalf("RecordAssayRun (new): %v", err)
+	}
+
+	sha, err = db.LastReviewedSHA("anvil-1", 7)
+	if err != nil {
+		t.Fatalf("LastReviewedSHA (after runs): %v", err)
+	}
+	if sha != "sha-new" {
+		t.Errorf("expected latest SHA %q, got %q", "sha-new", sha)
+	}
+}
+
+func TestDB_IncrementConsecutiveMiss(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := db.InsertFinding(Finding{
+		Anvil:       "anvil-1",
+		PRNumber:    1,
+		FindingHash: "miss-hash",
+	}); err != nil {
+		t.Fatalf("InsertFinding: %v", err)
+	}
+
+	if err := db.IncrementConsecutiveMiss("miss-hash"); err != nil {
+		t.Fatalf("IncrementConsecutiveMiss (1): %v", err)
+	}
+	if err := db.IncrementConsecutiveMiss("miss-hash"); err != nil {
+		t.Fatalf("IncrementConsecutiveMiss (2): %v", err)
+	}
+
+	var misses int
+	if err := db.Conn().QueryRow(
+		`SELECT consecutive_misses FROM pr_findings WHERE finding_hash = ?`, "miss-hash",
+	).Scan(&misses); err != nil {
+		t.Fatalf("reading consecutive_misses: %v", err)
+	}
+	if misses != 2 {
+		t.Errorf("expected consecutive_misses=2, got %d", misses)
+	}
+}
+
+func TestDB_MarkResolved(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := db.InsertFinding(Finding{
+		Anvil:       "anvil-1",
+		PRNumber:    1,
+		FindingHash: "resolve-hash",
+	}); err != nil {
+		t.Fatalf("InsertFinding: %v", err)
+	}
+
+	if err := db.MarkResolved("resolve-hash"); err != nil {
+		t.Fatalf("MarkResolved: %v", err)
+	}
+
+	var resolvedAt *string
+	if err := db.Conn().QueryRow(
+		`SELECT resolved_at FROM pr_findings WHERE finding_hash = ?`, "resolve-hash",
+	).Scan(&resolvedAt); err != nil {
+		t.Fatalf("reading resolved_at: %v", err)
+	}
+	if resolvedAt == nil || *resolvedAt == "" {
+		t.Error("expected resolved_at to be set after MarkResolved")
+	}
+}
