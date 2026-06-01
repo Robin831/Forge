@@ -397,7 +397,11 @@ func checkOpenAIAuth(name string) checkResult {
 // binary means that pass cannot run, so it is reported as a failure.
 func checkAssayPasses() []checkResult {
 	if cfg == nil {
-		return nil
+		return []checkResult{{
+			Name:   "Assay passes",
+			Status: "warn",
+			Detail: "no config loaded — assay pass checks skipped",
+		}}
 	}
 	if !cfg.Assay.IsEnabled() {
 		return []checkResult{{

@@ -2957,6 +2957,120 @@ func TestHandleIPC_WardenRerun(t *testing.T) {
 	})
 }
 
+// TestHandleIPC_AssayRerun verifies the assay_rerun IPC handler validates
+// payloads, checks anvil config, looks up the PR from the DB, and verifies
+// anvil ownership.
+func TestHandleIPC_AssayRerun(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir},
+		},
+	})
+
+	t.Run("invalid payload", func(t *testing.T) {
+		resp := d.handleIPC(ipc.Command{Type: "assay_rerun", Payload: []byte("invalid")})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "invalid assay_rerun payload")
+	})
+
+	t.Run("missing fields", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.AssayRerunPayload{Anvil: "test-anvil"})
+		resp := d.handleIPC(ipc.Command{Type: "assay_rerun", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "requires anvil and pr")
+	})
+
+	t.Run("unknown anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.AssayRerunPayload{Anvil: "nope", PR: 1})
+		resp := d.handleIPC(ipc.Command{Type: "assay_rerun", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "unknown anvil")
+	})
+
+	t.Run("missing PR id", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.AssayRerunPayload{Anvil: "test-anvil", PR: 999})
+		resp := d.handleIPC(ipc.Command{Type: "assay_rerun", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "not found")
+	})
+
+	t.Run("anvil mismatch", func(t *testing.T) {
+		require.NoError(t, db.InsertPR(&state.PR{
+			Number: 42, Anvil: "other-anvil", BeadID: "BD-MM",
+			Branch: "b", Status: state.PROpen, CreatedAt: time.Now(),
+		}))
+		pr, err := db.GetPRByNumber("other-anvil", 42)
+		require.NoError(t, err)
+
+		payload, _ := json.Marshal(ipc.AssayRerunPayload{Anvil: "test-anvil", PR: pr.ID})
+		resp := d.handleIPC(ipc.Command{Type: "assay_rerun", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "belongs to anvil")
+	})
+
+	t.Run("success starts background goroutine", func(t *testing.T) {
+		require.NoError(t, db.InsertPR(&state.PR{
+			Number: 77, Anvil: "test-anvil", BeadID: "BD-ASSAY",
+			Branch: "forge/BD-ASSAY", Status: state.PROpen, CreatedAt: time.Now(),
+		}))
+		pr, err := db.GetPRByNumber("test-anvil", 77)
+		require.NoError(t, err)
+
+		payload, _ := json.Marshal(ipc.AssayRerunPayload{Anvil: "test-anvil", PR: pr.ID})
+		resp := d.handleIPC(ipc.Command{Type: "assay_rerun", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "Assay re-review started")
+
+		done := make(chan struct{})
+		go func() { d.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for background goroutine")
+		}
+
+		events, err := db.RecentEvents(20)
+		require.NoError(t, err)
+		found := false
+		for _, ev := range events {
+			if ev.Type == state.EventPRReviewNeeded && ev.BeadID == "BD-ASSAY" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "assay_rerun event should be logged")
+	})
+}
+
 // TestHandleIPC_ApproveAsIs verifies the approve_as_is IPC handler validates
 // payloads, checks anvil config, and dispatches a background goroutine.
 func TestHandleIPC_ApproveAsIs(t *testing.T) {

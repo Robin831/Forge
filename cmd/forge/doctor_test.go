@@ -556,3 +556,95 @@ func TestCheckProviderChain_NilConfig(t *testing.T) {
 		t.Errorf("expected warn when cfg is nil, got %q", results[0].Status)
 	}
 }
+
+// --- Assay pass doctor check tests ---
+
+func TestCheckAssayPasses_NilConfig(t *testing.T) {
+	origCfg := cfg
+	cfg = nil
+	defer func() { cfg = origCfg }()
+
+	results := checkAssayPasses()
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result when cfg is nil, got %d", len(results))
+	}
+	if results[0].Status != "warn" {
+		t.Errorf("expected warn when cfg is nil, got %q", results[0].Status)
+	}
+}
+
+func TestCheckAssayPasses_Disabled(t *testing.T) {
+	origCfg := cfg
+	cfg = &config.Config{}
+	defer func() { cfg = origCfg }()
+
+	results := checkAssayPasses()
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result when assay disabled, got %d", len(results))
+	}
+	if results[0].Status != "ok" {
+		t.Errorf("expected ok when assay disabled, got %q", results[0].Status)
+	}
+	if !strings.Contains(results[0].Detail, "disabled") {
+		t.Errorf("expected detail to mention disabled, got %q", results[0].Detail)
+	}
+}
+
+func TestCheckAssayPasses_EnabledBinaryFound(t *testing.T) {
+	enabled := true
+	origCfg := cfg
+	cfg = &config.Config{
+		Assay: config.AssayConfig{Enabled: &enabled},
+	}
+	defer func() { cfg = origCfg }()
+
+	mockExec(t,
+		func(file string) (string, error) {
+			return "/usr/local/bin/" + file, nil
+		},
+		func(name string, args ...string) ([]byte, error) {
+			return []byte("claude 1.2.3"), nil
+		},
+	)
+
+	results := checkAssayPasses()
+	if len(results) == 0 {
+		t.Fatal("expected at least one result for enabled assay")
+	}
+	for _, r := range results {
+		if r.Status != "ok" {
+			t.Errorf("expected ok for %q, got %q: %s", r.Name, r.Status, r.Detail)
+		}
+		if !strings.Contains(r.Name, "Assay pass") {
+			t.Errorf("expected name to contain 'Assay pass', got %q", r.Name)
+		}
+	}
+}
+
+func TestCheckAssayPasses_EnabledBinaryMissing(t *testing.T) {
+	enabled := true
+	origCfg := cfg
+	cfg = &config.Config{
+		Assay: config.AssayConfig{Enabled: &enabled},
+	}
+	defer func() { cfg = origCfg }()
+
+	mockExec(t,
+		func(file string) (string, error) {
+			return "", errors.New("not found")
+		},
+		func(name string, args ...string) ([]byte, error) {
+			return nil, errors.New("not found")
+		},
+	)
+
+	results := checkAssayPasses()
+	if len(results) == 0 {
+		t.Fatal("expected at least one result for enabled assay")
+	}
+	for _, r := range results {
+		if r.Status != "fail" {
+			t.Errorf("expected fail for %q when binary missing, got %q: %s", r.Name, r.Status, r.Detail)
+		}
+	}
+}
