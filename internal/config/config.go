@@ -1150,10 +1150,15 @@ func Defaults() Config {
 			Enabled:          boolPtr(false),
 			ShadowMode:       boolPtr(true),
 			SkipDrafts:       boolPtr(true),
-			DebounceSeconds:  intPtr(30),
-			MaxDiffBytes:     intPtr(250000),
-			MaxBaseFileBytes: intPtr(100000),
-			NitCap:           intPtr(10),
+			// Pilot-safety defaults: 5-minute debounce coalesces rapid push
+			// bursts; nit_cap=5 mirrors the design's noise budget; a non-zero
+			// daily cost cap means an unconfigured deployment can't silently
+			// burn Max-plan quota on a runaway PR loop.
+			DebounceSeconds:   intPtr(300),
+			DailyCostLimitUSD: float64Ptr(5.0),
+			MaxDiffBytes:      intPtr(250000),
+			MaxBaseFileBytes:  intPtr(100000),
+			NitCap:            intPtr(5),
 		},
 	}
 }
@@ -1164,6 +1169,10 @@ func boolPtr(b bool) *bool {
 
 func intPtr(i int) *int {
 	return &i
+}
+
+func float64Ptr(f float64) *float64 {
+	return &f
 }
 
 // Load reads the configuration from the given file path, or auto-discovers
