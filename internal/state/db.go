@@ -3788,13 +3788,17 @@ func (db *DB) MarkResolved(findingHash string) error {
 }
 
 // MarkFindingPosted records that a finding was successfully posted as a GitHub
-// review comment: it sets posted=1, stores the returned comment ID, and resets
-// the consecutive-miss counter (the finding has just been confirmed present on
-// the current head). Used by the Assay posting layer after a successful
-// inline-comment POST.
+// review comment: it sets posted=1, stores the returned comment ID, resets
+// the consecutive-miss counter, clears resolved_at (so a previously resolved
+// finding reappears in OpenPostedFindings), and clears the stale gh_thread_id
+// (the new comment lives on a fresh thread). Used by the Assay posting layer
+// after a successful inline-comment POST.
 func (db *DB) MarkFindingPosted(findingHash string, ghCommentID int64) error {
 	_, err := db.conn.Exec(
-		`UPDATE pr_findings SET posted = 1, gh_comment_id = ?, consecutive_misses = 0 WHERE finding_hash = ?`,
+		`UPDATE pr_findings
+		    SET posted = 1, gh_comment_id = ?, consecutive_misses = 0,
+		        resolved_at = NULL, gh_thread_id = ''
+		  WHERE finding_hash = ?`,
 		ghCommentID, findingHash,
 	)
 	return err
