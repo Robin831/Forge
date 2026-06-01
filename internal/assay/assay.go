@@ -225,8 +225,15 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		return nil, fmt.Errorf("all assay deep passes failed: %s", strings.Join(passErrors, "; "))
 	}
 
-	// 3. Aggregate: dedupe → suppress already-posted Nits → cap Nits.
+	// 3. Aggregate: hash-dedupe → collapse near-duplicates across passes →
+	// suppress already-posted Nits → cap Nits.
 	deduped := dedupeByHash(all)
+	// Same-anchor near-duplicates from different passes (e.g. tests-missing
+	// and logic each flagging the same untested code path with different
+	// category labels) bypass hash dedup because Hash includes category.
+	// Collapse them by body similarity so the operator sees one finding per
+	// concern, not two.
+	deduped = dedupeBySimilarity(deduped)
 
 	var posted map[string]bool
 	if db != nil {

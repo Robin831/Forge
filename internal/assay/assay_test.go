@@ -170,6 +170,89 @@ func TestNormalizeSeverity(t *testing.T) {
 
 // --- aggregation ----------------------------------------------------------
 
+// The two bodies below are paraphrased from a real Munin Assay run where
+// tests-missing and the logic pass independently flagged the same untested
+// code path with different category labels. Used by multiple similarity tests
+// below to assert dedup behavior on realistic input.
+const realParaphraseBodyA = "This change moves IDbContextFactory<CatalogDbContext> resolution out of the constructor and into StampCrossDatabase/StampCrossDatabaseAsync via scopeFactory.CreateScope()/CreateAsyncScope(). The only integration test explicitly documents that it drives Kilde/Variabel edits which map to ForKilde — TryBuildCrossDatabaseStamp returns false for those, so neither stamp method ever runs (allKilder/profileIds path requires a Rule or RuleProfileAssignment trigger). So the exact lines that changed have zero coverage. Add a regression test that saves a Rule or RuleProfileAssignment change through the interceptor-bearing context and asserts the affected KildeGrade.GradeInputsChangedAt rows are stamped."
+const realParaphraseBodyB = "The substance of this diff is the new lazy resolution inside StampCrossDatabase and StampCrossDatabaseAsync: create a scope and resolve IDbContextFactory<CatalogDbContext> from it. The DI-cycle break at the constructor level is exercised, but the modified lines themselves never run because the cross-DB stamp only fires on a Rule or RuleProfileAssignment change. Add an integration test that saves a Rule or RuleProfileAssignment change through the interceptor-bearing context and asserts the affected catalog.KildeGrades rows get GradeInputsChangedAt stamped."
+
+func TestDedupeBySimilarityCollapsesRealParaphrases(t *testing.T) {
+	anchor := "api/X.cs:204"
+	findings := []Finding{
+		{Anchor: anchor, Category: "missing-test", Severity: SeverityImportant, Title: "no test", Body: realParaphraseBodyA},
+		{Anchor: anchor, Category: "untested-path", Severity: SeverityImportant, Title: "untested", Body: realParaphraseBodyB},
+	}
+
+	out := dedupeBySimilarity(findings)
+
+	if len(out) != 1 {
+		t.Fatalf("expected paraphrases on the same anchor to collapse to 1; got %d", len(out))
+	}
+}
+
+func TestDedupeBySimilarityKeepsDistinctConcernsOnSameAnchor(t *testing.T) {
+	anchor := "src/cart.go:42"
+	findings := []Finding{
+		{Anchor: anchor, Category: "logic", Severity: SeverityImportant, Title: "off-by-one",
+			Body: "The loop bound iterates one element past the end of the slice, dereferencing memory outside the cart contents."},
+		{Anchor: anchor, Category: "security", Severity: SeverityImportant, Title: "nil",
+			Body: "There is no guard against a nil customer record, so the audit log entry below dereferences a null pointer when the request is anonymous."},
+	}
+
+	out := dedupeBySimilarity(findings)
+
+	if len(out) != 2 {
+		t.Errorf("expected distinct concerns on same anchor to survive; got %d", len(out))
+	}
+}
+
+func TestDedupeBySimilarityKeepsDifferentAnchors(t *testing.T) {
+	findings := []Finding{
+		{Anchor: "a.go:10", Category: "logic", Severity: SeverityImportant, Title: "x",
+			Body: realParaphraseBodyA},
+		{Anchor: "a.go:11", Category: "logic", Severity: SeverityImportant, Title: "x",
+			Body: realParaphraseBodyA},
+	}
+
+	out := dedupeBySimilarity(findings)
+
+	if len(out) != 2 {
+		t.Errorf("expected findings on different anchors to survive even when bodies are identical; got %d", len(out))
+	}
+}
+
+func TestDedupeBySimilarityPrefersHigherSeverity(t *testing.T) {
+	anchor := "api/X.cs:204"
+	findings := []Finding{
+		{Anchor: anchor, Category: "missing-test", Severity: SeverityNit, Title: "nit", Body: realParaphraseBodyA},
+		{Anchor: anchor, Category: "untested-path", Severity: SeverityImportant, Title: "imp", Body: realParaphraseBodyB},
+	}
+
+	out := dedupeBySimilarity(findings)
+
+	if len(out) != 1 {
+		t.Fatalf("expected paraphrases to collapse; got %d", len(out))
+	}
+	if out[0].Severity != SeverityImportant {
+		t.Errorf("expected Important to survive over Nit; got %s", out[0].Severity)
+	}
+}
+
+func TestDedupeBySimilaritySkipsTinyBodies(t *testing.T) {
+	anchor := "a.go:1"
+	findings := []Finding{
+		{Anchor: anchor, Category: "logic", Severity: SeverityImportant, Title: "x", Body: "no test"},
+		{Anchor: anchor, Category: "tests", Severity: SeverityNit, Title: "y", Body: "no test"},
+	}
+
+	out := dedupeBySimilarity(findings)
+
+	if len(out) != 2 {
+		t.Errorf("expected very short bodies to skip similarity dedup; got %d", len(out))
+	}
+}
+
 func TestDedupeByHash(t *testing.T) {
 	in := []Finding{
 		{Hash: "a"}, {Hash: "b"}, {Hash: "a"}, {Hash: ""}, {Hash: "c"}, {Hash: "b"},
