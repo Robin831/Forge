@@ -960,16 +960,16 @@ func (n NotificationsConfig) ResolvedTeamsEvents() []string {
 type AssayConfig struct {
 	Enabled           *bool    `mapstructure:"enabled" yaml:"enabled,omitempty"`
 	ShadowMode        *bool    `mapstructure:"shadow_mode" yaml:"shadow_mode,omitempty"`
-	DebounceSeconds   int      `mapstructure:"debounce_seconds" yaml:"debounce_seconds,omitempty"`
-	DailyCostLimitUSD float64  `mapstructure:"daily_cost_limit_usd" yaml:"daily_cost_limit_usd,omitempty"`
+	DebounceSeconds   *int      `mapstructure:"debounce_seconds" yaml:"debounce_seconds,omitempty"`
+	DailyCostLimitUSD *float64  `mapstructure:"daily_cost_limit_usd" yaml:"daily_cost_limit_usd,omitempty"`
 	TriageProvider    string   `mapstructure:"triage_provider" yaml:"triage_provider,omitempty"`
 	ReviewProvider    string   `mapstructure:"review_provider" yaml:"review_provider,omitempty"`
 	ModelTier         string   `mapstructure:"model_tier" yaml:"model_tier,omitempty"`
 	TriageModel       string   `mapstructure:"triage_model" yaml:"triage_model,omitempty"` // model hint
 	ReviewModel       string   `mapstructure:"review_model" yaml:"review_model,omitempty"` // model hint
-	MaxDiffBytes      int      `mapstructure:"max_diff_bytes" yaml:"max_diff_bytes,omitempty"`
-	MaxBaseFileBytes  int      `mapstructure:"max_base_file_bytes" yaml:"max_base_file_bytes,omitempty"`
-	NitCap            int      `mapstructure:"nit_cap" yaml:"nit_cap,omitempty"`
+	MaxDiffBytes      *int      `mapstructure:"max_diff_bytes" yaml:"max_diff_bytes,omitempty"`
+	MaxBaseFileBytes  *int      `mapstructure:"max_base_file_bytes" yaml:"max_base_file_bytes,omitempty"`
+	NitCap            *int      `mapstructure:"nit_cap" yaml:"nit_cap,omitempty"`
 	SkipDrafts        *bool    `mapstructure:"skip_drafts" yaml:"skip_drafts,omitempty"`
 	SkipPaths         []string `mapstructure:"skip_paths" yaml:"skip_paths,omitempty"`
 }
@@ -999,11 +999,51 @@ func (a AssayConfig) IsSkipDrafts() bool {
 	return *a.SkipDrafts
 }
 
+// GetDebounceSeconds returns the debounce seconds value, defaulting to 0 when unset.
+func (a AssayConfig) GetDebounceSeconds() int {
+	if a.DebounceSeconds == nil {
+		return 0
+	}
+	return *a.DebounceSeconds
+}
+
+// GetDailyCostLimitUSD returns the daily cost limit, defaulting to 0 when unset.
+func (a AssayConfig) GetDailyCostLimitUSD() float64 {
+	if a.DailyCostLimitUSD == nil {
+		return 0
+	}
+	return *a.DailyCostLimitUSD
+}
+
+// GetMaxDiffBytes returns the max diff bytes, defaulting to 0 when unset.
+func (a AssayConfig) GetMaxDiffBytes() int {
+	if a.MaxDiffBytes == nil {
+		return 0
+	}
+	return *a.MaxDiffBytes
+}
+
+// GetMaxBaseFileBytes returns the max base file bytes, defaulting to 0 when unset.
+func (a AssayConfig) GetMaxBaseFileBytes() int {
+	if a.MaxBaseFileBytes == nil {
+		return 0
+	}
+	return *a.MaxBaseFileBytes
+}
+
+// GetNitCap returns the nit cap, defaulting to 0 when unset.
+func (a AssayConfig) GetNitCap() int {
+	if a.NitCap == nil {
+		return 0
+	}
+	return *a.NitCap
+}
+
 // ResolvedAssay returns the effective Assay configuration for the named anvil.
 // It starts from the global c.Assay and overlays the anvil's *AssayConfig when
-// present: *bool fields override when non-nil; string/int/float fields override
-// when non-zero/non-empty; SkipPaths overrides when len>0. Unknown anvils or
-// anvils without an Assay override return the global config unchanged.
+// present: pointer fields (*bool, *int, *float64) override when non-nil; string
+// fields override when non-empty; SkipPaths overrides when len>0. Unknown anvils
+// or anvils without an Assay override return the global config unchanged.
 func (c *Config) ResolvedAssay(anvilName string) AssayConfig {
 	resolved := c.Assay
 	anvil, ok := c.Anvils[anvilName]
@@ -1020,10 +1060,10 @@ func (c *Config) ResolvedAssay(anvilName string) AssayConfig {
 	if o.SkipDrafts != nil {
 		resolved.SkipDrafts = o.SkipDrafts
 	}
-	if o.DebounceSeconds != 0 {
+	if o.DebounceSeconds != nil {
 		resolved.DebounceSeconds = o.DebounceSeconds
 	}
-	if o.DailyCostLimitUSD != 0 {
+	if o.DailyCostLimitUSD != nil {
 		resolved.DailyCostLimitUSD = o.DailyCostLimitUSD
 	}
 	if o.TriageProvider != "" {
@@ -1041,13 +1081,13 @@ func (c *Config) ResolvedAssay(anvilName string) AssayConfig {
 	if o.ReviewModel != "" {
 		resolved.ReviewModel = o.ReviewModel
 	}
-	if o.MaxDiffBytes != 0 {
+	if o.MaxDiffBytes != nil {
 		resolved.MaxDiffBytes = o.MaxDiffBytes
 	}
-	if o.MaxBaseFileBytes != 0 {
+	if o.MaxBaseFileBytes != nil {
 		resolved.MaxBaseFileBytes = o.MaxBaseFileBytes
 	}
-	if o.NitCap != 0 {
+	if o.NitCap != nil {
 		resolved.NitCap = o.NitCap
 	}
 	if len(o.SkipPaths) > 0 {
@@ -1110,16 +1150,20 @@ func Defaults() Config {
 			Enabled:          boolPtr(false),
 			ShadowMode:       boolPtr(true),
 			SkipDrafts:       boolPtr(true),
-			DebounceSeconds:  30,
-			MaxDiffBytes:     250000,
-			MaxBaseFileBytes: 100000,
-			NitCap:           10,
+			DebounceSeconds:  intPtr(30),
+			MaxDiffBytes:     intPtr(250000),
+			MaxBaseFileBytes: intPtr(100000),
+			NitCap:           intPtr(10),
 		},
 	}
 }
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func intPtr(i int) *int {
+	return &i
 }
 
 // Load reads the configuration from the given file path, or auto-discovers

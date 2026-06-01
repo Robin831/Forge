@@ -3077,10 +3077,10 @@ func TestDB_LastReviewedSHA(t *testing.T) {
 		t.Errorf("expected empty SHA before any run, got %q", sha)
 	}
 
-	if err := db.RecordAssayRun(AssayRun{Anvil: "anvil-1", PRNumber: 7, HeadSHA: "sha-old"}); err != nil {
+	if err := db.RecordAssayRun(&AssayRun{Anvil: "anvil-1", PRNumber: 7, HeadSHA: "sha-old"}); err != nil {
 		t.Fatalf("RecordAssayRun (old): %v", err)
 	}
-	if err := db.RecordAssayRun(AssayRun{Anvil: "anvil-1", PRNumber: 7, HeadSHA: "sha-new"}); err != nil {
+	if err := db.RecordAssayRun(&AssayRun{Anvil: "anvil-1", PRNumber: 7, HeadSHA: "sha-new"}); err != nil {
 		t.Fatalf("RecordAssayRun (new): %v", err)
 	}
 

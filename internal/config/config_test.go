@@ -277,7 +277,7 @@ assay:
   enabled: true
   shadow_mode: false
   debounce_seconds: 45
-  model_tier: pro
+  model_tier: sonnet
   max_diff_bytes: 500000
   nit_cap: 3
   skip_paths:
@@ -290,10 +290,10 @@ assay:
 	require.NoError(t, err)
 	assert.True(t, cfg.Assay.IsEnabled())
 	assert.False(t, cfg.Assay.IsShadowMode())
-	assert.Equal(t, 45, cfg.Assay.DebounceSeconds)
-	assert.Equal(t, "pro", cfg.Assay.ModelTier)
-	assert.Equal(t, 500000, cfg.Assay.MaxDiffBytes)
-	assert.Equal(t, 3, cfg.Assay.NitCap)
+	assert.Equal(t, 45, cfg.Assay.GetDebounceSeconds())
+	assert.Equal(t, "sonnet", cfg.Assay.ModelTier)
+	assert.Equal(t, 500000, cfg.Assay.GetMaxDiffBytes())
+	assert.Equal(t, 3, cfg.Assay.GetNitCap())
 	assert.Equal(t, []string{"vendor/", "**/*.gen.go"}, cfg.Assay.SkipPaths)
 }
 
@@ -326,10 +326,10 @@ assay:
 	resolved := cfg.ResolvedAssay("myrepo")
 	// Overridden fields reflect the anvil overlay.
 	assert.False(t, resolved.IsShadowMode())
-	assert.Equal(t, 1, resolved.NitCap)
+	assert.Equal(t, 1, resolved.GetNitCap())
 	// Non-overridden fields inherit from the global config.
 	assert.True(t, resolved.IsEnabled())
-	assert.Equal(t, 45, resolved.DebounceSeconds)
+	assert.Equal(t, 45, resolved.GetDebounceSeconds())
 }
 
 func TestResolvedAssay_NoOverrideReturnsGlobal(t *testing.T) {
@@ -353,8 +353,8 @@ assay:
 	resolved := cfg.ResolvedAssay("myrepo")
 	assert.True(t, resolved.IsEnabled())
 	assert.False(t, resolved.IsShadowMode())
-	assert.Equal(t, 45, resolved.DebounceSeconds)
-	assert.Equal(t, 7, resolved.NitCap)
+	assert.Equal(t, 45, resolved.GetDebounceSeconds())
+	assert.Equal(t, 7, resolved.GetNitCap())
 
 	// An unknown anvil also falls back to the global config.
 	unknown := cfg.ResolvedAssay("does-not-exist")

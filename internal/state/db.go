@@ -3788,7 +3788,7 @@ func (db *DB) MarkResolved(findingHash string) error {
 
 // RecordAssayRun inserts a new assay_runs row. started_at defaults to now (UTC)
 // when r.StartedAt is the zero time.
-func (db *DB) RecordAssayRun(r AssayRun) error {
+func (db *DB) RecordAssayRun(r *AssayRun) error {
 	startedAt := r.StartedAt.UTC().Format(dbTimeLayout)
 	if r.StartedAt.IsZero() {
 		startedAt = time.Now().UTC().Format(dbTimeLayout)

@@ -58,6 +58,7 @@ func ChangedFiles(diff string) []string {
 	var out []string
 	seen := make(map[string]bool)
 	scanner := bufio.NewScanner(strings.NewReader(diff))
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, marker) {
@@ -69,6 +70,9 @@ func ChangedFiles(diff string) []string {
 		}
 		seen[p] = true
 		out = append(out, p)
+	}
+	if err := scanner.Err(); err != nil {
+		return out
 	}
 	return out
 }
