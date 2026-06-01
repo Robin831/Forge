@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/adventurer"
+	"github.com/Robin831/Forge/internal/assay"
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/burnish"
 	"github.com/Robin831/Forge/internal/config"
@@ -1581,24 +1582,73 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				break
 			}
 
-			// TODO(assay sub-task 3): invoke assay.Review(workerCtx, ...) here to
-			// triage the diff, post findings, and report the real cost/findings.
-			// Until that lands, record a no-op run so LastReviewedSHA advances to
-			// the current head and the trigger gate debounces instead of
-			// re-firing every poll.
+			// Resolve config + build engine config from the per-anvil overlay.
+			cfgNow := d.cfg.Load()
+			resolved := cfgNow.ResolvedAssay(req.Anvil)
+			engineCfg := assay.FromAssayConfig(resolved)
+
 			started := time.Now()
 			run := &state.AssayRun{
-				Anvil:         req.Anvil,
-				PRNumber:      req.PRNumber,
-				HeadSHA:       req.HeadSHA,
-				StartedAt:     started,
-				SkippedReason: "assay reviewer not yet wired",
+				Anvil:      req.Anvil,
+				PRNumber:   req.PRNumber,
+				HeadSHA:    req.HeadSHA,
+				StartedAt:  started,
+				ShadowMode: engineCfg.ShadowMode,
 			}
+
+			// Fetch the PR diff via `gh pr diff <N>` from the worktree. A
+			// fetch failure surfaces as a recorded-but-skipped run so the
+			// LastReviewedSHA advances and Bellows doesn't loop on the same
+			// head; transient failures are recovered on the next push.
+			diffCmd := executil.HideWindow(exec.CommandContext(workerCtx, "gh", "pr", "diff", strconv.Itoa(req.PRNumber)))
+			diffCmd.Dir = wt.Path
+			var diffStderr strings.Builder
+			diffCmd.Stderr = &diffStderr
+			diffBytes, diffErr := diffCmd.Output()
+			if diffErr != nil {
+				d.logger.Error("failed to fetch PR diff for Assay", "pr", req.PRNumber, "bead", req.BeadID, "error", diffErr, "stderr", diffStderr.String())
+				run.SkippedReason = "diff fetch failed"
+				run.Error = diffErr.Error()
+			} else {
+				// Invoke the multi-pass engine. Findings are written to
+				// pr_findings inside Review when db is non-nil, including the
+				// REVIEW.md-driven repository guidance pass.
+				assayReq := assay.ReviewRequest{
+					Anvil:     req.Anvil,
+					AnvilPath: anvilCfg.Path,
+					PRNumber:  req.PRNumber,
+					HeadSHA:   req.HeadSHA,
+					Diff:      string(diffBytes),
+					BeadID:    req.BeadID,
+					Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
+					WorkDir:   wt.Path,
+				}
+				result, rerr := assay.Review(workerCtx, assayReq, d.db, engineCfg)
+				if rerr != nil {
+					d.logger.Error("Assay review failed", "pr", req.PRNumber, "bead", req.BeadID, "error", rerr)
+					run.Error = rerr.Error()
+				} else {
+					run.CostUSD = result.CostUSD
+					run.FindingsCount = len(result.Findings)
+					d.logger.Info("Assay review completed",
+						"pr", req.PRNumber,
+						"bead", req.BeadID,
+						"head", req.HeadSHA,
+						"findings", run.FindingsCount,
+						"shadow", engineCfg.ShadowMode,
+						"cost_usd", run.CostUSD,
+						"duration_ms", result.Duration.Milliseconds(),
+					)
+				}
+			}
+
 			finished := time.Now()
 			run.FinishedAt = &finished
 			run.DurationMs = finished.Sub(started).Milliseconds()
 			if err := d.db.RecordAssayRun(run); err != nil {
 				d.logger.Error("failed to record Assay run", "pr", req.PRNumber, "bead", req.BeadID, "error", err)
+				_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			} else if run.Error != "" {
 				_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
 			} else {
 				_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
