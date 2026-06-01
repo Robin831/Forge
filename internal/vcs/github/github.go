@@ -789,6 +789,110 @@ func (p *Provider) ResolveThread(ctx context.Context, worktreePath string, threa
 	return nil
 }
 
+// ThreadIDByBodyHeader returns the GraphQL node ID of the first review thread on
+// the PR whose top comment body contains the given header marker (for example
+// an "<!-- assay-hash: … -->" line). It returns "" (no error) when no thread
+// matches. Assay uses this to locate the thread it previously opened for a
+// finding so the thread can be resolved once the finding is gone.
+func (p *Provider) ThreadIDByBodyHeader(ctx context.Context, worktreePath string, prNumber int, header string) (string, error) {
+	if strings.TrimSpace(header) == "" {
+		return "", nil
+	}
+
+	owner, repo, err := p.GetRepoOwnerAndName(ctx, worktreePath)
+	if err != nil {
+		return "", fmt.Errorf("getting repo owner and name: %w", err)
+	}
+
+	query := `
+	query($owner:String!, $repo:String!, $pr:Int!, $cursor:String) {
+		repository(owner:$owner, name:$repo) {
+			pullRequest(number:$pr) {
+				reviewThreads(first:100, after:$cursor) {
+					pageInfo { hasNextPage endCursor }
+					nodes {
+						id
+						comments(first:1) {
+							nodes { body }
+						}
+					}
+				}
+			}
+		}
+	}`
+
+	type gqlPage struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
+						Nodes []struct {
+							ID       string `json:"id"`
+							Comments struct {
+								Nodes []struct {
+									Body string `json:"body"`
+								} `json:"nodes"`
+							} `json:"comments"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+
+	cursor := ""
+	for {
+		args := []string{
+			"api", "graphql",
+			"-f", "query=" + query,
+			"-f", "owner=" + owner,
+			"-f", "repo=" + repo,
+			"-F", fmt.Sprintf("pr=%d", prNumber),
+		}
+		if cursor != "" {
+			args = append(args, "-f", "cursor="+cursor)
+		} else {
+			args = append(args, "-F", "cursor=null")
+		}
+
+		cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
+		cmd.Dir = worktreePath
+
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("gh api graphql (threads): %w\nstderr: %s", err, stderr.String())
+		}
+
+		var page gqlPage
+		if err := json.Unmarshal(stdout.Bytes(), &page); err != nil {
+			return "", fmt.Errorf("parsing graphql response: %w", err)
+		}
+
+		for _, thread := range page.Data.Repository.PullRequest.ReviewThreads.Nodes {
+			if len(thread.Comments.Nodes) == 0 {
+				continue
+			}
+			if strings.Contains(thread.Comments.Nodes[0].Body, header) {
+				return thread.ID, nil
+			}
+		}
+
+		if !page.Data.Repository.PullRequest.ReviewThreads.PageInfo.HasNextPage {
+			break
+		}
+		cursor = page.Data.Repository.PullRequest.ReviewThreads.PageInfo.EndCursor
+	}
+
+	return "", nil
+}
+
 // ParseRepoURL parses a git remote URL into owner and repository name.
 func ParseRepoURL(url string) (owner, repo string, err error) {
 	url = strings.TrimSuffix(url, ".git")
