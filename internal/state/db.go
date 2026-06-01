@@ -3859,6 +3859,43 @@ func (db *DB) OpenPostedFindings(anvil string, prNumber int) ([]Finding, error) 
 	return out, rows.Err()
 }
 
+// ActiveFindings returns every non-resolved finding for the given anvil and
+// PR, regardless of posted state. Assay uses this for cross-run
+// similarity-based dedup: a finding the model rewords on a subsequent run
+// has a new canonical body and therefore a new Finding.Hash, so the hash-only
+// guards (INSERT OR IGNORE, PostedFindingHashes) would otherwise let the
+// reworded version through as a fresh row. The returned slice is never nil.
+func (db *DB) ActiveFindings(anvil string, prNumber int) ([]Finding, error) {
+	rows, err := db.conn.Query(
+		`SELECT head_sha, finding_hash, file, anchor, severity, category, title,
+		        body, evidence, source_pass, posted, gh_comment_id, gh_thread_id,
+		        consecutive_misses
+		   FROM pr_findings
+		  WHERE anvil = ? AND pr_number = ? AND resolved_at IS NULL`,
+		anvil, prNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]Finding, 0)
+	for rows.Next() {
+		f := Finding{Anvil: anvil, PRNumber: prNumber}
+		var posted int
+		if err := rows.Scan(
+			&f.HeadSHA, &f.FindingHash, &f.File, &f.Anchor, &f.Severity,
+			&f.Category, &f.Title, &f.Body, &f.Evidence, &f.SourcePass,
+			&posted, &f.GHCommentID, &f.GHThreadID, &f.ConsecutiveMisses,
+		); err != nil {
+			return nil, err
+		}
+		f.Posted = posted != 0
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 // PostedFindingHashes returns the set of finding_hash values that have already
 // been posted (posted=1) for the given anvil and PR. Assay uses this to
 // suppress re-posting Nit findings on a repeat review of the same PR. The

@@ -34,6 +34,69 @@ func dedupeByHash(findings []Finding) []Finding {
 	return out
 }
 
+// ExistingFinding is the narrow shape suppressSimilarToExisting needs from a
+// persisted finding: just the anchor and body. Defining it locally keeps the
+// dedup helper decoupled from state.Finding (and from sql/db wiring in tests).
+type ExistingFinding struct {
+	Anchor string
+	Body   string
+}
+
+// suppressSimilarToExisting drops new findings whose body has high overlap
+// with an already-active finding on the same anvil/PR/anchor. The model
+// regenerates the same concern with slightly different wording on each
+// re-run; without this pass each re-run would insert a fresh row because
+// Finding.Hash includes the canonical body. Anchor is the lock — same advice
+// on different lines is genuinely distinct work to do.
+//
+// Returns the filtered slice; the existing-findings argument is unchanged.
+// When either side has fewer than minSimilarityTokens significant tokens the
+// pair is skipped (too noisy to compare), matching the intra-run rule.
+func suppressSimilarToExisting(newFindings []Finding, existing []ExistingFinding) []Finding {
+	if len(newFindings) == 0 || len(existing) == 0 {
+		return newFindings
+	}
+	byAnchor := make(map[string][]ExistingFinding)
+	for _, e := range existing {
+		if e.Anchor == "" {
+			continue
+		}
+		byAnchor[e.Anchor] = append(byAnchor[e.Anchor], e)
+	}
+	out := make([]Finding, 0, len(newFindings))
+	for _, f := range newFindings {
+		if f.Anchor == "" {
+			out = append(out, f)
+			continue
+		}
+		peers := byAnchor[f.Anchor]
+		if len(peers) == 0 {
+			out = append(out, f)
+			continue
+		}
+		nt := tokenizeForSimilarity(f.Body)
+		if len(nt) < minSimilarityTokens {
+			out = append(out, f)
+			continue
+		}
+		suppress := false
+		for _, e := range peers {
+			et := tokenizeForSimilarity(e.Body)
+			if len(et) < minSimilarityTokens {
+				continue
+			}
+			if overlapCoefficient(nt, et) >= similarityDedupeThreshold {
+				suppress = true
+				break
+			}
+		}
+		if !suppress {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // dedupeBySimilarity collapses multiple findings on the same anchor whose
 // bodies are highly similar. This catches the common case where two passes
 // (e.g. tests-missing and logic) flag the same gap with different category

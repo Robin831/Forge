@@ -226,7 +226,8 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	}
 
 	// 3. Aggregate: hash-dedupe → collapse near-duplicates across passes →
-	// suppress already-posted Nits → cap Nits.
+	// suppress near-duplicates of already-stored findings → suppress
+	// already-posted Nits → cap Nits.
 	deduped := dedupeByHash(all)
 	// Same-anchor near-duplicates from different passes (e.g. tests-missing
 	// and logic each flagging the same untested code path with different
@@ -234,6 +235,24 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	// Collapse them by body similarity so the operator sees one finding per
 	// concern, not two.
 	deduped = dedupeBySimilarity(deduped)
+	// Cross-run dedup: on a repeat review of the same PR the model often
+	// regenerates the same concern with slightly different wording, which
+	// canonicalizes to a different Hash and would otherwise INSERT as a
+	// fresh row. Drop new findings whose body overlaps highly with an
+	// already-active (non-resolved) finding at the same anchor.
+	if db != nil {
+		raw, ferr := db.ActiveFindings(req.Anvil, req.PRNumber)
+		if ferr != nil {
+			return nil, fmt.Errorf("assay: querying active findings: %w", ferr)
+		}
+		if len(raw) > 0 {
+			existing := make([]ExistingFinding, 0, len(raw))
+			for _, r := range raw {
+				existing = append(existing, ExistingFinding{Anchor: r.Anchor, Body: r.Body})
+			}
+			deduped = suppressSimilarToExisting(deduped, existing)
+		}
+	}
 
 	var posted map[string]bool
 	if db != nil {

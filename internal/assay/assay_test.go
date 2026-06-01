@@ -239,6 +239,66 @@ func TestDedupeBySimilarityPrefersHigherSeverity(t *testing.T) {
 	}
 }
 
+func TestSuppressSimilarToExistingDropsParaphraseAtSameAnchor(t *testing.T) {
+	anchor := "api/X.cs:172"
+	existing := []ExistingFinding{
+		{Anchor: anchor, Body: realParaphraseBodyA},
+	}
+	newFindings := []Finding{
+		{Anchor: anchor, Category: "missing-test", Severity: SeverityImportant, Title: "rewording", Body: realParaphraseBodyB},
+	}
+
+	out := suppressSimilarToExisting(newFindings, existing)
+
+	if len(out) != 0 {
+		t.Errorf("expected reworded paraphrase to be suppressed against existing; got %d", len(out))
+	}
+}
+
+func TestSuppressSimilarToExistingKeepsDistinctConcernAtSameAnchor(t *testing.T) {
+	anchor := "src/cart.go:42"
+	existing := []ExistingFinding{
+		{Anchor: anchor, Body: "The loop bound iterates one element past the end of the slice, dereferencing memory outside the cart contents."},
+	}
+	newFindings := []Finding{
+		{Anchor: anchor, Category: "security", Severity: SeverityImportant, Title: "nil",
+			Body: "There is no guard against a nil customer record, so the audit log entry below dereferences a null pointer when the request is anonymous."},
+	}
+
+	out := suppressSimilarToExisting(newFindings, existing)
+
+	if len(out) != 1 {
+		t.Errorf("expected distinct concern at same anchor to survive; got %d", len(out))
+	}
+}
+
+func TestSuppressSimilarToExistingKeepsDifferentAnchor(t *testing.T) {
+	existing := []ExistingFinding{
+		{Anchor: "api/X.cs:204", Body: realParaphraseBodyA},
+	}
+	newFindings := []Finding{
+		{Anchor: "api/X.cs:172", Category: "missing-test", Severity: SeverityImportant, Title: "at different line", Body: realParaphraseBodyB},
+	}
+
+	out := suppressSimilarToExisting(newFindings, existing)
+
+	if len(out) != 1 {
+		t.Errorf("expected finding at a different anchor to survive even when body matches; got %d", len(out))
+	}
+}
+
+func TestSuppressSimilarToExistingNoOpOnEmptyExisting(t *testing.T) {
+	newFindings := []Finding{
+		{Anchor: "a.go:1", Category: "logic", Severity: SeverityImportant, Title: "x", Body: realParaphraseBodyA},
+	}
+
+	out := suppressSimilarToExisting(newFindings, nil)
+
+	if len(out) != 1 {
+		t.Errorf("expected pass-through with nil existing; got %d", len(out))
+	}
+}
+
 func TestDedupeBySimilaritySkipsTinyBodies(t *testing.T) {
 	anchor := "a.go:1"
 	findings := []Finding{
