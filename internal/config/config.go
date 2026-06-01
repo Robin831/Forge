@@ -31,6 +31,11 @@ type Config struct {
 	Anvils        map[string]AnvilConfig `mapstructure:"anvils" yaml:"anvils"`
 	Settings      SettingsConfig         `mapstructure:"settings" yaml:"settings"`
 	Notifications NotificationsConfig    `mapstructure:"notifications" yaml:"notifications,omitempty"`
+	// Assay holds the global Assay (AI PR review) configuration. It lives on
+	// the top-level Config — which is serialized by plain yaml.Marshal (Save)
+	// and unmarshalled by viper — rather than on SettingsConfig, whose custom
+	// MarshalYAML shadow struct would silently drop new fields.
+	Assay AssayConfig `mapstructure:"assay" yaml:"assay,omitempty"`
 }
 
 // AnvilConfig defines a registered repository (anvil).
@@ -129,6 +134,11 @@ type AnvilConfig struct {
 	// from a "before" hook aborts the stage; "after" hook failures are
 	// logged but do not abort the pipeline.
 	Hooks *HooksConfig `mapstructure:"hooks" yaml:"hooks,omitempty"`
+
+	// Assay holds a per-anvil overlay over the global Assay configuration.
+	// When set, its non-zero fields override the corresponding global values
+	// via Config.ResolvedAssay. When nil (default), the global Assay applies.
+	Assay *AssayConfig `mapstructure:"assay" yaml:"assay,omitempty"`
 }
 
 // SmithConfig holds per-anvil Smith configuration.
@@ -943,6 +953,149 @@ func (n NotificationsConfig) ResolvedTeamsEvents() []string {
 	return n.Events
 }
 
+// AssayConfig configures the Assay AI PR review subsystem. It exists both as
+// a top-level Config section (global defaults) and as a per-anvil overlay
+// (AnvilConfig.Assay). Tri-state booleans use *bool so an unset value inherits
+// from the global config, following the VulncheckEnabled / SmelterEnabled idiom.
+type AssayConfig struct {
+	Enabled           *bool    `mapstructure:"enabled" yaml:"enabled,omitempty"`
+	ShadowMode        *bool    `mapstructure:"shadow_mode" yaml:"shadow_mode,omitempty"`
+	DebounceSeconds   *int      `mapstructure:"debounce_seconds" yaml:"debounce_seconds,omitempty"`
+	DailyCostLimitUSD *float64  `mapstructure:"daily_cost_limit_usd" yaml:"daily_cost_limit_usd,omitempty"`
+	TriageProvider    string   `mapstructure:"triage_provider" yaml:"triage_provider,omitempty"`
+	ReviewProvider    string   `mapstructure:"review_provider" yaml:"review_provider,omitempty"`
+	ModelTier         string   `mapstructure:"model_tier" yaml:"model_tier,omitempty"`
+	TriageModel       string   `mapstructure:"triage_model" yaml:"triage_model,omitempty"` // model hint
+	ReviewModel       string   `mapstructure:"review_model" yaml:"review_model,omitempty"` // model hint
+	MaxDiffBytes      *int      `mapstructure:"max_diff_bytes" yaml:"max_diff_bytes,omitempty"`
+	MaxBaseFileBytes  *int      `mapstructure:"max_base_file_bytes" yaml:"max_base_file_bytes,omitempty"`
+	NitCap            *int      `mapstructure:"nit_cap" yaml:"nit_cap,omitempty"`
+	SkipDrafts        *bool    `mapstructure:"skip_drafts" yaml:"skip_drafts,omitempty"`
+	SkipPaths         []string `mapstructure:"skip_paths" yaml:"skip_paths,omitempty"`
+}
+
+// IsEnabled returns whether Assay is active. Defaults to false when unset.
+func (a AssayConfig) IsEnabled() bool {
+	if a.Enabled == nil {
+		return false
+	}
+	return *a.Enabled
+}
+
+// IsShadowMode returns whether Assay runs in shadow mode (no public side
+// effects). Defaults to true when unset — shadow is the safe default.
+func (a AssayConfig) IsShadowMode() bool {
+	if a.ShadowMode == nil {
+		return true
+	}
+	return *a.ShadowMode
+}
+
+// IsSkipDrafts returns whether draft PRs are skipped. Defaults to true when unset.
+func (a AssayConfig) IsSkipDrafts() bool {
+	if a.SkipDrafts == nil {
+		return true
+	}
+	return *a.SkipDrafts
+}
+
+// GetDebounceSeconds returns the debounce seconds value, defaulting to 0 when unset.
+func (a AssayConfig) GetDebounceSeconds() int {
+	if a.DebounceSeconds == nil {
+		return 0
+	}
+	return *a.DebounceSeconds
+}
+
+// GetDailyCostLimitUSD returns the daily cost limit, defaulting to 0 when unset.
+func (a AssayConfig) GetDailyCostLimitUSD() float64 {
+	if a.DailyCostLimitUSD == nil {
+		return 0
+	}
+	return *a.DailyCostLimitUSD
+}
+
+// GetMaxDiffBytes returns the max diff bytes, defaulting to 0 when unset.
+func (a AssayConfig) GetMaxDiffBytes() int {
+	if a.MaxDiffBytes == nil {
+		return 0
+	}
+	return *a.MaxDiffBytes
+}
+
+// GetMaxBaseFileBytes returns the max base file bytes, defaulting to 0 when unset.
+func (a AssayConfig) GetMaxBaseFileBytes() int {
+	if a.MaxBaseFileBytes == nil {
+		return 0
+	}
+	return *a.MaxBaseFileBytes
+}
+
+// GetNitCap returns the nit cap, defaulting to 0 when unset.
+func (a AssayConfig) GetNitCap() int {
+	if a.NitCap == nil {
+		return 0
+	}
+	return *a.NitCap
+}
+
+// ResolvedAssay returns the effective Assay configuration for the named anvil.
+// It starts from the global c.Assay and overlays the anvil's *AssayConfig when
+// present: pointer fields (*bool, *int, *float64) override when non-nil; string
+// fields override when non-empty; SkipPaths overrides when len>0. Unknown anvils
+// or anvils without an Assay override return the global config unchanged.
+func (c *Config) ResolvedAssay(anvilName string) AssayConfig {
+	resolved := c.Assay
+	anvil, ok := c.Anvils[anvilName]
+	if !ok || anvil.Assay == nil {
+		return resolved
+	}
+	o := anvil.Assay
+	if o.Enabled != nil {
+		resolved.Enabled = o.Enabled
+	}
+	if o.ShadowMode != nil {
+		resolved.ShadowMode = o.ShadowMode
+	}
+	if o.SkipDrafts != nil {
+		resolved.SkipDrafts = o.SkipDrafts
+	}
+	if o.DebounceSeconds != nil {
+		resolved.DebounceSeconds = o.DebounceSeconds
+	}
+	if o.DailyCostLimitUSD != nil {
+		resolved.DailyCostLimitUSD = o.DailyCostLimitUSD
+	}
+	if o.TriageProvider != "" {
+		resolved.TriageProvider = o.TriageProvider
+	}
+	if o.ReviewProvider != "" {
+		resolved.ReviewProvider = o.ReviewProvider
+	}
+	if o.ModelTier != "" {
+		resolved.ModelTier = o.ModelTier
+	}
+	if o.TriageModel != "" {
+		resolved.TriageModel = o.TriageModel
+	}
+	if o.ReviewModel != "" {
+		resolved.ReviewModel = o.ReviewModel
+	}
+	if o.MaxDiffBytes != nil {
+		resolved.MaxDiffBytes = o.MaxDiffBytes
+	}
+	if o.MaxBaseFileBytes != nil {
+		resolved.MaxBaseFileBytes = o.MaxBaseFileBytes
+	}
+	if o.NitCap != nil {
+		resolved.NitCap = o.NitCap
+	}
+	if len(o.SkipPaths) > 0 {
+		resolved.SkipPaths = o.SkipPaths
+	}
+	return resolved
+}
+
 // Defaults returns a Config with sensible default values.
 func Defaults() Config {
 	return Config{
@@ -993,11 +1146,24 @@ func Defaults() Config {
 				TurnTimeout: DefaultForgeChatTurnTimeout,
 			},
 		},
+		Assay: AssayConfig{
+			Enabled:          boolPtr(false),
+			ShadowMode:       boolPtr(true),
+			SkipDrafts:       boolPtr(true),
+			DebounceSeconds:  intPtr(30),
+			MaxDiffBytes:     intPtr(250000),
+			MaxBaseFileBytes: intPtr(100000),
+			NitCap:           intPtr(10),
+		},
 	}
 }
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func intPtr(i int) *int {
+	return &i
 }
 
 // Load reads the configuration from the given file path, or auto-discovers

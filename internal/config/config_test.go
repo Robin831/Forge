@@ -266,6 +266,110 @@ anvils:
 	assert.Equal(t, "all", cfg.Anvils["myrepo"].AutoDispatch)
 }
 
+func TestLoad_GlobalAssay(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+anvils:
+  myrepo:
+    path: /some/path
+assay:
+  enabled: true
+  shadow_mode: false
+  debounce_seconds: 45
+  model_tier: sonnet
+  max_diff_bytes: 500000
+  nit_cap: 3
+  skip_paths:
+    - vendor/
+    - "**/*.gen.go"
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.True(t, cfg.Assay.IsEnabled())
+	assert.False(t, cfg.Assay.IsShadowMode())
+	assert.Equal(t, 45, cfg.Assay.GetDebounceSeconds())
+	assert.Equal(t, "sonnet", cfg.Assay.ModelTier)
+	assert.Equal(t, 500000, cfg.Assay.GetMaxDiffBytes())
+	assert.Equal(t, 3, cfg.Assay.GetNitCap())
+	assert.Equal(t, []string{"vendor/", "**/*.gen.go"}, cfg.Assay.SkipPaths)
+}
+
+// TestResolvedAssay_AnvilOverlay verifies that a per-anvil assay block merges
+// over the global config: overridden fields change while non-overridden fields
+// inherit. Hot-reload of Assay is satisfied transparently because Assay lives
+// on Config, which the daemon replaces wholesale (d.cfg.Store) on fsnotify
+// change — no extra wiring is required.
+func TestResolvedAssay_AnvilOverlay(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+anvils:
+  myrepo:
+    path: /some/path
+    assay:
+      shadow_mode: false
+      nit_cap: 1
+assay:
+  enabled: true
+  shadow_mode: true
+  debounce_seconds: 45
+  nit_cap: 10
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+
+	resolved := cfg.ResolvedAssay("myrepo")
+	// Overridden fields reflect the anvil overlay.
+	assert.False(t, resolved.IsShadowMode())
+	assert.Equal(t, 1, resolved.GetNitCap())
+	// Non-overridden fields inherit from the global config.
+	assert.True(t, resolved.IsEnabled())
+	assert.Equal(t, 45, resolved.GetDebounceSeconds())
+}
+
+func TestResolvedAssay_NoOverrideReturnsGlobal(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+anvils:
+  myrepo:
+    path: /some/path
+assay:
+  enabled: true
+  shadow_mode: false
+  debounce_seconds: 45
+  nit_cap: 7
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+
+	resolved := cfg.ResolvedAssay("myrepo")
+	assert.True(t, resolved.IsEnabled())
+	assert.False(t, resolved.IsShadowMode())
+	assert.Equal(t, 45, resolved.GetDebounceSeconds())
+	assert.Equal(t, 7, resolved.GetNitCap())
+
+	// An unknown anvil also falls back to the global config.
+	unknown := cfg.ResolvedAssay("does-not-exist")
+	assert.Equal(t, cfg.Assay, unknown)
+}
+
+func TestAssayConfig_ResolverDefaults(t *testing.T) {
+	// A zero AssayConfig (all tri-state booleans nil) uses the documented
+	// defaults: disabled, shadow mode on, drafts skipped.
+	var a AssayConfig
+	assert.False(t, a.IsEnabled())
+	assert.True(t, a.IsShadowMode())
+	assert.True(t, a.IsSkipDrafts())
+}
+
 func TestLoad_RateLimitBackoff(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "forge.yaml")
