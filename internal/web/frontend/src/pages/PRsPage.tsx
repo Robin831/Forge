@@ -7,6 +7,7 @@ import {
   MessageSquare,
   RefreshCw,
   RotateCcw,
+  ScanSearch,
   ShieldCheck,
   Wrench,
   X,
@@ -20,6 +21,7 @@ import { prActions, type PRActionKind, type PRItem, type StatusResponse } from '
 import AppHeader from '../components/AppHeader'
 import ConfirmModal from '../components/ConfirmModal'
 import Pane, { EmptyState } from '../components/Pane'
+import PRFindingsPanel from '../components/PRFindingsPanel'
 import {
   PR_SECTION_DESCRIPTIONS,
   PR_SECTION_EMPTY_MESSAGES,
@@ -237,6 +239,11 @@ export default function PRsPage() {
   // flag from useAction would do the latter).
   const [actingKey, setActingKey] = useState<string | null>(null)
   const [pending, setPending] = useState<PendingAction | null>(null)
+  // expandedFindingsKey is the row whose Assay findings panel is open. Only
+  // one panel is visible at a time so the page keeps a compact footprint —
+  // mirrors WorkersPane's single-open resolve panel. The key is the same
+  // identity PRRow uses for its React key so it survives re-sorts.
+  const [expandedFindingsKey, setExpandedFindingsKey] = useState<string | null>(null)
 
   const requestAction = (pr: PRItem, kind: PRActionKind) => {
     setPending({ pr, kind })
@@ -340,6 +347,10 @@ export default function PRsPage() {
             actingKey={actingKey}
             expanded={expandedBySection[kind]}
             onToggle={() => toggleSection(kind)}
+            expandedFindingsKey={expandedFindingsKey}
+            onToggleFindings={(key) =>
+              setExpandedFindingsKey((prev) => (prev === key ? null : key))
+            }
           />
         ))}
       </main>
@@ -371,6 +382,11 @@ interface PRSectionContainerProps {
   actingKey: string | null
   expanded: boolean
   onToggle: () => void
+  // expandedFindingsKey / onToggleFindings drive the inline Assay findings
+  // panel: the key identifies which row's panel is open (single-open), and
+  // the toggle flips it. Both are threaded down to PRRow.
+  expandedFindingsKey: string | null
+  onToggleFindings: (key: string) => void
 }
 
 function PRSectionContainer({
@@ -382,6 +398,8 @@ function PRSectionContainer({
   actingKey,
   expanded,
   onToggle,
+  expandedFindingsKey,
+  onToggleFindings,
 }: PRSectionContainerProps) {
   return (
     <Pane
@@ -399,15 +417,21 @@ function PRSectionContainer({
         <EmptyState message={PR_SECTION_EMPTY_MESSAGES[kind]} />
       ) : (
         <ul className="divide-y divide-slate-800" data-testid={`prs-${kind}`}>
-          {items.map((pr) => (
-            <PRRow
-              key={pr.id ?? `${pr.repo ?? pr.anvil}#${pr.number}`}
-              pr={pr}
-              section={kind}
-              onAction={onAction}
-              actingKey={actingKey}
-            />
-          ))}
+          {items.map((pr) => {
+            const rowKey = pr.id ?? `${pr.repo ?? pr.anvil}#${pr.number}`
+            return (
+              <PRRow
+                key={rowKey}
+                rowKey={String(rowKey)}
+                pr={pr}
+                section={kind}
+                onAction={onAction}
+                actingKey={actingKey}
+                findingsExpanded={expandedFindingsKey === String(rowKey)}
+                onToggleFindings={() => onToggleFindings(String(rowKey))}
+              />
+            )
+          })}
         </ul>
       )}
     </Pane>
@@ -416,12 +440,25 @@ function PRSectionContainer({
 
 interface PRRowProps {
   pr: PRItem
+  // rowKey is the stable identity PRSectionContainer assigns the row; used to
+  // wire the findings panel's aria-controls / id without re-deriving it.
+  rowKey: string
   section: PRSectionKind
   onAction: (pr: PRItem, kind: PRActionKind) => void
   actingKey: string | null
+  findingsExpanded: boolean
+  onToggleFindings: () => void
 }
 
-function PRRow({ pr, section, onAction, actingKey }: PRRowProps) {
+function PRRow({
+  pr,
+  rowKey,
+  section,
+  onAction,
+  actingKey,
+  findingsExpanded,
+  onToggleFindings,
+}: PRRowProps) {
   const isExternal = pr.is_external || (pr.bead_id?.startsWith('ext-') ?? false)
   const isMerged = section === 'recently_merged'
   const conflicting = pr.is_conflicting === true
@@ -544,7 +581,32 @@ function PRRow({ pr, section, onAction, actingKey }: PRRowProps) {
             />
           </div>
         )}
+
+        {/* Findings toggle is available for any PR with a state.db id —
+            including merged PRs — so an operator can inspect what Assay
+            flagged after the fact. */}
+        {pr.id !== undefined && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onToggleFindings}
+              aria-expanded={findingsExpanded}
+              aria-controls={`pr-findings-${rowKey}`}
+              data-testid={`pr-findings-toggle-${pr.id}`}
+              className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800/60 px-2 py-1 text-xs font-medium text-slate-300 transition-colors hover:border-slate-600 hover:bg-slate-700 focus:outline-none focus-visible:ring-1 focus-visible:ring-cyan-300"
+            >
+              <ScanSearch size={13} aria-hidden />
+              <span>{findingsExpanded ? 'Hide findings' : 'Findings'}</span>
+            </button>
+          </div>
+        )}
       </div>
+
+      {pr.id !== undefined && findingsExpanded && (
+        <div id={`pr-findings-${rowKey}`} className="mt-3">
+          <PRFindingsPanel pr={pr} onClose={onToggleFindings} />
+        </div>
+      )}
     </li>
   )
 }
