@@ -1022,23 +1022,23 @@ func nonTerminalPRStatusSQL() string {
 
 // PR represents a pull request entry.
 type PR struct {
-	ID                   int
-	Number               int
-	Anvil                string
-	BeadID               string
-	Branch               string
-	BaseBranch           string // Target branch for the PR (empty = repo default base branch)
-	Status               PRStatus
-	CreatedAt            time.Time
-	LastChecked          *time.Time
-	CIFixCount           int
-	ReviewFixCount       int
-	RebaseCount          int
-	CIPassing            bool
-	IsConflicting        bool
-	HasUnresolvedThreads bool
-	HasPendingReviews    bool
-	HasApproval          bool
+	ID                      int
+	Number                  int
+	Anvil                   string
+	BeadID                  string
+	Branch                  string
+	BaseBranch              string // Target branch for the PR (empty = repo default base branch)
+	Status                  PRStatus
+	CreatedAt               time.Time
+	LastChecked             *time.Time
+	CIFixCount              int
+	ReviewFixCount          int
+	RebaseCount             int
+	CIPassing               bool
+	IsConflicting           bool
+	HasUnresolvedThreads    bool
+	HasPendingReviews       bool
+	HasApproval             bool
 	Title                   string
 	BellowsManaged          bool // true = bellows runs lifecycle workers (quench, burnish, rebase)
 	BellowsManuallyAssigned bool // true = a user explicitly assigned bellows via IPC; reconcile must not clobber
@@ -1513,17 +1513,17 @@ func (db *DB) DismissExhaustedPR(id int) error {
 type EventType string
 
 const (
-	EventDaemonStarted        EventType = "daemon_started"
-	EventDaemonStopped        EventType = "daemon_stopped"
-	EventConfigReload         EventType = "config_reload"
+	EventDaemonStarted EventType = "daemon_started"
+	EventDaemonStopped EventType = "daemon_stopped"
+	EventConfigReload  EventType = "config_reload"
 	EventOrphanCleanup EventType = "orphan_cleanup"
 	// EventPoll is retained as a constant for historical rows already in the
 	// events table (and so referring code does not need to be churned), but it
 	// is no longer written by the daemon: successful polls are tracked only in
 	// the in-memory map on Daemon (see Daemon.lastPollMap). Failed polls
 	// continue to be persisted as EventPollError so they remain visible.
-	EventPoll      EventType = "poll"
-	EventPollError EventType = "poll_error"
+	EventPoll                 EventType = "poll"
+	EventPollError            EventType = "poll_error"
 	EventBeadClaimed          EventType = "bead_claimed"
 	EventSmithStarted         EventType = "smith_started"
 	EventSmithDone            EventType = "smith_done"
@@ -1572,42 +1572,42 @@ const (
 	// check finds origin/forge/<bead-id> with commits not reachable from the
 	// base ref and no PR — a prior worker pushed but never opened a PR.
 	EventDispatchBlockedStrandedBranch EventType = "dispatch_blocked_stranded_branch"
-	EventRateLimited          EventType = "rate_limited"
-	EventCostLimitHit         EventType = "cost_limit_hit"
-	EventSchematicSubBead     EventType = "schematic_sub_bead"
-	EventWorkerStalled        EventType = "worker_stalled"
-	EventBeadTagged           EventType = "bead_tagged"
-	EventBeadClosed           EventType = "bead_closed"
-	EventPRReadyToMerge       EventType = "pr_ready_to_merge"
-	EventPRReviewNeeded       EventType = "pr_review_needed"
-	EventPRMergeRequested     EventType = "pr_merge_requested"
-	EventPRMergeFailed        EventType = "pr_merge_failed"
-	EventPRAutoMerged         EventType = "pr_auto_merged"
-	EventError                EventType = "error"
-	EventBeadRecovered        EventType = "bead_recovered"
-	EventBeadStopped          EventType = "bead_stopped"
-	EventDepcheckStarted      EventType = "depcheck_started"
-	EventDepcheckPassed       EventType = "depcheck_passed"
-	EventDepcheckFound        EventType = "depcheck_found"
-	EventDepcheckFailed       EventType = "depcheck_failed"
-	EventDepcheckBeadCreated  EventType = "depcheck_bead_created"
-	EventDepcheckDedup        EventType = "depcheck_dedup"
-	EventVulnScanStarted      EventType = "vuln_scan_started"
-	EventVulnScanDone         EventType = "vuln_scan_done"
-	EventVulnScanFailed       EventType = "vuln_scan_failed"
-	EventVulnScanCycleDone    EventType = "vuln_scan_cycle_done"
-	EventVulnBeadCreated      EventType = "vuln_bead_created"
-	EventWardenRerun          EventType = "warden_rerun"
-	EventApproveAsIs          EventType = "approve_as_is"
-	EventForceSmith           EventType = "force_smith"
-	EventAutoLearnError       EventType = "auto_learn_error"
-	EventAutoLearnSkipped     EventType = "auto_learn_skipped"
-	EventAutoLearnRules       EventType = "auto_learn_rules"
-	EventWardenRuleLearned    EventType = "warden_rule_learned"
-	EventBeadAutoClosed       EventType = "bead_auto_closed"
-	EventNoChangesNeeded      EventType = "no_changes_needed"
-	EventPRCreationFailed     EventType = "pr_creation_failed"
-	EventPRAlreadyExists      EventType = "pr_already_exists"
+	EventRateLimited                   EventType = "rate_limited"
+	EventCostLimitHit                  EventType = "cost_limit_hit"
+	EventSchematicSubBead              EventType = "schematic_sub_bead"
+	EventWorkerStalled                 EventType = "worker_stalled"
+	EventBeadTagged                    EventType = "bead_tagged"
+	EventBeadClosed                    EventType = "bead_closed"
+	EventPRReadyToMerge                EventType = "pr_ready_to_merge"
+	EventPRReviewNeeded                EventType = "pr_review_needed"
+	EventPRMergeRequested              EventType = "pr_merge_requested"
+	EventPRMergeFailed                 EventType = "pr_merge_failed"
+	EventPRAutoMerged                  EventType = "pr_auto_merged"
+	EventError                         EventType = "error"
+	EventBeadRecovered                 EventType = "bead_recovered"
+	EventBeadStopped                   EventType = "bead_stopped"
+	EventDepcheckStarted               EventType = "depcheck_started"
+	EventDepcheckPassed                EventType = "depcheck_passed"
+	EventDepcheckFound                 EventType = "depcheck_found"
+	EventDepcheckFailed                EventType = "depcheck_failed"
+	EventDepcheckBeadCreated           EventType = "depcheck_bead_created"
+	EventDepcheckDedup                 EventType = "depcheck_dedup"
+	EventVulnScanStarted               EventType = "vuln_scan_started"
+	EventVulnScanDone                  EventType = "vuln_scan_done"
+	EventVulnScanFailed                EventType = "vuln_scan_failed"
+	EventVulnScanCycleDone             EventType = "vuln_scan_cycle_done"
+	EventVulnBeadCreated               EventType = "vuln_bead_created"
+	EventWardenRerun                   EventType = "warden_rerun"
+	EventApproveAsIs                   EventType = "approve_as_is"
+	EventForceSmith                    EventType = "force_smith"
+	EventAutoLearnError                EventType = "auto_learn_error"
+	EventAutoLearnSkipped              EventType = "auto_learn_skipped"
+	EventAutoLearnRules                EventType = "auto_learn_rules"
+	EventWardenRuleLearned             EventType = "warden_rule_learned"
+	EventBeadAutoClosed                EventType = "bead_auto_closed"
+	EventNoChangesNeeded               EventType = "no_changes_needed"
+	EventPRCreationFailed              EventType = "pr_creation_failed"
+	EventPRAlreadyExists               EventType = "pr_already_exists"
 
 	// Crucible events — parent bead orchestration with children on feature branches.
 	EventCrucibleStarted         EventType = "crucible_started"
@@ -1627,23 +1627,23 @@ const (
 	EventTestBeadCreated    EventType = "test_bead_created"
 
 	// Smelter events — batch warden rule flushing.
-	EventSmelterStarted    EventType = "smelter_started"
-	EventSmelterFlushed    EventType = "smelter_flushed"
-	EventSmelterFailed     EventType = "smelter_failed"
-	EventSmelterCycleDone  EventType = "smelter_cycle_done"
+	EventSmelterStarted   EventType = "smelter_started"
+	EventSmelterFlushed   EventType = "smelter_flushed"
+	EventSmelterFailed    EventType = "smelter_failed"
+	EventSmelterCycleDone EventType = "smelter_cycle_done"
 
 	// Wicket events — GitHub issue triage monitor.
-	EventWicketScanDone         EventType = "wicket_scan_done"
-	EventWicketIssueTriage      EventType = "wicket_issue_triage"
-	EventWicketBeadCreated      EventType = "wicket_bead_created"
-	EventWicketClarification    EventType = "wicket_clarification"
-	EventWicketRejected         EventType = "wicket_rejected"
-	EventWicketFlaggedHuman     EventType = "wicket_flagged_human"
-	EventWicketError            EventType = "wicket_error"
-	EventWicketDispatchConfirm  EventType = "wicket_dispatch_confirm"
-	EventWicketPRLinked         EventType = "wicket_pr_linked"
-	EventWicketIssueClosed      EventType = "wicket_issue_closed"
-	EventWicketIssueStaleClose  EventType = "wicket_issue_stale_close"
+	EventWicketScanDone        EventType = "wicket_scan_done"
+	EventWicketIssueTriage     EventType = "wicket_issue_triage"
+	EventWicketBeadCreated     EventType = "wicket_bead_created"
+	EventWicketClarification   EventType = "wicket_clarification"
+	EventWicketRejected        EventType = "wicket_rejected"
+	EventWicketFlaggedHuman    EventType = "wicket_flagged_human"
+	EventWicketError           EventType = "wicket_error"
+	EventWicketDispatchConfirm EventType = "wicket_dispatch_confirm"
+	EventWicketPRLinked        EventType = "wicket_pr_linked"
+	EventWicketIssueClosed     EventType = "wicket_issue_closed"
+	EventWicketIssueStaleClose EventType = "wicket_issue_stale_close"
 
 	// Pipeline hook events.
 	EventHookFailed EventType = "hook_failed"
@@ -1998,17 +1998,17 @@ func (db *DB) LastPollAllAnvils() ([]AnvilPollStatus, error) {
 
 // RetryRecord tracks retry state for a bead.
 type RetryRecord struct {
-	BeadID                string
-	Anvil                 string
-	RetryCount            int
-	NextRetry             *time.Time
-	NeedsHuman            bool
-	ClarificationNeeded   bool
-	DispatchFailures      int
-	RecoveryFailures      int
-	FirstRecoveryFailure  *time.Time
-	LastError             string
-	UpdatedAt             time.Time
+	BeadID               string
+	Anvil                string
+	RetryCount           int
+	NextRetry            *time.Time
+	NeedsHuman           bool
+	ClarificationNeeded  bool
+	DispatchFailures     int
+	RecoveryFailures     int
+	FirstRecoveryFailure *time.Time
+	LastError            string
+	UpdatedAt            time.Time
 }
 
 // GetRetry returns the retry record for a bead, or nil if none exists.
@@ -3231,12 +3231,12 @@ func (db *DB) DeletePendingRules(ids []int) error {
 // WicketIssue is the database representation of a GitHub issue that has been
 // seen (and optionally triaged) by the Wicket monitor.
 type WicketIssue struct {
-	ID           int
-	Repo         string
-	IssueNumber  int
-	Title        string
-	Body         string
-	Author       string
+	ID          int
+	Repo        string
+	IssueNumber int
+	Title       string
+	Body        string
+	Author      string
 	// State is the lifecycle state of this record: "pending", "bead_created",
 	// "ask_clarify", "needs_human", "rejected", "dispatched", "stale", "merged", "closed".
 	State        string
@@ -3785,6 +3785,74 @@ func (db *DB) MarkResolved(findingHash string) error {
 		time.Now().UTC().Format(dbTimeLayout), findingHash,
 	)
 	return err
+}
+
+// MarkFindingPosted records that a finding was successfully posted as a GitHub
+// review comment: it sets posted=1, stores the returned comment ID, and resets
+// the consecutive-miss counter (the finding has just been confirmed present on
+// the current head). Used by the Assay posting layer after a successful
+// inline-comment POST.
+func (db *DB) MarkFindingPosted(findingHash string, ghCommentID int64) error {
+	_, err := db.conn.Exec(
+		`UPDATE pr_findings SET posted = 1, gh_comment_id = ?, consecutive_misses = 0 WHERE finding_hash = ?`,
+		ghCommentID, findingHash,
+	)
+	return err
+}
+
+// ResetConsecutiveMiss clears the consecutive_misses counter for a finding that
+// was re-detected on a fresh review (so an intermittent disappearance does not
+// accumulate toward auto-resolution).
+func (db *DB) ResetConsecutiveMiss(findingHash string) error {
+	_, err := db.conn.Exec(
+		`UPDATE pr_findings SET consecutive_misses = 0 WHERE finding_hash = ?`,
+		findingHash,
+	)
+	return err
+}
+
+// SetFindingThreadID stores the GitHub review thread node ID matched to a
+// finding, so a subsequent resolution can target the thread directly.
+func (db *DB) SetFindingThreadID(findingHash, threadID string) error {
+	_, err := db.conn.Exec(
+		`UPDATE pr_findings SET gh_thread_id = ? WHERE finding_hash = ?`,
+		threadID, findingHash,
+	)
+	return err
+}
+
+// OpenPostedFindings returns the findings on the given anvil/PR that have been
+// posted (posted=1) and not yet resolved (resolved_at IS NULL). The Assay
+// posting layer uses these to detect findings that disappeared on a later
+// review — accumulating consecutive misses until their threads are
+// auto-resolved.
+func (db *DB) OpenPostedFindings(anvil string, prNumber int) ([]Finding, error) {
+	rows, err := db.conn.Query(
+		`SELECT head_sha, finding_hash, file, anchor, severity, category, title,
+		        body, evidence, source_pass, gh_comment_id, gh_thread_id,
+		        consecutive_misses
+		   FROM pr_findings
+		  WHERE anvil = ? AND pr_number = ? AND posted = 1 AND resolved_at IS NULL`,
+		anvil, prNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Finding
+	for rows.Next() {
+		f := Finding{Anvil: anvil, PRNumber: prNumber, Posted: true}
+		if err := rows.Scan(
+			&f.HeadSHA, &f.FindingHash, &f.File, &f.Anchor, &f.Severity,
+			&f.Category, &f.Title, &f.Body, &f.Evidence, &f.SourcePass,
+			&f.GHCommentID, &f.GHThreadID, &f.ConsecutiveMisses,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
 }
 
 // PostedFindingHashes returns the set of finding_hash values that have already
