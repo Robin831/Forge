@@ -133,6 +133,9 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 
 	runner := cfg.runner
 	if runner == nil {
+		if req.WorkDir == "" {
+			return nil, fmt.Errorf("assay: ReviewRequest.WorkDir is required when using the default Smith-based runner")
+		}
 		runner = newSmithRunner(cfg, req.WorkDir)
 	}
 

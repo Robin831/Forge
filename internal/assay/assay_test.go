@@ -118,23 +118,33 @@ func testRequest() ReviewRequest {
 // --- hashing & canonicalization ------------------------------------------
 
 func TestComputeHashStableAcrossCosmeticBodyChanges(t *testing.T) {
-	h1 := computeHash("main.go:10", "logic", "Off-by-one in the loop bound.")
-	h2 := computeHash("main.go:10", "logic", "  off-by-one   in the LOOP bound.  ")
+	h1 := computeHash("demo", 7, "main.go:10", "logic", "Off-by-one in the loop bound.")
+	h2 := computeHash("demo", 7, "main.go:10", "logic", "  off-by-one   in the LOOP bound.  ")
 	if h1 != h2 {
 		t.Fatalf("expected identical hashes for cosmetically different bodies; got %s vs %s", h1, h2)
 	}
 }
 
 func TestComputeHashDiffersByAnchorAndCategory(t *testing.T) {
-	base := computeHash("main.go:10", "logic", "issue")
-	if base == computeHash("main.go:11", "logic", "issue") {
+	base := computeHash("demo", 7, "main.go:10", "logic", "issue")
+	if base == computeHash("demo", 7, "main.go:11", "logic", "issue") {
 		t.Error("hash should change with anchor")
 	}
-	if base == computeHash("main.go:10", "security", "issue") {
+	if base == computeHash("demo", 7, "main.go:10", "security", "issue") {
 		t.Error("hash should change with category")
 	}
-	if base == computeHash("main.go:10", "logic", "different") {
+	if base == computeHash("demo", 7, "main.go:10", "logic", "different") {
 		t.Error("hash should change with body")
+	}
+}
+
+func TestComputeHashDiffersByAnvilAndPR(t *testing.T) {
+	base := computeHash("demo", 7, "main.go:10", "logic", "issue")
+	if base == computeHash("other-repo", 7, "main.go:10", "logic", "issue") {
+		t.Error("hash should change with anvil")
+	}
+	if base == computeHash("demo", 99, "main.go:10", "logic", "issue") {
+		t.Error("hash should change with PR number")
 	}
 }
 
@@ -353,7 +363,7 @@ func TestReviewNitCap(t *testing.T) {
 func TestReviewSuppressesAlreadyPostedNit(t *testing.T) {
 	db := openTestDB(t)
 	anchor, category, body := "a.go:9", "conventions", "rename this"
-	hash := computeHash(anchor, category, body)
+	hash := computeHash("demo", 7, anchor, category, body)
 
 	// Pre-record the nit as already posted on a prior review of this PR.
 	if err := db.InsertFinding(state.Finding{

@@ -82,6 +82,9 @@ func newSmithRunner(cfg Config, workDir string) PassRunner {
 		if res.RateLimited {
 			return PassOutput{}, fmt.Errorf("assay pass %s: provider %s rate limited", pass, pv.Label())
 		}
+		if res.IsError || res.ExitCode != 0 {
+			return PassOutput{}, fmt.Errorf("assay pass %s: provider %s failed (exit %d, subtype %s)", pass, pv.Label(), res.ExitCode, res.ResultSubtype)
+		}
 		text := res.FullOutput
 		if text == "" {
 			text = res.Output
@@ -91,12 +94,15 @@ func newSmithRunner(cfg Config, workDir string) PassRunner {
 }
 
 // loadPrompt returns the embedded instruction text for the named template.
-func loadPrompt(name string) string {
+// It returns an error if the prompt cannot be read — since prompts are compiled
+// into the binary via embed, a failure here indicates a programming error
+// (e.g. a typo in a passDef promptFile).
+func loadPrompt(name string) (string, error) {
 	b, err := promptFS.ReadFile("prompts/" + name + ".md")
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("loading embedded prompt %q: %w", name, err)
 	}
-	return string(b)
+	return string(b), nil
 }
 
 // strictJSONReminder is appended to a pass prompt on the single retry after the
@@ -122,9 +128,13 @@ const jsonOutputContract = "## Required Output\n\n" +
 // buildPassPrompt assembles the full prompt for a deep pass: the pass-specific
 // instructions, the shared JSON contract, untrusted bead/PR context, the triage
 // notes, and the scoped diff.
-func buildPassPrompt(p passDef, req ReviewRequest, scopedDiff, triageNotes string) string {
+func buildPassPrompt(p passDef, req ReviewRequest, scopedDiff, triageNotes string) (string, error) {
+	instructions, err := loadPrompt(p.promptFile)
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
-	b.WriteString(loadPrompt(p.promptFile))
+	b.WriteString(instructions)
 	b.WriteString("\n\n")
 	b.WriteString(jsonOutputContract)
 	b.WriteString("\n\n")
@@ -137,7 +147,7 @@ func buildPassPrompt(p passDef, req ReviewRequest, scopedDiff, triageNotes strin
 	b.WriteString("\n## Diff Under Review\n\n```diff\n")
 	b.WriteString(scopedDiff)
 	b.WriteString("\n```\n")
-	return b.String()
+	return b.String(), nil
 }
 
 // contextSection renders the untrusted bead/PR metadata as data only.
@@ -183,7 +193,10 @@ func sanitize(s string) string {
 // runDeepPass runs one finding-producing pass, parsing its JSON output with a
 // single retry. On a second parse failure the pass returns a run error.
 func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, scopedDiff, triageNotes string, p passDef) ([]Finding, float64, error) {
-	prompt := buildPassPrompt(p, req, scopedDiff, triageNotes)
+	prompt, err := buildPassPrompt(p, req, scopedDiff, triageNotes)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	out, err := runner(ctx, p.Name, p.Tier, prompt)
 	if err != nil {
@@ -205,7 +218,7 @@ func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewR
 		}
 	}
 
-	finalizeFindings(findings, p.Name)
+	finalizeFindings(findings, p.Name, req.Anvil, req.PRNumber)
 	return findings, cost, nil
 }
 
@@ -231,7 +244,7 @@ func parseFindings(text string) ([]Finding, error) {
 
 // finalizeFindings stamps each finding with its source pass, a default category,
 // a normalized severity, and the content hash. It mutates the slice in place.
-func finalizeFindings(findings []Finding, passName string) {
+func finalizeFindings(findings []Finding, passName, anvil string, prNumber int) {
 	for i := range findings {
 		f := &findings[i]
 		f.SourcePass = passName
@@ -239,7 +252,7 @@ func finalizeFindings(findings []Finding, passName string) {
 			f.Category = passName
 		}
 		f.Severity = normalizeSeverity(f.Severity)
-		f.Hash = computeHash(f.Anchor, f.Category, f.Body)
+		f.Hash = computeHash(anvil, prNumber, f.Anchor, f.Category, f.Body)
 	}
 }
 
@@ -260,10 +273,16 @@ func normalizeSeverity(s Severity) Severity {
 }
 
 // computeHash returns the dedup key for a finding:
-// sha256(anchor + category + canonical(body)). Fields are joined with a unit
+// sha256(anvil + prNumber + anchor + category + canonical(body)). Including
+// anvil and prNumber prevents cross-repo / cross-PR collisions on the globally
+// UNIQUE finding_hash column in pr_findings. Fields are joined with a unit
 // separator so distinct field boundaries cannot collide.
-func computeHash(anchor, category, body string) string {
+func computeHash(anvil string, prNumber int, anchor, category, body string) string {
 	h := sha256.New()
+	h.Write([]byte(anvil))
+	h.Write([]byte{0x1f})
+	h.Write([]byte(strconv.Itoa(prNumber)))
+	h.Write([]byte{0x1f})
 	h.Write([]byte(anchor))
 	h.Write([]byte{0x1f})
 	h.Write([]byte(category))

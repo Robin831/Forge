@@ -24,9 +24,9 @@ type Config struct {
 	ModelTier string
 
 	// TriageProvider and ReviewProvider are provider specs (the same syntax as
-	// settings.providers, e.g. "claude", "gemini/gemini-2.5-pro"). Empty falls
-	// back to provider.Defaults(). TriageProvider drives the cheap scoping pass;
-	// ReviewProvider drives the five deep passes.
+	// settings.providers, e.g. "claude", "gemini/gemini-2.5-pro"). Empty
+	// defaults to the Claude provider. TriageProvider drives the cheap scoping
+	// pass; ReviewProvider drives the five deep passes.
 	TriageProvider string
 	ReviewProvider string
 

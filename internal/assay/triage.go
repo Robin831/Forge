@@ -21,7 +21,10 @@ type triageResult struct {
 // runTriage runs the scoping pass. Like the deep passes it parses strict JSON
 // with a single retry; a second failure is surfaced as a run error.
 func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, filteredDiff string) (triageResult, float64, error) {
-	prompt := buildTriagePrompt(req, filteredDiff)
+	prompt, err := buildTriagePrompt(req, filteredDiff)
+	if err != nil {
+		return triageResult{}, 0, err
+	}
 
 	out, err := runner(ctx, passTriage.Name, passTriage.Tier, prompt)
 	if err != nil {
@@ -46,7 +49,7 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 
 // buildTriagePrompt assembles the Triage prompt from its embedded instructions,
 // its JSON contract, the change context, and the (already filtered) diff.
-func buildTriagePrompt(req ReviewRequest, filteredDiff string) string {
+func buildTriagePrompt(req ReviewRequest, filteredDiff string) (string, error) {
 	const contract = "## Required Output\n\n" +
 		"Respond with a single JSON object and nothing else:\n\n" +
 		"```json\n" +
@@ -56,8 +59,12 @@ func buildTriagePrompt(req ReviewRequest, filteredDiff string) string {
 		"mechanical or trivial files. Use an empty array to mean \"review everything\".\n" +
 		"- `notes` is optional one-paragraph guidance (risk areas, intent). Keep it brief."
 
+	instructions, err := loadPrompt(passTriage.promptFile)
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
-	b.WriteString(loadPrompt(passTriage.promptFile))
+	b.WriteString(instructions)
 	b.WriteString("\n\n")
 	b.WriteString(contract)
 	b.WriteString("\n\n")
@@ -65,7 +72,7 @@ func buildTriagePrompt(req ReviewRequest, filteredDiff string) string {
 	b.WriteString("\n## Diff\n\n```diff\n")
 	b.WriteString(filteredDiff)
 	b.WriteString("\n```\n")
-	return b.String()
+	return b.String(), nil
 }
 
 // parseTriage extracts and decodes the triage JSON object. A missing or
