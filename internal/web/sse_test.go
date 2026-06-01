@@ -122,6 +122,59 @@ func TestActivityStream_InitialEvents(t *testing.T) {
 	}
 }
 
+func TestPRFindingsStream_InitialSnapshot(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+
+	pr := &state.PR{
+		Number: 11, Anvil: "anvil-a", BeadID: "Forge-cccc",
+		Branch: "x", Status: state.PROpen, CreatedAt: time.Now().UTC(),
+	}
+	if err := srv.db.InsertPR(pr); err != nil {
+		t.Fatalf("insert PR: %v", err)
+	}
+	if err := srv.db.InsertFinding(state.Finding{
+		Anvil: "anvil-a", PRNumber: 11, FindingHash: "fh1",
+		Severity: "Important", Title: "Important finding",
+	}); err != nil {
+		t.Fatalf("insert finding: %v", err)
+	}
+
+	resp, cancel := authedSSEClient(t, srv, fmt.Sprintf("/api/prs/%d/findings/stream", pr.ID), "")
+	defer cancel()
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("Content-Type: got %q want text/event-stream", got)
+	}
+
+	got := readSSEData(t, resp.Body, 1, 5*time.Second)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 snapshot event, got %d (%v)", len(got), got)
+	}
+	var snap prFindingsResponse
+	if err := json.Unmarshal([]byte(got[0]), &snap); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+	if snap.PR != 11 || snap.Anvil != "anvil-a" {
+		t.Errorf("unexpected snapshot pr/anvil: %+v", snap)
+	}
+	if len(snap.Findings) != 1 || snap.Findings[0].Message != "Important finding" {
+		t.Errorf("unexpected snapshot findings: %+v", snap.Findings)
+	}
+}
+
+func TestPRFindingsStream_NotFound(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	req := httptest.NewRequest("GET", "/api/prs/12345/findings/stream", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown PR, got %d", rec.Code)
+	}
+}
+
 func TestActivityStream_LastEventIDSkipsReplay(t *testing.T) {
 	srv := newServerWithDefaults(t, nil)
 
