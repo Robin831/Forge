@@ -13,6 +13,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/Robin831/Forge/internal/assay"
 	"github.com/Robin831/Forge/internal/autostart"
 	"github.com/Robin831/Forge/internal/changelog"
 	"github.com/Robin831/Forge/internal/daemon"
@@ -75,6 +76,9 @@ var doctorCmd = &cobra.Command{
 
 		// 4. Check claude installed
 		checks = append(checks, checkBinary("claude", "Claude CLI"))
+
+		// 4a. Check claude (or configured provider) availability per Assay pass
+		checks = append(checks, checkAssayPasses()...)
 
 		// 5. Check provider chain CLIs and auth
 		checks = append(checks, checkProviderChain()...)
@@ -384,6 +388,56 @@ func checkOpenAIAuth(name string) checkResult {
 		Status: "warn",
 		Detail: "OPENAI_API_KEY is not set — OpenAI provider requires authentication",
 	}
+}
+
+// checkAssayPasses verifies the CLI binary backing each Assay review pass is
+// available in PATH, reported per-pass. Assay runs a cheap triage scoping pass
+// plus five deep finding passes; each resolves to a provider (the Claude CLI by
+// default, or whatever triage_provider/review_provider configure). A missing
+// binary means that pass cannot run, so it is reported as a failure.
+func checkAssayPasses() []checkResult {
+	if cfg == nil {
+		return []checkResult{{
+			Name:   "Assay passes",
+			Status: "warn",
+			Detail: "no config loaded — assay pass checks skipped",
+		}}
+	}
+	if !cfg.Assay.IsEnabled() {
+		return []checkResult{{
+			Name:   "Assay passes",
+			Status: "ok",
+			Detail: "assay disabled — set assay.enabled to review PRs",
+		}}
+	}
+
+	engineCfg := assay.FromAssayConfig(cfg.Assay)
+	var results []checkResult
+	for _, pp := range assay.PassProviders(engineCfg) {
+		name := "Assay pass (" + pp.Pass + ")"
+		bin := pp.Provider.Cmd()
+		path, err := execLookPath(bin)
+		if err != nil {
+			results = append(results, checkResult{
+				Name:   name,
+				Status: "fail",
+				Detail: fmt.Sprintf("%s not found in PATH (provider %s)", bin, pp.Provider.Label()),
+			})
+			continue
+		}
+		// Probe the binary's version for richer detail; fall back to the
+		// resolved path when the probe fails (binary present is enough to pass).
+		detail := fmt.Sprintf("%s (%s)", path, pp.Provider.Label())
+		if out, verr := execRunCommand(path, "--version"); verr == nil {
+			detail = fmt.Sprintf("%s (%s)", strings.TrimSpace(string(out)), pp.Provider.Label())
+		}
+		results = append(results, checkResult{
+			Name:   name,
+			Status: "ok",
+			Detail: detail,
+		})
+	}
+	return results
 }
 
 func checkBinary(name, description string) checkResult {

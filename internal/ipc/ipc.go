@@ -31,7 +31,7 @@ import (
 
 // Command is a message sent from a client to the daemon.
 type Command struct {
-	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "set_clarification", "clear_clarification"
+	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "set_clarification", "clear_clarification", "assay_rerun"
 	Payload json.RawMessage `json:"payload"` // Type-specific data
 	// ReadTimeout is an optional client-side timeout for reading the response.
 	// Zero uses DefaultReadTimeout. Long-running commands that go through bd or
@@ -268,6 +268,18 @@ type PRActionPayload struct {
 type WardenRerunPayload struct {
 	BeadID string `json:"bead_id"`
 	Anvil  string `json:"anvil"`
+}
+
+// AssayRerunPayload is the payload for an "assay_rerun" command.
+// Triggers a fresh Assay AI review pass over a PR's current head, bypassing the
+// Bellows trigger gate's head-SHA debounce. PR is the state.db PR id (matching
+// the {pr} path parameter the web rerun endpoint forwards, and the `pr` field
+// the api.ts client posts); Anvil resolves the worktree/config for the
+// re-review. The field shape mirrors api.ts RerunAssayParams so the web backend
+// can forward the request without translation.
+type AssayRerunPayload struct {
+	Anvil string `json:"anvil"`
+	PR    int    `json:"pr"`
 }
 
 // ApproveAsIsPayload is the payload for an "approve_as_is" command.

@@ -92,6 +92,7 @@ func (s *Server) routes() http.Handler {
 		r.Post("/prs/{id}/fix-comments", s.handlePRFixComments)
 		r.Post("/prs/{id}/fix-conflicts", s.handlePRFixConflicts)
 		r.Post("/prs/{id}/reset-counters", s.handlePRResetCounters)
+		r.Post("/prs/{id}/rerun-assay", s.handlePRRerunAssay)
 
 		// Beads-Forge sessions (Hearth 2.0). Sessions are scoped per
 		// signed-in user. The /turn endpoint drives the AI loop —

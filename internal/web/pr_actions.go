@@ -178,3 +178,19 @@ func (s *Server) handlePRResetCounters(w http.ResponseWriter, r *http.Request) {
 		PRID:   ctx.prID,
 	})
 }
+
+// handlePRRerunAssay handles POST /api/prs/{id}/rerun-assay — triggers a
+// fresh Assay AI review pass over the PR's current head, bypassing the
+// Bellows trigger gate's head-SHA debounce. The request body must contain
+// {"anvil": "<name>"} to identify the anvil configuration.
+func (s *Server) handlePRRerunAssay(w http.ResponseWriter, r *http.Request) {
+	ctx, ok := s.requirePR(w, r)
+	if !ok {
+		return
+	}
+	s.logActor(r, "assay_rerun", "pr", ctx.pr.Number, "anvil", ctx.pr.Anvil)
+	s.dispatchAction(w, "assay_rerun", ipc.AssayRerunPayload{
+		Anvil: ctx.pr.Anvil,
+		PR:    ctx.prID,
+	})
+}
