@@ -41,6 +41,17 @@ function statusClass(status: string): string {
   return STATUS_CLASSES[status] ?? 'bg-slate-800 text-slate-300 border-slate-700'
 }
 
+// phaseBadgeClass styles the per-worker phase chip. Most phases share the
+// neutral slate chip, but the Assay verification pass gets a distinct cyan
+// accent — echoing the Assay findings panel's cyan theme — so the review/
+// verify worker row stands out from in-flight Smith phases at a glance.
+function phaseBadgeClass(phase: string): string {
+  if (phase === 'assay') {
+    return 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
+  }
+  return 'border-slate-700 bg-slate-800/60 text-slate-300'
+}
+
 // Encode an arbitrary anvil name into a valid HTML id token using the same
 // percent-encoding scheme as QueuePane (replace % with _ for readability).
 // The `workers-` prefix keeps IDs unique when both panes appear on the same
@@ -272,7 +283,9 @@ export default function WorkersPane({
                                       {w.status}
                                     </span>
                                     {w.phase && (
-                                      <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
+                                      <span
+                                        className={`rounded-md border px-2 py-0.5 text-[10px] uppercase tracking-wide ${phaseBadgeClass(w.phase)}`}
+                                      >
                                         {w.phase}
                                       </span>
                                     )}

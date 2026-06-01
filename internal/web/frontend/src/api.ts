@@ -342,6 +342,68 @@ export interface PRsResponse {
   recently_merged: PRItem[]
 }
 
+// FindingSeverity mirrors the `severity` column the daemon writes to
+// pr_findings. The three canonical Assay buckets are surfaced as a union for
+// ergonomic switch/badge logic, but the type stays open (`| string`) so an
+// unexpected backend value renders rather than failing to type-check.
+export type FindingSeverity = 'Important' | 'PreExisting' | 'Nit' | (string & {})
+
+// FindingStatus mirrors web's findingStatus(): a finding is `open` once
+// detected, `posted` after the comment lands on the PR, and `resolved` once
+// the review thread is closed.
+export type FindingStatus = 'open' | 'posted' | 'resolved' | (string & {})
+
+// AssayFinding mirrors internal/web's findingJSON. The first seven fields are
+// the stable contract (id, pr, anvil, status, severity, message, timestamp);
+// the rest are optional context the findings panel renders when present.
+export interface AssayFinding {
+  id: number
+  // pr is the GitHub PR number the finding was raised against (not the
+  // state.db row id used in the endpoint path).
+  pr: number
+  anvil: string
+  status: FindingStatus
+  severity: FindingSeverity
+  message: string
+  timestamp?: string
+  head_sha?: string
+  file?: string
+  anchor?: string
+  category?: string
+  body?: string
+}
+
+// AssayRunStatus mirrors web's runStatus(): a run is `running` until it
+// finishes, then resolves to `error`, `skipped`, or `complete`.
+export type AssayRunStatus = 'running' | 'error' | 'skipped' | 'complete' | (string & {})
+
+// AssayRun mirrors internal/web's assayRunJSON — a summary of the most recent
+// Assay review pass over a PR so the panel can show rerun progress.
+export interface AssayRun {
+  status: AssayRunStatus
+  head_sha?: string
+  started_at?: string
+  finished_at?: string
+  duration_ms?: number
+  cost_usd?: number
+  findings_count: number
+  posted_count: number
+  shadow_mode?: boolean
+  skipped_reason?: string
+  error?: string
+}
+
+// PRFindingsResponse mirrors internal/web's prFindingsResponse. It is the body
+// of GET /api/prs/{id}/findings and the payload of each `findings` SSE event
+// on /api/prs/{id}/findings/stream. `run` is null until Assay has recorded at
+// least one pass; `findings` is always an array.
+export interface PRFindingsResponse {
+  pr: number
+  anvil: string
+  run: AssayRun | null
+  findings: AssayFinding[]
+}
+
 export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -659,4 +721,113 @@ export type PRActionKind =
 export const prActions = {
   run: (prID: number, action: PRActionKind) =>
     apiPost(`/api/prs/${prID}/${action}`),
+}
+
+// --- Assay findings client -------------------------------------------------
+//
+// The findings endpoints are all keyed by the PR's numeric state.db id (the
+// `{id}` path parameter), the same id prActions.run uses. `getFindings` and
+// the SSE channel consume the web-backend sub-task's endpoints directly;
+// `rerunAssay` POSTs to the rerun endpoint, which the daemon turns into an
+// `assay_rerun` action (anvil is forwarded in the body, mirroring the
+// `{anvil}` convention the queue/PR actions already use).
+
+// RerunAssayParams is the argument shape for assay.rerunAssay. `pr` is the
+// state.db PR id (the path parameter); `anvil` is forwarded to the daemon so
+// it can resolve the worktree/config for the re-review.
+export interface RerunAssayParams {
+  anvil: string
+  pr: number
+}
+
+// findingsStreamURL builds the SSE endpoint for a PR's live findings channel.
+// Exposed so callers (and tests) construct the URL through one place.
+export function findingsStreamURL(pr: number): string {
+  return `/api/prs/${pr}/findings/stream`
+}
+
+// FindingsStreamHandlers is the callback set passed to subscribeFindings.
+export interface FindingsStreamHandlers {
+  // onSnapshot fires for every `findings` event with the full, current
+  // findings/run snapshot — the backend re-emits the whole payload on each
+  // change, so consumers replace (not merge) their state.
+  onSnapshot: (snapshot: PRFindingsResponse) => void
+  // onOpen fires once the EventSource connection is established.
+  onOpen?: () => void
+  // onError reports a transport problem. The browser auto-reconnects (the
+  // backend emits `retry: 3000`), so callers typically show a quiet banner
+  // rather than tearing the panel down.
+  onError?: (message: string) => void
+}
+
+// FindingsStreamOptions lets tests inject a fake EventSource constructor.
+export interface FindingsStreamOptions {
+  eventSourceImpl?: typeof EventSource
+}
+
+// FindingsSubscription is returned from subscribeFindings. close() releases
+// the EventSource and prevents any further handler invocations. Safe to call
+// more than once.
+export interface FindingsSubscription {
+  close: () => void
+}
+
+// subscribeFindings opens the named-event findings SSE stream for a PR and
+// forwards each `findings` event to onSnapshot. The backend emits a named
+// event (`event: findings`) rather than the default message event, so this
+// registers an explicit listener instead of using the generic useEventSource
+// hook. Returns a no-op subscription when EventSource is unavailable (jsdom /
+// non-streaming environments); callers should fall back to getFindings polling
+// or the initial fetch in that case.
+export function subscribeFindings(
+  pr: number,
+  handlers: FindingsStreamHandlers,
+  opts: FindingsStreamOptions = {},
+): FindingsSubscription {
+  const EventSourceCtor =
+    opts.eventSourceImpl ?? (typeof EventSource !== 'undefined' ? EventSource : undefined)
+  if (!EventSourceCtor) {
+    return { close: () => {} }
+  }
+
+  const es = new EventSourceCtor(findingsStreamURL(pr), { withCredentials: true })
+  let closed = false
+  const close = () => {
+    if (closed) return
+    closed = true
+    es.close()
+  }
+
+  es.addEventListener('open', () => {
+    if (!closed) handlers.onOpen?.()
+  })
+  es.addEventListener('findings', (ev: MessageEvent) => {
+    if (closed) return
+    try {
+      handlers.onSnapshot(JSON.parse(ev.data) as PRFindingsResponse)
+    } catch {
+      // Drop malformed frames silently — a single bad payload must not kill
+      // the stream.
+    }
+  })
+  es.onerror = () => {
+    if (!closed) handlers.onError?.('connection lost')
+  }
+
+  return { close }
+}
+
+// assay groups the typed findings client: a one-shot snapshot fetch, the
+// re-run trigger, and the SSE subscription. Mutating calls route through
+// apiPost (which sets the X-Forge-Action CSRF header).
+export const assay = {
+  // getFindings loads the current findings + latest run for a PR by its
+  // state.db id.
+  getFindings: (pr: number, signal?: AbortSignal) =>
+    apiGet<PRFindingsResponse>(`/api/prs/${pr}/findings`, signal),
+  // rerunAssay asks the daemon to re-run Assay over the PR's current head.
+  rerunAssay: ({ anvil, pr }: RerunAssayParams) =>
+    apiPost<{ message?: string }>(`/api/prs/${pr}/rerun-assay`, { anvil }),
+  findingsStreamURL,
+  subscribeFindings,
 }
