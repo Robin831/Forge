@@ -35,7 +35,16 @@ const (
 	EventPRClosed       = "pr_closed"
 	EventPRConflicting  = "pr_conflicting"
 	EventPRReadyToMerge = "pr_ready_to_merge"
+	// EventPRReviewNeeded signals that a PR's current head should be reviewed
+	// by Assay. It is emitted by the Assay trigger gate in checkPR when the
+	// head SHA differs from the last reviewed SHA and all gating conditions
+	// (managed, open, not draft, CI settled, debounce, daily cost) are met.
+	EventPRReviewNeeded = "pr_review_needed"
 )
+
+// defaultAssayDebounceSeconds is the fallback minimum interval between Assay
+// runs for the same (anvil, PR) when the configured debounce is unset (<= 0).
+const defaultAssayDebounceSeconds = 300
 
 // PREvent is emitted when a PR status changes.
 type PREvent struct {
@@ -49,6 +58,26 @@ type PREvent struct {
 	// PRURL is the GitHub URL of the PR, populated for events that need it
 	// (e.g. pr_ready_to_merge).
 	PRURL string
+	// HeadSHA is the commit OID at the head of the PR branch, populated for
+	// events that need it (e.g. pr_review_needed, so the Assay reviewer knows
+	// which head it is reviewing and can record the run against it).
+	HeadSHA string
+}
+
+// AssayGateConfig holds the resolved Assay settings the trigger gate needs to
+// decide whether to emit EventPRReviewNeeded for a PR. The daemon supplies a
+// per-anvil accessor via Monitor.SetAssayConfig so hot-reloaded config changes
+// take effect without restarting.
+type AssayGateConfig struct {
+	// Enabled gates the whole feature: when false the trigger never fires.
+	Enabled bool
+	// SkipDrafts suppresses the trigger for draft PRs when true.
+	SkipDrafts bool
+	// DebounceSeconds is the minimum interval between Assay runs for the same
+	// (anvil, PR). Values <= 0 fall back to defaultAssayDebounceSeconds.
+	DebounceSeconds int
+	// DailyCostLimitUSD caps total Assay spend per day; 0 means no limit.
+	DailyCostLimitUSD float64
 }
 
 // Handler is called when a PR event is detected.
@@ -75,6 +104,7 @@ type Monitor struct {
 	wasUnmanaged     map[string]bool       // keys of ext- PRs seen as unmanaged (for managed transition detection)
 	autoMergeHandler func(ctx context.Context, anvil string, pr state.PR) // called when a PR becomes ready-to-merge
 	smelterEnabled   func() bool           // when true, route learned rules to pending table instead of PR
+	assayConfig      func(anvil string) AssayGateConfig // resolved Assay gate config; nil disables the trigger
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -140,6 +170,26 @@ func (m *Monitor) SetAutoMergeHandler(h func(ctx context.Context, anvil string, 
 // table instead of creating immediate PRs.
 func (m *Monitor) SetSmelterEnabled(f func() bool) {
 	m.smelterEnabled = f
+}
+
+// SetAssayConfig registers an accessor returning the resolved Assay gate config
+// for a given anvil. When set and enabled, the trigger gate in checkPR may emit
+// EventPRReviewNeeded. When nil (the default), the Assay trigger is disabled.
+func (m *Monitor) SetAssayConfig(f func(anvil string) AssayGateConfig) {
+	m.assayConfig = f
+}
+
+// lastReviewedSHA returns the head SHA most recently reviewed by Assay for the
+// given PR, or "" when no review has run (or on DB error). It wraps the
+// state-layer LastReviewedSHA helper (added in sub-task 1) so the trigger gate
+// can compare it against the PR's current head.
+func (m *Monitor) lastReviewedSHA(pr *state.PR) string {
+	sha, err := m.db.LastReviewedSHA(pr.Anvil, pr.Number)
+	if err != nil {
+		log.Printf("[bellows] Failed to query last reviewed SHA for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
+		return ""
+	}
+	return sha
 }
 
 // OnEvent registers a handler for PR events.
@@ -358,16 +408,31 @@ func (m *Monitor) checkAll(ctx context.Context) {
 		}
 	}
 
+	var dailyAssayCost *float64
+	if m.assayConfig != nil {
+		now := time.Now().UTC()
+		dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		cost, err := m.db.AssayCostUSDSince(dayStart)
+		if err != nil {
+			log.Printf("[bellows] Failed to query daily Assay cost: %v", err)
+		} else {
+			dailyAssayCost = &cost
+		}
+	}
+
 	for i := range prs {
 		if ctx.Err() != nil {
 			return
 		}
-		m.checkPR(ctx, &prs[i])
+		m.checkPR(ctx, &prs[i], dailyAssayCost)
 	}
 }
 
 // checkPR polls a single PR and emits events for any state changes.
-func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
+// dailyAssayCost is the precomputed global Assay cost for the current day,
+// queried once per checkAll cycle to avoid redundant per-PR queries. A nil
+// value means the query failed and the Assay gate should be skipped.
+func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *float64) {
 	m.pathsMu.RLock()
 	anvilPath, ok := m.anvilPaths[pr.Anvil]
 	m.pathsMu.RUnlock()
@@ -491,7 +556,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 			delete(m.lastStatuses, key)
 			m.mu.Unlock()
 			// Re-enter checkPR so the nil-snapshot seeding path runs.
-			m.checkPR(ctx, pr)
+			m.checkPR(ctx, pr, dailyAssayCost)
 			return
 		}
 	}
@@ -734,6 +799,13 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR) {
 	if newSnap.CIPassing && !ciInProgress && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews {
 		_ = m.db.UpdatePRStatusIfNeedsFix(pr.ID, state.PRApproved)
 	}
+
+	// Assay trigger gate: before ready-to-merge detection, emit
+	// EventPRReviewNeeded when the current head has not yet been reviewed and
+	// all gating conditions hold (see shouldEmitReviewNeeded). Placed here so a
+	// PR's head is offered for AI review once CI has settled but before/while it
+	// awaits merge. No-op unless an Assay config accessor is registered.
+	m.maybeEmitReviewNeeded(ctx, pr, status, newSnap, ciInProgress, dailyAssayCost)
 
 	// Detect transition to fully ready-to-merge state (CI passing +
 	// no conflicts, unresolved threads, or pending reviews).
@@ -1014,6 +1086,140 @@ func bellowsGit(ctx context.Context, dir string, args ...string) error {
 		return fmt.Errorf("git %s: %s (%w)", args[0], stderr.String(), err)
 	}
 	return nil
+}
+
+// reviewGateInputs bundles every signal the Assay trigger gate evaluates.
+// Extracting the decision into a pure function (shouldEmitReviewNeeded) keeps
+// it unit-testable in isolation, mirroring the computeTransitionEvents pattern
+// used for the other Bellows transitions.
+type reviewGateInputs struct {
+	enabled         bool
+	managed         bool
+	open            bool
+	draft           bool
+	skipDrafts      bool
+	headSHA         string
+	lastReviewedSHA string
+	ciInProgress    bool
+	ciPassing       bool
+	ciFixCount      int
+	maxCIFix        int
+	lastAssayRun    time.Time // zero when no prior run exists
+	now             time.Time
+	debounceSeconds int
+	dailyCostUSD    float64
+	dailyCostLimit  float64 // 0 = no limit
+}
+
+// shouldEmitReviewNeeded returns true when EventPRReviewNeeded should fire for a
+// PR. It emits only when ALL hold: Assay is enabled; the PR is managed, open,
+// and not a (skipped) draft; the current head differs from the last reviewed
+// head; CI is settled (not in progress) and either passing or past the CI-fix
+// cap; no Assay run occurred within the debounce window; and the daily Assay
+// cost is below the configured limit.
+func shouldEmitReviewNeeded(in reviewGateInputs) bool {
+	if !in.enabled {
+		return false
+	}
+	if !in.managed {
+		return false
+	}
+	if !in.open {
+		return false
+	}
+	if in.draft && in.skipDrafts {
+		return false
+	}
+	// An empty head SHA means GitHub did not report one; we cannot decide it is
+	// unreviewed, so skip rather than risk a spurious review.
+	if in.headSHA == "" || in.headSHA == in.lastReviewedSHA {
+		return false
+	}
+	if in.ciInProgress {
+		return false
+	}
+	if !in.ciPassing && in.ciFixCount < in.maxCIFix {
+		return false
+	}
+	debounce := in.debounceSeconds
+	if debounce <= 0 {
+		debounce = defaultAssayDebounceSeconds
+	}
+	if !in.lastAssayRun.IsZero() && in.now.Sub(in.lastAssayRun) < time.Duration(debounce)*time.Second {
+		return false
+	}
+	if in.dailyCostLimit > 0 && in.dailyCostUSD >= in.dailyCostLimit {
+		return false
+	}
+	return true
+}
+
+// maybeEmitReviewNeeded evaluates the Assay trigger gate for a managed, open PR
+// and emits EventPRReviewNeeded when all conditions hold. It is a no-op when no
+// Assay config accessor has been registered (the feature is disabled).
+func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, status *vcs.PRStatus, newSnap *prSnapshot, ciInProgress bool, dailyAssayCost *float64) {
+	if m.assayConfig == nil {
+		return
+	}
+	cfg := m.assayConfig(pr.Anvil)
+	if !cfg.Enabled {
+		return
+	}
+
+	lastRun, err := m.db.LastAssayRunAt(pr.Anvil, pr.Number)
+	if err != nil {
+		log.Printf("[bellows] Failed to query last Assay run for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
+		return
+	}
+	if dailyAssayCost == nil {
+		return
+	}
+	now := time.Now().UTC()
+
+	managed := !(strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged)
+	in := reviewGateInputs{
+		enabled:         cfg.Enabled,
+		managed:         managed,
+		open:            !newSnap.IsMerged && !newSnap.IsClosed,
+		draft:           status.IsDraft,
+		skipDrafts:      cfg.SkipDrafts,
+		headSHA:         status.HeadSHA,
+		lastReviewedSHA: m.lastReviewedSHA(pr),
+		ciInProgress:    ciInProgress,
+		ciPassing:       newSnap.CIPassing,
+		ciFixCount:      pr.CIFixCount,
+		maxCIFix:        m.maxCIFixAttempts(),
+		lastAssayRun:    lastRun,
+		now:             now,
+		debounceSeconds: cfg.DebounceSeconds,
+		dailyCostUSD:    *dailyAssayCost,
+		dailyCostLimit:  cfg.DailyCostLimitUSD,
+	}
+	if !shouldEmitReviewNeeded(in) {
+		return
+	}
+
+	m.emit(ctx, PREvent{
+		PRNumber:  pr.Number,
+		BeadID:    pr.BeadID,
+		Anvil:     pr.Anvil,
+		Branch:    status.HeadRefName,
+		EventType: EventPRReviewNeeded,
+		Details:   fmt.Sprintf("PR #%d head %s needs Assay review", pr.Number, shortSHA(status.HeadSHA)),
+		Timestamp: now,
+		PRURL:     status.URL,
+		HeadSHA:   status.HeadSHA,
+	})
+	_ = m.db.LogEvent(state.EventPRReviewNeeded, fmt.Sprintf("PR #%d queued for Assay review (head %s)", pr.Number, shortSHA(status.HeadSHA)), pr.BeadID, pr.Anvil)
+}
+
+// shortSHA truncates a commit OID to its first 8 characters for log/event
+// readability, returning the input unchanged when shorter.
+func shortSHA(sha string) string {
+	if len(sha) > 8 {
+		return sha[:8]
+	}
+	return sha
 }
 
 // emit calls all registered handlers with the given event.

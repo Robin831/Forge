@@ -94,6 +94,7 @@ type bellowsMonitorIface interface {
 	OnEvent(h bellows.Handler)
 	SetAutoMergeHandler(h func(ctx context.Context, anvil string, pr state.PR))
 	SetSmelterEnabled(f func() bool)
+	SetAssayConfig(f func(anvil string) bellows.AssayGateConfig)
 	UpdateAnvilPaths(paths map[string]string)
 	Refresh()
 	Run(ctx context.Context) error
@@ -984,6 +985,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.bellowsMonitor.SetSmelterEnabled(func() bool {
 		return d.cfg.Load().Settings.IsSmelterEnabled()
 	})
+	// Provide the Assay trigger gate with the resolved per-anvil Assay config so
+	// hot-reloaded changes take effect without a restart. Returning the config
+	// each call (rather than capturing it once) keeps the gate live-configured.
+	d.bellowsMonitor.SetAssayConfig(func(anvil string) bellows.AssayGateConfig {
+		ra := d.cfg.Load().ResolvedAssay(anvil)
+		return bellows.AssayGateConfig{
+			Enabled:           ra.IsEnabled(),
+			SkipDrafts:        ra.IsSkipDrafts(),
+			DebounceSeconds:   ra.GetDebounceSeconds(),
+			DailyCostLimitUSD: ra.GetDailyCostLimitUSD(),
+		}
+	})
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
 	d.bellowsMonitor.OnEvent(d.handleBellowsNotifications)
 	d.bellowsMonitor.OnEvent(d.handleBeadCloseOnMerge)
@@ -1537,6 +1550,61 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			// have IsConflicting=true and the seeding guard would preserve
 			// that value, preventing the still-conflicting branch from
 			// re-emitting EventPRConflicting after the status is reset.
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
+			}
+
+		case lifecycle.ActionAssayReview:
+			d.logger.Info("spawning Assay review worker", "pr", req.PRNumber, "bead", req.BeadID, "head", req.HeadSHA)
+			// Insert the worker row FIRST. Per the bead 05/15 lesson, the
+			// assay-run "counter" (RecordAssayRun) must only advance after the
+			// worker row is successfully inserted — otherwise a failed insert
+			// would still mark the head as reviewed and suppress future runs.
+			if err := d.db.InsertWorker(&state.Worker{
+				ID:           workerID,
+				BeadID:       req.BeadID,
+				Anvil:        req.Anvil,
+				Branch:       req.Branch,
+				Status:       state.WorkerRunning,
+				Phase:        "assay",
+				Title:        d.db.BeadTitle(req.BeadID, req.Anvil),
+				PRNumber:     req.PRNumber,
+				StartedAt:    time.Now(),
+				StaleTimeout: workerTimeout / 2,
+			}); err != nil {
+				d.logger.Error("failed to insert Assay worker row; skipping run", "pr", req.PRNumber, "bead", req.BeadID, "error", err)
+				// Do not record a run: reset the snapshot so the next poll can
+				// re-emit EventPRReviewNeeded and retry the dispatch.
+				if d.bellowsMonitor != nil {
+					d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
+				}
+				break
+			}
+
+			// TODO(assay sub-task 3): invoke assay.Review(workerCtx, ...) here to
+			// triage the diff, post findings, and report the real cost/findings.
+			// Until that lands, record a no-op run so LastReviewedSHA advances to
+			// the current head and the trigger gate debounces instead of
+			// re-firing every poll.
+			started := time.Now()
+			run := &state.AssayRun{
+				Anvil:         req.Anvil,
+				PRNumber:      req.PRNumber,
+				HeadSHA:       req.HeadSHA,
+				StartedAt:     started,
+				SkippedReason: "assay reviewer not yet wired",
+			}
+			finished := time.Now()
+			run.FinishedAt = &finished
+			run.DurationMs = finished.Sub(started).Milliseconds()
+			if err := d.db.RecordAssayRun(run); err != nil {
+				d.logger.Error("failed to record Assay run", "pr", req.PRNumber, "bead", req.BeadID, "error", err)
+				_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			} else {
+				_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
+			}
+			// Reset the snapshot so subsequent head pushes are re-detected by
+			// the gate on the next poll.
 			if d.bellowsMonitor != nil {
 				d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
 			}

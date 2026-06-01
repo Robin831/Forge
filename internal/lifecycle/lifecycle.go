@@ -45,12 +45,13 @@ func (s *PRState) NeedsFix() bool {
 type Action int
 
 const (
-	ActionNone      Action = iota
-	ActionFixCI            // Spawn CI fix worker
-	ActionFixReview        // Spawn review fix worker
-	ActionCloseBead        // Close bead after merge
-	ActionCleanup          // Clean up worktree/branch after close
-	ActionRebase           // Rebase branch on top of main to resolve conflict
+	ActionNone        Action = iota
+	ActionFixCI              // Spawn CI fix worker
+	ActionFixReview          // Spawn review fix worker
+	ActionCloseBead          // Close bead after merge
+	ActionCleanup            // Clean up worktree/branch after close
+	ActionRebase             // Rebase branch on top of main to resolve conflict
+	ActionAssayReview        // Run an Assay AI review pass over the PR's current head
 )
 
 // ActionRequest is dispatched to the action handler.
@@ -62,6 +63,7 @@ type ActionRequest struct {
 	Branch     string
 	BaseBranch string // Target branch for the PR (empty = main)
 	IsManual   bool   // true when triggered by a user IPC action (not auto-detected by Bellows)
+	HeadSHA    string // PR head commit OID, set for ActionAssayReview so the run is recorded against the reviewed head
 }
 
 // ActionHandler processes lifecycle actions. Implementations should be async-safe.
@@ -328,6 +330,14 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		st.Closed = true
 		action = ActionCleanup
 		m.logger.Info("PR closed without merge, cleanup", "pr", event.PRNumber, "anvil", event.Anvil)
+
+	case bellows.EventPRReviewNeeded:
+		// The Bellows Assay trigger gate (head-SHA comparison, debounce window,
+		// and daily cost cap) is the sole rate limiter, so no per-PR counter is
+		// tracked here. Per the bead 05/15 lesson, the assay-run "counter" is
+		// recorded by the daemon only after the worker row is inserted.
+		action = ActionAssayReview
+		m.logger.Info("PR review needed, dispatching Assay review", "pr", event.PRNumber, "anvil", event.Anvil)
 	}
 
 	// Capture all values needed after the lock is released.
@@ -343,6 +353,7 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 		Anvil:      event.Anvil,
 		Branch:     st.Branch,
 		BaseBranch: st.BaseBranch,
+		HeadSHA:    event.HeadSHA,
 	}
 	m.mu.Unlock()
 

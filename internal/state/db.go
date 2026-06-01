@@ -547,7 +547,7 @@ const (
 // Note: depupdate is retained here only for backward compatibility with
 // historical DB rows; there is no active depupdate worker flow anymore.
 // Update this constant when new background or synthetic phases are added.
-const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'crucible', 'schematic', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter', 'depupdate'"
+const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'assay', 'crucible', 'schematic', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter', 'depupdate'"
 
 // Worker represents a Smith worker entry.
 type Worker struct {
@@ -663,7 +663,7 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 // All phases listed in backgroundPhases are excluded from the global check
 // because they only produce log output when external state changes (e.g. PR
 // events) and can be legitimately silent for long stretches. However,
-// lifecycle workers (quench/burnish/rebase) that were registered with a
+// lifecycle workers (quench/burnish/rebase/assay) that were registered with a
 // per-worker StaleTimeout are additionally checked using that shorter
 // threshold — these phases appear in backgroundPhases and are therefore
 // absent from the first result set, so there is no risk of duplicates.
@@ -713,7 +713,7 @@ func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 		SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path, stale_timeout
 		FROM workers
 		WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
-		  AND phase IN ('quench', 'cifix', 'burnish', 'reviewfix', 'rebase')
+		  AND phase IN ('quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'assay')
 		  AND stale_timeout > 0
 		ORDER BY started_at`)
 	if err != nil {
@@ -775,7 +775,7 @@ func (db *DB) MarkWorkerStalled(id string) error {
 
 // ActiveDispatchWorkers returns active workers that are running primary dispatch
 // pipeline phases (smith, temper, warden). Bellows (PR monitoring) and lifecycle
-// workers (quench, burnish, rebase) are excluded so they don't consume dispatch capacity slots.
+// workers (quench, burnish, rebase, assay) are excluded so they don't consume dispatch capacity slots.
 // Stalled workers are included so they continue to count against capacity and
 // prevent the daemon from over-subscribing while stalled processes are still running.
 func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
@@ -786,7 +786,7 @@ func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 }
 
 // ActiveDispatchWorkersByAnvil returns active dispatch workers for a given anvil,
-// excluding bellows and lifecycle workers (quench, burnish, rebase).
+// excluding bellows and lifecycle workers (quench, burnish, rebase, assay).
 // Stalled workers are included so they continue to count against per-anvil capacity.
 func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
@@ -1579,6 +1579,7 @@ const (
 	EventBeadTagged           EventType = "bead_tagged"
 	EventBeadClosed           EventType = "bead_closed"
 	EventPRReadyToMerge       EventType = "pr_ready_to_merge"
+	EventPRReviewNeeded       EventType = "pr_review_needed"
 	EventPRMergeRequested     EventType = "pr_merge_requested"
 	EventPRMergeFailed        EventType = "pr_merge_failed"
 	EventPRAutoMerged         EventType = "pr_auto_merged"
@@ -3821,4 +3822,40 @@ func (db *DB) RecordAssayRun(r *AssayRun) error {
 	id, _ := res.LastInsertId()
 	r.ID = int(id)
 	return nil
+}
+
+// LastAssayRunAt returns the started_at timestamp of the most recent assay_runs
+// row for the given anvil and PR number. Returns the zero time (no error) when
+// no run exists. Used by the Bellows Assay trigger gate to debounce repeat runs.
+func (db *DB) LastAssayRunAt(anvil string, prNumber int) (time.Time, error) {
+	var startedAt string
+	err := db.conn.QueryRow(
+		`SELECT started_at FROM assay_runs
+		 WHERE anvil = ? AND pr_number = ?
+		 ORDER BY id DESC LIMIT 1`,
+		anvil, prNumber,
+	).Scan(&startedAt)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parseTime(startedAt), nil
+}
+
+// AssayCostUSDSince returns the total cost_usd of all assay_runs started at or
+// after the given time. The cutoff is formatted with dbTimeLayout, whose
+// lexicographic ordering matches chronological ordering, so a TEXT comparison
+// is valid. Used by the Bellows Assay trigger gate to enforce a daily cost cap.
+func (db *DB) AssayCostUSDSince(since time.Time) (float64, error) {
+	var total float64
+	err := db.conn.QueryRow(
+		`SELECT COALESCE(SUM(cost_usd), 0) FROM assay_runs WHERE started_at >= ?`,
+		since.UTC().Format(dbTimeLayout),
+	).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
 }
