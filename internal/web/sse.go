@@ -121,6 +121,75 @@ func (s *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handlePRFindingsStream serves GET /api/prs/{id}/findings/stream as Server-Sent
+// Events. It resolves the PR from state.db, emits the current findings/run
+// snapshot immediately, then polls every 2s and re-emits only when the snapshot
+// changes (findings set or latest run status). Each update is delivered as a
+// named `findings` event whose data payload is a prFindingsResponse — the same
+// shape GET /api/prs/{id}/findings returns — so the frontend can apply it
+// directly. A 30s keep-alive comment keeps the connection warm behind proxies.
+func (s *Server) handlePRFindingsStream(w http.ResponseWriter, r *http.Request) {
+	ctx, ok := s.requirePR(w, r)
+	if !ok {
+		return
+	}
+	anvil := ctx.pr.Anvil
+	prNumber := ctx.pr.Number
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	fmt.Fprint(w, "retry: 3000\n\n")
+	flusher.Flush()
+
+	// lastFingerprint is the JSON of the last snapshot we emitted. Comparing
+	// the marshalled payload lets us suppress no-op ticks (no new findings, no
+	// run-status change) so the client only re-renders on real updates.
+	var lastFingerprint string
+	emit := func() {
+		resp, err := s.collectPRFindings(anvil, prNumber)
+		if err != nil {
+			s.logger.Warn("pr findings stream collect failed", "anvil", anvil, "pr", prNumber, "error", err)
+			return
+		}
+		data, err := json.Marshal(resp)
+		if err != nil {
+			return
+		}
+		if string(data) == lastFingerprint {
+			return
+		}
+		lastFingerprint = string(data)
+		fmt.Fprintf(w, "event: findings\ndata: %s\n\n", data)
+		flusher.Flush()
+	}
+	emit()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	keepalive := time.NewTicker(30 * time.Second)
+	defer keepalive.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-keepalive.C:
+			fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
+		case <-ticker.C:
+			emit()
+		}
+	}
+}
+
 func toActivityEvent(e state.Event) activityEvent {
 	return activityEvent{
 		ID:        e.ID,

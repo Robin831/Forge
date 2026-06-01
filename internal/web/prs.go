@@ -224,6 +224,216 @@ func (s *Server) recentlyMergedPRs(window time.Duration) ([]prItemJSON, error) {
 	return out, nil
 }
 
+// findingJSON is the wire shape for one Assay finding on a PR. The first
+// seven fields (id, pr, anvil, status, severity, message, timestamp) form the
+// stable contract the typed frontend client mirrors; the remaining fields are
+// optional context the PR detail panel renders when present.
+type findingJSON struct {
+	ID        int    `json:"id"`
+	PR        int    `json:"pr"`
+	Anvil     string `json:"anvil"`
+	Status    string `json:"status"`
+	Severity  string `json:"severity"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp,omitempty"`
+	HeadSHA   string `json:"head_sha,omitempty"`
+	File      string `json:"file,omitempty"`
+	Anchor    string `json:"anchor,omitempty"`
+	Category  string `json:"category,omitempty"`
+	Body      string `json:"body,omitempty"`
+}
+
+// assayRunJSON summarises the most recent Assay review pass over a PR so the
+// detail panel can show "rerun" progress (running → complete/error/skipped).
+type assayRunJSON struct {
+	Status        string  `json:"status"`
+	HeadSHA       string  `json:"head_sha,omitempty"`
+	StartedAt     string  `json:"started_at,omitempty"`
+	FinishedAt    string  `json:"finished_at,omitempty"`
+	DurationMs    int64   `json:"duration_ms,omitempty"`
+	CostUSD       float64 `json:"cost_usd,omitempty"`
+	FindingsCount int     `json:"findings_count"`
+	PostedCount   int     `json:"posted_count"`
+	ShadowMode    bool    `json:"shadow_mode,omitempty"`
+	SkippedReason string  `json:"skipped_reason,omitempty"`
+	Error         string  `json:"error,omitempty"`
+}
+
+// prFindingsResponse is the JSON body returned by GET /api/prs/{id}/findings
+// and emitted on the findings SSE channel. `run` is null until Assay has
+// recorded at least one review pass for the PR; `findings` is always an array.
+type prFindingsResponse struct {
+	PR       int           `json:"pr"`
+	Anvil    string        `json:"anvil"`
+	Run      *assayRunJSON `json:"run"`
+	Findings []findingJSON `json:"findings"`
+}
+
+// handlePRFindings returns the Assay findings (and latest run status) for the
+// PR identified by the {id} path parameter. The PR row is resolved from
+// state.db so the anvil/number key the pr_findings table is queried with.
+func (s *Server) handlePRFindings(w http.ResponseWriter, r *http.Request) {
+	ctx, ok := s.requirePR(w, r)
+	if !ok {
+		return
+	}
+	resp, err := s.collectPRFindings(ctx.pr.Anvil, ctx.pr.Number)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load findings: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// collectPRFindings reads the findings and most-recent Assay run for one PR.
+// It queries state.db directly (like recentlyMergedPRs) so the change stays
+// confined to the web package. Findings are ordered Important → PreExisting →
+// Nit, then by insertion order, so the most actionable items sort first.
+func (s *Server) collectPRFindings(anvil string, prNumber int) (prFindingsResponse, error) {
+	resp := prFindingsResponse{
+		PR:       prNumber,
+		Anvil:    anvil,
+		Findings: []findingJSON{},
+	}
+	conn := s.db.Conn()
+	if conn == nil {
+		return resp, nil
+	}
+
+	rows, err := conn.Query(`SELECT id, pr_number, anvil, head_sha, file, anchor,
+		severity, category, title, body, posted, resolved_at, created_at
+		FROM pr_findings
+		WHERE anvil = ? AND pr_number = ?
+		ORDER BY
+			CASE severity WHEN 'Important' THEN 0 WHEN 'Nit' THEN 2 ELSE 1 END,
+			id`, anvil, prNumber)
+	if err != nil {
+		return resp, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			id, pr                                        int
+			av, headSHA, file, anchor, severity, category string
+			title, body, createdAt                        string
+			posted                                        int
+			resolvedAt                                    sql.NullString
+		)
+		if err := rows.Scan(&id, &pr, &av, &headSHA, &file, &anchor, &severity,
+			&category, &title, &body, &posted, &resolvedAt, &createdAt); err != nil {
+			s.logger.Warn("pr finding row scan failed", "error", err)
+			continue
+		}
+		item := findingJSON{
+			ID:       id,
+			PR:       pr,
+			Anvil:    av,
+			Status:   findingStatus(posted != 0, resolvedAt.Valid),
+			Severity: severity,
+			Message:  title,
+			HeadSHA:  headSHA,
+			File:     file,
+			Anchor:   anchor,
+			Category: category,
+			Body:     body,
+		}
+		if t := parseAnyTime(createdAt); !t.IsZero() {
+			item.Timestamp = t.UTC().Format(time.RFC3339Nano)
+		}
+		resp.Findings = append(resp.Findings, item)
+	}
+	if err := rows.Err(); err != nil {
+		return resp, err
+	}
+
+	run, err := s.latestAssayRun(anvil, prNumber)
+	if err != nil {
+		return resp, err
+	}
+	resp.Run = run
+	return resp, nil
+}
+
+// latestAssayRun returns the most recent assay_runs row for the anvil/PR as a
+// wire object, or (nil, nil) when no run has been recorded yet.
+func (s *Server) latestAssayRun(anvil string, prNumber int) (*assayRunJSON, error) {
+	conn := s.db.Conn()
+	if conn == nil {
+		return nil, nil
+	}
+	var (
+		headSHA, skipped, errMsg           string
+		startedAt                          string
+		finishedAt                         sql.NullString
+		durationMs                         int64
+		costUSD                            float64
+		findingsCount, postedCount, shadow int
+	)
+	err := conn.QueryRow(`SELECT head_sha, started_at, finished_at, duration_ms,
+		cost_usd, findings_count, posted_count, shadow_mode, skipped_reason, error
+		FROM assay_runs
+		WHERE anvil = ? AND pr_number = ?
+		ORDER BY id DESC LIMIT 1`, anvil, prNumber).Scan(
+		&headSHA, &startedAt, &finishedAt, &durationMs, &costUSD,
+		&findingsCount, &postedCount, &shadow, &skipped, &errMsg)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	run := &assayRunJSON{
+		Status:        runStatus(finishedAt.Valid, errMsg, skipped),
+		HeadSHA:       headSHA,
+		DurationMs:    durationMs,
+		CostUSD:       costUSD,
+		FindingsCount: findingsCount,
+		PostedCount:   postedCount,
+		ShadowMode:    shadow != 0,
+		SkippedReason: skipped,
+		Error:         errMsg,
+	}
+	if t := parseAnyTime(startedAt); !t.IsZero() {
+		run.StartedAt = t.UTC().Format(time.RFC3339Nano)
+	}
+	if finishedAt.Valid {
+		if t := parseAnyTime(finishedAt.String); !t.IsZero() {
+			run.FinishedAt = t.UTC().Format(time.RFC3339Nano)
+		}
+	}
+	return run, nil
+}
+
+// findingStatus maps a finding's posted/resolved flags to a status label the
+// frontend can badge: resolved (thread closed) → posted (live comment) → open
+// (detected, not yet posted).
+func findingStatus(posted, resolved bool) string {
+	switch {
+	case resolved:
+		return "resolved"
+	case posted:
+		return "posted"
+	default:
+		return "open"
+	}
+}
+
+// runStatus maps an assay_runs row to a coarse lifecycle label: running (not
+// finished) → error → skipped → complete.
+func runStatus(finished bool, errMsg, skipped string) string {
+	switch {
+	case !finished:
+		return "running"
+	case errMsg != "":
+		return "error"
+	case skipped != "":
+		return "skipped"
+	default:
+		return "complete"
+	}
+}
+
 // parseAnyTime parses a timestamp using the layouts the state package
 // produces (canonical fixed-width with nanos, then RFC3339Nano / RFC3339).
 // Returns the zero time when none of them parse.

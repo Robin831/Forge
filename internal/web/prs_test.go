@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -124,6 +125,137 @@ func TestPRsAll_SectionAssignment(t *testing.T) {
 	}
 	if got := resp.RecentlyMerged[0]; got.Number != 3 || got.Status != string(state.PRMerged) {
 		t.Errorf("recently_merged[0] unexpected: %+v", got)
+	}
+}
+
+func TestPRFindings_RequiresAuth(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, httptest.NewRequest("GET", "/api/prs/1/findings", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without auth, got %d", rec.Code)
+	}
+}
+
+func TestPRFindings_NotFound(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	req := httptest.NewRequest("GET", "/api/prs/999/findings", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown PR, got %d", rec.Code)
+	}
+}
+
+func TestPRFindings_EmptyShape(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	pr := &state.PR{
+		Number: 8, Anvil: "anvil-a", BeadID: "Forge-bbbb",
+		Branch: "b", Status: state.PROpen, CreatedAt: time.Now().UTC(),
+	}
+	if err := srv.db.InsertPR(pr); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	cookie := loginAndGetCookie(t, srv)
+	req := httptest.NewRequest("GET", fmt.Sprintf("/api/prs/%d/findings", pr.ID), nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// findings must serialise as [] (not null) so the SPA can index it; run is
+	// null until Assay records a pass.
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if string(body["findings"]) == "null" {
+		t.Errorf("findings should be [] not null")
+	}
+	if string(body["run"]) != "null" {
+		t.Errorf("run should be null when no run recorded, got %s", body["run"])
+	}
+}
+
+func TestPRFindings_ReturnsFindingsAndRun(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+
+	pr := &state.PR{
+		Number: 7, Anvil: "anvil-a", BeadID: "Forge-aaaa",
+		Branch: "feature/x", Status: state.PROpen, Title: "Change",
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := srv.db.InsertPR(pr); err != nil {
+		t.Fatalf("insert PR: %v", err)
+	}
+
+	// One Important finding (open) and one Nit finding (posted).
+	if err := srv.db.InsertFinding(state.Finding{
+		Anvil: "anvil-a", PRNumber: 7, HeadSHA: "deadbeef", FindingHash: "h1",
+		File: "a.go", Anchor: "a.go:1", Severity: "Important", Category: "logic",
+		Title: "Bug here", Body: "details",
+	}); err != nil {
+		t.Fatalf("insert finding 1: %v", err)
+	}
+	if err := srv.db.InsertFinding(state.Finding{
+		Anvil: "anvil-a", PRNumber: 7, HeadSHA: "deadbeef", FindingHash: "h2",
+		File: "b.go", Anchor: "b.go:2", Severity: "Nit", Category: "style",
+		Title: "Style nit", Body: "x", Posted: true,
+	}); err != nil {
+		t.Fatalf("insert finding 2: %v", err)
+	}
+
+	finished := time.Now().UTC()
+	if err := srv.db.RecordAssayRun(&state.AssayRun{
+		Anvil: "anvil-a", PRNumber: 7, HeadSHA: "deadbeef",
+		StartedAt: finished.Add(-time.Minute), FinishedAt: &finished,
+		FindingsCount: 2, PostedCount: 1, CostUSD: 0.5,
+	}); err != nil {
+		t.Fatalf("record run: %v", err)
+	}
+
+	cookie := loginAndGetCookie(t, srv)
+	req := httptest.NewRequest("GET", fmt.Sprintf("/api/prs/%d/findings", pr.ID), nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp prFindingsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if resp.PR != 7 || resp.Anvil != "anvil-a" {
+		t.Errorf("unexpected pr/anvil: %+v", resp)
+	}
+	if len(resp.Findings) != 2 {
+		t.Fatalf("expected 2 findings, got %d (%+v)", len(resp.Findings), resp.Findings)
+	}
+	// Important sorts before Nit.
+	if resp.Findings[0].Severity != "Important" {
+		t.Errorf("expected Important first, got %q", resp.Findings[0].Severity)
+	}
+	if resp.Findings[0].Status != "open" {
+		t.Errorf("expected open status, got %q", resp.Findings[0].Status)
+	}
+	if resp.Findings[0].Message != "Bug here" {
+		t.Errorf("expected message from title, got %q", resp.Findings[0].Message)
+	}
+	if resp.Findings[1].Status != "posted" {
+		t.Errorf("expected posted status, got %q", resp.Findings[1].Status)
+	}
+	if resp.Run == nil || resp.Run.Status != "complete" {
+		t.Errorf("expected complete run, got %+v", resp.Run)
+	}
+	if resp.Run != nil && resp.Run.HeadSHA != "deadbeef" {
+		t.Errorf("expected run head_sha deadbeef, got %q", resp.Run.HeadSHA)
 	}
 }
 

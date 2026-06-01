@@ -57,6 +57,11 @@ func (s *Server) routes() http.Handler {
 		r.Get("/history/workers", s.handleHistoryWorkers)
 		r.Get("/costs", s.handleCosts)
 		r.Get("/prs/all", s.handlePRs)
+		// Assay findings for one PR, plus a live SSE channel that re-emits the
+		// findings/run snapshot whenever it changes so the PR detail panel
+		// updates without a manual refresh.
+		r.Get("/prs/{id}/findings", s.handlePRFindings)
+		r.Get("/prs/{id}/findings/stream", s.handlePRFindingsStream)
 		r.Get("/bead/{bead_id}", s.handleBeadDetail)
 		r.Get("/bead/{bead_id}/deps", s.handleBeadDeps)
 
