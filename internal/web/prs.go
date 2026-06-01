@@ -244,7 +244,7 @@ type findingJSON struct {
 }
 
 // assayRunJSON summarises the most recent Assay review pass over a PR so the
-// detail panel can show "rerun" progress (running → complete/error/skipped).
+// detail panel can show "rerun" progress (running → error → skipped → complete).
 type assayRunJSON struct {
 	Status        string  `json:"status"`
 	HeadSHA       string  `json:"head_sha,omitempty"`
@@ -305,7 +305,7 @@ func (s *Server) collectPRFindings(anvil string, prNumber int) (prFindingsRespon
 		FROM pr_findings
 		WHERE anvil = ? AND pr_number = ?
 		ORDER BY
-			CASE severity WHEN 'Important' THEN 0 WHEN 'Nit' THEN 2 ELSE 1 END,
+			CASE severity WHEN 'Important' THEN 0 WHEN 'PreExisting' THEN 1 WHEN 'Nit' THEN 2 ELSE 3 END,
 			id`, anvil, prNumber)
 	if err != nil {
 		return resp, err
