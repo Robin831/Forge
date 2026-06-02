@@ -138,6 +138,15 @@ type Daemon struct {
 	worktreeMgr    *worktree.Manager
 	promptBuilder  *prompt.Builder
 
+	// lifecycleActive counts the lifecycle/bellows fix workers
+	// (quench/burnish/rebase/assay) currently running a Claude session. Gated by
+	// reserveLifecycleSlot against settings.max_lifecycle_workers so a burst of
+	// stuck PRs cannot fan out unbounded Claude sessions and OOM the host
+	// (Forge-3m06). These workers are deliberately excluded from the
+	// max_total_smiths dispatch cap (see state.ActiveDispatchWorkers), so they
+	// need this independent ceiling.
+	lifecycleActive atomic.Int64
+
 	// PR Monitoring (Bellows)
 	bellowsMonitor  bellowsMonitorIface
 	lifecycleMgr    *lifecycle.Manager
@@ -1270,6 +1279,42 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			return
 		}
 
+		// Gate the expensive fix workers (quench/burnish/rebase/assay) behind a
+		// global concurrency cap. Each spawns a Claude session of comparable
+		// length to a Smith, yet they are deliberately excluded from the
+		// max_total_smiths dispatch cap (see state.ActiveDispatchWorkers). Without
+		// their own ceiling a burst of stuck PRs fans out unbounded Claude
+		// sessions and OOM-crashed the host (Forge-3m06). The light-weight
+		// no-worktree actions (CloseBead/Cleanup) already returned above and are
+		// intentionally not gated.
+		maxLifecycle := d.cfg.Load().Settings.MaxLifecycleWorkers
+		if !d.reserveLifecycleSlot(maxLifecycle) {
+			d.logger.Warn("lifecycle worker capacity reached, deferring action",
+				"action", req.Action,
+				"pr", req.PRNumber,
+				"bead", req.BeadID,
+				"active", d.lifecycleActive.Load(),
+				"limit", effectiveMaxLifecycleWorkers(maxLifecycle),
+			)
+			// Reset lifecycle + bellows state so the next Bellows poll re-emits
+			// this event and the action is retried once a slot frees. Mirrors the
+			// worktree-create failure path below; runaway is still bounded by the
+			// per-PR attempt counters (CIFixCount/ReviewFixCnt/RebaseCount).
+			switch req.Action {
+			case lifecycle.ActionRebase:
+				d.lifecycleMgr.NotifyRebaseCompleted(req.Anvil, req.PRNumber)
+			case lifecycle.ActionFixCI:
+				d.lifecycleMgr.NotifyCIFixCompleted(req.Anvil, req.PRNumber)
+			case lifecycle.ActionFixReview:
+				d.lifecycleMgr.NotifyReviewFixCompleted(req.Anvil, req.PRNumber)
+			}
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
+			}
+			return
+		}
+		defer d.releaseLifecycleSlot()
+
 		// Create/get worktree for the PR branch. Use lockKey (which may be
 		// "pr-{N}" for non-bead PRs) so the path is always non-empty/valid.
 		wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, lockKey, req.Branch)
@@ -1949,6 +1994,41 @@ func (d *Daemon) drainPendingAction(ctx context.Context, beadID string) {
 	}
 	d.logger.Info("draining parked lifecycle action", "bead", beadID, "action", req.Action)
 	d.handleLifecycleAction(ctx, req)
+}
+
+// effectiveMaxLifecycleWorkers resolves the configured lifecycle concurrency cap,
+// falling back to config.DefaultMaxLifecycleWorkers when the setting is unset or
+// non-positive.
+func effectiveMaxLifecycleWorkers(limit int) int {
+	if limit <= 0 {
+		return config.DefaultMaxLifecycleWorkers
+	}
+	return limit
+}
+
+// reserveLifecycleSlot atomically reserves a concurrency slot for a lifecycle fix
+// worker (quench/burnish/rebase/assay). It returns true if a slot was acquired —
+// in which case the caller MUST call releaseLifecycleSlot exactly once when the
+// worker finishes (use defer) — or false if the effective max_lifecycle_workers
+// limit is already reached. The compare-and-swap loop makes the check-and-reserve
+// atomic so concurrent handler goroutines (Bellows-triggered and manual) cannot
+// over-subscribe the cap.
+func (d *Daemon) reserveLifecycleSlot(limit int) bool {
+	maxSlots := int64(effectiveMaxLifecycleWorkers(limit))
+	for {
+		cur := d.lifecycleActive.Load()
+		if cur >= maxSlots {
+			return false
+		}
+		if d.lifecycleActive.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+// releaseLifecycleSlot frees a slot previously reserved by reserveLifecycleSlot.
+func (d *Daemon) releaseLifecycleSlot() {
+	d.lifecycleActive.Add(-1)
 }
 
 // runStaleDetection periodically checks active workers for stale log files.

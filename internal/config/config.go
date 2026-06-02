@@ -315,6 +315,15 @@ type SettingsConfig struct {
 	// MaxRebaseAttempts is the maximum number of conflict rebase attempts per
 	// PR before the PR is considered exhausted. Default: 3.
 	MaxRebaseAttempts int `mapstructure:"max_rebase_attempts" yaml:"max_rebase_attempts"`
+	// MaxLifecycleWorkers caps how many lifecycle/bellows fix workers
+	// (quench/cifix, burnish/reviewfix, rebase, assay) may run concurrently
+	// across all PRs and anvils. Each fix worker spawns its own Claude session
+	// of comparable length to a Smith, and they are deliberately excluded from
+	// the max_total_smiths dispatch cap (see state.ActiveDispatchWorkers), so
+	// without their own ceiling a burst of stuck PRs can fan out unbounded
+	// Claude sessions and OOM the host (Forge-3m06). A value <= 0 falls back to
+	// DefaultMaxLifecycleWorkers. Default: 2.
+	MaxLifecycleWorkers int `mapstructure:"max_lifecycle_workers" yaml:"max_lifecycle_workers"`
 	// MergeStrategy controls how PRs are merged from the Hearth TUI.
 	// Valid values: "squash" (default), "merge", "rebase".
 	MergeStrategy string `mapstructure:"merge_strategy" yaml:"merge_strategy,omitempty"`
@@ -477,6 +486,13 @@ type SettingsConfig struct {
 	// per-turn budget without recompiling.
 	ForgeChat ForgeChatSettings `mapstructure:"forgechat" yaml:"forgechat,omitempty"`
 }
+
+// DefaultMaxLifecycleWorkers is the fallback concurrency cap for lifecycle/bellows
+// fix workers (quench/burnish/rebase/assay) when settings.max_lifecycle_workers is
+// unset or <= 0. Kept deliberately small because each lifecycle worker spawns its
+// own Claude session and they are not counted against the max_total_smiths dispatch
+// cap; an unbounded fan-out previously OOM-crashed the host (Forge-3m06).
+const DefaultMaxLifecycleWorkers = 2
 
 // MaxForgeChatTurnTimeout is the hard upper bound for settings.forgechat.turn_timeout.
 // Values above this are clamped on load and a warning is logged. Picked so that
@@ -642,6 +658,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		MaxCIFixAttempts          int      `yaml:"max_ci_fix_attempts"`
 		MaxReviewFixAttempts      int      `yaml:"max_review_fix_attempts"`
 		MaxRebaseAttempts         int      `yaml:"max_rebase_attempts"`
+		MaxLifecycleWorkers       int      `yaml:"max_lifecycle_workers"`
 		BurnishVerifyTimeout      string   `yaml:"burnish_verify_timeout,omitempty"`
 		MergeStrategy             string   `yaml:"merge_strategy,omitempty"`
 		StaleInterval             string   `yaml:"stale_interval"`
@@ -704,6 +721,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		MaxCIFixAttempts:          s.MaxCIFixAttempts,
 		MaxReviewFixAttempts:      s.MaxReviewFixAttempts,
 		MaxRebaseAttempts:         s.MaxRebaseAttempts,
+		MaxLifecycleWorkers:       s.MaxLifecycleWorkers,
 		BurnishVerifyTimeout:      func() string {
 			if s.BurnishVerifyTimeout > 0 {
 				return durationString(s.BurnishVerifyTimeout)
@@ -1113,6 +1131,7 @@ func Defaults() Config {
 			MaxCIFixAttempts:     5,
 			MaxReviewFixAttempts: 5,
 			MaxRebaseAttempts:    3,
+			MaxLifecycleWorkers:  DefaultMaxLifecycleWorkers,
 			BurnishVerifyTimeout: 5 * time.Minute,
 			StaleInterval:        5 * time.Minute,
 			DepcheckInterval:     168 * time.Hour, // weekly
@@ -1193,6 +1212,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.max_ci_fix_attempts", 5)
 	v.SetDefault("settings.max_review_fix_attempts", 5)
 	v.SetDefault("settings.max_rebase_attempts", 3)
+	v.SetDefault("settings.max_lifecycle_workers", DefaultMaxLifecycleWorkers)
 	v.SetDefault("settings.burnish_verify_timeout", "5m")
 	v.SetDefault("settings.stale_interval", "5m")
 	v.SetDefault("settings.depcheck_interval", "168h")
@@ -1472,6 +1492,9 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.MaxRebaseAttempts < 1 {
 		errs = append(errs, "settings.max_rebase_attempts must be >= 1")
+	}
+	if c.Settings.MaxLifecycleWorkers < 0 {
+		errs = append(errs, "settings.max_lifecycle_workers must not be negative (omit or set to 0 to use the default)")
 	}
 	if c.Settings.BurnishVerifyTimeout < 0 {
 		errs = append(errs, "settings.burnish_verify_timeout must not be negative (omit or set to 0 to use the package default)")

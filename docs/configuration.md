@@ -55,6 +55,7 @@ settings:
   max_ci_fix_attempts: 5
   max_review_fix_attempts: 5
   max_rebase_attempts: 3
+  max_lifecycle_workers: 2          # Concurrent quench/burnish/rebase/assay fix workers
   merge_strategy: squash
   daily_cost_limit: 50.00
   copilot_daily_request_limit: 300  # 300 for Pro, 1500 for Pro+
@@ -479,6 +480,7 @@ anvils:
 | `max_ci_fix_attempts` | int | `5` | `1` | Maximum CI fix cycles per PR before marking as exhausted. |
 | `max_review_fix_attempts` | int | `5` | `1` | Maximum review fix cycles per PR before marking as exhausted. |
 | `max_rebase_attempts` | int | `3` | `1` | Maximum conflict rebase attempts per PR before marking as exhausted. |
+| `max_lifecycle_workers` | int | `2` | `0` (use default) | Global cap on concurrent lifecycle/bellows fix workers (quench/cifix, burnish/reviewfix, rebase, assay) across all PRs and anvils. Each fix worker spawns its own Claude session and is **not** counted against `max_total_smiths`, so this independent ceiling prevents a burst of stuck PRs from fanning out unbounded Claude sessions and OOM-crashing the host. `0` or unset falls back to the default of `2`. |
 | `merge_strategy` | string | `"squash"` | | How PRs are merged from Hearth TUI. Valid: `squash`, `merge`, `rebase`. |
 | `stale_interval` | duration | `5m` | `30s` or `0` | How long a worker's log can go without modification before marking as stalled. `0` disables stale detection. |
 | `go_race_detection` | bool | `false` | | Enable the `-race` flag for Go tests in Temper globally. Per-anvil `go_race_detection` overrides this. |
@@ -729,6 +731,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_MAX_CI_FIX_ATTEMPTS` | `settings.max_ci_fix_attempts` |
 | `FORGE_SETTINGS_MAX_REVIEW_FIX_ATTEMPTS` | `settings.max_review_fix_attempts` |
 | `FORGE_SETTINGS_MAX_REBASE_ATTEMPTS` | `settings.max_rebase_attempts` |
+| `FORGE_SETTINGS_MAX_LIFECYCLE_WORKERS` | `settings.max_lifecycle_workers` |
 | `FORGE_SETTINGS_MERGE_STRATEGY` | `settings.merge_strategy` |
 | `FORGE_SETTINGS_STALE_INTERVAL` | `settings.stale_interval` |
 | `FORGE_SETTINGS_DEPCHECK_INTERVAL` | `settings.depcheck_interval` |
@@ -770,6 +773,7 @@ The config is validated at load time. Errors are reported as a list:
 - `max_ci_fix_attempts` must be >= 1
 - `max_review_fix_attempts` must be >= 1
 - `max_rebase_attempts` must be >= 1
+- `max_lifecycle_workers` must not be negative (omit or set to 0 to use the default)
 - `poll_interval` must be >= 10s
 - `smith_timeout` must be >= 1m
 - `bellows_interval` must be >= 30s
@@ -793,6 +797,7 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `poll_interval` is re-read and the new value takes effect on the next cycle
 - `smith_timeout` is re-read and used for newly started smiths
 - `max_total_smiths` is re-read and applied to subsequent scheduling decisions
+- `max_lifecycle_workers` is re-read and applied to subsequent lifecycle fix-worker dispatches
 - `claude_flags` are re-read and used for newly started smiths
 - `smith_providers` and `stage_providers` are re-read and used for newly dispatched beads
 - `copilot_combined_smith_warden` toggles combined Smith+Warden mode at runtime
