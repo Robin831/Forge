@@ -138,6 +138,16 @@ type Daemon struct {
 	worktreeMgr    *worktree.Manager
 	promptBuilder  *prompt.Builder
 
+	// lifecycleActive counts the lifecycle/bellows fix workers
+	// (quench/burnish/rebase/assay) currently running a Claude session. Gated by
+	// waitForLifecycleSlot against settings.max_lifecycle_workers so a burst of
+	// stuck PRs cannot fan out unbounded Claude sessions and OOM the host
+	// (Forge-3m06). These workers are deliberately excluded from the
+	// max_total_smiths dispatch cap (see state.ActiveDispatchWorkers), so they
+	// need this independent ceiling.
+	lifecycleActive atomic.Int64
+	lifecycleCond   *sync.Cond
+
 	// PR Monitoring (Bellows)
 	bellowsMonitor  bellowsMonitorIface
 	lifecycleMgr    *lifecycle.Manager
@@ -362,6 +372,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		lastPollMap:           make(map[string]anvilPollSnapshot),
 		queueTimestamps:       make(map[string]queueTimestamp),
 	}
+	d.lifecycleCond = sync.NewCond(&sync.Mutex{})
 	d.notifier.Store(notifier)
 	d.dispatcher.Store(dispatcher)
 	// Wire up the crucible-active check so orphan recovery skips parent beads
@@ -1270,6 +1281,30 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			return
 		}
 
+		// Gate the expensive fix workers (quench/burnish/rebase/assay) behind a
+		// global concurrency cap. Each spawns a Claude session of comparable
+		// length to a Smith, yet they are deliberately excluded from the
+		// max_total_smiths dispatch cap (see state.ActiveDispatchWorkers). Without
+		// their own ceiling a burst of stuck PRs fans out unbounded Claude
+		// sessions and OOM-crashed the host (Forge-3m06). The light-weight
+		// no-worktree actions (CloseBead/Cleanup) already returned above and are
+		// intentionally not gated.
+		//
+		// We block until a slot becomes available (or ctx is cancelled) so the
+		// originally-dispatched attempt runs and per-PR retry counters reflect
+		// real work, rather than deferring and re-dispatching which can burn
+		// through attempt limits without ever running a fix worker.
+		maxLifecycle := d.cfg.Load().Settings.MaxLifecycleWorkers
+		if !d.waitForLifecycleSlot(ctx, maxLifecycle) {
+			d.logger.Warn("lifecycle slot wait cancelled",
+				"action", req.Action,
+				"pr", req.PRNumber,
+				"bead", req.BeadID,
+			)
+			return
+		}
+		defer d.releaseLifecycleSlot()
+
 		// Create/get worktree for the PR branch. Use lockKey (which may be
 		// "pr-{N}" for non-bead PRs) so the path is always non-empty/valid.
 		wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, lockKey, req.Branch)
@@ -1949,6 +1984,79 @@ func (d *Daemon) drainPendingAction(ctx context.Context, beadID string) {
 	}
 	d.logger.Info("draining parked lifecycle action", "bead", beadID, "action", req.Action)
 	d.handleLifecycleAction(ctx, req)
+}
+
+// effectiveMaxLifecycleWorkers resolves the configured lifecycle concurrency cap,
+// falling back to config.DefaultMaxLifecycleWorkers when the setting is unset or
+// non-positive.
+func effectiveMaxLifecycleWorkers(limit int) int {
+	if limit <= 0 {
+		return config.DefaultMaxLifecycleWorkers
+	}
+	return limit
+}
+
+// reserveLifecycleSlot atomically tries to reserve a concurrency slot for a
+// lifecycle fix worker. Returns true if a slot was acquired (caller MUST call
+// releaseLifecycleSlot exactly once), false if the cap is reached.
+func (d *Daemon) reserveLifecycleSlot(limit int) bool {
+	maxSlots := int64(effectiveMaxLifecycleWorkers(limit))
+	for {
+		cur := d.lifecycleActive.Load()
+		if cur >= maxSlots {
+			return false
+		}
+		if d.lifecycleActive.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+// waitForLifecycleSlot blocks until a lifecycle concurrency slot is available or
+// ctx is cancelled. Returns true if a slot was acquired (caller MUST call
+// releaseLifecycleSlot), false if the context was cancelled before a slot freed.
+func (d *Daemon) waitForLifecycleSlot(ctx context.Context, limit int) bool {
+	if d.reserveLifecycleSlot(limit) {
+		return true
+	}
+
+	d.logger.Info("waiting for lifecycle slot",
+		"active", d.lifecycleActive.Load(),
+		"limit", effectiveMaxLifecycleWorkers(limit),
+	)
+
+	// Bridge ctx cancellation into the Cond so Wait() unblocks.
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			d.lifecycleCond.Broadcast()
+		case <-done:
+		}
+	}()
+	defer close(done)
+
+	d.lifecycleCond.L.Lock()
+	defer d.lifecycleCond.L.Unlock()
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		if d.reserveLifecycleSlot(limit) {
+			return true
+		}
+		d.lifecycleCond.Wait()
+	}
+}
+
+// releaseLifecycleSlot frees a slot previously reserved by
+// reserveLifecycleSlot/waitForLifecycleSlot and wakes any goroutines waiting
+// for a slot.
+func (d *Daemon) releaseLifecycleSlot() {
+	d.lifecycleActive.Add(-1)
+	if d.lifecycleCond != nil {
+		d.lifecycleCond.Broadcast()
+	}
 }
 
 // runStaleDetection periodically checks active workers for stale log files.

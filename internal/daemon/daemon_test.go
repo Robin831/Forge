@@ -2395,6 +2395,164 @@ func TestHandleLifecycleAction_CloseBead_Error(t *testing.T) {
 	assert.True(t, st.Merged, "lifecycle state should show PR as merged even when bd close fails")
 }
 
+// TestEffectiveMaxLifecycleWorkers verifies the fallback to the package default
+// when the configured limit is unset or non-positive.
+func TestEffectiveMaxLifecycleWorkers(t *testing.T) {
+	assert.Equal(t, config.DefaultMaxLifecycleWorkers, effectiveMaxLifecycleWorkers(0))
+	assert.Equal(t, config.DefaultMaxLifecycleWorkers, effectiveMaxLifecycleWorkers(-5))
+	assert.Equal(t, 1, effectiveMaxLifecycleWorkers(1))
+	assert.Equal(t, 7, effectiveMaxLifecycleWorkers(7))
+}
+
+// TestReserveLifecycleSlot_Concurrent verifies that no more than the configured
+// limit of lifecycle slots can be reserved concurrently, and that releasing a
+// slot lets a subsequent reservation succeed.
+func TestReserveLifecycleSlot_Concurrent(t *testing.T) {
+	const limit = 2
+	const goroutines = 16
+
+	d := &Daemon{lifecycleCond: sync.NewCond(&sync.Mutex{})}
+
+	var granted atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if d.reserveLifecycleSlot(limit) {
+				granted.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	assert.Equal(t, int64(limit), granted.Load(), "exactly %d slots should be granted", limit)
+	assert.Equal(t, int64(limit), d.lifecycleActive.Load(), "counter should reflect granted slots")
+
+	// At capacity: further reservations fail.
+	assert.False(t, d.reserveLifecycleSlot(limit), "reservation must fail when at capacity")
+
+	// Releasing one slot frees capacity for exactly one more reservation.
+	d.releaseLifecycleSlot()
+	assert.True(t, d.reserveLifecycleSlot(limit), "reservation must succeed after a slot frees")
+	assert.False(t, d.reserveLifecycleSlot(limit), "reservation must fail again once back at capacity")
+}
+
+// TestReserveLifecycleSlot_DefaultLimit verifies that a non-positive limit falls
+// back to the package default.
+func TestReserveLifecycleSlot_DefaultLimit(t *testing.T) {
+	d := &Daemon{lifecycleCond: sync.NewCond(&sync.Mutex{})}
+	for i := 0; i < config.DefaultMaxLifecycleWorkers; i++ {
+		assert.True(t, d.reserveLifecycleSlot(0), "reservation %d should succeed under default limit", i)
+	}
+	assert.False(t, d.reserveLifecycleSlot(0), "reservation beyond default limit must fail")
+}
+
+// TestHandleLifecycleAction_RespectsLifecycleCap verifies that a fix action
+// blocks when the lifecycle concurrency cap is saturated, and proceeds once a
+// slot frees — without burning retry counters.
+func TestHandleLifecycleAction_RespectsLifecycleCap(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-lifecycle-cap-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	d := &Daemon{
+		db:            db,
+		logger:        logger,
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+		runCtx:        context.Background(),
+		lifecycleCond: sync.NewCond(&sync.Mutex{}),
+	}
+	d.cfg.Store(&config.Config{
+		Settings: config.SettingsConfig{MaxLifecycleWorkers: 1},
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir},
+		},
+	})
+
+	lm := lifecycle.New(db, logger, d.handleLifecycleAction)
+	d.lifecycleMgr = lm
+
+	// Saturate the single lifecycle slot to simulate an in-flight fix worker.
+	require.True(t, d.reserveLifecycleSlot(1))
+
+	// Emit a CI failure: the lifecycle manager dispatches ActionFixCI, but the
+	// handler must block waiting for a slot (not defer/reset).
+	lm.HandleEvent(context.Background(), bellows.PREvent{
+		PRNumber:  7,
+		BeadID:    "CAP-1",
+		Anvil:     "test-anvil",
+		Branch:    "forge/CAP-1",
+		EventType: bellows.EventCIFailed,
+	})
+
+	// Give the handler goroutine time to park on the Cond wait.
+	time.Sleep(100 * time.Millisecond)
+
+	// The counter must still reflect only the pre-reserved slot — the blocked
+	// handler has not yet acquired a slot.
+	assert.Equal(t, int64(1), d.lifecycleActive.Load(), "blocked action must not change the lifecycle counter")
+
+	// Release the pre-reserved slot to unblock the waiting handler. It will
+	// proceed to acquire a slot and then fail at worktree creation (the anvil
+	// path is a temp dir, not a git repo), releasing the slot and finishing.
+	d.releaseLifecycleSlot()
+
+	done := make(chan struct{})
+	go func() { d.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for handleLifecycleAction to complete")
+	}
+
+	// After the handler finishes (worktree creation fails), the slot must be
+	// released back, leaving the counter at zero.
+	assert.Equal(t, int64(0), d.lifecycleActive.Load(), "lifecycle counter must return to zero after handler finishes")
+}
+
+// TestWaitForLifecycleSlot_CancelledContext verifies that waitForLifecycleSlot
+// returns false promptly when the context is cancelled while waiting.
+func TestWaitForLifecycleSlot_CancelledContext(t *testing.T) {
+	d := &Daemon{
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		lifecycleCond: sync.NewCond(&sync.Mutex{}),
+	}
+
+	// Saturate the slot.
+	require.True(t, d.reserveLifecycleSlot(1))
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- d.waitForLifecycleSlot(ctx, 1)
+	}()
+
+	// Give the goroutine time to park on the Cond wait.
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+
+	select {
+	case got := <-done:
+		assert.False(t, got, "waitForLifecycleSlot must return false on cancelled context")
+	case <-time.After(5 * time.Second):
+		t.Fatal("waitForLifecycleSlot did not return after context cancellation")
+	}
+
+	// The counter must still be 1 (only the pre-reserved slot).
+	assert.Equal(t, int64(1), d.lifecycleActive.Load())
+}
+
 // mockVCSProvider implements vcs.Provider for testing.
 type mockVCSProvider struct {
 	mergeCalls atomic.Int32

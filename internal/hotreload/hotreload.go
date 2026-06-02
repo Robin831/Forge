@@ -12,6 +12,7 @@
 //   - settings.max_ci_fix_attempts (applied immediately to lifecycle manager)
 //   - settings.max_review_fix_attempts (applied immediately to lifecycle manager)
 //   - settings.max_rebase_attempts (applied immediately to lifecycle manager)
+//   - settings.max_lifecycle_workers (gates concurrent lifecycle fix workers; read per-dispatch)
 //   - settings.crucible_poll_interval (change the slow-path Crucible poll cadence)
 //   - settings.copilot_combined_smith_warden (toggle combined mode at runtime)
 //   - settings.copilot_warden_sample_rate (adjust sampling rate at runtime)
@@ -246,6 +247,11 @@ func applyChanges(old, new *config.Config) []string {
 	if old.Settings.MaxRebaseAttempts != new.Settings.MaxRebaseAttempts {
 		changes = append(changes, fmt.Sprintf("max_rebase_attempts: %d → %d",
 			old.Settings.MaxRebaseAttempts, new.Settings.MaxRebaseAttempts))
+	}
+
+	if old.Settings.MaxLifecycleWorkers != new.Settings.MaxLifecycleWorkers {
+		changes = append(changes, fmt.Sprintf("max_lifecycle_workers: %d → %d",
+			old.Settings.MaxLifecycleWorkers, new.Settings.MaxLifecycleWorkers))
 	}
 
 	if old.Settings.CopilotCombinedSmithWarden != new.Settings.CopilotCombinedSmithWarden {

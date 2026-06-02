@@ -193,6 +193,7 @@ func TestDefaults(t *testing.T) {
 	assert.Equal(t, 5, cfg.Settings.MaxCIFixAttempts)
 	assert.Equal(t, 5, cfg.Settings.MaxReviewFixAttempts)
 	assert.Equal(t, 3, cfg.Settings.MaxRebaseAttempts)
+	assert.Equal(t, DefaultMaxLifecycleWorkers, cfg.Settings.MaxLifecycleWorkers)
 	assert.NotNil(t, cfg.Anvils)
 }
 
