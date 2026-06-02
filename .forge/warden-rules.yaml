@@ -7127,3 +7127,49 @@ rules:
       paths:
         - '**/*.go'
         - '**/*.md'
+    - id: partial-list-on-query-error
+      category: error-handling
+      pattern: >-
+        An endpoint aggregates rows from multiple queries (e.g. needs_human plus clarification-needed) into one response
+      check: >-
+        Verify every contributing query's error is handled the same way (return a failure), so a failed secondary query cannot silently drop rows and return a 200 with an incomplete list
+      source: copilot:PR#661
+      added: "2026-05-29"
+      paths:
+        - '**/*.css'
+        - '**/*.go'
+        - '**/*.html'
+        - '**/*.js'
+        - '**/*.md'
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: multi-anvil-cache-key
+      category: concurrency
+      pattern: >-
+        Caching or store lookups for beads/escalations/PRs keyed only by bead id when the same bead id can exist across multiple anvils (repositories)
+      check: >-
+        Verify the cache key and lookup include both anvil and bead id (not bead id alone), so concurrent entries from different anvils cannot overwrite each other or cause resolve/mutation actions to target the wrong anvil
+      source: copilot:PR#661
+      added: "2026-05-29"
+      paths:
+        - '**/*.css'
+        - '**/*.go'
+        - '**/*.html'
+        - '**/*.js'
+        - '**/*.md'
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: assert-width-class-over-visibility-for-truncation
+      category: testing
+      pattern: >-
+        A test asserting on element visibility (e.g. toBeVisible()) to verify a CSS-based truncation, overflow, or layout fix (text-overflow, ellipsis, column width) in jsdom
+      check: >-
+        jsdom performs no layout, so visibility/overflow assertions pass regardless of the regression. Verify the test asserts the concrete style/width class on the element so it fails if the dimension is reverted.
+      source: copilot:PR#663
+      added: "2026-05-29"
+      paths:
+        - '**/*.css'
+        - '**/*.html'
+        - '**/*.js'
+        - '**/*.md'
+        - '**/*.tsx'
