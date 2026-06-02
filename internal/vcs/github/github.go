@@ -232,12 +232,15 @@ func (p *Provider) CheckStatus(ctx context.Context, worktreePath string, prNumbe
 	return &status, nil
 }
 
-// CheckStatusLight gets the review-request and mergeable state of a PR without
-// fetching unresolved thread counts (which requires expensive GraphQL pagination).
+// CheckStatusLight gets the review-request, mergeable, and head-SHA state of
+// a PR without fetching unresolved thread counts (which requires expensive
+// GraphQL pagination). headRefOid is included so callers (e.g. the manual
+// assay_rerun handler) can record the run against the actual head; omitting
+// it left HeadSHA empty and Assay re-runs spawned workers with head="".
 func (p *Provider) CheckStatusLight(ctx context.Context, worktreePath string, prNumber int) (*vcs.PRStatus, error) {
 	args := []string{
 		"pr", "view", fmt.Sprintf("%d", prNumber),
-		"--json", "state,reviewRequests,mergeable",
+		"--json", "state,reviewRequests,mergeable,headRefOid",
 	}
 
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
