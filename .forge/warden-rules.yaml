@@ -7173,3 +7173,233 @@ rules:
         - '**/*.js'
         - '**/*.md'
         - '**/*.tsx'
+    - id: value-receiver-mutation-noop
+      category: error-handling
+      pattern: >-
+        A method or function receives a struct by value (not pointer) and assigns to one of its fields—e.g. setting an inserted row ID after LastInsertId()—expecting the caller to observe the change
+      check: >-
+        Verify the mutation is actually propagated to the caller: the receiver/parameter must be a pointer, or the value must be returned. Otherwise the assignment is dead code and the field change is silently lost.
+      source: copilot:PR#665
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: bufio-scanner-buffer-and-err
+      category: error-handling
+      pattern: >-
+        Reading command/diff/file output line-by-line with bufio.Scanner using the default token buffer
+      check: >-
+        Verify the scanner raises its buffer limit (scanner.Buffer) to handle very long lines (e.g. minified files) and checks scanner.Err() after the loop, so a long-line or read error is surfaced instead of silently returning a truncated result
+      source: copilot:PR#665
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: zero-value-overlay-fields
+      category: other
+      pattern: >-
+        Config overlay/merge logic that only applies numeric fields when they are non-zero (e.g. `if overlay.X != 0 { base.X = overlay.X }`)
+      check: >-
+        Verify that 0 is not a meaningful value being silently dropped; if zero is a valid explicit override (e.g. 'no limit', 'disable'), the field should use a pointer type or sentinel to distinguish unset from zero
+      source: copilot:PR#665
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: test-config-supported-values
+      category: testing
+      pattern: >-
+        Test fixtures or config setups specify enum/tier values (e.g. model_tier) that are consumed by a lookup function with a fixed set of recognized values
+      check: >-
+        Verify fixture values match what the consuming code actually supports (e.g. tiers recognized by cost.PricingForTier like haiku/sonnet/opus); reject unsupported values that could mask config-vs-behavior mismatches
+      source: copilot:PR#665
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: stale-scan-phase-symmetry
+      category: concurrency
+      pattern: >-
+        Adding or changing a worker phase in one phase-list (e.g. backgroundPhases excluded from global stale scan) without updating the parallel phase-list used by per-worker stale-timeout detection (StalledWorkers)
+      check: >-
+        Verify that any worker phase given a StaleTimeout is included in StalledWorkers()'s phase set, so phase membership stays symmetric across all stall-detection paths and no worker with a stale timeout escapes detection
+      source: copilot:PR#666
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: hoist-loop-invariant-query
+      category: performance
+      pattern: >-
+        A query whose result is identical for every iteration (e.g. a global/aggregate total) is executed inside a per-item loop such as iterating over PRs, workers, or beads
+      check: >-
+        Verify that loop-invariant or globally-constant query results are fetched once before the loop and reused, rather than re-queried on each iteration
+      source: copilot:PR#666
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: sync-parallel-phase-lists
+      category: other
+      pattern: >-
+        Adding or removing a phase/worker-type from one phase classification list (e.g. backgroundPhases) when sibling lists exist that enumerate the same phases for related logic (e.g. StalledWorkers stale-timeout scan)
+      check: >-
+        Verify the new phase is added to (or removed from) every parallel phase list consistently, so a worker isn't excluded from one scan while still expected by another — e.g. an 'assay' worker with StaleTimeout set must still be reachable by stall detection.
+      source: copilot:PR#666
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: global-cost-query-in-pr-loop
+      category: performance
+      pattern: >-
+        A per-PR loop (e.g. checkAll iterating over open PRs) calls a query that aggregates global/poll-cycle-wide state, such as AssayCostUSDSince(dayStart) for a daily cost total that is identical for every PR
+      check: >-
+        Verify that queries returning the same value for every iteration are hoisted out of the loop and computed once per poll cycle, rather than re-run N times (N×SUM) as the open PR count grows
+      source: copilot:PR#666
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: smith-nonzero-exit-ignored
+      category: error-handling
+      pattern: >-
+        Code that inspects a Smith/subprocess run result and only handles a specific failure mode (e.g. RateLimited) before parsing its output as JSON
+      check: >-
+        Verify that all non-zero exit codes / IsError results are checked and surfaced as the real failure before attempting to parse output, so provider/CLI failures aren't masked as 'invalid JSON' errors or trigger needless retries
+      source: copilot:PR#667
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: global-unique-hash-scope
+      category: error-handling
+      pattern: >-
+        Computing a hash used as a persisted dedupe key from only content fields (e.g. anchor, category, body) when the database column has a globally UNIQUE constraint
+      check: >-
+        Verify the hash inputs include the scoping identifiers (e.g. anvil/repo and PR) so the dedupe key cannot collide across repos or PRs and cause INSERT OR IGNORE to silently drop legitimate rows
+      source: copilot:PR#667
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: provider-fallback-doc-mismatch
+      category: error-handling
+      pattern: >-
+        Config or doc comments describe a provider/dependency fallback chain (e.g. empty value falls back to defaults), while the resolver function returns only a single default
+      check: >-
+        Verify the implementation actually constructs the documented fallback chain, or that the comment accurately describes the real single-default behavior — the two must be consistent
+      source: copilot:PR#667
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: validate-workdir-before-runner
+      category: error-handling
+      pattern: >-
+        An entry point or public function passes a path/identifier field (e.g. req.WorkDir) into a downstream call that requires it to be non-empty, without validating it first
+      check: >-
+        Verify required input fields are validated up front with a clear, actionable error, rather than failing deeper in a downstream call with a less actionable message
+      source: copilot:PR#667
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: fail-fast-on-embedded-resource-load
+      category: error-handling
+      pattern: >-
+        A loader reads an embedded or bundled resource (prompt, template, config) and returns an empty/zero value when the read fails, instead of surfacing the error
+      check: >-
+        Verify that failure to load an embedded/static resource — which indicates a programming or build-config error, not a runtime condition — fails fast (panic or returned error) rather than silently proceeding with an empty default that degrades behavior in hard-to-debug ways
+      source: copilot:PR#667
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: clear-stale-state-on-finding-repost
+      category: error-handling
+      pattern: >-
+        An UPDATE that marks a record as posted/active again (e.g. MarkFindingPosted setting posted/gh_comment_id) when the same logical record may have been previously resolved
+      check: >-
+        Verify the update also clears stale lifecycle fields like resolved_at and any prior gh_thread_id, so a reappearing (re-posted) finding becomes visible again in open-finding queries and future auto-resolution does not target a stale thread/comment ID from a prior occurrence
+      source: copilot:PR#668
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: doc-comment-state-progression-match
+      category: style
+      pattern: >-
+        A doc comment or comment describes a status/state progression (e.g. enum values or status field transitions) alongside the function that produces those states
+      check: >-
+        Verify the comment's described state sequence exactly matches the actual progression yielded by the code (order and value names), so frontend or other consumers aren't misled about the status field
+      source: copilot:PR#669
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: explicit-sql-case-buckets
+      category: style
+      pattern: >-
+        A SQL CASE expression that maps ordered enum/severity values to sort buckets but uses an ELSE branch for one or more middle categories, while documentation/comments claim an explicit ordering
+      check: >-
+        Verify each named ordering bucket has an explicit WHEN clause rather than relying on ELSE, so the query stays self-documenting and unexpected or newly-added enum values cannot silently fall into the wrong bucket
+      source: copilot:PR#669
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: doctor-check-nil-config-warn
+      category: error-handling
+      pattern: >-
+        A `forge doctor` check function returns no results (skips output) when config or another precondition is nil/missing
+      check: >-
+        Verify the check surfaces an explicit warn result instead of silently skipping, consistent with other doctor checks (e.g. provider chain), so the check is never omitted from output
+      source: copilot:PR#671
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: missing-tests-for-new-checks
+      category: testing
+      pattern: >-
+        New per-pass or per-tier check functions are added to a command (e.g. doctor checks) that already has an accompanying test file
+      check: >-
+        Verify focused unit tests are added for the new check covering each branch — disabled vs enabled state, provider/tier selection, and missing-binary reporting per pass
+      source: copilot:PR#671
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: ipc-handler-test-coverage
+      category: testing
+      pattern: >-
+        A new IPC command handler is added (e.g. assay_rerun) alongside existing handlers that have test coverage
+      check: >-
+        Verify the new handler has tests mirroring sibling handlers — covering invalid payload, missing required fields, unknown anvil, missing PR id, anvil mismatch, and the success path (background goroutine started + event logged)
+      source: copilot:PR#671
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: ipc-cmd-needs-full-wiring
+      category: error-handling
+      pattern: >-
+        A new IPC command/handler is added and documented as backing a user-facing action (web button, API route, CLI), but the calling path that invokes it (web router endpoint, backend dispatcher, client request) is not registered
+      check: >-
+        Verify the full invocation chain is wired end-to-end: the HTTP route/endpoint exists, a backend handler dispatches the IPC command, and the client actually calls it — so the documented user-facing path can reach the new handler
+      source: copilot:PR#671
+      added: "2026-06-01"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: changelog-fragment-bead-id-mismatch
+      category: other
+      pattern: >-
+        A PR adds a changelog fragment file (changelog.d/<bead-id>.md) where the bead ID in the filename differs from the bead ID referenced in the PR description, task text, or 'Original Issue' section
+      check: >-
+        Verify the changelog fragment filename's bead ID matches the bead ID cited in the PR description and task text; if they differ, align the description or rename the fragment so changelog tracking stays consistent
+      source: copilot:PR#672
+      added: "2026-06-01"
+      paths:
+        - '**/*.md'
