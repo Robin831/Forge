@@ -791,7 +791,7 @@ func BeadIDFromBranch(branch string) (string, bool) {
 		return "", false
 	}
 	id := strings.TrimPrefix(branch, prefix)
-	if id == "" {
+	if id == "" || strings.Contains(id, "/") {
 		return "", false
 	}
 	return id, true

@@ -38,6 +38,8 @@ func TestBeadIDFromBranch(t *testing.T) {
 		{"forge/Forge-abc1", "Forge-abc1", true},
 		{"forge/Forge-n1g.4.1", "Forge-n1g.4.1", true},
 		{"forge/Fhi.Metadata-g1a58", "Fhi.Metadata-g1a58", true},
+		{"forge/foo/bar", "", false},
+		{"forge/nested/path/id", "", false},
 		{"feature/random", "", false},
 		{"sophie/manual-fix", "", false},
 		{"main", "", false},
