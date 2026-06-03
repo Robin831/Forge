@@ -158,8 +158,10 @@ func ShouldRun(cfg Config, bead poller.Bead) bool {
 		}
 	}
 
-	// Word count heuristic on description
-	wordCount := len(strings.Fields(bead.Description))
+	// Word-count heuristic over the full spec, not just the description: a
+	// terse description with rich design/acceptance criteria is still a complex
+	// bead worth analysing (and likely decomposing).
+	wordCount := len(strings.Fields(bead.Description + " " + bead.Design + " " + bead.AcceptanceCriteria))
 	return wordCount >= cfg.WordThreshold
 }
 
@@ -707,7 +709,7 @@ func parseDepsFromShow(jsonOutput string) (upstreamIDs, downstreamIDs []string) 
 func buildPrompt(bead poller.Bead) string {
 	prompt := `You are a software architect analysing a work item (bead) to determine the best approach.
 
-IMPORTANT: You have a very limited turn budget. You MUST output your JSON verdict IMMEDIATELY in your FIRST response. Do NOT use any tools — do NOT read files, do NOT run commands, do NOT explore the codebase. Your job is to analyse the bead description below and make a decision based solely on what is written. Output the JSON verdict and nothing else.
+IMPORTANT: You have a very limited turn budget. You MUST output your JSON verdict IMMEDIATELY in your FIRST response. Do NOT use any tools — do NOT read files, do NOT run commands, do NOT explore the codebase. Your job is to analyse the bead specification below — description, design, AND acceptance criteria — and make a decision based solely on what is written. The acceptance criteria often reveal the true scope (multiple components/areas) even when the description reads as one feature. Output the JSON verdict and nothing else.
 
 ## Bead to Analyse
 
@@ -729,6 +731,21 @@ IMPORTANT: You have a very limited turn budget. You MUST output your JSON verdic
 	b.WriteString("\n\n### Description\n\n")
 	b.WriteString(bead.Description)
 	b.WriteString("\n")
+	// Design and Acceptance Criteria carry the real scope signal for the
+	// decompose decision — a terse description can hide a multi-area feature
+	// whose parts are only enumerated in the acceptance criteria (this is why
+	// Fhi.Metadata-jnmj6, an API+GUI+export+migration+rule+tests bead, was
+	// mis-classified as a single "plan" when schematic saw description only).
+	if strings.TrimSpace(bead.Design) != "" {
+		b.WriteString("\n### Design\n\n")
+		b.WriteString(bead.Design)
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(bead.AcceptanceCriteria) != "" {
+		b.WriteString("\n### Acceptance Criteria\n\n")
+		b.WriteString(bead.AcceptanceCriteria)
+		b.WriteString("\n")
+	}
 
 	b.WriteString(`
 ## Your Task
@@ -742,6 +759,7 @@ Analyse this bead and decide ONE of the following actions:
 ## Decision Criteria
 
 - If the description has multiple independent features/changes → decompose
+- If the design or acceptance criteria span multiple independent areas or layers (e.g. API + GUI + DB migration + export + tests) → decompose, one sub-task per area
 - If the scope is large (>500 lines of change expected) → decompose
 - If the bead title and description are clear and focused → plan
 - If the bead has contradictory or missing requirements → clarify
