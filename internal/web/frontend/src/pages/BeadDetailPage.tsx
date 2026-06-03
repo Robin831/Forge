@@ -290,6 +290,24 @@ export default function BeadDetailPage() {
         </CollapsibleSection>
       )}
 
+      {data?.design && data.design.trim() !== '' && (
+        <CollapsibleSection
+          title="Design"
+          icon={<FileText size={16} className="text-sky-400" aria-hidden />}
+        >
+          <p className="whitespace-pre-wrap px-4 py-3 text-sm text-slate-200">{data.design}</p>
+        </CollapsibleSection>
+      )}
+
+      {data?.acceptance_criteria && data.acceptance_criteria.trim() !== '' && (
+        <CollapsibleSection
+          title="Acceptance Criteria"
+          icon={<FileText size={16} className="text-emerald-400" aria-hidden />}
+        >
+          <p className="whitespace-pre-wrap px-4 py-3 text-sm text-slate-200">{data.acceptance_criteria}</p>
+        </CollapsibleSection>
+      )}
+
       {data && (mergedComments.length > 0 || resolvedAnvil) && (
         <CollapsibleSection
           title="Comments"

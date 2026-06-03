@@ -366,7 +366,9 @@ type beadDetailResponse struct {
 	PRs       []beadDetailPR      `json:"prs"`
 	Blocks    []beadDetailDepRef  `json:"blocks"`
 	BlockedBy []beadDetailDepRef  `json:"blocked_by"`
-	Notes     string              `json:"notes,omitempty"`
+	Notes              string         `json:"notes,omitempty"`
+	Design             string         `json:"design,omitempty"`
+	AcceptanceCriteria string         `json:"acceptance_criteria,omitempty"`
 	Comments  []beadDetailComment `json:"comments"`
 }
 
@@ -391,6 +393,8 @@ type bdShowEntry struct {
 	Status         string        `json:"status"`
 	Priority       int           `json:"priority"`
 	Notes          string        `json:"notes"`
+	Design             string    `json:"design"`
+	AcceptanceCriteria string    `json:"acceptance_criteria"`
 	DependencyType string        `json:"dependency_type"`
 	Dependencies   []bdShowEntry `json:"dependencies"`
 	Dependents     []bdShowEntry `json:"dependents"`
@@ -823,6 +827,8 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 	defer showCancel()
 	if entry, err := fetchBeadShow(showCtx, anvilPath, beadID); err == nil && entry != nil {
 		resp.Notes = entry.Notes
+		resp.Design = entry.Design
+		resp.AcceptanceCriteria = entry.AcceptanceCriteria
 		resp.Blocks, resp.BlockedBy = extractBeadDeps(entry, newAnvilLookup(s.db))
 	}
 

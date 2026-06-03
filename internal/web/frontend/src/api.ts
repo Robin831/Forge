@@ -285,6 +285,8 @@ export interface BeadDetailResponse {
   blocks: BeadBrief[]
   blocked_by: BeadBrief[]
   notes?: string
+  design?: string
+  acceptance_criteria?: string
   comments: BeadDetailComment[]
 }
 
