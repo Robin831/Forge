@@ -7073,7 +7073,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 	var baseBranch string
 	var rerunExternalRef string
 	if bead, err := crucible.FetchBead(ctx, beadID, anvilCfg.Path); err == nil {
-		description = bead.Description
+		description = bead.SpecForPrompt()
 		rerunExternalRef = bead.ExternalRef
 		// Resolve epic branch so PRs target the correct base for crucible children.
 		beads := []poller.Bead{bead}
@@ -7267,7 +7267,7 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 	title := d.db.BeadTitle(beadID, anvil)
 	var description, notes string
 	if bead, err := crucible.FetchBead(ctx, beadID, anvilCfg.Path); err == nil {
-		description = bead.Description
+		description = bead.SpecForPrompt()
 		notes = bead.Notes
 	}
 

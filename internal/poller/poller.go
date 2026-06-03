@@ -25,6 +25,12 @@ type Bead struct {
 	Title        string    `json:"title"`
 	Description  string    `json:"description"`
 	Notes        string    `json:"notes"`
+	// Design and AcceptanceCriteria are emitted by `bd ready --json` but were
+	// previously dropped — Smith implemented and Warden reviewed beads without
+	// ever seeing the design intent or the definition-of-done. SpecForPrompt()
+	// folds them into the text handed to the AI workers.
+	Design             string `json:"design"`
+	AcceptanceCriteria string `json:"acceptance_criteria"`
 	Status       string    `json:"status"`
 	Priority     int       `json:"priority"`
 	IssueType    string    `json:"issue_type"`
@@ -49,6 +55,26 @@ type Bead struct {
 	EpicBranch string `json:"-"`
 	// Forge-injected: when true, dispatch as standalone — skip epic and crucible detection.
 	ForceIndependent bool `json:"-"`
+}
+
+// SpecForPrompt returns the bead's full specification for AI prompts: the
+// description, plus the Design and Acceptance Criteria sections when present.
+// Smith (implementer) and Warden (reviewer) both consume this so they see the
+// design intent and the definition-of-done — not just the description, which
+// is all they got before. Sections are omitted when empty, so simple beads
+// (no design/acceptance) produce exactly the description as before.
+func (b Bead) SpecForPrompt() string {
+	var sb strings.Builder
+	sb.WriteString(b.Description)
+	if d := strings.TrimSpace(b.Design); d != "" {
+		sb.WriteString("\n\n## Design\n")
+		sb.WriteString(d)
+	}
+	if a := strings.TrimSpace(b.AcceptanceCriteria); a != "" {
+		sb.WriteString("\n\n## Acceptance Criteria (definition of done — the implementation MUST satisfy every item)\n")
+		sb.WriteString(a)
+	}
+	return sb.String()
 }
 
 // BeadDep represents a dependency entry in the bd JSON output.

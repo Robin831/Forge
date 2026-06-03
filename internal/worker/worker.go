@@ -127,7 +127,7 @@ func (w *Worker) Run(ctx context.Context, extraFlags []string) (*smith.Result, e
 	beadCtx := prompt.BeadContext{
 		BeadID:       w.Bead.ID,
 		Title:        w.Bead.Title,
-		Description:  w.Bead.Description,
+		Description:  w.Bead.SpecForPrompt(),
 		Notes:        w.Bead.Notes,
 		IssueType:    w.Bead.IssueType,
 		Priority:     w.Bead.Priority,

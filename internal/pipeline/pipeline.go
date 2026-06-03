@@ -662,7 +662,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 	beadCtx := prompt.BeadContext{
 		BeadID:              p.Bead.ID,
 		Title:               p.Bead.Title,
-		Description:         p.Bead.Description,
+		Description:         p.Bead.SpecForPrompt(),
 		Notes:               p.Bead.Notes,
 		IssueType:           p.Bead.IssueType,
 		Priority:            p.Bead.Priority,
@@ -1528,7 +1528,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 
 			var err error
-			reviewResult, err = reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.Description, p.AnvilConfig.Path, p.DB, wardenFeedbackArg, p.wardenProviders(providers)...)
+			reviewResult, err = reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.SpecForPrompt(), p.AnvilConfig.Path, p.DB, wardenFeedbackArg, p.wardenProviders(providers)...)
 			if err != nil {
 				log.Printf("[pipeline:%s] Warden error: %v", workerID, err)
 				// Warden failure is not fatal — default to approve and let human review
