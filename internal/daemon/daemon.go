@@ -3395,10 +3395,37 @@ func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.B
 			return false
 		}
 
-		// No PR — the prior worker pushed but never opened one. Surface as
-		// needs-attention with a message modelled on the Smith escalation
-		// from the 2026-05-18 Fhi.Metadata-orjp2 incident so the operator's
-		// mental model is consistent regardless of when the check fires.
+		// No PR — the prior worker pushed but never opened one. Before
+		// escalating to needs_human, check for a completion signal: a
+		// changelog fragment for this bead (changelog.d/<bead-id>.md)
+		// reachable from the branch tip. Forge requires a fragment per PR, so
+		// its presence means the prior worker finished its work and merely
+		// failed at the last mile (PR creation). In that case auto-open the PR
+		// so bellows can drive it to merge — mirroring the orphaned-branch
+		// recovery in applyNoChangesNeededOutcome. The Stranded classification
+		// already guarantees the branch is ahead of base by >=1 commit, so no
+		// separate ahead-count check is required.
+		hasFragment, fragErr := d.branchHasChangelogFragment(ctx, anvilPath, info.SHA, bead.ID)
+		if fragErr != nil {
+			// Inconclusive probe — never auto-open a PR on a git error. Log and
+			// fall through to the needs_human escalation below.
+			d.logger.Warn("pre-dispatch: changelog-fragment completion check failed for stranded branch; escalating to needs_human",
+				"bead", bead.ID, "branch", branch, "sha", info.SHA, "error", fragErr)
+		} else if hasFragment {
+			if d.recoverStrandedBranchPR(ctx, bead, anvilPath, branch, info.SHA) {
+				return false
+			}
+			// Recovery failed (PR re-check error, CreatePR error, or invalid
+			// PR object). Fall through to the needs_human escalation below so
+			// the failure is never silently swallowed.
+			d.logger.Warn("pre-dispatch: stranded-branch auto-recovery failed; escalating to needs_human",
+				"bead", bead.ID, "branch", branch, "sha", info.SHA)
+		}
+
+		// Surface as needs-attention with a message modelled on the Smith
+		// escalation from the 2026-05-18 Fhi.Metadata-orjp2 incident so the
+		// operator's mental model is consistent regardless of when the check
+		// fires.
 		shortSHA := info.SHA
 		if len(shortSHA) > 12 {
 			shortSHA = shortSHA[:12]
@@ -3441,6 +3468,133 @@ func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.B
 		return false
 	}
 
+	return true
+}
+
+// branchHasChangelogFragment reports whether a changelog fragment for beadID
+// (changelog.d/<bead-id>.md) is reachable from the given commit SHA. Forge
+// requires a fragment per PR, so its presence on a stranded forge branch is a
+// completion signal: the prior worker finished its work and merely failed to
+// open a PR. The SHA's tree is already local because CheckRemoteBranchState
+// fetched the branch before this is called.
+//
+// It returns (found, nil) on a successful tree read and (false, err) when the
+// git command itself fails, so callers can distinguish "no fragment" (a clean
+// negative) from "git error" (inconclusive) and avoid auto-opening a PR on an
+// indeterminate probe.
+func (d *Daemon) branchHasChangelogFragment(ctx context.Context, anvilPath, sha, beadID string) (bool, error) {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "ls-tree", "-r", "--name-only", sha, "--", "changelog.d/"))
+	cmd.Dir = anvilPath
+	cmd.Env = cleanGitEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return false, err
+	}
+	target := "changelog.d/" + beadID + ".md"
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) == target {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// recoverStrandedBranchPR auto-opens a PR for a stranded forge branch that
+// carries a completion signal (a changelog fragment for the bead). It first
+// re-checks for an existing PR to avoid racing a concurrent open, then mirrors
+// the normal end-of-pipeline CreatePR. On success it registers the PR so
+// bellows owns it, logs EventDispatchRecoveredStrandedBranch, clears the retry
+// record, and returns true so the caller skips dispatch. It returns false on
+// any failure (PR re-check error, CreatePR error, or invalid PR object) so the
+// caller falls through to the needs_human escalation rather than silently
+// swallowing the error.
+func (d *Daemon) recoverStrandedBranchPR(ctx context.Context, bead poller.Bead, anvilPath, branch, sha string) bool {
+	provider := d.vcsForAnvil(bead.Anvil)
+
+	// Fresh guard: a concurrent dispatch (or bellows) may have opened a PR
+	// between the earlier lookup and now. Never duplicate a tracked PR.
+	if pr, err := provider.GetPRByHeadBranch(ctx, anvilPath, branch); err != nil {
+		d.logger.Warn("pre-dispatch: PR re-check failed before stranded-branch recovery",
+			"bead", bead.ID, "branch", branch, "error", err)
+		return false
+	} else if pr != nil {
+		d.logger.Info("pre-dispatch: PR opened concurrently for stranded branch; deferring to bellows",
+			"bead", bead.ID, "branch", branch, "pr", pr.Number)
+		d.registerPRIfUntracked(ctx, bead.Anvil, bead.ID, pr, bead.EpicBranch)
+		return true
+	}
+
+	// Use a dedicated timeout for PR creation independent of the caller ctx —
+	// the original ctx may carry a short poll deadline.
+	prCtx, prCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer prCancel()
+
+	// Last-chance external_ref lookup in case it was empty at dispatch time.
+	externalRef := bead.ExternalRef
+	if externalRef == "" {
+		externalRef = d.fetchExternalRef(anvilPath, bead.ID)
+	}
+
+	pr, err := provider.CreatePR(prCtx, vcs.CreateParams{
+		WorktreePath:    anvilPath,
+		BeadID:          bead.ID,
+		Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
+		Branch:          branch,
+		Base:            bead.EpicBranch, // empty = use provider default base
+		AnvilName:       bead.Anvil,
+		BeadTitle:       bead.Title,
+		BeadDescription: bead.Description,
+		BeadType:        bead.IssueType,
+		ExternalRef:     externalRef,
+	})
+	if err != nil {
+		if errors.Is(err, vcs.ErrPRAlreadyExists) {
+			// Lost a race with a concurrent open between the guard and the
+			// create — register the existing PR and defer to bellows.
+			d.logger.Info("pre-dispatch: PR already exists on stranded-branch recovery create; registering and deferring to bellows",
+				"bead", bead.ID, "branch", branch)
+			d.registerExistingPRByBranch(prCtx, bead.Anvil, anvilPath, bead.ID, branch, bead.EpicBranch)
+			if clearErr := d.db.ClearRetry(bead.ID, bead.Anvil); clearErr != nil {
+				d.logger.Error("failed to clear retry record after ErrPRAlreadyExists on stranded recovery", "bead", bead.ID, "error", clearErr)
+			}
+			return true
+		}
+		d.logger.Error("pre-dispatch: auto PR creation failed for stranded branch",
+			"bead", bead.ID, "branch", branch, "error", err)
+		_ = d.db.LogEvent(state.EventPRCreationFailed,
+			fmt.Sprintf("Pre-dispatch: auto PR creation failed for stranded branch %s: %v", branch, err),
+			bead.ID, bead.Anvil)
+		return false
+	}
+	if pr == nil || pr.URL == "" || pr.Number == 0 {
+		d.logger.Error("pre-dispatch: auto PR creation returned invalid PR object for stranded branch",
+			"bead", bead.ID, "branch", branch, "pr", pr)
+		return false
+	}
+
+	// Register so bellows owns the PR and drives it to merge. registerPRIfUntracked
+	// is idempotent (CreatePR already records the PR), so this is a safety net.
+	d.registerPRIfUntracked(ctx, bead.Anvil, bead.ID, &vcs.OpenPR{
+		Number: pr.Number,
+		Title:  pr.Title,
+		Branch: branch,
+	}, bead.EpicBranch)
+
+	shortSHA := sha
+	if len(shortSHA) > 12 {
+		shortSHA = shortSHA[:12]
+	}
+	d.logger.Info("pre-dispatch: auto-created PR for stranded forge branch with completion signal",
+		"bead", bead.ID, "branch", branch, "pr", pr.URL, "sha", shortSHA)
+	d.ingotRecordPR(bead.ID, bead.Anvil, pr.Number, pr.URL)
+	d.notifyWicketPRCreated(bead.ID, pr.URL, pr.Number)
+	_ = d.db.LogEvent(state.EventDispatchRecoveredStrandedBranch,
+		fmt.Sprintf("Pre-dispatch: stranded branch %s had a changelog fragment (completion signal); auto-created PR #%d: %s (SHA %s)",
+			branch, pr.Number, pr.URL, shortSHA),
+		bead.ID, bead.Anvil)
+	if clearErr := d.db.ClearRetry(bead.ID, bead.Anvil); clearErr != nil {
+		d.logger.Error("failed to clear retry record after stranded-branch recovery PR creation", "bead", bead.ID, "error", clearErr)
+	}
 	return true
 }
 

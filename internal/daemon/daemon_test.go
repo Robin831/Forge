@@ -2563,9 +2563,15 @@ type mockVCSProvider struct {
 	// when the caller will dereference the return value.
 	createPRResult *vcs.PR
 	createPRErr    error
+	createPRCalls  atomic.Int32
 	// openPRs controls what ListOpenPRs and GetPRByHeadBranch return. Used by
 	// tests that exercise the ErrPRAlreadyExists recovery path.
 	openPRs []vcs.OpenPR
+	// getPRByHeadBranchFunc, when non-nil, overrides GetPRByHeadBranch and is
+	// passed the 1-based call count so tests can simulate a PR appearing
+	// concurrently between the pre-dispatch lookup and the recovery re-check.
+	getPRByHeadBranchFunc func(branch string, call int) (*vcs.OpenPR, error)
+	getPRCalls            atomic.Int32
 }
 
 func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error {
@@ -2573,6 +2579,7 @@ func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) 
 	return m.mergeErr
 }
 func (m *mockVCSProvider) CreatePR(_ context.Context, _ vcs.CreateParams) (*vcs.PR, error) {
+	m.createPRCalls.Add(1)
 	return m.createPRResult, m.createPRErr
 }
 func (m *mockVCSProvider) CheckStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
@@ -2585,6 +2592,10 @@ func (m *mockVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.OpenPR
 	return m.openPRs, nil
 }
 func (m *mockVCSProvider) GetPRByHeadBranch(_ context.Context, _ string, branch string) (*vcs.OpenPR, error) {
+	call := int(m.getPRCalls.Add(1))
+	if m.getPRByHeadBranchFunc != nil {
+		return m.getPRByHeadBranchFunc(branch, call)
+	}
 	for i := range m.openPRs {
 		if m.openPRs[i].Branch == branch {
 			return &m.openPRs[i], nil
@@ -4077,6 +4088,163 @@ func TestPreDispatchRemoteBranchCheck(t *testing.T) {
 		if r != nil && r.NeedsHuman {
 			t.Errorf("bead must NOT be marked needs_human when a PR already exists; bellows takes over")
 		}
+	})
+
+	// pushStrandedWithFragment creates a stranded forge branch carrying a
+	// changelog fragment for the bead (the completion signal), pushes it to
+	// origin, and returns to main.
+	pushStrandedWithFragment := func(t *testing.T, anvilPath, branch, beadID string) {
+		t.Helper()
+		gitLocal(t, anvilPath, "checkout", "-b", branch)
+		require.NoError(t, os.MkdirAll(filepath.Join(anvilPath, "changelog.d"), 0o755))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(anvilPath, "changelog.d", beadID+".md"),
+			[]byte("category: Fixed\n- **Done** - completion signal. ("+beadID+")\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(anvilPath, "impl.txt"), []byte("prior\n"), 0o644))
+		gitLocal(t, anvilPath, "add", "changelog.d", "impl.txt")
+		gitLocal(t, anvilPath, "commit", "-m", "stranded prior work with fragment")
+		gitLocal(t, anvilPath, "push", "origin", branch)
+		gitLocal(t, anvilPath, "checkout", "main")
+	}
+
+	t.Run("stranded branch with completion signal: auto-opens PR, no needs_human", func(t *testing.T) {
+		anvilPath := initTestGitRepo(t)
+		db, err := state.Open(filepath.Join(anvilPath, "state.db"))
+		require.NoError(t, err)
+		defer db.Close()
+
+		bead := poller.Bead{ID: "PRD-RECOVER", Anvil: anvilName, Title: "recover"}
+		branch := worktree.BranchName(bead.ID)
+		mockVCS := &mockVCSProvider{
+			createPRResult: &vcs.PR{Number: 91, URL: "https://example.com/pr/91", Title: bead.Title},
+		}
+		d := &Daemon{
+			db:           db,
+			logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr:  worktree.NewManager(),
+			vcsProviders: map[string]vcs.Provider{anvilName: mockVCS},
+		}
+		d.cfg.Store(&config.Config{})
+
+		pushStrandedWithFragment(t, anvilPath, branch, bead.ID)
+
+		if d.preDispatchRemoteBranchCheck(context.Background(), bead, anvilPath) {
+			t.Fatal("expected dispatch to be skipped after auto-opening PR")
+		}
+
+		require.Equal(t, int32(1), mockVCS.createPRCalls.Load(), "CreatePR should be called exactly once")
+
+		r, err := db.GetRetry(bead.ID, bead.Anvil)
+		require.NoError(t, err)
+		if r != nil && r.NeedsHuman {
+			t.Errorf("bead must NOT be marked needs_human when the PR is auto-recovered")
+		}
+
+		// The PR should be registered so bellows owns it.
+		pr, err := db.GetPRByNumber(bead.Anvil, 91)
+		require.NoError(t, err)
+		require.NotNil(t, pr, "auto-opened PR should be registered in state.db")
+
+		events, err := db.RecentEvents(20)
+		require.NoError(t, err)
+		var recovered bool
+		for _, ev := range events {
+			if ev.Type == state.EventDispatchRecoveredStrandedBranch && ev.BeadID == bead.ID {
+				recovered = true
+				break
+			}
+		}
+		require.True(t, recovered, "expected EventDispatchRecoveredStrandedBranch to be logged")
+	})
+
+	t.Run("stranded branch with completion signal but PR appears concurrently: no duplicate CreatePR", func(t *testing.T) {
+		anvilPath := initTestGitRepo(t)
+		db, err := state.Open(filepath.Join(anvilPath, "state.db"))
+		require.NoError(t, err)
+		defer db.Close()
+
+		bead := poller.Bead{ID: "PRD-RACE", Anvil: anvilName, Title: "race"}
+		branch := worktree.BranchName(bead.ID)
+		// First lookup (the stranded guard) returns nil; the second lookup (the
+		// fresh re-check inside recovery) finds a PR opened concurrently.
+		mockVCS := &mockVCSProvider{
+			getPRByHeadBranchFunc: func(b string, call int) (*vcs.OpenPR, error) {
+				if call >= 2 {
+					return &vcs.OpenPR{Number: 55, Branch: b}, nil
+				}
+				return nil, nil
+			},
+		}
+		d := &Daemon{
+			db:           db,
+			logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr:  worktree.NewManager(),
+			vcsProviders: map[string]vcs.Provider{anvilName: mockVCS},
+		}
+		d.cfg.Store(&config.Config{})
+
+		pushStrandedWithFragment(t, anvilPath, branch, bead.ID)
+
+		if d.preDispatchRemoteBranchCheck(context.Background(), bead, anvilPath) {
+			t.Fatal("expected dispatch to be skipped when a PR exists for the branch")
+		}
+
+		require.Equal(t, int32(0), mockVCS.createPRCalls.Load(), "CreatePR must not be called when a PR already exists")
+
+		r, err := db.GetRetry(bead.ID, bead.Anvil)
+		require.NoError(t, err)
+		if r != nil && r.NeedsHuman {
+			t.Errorf("bead must NOT be marked needs_human when a PR is found concurrently")
+		}
+		pr, err := db.GetPRByNumber(bead.Anvil, 55)
+		require.NoError(t, err)
+		require.NotNil(t, pr, "concurrently-opened PR should be registered for bellows")
+	})
+
+	t.Run("stranded branch with completion signal but CreatePR fails: falls through to needs_human", func(t *testing.T) {
+		anvilPath := initTestGitRepo(t)
+		db, err := state.Open(filepath.Join(anvilPath, "state.db"))
+		require.NoError(t, err)
+		defer db.Close()
+
+		bead := poller.Bead{ID: "PRD-RECOVER-FAIL", Anvil: anvilName, Title: "recover fail"}
+		branch := worktree.BranchName(bead.ID)
+		mockVCS := &mockVCSProvider{
+			createPRErr: fmt.Errorf("gh pr create exploded"),
+		}
+		d := &Daemon{
+			db:           db,
+			logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			worktreeMgr:  worktree.NewManager(),
+			vcsProviders: map[string]vcs.Provider{anvilName: mockVCS},
+		}
+		d.cfg.Store(&config.Config{})
+
+		pushStrandedWithFragment(t, anvilPath, branch, bead.ID)
+
+		if d.preDispatchRemoteBranchCheck(context.Background(), bead, anvilPath) {
+			t.Fatal("expected dispatch to be blocked when CreatePR fails")
+		}
+
+		require.Equal(t, int32(1), mockVCS.createPRCalls.Load(), "CreatePR should be attempted once")
+
+		r, err := db.GetRetry(bead.ID, bead.Anvil)
+		require.NoError(t, err)
+		require.NotNil(t, r, "retry row should be created on fall-through to needs_human")
+		if !r.NeedsHuman {
+			t.Errorf("bead should be marked needs_human when auto-recovery fails")
+		}
+
+		events, err := db.RecentEvents(20)
+		require.NoError(t, err)
+		var blocked bool
+		for _, ev := range events {
+			if ev.Type == state.EventDispatchBlockedStrandedBranch && ev.BeadID == bead.ID {
+				blocked = true
+				break
+			}
+		}
+		require.True(t, blocked, "expected EventDispatchBlockedStrandedBranch on fall-through")
 	})
 }
 
