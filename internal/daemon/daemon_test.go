@@ -4185,6 +4185,28 @@ func TestPreDispatchRemoteBranchCheck(t *testing.T) {
 		if r != nil && r.NeedsHuman {
 			t.Errorf("bead must NOT be marked needs_human when a PR already exists; bellows takes over")
 		}
+
+		// The existing PR must be left untouched: no auto-open is attempted and
+		// no recovery is performed. The branch is handed straight to bellows.
+		require.Equal(t, int32(0), mockVCS.createPRCalls.Load(),
+			"CreatePR must NOT be called when a PR already exists for the stranded branch")
+
+		// The pre-existing PR is registered (so bellows owns it) under the real
+		// bead ID derived from the forge/<bead> branch — never a synthetic ext-* id.
+		pr, err := db.GetPRByNumber(bead.Anvil, 77)
+		require.NoError(t, err)
+		require.NotNil(t, pr, "the already-open PR should be registered for bellows")
+		assert.Equal(t, bead.ID, pr.BeadID,
+			"registered PR must carry the real bead ID, not a synthetic ext-* placeholder")
+
+		// No recovery event must fire — recovery only applies when there is no PR.
+		events, err := db.RecentEvents(20)
+		require.NoError(t, err)
+		for _, ev := range events {
+			if ev.Type == state.EventDispatchRecoveredStrandedBranch && ev.BeadID == bead.ID {
+				t.Errorf("EventDispatchRecoveredStrandedBranch must NOT be logged when a PR already exists")
+			}
+		}
 	})
 
 	// pushStrandedWithFragment creates a stranded forge branch carrying a
@@ -4241,6 +4263,17 @@ func TestPreDispatchRemoteBranchCheck(t *testing.T) {
 		pr, err := db.GetPRByNumber(bead.Anvil, 91)
 		require.NoError(t, err)
 		require.NotNil(t, pr, "auto-opened PR should be registered in state.db")
+		// Registration must use the real bead ID derived from the forge/<bead>
+		// branch — not a synthetic ext-<number> placeholder — so merge-close
+		// (handleBeadCloseOnMerge) can key off it and close the bead on merge.
+		assert.Equal(t, bead.ID, pr.BeadID,
+			"recovered PR must be registered under the real bead ID, not ext-<number>")
+		assert.Equal(t, branch, pr.Branch,
+			"recovered PR must record the forge/<bead> branch it was opened from")
+		// "forge-managed": a recovery PR registered under a real bead ID must be
+		// bellows-managed so bellows drives it through CI/review/merge.
+		assert.True(t, pr.BellowsManaged,
+			"auto-recovered PR must be bellows-managed (forge owns its lifecycle)")
 
 		events, err := db.RecentEvents(20)
 		require.NoError(t, err)
