@@ -774,6 +774,29 @@ func BranchName(beadID string) string {
 	return "forge/" + sanitizePath(beadID)
 }
 
+// BeadIDFromBranch is the inverse of BranchName: given a canonical forge branch
+// name of the form "forge/<bead-id>" it returns the bead ID and true. For any
+// branch outside the "forge/" namespace (or a bare "forge/" with no bead
+// segment) it returns ("", false).
+//
+// SanitizePath (applied by BranchName) is lossy — it folds '/', '\\', ' ' and
+// ':' to '-' — so the recovered ID matches the original only for bead IDs that
+// contain none of those characters. That holds for every bd-issued ID (e.g.
+// "Forge-abc1", "Forge-n1g.4.1"), so the function returns the branch suffix
+// verbatim. Callers use it to recover the bead ID encoded in a forge branch
+// when no other source (e.g. a PR body reference) is available.
+func BeadIDFromBranch(branch string) (string, bool) {
+	const prefix = "forge/"
+	if !strings.HasPrefix(branch, prefix) {
+		return "", false
+	}
+	id := strings.TrimPrefix(branch, prefix)
+	if id == "" || strings.Contains(id, "/") {
+		return "", false
+	}
+	return id, true
+}
+
 // FetchBranch fetches a single named branch from origin in the given anvil
 // directory, updating the local remote-tracking ref. This is the canonical
 // way for daemon code to fetch a branch without going through a full worktree
