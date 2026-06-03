@@ -3521,6 +3521,9 @@ func (d *Daemon) recoverStrandedBranchPR(ctx context.Context, bead poller.Bead, 
 		d.logger.Info("pre-dispatch: PR opened concurrently for stranded branch; deferring to bellows",
 			"bead", bead.ID, "branch", branch, "pr", pr.Number)
 		d.registerPRIfUntracked(ctx, bead.Anvil, bead.ID, pr, bead.EpicBranch)
+		if clearErr := d.db.ClearRetry(bead.ID, bead.Anvil); clearErr != nil {
+			d.logger.Error("failed to clear retry record after concurrent PR discovery on stranded recovery", "bead", bead.ID, "error", clearErr)
+		}
 		return true
 	}
 

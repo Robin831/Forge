@@ -4185,6 +4185,10 @@ func TestPreDispatchRemoteBranchCheck(t *testing.T) {
 
 		pushStrandedWithFragment(t, anvilPath, branch, bead.ID)
 
+		// Pre-populate a stale retry record (e.g. from a prior dispatch failure)
+		// to verify the concurrent-PR path clears it.
+		require.NoError(t, db.MarkNeedsHuman(bead.ID, bead.Anvil, "prior failure"))
+
 		if d.preDispatchRemoteBranchCheck(context.Background(), bead, anvilPath) {
 			t.Fatal("expected dispatch to be skipped when a PR exists for the branch")
 		}
@@ -4193,9 +4197,7 @@ func TestPreDispatchRemoteBranchCheck(t *testing.T) {
 
 		r, err := db.GetRetry(bead.ID, bead.Anvil)
 		require.NoError(t, err)
-		if r != nil && r.NeedsHuman {
-			t.Errorf("bead must NOT be marked needs_human when a PR is found concurrently")
-		}
+		require.Nil(t, r, "stale retry record must be cleared when a PR is found concurrently")
 		pr, err := db.GetPRByNumber(bead.Anvil, 55)
 		require.NoError(t, err)
 		require.NotNil(t, pr, "concurrently-opened PR should be registered for bellows")
