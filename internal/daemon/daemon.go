@@ -726,9 +726,21 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 				}
 				beadID = "ext-" + strconv.Itoa(pr.Number)
 			} else if beadID == "" {
-				// Marker present but no bead reference — unexpected, but keep the
-				// PR tracked under a synthetic ID rather than dropping it.
-				beadID = "ext-" + strconv.Itoa(pr.Number)
+				// Marker present (this forge created the PR) but the body carries
+				// no parseable "Bead:" reference — e.g. an auto-opened stranded-
+				// branch recovery PR, or a body edited after creation. Recover the
+				// real bead ID from the canonical forge branch name (forge/<bead-id>)
+				// instead of falling back to a synthetic ext-<number> placeholder.
+				// This is required for merge-close: handleBeadCloseOnMerge keys off
+				// a real bead_id, so an ext-* row would merge without ever closing
+				// its bead. Branch recovery is gated on OUR marker so a sibling
+				// forge's forge/<id> PR is still tracked as external (Forge-i1g7
+				// multi-forge safety); only the marker grants ownership (Forge-wor5).
+				if parsed, ok := worktree.BeadIDFromBranch(pr.Branch); ok {
+					beadID = parsed
+				} else {
+					beadID = "ext-" + strconv.Itoa(pr.Number)
+				}
 			}
 			dbPR := &state.PR{
 				Number:    pr.Number,

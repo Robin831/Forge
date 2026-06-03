@@ -3584,6 +3584,103 @@ func TestReconcileOpenPRs_RequiresPerInstanceForgeManagedMarker(t *testing.T) {
 		"legacy generic-marker PRs must NOT be bellows-managed in a multi-forge deployment")
 }
 
+// TestReconcileOpenPRs_RecoversBeadIDFromForgeBranch is the regression test for
+// Forge-wor5. When this forge's own PR carries our forge-managed marker but its
+// body has no parseable "Bead:" reference (e.g. an auto-opened stranded-branch
+// recovery PR, or a body edited after creation), reconcile must recover the real
+// bead ID from the canonical forge/<bead-id> branch name instead of storing the
+// synthetic ext-<number> placeholder. Without the real bead_id, merge-close
+// (handleBeadCloseOnMerge) never fires and the bead is left open after the PR
+// merges. Branch recovery is gated on OUR marker so the multi-forge safety from
+// Forge-i1g7 is preserved (a sibling forge's forge/<id> PR still stays external).
+func TestReconcileOpenPRs_RecoversBeadIDFromForgeBranch(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-reconcile-branch-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	const myID = "local-forge"
+	const siblingID = "skybert-forge"
+
+	prevID := vcs.ForgeID()
+	vcs.SetForgeID(myID)
+	defer vcs.SetForgeID(prevID)
+
+	mock := &mockVCSProvider{
+		openPRs: []vcs.OpenPR{
+			// 7070: our own recovery PR — carries OUR marker but the body has no
+			// "Bead:" footer. The bead ID must be recovered from the forge branch.
+			{
+				Number: 7070,
+				Title:  "forge: recovered stranded branch",
+				Branch: "forge/Forge-stranded",
+				Body:   "## Changes\n\nAuto-opened for a stranded branch.\n\n" + vcs.MarkerForID(myID),
+			},
+			// 7071: our marker but a NON-forge branch and no body ref — there is no
+			// bead ID to recover, so it must keep the ext-<number> placeholder.
+			{
+				Number: 7071,
+				Title:  "forge: odd branch",
+				Branch: "release/cut-1.2",
+				Body:   "## Changes\n\nNo bead ref here.\n\n" + vcs.MarkerForID(myID),
+			},
+			// 7072: a SIBLING forge's PR on a forge/<id> branch with no body ref.
+			// Branch recovery is gated on OUR marker, so this must stay external
+			// (preserving the Forge-i1g7 multi-forge safety guarantee).
+			{
+				Number: 7072,
+				Title:  "forge: sibling branch",
+				Branch: "forge/Forge-sibling",
+				Body:   "## Changes\n\nSibling work.\n\n" + vcs.MarkerForID(siblingID),
+			},
+		},
+	}
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		vcsProviders: map[string]vcs.Provider{
+			"test-anvil": mock,
+		},
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"test-anvil": {Path: tmpDir},
+		},
+		Settings: config.SettingsConfig{ForgeID: myID},
+	})
+
+	d.reconcileOpenPRs(context.Background())
+
+	recovered, err := db.GetPRByNumber("test-anvil", 7070)
+	require.NoError(t, err)
+	require.NotNil(t, recovered)
+	assert.Equal(t, "Forge-stranded", recovered.BeadID,
+		"forge-managed PR with no body bead ref must recover the bead ID from its forge/<id> branch")
+	assert.True(t, recovered.BellowsManaged,
+		"a PR carrying our forge-managed marker must be bellows-managed")
+
+	odd, err := db.GetPRByNumber("test-anvil", 7071)
+	require.NoError(t, err)
+	require.NotNil(t, odd)
+	assert.Equal(t, "ext-7071", odd.BeadID,
+		"forge-managed PR on a non-forge branch with no bead ref must keep the ext-<number> placeholder")
+	assert.False(t, odd.BellowsManaged,
+		"a forge-managed-but-unparseable PR (synthetic ext-* id) must not be bellows-managed")
+
+	sibling, err := db.GetPRByNumber("test-anvil", 7072)
+	require.NoError(t, err)
+	require.NotNil(t, sibling)
+	assert.Equal(t, "ext-7072", sibling.BeadID,
+		"a sibling forge's forge/<id> PR must stay external — branch recovery is gated on our own marker")
+	assert.False(t, sibling.BellowsManaged,
+		"a sibling forge's PR must not be bellows-managed (Forge-i1g7 multi-forge safety)")
+}
+
 // TestReconcileOpenPRs_ReevaluatesAlreadyTrackedPRs is the regression test
 // for the second half of Forge-i1g7. Before the fix, reconcileOpenPRs
 // short-circuited with "continue // already tracked", so PRs adopted under

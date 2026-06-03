@@ -29,6 +29,42 @@ func TestSanitizePath(t *testing.T) {
 	}
 }
 
+func TestBeadIDFromBranch(t *testing.T) {
+	tests := []struct {
+		branch string
+		wantID string
+		wantOK bool
+	}{
+		{"forge/Forge-abc1", "Forge-abc1", true},
+		{"forge/Forge-n1g.4.1", "Forge-n1g.4.1", true},
+		{"forge/Fhi.Metadata-g1a58", "Fhi.Metadata-g1a58", true},
+		{"feature/random", "", false},
+		{"sophie/manual-fix", "", false},
+		{"main", "", false},
+		{"forge/", "", false},
+		{"", "", false},
+	}
+
+	for _, tt := range tests {
+		gotID, gotOK := BeadIDFromBranch(tt.branch)
+		if gotID != tt.wantID || gotOK != tt.wantOK {
+			t.Errorf("BeadIDFromBranch(%q) = (%q, %v); want (%q, %v)",
+				tt.branch, gotID, gotOK, tt.wantID, tt.wantOK)
+		}
+	}
+}
+
+// BeadIDFromBranch must round-trip the canonical BranchName output for any
+// bead ID free of path-fold characters (the case for all bd-issued IDs).
+func TestBeadIDFromBranch_RoundTripsBranchName(t *testing.T) {
+	for _, id := range []string{"Forge-abc1", "Forge-n1g.4.1", "Fhi.Metadata-g1a58"} {
+		got, ok := BeadIDFromBranch(BranchName(id))
+		if !ok || got != id {
+			t.Errorf("BeadIDFromBranch(BranchName(%q)) = (%q, %v); want (%q, true)", id, got, ok, id)
+		}
+	}
+}
+
 // runGit runs a git command in dir and fails the test on error.
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
