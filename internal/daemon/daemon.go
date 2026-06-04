@@ -1258,6 +1258,20 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 
 	// If bead is already in flight, park the action for after it finishes.
 	if _, inFlight := d.activeBeads.LoadOrStore(lockKey, true); inFlight {
+		// Assay is a best-effort, shadow-mode review pass. Do NOT park it:
+		// pendingActions is a single slot per bead (latest-wins), so a parked
+		// Assay review would overwrite a parked review-fix/rebase for the same
+		// bead — silently dropping the action that actually fixes the PR and
+		// stranding it in needs_fix (observed: PR #3545 / Fhi.Metadata-4r1gr,
+		// 2026-06-04, where two Assay reviews clobbered the burnish). Skipping is
+		// safe: Assay re-fires whenever the PR head changes, so it reviews the
+		// fixed head once the more important work completes.
+		if req.Action == lifecycle.ActionAssayReview {
+			d.logger.Info("bead in flight, skipping best-effort Assay review (re-fires on next head)", "bead", req.BeadID, "pr", req.PRNumber)
+			return
+		}
+		// Mutating actions (review-fix, rebase, ...) still park latest-wins as
+		// before — and since Assay no longer parks, it can no longer clobber them.
 		d.pendingActions.Store(lockKey, req)
 		d.logger.Info("bead in flight, queued lifecycle action for later", "bead", req.BeadID, "action", req.Action)
 		return
