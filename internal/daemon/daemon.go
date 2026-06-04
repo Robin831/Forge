@@ -2579,20 +2579,29 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 			break
 		}
 
-		// Claim the bead atomically before dispatching
+		// Insert a pending worker row BEFORE claiming the bead. A cold-start
+		// `bd update --status=in_progress` can exceed DefaultBdTimeout and be
+		// killed *after* its write has already committed server-side, leaving the
+		// bead in_progress with the daemon seeing an error. By pre-inserting the
+		// row, orphan recovery's HasWorkerRecord check can still identify the bead
+		// as Forge-owned and reclaim it; without it the bead would wedge as a
+		// phantom in_progress with no worker row, invisible to recovery forever
+		// (Forge-au4z). This also covers the known claim→worktree crash window.
+		// The pipeline overwrites this row via INSERT OR REPLACE when it starts.
+		claimWorkerID := d.insertPendingWorker(bead.ID, bead.Anvil, bead.Title)
+
+		// Claim the bead atomically before dispatching.
 		if err := d.claimBead(ctx, bead.ID, anvilCfg.Path); err != nil {
 			d.logger.Warn("failed to claim bead", "bead", bead.ID, "error", err)
-			d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("claim failed: %v", err), false)
+			// A killed/timed-out claim is non-atomic from the daemon's point of
+			// view: the in_progress write may or may not have landed. Roll the
+			// status back to open (best-effort) so a possibly-committed claim
+			// self-heals — the bead reappears in `bd ready` and is re-dispatched
+			// on the next poll once bd is warm — rather than wedging forever.
+			d.abortClaim(bead.ID, bead.Anvil, claimWorkerID, fmt.Sprintf("claim failed: %v", err))
 			d.activeBeads.Delete(bead.ID)
 			continue
 		}
-
-		// Insert a pending worker row immediately after claiming so that orphan
-		// recovery can identify this as a Forge-owned bead even if the process
-		// crashes before the pipeline inserts the running row (the known
-		// claim→worktree crash window). The pipeline overwrites this row via
-		// INSERT OR REPLACE when it starts.
-		claimWorkerID := d.insertPendingWorker(bead.ID, bead.Anvil, bead.Title)
 
 		thisCycleAnvil[bead.Anvil]++
 		thisCycleTotal++
@@ -3191,6 +3200,25 @@ func (d *Daemon) insertPendingWorker(beadID, anvilName, title string) string {
 		d.logger.Warn("failed to insert pending worker row at claim time", "bead", beadID, "error", err)
 	}
 	return workerID
+}
+
+// abortClaim rolls back a failed or killed bead claim. Because a killed
+// `bd update --status=in_progress` is non-atomic (the write may have committed
+// before the client process was killed), this best-effort reverts the bead to
+// open via recordDispatchFailure with releaseClaim=true, so a phantom
+// in_progress bead lands back in `bd ready` and is re-dispatched on the next
+// poll instead of wedging forever. It also marks the pending worker row that
+// was pre-inserted before the claim as failed, so a dangling row for a now-open
+// bead neither counts toward dispatch capacity nor masks the bead from a fresh
+// dispatch. See Forge-au4z.
+func (d *Daemon) abortClaim(beadID, anvil, claimWorkerID, reason string) {
+	d.recordDispatchFailure(beadID, anvil, reason, true)
+	if claimWorkerID != "" {
+		if err := d.db.UpdateWorkerStatus(claimWorkerID, state.WorkerFailed); err != nil {
+			d.logger.Warn("failed to mark pending worker failed after claim failure",
+				"bead", beadID, "worker", claimWorkerID, "error", err)
+		}
+	}
 }
 
 // claimBead marks a bead as in_progress via bd update --claim.
@@ -4352,16 +4380,20 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
+		// Insert a pending worker row BEFORE claiming so orphan recovery can
+		// identify this as Forge-owned even if the claim is killed after
+		// committing server-side, and through the claim→worktree window (Forge-au4z).
+		claimWorkerID := d.insertPendingWorker(targetBead.ID, targetBead.Anvil, targetBead.Title)
+
 		// Claim the bead
 		if err := d.claimBead(context.Background(), targetBead.ID, anvilCfg.Path); err != nil {
+			// Revert a possibly-committed-but-killed claim so the bead does not
+			// wedge as a phantom in_progress with no live worker.
+			d.abortClaim(targetBead.ID, targetBead.Anvil, claimWorkerID, fmt.Sprintf("claim failed: %v", err))
 			d.activeBeads.Delete(targetBead.ID)
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to claim bead: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-
-		// Insert a pending worker row immediately after claiming so orphan
-		// recovery can identify this as Forge-owned in the claim→worktree window.
-		claimWorkerID := d.insertPendingWorker(targetBead.ID, targetBead.Anvil, targetBead.Title)
 
 		d.wg.Add(1)
 		go d.dispatchBead(context.Background(), *targetBead, anvilCfg, claimWorkerID)

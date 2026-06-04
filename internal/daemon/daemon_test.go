@@ -5517,3 +5517,137 @@ func TestPollAndDispatch_NoSuccessPollEvent(t *testing.T) {
 		assert.NotEmpty(t, got.Message, "snapshot message must capture the error text")
 	})
 }
+
+// writeFakeBd installs a fake `bd` on PATH that logs its arguments to bdLog and
+// exits 0 for `bd update ...` (any status), exiting 1 otherwise. It returns the
+// path of the args log. The caller is responsible for restoring PATH (done via
+// t.Cleanup here).
+func writeFakeBd(t *testing.T, dir string) (bdLog string) {
+	t.Helper()
+	bdLog = filepath.Join(dir, "bd-args.log")
+	var bdScript, bdContent string
+	if runtime.GOOS == "windows" {
+		bdScript = filepath.Join(dir, "bd.bat")
+		bdContent = "@echo off\r\necho %*>>\"" + bdLog + "\"\r\nif \"%1\"==\"update\" (\r\n  echo {\"id\":\"%2\",\"status\":\"open\"}\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n"
+	} else {
+		bdScript = filepath.Join(dir, "bd")
+		bdContent = "#!/bin/sh\necho \"$@\" >> \"" + bdLog + "\"\nif [ \"$1\" = \"update\" ]; then\n  echo '{\"id\":\"'\"$2\"'\",\"status\":\"open\"}'\n  exit 0\nfi\nexit 1\n"
+	}
+	require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
+	return bdLog
+}
+
+// TestAbortClaim_RevertsStatusAndFailsPendingWorker verifies the Forge-au4z
+// fix: when a bead claim fails (e.g. the cold-start `bd update` was killed after
+// committing server-side), abortClaim must (a) revert the bead to open so it
+// re-enters `bd ready` and self-heals on the next poll, and (b) mark the
+// pre-inserted pending worker as failed so it stops counting toward dispatch
+// capacity. The pending worker row itself is what lets orphan recovery
+// recognise the bead as Forge-owned (HasWorkerRecord) if the revert never lands.
+func TestAbortClaim_RevertsStatusAndFailsPendingWorker(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	bdLog := writeFakeBd(t, tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runCtx: context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"munin": {Path: tmpDir, AutoDispatchTag: "forgeReady"},
+		},
+	})
+
+	const beadID = "BD-KILLED"
+
+	// Mirror the dispatch path: a pending worker is inserted BEFORE the claim.
+	workerID := d.insertPendingWorker(beadID, "munin", "killed claim title")
+	require.NotEmpty(t, workerID)
+
+	// Defence-in-depth precondition: the pre-inserted row makes the bead
+	// recognisable to orphan recovery even before any revert runs.
+	has, err := db.HasWorkerRecord(beadID, "munin")
+	require.NoError(t, err)
+	assert.True(t, has, "pre-inserted pending worker must give the bead a worker record")
+
+	d.abortClaim(beadID, "munin", workerID, "claim failed: signal: killed")
+
+	// (a) The bead must have been reverted to open via `bd update --status=open`.
+	logBytes, err := os.ReadFile(bdLog)
+	require.NoError(t, err)
+	logged := string(logBytes)
+	assert.Contains(t, logged, "update "+beadID, "abortClaim must issue a bd update for the bead")
+	assert.Contains(t, logged, "--status=open", "abortClaim must revert a possibly-committed claim back to open")
+
+	// (b) The pending worker must be marked failed so it neither counts toward
+	// dispatch capacity nor masks the now-open bead from re-dispatch.
+	w, err := db.GetWorker(workerID)
+	require.NoError(t, err)
+	require.NotNil(t, w)
+	assert.Equal(t, state.WorkerFailed, w.Status, "pending worker must be marked failed after a claim abort")
+
+	// A dispatch failure must have been recorded so the circuit breaker can
+	// eventually trip if the claim keeps failing.
+	r, err := db.GetRetry(beadID, "munin")
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.GreaterOrEqual(t, r.DispatchFailures, 1, "abortClaim must record a dispatch failure")
+}
+
+// TestClaimBead_SuccessLeavesPendingWorkerIntact verifies the success path is
+// not regressed by the Forge-au4z reordering: when the claim succeeds, the
+// worker row pre-inserted before the claim is left pending (not reverted or
+// failed) so the pipeline can take it over.
+func TestClaimBead_SuccessLeavesPendingWorkerIntact(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	writeFakeBd(t, tmpDir) // fake bd exits 0 on update → claim succeeds
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runCtx: context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{"munin": {Path: tmpDir}},
+	})
+
+	const beadID = "BD-OK"
+	workerID := d.insertPendingWorker(beadID, "munin", "ok title")
+	require.NotEmpty(t, workerID)
+
+	require.NoError(t, d.claimBead(context.Background(), beadID, tmpDir),
+		"claim should succeed when bd update exits 0")
+
+	w, err := db.GetWorker(workerID)
+	require.NoError(t, err)
+	require.NotNil(t, w)
+	assert.Equal(t, state.WorkerPending, w.Status, "a successful claim must leave the worker pending for the pipeline")
+
+	// No dispatch failure should be recorded on the success path.
+	r, err := db.GetRetry(beadID, "munin")
+	require.NoError(t, err)
+	if r != nil {
+		assert.Equal(t, 0, r.DispatchFailures, "a successful claim must not record a dispatch failure")
+	}
+}
