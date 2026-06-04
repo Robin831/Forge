@@ -5541,14 +5541,12 @@ func writeFakeBd(t *testing.T, dir string) (bdLog string) {
 	return bdLog
 }
 
-// TestAbortClaim_RevertsStatusAndFailsPendingWorker verifies the Forge-au4z
-// fix: when a bead claim fails (e.g. the cold-start `bd update` was killed after
-// committing server-side), abortClaim must (a) revert the bead to open so it
-// re-enters `bd ready` and self-heals on the next poll, and (b) mark the
-// pre-inserted pending worker as failed so it stops counting toward dispatch
-// capacity. The pending worker row itself is what lets orphan recovery
-// recognise the bead as Forge-owned (HasWorkerRecord) if the revert never lands.
-func TestAbortClaim_RevertsStatusAndFailsPendingWorker(t *testing.T) {
+// TestAbortClaim_KilledClaimReleasesAndFailsWorker verifies the Forge-au4z
+// fix: when a bead claim is killed/timed out (non-atomic — the server-side
+// write may have landed), abortClaim must (a) mark the pending worker failed
+// immediately so it stops counting toward capacity, and (b) release the claim
+// back to open so the bead self-heals via `bd ready`.
+func TestAbortClaim_KilledClaimReleasesAndFailsWorker(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-test-*")
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
@@ -5573,38 +5571,90 @@ func TestAbortClaim_RevertsStatusAndFailsPendingWorker(t *testing.T) {
 
 	const beadID = "BD-KILLED"
 
-	// Mirror the dispatch path: a pending worker is inserted BEFORE the claim.
 	workerID := d.insertPendingWorker(beadID, "munin", "killed claim title")
 	require.NotEmpty(t, workerID)
 
-	// Defence-in-depth precondition: the pre-inserted row makes the bead
-	// recognisable to orphan recovery even before any revert runs.
 	has, err := db.HasWorkerRecord(beadID, "munin")
 	require.NoError(t, err)
 	assert.True(t, has, "pre-inserted pending worker must give the bead a worker record")
 
-	d.abortClaim(beadID, "munin", workerID, "claim failed: signal: killed")
+	killedErr := fmt.Errorf("bd update %s --status=in_progress --json: signal: killed", beadID)
+	d.abortClaim(beadID, "munin", workerID, "claim failed: signal: killed", killedErr)
 
-	// (a) The bead must have been reverted to open via `bd update --status=open`.
-	logBytes, err := os.ReadFile(bdLog)
-	require.NoError(t, err)
-	logged := string(logBytes)
-	assert.Contains(t, logged, "update "+beadID, "abortClaim must issue a bd update for the bead")
-	assert.Contains(t, logged, "--status=open", "abortClaim must revert a possibly-committed claim back to open")
-
-	// (b) The pending worker must be marked failed so it neither counts toward
-	// dispatch capacity nor masks the now-open bead from re-dispatch.
+	// (a) The pending worker must be marked failed first.
 	w, err := db.GetWorker(workerID)
 	require.NoError(t, err)
 	require.NotNil(t, w)
 	assert.Equal(t, state.WorkerFailed, w.Status, "pending worker must be marked failed after a claim abort")
 
-	// A dispatch failure must have been recorded so the circuit breaker can
-	// eventually trip if the claim keeps failing.
+	// (b) The bead must have been reverted to open via `bd update --status=open`
+	// because this was a killed/timeout error (non-atomic).
+	logBytes, err := os.ReadFile(bdLog)
+	require.NoError(t, err)
+	logged := string(logBytes)
+	assert.Contains(t, logged, "update "+beadID, "abortClaim must issue a bd update for the bead")
+	assert.Contains(t, logged, "--status=open", "killed claim must release the bead back to open")
+
 	r, err := db.GetRetry(beadID, "munin")
 	require.NoError(t, err)
 	require.NotNil(t, r)
 	assert.GreaterOrEqual(t, r.DispatchFailures, 1, "abortClaim must record a dispatch failure")
+}
+
+// TestAbortClaim_ConflictDoesNotReleaseClaim verifies that when a claim fails
+// with a non-timeout error (e.g. the bead is already in_progress, owned by
+// another instance), abortClaim does NOT release the claim — doing so would
+// unassign a bead legitimately owned by someone else. The pending worker must
+// still be marked failed and a dispatch failure recorded.
+func TestAbortClaim_ConflictDoesNotReleaseClaim(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	bdLog := writeFakeBd(t, tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runCtx: context.Background(),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"munin": {Path: tmpDir, AutoDispatchTag: "forgeReady"},
+		},
+	})
+
+	const beadID = "BD-CONFLICT"
+
+	workerID := d.insertPendingWorker(beadID, "munin", "conflict claim title")
+	require.NotEmpty(t, workerID)
+
+	conflictErr := fmt.Errorf("bd update %s --status=in_progress --json: exit status 1\nbead already in_progress", beadID)
+	d.abortClaim(beadID, "munin", workerID, fmt.Sprintf("claim failed: %v", conflictErr), conflictErr)
+
+	// The pending worker must still be marked failed.
+	w, err := db.GetWorker(workerID)
+	require.NoError(t, err)
+	require.NotNil(t, w)
+	assert.Equal(t, state.WorkerFailed, w.Status, "pending worker must be marked failed even for conflict errors")
+
+	// A dispatch failure must still be recorded.
+	r, err := db.GetRetry(beadID, "munin")
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.GreaterOrEqual(t, r.DispatchFailures, 1, "abortClaim must record a dispatch failure")
+
+	// The claim must NOT have been released — no bd update --status=open call.
+	// The log file may not even exist if bd was never invoked, which is correct.
+	logBytes, _ := os.ReadFile(bdLog)
+	logged := string(logBytes)
+	assert.NotContains(t, logged, "--status=open",
+		"conflict error must not release the claim — another instance may own the bead")
 }
 
 // TestClaimBead_SuccessLeavesPendingWorkerIntact verifies the success path is

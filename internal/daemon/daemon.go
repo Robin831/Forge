@@ -2593,12 +2593,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		// Claim the bead atomically before dispatching.
 		if err := d.claimBead(ctx, bead.ID, anvilCfg.Path); err != nil {
 			d.logger.Warn("failed to claim bead", "bead", bead.ID, "error", err)
-			// A killed/timed-out claim is non-atomic from the daemon's point of
-			// view: the in_progress write may or may not have landed. Roll the
-			// status back to open (best-effort) so a possibly-committed claim
-			// self-heals — the bead reappears in `bd ready` and is re-dispatched
-			// on the next poll once bd is warm — rather than wedging forever.
-			d.abortClaim(bead.ID, bead.Anvil, claimWorkerID, fmt.Sprintf("claim failed: %v", err))
+			d.abortClaim(bead.ID, bead.Anvil, claimWorkerID, fmt.Sprintf("claim failed: %v", err), err)
 			d.activeBeads.Delete(bead.ID)
 			continue
 		}
@@ -3202,23 +3197,46 @@ func (d *Daemon) insertPendingWorker(beadID, anvilName, title string) string {
 	return workerID
 }
 
-// abortClaim rolls back a failed or killed bead claim. Because a killed
-// `bd update --status=in_progress` is non-atomic (the write may have committed
-// before the client process was killed), this best-effort reverts the bead to
-// open via recordDispatchFailure with releaseClaim=true, so a phantom
-// in_progress bead lands back in `bd ready` and is re-dispatched on the next
-// poll instead of wedging forever. It also marks the pending worker row that
-// was pre-inserted before the claim as failed, so a dangling row for a now-open
-// bead neither counts toward dispatch capacity nor masks the bead from a fresh
-// dispatch. See Forge-au4z.
-func (d *Daemon) abortClaim(beadID, anvil, claimWorkerID, reason string) {
-	d.recordDispatchFailure(beadID, anvil, reason, true)
+// abortClaim handles a failed bead claim. It marks the pre-inserted pending
+// worker as failed immediately (before any potentially-slow bd calls) so it
+// stops counting toward dispatch capacity.
+//
+// claimErr drives whether the bead claim is released back to open:
+//   - Timeout / context-canceled / signal-killed errors are non-atomic — the
+//     server-side write may have landed before the client process died. For
+//     these, releaseClaim=true reverts the bead to open so it self-heals via
+//     `bd ready` instead of wedging as a phantom in_progress.
+//   - Other errors (conflict, already in_progress, bd validation) mean the
+//     claim almost certainly did NOT land. Releasing here would risk unassigning
+//     a bead legitimately owned by another Forge instance or a human.
+//
+// See Forge-au4z.
+func (d *Daemon) abortClaim(beadID, anvil, claimWorkerID, reason string, claimErr error) {
 	if claimWorkerID != "" {
 		if err := d.db.UpdateWorkerStatus(claimWorkerID, state.WorkerFailed); err != nil {
 			d.logger.Warn("failed to mark pending worker failed after claim failure",
 				"bead", beadID, "worker", claimWorkerID, "error", err)
 		}
 	}
+
+	releaseClaim := isNonAtomicClaimFailure(claimErr)
+	d.recordDispatchFailure(beadID, anvil, reason, releaseClaim)
+}
+
+// isNonAtomicClaimFailure returns true when a claimBead error could indicate
+// that the server-side write landed before the client observed the error
+// (timeout, context cancellation, signal kill). For these cases the bead
+// claim should be released; for clean bd errors (conflict, validation) it
+// should not.
+func isNonAtomicClaimFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "signal: killed") || strings.Contains(msg, "signal: terminated")
 }
 
 // claimBead marks a bead as in_progress via bd update --claim.
@@ -4387,9 +4405,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 		// Claim the bead
 		if err := d.claimBead(context.Background(), targetBead.ID, anvilCfg.Path); err != nil {
-			// Revert a possibly-committed-but-killed claim so the bead does not
-			// wedge as a phantom in_progress with no live worker.
-			d.abortClaim(targetBead.ID, targetBead.Anvil, claimWorkerID, fmt.Sprintf("claim failed: %v", err))
+			d.abortClaim(targetBead.ID, targetBead.Anvil, claimWorkerID, fmt.Sprintf("claim failed: %v", err), err)
 			d.activeBeads.Delete(targetBead.ID)
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to claim bead: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
