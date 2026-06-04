@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -207,18 +208,121 @@ func TestDedupeBySimilarityKeepsDistinctConcernsOnSameAnchor(t *testing.T) {
 	}
 }
 
-func TestDedupeBySimilarityKeepsDifferentAnchors(t *testing.T) {
+// Adjacent lines on the same file no longer survive when bodies are
+// essentially identical — the calibration data (Munin PRs #3514, #3523)
+// showed the model emitting the same observation as separate findings at
+// adjacent statement boundaries inside one method. Different FILES still
+// survive (see TestDedupeBySimilarityKeepsDifferentFiles below).
+func TestDedupeBySimilarityCollapsesAdjacentLinesOnSameFile(t *testing.T) {
 	findings := []Finding{
-		{Anchor: "a.go:10", Category: "logic", Severity: SeverityImportant, Title: "x",
-			Body: realParaphraseBodyA},
-		{Anchor: "a.go:11", Category: "logic", Severity: SeverityImportant, Title: "x",
-			Body: realParaphraseBodyA},
+		{Anchor: "a.go:10", Category: "logic", Severity: SeverityImportant, Title: "x", Body: realParaphraseBodyA},
+		{Anchor: "a.go:11", Category: "logic", Severity: SeverityImportant, Title: "x", Body: realParaphraseBodyA},
+	}
+
+	out := dedupeBySimilarity(findings)
+
+	if len(out) != 1 {
+		t.Errorf("expected adjacent same-file paraphrases to collapse; got %d", len(out))
+	}
+}
+
+func TestDedupeBySimilarityKeepsDifferentFiles(t *testing.T) {
+	findings := []Finding{
+		{Anchor: "a.go:10", Category: "logic", Severity: SeverityImportant, Title: "x", Body: realParaphraseBodyA},
+		{Anchor: "b.go:10", Category: "logic", Severity: SeverityImportant, Title: "x", Body: realParaphraseBodyA},
 	}
 
 	out := dedupeBySimilarity(findings)
 
 	if len(out) != 2 {
-		t.Errorf("expected findings on different anchors to survive even when bodies are identical; got %d", len(out))
+		t.Errorf("expected different-file findings to survive even when bodies are identical; got %d", len(out))
+	}
+}
+
+// Real Munin pattern from PR #3514: three paraphrases of the same
+// AsyncLocal-restore concern at adjacent lines 60, 61, 62 of
+// RecomputeSqlProfiler.cs. Should collapse to one.
+func TestDedupeBySimilarityCollapsesPR3514ThreeWayParaphrase(t *testing.T) {
+	body := "Scope.Dispose clears AsyncLocal to null instead of restoring the previous scope, breaking nested-scope semantics in the RecomputeSqlProfiler."
+	file := "api/Fhi.Metadata.Api/Service/Catalog/Grading/RecomputeSqlProfiler.cs"
+	findings := []Finding{
+		{Anchor: file + ":60", Category: "concurrency", Severity: SeverityNit, Title: "Scope.Dispose clears AsyncLocal", Body: body},
+		{Anchor: file + ":61", Category: "maintainability", Severity: SeverityNit, Title: "Scope.Dispose clears AsyncLocal", Body: body},
+		{Anchor: file + ":62", Category: "concurrency", Severity: SeverityNit, Title: "Scope.Dispose clears AsyncLocal", Body: body},
+	}
+
+	out := dedupeBySimilarity(findings)
+
+	if len(out) != 1 {
+		t.Errorf("expected PR #3514 three-way paraphrase to collapse to 1; got %d", len(out))
+	}
+}
+
+// Lines further apart than nearAnchorMaxLineDistance on the same file must
+// survive — large gaps usually mean genuinely distinct concerns. This guards
+// against the model emitting one Nit at the top of a 500-line file and
+// another at the bottom and having them silently merged.
+func TestDedupeBySimilarityKeepsFarLinesOnSameFile(t *testing.T) {
+	findings := []Finding{
+		{Anchor: "a.go:10", Category: "logic", Severity: SeverityImportant, Title: "x", Body: realParaphraseBodyA},
+		{Anchor: "a.go:" + strconv.Itoa(10+nearAnchorMaxLineDistance+5), Category: "logic", Severity: SeverityImportant, Title: "x", Body: realParaphraseBodyA},
+	}
+
+	out := dedupeBySimilarity(findings)
+
+	if len(out) != 2 {
+		t.Errorf("expected far-apart same-file findings to survive; got %d", len(out))
+	}
+}
+
+// Near-anchor regime uses a stricter threshold than exact-anchor — verify
+// that a pair barely over the exact-anchor threshold but under the
+// near-anchor threshold survives when anchors differ.
+func TestDedupeBySimilarityNearAnchorThresholdIsStricter(t *testing.T) {
+	// Bodies share enough words to clear similarityDedupeThreshold (0.4) but
+	// not enough to clear sameFileNearAnchorThreshold (0.55).
+	bodyA := "The recompute path swallows OperationCanceledException and reports a misleading commandtimeout warning during contention windows."
+	bodyB := "OperationCanceledException is treated as a contention warning when it should be propagated; the recompute timeout configuration is unrelated."
+
+	// Same anchor — clears 0.4, collapses.
+	sameAnchor := []Finding{
+		{Anchor: "a.go:10", Category: "x", Severity: SeverityNit, Title: "a", Body: bodyA},
+		{Anchor: "a.go:10", Category: "x", Severity: SeverityNit, Title: "b", Body: bodyB},
+	}
+	if got := dedupeBySimilarity(sameAnchor); len(got) != 1 {
+		t.Errorf("same-anchor pair below stricter threshold should still collapse at 0.4; got %d", len(got))
+	}
+
+	// Different line, same file — must clear 0.55 to collapse; this pair
+	// should survive because the bodies share the framing but disagree on
+	// the diagnosis.
+	nearAnchor := []Finding{
+		{Anchor: "a.go:10", Category: "x", Severity: SeverityNit, Title: "a", Body: bodyA},
+		{Anchor: "a.go:14", Category: "x", Severity: SeverityNit, Title: "b", Body: bodyB},
+	}
+	if got := dedupeBySimilarity(nearAnchor); len(got) != 2 {
+		t.Errorf("near-anchor pair under the stricter threshold should survive; got %d", len(got))
+	}
+}
+
+func TestParseAnchorHandlesRangesAndMethodAnchors(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantFile string
+		wantLine int
+	}{
+		{"src/foo.go:42", "src/foo.go", 42},
+		{"src/foo.go:42-58", "src/foo.go", 42},
+		{"src/foo.go:MethodName", "src/foo.go", -1},
+		{"src/foo.go", "src/foo.go", -1},
+		{"  src/foo.go:7  ", "src/foo.go", 7},
+		{"", "", -1},
+	}
+	for _, tc := range cases {
+		got := parseAnchor(tc.in)
+		if got.file != tc.wantFile || got.line != tc.wantLine {
+			t.Errorf("parseAnchor(%q) = {%q, %d}; want {%q, %d}", tc.in, got.file, got.line, tc.wantFile, tc.wantLine)
+		}
 	}
 }
 
@@ -284,6 +388,38 @@ func TestSuppressSimilarToExistingKeepsDifferentAnchor(t *testing.T) {
 
 	if len(out) != 1 {
 		t.Errorf("expected finding at a different anchor to survive even when body matches; got %d", len(out))
+	}
+}
+
+func TestSuppressSimilarToExistingDropsParaphraseAtNearbyLine(t *testing.T) {
+	file := "api/X.cs"
+	existing := []ExistingFinding{
+		{Anchor: file + ":172", Body: realParaphraseBodyA},
+	}
+	newFindings := []Finding{
+		{Anchor: file + ":178", Category: "missing-test", Severity: SeverityImportant, Title: "rewording at drift", Body: realParaphraseBodyB},
+	}
+
+	out := suppressSimilarToExisting(newFindings, existing)
+
+	if len(out) != 0 {
+		t.Errorf("expected reworded paraphrase at nearby line to be suppressed against existing; got %d", len(out))
+	}
+}
+
+func TestSuppressSimilarToExistingKeepsFarLineOnSameFile(t *testing.T) {
+	file := "api/X.cs"
+	existing := []ExistingFinding{
+		{Anchor: file + ":10", Body: realParaphraseBodyA},
+	}
+	newFindings := []Finding{
+		{Anchor: file + ":" + strconv.Itoa(10+nearAnchorMaxLineDistance+5), Category: "logic", Severity: SeverityImportant, Title: "far-apart same-file", Body: realParaphraseBodyB},
+	}
+
+	out := suppressSimilarToExisting(newFindings, existing)
+
+	if len(out) != 1 {
+		t.Errorf("expected far-apart same-file finding to survive even when body matches; got %d", len(out))
 	}
 }
 

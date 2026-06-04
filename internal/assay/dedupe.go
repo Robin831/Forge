@@ -12,6 +12,29 @@ import "strings"
 // well under 0.2.
 const similarityDedupeThreshold = 0.4
 
+// sameFileNearAnchorThreshold is the stricter overlap-coefficient bar that
+// applies when two findings share a file but have different anchors (or
+// different lines). Raised above similarityDedupeThreshold because adjacent
+// lines on the same file legitimately host distinct concerns more often than
+// the exact-same-anchor case — but only modestly stricter, because the
+// dominant noise source observed in shadow mode was the model anchoring at
+// slightly different lines for what is, by content, the same paraphrased
+// observation (Munin PR #3475 lines :172 vs :204, PR #3514 lines 60/61/62,
+// PR #3523 lines 117/120 and 150/160). Calibration: realistic re-run
+// paraphrases of the same concern measure ~0.45–0.55 overlap; unrelated
+// adjacent-line findings measure well under 0.3.
+const sameFileNearAnchorThreshold = 0.45
+
+// nearAnchorMaxLineDistance is the maximum line gap at which two findings on
+// the same file are considered "near" each other for the purposes of
+// cross-anchor similarity dedup. Set to 15 to cover paraphrases of the same
+// observation at adjacent statements within a small method while keeping
+// genuinely distinct concerns at the top and bottom of a file apart. A
+// finding with no parseable line number is treated as "near" any other on
+// the same file (model anchors that name a method rather than a line still
+// dedupe sensibly).
+const nearAnchorMaxLineDistance = 15
+
 // minSimilarityTokens is the minimum number of meaningful tokens both findings
 // must contain before similarity-dedup considers them. Tiny bodies are too
 // noisy to compare reliably with Jaccard — a one-line nit and a one-line
@@ -43,11 +66,13 @@ type ExistingFinding struct {
 }
 
 // suppressSimilarToExisting drops new findings whose body has high overlap
-// with an already-active finding on the same anvil/PR/anchor. The model
-// regenerates the same concern with slightly different wording on each
-// re-run; without this pass each re-run would insert a fresh row because
-// Finding.Hash includes the canonical body. Anchor is the lock — same advice
-// on different lines is genuinely distinct work to do.
+// with an already-active finding at the same anchor — or at a nearby anchor
+// on the same file. The model regenerates the same concern with slightly
+// different wording on each re-run; without this pass each re-run would
+// insert a fresh row because Finding.Hash includes the canonical body. The
+// same-file regime catches the cross-run case where the rewording also
+// drifts the line number (e.g. one run anchors at the method header, the
+// next at the offending statement two lines below).
 //
 // Returns the filtered slice; the existing-findings argument is unchanged.
 // When either side has fewer than minSimilarityTokens significant tokens the
@@ -56,12 +81,30 @@ func suppressSimilarToExisting(newFindings []Finding, existing []ExistingFinding
 	if len(newFindings) == 0 || len(existing) == 0 {
 		return newFindings
 	}
-	byAnchor := make(map[string][]ExistingFinding)
+	// Pre-tokenize and pre-parse existing findings once. Same file index lets
+	// the near-anchor check run in O(1) per (file, new) pair instead of
+	// scanning the whole existing list for every new finding.
+	type idxEntry struct {
+		anchor string
+		parsed anchorParts
+		tokens map[string]struct{}
+		body   string
+	}
+	byFile := make(map[string][]idxEntry)
 	for _, e := range existing {
 		if e.Anchor == "" {
 			continue
 		}
-		byAnchor[e.Anchor] = append(byAnchor[e.Anchor], e)
+		p := parseAnchor(e.Anchor)
+		if p.file == "" {
+			continue
+		}
+		byFile[p.file] = append(byFile[p.file], idxEntry{
+			anchor: e.Anchor,
+			parsed: p,
+			tokens: tokenizeForSimilarity(e.Body),
+			body:   e.Body,
+		})
 	}
 	out := make([]Finding, 0, len(newFindings))
 	for _, f := range newFindings {
@@ -69,7 +112,12 @@ func suppressSimilarToExisting(newFindings []Finding, existing []ExistingFinding
 			out = append(out, f)
 			continue
 		}
-		peers := byAnchor[f.Anchor]
+		np := parseAnchor(f.Anchor)
+		if np.file == "" {
+			out = append(out, f)
+			continue
+		}
+		peers := byFile[np.file]
 		if len(peers) == 0 {
 			out = append(out, f)
 			continue
@@ -81,11 +129,14 @@ func suppressSimilarToExisting(newFindings []Finding, existing []ExistingFinding
 		}
 		suppress := false
 		for _, e := range peers {
-			et := tokenizeForSimilarity(e.Body)
-			if len(et) < minSimilarityTokens {
+			if len(e.tokens) < minSimilarityTokens {
 				continue
 			}
-			if overlapCoefficient(nt, et) >= similarityDedupeThreshold {
+			threshold, eligible := pairThreshold(f.Anchor, e.anchor, np, e.parsed)
+			if !eligible {
+				continue
+			}
+			if overlapCoefficient(nt, e.tokens) >= threshold {
 				suppress = true
 				break
 			}
@@ -97,17 +148,24 @@ func suppressSimilarToExisting(newFindings []Finding, existing []ExistingFinding
 	return out
 }
 
-// dedupeBySimilarity collapses multiple findings on the same anchor whose
-// bodies are highly similar. This catches the common case where two passes
-// (e.g. tests-missing and logic) flag the same gap with different category
-// labels and reworded reasoning — Finding.Hash includes the category so the
-// earlier hash dedup misses them.
+// dedupeBySimilarity collapses multiple findings whose bodies are highly
+// similar. Two regimes apply:
 //
-// When two findings on the same anchor exceed similarityDedupeThreshold, the
-// higher-severity one is kept. Severity ties go to the earlier finding so
-// output ordering is deterministic. Findings on different anchors are never
-// merged, even if their bodies are similar — same advice on different lines
-// is genuinely distinct work to do.
+//   - Same exact anchor: collapse when body overlap >= similarityDedupeThreshold.
+//     This catches the common case where two passes (e.g. tests-missing and
+//     logic) flag the same gap with different category labels and reworded
+//     reasoning. Finding.Hash includes the category so the earlier hash dedup
+//     misses these.
+//   - Same file but different anchors (or different lines within
+//     nearAnchorMaxLineDistance): collapse when body overlap >=
+//     sameFileNearAnchorThreshold. Catches the pattern where the model emits
+//     three paraphrases of one observation at adjacent statement boundaries
+//     (e.g. Munin PR #3514 lines 60/61/62, PR #3523 lines 117/120 and 150/160).
+//
+// Findings on different files are never collapsed — the same advice landed
+// in two files is genuinely two pieces of work. When two findings collapse,
+// the higher-severity one is kept; severity ties keep the earlier finding so
+// output ordering is deterministic.
 func dedupeBySimilarity(findings []Finding) []Finding {
 	if len(findings) <= 1 {
 		return findings
@@ -117,8 +175,10 @@ func dedupeBySimilarity(findings []Finding) []Finding {
 		keep[i] = true
 	}
 	tokens := make([]map[string]struct{}, len(findings))
+	parsed := make([]anchorParts, len(findings))
 	for i, f := range findings {
 		tokens[i] = tokenizeForSimilarity(f.Body)
+		parsed[i] = parseAnchor(f.Anchor)
 	}
 	for i := 0; i < len(findings); i++ {
 		if !keep[i] {
@@ -128,13 +188,14 @@ func dedupeBySimilarity(findings []Finding) []Finding {
 			if !keep[j] {
 				continue
 			}
-			if findings[i].Anchor == "" || findings[i].Anchor != findings[j].Anchor {
-				continue
-			}
 			if len(tokens[i]) < minSimilarityTokens || len(tokens[j]) < minSimilarityTokens {
 				continue
 			}
-			if overlapCoefficient(tokens[i], tokens[j]) < similarityDedupeThreshold {
+			threshold, eligible := pairThreshold(findings[i].Anchor, findings[j].Anchor, parsed[i], parsed[j])
+			if !eligible {
+				continue
+			}
+			if overlapCoefficient(tokens[i], tokens[j]) < threshold {
 				continue
 			}
 			// Collapse to the higher-severity finding. Ties keep i (earlier).
@@ -152,6 +213,83 @@ func dedupeBySimilarity(findings []Finding) []Finding {
 		}
 	}
 	return out
+}
+
+// anchorParts is the parsed shape of a finding anchor: the file path and an
+// optional line number. Anchors that don't include a parseable line have
+// line=-1, which pairThreshold treats as "near any other line on the same file".
+type anchorParts struct {
+	file string
+	line int // -1 when no parseable line number is present
+}
+
+// parseAnchor splits an anchor like "src/foo.go:42" or "src/foo.go:42-58" into
+// its file and line components. The line is the first integer following the
+// rightmost colon; ranges use the start line. When no integer is found, line is
+// -1. The whole anchor falls through as the file when no colon is present so
+// pairThreshold's file equality still works on raw symbol-style anchors.
+func parseAnchor(anchor string) anchorParts {
+	anchor = strings.TrimSpace(anchor)
+	if anchor == "" {
+		return anchorParts{file: "", line: -1}
+	}
+	idx := strings.LastIndex(anchor, ":")
+	if idx < 0 {
+		return anchorParts{file: anchor, line: -1}
+	}
+	file := anchor[:idx]
+	tail := anchor[idx+1:]
+	// Strip a "-end" suffix for ranges so we anchor on the start line.
+	if dash := strings.IndexByte(tail, '-'); dash > 0 {
+		tail = tail[:dash]
+	}
+	n := 0
+	parsedAny := false
+	for _, r := range tail {
+		if r < '0' || r > '9' {
+			break
+		}
+		n = n*10 + int(r-'0')
+		parsedAny = true
+	}
+	if !parsedAny {
+		// Anchor like "src/foo.go:MethodName" — keep the file as everything
+		// before the colon and treat the line as unknown.
+		return anchorParts{file: file, line: -1}
+	}
+	return anchorParts{file: file, line: n}
+}
+
+// pairThreshold returns the overlap threshold to require for collapse and
+// whether the pair is eligible at all. Eligibility:
+//   - Both anchors non-empty.
+//   - Either anchors are exactly equal, OR files match (same file regime).
+//   - When files match but lines differ, the lines must be within
+//     nearAnchorMaxLineDistance. An unknown line (parseAnchor returned -1)
+//     counts as near any other line on the same file.
+//
+// Same-anchor pairs use similarityDedupeThreshold; near-anchor pairs use the
+// stricter sameFileNearAnchorThreshold.
+func pairThreshold(anchorA, anchorB string, a, b anchorParts) (float64, bool) {
+	if anchorA == "" || anchorB == "" {
+		return 0, false
+	}
+	if anchorA == anchorB {
+		return similarityDedupeThreshold, true
+	}
+	if a.file == "" || a.file != b.file {
+		return 0, false
+	}
+	if a.line >= 0 && b.line >= 0 {
+		diff := a.line - b.line
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > nearAnchorMaxLineDistance {
+			return 0, false
+		}
+	}
+	return sameFileNearAnchorThreshold, true
 }
 
 // tokenizeForSimilarity lowercases the input, splits on non-alphanumeric runs,
