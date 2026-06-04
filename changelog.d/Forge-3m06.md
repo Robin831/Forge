@@ -1,2 +1,0 @@
-category: Fixed
-- **Cap concurrent lifecycle fix workers** - Bellows fix workers (quench/cifix, burnish/reviewfix, rebase, assay) are now bounded by a global `max_lifecycle_workers` concurrency cap (default 2) instead of fanning out unbounded. Each fix worker spawns its own Claude session and was deliberately excluded from `max_total_smiths`, so a burst of stuck PRs could previously spawn one Claude session per PR and OOM-crash the host. Actions over the cap are deferred and retried on the next Bellows poll. (Forge-3m06)

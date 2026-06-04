@@ -1,2 +1,0 @@
-category: Added
-- **Auto-recover stranded complete forge branches** - When the pre-dispatch remote branch check finds a stranded `forge/<bead>` branch with no PR, Forge now looks for a changelog fragment for the bead on the branch tip (a completion signal). If found, it auto-opens the PR (with a fresh duplicate-PR guard) and hands it to bellows instead of escalating to needs_human; incomplete branches or PR-creation failures still escalate. (Forge-dz6h)

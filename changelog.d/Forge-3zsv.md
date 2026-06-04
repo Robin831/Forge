@@ -1,2 +1,0 @@
-category: Added
-- **PR findings API & live SSE channel** - Added `GET /api/prs/{id}/findings`, returning a PR's Assay findings (id, pr, anvil, status, severity, message, timestamp) plus the latest review-run status, and a `GET /api/prs/{id}/findings/stream` Server-Sent Events channel that re-emits the snapshot whenever findings or rerun status change so the PR detail panel updates live. (Forge-3zsv)

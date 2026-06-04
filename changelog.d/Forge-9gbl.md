@@ -1,3 +1,0 @@
-category: Added
-- **Assay findings panel on the PRs page** - Each PR row gains a Findings toggle that opens an inline Assay findings panel showing the latest review run, per-finding severity/status/file context, and a Re-run button that re-triggers Assay over the PR's current head. Findings update live via the findings SSE channel. (Forge-9gbl)
-- **Typed Assay findings client** - Added `assay.getFindings`, `assay.rerunAssay`, and `subscribeFindings` to the web client with TypeScript types mirroring the backend findings response, plus a distinct cyan accent for the Assay verification worker row in the Workers pane. (Forge-9gbl)

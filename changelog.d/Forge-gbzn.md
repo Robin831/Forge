@@ -1,2 +1,0 @@
-category: Fixed
-- **Needs Attention shows the Smith escalation, not schematic reasoning** - Reordered the needs-human reason ladder so an explicit Smith escalation takes priority over the Schematic's decomposition rationale. When a schematic ran earlier in the same pipeline, the panel and bead detail page now surface Smith's actual, actionable escalation; a schematic reason still surfaces when nothing more specific exists, but is labelled "Schematic:" so it can never masquerade as a bare escalation. (Forge-gbzn)
