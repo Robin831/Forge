@@ -1569,7 +1569,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prevKey := m.lastSeenEventKey
 
 		m.events = msg.Items
-		filterCmd := m.applyEventFilter()
+		newKey := ""
+		if len(msg.Items) > 0 {
+			newKey = toastEventKey(msg.Items[0])
+		}
+		var filterCmd tea.Cmd
+		if newKey != prevKey {
+			filterCmd = m.applyEventFilter()
+		}
 		m.eventRevision++
 		// Auto-scroll to bottom if enabled and new events arrived
 		if m.eventAutoScroll && len(msg.Items) > m.prevEventCount {
@@ -1580,8 +1587,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.prevEventCount = len(msg.Items)
 
 		// Update the last-seen key for the next cycle.
-		if len(msg.Items) > 0 {
-			m.lastSeenEventKey = toastEventKey(msg.Items[0])
+		if newKey != "" {
+			m.lastSeenEventKey = newKey
 		}
 
 		// Detect new events and fire toast notifications for notable ones.
@@ -4471,6 +4478,7 @@ func (m *Model) applyEventFilter() tea.Cmd {
 	}
 	// Prefer a DB-backed search so events older than the loaded window match.
 	if m.data != nil && m.data.DB != nil {
+		m.filteredEvents = nil
 		return FetchEventsMatching(m.data.DB, m.eventFilterText)
 	}
 	// Fallback: filter the in-memory slice (display-only mode).

@@ -3288,4 +3288,36 @@ func TestDB_RecentEventsMatching(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("escapes LIKE wildcards literally", func(t *testing.T) {
+		if err := db.LogEventAt(EventSmithDone, "100% done", "Forge-PCT1", "anvil-a", base.Add(300*time.Minute)); err != nil {
+			t.Fatalf("seed percent event: %v", err)
+		}
+		// "%" should NOT match everything — only the literal character.
+		results, err := db.RecentEventsMatching("%", 500, excluded)
+		if err != nil {
+			t.Fatalf("RecentEventsMatching: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 match for literal '%%', got %d", len(results))
+		}
+		if results[0].BeadID != "Forge-PCT1" {
+			t.Fatalf("unexpected match: %+v", results[0])
+		}
+
+		// "_" should NOT match any single character — only the literal underscore.
+		if err := db.LogEventAt(EventSmithDone, "under_score test", "Forge-US1", "anvil-a", base.Add(301*time.Minute)); err != nil {
+			t.Fatalf("seed underscore event: %v", err)
+		}
+		results, err = db.RecentEventsMatching("r_s", 500, excluded)
+		if err != nil {
+			t.Fatalf("RecentEventsMatching: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 match for literal 'r_s', got %d", len(results))
+		}
+		if results[0].BeadID != "Forge-US1" {
+			t.Fatalf("unexpected match: %+v", results[0])
+		}
+	})
 }

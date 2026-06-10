@@ -1832,9 +1832,10 @@ func (db *DB) RecentEventsMatching(pattern string, n int, excludeTypes []EventTy
 	// case-insensitive for ASCII in SQLite by default; lower-casing both sides
 	// keeps the behavior aligned with the TUI's in-memory filter for any
 	// non-ASCII content as well.
-	like := "%" + strings.ToLower(pattern) + "%"
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(strings.ToLower(pattern))
+	like := "%" + escaped + "%"
 	conditions = append(conditions,
-		"(LOWER(timestamp) LIKE ? OR LOWER(type) LIKE ? OR LOWER(bead_id) LIKE ? OR LOWER(message) LIKE ?)")
+		"(LOWER(timestamp) LIKE ? ESCAPE '\\' OR LOWER(type) LIKE ? ESCAPE '\\' OR LOWER(bead_id) LIKE ? ESCAPE '\\' OR LOWER(message) LIKE ? ESCAPE '\\')")
 	args = append(args, like, like, like, like)
 
 	args = append(args, n)
