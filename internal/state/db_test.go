@@ -3183,3 +3183,141 @@ func TestDB_MarkResolved(t *testing.T) {
 		t.Error("expected resolved_at to be set after MarkResolved")
 	}
 }
+
+func TestDB_RecentEventsMatching(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-eventmatch-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Seed one old event that matches our filter, then bury it under far more
+	// than EventFetchLimit (100) newer, non-matching events. An in-memory
+	// filter over the most-recent ~100 rows would never see the old one.
+	if err := db.LogEventAt(EventBeadClaimed, "claimed Forge-OLD1", "Forge-OLD1", "anvil-a", base); err != nil {
+		t.Fatalf("seed old event: %v", err)
+	}
+	for i := 0; i < 150; i++ {
+		at := base.Add(time.Duration(i+1) * time.Minute)
+		if err := db.LogEventAt(EventSmithDone, "smith finished noise", fmt.Sprintf("Forge-N%03d", i), "anvil-a", at); err != nil {
+			t.Fatalf("seed noise event %d: %v", i, err)
+		}
+	}
+	// Excluded poll/poll_error rows that also contain the search term — they
+	// must never appear in results.
+	if err := db.LogEventAt(EventPoll, "poll Forge-OLD1", "Forge-OLD1", "anvil-a", base.Add(200*time.Minute)); err != nil {
+		t.Fatalf("seed poll event: %v", err)
+	}
+	if err := db.LogEventAt(EventPollError, "poll error forge-old1", "Forge-OLD1", "anvil-a", base.Add(201*time.Minute)); err != nil {
+		t.Fatalf("seed poll_error event: %v", err)
+	}
+
+	excluded := []EventType{EventPoll, EventPollError}
+
+	t.Run("matches an event older than the load window", func(t *testing.T) {
+		results, err := db.RecentEventsMatching("Forge-OLD1", 500, excluded)
+		if err != nil {
+			t.Fatalf("RecentEventsMatching: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected exactly 1 match, got %d", len(results))
+		}
+		if results[0].BeadID != "Forge-OLD1" || results[0].Type != EventBeadClaimed {
+			t.Fatalf("unexpected match: %+v", results[0])
+		}
+	})
+
+	t.Run("is case-insensitive", func(t *testing.T) {
+		results, err := db.RecentEventsMatching("forge-old1", 500, excluded)
+		if err != nil {
+			t.Fatalf("RecentEventsMatching: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected exactly 1 case-insensitive match, got %d", len(results))
+		}
+		if results[0].BeadID != "Forge-OLD1" {
+			t.Fatalf("unexpected match: %+v", results[0])
+		}
+	})
+
+	t.Run("excludes poll and poll_error types", func(t *testing.T) {
+		results, err := db.RecentEventsMatching("Forge-OLD1", 500, excluded)
+		if err != nil {
+			t.Fatalf("RecentEventsMatching: %v", err)
+		}
+		for _, e := range results {
+			if e.Type == EventPoll || e.Type == EventPollError {
+				t.Fatalf("excluded type leaked into results: %+v", e)
+			}
+		}
+	})
+
+	t.Run("enforces the result cap", func(t *testing.T) {
+		// "smith" matches all 150 noise events; the cap must bound the result.
+		results, err := db.RecentEventsMatching("smith", 25, excluded)
+		if err != nil {
+			t.Fatalf("RecentEventsMatching: %v", err)
+		}
+		if len(results) != 25 {
+			t.Fatalf("expected capped 25 results, got %d", len(results))
+		}
+		// Newest-first ordering: the most recent noise event should be first.
+		if results[0].BeadID != "Forge-N149" {
+			t.Fatalf("expected newest-first ordering, got first=%+v", results[0])
+		}
+	})
+
+	t.Run("empty pattern falls back to exclusion-only", func(t *testing.T) {
+		results, err := db.RecentEventsMatching("", 10, excluded)
+		if err != nil {
+			t.Fatalf("RecentEventsMatching: %v", err)
+		}
+		if len(results) != 10 {
+			t.Fatalf("expected 10 results for empty pattern, got %d", len(results))
+		}
+		for _, e := range results {
+			if e.Type == EventPoll || e.Type == EventPollError {
+				t.Fatalf("excluded type leaked into empty-pattern results: %+v", e)
+			}
+		}
+	})
+
+	t.Run("escapes LIKE wildcards literally", func(t *testing.T) {
+		if err := db.LogEventAt(EventSmithDone, "100% done", "Forge-PCT1", "anvil-a", base.Add(300*time.Minute)); err != nil {
+			t.Fatalf("seed percent event: %v", err)
+		}
+		// "%" should NOT match everything — only the literal character.
+		results, err := db.RecentEventsMatching("%", 500, excluded)
+		if err != nil {
+			t.Fatalf("RecentEventsMatching: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 match for literal '%%', got %d", len(results))
+		}
+		if results[0].BeadID != "Forge-PCT1" {
+			t.Fatalf("unexpected match: %+v", results[0])
+		}
+
+		// "_" should NOT match any single character — only the literal underscore.
+		if err := db.LogEventAt(EventSmithDone, "under_score test", "Forge-US1", "anvil-a", base.Add(301*time.Minute)); err != nil {
+			t.Fatalf("seed underscore event: %v", err)
+		}
+		results, err = db.RecentEventsMatching("r_s", 500, excluded)
+		if err != nil {
+			t.Fatalf("RecentEventsMatching: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 match for literal 'r_s', got %d", len(results))
+		}
+		if results[0].BeadID != "Forge-US1" {
+			t.Fatalf("unexpected match: %+v", results[0])
+		}
+	})
+}

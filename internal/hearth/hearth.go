@@ -906,18 +906,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.eventFilter.Blur()
 				m.eventFilter.SetValue("")
 				m.eventFilterText = ""
-				m.applyEventFilter()
+				filterCmd := m.applyEventFilter()
 				m.eventScroll = 0
 				m.eventRevision++
-				return m, nil
+				return m, filterCmd
 			case "enter":
 				m.eventFilterActive = false
 				m.eventFilter.Blur()
 				m.eventFilterText = m.eventFilter.Value()
-				m.applyEventFilter()
+				filterCmd := m.applyEventFilter()
 				m.eventScroll = 0
 				m.eventRevision++
-				return m, nil
+				return m, filterCmd
 			default:
 				var cmd tea.Cmd
 				m.eventFilter, cmd = m.eventFilter.Update(msg)
@@ -925,9 +925,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				newText := m.eventFilter.Value()
 				if newText != m.eventFilterText {
 					m.eventFilterText = newText
-					m.applyEventFilter()
+					filterCmd := m.applyEventFilter()
 					m.eventScroll = 0
 					m.eventRevision++
+					return m, tea.Batch(cmd, filterCmd)
 				}
 				return m, cmd
 			}
@@ -1573,7 +1574,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prevKey := m.lastSeenEventKey
 
 		m.events = msg.Items
-		m.applyEventFilter()
+		newKey := ""
+		if len(msg.Items) > 0 {
+			newKey = toastEventKey(msg.Items[0])
+		}
+		var filterCmd tea.Cmd
+		if newKey != prevKey {
+			filterCmd = m.applyEventFilter()
+		}
 		m.eventRevision++
 		// Auto-scroll to bottom if enabled and new events arrived
 		if m.eventAutoScroll && len(msg.Items) > m.prevEventCount {
@@ -1584,8 +1592,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.prevEventCount = len(msg.Items)
 
 		// Update the last-seen key for the next cycle.
-		if len(msg.Items) > 0 {
-			m.lastSeenEventKey = toastEventKey(msg.Items[0])
+		if newKey != "" {
+			m.lastSeenEventKey = newKey
 		}
 
 		// Detect new events and fire toast notifications for notable ones.
@@ -1608,8 +1616,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		if filterCmd != nil {
+			toastCmds = append(toastCmds, filterCmd)
+		}
 		if len(toastCmds) > 0 {
 			return m, tea.Batch(toastCmds...)
+		}
+
+	case UpdateFilteredEventsMsg:
+		// Ignore results from a stale query — the filter text may have changed
+		// while this DB search was in flight. Scroll position is left untouched
+		// here so periodic refreshes don't jump the view; the user-facing filter
+		// actions reset the scroll themselves.
+		if msg.Filter == m.eventFilterText {
+			m.filteredEvents = msg.Items
+			m.eventRevision++
 		}
 
 	case UpdateWicketSummaryMsg:
@@ -4450,14 +4471,34 @@ func (m *Model) renderEventLines(item EventItem, selected bool, panelWidth int) 
 	return lines
 }
 
-// applyEventFilter filters m.events into m.filteredEvents based on
-// m.eventFilterText. Called whenever events or the filter text change.
-func (m *Model) applyEventFilter() {
+// applyEventFilter updates the filtered event view based on m.eventFilterText.
+// Called whenever events or the filter text change.
+//
+// When a filter is active, the search runs at the DB level so the entire event
+// log is queried — not just the most recent EventFetchLimit events held in
+// m.events. It returns the command that performs that query; the result arrives
+// asynchronously as an UpdateFilteredEventsMsg. When the filter is empty (or no
+// data source is available, e.g. display-only mode), it falls back to filtering
+// the in-memory slice synchronously and returns nil.
+func (m *Model) applyEventFilter() tea.Cmd {
 	query := strings.ToLower(m.eventFilterText)
 	if query == "" {
 		m.filteredEvents = m.events
-		return
+		return nil
 	}
+	// Prefer a DB-backed search so events older than the loaded window match.
+	if m.data != nil && m.data.DB != nil {
+		m.filteredEvents = nil
+		return FetchEventsMatching(m.data.DB, m.eventFilterText)
+	}
+	// Fallback: filter the in-memory slice (display-only mode).
+	m.filteredEvents = m.filterEventsInMemory(query)
+	return nil
+}
+
+// filterEventsInMemory returns the subset of m.events matching the given
+// lower-cased query. Used as a fallback when no DB is available.
+func (m *Model) filterEventsInMemory(query string) []EventItem {
 	filtered := make([]EventItem, 0, len(m.events))
 	for _, ev := range m.events {
 		line := strings.ToLower(ev.Timestamp + " " + ev.Type + " " + ev.BeadID + " " + ev.Message)
@@ -4465,7 +4506,7 @@ func (m *Model) applyEventFilter() {
 			filtered = append(filtered, ev)
 		}
 	}
-	m.filteredEvents = filtered
+	return filtered
 }
 
 // displayEvents returns the events to render — filtered if a filter is active,
@@ -4507,6 +4548,15 @@ type UpdateWorkersMsg struct{ Items []WorkerItem }
 
 // UpdateEventsMsg updates the event log panel.
 type UpdateEventsMsg struct{ Items []EventItem }
+
+// UpdateFilteredEventsMsg delivers the result of a DB-backed event filter
+// search. Filter echoes the query the search was issued for, so the model can
+// ignore results that no longer match the current filter text (the user may
+// have kept typing while the query was in flight).
+type UpdateFilteredEventsMsg struct {
+	Filter string
+	Items  []EventItem
+}
 
 // AnvilHealth holds per-anvil poll health status for the Queue panel.
 type AnvilHealth struct {

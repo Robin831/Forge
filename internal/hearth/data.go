@@ -57,6 +57,12 @@ const healthTickDivisor = 5
 // EventFetchLimit is the maximum number of events retrieved for the Events panel.
 const EventFetchLimit = 100
 
+// EventFilterMatchLimit is the maximum number of events returned when an event
+// filter is active. The filter is applied at the SQL level so the whole event
+// log is searched (not just the most recent EventFetchLimit rows), but the
+// result count is still capped to protect the TUI render.
+const EventFilterMatchLimit = 500
+
 // TickMsg triggers a data refresh cycle.
 type TickMsg time.Time
 
@@ -727,6 +733,37 @@ func FetchEvents(db *state.DB, limit int) tea.Cmd {
 		}
 
 		return UpdateEventsMsg{Items: items}
+	}
+}
+
+// FetchEventsMatching searches the entire event log for events matching the
+// filter and returns them as an UpdateFilteredEventsMsg. The search runs at the
+// SQL level (via RecentEventsMatching) so events older than the EventFetchLimit
+// window are also matched — fixing the case where filtering only ever scanned
+// the most recent ~100 in-memory events. The same poll/poll_error exclusions as
+// FetchEvents apply, and results are capped at EventFilterMatchLimit.
+//
+// The originating filter text is echoed back in the message so the model can
+// discard results from a stale query (the user may have typed further since).
+func FetchEventsMatching(db *state.DB, filter string) tea.Cmd {
+	return func() tea.Msg {
+		events, err := db.RecentEventsMatching(filter, EventFilterMatchLimit,
+			[]state.EventType{state.EventPoll, state.EventPollError})
+		if err != nil {
+			return UpdateFilteredEventsMsg{Filter: filter, Items: nil}
+		}
+
+		items := make([]EventItem, 0, len(events))
+		for _, e := range events {
+			items = append(items, EventItem{
+				Timestamp: e.Timestamp.Format("15:04:05"),
+				Type:      string(e.Type),
+				Message:   e.Message,
+				BeadID:    e.BeadID,
+			})
+		}
+
+		return UpdateFilteredEventsMsg{Filter: filter, Items: items}
 	}
 }
 
