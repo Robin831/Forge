@@ -544,10 +544,18 @@ const (
 //     depupdate [legacy], etc.) that do not represent active Smith work and
 //     should not block dispatch capacity or be treated as stale.
 //
+// Note: 'schematic' is deliberately NOT listed here. Schematic is a pre-analysis
+// phase that runs on the dispatched (claimed) worker before Smith, so it is part
+// of the dispatch pipeline and must keep counting against the dispatch cap —
+// otherwise a worker in the schematic phase becomes invisible to the
+// max_total_smiths check, opening a window for a second concurrent Smith. It is
+// also an active Claude session that produces log output, so subjecting it to
+// the global stale check is correct.
+//
 // Note: depupdate is retained here only for backward compatibility with
 // historical DB rows; there is no active depupdate worker flow anymore.
 // Update this constant when new background or synthetic phases are added.
-const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'assay', 'crucible', 'schematic', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter', 'depupdate'"
+const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'assay', 'crucible', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter', 'depupdate'"
 
 // Worker represents a Smith worker entry.
 type Worker struct {
@@ -663,9 +671,9 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 // All phases listed in backgroundPhases are excluded from the global check
 // because they only produce log output when external state changes (e.g. PR
 // events) and can be legitimately silent for long stretches. However,
-// lifecycle workers (quench/burnish/rebase/assay) that were registered with a
-// per-worker StaleTimeout are additionally checked using that shorter
-// threshold — these phases appear in backgroundPhases and are therefore
+// lifecycle workers (quench/cifix/burnish/reviewfix/rebase/assay) that were
+// registered with a per-worker StaleTimeout are additionally checked using that
+// shorter threshold — these phases appear in backgroundPhases and are therefore
 // absent from the first result set, so there is no risk of duplicates.
 func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 	if staleThreshold <= 0 {
@@ -774,8 +782,8 @@ func (db *DB) MarkWorkerStalled(id string) error {
 }
 
 // ActiveDispatchWorkers returns active workers that are running primary dispatch
-// pipeline phases (smith, temper, warden). Bellows (PR monitoring) and lifecycle
-// workers (quench, burnish, rebase, assay) are excluded so they don't consume dispatch capacity slots.
+// pipeline phases (schematic, smith, temper, warden). All phases in backgroundPhases
+// are excluded so they don't consume dispatch capacity slots.
 // Stalled workers are included so they continue to count against capacity and
 // prevent the daemon from over-subscribing while stalled processes are still running.
 func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
@@ -786,7 +794,7 @@ func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 }
 
 // ActiveDispatchWorkersByAnvil returns active dispatch workers for a given anvil,
-// excluding bellows and lifecycle workers (quench, burnish, rebase, assay).
+// excluding all phases in backgroundPhases.
 // Stalled workers are included so they continue to count against per-anvil capacity.
 func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path

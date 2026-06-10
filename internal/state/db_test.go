@@ -3321,3 +3321,63 @@ func TestDB_RecentEventsMatching(t *testing.T) {
 		}
 	})
 }
+
+// TestDB_ActiveDispatchWorkers_CountsSchematic is a regression test for the bug
+// where a dispatched worker in the 'schematic' pre-analysis phase dropped out of
+// the dispatch capacity count, allowing a second Smith to be dispatched while the
+// max_total_smiths cap was 1. Schematic runs on the claimed worker before Smith,
+// so it must keep counting against the dispatch cap.
+func TestDB_ActiveDispatchWorkers_CountsSchematic(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// A worker that has entered the schematic pre-analysis phase.
+	if err := db.InsertWorker(&Worker{
+		ID: "w-schematic", BeadID: "BD-1", Anvil: "anvil-1",
+		Status: WorkerRunning, Phase: "schematic",
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A bellows (background) worker that must NOT count against the dispatch cap.
+	if err := db.InsertWorker(&Worker{
+		ID: "w-bellows", BeadID: "BD-2", Anvil: "anvil-1",
+		Status: WorkerMonitoring, Phase: "bellows",
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Global dispatch count must include the schematic worker.
+	dispatch, err := db.ActiveDispatchWorkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatch) != 1 {
+		t.Fatalf("expected 1 dispatch worker (schematic), got %d: %+v", len(dispatch), dispatch)
+	}
+	if dispatch[0].ID != "w-schematic" {
+		t.Errorf("expected w-schematic to count against dispatch cap, got %s", dispatch[0].ID)
+	}
+
+	// Per-anvil dispatch count must also include the schematic worker so a second
+	// dispatch is blocked when max_smiths/max_total_smiths is 1.
+	byAnvil, err := db.ActiveDispatchWorkersByAnvil("anvil-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byAnvil) != 1 {
+		t.Fatalf("expected 1 per-anvil dispatch worker (schematic), got %d: %+v", len(byAnvil), byAnvil)
+	}
+	if byAnvil[0].ID != "w-schematic" {
+		t.Errorf("expected w-schematic in per-anvil dispatch count, got %s", byAnvil[0].ID)
+	}
+}
