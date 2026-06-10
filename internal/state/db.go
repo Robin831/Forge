@@ -544,10 +544,18 @@ const (
 //     depupdate [legacy], etc.) that do not represent active Smith work and
 //     should not block dispatch capacity or be treated as stale.
 //
+// Note: 'schematic' is deliberately NOT listed here. Schematic is a pre-analysis
+// phase that runs on the dispatched (claimed) worker before Smith, so it is part
+// of the dispatch pipeline and must keep counting against the dispatch cap —
+// otherwise a worker in the schematic phase becomes invisible to the
+// max_total_smiths check, opening a window for a second concurrent Smith. It is
+// also an active Claude session that produces log output, so subjecting it to
+// the global stale check is correct.
+//
 // Note: depupdate is retained here only for backward compatibility with
 // historical DB rows; there is no active depupdate worker flow anymore.
 // Update this constant when new background or synthetic phases are added.
-const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'assay', 'crucible', 'schematic', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter', 'depupdate'"
+const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'assay', 'crucible', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter', 'depupdate'"
 
 // Worker represents a Smith worker entry.
 type Worker struct {
@@ -774,7 +782,7 @@ func (db *DB) MarkWorkerStalled(id string) error {
 }
 
 // ActiveDispatchWorkers returns active workers that are running primary dispatch
-// pipeline phases (smith, temper, warden). Bellows (PR monitoring) and lifecycle
+// pipeline phases (schematic, smith, temper, warden). Bellows (PR monitoring) and lifecycle
 // workers (quench, burnish, rebase, assay) are excluded so they don't consume dispatch capacity slots.
 // Stalled workers are included so they continue to count against capacity and
 // prevent the daemon from over-subscribing while stalled processes are still running.
