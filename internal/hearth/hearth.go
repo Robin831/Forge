@@ -70,6 +70,11 @@ type QueueItem struct {
 	Status      string
 	Section     string // "ready", "unlabeled", "in_progress"
 	Assignee    string
+	// PRNumber is the GitHub PR number for this bead, or 0 when no PR exists yet.
+	PRNumber int
+	// PRURL is the full https://github.com/<owner>/<repo>/pull/<n> link for the
+	// bead's PR, or empty when no PR exists or the anvil's repo URL is unknown.
+	PRURL string
 }
 
 // queueNavItem represents a navigable item in the grouped queue panel.
@@ -3388,16 +3393,21 @@ func (m *Model) renderQueue(width, height int) string {
 				lastSection = item.Section
 			}
 
-			// Main bead line.
+			// Main bead line: priority + bead ID, then the PR column, then the
+			// anvil suffix on the right. The PR cell is rendered outside the
+			// selection highlight because it may carry an OSC 8 hyperlink escape
+			// that must not be wrapped by lipgloss styling.
 			priority := priorityStyle(item.Priority)
 			anvilSuffix := ""
 			if !m.queueGrouped {
 				anvilSuffix = " " + dimStyle.Render(item.Anvil)
 			}
-			mainLine := fmt.Sprintf("%s%s %s%s", indent, priority, item.BeadID, anvilSuffix)
+			beadPart := fmt.Sprintf("%s%s %s", indent, priority, item.BeadID)
 			if ni == m.queueVP.cursor {
-				mainLine = selectedStyle.Render(mainLine)
+				beadPart = selectedStyle.Render(beadPart)
 			}
+			prCell := renderQueuePRCell(item.PRNumber, item.PRURL)
+			mainLine := beadPart + "  " + prCell + anvilSuffix
 			rows = append(rows, displayRow{text: mainLine, navIdx: ni})
 
 			// Title line.
@@ -4689,6 +4699,59 @@ func phaseTag(phase string) string {
 	default:
 		return lipgloss.NewStyle().Foreground(colorMuted).Render("[idle]")
 	}
+}
+
+// renderOSC8Link wraps text in an OSC 8 terminal hyperlink escape sequence,
+// making the text clickable in supporting terminals (e.g. Windows Terminal,
+// iTerm2). When url is empty the text is returned unchanged.
+//
+// To avoid terminal escape injection, the OSC 8 sequence is only emitted when
+// both url and text contain no ASCII control characters (e.g. ESC, BEL).
+func renderOSC8Link(url, text string) string {
+	if url == "" {
+		return text
+	}
+	if !isSafeForOSC8(url) || !isSafeForOSC8(text) {
+		return text
+	}
+	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
+}
+
+// isSafeForOSC8 reports whether s can be safely embedded into an OSC 8
+// hyperlink sequence. It rejects ASCII control characters (0x00-0x1F, 0x7F),
+// including ESC and BEL, which could otherwise be used for terminal escape
+// injection.
+func isSafeForOSC8(s string) bool {
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b < 0x20 || b == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// prColumnWidth is the fixed display width reserved for the queue PR column
+// (e.g. "PR #1234"). It keeps the bead and PR columns aligned across rows
+// whether or not a given bead has a PR yet.
+const prColumnWidth = 8
+
+// renderQueuePRCell returns the styled, fixed-width PR cell for a queue row.
+// When the bead has a PR it shows "PR #N" as a clickable OSC 8 hyperlink (when
+// a URL is known); otherwise it returns blank padding of the same width so the
+// surrounding columns stay aligned. The visible text is padded to
+// prColumnWidth before the hyperlink escape is applied, so the OSC 8 control
+// bytes do not count toward the column width.
+func renderQueuePRCell(prNumber int, prURL string) string {
+	if prNumber <= 0 {
+		return strings.Repeat(" ", prColumnWidth)
+	}
+	label := fmt.Sprintf("PR #%d", prNumber)
+	if w := lipgloss.Width(label); w < prColumnWidth {
+		label += strings.Repeat(" ", prColumnWidth-w)
+	}
+	linked := renderOSC8Link(prURL, label)
+	return lipgloss.NewStyle().Foreground(colorInfo).Render(linked)
 }
 
 // eventTypeStyle returns a styled event type.
