@@ -1802,6 +1802,65 @@ func (db *DB) RecentEventsExcluding(n int, excludeTypes []EventType) ([]Event, e
 	return events, rows.Err()
 }
 
+// RecentEventsMatching returns the n most recent events whose timestamp, type,
+// bead_id, or message contains the given pattern (case-insensitive substring
+// match), excluding the given types. Unlike RecentEventsExcluding, the match is
+// applied at the SQL level so the entire event log is searched — not just the
+// most recent n rows. The LIMIT still caps results at n to protect callers
+// (e.g. the TUI render) from unbounded result sets.
+//
+// An empty pattern is treated as "match everything" and is equivalent to
+// RecentEventsExcluding.
+func (db *DB) RecentEventsMatching(pattern string, n int, excludeTypes []EventType) ([]Event, error) {
+	if pattern == "" {
+		return db.RecentEventsExcluding(n, excludeTypes)
+	}
+
+	var conditions []string
+	var args []any
+
+	if len(excludeTypes) > 0 {
+		placeholders := make([]string, len(excludeTypes))
+		for i, t := range excludeTypes {
+			placeholders[i] = "?"
+			args = append(args, string(t))
+		}
+		conditions = append(conditions, "type NOT IN ("+strings.Join(placeholders, ",")+")")
+	}
+
+	// Case-insensitive substring match across the searchable columns. LIKE is
+	// case-insensitive for ASCII in SQLite by default; lower-casing both sides
+	// keeps the behavior aligned with the TUI's in-memory filter for any
+	// non-ASCII content as well.
+	like := "%" + strings.ToLower(pattern) + "%"
+	conditions = append(conditions,
+		"(LOWER(timestamp) LIKE ? OR LOWER(type) LIKE ? OR LOWER(bead_id) LIKE ? OR LOWER(message) LIKE ?)")
+	args = append(args, like, like, like, like)
+
+	args = append(args, n)
+	query := `SELECT id, timestamp, type, message, bead_id, anvil
+		 FROM events WHERE ` + strings.Join(conditions, " AND ") + `
+		 ORDER BY timestamp DESC, id DESC LIMIT ?`
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var typ, ts string
+		if err := rows.Scan(&e.ID, &ts, &typ, &e.Message, &e.BeadID, &e.Anvil); err != nil {
+			return nil, err
+		}
+		e.Type = EventType(typ)
+		e.Timestamp = parseTime(ts)
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
 // EventsSince returns events with ID greater than lastID, ordered oldest-first.
 // Used by the web SSE activity stream to deliver new events to connected
 // clients; the oldest-first ordering and id > lastID predicate make it trivial
