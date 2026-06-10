@@ -2538,7 +2538,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 	// are untouched and finish normally; only new claims/dispatch are skipped.
 	// Manual `forge queue run` remains allowed (handled in the run_bead path).
 	if d.dispatchPaused.Load() {
-		d.logger.Info("dispatch paused (manual), skipping dispatch")
+		d.logger.Debug("dispatch paused (manual), skipping dispatch")
 		return
 	}
 

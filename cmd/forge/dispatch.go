@@ -33,8 +33,10 @@ func sendDispatchToggle(cmdType, action string) error {
 	}
 	if resp.Type == "error" {
 		var e map[string]string
-		_ = json.Unmarshal(resp.Payload, &e)
-		return fmt.Errorf("daemon error: %s", e["message"])
+		if err := json.Unmarshal(resp.Payload, &e); err == nil && e["message"] != "" {
+			return fmt.Errorf("daemon error: %s", e["message"])
+		}
+		return fmt.Errorf("daemon error: %s", string(resp.Payload))
 	}
 
 	if jsonOutput {
