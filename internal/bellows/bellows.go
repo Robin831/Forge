@@ -800,12 +800,12 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		_ = m.db.UpdatePRStatusIfNeedsFix(pr.ID, state.PRApproved)
 	}
 
-	// Assay trigger gate: before ready-to-merge detection, emit
-	// EventPRReviewNeeded when the current head has not yet been reviewed and
-	// all gating conditions hold (see shouldEmitReviewNeeded). Placed here so a
-	// PR's head is offered for AI review once CI has settled but before/while it
-	// awaits merge. No-op unless an Assay config accessor is registered.
-	m.maybeEmitReviewNeeded(ctx, pr, status, newSnap, ciInProgress, dailyAssayCost)
+	// Assay trigger gate: emit EventPRReviewNeeded when the current head has not
+	// yet been reviewed and all gating conditions hold (see
+	// shouldEmitReviewNeeded). Assay reviews on first sighting regardless of CI
+	// state — like Copilot — so its findings are available early enough to feed
+	// the Burnish fix loop. No-op unless an Assay config accessor is registered.
+	m.maybeEmitReviewNeeded(ctx, pr, status, newSnap, dailyAssayCost)
 
 	// Detect transition to fully ready-to-merge state (CI passing +
 	// no conflicts, unresolved threads, or pending reviews).
@@ -1100,10 +1100,6 @@ type reviewGateInputs struct {
 	skipDrafts      bool
 	headSHA         string
 	lastReviewedSHA string
-	ciInProgress    bool
-	ciPassing       bool
-	ciFixCount      int
-	maxCIFix        int
 	lastAssayRun    time.Time // zero when no prior run exists
 	now             time.Time
 	debounceSeconds int
@@ -1114,9 +1110,16 @@ type reviewGateInputs struct {
 // shouldEmitReviewNeeded returns true when EventPRReviewNeeded should fire for a
 // PR. It emits only when ALL hold: Assay is enabled; the PR is managed, open,
 // and not a (skipped) draft; the current head differs from the last reviewed
-// head; CI is settled (not in progress) and either passing or past the CI-fix
-// cap; no Assay run occurred within the debounce window; and the daily Assay
+// head; no Assay run occurred within the debounce window; and the daily Assay
 // cost is below the configured limit.
+//
+// CI state is deliberately NOT a gate. Assay reviews the diff (logic, security,
+// test gaps), which does not depend on CI colour, and Forge's Temper already
+// runs build/test/lint before the PR is created so PR-time CI failures are rare.
+// Gating on green CI made Assay fire only once the PR had stabilised (≈ ready to
+// merge) — too late to feed the Burnish fix loop. Reviewing on first sighting,
+// like Copilot, is the intended behaviour; the debounce + immutable head SHA +
+// cross-run dedup absorb any churn from rapid pushes.
 func shouldEmitReviewNeeded(in reviewGateInputs) bool {
 	if !in.enabled {
 		return false
@@ -1135,12 +1138,6 @@ func shouldEmitReviewNeeded(in reviewGateInputs) bool {
 	if in.headSHA == "" || in.headSHA == in.lastReviewedSHA {
 		return false
 	}
-	if in.ciInProgress {
-		return false
-	}
-	if !in.ciPassing && in.ciFixCount < in.maxCIFix {
-		return false
-	}
 	debounce := in.debounceSeconds
 	if debounce <= 0 {
 		debounce = defaultAssayDebounceSeconds
@@ -1157,7 +1154,7 @@ func shouldEmitReviewNeeded(in reviewGateInputs) bool {
 // maybeEmitReviewNeeded evaluates the Assay trigger gate for a managed, open PR
 // and emits EventPRReviewNeeded when all conditions hold. It is a no-op when no
 // Assay config accessor has been registered (the feature is disabled).
-func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, status *vcs.PRStatus, newSnap *prSnapshot, ciInProgress bool, dailyAssayCost *float64) {
+func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, status *vcs.PRStatus, newSnap *prSnapshot, dailyAssayCost *float64) {
 	if m.assayConfig == nil {
 		return
 	}
@@ -1185,10 +1182,6 @@ func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, statu
 		skipDrafts:      cfg.SkipDrafts,
 		headSHA:         status.HeadSHA,
 		lastReviewedSHA: m.lastReviewedSHA(pr),
-		ciInProgress:    ciInProgress,
-		ciPassing:       newSnap.CIPassing,
-		ciFixCount:      pr.CIFixCount,
-		maxCIFix:        m.maxCIFixAttempts(),
 		lastAssayRun:    lastRun,
 		now:             now,
 		debounceSeconds: cfg.DebounceSeconds,

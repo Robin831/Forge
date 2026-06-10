@@ -1618,10 +1618,6 @@ func TestShouldEmitReviewNeeded(t *testing.T) {
 			skipDrafts:      true,
 			headSHA:         "abc1234deadbeef",
 			lastReviewedSHA: "old999",
-			ciInProgress:    false,
-			ciPassing:       true,
-			ciFixCount:      0,
-			maxCIFix:        5,
 			lastAssayRun:    time.Time{},
 			now:             now,
 			debounceSeconds: 300,
@@ -1643,9 +1639,6 @@ func TestShouldEmitReviewNeeded(t *testing.T) {
 		{"draft without skip_drafts", func(in *reviewGateInputs) { in.draft = true; in.skipDrafts = false }, true},
 		{"head already reviewed", func(in *reviewGateInputs) { in.lastReviewedSHA = in.headSHA }, false},
 		{"empty head SHA", func(in *reviewGateInputs) { in.headSHA = "" }, false},
-		{"CI in progress", func(in *reviewGateInputs) { in.ciInProgress = true }, false},
-		{"CI not passing and under max fix attempts", func(in *reviewGateInputs) { in.ciPassing = false; in.ciFixCount = 2 }, false},
-		{"CI not passing but at max fix attempts", func(in *reviewGateInputs) { in.ciPassing = false; in.ciFixCount = 5 }, true},
 		{"within debounce window", func(in *reviewGateInputs) { in.lastAssayRun = now.Add(-100 * time.Second) }, false},
 		{"outside debounce window", func(in *reviewGateInputs) { in.lastAssayRun = now.Add(-400 * time.Second) }, true},
 		{"within default debounce window", func(in *reviewGateInputs) { in.debounceSeconds = 0; in.lastAssayRun = now.Add(-100 * time.Second) }, false},
@@ -1696,7 +1689,7 @@ func TestMaybeEmitReviewNeeded_EmitsWhenUnreviewed(t *testing.T) {
 
 	status := &vcs.PRStatus{State: "OPEN", HeadRefName: "forge/forge-abc", HeadSHA: "abc1234", URL: "https://example/pr/101"}
 	snap := &prSnapshot{CIPassing: true}
-	m.maybeEmitReviewNeeded(context.Background(), pr, status, snap, false, float64Ptr(0))
+	m.maybeEmitReviewNeeded(context.Background(), pr, status, snap, float64Ptr(0))
 
 	require.Len(t, got, 1)
 	assert.Equal(t, EventPRReviewNeeded, got[0].EventType)
@@ -1744,7 +1737,7 @@ func TestMaybeEmitReviewNeeded_SuppressedWhenHeadAlreadyReviewed(t *testing.T) {
 
 	status := &vcs.PRStatus{State: "OPEN", HeadRefName: "forge/forge-xyz", HeadSHA: "abc1234"}
 	snap := &prSnapshot{CIPassing: true}
-	m.maybeEmitReviewNeeded(context.Background(), pr, status, snap, false, float64Ptr(0))
+	m.maybeEmitReviewNeeded(context.Background(), pr, status, snap, float64Ptr(0))
 
 	assert.Empty(t, got, "gate must not emit when the current head has already been reviewed")
 }
@@ -1763,6 +1756,6 @@ func TestMaybeEmitReviewNeeded_NoConfigIsNoop(t *testing.T) {
 	m.OnEvent(func(_ context.Context, ev PREvent) { got = append(got, ev) })
 
 	status := &vcs.PRStatus{State: "OPEN", HeadSHA: "abc1234"}
-	m.maybeEmitReviewNeeded(context.Background(), pr, status, &prSnapshot{CIPassing: true}, false, float64Ptr(0))
+	m.maybeEmitReviewNeeded(context.Background(), pr, status, &prSnapshot{CIPassing: true}, float64Ptr(0))
 	assert.Empty(t, got)
 }
