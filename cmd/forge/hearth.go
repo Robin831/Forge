@@ -6,7 +6,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"sort"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -15,7 +17,30 @@ import (
 	"github.com/Robin831/Forge/internal/hearth"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/vcs/github"
 )
+
+// anvilRepoBaseURL derives an anvil's GitHub repository base URL
+// (e.g. "https://github.com/owner/repo") from its git remote "origin".
+// It returns an empty string when the path is blank, the remote is unreadable,
+// or the URL cannot be parsed as a GitHub repo — callers then fall back to
+// rendering PR numbers as plain text without a hyperlink.
+func anvilRepoBaseURL(anvilPath string) string {
+	if anvilPath == "" {
+		return ""
+	}
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd.Dir = anvilPath
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	owner, repo, err := github.ParseRepoURL(strings.TrimSpace(string(out)))
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+}
 
 func init() {
 	rootCmd.AddCommand(hearthCmd)
@@ -46,10 +71,14 @@ var hearthCmd = &cobra.Command{
 
 		anvilNames := make([]string, 0, len(cfg.Anvils))
 		autoMergeAnvils := make(map[string]bool)
+		anvilRepoURLs := make(map[string]string)
 		for name, a := range cfg.Anvils {
 			anvilNames = append(anvilNames, name)
 			if a.AutoMerge {
 				autoMergeAnvils[name] = true
+			}
+			if url := anvilRepoBaseURL(a.Path); url != "" {
+				anvilRepoURLs[name] = url
 			}
 		}
 		sort.Strings(anvilNames)
@@ -67,6 +96,7 @@ var hearthCmd = &cobra.Command{
 			// Hearth reflects changes after restart.
 			AutoMergeAnvils: func() map[string]bool { return autoMergeAnvils },
 			WicketEnabled:   cfg.Settings.WicketEnabled,
+			AnvilRepoURLs:   anvilRepoURLs,
 		}
 
 		model := hearth.NewModel(ds)

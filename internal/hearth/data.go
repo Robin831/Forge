@@ -97,6 +97,26 @@ type DataSource struct {
 	// WicketEnabled controls whether the Wicket panel is shown in the TUI.
 	// Set to true when wicket_enabled is true in the loaded config.
 	WicketEnabled bool
+	// AnvilRepoURLs maps an anvil name to its GitHub repository base URL
+	// (e.g. "https://github.com/owner/repo"), derived once at startup from the
+	// anvil's git remote. The Queue panel uses it to build clickable PR links.
+	// An anvil missing from the map (or a blank value) renders PR numbers as
+	// plain text without a hyperlink.
+	AnvilRepoURLs map[string]string
+}
+
+// prURLForBead builds the GitHub PR URL for a bead's PR from the anvil's
+// repository base URL. Returns an empty string when the base URL is unknown
+// or the PR number is not positive, so callers fall back to plain text.
+func prURLForBead(anvilRepoURLs map[string]string, anvil string, prNumber int) string {
+	if prNumber <= 0 {
+		return ""
+	}
+	base := anvilRepoURLs[anvil]
+	if base == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/pull/%d", strings.TrimRight(base, "/"), prNumber)
 }
 
 // Tick returns a Bubbletea command that sends a TickMsg after the interval.
@@ -109,15 +129,31 @@ func Tick() tea.Cmd {
 // FetchQueue reads the daemon's cached queue from the state DB.
 // The daemon writes queue data on each poll cycle, so the Hearth TUI
 // always reflects the daemon's view without running its own bd ready calls.
-func FetchQueue(db *state.DB) tea.Cmd {
+// Each queued bead is enriched with its open PR number and a clickable GitHub
+// URL by joining the prs table on (anvil, bead ID).
+func FetchQueue(ds *DataSource) tea.Cmd {
 	return func() tea.Msg {
-		cached, err := db.QueueCache()
+		cached, err := ds.DB.QueueCache()
 		if err != nil {
 			return QueueErrorMsg{Err: err}
 		}
 
+		// Build a lookup of (anvil, bead ID) → PR number from open PRs so each
+		// queued bead can show its PR. Keyed by anvil+\x00+beadID to avoid
+		// collisions between anvils that reuse bead IDs.
+		prByBead := make(map[string]int)
+		if prs, prErr := ds.DB.OpenPRs(); prErr == nil {
+			for _, p := range prs {
+				if p.BeadID == "" || p.Number == 0 {
+					continue
+				}
+				prByBead[p.Anvil+"\x00"+p.BeadID] = p.Number
+			}
+		}
+
 		var items []QueueItem
 		for _, c := range cached {
+			prNumber := prByBead[c.Anvil+"\x00"+c.BeadID]
 			items = append(items, QueueItem{
 				BeadID:      c.BeadID,
 				Title:       c.Title,
@@ -127,6 +163,8 @@ func FetchQueue(db *state.DB) tea.Cmd {
 				Status:      c.Status,
 				Section:     string(c.Section),
 				Assignee:    c.Assignee,
+				PRNumber:    prNumber,
+				PRURL:       prURLForBead(ds.AnvilRepoURLs, c.Anvil, prNumber),
 			})
 		}
 
@@ -1158,7 +1196,7 @@ func FetchWicketSummary(db *state.DB) tea.Cmd {
 // controlled by healthTickDivisor in the TickMsg handler.
 func FetchAll(ds *DataSource, logCache *LogTailerCache) tea.Cmd {
 	return tea.Batch(
-		FetchQueue(ds.DB),
+		FetchQueue(ds),
 		FetchNeedsAttention(ds),
 		FetchReadyToMerge(*ds),
 		FetchWorkers(ds.DB, logCache),
