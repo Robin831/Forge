@@ -1229,6 +1229,32 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 }
 
+// assaySummaryLine renders the one-line tally shown above the severity table in
+// Assay's top-level review comment, e.g. "Assay (AI review): 2 important, 4 nit".
+// Returns a "no issues" line when the finding set is empty so the summary review
+// still reads cleanly on a clean PR.
+func assaySummaryLine(findings []assay.Finding) string {
+	var imp, nit, pre int
+	for _, f := range findings {
+		switch f.Severity {
+		case assay.SeverityImportant:
+			imp++
+		case assay.SeverityNit:
+			nit++
+		case assay.SeverityPreExisting:
+			pre++
+		}
+	}
+	if imp == 0 && nit == 0 && pre == 0 {
+		return "Assay (AI review): no issues found."
+	}
+	parts := []string{fmt.Sprintf("%d important", imp), fmt.Sprintf("%d nit", nit)}
+	if pre > 0 {
+		parts = append(parts, fmt.Sprintf("%d pre-existing", pre))
+	}
+	return "Assay (AI review): " + strings.Join(parts, ", ")
+}
+
 // handleLifecycleAction handles PR-triggered fixes from Bellows.
 func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.ActionRequest) {
 	d.logger.Info("lifecycle action requested", "action", req.Action, "pr", req.PRNumber, "bead", req.BeadID)
@@ -1713,6 +1739,43 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 						"cost_usd", run.CostUSD,
 						"duration_ms", result.Duration.Milliseconds(),
 					)
+
+					// Live posting. Post() is a no-op when engineCfg.ShadowMode
+					// is true (it self-guards), so this is safe to call on every
+					// anvil — only anvils whose resolved shadow_mode is false
+					// produce public side effects. The resolver is the GitHub
+					// provider when available (it satisfies ThreadResolver via
+					// ThreadIDByBodyHeader + ResolveThread); other VCS providers
+					// fall back to nil, which skips thread auto-resolution but
+					// still posts inline comments.
+					if !engineCfg.ShadowMode {
+						var resolver assay.ThreadResolver
+						if tr, ok := d.vcsForAnvil(req.Anvil).(assay.ThreadResolver); ok {
+							resolver = tr
+						}
+						poster := assay.NewPoster(d.db, resolver)
+						postRes, perr := poster.Post(workerCtx, engineCfg, assay.PostRequest{
+							Anvil:        req.Anvil,
+							PRNumber:     req.PRNumber,
+							HeadSHA:      req.HeadSHA,
+							WorktreePath: wt.Path,
+							SummaryLine:  assaySummaryLine(result.Findings),
+							Findings:     result.Findings,
+						})
+						if perr != nil {
+							d.logger.Error("Assay posting failed", "pr", req.PRNumber, "bead", req.BeadID, "error", perr)
+						} else if postRes != nil {
+							run.PostedCount = postRes.Posted
+							d.logger.Info("Assay findings posted",
+								"pr", req.PRNumber,
+								"bead", req.BeadID,
+								"posted", postRes.Posted,
+								"failed", postRes.Failed,
+								"resolved", postRes.Resolved,
+								"summary", postRes.SummaryPosted,
+							)
+						}
+					}
 				}
 			}
 
