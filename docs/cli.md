@@ -28,6 +28,37 @@ Stop the daemon gracefully.
 forge down
 ```
 
+### `forge pause`
+
+Pause daemon-wide auto-dispatch. Forge stops claiming and dispatching **new**
+beads, but all currently-running workers are left untouched and finish normally.
+Manual `forge queue run <id>` still works while paused.
+
+```bash
+forge pause
+```
+
+Use this to drain the active worker set to zero before rebuilding or restarting
+the daemon mid-day without trampling in-flight work: pause, wait for the active
+workers to finish, then restart cleanly.
+
+Note: pausing does **not** make a restart free — workers still running at restart
+are killed and their beads reset to open (orphan recovery). The value of pausing
+is letting the active set drain to empty first.
+
+The pause is in-memory only and **resets on daemon restart** — a restart resumes
+dispatch by default (resuming dispatch is the whole point of restarting), so
+there is no persisted pause flag to clear afterward.
+
+### `forge resume`
+
+Resume auto-dispatch after a `forge pause`. New beads are dispatched again on the
+next poll (a poll is triggered immediately).
+
+```bash
+forge resume
+```
+
 ### `forge status`
 
 Show daemon status, active workers, provider quotas, and recent events.
@@ -42,6 +73,7 @@ Output includes:
 - Active worker count and queue size
 - Open PR count
 - Provider quota information (requests/tokens remaining, reset times)
+- Dispatch pause indicator (shown when paused via `forge pause`)
 - Active workers table (ID, bead, anvil, status, running time)
 - Recent events
 

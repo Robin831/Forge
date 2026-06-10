@@ -31,7 +31,7 @@ import (
 
 // Command is a message sent from a client to the daemon.
 type Command struct {
-	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "set_clarification", "clear_clarification", "assay_rerun"
+	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "set_clarification", "clear_clarification", "assay_rerun", "pause_dispatch", "resume_dispatch"
 	Payload json.RawMessage `json:"payload"` // Type-specific data
 	// ReadTimeout is an optional client-side timeout for reading the response.
 	// Zero uses DefaultReadTimeout. Long-running commands that go through bd or
@@ -89,6 +89,11 @@ type StatusPayload struct {
 	// currently paused due to hitting the daily cost limit. Manual run_bead
 	// dispatch remains allowed while this flag is true.
 	CostLimitPaused bool `json:"cost_limit_paused,omitempty"`
+	// DispatchPaused reports that auto-dispatch is manually paused via the
+	// pause_dispatch IPC command (forge pause / Hearth toggle). Running workers
+	// keep going; only new dispatch is suspended. Manual run_bead dispatch
+	// remains allowed. The flag is in-memory only and resets on daemon restart.
+	DispatchPaused bool `json:"dispatch_paused,omitempty"`
 	// CopilotPremiumRequests is the weighted count of Copilot premium requests used today.
 	CopilotPremiumRequests float64 `json:"copilot_premium_requests,omitempty"`
 	// CopilotRequestLimit is the configured daily limit (0 = no limit).

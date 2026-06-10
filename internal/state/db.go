@@ -1579,6 +1579,8 @@ const (
 	EventDispatchRecoveredStrandedBranch EventType = "dispatch_recovered_stranded_branch"
 	EventRateLimited                     EventType = "rate_limited"
 	EventCostLimitHit                    EventType = "cost_limit_hit"
+	EventDispatchPaused                  EventType = "dispatch_paused"
+	EventDispatchResumed                 EventType = "dispatch_resumed"
 	EventSchematicSubBead                EventType = "schematic_sub_bead"
 	EventWorkerStalled                   EventType = "worker_stalled"
 	EventBeadTagged                      EventType = "bead_tagged"

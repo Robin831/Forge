@@ -86,6 +86,7 @@ export interface StatusResponse {
   daily_cost?: number
   daily_cost_limit?: number
   cost_limit_paused?: boolean
+  dispatch_paused?: boolean
   copilot_premium_requests?: number
   copilot_request_limit?: number
   copilot_limit_reached?: boolean
@@ -469,6 +470,11 @@ export interface ActionRequest {
 }
 
 export const actions = {
+  // pauseDispatch / resumeDispatch toggle the daemon-wide auto-dispatch
+  // switch. Pausing stops new workers from being dispatched while leaving
+  // running workers untouched; resuming re-enables dispatch immediately.
+  pauseDispatch: () => apiPost<{ message?: string }>(`/api/dispatch/pause`),
+  resumeDispatch: () => apiPost<{ message?: string }>(`/api/dispatch/resume`),
   killWorker: (workerID: string) => apiPost(`/api/worker/${encodeURIComponent(workerID)}/kill`),
   retry: (beadID: string, anvil: string) =>
     apiPost(`/api/queue/${encodeURIComponent(beadID)}/retry`, { anvil }),

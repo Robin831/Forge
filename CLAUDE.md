@@ -29,6 +29,8 @@ go vet ./...
 ```bash
 forge up                              # Start the daemon
 forge down                            # Stop the daemon
+forge pause                           # Pause auto-dispatch (running workers finish; no new dispatch)
+forge resume                          # Resume auto-dispatch
 forge status                          # Show daemon status (via IPC)
 forge hearth                          # Open TUI dashboard
 forge anvil add <name> <path>         # Register a repository

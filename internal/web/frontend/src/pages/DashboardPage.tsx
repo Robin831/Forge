@@ -9,6 +9,7 @@ import type {
   WorkersResponse,
 } from '../api'
 import AppHeader from '../components/AppHeader'
+import DispatchToggle from '../components/DispatchToggle'
 import QueuePane from '../components/QueuePane'
 import WorkersPane from '../components/WorkersPane'
 import NeedsAttentionPane from '../components/NeedsAttentionPane'
@@ -37,10 +38,23 @@ export default function DashboardPage() {
   const queueCount = queue.data?.items?.length ?? 0
   const crucibleCount = crucibles.data?.crucibles?.length ?? 0
   const daemonHealthy = status.data?.running
+  const dispatchPaused = status.data?.dispatch_paused ?? false
 
   return (
     <div className="flex min-h-full w-full flex-col gap-6 p-4 sm:p-6">
       <AppHeader daemonOnline={daemonHealthy} daemonLoading={status.loading} />
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {dispatchPaused ? (
+          <p className="text-sm text-amber-200/90">
+            Auto-dispatch is <strong>paused</strong>. Running workers continue; no new beads
+            are dispatched. Resume to start dispatching again.
+          </p>
+        ) : (
+          <span aria-hidden />
+        )}
+        <DispatchToggle paused={dispatchPaused} />
+      </div>
 
       <section
         aria-label="Summary"
