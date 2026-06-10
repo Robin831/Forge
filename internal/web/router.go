@@ -65,6 +65,11 @@ func (s *Server) routes() http.Handler {
 		r.Get("/bead/{bead_id}", s.handleBeadDetail)
 		r.Get("/bead/{bead_id}/deps", s.handleBeadDeps)
 
+		// Daemon-wide dispatch control (Hearth 2.0). Pause/resume the
+		// auto-dispatch of new workers without touching running ones.
+		r.Post("/dispatch/pause", s.handleDispatchPause)
+		r.Post("/dispatch/resume", s.handleDispatchResume)
+
 		// Destructive admin actions (Hearth 2.0).
 		r.Post("/worker/{id}/kill", s.handleKillWorker)
 		r.Post("/queue/{bead_id}/retry", s.handleQueueRetry)

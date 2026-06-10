@@ -91,6 +91,21 @@ func (s *Server) dispatchAction(w http.ResponseWriter, cmdType string, payload a
 	return resp
 }
 
+// handleDispatchPause proxies POST /api/dispatch/pause to the daemon's
+// pause_dispatch IPC. It pauses auto-dispatch of new workers daemon-wide;
+// running workers are left untouched. The body is ignored.
+func (s *Server) handleDispatchPause(w http.ResponseWriter, r *http.Request) {
+	s.logActor(r, "pause_dispatch")
+	s.dispatchAction(w, "pause_dispatch", struct{}{})
+}
+
+// handleDispatchResume proxies POST /api/dispatch/resume to the daemon's
+// resume_dispatch IPC, re-enabling auto-dispatch. The body is ignored.
+func (s *Server) handleDispatchResume(w http.ResponseWriter, r *http.Request) {
+	s.logActor(r, "resume_dispatch")
+	s.dispatchAction(w, "resume_dispatch", struct{}{})
+}
+
 // handleKillWorker proxies POST /api/worker/{id}/kill to the daemon's
 // kill_worker IPC. The body may be empty.
 func (s *Server) handleKillWorker(w http.ResponseWriter, r *http.Request) {

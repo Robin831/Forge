@@ -242,6 +242,14 @@ type Daemon struct {
 	// to avoid spamming the event log every poll cycle.
 	costLimitLoggedDate atomic.Value // stores string (YYYY-MM-DD)
 
+	// dispatchPaused is a manual daemon-wide pause switch. When true,
+	// pollAndDispatch still polls (so the Hearth queue stays current) but
+	// returns before claiming/dispatching any new beads — currently running
+	// workers are left untouched and finish normally. Manual `forge queue run`
+	// dispatch is still allowed (mirrors the cost-limit pause behavior). The
+	// flag is in-memory only and resets to false on daemon restart by design.
+	dispatchPaused atomic.Bool
+
 	// Per-anvil VCS providers for PR operations (GitHub, GitLab, etc.).
 	vcsProviders   map[string]vcs.Provider
 	vcsProvidersMu sync.RWMutex
@@ -2526,6 +2534,14 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		return
 	}
 
+	// Manual pause switch: skip all new dispatch while paused. Running workers
+	// are untouched and finish normally; only new claims/dispatch are skipped.
+	// Manual `forge queue run` remains allowed (handled in the run_bead path).
+	if d.dispatchPaused.Load() {
+		d.logger.Info("dispatch paused (manual), skipping dispatch")
+		return
+	}
+
 	// Check daily cost limit before dispatching new work.
 	costLimit := cfg.Settings.DailyCostLimit
 	if costLimit > 0 {
@@ -4010,6 +4026,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			DailyCost:              todayCost,
 			DailyCostLimit:         costLimit,
 			CostLimitPaused:        costLimit > 0 && todayCost >= costLimit,
+			DispatchPaused:         d.dispatchPaused.Load(),
 			CopilotPremiumRequests: copilotReqs,
 			CopilotRequestLimit:    copilotLimit,
 			CopilotLimitReached:    copilotLimit > 0 && copilotReqs >= float64(copilotLimit),
@@ -4176,6 +4193,29 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			}
 		}()
 		data, _ := json.Marshal(map[string]string{"message": "poll triggered"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "pause_dispatch":
+		// Idempotent: pausing while already paused is a no-op success.
+		already := d.dispatchPaused.Swap(true)
+		if !already {
+			_ = d.db.LogEvent(state.EventDispatchPaused, "Dispatch manually paused — running workers continue; no new beads dispatched", "", "")
+			d.logger.Info("dispatch paused (manual)")
+		}
+		data, _ := json.Marshal(map[string]string{"message": "dispatch paused"})
+		return ipc.Response{Type: "ok", Payload: data}
+
+	case "resume_dispatch":
+		// Idempotent: resuming while not paused is a no-op success.
+		was := d.dispatchPaused.Swap(false)
+		if was {
+			_ = d.db.LogEvent(state.EventDispatchResumed, "Dispatch manually resumed", "", "")
+			d.logger.Info("dispatch resumed (manual)")
+			// Kick a poll so resuming takes effect immediately rather than
+			// waiting for the next ticker.
+			go d.pollAndDispatch(d.runCtx, false)
+		}
+		data, _ := json.Marshal(map[string]string{"message": "dispatch resumed"})
 		return ipc.Response{Type: "ok", Payload: data}
 
 	case "reconcile_prs":

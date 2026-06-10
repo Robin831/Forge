@@ -547,6 +547,109 @@ exit 0
 	assert.Equal(t, 1, countCostLimitEvents(), "cost_limit_hit must not be logged after simulated restart when already notified today")
 }
 
+func TestPollAndDispatch_ManualPause(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-pause-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// Fake bd returning one ready bead so we can verify dispatch is actually
+	// skipped while paused (not a no-op because no beads exist).
+	var bdScript, bdContent string
+	if runtime.GOOS == "windows" {
+		bdScript = filepath.Join(tmpDir, "bd.bat")
+		bdContent = `@echo off
+if "%1"=="ready" (
+    echo [{"id": "PAUSE-1", "title": "Pause Test Bead", "status": "ready", "priority": 1, "tags": []}]
+    exit /b 0
+)
+exit /b 0
+`
+	} else {
+		bdScript = filepath.Join(tmpDir, "bd")
+		bdContent = `#!/bin/sh
+if [ "$1" = "ready" ]; then
+    echo '[{"id": "PAUSE-1", "title": "Pause Test Bead", "status": "ready", "priority": 1, "tags": []}]'
+    exit 0
+fi
+exit 0
+`
+	}
+	require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+	defer os.Setenv("PATH", oldPath)
+
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := state.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	cfg := &config.Config{
+		Settings: config.SettingsConfig{
+			MaxTotalSmiths: 4,
+			PollInterval:   10 * time.Second,
+		},
+		Anvils: map[string]config.AnvilConfig{
+			"dummy": {Path: tmpDir, AutoDispatch: "all"},
+		},
+	}
+
+	d := &Daemon{
+		db:            db,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		worktreeMgr:   worktree.NewManager(),
+		promptBuilder: prompt.NewBuilder(),
+	}
+	d.cfg.Store(cfg)
+	d.runCtx = context.Background()
+
+	// Pause via IPC: state flag flips and an event is logged.
+	resp := d.handleIPC(ipc.Command{Type: "pause_dispatch"})
+	assert.Equal(t, "ok", resp.Type)
+	assert.True(t, d.dispatchPaused.Load(), "dispatch should be paused after pause_dispatch")
+
+	countEvents := func(et state.EventType) int {
+		events, err := db.RecentEvents(50)
+		require.NoError(t, err)
+		n := 0
+		for _, e := range events {
+			if e.Type == et {
+				n++
+			}
+		}
+		return n
+	}
+	assert.Equal(t, 1, countEvents(state.EventDispatchPaused), "pause should log one event")
+
+	// Pausing again is idempotent — no duplicate event.
+	resp = d.handleIPC(ipc.Command{Type: "pause_dispatch"})
+	assert.Equal(t, "ok", resp.Type)
+	assert.Equal(t, 1, countEvents(state.EventDispatchPaused), "re-pausing must not log again")
+
+	// Poll while paused: the ready bead is surfaced but NOT dispatched.
+	d.pollAndDispatch(context.Background(), true)
+	assert.GreaterOrEqual(t, len(d.lastBeads), 1, "poll should still surface the ready bead while paused")
+	_, inFlight := d.activeBeads.Load("PAUSE-1")
+	assert.False(t, inFlight, "bead should NOT be dispatched while paused")
+
+	// Resume triggers a background poll. Swap to an empty-anvils config first so
+	// that async poll finds no beads to dispatch — keeps the test deterministic
+	// and avoids a real worktree dispatch racing with teardown.
+	d.cfg.Store(&config.Config{Settings: cfg.Settings})
+
+	// Resume: state flag clears and a resume event is logged.
+	resp = d.handleIPC(ipc.Command{Type: "resume_dispatch"})
+	assert.Equal(t, "ok", resp.Type)
+	assert.False(t, d.dispatchPaused.Load(), "dispatch should resume after resume_dispatch")
+	assert.Equal(t, 1, countEvents(state.EventDispatchResumed), "resume should log one event")
+
+	// Resuming again is idempotent — no duplicate event.
+	resp = d.handleIPC(ipc.Command{Type: "resume_dispatch"})
+	assert.Equal(t, "ok", resp.Type)
+	assert.Equal(t, 1, countEvents(state.EventDispatchResumed), "re-resuming must not log again")
+}
+
 func TestHandleIPC_RetryBead(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-test-*")
 	require.NoError(t, err)
