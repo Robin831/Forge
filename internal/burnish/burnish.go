@@ -387,9 +387,13 @@ func buildBatchReviewPrompt(prNumber int, branch, beadID string, comments []vcs.
 
 1. Address ALL %d review comments above in a single pass
 2. Make the requested changes — follow each reviewer's guidance
-3. **Run the test suite** and fix any failures before continuing
-4. Commit with message: "fix: address review comments for %s"
-5. Do NOT push — Forge will run verification and push for you. Exit cleanly after committing.
+3. Comments may come from more than one reviewer (e.g. GitHub Copilot and
+   the Assay AI reviewer) and some may describe the SAME underlying issue in
+   different words or at adjacent lines. Make ONE fix per distinct issue —
+   do not apply the same change twice, and reconcile any that conflict.
+4. **Run the test suite** and fix any failures before continuing
+5. Commit with message: "fix: address review comments for %s"
+6. Do NOT push — Forge will run verification and push for you. Exit cleanly after committing.
 
 `, len(comments), beadID)
 

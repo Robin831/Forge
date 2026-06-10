@@ -1255,6 +1255,135 @@ func assaySummaryLine(findings []assay.Finding) string {
 	return "Assay (AI review): " + strings.Join(parts, ", ")
 }
 
+// runAssayReview performs one Assay review of the PR's current head: it fetches
+// the diff, runs the multi-pass engine (writing findings to pr_findings), and —
+// when the anvil's resolved shadow_mode is false — posts the findings to the PR.
+// It records an assay_runs row and returns it along with any record error.
+// Worker-row lifecycle is the caller's responsibility, so this is reusable from
+// both the ActionAssayReview dispatch and the Burnish pre-fetch coordination
+// step. headSHA is recorded on the run and used as the inline-comment anchor.
+func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID string, prNumber int, headSHA, worktreePath string) (*state.AssayRun, error) {
+	resolved := d.cfg.Load().ResolvedAssay(anvil)
+	engineCfg := assay.FromAssayConfig(resolved)
+
+	started := time.Now()
+	run := &state.AssayRun{
+		Anvil:      anvil,
+		PRNumber:   prNumber,
+		HeadSHA:    headSHA,
+		StartedAt:  started,
+		ShadowMode: engineCfg.ShadowMode,
+	}
+
+	// Fetch the PR diff via `gh pr diff <N>` from the worktree — the full net
+	// diff base..head, i.e. the cumulative change across every commit.
+	diffCmd := executil.HideWindow(exec.CommandContext(ctx, "gh", "pr", "diff", strconv.Itoa(prNumber)))
+	diffCmd.Dir = worktreePath
+	var diffStderr strings.Builder
+	diffCmd.Stderr = &diffStderr
+	diffBytes, diffErr := diffCmd.Output()
+	if diffErr != nil {
+		d.logger.Error("failed to fetch PR diff for Assay", "pr", prNumber, "bead", beadID, "error", diffErr, "stderr", diffStderr.String())
+		run.SkippedReason = "diff fetch failed"
+		run.Error = diffErr.Error()
+	} else {
+		result, rerr := assay.Review(ctx, assay.ReviewRequest{
+			Anvil:     anvil,
+			AnvilPath: anvilPath,
+			PRNumber:  prNumber,
+			HeadSHA:   headSHA,
+			Diff:      string(diffBytes),
+			BeadID:    beadID,
+			Title:     d.db.BeadTitle(beadID, anvil),
+			WorkDir:   worktreePath,
+		}, d.db, engineCfg)
+		if rerr != nil {
+			d.logger.Error("Assay review failed", "pr", prNumber, "bead", beadID, "error", rerr)
+			run.Error = rerr.Error()
+		} else {
+			run.CostUSD = result.CostUSD
+			run.FindingsCount = len(result.Findings)
+			if len(result.PassErrors) > 0 {
+				for _, pe := range result.PassErrors {
+					d.logger.Warn("Assay pass error (partial)", "pr", prNumber, "bead", beadID, "error", pe)
+				}
+				run.Error = strings.Join(result.PassErrors, "; ")
+			}
+			d.logger.Info("Assay review completed",
+				"pr", prNumber, "bead", beadID, "head", headSHA,
+				"findings", run.FindingsCount, "pass_errors", len(result.PassErrors),
+				"shadow", engineCfg.ShadowMode, "cost_usd", run.CostUSD,
+				"duration_ms", result.Duration.Milliseconds(),
+			)
+
+			// Live posting. Post() self-guards on shadow mode, so this only
+			// produces public side effects on anvils whose resolved shadow_mode
+			// is false. The resolver is the GitHub provider when it satisfies
+			// ThreadResolver; other providers fall back to nil (posts comments,
+			// skips thread auto-resolution).
+			if !engineCfg.ShadowMode {
+				var resolver assay.ThreadResolver
+				if tr, ok := d.vcsForAnvil(anvil).(assay.ThreadResolver); ok {
+					resolver = tr
+				}
+				postRes, perr := assay.NewPoster(d.db, resolver).Post(ctx, engineCfg, assay.PostRequest{
+					Anvil:        anvil,
+					PRNumber:     prNumber,
+					HeadSHA:      headSHA,
+					WorktreePath: worktreePath,
+					SummaryLine:  assaySummaryLine(result.Findings),
+					Findings:     result.Findings,
+				})
+				if perr != nil {
+					d.logger.Error("Assay posting failed", "pr", prNumber, "bead", beadID, "error", perr)
+				} else if postRes != nil {
+					run.PostedCount = postRes.Posted
+					d.logger.Info("Assay findings posted",
+						"pr", prNumber, "bead", beadID,
+						"posted", postRes.Posted, "failed", postRes.Failed,
+						"resolved", postRes.Resolved, "summary", postRes.SummaryPosted,
+					)
+				}
+			}
+		}
+	}
+
+	finished := time.Now()
+	run.FinishedAt = &finished
+	run.DurationMs = finished.Sub(started).Milliseconds()
+	recErr := d.db.RecordAssayRun(run)
+	if recErr != nil {
+		d.logger.Error("failed to record Assay run", "pr", prNumber, "bead", beadID, "error", recErr)
+	}
+	return run, recErr
+}
+
+// ensureAssayReviewedHead, for an Assay-live anvil, runs an Assay review of the
+// PR's current head BEFORE Burnish fetches the review-comment set, so a single
+// Burnish pass addresses both Copilot and Assay findings instead of triggering
+// two separate fix cycles. It is a no-op when Assay is disabled or in shadow
+// mode (nothing is posted, so there is nothing to coordinate) or when the
+// current head has already been reviewed. Failures are logged and swallowed —
+// coordination is best-effort and must never block the review-fix itself.
+func (d *Daemon) ensureAssayReviewedHead(ctx context.Context, anvil, anvilPath, beadID string, prNumber int, worktreePath string) {
+	resolved := d.cfg.Load().ResolvedAssay(anvil)
+	if !resolved.IsEnabled() || resolved.IsShadowMode() {
+		return
+	}
+	st, err := d.vcsForAnvil(anvil).CheckStatusLight(ctx, anvilPath, prNumber)
+	if err != nil || st == nil || st.HeadSHA == "" {
+		if err != nil {
+			d.logger.Warn("Burnish/Assay coordination: head SHA lookup failed; fixing without Assay sync", "pr", prNumber, "anvil", anvil, "error", err)
+		}
+		return
+	}
+	if last, lerr := d.db.LastReviewedSHA(anvil, prNumber); lerr == nil && last == st.HeadSHA {
+		return // current head already reviewed; its comments (if any) are posted
+	}
+	d.logger.Info("Burnish/Assay coordination: running Assay before fix so both reviews land in one pass", "pr", prNumber, "anvil", anvil, "head", st.HeadSHA)
+	_, _ = d.runAssayReview(ctx, anvil, anvilPath, beadID, prNumber, st.HeadSHA, worktreePath)
+}
+
 // handleLifecycleAction handles PR-triggered fixes from Bellows.
 func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.ActionRequest) {
 	d.logger.Info("lifecycle action requested", "action", req.Action, "pr", req.PRNumber, "bead", req.BeadID)
@@ -1503,6 +1632,13 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 
 		case lifecycle.ActionFixReview:
 			d.logger.Info("spawning review fix worker", "pr", req.PRNumber, "bead", req.BeadID)
+			// Coordinate with Assay before fetching the comment set: on a live
+			// Assay anvil, ensure Assay has reviewed (and posted on) the current
+			// head so this single Burnish pass addresses both Copilot and Assay
+			// findings rather than running once for Copilot now and again for
+			// Assay later. No-op for shadow/disabled anvils or an already-reviewed
+			// head; best-effort, never blocks the fix.
+			d.ensureAssayReviewedHead(workerCtx, req.Anvil, anvilCfg.Path, req.BeadID, req.PRNumber, wt.Path)
 			_ = d.db.InsertWorker(&state.Worker{
 				ID:           workerID,
 				BeadID:       req.BeadID,
@@ -1669,123 +1805,8 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				break
 			}
 
-			// Resolve config + build engine config from the per-anvil overlay.
-			cfgNow := d.cfg.Load()
-			resolved := cfgNow.ResolvedAssay(req.Anvil)
-			engineCfg := assay.FromAssayConfig(resolved)
-
-			started := time.Now()
-			run := &state.AssayRun{
-				Anvil:      req.Anvil,
-				PRNumber:   req.PRNumber,
-				HeadSHA:    req.HeadSHA,
-				StartedAt:  started,
-				ShadowMode: engineCfg.ShadowMode,
-			}
-
-			// Fetch the PR diff via `gh pr diff <N>` from the worktree. A
-			// fetch failure surfaces as a recorded-but-skipped run so the
-			// LastReviewedSHA advances and Bellows doesn't loop on the same
-			// head; transient failures are recovered on the next push.
-			diffCmd := executil.HideWindow(exec.CommandContext(workerCtx, "gh", "pr", "diff", strconv.Itoa(req.PRNumber)))
-			diffCmd.Dir = wt.Path
-			var diffStderr strings.Builder
-			diffCmd.Stderr = &diffStderr
-			diffBytes, diffErr := diffCmd.Output()
-			if diffErr != nil {
-				d.logger.Error("failed to fetch PR diff for Assay", "pr", req.PRNumber, "bead", req.BeadID, "error", diffErr, "stderr", diffStderr.String())
-				run.SkippedReason = "diff fetch failed"
-				run.Error = diffErr.Error()
-			} else {
-				// Invoke the multi-pass engine. Findings are written to
-				// pr_findings inside Review when db is non-nil, including the
-				// REVIEW.md-driven repository guidance pass.
-				assayReq := assay.ReviewRequest{
-					Anvil:     req.Anvil,
-					AnvilPath: anvilCfg.Path,
-					PRNumber:  req.PRNumber,
-					HeadSHA:   req.HeadSHA,
-					Diff:      string(diffBytes),
-					BeadID:    req.BeadID,
-					Title:     d.db.BeadTitle(req.BeadID, req.Anvil),
-					WorkDir:   wt.Path,
-				}
-				result, rerr := assay.Review(workerCtx, assayReq, d.db, engineCfg)
-				if rerr != nil {
-					d.logger.Error("Assay review failed", "pr", req.PRNumber, "bead", req.BeadID, "error", rerr)
-					run.Error = rerr.Error()
-				} else {
-					run.CostUSD = result.CostUSD
-					run.FindingsCount = len(result.Findings)
-					// Partial failures: some passes errored but others
-					// produced findings. Record the per-pass errors in
-					// assay_runs.error so they show up in the Hearth panel
-					// and log each individually so operators can see which
-					// pass(es) need tuning. The run is NOT marked failed —
-					// the findings we got are still useful.
-					if len(result.PassErrors) > 0 {
-						for _, pe := range result.PassErrors {
-							d.logger.Warn("Assay pass error (partial)", "pr", req.PRNumber, "bead", req.BeadID, "error", pe)
-						}
-						run.Error = strings.Join(result.PassErrors, "; ")
-					}
-					d.logger.Info("Assay review completed",
-						"pr", req.PRNumber,
-						"bead", req.BeadID,
-						"head", req.HeadSHA,
-						"findings", run.FindingsCount,
-						"pass_errors", len(result.PassErrors),
-						"shadow", engineCfg.ShadowMode,
-						"cost_usd", run.CostUSD,
-						"duration_ms", result.Duration.Milliseconds(),
-					)
-
-					// Live posting. Post() is a no-op when engineCfg.ShadowMode
-					// is true (it self-guards), so this is safe to call on every
-					// anvil — only anvils whose resolved shadow_mode is false
-					// produce public side effects. The resolver is the GitHub
-					// provider when available (it satisfies ThreadResolver via
-					// ThreadIDByBodyHeader + ResolveThread); other VCS providers
-					// fall back to nil, which skips thread auto-resolution but
-					// still posts inline comments.
-					if !engineCfg.ShadowMode {
-						var resolver assay.ThreadResolver
-						if tr, ok := d.vcsForAnvil(req.Anvil).(assay.ThreadResolver); ok {
-							resolver = tr
-						}
-						poster := assay.NewPoster(d.db, resolver)
-						postRes, perr := poster.Post(workerCtx, engineCfg, assay.PostRequest{
-							Anvil:        req.Anvil,
-							PRNumber:     req.PRNumber,
-							HeadSHA:      req.HeadSHA,
-							WorktreePath: wt.Path,
-							SummaryLine:  assaySummaryLine(result.Findings),
-							Findings:     result.Findings,
-						})
-						if perr != nil {
-							d.logger.Error("Assay posting failed", "pr", req.PRNumber, "bead", req.BeadID, "error", perr)
-						} else if postRes != nil {
-							run.PostedCount = postRes.Posted
-							d.logger.Info("Assay findings posted",
-								"pr", req.PRNumber,
-								"bead", req.BeadID,
-								"posted", postRes.Posted,
-								"failed", postRes.Failed,
-								"resolved", postRes.Resolved,
-								"summary", postRes.SummaryPosted,
-							)
-						}
-					}
-				}
-			}
-
-			finished := time.Now()
-			run.FinishedAt = &finished
-			run.DurationMs = finished.Sub(started).Milliseconds()
-			if err := d.db.RecordAssayRun(run); err != nil {
-				d.logger.Error("failed to record Assay run", "pr", req.PRNumber, "bead", req.BeadID, "error", err)
-				_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
-			} else if run.Error != "" {
+			run, recErr := d.runAssayReview(workerCtx, req.Anvil, anvilCfg.Path, req.BeadID, req.PRNumber, req.HeadSHA, wt.Path)
+			if recErr != nil || run.Error != "" {
 				_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
 			} else {
 				_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
