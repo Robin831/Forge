@@ -4750,8 +4750,8 @@ func renderQueuePRCell(prNumber int, prURL string) string {
 	if w := lipgloss.Width(label); w < prColumnWidth {
 		label += strings.Repeat(" ", prColumnWidth-w)
 	}
-	styled := lipgloss.NewStyle().Foreground(colorInfo).Render(label)
-	return renderOSC8Link(prURL, styled)
+	linked := renderOSC8Link(prURL, label)
+	return lipgloss.NewStyle().Foreground(colorInfo).Render(linked)
 }
 
 // eventTypeStyle returns a styled event type.
