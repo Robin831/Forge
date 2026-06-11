@@ -213,9 +213,12 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	s.writeIPCResponse(w, resp)
 }
 
-// handleWorkers mirrors the IPC "workers" command.
+// handleWorkers mirrors the IPC "workers" command, enriching each worker that
+// has a pr_number with its pr_url so Hearth 2.0's pipeline view and Workers
+// pane (both fed by /api/workers) can render a clickable GitHub link.
 func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	resp := s.dispatchIPC("workers")
+	resp.Payload = s.enrichWorkerPRURLs(resp.Payload)
 	s.writeIPCResponse(w, resp)
 }
 
