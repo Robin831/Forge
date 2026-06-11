@@ -812,13 +812,43 @@ var gitPushFn = gitPush
 // gitRevParseFn is the function used to resolve git refs. Package-level for test stubbing.
 var gitRevParseFn = gitRevParse
 
-// gitPush pushes the current branch to origin.
+// gitPush pushes the current branch to origin with --force-with-lease.
+//
+// Burnish reuses a per-bead worktree across review-fix runs. If that worktree
+// survived a prior run (a pod restart skipped the deferred worktree Remove, or
+// Remove failed on a file lock) its local base can lag the remote tip — which is
+// Forge's OWN earlier push for this branch — and a plain `git push` is then
+// rejected non-fast-forward, losing the just-temper-verified fix. So fetch the
+// branch first to refresh refs/remotes/origin/<branch>, then push with
+// --force-with-lease: the lease verifies against the true remote tip (so a
+// genuine concurrent third-party push is never clobbered) while still letting the
+// newly verified commits replace Forge's prior attempt. Mirrors smelter's push
+// path (internal/smelter/smelter.go).
 func gitPush(ctx context.Context, worktreePath, branch string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "push", "origin", branch)
+	// Refresh the remote-tracking ref so --force-with-lease leases against the
+	// actual remote tip rather than a stale local ref.
+	fetchCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	fetchCmd := exec.CommandContext(fetchCtx, "git", "-C", worktreePath, "fetch", "origin", branch)
+	executil.HideWindow(fetchCmd)
+	if fout, ferr := fetchCmd.CombinedOutput(); ferr != nil {
+		if strings.Contains(string(fout), "couldn't find remote ref") {
+			// Branch not on origin yet (first push) or auto-deleted after merge.
+			// Clear any stale tracking ref so --force-with-lease doesn't reject
+			// with "(stale info)".
+			pruneCmd := exec.CommandContext(fetchCtx, "git", "-C", worktreePath, "update-ref", "-d", "refs/remotes/origin/"+branch)
+			executil.HideWindow(pruneCmd)
+			_ = pruneCmd.Run() // best effort
+		} else {
+			return fmt.Errorf("git fetch origin %s: %w (output: %s)", branch, ferr, strings.TrimSpace(string(fout)))
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "push", "--force-with-lease", "origin", branch)
 	executil.HideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git push origin %s: %w (output: %s)", branch, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("git push --force-with-lease origin %s: %w (output: %s)", branch, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
