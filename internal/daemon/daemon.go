@@ -1528,29 +1528,35 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			return
 		}
 
-		// Gate the expensive fix workers (quench/burnish/rebase/assay) behind a
-		// global concurrency cap. Each spawns a Claude session of comparable
-		// length to a Smith, yet they are deliberately excluded from the
-		// max_total_smiths dispatch cap (see state.ActiveDispatchWorkers). Without
-		// their own ceiling a burst of stuck PRs fans out unbounded Claude
-		// sessions and OOM-crashed the host (Forge-3m06). The light-weight
-		// no-worktree actions (CloseBead/Cleanup) already returned above and are
-		// intentionally not gated.
+		// Gate the expensive fix workers (quench/burnish/rebase) behind a global
+		// concurrency cap. Each spawns a Claude session of comparable length to a
+		// Smith, yet they are deliberately excluded from the max_total_smiths
+		// dispatch cap (see state.ActiveDispatchWorkers). Without their own ceiling
+		// a burst of stuck PRs fans out unbounded Claude sessions and OOM-crashed
+		// the host (Forge-3m06). The light-weight no-worktree actions
+		// (CloseBead/Cleanup) already returned above and are intentionally not gated.
+		//
+		// Assay is intentionally NOT gated: it is a fast, best-effort review pass
+		// that dedupes per PR head (so it cannot fan out unbounded for a single
+		// PR), and we want reviews to start immediately rather than queue behind a
+		// long-running Smith/Burnish session holding the only lifecycle slot.
 		//
 		// We block until a slot becomes available (or ctx is cancelled) so the
 		// originally-dispatched attempt runs and per-PR retry counters reflect
 		// real work, rather than deferring and re-dispatching which can burn
 		// through attempt limits without ever running a fix worker.
-		maxLifecycle := d.cfg.Load().Settings.MaxLifecycleWorkers
-		if !d.waitForLifecycleSlot(ctx, maxLifecycle) {
-			d.logger.Warn("lifecycle slot wait cancelled",
-				"action", req.Action,
-				"pr", req.PRNumber,
-				"bead", req.BeadID,
-			)
-			return
+		if req.Action != lifecycle.ActionAssayReview {
+			maxLifecycle := d.cfg.Load().Settings.MaxLifecycleWorkers
+			if !d.waitForLifecycleSlot(ctx, maxLifecycle) {
+				d.logger.Warn("lifecycle slot wait cancelled",
+					"action", req.Action,
+					"pr", req.PRNumber,
+					"bead", req.BeadID,
+				)
+				return
+			}
+			defer d.releaseLifecycleSlot()
 		}
-		defer d.releaseLifecycleSlot()
 
 		// Create/get worktree for the PR branch. Use lockKey (which may be
 		// "pr-{N}" for non-bead PRs) so the path is always non-empty/valid.
