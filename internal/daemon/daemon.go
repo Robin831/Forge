@@ -273,6 +273,11 @@ type Daemon struct {
 	// Defaults to exec.Command; may be replaced in tests.
 	beadShower func(anvilPath, beadID string) (stdout []byte, stderr string, err error)
 
+	// beadFetcher fetches a full bead by ID (via `bd show`) for the manual
+	// create-PR-from-existing-branch recovery. Defaults to crucible.FetchBead;
+	// may be replaced in tests to avoid a real bd invocation.
+	beadFetcher func(ctx context.Context, beadID, dir string) (poller.Bead, error)
+
 	// parentCloser closes a bead with --force. Defaults to exec.Command;
 	// may be replaced in tests.
 	parentCloser func(anvilPath, beadID, reason string) error
@@ -371,15 +376,15 @@ func New(cfg *config.Config) (*Daemon, error) {
 	vcsProviders := buildVCSProviders(cfg, db, logger)
 
 	d := &Daemon{
-		db:            db,
-		logger:        logger,
-		forgeDir:      forgeDir,
-		pidFile:       filepath.Join(forgeDir, PIDFileName),
-		configFile:    config.ConfigFilePath(""),
-		logFile:       logFile,
-		shutdownMgr:   shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
-		worktreeMgr:   wtMgr,
-		promptBuilder: prompt.NewBuilder(),
+		db:                    db,
+		logger:                logger,
+		forgeDir:              forgeDir,
+		pidFile:               filepath.Join(forgeDir, PIDFileName),
+		configFile:            config.ConfigFilePath(""),
+		logFile:               logFile,
+		shutdownMgr:           shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
+		worktreeMgr:           wtMgr,
+		promptBuilder:         prompt.NewBuilder(),
 		vcsProviders:          vcsProviders,
 		reqTracker:            *ipc.NewRequestTracker("forge-"),
 		crucibleTickerResetCh: make(chan struct{}, 1),
@@ -466,6 +471,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		out, err := cmd.Output()
 		return out, stderrBuf.String(), err
 	}
+	d.beadFetcher = crucible.FetchBead
 	d.parentCloser = func(anvilPath, beadID, reason string) error {
 		// Use context.Background() so the bd close call succeeds even during
 		// graceful shutdown (d.runCtx may already be cancelled at that point).
@@ -580,6 +586,52 @@ func (d *Daemon) ingotRecordPR(beadID, anvil string, prNumber int, prURL string)
 	}
 	if err := ingot.UpdateIngotStatus(conn, beadID, anvil, ingot.StatusPROpen); err != nil {
 		d.logger.Warn("ingot status update to pr_open failed", "bead", beadID, "error", err)
+	}
+}
+
+// ingotRecordPRCreateFailed is a best-effort helper that records a failed PR
+// creation on an ingot: it persists the pushed branch, head SHA, and classified
+// error and transitions the ingot to pr_create_failed so an operator can recover
+// the branch via `forge queue create-pr` without re-running Smith.
+func (d *Daemon) ingotRecordPRCreateFailed(beadID, anvil, branch, headSHA, classifiedErr string) {
+	if conn := d.db.Conn(); conn != nil {
+		if err := ingot.UpdateIngotPRCreateFailed(conn, beadID, anvil, branch, headSHA, classifiedErr); err != nil {
+			d.logger.Warn("ingot pr_create_failed update failed", "bead", beadID, "error", err)
+		}
+	}
+}
+
+// ingotClearPRCreateError is a best-effort helper that clears a previously
+// recorded PR-creation error on an ingot. It is called on the recovery path so a
+// successfully reopened PR no longer surfaces a stale failure.
+func (d *Daemon) ingotClearPRCreateError(beadID, anvil string) {
+	if conn := d.db.Conn(); conn != nil {
+		if err := ingot.ClearIngotPRCreateError(conn, beadID, anvil); err != nil {
+			d.logger.Warn("ingot pr_create_error clear failed", "bead", beadID, "error", err)
+		}
+	}
+}
+
+// buildPRCreateParams constructs the vcs.CreateParams shared by every PR-creation
+// path (end-of-pipeline finalize, stranded-branch auto-recovery, and the manual
+// create-PR-from-existing-branch primitive). Centralising it here keeps the PR
+// title/body inputs identical across paths so they cannot drift. changeSummary
+// and reviewerNotes are the author-written and reviewer-written body sections;
+// pass "" for either when not available (the provider generates a default body).
+func (d *Daemon) buildPRCreateParams(bead poller.Bead, worktreePath, branch, changeSummary, reviewerNotes, externalRef string) vcs.CreateParams {
+	return vcs.CreateParams{
+		WorktreePath:    worktreePath,
+		BeadID:          bead.ID,
+		Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
+		Branch:          branch,
+		Base:            bead.EpicBranch, // empty = use provider default base
+		AnvilName:       bead.Anvil,
+		BeadTitle:       bead.Title,
+		BeadDescription: bead.Description,
+		BeadType:        bead.IssueType,
+		ChangeSummary:   changeSummary,
+		ReviewerNotes:   reviewerNotes,
+		ExternalRef:     externalRef,
 	}
 }
 
@@ -1585,17 +1637,17 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					}
 					if useBatch {
 						res = quench.BatchFix(workerCtx, quench.BatchFixParams{
-						WorktreePath:  wt.Path,
-						BeadID:        req.BeadID,
-						AnvilName:     req.Anvil,
-						PRNumber:      req.PRNumber,
-						Branch:        req.Branch,
-						DB:            d.db,
-						WorkerID:      workerID,
-						ExtraFlags:    cfg.Settings.ClaudeFlags,
-						Providers:     quenchProviders,
-						FailingChecks: failingChecks,
-						CILogs:        ciLogs,
+							WorktreePath:  wt.Path,
+							BeadID:        req.BeadID,
+							AnvilName:     req.Anvil,
+							PRNumber:      req.PRNumber,
+							Branch:        req.Branch,
+							DB:            d.db,
+							WorkerID:      workerID,
+							ExtraFlags:    cfg.Settings.ClaudeFlags,
+							Providers:     quenchProviders,
+							FailingChecks: failingChecks,
+							CILogs:        ciLogs,
 						})
 					}
 				}
@@ -2994,8 +3046,8 @@ normalPipeline:
 		ExtraFlags:      cfg.Settings.ClaudeFlags,
 		TemperConfig:    d.resolveTemperConfig(anvilCfg),
 		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
-		Providers: d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(cfg.Settings, &anvilCfg, "smith"))),
-		Notifier:  d.notifier.Load(),
+		Providers:       d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(cfg.Settings, &anvilCfg, "smith"))),
+		Notifier:        d.notifier.Load(),
 		BaseBranch:      bead.EpicBranch,
 		WorkerID:        claimWorkerID,
 		MaxIterations:   cfg.Settings.MaxPipelineIterations,
@@ -3215,20 +3267,8 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		},
 		func() error {
 			var e error
-			pr, e = d.vcsForAnvil(bead.Anvil).CreatePR(ctx, vcs.CreateParams{
-				WorktreePath:    anvilPath,
-				BeadID:          bead.ID,
-				Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
-				Branch:          outcome.Branch,
-				Base:            bead.EpicBranch, // empty = use provider default base
-				AnvilName:       bead.Anvil,
-				BeadTitle:       bead.Title,
-				BeadDescription: bead.Description,
-				BeadType:        bead.IssueType,
-				ChangeSummary:   changelogSummary,
-				ReviewerNotes:   reviewerNotes,
-				ExternalRef:     externalRef,
-			})
+			pr, e = d.vcsForAnvil(bead.Anvil).CreatePR(ctx,
+				d.buildPRCreateParams(bead, anvilPath, outcome.Branch, changelogSummary, reviewerNotes, externalRef))
 			return e
 		})
 	if err != nil {
@@ -3265,7 +3305,11 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		if dbErr := d.db.UpdateWorkerStatus(workerID, state.WorkerFailed); dbErr != nil {
 			d.logger.Error("failed to update worker status to failed", "worker", workerID, "error", dbErr)
 		}
-		d.ingotMarkFailed(bead.ID, bead.Anvil)
+		// Record the pushed branch, head SHA, and classified error on the ingot
+		// so an operator can recover via `forge queue create-pr <id> --anvil <name>`
+		// without re-running Smith. The work is committed and pushed; only the
+		// final PR open failed.
+		d.ingotRecordPRCreateFailed(bead.ID, bead.Anvil, outcome.Branch, d.localHeadSHA(ctx, anvilPath), err.Error())
 		return
 	}
 
@@ -3741,18 +3785,8 @@ func (d *Daemon) recoverStrandedBranchPR(ctx context.Context, bead poller.Bead, 
 		externalRef = d.fetchExternalRef(anvilPath, bead.ID)
 	}
 
-	pr, err := provider.CreatePR(prCtx, vcs.CreateParams{
-		WorktreePath:    anvilPath,
-		BeadID:          bead.ID,
-		Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
-		Branch:          branch,
-		Base:            bead.EpicBranch, // empty = use provider default base
-		AnvilName:       bead.Anvil,
-		BeadTitle:       bead.Title,
-		BeadDescription: bead.Description,
-		BeadType:        bead.IssueType,
-		ExternalRef:     externalRef,
-	})
+	pr, err := provider.CreatePR(prCtx,
+		d.buildPRCreateParams(bead, anvilPath, branch, "", "", externalRef))
 	if err != nil {
 		if errors.Is(err, vcs.ErrPRAlreadyExists) {
 			// Lost a race with a concurrent open between the guard and the
@@ -3802,6 +3836,189 @@ func (d *Daemon) recoverStrandedBranchPR(ctx context.Context, bead poller.Bead, 
 		d.logger.Error("failed to clear retry record after stranded-branch recovery PR creation", "bead", bead.ID, "error", clearErr)
 	}
 	return true
+}
+
+// localHeadSHA returns the tip commit SHA of the given worktree (HEAD), or "" on
+// any error. It is a best-effort helper used to record the pushed head SHA when
+// PR creation fails — a missing SHA must never block the failure-recording path.
+func (d *Daemon) localHeadSHA(ctx context.Context, worktreePath string) string {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "rev-parse", "HEAD"))
+	cmd.Dir = worktreePath
+	cmd.Env = cleanGitEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// clearNeedsHumanAfterRecovery clears the needs_human escalation and the stale
+// ingot PR-creation error after a successful create-PR-from-existing-branch
+// recovery. Errors are logged but not surfaced — the recovery itself succeeded.
+func (d *Daemon) clearNeedsHumanAfterRecovery(beadID, anvil string) {
+	if err := d.db.ClearRetry(beadID, anvil); err != nil {
+		d.logger.Error("create-pr: failed to clear retry/needs_human after recovery", "bead", beadID, "anvil", anvil, "error", err)
+	}
+	d.ingotClearPRCreateError(beadID, anvil)
+}
+
+// openPRForExistingBranch opens a PR for an already-pushed forge branch WITHOUT
+// re-running Smith. It is the shared recovery primitive behind the manual
+// `forge queue create-pr <id> --anvil <name>` command (and, via the same IPC
+// path, the Hearth "Create PR" button). It reuses the pushed branch, its head
+// SHA, and the changelog fragment already committed to that branch, then builds
+// the same CreateParams the normal pipeline uses (so the PR body cannot drift)
+// and registers the resulting PR so bellows drives it to merge.
+//
+// Preconditions, each surfaced as a distinct error so an operator understands
+// why a recovery was refused:
+//   - origin/forge/<bead> exists,
+//   - it is ahead of the base branch (carries un-merged commits),
+//   - no open PR already targets it (an existing PR is registered and treated as
+//     a successful recovery rather than an error),
+//   - its tip carries the bead's changelog fragment (the per-PR completion
+//     signal Forge requires), proving the prior worker finished its work.
+//
+// On success it clears needs_human, logs EventPRCreateRecovered, and returns the
+// PR number. On failure it surfaces the gh error and leaves needs_human set so
+// the bead remains in the operator's needs-attention view.
+func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName string) (int, error) {
+	if beadID == "" || anvilName == "" {
+		return 0, fmt.Errorf("bead_id and anvil are required")
+	}
+	anvilCfg, ok := d.cfg.Load().Anvils[anvilName]
+	if !ok {
+		return 0, fmt.Errorf("anvil %q not found", anvilName)
+	}
+	anvilPath := anvilCfg.Path
+	if anvilPath == "" {
+		return 0, fmt.Errorf("anvil %q has no path configured", anvilName)
+	}
+
+	branch := worktree.BranchName(beadID)
+	// The bead_id used to register the PR is derived from the branch so it stays
+	// consistent with the rest of the daemon's branch→bead recovery (ext-<number>
+	// fallback handled by registerPRIfUntracked when no forge branch maps back).
+	registerID := beadID
+	if derived, ok := worktree.BeadIDFromBranch(branch); ok {
+		registerID = derived
+	}
+
+	// Fetch bead metadata for the PR title/body. The worktree is typically gone
+	// by recovery time, so the bead is the only source for title/description.
+	fetchBead := d.beadFetcher
+	if fetchBead == nil {
+		fetchBead = crucible.FetchBead
+	}
+	bead, err := fetchBead(ctx, beadID, anvilPath)
+	if err != nil {
+		return 0, fmt.Errorf("bd show %s: %w", beadID, err)
+	}
+	bead.Anvil = anvilName
+
+	// Resolve the epic branch so a Crucible child's recovered PR targets the
+	// feature branch rather than the repo default. FetchBead does not populate
+	// EpicBranch (it is json:"-" and normally filled by poller.ResolveEpicBranches),
+	// so we resolve it explicitly here — mirroring the force_smith/warden_rerun
+	// flows. Every downstream use below (base-branch precondition check, CreateParams,
+	// and PR registration) reads bead.EpicBranch, so this must run before them.
+	beads := []poller.Bead{bead}
+	poller.ResolveEpicBranches(ctx, beads, map[string]string{anvilName: anvilPath})
+	bead.EpicBranch = beads[0].EpicBranch
+
+	// Precondition: origin/<branch> exists and is ahead of base (stranded).
+	branchState, info, err := worktree.CheckRemoteBranchState(ctx, anvilPath, branch, bead.EpicBranch)
+	if err != nil {
+		return 0, fmt.Errorf("checking remote branch %s: %w", branch, err)
+	}
+	switch branchState {
+	case worktree.RemoteBranchAbsent:
+		return 0, fmt.Errorf("origin/%s does not exist; nothing to open a PR for", branch)
+	case worktree.RemoteBranchMerged:
+		return 0, fmt.Errorf("origin/%s is already merged into the base branch; nothing to open", branch)
+	}
+
+	provider := d.vcsForAnvil(anvilName)
+
+	// Precondition: no open PR already. If one exists, register it (idempotent)
+	// and treat this as a successful recovery — the goal state is reached.
+	if pr, perr := provider.GetPRByHeadBranch(ctx, anvilPath, branch); perr != nil {
+		return 0, fmt.Errorf("looking up existing PR for %s: %w", branch, perr)
+	} else if pr != nil {
+		d.registerPRIfUntracked(ctx, anvilName, registerID, pr, bead.EpicBranch)
+		d.clearNeedsHumanAfterRecovery(beadID, anvilName)
+		d.ingotRecordPR(beadID, anvilName, pr.Number, "")
+		d.ingotClearPRCreateError(beadID, anvilName)
+		_ = d.db.LogEvent(state.EventPRCreateRecovered,
+			fmt.Sprintf("create-pr: %s already has open PR #%d; registered and cleared needs_human", branch, pr.Number),
+			beadID, anvilName)
+		return pr.Number, nil
+	}
+
+	// Precondition: branch tip carries the bead's changelog fragment.
+	hasFragment, fragErr := d.branchHasChangelogFragment(ctx, anvilPath, info.SHA, beadID)
+	if fragErr != nil {
+		return 0, fmt.Errorf("checking changelog fragment on %s: %w", branch, fragErr)
+	}
+	if !hasFragment {
+		return 0, fmt.Errorf("origin/%s does not carry a changelog fragment (changelog.d/%s.md); refusing to open a PR for incomplete work", branch, beadID)
+	}
+
+	// Last-chance external_ref lookup in case it was empty in the bead record.
+	externalRef := bead.ExternalRef
+	if externalRef == "" {
+		externalRef = d.fetchExternalRef(anvilPath, bead.ID)
+	}
+
+	// Dedicated timeout for PR creation independent of the caller ctx, which may
+	// carry a short IPC deadline.
+	prCtx, prCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer prCancel()
+
+	pr, err := provider.CreatePR(prCtx,
+		d.buildPRCreateParams(bead, anvilPath, branch, "", "", externalRef))
+	if err != nil {
+		if errors.Is(err, vcs.ErrPRAlreadyExists) {
+			// Raced a concurrent open between the guard and the create — register
+			// the existing PR and treat as recovered.
+			n := d.registerExistingPRByBranch(prCtx, anvilName, anvilPath, registerID, branch, bead.EpicBranch)
+			d.clearNeedsHumanAfterRecovery(beadID, anvilName)
+			if n > 0 {
+				d.ingotRecordPR(beadID, anvilName, n, "")
+				d.ingotClearPRCreateError(beadID, anvilName)
+			}
+			_ = d.db.LogEvent(state.EventPRCreateRecovered,
+				fmt.Sprintf("create-pr: PR already existed for %s on create; registered #%d and cleared needs_human", branch, n),
+				beadID, anvilName)
+			return n, nil
+		}
+		// Surface the gh error and leave needs_human set.
+		_ = d.db.LogEvent(state.EventPRCreationFailed,
+			fmt.Sprintf("create-pr: PR creation failed for branch %s: %v", branch, err), beadID, anvilName)
+		d.ingotRecordPRCreateFailed(beadID, anvilName, branch, info.SHA, err.Error())
+		return 0, fmt.Errorf("gh pr create for %s failed: %w", branch, err)
+	}
+	if pr == nil || pr.URL == "" || pr.Number == 0 {
+		return 0, fmt.Errorf("PR creation for %s returned an invalid PR object", branch)
+	}
+
+	// Register so bellows owns the PR. registerPRIfUntracked is idempotent
+	// (CreatePR already records the PR), so this is a safety net.
+	d.registerPRIfUntracked(prCtx, anvilName, registerID, &vcs.OpenPR{
+		Number: pr.Number,
+		Title:  pr.Title,
+		Branch: branch,
+	}, bead.EpicBranch)
+
+	d.ingotRecordPR(beadID, anvilName, pr.Number, pr.URL)
+	d.notifyWicketPRCreated(beadID, pr.URL, pr.Number)
+	d.clearNeedsHumanAfterRecovery(beadID, anvilName)
+	d.logger.Info("create-pr: opened PR for existing forge branch",
+		"bead", beadID, "anvil", anvilName, "branch", branch, "pr", pr.URL)
+	_ = d.db.LogEvent(state.EventPRCreateRecovered,
+		fmt.Sprintf("create-pr: opened PR #%d for existing branch %s: %s", pr.Number, branch, pr.URL),
+		beadID, anvilName)
+	return pr.Number, nil
 }
 
 // forgeBranchAheadOfMain checks whether the origin remote has a forge branch
@@ -4835,6 +5052,38 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}()
 		resp, _ := ipc.NewQueuedResponse(reqID, "stopping bead")
 		return resp
+
+	case "create_pr":
+		var cp ipc.CreatePRPayload
+		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": "invalid create_pr payload"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if cp.BeadID == "" || cp.Anvil == "" {
+			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		// Canonicalise the anvil name so the helper's config lookup matches the
+		// configured key regardless of how the user typed it on the CLI.
+		anvilName := cp.Anvil
+		if canonical, _, ok := d.resolveAnvilConfig(anvilName); ok {
+			anvilName = canonical
+		}
+		// Handle synchronously so the CLI receives the real PR number (or gh
+		// error). Each IPC connection runs in its own goroutine, so blocking for
+		// the duration of the gh call does not stall other clients. The client
+		// uses ipc.BdBackedReadTimeout for this command.
+		opCtx, opCancel := context.WithTimeout(context.Background(), ipc.BdBackedReadTimeout)
+		defer opCancel()
+		prNumber, err := d.openPRForExistingBranch(opCtx, cp.BeadID, anvilName)
+		if err != nil {
+			msg, _ := json.Marshal(map[string]string{"message": err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		data, _ := json.Marshal(map[string]string{
+			"message": fmt.Sprintf("opened PR #%d for %s", prNumber, cp.BeadID),
+		})
+		return ipc.Response{Type: "ok", Payload: data}
 
 	case "clear_clarification":
 		var cp ipc.ClarificationPayload

@@ -131,6 +131,8 @@ func (db *DB) migrate() error {
 		{"forge_session_messages", "metadata", `ALTER TABLE forge_session_messages ADD COLUMN metadata TEXT NOT NULL DEFAULT ''`},
 		{"prs", "bellows_manually_assigned", `ALTER TABLE prs ADD COLUMN bellows_manually_assigned INTEGER NOT NULL DEFAULT 0`},
 		{"ingot_test_results", "skipped", `ALTER TABLE ingot_test_results ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0`},
+		{"ingots", "head_sha", `ALTER TABLE ingots ADD COLUMN head_sha TEXT NOT NULL DEFAULT ''`},
+		{"ingots", "pr_create_error", `ALTER TABLE ingots ADD COLUMN pr_create_error TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -336,6 +338,8 @@ CREATE TABLE IF NOT EXISTS ingots (
     pr_url              TEXT NOT NULL DEFAULT '',
     title               TEXT NOT NULL DEFAULT '',
     branch              TEXT NOT NULL DEFAULT '',
+    head_sha            TEXT NOT NULL DEFAULT '',
+    pr_create_error     TEXT NOT NULL DEFAULT '',
     UNIQUE(bead_id, anvil)
 );
 
@@ -1623,6 +1627,10 @@ const (
 	EventNoChangesNeeded                 EventType = "no_changes_needed"
 	EventPRCreationFailed                EventType = "pr_creation_failed"
 	EventPRAlreadyExists                 EventType = "pr_already_exists"
+	// EventPRCreateRecovered fires when the manual create-PR-from-existing-branch
+	// recovery opens (or registers) a PR for an already-pushed forge branch
+	// without re-running Smith, clearing the needs_human escalation.
+	EventPRCreateRecovered EventType = "pr_create_recovered"
 
 	// Crucible events — parent bead orchestration with children on feature branches.
 	EventCrucibleStarted         EventType = "crucible_started"

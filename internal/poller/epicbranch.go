@@ -25,6 +25,16 @@ const DefaultEpicBranchPrefix = "epic/"
 // It defaults to lookupEpicBranch but can be replaced in tests.
 var epicBranchLookupFunc = lookupEpicBranch
 
+// SetEpicBranchLookupForTest overrides the epic-branch lookup function and
+// returns a restore function. It lets packages outside poller (e.g. daemon)
+// exercise epic-branch resolution without shelling out to bd. Intended for
+// tests only; always defer the returned restore.
+func SetEpicBranchLookupForTest(fn func(ctx context.Context, parentID, anvilPath string) string) (restore func()) {
+	orig := epicBranchLookupFunc
+	epicBranchLookupFunc = fn
+	return func() { epicBranchLookupFunc = orig }
+}
+
 // ResolveEpicBranches enriches beads that belong to an epic with the epic's
 // branch name. It discovers the epic relationship via two paths:
 //

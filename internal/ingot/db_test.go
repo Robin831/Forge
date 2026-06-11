@@ -337,3 +337,62 @@ func TestEagerLoadTestResults(t *testing.T) {
 		t.Errorf("StepName = %q; want go build", got.TestResults[0].StepName)
 	}
 }
+
+func TestUpdateIngotPRCreateFailed_RoundTrip(t *testing.T) {
+	sdb, cleanup := openTestDB(t)
+	defer cleanup()
+	db := sdb.Conn()
+
+	ig := &Ingot{
+		BeadID:   "bd-pcf",
+		Anvil:    "anvil-1",
+		WorkerID: "worker-pcf",
+		Status:   StatusApproved,
+		Title:    "Failed PR feature",
+		Branch:   "forge/bd-pcf",
+	}
+	if err := InsertIngot(db, ig); err != nil {
+		t.Fatalf("InsertIngot: %v", err)
+	}
+
+	const (
+		branch  = "forge/bd-pcf"
+		headSHA = "deadbeefcafe1234567890abcdef000011112222"
+		errMsg  = "gh pr create failed: HTTP 403 rate limited"
+	)
+	if err := UpdateIngotPRCreateFailed(db, "bd-pcf", "anvil-1", branch, headSHA, errMsg); err != nil {
+		t.Fatalf("UpdateIngotPRCreateFailed: %v", err)
+	}
+
+	got, err := GetIngot(db, "bd-pcf", "anvil-1")
+	if err != nil {
+		t.Fatalf("GetIngot: %v", err)
+	}
+	if got.Status != StatusPRCreateFailed {
+		t.Errorf("Status = %q; want %q", got.Status, StatusPRCreateFailed)
+	}
+	if got.Branch != branch {
+		t.Errorf("Branch = %q; want %q", got.Branch, branch)
+	}
+	if got.HeadSHA != headSHA {
+		t.Errorf("HeadSHA = %q; want %q", got.HeadSHA, headSHA)
+	}
+	if got.PRCreateError != errMsg {
+		t.Errorf("PRCreateError = %q; want %q", got.PRCreateError, errMsg)
+	}
+
+	// Recovery path: clearing the error must not touch the other fields.
+	if err := ClearIngotPRCreateError(db, "bd-pcf", "anvil-1"); err != nil {
+		t.Fatalf("ClearIngotPRCreateError: %v", err)
+	}
+	got, err = GetIngot(db, "bd-pcf", "anvil-1")
+	if err != nil {
+		t.Fatalf("GetIngot after clear: %v", err)
+	}
+	if got.PRCreateError != "" {
+		t.Errorf("PRCreateError after clear = %q; want empty", got.PRCreateError)
+	}
+	if got.HeadSHA != headSHA {
+		t.Errorf("HeadSHA after clear = %q; want preserved %q", got.HeadSHA, headSHA)
+	}
+}

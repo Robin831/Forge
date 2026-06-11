@@ -28,12 +28,15 @@ func init() {
 	queueStopCmd.Flags().StringP("reason", "r", "", "Why the bead is being stopped (optional)")
 	queueClearCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
 	_ = queueClearCmd.MarkFlagRequired("anvil")
+	queueCreatePRCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
+	_ = queueCreatePRCmd.MarkFlagRequired("anvil")
 	queueCmd.AddCommand(queueRunCmd)
 	queueCmd.AddCommand(queueClarifyCmd)
 	queueCmd.AddCommand(queueUnclarifyCmd)
 	queueCmd.AddCommand(queueRetryCmd)
 	queueCmd.AddCommand(queueStopCmd)
 	queueCmd.AddCommand(queueClearCmd)
+	queueCmd.AddCommand(queueCreatePRCmd)
 	rootCmd.AddCommand(queueCmd)
 }
 
@@ -327,6 +330,69 @@ The bead will not be dispatched again until you run 'forge queue unclarify'.`,
 		}
 
 		fmt.Printf("Bead %s stopped — use 'forge queue unclarify --anvil %s %s' to resume\n", beadID, anvil, beadID)
+		return nil
+	},
+}
+
+var queueCreatePRCmd = &cobra.Command{
+	Use:   "create-pr <id>",
+	Short: "Open a PR for an already-pushed forge branch without re-running Smith",
+	Long: `Recover a bead whose branch was pushed but for which PR creation failed.
+
+This opens a pull request for the existing forge/<bead> branch on origin without
+re-running Smith. It requires that:
+  1. origin/forge/<bead> exists and is ahead of the base branch
+  2. no open PR already targets the branch
+  3. the branch tip carries the bead's changelog fragment (completion signal)
+
+On success the needs-attention flag is cleared and bellows takes over the PR.
+On failure the gh error is surfaced and the bead stays in needs-attention.`,
+	Args:    cobra.ExactArgs(1),
+	Example: "  forge queue create-pr BD-42 --anvil heimdall",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		beadID := args[0]
+		anvil, _ := cmd.Flags().GetString("anvil")
+
+		client, err := ipc.NewClient()
+		if err != nil {
+			return fmt.Errorf("connecting to daemon: %w (is 'forge up' running?)", err)
+		}
+		defer client.Close()
+
+		payload, _ := json.Marshal(ipc.CreatePRPayload{
+			BeadID: beadID,
+			Anvil:  anvil,
+		})
+
+		// PR creation shells out to gh (and bd/git for preconditions), so allow
+		// the longer bd-backed read timeout.
+		resp, err := client.Send(ipc.Command{
+			Type:        "create_pr",
+			Payload:     payload,
+			ReadTimeout: ipc.BdBackedReadTimeout,
+		})
+		if err != nil {
+			return fmt.Errorf("sending command: %w", err)
+		}
+
+		if resp.Type == "error" {
+			var msg map[string]string
+			var errMsg string
+			if err := json.Unmarshal(resp.Payload, &msg); err == nil && msg["message"] != "" {
+				errMsg = msg["message"]
+			} else if len(resp.Payload) > 0 {
+				errMsg = string(resp.Payload)
+			} else {
+				errMsg = "unknown error from daemon"
+			}
+			return fmt.Errorf("daemon error: %s", errMsg)
+		}
+
+		var result map[string]string
+		if err := json.Unmarshal(resp.Payload, &result); err != nil {
+			return fmt.Errorf("failed to unmarshal daemon response: %w", err)
+		}
+		fmt.Printf("Created PR for bead %s: %s\n", beadID, result["message"])
 		return nil
 	},
 }
