@@ -225,6 +225,82 @@ func TestForgeResolve_DispatchesWardenRerun(t *testing.T) {
 	}
 }
 
+// TestForgeResolve_DispatchesCreatePR verifies that action=create-pr reaches
+// the daemon as the create_pr IPC with the BeadID + Anvil payload shape (the
+// Part B openPRForExistingBranch recovery), and that the daemon's structured
+// pr_number / pr_url ok payload is forwarded verbatim so the Hearth "Create PR"
+// button can render a clickable link.
+func TestForgeResolve_DispatchesCreatePR(t *testing.T) {
+	rh := &recordingHandler{
+		resp: ipc.Response{
+			Type:    "ok",
+			Payload: []byte(`{"message":"opened PR #77 for Forge-abc1","pr_number":77,"pr_url":"https://example.test/pr/77"}`),
+		},
+	}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/forge/resolve", map[string]any{
+		"bead_id":    "Forge-abc1",
+		"action":     "create-pr",
+		"anvil_name": "forge",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cmd, ok := rh.lastCommand()
+	if !ok {
+		t.Fatalf("no command dispatched")
+	}
+	if cmd.Type != "create_pr" {
+		t.Errorf("expected IPC type create_pr, got %q", cmd.Type)
+	}
+	var p ipc.CreatePRPayload
+	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if p.BeadID != "Forge-abc1" || p.Anvil != "forge" {
+		t.Errorf("payload mismatch: %+v", p)
+	}
+	// The daemon's structured success payload must reach the SPA unchanged.
+	var body struct {
+		PRNumber int    `json:"pr_number"`
+		PRURL    string `json:"pr_url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response unmarshal: %v", err)
+	}
+	if body.PRNumber != 77 || body.PRURL != "https://example.test/pr/77" {
+		t.Errorf("expected pr_number/pr_url forwarded, got %+v", body)
+	}
+}
+
+// TestForgeResolve_CreatePR_DaemonErrorPropagates verifies that a failed PR
+// creation (the gh error) is surfaced to the caller as a 5xx carrying the
+// daemon's message, which the panel renders inline.
+func TestForgeResolve_CreatePR_DaemonErrorPropagates(t *testing.T) {
+	rh := &recordingHandler{
+		resp: ipc.Response{
+			Type:    "error",
+			Payload: []byte(`{"message":"gh pr create for forge/Forge-abc1 failed: 422 protected branch"}`),
+		},
+	}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/forge/resolve", map[string]any{
+		"bead_id":    "Forge-abc1",
+		"action":     "create-pr",
+		"anvil_name": "forge",
+	})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "protected branch") {
+		t.Errorf("expected gh error in body, got %s", rec.Body.String())
+	}
+}
+
 // TestForgeResolve_ApproveAsIs_DaemonErrorPropagates verifies that an
 // anvil-ownership mismatch (or any other daemon-side rejection) is
 // surfaced to the caller as a 5xx with the daemon's message — the SPA

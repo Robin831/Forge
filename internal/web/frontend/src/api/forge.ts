@@ -19,6 +19,7 @@ export type ResolveVerb =
   | 'stop'
   | 'approve-as-is'
   | 'warden-rerun'
+  | 'create-pr'
 
 // RESOLVE_VERBS is the canonical ordered list of verbs the backend
 // accepts. Exporting it lets the panel render the action buttons without
@@ -31,6 +32,7 @@ export const RESOLVE_VERBS: readonly ResolveVerb[] = [
   'stop',
   'approve-as-is',
   'warden-rerun',
+  'create-pr',
 ] as const
 
 // EscalationType discriminates the needs-attention class of a bead and drives
@@ -45,6 +47,7 @@ export type EscalationType =
   | 'recovery_failed'
   | 'dispatch_blocked_stranded_branch'
   | 'clarification'
+  | 'pr_create_failed'
 
 // NeedsAttentionItem is one row of GET /api/forge/needs-attention. It mirrors
 // `needsAttentionItem` in internal/web/forge_needs_attention.go and is driven
@@ -128,12 +131,22 @@ export interface ResolveRequest {
   forgeId?: string
 }
 
-// ResolveResponse is the daemon's response to a resolve action. The
-// daemon returns `{status: "queued"}` (HTTP 202) or `{status: "ok"}` (200)
-// depending on whether the action ran synchronously; both are surfaced
-// here so callers can render the difference if they want to.
+// ResolveResponse is the daemon's response to a resolve action.
+//
+// For synchronous verbs (HTTP 200) the server forwards the IPC payload
+// verbatim — e.g. create-pr returns `{message, pr_number, pr_url}`.
+//
+// For async verbs (HTTP 202) the server returns
+// `{queued: true, request_id, message?}`.
+//
+// Both shapes are merged here so callers can destructure whichever
+// fields the verb provides.
 export interface ResolveResponse {
-  status?: string
+  queued?: boolean
+  request_id?: string
+  message?: string
+  pr_number?: number
+  pr_url?: string
 }
 
 // fetchEscalation calls GET /api/forge/escalation/{bead_id}. When the bead

@@ -23,14 +23,26 @@ import {
 // first, regardless of its previous status.
 export type ResolveStatus = 'idle' | 'pending' | 'success' | 'error'
 
+// ResolveSuccess captures the optional structured payload a synchronous
+// resolve verb returns on success. Only create-pr populates it today: the
+// daemon returns the opened PR's number and (when known) web URL so the panel
+// can render a clickable "PR #N" link.
+export interface ResolveSuccess {
+  message?: string
+  prNumber?: number
+  prUrl?: string
+}
+
 // ResolveEntry is the per-key state surfaced to consumers. `verb` records
 // which verb produced the current status so panels with multiple buttons
 // know which one to highlight; `error` is the daemon's message for the
-// last failed attempt (cleared on success).
+// last failed attempt (cleared on success); `result` carries the success
+// payload for verbs that return one (create-pr).
 export interface ResolveEntry {
   status: ResolveStatus
   verb?: ResolveVerb
   error?: string
+  result?: ResolveSuccess
   updatedAt: number
 }
 
@@ -153,10 +165,26 @@ export function ResolveStoreProvider({ children }: { children: ReactNode }) {
         [key]: { status: 'pending', verb: req.verb, updatedAt: Date.now() },
       }))
       try {
-        await postResolve(beadID, req)
+        const resp = await postResolve(beadID, req)
+        // Capture the synchronous create-pr payload (PR number + URL) so the
+        // panel can render a link; other verbs return no such fields and the
+        // result is simply left undefined.
+        const result: ResolveSuccess | undefined =
+          resp.pr_number || resp.pr_url || resp.message
+            ? {
+                message: resp.message,
+                prNumber: resp.pr_number,
+                prUrl: resp.pr_url,
+              }
+            : undefined
         setEntries((prev) => ({
           ...prev,
-          [key]: { status: 'success', verb: req.verb, updatedAt: Date.now() },
+          [key]: {
+            status: 'success',
+            verb: req.verb,
+            result,
+            updatedAt: Date.now(),
+          },
         }))
         return true
       } catch (err) {

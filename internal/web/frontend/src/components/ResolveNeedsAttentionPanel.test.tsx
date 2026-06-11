@@ -256,6 +256,113 @@ describe('ResolveNeedsAttentionPanel — dispatch_blocked_stranded_branch', () =
   })
 })
 
+describe('ResolveNeedsAttentionPanel — pr_create_failed', () => {
+  it('renders the Create PR action set', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(DETAIL))
+
+    render(
+      <Wrapper>
+        <ResolveNeedsAttentionPanel
+          escalationId="Forge-aaaa"
+          escalationType="pr_create_failed"
+        />
+      </Wrapper>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Create PR')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Reset & retry')).toBeInTheDocument()
+    expect(screen.getByText('Accept & clear')).toBeInTheDocument()
+    // The generic smith/dispatch verbs are not shown for this class.
+    expect(screen.queryByText('Re-run Warden')).not.toBeInTheDocument()
+    expect(screen.queryByText('Stop worker')).not.toBeInTheDocument()
+  })
+
+  it('POSTs create-pr and renders the returned PR number + link on success', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(DETAIL))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          message: 'opened PR #77 for Forge-aaaa',
+          pr_number: 77,
+          pr_url: 'https://github.com/example/repo/pull/77',
+        }),
+      )
+
+    const user = userEvent.setup()
+    render(
+      <Wrapper>
+        <ResolveNeedsAttentionPanel
+          escalationId="Forge-aaaa"
+          escalationType="pr_create_failed"
+        />
+      </Wrapper>,
+    )
+
+    const createPR = await screen.findByText('Create PR')
+    await user.click(createPR)
+    // create-pr is outward-facing → confirm before firing.
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByText('Confirm'))
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([url]) => url === '/api/forge/resolve'),
+      ).toHaveLength(1)
+    })
+    const [, init] = fetchMock.mock.calls.find(
+      ([url]) => url === '/api/forge/resolve',
+    ) as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      bead_id: 'Forge-aaaa',
+      action: 'create-pr',
+      anvil_name: 'forge',
+    })
+
+    // Success surfaces the PR number and a clickable link to the PR.
+    const link = await screen.findByRole('link', { name: /View on GitHub/i })
+    expect(link).toHaveAttribute(
+      'href',
+      'https://github.com/example/repo/pull/77',
+    )
+    expect(screen.getByText(/Opened PR #77/)).toBeInTheDocument()
+  })
+
+  it('surfaces the gh error inline when PR creation fails', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(DETAIL))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: 'gh pr create failed: 422 protected branch' },
+          { status: 500 },
+        ),
+      )
+
+    const user = userEvent.setup()
+    render(
+      <Wrapper>
+        <ResolveNeedsAttentionPanel
+          escalationId="Forge-aaaa"
+          escalationType="pr_create_failed"
+        />
+      </Wrapper>,
+    )
+
+    const createPR = await screen.findByText('Create PR')
+    await user.click(createPR)
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByText('Confirm'))
+
+    await waitFor(() => {
+      expect(screen.getByText(/protected branch/)).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('link', { name: /View on GitHub/i }),
+    ).not.toBeInTheDocument()
+  })
+})
+
 describe('ResolveNeedsAttentionPanel — clarification', () => {
   it('renders only the clarify / unclarify verbs', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(DETAIL))

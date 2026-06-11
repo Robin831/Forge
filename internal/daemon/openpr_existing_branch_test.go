@@ -86,9 +86,10 @@ func TestOpenPRForExistingBranch_Success(t *testing.T) {
 	// Pre-seed needs_human so we can assert it is cleared on recovery.
 	require.NoError(t, db.MarkNeedsHuman(beadID, anvil, "PR creation failed"))
 
-	prNum, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
+	prNum, prURL, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
 	require.NoError(t, err)
 	assert.Equal(t, 77, prNum)
+	assert.Equal(t, "https://example.test/pr/77", prURL, "the freshly created PR's URL should be returned for the Create PR button link")
 	assert.Equal(t, int32(1), mock.createPRCalls.Load(), "CreatePR should be called exactly once")
 
 	// PR registered in state.db.
@@ -116,7 +117,7 @@ func TestOpenPRForExistingBranch_MissingBranch(t *testing.T) {
 	mock := &mockVCSProvider{}
 	d, _ := newCreatePRTestDaemon(t, anvil, anvilPath, mock)
 
-	_, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
+	_, _, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not exist")
 	assert.Equal(t, int32(0), mock.createPRCalls.Load(), "CreatePR must not be called when branch is absent")
@@ -132,7 +133,7 @@ func TestOpenPRForExistingBranch_MissingChangelogFragment(t *testing.T) {
 	d, db := newCreatePRTestDaemon(t, anvil, anvilPath, mock)
 	require.NoError(t, db.MarkNeedsHuman(beadID, anvil, "PR creation failed"))
 
-	_, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
+	_, _, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "changelog fragment")
 	assert.Equal(t, int32(0), mock.createPRCalls.Load(), "CreatePR must not be called without a completion signal")
@@ -157,7 +158,7 @@ func TestOpenPRForExistingBranch_ExistingOpenPR(t *testing.T) {
 	d, db := newCreatePRTestDaemon(t, anvil, anvilPath, mock)
 	require.NoError(t, db.MarkNeedsHuman(beadID, anvil, "PR creation failed"))
 
-	prNum, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
+	prNum, _, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
 	require.NoError(t, err, "an existing open PR should be treated as a successful recovery")
 	assert.Equal(t, 99, prNum)
 	assert.Equal(t, int32(0), mock.createPRCalls.Load(), "CreatePR must not be called when a PR already exists")
@@ -183,7 +184,7 @@ func TestOpenPRForExistingBranch_CreatePRFailureLeavesNeedsHuman(t *testing.T) {
 	d, db := newCreatePRTestDaemon(t, anvil, anvilPath, mock)
 	require.NoError(t, db.MarkNeedsHuman(beadID, anvil, "PR creation failed"))
 
-	_, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
+	_, _, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "protected branch")
 
@@ -254,7 +255,7 @@ func TestOpenPRForExistingBranch_ResolvesEpicBranch(t *testing.T) {
 	}
 	require.NoError(t, db.MarkNeedsHuman(beadID, anvil, "PR creation failed"))
 
-	prNum, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
+	prNum, _, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
 	require.NoError(t, err)
 	assert.Equal(t, 55, prNum)
 	assert.Equal(t, featureBranch, mock.lastCreateParams.Base,
@@ -265,7 +266,7 @@ func TestOpenPRForExistingBranch_UnknownAnvil(t *testing.T) {
 	mock := &mockVCSProvider{}
 	d, _ := newCreatePRTestDaemon(t, "test-anvil", initTestGitRepo(t), mock)
 
-	_, err := d.openPRForExistingBranch(context.Background(), "Forge-x", "nope")
+	_, _, err := d.openPRForExistingBranch(context.Background(), "Forge-x", "nope")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }

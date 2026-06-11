@@ -184,4 +184,14 @@ func TestDeriveEscalationType_PrefersLatestEvent(t *testing.T) {
 	if got != escTypeDispatchFailed {
 		t.Errorf("expected dispatch_failed fallback, got %q", got)
 	}
+
+	// A pr_creation_failed event (Part D's pr_create_failed state) classifies
+	// the bead as pr_create_failed so the panel offers the Create PR recovery.
+	if err := srv.db.LogEvent(state.EventPRCreationFailed, "z", "Forge-gggg", "forge"); err != nil {
+		t.Fatalf("log event: %v", err)
+	}
+	got = srv.deriveEscalationType(state.RetryRecord{BeadID: "Forge-gggg", Anvil: "forge", NeedsHuman: true})
+	if got != escTypePRCreateFailed {
+		t.Errorf("expected pr_create_failed, got %q", got)
+	}
 }
