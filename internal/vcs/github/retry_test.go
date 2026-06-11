@@ -74,3 +74,21 @@ func TestRetryTransient_ContextCancelled(t *testing.T) {
 		t.Fatalf("expected 1 call before cancellation, got %d", calls)
 	}
 }
+
+func TestRetryTransient_ContextCancelledZeroDelay(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	err := RetryTransient(ctx, noDelay, nil, func() error {
+		calls++
+		if calls == 1 {
+			cancel()
+		}
+		return errors.New("HTTP 500: Internal Server Error")
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled with zero-delay backoff, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected 1 call before cancellation with zero-delay, got %d", calls)
+	}
+}

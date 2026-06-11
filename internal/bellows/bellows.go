@@ -904,7 +904,12 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, be
 		return
 	}
 
-	comments, err := warden.FetchCopilotComments(ctx, anvilPath, prNumber)
+	var comments []warden.PRComment
+	err := m.retryTransient(ctx, fmt.Sprintf("FetchCopilotComments PR #%d", prNumber), func() error {
+		var fetchErr error
+		comments, fetchErr = warden.FetchCopilotComments(ctx, anvilPath, prNumber)
+		return fetchErr
+	})
 	if err != nil {
 		if ctx.Err() != nil {
 			return

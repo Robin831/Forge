@@ -64,6 +64,11 @@ func RetryTransient(ctx context.Context, b RetryBackoff, logFn RetryLogFunc, fn 
 		if logFn != nil {
 			logFn(retries+1, delay, err)
 		}
+		// Always honour context cancellation between attempts, even when
+		// delay is zero (e.g. in tests with immediate retries).
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if delay > 0 {
 			t := time.NewTimer(delay)
 			select {
