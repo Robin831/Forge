@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/ipc"
 )
 
@@ -125,10 +126,73 @@ func (s *Server) dispatchIPC(cmdType string) ipc.Response {
 	return s.handler(ipc.Command{Type: cmdType})
 }
 
-// handleStatus mirrors the IPC "status" command.
+// handleStatus mirrors the IPC "status" command, enriching each active worker
+// that has a pr_number with its pr_url so Hearth 2.0 can render a clickable
+// GitHub link (the IPC WorkerInfo carries the number but not the URL).
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp := s.dispatchIPC("status")
+	if resp.Type == "status" {
+		resp.Payload = s.enrichWorkerPRURLs(resp.Payload)
+	}
 	s.writeIPCResponse(w, resp)
+}
+
+// enrichWorkerPRURLs adds a "pr_url" field to each worker in the status payload
+// that has a positive "pr_number", looked up from the bead's ingot record
+// (which stores the URL at PR-creation time). All other payload fields are
+// preserved verbatim. Best-effort: any decode, DB, or lookup failure returns
+// the original payload unchanged, so the status endpoint never breaks on this.
+func (s *Server) enrichWorkerPRURLs(payload json.RawMessage) json.RawMessage {
+	if len(payload) == 0 || s.db == nil {
+		return payload
+	}
+	conn := s.db.Conn()
+	if conn == nil {
+		return payload
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return payload
+	}
+	rawWorkers, ok := root["workers"]
+	if !ok {
+		return payload
+	}
+	var workers []map[string]any
+	if err := json.Unmarshal(rawWorkers, &workers); err != nil {
+		return payload
+	}
+	changed := false
+	for _, wm := range workers {
+		prNum, ok := wm["pr_number"].(float64)
+		if !ok || prNum <= 0 {
+			continue
+		}
+		beadID, _ := wm["bead_id"].(string)
+		anvil, _ := wm["anvil"].(string)
+		if beadID == "" || anvil == "" {
+			continue
+		}
+		ig, err := ingot.GetIngot(conn, beadID, anvil)
+		if err != nil || ig == nil || ig.PRURL == "" {
+			continue
+		}
+		wm["pr_url"] = ig.PRURL
+		changed = true
+	}
+	if !changed {
+		return payload
+	}
+	newWorkers, err := json.Marshal(workers)
+	if err != nil {
+		return payload
+	}
+	root["workers"] = newWorkers
+	out, err := json.Marshal(root)
+	if err != nil {
+		return payload
+	}
+	return out
 }
 
 // handleQueue mirrors the IPC "queue" command.

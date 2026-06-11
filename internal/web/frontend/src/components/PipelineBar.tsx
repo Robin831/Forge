@@ -290,6 +290,23 @@ function BeadRow({ worker, stage }: BeadRowProps) {
       <span className="min-w-0 flex-1 truncate text-slate-200">
         {worker.title || worker.bead_id}
       </span>
+      {worker.pr_number ? (
+        worker.pr_url ? (
+          <a
+            href={worker.pr_url}
+            target="_blank"
+            rel="noreferrer"
+            title={worker.pr_url}
+            className="shrink-0 rounded-md border border-purple-500/40 bg-purple-500/10 px-1.5 py-0.5 text-[10px] text-purple-300 hover:bg-purple-500/20 hover:underline"
+          >
+            PR #{worker.pr_number}
+          </a>
+        ) : (
+          <span className="shrink-0 rounded-md border border-purple-500/40 bg-purple-500/10 px-1.5 py-0.5 text-[10px] text-purple-300">
+            PR #{worker.pr_number}
+          </span>
+        )
+      ) : null}
       <div className="flex items-center gap-1">
         {STAGES.map((s) => (
           <span

@@ -290,9 +290,22 @@ export default function WorkersPane({
                                       </span>
                                     )}
                                     {w.pr_number ? (
-                                      <span className="rounded-md border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-[10px] text-purple-300">
-                                        PR #{w.pr_number}
-                                      </span>
+                                      w.pr_url ? (
+                                        <a
+                                          href={w.pr_url}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          onClick={(e) => e.stopPropagation()}
+                                          title={w.pr_url}
+                                          className="rounded-md border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-[10px] text-purple-300 hover:bg-purple-500/20 hover:underline"
+                                        >
+                                          PR #{w.pr_number}
+                                        </a>
+                                      ) : (
+                                        <span className="rounded-md border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-[10px] text-purple-300">
+                                          PR #{w.pr_number}
+                                        </span>
+                                      )
                                     ) : null}
                                     {clickable && (
                                       <span className="ml-auto text-[10px] uppercase tracking-wide text-slate-500">

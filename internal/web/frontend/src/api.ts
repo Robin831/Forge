@@ -46,6 +46,10 @@ export interface WorkerInfo {
   completed_at?: string
   log_path?: string
   pr_number?: number
+  /** Full GitHub PR URL, when the worker's bead has an open PR. Server-enriched
+   *  from the bead's ingot in /api/status (the IPC WorkerInfo carries only the
+   *  number). Used to render the PR number as a clickable link. */
+  pr_url?: string
 }
 
 export interface WorkersResponse {
