@@ -21,6 +21,7 @@ import (
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/vcs"
+	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/warden"
 	"github.com/Robin831/Forge/internal/worktree"
 )
@@ -105,6 +106,12 @@ type Monitor struct {
 	autoMergeHandler func(ctx context.Context, anvil string, pr state.PR) // called when a PR becomes ready-to-merge
 	smelterEnabled   func() bool           // when true, route learned rules to pending table instead of PR
 	assayConfig      func(anvil string) AssayGateConfig // resolved Assay gate config; nil disables the trigger
+
+	// retryBackoff overrides the inline retry backoff used when wrapping gh
+	// status fetches in transient-failure retries. nil selects
+	// github.DefaultRetryBackoff(); tests set a zero-delay backoff to avoid
+	// real sleeps.
+	retryBackoff *github.RetryBackoff
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -304,7 +311,12 @@ func (m *Monitor) reconcileTerminalStates(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		status, err := anvilVCS.CheckStatus(ctx, anvilPath, pr.Number)
+		var status *vcs.PRStatus
+		err := m.retryTransient(ctx, fmt.Sprintf("reconcile CheckStatus PR #%d", pr.Number), func() error {
+			var e error
+			status, e = anvilVCS.CheckStatus(ctx, anvilPath, pr.Number)
+			return e
+		})
 		if err != nil {
 			log.Printf("[bellows] reconcileTerminalStates: error checking PR #%d (%s): %v", pr.Number, pr.Anvil, err)
 			continue
@@ -450,7 +462,12 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		log.Printf("[bellows] No VCS provider for anvil %s; skipping status check for PR #%d", pr.Anvil, pr.Number)
 		return
 	}
-	status, err := anvilVCS.CheckStatus(ctx, anvilPath, pr.Number)
+	var status *vcs.PRStatus
+	err := m.retryTransient(ctx, fmt.Sprintf("CheckStatus PR #%d", pr.Number), func() error {
+		var e error
+		status, e = anvilVCS.CheckStatus(ctx, anvilPath, pr.Number)
+		return e
+	})
 	if err != nil {
 		log.Printf("[bellows] Error checking PR #%d: %v", pr.Number, err)
 		return
@@ -887,7 +904,12 @@ func (m *Monitor) learnRulesFromPR(ctx context.Context, anvilName, anvilPath, be
 		return
 	}
 
-	comments, err := warden.FetchCopilotComments(ctx, anvilPath, prNumber)
+	var comments []warden.PRComment
+	err := m.retryTransient(ctx, fmt.Sprintf("FetchCopilotComments PR #%d", prNumber), func() error {
+		var fetchErr error
+		comments, fetchErr = warden.FetchCopilotComments(ctx, anvilPath, prNumber)
+		return fetchErr
+	})
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -1086,6 +1108,28 @@ func bellowsGit(ctx context.Context, dir string, args ...string) error {
 		return fmt.Errorf("git %s: %s (%w)", args[0], stderr.String(), err)
 	}
 	return nil
+}
+
+// retryBackoffOrDefault returns the inline retry backoff for gh status fetches.
+// It uses the production default unless a test has installed an override
+// (typically a zero-delay backoff to avoid real sleeps).
+func (m *Monitor) retryBackoffOrDefault() github.RetryBackoff {
+	if m.retryBackoff != nil {
+		return *m.retryBackoff
+	}
+	return github.DefaultRetryBackoff()
+}
+
+// retryTransient wraps fn in the shared transient-failure retry. A momentary
+// gh/GitHub blip (transient 401, rate-limited 403, 5xx, network) is retried
+// with bounded exponential backoff instead of surfacing immediately and
+// flapping the PR through needs_fix/needs_human; permanent errors return at
+// once so the caller's existing error handling runs unchanged.
+func (m *Monitor) retryTransient(ctx context.Context, what string, fn func() error) error {
+	return github.RetryTransient(ctx, m.retryBackoffOrDefault(),
+		func(attempt int, delay time.Duration, err error) {
+			log.Printf("[bellows] %s transient failure (retry %d in %s): %v", what, attempt, delay, err)
+		}, fn)
 }
 
 // reviewGateInputs bundles every signal the Assay trigger gate evaluates.
