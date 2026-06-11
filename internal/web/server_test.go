@@ -15,6 +15,44 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+func TestEnrichWorkerPRURLs(t *testing.T) {
+	s := &Server{anvilRepoURLs: map[string]string{
+		"munin": "https://github.com/FHIDev/Munin",
+	}}
+	in := json.RawMessage(`{"workers":[` +
+		`{"bead_id":"Fhi.Metadata-1xnrh","anvil":"munin","pr_number":3897},` +
+		`{"bead_id":"Fhi.Metadata-aaaa","anvil":"munin"},` +
+		`{"bead_id":"H-1","anvil":"heimdall","pr_number":5}` +
+		`],"max_total_smiths":1}`)
+
+	out := s.enrichWorkerPRURLs(in)
+
+	var root map[string]any
+	if err := json.Unmarshal(out, &root); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if root["max_total_smiths"] != float64(1) {
+		t.Errorf("top-level field not preserved: max_total_smiths = %v", root["max_total_smiths"])
+	}
+	workers, ok := root["workers"].([]any)
+	if !ok || len(workers) != 3 {
+		t.Fatalf("workers shape wrong: %v", root["workers"])
+	}
+	// Worker with a pr_number on a known anvil gets a constructed link, even
+	// though it's an adopted PR with no ingot URL.
+	if got := workers[0].(map[string]any)["pr_url"]; got != "https://github.com/FHIDev/Munin/pull/3897" {
+		t.Errorf("worker0 pr_url = %v, want https://github.com/FHIDev/Munin/pull/3897", got)
+	}
+	// No pr_number -> no pr_url.
+	if _, has := workers[1].(map[string]any)["pr_url"]; has {
+		t.Errorf("worker1 (no pr_number) should not get a pr_url")
+	}
+	// Anvil not in the repo map and no DB fallback -> no pr_url (not a crash).
+	if _, has := workers[2].(map[string]any)["pr_url"]; has {
+		t.Errorf("worker2 (unknown anvil) should not get a pr_url")
+	}
+}
+
 func TestHealthz_NoAuth(t *testing.T) {
 	srv := newServerWithDefaults(t, nil)
 	rec := httptest.NewRecorder()

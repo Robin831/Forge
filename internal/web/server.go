@@ -96,6 +96,12 @@ type Server struct {
 	// emission cannot proceed without anvil routing.
 	anvils AnvilLister
 
+	// anvilRepoURLs maps an anvil name to its GitHub repo base URL
+	// ("https://github.com/owner/repo"), derived from the anvil's git origin
+	// at startup. Used by /api/status to construct a clickable PR link from a
+	// worker's pr_number. Empty/nil for anvils whose remote couldn't be parsed.
+	anvilRepoURLs map[string]string
+
 	// anvilTags returns the live per-anvil dispatch tags. Optional: when
 	// nil the /api/queue/{id}/apply-dispatch-tag endpoint reports 400 with
 	// "anvil has no auto_dispatch_tag configured" for every request.
@@ -139,6 +145,12 @@ func (s *Server) SetChatRunner(r forgechat.Runner) {
 // so hot-reloads are picked up automatically.
 func (s *Server) SetAnvilLister(a AnvilLister) {
 	s.anvils = a
+}
+
+// SetAnvilRepoURLs installs the anvil-name -> GitHub repo base URL map used
+// by /api/status to render a worker's pr_number as a clickable PR link.
+func (s *Server) SetAnvilRepoURLs(m map[string]string) {
+	s.anvilRepoURLs = m
 }
 
 // SetAnvilDispatchTagLister installs the per-anvil dispatch tag callback

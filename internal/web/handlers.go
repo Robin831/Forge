@@ -1,7 +1,9 @@
 package web
 
 import (
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -138,16 +140,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // enrichWorkerPRURLs adds a "pr_url" field to each worker in the status payload
-// that has a positive "pr_number", looked up from the bead's ingot record
-// (which stores the URL at PR-creation time). All other payload fields are
-// preserved verbatim. Best-effort: any decode, DB, or lookup failure returns
+// that has a positive "pr_number". The URL is constructed from the anvil's
+// GitHub repo base ("<repo>/pull/<n>"), which works whether the PR was opened
+// by Forge or adopted from a hand-opened branch; it falls back to the bead's
+// ingot URL when the repo base for that anvil is unknown. All other payload
+// fields are preserved verbatim. Best-effort: any decode/lookup failure returns
 // the original payload unchanged, so the status endpoint never breaks on this.
 func (s *Server) enrichWorkerPRURLs(payload json.RawMessage) json.RawMessage {
-	if len(payload) == 0 || s.db == nil {
-		return payload
-	}
-	conn := s.db.Conn()
-	if conn == nil {
+	if len(payload) == 0 {
 		return payload
 	}
 	var root map[string]json.RawMessage
@@ -162,6 +162,10 @@ func (s *Server) enrichWorkerPRURLs(payload json.RawMessage) json.RawMessage {
 	if err := json.Unmarshal(rawWorkers, &workers); err != nil {
 		return payload
 	}
+	var conn *sql.DB
+	if s.db != nil {
+		conn = s.db.Conn()
+	}
 	changed := false
 	for _, wm := range workers {
 		prNum, ok := wm["pr_number"].(float64)
@@ -170,14 +174,22 @@ func (s *Server) enrichWorkerPRURLs(payload json.RawMessage) json.RawMessage {
 		}
 		beadID, _ := wm["bead_id"].(string)
 		anvil, _ := wm["anvil"].(string)
-		if beadID == "" || anvil == "" {
+		if anvil == "" {
 			continue
 		}
-		ig, err := ingot.GetIngot(conn, beadID, anvil)
-		if err != nil || ig == nil || ig.PRURL == "" {
+		prURL := ""
+		if base := s.anvilRepoURLs[anvil]; base != "" {
+			prURL = fmt.Sprintf("%s/pull/%d", base, int(prNum))
+		} else if conn != nil && beadID != "" {
+			// Fallback: the ingot stores the URL for Forge-created PRs.
+			if ig, err := ingot.GetIngot(conn, beadID, anvil); err == nil && ig != nil {
+				prURL = ig.PRURL
+			}
+		}
+		if prURL == "" {
 			continue
 		}
-		wm["pr_url"] = ig.PRURL
+		wm["pr_url"] = prURL
 		changed = true
 	}
 	if !changed {

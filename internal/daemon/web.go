@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/forgechat"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/web"
 )
 
@@ -65,6 +67,28 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 		}
 		return out
 	})
+	// Build a name -> "https://github.com/owner/repo" map from each anvil's
+	// git origin remote, so /api/status can render a worker's pr_number as a
+	// clickable PR link. Derived once at startup (git reads .git/config, no
+	// network); best-effort — anvils whose remote can't be parsed are omitted
+	// and fall back to the ingot URL in the handler.
+	{
+		cfg := d.cfg.Load()
+		repoURLs := make(map[string]string, len(cfg.Anvils))
+		for name, anvil := range cfg.Anvils {
+			out, gerr := exec.Command("git", "-C", anvil.Path, "remote", "get-url", "origin").Output()
+			if gerr != nil {
+				continue
+			}
+			owner, repo, perr := github.ParseRepoURL(strings.TrimSpace(string(out)))
+			if perr != nil {
+				continue
+			}
+			repoURLs[name] = fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+		}
+		srv.SetAnvilRepoURLs(repoURLs)
+	}
+
 	// Expose each anvil's auto_dispatch_tag so the Hearth Apply-tag action
 	// can resolve the configured label without trusting a frontend constant.
 	// Anvils without a tag are omitted so the handler can use a simple
