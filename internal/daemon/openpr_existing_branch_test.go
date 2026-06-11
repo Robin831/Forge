@@ -194,6 +194,73 @@ func TestOpenPRForExistingBranch_CreatePRFailureLeavesNeedsHuman(t *testing.T) {
 	assert.True(t, r.NeedsHuman, "needs_human must remain set when gh pr create fails")
 }
 
+// pushEpicChildBranch creates an epic feature branch on origin and a forge child
+// branch that is one commit ahead of it (carrying the bead's changelog fragment).
+// This mirrors a Crucible child whose PR must target the feature branch, not main.
+func pushEpicChildBranch(t *testing.T, anvilPath, beadID, featureBranch string) {
+	t.Helper()
+	childBranch := worktree.BranchName(beadID)
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = anvilPath
+		cmd.Env = cleanGitTestEnv()
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	// Feature branch off main, pushed to origin so it can serve as the PR base.
+	git("checkout", "-b", featureBranch)
+	git("push", "origin", featureBranch)
+	// Child branch off the feature branch, one commit ahead, with the fragment.
+	git("checkout", "-b", childBranch)
+	require.NoError(t, os.MkdirAll(filepath.Join(anvilPath, "changelog.d"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(anvilPath, "changelog.d", beadID+".md"),
+		[]byte("category: Added\n- **Thing** - did a thing. ("+beadID+")\n"), 0o644))
+	git("add", filepath.Join("changelog.d", beadID+".md"))
+	git("commit", "-m", "child work")
+	git("push", "origin", childBranch)
+	git("checkout", "main")
+}
+
+// TestOpenPRForExistingBranch_ResolvesEpicBranch verifies that a Crucible child
+// recovered via openPRForExistingBranch gets its PR targeted at the resolved
+// epic feature branch rather than the repo default. FetchBead does not populate
+// EpicBranch, so the helper must resolve it via poller.ResolveEpicBranches.
+func TestOpenPRForExistingBranch_ResolvesEpicBranch(t *testing.T) {
+	const anvil = "test-anvil"
+	const beadID = "Forge-child1"
+	const epicID = "Forge-epic1"
+	const featureBranch = "feature/Forge-epic1"
+	anvilPath := initTestGitRepo(t)
+	pushEpicChildBranch(t, anvilPath, beadID, featureBranch)
+
+	// Resolve the epic branch without shelling out to bd.
+	restore := poller.SetEpicBranchLookupForTest(func(_ context.Context, parentID, _ string) string {
+		if parentID == epicID {
+			return featureBranch
+		}
+		return ""
+	})
+	defer restore()
+
+	mock := &mockVCSProvider{
+		createPRResult: &vcs.PR{Number: 55, URL: "https://example.test/pr/55", Title: "Recover child"},
+	}
+	d, db := newCreatePRTestDaemon(t, anvil, anvilPath, mock)
+	// Override the canned fetcher with one returning a child that blocks the epic.
+	d.beadFetcher = func(_ context.Context, id, _ string) (poller.Bead, error) {
+		return poller.Bead{ID: id, Title: "Recover child", Description: "desc", IssueType: "task", Blocks: []string{epicID}}, nil
+	}
+	require.NoError(t, db.MarkNeedsHuman(beadID, anvil, "PR creation failed"))
+
+	prNum, err := d.openPRForExistingBranch(context.Background(), beadID, anvil)
+	require.NoError(t, err)
+	assert.Equal(t, 55, prNum)
+	assert.Equal(t, featureBranch, mock.lastCreateParams.Base,
+		"a Crucible child's recovered PR must target the resolved epic feature branch")
+}
+
 func TestOpenPRForExistingBranch_UnknownAnvil(t *testing.T) {
 	mock := &mockVCSProvider{}
 	d, _ := newCreatePRTestDaemon(t, "test-anvil", initTestGitRepo(t), mock)

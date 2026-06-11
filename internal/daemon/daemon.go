@@ -3916,6 +3916,16 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 	}
 	bead.Anvil = anvilName
 
+	// Resolve the epic branch so a Crucible child's recovered PR targets the
+	// feature branch rather than the repo default. FetchBead does not populate
+	// EpicBranch (it is json:"-" and normally filled by poller.ResolveEpicBranches),
+	// so we resolve it explicitly here — mirroring the force_smith/warden_rerun
+	// flows. Every downstream use below (base-branch precondition check, CreateParams,
+	// and PR registration) reads bead.EpicBranch, so this must run before them.
+	beads := []poller.Bead{bead}
+	poller.ResolveEpicBranches(ctx, beads, map[string]string{anvilName: anvilPath})
+	bead.EpicBranch = beads[0].EpicBranch
+
 	// Precondition: origin/<branch> exists and is ahead of base (stranded).
 	branchState, info, err := worktree.CheckRemoteBranchState(ctx, anvilPath, branch, bead.EpicBranch)
 	if err != nil {

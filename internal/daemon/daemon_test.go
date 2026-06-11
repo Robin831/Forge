@@ -2669,6 +2669,10 @@ type mockVCSProvider struct {
 	createPRResult *vcs.PR
 	createPRErr    error
 	createPRCalls  atomic.Int32
+	// lastCreateParams captures the CreateParams of the most recent CreatePR
+	// call so tests can assert the PR base branch (e.g. a Crucible child's
+	// resolved epic branch) is wired through correctly.
+	lastCreateParams vcs.CreateParams
 	// createPRFunc, when non-nil, overrides the static createPRResult/createPRErr
 	// and is passed the 1-based call count so tests can simulate a transient
 	// failure on the first attempt followed by success on a retry.
@@ -2687,7 +2691,8 @@ func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) 
 	m.mergeCalls.Add(1)
 	return m.mergeErr
 }
-func (m *mockVCSProvider) CreatePR(_ context.Context, _ vcs.CreateParams) (*vcs.PR, error) {
+func (m *mockVCSProvider) CreatePR(_ context.Context, params vcs.CreateParams) (*vcs.PR, error) {
+	m.lastCreateParams = params
 	call := int(m.createPRCalls.Add(1))
 	if m.createPRFunc != nil {
 		return m.createPRFunc(call)
