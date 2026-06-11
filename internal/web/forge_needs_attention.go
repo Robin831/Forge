@@ -18,6 +18,11 @@ const (
 	escTypeRecoveryFailed = "recovery_failed"
 	escTypeDispatchFailed = "dispatch_failed"
 	escTypeClarification  = "clarification"
+	// escTypePRCreateFailed marks a bead whose branch was pushed but for which
+	// PR creation failed (Part D's pr_create_failed recorded state). It drives
+	// the panel's "Create PR" action set, which recovers the bead by opening a
+	// PR for the existing branch without re-running Smith.
+	escTypePRCreateFailed = "pr_create_failed"
 )
 
 // needsAttentionItem is one row of GET /api/forge/needs-attention. It bundles
@@ -130,6 +135,12 @@ func (s *Server) deriveEscalationType(rec state.RetryRecord) string {
 			switch e.Type {
 			case state.EventDispatchBlockedStrandedBranch:
 				return escTypeStrandedBranch
+			case state.EventPRCreationFailed:
+				// PR creation failed after the branch was pushed (Part D records
+				// the pr_create_failed state alongside this event). The work is
+				// committed; only the final PR open failed, so the operator can
+				// recover with "Create PR".
+				return escTypePRCreateFailed
 			case state.EventSmithFailed:
 				return escTypeSmithFailed
 			case state.EventRecoveryCircuitBreak:

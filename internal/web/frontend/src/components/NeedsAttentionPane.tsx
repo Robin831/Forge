@@ -16,6 +16,7 @@ const TYPE_LABEL: Record<EscalationType, string> = {
   recovery_failed: 'recovery failed',
   dispatch_blocked_stranded_branch: 'stranded branch',
   clarification: 'clarification',
+  pr_create_failed: 'PR create failed',
 }
 
 // TYPE_BADGE tints the escalation-type badge so the operator can scan the
@@ -28,6 +29,7 @@ const TYPE_BADGE: Record<EscalationType, string> = {
   dispatch_blocked_stranded_branch:
     'border-amber-500/40 bg-amber-500/10 text-amber-300',
   clarification: 'border-sky-500/40 bg-sky-500/10 text-sky-300',
+  pr_create_failed: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
 }
 
 // rowKey identifies a needs-attention row by bead+anvil, matching the

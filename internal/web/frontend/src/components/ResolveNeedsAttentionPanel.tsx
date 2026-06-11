@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, X } from 'lucide-react'
+import { AlertTriangle, ExternalLink, X } from 'lucide-react'
 import type { EscalationDetail, EscalationType, ResolveVerb } from '../api/forge'
 import ConfirmModal from './ConfirmModal'
 import {
@@ -55,6 +55,7 @@ const VERB_LABEL: Record<ResolveVerb, string> = {
   clear: 'Clear flag',
   'approve-as-is': 'Approve as-is (skip Warden)',
   'warden-rerun': 'Re-run Warden',
+  'create-pr': 'Create PR',
 }
 
 // VerbSpec is one entry in an escalation type's action set. `label` overrides
@@ -86,6 +87,18 @@ const CLARIFICATION_VERBS: readonly VerbSpec[] = [
   { verb: 'unclarify' },
 ]
 
+// PR_CREATE_FAILED_VERBS is the action set for a pr_create_failed escalation:
+// a prior worker pushed origin/forge/<bead> and finished its work, but the
+// final PR open failed (auth/transient/protected-branch). The primary recovery
+// is "Create PR" — open a PR for the existing branch without re-running Smith;
+// the operator can instead reset & re-dispatch through Smith, or accept the
+// situation and clear the flag.
+const PR_CREATE_FAILED_VERBS: readonly VerbSpec[] = [
+  { verb: 'create-pr' },
+  { verb: 'retry', label: 'Reset & retry' },
+  { verb: 'clear', label: 'Accept & clear' },
+]
+
 // verbSpecsFor maps an escalation type to its ordered action set. The two
 // recovery/worker modes share WORKER_VERBS; dispatch_failed keeps the broader
 // BEAD_VERBS (no live worker to stop); the bead-centric types added by
@@ -94,6 +107,8 @@ function verbSpecsFor(type: EscalationType): readonly VerbSpec[] {
   switch (type) {
     case 'dispatch_blocked_stranded_branch':
       return STRANDED_BRANCH_VERBS
+    case 'pr_create_failed':
+      return PR_CREATE_FAILED_VERBS
     case 'clarification':
       return CLARIFICATION_VERBS
     case 'dispatch_failed':
@@ -133,6 +148,8 @@ const DESTRUCTIVE_VERBS: ReadonlySet<ResolveVerb> = new Set<ResolveVerb>([
   'retry',
   'stop',
   'approve-as-is',
+  // create-pr opens a real GitHub PR (outward-facing); confirm before firing.
+  'create-pr',
 ])
 
 
@@ -142,6 +159,7 @@ const TYPE_TITLE: Record<EscalationType, string> = {
   recovery_failed: 'Recovery failed — needs attention',
   dispatch_blocked_stranded_branch: 'Stranded branch — needs attention',
   clarification: 'Clarification needed',
+  pr_create_failed: 'PR creation failed — needs attention',
 }
 
 // formatCommitList renders a list of commits as monospace lines. The
@@ -250,6 +268,12 @@ export default function ResolveNeedsAttentionPanel({
   const actionEntry = useResolveStatus(actionKey)
   const actionPending = actionEntry.status === 'pending'
   const actionError = actionEntry.status === 'error' ? actionEntry.error : undefined
+  // The create-pr verb returns a structured success payload (PR number + URL)
+  // that we surface inline as a clickable link; no other verb populates it.
+  const createPRResult =
+    actionEntry.status === 'success' && actionEntry.verb === 'create-pr'
+      ? actionEntry.result
+      : undefined
   const actionsDisabled = actionPending || actionEntry.status === 'error'
   const anvilMissing = detail != null && !detail.anvil
 
@@ -422,6 +446,30 @@ export default function ResolveNeedsAttentionPanel({
                 </button>
               </div>
             )}
+            {createPRResult && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-emerald-700/40 bg-emerald-900/20 px-3 py-2 text-sm text-emerald-200"
+              >
+                <span>
+                  {createPRResult.prNumber
+                    ? `Opened PR #${createPRResult.prNumber}.`
+                    : createPRResult.message || 'PR created.'}
+                </span>
+                {createPRResult.prUrl && (
+                  <a
+                    href={createPRResult.prUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 font-medium underline hover:no-underline focus:outline-none focus-visible:ring-1 focus-visible:ring-emerald-400"
+                  >
+                    View on GitHub
+                    <ExternalLink size={12} aria-hidden />
+                  </a>
+                )}
+              </div>
+            )}
           </div>
 
         </>
@@ -434,7 +482,9 @@ export default function ResolveNeedsAttentionPanel({
             ? 'Killing the worker stops the running smith process and prevents re-dispatch until the flag is cleared. Continue?'
             : confirmVerb?.verb === 'approve-as-is'
               ? "This will skip the Warden review and open a PR from the worker's existing branch. Continue?"
-              : 'Retrying clears the needs-attention flag and re-dispatches this bead on the next poll. Continue?'
+              : confirmVerb?.verb === 'create-pr'
+                ? 'This opens a pull request for the already-pushed branch (without re-running Smith) and hands it to Bellows. Continue?'
+                : 'Retrying clears the needs-attention flag and re-dispatches this bead on the next poll. Continue?'
         }
         tone="danger"
         busy={actionPending}

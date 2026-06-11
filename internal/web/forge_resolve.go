@@ -28,13 +28,18 @@ import (
 // added in Forge-ts2r to give pod-hosted forges the same escape hatches
 // the TUI exposes.
 const (
-	resolveActionClear        = "clear"
-	resolveActionRetry        = "retry"
-	resolveActionClarify      = "clarify"
-	resolveActionUnclarify    = "unclarify"
-	resolveActionStop         = "stop"
-	resolveActionApproveAsIs  = "approve-as-is"
-	resolveActionWardenRerun  = "warden-rerun"
+	resolveActionClear       = "clear"
+	resolveActionRetry       = "retry"
+	resolveActionClarify     = "clarify"
+	resolveActionUnclarify   = "unclarify"
+	resolveActionStop        = "stop"
+	resolveActionApproveAsIs = "approve-as-is"
+	resolveActionWardenRerun = "warden-rerun"
+	// resolveActionCreatePR opens a PR for an already-pushed forge/<bead>
+	// branch without re-running Smith (Part B's openPRForExistingBranch helper,
+	// exposed via the create_pr IPC). The Hearth "Create PR" button uses it to
+	// recover a bead stuck in pr_create_failed after PR creation failed.
+	resolveActionCreatePR = "create-pr"
 )
 
 // resolveActionToIPC maps the web-facing action verb to the daemon IPC
@@ -50,6 +55,7 @@ var resolveActionToIPC = map[string]string{
 	resolveActionStop:        "queue_stop",
 	resolveActionApproveAsIs: "approve_as_is",
 	resolveActionWardenRerun: "warden_rerun",
+	resolveActionCreatePR:    "create_pr",
 }
 
 // resolveRequest is the JSON body for POST /api/forge/resolve. anvil_name is
@@ -95,7 +101,7 @@ func (s *Server) handleForgeResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	cmdType, ok := resolveActionToIPC[req.Action]
 	if !ok {
-		writeError(w, http.StatusBadRequest, "action must be one of clear|retry|clarify|unclarify|stop|approve-as-is|warden-rerun")
+		writeError(w, http.StatusBadRequest, "action must be one of clear|retry|clarify|unclarify|stop|approve-as-is|warden-rerun|create-pr")
 		return
 	}
 	if req.AnvilName == "" {
@@ -122,6 +128,14 @@ func (s *Server) handleForgeResolve(w http.ResponseWriter, r *http.Request) {
 		})
 	case resolveActionWardenRerun:
 		s.dispatchAction(w, cmdType, ipc.WardenRerunPayload{
+			BeadID: req.BeadID,
+			Anvil:  req.AnvilName,
+		})
+	case resolveActionCreatePR:
+		// create_pr carries bead_id + anvil only (no note). The daemon runs it
+		// synchronously and returns pr_number / pr_url in the ok payload, which
+		// dispatchAction forwards verbatim so the SPA can render a PR link.
+		s.dispatchAction(w, cmdType, ipc.CreatePRPayload{
 			BeadID: req.BeadID,
 			Anvil:  req.AnvilName,
 		})

@@ -3880,19 +3880,22 @@ func (d *Daemon) clearNeedsHumanAfterRecovery(beadID, anvil string) {
 //     signal Forge requires), proving the prior worker finished its work.
 //
 // On success it clears needs_human, logs EventPRCreateRecovered, and returns the
-// PR number. On failure it surfaces the gh error and leaves needs_human set so
-// the bead remains in the operator's needs-attention view.
-func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName string) (int, error) {
+// PR number and (when known) the PR's web URL. On failure it surfaces the gh
+// error and leaves needs_human set so the bead remains in the operator's
+// needs-attention view. The URL is returned so callers (the Hearth "Create PR"
+// button) can render a clickable link; it is empty for the already-open / raced
+// recovery paths where only the PR number is available.
+func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName string) (int, string, error) {
 	if beadID == "" || anvilName == "" {
-		return 0, fmt.Errorf("bead_id and anvil are required")
+		return 0, "", fmt.Errorf("bead_id and anvil are required")
 	}
 	anvilCfg, ok := d.cfg.Load().Anvils[anvilName]
 	if !ok {
-		return 0, fmt.Errorf("anvil %q not found", anvilName)
+		return 0, "", fmt.Errorf("anvil %q not found", anvilName)
 	}
 	anvilPath := anvilCfg.Path
 	if anvilPath == "" {
-		return 0, fmt.Errorf("anvil %q has no path configured", anvilName)
+		return 0, "", fmt.Errorf("anvil %q has no path configured", anvilName)
 	}
 
 	branch := worktree.BranchName(beadID)
@@ -3912,7 +3915,7 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 	}
 	bead, err := fetchBead(ctx, beadID, anvilPath)
 	if err != nil {
-		return 0, fmt.Errorf("bd show %s: %w", beadID, err)
+		return 0, "", fmt.Errorf("bd show %s: %w", beadID, err)
 	}
 	bead.Anvil = anvilName
 
@@ -3929,13 +3932,13 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 	// Precondition: origin/<branch> exists and is ahead of base (stranded).
 	branchState, info, err := worktree.CheckRemoteBranchState(ctx, anvilPath, branch, bead.EpicBranch)
 	if err != nil {
-		return 0, fmt.Errorf("checking remote branch %s: %w", branch, err)
+		return 0, "", fmt.Errorf("checking remote branch %s: %w", branch, err)
 	}
 	switch branchState {
 	case worktree.RemoteBranchAbsent:
-		return 0, fmt.Errorf("origin/%s does not exist; nothing to open a PR for", branch)
+		return 0, "", fmt.Errorf("origin/%s does not exist; nothing to open a PR for", branch)
 	case worktree.RemoteBranchMerged:
-		return 0, fmt.Errorf("origin/%s is already merged into the base branch; nothing to open", branch)
+		return 0, "", fmt.Errorf("origin/%s is already merged into the base branch; nothing to open", branch)
 	}
 
 	provider := d.vcsForAnvil(anvilName)
@@ -3943,7 +3946,7 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 	// Precondition: no open PR already. If one exists, register it (idempotent)
 	// and treat this as a successful recovery — the goal state is reached.
 	if pr, perr := provider.GetPRByHeadBranch(ctx, anvilPath, branch); perr != nil {
-		return 0, fmt.Errorf("looking up existing PR for %s: %w", branch, perr)
+		return 0, "", fmt.Errorf("looking up existing PR for %s: %w", branch, perr)
 	} else if pr != nil {
 		d.registerPRIfUntracked(ctx, anvilName, registerID, pr, bead.EpicBranch)
 		d.clearNeedsHumanAfterRecovery(beadID, anvilName)
@@ -3952,16 +3955,16 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 		_ = d.db.LogEvent(state.EventPRCreateRecovered,
 			fmt.Sprintf("create-pr: %s already has open PR #%d; registered and cleared needs_human", branch, pr.Number),
 			beadID, anvilName)
-		return pr.Number, nil
+		return pr.Number, "", nil
 	}
 
 	// Precondition: branch tip carries the bead's changelog fragment.
 	hasFragment, fragErr := d.branchHasChangelogFragment(ctx, anvilPath, info.SHA, beadID)
 	if fragErr != nil {
-		return 0, fmt.Errorf("checking changelog fragment on %s: %w", branch, fragErr)
+		return 0, "", fmt.Errorf("checking changelog fragment on %s: %w", branch, fragErr)
 	}
 	if !hasFragment {
-		return 0, fmt.Errorf("origin/%s does not carry a changelog fragment (changelog.d/%s.md); refusing to open a PR for incomplete work", branch, beadID)
+		return 0, "", fmt.Errorf("origin/%s does not carry a changelog fragment (changelog.d/%s.md); refusing to open a PR for incomplete work", branch, beadID)
 	}
 
 	// Last-chance external_ref lookup in case it was empty in the bead record.
@@ -3990,16 +3993,16 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 			_ = d.db.LogEvent(state.EventPRCreateRecovered,
 				fmt.Sprintf("create-pr: PR already existed for %s on create; registered #%d and cleared needs_human", branch, n),
 				beadID, anvilName)
-			return n, nil
+			return n, "", nil
 		}
 		// Surface the gh error and leave needs_human set.
 		_ = d.db.LogEvent(state.EventPRCreationFailed,
 			fmt.Sprintf("create-pr: PR creation failed for branch %s: %v", branch, err), beadID, anvilName)
 		d.ingotRecordPRCreateFailed(beadID, anvilName, branch, info.SHA, err.Error())
-		return 0, fmt.Errorf("gh pr create for %s failed: %w", branch, err)
+		return 0, "", fmt.Errorf("gh pr create for %s failed: %w", branch, err)
 	}
 	if pr == nil || pr.URL == "" || pr.Number == 0 {
-		return 0, fmt.Errorf("PR creation for %s returned an invalid PR object", branch)
+		return 0, "", fmt.Errorf("PR creation for %s returned an invalid PR object", branch)
 	}
 
 	// Register so bellows owns the PR. registerPRIfUntracked is idempotent
@@ -4018,7 +4021,7 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 	_ = d.db.LogEvent(state.EventPRCreateRecovered,
 		fmt.Sprintf("create-pr: opened PR #%d for existing branch %s: %s", pr.Number, branch, pr.URL),
 		beadID, anvilName)
-	return pr.Number, nil
+	return pr.Number, pr.URL, nil
 }
 
 // forgeBranchAheadOfMain checks whether the origin remote has a forge branch
@@ -5075,13 +5078,19 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// uses ipc.BdBackedReadTimeout for this command.
 		opCtx, opCancel := context.WithTimeout(context.Background(), ipc.BdBackedReadTimeout)
 		defer opCancel()
-		prNumber, err := d.openPRForExistingBranch(opCtx, cp.BeadID, anvilName)
+		prNumber, prURL, err := d.openPRForExistingBranch(opCtx, cp.BeadID, anvilName)
 		if err != nil {
 			msg, _ := json.Marshal(map[string]string{"message": err.Error()})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		data, _ := json.Marshal(map[string]string{
-			"message": fmt.Sprintf("opened PR #%d for %s", prNumber, cp.BeadID),
+		// Include the PR number and (when known) its web URL as structured
+		// fields so the Hearth "Create PR" button can render a clickable link.
+		// prURL is empty for the already-open / raced recovery paths, where only
+		// the number is available; clients fall back to a number-only label.
+		data, _ := json.Marshal(map[string]any{
+			"message":   fmt.Sprintf("opened PR #%d for %s", prNumber, cp.BeadID),
+			"pr_number": prNumber,
+			"pr_url":    prURL,
 		})
 		return ipc.Response{Type: "ok", Payload: data}
 
