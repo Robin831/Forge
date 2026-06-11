@@ -1,0 +1,2 @@
+category: Fixed
+- **Retry transient gh failures on PR creation and PR monitoring** - The end-of-pipeline CreatePR and Bellows' PR status fetches now retry transient gh/GitHub errors (momentary 401, rate-limited 403, 5xx, network blips) with bounded exponential backoff via the shared vcs/github classifier, instead of immediately stranding a bead or flapping a PR through needs_fix/needs_human. Permanent errors (422 validation, branch protection, 404) still surface immediately. (Forge-ficr)

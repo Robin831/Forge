@@ -21,11 +21,13 @@ import (
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
+	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/vcs"
+	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/wicket"
 	"github.com/Robin831/Forge/internal/worktree"
 	"github.com/stretchr/testify/assert"
@@ -2667,6 +2669,10 @@ type mockVCSProvider struct {
 	createPRResult *vcs.PR
 	createPRErr    error
 	createPRCalls  atomic.Int32
+	// createPRFunc, when non-nil, overrides the static createPRResult/createPRErr
+	// and is passed the 1-based call count so tests can simulate a transient
+	// failure on the first attempt followed by success on a retry.
+	createPRFunc func(call int) (*vcs.PR, error)
 	// openPRs controls what ListOpenPRs and GetPRByHeadBranch return. Used by
 	// tests that exercise the ErrPRAlreadyExists recovery path.
 	openPRs []vcs.OpenPR
@@ -2682,7 +2688,10 @@ func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) 
 	return m.mergeErr
 }
 func (m *mockVCSProvider) CreatePR(_ context.Context, _ vcs.CreateParams) (*vcs.PR, error) {
-	m.createPRCalls.Add(1)
+	call := int(m.createPRCalls.Add(1))
+	if m.createPRFunc != nil {
+		return m.createPRFunc(call)
+	}
 	return m.createPRResult, m.createPRErr
 }
 func (m *mockVCSProvider) CheckStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
@@ -5803,4 +5812,91 @@ func TestClaimBead_SuccessLeavesPendingWorkerIntact(t *testing.T) {
 	if r != nil {
 		assert.Equal(t, 0, r.DispatchFailures, "a successful claim must not record a dispatch failure")
 	}
+}
+
+// TestFinalizePipelineCreatePRRetry verifies that the end-of-pipeline CreatePR
+// is wrapped in transient-failure retry: a transient gh/GitHub error (e.g. a
+// momentary 401) is auto-retried so the bead is NOT stranded, while a permanent
+// error (e.g. 422 validation) surfaces immediately to the needs_human path with
+// no retry. Covers Forge-ficr acceptance criteria (1), (2).
+func TestFinalizePipelineCreatePRRetry(t *testing.T) {
+	const anvilName = "test-anvil"
+
+	newDaemon := func(t *testing.T, mock *mockVCSProvider) (*Daemon, *state.DB) {
+		t.Helper()
+		tmpDir, err := os.MkdirTemp("", "forge-finalize-*")
+		require.NoError(t, err)
+		t.Cleanup(func() { os.RemoveAll(tmpDir) })
+
+		db, err := state.Open(filepath.Join(tmpDir, "state.db"))
+		require.NoError(t, err)
+		t.Cleanup(func() { db.Close() })
+
+		zero := github.RetryBackoff{} // no real sleeps in tests
+		d := &Daemon{
+			db:             db,
+			logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+			vcsProviders:   map[string]vcs.Provider{anvilName: mock},
+			prRetryBackoff: &zero,
+		}
+		d.cfg.Store(&config.Config{})
+		return d, db
+	}
+
+	t.Run("transient 401 then success: auto-retried, not stranded", func(t *testing.T) {
+		mock := &mockVCSProvider{
+			createPRFunc: func(call int) (*vcs.PR, error) {
+				if call == 1 {
+					return nil, fmt.Errorf("failed to create PR: HTTP 401: Bad credentials")
+				}
+				return &vcs.PR{Number: 42, URL: "https://example.com/pr/42", Title: "t"}, nil
+			},
+		}
+		d, db := newDaemon(t, mock)
+
+		bead := poller.Bead{ID: "FICR-401", Anvil: anvilName, Title: "retry me", ExternalRef: "gh-1"}
+		outcome := &pipeline.Outcome{Branch: worktree.BranchName(bead.ID), Iterations: 1}
+
+		d.finalizePipeline(context.Background(), outcome, bead, t.TempDir(), "worker-1")
+
+		require.Equal(t, int32(2), mock.createPRCalls.Load(),
+			"CreatePR should be retried once after the transient 401")
+
+		// The bead must NOT be stranded/needs_human after a successful retry.
+		r, err := db.GetRetry(bead.ID, bead.Anvil)
+		require.NoError(t, err)
+		if r != nil {
+			assert.False(t, r.NeedsHuman, "bead must not be marked needs_human when CreatePR succeeds on retry")
+		}
+		// No PR-creation-failed event should have been logged.
+		events, err := db.RecentEvents(20)
+		require.NoError(t, err)
+		for _, ev := range events {
+			assert.NotEqual(t, state.EventPRCreationFailed, ev.Type,
+				"no PR creation failure should be logged when the retry succeeds")
+		}
+	})
+
+	t.Run("permanent 422: no retry, immediate needs_human", func(t *testing.T) {
+		mock := &mockVCSProvider{
+			createPRFunc: func(call int) (*vcs.PR, error) {
+				return nil, fmt.Errorf("failed to create PR: HTTP 422: Validation Failed (No commits between main and feature)")
+			},
+		}
+		d, db := newDaemon(t, mock)
+
+		bead := poller.Bead{ID: "FICR-422", Anvil: anvilName, Title: "permanent", ExternalRef: "gh-1"}
+		outcome := &pipeline.Outcome{Branch: worktree.BranchName(bead.ID), Iterations: 1}
+
+		d.finalizePipeline(context.Background(), outcome, bead, t.TempDir(), "worker-2")
+
+		require.Equal(t, int32(1), mock.createPRCalls.Load(),
+			"a permanent 422 must NOT be retried")
+
+		// The bead must fall through to needs_human immediately.
+		r, err := db.GetRetry(bead.ID, bead.Anvil)
+		require.NoError(t, err)
+		require.NotNil(t, r, "permanent CreatePR failure should mark the bead needs_human")
+		assert.True(t, r.NeedsHuman, "permanent CreatePR failure must surface to needs_human")
+	})
 }

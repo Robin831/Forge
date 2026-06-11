@@ -3,6 +3,7 @@ package bellows
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/vcs"
+	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1138,6 +1140,11 @@ func TestCheckPR_TitleBackfill(t *testing.T) {
 // fakeVCSProvider is a minimal vcs.Provider that returns a fixed PRStatus.
 type fakeVCSProvider struct {
 	status *vcs.PRStatus
+	// checkStatusFunc, when non-nil, overrides the fixed status and is passed
+	// the 1-based call count so tests can simulate a transient CheckStatus
+	// failure followed by success on a retry.
+	checkStatusFunc  func(call int) (*vcs.PRStatus, error)
+	checkStatusCalls int
 }
 
 func (f *fakeVCSProvider) CreatePR(context.Context, vcs.CreateParams) (*vcs.PR, error) {
@@ -1145,6 +1152,10 @@ func (f *fakeVCSProvider) CreatePR(context.Context, vcs.CreateParams) (*vcs.PR, 
 }
 func (f *fakeVCSProvider) MergePR(context.Context, string, int, string) error { return nil }
 func (f *fakeVCSProvider) CheckStatus(context.Context, string, int) (*vcs.PRStatus, error) {
+	f.checkStatusCalls++
+	if f.checkStatusFunc != nil {
+		return f.checkStatusFunc(f.checkStatusCalls)
+	}
 	return f.status, nil
 }
 func (f *fakeVCSProvider) CheckStatusLight(context.Context, string, int) (*vcs.PRStatus, error) {
@@ -1176,6 +1187,89 @@ func (f *fakeVCSProvider) FetchReviewComments(context.Context, string, int) ([]v
 }
 func (f *fakeVCSProvider) ResolveThread(context.Context, string, string) error { return nil }
 func (f *fakeVCSProvider) Platform() vcs.Platform                              { return "fake" }
+
+// TestCheckPR_TransientCheckStatusRetried verifies that a transient gh/GitHub
+// failure on the CI/review status fetch (e.g. a momentary 401 during the
+// 2026-06-10 blip) is retried rather than flapping the PR through needs_fix.
+// Covers Forge-ficr acceptance criterion (6).
+func TestCheckPR_TransientCheckStatusRetried(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    800,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-transient",
+		Branch:    "forge/forge-transient",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, false, false, false))
+
+	fake := &fakeVCSProvider{
+		checkStatusFunc: func(call int) (*vcs.PRStatus, error) {
+			if call == 1 {
+				return nil, fmt.Errorf("gh api failed: HTTP 401: Bad credentials")
+			}
+			return &vcs.PRStatus{State: "OPEN"}, nil
+		},
+	}
+
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
+		map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
+	zero := github.RetryBackoff{} // no real sleeps in tests
+	m.retryBackoff = &zero
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	assert.Equal(t, 2, fake.checkStatusCalls,
+		"CheckStatus must be retried once after the transient 401")
+	assert.NotContains(t, events, EventCIFailed,
+		"a transient status-fetch blip must not flap the PR into a CI-failed event")
+
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, state.PRNeedsFix, updated.Status,
+		"a transient status-fetch blip must not flap the PR into needs_fix")
+}
+
+// TestCheckPR_PermanentCheckStatusNoRetry verifies that a permanent gh error on
+// the status fetch surfaces immediately without burning retries.
+func TestCheckPR_PermanentCheckStatusNoRetry(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    801,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-permanent",
+		Branch:    "forge/forge-permanent",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	fake := &fakeVCSProvider{
+		checkStatusFunc: func(int) (*vcs.PRStatus, error) {
+			return nil, fmt.Errorf("gh api failed: HTTP 404: Not Found")
+		},
+	}
+
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
+		map[string]string{"test-anvil": "/fake"}, nil, nil, nil, nil)
+	zero := github.RetryBackoff{}
+	m.retryBackoff = &zero
+
+	m.checkAll(context.Background())
+
+	assert.Equal(t, 1, fake.checkStatusCalls,
+		"a permanent 404 must NOT be retried")
+}
 
 // seedIngot inserts an ingot row so UpdateIngotStatus has something to update.
 func seedIngot(t *testing.T, sqlDB *sql.DB, beadID, anvil string) {

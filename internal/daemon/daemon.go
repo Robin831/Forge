@@ -254,6 +254,12 @@ type Daemon struct {
 	vcsProviders   map[string]vcs.Provider
 	vcsProvidersMu sync.RWMutex
 
+	// prRetryBackoff overrides the inline retry backoff used when wrapping the
+	// end-of-pipeline CreatePR in transient-failure retries. nil selects
+	// github.DefaultRetryBackoff(); tests set a zero-delay backoff to avoid
+	// real sleeps.
+	prRetryBackoff *github.RetryBackoff
+
 	// reqTracker tracks async IPC requests so completions can be correlated
 	// back to the original command. Store it by value so Daemon instances
 	// created via direct struct literals still have a usable tracker.
@@ -3162,6 +3168,16 @@ func needsHumanReason(outcome *pipeline.Outcome) string {
 	return "Smith produced no diff, needs human attention"
 }
 
+// createPRBackoff returns the inline retry backoff for the end-of-pipeline
+// CreatePR. It uses the production default unless a test has installed an
+// override (typically a zero-delay backoff to avoid real sleeps).
+func (d *Daemon) createPRBackoff() github.RetryBackoff {
+	if d.prRetryBackoff != nil {
+		return *d.prRetryBackoff
+	}
+	return github.DefaultRetryBackoff()
+}
+
 // finalizePipeline handles the post-success pipeline flow: create PR, clear
 // retries, send notifications, and close the bead. Both the normal dispatch
 // path and the force smith path call this to avoid duplicating PR creation logic.
@@ -3186,20 +3202,35 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		externalRef = d.fetchExternalRef(anvilPath, bead.ID)
 	}
 
-	pr, err := d.vcsForAnvil(bead.Anvil).CreatePR(ctx, vcs.CreateParams{
-		WorktreePath:    anvilPath,
-		BeadID:          bead.ID,
-		Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
-		Branch:          outcome.Branch,
-		Base:            bead.EpicBranch, // empty = use provider default base
-		AnvilName:       bead.Anvil,
-		BeadTitle:       bead.Title,
-		BeadDescription: bead.Description,
-		BeadType:        bead.IssueType,
-		ChangeSummary:   changelogSummary,
-		ReviewerNotes:   reviewerNotes,
-		ExternalRef:     externalRef,
-	})
+	// Wrap CreatePR in transient-failure retry: a momentary gh/GitHub blip
+	// (transient 401, rate-limited 403, 5xx, network) is retried with bounded
+	// exponential backoff instead of immediately stranding the bead. Permanent
+	// errors (422 validation, branch protection, 404) are NOT retried by the
+	// classifier and fall straight through to the needs_human path below.
+	var pr *vcs.PR
+	err := github.RetryTransient(ctx, d.createPRBackoff(),
+		func(attempt int, delay time.Duration, e error) {
+			d.logger.Warn("PR creation transient failure, retrying",
+				"bead", bead.ID, "attempt", attempt, "delay", delay, "error", e)
+		},
+		func() error {
+			var e error
+			pr, e = d.vcsForAnvil(bead.Anvil).CreatePR(ctx, vcs.CreateParams{
+				WorktreePath:    anvilPath,
+				BeadID:          bead.ID,
+				Title:           fmt.Sprintf("%s (%s)", bead.Title, bead.ID),
+				Branch:          outcome.Branch,
+				Base:            bead.EpicBranch, // empty = use provider default base
+				AnvilName:       bead.Anvil,
+				BeadTitle:       bead.Title,
+				BeadDescription: bead.Description,
+				BeadType:        bead.IssueType,
+				ChangeSummary:   changelogSummary,
+				ReviewerNotes:   reviewerNotes,
+				ExternalRef:     externalRef,
+			})
+			return e
+		})
 	if err != nil {
 		// If a PR already exists for this branch (duplicate run), log a warning
 		// and continue rather than failing — the work is already represented.
