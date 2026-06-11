@@ -46,6 +46,7 @@ func TestIsTransient(t *testing.T) {
 		{"io.EOF wrapped", fmt.Errorf("gh api graphql: %w", io.EOF), true},
 		{"net.Error timeout", timeoutError{}, true},
 		{"net.Error wrapped timeout", fmt.Errorf("request failed: %w", timeoutError{}), true},
+		{"context deadline exceeded", errors.New("context deadline exceeded"), true},
 		{"graphql requires authentication", errors.New("GraphQL: Requires authentication (repository.pullRequest)"), true},
 
 		// --- Permanent (criterion 2: surfaces immediately) ---
@@ -64,7 +65,7 @@ func TestIsTransient(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.transient, IsTransient(tt.err),
-				"IsTransient mismatch for %q", tt.err)
+				"IsTransient mismatch for %v", tt.err)
 		})
 	}
 }
@@ -118,6 +119,10 @@ func TestShouldRetry(t *testing.T) {
 		// At or beyond the bound, even a transient error must stop retrying.
 		assert.False(t, ShouldRetry(transient, MaxTransientAttempts))
 		assert.False(t, ShouldRetry(transient, MaxTransientAttempts+10))
+	})
+
+	t.Run("negative attempt is not retried", func(t *testing.T) {
+		assert.False(t, ShouldRetry(transient, -1))
 	})
 
 	t.Run("permanent never retried", func(t *testing.T) {

@@ -66,7 +66,7 @@ func Classify(err error) error {
 //   - HTTP 401 (transient auth — token momentarily not accepted)
 //   - HTTP 403 carrying rate-limit / secondary-rate-limit / abuse signals
 //   - any HTTP 5xx
-//   - network failures: dial/timeout/EOF/connection-reset/i-o-timeout, plus
+//   - network failures: dial/timeout/EOF/connection-reset/i/o timeout, plus
 //     net.Error timeouts and io.EOF
 //   - the literal GraphQL "Requires authentication" error
 //
@@ -92,7 +92,7 @@ func IsTransient(err error) bool {
 // bounded primitive that guarantees over-classification can't retry forever;
 // the actual backoff/sleep loop lives in the consuming sub-tasks.
 func ShouldRetry(err error, attempt int) bool {
-	return IsTransient(err) && attempt < MaxTransientAttempts
+	return attempt >= 0 && IsTransient(err) && attempt < MaxTransientAttempts
 }
 
 // isTransient holds the raw classification logic, free of the TransientError
@@ -144,6 +144,7 @@ func isTransient(err error) bool {
 		"dial ",
 		"i/o timeout",
 		"timeout",
+		"context deadline exceeded",
 		"connection reset",
 		"connection refused",
 		"no such host",
