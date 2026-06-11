@@ -3947,6 +3947,8 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 	} else if pr != nil {
 		d.registerPRIfUntracked(ctx, anvilName, registerID, pr, bead.EpicBranch)
 		d.clearNeedsHumanAfterRecovery(beadID, anvilName)
+		d.ingotRecordPR(beadID, anvilName, pr.Number, "")
+		d.ingotClearPRCreateError(beadID, anvilName)
 		_ = d.db.LogEvent(state.EventPRCreateRecovered,
 			fmt.Sprintf("create-pr: %s already has open PR #%d; registered and cleared needs_human", branch, pr.Number),
 			beadID, anvilName)
@@ -3981,6 +3983,10 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 			// the existing PR and treat as recovered.
 			n := d.registerExistingPRByBranch(prCtx, anvilName, anvilPath, registerID, branch, bead.EpicBranch)
 			d.clearNeedsHumanAfterRecovery(beadID, anvilName)
+			if n > 0 {
+				d.ingotRecordPR(beadID, anvilName, n, "")
+				d.ingotClearPRCreateError(beadID, anvilName)
+			}
 			_ = d.db.LogEvent(state.EventPRCreateRecovered,
 				fmt.Sprintf("create-pr: PR already existed for %s on create; registered #%d and cleared needs_human", branch, n),
 				beadID, anvilName)

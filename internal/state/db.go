@@ -1006,12 +1006,6 @@ const (
 	PRMerged   PRStatus = "merged"
 	PRClosed   PRStatus = "closed"
 	PRNeedsFix PRStatus = "needs_fix"
-	// PRCreateFailed marks a bead whose branch was pushed but for which the
-	// final PR creation failed (after Part A transient retries were exhausted).
-	// It is recorded on the ingot record together with the pushed branch, head
-	// SHA, and classified error so an operator can recover via the manual
-	// create-PR-from-existing-branch path without re-running Smith.
-	PRCreateFailed PRStatus = "pr_create_failed"
 )
 
 // nonTerminalPRStatuses lists every PR status that is not yet resolved.

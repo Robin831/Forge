@@ -111,14 +111,14 @@ func UpdateIngotPR(db *sql.DB, beadID, anvil string, prNum int, prURL string, pr
 // the status to pr_create_failed and persists the pushed branch, head SHA, and
 // classified error so the work can be recovered via the manual
 // create-PR-from-existing-branch path without re-running Smith. It also clears
-// any stale pr_number/pr_url so the record unambiguously reflects "branch pushed
-// but no PR". The row must already exist (created at dispatch time); this is an
-// UPDATE, not an upsert.
+// any stale pr_number/pr_url/pr_id so the record unambiguously reflects "branch
+// pushed but no PR". The row must already exist (created at dispatch time); this
+// is an UPDATE, not an upsert.
 func UpdateIngotPRCreateFailed(db *sql.DB, beadID, anvil, branch, headSHA, classifiedErr string) error {
 	_, err := db.Exec(`
 		UPDATE ingots
 		SET status = ?, branch = ?, head_sha = ?, pr_create_error = ?,
-		    pr_number = NULL, pr_url = '', updated_at = ?
+		    pr_number = NULL, pr_url = '', pr_id = NULL, updated_at = ?
 		WHERE bead_id = ? AND anvil = ?`,
 		string(StatusPRCreateFailed), branch, headSHA, classifiedErr,
 		formatTime(time.Now()), beadID, anvil,
