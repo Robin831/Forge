@@ -107,13 +107,53 @@ func UpdateIngotPR(db *sql.DB, beadID, anvil string, prNum int, prURL string, pr
 	return nil
 }
 
+// UpdateIngotPRCreateFailed records a failed PR creation on the ingot: it sets
+// the status to pr_create_failed and persists the pushed branch, head SHA, and
+// classified error so the work can be recovered via the manual
+// create-PR-from-existing-branch path without re-running Smith. It also clears
+// any stale pr_number/pr_url so the record unambiguously reflects "branch pushed
+// but no PR". The row must already exist (created at dispatch time); this is an
+// UPDATE, not an upsert.
+func UpdateIngotPRCreateFailed(db *sql.DB, beadID, anvil, branch, headSHA, classifiedErr string) error {
+	_, err := db.Exec(`
+		UPDATE ingots
+		SET status = ?, branch = ?, head_sha = ?, pr_create_error = ?,
+		    pr_number = NULL, pr_url = '', updated_at = ?
+		WHERE bead_id = ? AND anvil = ?`,
+		string(StatusPRCreateFailed), branch, headSHA, classifiedErr,
+		formatTime(time.Now()), beadID, anvil,
+	)
+	if err != nil {
+		return fmt.Errorf("recording ingot pr_create_failed: %w", err)
+	}
+	return nil
+}
+
+// ClearIngotPRCreateError clears the recorded PR-creation error on the ingot.
+// It is called on the recovery path once a PR has been (re)opened so the record
+// no longer surfaces a stale failure. It intentionally does not touch the status
+// — the caller transitions the ingot to pr_open via UpdateIngotPR/Status.
+func ClearIngotPRCreateError(db *sql.DB, beadID, anvil string) error {
+	_, err := db.Exec(`
+		UPDATE ingots
+		SET pr_create_error = '', updated_at = ?
+		WHERE bead_id = ? AND anvil = ?`,
+		formatTime(time.Now()), beadID, anvil,
+	)
+	if err != nil {
+		return fmt.Errorf("clearing ingot pr_create_error: %w", err)
+	}
+	return nil
+}
+
 // GetIngot fetches a single ingot by (beadID, anvil), eager-loading its
 // TestResults. Returns nil, nil if not found.
 func GetIngot(db *sql.DB, beadID, anvil string) (*Ingot, error) {
 	row := db.QueryRow(`
 		SELECT id, bead_id, anvil, pr_id, worker_id, status,
 		       temper_passed, temper_failed_step, temper_duration_ms,
-		       pr_number, pr_url, title, branch, created_at, updated_at
+		       pr_number, pr_url, title, branch, head_sha, pr_create_error,
+		       created_at, updated_at
 		FROM ingots
 		WHERE bead_id = ? AND anvil = ?`,
 		beadID, anvil,
@@ -140,7 +180,8 @@ func GetIngotByBeadID(db *sql.DB, beadID string) ([]Ingot, error) {
 	rows, err := db.Query(`
 		SELECT id, bead_id, anvil, pr_id, worker_id, status,
 		       temper_passed, temper_failed_step, temper_duration_ms,
-		       pr_number, pr_url, title, branch, created_at, updated_at
+		       pr_number, pr_url, title, branch, head_sha, pr_create_error,
+		       created_at, updated_at
 		FROM ingots
 		WHERE bead_id = ?
 		ORDER BY anvil`,
@@ -170,7 +211,8 @@ func GetIngotsByStatus(db *sql.DB, status Status, limit int) ([]Ingot, error) {
 	rows, err := db.Query(`
 		SELECT id, bead_id, anvil, pr_id, worker_id, status,
 		       temper_passed, temper_failed_step, temper_duration_ms,
-		       pr_number, pr_url, title, branch, created_at, updated_at
+		       pr_number, pr_url, title, branch, head_sha, pr_create_error,
+		       created_at, updated_at
 		FROM ingots
 		WHERE status = ?
 		ORDER BY updated_at DESC
@@ -206,7 +248,8 @@ func GetIngots(db *sql.DB, anvil string, status string, limit int) ([]Ingot, err
 	query := `
 		SELECT id, bead_id, anvil, pr_id, worker_id, status,
 		       temper_passed, temper_failed_step, temper_duration_ms,
-		       pr_number, pr_url, title, branch, created_at, updated_at
+		       pr_number, pr_url, title, branch, head_sha, pr_create_error,
+		       created_at, updated_at
 		FROM ingots
 		WHERE 1=1`
 	var args []any
@@ -338,6 +381,7 @@ func scanIngot(s scanner) (*Ingot, error) {
 		&prID, &ingot.WorkerID, &statusStr,
 		&temperPassed, &ingot.TemperFailedStep, &ingot.TemperDurationMs,
 		&prNumber, &ingot.PRURL, &ingot.Title, &ingot.Branch,
+		&ingot.HeadSHA, &ingot.PRCreateError,
 		&createdAtStr, &updatedAtStr,
 	); err != nil {
 		return nil, err

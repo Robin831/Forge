@@ -31,7 +31,7 @@ import (
 
 // Command is a message sent from a client to the daemon.
 type Command struct {
-	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "set_clarification", "clear_clarification", "assay_rerun", "pause_dispatch", "resume_dispatch"
+	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "create_pr", "set_clarification", "clear_clarification", "assay_rerun", "pause_dispatch", "resume_dispatch"
 	Payload json.RawMessage `json:"payload"` // Type-specific data
 	// ReadTimeout is an optional client-side timeout for reading the response.
 	// Zero uses DefaultReadTimeout. Long-running commands that go through bd or
@@ -232,6 +232,15 @@ type StopBeadPayload struct {
 	Reason string `json:"reason"` // Optional; defaults to "manually stopped"
 }
 
+// CreatePRPayload is the payload for a "create_pr" command. It triggers the
+// manual create-PR-from-existing-branch recovery: the daemon opens a PR for the
+// already-pushed forge/<bead> branch without re-running Smith. Used by
+// `forge queue create-pr <id> --anvil <name>` and the Hearth "Create PR" button.
+type CreatePRPayload struct {
+	BeadID string `json:"bead_id"`
+	Anvil  string `json:"anvil"`
+}
+
 // QueueActionPayload is the payload for the queue resolution verbs:
 // "queue_clarify", "queue_unclarify", "queue_retry", "queue_clear", and
 // "queue_stop". These are thin IPC wrappers around the shared queueactions
@@ -347,9 +356,9 @@ type GetIngotPayload struct {
 type WicketStatusPayload struct {
 	Enabled        bool           `json:"enabled"`
 	Interval       string         `json:"interval"`
-	MonitoredRepos []string       `json:"monitored_repos"`  // explicitly configured repos
-	DerivedAnvils  int            `json:"derived_anvils"`   // anvil count deriving repo from git remote at runtime
-	IssueCounts    map[string]int `json:"issue_counts"`     // state -> count
+	MonitoredRepos []string       `json:"monitored_repos"` // explicitly configured repos
+	DerivedAnvils  int            `json:"derived_anvils"`  // anvil count deriving repo from git remote at runtime
+	IssueCounts    map[string]int `json:"issue_counts"`    // state -> count
 	LastScanAt     *time.Time     `json:"last_scan_at,omitempty"`
 }
 

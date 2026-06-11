@@ -342,3 +342,33 @@ func TestQueuedResponseJSON(t *testing.T) {
 		t.Fatalf("expected request_id abc, got %s", decoded.RequestID)
 	}
 }
+
+func TestCreatePRPayload_RoundTrip(t *testing.T) {
+	cmd := Command{
+		Type:    "create_pr",
+		Payload: mustMarshal(CreatePRPayload{BeadID: "Forge-abc1", Anvil: "heimdall"}),
+	}
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		t.Fatalf("marshal command: %v", err)
+	}
+
+	var gotCmd Command
+	if err := json.Unmarshal(data, &gotCmd); err != nil {
+		t.Fatalf("unmarshal command: %v", err)
+	}
+	if gotCmd.Type != "create_pr" {
+		t.Errorf("Type = %q; want create_pr", gotCmd.Type)
+	}
+
+	var p CreatePRPayload
+	if err := json.Unmarshal(gotCmd.Payload, &p); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if p.BeadID != "Forge-abc1" {
+		t.Errorf("BeadID = %q; want Forge-abc1", p.BeadID)
+	}
+	if p.Anvil != "heimdall" {
+		t.Errorf("Anvil = %q; want heimdall", p.Anvil)
+	}
+}
