@@ -131,16 +131,19 @@ export interface ResolveRequest {
   forgeId?: string
 }
 
-// ResolveResponse is the daemon's response to a resolve action. The
-// daemon returns `{status: "queued"}` (HTTP 202) or `{status: "ok"}` (200)
-// depending on whether the action ran synchronously; both are surfaced
-// here so callers can render the difference if they want to.
+// ResolveResponse is the daemon's response to a resolve action.
 //
-// The create-pr verb runs synchronously and additionally returns the opened
-// PR's number and (when known) its web URL plus a human-readable message, so
-// the panel can render a clickable "PR #N" link inline on success.
+// For synchronous verbs (HTTP 200) the server forwards the IPC payload
+// verbatim — e.g. create-pr returns `{message, pr_number, pr_url}`.
+//
+// For async verbs (HTTP 202) the server returns
+// `{queued: true, request_id, message?}`.
+//
+// Both shapes are merged here so callers can destructure whichever
+// fields the verb provides.
 export interface ResolveResponse {
-  status?: string
+  queued?: boolean
+  request_id?: string
   message?: string
   pr_number?: number
   pr_url?: string

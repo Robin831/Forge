@@ -16,7 +16,7 @@ const TYPE_LABEL: Record<EscalationType, string> = {
   recovery_failed: 'recovery failed',
   dispatch_blocked_stranded_branch: 'stranded branch',
   clarification: 'clarification',
-  pr_create_failed: 'PR create failed',
+  pr_create_failed: 'PR creation failed',
 }
 
 // TYPE_BADGE tints the escalation-type badge so the operator can scan the
