@@ -79,6 +79,10 @@ type AssayGateConfig struct {
 	DebounceSeconds int
 	// DailyCostLimitUSD caps total Assay spend per day; 0 means no limit.
 	DailyCostLimitUSD float64
+	// MaxRuns caps the number of executed Assay reviews per PR; once reached the
+	// trigger never fires again for that PR, stopping the Assay→Burnish→new-head
+	// loop. Values <= 0 mean no cap.
+	MaxRuns int
 }
 
 // Handler is called when a PR event is detected.
@@ -1149,13 +1153,16 @@ type reviewGateInputs struct {
 	debounceSeconds int
 	dailyCostUSD    float64
 	dailyCostLimit  float64 // 0 = no limit
+	runCount        int     // executed Assay reviews so far for this PR
+	maxRuns         int     // 0 = no cap
 }
 
 // shouldEmitReviewNeeded returns true when EventPRReviewNeeded should fire for a
 // PR. It emits only when ALL hold: Assay is enabled; the PR is managed, open,
 // and not a (skipped) draft; the current head differs from the last reviewed
-// head; no Assay run occurred within the debounce window; and the daily Assay
-// cost is below the configured limit.
+// head; no Assay run occurred within the debounce window; the daily Assay
+// cost is below the configured limit; and the per-PR run cap (maxRuns) has not
+// been reached.
 //
 // CI state is deliberately NOT a gate. Assay reviews the diff (logic, security,
 // test gaps), which does not depend on CI colour, and Forge's Temper already
@@ -1192,6 +1199,12 @@ func shouldEmitReviewNeeded(in reviewGateInputs) bool {
 	if in.dailyCostLimit > 0 && in.dailyCostUSD >= in.dailyCostLimit {
 		return false
 	}
+	// Per-PR run cap: once a PR has been reviewed maxRuns times, stop re-firing
+	// so the Assay→Burnish→new-head loop terminates instead of running until a
+	// pass finds nothing.
+	if in.maxRuns > 0 && in.runCount >= in.maxRuns {
+		return false
+	}
 	return true
 }
 
@@ -1210,6 +1223,11 @@ func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, statu
 	lastRun, err := m.db.LastAssayRunAt(pr.Anvil, pr.Number)
 	if err != nil {
 		log.Printf("[bellows] Failed to query last Assay run for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
+		return
+	}
+	runCount, err := m.db.CountAssayRuns(pr.Anvil, pr.Number)
+	if err != nil {
+		log.Printf("[bellows] Failed to count Assay runs for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
 		return
 	}
 	if dailyAssayCost == nil {
@@ -1231,6 +1249,8 @@ func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, statu
 		debounceSeconds: cfg.DebounceSeconds,
 		dailyCostUSD:    *dailyAssayCost,
 		dailyCostLimit:  cfg.DailyCostLimitUSD,
+		runCount:        runCount,
+		maxRuns:         cfg.MaxRuns,
 	}
 	if !shouldEmitReviewNeeded(in) {
 		return

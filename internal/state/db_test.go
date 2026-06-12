@@ -3111,6 +3111,51 @@ func TestDB_LastReviewedSHA(t *testing.T) {
 	}
 }
 
+func TestDB_CountAssayRuns(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// No runs yet → 0.
+	n, err := db.CountAssayRuns("anvil-1", 7)
+	if err != nil {
+		t.Fatalf("CountAssayRuns (none): %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 runs before any, got %d", n)
+	}
+
+	// Two executed runs plus one skipped run (skipped must NOT count).
+	if err := db.RecordAssayRun(&AssayRun{Anvil: "anvil-1", PRNumber: 7, HeadSHA: "sha-1"}); err != nil {
+		t.Fatalf("RecordAssayRun 1: %v", err)
+	}
+	if err := db.RecordAssayRun(&AssayRun{Anvil: "anvil-1", PRNumber: 7, HeadSHA: "sha-2"}); err != nil {
+		t.Fatalf("RecordAssayRun 2: %v", err)
+	}
+	if err := db.RecordAssayRun(&AssayRun{Anvil: "anvil-1", PRNumber: 7, HeadSHA: "sha-3", SkippedReason: "diff fetch failed"}); err != nil {
+		t.Fatalf("RecordAssayRun skipped: %v", err)
+	}
+	// A run for a different PR must not bleed in.
+	if err := db.RecordAssayRun(&AssayRun{Anvil: "anvil-1", PRNumber: 8, HeadSHA: "sha-x"}); err != nil {
+		t.Fatalf("RecordAssayRun other PR: %v", err)
+	}
+
+	n, err = db.CountAssayRuns("anvil-1", 7)
+	if err != nil {
+		t.Fatalf("CountAssayRuns (after runs): %v", err)
+	}
+	if n != 2 {
+		t.Errorf("expected 2 executed runs (skipped excluded), got %d", n)
+	}
+}
+
 func TestDB_IncrementConsecutiveMiss(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

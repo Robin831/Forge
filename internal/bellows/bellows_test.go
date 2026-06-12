@@ -1717,6 +1717,8 @@ func TestShouldEmitReviewNeeded(t *testing.T) {
 			debounceSeconds: 300,
 			dailyCostUSD:    0,
 			dailyCostLimit:  10,
+			runCount:        0,
+			maxRuns:         2,
 		}
 	}
 
@@ -1740,6 +1742,10 @@ func TestShouldEmitReviewNeeded(t *testing.T) {
 		{"daily cost at limit", func(in *reviewGateInputs) { in.dailyCostUSD = 10; in.dailyCostLimit = 10 }, false},
 		{"daily cost over limit", func(in *reviewGateInputs) { in.dailyCostUSD = 15; in.dailyCostLimit = 10 }, false},
 		{"daily cost with no limit", func(in *reviewGateInputs) { in.dailyCostUSD = 99; in.dailyCostLimit = 0 }, true},
+		{"under run cap", func(in *reviewGateInputs) { in.runCount = 1; in.maxRuns = 2 }, true},
+		{"at run cap", func(in *reviewGateInputs) { in.runCount = 2; in.maxRuns = 2 }, false},
+		{"over run cap", func(in *reviewGateInputs) { in.runCount = 5; in.maxRuns = 2 }, false},
+		{"run cap disabled", func(in *reviewGateInputs) { in.runCount = 99; in.maxRuns = 0 }, true},
 	}
 
 	for _, tt := range tests {

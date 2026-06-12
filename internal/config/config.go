@@ -980,6 +980,7 @@ type AssayConfig struct {
 	ShadowMode        *bool    `mapstructure:"shadow_mode" yaml:"shadow_mode,omitempty"`
 	DebounceSeconds   *int      `mapstructure:"debounce_seconds" yaml:"debounce_seconds,omitempty"`
 	DailyCostLimitUSD *float64  `mapstructure:"daily_cost_limit_usd" yaml:"daily_cost_limit_usd,omitempty"`
+	MaxRuns           *int      `mapstructure:"max_runs" yaml:"max_runs,omitempty"`
 	TriageProvider    string   `mapstructure:"triage_provider" yaml:"triage_provider,omitempty"`
 	ReviewProvider    string   `mapstructure:"review_provider" yaml:"review_provider,omitempty"`
 	ModelTier         string   `mapstructure:"model_tier" yaml:"model_tier,omitempty"`
@@ -1033,6 +1034,21 @@ func (a AssayConfig) GetDailyCostLimitUSD() float64 {
 	return *a.DailyCostLimitUSD
 }
 
+// defaultAssayMaxRuns is the fallback per-PR Assay run cap when max_runs is
+// unset. Assay reviews on every new head SHA, so without a cap the
+// Assay→Burnish→new-head loop runs until a review finds nothing; two passes
+// (initial review + one re-review of the fixes) is plenty in practice.
+const defaultAssayMaxRuns = 2
+
+// GetMaxRuns returns the maximum number of executed Assay reviews per PR,
+// defaulting to defaultAssayMaxRuns when unset. A value <= 0 means no cap.
+func (a AssayConfig) GetMaxRuns() int {
+	if a.MaxRuns == nil {
+		return defaultAssayMaxRuns
+	}
+	return *a.MaxRuns
+}
+
 // GetMaxDiffBytes returns the max diff bytes, defaulting to 0 when unset.
 func (a AssayConfig) GetMaxDiffBytes() int {
 	if a.MaxDiffBytes == nil {
@@ -1083,6 +1099,9 @@ func (c *Config) ResolvedAssay(anvilName string) AssayConfig {
 	}
 	if o.DailyCostLimitUSD != nil {
 		resolved.DailyCostLimitUSD = o.DailyCostLimitUSD
+	}
+	if o.MaxRuns != nil {
+		resolved.MaxRuns = o.MaxRuns
 	}
 	if o.TriageProvider != "" {
 		resolved.TriageProvider = o.TriageProvider
@@ -1175,6 +1194,7 @@ func Defaults() Config {
 			// burn Max-plan quota on a runaway PR loop.
 			DebounceSeconds:   intPtr(300),
 			DailyCostLimitUSD: float64Ptr(5.0),
+			MaxRuns:           intPtr(defaultAssayMaxRuns),
 			MaxDiffBytes:      intPtr(250000),
 			MaxBaseFileBytes:  intPtr(100000),
 			NitCap:            intPtr(5),

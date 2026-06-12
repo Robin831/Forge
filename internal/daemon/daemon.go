@@ -1085,6 +1085,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			SkipDrafts:        ra.IsSkipDrafts(),
 			DebounceSeconds:   ra.GetDebounceSeconds(),
 			DailyCostLimitUSD: ra.GetDailyCostLimitUSD(),
+			MaxRuns:           ra.GetMaxRuns(),
 		}
 	})
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)

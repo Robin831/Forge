@@ -4062,6 +4062,24 @@ func (db *DB) LastAssayRunAt(anvil string, prNumber int) (time.Time, error) {
 	return parseTime(startedAt), nil
 }
 
+// CountAssayRuns returns the number of executed Assay review passes for the
+// given anvil and PR — rows whose skipped_reason is empty (a skipped run, e.g.
+// a failed diff fetch, never reviewed the diff and so does not count toward the
+// per-PR run cap). Used by the Bellows Assay trigger gate to stop the
+// Assay→Burnish→new-head→Assay loop after a configured number of real reviews.
+func (db *DB) CountAssayRuns(anvil string, prNumber int) (int, error) {
+	var n int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM assay_runs
+		 WHERE anvil = ? AND pr_number = ? AND COALESCE(skipped_reason, '') = ''`,
+		anvil, prNumber,
+	).Scan(&n)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // AssayCostUSDSince returns the total cost_usd of all assay_runs started at or
 // after the given time. The cutoff is formatted with dbTimeLayout, whose
 // lexicographic ordering matches chronological ordering, so a TEXT comparison
