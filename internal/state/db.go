@@ -133,6 +133,10 @@ func (db *DB) migrate() error {
 		{"ingot_test_results", "skipped", `ALTER TABLE ingot_test_results ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0`},
 		{"ingots", "head_sha", `ALTER TABLE ingots ADD COLUMN head_sha TEXT NOT NULL DEFAULT ''`},
 		{"ingots", "pr_create_error", `ALTER TABLE ingots ADD COLUMN pr_create_error TEXT NOT NULL DEFAULT ''`},
+		// prev_status records the active status a worker held immediately before
+		// being flipped to 'stalled', so a recovered worker can be restored to its
+		// real phase (running/reviewing/monitoring/pending) instead of a guess.
+		{"workers", "prev_status", `ALTER TABLE workers ADD COLUMN prev_status TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -199,7 +203,8 @@ CREATE TABLE IF NOT EXISTS workers (
     title       TEXT NOT NULL DEFAULT '',
     started_at  TEXT NOT NULL,
     completed_at TEXT,
-    log_path    TEXT NOT NULL DEFAULT ''
+    log_path    TEXT NOT NULL DEFAULT '',
+    prev_status TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS prs (
@@ -771,9 +776,12 @@ func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 }
 
 // MarkWorkerStalled sets a worker's status to stalled and records the time.
+// The pre-stall status is captured into prev_status (in the same UPDATE, so the
+// right-hand side reads the old value) so that a worker which later resumes log
+// activity can be restored to its real phase via UnstallWorker.
 func (db *DB) MarkWorkerStalled(id string) error {
 	res, err := db.conn.Exec(
-		`UPDATE workers SET status = ?, updated_at = ?
+		`UPDATE workers SET prev_status = status, status = ?, updated_at = ?
 		 WHERE id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring')`,
 		string(WorkerStalled), time.Now().Format(dbTimeLayout), id,
 	)
@@ -783,6 +791,60 @@ func (db *DB) MarkWorkerStalled(id string) error {
 	// Observe whether the transition actually occurred; ignore the count to avoid changing behavior.
 	_, _ = res.RowsAffected()
 	return nil
+}
+
+// RecoveredStalledWorkers returns workers currently in the 'stalled' status whose
+// log files have been modified within the given staleThreshold — i.e. their
+// underlying process has resumed writing output and they should be transitioned
+// back to an active state. It is the inverse of StalledWorkers: where that query
+// excludes already-stalled workers, this one looks at exactly those.
+//
+// Workers without a log path are skipped: they stalled on age (the dispatch
+// goroutine likely died before the pipeline produced any log output) and have no
+// activity signal that could indicate genuine recovery.
+func (db *DB) RecoveredStalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
+	if staleThreshold <= 0 {
+		return nil, nil
+	}
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+		FROM workers WHERE status = 'stalled'
+		ORDER BY started_at`)
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().Add(-staleThreshold)
+	var recovered []Worker
+	for _, w := range workers {
+		if w.LogPath == "" {
+			continue
+		}
+		info, err := os.Stat(w.LogPath)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			recovered = append(recovered, w)
+		}
+	}
+	return recovered, nil
+}
+
+// UnstallWorker transitions a worker out of the 'stalled' status back to the
+// active phase it held before it stalled (prev_status), defaulting to 'running'
+// when no prior status was recorded. The WHERE status = 'stalled' guard ensures
+// it never clobbers a worker that already reached a terminal state (done/failed/
+// timeout) via UpdateWorkerStatus while it was marked stalled. prev_status is
+// cleared on success.
+func (db *DB) UnstallWorker(id string) error {
+	_, err := db.conn.Exec(
+		`UPDATE workers
+		 SET status = CASE WHEN prev_status = '' THEN ? ELSE prev_status END,
+		     prev_status = '',
+		     updated_at = ?
+		 WHERE id = ? AND status = 'stalled'`,
+		string(WorkerRunning), time.Now().Format(dbTimeLayout), id,
+	)
+	return err
 }
 
 // ActiveDispatchWorkers returns active workers that are running primary dispatch
@@ -1595,6 +1657,7 @@ const (
 	EventDispatchResumed                 EventType = "dispatch_resumed"
 	EventSchematicSubBead                EventType = "schematic_sub_bead"
 	EventWorkerStalled                   EventType = "worker_stalled"
+	EventWorkerRecovered                 EventType = "worker_recovered"
 	EventBeadTagged                      EventType = "bead_tagged"
 	EventBeadClosed                      EventType = "bead_closed"
 	EventPRReadyToMerge                  EventType = "pr_ready_to_merge"

@@ -1333,6 +1333,179 @@ func TestDB_StalledWorkers_LifecycleWithPerWorkerTimeout(t *testing.T) {
 	}
 }
 
+// getWorkerStatus is a small test helper that returns a worker's current status.
+func getWorkerStatus(t *testing.T, db *DB, id string) WorkerStatus {
+	t.Helper()
+	w, err := db.GetWorker(id)
+	if err != nil {
+		t.Fatalf("GetWorker(%s): %v", id, err)
+	}
+	return w.Status
+}
+
+func TestDB_MarkWorkerStalled_PreservesPriorStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Cover the full round-trip for every active status that can stall.
+	phases := []struct {
+		id     string
+		status WorkerStatus
+	}{
+		{"w-pending", WorkerPending},
+		{"w-running", WorkerRunning},
+		{"w-reviewing", WorkerReviewing},
+		{"w-monitoring", WorkerMonitoring},
+	}
+	for _, p := range phases {
+		logFile := filepath.Join(tmpDir, p.id+".log")
+		if err := os.WriteFile(logFile, []byte("log"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.InsertWorker(&Worker{
+			ID: p.id, BeadID: "BD-" + p.id, Anvil: "anvil-1",
+			Status: p.status, Phase: "smith",
+			StartedAt: time.Now().Add(-15 * time.Minute),
+			LogPath:   logFile,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.MarkWorkerStalled(p.id); err != nil {
+			t.Fatal(err)
+		}
+		if got := getWorkerStatus(t, db, p.id); got != WorkerStalled {
+			t.Fatalf("%s: expected stalled, got %s", p.id, got)
+		}
+
+		// Bump the log so the worker counts as recovered, then un-stall it and
+		// confirm it returns to its original status.
+		now := time.Now()
+		if err := os.Chtimes(logFile, now, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.UnstallWorker(p.id); err != nil {
+			t.Fatal(err)
+		}
+		if got := getWorkerStatus(t, db, p.id); got != p.status {
+			t.Errorf("%s: expected restored status %s, got %s", p.id, p.status, got)
+		}
+	}
+}
+
+func TestDB_RecoveredStalledWorkers(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	staleLog := func(name string) string {
+		p := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(p, []byte("log"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-20 * time.Minute)
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// Stalled worker with a fresh log → recoverable.
+	freshLog := filepath.Join(tmpDir, "fresh.log")
+	if err := os.WriteFile(freshLog, []byte("recent"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertWorker(&Worker{
+		ID: "w-fresh", BeadID: "BD-1", Anvil: "anvil-1",
+		Status: WorkerStalled, Phase: "smith",
+		StartedAt: time.Now().Add(-25 * time.Minute), LogPath: freshLog,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Stalled worker whose log is still old → not recoverable.
+	if err := db.InsertWorker(&Worker{
+		ID: "w-stillstale", BeadID: "BD-2", Anvil: "anvil-1",
+		Status: WorkerStalled, Phase: "smith",
+		StartedAt: time.Now().Add(-25 * time.Minute), LogPath: staleLog("stale.log"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Stalled worker with no log path → not recoverable (stalled on age).
+	if err := db.InsertWorker(&Worker{
+		ID: "w-nolog", BeadID: "BD-3", Anvil: "anvil-1",
+		Status: WorkerStalled, Phase: "smith",
+		StartedAt: time.Now().Add(-25 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Active (non-stalled) worker with a fresh log → not in scope.
+	if err := db.InsertWorker(&Worker{
+		ID: "w-running", BeadID: "BD-4", Anvil: "anvil-1",
+		Status: WorkerRunning, Phase: "smith",
+		StartedAt: time.Now().Add(-25 * time.Minute), LogPath: freshLog,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := db.RecoveredStalledWorkers(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered) != 1 {
+		ids := make([]string, len(recovered))
+		for i, w := range recovered {
+			ids[i] = w.ID
+		}
+		t.Fatalf("expected 1 recovered worker, got %d: %v", len(recovered), ids)
+	}
+	if recovered[0].ID != "w-fresh" {
+		t.Errorf("expected w-fresh, got %s", recovered[0].ID)
+	}
+}
+
+func TestDB_UnstallWorker_NoOpWhenTerminal(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	logFile := filepath.Join(tmpDir, "w.log")
+	if err := os.WriteFile(logFile, []byte("log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertWorker(&Worker{
+		ID: "w-1", BeadID: "BD-1", Anvil: "anvil-1",
+		Status: WorkerRunning, Phase: "smith",
+		StartedAt: time.Now().Add(-15 * time.Minute), LogPath: logFile,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Stall it, then let the real process finish (terminal status) while it is
+	// still flagged stalled — UpdateWorkerStatus has no status guard, mirroring
+	// the production race the WHERE guard protects against.
+	if err := db.MarkWorkerStalled("w-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateWorkerStatus("w-1", WorkerDone); err != nil {
+		t.Fatal(err)
+	}
+	// UnstallWorker must not resurrect a terminal worker.
+	if err := db.UnstallWorker("w-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := getWorkerStatus(t, db, "w-1"); got != WorkerDone {
+		t.Errorf("expected status to remain done, got %s", got)
+	}
+}
+
 func TestDB_PendingRetries_ExcludesClarification(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {
