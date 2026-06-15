@@ -842,9 +842,9 @@ func (db *DB) RecoveredStalledWorkers(staleThreshold time.Duration) ([]Worker, e
 		}
 	}
 
-	// Per-worker pass: lifecycle workers (excluded from backgroundPhases above)
-	// carry their own StaleTimeout. Recover them against that same per-worker
-	// threshold so recovery is symmetric with how StalledWorkers stalled them.
+	// Per-worker pass: lifecycle phases (quench, cifix, etc.) are listed in
+	// backgroundPhases, so the global pass above skips them. Recover them here
+	// against their own per-worker StaleTimeout for symmetry with StalledWorkers.
 	lifecycleRows, err := db.conn.Query(`
 		SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path, stale_timeout
 		FROM workers
