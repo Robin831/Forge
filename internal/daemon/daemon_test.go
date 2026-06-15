@@ -5905,3 +5905,45 @@ func TestFinalizePipelineCreatePRRetry(t *testing.T) {
 		assert.True(t, r.NeedsHuman, "permanent CreatePR failure must surface to needs_human")
 	})
 }
+
+func TestCheckStaleWorkers_StallAndRecoverRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := state.Open(filepath.Join(tmpDir, "state.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	d.cfg.Store(&config.Config{})
+
+	const interval = 5 * time.Minute
+
+	// A worker whose log went silent long ago.
+	logFile := filepath.Join(tmpDir, "smith.log")
+	require.NoError(t, os.WriteFile(logFile, []byte("log"), 0o644))
+	old := time.Now().Add(-20 * time.Minute)
+	require.NoError(t, os.Chtimes(logFile, old, old))
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "w-1", BeadID: "BD-1", Anvil: "anvil-1",
+		Status: state.WorkerReviewing, Phase: "warden",
+		StartedAt: time.Now().Add(-25 * time.Minute), LogPath: logFile,
+	}))
+
+	// First pass: the worker should be flagged stalled.
+	d.checkStaleWorkers(interval)
+	w, err := db.GetWorker("w-1")
+	require.NoError(t, err)
+	require.Equal(t, state.WorkerStalled, w.Status, "worker should be stalled after first pass")
+
+	// The underlying process resumes and writes to its log.
+	now := time.Now()
+	require.NoError(t, os.Chtimes(logFile, now, now))
+
+	// Next pass: the worker should be restored to its pre-stall status.
+	d.checkStaleWorkers(interval)
+	w, err = db.GetWorker("w-1")
+	require.NoError(t, err)
+	assert.Equal(t, state.WorkerReviewing, w.Status, "worker should return to its prior phase after recovery")
+}

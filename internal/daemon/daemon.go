@@ -2281,23 +2281,7 @@ func (d *Daemon) runStaleDetection(ctx context.Context) {
 				}
 				continue
 			}
-			stalled, err := d.db.StalledWorkers(interval)
-			if err != nil {
-				d.logger.Warn("stale detection: failed to query workers", "error", err)
-				continue
-			}
-			for _, w := range stalled {
-				d.logger.Warn("marking worker as stalled — no log activity",
-					"worker", w.ID, "bead", w.BeadID, "anvil", w.Anvil,
-					"phase", w.Phase, "stale_interval", interval)
-				if err := d.db.MarkWorkerStalled(w.ID); err != nil {
-					d.logger.Error("failed to mark worker stalled", "worker", w.ID, "error", err)
-					continue
-				}
-				_ = d.db.LogEvent(state.EventWorkerStalled,
-					fmt.Sprintf("Worker %s stalled (no log activity for %s)", w.ID, interval),
-					w.BeadID, w.Anvil)
-			}
+			d.checkStaleWorkers(interval)
 
 			// Adjust ticker cadence if the stale interval changed.
 			if newCheckInterval := checkIntervalFor(interval); newCheckInterval != checkInterval {
@@ -2305,6 +2289,53 @@ func (d *Daemon) runStaleDetection(ctx context.Context) {
 				checkInterval = newCheckInterval
 			}
 		}
+	}
+}
+
+// checkStaleWorkers runs a single stale-detection pass for the given interval:
+// it marks newly-stalled workers and un-stalls any previously-stalled worker
+// whose log file has become fresh again (self-healing recovery). It is factored
+// out of runStaleDetection's ticker loop so it can be exercised directly in tests.
+func (d *Daemon) checkStaleWorkers(interval time.Duration) {
+	stalled, err := d.db.StalledWorkers(interval)
+	if err != nil {
+		d.logger.Warn("stale detection: failed to query workers", "error", err)
+		return
+	}
+	for _, w := range stalled {
+		d.logger.Warn("marking worker as stalled — no log activity",
+			"worker", w.ID, "bead", w.BeadID, "anvil", w.Anvil,
+			"phase", w.Phase, "stale_interval", interval)
+		if err := d.db.MarkWorkerStalled(w.ID); err != nil {
+			d.logger.Error("failed to mark worker stalled", "worker", w.ID, "error", err)
+			continue
+		}
+		_ = d.db.LogEvent(state.EventWorkerStalled,
+			fmt.Sprintf("Worker %s stalled (no log activity for %s)", w.ID, interval),
+			w.BeadID, w.Anvil)
+	}
+
+	// Recovery pass: a worker previously marked stalled whose log file is fresh
+	// again has resumed work and should be un-stalled so it stops showing up as
+	// needing attention and is no longer mistakenly counted (or excluded) when it
+	// is in fact making progress. This is automatic self-healing — no operator
+	// confirmation required.
+	recovered, err := d.db.RecoveredStalledWorkers(interval)
+	if err != nil {
+		d.logger.Warn("stale detection: failed to query recovered workers", "error", err)
+		return
+	}
+	for _, w := range recovered {
+		d.logger.Info("un-stalling worker — log activity resumed",
+			"worker", w.ID, "bead", w.BeadID, "anvil", w.Anvil,
+			"phase", w.Phase, "stale_interval", interval)
+		if err := d.db.UnstallWorker(w.ID); err != nil {
+			d.logger.Error("failed to un-stall worker", "worker", w.ID, "error", err)
+			continue
+		}
+		_ = d.db.LogEvent(state.EventWorkerRecovered,
+			fmt.Sprintf("Worker %s recovered (log activity resumed)", w.ID),
+			w.BeadID, w.Anvil)
 	}
 }
 
