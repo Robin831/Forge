@@ -794,10 +794,20 @@ func (db *DB) MarkWorkerStalled(id string) error {
 }
 
 // RecoveredStalledWorkers returns workers currently in the 'stalled' status whose
-// log files have been modified within the given staleThreshold — i.e. their
-// underlying process has resumed writing output and they should be transitioned
-// back to an active state. It is the inverse of StalledWorkers: where that query
-// excludes already-stalled workers, this one looks at exactly those.
+// log files have been modified within their applicable stale threshold — i.e.
+// their underlying process has resumed writing output and they should be
+// transitioned back to an active state. It is the inverse of StalledWorkers:
+// where that query excludes already-stalled workers, this one looks at exactly
+// those, and it mirrors the SAME threshold logic so a worker is only un-stalled
+// against the threshold that would have stalled it.
+//
+// This symmetry matters for lifecycle workers (quench/cifix/burnish/reviewfix/
+// rebase/assay): StalledWorkers stalls them using their shorter per-worker
+// StaleTimeout, so recovery must use that same per-worker threshold rather than
+// the global staleThreshold. Using the (typically longer) global threshold here
+// would un-stall a lifecycle worker whose log is older than its own timeout but
+// newer than the global one, causing it to immediately re-stall on the next pass
+// (flapping).
 //
 // Workers without a log path are skipped: they stalled on age (the dispatch
 // goroutine likely died before the pipeline produced any log output) and have no
@@ -806,8 +816,13 @@ func (db *DB) RecoveredStalledWorkers(staleThreshold time.Duration) ([]Worker, e
 	if staleThreshold <= 0 {
 		return nil, nil
 	}
+
+	// Global-threshold pass: stalled pipeline workers (non-background phases) are
+	// recovered against the global staleThreshold, matching how StalledWorkers
+	// stalled them.
 	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
 		FROM workers WHERE status = 'stalled'
+		  AND phase NOT IN (` + backgroundPhases + `)
 		ORDER BY started_at`)
 	if err != nil {
 		return nil, err
@@ -826,6 +841,50 @@ func (db *DB) RecoveredStalledWorkers(staleThreshold time.Duration) ([]Worker, e
 			recovered = append(recovered, w)
 		}
 	}
+
+	// Per-worker pass: lifecycle workers (excluded from backgroundPhases above)
+	// carry their own StaleTimeout. Recover them against that same per-worker
+	// threshold so recovery is symmetric with how StalledWorkers stalled them.
+	lifecycleRows, err := db.conn.Query(`
+		SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path, stale_timeout
+		FROM workers
+		WHERE status = 'stalled'
+		  AND phase IN ('quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'assay')
+		  AND stale_timeout > 0
+		ORDER BY started_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer lifecycleRows.Close()
+	now := time.Now()
+	for lifecycleRows.Next() {
+		var w Worker
+		var status, startedAt string
+		var staleTimeoutSecs int64
+		if err := lifecycleRows.Scan(&w.ID, &w.BeadID, &w.Anvil, &w.Branch, &w.PID,
+			&status, &w.Phase, &w.Title, &w.PRNumber, &startedAt, &w.LogPath, &staleTimeoutSecs); err != nil {
+			return nil, err
+		}
+		w.Status = WorkerStatus(status)
+		w.StartedAt = parseTime(startedAt)
+		w.StaleTimeout = time.Duration(staleTimeoutSecs) * time.Second
+
+		// Workers without a log path stalled on age — no activity signal to recover on.
+		if w.LogPath == "" {
+			continue
+		}
+		info, statErr := os.Stat(w.LogPath)
+		if statErr != nil {
+			continue
+		}
+		if info.ModTime().After(now.Add(-w.StaleTimeout)) {
+			recovered = append(recovered, w)
+		}
+	}
+	if err := lifecycleRows.Err(); err != nil {
+		return nil, err
+	}
+
 	return recovered, nil
 }
 

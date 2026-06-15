@@ -1469,6 +1469,70 @@ func TestDB_RecoveredStalledWorkers(t *testing.T) {
 	}
 }
 
+// TestDB_RecoveredStalledWorkers_LifecycleThreshold guards the recovery/stall
+// threshold symmetry: lifecycle workers (quench/cifix/burnish/reviewfix/rebase/
+// assay) are stalled against their own per-worker StaleTimeout, so they must be
+// un-stalled against that SAME threshold — not the (typically longer) global
+// staleThreshold. Otherwise a lifecycle worker whose log is older than its own
+// timeout but newer than the global threshold would be recovered and then
+// immediately re-stalled, flapping.
+func TestDB_RecoveredStalledWorkers_LifecycleThreshold(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	logWithAge := func(name string, age time.Duration) string {
+		p := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(p, []byte("log"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mt := time.Now().Add(-age)
+		if err := os.Chtimes(p, mt, mt); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	const globalThreshold = 5 * time.Minute
+	const lifecycleTimeout = 1 * time.Minute
+
+	// Lifecycle worker whose log is 2m old: stale by its own 1m timeout, but
+	// "fresh" by the global 5m threshold. It must NOT recover — recovering it
+	// would un-stall a worker that is genuinely stalled under its own threshold.
+	if err := db.InsertWorker(&Worker{
+		ID: "w-lifecycle-stillstale", BeadID: "BD-1", Anvil: "anvil-1",
+		Status: WorkerStalled, Phase: "quench",
+		StartedAt: time.Now().Add(-25 * time.Minute), LogPath: logWithAge("quench.log", 2*time.Minute),
+		StaleTimeout: lifecycleTimeout,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Lifecycle worker with a genuinely fresh log (within its 1m timeout) → recovers.
+	if err := db.InsertWorker(&Worker{
+		ID: "w-lifecycle-fresh", BeadID: "BD-2", Anvil: "anvil-1",
+		Status: WorkerStalled, Phase: "burnish",
+		StartedAt: time.Now().Add(-25 * time.Minute), LogPath: logWithAge("burnish.log", 10*time.Second),
+		StaleTimeout: lifecycleTimeout,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := db.RecoveredStalledWorkers(globalThreshold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered) != 1 || recovered[0].ID != "w-lifecycle-fresh" {
+		ids := make([]string, len(recovered))
+		for i, w := range recovered {
+			ids[i] = w.ID
+		}
+		t.Fatalf("expected only w-lifecycle-fresh to recover, got %v", ids)
+	}
+}
+
 func TestDB_UnstallWorker_NoOpWhenTerminal(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, err := Open(filepath.Join(tmpDir, "state.db"))
