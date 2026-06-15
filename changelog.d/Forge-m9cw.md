@@ -1,2 +1,0 @@
-category: Added
-- **Manual create-PR-from-existing-branch recovery** - When PR creation fails after transient retries, the pushed branch, head SHA, and classified error are now recorded on the ingot as `pr_create_failed`. Recover with `forge queue create-pr <id> --anvil <name>`, which opens a PR for the already-pushed `forge/<bead>` branch without re-running Smith (preconditions: branch exists, is ahead of base, has no open PR, and carries the bead's changelog fragment), then clears the needs-attention flag. (Forge-m9cw)

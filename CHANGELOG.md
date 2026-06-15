@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.21.0] - 2026-06-15
+
+### Added
+
+- **Hearth 2.0 Create PR button** - The needs-attention panel now shows a **Create PR** action for beads stuck in the `pr_create_failed` state. It opens a PR for the already-pushed forge branch (without re-running Smith) and reports the result inline: the new PR number with a link to GitHub on success, or the `gh` error on failure. (Forge-xnb5)
+- **Manual create-PR-from-existing-branch recovery** - When PR creation fails after transient retries, the pushed branch, head SHA, and classified error are now recorded on the ingot as `pr_create_failed`. Recover with `forge queue create-pr <id> --anvil <name>`, which opens a PR for the already-pushed `forge/<bead>` branch without re-running Smith (preconditions: branch exists, is ahead of base, has no open PR, and carries the bead's changelog fragment), then clears the needs-attention flag. (Forge-m9cw)
+- **Manual dispatch pause/resume** - Added `forge pause` / `forge resume` CLI commands and a Hearth 2.0 toggle button (shortcut: `p`) to pause daemon-wide auto-dispatch. Pausing stops new workers from being dispatched while leaving running workers untouched so the active set can drain to zero before a restart. The paused state is surfaced in `forge status` and the dashboard, and resets on daemon restart. (Forge-14n0)
+- **PR number column in Hearth queue** - The Hearth queue/pipeline view now shows each bead's PR number as a clickable GitHub hyperlink (OSC 8) between the bead ID and the anvil, falling back to blank for beads without a PR. (Forge-s4sv)
+- **Shared GitHub transient/permanent error classifier** - Added `IsTransient`, `Classify`, `ShouldRetry`, and the `TransientError` type to `internal/vcs/github`, giving CreatePR-retry and Bellows a single place to decide which gh/GitHub errors are worth retrying (401, rate-limited 403, 5xx, network/EOF/timeout, GraphQL "Requires authentication") versus surfaced immediately (422 validation, branch-protection refusals, 404). Retries are bounded by `MaxTransientAttempts` so over-classification can't loop forever. (Forge-sha2)
+
+### Changed
+
+- **Assay runs outside the lifecycle worker cap** - Assay PR reviews are no longer gated by `max_lifecycle_workers`; they run unbounded (deduped per PR head) so reviews start immediately instead of queueing behind long-running Smith/Burnish/rebase sessions. (Forge-asy1)
+
+### Fixed
+
+- **Cap Assay reviews per PR** - Assay re-fired on every new head SHA, so the Assay→Burnish→new-head loop ran until a pass found nothing. The Bellows trigger now stops after `assay.max_runs` executed reviews per PR (default 2; skipped runs don't count; 0 disables the cap). (Forge-asy2)
+- **Hearth event filter searches the whole log** - The Events panel filter now runs a DB-backed search across the entire event log instead of only the ~100 events loaded in memory, so filtering for an older bead or event id matches correctly. Results are capped at 500 to protect the TUI render. (Forge-1l1s)
+- **Killed bead claim no longer wedges as a phantom in_progress** - A `bd update --status=in_progress` that is killed after committing server-side (cold-start bd slowness) previously left the bead in_progress with no worker row, invisible to orphan recovery forever. The dispatch path now inserts the pending worker row before claiming (so orphan recovery can reclaim it) and reverts the bead to open on any claim failure (so it re-enters `bd ready` and self-heals on the next poll). (Forge-au4z)
+- **Retry transient gh failures on PR creation and PR monitoring** - The end-of-pipeline CreatePR and Bellows' PR status fetches now retry transient gh/GitHub errors (momentary 401, rate-limited 403, 5xx, network blips) with bounded exponential backoff via the shared vcs/github classifier, instead of immediately stranding a bead or flapping a PR through needs_fix/needs_human. Permanent errors (422 validation, branch protection, 404) still surface immediately. (Forge-ficr)
+- **Schematic-phase workers now count against the dispatch cap** - A dispatched worker in the schematic pre-analysis phase no longer drops out of the `max_total_smiths`/`max_smiths` count, closing a window where a second Smith could be dispatched concurrently. (Forge-n34d)
+
 ## [0.20.0] - 2026-06-04
 
 ### Added

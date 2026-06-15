@@ -1,2 +1,0 @@
-category: Fixed
-- **Killed bead claim no longer wedges as a phantom in_progress** - A `bd update --status=in_progress` that is killed after committing server-side (cold-start bd slowness) previously left the bead in_progress with no worker row, invisible to orphan recovery forever. The dispatch path now inserts the pending worker row before claiming (so orphan recovery can reclaim it) and reverts the bead to open on any claim failure (so it re-enters `bd ready` and self-heals on the next poll). (Forge-au4z)

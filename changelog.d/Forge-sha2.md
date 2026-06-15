@@ -1,2 +1,0 @@
-category: Added
-- **Shared GitHub transient/permanent error classifier** - Added `IsTransient`, `Classify`, `ShouldRetry`, and the `TransientError` type to `internal/vcs/github`, giving CreatePR-retry and Bellows a single place to decide which gh/GitHub errors are worth retrying (401, rate-limited 403, 5xx, network/EOF/timeout, GraphQL "Requires authentication") versus surfaced immediately (422 validation, branch-protection refusals, 404). Retries are bounded by `MaxTransientAttempts` so over-classification can't loop forever. (Forge-sha2)

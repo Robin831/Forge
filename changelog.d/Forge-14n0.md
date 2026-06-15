@@ -1,2 +1,0 @@
-category: Added
-- **Manual dispatch pause/resume** - Added `forge pause` / `forge resume` CLI commands and a Hearth 2.0 toggle button (shortcut: `p`) to pause daemon-wide auto-dispatch. Pausing stops new workers from being dispatched while leaving running workers untouched so the active set can drain to zero before a restart. The paused state is surfaced in `forge status` and the dashboard, and resets on daemon restart. (Forge-14n0)
