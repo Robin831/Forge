@@ -130,9 +130,8 @@ export default function SettingsPage() {
           icon={<SettingsIcon size={16} className="text-amber-400" aria-hidden />}
           loading={config.loading}
           error={config.error}
-        >
-          <></>
-        </Pane>
+          children={null}
+        />
       ) : groups.length === 0 ? (
         <Pane
           title="Configuration"
