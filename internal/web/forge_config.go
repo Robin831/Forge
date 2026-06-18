@@ -40,7 +40,7 @@ type ConfigKeyInfo struct {
 // configured anvil name to its per-anvil settings (the anvils.<name>.<key>
 // contract); it is always present and serializes to "{}" when no anvils are
 // configured. Tri-state *bool settings serialize to null when unset, meaning
-// the anvil inherits the corresponding global setting.
+// the anvil inherits the corresponding global setting or built-in default.
 type ConfigResponse struct {
 	Keys   []ConfigKeyInfo                 `json:"keys"`
 	Anvils map[string]config.AnvilSettings `json:"anvils"`

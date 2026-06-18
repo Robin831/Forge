@@ -371,7 +371,16 @@ func TestForgeConfig_GetEmptyAnvilsIsObjectNotNull(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"anvils":{}`) {
-		t.Errorf("expected \"anvils\":{} in body, got: %s", rec.Body.String())
+	var resp struct {
+		Anvils map[string]json.RawMessage `json:"anvils"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Anvils == nil {
+		t.Fatal("expected anvils to be a non-nil empty object, got null")
+	}
+	if len(resp.Anvils) != 0 {
+		t.Errorf("expected empty anvils map, got %d entries", len(resp.Anvils))
 	}
 }
