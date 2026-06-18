@@ -711,6 +711,36 @@ export async function apiSend<T = unknown>(
   return (parsed ?? {}) as T
 }
 
+// ConfigKeyInfo mirrors Go's web.ConfigKeyInfo — one managed boolean setting
+// with the metadata the SettingsPage needs to render and group it. `value` is
+// the current effective value (defaults applied for tri-state keys);
+// `hotReloadable` is true only for keys the running daemon applies without a
+// restart, which drives the "applies on next run" hint for the rest.
+export interface ConfigKeyInfo {
+  key: string
+  value: boolean
+  isDefault: boolean
+  hotReloadable: boolean
+  area: string
+  label: string
+  description: string
+}
+
+// ConfigResponse is the body of GET /api/forge/config (and the echo returned by
+// PATCH). `keys` is server-ordered so the UI renders deterministically.
+export interface ConfigResponse {
+  keys: ConfigKeyInfo[]
+}
+
+// forgeConfig wraps the managed-settings endpoints. `patch` sends a map of
+// key->boolean to PATCH /api/forge/config (validated all-or-nothing by the
+// backend) and returns the freshly re-read config, same shape as `get`.
+export const forgeConfig = {
+  get: (signal?: AbortSignal) => apiGet<ConfigResponse>('/api/forge/config', signal),
+  patch: (changes: Record<string, boolean>) =>
+    apiSend<ConfigResponse>('PATCH', '/api/forge/config', changes),
+}
+
 // PRActionKind enumerates the per-row actions exposed on the /prs tab. The
 // backend resolves the PR row from state.db using the numeric id, so the
 // frontend only sends the path — no body is required.
